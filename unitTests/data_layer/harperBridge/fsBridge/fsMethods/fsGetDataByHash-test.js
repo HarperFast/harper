@@ -29,7 +29,7 @@ const TEST_SEARCH_OBJ = {
     schema: TEST_SCHEMA,
     table: TEST_TABLE_DOG,
     hash_values: test_hash_values,
-    get_attributes: "*"
+    get_attributes: ['*']
 };
 
 const ERR_MSGS = {

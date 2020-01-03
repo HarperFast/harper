@@ -17,6 +17,7 @@ const sc_utils = require('../../server/socketcluster/util/socketClusterUtils');
 const validator = require('../../validation/csvLoadValidator');
 const insert = require('../../data_layer/insert');
 const logger = require('../../utility/logging/harper_logger');
+const env = require('../../utility/environment/environmentManager');
 const papa_parse = require('papaparse');
 const fs = require('fs-extra');
 const {promise} = require('alasql');
@@ -29,9 +30,13 @@ const INVALID_CSV_PATH = '/tmp/csv_input_invalid_id.csv';
 const EMPTY_FILE_PATH = '/tmp/empty.csv';
 const HOSTED_CSV_FILE_URL = 'https://s3.amazonaws.com/complimentarydata/breeds.csv';
 const MIDDLEWARE_PARSE_PARAMETERS = 'SELECT * FROM CSV(?, {headers:true, separator:","})';
+const CSV_URL_TEMP_DIR = `${env.get('HDB_ROOT')}/tmp`;
+const TEMP_CSV_FILE = `tempCSVURLLoad.csv`;
 
 const BULK_LOAD_RESPONSE = {
-    message: 'successfully loaded 3 of 3 records'
+    message: 'successfully loaded 3 of 3 records',
+    number_written: '3',
+    records: '3'
 };
 
 const DATA_LOAD_MESSAGE = {
@@ -40,6 +45,14 @@ const DATA_LOAD_MESSAGE = {
     "table":"breed",
     "action":"insert",
     "data": ''
+};
+
+const CSV_URL_MESSAGE = {
+    "operation": "csv_url_load",
+    "action": "insert",
+    "schema": "test",
+    "table": "url_load_test",
+    "csv_url": "",
 };
 
 // Used to stub the post function used to send to cluster.
@@ -160,10 +173,14 @@ describe('Test csvBulkLoad.js', () => {
 
         it('Test csvDataLoad incomplete csv data, expect nothing loaded message' , async function() {
             test_msg.data = 'a, b, c, d\n1,';
-            bulk_load_stub = sandbox.stub().returns({message:'successfully loaded 1 of 1 records'});
+            bulk_load_stub = sandbox.stub().returns({
+                message: 'successfully loaded 1 of 1 records',
+                number_written: '1',
+                records: '1'
+            });
             csv_rewire.__set__('bulkLoad', bulk_load_stub);
             let response = undefined;
-            response = await csv_rewire.csvDataLoad(test_msg).catch( (e) => {
+            response = await csv_rewire.csvDataLoad(test_msg).catch((e) => {
                 response = e;
             });
             assert.equal(response, 'successfully loaded 1 of 1 records', 'Did not get expected response message');
@@ -223,75 +240,153 @@ describe('Test csvBulkLoad.js', () => {
         });
     });
 
-    describe('Test csvURLLoad', function () {
-        let test_msg = undefined;
+    describe('Test csvURLLoad function', () => {
         let sandbox = sinon.createSandbox();
-        let bulk_load_orig = undefined;
-        let bulk_load_stub = undefined;
-        let bulk_load_rewire;
-        let bulk_load_post_op_stub = undefined;
-        let bulk_load_post_op_stub_orig = undefined;
-        // TODO: Expand these tests once we can get some additional invalid csv files hosted on the intranet.
+        let download_csv_stub = sandbox.stub();
+        let remove_dir_stub;
+        let success_msg = 'Successfully loaded 77 of 77 records';
+        let csv_file_load_stub = sandbox.stub().resolves(success_msg);
 
         before(() => {
-            bulk_load_orig = csv_rewire.__get__('bulkLoad');
-            bulk_load_stub = sandbox.stub().returns(BULK_LOAD_RESPONSE);
-            bulk_load_rewire = csv_rewire.__set__('bulkLoad', bulk_load_stub);
-            bulk_load_post_op_stub_orig = csv_rewire.__get__('postCSVLoadFunction');
-            bulk_load_post_op_stub = sandbox.stub().callsFake(postCSVLoadFunction_stub);
-            csv_rewire.__set__('postCSVLoadFunction', bulk_load_post_op_stub);
-        });
-
-        beforeEach(function () {
-            test_msg = test_utils.deepClone(DATA_LOAD_MESSAGE);
-            test_msg.operation = hdb_terms.OPERATIONS_ENUM.csv_url_load;
-            sandbox.stub(validator, 'urlObject');
-        });
-
-        afterEach(function () {
-            sandbox.restore();
-            bulk_load_rewire = csv_rewire.__set__('postCSVLoadFunction', bulk_load_post_op_stub_orig);
+            csv_rewire.__set__('downloadCSVFile', download_csv_stub);
+            csv_rewire.__set__('csvFileLoad', csv_file_load_stub);
+            remove_dir_stub = sandbox.stub(hdb_utils, 'removeDir');
         });
 
         after(() => {
-            bulk_load_rewire();
-            csv_rewire.__set__('bulkLoad', bulk_load_orig);
+            sandbox.restore();
         });
 
-        it('Test csvURLLoad nominal case with valid file and valid column names/data', async function() {
-            try {
-                test_msg.csv_url = HOSTED_CSV_FILE_URL;
-                let result = await csv_rewire.csvURLLoad(test_msg);
-                assert.equal(result, BULK_LOAD_RESPONSE.message, 'Got incorrect response');
+        it('Test bad URL throws validation error', async () => {
+            CSV_URL_MESSAGE.csv_url = "breeds.csv";
+            let test_err_result = await test_utils.testError(csv_rewire.csvURLLoad(CSV_URL_MESSAGE), 'Error: Csv url is not a valid url');
 
-            } catch(e) {
-                throw e;
-            }
+            expect(test_err_result).to.be.true;
         });
-//TODO this test hangs for a long time, fix in the future
-        /*it('Test csvDataLoad with bad path', async function() {
-            test_msg.csv_url = 'http://omgbadurlwtf/docs.csv';
-            let response = undefined;
+
+        it('Test for nominal behaviour and success message is returned', async () => {
+            CSV_URL_MESSAGE.csv_url = 'http://data.neo4j.com/northwind/products.csv';
+            sandbox.stub(validator, 'urlObject').returns(null);
+            let result = await csv_rewire.csvURLLoad(CSV_URL_MESSAGE);
+
+            expect(result).to.equal(success_msg);
+            expect(remove_dir_stub).to.have.been.calledWith(CSV_URL_TEMP_DIR);
+        });
+
+        it('Test that in case of error remove dir is called to cleanup temp dir', async () => {
+            let error_msg = 'Error csv loading file';
+            let error;
+            csv_file_load_stub.throws(new Error(error_msg));
+            sandbox.stub(fs,'existsSync').returns(true);
 
             try {
-                response = await csv_rewire.csvURLLoad(test_msg);
-            } catch (e) {
-                response = e;
+                await csv_rewire.csvURLLoad(CSV_URL_MESSAGE);
+            } catch(err) {
+                error = err;
             }
 
-            assert.ok((response instanceof Error) === true, 'Did not get expected exception');
-        });*/
+            expect(remove_dir_stub).to.have.been.calledWith(CSV_URL_TEMP_DIR);
+            expect(error.message).to.equal(error_msg);
+        });
     });
 
-    describe('Test createReadStreamFromURL', function () {
-        let createReadStreamFromURL = csv_rewire.__get__('createReadStreamFromURL');
+    describe('Test downloadCSVFile function', () => {
+        let response_fake = {
+            body: 'id, name \n 1, harper\n'
+        };
+        let downloadCSVFile_rw = csv_rewire.__get__('downloadCSVFile');
+        let sandbox = sinon.createSandbox();
+        let request_response_stub = sandbox.stub().resolves(response_fake);
+        let validate_response_stub = sandbox.stub();
+        let mk_dir_stub;
+        let write_file_stub;
 
-        // TODO: Expand these tests once we can get some additional invalid csv files hosted on the intranet.
-        // https://harperdb.atlassian.net/browse/OPS-27
+        before(() => {
+            csv_rewire.__set__('validateResponse', validate_response_stub);
+            mk_dir_stub = sandbox.stub(fs, 'mkdirSync');
+            write_file_stub = sandbox.stub(fs, 'writeFileSync');
+        });
 
-        it('Test createReadStreamFromURL nominal case', async function () {
-            let response = await createReadStreamFromURL(HOSTED_CSV_FILE_URL);
-            assert.equal(response.statusCode, hdb_terms.HTTP_STATUS_CODES.OK, 'Expected 200 status code');
+        after(() => {
+            sandbox.restore();
+        });
+
+        it('Test error is handled from request promise module', async () => {
+            let test_err_rest = await test_utils.testError(downloadCSVFile_rw('wwwwww.badurl.com'), 'Error downloading CSV file from wwwwww.badurl.com, status code: undefined, message: Error: Invalid URI "wwwwww.badurl.com"');
+            expect(test_err_rest).to.be.true;
+        });
+
+        it('Test for nominal behaviour, stubs are called as expected', async () => {
+            csv_rewire.__set__('request_promise', request_response_stub);
+            await downloadCSVFile_rw('www.csv.com');
+
+            expect(mk_dir_stub).to.have.been.calledWith(CSV_URL_TEMP_DIR);
+            expect(write_file_stub).to.have.been.calledWith(`${CSV_URL_TEMP_DIR}/${TEMP_CSV_FILE}`, response_fake.body);
+        });
+
+        it('Test that error from mkdirSync is handled correctly', async () => {
+            let error_msg = 'Error creating directory';
+            mk_dir_stub.throws(new Error(error_msg));
+            let test_err_result = await test_utils.testError(downloadCSVFile_rw('www.csv.com'), error_msg);
+
+            expect(test_err_result).to.be.true;
+        });
+    });
+
+    describe('Test validateResponse function', () => {
+        let validateResponse_rw = csv_rewire.__get__('validateResponse');
+        let url_fake = 'www.csv.com';
+
+        it('Test that bad error code is handled', () => {
+            let response = {
+                statusCode: 400,
+                statusMessage: 'Bad request'
+            };
+            let error;
+
+            try {
+                validateResponse_rw(response, url_fake);
+            } catch(err) {
+                error = err;
+            }
+
+            expect(error.message).to.equal(`CSV Load failed from URL: ${url_fake}, status code: ${response.statusCode}, message: ${response.statusMessage}`);
+        });
+
+        it('Test non-supported content type is handled', () => {
+            let response = {
+                statusCode: 200,
+                headers: {
+                    'content-type': 'text/html'
+                }
+            };
+            let error;
+
+            try {
+                validateResponse_rw(response, url_fake);
+            } catch(err) {
+                error = err;
+            }
+
+            expect(error.message).to.equal(`CSV Load failed from URL: ${url_fake}, unsupported content type: ${response.headers['content-type']}`);
+        });
+
+        it('Test empty response body is handled', () => {
+            let response = {
+                statusCode: 200,
+                headers: {
+                    'content-type': 'text/csv'
+                }
+            };
+            let error;
+
+            try {
+                validateResponse_rw(response, url_fake);
+            } catch(err) {
+                error = err;
+            }
+
+            expect(error.message).to.equal(`CSV Load failed from URL: ${url_fake}, no csv found at url`);
         });
     });
 

@@ -14,10 +14,19 @@ const env = require('../utility/environment/environmentManager');
 const socket_cluster_util = require('../server/socketcluster/util/socketClusterUtils');
 const op_func_caller = require('../utility/OperationFunctionCaller');
 
+const CSV_NO_RECORDS_MSG = 'No records parsed from csv file.';
+const TEMP_CSV_FILE = `tempCSVURLLoad.csv`;
+const TEMP_DOWNLOAD_DIR = `${env.get('HDB_ROOT')}/tmp`;
 const NEWLINE = '\n';
 const unix_filename_regex = new RegExp(/[^-_.A-Za-z0-9]/);
 const ALASQL_MIDDLEWARE_PARSE_PARAMETERS = 'SELECT * FROM CSV(?, {headers:true, separator:","})';
 const HIGHWATERMARK = 1024*1024*5;
+const ACCEPTABLE_URL_CONTENT_TYPE_ENUM = {
+    'text/csv': true,
+    'application/octet-stream': true,
+    'text/plain': true,
+    'application/vnd.ms-excel': true
+};
 
 module.exports = {
     csvDataLoad,
@@ -61,56 +70,102 @@ async function csvDataLoad(json_message) {
             converted_msg.data = json_message.data;
         }
         bulk_load_result = await op_func_caller.callOperationFunctionAsAwait(callBulkLoad, converted_msg, postCSVLoadFunction);
+
+        if (bulk_load_result.message === CSV_NO_RECORDS_MSG) {
+            return CSV_NO_RECORDS_MSG;
+        }
+
+        return buildCSVResponseMsg(bulk_load_result.records, bulk_load_result.number_written);
     } catch(e) {
         throw e;
     }
-
-    return bulk_load_result.message;
 }
 
 /**
- * Load a csv file from a URL.
- *
- * @param json_message - An object representing the CSV file via URL.
- * @returns validation_msg - Contains any validation errors found
- * @returns error - any errors found reading the csv file
- * @returns err - any errors found during the bulk load
- *
+ * Orchestrates a CSV data load via a file URL. First downloads the file to a temporary folder/file, then calls csvFileLoad on the
+ * downloaded file. Finally deletes temporary folder and file.
+ * @param json_message
+ * @returns {Promise<void>}
  */
 async function csvURLLoad(json_message) {
     let validation_msg = validator.urlObject(json_message);
     if (validation_msg) {
         throw new Error(validation_msg);
     }
-    let converted_msg = {
+
+    let csv_file_load_obj = {
+        operation: hdb_terms.OPERATIONS_ENUM.CSV_FILE_LOAD,
+        action: json_message.action,
         schema: json_message.schema,
         table: json_message.table,
-        action: json_message.action,
-        transact_to_cluster: json_message.transact_to_cluster,
-        data: []
+        file_path: `${TEMP_DOWNLOAD_DIR}/${TEMP_CSV_FILE}`
     };
-    let bulk_load_result = undefined;
 
-    // check passed url to see if its live and valid data
-    let url_response = undefined;
     try {
-        url_response = await createReadStreamFromURL(json_message.csv_url);
-    } catch (e) {
-        logger.error(`invalid bulk load url ${json_message.csv_url}, response ${url_response.statusMessage}`);
-        throw e;
-    }
-    try {
-        // Some ISPs will return a "Not found" html page that still have a 200 status. This handles that.
-        if(!url_response.body) {
-            throw new Error(url_response.message);
+        await downloadCSVFile(json_message.csv_url);
+        let bulk_load_result = await csvFileLoad(csv_file_load_obj);
+
+        // Remove the downloaded temporary CSV file and directory once csvFileLoad complete
+        await hdb_utils.removeDir(TEMP_DOWNLOAD_DIR);
+
+        return bulk_load_result;
+    } catch (err) {
+        // If an error is thrown and removeDir above is skipped, cleanup the temporary downloaded data.
+        if (fs.existsSync(TEMP_DOWNLOAD_DIR)) {
+            await hdb_utils.removeDir(TEMP_DOWNLOAD_DIR);
         }
-        converted_msg.data = await callMiddleware(ALASQL_MIDDLEWARE_PARSE_PARAMETERS, [url_response.body]);
-        bulk_load_result = await op_func_caller.callOperationFunctionAsAwait(callBulkLoad, converted_msg, postCSVLoadFunction);
-    } catch(e) {
-        throw new Error(e);
+        throw err;
+    }
+}
+
+/**
+ * Gets a file via URL, then creates a temporary directory in hdb root and writes file to disk.
+ * @param url
+ * @returns {Promise<void>}
+ */
+async function downloadCSVFile(url) {
+    let options = {
+        method: 'GET',
+        uri: `${url}`,
+        encoding: null,
+        resolveWithFullResponse: true
+    };
+
+    let response;
+    try {
+        response = await request_promise(options);
+    } catch(err) {
+        throw new Error (`Error downloading CSV file from ${url}, status code: ${err.statusCode}, message: ${err.message}`);
     }
 
-    return bulk_load_result.message;
+    validateResponse(response, url);
+
+    try {
+        fs.mkdirSync(TEMP_DOWNLOAD_DIR);
+        fs.writeFileSync(`${TEMP_DOWNLOAD_DIR}/${TEMP_CSV_FILE}`, response.body);
+    } catch(err) {
+        logger.error(`Error writing temporary CSV file to storage`);
+        throw err;
+    }
+}
+
+/**
+ * Runs multiple validations on response from HTTP client.
+ * @param response
+ * @param url
+ */
+function validateResponse(response, url) {
+    if (response.statusCode !== hdb_terms.HTTP_STATUS_CODES.OK) {
+        throw new Error(`CSV Load failed from URL: ${url}, status code: ${response.statusCode}, message: ${response.statusMessage}`);
+    }
+
+    if (!ACCEPTABLE_URL_CONTENT_TYPE_ENUM[response.headers['content-type']]) {
+        throw new Error(`CSV Load failed from URL: ${url}, unsupported content type: ${response.headers['content-type']}`);
+    }
+    
+    if (!response.body) {
+        throw new Error(`CSV Load failed from URL: ${url}, no csv found at url`);
+    }
 }
 
 /**
@@ -133,7 +188,7 @@ async function csvFileLoad(json_message) {
         await fs.access(json_message.file_path, fs.constants.R_OK | fs.constants.F_OK);
         let bulk_load_result = await callPapaParse(json_message);
 
-        return `successfully loaded ${bulk_load_result.number_written} of ${bulk_load_result.records} records`;
+        return buildCSVResponseMsg(bulk_load_result.records, bulk_load_result.number_written);
     } catch(err) {
         logger.error(err);
         throw err;
@@ -254,30 +309,6 @@ async function callPapaParse(json_message) {
 }
 
 /**
- * Grab the file specified in the URL parameter.
- * @param {string} url - URL to file.
- * @returns {Promise<*>}
- */
-async function createReadStreamFromURL(url) {
-    let options = {
-        method: 'GET',
-        uri: `${url}`,
-        resolveWithFullResponse: true
-    };
-    let response = await request_promise(options);
-    if (response.statusCode !== hdb_terms.HTTP_STATUS_CODES.OK || response.headers['content-type'].indexOf('text/csv') < 0) {
-        let return_object = {
-            message: `CSV Load failed from URL: ${url}`,
-            status_code: response.statusCode,
-            status_message: response.statusMessage,
-            content_type: response.headers['content-type']
-        };
-        return return_object;
-    }
-    return response;
-}
-
-/**
  * Genericize the call to the middleware used for parsing (currently alasql);
  * @param parameter_string - The parameters to be passed into the middleware
  * @param data - The data that needs to be parsed.
@@ -389,14 +420,22 @@ async function postCSVLoadFunction(orig_bulk_msg, result, orig_req) {
     let transaction_msg = hdb_utils.getClusterMessage(hdb_terms.CLUSTERING_MESSAGE_TYPES.HDB_TRANSACTION);
     transaction_msg.__transacted = true;
     transaction_msg.transaction = {
-        operation: hdb_terms.OPERATIONS_ENUM.CSV_DATA_LOAD,
+        operation: orig_bulk_msg.action !== undefined ? orig_bulk_msg.action : hdb_terms.OPERATIONS_ENUM.INSERT,
         schema: orig_bulk_msg.schema,
         table: orig_bulk_msg.table,
-        transact_to_cluster: orig_bulk_msg.transact_to_cluster,
-        data: orig_bulk_msg.data
+        records: orig_bulk_msg.data
     };
     if (orig_req) {
         socket_cluster_util.concatSourceMessageHeader(transaction_msg, orig_req);
     }
     hdb_utils.sendTransactionToSocketCluster(`${orig_bulk_msg.schema}:${orig_bulk_msg.table}`, transaction_msg, env.getProperty(hdb_terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY));
+}
+
+/**
+ * Builds the response message returned by CSV operations.
+ * @param total_records
+ * @param number_written
+ */
+function buildCSVResponseMsg(total_records, number_written) {
+    return `successfully loaded ${number_written} of ${total_records} records`;
 }

@@ -57,7 +57,7 @@ function dropTableFromSystem(drop_table_obj) {
     let delete_table_obj = {
         table: hdb_terms.SYSTEM_TABLE_NAMES.TABLE_TABLE_NAME,
         schema: hdb_terms.SYSTEM_SCHEMA_NAME,
-        hash_attribute: hdb_terms.SYSTEM_TABLE_HASH,
+        hash_attribute: hdb_terms.SYSTEM_TABLE_HASH_ATTRIBUTES.TABLE_TABLE_HASH_ATTRIBUTE,
         hash_values: [delete_table.id]
     };
     try {

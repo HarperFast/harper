@@ -106,8 +106,8 @@ function consolidateValueSearchData(attrs_keys, attrs_data, return_hash_attr) {
         for (let i = 0; i < row[1].length; i++) {
             const data = row[1][i];
             final_data[hash][attrs_keys[i]] = common_utils.autoCast(data);
-        };
-    };
+        }
+    }
 
     return final_data;
 }

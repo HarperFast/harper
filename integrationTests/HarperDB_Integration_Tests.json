@@ -1,6 +1,6 @@
 {
 	"info": {
-		"_postman_id": "a20eee7f-d7ee-4322-be92-6e34e1183720",
+		"_postman_id": "ca781c25-7146-489f-985e-2cee898543cc",
 		"name": "HarperDB Integration Tests",
 		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
 	},
@@ -2457,7 +2457,6 @@
 								},
 								"url": {
 									"raw": "{{host}}:9925",
-
 									"host": [
 										"{{host}}"
 									],
@@ -2480,6 +2479,1102 @@
 									"    pm.environment.set(\"job_id\", parsedId);",
 									"    pm.environment.set(\"next_request\", next_req);",
 									"    postman.setNextRequest(\"Check Job Completed\");",
+									"});"
+								]
+							}
+						}
+					],
+					"protocolProfileBehavior": {},
+					"_postman_isSubFolder": true
+				},
+				{
+					"name": "CSV URL Load",
+					"item": [
+						{
+							"name": "Create CSV data table",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "7c135745-b3bf-47c2-9887-3649dea3c65a",
+										"exec": [
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"tests[\"Create Table\"] = responseBody.has(\"successfully created.\");",
+											"",
+											"setTimeout(()=>{}, 500);"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "saveHelperData",
+											"value": true,
+											"type": "boolean"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"value": "Basic SERCX0FETUlOOnJvb3Q="
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"operation\":\"create_table\",\n  \"schema\":\"{{schema}}\",\n  \"table\":\"{{csv_tb}}\",\n  \"hash_attribute\": \"id\"\n}"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "CSV file load",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "acf3b9f8-0ea6-4f9a-b0f2-0ddb6722242d",
+										"exec": [
+											"pm.test(\"Check for job message\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData.message.indexOf('Starting job')).to.eql(0);",
+											"    ",
+											"    eval(pm.globals.get(\"function:getJobIdURLcsv\"))(jsonData, null);",
+											"});",
+											"",
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"setTimeout(()=>{}, 500);"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"operation\":\"csv_url_load\",\n  \"action\": \"insert\",\n  \"schema\":\"{{schema}}\",\n  \"table\":\"{{csv_tb}}\",\n  \"csv_url\":\"https://s3.amazonaws.com/complimentarydata/breeds.csv\"\n}"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": [
+								{
+									"name": "CSV Data Load",
+									"originalRequest": {
+										"method": "POST",
+										"header": [
+											{
+												"key": "Content-Type",
+												"value": "application/json"
+											},
+											{
+												"key": "Authorization",
+												"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+											}
+										],
+										"body": {
+											"mode": "raw",
+											"raw": "{\n  \"operation\":\"csv_data_load\",\n  \"schema\":\"dev\",\n  \"action\": \"insert\",\n  \"table\":\"breed\",\n  \"data\":\"id,name,section,country,image\\n1,ENGLISH POINTER,British and Irish Pointers and Setters,GREAT BRITAIN,http://www.fci.be/Nomenclature/Illustrations/001g07.jpg\\n2,ENGLISH SETTER,British and Irish Pointers and Setters,GREAT BRITAIN,http://www.fci.be/Nomenclature/Illustrations/002g07.jpg\\n3,KERRY BLUE TERRIER,Large and medium sized Terriers,IRELAND,\\n\"\n}"
+										},
+										"url": {
+											"raw": "{{HDB_ENDPOINT}}",
+											"host": [
+												"{{HDB_ENDPOINT}}"
+											]
+										}
+									},
+									"status": "OK",
+									"code": 200,
+									"_postman_previewlanguage": "json",
+									"header": [
+										{
+											"key": "Connection",
+											"value": "keep-alive",
+											"name": "Connection",
+											"description": "Options that are desired for the connection"
+										},
+										{
+											"key": "Content-Length",
+											"value": "71",
+											"name": "Content-Length",
+											"description": "The length of the response body in octets (8-bit bytes)"
+										},
+										{
+											"key": "Content-Type",
+											"value": "application/json; charset=utf-8",
+											"name": "Content-Type",
+											"description": "The mime type of this content"
+										},
+										{
+											"key": "Date",
+											"value": "Mon, 09 Jul 2018 20:07:14 GMT",
+											"name": "Date",
+											"description": "The date and time that the message was sent"
+										},
+										{
+											"key": "ETag",
+											"value": "W/\"47-FY/m86hgW/48m7lLK1CpL02xrIw\"",
+											"name": "ETag",
+											"description": "An identifier for a specific version of a resource, often a message digest"
+										},
+										{
+											"key": "Vary",
+											"value": "Origin",
+											"name": "Vary",
+											"description": "Tells downstream proxies how to match future request headers to decide whether the cached response can be used rather than requesting a fresh one from the origin server."
+										}
+									],
+									"cookie": [],
+									"body": ""
+								}
+							]
+						},
+						{
+							"name": "Check CSV data loaded",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "34b3186b-c5e9-45da-8bca-92ea79825179",
+										"exec": [
+											"",
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"test Job Found\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData.length).to.eql(1);",
+											"    ",
+											"    pm.expect(jsonData[0]).to.have.property('status');",
+											"    ",
+											"    let status = jsonData[0].status;",
+											"    ",
+											"    switch(status){",
+											"        case 'ERROR':",
+											"            console.log(jsonData[0]);",
+											"            console.log(\"Error checking CSV URL load job.\")",
+											"            if(pm.environment.get(\"next_request\")){",
+											"                postman.setNextRequest(pm.environment.get(\"next_request\"));",
+											"            }",
+											"            pm.expect(status).to.not.eql('ERROR');",
+											"            break;",
+											"        case 'COMPLETE':",
+											"            console.log(jsonData[0]);",
+											"            if(pm.environment.get(\"next_request\")){",
+											"                postman.setNextRequest(pm.environment.get(\"next_request\"));",
+											"            }",
+											"           ",
+											"            pm.expect(jsonData[0].message).to.eql(\"successfully loaded 351 of 351 records\");",
+											"            pm.expect(status).to.be.oneOf(['COMPLETE', 'ERROR']);",
+											"            break;",
+											"        case '0':",
+											"        case 0:",
+											"        case 'IN_PROGRESS':",
+											"            console.log('in progress, checking again');",
+											"            postman.setNextRequest('Check CSV data loaded');",
+											"            pm.expect(status).to.be.oneOf(['IN_PROGRESS', 0, '0']);",
+											"            break;",
+											"        default:",
+											"            postman.setNextRequest('Check CSV data loaded');",
+											"            pm.expect(status).to.be.oneOf(['IN_PROGRESS', 0, '0', 'ERROR', 'COMPLETE']);",
+											"            break;",
+											"    }",
+											"});",
+											""
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"id": "c350ea7e-d128-486d-9aa2-24abaa82d300",
+										"exec": [
+											"setTimeout(()=>{}, 200);",
+											"console.log(\"Checking Job CSV URL load\" + pm.environment.get(\"job_id\"));"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "saveHelperData",
+											"type": "any"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\t\"operation\":\"get_job\",\n\t\"id\": \"{{job_id}}\"\n}"
+								},
+								"url": {
+									"raw": "http://localhost:9925",
+									"protocol": "http",
+									"host": [
+										"localhost"
+									],
+									"port": "9925"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "Confirm all CSV records loaded",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "0140dbb8-08cc-411d-ae68-91d01be59fdf",
+										"exec": [
+											"pm.test(\"test good response\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"test correct count from table\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData[0]['COUNT(*)']).to.eql(351)",
+											"});",
+											"",
+											"setTimeout(()=>{}, 500);"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\t\"operation\":\"sql\",\n\t\"sql\":\"select count(*) from {{schema}}.{{csv_tb}}\"\n}"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": [
+								{
+									"name": "Select",
+									"originalRequest": {
+										"method": "POST",
+										"header": [
+											{
+												"key": "Content-Type",
+												"value": "application/json"
+											},
+											{
+												"key": "Authorization",
+												"type": "text",
+												"name": "Authorization",
+												"value": "Basic SERCX0FETUlOOjE0MDA="
+											}
+										],
+										"body": {
+											"mode": "raw",
+											"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"SELECT d.id, d.dog_name, d.owner_name, b.name, b.section FROM dev.dog AS d INNER JOIN dev.breed AS b ON d.breed_id = b.id WHERE d.owner_name IN ('Kyle', 'Zach', 'Stephen') AND b.section = 'Mutt' ORDER BY d.dog_name\"\n}"
+										},
+										"url": {
+											"raw": "http://localhost:9925",
+											"protocol": "http",
+											"host": [
+												"localhost"
+											],
+											"port": "9925"
+										}
+									},
+									"status": "OK",
+									"code": 200,
+									"_postman_previewlanguage": "json",
+									"header": [
+										{
+											"key": "connection",
+											"value": "keep-alive",
+											"name": "connection",
+											"description": ""
+										},
+										{
+											"key": "content-length",
+											"value": "389",
+											"name": "content-length",
+											"description": ""
+										},
+										{
+											"key": "content-type",
+											"value": "application/json; charset=utf-8",
+											"name": "content-type",
+											"description": ""
+										},
+										{
+											"key": "date",
+											"value": "Fri, 01 Sep 2017 17:55:45 GMT",
+											"name": "date",
+											"description": ""
+										},
+										{
+											"key": "etag",
+											"value": "W/\"185-edwDBNLCreSo/YY1IIyzPmR72ec\"",
+											"name": "etag",
+											"description": ""
+										},
+										{
+											"key": "x-powered-by",
+											"value": "HarperDB",
+											"name": "x-powered-by",
+											"description": ""
+										}
+									],
+									"cookie": [],
+									"body": ""
+								}
+							]
+						},
+						{
+							"name": "Create CSV data table empty",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "7c135745-b3bf-47c2-9887-3649dea3c65a",
+										"exec": [
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"tests[\"Create Table\"] = responseBody.has(\"successfully created.\");"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "saveHelperData",
+											"value": true,
+											"type": "boolean"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"value": "Basic SERCX0FETUlOOnJvb3Q="
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"operation\":\"create_table\",\n  \"schema\":\"{{schema}}\",\n  \"table\":\"{{csv_tb_empty}}\",\n  \"hash_attribute\": \"id\"\n}"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "CSV file load empty file",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "acf3b9f8-0ea6-4f9a-b0f2-0ddb6722242d",
+										"exec": [
+											"pm.test(\"Check for job message\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData.message.indexOf('Starting job')).to.eql(0);",
+											"    ",
+											"    eval(pm.globals.get(\"function:getJobIdURLcsvEmpty\"))(jsonData, null);",
+											"});",
+											"",
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"id": "4c54e477-3457-4c75-a64f-10c086d27727",
+										"exec": [
+											"setTimeout(()=>{}, 500);"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"operation\":\"csv_url_load\",\n  \"action\": \"insert\",\n  \"schema\":\"{{schema}}\",\n  \"table\":\"{{csv_tb_empty}}\",\n  \"csv_url\":\"https://s3.amazonaws.com/complimentarydata/breedsEmpty.csv\"\n}"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": [
+								{
+									"name": "CSV Data Load",
+									"originalRequest": {
+										"method": "POST",
+										"header": [
+											{
+												"key": "Content-Type",
+												"value": "application/json"
+											},
+											{
+												"key": "Authorization",
+												"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+											}
+										],
+										"body": {
+											"mode": "raw",
+											"raw": "{\n  \"operation\":\"csv_data_load\",\n  \"schema\":\"dev\",\n  \"action\": \"insert\",\n  \"table\":\"breed\",\n  \"data\":\"id,name,section,country,image\\n1,ENGLISH POINTER,British and Irish Pointers and Setters,GREAT BRITAIN,http://www.fci.be/Nomenclature/Illustrations/001g07.jpg\\n2,ENGLISH SETTER,British and Irish Pointers and Setters,GREAT BRITAIN,http://www.fci.be/Nomenclature/Illustrations/002g07.jpg\\n3,KERRY BLUE TERRIER,Large and medium sized Terriers,IRELAND,\\n\"\n}"
+										},
+										"url": {
+											"raw": "{{HDB_ENDPOINT}}",
+											"host": [
+												"{{HDB_ENDPOINT}}"
+											]
+										}
+									},
+									"status": "OK",
+									"code": 200,
+									"_postman_previewlanguage": "json",
+									"header": [
+										{
+											"key": "Connection",
+											"value": "keep-alive",
+											"name": "Connection",
+											"description": "Options that are desired for the connection"
+										},
+										{
+											"key": "Content-Length",
+											"value": "71",
+											"name": "Content-Length",
+											"description": "The length of the response body in octets (8-bit bytes)"
+										},
+										{
+											"key": "Content-Type",
+											"value": "application/json; charset=utf-8",
+											"name": "Content-Type",
+											"description": "The mime type of this content"
+										},
+										{
+											"key": "Date",
+											"value": "Mon, 09 Jul 2018 20:07:14 GMT",
+											"name": "Date",
+											"description": "The date and time that the message was sent"
+										},
+										{
+											"key": "ETag",
+											"value": "W/\"47-FY/m86hgW/48m7lLK1CpL02xrIw\"",
+											"name": "ETag",
+											"description": "An identifier for a specific version of a resource, often a message digest"
+										},
+										{
+											"key": "Vary",
+											"value": "Origin",
+											"name": "Vary",
+											"description": "Tells downstream proxies how to match future request headers to decide whether the cached response can be used rather than requesting a fresh one from the origin server."
+										}
+									],
+									"cookie": [],
+									"body": ""
+								}
+							]
+						},
+						{
+							"name": "Check CSV data empty",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "34b3186b-c5e9-45da-8bca-92ea79825179",
+										"exec": [
+											"",
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"test Job Found\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData.length).to.eql(1);",
+											"    ",
+											"    pm.expect(jsonData[0]).to.have.property('status');",
+											"    ",
+											"    let status = jsonData[0].status;",
+											"    ",
+											"    switch(status){",
+											"        case 'ERROR':",
+											"            console.log(jsonData[0]);",
+											"            console.log(\"Error checking CSV URL load job.\")",
+											"            if(pm.environment.get(\"next_request\")){",
+											"                postman.setNextRequest(pm.environment.get(\"next_request\"));",
+											"            }",
+											"            pm.expect(status).to.not.eql('ERROR');",
+											"            break;",
+											"        case 'COMPLETE':",
+											"            console.log(jsonData[0]);",
+											"            if(pm.environment.get(\"next_request\")){",
+											"                postman.setNextRequest(pm.environment.get(\"next_request\"));",
+											"            }",
+											"           ",
+											"            pm.expect(jsonData[0].message).to.eql(\"successfully loaded 0 of 0 records\");",
+											"            pm.expect(status).to.be.oneOf(['COMPLETE', 'ERROR']);",
+											"            break;",
+											"        case '0':",
+											"        case 0:",
+											"        case 'IN_PROGRESS':",
+											"            console.log('in progress, checking again');",
+											"            postman.setNextRequest('Check CSV data empty');",
+											"            pm.expect(status).to.be.oneOf(['IN_PROGRESS', 0, '0']);",
+											"            break;",
+											"        default:",
+											"            postman.setNextRequest('Check CSV data empty');",
+											"            pm.expect(status).to.be.oneOf(['IN_PROGRESS', 0, '0', 'ERROR', 'COMPLETE']);",
+											"            break;",
+											"    }",
+											"});",
+											""
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"id": "c350ea7e-d128-486d-9aa2-24abaa82d300",
+										"exec": [
+											"setTimeout(()=>{}, 200);",
+											"console.log(\"Checking Job CSV URL load\" + pm.environment.get(\"job_id\"));"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "saveHelperData",
+											"type": "any"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\t\"operation\":\"get_job\",\n\t\"id\": \"{{job_id}}\"\n}"
+								},
+								"url": {
+									"raw": "http://localhost:9925",
+									"protocol": "http",
+									"host": [
+										"localhost"
+									],
+									"port": "9925"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "CSV file load bad attribute",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "acf3b9f8-0ea6-4f9a-b0f2-0ddb6722242d",
+										"exec": [
+											"pm.test(\"Check for job message\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData.message.indexOf('Starting job')).to.eql(0);",
+											"    ",
+											"    eval(pm.globals.get(\"function:getJobIdURLcsvError\"))(jsonData, null);",
+											"});",
+											"",
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"operation\":\"csv_url_load\",\n  \"action\": \"insert\",\n  \"schema\":\"{{schema}}\",\n  \"table\":\"{{csv_tb_empty}}\",\n  \"csv_url\":\"https://s3.amazonaws.com/complimentarydata/breeds-bad-column-name.csv\"\n}"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": [
+								{
+									"name": "CSV Data Load",
+									"originalRequest": {
+										"method": "POST",
+										"header": [
+											{
+												"key": "Content-Type",
+												"value": "application/json"
+											},
+											{
+												"key": "Authorization",
+												"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+											}
+										],
+										"body": {
+											"mode": "raw",
+											"raw": "{\n  \"operation\":\"csv_data_load\",\n  \"schema\":\"dev\",\n  \"action\": \"insert\",\n  \"table\":\"breed\",\n  \"data\":\"id,name,section,country,image\\n1,ENGLISH POINTER,British and Irish Pointers and Setters,GREAT BRITAIN,http://www.fci.be/Nomenclature/Illustrations/001g07.jpg\\n2,ENGLISH SETTER,British and Irish Pointers and Setters,GREAT BRITAIN,http://www.fci.be/Nomenclature/Illustrations/002g07.jpg\\n3,KERRY BLUE TERRIER,Large and medium sized Terriers,IRELAND,\\n\"\n}"
+										},
+										"url": {
+											"raw": "{{HDB_ENDPOINT}}",
+											"host": [
+												"{{HDB_ENDPOINT}}"
+											]
+										}
+									},
+									"status": "OK",
+									"code": 200,
+									"_postman_previewlanguage": "json",
+									"header": [
+										{
+											"key": "Connection",
+											"value": "keep-alive",
+											"name": "Connection",
+											"description": "Options that are desired for the connection"
+										},
+										{
+											"key": "Content-Length",
+											"value": "71",
+											"name": "Content-Length",
+											"description": "The length of the response body in octets (8-bit bytes)"
+										},
+										{
+											"key": "Content-Type",
+											"value": "application/json; charset=utf-8",
+											"name": "Content-Type",
+											"description": "The mime type of this content"
+										},
+										{
+											"key": "Date",
+											"value": "Mon, 09 Jul 2018 20:07:14 GMT",
+											"name": "Date",
+											"description": "The date and time that the message was sent"
+										},
+										{
+											"key": "ETag",
+											"value": "W/\"47-FY/m86hgW/48m7lLK1CpL02xrIw\"",
+											"name": "ETag",
+											"description": "An identifier for a specific version of a resource, often a message digest"
+										},
+										{
+											"key": "Vary",
+											"value": "Origin",
+											"name": "Vary",
+											"description": "Tells downstream proxies how to match future request headers to decide whether the cached response can be used rather than requesting a fresh one from the origin server."
+										}
+									],
+									"cookie": [],
+									"body": ""
+								}
+							]
+						},
+						{
+							"name": "Check CSV job error",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "34b3186b-c5e9-45da-8bca-92ea79825179",
+										"exec": [
+											"",
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"test Job Found\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData.length).to.eql(1);",
+											"    ",
+											"    pm.expect(jsonData[0]).to.have.property('status');",
+											"    ",
+											"    let status = jsonData[0].status;",
+											"    ",
+											"    switch(status){",
+											"        case 'ERROR':",
+											"            console.log(jsonData[0]);",
+											"            if(pm.environment.get(\"next_request\")){",
+											"                postman.setNextRequest(pm.environment.get(\"next_request\"));",
+											"            }",
+											"            ",
+											"            let msg_contains = jsonData[0].message.includes(\"Invalid column name id/, cancelling load operation\");",
+											"            pm.expect(msg_contains).to.eql(true);",
+											"            pm.expect(status).to.eql('ERROR');",
+											"            break;",
+											"        case 'COMPLETE':",
+											"            console.log(jsonData[0]);",
+											"            if(pm.environment.get(\"next_request\")){",
+											"                postman.setNextRequest(pm.environment.get(\"next_request\"));",
+											"            }",
+											"            ",
+											"            pm.expect(status).to.not.eql('COMPLETE');",
+											"            break;",
+											"        case '0':",
+											"        case 0:",
+											"        case 'IN_PROGRESS':",
+											"            console.log('in progress, checking again');",
+											"            postman.setNextRequest('Check CSV job error');",
+											"            pm.expect(status).to.be.oneOf(['IN_PROGRESS', 0, '0']);",
+											"            break;",
+											"        default:",
+											"            postman.setNextRequest('Check CSV job error');",
+											"            pm.expect(status).to.be.oneOf(['IN_PROGRESS', 0, '0', 'ERROR', 'COMPLETE']);",
+											"            break;",
+											"    }",
+											"});",
+											""
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"id": "c350ea7e-d128-486d-9aa2-24abaa82d300",
+										"exec": [
+											"setTimeout(()=>{}, 200);",
+											"console.log(\"Checking Job CSV URL load\" + pm.environment.get(\"job_id\"));"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "saveHelperData",
+											"type": "any"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\t\"operation\":\"get_job\",\n\t\"id\": \"{{job_id}}\"\n}"
+								},
+								"url": {
+									"raw": "http://localhost:9925",
+									"protocol": "http",
+									"host": [
+										"localhost"
+									],
+									"port": "9925"
+								}
+							},
+							"response": []
+						}
+					],
+					"event": [
+						{
+							"listen": "prerequest",
+							"script": {
+								"id": "f31e0863-2b2b-4ffb-b2c1-dce594619552",
+								"type": "text/javascript",
+								"exec": [
+									""
+								]
+							}
+						},
+						{
+							"listen": "test",
+							"script": {
+								"id": "2a002ef4-bd15-4976-902b-505b1d69361e",
+								"type": "text/javascript",
+								"exec": [
+									"postman.setGlobalVariable(\"function:getJobIdURLcsv\", (jsonData, next_req)=>{",
+									"    let id_index = jsonData.message.indexOf('id ');",
+									"    let parsedId = jsonData.message.substr(id_index + 3, jsonData.message.length);",
+									"    pm.environment.set(\"job_id\", parsedId);",
+									"    pm.environment.set(\"next_request\", next_req);",
+									"    postman.setNextRequest(\"Check CSV data loaded\");",
+									"});",
+									"",
+									"postman.setGlobalVariable(\"function:getJobIdURLcsvEmpty\", (jsonData, next_req)=>{",
+									"    let id_index = jsonData.message.indexOf('id ');",
+									"    let parsedId = jsonData.message.substr(id_index + 3, jsonData.message.length);",
+									"    pm.environment.set(\"job_id\", parsedId);",
+									"    pm.environment.set(\"next_request\", next_req);",
+									"    postman.setNextRequest(\"Check CSV data empty\");",
+									"});",
+									"",
+									"postman.setGlobalVariable(\"function:getJobIdURLcsvError\", (jsonData, next_req)=>{",
+									"    let id_index = jsonData.message.indexOf('id ');",
+									"    let parsedId = jsonData.message.substr(id_index + 3, jsonData.message.length);",
+									"    pm.environment.set(\"job_id\", parsedId);",
+									"    pm.environment.set(\"next_request\", next_req);",
+									"    postman.setNextRequest(\"Check CSV job error\");",
 									"});"
 								]
 							}
@@ -3274,7 +4369,6 @@
 										},
 										"url": {
 											"raw": "{{host}}:9925",
-
 											"host": [
 												"{{host}}"
 											],
@@ -6865,6 +7959,574 @@
 					"response": []
 				},
 				{
+					"name": "select - where attr < comparator",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "3ac0766f-efe2-4652-b990-f38461be86f7",
+								"exec": [
+									"pm.test(\"sql select - where attr < comparator\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    jsonData.forEach((record)=>{",
+									"        pm.expect(record.unitprice)<81;",
+									"    });",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"value": true,
+									"type": "boolean"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"select * from {{schema}}.{{prod_tb}} where unitprice < 81\"\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "select - where attr <= comparator",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "3ac0766f-efe2-4652-b990-f38461be86f7",
+								"exec": [
+									"pm.test(\"sql select - where attr <= comparator\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    jsonData.forEach((record)=>{",
+									"        pm.expect(record.unitprice)<=81;",
+									"    });",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"value": true,
+									"type": "boolean"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"select * from {{schema}}.{{prod_tb}} where unitprice <= 81\"\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "select - where attr > comparator",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "3ac0766f-efe2-4652-b990-f38461be86f7",
+								"exec": [
+									"pm.test(\"sql select - where attr > comparator\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    jsonData.forEach((record)=>{",
+									"        pm.expect(record.unitprice) > 81;",
+									"    });",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"value": true,
+									"type": "boolean"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"select * from {{schema}}.{{prod_tb}} where unitprice > 81\"\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "select - where attr >= comparator",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "3ac0766f-efe2-4652-b990-f38461be86f7",
+								"exec": [
+									"pm.test(\"sql select - where attr >= comparator\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    jsonData.forEach((record)=>{",
+									"        pm.expect(record.unitprice) >= 81;",
+									"    });",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"value": true,
+									"type": "boolean"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"select * from {{schema}}.{{prod_tb}} where unitprice >= 81\"\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "select - where attr w/ multiple comparators",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "3ac0766f-efe2-4652-b990-f38461be86f7",
+								"exec": [
+									"pm.test(\"sql select - where attr w/ multiple comparators\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    jsonData.forEach((record)=>{",
+									"        pm.expect(record.unitprice) > 20;",
+									"        pm.expect(record.unitprice) <= 81;",
+									"    });",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"value": true,
+									"type": "boolean"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"select * from {{schema}}.{{prod_tb}} where unitprice > 20 AND unitprice <= 81\"\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "select - where w/ multiple attr comparators",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "3ac0766f-efe2-4652-b990-f38461be86f7",
+								"exec": [
+									"pm.test(\"sql select - where w/ multiple attr comparators\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    jsonData.forEach((record)=>{",
+									"        pm.expect(record.unitprice) > 10;",
+									"        pm.expect(record.unitprice) <= 81;",
+									"        pm.expect(record.unitsinstock).to.eql(0);",
+									"    });",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"value": true,
+									"type": "boolean"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"select * from {{schema}}.{{prod_tb}} where unitprice > 10 AND unitprice <=81 AND unitsinstock = 0\"\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "select - where w/ multiple comparators for multiple attrs",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "3ac0766f-efe2-4652-b990-f38461be86f7",
+								"exec": [
+									"pm.test(\"sql select - where w/ multiple comparators for multiple attrs\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    jsonData.forEach((record)=>{",
+									"        pm.expect(record.unitprice) > 10;",
+									"        pm.expect(record.unitprice) <= 81;",
+									"        pm.expect(record.unitsinstock) > 10;",
+									"    });",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"value": true,
+									"type": "boolean"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"select * from {{schema}}.{{prod_tb}} where unitprice > 10 AND unitprice <=81 AND unitsinstock > 10\"\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "select - where w/ IN() and multiple of comparators for multiple attrs",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "3ac0766f-efe2-4652-b990-f38461be86f7",
+								"exec": [
+									"pm.test(\"sql select - where w/ IN() and multiple of comparators for multiple attrs\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    jsonData.forEach((record)=>{",
+									"        pm.expect(record.unitprice) > 10;",
+									"        pm.expect(record.unitprice) <= 81;",
+									"        pm.expect(record.unitsinstock) > 10;",
+									"        pm.expect(record.supplierid).to.be.oneOf([1,2,3,4]);",
+									"    });",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"value": true,
+									"type": "boolean"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"select * from {{schema}}.{{prod_tb}} where unitprice > 10 AND unitprice <=81 AND unitsinstock > 10 AND supplierid IN(1,2,3,4)\"\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
 					"name": "update SQL employee",
 					"event": [
 						{
@@ -9464,6 +11126,278 @@
 					"response": []
 				},
 				{
+					"name": "NoSQL search by hash no schema",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "9ffd40b5-8323-40c0-948a-a95f766bcebe",
+								"exec": [
+									"pm.test(\"Status code is 500\", function () {",
+									"    pm.response.to.have.status(500);",
+									"});",
+									"",
+									"pm.test(\"verify proper error message is given\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.error).to.eql(\"schema callABC does not exist\");",
+									"});",
+									""
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"search_by_hash\",\n  \"schema\":\"callABC\",\n  \"table\":\"aggr\",\n  \"hash_values\":[4],\n  \"get_attributes\": [\"*\"]\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "NoSQL search by hash no table",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "c015be28-a680-4910-82a6-f1d509543dca",
+								"exec": [
+									"pm.test(\"Status code is 500\", function () {",
+									"    pm.response.to.have.status(500);",
+									"});",
+									"",
+									"pm.test(\"verify proper error message is given\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.error).to.eql(\"table call.aggrABC does not exist\");",
+									"});",
+									""
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"search_by_hash\",\n  \"schema\":\"call\",\n  \"table\":\"aggrABC\",\n  \"hash_values\":[4],\n  \"get_attributes\": [\"*\"]\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "NoSQL search by hash hash_value bad data type",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "c015be28-a680-4910-82a6-f1d509543dca",
+								"exec": [
+									"pm.test(\"Status code is 500\", function () {",
+									"    pm.response.to.have.status(500);",
+									"});",
+									"",
+									"pm.test(\"verify proper error message is given\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.error).to.eql(\"hash_values must be an array\");",
+									"});",
+									""
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"search_by_hash\",\n  \"schema\":\"call\",\n  \"table\":\"aggr\",\n  \"hash_values\":4,\n  \"get_attributes\": [\"*\"]\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "NoSQL search by hash get_attributes bad data type",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "c015be28-a680-4910-82a6-f1d509543dca",
+								"exec": [
+									"pm.test(\"Status code is 500\", function () {",
+									"    pm.response.to.have.status(500);",
+									"});",
+									"",
+									"pm.test(\"verify proper error message is given\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.error).to.eql(\"get_attributes must be an array\");",
+									"});",
+									""
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"search_by_hash\",\n  \"schema\":\"call\",\n  \"table\":\"aggr\",\n  \"hash_values\":[4],\n  \"get_attributes\": \"*\"\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
 					"name": "update NoSQL employee with falsey attributes",
 					"event": [
 						{
@@ -10759,8 +12693,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -10825,8 +12759,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -10891,8 +12825,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -10957,8 +12891,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -11023,8 +12957,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -11089,8 +13023,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -11155,8 +13089,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -11221,8 +13155,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -11287,8 +13221,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -11353,8 +13287,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -11419,8 +13353,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -11485,8 +13419,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -11551,8 +13485,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -11617,8 +13551,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -11683,8 +13617,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -11749,8 +13683,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -11815,8 +13749,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -11881,8 +13815,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -11947,8 +13881,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925"
 						},
@@ -12010,8 +13944,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925"
 						},
@@ -12624,8 +14558,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -12701,8 +14635,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925"
 						},
@@ -12768,8 +14702,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925"
 						},
@@ -12843,8 +14777,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925"
 						},
@@ -12906,8 +14840,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -12972,8 +14906,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -13038,8 +14972,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -13104,8 +15038,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -13170,8 +15104,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -13236,8 +15170,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -13302,8 +15236,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -13368,8 +15302,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -13434,8 +15368,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -13500,8 +15434,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -13566,8 +15500,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -13632,8 +15566,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -13698,8 +15632,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -13764,8 +15698,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -13830,8 +15764,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -13896,8 +15830,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -13958,8 +15892,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -14031,8 +15965,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925"
 						},
@@ -14101,8 +16035,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925"
 						},
@@ -14257,8 +16191,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -15227,8 +17161,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -15295,8 +17229,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -15371,8 +17305,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -15442,8 +17376,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -15504,8 +17438,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -15581,8 +17515,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -15652,8 +17586,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -15732,8 +17666,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925"
 						}
@@ -15799,8 +17733,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925"
 						}
@@ -15862,8 +17796,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925"
 						}
@@ -15929,8 +17863,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925"
 						}
@@ -15991,8 +17925,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -16057,8 +17991,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -16119,8 +18053,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -16181,8 +18115,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -16243,8 +18177,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -16305,8 +18239,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -16367,8 +18301,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -16433,8 +18367,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925"
 						},
@@ -16496,8 +18430,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925"
 						},
@@ -17213,6 +19147,1803 @@
 					"_postman_isSubFolder": true
 				},
 				{
+					"name": "Drop schema tests",
+					"item": [
+						{
+							"name": "Create schema for drop test",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "31fc35c6-2dac-4a26-8434-fa1b79f73cf5",
+										"exec": [
+											"pm.test(\"Status code is 200\", function () {\r",
+											"    pm.response.to.have.status(200);\r",
+											"});\r",
+											"\r",
+											"pm.test(\"Response from create schema is correct\", () =>{\r",
+											"     var jsonData = pm.response.json();\r",
+											"     pm.expect(jsonData.message).to.eql(\"schema drop_schema successfully created\")\r",
+											"});\r",
+											""
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"id": "ea0bfcdc-9630-4b2d-be4a-e58e872b66b1",
+										"exec": [
+											"setTimeout(()=>{}, 200);"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"operation\":\"create_schema\",\n  \"schema\": \"{{drop_schema}}\"\n}"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								},
+								"description": "This method is used to create a schema.  It like all other functions requires basic auth.  \n\nAttributes:\n\noperation (required) - must always be create_schema\n\nschema (required) - name of the schema you are creating"
+							},
+							"response": []
+						},
+						{
+							"name": "Create table for drop test",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "0c22b1e9-e7ff-4dab-9c1d-239884772cf3",
+										"exec": [
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"Response from create table is correct\", () =>{",
+											"     var jsonData = pm.response.json();",
+											"     pm.expect(jsonData.message).to.eql(\"table drop_schema.drop_table successfully created.\")",
+											"});",
+											""
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"id": "b540dbcf-8190-4315-9ee4-e317fce3b15c",
+										"exec": [
+											"setTimeout(()=>{}, 200);"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "saveHelperData",
+											"value": true,
+											"type": "boolean"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"operation\":\"create_table\",\n  \"schema\":\"{{drop_schema}}\",\n  \"table\":\"{{drop_table}}\",\n  \"hash_attribute\": \"id\"\n}"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "Insert records for drop test",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "117c3953-8685-4758-8769-4358a812df0e",
+										"exec": [
+											"pm.test(\"Inserted all records\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData.inserted_hashes.length).to.eql(4);",
+											"});",
+											"",
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"id": "a291e09f-33e2-4abc-b058-f01fe378014a",
+										"exec": [
+											"setTimeout(()=>{}, 200);"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\"operation\":\"insert\",\n\"schema\":\"{{drop_schema}}\",\n\"table\":\"{{drop_table}}\",\n\"records\": [\n  {\n    \"id\": 4,\n    \"address\": \"194 Greenbrook Drive\"\n  },\n  {\n    \"id\": 7,\n    \"address\": \"195 Greenbrook Lane\"\n  },\n  {\n    \"id\": 9,\n    \"address\": \"196 Greenbrook Lane\"\n  },\n  {\n    \"id\": 0,\n    \"address\": \"197 Greenbrook Drive\"\n  }\n  ]\n}"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "Drop schema",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "117c3953-8685-4758-8769-4358a812df0e",
+										"exec": [
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"Response from drop table is correct\", () =>{",
+											"     var jsonData = pm.response.json();",
+											"     pm.expect(jsonData.message).to.eql(\"successfully deleted schema drop_schema\");",
+											"});",
+											""
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\t\"operation\":\"drop_schema\",\n\t\"schema\":\"{{drop_schema}}\"\n}\n"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "Confirm drop schema",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "117c3953-8685-4758-8769-4358a812df0e",
+										"exec": [
+											"// This code loops through the response from describe all and compares ",
+											"// the attributes to expected result variable below. ",
+											"// If you create tests that modify schema/table/attributes you should update ‘expected_result’",
+											"let expected_result = {",
+											"    \"northnwd\": {",
+											"        \"suppliers\": {",
+											"            \"id\": \"01a3d40f-d983-4210-b031-71ee28faf95a\",",
+											"            \"name\": \"suppliers\",",
+											"            \"hash_attribute\": \"supplierid\",",
+											"            \"schema\": \"northnwd\",",
+											"            \"residence\": null,",
+											"            \"attributes\": [",
+											"                {",
+											"                    \"attribute\": \"region\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"address\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"supplierid\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"city\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"postalcode\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"country\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"contacttitle\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"homepage\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"phone\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"companyname\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"contactname\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"fax\"",
+											"                }",
+											"            ]",
+											"        },",
+											"        \"products\": {",
+											"            \"id\": \"03ac86f4-4fa5-4078-ace8-f0733eb5fd9e\",",
+											"            \"name\": \"products\",",
+											"            \"hash_attribute\": \"productid\",",
+											"            \"schema\": \"northnwd\",",
+											"            \"residence\": null,",
+											"            \"attributes\": [",
+											"                {",
+											"                    \"attribute\": \"quantityperunit\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"supplierid\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"productid\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"reorderlevel\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"productname\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"categoryid\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"discontinued\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"unitsinstock\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"unitsnnorder\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"unitprice\"",
+											"                }",
+											"            ]",
+											"        },",
+											"        \"territories\": {",
+											"            \"id\": \"1dcb5b87-b5e3-4c86-866a-ed8242464834\",",
+											"            \"name\": \"territories\",",
+											"            \"hash_attribute\": \"territoryid\",",
+											"            \"schema\": \"northnwd\",",
+											"            \"residence\": null,",
+											"            \"attributes\": [",
+											"                {",
+											"                    \"attribute\": \"regionid\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"territoryid\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"territorydescription\"",
+											"                }",
+											"            ]",
+											"        },",
+											"        \"employees\": {",
+											"            \"id\": \"5c0817be-8205-4237-a3bc-093d0dc92b13\",",
+											"            \"name\": \"employees\",",
+											"            \"hash_attribute\": \"employeeid\",",
+											"            \"schema\": \"northnwd\",",
+											"            \"residence\": null,",
+											"            \"attributes\": [",
+											"                {",
+											"                    \"attribute\": \"title\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"photopath\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"titleofcourtesy\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"address\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"homephone\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"employeeid\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"postalCode\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"country\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": 4289",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"notes\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"skip\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"lastname\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"reportsto\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"birthdate\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"region\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"city\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"extension\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"hireDate\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"test_record\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"firstname\"",
+											"                }",
+											"            ]",
+											"        },",
+											"        \"url_csv_data\": {",
+											"            \"id\": \"8d71a4b7-ade7-4d6e-9c27-08d26f366f8e\",",
+											"            \"name\": \"url_csv_data\",",
+											"            \"hash_attribute\": \"id\",",
+											"            \"schema\": \"northnwd\",",
+											"            \"residence\": null,",
+											"            \"attributes\": [",
+											"                {",
+											"                    \"attribute\": \"section\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"id\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"date\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"country\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"image\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"name\"",
+											"                }",
+											"            ]",
+											"        },",
+											"        \"shippers\": {",
+											"            \"id\": \"a9c53eb2-0d34-4ee9-81c6-fbd07904173f\",",
+											"            \"name\": \"shippers\",",
+											"            \"hash_attribute\": \"shipperid\",",
+											"            \"schema\": \"northnwd\",",
+											"            \"residence\": null,",
+											"            \"attributes\": [",
+											"                {",
+											"                    \"attribute\": \"companyname\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"phone\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"shipperid\"",
+											"                }",
+											"            ]",
+											"        },",
+											"        \"employeeterritories\": {",
+											"            \"id\": \"3ec7df4c-6ed6-4097-8fad-4e0c8f10c3c1\",",
+											"            \"name\": \"employeeterritories\",",
+											"            \"hash_attribute\": \"employeeid\",",
+											"            \"schema\": \"northnwd\",",
+											"            \"residence\": null,",
+											"            \"attributes\": [",
+											"                {",
+											"                    \"attribute\": \"territoryid\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"skip\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"employeeid\"",
+											"                }",
+											"            ]",
+											"        },",
+											"        \"customers\": {",
+											"            \"id\": \"72cb3eb0-fcb7-40cd-880c-f1b7f8a30179\",",
+											"            \"name\": \"customers\",",
+											"            \"hash_attribute\": \"customerid\",",
+											"            \"schema\": \"northnwd\",",
+											"            \"residence\": null,",
+											"            \"attributes\": [",
+											"                {",
+											"                    \"attribute\": \"companyname\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"fax\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"contactmame\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"region\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"object\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"country\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"address\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"array\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"customerid\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"phone\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"contacttitle\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"postalcode\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"city\"",
+											"                }",
+											"            ]",
+											"        },",
+											"        \"url_csv_no_data\": {",
+											"            \"id\": \"a702efb2-0476-4030-ae0e-d6e860aa08ae\",",
+											"            \"name\": \"url_csv_no_data\",",
+											"            \"hash_attribute\": \"id\",",
+											"            \"schema\": \"northnwd\",",
+											"            \"residence\": null,",
+											"            \"attributes\": [",
+											"                {",
+											"                    \"attribute\": \"id\"",
+											"                }",
+											"            ]",
+											"        },",
+											"        \"categories\": {",
+											"            \"id\": \"943cf1b5-15fb-41ba-b5b8-0b2d798abf01\",",
+											"            \"name\": \"categories\",",
+											"            \"hash_attribute\": \"categoryid\",",
+											"            \"schema\": \"northnwd\",",
+											"            \"residence\": null,",
+											"            \"attributes\": [",
+											"                {",
+											"                    \"attribute\": \"categoryname\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"picture\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"description\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"categoryid\"",
+											"                }",
+											"            ]",
+											"        },",
+											"        \"order_details\": {",
+											"            \"id\": \"d1198831-ce41-4655-a00d-c5bbf392543b\",",
+											"            \"name\": \"order_details\",",
+											"            \"hash_attribute\": \"orderdetailid\",",
+											"            \"schema\": \"northnwd\",",
+											"            \"residence\": null,",
+											"            \"attributes\": [",
+											"                {",
+											"                    \"attribute\": \"orderdetailid\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"discount\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"orderid\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"quantity\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"productid\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"unitprice\"",
+											"                }",
+											"            ]",
+											"        },",
+											"        \"orders\": {",
+											"            \"id\": \"d875a429-cca6-4b23-a1bb-01e31de1f06c\",",
+											"            \"name\": \"orders\",",
+											"            \"hash_attribute\": \"orderid\",",
+											"            \"schema\": \"northnwd\",",
+											"            \"residence\": null,",
+											"            \"attributes\": [",
+											"                {",
+											"                    \"attribute\": \"shipPostalcode\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"shipcity\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"requireddate\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"shipaddress\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"shipname\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"shipvia\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"employeeid\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"orderdate\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"orderid\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"customerid\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"freight\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"shipregion\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"shipcountry\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"shippeddate\"",
+											"                }",
+											"            ]",
+											"        },",
+											"        \"region\": {",
+											"            \"id\": \"f883b03a-ea29-464a-9e2e-888e20443d5a\",",
+											"            \"name\": \"region\",",
+											"            \"hash_attribute\": \"regionid\",",
+											"            \"schema\": \"northnwd\",",
+											"            \"residence\": null,",
+											"            \"attributes\": [",
+											"                {",
+											"                    \"attribute\": \"regiondescription\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"regionid\"",
+											"                }",
+											"            ]",
+											"        }",
+											"    },",
+											"    \"test_delete_before\": {",
+											"        \"address\": {",
+											"            \"id\": \"6ed1a97e-637a-4a9c-b4dd-f9a79dd2a4db\",",
+											"            \"name\": \"address\",",
+											"            \"hash_attribute\": \"id\",",
+											"            \"schema\": \"test_delete_before\",",
+											"            \"residence\": null,",
+											"            \"attributes\": [",
+											"                {",
+											"                    \"attribute\": \"address\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"id\"",
+											"                }",
+											"            ]",
+											"        }",
+											"    },",
+											"    \"dev\": {",
+											"        \"long_text\": {",
+											"            \"id\": \"1628b688-6a95-4251-9c81-30fba44a0e40\",",
+											"            \"name\": \"long_text\",",
+											"            \"hash_attribute\": \"id\",",
+											"            \"schema\": \"dev\",",
+											"            \"residence\": null,",
+											"            \"attributes\": [",
+											"                {",
+											"                    \"attribute\": \"id\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"remarks\"",
+											"                }",
+											"            ]",
+											"        },",
+											"        \"remarks_blob\": {",
+											"            \"id\": \"2c2d78dc-d1b4-44e7-af64-6af146c1c388\",",
+											"            \"name\": \"remarks_blob\",",
+											"            \"hash_attribute\": \"id\",",
+											"            \"schema\": \"dev\",",
+											"            \"residence\": null,",
+											"            \"attributes\": [",
+											"                {",
+											"                    \"attribute\": \"id\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"length\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"remarks\"",
+											"                }",
+											"            ]",
+											"        },",
+											"        \"invalid_attribute\": {",
+											"            \"id\": \"99709710-1022-4ad2-a851-fcdd5cca2926\",",
+											"            \"name\": \"invalid_attribute\",",
+											"            \"hash_attribute\": \"id\",",
+											"            \"schema\": \"dev\",",
+											"            \"residence\": null,",
+											"            \"attributes\": [",
+											"                {",
+											"                    \"attribute\": \"id\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"some_attribute1\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"some_attribute2\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"another_attribute\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"some_attribute\"",
+											"                }",
+											"            ]",
+											"        },",
+											"        \"AttributeDropTest\": {",
+											"            \"id\": \"669786d2-dc24-450c-b871-0e729f7e13ef\",",
+											"            \"name\": \"AttributeDropTest\",",
+											"            \"hash_attribute\": \"hashid\",",
+											"            \"schema\": \"dev\",",
+											"            \"residence\": null,",
+											"            \"attributes\": [",
+											"                {",
+											"                    \"attribute\": \"hashid\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"another_attribute\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"some_attribute\"",
+											"                }",
+											"            ]",
+											"        }",
+											"    },",
+											"    \"call\": {",
+											"        \"aggr\": {",
+											"            \"id\": \"be689cae-dd7a-47d7-9ad0-1720736a9bc2\",",
+											"            \"name\": \"aggr\",",
+											"            \"hash_attribute\": \"all\",",
+											"            \"schema\": \"call\",",
+											"            \"residence\": null,",
+											"            \"attributes\": [",
+											"                {",
+											"                    \"attribute\": \"weight_lbs\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"dog_name\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"breed_id\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"age\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"owner_name\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"all\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"adorable\"",
+											"                }",
+											"            ]",
+											"        }",
+											"    }",
+											"}",
+											"",
+											"let json_data = pm.response.json();",
+											"let attribute_found = true;",
+											"let schema_exists = false;",
+											"let schema_name = pm.environment.get(\"drop_schema\")",
+											"for (let schema in expected_result) {",
+											"    if (schema === schema_name) {",
+											"        schema_exists = true;",
+											"        break;",
+											"    }",
+											"    for (let table in expected_result[schema]) {",
+											"        let json_data_attr_array = json_data[schema][table][\"attributes\"].map(obj => obj.attribute);",
+											"        expected_result[schema][table].attributes.forEach((value) => {",
+											"            if (!json_data_attr_array.includes(value.attribute)) {",
+											"                attribute_found = false;",
+											"                console.log(value.attribute);",
+											"            }",
+											"        });",
+											"    }",
+											"}",
+											"",
+											"pm.test(\"Test schema does not exist\", function () {",
+											"    pm.expect(schema_exists).to.eql(false);",
+											"});",
+											"",
+											"pm.test(\"Test attributes are as expected\", function () {",
+											"    pm.expect(attribute_found).to.eql(true)",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\t\"operation\":\"describe_all\"\n}"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "Create schema again",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "31fc35c6-2dac-4a26-8434-fa1b79f73cf5",
+										"exec": [
+											"pm.test(\"Status code is 200\", function () {\r",
+											"    pm.response.to.have.status(200);\r",
+											"});\r",
+											"\r",
+											"pm.test(\"Response from create schema is correct\", () =>{\r",
+											"     var jsonData = pm.response.json();\r",
+											"     pm.expect(jsonData.message).to.eql(\"schema drop_schema successfully created\")\r",
+											"});\r",
+											""
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"id": "8b93e762-284c-45f8-9ec0-7556ff038948",
+										"exec": [
+											"setTimeout(()=>{}, 200);"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"operation\":\"create_schema\",\n  \"schema\": \"{{drop_schema}}\"\n}"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								},
+								"description": "This method is used to create a schema.  It like all other functions requires basic auth.  \n\nAttributes:\n\noperation (required) - must always be create_schema\n\nschema (required) - name of the schema you are creating"
+							},
+							"response": []
+						},
+						{
+							"name": "Create table again",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "0c22b1e9-e7ff-4dab-9c1d-239884772cf3",
+										"exec": [
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"Response from create table is correct\", () =>{",
+											"     var jsonData = pm.response.json();",
+											"     pm.expect(jsonData.message).to.eql(\"table drop_schema.drop_table successfully created.\")",
+											"});",
+											""
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"id": "dce466bb-df10-444f-abed-e8c22a146e21",
+										"exec": [
+											"setTimeout(()=>{}, 200);"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "saveHelperData",
+											"value": true,
+											"type": "boolean"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"operation\":\"create_table\",\n  \"schema\":\"{{drop_schema}}\",\n  \"table\":\"{{drop_table}}\",\n  \"hash_attribute\": \"id\"\n}"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "Confirm correct attributes",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "117c3953-8685-4758-8769-4358a812df0e",
+										"exec": [
+											"// This code loops through the response from describe all and compares ",
+											"// the attributes to expected result variable below. ",
+											"// If you create tests that modify schema/table/attributes you should update ‘expected_result’",
+											"let expected_result = {",
+											"    \"northnwd\": {",
+											"        \"suppliers\": {",
+											"            \"id\": \"01a3d40f-d983-4210-b031-71ee28faf95a\",",
+											"            \"name\": \"suppliers\",",
+											"            \"hash_attribute\": \"supplierid\",",
+											"            \"schema\": \"northnwd\",",
+											"            \"residence\": null,",
+											"            \"attributes\": [",
+											"                {",
+											"                    \"attribute\": \"address\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"postalcode\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"city\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"region\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"contacttitle\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"country\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"phone\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"homepage\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"fax\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"supplierid\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"companyname\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"contactname\"",
+											"                }",
+											"            ]",
+											"        },",
+											"        \"territories\": {",
+											"            \"id\": \"1dcb5b87-b5e3-4c86-866a-ed8242464834\",",
+											"            \"name\": \"territories\",",
+											"            \"hash_attribute\": \"territoryid\",",
+											"            \"schema\": \"northnwd\",",
+											"            \"residence\": null,",
+											"            \"attributes\": [",
+											"                {",
+											"                    \"attribute\": \"territoryid\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"regionid\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"territorydescription\"",
+											"                }",
+											"            ]",
+											"        },",
+											"        \"products\": {",
+											"            \"id\": \"03ac86f4-4fa5-4078-ace8-f0733eb5fd9e\",",
+											"            \"name\": \"products\",",
+											"            \"hash_attribute\": \"productid\",",
+											"            \"schema\": \"northnwd\",",
+											"            \"residence\": null,",
+											"            \"attributes\": [",
+											"                {",
+											"                    \"attribute\": \"quantityperunit\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"productid\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"unitsinstock\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"discontinued\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"productname\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"supplierid\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"reorderlevel\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"categoryid\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"unitsnnorder\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"unitprice\"",
+											"                }",
+											"            ]",
+											"        },",
+											"        \"employees\": {",
+											"            \"id\": \"5c0817be-8205-4237-a3bc-093d0dc92b13\",",
+											"            \"name\": \"employees\",",
+											"            \"hash_attribute\": \"employeeid\",",
+											"            \"schema\": \"northnwd\",",
+											"            \"residence\": null,",
+											"            \"attributes\": [",
+											"                {",
+											"                    \"attribute\": \"title\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"photopath\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"homephone\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"titleofcourtesy\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"employeeid\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"postalCode\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"address\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"country\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": 4289",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"skip\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"notes\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"lastname\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"birthdate\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"extension\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"reportsto\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"city\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"hireDate\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"firstname\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"region\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"test_record\"",
+											"                }",
+											"            ]",
+											"        },",
+											"        \"employeeterritories\": {",
+											"            \"id\": \"3ec7df4c-6ed6-4097-8fad-4e0c8f10c3c1\",",
+											"            \"name\": \"employeeterritories\",",
+											"            \"hash_attribute\": \"employeeid\",",
+											"            \"schema\": \"northnwd\",",
+											"            \"residence\": null,",
+											"            \"attributes\": [",
+											"                {",
+											"                    \"attribute\": \"skip\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"employeeid\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"territoryid\"",
+											"                }",
+											"            ]",
+											"        },",
+											"        \"customers\": {",
+											"            \"id\": \"72cb3eb0-fcb7-40cd-880c-f1b7f8a30179\",",
+											"            \"name\": \"customers\",",
+											"            \"hash_attribute\": \"customerid\",",
+											"            \"schema\": \"northnwd\",",
+											"            \"residence\": null,",
+											"            \"attributes\": [",
+											"                {",
+											"                    \"attribute\": \"fax\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"contactmame\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"companyname\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"country\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"region\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"object\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"array\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"customerid\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"phone\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"contacttitle\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"address\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"city\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"postalcode\"",
+											"                }",
+											"            ]",
+											"        },",
+											"        \"url_csv_data\": {",
+											"            \"id\": \"8d71a4b7-ade7-4d6e-9c27-08d26f366f8e\",",
+											"            \"name\": \"url_csv_data\",",
+											"            \"hash_attribute\": \"id\",",
+											"            \"schema\": \"northnwd\",",
+											"            \"residence\": null,",
+											"            \"attributes\": [",
+											"                {",
+											"                    \"attribute\": \"country\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"section\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"image\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"name\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"id\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"date\"",
+											"                }",
+											"            ]",
+											"        },",
+											"        \"url_csv_no_data\": {",
+											"            \"id\": \"a702efb2-0476-4030-ae0e-d6e860aa08ae\",",
+											"            \"name\": \"url_csv_no_data\",",
+											"            \"hash_attribute\": \"id\",",
+											"            \"schema\": \"northnwd\",",
+											"            \"residence\": null,",
+											"            \"attributes\": [",
+											"                {",
+											"                    \"attribute\": \"id\"",
+											"                }",
+											"            ]",
+											"        },",
+											"        \"categories\": {",
+											"            \"id\": \"943cf1b5-15fb-41ba-b5b8-0b2d798abf01\",",
+											"            \"name\": \"categories\",",
+											"            \"hash_attribute\": \"categoryid\",",
+											"            \"schema\": \"northnwd\",",
+											"            \"residence\": null,",
+											"            \"attributes\": [",
+											"                {",
+											"                    \"attribute\": \"categoryid\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"description\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"picture\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"categoryname\"",
+											"                }",
+											"            ]",
+											"        },",
+											"        \"shippers\": {",
+											"            \"id\": \"a9c53eb2-0d34-4ee9-81c6-fbd07904173f\",",
+											"            \"name\": \"shippers\",",
+											"            \"hash_attribute\": \"shipperid\",",
+											"            \"schema\": \"northnwd\",",
+											"            \"residence\": null,",
+											"            \"attributes\": [",
+											"                {",
+											"                    \"attribute\": \"shipperid\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"phone\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"companyname\"",
+											"                }",
+											"            ]",
+											"        },",
+											"        \"region\": {",
+											"            \"id\": \"f883b03a-ea29-464a-9e2e-888e20443d5a\",",
+											"            \"name\": \"region\",",
+											"            \"hash_attribute\": \"regionid\",",
+											"            \"schema\": \"northnwd\",",
+											"            \"residence\": null,",
+											"            \"attributes\": [",
+											"                {",
+											"                    \"attribute\": \"regionid\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"regiondescription\"",
+											"                }",
+											"            ]",
+											"        },",
+											"        \"order_details\": {",
+											"            \"id\": \"d1198831-ce41-4655-a00d-c5bbf392543b\",",
+											"            \"name\": \"order_details\",",
+											"            \"hash_attribute\": \"orderdetailid\",",
+											"            \"schema\": \"northnwd\",",
+											"            \"residence\": null,",
+											"            \"attributes\": [",
+											"                {",
+											"                    \"attribute\": \"orderdetailid\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"unitprice\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"discount\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"quantity\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"orderid\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"productid\"",
+											"                }",
+											"            ]",
+											"        },",
+											"        \"orders\": {",
+											"            \"id\": \"d875a429-cca6-4b23-a1bb-01e31de1f06c\",",
+											"            \"name\": \"orders\",",
+											"            \"hash_attribute\": \"orderid\",",
+											"            \"schema\": \"northnwd\",",
+											"            \"residence\": null,",
+											"            \"attributes\": [",
+											"                {",
+											"                    \"attribute\": \"shipPostalcode\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"shipcity\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"requireddate\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"shipaddress\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"freight\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"shipvia\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"orderdate\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"orderid\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"employeeid\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"customerid\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"shipname\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"shipregion\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"shippeddate\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"shipcountry\"",
+											"                }",
+											"            ]",
+											"        }",
+											"    },",
+											"    \"dev\": {",
+											"        \"remarks_blob\": {",
+											"            \"id\": \"2c2d78dc-d1b4-44e7-af64-6af146c1c388\",",
+											"            \"name\": \"remarks_blob\",",
+											"            \"hash_attribute\": \"id\",",
+											"            \"schema\": \"dev\",",
+											"            \"residence\": null,",
+											"            \"attributes\": [",
+											"                {",
+											"                    \"attribute\": \"id\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"remarks\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"length\"",
+											"                }",
+											"            ]",
+											"        },",
+											"        \"long_text\": {",
+											"            \"id\": \"1628b688-6a95-4251-9c81-30fba44a0e40\",",
+											"            \"name\": \"long_text\",",
+											"            \"hash_attribute\": \"id\",",
+											"            \"schema\": \"dev\",",
+											"            \"residence\": null,",
+											"            \"attributes\": [",
+											"                {",
+											"                    \"attribute\": \"remarks\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"id\"",
+											"                }",
+											"            ]",
+											"        },",
+											"        \"AttributeDropTest\": {",
+											"            \"id\": \"669786d2-dc24-450c-b871-0e729f7e13ef\",",
+											"            \"name\": \"AttributeDropTest\",",
+											"            \"hash_attribute\": \"hashid\",",
+											"            \"schema\": \"dev\",",
+											"            \"residence\": null,",
+											"            \"attributes\": [",
+											"                {",
+											"                    \"attribute\": \"some_attribute\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"another_attribute\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"hashid\"",
+											"                }",
+											"            ]",
+											"        },",
+											"        \"invalid_attribute\": {",
+											"            \"id\": \"99709710-1022-4ad2-a851-fcdd5cca2926\",",
+											"            \"name\": \"invalid_attribute\",",
+											"            \"hash_attribute\": \"id\",",
+											"            \"schema\": \"dev\",",
+											"            \"residence\": null,",
+											"            \"attributes\": [",
+											"                {",
+											"                    \"attribute\": \"id\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"some_attribute2\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"some_attribute1\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"some_attribute\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"another_attribute\"",
+											"                }",
+											"            ]",
+											"        }",
+											"    },",
+											"    \"test_delete_before\": {",
+											"        \"address\": {",
+											"            \"id\": \"6ed1a97e-637a-4a9c-b4dd-f9a79dd2a4db\",",
+											"            \"name\": \"address\",",
+											"            \"hash_attribute\": \"id\",",
+											"            \"schema\": \"test_delete_before\",",
+											"            \"residence\": null,",
+											"            \"attributes\": [",
+											"                {",
+											"                    \"attribute\": \"id\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"address\"",
+											"                }",
+											"            ]",
+											"        }",
+											"    },",
+											"    \"call\": {",
+											"        \"aggr\": {",
+											"            \"id\": \"be689cae-dd7a-47d7-9ad0-1720736a9bc2\",",
+											"            \"name\": \"aggr\",",
+											"            \"hash_attribute\": \"all\",",
+											"            \"schema\": \"call\",",
+											"            \"residence\": null,",
+											"            \"attributes\": [",
+											"                {",
+											"                    \"attribute\": \"weight_lbs\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"dog_name\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"breed_id\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"age\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"all\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"owner_name\"",
+											"                },",
+											"                {",
+											"                    \"attribute\": \"adorable\"",
+											"                }",
+											"            ]",
+											"        }",
+											"    },",
+											"    \"drop_schema\": {",
+											"        \"drop_table\": {",
+											"            \"id\": \"e0818716-19df-477e-a227-5b04c67e9c8f\",",
+											"            \"name\": \"drop_table\",",
+											"            \"hash_attribute\": \"id\",",
+											"            \"schema\": \"drop_schema\",",
+											"            \"residence\": null,",
+											"            \"attributes\": [",
+											"                {",
+											"                    \"attribute\": \"id\"",
+											"                }",
+											"            ]",
+											"        }",
+											"    }",
+											"}",
+											"",
+											"let json_data = pm.response.json();",
+											"let attribute_found = true;",
+											"let schema_exists = false;",
+											"let schema_name = pm.environment.get(\"drop_schema\")",
+											"for (let schema in expected_result) {",
+											"    if (schema === schema_name) {",
+											"        schema_exists = true;",
+											"    }",
+											"    for (let table in expected_result[schema]) {",
+											"        let json_data_attr_array = json_data[schema][table][\"attributes\"].map(obj => obj.attribute);",
+											"        expected_result[schema][table].attributes.forEach((value) => {",
+											"            if (!json_data_attr_array.includes(value.attribute)) {",
+											"                attribute_found = false;",
+											"                console.log(value.attribute);",
+											"            }",
+											"        });",
+											"    }",
+											"}",
+											"",
+											"pm.test(\"Test schema does exist\", function () {",
+											"    pm.expect(schema_exists).to.eql(true);",
+											"});",
+											"",
+											"pm.test(\"Test attributes are as expected\", function () {",
+											"    pm.expect(attribute_found).to.eql(true)",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\t\"operation\":\"describe_all\"\n}"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "Clean up after drop schema tests",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "117c3953-8685-4758-8769-4358a812df0e",
+										"exec": [
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"Response from drop table is correct\", () =>{",
+											"     var jsonData = pm.response.json();",
+											"     pm.expect(jsonData.message).to.eql(\"successfully deleted schema drop_schema\");",
+											"});",
+											""
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\t\"operation\":\"drop_schema\",\n\t\"schema\":\"{{drop_schema}}\"\n}\n"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						}
+					],
+					"protocolProfileBehavior": {},
+					"_postman_isSubFolder": true
+				},
+				{
 					"name": "Insert new Employees",
 					"event": [
 						{
@@ -17416,12 +21147,27 @@
 							"listen": "test",
 							"script": {
 								"id": "b053fde5-fab4-4952-a272-47fef8043499",
-								"type": "text/javascript",
 								"exec": [
+									"let expected_result = {",
+									"    \"message\": \"2 of 2 records successfully deleted\",",
+									"    \"deleted_hashes\": [",
+									"        924,",
+									"        927",
+									"    ],",
+									"    \"skipped_hashes\": []",
+									"};",
+									"",
 									"pm.test(\"Status code is 200\", function () {",
 									"    pm.response.to.have.status(200);",
-									"});"
-								]
+									"});",
+									"",
+									"pm.test(\"Correct response from NoSQL delete\", function () {",
+									"   let jsonData = pm.response.json();",
+									"   pm.expect(jsonData).to.eql(expected_result);",
+									"});",
+									""
+								],
+								"type": "text/javascript"
 							}
 						}
 					],
@@ -17459,7 +21205,7 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n  \"operation\":\"delete\",\n  \"schema\":\"{{schema}}\",\n  \"table\":\"{{emps_tb}}\",\n  \"hash_values\":[924,927]\n}"
+							"raw": "{\n  \"operation\":\"delete\",\n  \"schema\":\"{{schema}}\",\n  \"table\":\"{{emps_tb}}\",\n  \"hash_values\":[\"924\",927]\n}"
 						},
 						"url": {
 							"raw": "{{host}}:{{port}}",
@@ -17528,6 +21274,218 @@
 						"body": {
 							"mode": "raw",
 							"raw": "{\n\t\"operation\":\"search_by_hash\",\n\t\"schema\":\"{{schema}}\",\n\t\"table\":\"{{emps_tb}}\",\n\t\"hash_values\":[924,925,926,927],\n\t\"get_attributes\":[\"*\"]\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Insert records with objects and arrays",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "117c3953-8685-4758-8769-4358a812df0e",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"Inserted all records\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.message).to.be.eql(\"inserted 4 of 4 records\");",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\"operation\":\"insert\",\n\"schema\":\"{{schema}}\",\n\"table\":\"{{emps_tb}}\",\n\"records\": [\n  {\n    \"employeeid\": 7924,\n    \"address\": [{\"height\": 12, \"weight\": 46}, {\"shoe_size\": 12, \"iq\": 46}]\n  },\n  {\n    \"employeeid\": 7925,\n    \"address\": {\"number\": 12, \"age\": 46}\n  },\n  {\n    \"employeeid\": 7926,\n    \"address\": {\"numberArray\": [\"1\", \"2\", \"3\"], \"string\": \"Penny\"}\n  },\n  {\n    \"employeeid\": 7927,\n    \"address\":  [\"1\", \"2\", \"3\"]\n  }\n]\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Delete records contaitng objects and arrays",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "117c3953-8685-4758-8769-4358a812df0e",
+								"exec": [
+									"let expected_result = {",
+									"    \"message\": \"4 of 4 records successfully deleted\",",
+									"    \"deleted_hashes\": [",
+									"        7924,",
+									"        7925,",
+									"        7926,",
+									"        7927",
+									"    ],",
+									"    \"skipped_hashes\": []",
+									"}",
+									"",
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"Deleted all records\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData).to.be.eql(expected_result);",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"delete\",\n\t\"schema\":\"{{schema}}\",\n\t\"table\":\"{{emps_tb}}\",\n\t\"hash_values\":[7924, 7925, 7926, 7927]\n}\n\n"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Verify object and array records deleted",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "117c3953-8685-4758-8769-4358a812df0e",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"Search finds no records\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData).to.be.eql([]);",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"search_by_hash\",\n\t\"schema\":\"{{schema}}\",\n\t\"table\":\"{{emps_tb}}\",\n\t\"hash_values\":[7924, 7925, 7926, 7925],\n\t\"get_attributes\": [\"employeeid\", \"address\"]\n}\n"
 						},
 						"url": {
 							"raw": "{{host}}:{{port}}",
@@ -17673,8 +21631,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925"
 						},
@@ -17752,8 +21710,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925"
 						},
@@ -17805,8 +21763,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925"
 						},
@@ -17884,8 +21842,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925"
 						},
@@ -17947,8 +21905,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925"
 						},
@@ -18081,8 +22039,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -18152,8 +22110,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -18223,8 +22181,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -18299,8 +22257,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925"
 						},
@@ -18362,8 +22320,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925"
 						},
@@ -18425,8 +22383,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925"
 						},
@@ -18534,7 +22492,6 @@
 								},
 								"url": {
 									"raw": "{{host}}:9925",
-
 									"host": [
 										"{{host}}"
 									],
@@ -19155,7 +23112,6 @@
 								},
 								"url": {
 									"raw": "{{host}}:9925",
-
 									"host": [
 										"{{host}}"
 									],
@@ -19313,7 +23269,6 @@
 								},
 								"url": {
 									"raw": "{{host}}:9925",
-
 									"host": [
 										"{{host}}"
 									],
@@ -19429,8 +23384,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925"
 						},
@@ -19459,7 +23414,6 @@
 								},
 								"url": {
 									"raw": "{{host}}:9925",
-
 									"host": [
 										"{{host}}"
 									],
@@ -19587,8 +23541,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925"
 						},
@@ -19617,7 +23571,6 @@
 								},
 								"url": {
 									"raw": "{{host}}:9925",
-
 									"host": [
 										"{{host}}"
 									],
@@ -19683,6 +23636,79 @@
 					]
 				},
 				{
+					"name": "Get Registration Info",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "66a005c7-2d9b-44f1-8778-34003b8fe079",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"license data returned\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.registered).to.eql(true);",
+									"    pm.expect(!!jsonData.version && !!jsonData.storage_type && !!jsonData.license_expiration_date && !!jsonData.daily_api_calls_current && !!jsonData.daily_api_calls_limit).to.eql(true);",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"type": "any"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"registration_info\"\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						},
+						"description": "Method for describing a table. This will return all attributes under the specified table.\n\n<ul>\n<li>\n<b>operation</b> <i> (required) </i> - must always be 'describe_table'\n</li>\n\n<li>\n<b>table</b> <i>(required)</i> - table you wish to describe\n</li>\n\n<li>\n<b>schema </b><i>(required)</i> -schema where the table you wish to describe lives\n</li>\n\n\n</ul>"
+					},
+					"response": []
+				},
+				{
 					"name": "Set License Bad Key",
 					"event": [
 						{
@@ -19745,8 +23771,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925"
 						},
@@ -19775,7 +23801,6 @@
 								},
 								"url": {
 									"raw": "{{host}}:9925",
-
 									"host": [
 										"{{host}}"
 									],
@@ -19898,8 +23923,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925"
 						},
@@ -19928,7 +23953,6 @@
 								},
 								"url": {
 									"raw": "{{host}}:9925",
-
 									"host": [
 										"{{host}}"
 									],
@@ -20053,8 +24077,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925"
 						},
@@ -20083,7 +24107,6 @@
 								},
 								"url": {
 									"raw": "{{host}}:9925",
-
 									"host": [
 										"{{host}}"
 									],
@@ -20236,6 +24259,225 @@
 							"port": "{{port}}"
 						},
 						"description": "This method is used to create a schema.  It like all other functions requires basic auth.  \n\nAttributes:\n\noperation (required) - must always be create_schema\n\nschema (required) - name of the schema you are creating"
+					},
+					"response": []
+				},
+				{
+					"name": "confirm attribute count correct",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "cb89a517-bdbf-4834-a052-b269780231b6",
+								"exec": [
+									"// This code loops through the response from describe all and compares ",
+									"// the attributes to expected result variable below. ",
+									"// If you create tests that modify schema/table/attributes you should update ‘expected_result’",
+									"let expected_result = {",
+									"    \"dev\": {",
+									"        \"invalid_attribute\": {",
+									"            \"id\": \"0c4c779d-edc8-4163-8d2b-3a139b31279b\",",
+									"            \"name\": \"invalid_attribute\",",
+									"            \"hash_attribute\": \"id\",",
+									"            \"schema\": \"dev\",",
+									"            \"residence\": null,",
+									"            \"attributes\": [",
+									"                {",
+									"                    \"attribute\": \"some_attribute\"",
+									"                },",
+									"                {",
+									"                    \"attribute\": \"some_attribute2\"",
+									"                },",
+									"                {",
+									"                    \"attribute\": \"id\"",
+									"                },",
+									"                {",
+									"                    \"attribute\": \"some_attribute1\"",
+									"                }",
+									"            ]",
+									"        },",
+									"        \"AttributeDropTest\": {",
+									"            \"id\": \"59f1b41a-edc6-42de-a90c-4535fd7ae5a3\",",
+									"            \"name\": \"AttributeDropTest\",",
+									"            \"hash_attribute\": \"hashid\",",
+									"            \"schema\": \"dev\",",
+									"            \"residence\": null,",
+									"            \"attributes\": [",
+									"                {",
+									"                    \"attribute\": \"created_attribute\"",
+									"                },",
+									"                {",
+									"                    \"attribute\": \"some_attribute\"",
+									"                },",
+									"                {",
+									"                    \"attribute\": \"hashid\"",
+									"                }",
+									"            ]",
+									"        },",
+									"        \"remarks_blob\": {",
+									"            \"id\": \"db5ae901-6109-456d-bd25-4abe55e14eb8\",",
+									"            \"name\": \"remarks_blob\",",
+									"            \"hash_attribute\": \"id\",",
+									"            \"schema\": \"dev\",",
+									"            \"residence\": null,",
+									"            \"attributes\": [",
+									"                {",
+									"                    \"attribute\": \"remarks\"",
+									"                },",
+									"                {",
+									"                    \"attribute\": \"id\"",
+									"                },",
+									"                {",
+									"                    \"attribute\": \"length\"",
+									"                }",
+									"            ]",
+									"        },",
+									"        \"long_text\": {",
+									"            \"id\": \"eb3e5ea0-2ec5-4a7a-a190-37b5ed6e2e64\",",
+									"            \"name\": \"long_text\",",
+									"            \"hash_attribute\": \"id\",",
+									"            \"schema\": \"dev\",",
+									"            \"residence\": null,",
+									"            \"attributes\": [",
+									"                {",
+									"                    \"attribute\": \"remarks\"",
+									"                },",
+									"                {",
+									"                    \"attribute\": \"id\"",
+									"                }",
+									"            ]",
+									"        }",
+									"    },",
+									"    \"call\": {",
+									"        \"aggr\": {",
+									"            \"id\": \"a6f5eedb-4834-4dad-81e9-0899666e477e\",",
+									"            \"name\": \"aggr\",",
+									"            \"hash_attribute\": \"all\",",
+									"            \"schema\": \"call\",",
+									"            \"residence\": null,",
+									"            \"attributes\": [",
+									"                {",
+									"                    \"attribute\": \"owner_name\"",
+									"                },",
+									"                {",
+									"                    \"attribute\": \"dog_name\"",
+									"                },",
+									"                {",
+									"                    \"attribute\": \"age\"",
+									"                },",
+									"                {",
+									"                    \"attribute\": \"weight_lbs\"",
+									"                },",
+									"                {",
+									"                    \"attribute\": \"adorable\"",
+									"                },",
+									"                {",
+									"                    \"attribute\": \"all\"",
+									"                },",
+									"                {",
+									"                    \"attribute\": \"breed_id\"",
+									"                }",
+									"            ]",
+									"        }",
+									"    },",
+									"    \"test_delete_before\": {",
+									"        \"address\": {",
+									"            \"id\": \"cbbc9bf3-3649-4879-812d-348fd55dd608\",",
+									"            \"name\": \"address\",",
+									"            \"hash_attribute\": \"id\",",
+									"            \"schema\": \"test_delete_before\",",
+									"            \"residence\": null,",
+									"            \"attributes\": [",
+									"                {",
+									"                    \"attribute\": \"address\"",
+									"                },",
+									"                {",
+									"                    \"attribute\": \"id\"",
+									"                }",
+									"            ]",
+									"        }",
+									"    }",
+									"};",
+									"",
+									"let json_data = pm.response.json();",
+									"let attribute_found = true;",
+									"let schema_northnwd_exists = false;",
+									"for (let schema in expected_result) {",
+									"    try {",
+									"         if (schema === \"northnwd\") {",
+									"        schema_northnwd_exists = true;",
+									"        break;",
+									"        }",
+									"        for (let table in expected_result[schema]) {",
+									"            let json_data_attr_array = json_data[schema][table][\"attributes\"].map(obj => obj.attribute);",
+									"            expected_result[schema][table].attributes.forEach((value) => {",
+									"                if (!json_data_attr_array.includes(value.attribute)) {",
+									"                    attribute_found = false;",
+									"                    console.log(`Attribute: ${value.attribute}`);",
+									"                    console.log(`Searching schema: ${schema} and table: ${table}`);",
+									"                }",
+									"            });",
+									"        }",
+									"    } catch(err) {",
+									"        console.log(err);",
+									"    }",
+									"}",
+									"",
+									"pm.test(\"Test northnwd schema does not exist\", function () {",
+									"    pm.expect(schema_northnwd_exists).to.eql(false);",
+									"});",
+									"",
+									"pm.test(\"Test attributes are as expected\", function () {",
+									"    pm.expect(attribute_found).to.eql(true);",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3Q="
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"describe_all\"\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
 					},
 					"response": []
 				},

@@ -123,7 +123,7 @@ class DecisionMatrixIF {
      * @throws
      */
     listRules(connector_type_enum, middleware_type_enum) {
-        if(!connector_type_enum === null || connector_type_enum === undefined) {
+        if(connector_type_enum === null || connector_type_enum === undefined) {
             throw new Error('Invalid parameter passed to listRules');
         }
         // TODO: might need to return a deep copy of the rules so the caller can't modify the rules.

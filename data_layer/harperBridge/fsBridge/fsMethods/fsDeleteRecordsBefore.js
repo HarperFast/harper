@@ -261,8 +261,8 @@ async function inspectHashAttributeDir(date_unix_ms, dir_path, hash_attributes_t
 
         if(!hdb_utils.isEmptyOrZeroLength(latest_file) && isFileTimeBeforeParameterTime(date_unix_ms, latest_file)) {
             // The ID of the record should be the last /<TEXT> part of the path.  Pull the ID and remove the file.
-            let dir_path = (found_dirs[curr_dir]);
-            let id = dir_path.substring(dir_path.lastIndexOf('/')+1, dir_path.length);
+            let found_dir = (found_dirs[curr_dir]);
+            let id = found_dir.substring(found_dir.lastIndexOf('/')+1, found_dir.length);
             hash_attributes_to_remove.push(id);
         }
     }

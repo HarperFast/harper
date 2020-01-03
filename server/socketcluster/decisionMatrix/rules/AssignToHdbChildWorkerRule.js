@@ -48,7 +48,7 @@ class AssignToHdbChildWorkerRule extends RuleIF {
             log.trace(`Assigning message to worker: ${random_worker}`);
             worker.exchange.publish(random_worker, req.data);
             log.debug(`Transacted flag not found, swallowing message.`);
-            return true;
+            return false;
 
         } catch(err) {
             log.trace('Failed Assign to Hdb Child worker rule');

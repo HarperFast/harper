@@ -169,6 +169,7 @@ class CoreRoom extends RoomIF {
                     status_bucket_obj.response_msg = cluster_status_response;
                     self.cluster_status_request_buckets[get_cluster_status_msg.request_id] = status_bucket_obj;
                     if(worker.options.workerCount === 1) {
+
                         self.publishToRoom(cluster_status_response, worker, req.hdb_header);
                         result = cluster_status_response;
                         return result;

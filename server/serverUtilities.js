@@ -35,9 +35,6 @@ const p_search_search_by_hash = util.promisify(search.searchByHash);
 const p_search_search_by_value = util.promisify(search.searchByValue);
 const p_search_search = util.promisify(search.search);
 const p_sql_evaluate_sql = util.promisify(sql.evaluateSQL);
-const p_schema_describe_schema = util.promisify(schema_describe.describeSchema);
-const p_schema_describe_table = util.promisify(schema_describe.describeTable);
-const p_schema_describe_all = util.promisify(schema_describe.describeAll);
 const p_delete = util.promisify(delete_.delete);
 
 const GLOBAL_SCHEMA_UPDATE_OPERATIONS_ENUM = {
@@ -278,15 +275,25 @@ function convertCRUDOperationToTransaction(source_json, affected_hashes, hash_at
     let transaction = {
         operation: source_json.operation,
         schema: source_json.schema,
-        table: source_json.table,
-        records:[]
+        table: source_json.table
     };
 
-    source_json.records.forEach(record =>{
-        if(affected_hashes.indexOf(common_utils.autoCast(record[hash_attribute])) >= 0) {
-            transaction.records.push(record);
+    if(source_json.operation === terms.OPERATIONS_ENUM.DELETE) {
+        transaction.hash_values = [];
+    } else{
+        transaction.records = [];
+    }
+
+    source_json.records.forEach(record => {
+        if (affected_hashes.indexOf(common_utils.autoCast(record[hash_attribute])) >= 0) {
+            if(source_json.operation === terms.OPERATIONS_ENUM.DELETE) {
+                transaction.hash_values.push(record[hash_attribute]);
+            } else {
+                transaction.records.push(record);
+            }
         }
     });
+
     let transaction_msg = common_utils.getClusterMessage(terms.CLUSTERING_MESSAGE_TYPES.HDB_TRANSACTION);
     transaction_msg.transaction = transaction;
     return transaction_msg;
@@ -400,13 +407,13 @@ function getOperationFunction(json){
             operation_function = schema.dropAttribute;
             break;
         case terms.OPERATIONS_ENUM.DESCRIBE_SCHEMA:
-            operation_function = p_schema_describe_schema;
+            operation_function = schema_describe.describeSchema;
             break;
         case terms.OPERATIONS_ENUM.DESCRIBE_TABLE:
-            operation_function = p_schema_describe_table;
+            operation_function = schema_describe.describeTable;
             break;
         case terms.OPERATIONS_ENUM.DESCRIBE_ALL:
-            operation_function = p_schema_describe_all;
+            operation_function = schema_describe.describeAll;
             break;
         case terms.OPERATIONS_ENUM.DELETE:
             operation_function = p_delete;
@@ -486,6 +493,9 @@ function getOperationFunction(json){
         case terms.OPERATIONS_ENUM.SET_LICENSE:
             operation_function = reg.setLicense;
             break;
+        case terms.OPERATIONS_ENUM.GET_REGISTRATION_INFO:
+            operation_function = reg.getRegistrationInfo;
+            break;
         case terms.OPERATIONS_ENUM.RESTART:
             operation_function = stop.restartProcesses;
             break;
@@ -502,32 +512,34 @@ function getOperationFunction(json){
     };
 }
 
-async function catchup(catchup_object) {
+async function catchup(req) {
     harper_logger.trace('In serverUtils.catchup');
+    let catchup_object = req.transaction;
     let split_channel = catchup_object.channel.split(':');
 
     let schema = split_channel[0];
     let table = split_channel[1];
-    let originator = catchup_object.__originator;
     for (let transaction of catchup_object.transactions) {
         try {
             transaction.schema = schema;
             transaction.table = table;
-            transaction.__originator = originator;
+            let result;
             switch (transaction.operation) {
                 case terms.OPERATIONS_ENUM.INSERT:
-                    await insert.insert(transaction);
+                    result = await insert.insert(transaction);
                     break;
                 case terms.OPERATIONS_ENUM.UPDATE:
-                    await insert.update(transaction);
+                    result = await insert.update(transaction);
                     break;
                 case terms.OPERATIONS_ENUM.DELETE:
-                    await delete_.delete(transaction);
+                    result = await delete_.delete(transaction);
                     break;
                 default:
                     harper_logger.warn('invalid operation in catchup');
                     break;
             }
+
+            postOperationHandler(transaction, result, req);
         } catch(e) {
             harper_logger.info('Invalid operation in transaction');
             harper_logger.error(e);

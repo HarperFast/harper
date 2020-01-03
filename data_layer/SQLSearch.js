@@ -14,8 +14,10 @@ const RecursiveIterator = require('recursive-iterator');
 const log = require('../utility/logging/harper_logger');
 const common_utils = require('../utility/common_utils');
 const harperBridge = require('./harperBridge/harperBridge');
+const hdbTerms = require('../utility/hdbTerms');
 
 const WHERE_CLAUSE_IS_NULL = 'IS NULL';
+const SEARCH_ERROR_MSG = 'There was a problem performing this search. Please check the logs and try again.';
 
 //here we call to define and import custom functions to alasql
 alasql_function_importer(alasql);
@@ -29,6 +31,7 @@ class SQLSearch {
      */
     constructor(statement, attributes) {
         if (common_utils.isEmpty(statement)) {
+            log.error('AST statement for SQL select process cannot be empty');
             throw 'statement cannot be null';
         }
 
@@ -40,6 +43,7 @@ class SQLSearch {
 
         this.fetch_attributes = [];
         this.exact_search_values = {};
+        this.comparator_search_values = {};
         this.tables = [];
 
         //holds the data from the file system to be evaluated by the sql processor
@@ -60,28 +64,58 @@ class SQLSearch {
         try {
             let empty_sql_results = await this._checkEmptySQL();
             if (!common_utils.isEmptyOrZeroLength(empty_sql_results)) {
+                log.trace('No results returned from checkEmptySQL SQLSearch method.');
                 return empty_sql_results;
             }
+        } catch (err) {
+            log.error('Error thrown from checkEmptySQL in SQLSearch class method search.');
+            log.error(err);
+            throw new Error(SEARCH_ERROR_MSG);
+        }
 
+        try {
             // Search for fetch attribute values and consolidate them into this.data[table].__merged_data property
             await this._getFetchAttributeValues();
-
-            //In the instance of null data this.data would not have schema/table defined or created as there is no data backing up what would sit in data.
-            if (Object.keys(this.data).length === 0) {
-                return [];
-            }
-
-            // Consolidate initial data required for first pass of sql join - narrows list of hash ids for second pass to collect all data resulting from sql request
-            let join_results = await this._processJoins();
-
-            // Decide the most efficient way to make the second/final pass for collecting all additional data needed for sql request
-            await this._getFinalAttributeData(join_results.existing_attributes,join_results.joined_length);
-            search_results = await this._finalSQL();
-        } catch(e) {
-            log.error(e);
-            throw new Error('There was a problem performing this search.  Please check the logs and try again.');
+        } catch (err) {
+            log.error('Error thrown from getFetchAttributeValues in SQLSearch class method search.');
+            log.error(err);
+            throw new Error(SEARCH_ERROR_MSG);
         }
-        return search_results;
+
+        // In the instance of null data this.data would not have schema/table defined or created as there is no data backing up what would sit in data.
+        if (Object.keys(this.data).length === 0) {
+            log.trace('SQLSearch class field: "data" is empty.');
+            return [];
+        }
+
+        let join_results;
+        try {
+            // Consolidate initial data required for first pass of sql join - narrows list of hash ids for second pass to collect all data resulting from sql request
+            join_results = await this._processJoins();
+        } catch (err) {
+            log.error('Error thrown from processJoins in SQLSearch class method search.');
+            log.error(err);
+            throw new Error(SEARCH_ERROR_MSG);
+        }
+
+        try {
+            // Decide the most efficient way to make the second/final pass for collecting all additional data needed for sql request
+            await this._getFinalAttributeData(join_results.existing_attributes, join_results.joined_length);
+        } catch (err) {
+            log.error('Error thrown from getFinalAttributeData in SQLSearch class method search.');
+            log.error(err);
+            throw new Error(SEARCH_ERROR_MSG);
+        }
+
+        try {
+            search_results = await this._finalSQL();
+            log.trace(`Search results: ${search_results}`);
+            return search_results;
+        } catch (err) {
+            log.error('Error thrown from finalSQL in SQLSearch class method search.');
+            log.error(err);
+            throw new Error(SEARCH_ERROR_MSG);
+        }
     }
 
     /**
@@ -89,20 +123,6 @@ class SQLSearch {
      * @private
      */
     _getColumns() {
-        //before pulling the raw columns we need to set the order by so that aliases match the raw column / function definition
-        if (!common_utils.isEmptyOrZeroLength(this.statement.order)) {
-            //we need to loop each element of the order by and see if it's columnid actually matches an alias in the select.
-            // if the order by column is an alias we replace the alias with the actual expression from the select
-            this.statement.order.forEach(order_by => {
-                let found = this.statement.columns.filter(column => common_utils.isEmpty(order_by.expression.tableid) && column.as === order_by.expression.columnid);
-
-                if (found.length > 0) {
-                    order_by.expression = clone(found[0]);
-                    delete order_by.expression.as;
-                }
-            });
-        }
-
         let iterator = new RecursiveIterator(this.statement);
         for (let {node, path} of iterator) {
             if (node && node.columnid){
@@ -142,6 +162,7 @@ class SQLSearch {
      */
     _conditionsToFetchAttributeValues() {
         if (common_utils.isEmpty(this.statement.where)) {
+            log.trace('AST "where" statement is empty.');
             return;
         }
 
@@ -154,12 +175,14 @@ class SQLSearch {
         }
 
         if (total_ignore) {
+            log.trace('Where clause contains "OR", exact match search not performed on attributes.');
             return;
         }
 
         for (let {node} of new RecursiveIterator(this.statement.where)) {
-            if (node && node.left && node.right && (node.left.columnid || node.right.columid) && node.op) {
+            if (node && node.left && node.right && (node.left.columnid || node.right.value) && node.op) {
                 let values = new Set();
+                // TODO - explore what scenarios would be handled here - when would a left.columnid not be present?
                 let column = node.left.columnid ? node.left : node.right;
                 let found_column = this._findColumn(column);
                 if(!found_column) {
@@ -167,6 +190,32 @@ class SQLSearch {
                 }
                 //buildFolderPath returns the needed key for FS (attribute dir key) and for Helium (datastore key)
                 let attribute_key = common_utils.buildFolderPath(found_column.table.databaseid, found_column.table.tableid, found_column.attribute);
+
+                // Check for value range search first
+                if (!common_utils.isEmpty(hdbTerms.FS_VALUE_SEARCH_COMPARATORS_REVERSE_LOOKUP[node.op])) {
+                    if (common_utils.isEmpty(this.comparator_search_values[attribute_key])) {
+                        this.comparator_search_values[attribute_key] = {
+                            ignore: false,
+                            comparators: []
+                        };
+                    }
+
+                    if (!this.comparator_search_values[attribute_key].ignore) {
+                        if (common_utils.isEmptyOrZeroLength(node.left.columnid) || common_utils.isEmptyOrZeroLength(node.right.value)) {
+                            this.comparator_search_values[attribute_key].ignore = true;
+                            this.comparator_search_values[attribute_key].comparators = [];
+                            continue;
+                        }
+
+                        this.comparator_search_values[attribute_key].comparators.push({
+                            attribute: node.left.columnid,
+                            operation: node.op,
+                            search_value: `${node.right.value}`
+                        });
+                    }
+                    continue;
+                }
+
                 if (common_utils.isEmpty(this.exact_search_values[attribute_key])) {
                     this.exact_search_values[attribute_key] = {
                         ignore: false,
@@ -185,7 +234,7 @@ class SQLSearch {
                                 ignore = true;
                             }
                             break;
-                        case 'IN' :
+                        case 'IN':
                             let in_array = Array.isArray(node.right) ? node.right : node.left;
 
                             for (let x = 0; x < in_array.length; x++) {
@@ -293,8 +342,8 @@ class SQLSearch {
             //this scenario is reached by doing a select with only calculations
             try {
                 results = await alasql.promise(this.statement.toString());
-
             } catch(e) {
+                log.error('Error thrown from AlaSQL in SQLSearch class method checkEmptySQL.');
                 log.error(e);
                 throw new Error('There was a problem with the SQL statement');
             }
@@ -329,8 +378,6 @@ class SQLSearch {
         //get all unique attributes
         this._addFetchColumns(this.columns.joins);
 
-        // in order to perform is null conditions we need to bring in the hash attribute to make sure we coalesce the
-        // objects so records that have null values are found.
         let where_string = null;
         try {
             where_string = this.statement.where ? this.statement.where.toString() : '';
@@ -409,52 +456,94 @@ class SQLSearch {
                             }
                         });
                     } catch (e) {
+                        log.error('Error thrown from getDataByHash function in SQLSearch class method getFetchAttributeValues exact match.');
                         log.error(e);
                     }
                 } else {
-                    search_object.search_attribute = attribute.attribute;
-                    await Promise.all(Array.from(this.exact_search_values[object_path].values).map(async (value) => {
-                        search_object.search_value = value;
-                        const attr_vals = await harperBridge.getDataByValue(search_object);
-                        Object.keys(attr_vals).forEach(hash_val => {
-                            if (!this.data[schema_table].__merged_data[hash_val]) {
-                                this.data[schema_table].__merged_data[hash_val] = Object.create(fetch_attributes_objs[schema_table]);
-                                this.data[schema_table].__merged_data[hash_val][hash_name] = common_utils.autoCast(hash_val);
-                                this.data[schema_table].__merged_data[hash_val][attribute.attribute] = attr_vals[hash_val][attribute.attribute];
-                            } else {
-                                this.data[schema_table].__merged_data[hash_val][attribute.attribute] = attr_vals[hash_val][attribute.attribute];
-                            }
-                        });
-                    }));
+                    try {
+                        search_object.search_attribute = attribute.attribute;
+                        await Promise.all(Array.from(this.exact_search_values[object_path].values).map(async (value) => {
+                            search_object.search_value = value;
+                            const attr_vals = await harperBridge.getDataByValue(search_object);
+                            Object.keys(attr_vals).forEach(hash_val => {
+                                if (!this.data[schema_table].__merged_data[hash_val]) {
+                                    this.data[schema_table].__merged_data[hash_val] = Object.create(fetch_attributes_objs[schema_table]);
+                                    this.data[schema_table].__merged_data[hash_val][hash_name] = common_utils.autoCast(hash_val);
+                                    this.data[schema_table].__merged_data[hash_val][attribute.attribute] = attr_vals[hash_val][attribute.attribute];
+                                } else {
+                                    this.data[schema_table].__merged_data[hash_val][attribute.attribute] = attr_vals[hash_val][attribute.attribute];
+                                }
+                            });
+                        }));
+                    } catch (err) {
+                        log.error('Error thrown from getDataByValue function in SQLSearch class method getFetchAttributeValues exact match.');
+                        log.error(err);
+                    }
                 }
             } else {
-                try {
-                    search_object.search_attribute = attribute.attribute;
-                    search_object.search_value = '*';
-                    const matching_data = await harperBridge.getDataByValue(search_object);
-                    if (is_hash) {
-                        this.data[schema_table].__has_hash = true;
-                        Object.values(matching_data).forEach(hash_obj => {
-                            const hash_val = hash_obj[hash_name];
-                            if (!this.data[schema_table].__merged_data[hash_val]) {
-                                this.data[schema_table].__merged_data[hash_val] = Object.create(fetch_attributes_objs[schema_table]);
-                                this.data[schema_table].__merged_data[hash_val][hash_name] = common_utils.autoCast(hash_val);
-                            }
-                        });
-                    } else {
-                        Object.keys(matching_data).forEach(hash_val => {
-                            if (!this.data[schema_table].__merged_data[hash_val]) {
-                                this.data[schema_table].__merged_data[hash_val] = Object.create(fetch_attributes_objs[schema_table]);
-                                this.data[schema_table].__merged_data[hash_val][hash_name] = common_utils.autoCast(hash_val);
-                                this.data[schema_table].__merged_data[hash_val][attribute.attribute] = matching_data[hash_val][attribute.attribute];
+                if (!common_utils.isEmpty(this.comparator_search_values[object_path]) && !this.comparator_search_values[object_path].ignore &&
+                    !common_utils.isEmptyOrZeroLength(this.comparator_search_values[object_path].comparators)) {
+                    try {
+                        const search_value_comparators = this.comparator_search_values[object_path].comparators;
+                        for (let i = 0; i < search_value_comparators.length; i++) {
+                            const comp = search_value_comparators[i];
+                            search_object.search_attribute = comp.attribute;
+                            search_object.search_value = comp.search_value;
+                            const matching_data = await harperBridge.getDataByValue(search_object, comp.operation);
+                            if (is_hash) {
+                                this.data[schema_table].__has_hash = true;
+                                Object.values(matching_data).forEach(hash_obj => {
+                                    const hash_val = hash_obj[hash_name];
+                                    if (!this.data[schema_table].__merged_data[hash_val]) {
+                                        this.data[schema_table].__merged_data[hash_val] = Object.create(fetch_attributes_objs[schema_table]);
+                                        this.data[schema_table].__merged_data[hash_val][hash_name] = common_utils.autoCast(hash_val);
+                                    }
+                                });
                             } else {
-                                this.data[schema_table].__merged_data[hash_val][attribute.attribute] = matching_data[hash_val][attribute.attribute];
+                                Object.keys(matching_data).forEach(hash_val => {
+                                    if (!this.data[schema_table].__merged_data[hash_val]) {
+                                        this.data[schema_table].__merged_data[hash_val] = Object.create(fetch_attributes_objs[schema_table]);
+                                        this.data[schema_table].__merged_data[hash_val][hash_name] = common_utils.autoCast(hash_val);
+                                        this.data[schema_table].__merged_data[hash_val][attribute.attribute] = matching_data[hash_val][attribute.attribute];
+                                    } else {
+                                        this.data[schema_table].__merged_data[hash_val][attribute.attribute] = matching_data[hash_val][attribute.attribute];
+                                    }
+                                });
                             }
-                        });
+                        }
+                    } catch (err) {
+                        log.error('Error thrown from getDataByValue function in SQLSearch class method getFetchAttributeValues comparator search values.');
+                        log.error(err);
                     }
-                } catch (e) {
-                    log.error(e);
-                    // no-op
+                } else {
+                    try {
+                        search_object.search_attribute = attribute.attribute;
+                        search_object.search_value = '*';
+                        const matching_data = await harperBridge.getDataByValue(search_object);
+                        if (is_hash) {
+                            this.data[schema_table].__has_hash = true;
+                            Object.values(matching_data).forEach(hash_obj => {
+                                const hash_val = hash_obj[hash_name];
+                                if (!this.data[schema_table].__merged_data[hash_val]) {
+                                    this.data[schema_table].__merged_data[hash_val] = Object.create(fetch_attributes_objs[schema_table]);
+                                    this.data[schema_table].__merged_data[hash_val][hash_name] = common_utils.autoCast(hash_val);
+                                }
+                            });
+                        } else {
+                            Object.keys(matching_data).forEach(hash_val => {
+                                if (!this.data[schema_table].__merged_data[hash_val]) {
+                                    this.data[schema_table].__merged_data[hash_val] = Object.create(fetch_attributes_objs[schema_table]);
+                                    this.data[schema_table].__merged_data[hash_val][hash_name] = common_utils.autoCast(hash_val);
+                                    this.data[schema_table].__merged_data[hash_val][attribute.attribute] = matching_data[hash_val][attribute.attribute];
+                                } else {
+                                    this.data[schema_table].__merged_data[hash_val][attribute.attribute] = matching_data[hash_val][attribute.attribute];
+                                }
+                            });
+                        }
+                    } catch (err) {
+                        log.error('Error thrown from getDataByValue function in SQLSearch class method getFetchAttributeValues no comparator search values.');
+                        log.error(err);
+                    }
                 }
             }
         }
@@ -469,18 +558,14 @@ class SQLSearch {
     async _processJoins() {
         let table_data = [];
         let select = [];
-
         //TODO possibly need to loop the from here, need to investigate
         let from_statement = this.statement.from[0];
-
         let tables = [from_statement];
-
         let from_clause = [
             '? ' + (from_statement.as ? ' AS ' + from_statement.as : from_statement.tableid)
         ];
 
         table_data.push(Object.values(this.data[`${from_statement.databaseid_orig}_${from_statement.tableid_orig}`].__merged_data));
-
 
         if (this.statement.joins) {
             this.statement.joins.forEach(join => {
@@ -536,6 +621,7 @@ class SQLSearch {
         try {
             joined = await alasql.promise(`SELECT ${select.join(',')} FROM ${from_clause.join(' ')} ${where_clause} ${order_clause} ${limit}`, table_data);
         } catch(e) {
+            log.error('Error thrown from AlaSQL in SQLSearch class method processJoins.');
             log.error(e);
             throw new Error('There was a problem processing the data.');
         }
@@ -593,6 +679,7 @@ class SQLSearch {
         try {
             await this._getData(all_columns);
         } catch(e) {
+            log.error('Error thrown from getData in SQLSearch class method getFinalAttributeData.');
             log.error(e);
         }
     }
@@ -636,6 +723,8 @@ class SQLSearch {
                 });
             }));
         } catch(e) {
+            log.error('Error thrown from getDataByHash function in SQLSearch class method getData.');
+            log.error(e);
             throw e;
         }
     }
@@ -666,8 +755,12 @@ class SQLSearch {
         let final_results = undefined;
         try {
             let sql = this._buildSQL();
+            log.trace(`Final SQL: ${sql}`);
             final_results = await alasql.promise(sql, table_data);
-        } catch(e){
+            log.trace(`Final AlaSQL results: ${final_results}`);
+        } catch(e) {
+            log.error('Error thrown from AlaSQL in SQLSearch class method finalSQL.');
+            log.error(e);
             throw new Error('There was a problem running the generated sql.');
         }
         return final_results;

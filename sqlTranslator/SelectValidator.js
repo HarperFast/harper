@@ -165,7 +165,7 @@ class SelectValidator {
         this[validateSegment](this.statement.columns, false);
         this[validateSegment](this.statement.joins, false);
         this[validateSegment](this.statement.where, false);
-        this[validateGroupBy](this.statement.group);
+        this[validateGroupBy](this.statement.group, false);
         this[validateSegment](this.statement.order, true);
     }
 

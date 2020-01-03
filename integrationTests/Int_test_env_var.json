@@ -185,6 +185,26 @@
       "key": "insert_timestamp",
       "value": "0",
       "enabled": true
+    },
+    {
+      "key": "csv_tb",
+      "value": "url_csv_data",
+      "enabled": true
+    },
+    {
+      "key": "csv_tb_empty",
+      "value": "url_csv_no_data",
+      "enabled": true
+    },
+    {
+      "key": "drop_schema",
+      "value": "drop_schema",
+      "enabled": true
+    },
+    {
+      "key": "drop_table",
+      "value": "drop_table",
+      "enabled": true
     }
   ],
   "_postman_variable_scope": "environment",

@@ -55,7 +55,7 @@ async function createAttribute(create_attribute_object) {
         operation: hdb_terms.OPERATIONS_ENUM.INSERT,
         schema: hdb_terms.SYSTEM_SCHEMA_NAME,
         table: hdb_terms.SYSTEM_TABLE_NAMES.ATTRIBUTE_TABLE_NAME,
-        hash_attribute: hdb_terms.SYSTEM_TABLE_HASH,
+        hash_attribute: hdb_terms.SYSTEM_TABLE_HASH_ATTRIBUTES.ATTRIBUTE_TABLE_HASH_ATTRIBUTE,
         records: [record]
     };
 

@@ -13,7 +13,7 @@ sed -i "/HDB_PROC_NAME/ s/ =.*/ = 'no_oneis_here';/" /opt/harperdb/bin/run.js
 #Then add newly obfuscated files through the --output option in javascript-obfuscator command.
 
 #Files to search for javascript to obfuscate as of 12/17/2018.. Please keep this updated!!(should Upgrade to new version functionality;
-#now allows directory use 
+#now allows directory use
 #version i was using only allowed individual .js files at a time.)
 
 files=( "data_layer" "sqlTranslator" "validation" "security" "utility" "utility/install" "utility/logging" "utility/functions" "utility/functions/date" "utility/functions/math" "utility/functions/string" "utility/functions/sql" "utility/registration" "utility/fs" "utility/threads" "lib/fileSystem" "lib/server" "lib/streams" "server" "server/clustering" "json" "events")
@@ -31,7 +31,7 @@ cp -R $working_dir/* $mirrored_dir
 
 #clean up unwanted directories for executable only
 cd $mirrored_dir
-rm -rf ./integrationTests ./test ./unitTests ./user_guide.html ./bash ./package-lock.json
+rm -rf ./integrationTests ./test ./unitTests ./index.html ./bash ./package-lock.json
 ############################
 
 cd $working_dir
@@ -68,14 +68,14 @@ harperdb_run()
      cd ./bin/
      echo "I am in this directory now: $(pwd)"
      ./linux-harperdb install --TC_AGREEMENT yes --HDB_ROOT $hdb_data --HTTP_PORT 9925 --HTTPS_PORT 31283 --HDB_ADMIN_USERNAME admin --HDB_ADMIN_PASSWORD "Abc1234!"
-    sleep 7s    
+    sleep 7s
     ./linux-harperdb run
     sleep 3s
     theProc=$(ps -ef | grep [h]db_express);
 
         if [ "$theProc" ];
            then
-             	
+
                apiKey="fe1dfb2c3647474f8f3e9d836783e694"
 
                #POSTMAN: HarperDB Integration Tests
@@ -87,7 +87,7 @@ harperdb_run()
 
                newman run https://api.getpostman.com/collections/$collection_id?apikey=$apiKey \
                --environment https://api.getpostman.com/environments/$environment_id?apikey=$apiKey -r cli > ../newman_output.log
-  
+
 ./linux-harperdb stop
        else
            echo "Process hdb_express did not start?"
