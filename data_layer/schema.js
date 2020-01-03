@@ -45,7 +45,7 @@ async function createSchemaStructure(schema_create_object) {
     }
 
     if (global.hdb_schema[schema_create_object.schema]) {
-        throw new Error(`schema ${schema_create_object.schema} already exists`);
+        throw `schema ${schema_create_object.schema} already exists`;
     }
 
     try {
@@ -81,11 +81,11 @@ async function createTableStructure(create_table_object) {
     validation.validateTableResidence(create_table_object.residence);
 
     if (!global.hdb_schema[create_table_object.schema]) {
-        throw new Error(`schema ${create_table_object.schema} does not exist`);
+        throw `schema ${create_table_object.schema} does not exist`;
     }
 
     if (global.hdb_schema[create_table_object.schema][create_table_object.table]) {
-        throw new Error(`table ${create_table_object.table} already exists in schema ${create_table_object.schema}`);
+        throw `table ${create_table_object.table} already exists in schema ${create_table_object.schema}`;
     }
 
     let table_system_data = {
