@@ -41,20 +41,24 @@ async function deleteFilesBefore(delete_obj) {
         throw new Error("Invalid date, must be in ISO-8601 format (YYYY-MM-DD).");
     }
 
-    if(common_utils.isEmptyOrZeroLength(delete_obj.schema)) {
-        throw new Error("Invalid schema.");
+    if (common_utils.isEmptyOrZeroLength(delete_obj.schema)) {
+        throw new Error('Invalid schema.');
     }
 
-    if(common_utils.isEmptyOrZeroLength(delete_obj.table)) {
-        throw new Error("Invalid table.");
+    if (common_utils.isEmptyOrZeroLength(delete_obj.table)) {
+        throw new Error('Invalid table.');
+    }
+
+    let check_schema_table_exist = common_utils.checkSchemaTableExist(delete_obj.schema, delete_obj.table);
+    if (check_schema_table_exist) {
+        throw new Error(check_schema_table_exist);
     }
 
     try {
-        common_utils.checkSchemaTableExist(delete_obj.schema, delete_obj.table);
         await harperBridge.deleteRecordsBefore(delete_obj);
         await p_global_schema(delete_obj.schema, delete_obj.table);
         harper_logger.info(`Finished deleting files before ${delete_obj.date}`);
-    } catch(err) {
+    } catch (err) {
         throw err;
     }
 }
@@ -64,22 +68,26 @@ async function deleteFilesBefore(delete_obj) {
  * @param delete_object
  * @returns {Promise<string>}
  */
-async function deleteRecord(delete_object){
+async function deleteRecord(delete_object) {
     let validation = bulk_delete_validator(delete_object);
     if (validation) {
         throw validation;
     }
 
+    let check_schema_table_exist = common_utils.checkSchemaTableExist(delete_object.schema, delete_object.table);
+    if (check_schema_table_exist) {
+        throw new Error(check_schema_table_exist);
+    }
+
     try {
-        common_utils.checkSchemaTableExist(delete_object.schema, delete_object.table);
         await p_global_schema(delete_object.schema, delete_object.table);
         let delete_result_object = await harperBridge.deleteRecords(delete_object);
 
-        if(common_utils.isEmptyOrZeroLength(delete_result_object.message)) {
+        if (common_utils.isEmptyOrZeroLength(delete_result_object.message)) {
             delete_result_object.message = `${delete_result_object.deleted_hashes.length} of ${delete_object.hash_values.length} ${SUCCESS_MESSAGE}`;
         }
         return delete_result_object;
-    } catch(err){
+    } catch (err) {
         if(err.message === terms.SEARCH_NOT_FOUND_MESSAGE) {
             let return_msg = new DeleteResponseObject();
             return_msg.message = terms.SEARCH_NOT_FOUND_MESSAGE;

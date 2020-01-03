@@ -114,14 +114,18 @@ async function insertData(insert_object){
         throw new Error('invalid operation, must be insert');
     }
 
+    let check_schema_table_exist = hdb_utils.checkSchemaTableExist(insert_object.schema, insert_object.table);
+    if (check_schema_table_exist) {
+        throw new Error(check_schema_table_exist);
+    }
+
     try {
-        hdb_utils.checkSchemaTableExist(insert_object.schema, insert_object.table);
         let bridge_insert_result = await harperBridge.createRecords(insert_object);
         convertOperationToTransaction(insert_object, bridge_insert_result.written_hashes, bridge_insert_result.schema_table.hash_attribute);
         await p_schema_to_global();
 
         return returnObject(INSERT_ACTION, bridge_insert_result.written_hashes, insert_object, bridge_insert_result.skipped_hashes);
-    } catch(e){
+    } catch (e) {
         throw (e);
     }
 }
@@ -149,12 +153,17 @@ function convertOperationToTransaction(write_object, written_hashes, hash_attrib
  * Updates the data in the update_object parameter.
  * @param update_object - The data that will be updated in the database
  */
-async function updateData(update_object){
+async function updateData(update_object) {
     if (update_object.operation !== 'update') {
         throw new Error('invalid operation, must be update');
     }
+
+    let check_schema_table_exist = hdb_utils.checkSchemaTableExist(update_object.schema, update_object.table);
+    if (check_schema_table_exist) {
+        throw new Error(check_schema_table_exist);
+    }
+
     try {
-        hdb_utils.checkSchemaTableExist(update_object.schema, update_object.table);
         let bridge_update_result = await harperBridge.updateRecords(update_object);
         if (!hdb_utils.isEmpty(bridge_update_result.existing_rows)) {
             return returnObject(bridge_update_result.update_action, [], update_object, bridge_update_result.hashes);
@@ -162,7 +171,7 @@ async function updateData(update_object){
         convertOperationToTransaction(update_object, bridge_update_result.written_hashes, bridge_update_result.schema_table.hash_attribute);
 
         return returnObject(UPDATE_ACTION, bridge_update_result.written_hashes, update_object, bridge_update_result.skipped_hashes);
-    } catch(e){
+    } catch (e) {
         throw (e);
     }
 }
