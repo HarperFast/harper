@@ -24,17 +24,17 @@ class SocketConnector{
 
         this.socket.on('error', (err, socket) =>{
             log.error('ERROR on HDB Client socket: ' + err);
-            log.error(err);
+            log.info(err);
         });
 
         this.socket.on('connect', status =>{
             this.disconnect_timestamp = null;
-            log.error(`Connected to cluster server.`);
+            log.notify(`Connected to cluster server.`);
         });
 
         this.socket.on('disconnect', status =>{
             this.disconnect_timestamp = Date.now();
-            log.error(`Disconnected from cluster server with code: ${status} - ${terms.WEBSOCKET_CLOSE_CODE_DESCRIPTION_LOOKUP[status]}`);
+            log.notify(`Disconnected from cluster server with code: ${status} - ${terms.WEBSOCKET_CLOSE_CODE_DESCRIPTION_LOOKUP[status]}`);
         });
 
         this.socket.on('login', (data, res)=>{
