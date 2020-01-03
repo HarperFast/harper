@@ -23,6 +23,8 @@ const default_test_log_dir = path.join(process.cwd(), "../", "unitTests");
 const default_test_log_name = 'test_log.log';
 const default_test_log_path = path.join(default_test_log_dir, default_test_log_name);
 // Create log location for Winston daily rotation file tests
+const daily_file_name_template = `%DATE%_${default_test_log_name}`;
+const daily_file_path_template = path.join(default_test_log_dir, daily_file_name_template);
 let current_date = moment().format("YYYY-MM-DD");
 let daily_file_name = `${current_date}_${default_test_log_name}`;
 let daily_test_log_path = path.join(default_test_log_dir, daily_file_name);
@@ -695,72 +697,78 @@ describe('Test harper_logger ', () => {
     });
 
     describe(`Test setLogLocation`, () => {
-        let new_output_file;
-        let new_output_file_dir;
+        let initWinstonLogger_orig;
+        let trace_orig;
+        let write_log_orig;
+        let fs_existsSync_stub;
+        let fs_mkdir_stub;
+        let fs_stub;
 
+        before(() => {
+            initWinstonLogger_orig = harper_log_rw.__get__('initWinstonLogger');
+            trace_orig = harper_log_rw.__get__('trace');
+            write_log_orig = harper_log_rw.__get__('write_log');;
+
+            fs_existsSync_stub = sandbox.stub().returns(true);
+            fs_mkdir_stub = sandbox.stub().returns();
+            fs_stub = {
+                existsSync: fs_existsSync_stub,
+                mkdir: fs_mkdir_stub
+            };
+            const initWinstonLogger_stub = sandbox.stub().returns();
+            const trace_stub = sandbox.stub().returns();
+            const write_log_stub = sandbox.stub().returns();
+            harper_log_rw.__set__('fs', fs_stub);
+            harper_log_rw.__set__('initWinstonLogger', initWinstonLogger_stub);
+            harper_log_rw.__set__('trace', trace_stub);
+            harper_log_rw.__set__('write_log', write_log_stub);
+        })
         beforeEach(() => {
             rewireDefaultLogger();
         });
 
         afterEach(() => {
-            watcher.close();
-            file_change_results = false;
+            sandbox.restore();
+            harper_log_rw.__set__('fs', fs_stub);
         });
 
         after(() => {
-            unlinkTestLog(new_output_file);
-            unlinkTestLog(daily_test_log_path);
+            harper_log_rw.__set__('fs', fs);
+            harper_log_rw.__set__('initWinstonLogger', initWinstonLogger_orig);
+            harper_log_rw.__set__('trace', trace_orig);
+            harper_log_rw.__set__('write_log', write_log_orig);
+        })
+
+        it('set log location w/ log file path',() => {
+            harper_log_rw.__set__('log_location', undefined)
+
+            setLogLocation_rw(default_test_log_path);
+
+            const test_location = harper_log_rw.__get__('log_location');
+
+            expect(test_location).to.equal(default_test_log_path);
+
         });
 
-        it('set log location w/ log file path',(done) => {
-            new_output_file = default_test_log_path
-            output_file_path = new_output_file;
+        it('set log location w/ log dir path', () => {
+            harper_log_rw.__set__('log_location', undefined)
 
-            setLogLocation_rw(new_output_file);
-
-            createTestOutputFile();
-            setLogWatcher(new_output_file);
-
-            harper_log_rw.error('test in new path');
-            setTimeout(() => {
-                // Had to play with the timing on this to make it constantly pass.  Might need to be slower depending on the
-                // event loop and specs of any given system the test is run on.  Not the best way to test, but works for now.
-                assert.equal(file_change_results, true, "Did not detect a file change to new log file. This might be a timing issue with the test, not the functionality.");
-                done();
-            }, 100);
-        });
-
-        it('set log location w/ log dir path', (done) => {
-            output_file_path = default_test_log_path;
             setLogLocation_rw(default_test_log_dir);
 
-            createTestOutputFile();
-            setLogWatcher();
+            const test_location = harper_log_rw.__get__('log_location');
 
-            harper_log_rw.error('test in new path');
-            setTimeout(() => {
-                // Had to play with the timing on this to make it constantly pass.  Might need to be slower depending on the
-                // event loop and specs of any given system the test is run on.  Not the best way to test, but works for now.
-                assert.equal(file_change_results, true, "Did not detect a file change to new log file. This might be a timing issue with the test, not the functionality.");
-                done();
-            }, 100);
+            expect(test_location).to.equal(default_test_log_path);
         });
 
-        it('set log location w/ log dir path and daily turned on', (done) => {
+        it('set log location w/ log dir path and daily turned on', () => {
             harper_log_rw.__set__('daily_rotate', true);
-            output_file_path = daily_test_log_path;
+            harper_log_rw.__set__('log_location', undefined)
+
             setLogLocation_rw(default_test_log_dir);
 
-            createTestOutputFile();
-            setLogWatcher();
+            const test_location = harper_log_rw.__get__('log_location');
 
-            harper_log_rw.error('test in new path');
-            setTimeout(() => {
-                // Had to play with the timing on this to make it constantly pass.  Might need to be slower depending on the
-                // event loop and specs of any given system the test is run on.  Not the best way to test, but works for now.
-                assert.equal(file_change_results, true, "Did not detect a file change to new log file. This might be a timing issue with the test, not the functionality.");
-                done();
-            }, 100);
+            expect(test_location).to.equal(daily_file_path_template);
         });
 
         it('set log location with undefined, expect log location set to default path', () => {
@@ -774,6 +782,65 @@ describe('Test harper_logger ', () => {
             const test_log_path = harper_log_rw.__get__('log_location');
 
             expect(test_log_path.includes(`log/${default_test_log_name}`)).to.equal(true);
+        });
+
+        it('set log location with file path that doesnt exist', () => {
+            harper_log_rw.__set__('log_location', undefined)
+
+            fs_existsSync_stub.returns(false);
+            harper_log_rw.__set__('fs', fs_stub);
+
+            const bad_log_path = 'log/log/sams/log.log';
+
+            setLogLocation_rw(bad_log_path);
+
+            const test_location = harper_log_rw.__get__('log_location');
+
+            expect(test_location).to.equal(bad_log_path);
+        });
+
+        it('set daily log location with file path that doesnt exist', () => {
+            harper_log_rw.__set__('daily_rotate', true);
+            harper_log_rw.__set__('log_location', undefined)
+
+            fs_existsSync_stub.returns(false);
+            harper_log_rw.__set__('fs', fs_stub);
+
+            const bad_log_path = 'log/log/sams/log.log';
+            const bad_log_path_daily = 'log/log/sams/%DATE%_log.log';
+
+            setLogLocation_rw(bad_log_path);
+
+            const test_location = harper_log_rw.__get__('log_location');
+
+            expect(test_location).to.equal(bad_log_path_daily);
+        });
+
+        it('set log location with file path that doesnt exist and mkdir error', () => {
+            harper_log_rw.__set__('log_location', undefined);
+            fs_existsSync_stub.returns(false);
+            fs_mkdir_stub.throws();
+            harper_log_rw.__set__('fs', fs_stub);
+
+            const bad_log_path = 'log/log/sams/log.log';
+            setLogLocation_rw(bad_log_path);
+
+            const test_location = harper_log_rw.__get__('log_location');
+            expect(test_location.includes(`log/${default_test_log_name}`)).to.equal(true);
+        });
+
+        it('set daily log location with file path that doesnt exist and mkdir error', () => {
+            harper_log_rw.__set__('daily_rotate', true);
+            harper_log_rw.__set__('log_location', undefined)
+            fs_existsSync_stub.returns(false);
+            fs_mkdir_stub.throws();
+            harper_log_rw.__set__('fs', fs_stub);
+
+            const bad_log_path = 'log/log/sams/log.log';
+            setLogLocation_rw(bad_log_path);
+
+            const test_location = harper_log_rw.__get__('log_location');
+            expect(test_location.includes(`log/${daily_file_name_template}`)).to.equal(true);
         });
     });
 });

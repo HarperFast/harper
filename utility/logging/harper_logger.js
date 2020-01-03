@@ -85,7 +85,7 @@ try {
     hdb_properties.append(hdb_properties.get('settings_path'));
 
     // read environment settings to get log settings
-    daily_rotate = hdb_properties.get('LOG_DAILY_ROTATE').toLowerCase() === 'true' ? true : false;
+    daily_rotate = `${hdb_properties.get('LOG_DAILY_ROTATE')}`.toLowerCase() === 'true' ? true : false;
     const daily_max = hdb_properties.get('LOG_MAX_DAILY_FILES');
     max_daily_files = daily_max ? daily_max + 'd' : null;
     log_level = hdb_properties.get('LOG_LEVEL');
@@ -400,7 +400,7 @@ function setLogLocation(log_location_setting) {
                 } else {
                     log_directory = log_settings_directory;
                     log_file_name = log_settings_name;
-                    fs.mkdir(log_settings_directory, (err) => {
+                    fs.mkdir(log_settings_directory,{ recursive: true },(err) => {
                         write_log(INFO, `Attempted to create log directory from settings file but failed.  Using default log path - 'hdb/log/hdb_log.log'`);
                         log_directory = default_log_directory;
                         log_file_name = DEFAULT_LOG_FILE_NAME;
@@ -412,7 +412,7 @@ function setLogLocation(log_location_setting) {
                     log_file_name = DEFAULT_LOG_FILE_NAME;
                 } else {
                     log_directory = log_location_setting;
-                    fs.mkdir(log_location_setting, (err) => {
+                    fs.mkdir(log_location_setting,{ recursive: true },(err) => {
                         write_log(INFO, `Attempted to create log directory from settings file but failed.  Using default log path - 'hdb/log/hdb_log.log'`);
                         log_directory = default_log_directory;
                     });
