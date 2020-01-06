@@ -128,8 +128,6 @@ describe('Test schema module', function() {
 
             expect(error.message).to.equal(create_schema_structure_err);
             expect(create_schema_structure_stub).to.have.been.calledOnce;
-            expect(logger_error_stub).to.have.been.calledOnce;
-            expect(logger_error_stub).to.have.been.calledWith(error);
         });
     });
 
@@ -165,7 +163,7 @@ describe('Test schema module', function() {
                 error = err;
             }
 
-            expect(error.message).to.equal(`schema ${SCHEMA_CREATE_OBJECT_TEST.schema} already exists`);
+            expect(error).to.equal(`schema ${SCHEMA_CREATE_OBJECT_TEST.schema} already exists`);
         });
 
         it('should call bridge and return success message', async () => {
@@ -208,8 +206,6 @@ describe('Test schema module', function() {
             expect(error).to.be.instanceOf(Error);
             expect(error.message).to.equal(create_table_struc_err);
             expect(create_table_struc_stub).to.have.been.calledOnce;
-            expect(logger_error_stub).to.have.been.calledOnce;
-            expect(logger_error_stub).to.have.been.calledWith(error);
         });
     });
 
@@ -262,7 +258,7 @@ describe('Test schema module', function() {
                error = err;
             }
 
-            expect(error.message).to.equal(`schema ${CREATE_TABLE_OBJECT_TEST.schema} does not exist`);
+            expect(error).to.equal(`Schema '${CREATE_TABLE_OBJECT_TEST.schema}' does not exist`);
             expect(create_table_validator_stub).to.have.been.calledOnce;
             expect(residence_validator_stub).to.have.been.calledOnce;
         });
@@ -277,7 +273,7 @@ describe('Test schema module', function() {
                 error = err;
             }
 
-            expect(error.message).to.equal(`table ${CREATE_TABLE_OBJECT_TEST.table} already exists in schema ${CREATE_TABLE_OBJECT_TEST.schema}`);
+            expect(error).to.equal(`table ${CREATE_TABLE_OBJECT_TEST.table} already exists in schema ${CREATE_TABLE_OBJECT_TEST.schema}`);
             expect(create_table_validator_stub).to.have.been.calledOnce;
             expect(residence_validator_stub).to.have.been.calledOnce;
             global.hdb_schema.dogsrule = {};
@@ -338,13 +334,24 @@ describe('Test schema module', function() {
             expect(result).to.equal(`successfully deleted schema ${DROP_SCHEMA_OBJECT_TEST.schema}`);
         });
 
+        it('Test schema does not exist error is thrown', async () => {
+            let error;
+            try {
+                await schema.dropSchema(DROP_SCHEMA_OBJECT_TEST);
+            } catch (err) {
+                error = err;
+            }
+
+            expect(error).to.be.equal(`Schema '${DROP_SCHEMA_OBJECT_TEST.schema}' does not exist`);
+        });
+
         it('Test error from bridge drop schema is caught, thrown and logged', async () => {
+            global.hdb_schema = GLOBAL_SCHEMA_FAKE;
             let error_msg = 'We have an error on the bridge';
             bridge_drop_schema_stub.throws(new Error(error_msg));
             let test_err_result = await test_util.testError(schema.dropSchema(DROP_SCHEMA_OBJECT_TEST), error_msg);
 
             expect(test_err_result).to.be.true;
-            expect(logger_error_stub).to.have.been.called;
         });
 
         it('Test schema obj validation catches and throws error', async () => {
@@ -389,10 +396,7 @@ describe('Test schema module', function() {
             let test_err_result = await test_util.testError(schema.dropTable(DROP_TABLE_OBJECT_TEST), error_msg);
 
             expect(test_err_result).to.be.true;
-            expect(logger_error_stub).to.have.been.called;
         });
-
-
     });
 
     /**
