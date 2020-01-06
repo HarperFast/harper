@@ -184,8 +184,6 @@ async function csvFileLoad(json_message) {
     }
 
     try {
-        // check file exists and have perms to read, throws exception if fails
-        await fs.access(json_message.file_path, fs.constants.R_OK | fs.constants.F_OK);
         let bulk_load_result = await callPapaParse(json_message);
 
         return buildCSVResponseMsg(bulk_load_result.records, bulk_load_result.number_written);
