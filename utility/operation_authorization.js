@@ -131,6 +131,7 @@ function verifyPermsAst(ast, user_object, operation) {
         let schemas = parsed_ast.getSchemas();
         let schema_table_map = new Map();
         let failed_permissions = [];
+        let failed_permission_objects = [];
         // Should not continue if there are no schemas defined and there are table columns defined.
         // This is defined so we can do calc selects like : SELECT ABS(-12)
         if ((!schemas || schemas.length === 0) && (parsed_ast.affected_attributes && parsed_ast.affected_attributes.size > 0)) {
@@ -145,7 +146,6 @@ function verifyPermsAst(ast, user_object, operation) {
         }
 
         for (let s = 0; s<schemas.length; s++) { //NOSONAR
-
             let tables = parsed_ast.getTablesBySchemaName(schemas[s]);
             if(!tables) {
                 return [];
@@ -153,12 +153,23 @@ function verifyPermsAst(ast, user_object, operation) {
 
             for (let t = 0; t<tables.length; t++) {
                 let attributes = parsed_ast.getAttributesBySchemaTableName(schemas[s], tables[t]);
-                let unauthorized_attributes = checkAttributePerms(attributes, getAttributeRestrictions(user_object, schemas[s],tables[t]), operation);
-                if (unauthorized_attributes && unauthorized_attributes.length) {
-                    unauthorized_attributes.forEach((failed_perm) => {
-                        failed_perm.table = tables[t];
+                let unauthorized_attributes = checkAttributePerms(attributes, getAttributeRestrictions(user_object, schemas[s],tables[t]), operation, tables[t], schemas[s]);
+                if (unauthorized_attributes && Object.keys(unauthorized_attributes).length > 0) {
+                    for(let failed_perm in unauthorized_attributes) {
+                        failed_permission_objects.push(unauthorized_attributes[failed_perm]);
+                    }
+                    //unauthorized_attributes.forEach((failed_perm) => {
+
+                        /*failed_perm.table = tables[t];
                         failed_permissions.push(failed_perm);
-                    });
+
+                        let failed_perm_object = new terms.PermissionResponseObject();
+                        failed_perm_object.schema = schemas[s];
+                        failed_perm_object.table = tables[t];
+                        if(failed_perm.attribute && Object.keys(failed_perm.attribute).length > 0) {
+
+                        }*/
+                    //});
                 }
             }
             schema_table_map.set(schemas[s], tables);
@@ -166,10 +177,16 @@ function verifyPermsAst(ast, user_object, operation) {
             if(has_permissions && has_permissions.length) {
                 has_permissions.forEach((has_perms)=> {
                    failed_permissions.push(has_perms);
+
+                    let failed_perm_object = new terms.PermissionResponseObject();
+                    failed_perm_object.schema = schemas[s];
+                    failed_perm_object.table = has_perms.table;
+                    failed_perm_object.required_table_permissions.push(has_perms.required_table_permissions);
+                    failed_permission_objects.push(failed_perm_object);
                 });
             }
         }
-        return failed_permissions;
+        return failed_permission_objects;
     } catch(e) {
         harper_logger.info(e);
         throw new Error(ERR_PROCESSING);
@@ -220,7 +237,12 @@ function hasPermissions(user_object, op, schema_table_map ) {
                         let user_permission = user_object.role.permission[schema_table].tables[table][perms];
                         if (user_permission === undefined || user_permission === null || user_permission === false) {
                             harper_logger.info(`Required permission not found for operation ${op} in role ${user_object.role.id}`);
-                            unauthorized_table.push({"table":table, "permission":perms});
+                            let failed_table = new terms.PermissionResponseObject();
+                            failed_table.schema = schema_table;
+                            failed_table.table = table;
+                            failed_table.required_table_permissions = perms;
+                            //unauthorized_table.push({"table":table, "required_permission":perms});
+                            unauthorized_table.push(failed_table);
                             return unauthorized_table;
                         }
                     }
@@ -279,7 +301,7 @@ function verifyPerms(request_json, operation) {
         return failed_table_permissions;
     }
     // TODO - after testing, just return the result of the checkAttributePerms call
-    let unauthorized_attributes = checkAttributePerms(getRecordAttributes(request_json), getAttributeRestrictions(request_json.hdb_user, operation_schema, table),op);
+    let unauthorized_attributes = checkAttributePerms(getRecordAttributes(request_json), getAttributeRestrictions(request_json.hdb_user, operation_schema, table),op, table, operation_schema);
     if(unauthorized_attributes && unauthorized_attributes.length > 0) {
         return unauthorized_attributes;
     }
@@ -295,7 +317,7 @@ function verifyPerms(request_json, operation) {
  * @param operation
  * @returns {Array} - empty array if permissions match, errors are an array of objects.
  */
-function checkAttributePerms(record_attributes, role_attribute_restrictions, operation) {
+function checkAttributePerms(record_attributes, role_attribute_restrictions, operation, table_name, schema_name) {
     if (!record_attributes || !role_attribute_restrictions) {
         harper_logger.info(`no attributes specified in checkAttributePerms.`);
         throw new Error(ERR_PROCESSING);
@@ -316,6 +338,7 @@ function checkAttributePerms(record_attributes, role_attribute_restrictions, ope
         return [];
     }
     let unauthorized_attributes = [];
+    let unauthorized_attributes_object = Object.create(null);
     // Check if each specified attribute in the call (record_attributes) has a restriction specified in the role.  If there is
     // a restriction, check if the operation permission/ restriction is false.
     for (let element of record_attributes) {
@@ -327,7 +350,20 @@ function checkAttributePerms(record_attributes, role_attribute_restrictions, ope
                     for (let restriction of role_attribute_restrictions.keys()) {
                         if (role_attribute_restrictions.get(restriction)[perm] === false) {
                             // here, rather than return false, we need to remove it from data that is searched for
-                            unauthorized_attributes.push({"table": perm.table, "attribute": restriction, "restriction": perm});
+                            //unauthorized_attributes.push({"table_name": perm.table_name, "attribute": restriction, "restriction": perm});
+
+                            let failed_perm_object = new terms.PermissionResponseObject();
+                            //failed_perm_object.schema = schemas[s];
+                            failed_perm_object.table = perm.table;
+                            failed_perm_object.schema = schema_name;
+                            let attribute_object = new terms.PermissionAttributeResponseObject();
+                            attribute_object.attribute_name = restriction;
+                            attribute_object.required_permissions.push(perm);
+                            failed_perm_object.push(attribute_object);
+                            if(!unauthorized_attributes_object[failed_perm_object]) {
+                                unauthorized_attributes_object[failed_perm_object] = {};
+                            }
+                            unauthorized_attributes_object[table_name] = failed_perm_object;
                         }
                     }
                 }
@@ -337,13 +373,22 @@ function checkAttributePerms(record_attributes, role_attribute_restrictions, ope
             if (restriction && needed_perm.perms) {
                 for (let perm of needed_perm.perms) {
                     if (restriction[perm] === false) {
-                        unauthorized_attributes.push({"table": restriction.table, "attribute": restriction, "restriction": perm});
+                        unauthorized_attributes.push({"table_name": table_name, "attribute": restriction, "restriction": perm});
+                        if(!unauthorized_attributes_object[table_name]) {
+                            unauthorized_attributes_object[table_name] = new terms.PermissionResponseObject();
+                            unauthorized_attributes_object[table_name].table = table_name;
+                            unauthorized_attributes_object[table_name].schema = schema_name;
+                        }
+                        let attribute_object = new terms.PermissionAttributeResponseObject();
+                        attribute_object.attribute_name = restriction.attribute_name;
+                        attribute_object.required_permissions.push(perm);
+                        unauthorized_attributes_object[table_name].required_attribute_permissions.push(attribute_object);
                     }
                 }
             }
         }
     }
-    return unauthorized_attributes;
+    return unauthorized_attributes_object;
 }
 
 /**

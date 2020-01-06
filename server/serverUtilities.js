@@ -340,10 +340,20 @@ function chooseOperation(json, callback) {
                     if(!perms_list[perm.table]) {
                         perms_list[perm.table] = [];
                     }
-                    perms_list[perm.table].push({"attribute":perm.attribute.attribute_name, "required permission": perm.restriction});
+                    if(perm.attribute) {
+                        perms_list[perm.table].push({
+                            "attribute": perm.attribute.attribute_name,
+                            "required permission": perm.restriction
+                        });
+                    } else {
+                        perms_list[perm.table].push(perm);
+                    }
                 });
                 harper_logger.error(`${UNAUTH_RESPONSE} from operation ${json.search_operation}`);
-                return callback(`You do not have the required permissions: ${util.inspect(perms_list)}`, null);
+                let error_response = {};
+                error_response['permission_failure'] = perms_list;
+                return callback(error_response, null);
+                //return callback(`You do not have the required permissions: ${perms_list}`, null);//${util.inspect(perms_list)}`, null);
             }
         } else {
             let function_to_check = (job_operation_function === undefined ? operation_function : job_operation_function);
