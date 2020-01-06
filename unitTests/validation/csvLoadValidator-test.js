@@ -212,7 +212,7 @@ describe('Test csvLoadValidator module', () => {
             check_glob_schema_stub.returns('');
             let result = post_validate_checks(file_object, validate_result);
 
-            expect(result.message).to.equal(`ENOENT: no such file or directory, access '${FAKE_FILE_PATH}'`);
+            expect(result.message).to.equal(`No such file or directory ${FAKE_FILE_PATH}`);
             expect(result).to.be.instanceOf(Error);
             expect(check_glob_schema_stub).to.have.been.calledOnce;
         });
