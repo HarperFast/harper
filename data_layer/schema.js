@@ -153,7 +153,6 @@ async function dropTable(drop_table_object) {
 
         return TABLE_DELETE_MSG;
     } catch (err) {
-        logger.error(err);
         throw err;
     }
 }
