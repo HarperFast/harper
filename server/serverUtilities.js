@@ -351,7 +351,8 @@ function chooseOperation(json, callback) {
                 });
                 harper_logger.error(`${UNAUTH_RESPONSE} from operation ${json.search_operation}`);
                 let error_response = {};
-                error_response['permission_failure'] = perms_list;
+                error_response[terms.UNAUTHORIZED_PERMISSION_NAME] = perms_list;
+                error_response.response = UNAUTH_RESPONSE;
                 return callback(error_response, null);
                 //return callback(`You do not have the required permissions: ${perms_list}`, null);//${util.inspect(perms_list)}`, null);
             }
@@ -362,9 +363,13 @@ function chooseOperation(json, callback) {
                 operation_json.hdb_user = json.hdb_user;
             }
             let verify_perms_result = op_auth.verifyPerms(operation_json, function_to_check);
-            if (verify_perms_result && verify_perms_result.length > 0) {
+            if (verify_perms_result && Object.keys(verify_perms_result).length > 0) {
                 harper_logger.error(`${UNAUTH_RESPONSE} from operation ${json.operation}`);
-                return callback({"response": UNAUTH_RESPONSE, "required_perms":verify_perms_result}, null);
+                let response = {};
+                response["response"] = UNAUTH_RESPONSE;
+                response[terms.UNAUTHORIZED_PERMISSION_NAME] = verify_perms_result;
+                //return callback({"response": UNAUTH_RESPONSE, `${terms.UNAUTHORIZED_PERMISSION_NAME}`:verify_perms_result}, null);
+                return callback(response);
             }
         }
     } catch (e) {

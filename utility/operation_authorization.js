@@ -158,18 +158,6 @@ function verifyPermsAst(ast, user_object, operation) {
                     for(let failed_perm in unauthorized_attributes) {
                         failed_permission_objects.push(unauthorized_attributes[failed_perm]);
                     }
-                    //unauthorized_attributes.forEach((failed_perm) => {
-
-                        /*failed_perm.table = tables[t];
-                        failed_permissions.push(failed_perm);
-
-                        let failed_perm_object = new terms.PermissionResponseObject();
-                        failed_perm_object.schema = schemas[s];
-                        failed_perm_object.table = tables[t];
-                        if(failed_perm.attribute && Object.keys(failed_perm.attribute).length > 0) {
-
-                        }*/
-                    //});
                 }
             }
             schema_table_map.set(schemas[s], tables);
@@ -302,8 +290,11 @@ function verifyPerms(request_json, operation) {
     }
     // TODO - after testing, just return the result of the checkAttributePerms call
     let unauthorized_attributes = checkAttributePerms(getRecordAttributes(request_json), getAttributeRestrictions(request_json.hdb_user, operation_schema, table),op, table, operation_schema);
-    if(unauthorized_attributes && unauthorized_attributes.length > 0) {
-        return unauthorized_attributes;
+    if(unauthorized_attributes && Object.keys(unauthorized_attributes).length > 0) {
+        //return unauthorized_attributes;
+        let error_response = {};
+        error_response[terms.UNAUTHORIZED_PERMISSION_NAME] = unauthorized_attributes;
+        return error_response;
     }
     // as with verifyPerms, we assume wide open permissions unless otherwise specified.  If we get here, just let it go.
     return [];
@@ -337,7 +328,6 @@ function checkAttributePerms(record_attributes, role_attribute_restrictions, ope
         harper_logger.info(`No role restrictions set (this is OK).`);
         return [];
     }
-    let unauthorized_attributes = [];
     let unauthorized_attributes_object = Object.create(null);
     // Check if each specified attribute in the call (record_attributes) has a restriction specified in the role.  If there is
     // a restriction, check if the operation permission/ restriction is false.
@@ -349,19 +339,16 @@ function checkAttributePerms(record_attributes, role_attribute_restrictions, ope
                 for (let perm of needed_perm.perms) {
                     for (let restriction of role_attribute_restrictions.keys()) {
                         if (role_attribute_restrictions.get(restriction)[perm] === false) {
-                            // here, rather than return false, we need to remove it from data that is searched for
-                            //unauthorized_attributes.push({"table_name": perm.table_name, "attribute": restriction, "restriction": perm});
-
                             let failed_perm_object = new terms.PermissionResponseObject();
-                            //failed_perm_object.schema = schemas[s];
                             failed_perm_object.table = perm.table;
                             failed_perm_object.schema = schema_name;
                             let attribute_object = new terms.PermissionAttributeResponseObject();
                             attribute_object.attribute_name = restriction;
                             attribute_object.required_permissions.push(perm);
-                            failed_perm_object.push(attribute_object);
+                            failed_perm_object.table = table_name;
+                            failed_perm_object.required_attribute_permissions.push(attribute_object);
                             if(!unauthorized_attributes_object[failed_perm_object]) {
-                                unauthorized_attributes_object[failed_perm_object] = {};
+                                unauthorized_attributes_object[failed_perm_object.table] = {};
                             }
                             unauthorized_attributes_object[table_name] = failed_perm_object;
                         }
@@ -373,7 +360,6 @@ function checkAttributePerms(record_attributes, role_attribute_restrictions, ope
             if (restriction && needed_perm.perms) {
                 for (let perm of needed_perm.perms) {
                     if (restriction[perm] === false) {
-                        unauthorized_attributes.push({"table_name": table_name, "attribute": restriction, "restriction": perm});
                         if(!unauthorized_attributes_object[table_name]) {
                             unauthorized_attributes_object[table_name] = new terms.PermissionResponseObject();
                             unauthorized_attributes_object[table_name].table = table_name;

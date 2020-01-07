@@ -483,6 +483,8 @@ class PermissionAttributeResponseObject {
     }
 }
 
+const UNAUTHORIZED_PERMISSION_NAME = 'unauthorized_access';
+
 module.exports = {
     LOCAL_HARPERDB_OPERATIONS,
     HDB_SUPPORT_ADDRESS,
@@ -577,5 +579,6 @@ module.exports = {
     COMPILED_EXTENSION,
     JAVASCRIPT_EXTENSION,
     PermissionResponseObject,
-    PermissionAttributeResponseObject
+    PermissionAttributeResponseObject,
+    UNAUTHORIZED_PERMISSION_NAME
 };
