@@ -4,7 +4,6 @@ const fs = require('fs-extra');
 
 const common_utils = require('../../../../utility/common_utils');
 const log = require('../../../../utility/logging/harper_logger');
-const hdb_terms = require('../../../../utility/hdbTerms');
 
 module.exports = getAllAttrHashValues;
 
@@ -20,9 +19,7 @@ async function getAllAttrHashValues(hash_dir_path) {
             final_hash_results.push(common_utils.autoCast(common_utils.stripFileExtension(hash_results[i])));
         }
     } catch(e) {
-        if (e.code !== hdb_terms.NODE_ERROR_CODES.ENOENT) {
-            log.error(e);
-        }
+        log.warn(e);
     }
 
     return final_hash_results;
