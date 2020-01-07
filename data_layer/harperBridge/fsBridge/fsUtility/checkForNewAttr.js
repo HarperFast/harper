@@ -81,7 +81,7 @@ async function createNewAttribute(hdb_auth_header,schema, table, attribute) {
 async function createAttribute(create_attribute_object) {
     let attribute_structure;
     try {
-        if(global.clustering_on
+       /* if(global.clustering_on
             && !create_attribute_object.delegated && create_attribute_object.schema !== 'system') {
 
             attribute_structure = await fsCreateAttribute(create_attribute_object);
@@ -101,11 +101,11 @@ async function createAttribute(create_attribute_object) {
             signalling.signalSchemaChange({type: 'schema'});
 
             return attribute_structure;
-        }
+        }*/
         attribute_structure = await fsCreateAttribute(create_attribute_object);
-        let create_att_msg = h_utils.getClusterMessage(hdb_terms.CLUSTERING_MESSAGE_TYPES.HDB_TRANSACTION);
-        create_att_msg.transaction = create_attribute_object;
-        h_utils.sendTransactionToSocketCluster(hdb_terms.INTERNAL_SC_CHANNELS.CREATE_ATTRIBUTE, create_att_msg);
+        /* let create_att_msg = h_utils.getClusterMessage(hdb_terms.CLUSTERING_MESSAGE_TYPES.HDB_TRANSACTION);
+         create_att_msg.transaction = create_attribute_object;
+         h_utils.sendTransactionToSocketCluster(hdb_terms.INTERNAL_SC_CHANNELS.CREATE_ATTRIBUTE, create_att_msg);*/
         signalling.signalSchemaChange({type: 'schema'});
 
         return attribute_structure;
