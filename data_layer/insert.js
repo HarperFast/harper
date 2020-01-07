@@ -117,7 +117,7 @@ async function insertData(insert_object){
     try {
         hdb_utils.checkSchemaTableExist(insert_object.schema, insert_object.table);
         let bridge_insert_result = await harperBridge.createRecords(insert_object);
-        convertOperationToTransaction(insert_object, bridge_insert_result.written_hashes, bridge_insert_result.schema_table.hash_attribute);
+        //convertOperationToTransaction(insert_object, bridge_insert_result.written_hashes, bridge_insert_result.schema_table.hash_attribute);
         await p_schema_to_global();
 
         return returnObject(INSERT_ACTION, bridge_insert_result.written_hashes, insert_object, bridge_insert_result.skipped_hashes);
@@ -126,7 +126,7 @@ async function insertData(insert_object){
     }
 }
 
-function convertOperationToTransaction(write_object, written_hashes, hash_attribute){
+/*function convertOperationToTransaction(write_object, written_hashes, hash_attribute){
     if(global.hdb_socket_client !== undefined && write_object.schema !== 'system' && Array.isArray(written_hashes) && written_hashes.length > 0){
         let transaction = {
             operation: write_object.operation,
@@ -143,7 +143,7 @@ function convertOperationToTransaction(write_object, written_hashes, hash_attrib
         let insert_msg = hdb_utils.getClusterMessage(hdb_terms.CLUSTERING_MESSAGE_TYPES.HDB_TRANSACTION);
         insert_msg.transaction = transaction;
     }
-}
+}*/
 
 /**
  * Updates the data in the update_object parameter.
@@ -159,7 +159,7 @@ async function updateData(update_object){
         if (!hdb_utils.isEmpty(bridge_update_result.existing_rows)) {
             return returnObject(bridge_update_result.update_action, [], update_object, bridge_update_result.hashes);
         }
-        convertOperationToTransaction(update_object, bridge_update_result.written_hashes, bridge_update_result.schema_table.hash_attribute);
+        //convertOperationToTransaction(update_object, bridge_update_result.written_hashes, bridge_update_result.schema_table.hash_attribute);
 
         return returnObject(UPDATE_ACTION, bridge_update_result.written_hashes, update_object, bridge_update_result.skipped_hashes);
     } catch(e){

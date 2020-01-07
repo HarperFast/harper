@@ -201,7 +201,7 @@ async function createAttribute(create_attribute_object) {
 
     let attribute_structure;
     try {
-        /*    if(global.clustering_on
+           /* if(global.clustering_on
                 && !create_attribute_object.delegated && create_attribute_object.schema !== 'system') {
 
                 attribute_structure = await harperBridge.createAttribute(create_attribute_object);
