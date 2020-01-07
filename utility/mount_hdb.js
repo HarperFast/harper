@@ -52,7 +52,6 @@ module.exports = function (logger, hdb_path, callback) {
     makeDirectory(path.join(hdb_path, 'schema/system/hdb_table/name'));
     makeDirectory(path.join(hdb_path, 'schema/system/hdb_table/hash_attribute'));
     makeDirectory(path.join(hdb_path, 'schema/system/hdb_table/residence'));
-    makeDirectory(path.join(hdb_path, 'schema/system/hdb_table/residence'));
     makeDirectory(path.join(hdb_path, 'schema/system/hdb_user'));
     makeDirectory(path.join(hdb_path, 'schema/system/hdb_role'));
     makeDirectory(path.join(hdb_path, 'schema/system/hdb_nodes'));
