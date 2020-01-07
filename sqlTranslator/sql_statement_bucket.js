@@ -198,6 +198,14 @@ function getSelectAttributes(ast, affected_attributes, table_lookup) {
             col = ast.where.expression.left.columnid;
         }
         if(table && col) {
+            if (!affected_attributes.get(schema).has(table)) {
+                if (!table_lookup.has(table)) {
+                    harper_logger.info(`table specified as ${table} not found.`);
+                    return;
+                } else {
+                    table = table_lookup.get(table);
+                }
+            }
             affected_attributes.get(schema).get(table).push(col);
         }
     }
