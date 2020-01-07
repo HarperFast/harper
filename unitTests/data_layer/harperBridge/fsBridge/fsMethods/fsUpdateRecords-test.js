@@ -144,17 +144,18 @@ describe('Test for file system module fsUpdateRecords', () => {
                     "name": "hdb_schema",
                     "schema": "system",
                     "residence": [
-                        "*"
+                        '*'
                     ],
-                    "attributes": [
+                    'attributes': [
                         {
-                            "attribute": "name"
+                            'attribute': 'name'
                         },
                         {
-                            "attribute": "age"
+                            'attribute': 'age'
                         }
                     ]
-                }
+                },
+                'new_attributes': undefined
             };
             get_existing_rows_stub.resolves(EXISTING_ROWS_TEST);
             let result = await fsUpdateRecords(UPDATE_OBJ_TEST);
