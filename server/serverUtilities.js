@@ -339,6 +339,7 @@ function chooseOperation(json, callback) {
                 let error_response = {};
                 error_response[terms.UNAUTHORIZED_PERMISSION_NAME] = ast_perm_check;
                 error_response.response = UNAUTH_RESPONSE;
+                error_response.error = UNAUTHORIZED_TEXT;
                 return callback(error_response, null);
                 //return callback(`You do not have the required permissions: ${perms_list}`, null);//${util.inspect(perms_list)}`, null);
             }
@@ -352,7 +353,8 @@ function chooseOperation(json, callback) {
             if (verify_perms_result && Object.keys(verify_perms_result).length > 0) {
                 harper_logger.error(`${UNAUTH_RESPONSE} from operation ${json.operation}`);
                 let response = {};
-                response["response"] = UNAUTH_RESPONSE;
+                response.response = UNAUTH_RESPONSE;
+                response.error = UNAUTHORIZED_TEXT;
                 response[terms.UNAUTHORIZED_PERMISSION_NAME] = verify_perms_result;
                 //return callback({"response": UNAUTH_RESPONSE, `${terms.UNAUTHORIZED_PERMISSION_NAME}`:verify_perms_result}, null);
                 return callback(response);
