@@ -27,8 +27,8 @@ module.exports = {
 async function createSchema(schema_create_object) {
     try {
         let schema_structure = await createSchemaStructure(schema_create_object);
-        let create_schema_msg = hdb_util.getClusterMessage(terms.CLUSTERING_MESSAGE_TYPES.HDB_TRANSACTION);
-        create_schema_msg.transaction = schema_create_object;
+        // let create_schema_msg = hdb_util.getClusterMessage(terms.CLUSTERING_MESSAGE_TYPES.HDB_TRANSACTION);
+        // create_schema_msg.transaction = schema_create_object;
         signalling.signalSchemaChange(signalling.SCHEMA_CHANGE_MESSAGE);
 
         return schema_structure;
@@ -60,8 +60,8 @@ async function createSchemaStructure(schema_create_object) {
 async function createTable(create_table_object) {
     try {
         let create_table_structure = await createTableStructure(create_table_object);
-        let create_table_msg = hdb_util.getClusterMessage(terms.CLUSTERING_MESSAGE_TYPES.HDB_TRANSACTION);
-        create_table_msg.transaction = create_table_object;
+        // let create_table_msg = hdb_util.getClusterMessage(terms.CLUSTERING_MESSAGE_TYPES.HDB_TRANSACTION);
+        // create_table_msg.transaction = create_table_object;
         signalling.signalSchemaChange(signalling.SCHEMA_CHANGE_MESSAGE);
 
         return create_table_structure;
@@ -201,30 +201,30 @@ async function createAttribute(create_attribute_object) {
 
     let attribute_structure;
     try {
-        if(global.clustering_on
-            && !create_attribute_object.delegated && create_attribute_object.schema !== 'system') {
+        /*    if(global.clustering_on
+                && !create_attribute_object.delegated && create_attribute_object.schema !== 'system') {
 
-            attribute_structure = await harperBridge.createAttribute(create_attribute_object);
-            create_attribute_object.delegated = true;
-            create_attribute_object.operation = 'create_attribute';
-            create_attribute_object.id = attribute_structure.id;
+                attribute_structure = await harperBridge.createAttribute(create_attribute_object);
+                create_attribute_object.delegated = true;
+                create_attribute_object.operation = 'create_attribute';
+                create_attribute_object.id = attribute_structure.id;
 
-            let payload = {
-                "type": "clustering_payload",
-                "pid": process.pid,
-                "clustering_type": "broadcast",
-                "id": attribute_structure.id,
-                "body": create_attribute_object
-            };
+                let payload = {
+                    "type": "clustering_payload",
+                    "pid": process.pid,
+                    "clustering_type": "broadcast",
+                    "id": attribute_structure.id,
+                    "body": create_attribute_object
+                };
 
-            hdb_util.callProcessSend(payload);
-            signalling.signalSchemaChange(signalling.SCHEMA_CHANGE_MESSAGE);
+                hdb_util.callProcessSend(payload);
+                signalling.signalSchemaChange(signalling.SCHEMA_CHANGE_MESSAGE);
 
-            return attribute_structure;
-        }
+                return attribute_structure;
+            }*/
         attribute_structure = await harperBridge.createAttribute(create_attribute_object);
-        let create_att_msg = hdb_util.getClusterMessage(terms.CLUSTERING_MESSAGE_TYPES.HDB_TRANSACTION);
-        create_att_msg.transaction = create_attribute_object;
+        // let create_att_msg = hdb_util.getClusterMessage(terms.CLUSTERING_MESSAGE_TYPES.HDB_TRANSACTION);
+        // create_att_msg.transaction = create_attribute_object;
         signalling.signalSchemaChange(signalling.SCHEMA_CHANGE_MESSAGE);
 
         return attribute_structure;
