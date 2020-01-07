@@ -290,11 +290,12 @@ function verifyPerms(request_json, operation) {
     }
     // TODO - after testing, just return the result of the checkAttributePerms call
     let unauthorized_attributes = checkAttributePerms(getRecordAttributes(request_json), getAttributeRestrictions(request_json.hdb_user, operation_schema, table),op, table, operation_schema);
-    if(unauthorized_attributes && Object.keys(unauthorized_attributes).length > 0) {
+    if(unauthorized_attributes && unauthorized_attributes.length > 0) {
         //return unauthorized_attributes;
-        let error_response = {};
-        error_response[terms.UNAUTHORIZED_PERMISSION_NAME] = unauthorized_attributes;
-        return error_response;
+        //let error_response = {};
+        //error_response[terms.UNAUTHORIZED_PERMISSION_NAME] = unauthorized_attributes;
+        //return error_response;
+        return unauthorized_attributes;
     }
     // as with verifyPerms, we assume wide open permissions unless otherwise specified.  If we get here, just let it go.
     return [];
@@ -328,7 +329,7 @@ function checkAttributePerms(record_attributes, role_attribute_restrictions, ope
         harper_logger.info(`No role restrictions set (this is OK).`);
         return [];
     }
-    let unauthorized_attributes_object = Object.create(null);
+    let unauthorized_attributes_array = [];
     // Check if each specified attribute in the call (record_attributes) has a restriction specified in the role.  If there is
     // a restriction, check if the operation permission/ restriction is false.
     for (let element of record_attributes) {
@@ -347,10 +348,7 @@ function checkAttributePerms(record_attributes, role_attribute_restrictions, ope
                             attribute_object.required_permissions.push(perm);
                             failed_perm_object.table = table_name;
                             failed_perm_object.required_attribute_permissions.push(attribute_object);
-                            if(!unauthorized_attributes_object[failed_perm_object]) {
-                                unauthorized_attributes_object[failed_perm_object.table] = {};
-                            }
-                            unauthorized_attributes_object[table_name] = failed_perm_object;
+                            unauthorized_attributes_array.push(failed_perm_object);
                         }
                     }
                 }
@@ -360,21 +358,20 @@ function checkAttributePerms(record_attributes, role_attribute_restrictions, ope
             if (restriction && needed_perm.perms) {
                 for (let perm of needed_perm.perms) {
                     if (restriction[perm] === false) {
-                        if(!unauthorized_attributes_object[table_name]) {
-                            unauthorized_attributes_object[table_name] = new terms.PermissionResponseObject();
-                            unauthorized_attributes_object[table_name].table = table_name;
-                            unauthorized_attributes_object[table_name].schema = schema_name;
-                        }
+                        let failed_perm_object = new terms.PermissionResponseObject();
+                        failed_perm_object.table = table_name;
+                        failed_perm_object.schema = schema_name;
                         let attribute_object = new terms.PermissionAttributeResponseObject();
                         attribute_object.attribute_name = restriction.attribute_name;
                         attribute_object.required_permissions.push(perm);
-                        unauthorized_attributes_object[table_name].required_attribute_permissions.push(attribute_object);
+                        failed_perm_object.required_attribute_permissions.push(attribute_object);
+                        unauthorized_attributes_array.push(failed_perm_object);
                     }
                 }
             }
         }
     }
-    return unauthorized_attributes_object;
+    return unauthorized_attributes_array;
 }
 
 /**

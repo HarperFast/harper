@@ -335,23 +335,9 @@ function chooseOperation(json, callback) {
             json.parsed_sql_object = parsed_sql_object;
             let ast_perm_check = sql.checkASTPermissions(json, parsed_sql_object);
             if (ast_perm_check && ast_perm_check.length > 0) {
-                let perms_list = {};
-                ast_perm_check.forEach((perm) => {
-                    if(!perms_list[perm.table]) {
-                        perms_list[perm.table] = [];
-                    }
-                    if(perm.attribute) {
-                        perms_list[perm.table].push({
-                            "attribute": perm.attribute.attribute_name,
-                            "required permission": perm.restriction
-                        });
-                    } else {
-                        perms_list[perm.table].push(perm);
-                    }
-                });
                 harper_logger.error(`${UNAUTH_RESPONSE} from operation ${json.search_operation}`);
                 let error_response = {};
-                error_response[terms.UNAUTHORIZED_PERMISSION_NAME] = perms_list;
+                error_response[terms.UNAUTHORIZED_PERMISSION_NAME] = ast_perm_check;
                 error_response.response = UNAUTH_RESPONSE;
                 return callback(error_response, null);
                 //return callback(`You do not have the required permissions: ${perms_list}`, null);//${util.inspect(perms_list)}`, null);
