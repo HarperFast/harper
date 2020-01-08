@@ -108,17 +108,18 @@ describe('Tests for file system module fsCreateRecords', () => {
                         "attribute": "createddate"
                     }
                 ],
-                "hash_attribute": "name",
-                "name": "hdb_schema",
-                "residence": [
-                    "*"
+                'hash_attribute': 'name',
+                'name': 'hdb_schema',
+                'residence': [
+                    '*'
                 ],
-                "schema": "system"
+                'schema': 'system'
             },
-            "skipped_hashes": [],
-            "written_hashes": [
-                "dev"
-            ]
+            'skipped_hashes': [],
+            'written_hashes': [
+                'dev'
+            ],
+            'new_attributes': undefined
         };
 
 

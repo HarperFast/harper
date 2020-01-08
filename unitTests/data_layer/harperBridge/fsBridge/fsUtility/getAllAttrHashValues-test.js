@@ -23,21 +23,30 @@ let commonUtils_spy;
 let commonUtils_rw;
 let autoCast_rw;
 let logError_spy;
+let logWarn_spy;
 let log_spy;
 
 function setupTestSpies() {
     sandbox = sinon.createSandbox();
     fsReadDir_stub = sandbox.stub().returns(TEST_FILE_RESULTS);
-    fs_spy = { readdir: fsReadDir_stub };
+    fs_spy = {readdir: fsReadDir_stub};
     getAllAttrHashValues_rw.__set__('fs', fs_spy);
     commonUtils_rw = getAllAttrHashValues_rw.__get__('common_utils');
     autoCast_rw = commonUtils_rw.autoCast;
     stripFileExtension_spy = sandbox.spy(commonUtils_rw, 'stripFileExtension');
     isEmptyOrZeroLength_stub = sandbox.stub().returns(false);
-    commonUtils_spy = { stripFileExtension: stripFileExtension_spy, isEmptyOrZeroLength: isEmptyOrZeroLength_stub, autoCast: autoCast_rw };
+    commonUtils_spy = {
+        stripFileExtension: stripFileExtension_spy,
+        isEmptyOrZeroLength: isEmptyOrZeroLength_stub,
+        autoCast: autoCast_rw
+    };
     getAllAttrHashValues_rw.__set__('common_utils', commonUtils_spy);
     logError_spy = sandbox.spy();
-    log_spy = { error: logError_spy };
+    logWarn_spy = sandbox.spy();
+    log_spy = {
+        error: logError_spy,
+        warn: logWarn_spy
+    };
     getAllAttrHashValues_rw.__set__('log', log_spy);
 }
 
@@ -81,7 +90,7 @@ describe('getAllAttrHashValues', () => {
 
         let test_result = await getAllAttrHashValues_rw(TEST_DIR_PATH);
 
-        expect(logError_spy.calledOnce).to.equal(true);
+        expect(logWarn_spy.calledOnce).to.equal(true);
         expect(test_result).to.deep.equal([]);
 
         fsReadDir_stub.reset();
