@@ -59,8 +59,8 @@ function findAndValidateUser(username, password, done) {
 
     function handleResponse() {
         try {
-            let user_tmp = global.hdb_users.filter((user) => {
-                return user.username === username;
+            let user_tmp = global.hdb_users.filter((hdb_user) => {
+                return hdb_user.username === username;
             })[0];
 
             if (!user_tmp) {
@@ -131,9 +131,9 @@ function authorize(req, res, next) {
             return next("User not found");
         }
         if (req.logIn) {
-            req.logIn(user, function (err) {
-                if (err) {
-                    return next(err);
+            req.logIn(user, function (err_login) {
+                if (err_login) {
+                    return next(err_login);
                 }
                 found_user = user;
                 return next(null, user);
