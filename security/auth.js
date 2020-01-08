@@ -15,13 +15,15 @@ const systemSchema = require('../json/systemSchema');
 const terms = require('../utility/hdbTerms');
 const log = require('../utility/logging/harper_logger');
 
+const GENERIC_AUTH_FAIL = 'Login failed';
+
 /**
  * adds system table permissions to the logged in user.  This is used to protect system tables by leveraging operationAuthoriation.
  * @param user_role - Role of the user found during auth.
  */
 function appendSystemTablesToRole(user_role) {
     try {
-        if(!user_role) {
+        if (!user_role) {
             log.error(`invalid user role found.`);
             return;
         }
@@ -62,7 +64,7 @@ function findAndValidateUser(username, password, done) {
             })[0];
 
             if (!user_tmp) {
-                return done(`Login failed`, null);
+                return done(GENERIC_AUTH_FAIL, null);
             }
 
             if (user_tmp && !user_tmp.active) {
@@ -70,7 +72,7 @@ function findAndValidateUser(username, password, done) {
             }
             let user = clone(user_tmp);
             if (!password_function.validate(user.password, password)) {
-                return done('Cannot complete request:  Invalid password', false);
+                return done(GENERIC_AUTH_FAIL, false);
             }
             delete user.password;
             delete user.hash;
@@ -79,7 +81,7 @@ function findAndValidateUser(username, password, done) {
         } catch(err) {
             log.error('There was an error authenticating user.');
             log.error(err);
-            return done(`Login failed`, null);
+            return done(GENERIC_AUTH_FAIL, null);
         }
     }
 }
