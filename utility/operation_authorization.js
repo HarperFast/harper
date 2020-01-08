@@ -169,7 +169,9 @@ function verifyPermsAst(ast, user_object, operation) {
                     let failed_perm_object = new terms.PermissionResponseObject();
                     failed_perm_object.schema = schemas[s];
                     failed_perm_object.table = has_perms.table;
-                    failed_perm_object.required_table_permissions.push(has_perms.required_table_permissions);
+                    has_perms.required_table_permissions.forEach((perm) => {
+                        failed_perm_object.required_table_permissions.push(perm);
+                    });
                     failed_permission_objects.push(failed_perm_object);
                 });
             }
@@ -228,7 +230,7 @@ function hasPermissions(user_object, op, schema_table_map ) {
                             let failed_table = new terms.PermissionResponseObject();
                             failed_table.schema = schema_table;
                             failed_table.table = table;
-                            failed_table.required_table_permissions = perms;
+                            failed_table.required_table_permissions.push(perms);
                             //unauthorized_table.push({"table":table, "required_permission":perms});
                             unauthorized_table.push(failed_table);
                             return unauthorized_table;
