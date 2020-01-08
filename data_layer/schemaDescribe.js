@@ -27,7 +27,6 @@ async function describeAll(op_obj) {
         let schema_search = {};
         schema_search.schema = terms.SYSTEM_SCHEMA_NAME;
         schema_search.table = terms.SYSTEM_TABLE_NAMES.SCHEMA_TABLE_NAME;
-        schema_search.hash_attribute = terms.SYSTEM_TABLE_HASH_ATTRIBUTES.SCHEMA_TABLE_HASH_ATTRIBUTE;
         schema_search.search_attribute = NAME_ATTRIBUTE_STRING;
         schema_search.search_value = terms.WILDCARD_SEARCH_VALUE;
         schema_search.get_attributes = [NAME_ATTRIBUTE_STRING];
@@ -45,7 +44,6 @@ async function describeAll(op_obj) {
         let table_search_obj = {};
         table_search_obj.schema = terms.SYSTEM_SCHEMA_NAME;
         table_search_obj.table = terms.SYSTEM_TABLE_NAMES.TABLE_TABLE_NAME;
-        table_search_obj.hash_attribute = terms.SYSTEM_TABLE_HASH_ATTRIBUTES.TABLE_TABLE_HASH_ATTRIBUTE;
         table_search_obj.search_attribute = terms.ID_ATTRIBUTE_STRING;
         table_search_obj.search_value = terms.WILDCARD_SEARCH_VALUE;
         table_search_obj.get_attributes = [HASH_ATTRIBUTE_STRING, terms.ID_ATTRIBUTE_STRING, NAME_ATTRIBUTE_STRING, SCHEMA_ATTRIBUTE_STRING];
