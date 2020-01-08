@@ -2,7 +2,6 @@
 
 const h_utils = require('../../../../utility/common_utils');
 const logger = require('../../../../utility/logging/harper_logger');
-const hdb_terms = require('../../../../utility/hdbTerms');
 const fsCreateAttribute = require('../fsMethods/fsCreateAttribute');
 const signalling = require('../../../../utility/signalling');
 
@@ -81,31 +80,7 @@ async function createNewAttribute(hdb_auth_header,schema, table, attribute) {
 async function createAttribute(create_attribute_object) {
     let attribute_structure;
     try {
-       /* if(global.clustering_on
-            && !create_attribute_object.delegated && create_attribute_object.schema !== 'system') {
-
-            attribute_structure = await fsCreateAttribute(create_attribute_object);
-            create_attribute_object.delegated = true;
-            create_attribute_object.operation = 'create_attribute';
-            create_attribute_object.id = attribute_structure.id;
-
-            let payload = {
-                "type": "clustering_payload",
-                "pid": process.pid,
-                "clustering_type": "broadcast",
-                "id": attribute_structure.id,
-                "body": create_attribute_object
-            };
-
-            h_utils.callProcessSend(payload);
-            signalling.signalSchemaChange({type: 'schema'});
-
-            return attribute_structure;
-        }*/
         attribute_structure = await fsCreateAttribute(create_attribute_object);
-        /* let create_att_msg = h_utils.getClusterMessage(hdb_terms.CLUSTERING_MESSAGE_TYPES.HDB_TRANSACTION);
-         create_att_msg.transaction = create_attribute_object;
-         h_utils.sendTransactionToSocketCluster(hdb_terms.INTERNAL_SC_CHANNELS.CREATE_ATTRIBUTE, create_att_msg);*/
         signalling.signalSchemaChange({type: 'schema'});
 
         return attribute_structure;
