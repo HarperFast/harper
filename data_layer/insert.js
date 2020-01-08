@@ -115,7 +115,7 @@ async function insertData(insert_object){
         let bridge_insert_result = await harperBridge.createRecords(insert_object);
         await p_schema_to_global();
 
-        return returnObject(INSERT_ACTION, bridge_insert_result.written_hashes, insert_object, bridge_insert_result.skipped_hashes);
+        return returnObject(INSERT_ACTION, bridge_insert_result.written_hashes, insert_object, bridge_insert_result.skipped_hashes, bridge_insert_result.new_attributes);
     } catch(e){
         throw (e);
     }
@@ -136,7 +136,7 @@ async function updateData(update_object){
             return returnObject(bridge_update_result.update_action, [], update_object, bridge_update_result.hashes);
         }
 
-        return returnObject(UPDATE_ACTION, bridge_update_result.written_hashes, update_object, bridge_update_result.skipped_hashes);
+        return returnObject(UPDATE_ACTION, bridge_update_result.written_hashes, update_object, bridge_update_result.skipped_hashes, bridge_update_result.new_attributes);
     } catch(e){
         throw (e);
     }
@@ -148,12 +148,14 @@ async function updateData(update_object){
  * @param written_hashes
  * @param object
  * @param skipped
- * @returns {{skipped_hashes: *, update_hashes: *, message: string}}
+ * @param new_attributes
+ * @returns {{skipped_hashes: *, message: string}}
  */
-function returnObject(action, written_hashes, object, skipped) {
+function returnObject(action, written_hashes, object, skipped, new_attributes) {
     let return_object = {
         message: `${action} ${written_hashes.length} of ${object.records.length} records`,
-        skipped_hashes: skipped
+        skipped_hashes: skipped,
+        new_attributes
     };
 
     if (action === INSERT_ACTION) {

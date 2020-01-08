@@ -22,13 +22,14 @@ async function createRecords(insert_obj) {
     try {
         let {schema_table, attributes} = insertUpdateValidate(insert_obj);
         let data_wrapper = await processRows(insert_obj, attributes, schema_table);
-        await checkAttributes(insert_obj.hdb_auth_header, schema_table, attributes);
+        let new_attributes = await checkAttributes(insert_obj.hdb_auth_header, schema_table, attributes);
         await processData(data_wrapper);
 
         let return_obj = {
             written_hashes: data_wrapper.written_hashes,
             skipped_hashes: data_wrapper.skipped_hashes,
-            schema_table
+            schema_table,
+            new_attributes
         };
 
         return return_obj;
@@ -37,11 +38,13 @@ async function createRecords(insert_obj) {
     }
 }
 
+
 async function checkAttributes(hdb_auth_header, table_schema, data_attributes) {
+    // Due to circular dependencies there are duplicate modules that check for new attributes. This one from bridgeUtility.
     let new_attributes = checkForNewAttributes(table_schema, data_attributes);
 
     if (hdb_utils.isEmptyOrZeroLength(new_attributes)) {
-        return;
+        return new_attributes;
     }
 
     try {
@@ -50,6 +53,7 @@ async function checkAttributes(hdb_auth_header, table_schema, data_attributes) {
                 await createNewAttribute(hdb_auth_header, table_schema.schema, table_schema.name, attribute);
             })
         );
+        return new_attributes;
     } catch(err) {
         throw err;
     }

@@ -19,7 +19,7 @@ module.exports = checkForNewAttributes;
 async function checkForNewAttributes(hdb_auth_header, table_schema, data_attributes){
     try {
         if (h_utils.isEmptyOrZeroLength(data_attributes)) {
-            return;
+            return data_attributes;
         }
 
         let raw_attributes = [];
@@ -34,7 +34,7 @@ async function checkForNewAttributes(hdb_auth_header, table_schema, data_attribu
         });
 
         if (new_attributes.length === 0) {
-            return;
+            return new_attributes;
         }
 
         await Promise.all(
@@ -42,6 +42,8 @@ async function checkForNewAttributes(hdb_auth_header, table_schema, data_attribu
                 await createNewAttribute(hdb_auth_header, table_schema.schema, table_schema.name, attribute);
             })
         );
+
+        return new_attributes;
     } catch(e){
         throw e;
     }
