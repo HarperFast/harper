@@ -18,7 +18,7 @@ async function dropTable(drop_table_obj) {
     let search_obj = {
         schema: terms.SYSTEM_SCHEMA_NAME,
         table: terms.SYSTEM_TABLE_NAMES.TABLE_TABLE_NAME,
-        hash_attribute: terms.SYSTEM_TABLE_HASH,
+        hash_attribute: terms.SYSTEM_TABLE_HASH_ATTRIBUTES.TABLE_TABLE_HASH_ATTRIBUTE,
         search_attribute: terms.SYSTEM_DEFAULT_ATTRIBUTE_NAMES.ATTR_NAME_KEY,
         search_value: drop_table_obj.table,
         get_attributes: [terms.SYSTEM_DEFAULT_ATTRIBUTE_NAMES.ATTR_NAME_KEY, terms.SYSTEM_DEFAULT_ATTRIBUTE_NAMES.ATTR_SCHEMA_KEY, terms.SYSTEM_DEFAULT_ATTRIBUTE_NAMES.ATTR_ID_KEY]
@@ -58,7 +58,7 @@ function buildDropTableObject(drop_table_object, data) {
     let delete_table_object = {
         table: terms.SYSTEM_TABLE_NAMES.TABLE_TABLE_NAME,
         schema: terms.SYSTEM_SCHEMA_NAME,
-        hash_attribute: terms.SYSTEM_TABLE_HASH,
+        hash_attribute: terms.SYSTEM_TABLE_HASH_ATTRIBUTES.TABLE_TABLE_HASH_ATTRIBUTE,
         hash_values: [delete_table.id]
     };
 

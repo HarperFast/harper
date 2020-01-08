@@ -39,10 +39,18 @@ async function callOperationFunctionAsAwait(promisified_function, function_input
         result = await promisified_function(function_input);
         //TODO: followup_async_func is meant to be a function that would prep a response for clustering, but may not be
         // necessary.
-        if(followup_async_func) {
+        if (followup_async_func) {
             //TODO: Passing result twice seems silly, why is this a thing?
             await followup_async_func(function_input, result, orig_req);
         }
+
+        // The result from insert or update contains a property new_attributes. It is used by postOperationHandler to propagate
+        // attribute metadata across the cluster. After the property has been used we no longer need it and do not want the API returning it,
+        // therefore we delete it from the result.
+        if (function_input.operation === terms.OPERATIONS_ENUM.INSERT || function_input.operation === terms.OPERATIONS_ENUM.UPDATE) {
+            delete result.new_attributes;
+        }
+
         return result;
     } catch(err) {
         // This specific check was added to avoid an error message in the log which could make the error look worse than it

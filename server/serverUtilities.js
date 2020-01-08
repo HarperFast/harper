@@ -35,9 +35,6 @@ const p_search_search_by_hash = util.promisify(search.searchByHash);
 const p_search_search_by_value = util.promisify(search.searchByValue);
 const p_search_search = util.promisify(search.search);
 const p_sql_evaluate_sql = util.promisify(sql.evaluateSQL);
-const p_schema_describe_schema = util.promisify(schema_describe.describeSchema);
-const p_schema_describe_table = util.promisify(schema_describe.describeTable);
-const p_schema_describe_all = util.promisify(schema_describe.describeAll);
 const p_delete = util.promisify(delete_.delete);
 
 const GLOBAL_SCHEMA_UPDATE_OPERATIONS_ENUM = {
@@ -182,6 +179,7 @@ function postOperationHandler(request_body, result, orig_req) {
         case terms.OPERATIONS_ENUM.INSERT:
             try {
                 sendOperationTransaction(transaction_msg, request_body, result.inserted_hashes, orig_req);
+                sendAttributeTransaction(result, request_body, transaction_msg, orig_req);
             } catch(err) {
                 harper_logger.error('There was an error calling insert followup function.');
                 harper_logger.error(err);
@@ -198,6 +196,7 @@ function postOperationHandler(request_body, result, orig_req) {
         case terms.OPERATIONS_ENUM.UPDATE:
             try {
                 sendOperationTransaction(transaction_msg, request_body, result.update_hashes, orig_req);
+                sendAttributeTransaction(result, request_body, transaction_msg, orig_req);
             } catch(err) {
                 harper_logger.error('There was an error calling delete followup function.');
                 harper_logger.error(err);
@@ -422,13 +421,13 @@ function getOperationFunction(json){
             operation_function = schema.dropAttribute;
             break;
         case terms.OPERATIONS_ENUM.DESCRIBE_SCHEMA:
-            operation_function = p_schema_describe_schema;
+            operation_function = schema_describe.describeSchema;
             break;
         case terms.OPERATIONS_ENUM.DESCRIBE_TABLE:
-            operation_function = p_schema_describe_table;
+            operation_function = schema_describe.describeTable;
             break;
         case terms.OPERATIONS_ENUM.DESCRIBE_ALL:
-            operation_function = p_schema_describe_all;
+            operation_function = schema_describe.describeAll;
             break;
         case terms.OPERATIONS_ENUM.DELETE:
             operation_function = p_delete;
@@ -507,6 +506,9 @@ function getOperationFunction(json){
             break;
         case terms.OPERATIONS_ENUM.SET_LICENSE:
             operation_function = reg.setLicense;
+            break;
+        case terms.OPERATIONS_ENUM.GET_REGISTRATION_INFO:
+            operation_function = reg.getRegistrationInfo;
             break;
         case terms.OPERATIONS_ENUM.RESTART:
             operation_function = stop.restartProcesses;
@@ -599,8 +601,30 @@ function createLimitsTimeout(limiter_name_string, master_rate_limiter, timout_in
             harper_logger.debug('Restoring limits');
             let points = master_rate_limiter._rateLimiters[`apiclusterlimiter`].points;
 
-        } catch(err) {
+        } catch (err) {
             harper_logger.log(err);
         }
     }, timout_interval_ms);
+}
+
+/**
+ * Propagates attribute metadata across the entire cluster.
+ * @param result
+ * @param request_body
+ * @param transaction_msg
+ * @param original_req
+ */
+function sendAttributeTransaction(result, request_body, transaction_msg, original_req) {
+    if (!common_utils.isEmptyOrZeroLength(result.new_attributes) && request_body.schema !== terms.SYSTEM_SCHEMA_NAME) {
+        result.new_attributes.forEach((attribute) => {
+            transaction_msg.transaction = {
+                operation: terms.OPERATIONS_ENUM.CREATE_ATTRIBUTE,
+                schema: request_body.schema,
+                table: request_body.table,
+                attribute: attribute
+            };
+
+            sendSchemaTransaction(transaction_msg, terms.INTERNAL_SC_CHANNELS.CREATE_ATTRIBUTE, request_body, original_req);
+        });
+    }
 }

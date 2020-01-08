@@ -46,12 +46,12 @@ function update(statement, callback){
             search.search.bind(null, search_statement),
             buildUpdateRecords.bind(null, update_record),
             updateRecords.bind(null, table_clone)
-        ], (err, results)=>{
-            if(err){
-                if(err.hdb_code){
-                    return callback(null, err.message);
+        ], (waterfall_err, results) => {
+            if (waterfall_err) {
+                if (waterfall_err.hdb_code) {
+                    return callback(null, waterfall_err.message);
                 }
-                return callback(err);
+                return callback(waterfall_err);
             }
 
             callback(null, results);
@@ -112,20 +112,45 @@ function updateRecords(table, records, callback){
     };
 
     cb_insert_update(update_object, (err, res) => {
-        if(err){
+        if (err) {
             callback(err);
             return;
         }
+
         // With non SQL CUD actions, the `post` operation passed into OperationFunctionCaller would send the transaction to the cluster.
         // Since we don`t send Most SQL options to the cluster, we need to explicitly send it.
-        if(res.update_hashes.length > 0) {
-            if (update_object.schema !== terms.SYSTEM_SCHEMA_NAME) {
-                let update_msg = hdb_utils.getClusterMessage(terms.CLUSTERING_MESSAGE_TYPES.HDB_TRANSACTION);
+        if (update_object.schema !== terms.SYSTEM_SCHEMA_NAME) {
+            let update_msg = hdb_utils.getClusterMessage(terms.CLUSTERING_MESSAGE_TYPES.HDB_TRANSACTION);
+
+            if (res.update_hashes.length > 0) {
                 update_msg.transaction = update_object;
                 update_msg.transaction.operation = terms.OPERATIONS_ENUM.UPDATE;
                 hdb_utils.sendTransactionToSocketCluster(`${update_object.schema}:${update_object.table}`, update_msg, env.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY));
             }
+
+            // If any new attributes are created we need to propagate them across the entire cluster.
+            if (!hdb_utils.isEmptyOrZeroLength(res.new_attributes)) {
+                update_msg.__transacted = true;
+
+                res.new_attributes.forEach((attribute) => {
+                    update_msg.transaction = {
+                        operation: terms.OPERATIONS_ENUM.CREATE_ATTRIBUTE,
+                        schema: update_object.schema,
+                        table: update_object.table,
+                        attribute: attribute
+                    };
+
+                    hdb_utils.sendTransactionToSocketCluster(terms.INTERNAL_SC_CHANNELS.CREATE_ATTRIBUTE, update_msg, env.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY));
+                });
+            }
         }
+        try {
+            // We do not want the API returning the new attributes property.
+            delete res.new_attributes;
+        } catch (delete_err) {
+            logger.error(`Error delete new_attributes from update response: ${delete_err}`);
+        }
+
         callback(null, res);
     });
 }

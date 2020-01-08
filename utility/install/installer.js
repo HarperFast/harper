@@ -83,13 +83,13 @@ function run_install(callback) {
                 generateKeys,
                 updateHdbInfo,
                 () => {
-                    console.log("HarperDB Installation was successful");
-                    winston.info("Installation Successful");
+                    console.log('HarperDB Installation was successful');
+                    winston.info('Installation Successful');
                     process.exit(0);
                 }
-            ], function (err) {
-                if (err) {
-                    return callback(err, null);
+            ], function (install_err) {
+                if (install_err) {
+                    return callback(install_err, null);
                 }
                 return callback(null, null);
             });
@@ -198,21 +198,21 @@ function promptForReinstall(callback) {
 
         if (reinstall_result.REINSTALL === 'yes' || reinstall_result.REINSTALL === 'y') {
             check_install_path = true;
-            prompt.get(overwrite_schema, function (err, overwrite_result) {
-                if (overwrite_result.KEEP_DATA === 'no' || overwrite_result.KEEP_DATA === 'n' ) {
+            prompt.get(overwrite_schema, function (prompt_err, overwrite_result) {
+                if (overwrite_result.KEEP_DATA === 'no' || overwrite_result.KEEP_DATA === 'n') {
                     // don't keep data, tear it all out.
-                    fs.remove(env.get('HDB_ROOT'), function (err) {
-                        if (err) {
-                            winston.error(err);
+                    fs.remove(env.get('HDB_ROOT'), function (fs_remove_err) {
+                        if (fs_remove_err) {
+                            winston.error(fs_remove_err);
                             console.log('There was a problem removing the existing installation.  Please check the install log for details.');
-                            return callback(err);
+                            return callback(fs_remove_err);
                         }
 
-                        fs.unlink(env.BOOT_PROPS_FILE_PATH, function (err) {
-                            if (err) {
-                                winston.error(err);
+                        fs.unlink(env.BOOT_PROPS_FILE_PATH, function (fs_unlink_err) {
+                            if (fs_unlink_err) {
+                                winston.error(fs_unlink_err);
                                 console.log('There was a problem removing the existing installation.  Please check the install log for details.');
-                                return callback(err);
+                                return callback(fs_unlink_err);
                             }
                             return callback(null, true);
                         });
@@ -261,13 +261,14 @@ function prepForReinstall(callback) {
 function wizard(err, callback) {
     prompt.message = ``;
     winston.info('Starting install wizard');
+    let admin_username;
     let install_schema = {
         properties: {
             HDB_ROOT: {
                 description: colors.magenta(`[HDB_ROOT] Please enter the destination for HarperDB`),
                 message: 'HDB_ROOT cannot contain /',
                 default: (env.getHdbBasePath() ? env.getHdbBasePath() : process.env['HOME'] + '/hdb'),
-                ask: function() {
+                ask: function () {
                     // only ask for HDB_ROOT if it is not defined.
                     if (env.getHdbBasePath()) {
                         console.log(`Using previous install path: ${env.getHdbBasePath()}`);
@@ -310,6 +311,7 @@ function wizard(err, callback) {
                 required: true,
                 // check against the previously built list of existing usernames.
                 conform: function (username) {
+                    admin_username = username;
                     if (!keep_data) {
                         return true;
                     }
@@ -333,9 +335,15 @@ function wizard(err, callback) {
                 required: true,
                 // check against the previously built list of existing usernames.
                 conform: function (username) {
+                    // check clustering user name not the same as admin user name
+                    if (username === admin_username) {
+                        return false;
+                    }
+
                     if (!keep_data) {
                         return true;
                     }
+
                     for (let i = 0; i < existing_users.length; i++) {
                         if (username === existing_users[i]) {
                             return false;
@@ -355,7 +363,7 @@ function wizard(err, callback) {
     console.log(colors.magenta('' + fs.readFileSync(path.join(__dirname, './ascii_logo.txt'))));
     console.log(colors.magenta('                    Installer'));
 
-    prompt.get(install_schema, function (err, result) {
+    prompt.get(install_schema, function (prompt_err, result) {
         wizard_result = result;
         //Support the tilde command for HOME.
         if (wizard_result.HDB_ROOT.indexOf('~') > -1) {
@@ -375,15 +383,15 @@ function wizard(err, callback) {
             if (!fs.existsSync(wizard_result.HDB_ROOT) ||
                 !fs.existsSync(wizard_result.HDB_ROOT + '/config/settings.js') ||
                 !fs.existsSync(wizard_result.HDB_ROOT + '/schema/system')) {
-                return callback(err, wizard_result.HDB_ROOT);
+                return callback(prompt_err, wizard_result.HDB_ROOT);
             }
             // we have an existing install, prompt for reinstall.
-            promptForReinstall((err, reinstall) => {
+            promptForReinstall((reinstall_err, reinstall) => {
                 if (reinstall) {
                     env.setPropsFilePath(wizard_result.HDB_ROOT + '/config/settings.js');
                     env.initSync();
-                    prepForReinstall((err) => {
-                        winston.error(err);
+                    prepForReinstall((prep_reinstall_err) => {
+                        winston.error(prep_reinstall_err);
                         return callback(null, wizard_result.HDB_ROOT);
                     });
                 } else {
@@ -481,15 +489,15 @@ function createAdminUser(role, admin_user, callback) {
                         }
                     };
 
-                    prompt.get(role_schema, function (err, selected_role) {
+                    prompt.get(role_schema, function (prompt_err, selected_role) {
                         // account for the offset
                         admin_user.role = res[selected_role.ROLE - 1].id;
 
-                        cb_user_add_user(admin_user, (err) => {
-                            if (err) {
-                                winston.error('user creation error' + err);
+                        cb_user_add_user(admin_user, (add_user_err) => {
+                            if (add_user_err) {
+                                winston.error('user creation error' + add_user_err);
                                 console.error('There was a problem creating the admin user.  Please check the install log for details.');
-                                return callback(err);
+                                return callback(add_user_err);
                             }
                             return callback(null);
                         });
@@ -498,11 +506,11 @@ function createAdminUser(role, admin_user, callback) {
                 } else {
                     admin_user.role = res[0].id;
 
-                    cb_user_add_user(admin_user, (err) => {
-                        if (err) {
-                            winston.error('user creation error' + err);
+                    cb_user_add_user(admin_user, (add_user_err) => {
+                        if (add_user_err) {
+                            winston.error('user creation error' + add_user_err);
                             console.error('There was a problem creating the admin user.  Please check the install log for details.');
-                            return callback(err);
+                            return callback(add_user_err);
                         }
                         return callback(null);
                     });
@@ -519,11 +527,11 @@ function createAdminUser(role, admin_user, callback) {
 
                 admin_user.role = res.id;
 
-                cb_user_add_user(admin_user, (err) => {
-                    if (err) {
-                        winston.error('user creation error' + err);
+                cb_user_add_user(admin_user, (add_user_err) => {
+                    if (add_user_err) {
+                        winston.error('user creation error' + add_user_err);
                         console.error('There was a problem creating the admin user.  Please check the install log for details.');
-                        return callback(err);
+                        return callback(add_user_err);
                     }
                     return callback(null);
                 });
@@ -550,11 +558,11 @@ function createSettingsFile(mount_status, callback) {
         if (keep_data) {
             if (fs.existsSync(settings_path)) {
                 try {
-                    fs.copySync(settings_path, settings_path+'.back');
-                } catch(err) {
+                    fs.copySync(settings_path, settings_path + '.back');
+                } catch (fs_exists_err) {
                     console.log(`There was a problem backing up current settings.js file.  Please check the logs.  Exiting.`);
-                    winston.fatal(err);
-                    throw err;
+                    winston.fatal(fs_exists_err);
+                    throw fs_exists_err;
                 }
             }
         }
@@ -569,14 +577,14 @@ function createSettingsFile(mount_status, callback) {
         try {
             num_cores = os.cpus().length;
             winston.info(`Detected ${num_cores} on this machine, defaulting MAX_HDB_PROCESSES to that.  This can be changed later in the settings.js file.`);
-        } catch (err) {
+        } catch (cpus_err) {
             //No-op, should only get here in the case of android.  Defaulted to 4.
         }
-        const path = require('path');
+        const path_module = require('path');
         let node_name = null;
         try {
             node_name = crypto.randomBytes(NODE_NAME_BYTE_LENGTH).toString('hex');
-        } catch(err) {
+        } catch (random_bytes_err) {
             winston.error('There was an error generating a random name for node name.  Defaulting to some_node.');
             node_name = 'some_node';
         }
@@ -586,7 +594,7 @@ function createSettingsFile(mount_status, callback) {
         let hdb_props_value = `   ;Settings for the HarperDB process.\n` +
             `\n` +
             `   ;The directory harperdb has been installed in.\n` +
-            `${HDB_SETTINGS_NAMES.PROJECT_DIR_KEY} = ${path.resolve(__dirname,'../../')}\n` +
+            `${HDB_SETTINGS_NAMES.PROJECT_DIR_KEY} = ${path_module.resolve(__dirname, '../../')}\n` +
             `   ;The directory selected during install where the database files reside.\n` +
             `${HDB_SETTINGS_NAMES.HDB_ROOT_KEY} = ${wizard_result.HDB_ROOT}\n` +
             `   ;The port the HarperDB REST interface will listen on.\n` +
@@ -639,11 +647,11 @@ function createSettingsFile(mount_status, callback) {
         winston.info('info', `hdb_props_value ${JSON.stringify(hdb_props_value)}`);
         winston.info('info', `settings path: ${env.get('settings_path')}`);
         try {
-            fs.writeFile(env.get('settings_path'), hdb_props_value, function (err) {
-                if (err) {
+            fs.writeFile(env.get('settings_path'), hdb_props_value, function (fs_write_file_err) {
+                if (fs_write_file_err) {
                     console.error('There was a problem writing the settings file.  Please check the install log for details.');
-                    winston.error(err);
-                    return callback(err);
+                    winston.error(fs_write_file_err);
+                    return callback(fs_write_file_err);
                 }
                 // load props
                 env.initSync();
@@ -752,11 +760,11 @@ function generateKeys(callback) {
             console.error('There was a problem creating the PEM file.  Please check the install log for details.');
             return callback(err);
         }
-        fs.writeFile(env.get('PRIVATE_KEY'), forge.pki.privateKeyToPem(keys.privateKey), function (err) {
-            if (err) {
-                winston.error(err);
+        fs.writeFile(env.get('PRIVATE_KEY'), forge.pki.privateKeyToPem(keys.privateKey), function (fs_write_file_err) {
+            if (fs_write_file_err) {
+                winston.error(fs_write_file_err);
                 console.error('There was a problem creating the private key file.  Please check the install log for details.');
-                return callback(err);
+                return callback(fs_write_file_err);
             }
             return callback();
         });
@@ -768,12 +776,12 @@ function setupService(callback) {
     fs.readFile(`./utility/install/harperdb.service`, 'utf8', function (err, data) {
         let fileData = data.replace('{{project_dir}}', `${env.get('PROJECT_DIR')}`).replace('{{hdb_directory}}',
             env.get('HDB_ROOT'));
-        fs.writeFile('/etc/systemd/system/harperdb.service', fileData, function (err) {
+        fs.writeFile('/etc/systemd/system/harperdb.service', fileData, function (fs_write_file_err) {
 
-            if (err) {
-                winston.info('error', `Service Setup Error ${err}`);
+            if (fs_write_file_err) {
+                winston.info('error', `Service Setup Error ${fs_write_file_err}`);
                 console.error('There was a problem setting up the service.  Please check the install log for details.');
-                return callback(err);
+                return callback(fs_write_file_err);
             }
 
             let terminal = spawn('bash');

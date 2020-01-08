@@ -184,7 +184,7 @@ function stripFileExtension(file_name) {
     if(isEmptyOrZeroLength(file_name)) {
         return EMPTY_STRING;
     }
-    return file_name.substr(0, file_name.length-FILE_EXTENSION_LENGTH);
+    return file_name.slice(0, -FILE_EXTENSION_LENGTH);
 }
 
 /**
@@ -502,14 +502,14 @@ function sendTransactionToSocketCluster(channel, transaction, originator) {
  * Checks the global hdb_schema for a schema and table
  * @param schema_name
  * @param table_name
- * @returns only returns a thrown message if schema and or table does not exist
+ * @returns string returns a thrown message if schema and or table does not exist
  */
 function checkGlobalSchemaTable(schema_name, table_name) {
     if (!global.hdb_schema[schema_name]) {
-        throw `schema ${schema_name} does not exist`;
+        return `schema ${schema_name} does not exist`;
     }
     if (!global.hdb_schema[schema_name] || !global.hdb_schema[schema_name][table_name]) {
-        throw `table ${schema_name}.${table_name} does not exist`;
+        return `table ${schema_name}.${table_name} does not exist`;
     }
 }
 

@@ -2457,7 +2457,6 @@
 								},
 								"url": {
 									"raw": "{{host}}:9925",
-
 									"host": [
 										"{{host}}"
 									],
@@ -4370,7 +4369,6 @@
 										},
 										"url": {
 											"raw": "{{host}}:9925",
-
 											"host": [
 												"{{host}}"
 											],
@@ -11128,6 +11126,278 @@
 					"response": []
 				},
 				{
+					"name": "NoSQL search by hash no schema",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "9ffd40b5-8323-40c0-948a-a95f766bcebe",
+								"exec": [
+									"pm.test(\"Status code is 500\", function () {",
+									"    pm.response.to.have.status(500);",
+									"});",
+									"",
+									"pm.test(\"verify proper error message is given\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.error).to.eql(\"schema callABC does not exist\");",
+									"});",
+									""
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"search_by_hash\",\n  \"schema\":\"callABC\",\n  \"table\":\"aggr\",\n  \"hash_values\":[4],\n  \"get_attributes\": [\"*\"]\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "NoSQL search by hash no table",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "c015be28-a680-4910-82a6-f1d509543dca",
+								"exec": [
+									"pm.test(\"Status code is 500\", function () {",
+									"    pm.response.to.have.status(500);",
+									"});",
+									"",
+									"pm.test(\"verify proper error message is given\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.error).to.eql(\"table call.aggrABC does not exist\");",
+									"});",
+									""
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"search_by_hash\",\n  \"schema\":\"call\",\n  \"table\":\"aggrABC\",\n  \"hash_values\":[4],\n  \"get_attributes\": [\"*\"]\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "NoSQL search by hash hash_value bad data type",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "c015be28-a680-4910-82a6-f1d509543dca",
+								"exec": [
+									"pm.test(\"Status code is 500\", function () {",
+									"    pm.response.to.have.status(500);",
+									"});",
+									"",
+									"pm.test(\"verify proper error message is given\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.error).to.eql(\"hash_values must be an array\");",
+									"});",
+									""
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"search_by_hash\",\n  \"schema\":\"call\",\n  \"table\":\"aggr\",\n  \"hash_values\":4,\n  \"get_attributes\": [\"*\"]\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "NoSQL search by hash get_attributes bad data type",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "c015be28-a680-4910-82a6-f1d509543dca",
+								"exec": [
+									"pm.test(\"Status code is 500\", function () {",
+									"    pm.response.to.have.status(500);",
+									"});",
+									"",
+									"pm.test(\"verify proper error message is given\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.error).to.eql(\"get_attributes must be an array\");",
+									"});",
+									""
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"search_by_hash\",\n  \"schema\":\"call\",\n  \"table\":\"aggr\",\n  \"hash_values\":[4],\n  \"get_attributes\": \"*\"\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
 					"name": "update NoSQL employee with falsey attributes",
 					"event": [
 						{
@@ -12423,8 +12693,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -12489,8 +12759,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -12555,8 +12825,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -12621,8 +12891,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -12687,8 +12957,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -12753,8 +13023,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -12819,8 +13089,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -12885,8 +13155,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -12951,8 +13221,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -13017,8 +13287,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -13083,8 +13353,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -13149,8 +13419,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -13215,8 +13485,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -13281,8 +13551,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -13347,8 +13617,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -13413,8 +13683,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -13479,8 +13749,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -13545,8 +13815,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -13611,8 +13881,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925"
 						},
@@ -13674,8 +13944,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925"
 						},
@@ -14288,8 +14558,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -14365,8 +14635,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925"
 						},
@@ -14432,8 +14702,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925"
 						},
@@ -14507,8 +14777,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925"
 						},
@@ -14570,8 +14840,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -14636,8 +14906,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -14702,8 +14972,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -14768,8 +15038,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -14834,8 +15104,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -14900,8 +15170,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -14966,8 +15236,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -15032,8 +15302,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -15098,8 +15368,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -15164,8 +15434,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -15230,8 +15500,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -15296,8 +15566,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -15362,8 +15632,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -15428,8 +15698,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -15494,8 +15764,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -15560,8 +15830,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -15622,8 +15892,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -15695,8 +15965,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925"
 						},
@@ -15765,8 +16035,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925"
 						},
@@ -15921,8 +16191,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -16891,8 +17161,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -16959,8 +17229,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -17035,8 +17305,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -17106,8 +17376,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -17168,8 +17438,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -17245,8 +17515,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -17316,8 +17586,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -17396,8 +17666,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925"
 						}
@@ -17463,8 +17733,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925"
 						}
@@ -17526,8 +17796,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925"
 						}
@@ -17593,8 +17863,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925"
 						}
@@ -17655,8 +17925,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -17721,8 +17991,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -17783,8 +18053,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -17845,8 +18115,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -17907,8 +18177,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -17969,8 +18239,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -18031,8 +18301,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -18097,8 +18367,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925"
 						},
@@ -18160,8 +18430,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925"
 						},
@@ -20877,12 +21147,27 @@
 							"listen": "test",
 							"script": {
 								"id": "b053fde5-fab4-4952-a272-47fef8043499",
-								"type": "text/javascript",
 								"exec": [
+									"let expected_result = {",
+									"    \"message\": \"2 of 2 records successfully deleted\",",
+									"    \"deleted_hashes\": [",
+									"        924,",
+									"        927",
+									"    ],",
+									"    \"skipped_hashes\": []",
+									"};",
+									"",
 									"pm.test(\"Status code is 200\", function () {",
 									"    pm.response.to.have.status(200);",
-									"});"
-								]
+									"});",
+									"",
+									"pm.test(\"Correct response from NoSQL delete\", function () {",
+									"   let jsonData = pm.response.json();",
+									"   pm.expect(jsonData).to.eql(expected_result);",
+									"});",
+									""
+								],
+								"type": "text/javascript"
 							}
 						}
 					],
@@ -20920,7 +21205,7 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n  \"operation\":\"delete\",\n  \"schema\":\"{{schema}}\",\n  \"table\":\"{{emps_tb}}\",\n  \"hash_values\":[924,927]\n}"
+							"raw": "{\n  \"operation\":\"delete\",\n  \"schema\":\"{{schema}}\",\n  \"table\":\"{{emps_tb}}\",\n  \"hash_values\":[\"924\",927]\n}"
 						},
 						"url": {
 							"raw": "{{host}}:{{port}}",
@@ -21346,8 +21631,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925"
 						},
@@ -21425,8 +21710,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925"
 						},
@@ -21478,8 +21763,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925"
 						},
@@ -21557,8 +21842,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925"
 						},
@@ -21620,8 +21905,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925"
 						},
@@ -21754,8 +22039,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -21825,8 +22110,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -21896,8 +22181,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925/",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925",
 							"path": [
@@ -21972,8 +22257,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925"
 						},
@@ -22035,8 +22320,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925"
 						},
@@ -22098,8 +22383,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925"
 						},
@@ -22207,7 +22492,6 @@
 								},
 								"url": {
 									"raw": "{{host}}:9925",
-
 									"host": [
 										"{{host}}"
 									],
@@ -22828,7 +23112,6 @@
 								},
 								"url": {
 									"raw": "{{host}}:9925",
-
 									"host": [
 										"{{host}}"
 									],
@@ -22986,7 +23269,6 @@
 								},
 								"url": {
 									"raw": "{{host}}:9925",
-
 									"host": [
 										"{{host}}"
 									],
@@ -23102,8 +23384,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925"
 						},
@@ -23132,7 +23414,6 @@
 								},
 								"url": {
 									"raw": "{{host}}:9925",
-
 									"host": [
 										"{{host}}"
 									],
@@ -23260,8 +23541,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925"
 						},
@@ -23290,7 +23571,6 @@
 								},
 								"url": {
 									"raw": "{{host}}:9925",
-
 									"host": [
 										"{{host}}"
 									],
@@ -23356,6 +23636,79 @@
 					]
 				},
 				{
+					"name": "Get Registration Info",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "66a005c7-2d9b-44f1-8778-34003b8fe079",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"license data returned\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.registered).to.eql(true);",
+									"    pm.expect(!!jsonData.version && !!jsonData.storage_type && !!jsonData.license_expiration_date && !!jsonData.daily_api_calls_current && !!jsonData.daily_api_calls_limit).to.eql(true);",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"type": "any"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"registration_info\"\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						},
+						"description": "Method for describing a table. This will return all attributes under the specified table.\n\n<ul>\n<li>\n<b>operation</b> <i> (required) </i> - must always be 'describe_table'\n</li>\n\n<li>\n<b>table</b> <i>(required)</i> - table you wish to describe\n</li>\n\n<li>\n<b>schema </b><i>(required)</i> -schema where the table you wish to describe lives\n</li>\n\n\n</ul>"
+					},
+					"response": []
+				},
+				{
 					"name": "Set License Bad Key",
 					"event": [
 						{
@@ -23418,8 +23771,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925"
 						},
@@ -23448,7 +23801,6 @@
 								},
 								"url": {
 									"raw": "{{host}}:9925",
-
 									"host": [
 										"{{host}}"
 									],
@@ -23571,8 +23923,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925"
 						},
@@ -23601,7 +23953,6 @@
 								},
 								"url": {
 									"raw": "{{host}}:9925",
-
 									"host": [
 										"{{host}}"
 									],
@@ -23726,8 +24077,8 @@
 						},
 						"url": {
 							"raw": "{{host}}:9925",
-
-							"host": ["{{host}}"
+							"host": [
+								"{{host}}"
 							],
 							"port": "9925"
 						},
@@ -23756,7 +24107,6 @@
 								},
 								"url": {
 									"raw": "{{host}}:9925",
-
 									"host": [
 										"{{host}}"
 									],
@@ -24053,19 +24403,23 @@
 									"let attribute_found = true;",
 									"let schema_northnwd_exists = false;",
 									"for (let schema in expected_result) {",
-									"    if (schema === \"northnwd\") {",
+									"    try {",
+									"         if (schema === \"northnwd\") {",
 									"        schema_northnwd_exists = true;",
 									"        break;",
-									"    }",
-									"    for (let table in expected_result[schema]) {",
-									"        let json_data_attr_array = json_data[schema][table][\"attributes\"].map(obj => obj.attribute);",
-									"        expected_result[schema][table].attributes.forEach((value) => {",
-									"            if (!json_data_attr_array.includes(value.attribute)) {",
-									"                attribute_found = false;",
-									"                console.log(`Attribute: ${value.attribute}`);",
-									"                console.log(`Searching schema: ${schema} and table: ${table}`);",
-									"            }",
-									"        });",
+									"        }",
+									"        for (let table in expected_result[schema]) {",
+									"            let json_data_attr_array = json_data[schema][table][\"attributes\"].map(obj => obj.attribute);",
+									"            expected_result[schema][table].attributes.forEach((value) => {",
+									"                if (!json_data_attr_array.includes(value.attribute)) {",
+									"                    attribute_found = false;",
+									"                    console.log(`Attribute: ${value.attribute}`);",
+									"                    console.log(`Searching schema: ${schema} and table: ${table}`);",
+									"                }",
+									"            });",
+									"        }",
+									"    } catch(err) {",
+									"        console.log(err);",
 									"    }",
 									"}",
 									"",

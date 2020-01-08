@@ -123,20 +123,6 @@ class SQLSearch {
      * @private
      */
     _getColumns() {
-        //before pulling the raw columns we need to set the order by so that aliases match the raw column / function definition
-        if (!common_utils.isEmptyOrZeroLength(this.statement.order)) {
-            //we need to loop each element of the order by and see if it's columnid actually matches an alias in the select.
-            // if the order by column is an alias we replace the alias with the actual expression from the select
-            this.statement.order.forEach(order_by => {
-                let found = this.statement.columns.filter(column => common_utils.isEmpty(order_by.expression.tableid) && column.as === order_by.expression.columnid);
-
-                if (found.length > 0) {
-                    order_by.expression = clone(found[0]);
-                    delete order_by.expression.as;
-                }
-            });
-        }
-
         let iterator = new RecursiveIterator(this.statement);
         for (let {node, path} of iterator) {
             if (node && node.columnid){

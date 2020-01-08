@@ -46,11 +46,11 @@ const test_conditions2 = [
 ];
 
 const TEST_SEARCH_OBJ = (conds) => ({
-    operation: "search_by_value",
+    operation: 'search_by_conditions',
     schema: TEST_SCHEMA,
     table: TEST_TABLE_DOG,
     conditions: conds,
-    get_attributes: "*"
+    get_attributes: ['*']
 
 });
 

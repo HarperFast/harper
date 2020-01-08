@@ -10,6 +10,7 @@ const test_util = require('../../test_utils');
 test_util.preTestPrep();
 const path = require(`path`);
 const hdb_license = require('../../../utility/registration/hdb_license');
+const settings_test_file = require('../../settingsTestFile');
 
 const CLUSTERING_PORT = 12345;
 const ADD_NODE = {name:'test', host:"192.161.0.1", port:12345};
@@ -357,10 +358,21 @@ describe('Test clusterUtilities' , ()=> {
  * Since there are common validators across most settings values, only testing a subset of the validators.
  */
 describe('Test configureCluster', () => {
+
+    // Builds a temporary settings file to be used by upgrade tests.
+    before(() => {
+        settings_test_file.buildFile();
+    });
+
+    // Remove temporary settings file.
+    after(() => {
+        settings_test_file.deleteFile();
+    });
+
     it(`Test nominal project dir path`, async () => {
         let test_msg = {
-            "operation": "configure_cluster",
-            "PROJECT_DIR": __dirname
+            'operation': 'configure_cluster',
+            'PROJECT_DIR': __dirname
         };
         let result = await cluster_utils.configureCluster(test_msg);
         assert.strictEqual(result, CONFIGURE_SUCCESS_RESPONSE, 'Expected success message');

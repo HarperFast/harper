@@ -1,6 +1,6 @@
 {
 	"info": {
-		"_postman_id": "44dded82-cf08-4dad-93f6-c954e3749313",
+		"_postman_id": "e2edb2fd-974d-4b78-8ccb-ce46bee2e3cc",
 		"name": "Six Node Clustering Tests",
 		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
 	},
@@ -803,13 +803,22 @@
 								"id": "6858e9a6-09d5-4b1a-a559-50ef8e63dccb",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {\r",
-									"    pm.response.to.have.status(200);\r",
+									"    try {\r",
+									"        pm.response.to.have.status(200);\r",
+									"    } catch (error) {\r",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
+									"    }\r",
 									"});\r",
 									"\r",
 									"pm.test(\"Schema has been created\", function () {\r",
 									"    var jsonData = pm.response.json();\r",
-									"    pm.expect(jsonData.hasOwnProperty(\"bearing\")).to.be.eql(true);\r",
-									"});"
+									"    try {\r",
+									"        pm.expect(jsonData.hasOwnProperty(\"bearing\")).to.be.eql(true);\r",
+									"    } catch (error) {\r",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
+									"    }\r",
+									"});\r",
+									""
 								],
 								"type": "text/javascript"
 							}
@@ -873,12 +882,20 @@
 								"id": "6858e9a6-09d5-4b1a-a559-50ef8e63dccb",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {\r",
-									"    pm.response.to.have.status(200);\r",
+									"    try {\r",
+									"        pm.response.to.have.status(200);\r",
+									"    } catch (error) {\r",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
+									"    }\r",
 									"});\r",
 									"\r",
 									"pm.test(\"Schema has been created\", function () {\r",
 									"    var jsonData = pm.response.json();\r",
-									"    pm.expect(jsonData.hasOwnProperty(\"bearing\")).to.be.eql(true);\r",
+									"    try {\r",
+									"        pm.expect(jsonData.hasOwnProperty(\"bearing\")).to.be.eql(true);\r",
+									"    } catch (error) {\r",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
+									"    }\r",
 									"});"
 								],
 								"type": "text/javascript"
@@ -943,12 +960,20 @@
 								"id": "6858e9a6-09d5-4b1a-a559-50ef8e63dccb",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {\r",
-									"    pm.response.to.have.status(200);\r",
+									"    try {\r",
+									"        pm.response.to.have.status(200);\r",
+									"    } catch (error) {\r",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
+									"    }\r",
 									"});\r",
 									"\r",
-									"pm.test(\"Schema has been propagated\", function () {\r",
+									"pm.test(\"Schema has been created\", function () {\r",
 									"    var jsonData = pm.response.json();\r",
-									"    pm.expect(jsonData.hasOwnProperty(\"bearing\")).to.be.eql(true);\r",
+									"    try {\r",
+									"        pm.expect(jsonData.hasOwnProperty(\"bearing\")).to.be.eql(true);\r",
+									"    } catch (error) {\r",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
+									"    }\r",
 									"});"
 								],
 								"type": "text/javascript"
@@ -1013,12 +1038,20 @@
 								"id": "6858e9a6-09d5-4b1a-a559-50ef8e63dccb",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {\r",
-									"    pm.response.to.have.status(200);\r",
+									"    try {\r",
+									"        pm.response.to.have.status(200);\r",
+									"    } catch (error) {\r",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
+									"    }\r",
 									"});\r",
 									"\r",
 									"pm.test(\"Schema has been created\", function () {\r",
 									"    var jsonData = pm.response.json();\r",
-									"    pm.expect(jsonData.hasOwnProperty(\"bearing\")).to.be.eql(true);\r",
+									"    try {\r",
+									"        pm.expect(jsonData.hasOwnProperty(\"bearing\")).to.be.eql(true);\r",
+									"    } catch (error) {\r",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
+									"    }\r",
 									"});"
 								],
 								"type": "text/javascript"
@@ -1083,12 +1116,20 @@
 								"id": "6858e9a6-09d5-4b1a-a559-50ef8e63dccb",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {\r",
-									"    pm.response.to.have.status(200);\r",
+									"    try {\r",
+									"        pm.response.to.have.status(200);\r",
+									"    } catch (error) {\r",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
+									"    }\r",
 									"});\r",
 									"\r",
 									"pm.test(\"Schema has been created\", function () {\r",
 									"    var jsonData = pm.response.json();\r",
-									"    pm.expect(jsonData.hasOwnProperty(\"bearing\")).to.be.eql(true);\r",
+									"    try {\r",
+									"        pm.expect(jsonData.hasOwnProperty(\"bearing\")).to.be.eql(true);\r",
+									"    } catch (error) {\r",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
+									"    }\r",
 									"});"
 								],
 								"type": "text/javascript"
@@ -1813,12 +1854,21 @@
 								"id": "6858e9a6-09d5-4b1a-a559-50ef8e63dccb",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {\r",
-									"    pm.response.to.have.status(200);\r",
+									"    try {\r",
+									"        pm.response.to.have.status(200);\r",
+									"    } catch (error) {\r",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
+									"    }\r",
 									"});\r",
 									"\r",
 									"pm.test(\"Correct number of records\", function () {\r",
 									"    var jsonData = pm.response.json();\r",
-									"    pm.expect(jsonData[0][\"COUNT(*)\"]).to.be.eql(6);\r",
+									"    \r",
+									"    try {\r",
+									"        pm.expect(jsonData[0][\"COUNT(*)\"]).to.be.eql(6);\r",
+									"    } catch (error) {\r",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
+									"    }\r",
 									"});"
 								],
 								"type": "text/javascript"
@@ -1883,12 +1933,21 @@
 								"id": "6858e9a6-09d5-4b1a-a559-50ef8e63dccb",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {\r",
-									"    pm.response.to.have.status(200);\r",
+									"    try {\r",
+									"        pm.response.to.have.status(200);\r",
+									"    } catch (error) {\r",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
+									"    }\r",
 									"});\r",
 									"\r",
 									"pm.test(\"Correct number of records\", function () {\r",
 									"    var jsonData = pm.response.json();\r",
-									"    pm.expect(jsonData[0][\"COUNT(*)\"]).to.be.eql(6);\r",
+									"    \r",
+									"    try {\r",
+									"        pm.expect(jsonData[0][\"COUNT(*)\"]).to.be.eql(6);\r",
+									"    } catch (error) {\r",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
+									"    }\r",
 									"});"
 								],
 								"type": "text/javascript"
@@ -1953,12 +2012,21 @@
 								"id": "6858e9a6-09d5-4b1a-a559-50ef8e63dccb",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {\r",
-									"    pm.response.to.have.status(200);\r",
+									"    try {\r",
+									"        pm.response.to.have.status(200);\r",
+									"    } catch (error) {\r",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
+									"    }\r",
 									"});\r",
 									"\r",
 									"pm.test(\"Correct number of records\", function () {\r",
 									"    var jsonData = pm.response.json();\r",
-									"    pm.expect(jsonData[0][\"COUNT(*)\"]).to.be.eql(0);\r",
+									"    \r",
+									"    try {\r",
+									"        pm.expect(jsonData[0][\"COUNT(*)\"]).to.be.eql(0);\r",
+									"    } catch (error) {\r",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
+									"    }\r",
 									"});"
 								],
 								"type": "text/javascript"
@@ -2008,6 +2076,441 @@
 							"protocol": "http",
 							"host": [
 								"{{node5_host}}"
+							],
+							"port": "{{node_port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Confirm A attributes node 2",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "6858e9a6-09d5-4b1a-a559-50ef8e63dccb",
+								"exec": [
+									"let expected_attributes = [ \"sensorData1\", \"sensorData2\", \"id\" ]\r",
+									"\r",
+									"pm.test(\"Status code is 200\", function () {\r",
+									"    try {\r",
+									"        pm.response.to.have.status(200);\r",
+									"    } catch (error) {\r",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
+									"    }\r",
+									"});\r",
+									"\r",
+									"pm.test(\"Describe all shows propagated attributes\", function () {\r",
+									"    var jsonData = pm.response.json();\r",
+									"    \r",
+									"    try {\r",
+									"        let value_found;\r",
+									"        jsonData.bearing.temperature.attributes.forEach((attr_obj) =>{\r",
+									"            if(!expected_attributes.includes(attr_obj.attribute)) {\r",
+									"                 value_found = false;\r",
+									"            }\r",
+									"        });\r",
+									"        pm.expect(value_found).to.not.be.false;\r",
+									"    } catch (error) {\r",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
+									"    }\r",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password_ct}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username_ct}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"type": "any"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"name": "Content-Type",
+								"type": "text",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"describe_all\"\n}"
+						},
+						"url": {
+							"raw": "http://{{node2_host}}:{{node_port}}",
+							"protocol": "http",
+							"host": [
+								"{{node2_host}}"
+							],
+							"port": "{{node_port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Confirm A attributes node 3",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "6858e9a6-09d5-4b1a-a559-50ef8e63dccb",
+								"exec": [
+									"let expected_attributes = [ \"sensorData1\", \"sensorData2\", \"id\" ]\r",
+									"\r",
+									"pm.test(\"Status code is 200\", function () {\r",
+									"    try {\r",
+									"        pm.response.to.have.status(200);\r",
+									"    } catch (error) {\r",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
+									"    }\r",
+									"});\r",
+									"\r",
+									"pm.test(\"Describe all shows propagated attributes\", function () {\r",
+									"    var jsonData = pm.response.json();\r",
+									"    \r",
+									"    try {\r",
+									"        let value_found;\r",
+									"        jsonData.bearing.temperature.attributes.forEach((attr_obj) =>{\r",
+									"            if(!expected_attributes.includes(attr_obj.attribute)) {\r",
+									"                 value_found = false;\r",
+									"            }\r",
+									"        });\r",
+									"        pm.expect(value_found).to.not.be.false;\r",
+									"    } catch (error) {\r",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
+									"    }\r",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password_ct}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username_ct}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"type": "any"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"name": "Content-Type",
+								"type": "text",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"describe_all\"\n}"
+						},
+						"url": {
+							"raw": "http://{{node3_host}}:{{node_port}}",
+							"protocol": "http",
+							"host": [
+								"{{node3_host}}"
+							],
+							"port": "{{node_port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Confirm A attributes node 4",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "6858e9a6-09d5-4b1a-a559-50ef8e63dccb",
+								"exec": [
+									"let expected_attributes = [ \"sensorData1\", \"sensorData2\", \"id\" ]\r",
+									"\r",
+									"pm.test(\"Status code is 200\", function () {\r",
+									"    try {\r",
+									"        pm.response.to.have.status(200);\r",
+									"    } catch (error) {\r",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
+									"    }\r",
+									"});\r",
+									"\r",
+									"pm.test(\"Describe all shows propagated attributes\", function () {\r",
+									"    var jsonData = pm.response.json();\r",
+									"    \r",
+									"    try {\r",
+									"        let value_found;\r",
+									"        jsonData.bearing.temperature.attributes.forEach((attr_obj) =>{\r",
+									"            if(!expected_attributes.includes(attr_obj.attribute)) {\r",
+									"                 value_found = false;\r",
+									"            }\r",
+									"        });\r",
+									"        pm.expect(value_found).to.not.be.false;\r",
+									"    } catch (error) {\r",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
+									"    }\r",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password_ct}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username_ct}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"type": "any"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"name": "Content-Type",
+								"type": "text",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"describe_all\"\n}"
+						},
+						"url": {
+							"raw": "http://{{node4_host}}:{{node_port}}",
+							"protocol": "http",
+							"host": [
+								"{{node4_host}}"
+							],
+							"port": "{{node_port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Confirm A attributes node 5",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "6858e9a6-09d5-4b1a-a559-50ef8e63dccb",
+								"exec": [
+									"let expected_attributes = [ \"sensorData1\", \"sensorData2\", \"id\" ]\r",
+									"\r",
+									"pm.test(\"Status code is 200\", function () {\r",
+									"    try {\r",
+									"        pm.response.to.have.status(200);\r",
+									"    } catch (error) {\r",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
+									"    }\r",
+									"});\r",
+									"\r",
+									"pm.test(\"Describe all shows propagated attributes\", function () {\r",
+									"    var jsonData = pm.response.json();\r",
+									"    \r",
+									"    try {\r",
+									"        let value_found;\r",
+									"        jsonData.bearing.temperature.attributes.forEach((attr_obj) =>{\r",
+									"            if(!expected_attributes.includes(attr_obj.attribute)) {\r",
+									"                 value_found = false;\r",
+									"            }\r",
+									"        });\r",
+									"        pm.expect(value_found).to.not.be.false;\r",
+									"    } catch (error) {\r",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
+									"    }\r",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password_ct}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username_ct}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"type": "any"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"name": "Content-Type",
+								"type": "text",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"describe_all\"\n}"
+						},
+						"url": {
+							"raw": "http://{{node5_host}}:{{node_port}}",
+							"protocol": "http",
+							"host": [
+								"{{node5_host}}"
+							],
+							"port": "{{node_port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Confirm A attributes node 6",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "6858e9a6-09d5-4b1a-a559-50ef8e63dccb",
+								"exec": [
+									"let expected_attributes = [ \"sensorData1\", \"sensorData2\", \"id\" ]\r",
+									"\r",
+									"pm.test(\"Status code is 200\", function () {\r",
+									"    try {\r",
+									"        pm.response.to.have.status(200);\r",
+									"    } catch (error) {\r",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
+									"    }\r",
+									"});\r",
+									"\r",
+									"pm.test(\"Describe all shows propagated attributes\", function () {\r",
+									"    var jsonData = pm.response.json();\r",
+									"    \r",
+									"    try {\r",
+									"        let value_found;\r",
+									"        jsonData.bearing.temperature.attributes.forEach((attr_obj) =>{\r",
+									"            if(!expected_attributes.includes(attr_obj.attribute)) {\r",
+									"                 value_found = false;\r",
+									"            }\r",
+									"        });\r",
+									"        pm.expect(value_found).to.not.be.false;\r",
+									"    } catch (error) {\r",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
+									"    }\r",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password_ct}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username_ct}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"type": "any"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"name": "Content-Type",
+								"type": "text",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"describe_all\"\n}"
+						},
+						"url": {
+							"raw": "http://{{node6_host}}:{{node_port}}",
+							"protocol": "http",
+							"host": [
+								"{{node6_host}}"
 							],
 							"port": "{{node_port}}"
 						}
@@ -2093,12 +2596,21 @@
 								"id": "6858e9a6-09d5-4b1a-a559-50ef8e63dccb",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {\r",
-									"    pm.response.to.have.status(200);\r",
+									"    try {\r",
+									"        pm.response.to.have.status(200);\r",
+									"    } catch (error) {\r",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
+									"    }\r",
 									"});\r",
 									"\r",
 									"pm.test(\"Correct number of records\", function () {\r",
 									"    var jsonData = pm.response.json();\r",
-									"    pm.expect(jsonData[0][\"COUNT(*)\"]).to.be.eql(6);\r",
+									"    \r",
+									"    try {\r",
+									"        pm.expect(jsonData[0][\"COUNT(*)\"]).to.be.eql(6);\r",
+									"    } catch (error) {\r",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
+									"    }\r",
 									"});"
 								],
 								"type": "text/javascript"
@@ -2233,12 +2745,21 @@
 								"id": "6858e9a6-09d5-4b1a-a559-50ef8e63dccb",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {\r",
-									"    pm.response.to.have.status(200);\r",
+									"    try {\r",
+									"        pm.response.to.have.status(200);\r",
+									"    } catch (error) {\r",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
+									"    }\r",
 									"});\r",
 									"\r",
 									"pm.test(\"Correct number of records\", function () {\r",
 									"    var jsonData = pm.response.json();\r",
-									"    pm.expect(jsonData[0][\"COUNT(*)\"]).to.be.eql(9);\r",
+									"    \r",
+									"    try {\r",
+									"        pm.expect(jsonData[0][\"COUNT(*)\"]).to.be.eql(9);\r",
+									"    } catch (error) {\r",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
+									"    }\r",
 									"});"
 								],
 								"type": "text/javascript"
@@ -2303,12 +2824,21 @@
 								"id": "6858e9a6-09d5-4b1a-a559-50ef8e63dccb",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {\r",
-									"    pm.response.to.have.status(200);\r",
+									"    try {\r",
+									"        pm.response.to.have.status(200);\r",
+									"    } catch (error) {\r",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
+									"    }\r",
 									"});\r",
 									"\r",
 									"pm.test(\"Correct number of records\", function () {\r",
 									"    var jsonData = pm.response.json();\r",
-									"    pm.expect(jsonData[0][\"COUNT(*)\"]).to.be.eql(0);\r",
+									"    \r",
+									"    try {\r",
+									"        pm.expect(jsonData[0][\"COUNT(*)\"]).to.be.eql(0);\r",
+									"    } catch (error) {\r",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
+									"    }\r",
 									"});"
 								],
 								"type": "text/javascript"
@@ -2513,12 +3043,21 @@
 								"id": "6858e9a6-09d5-4b1a-a559-50ef8e63dccb",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {\r",
-									"    pm.response.to.have.status(200);\r",
+									"    try {\r",
+									"        pm.response.to.have.status(200);\r",
+									"    } catch (error) {\r",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
+									"    }\r",
 									"});\r",
 									"\r",
 									"pm.test(\"Correct number of records\", function () {\r",
 									"    var jsonData = pm.response.json();\r",
-									"    pm.expect(jsonData[0][\"COUNT(*)\"]).to.be.eql(5);\r",
+									"    \r",
+									"    try {\r",
+									"        pm.expect(jsonData[0][\"COUNT(*)\"]).to.be.eql(5);\r",
+									"    } catch (error) {\r",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
+									"    }\r",
 									"});"
 								],
 								"type": "text/javascript"
@@ -2583,12 +3122,21 @@
 								"id": "6858e9a6-09d5-4b1a-a559-50ef8e63dccb",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {\r",
-									"    pm.response.to.have.status(200);\r",
+									"    try {\r",
+									"        pm.response.to.have.status(200);\r",
+									"    } catch (error) {\r",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
+									"    }\r",
 									"});\r",
 									"\r",
 									"pm.test(\"Correct number of records\", function () {\r",
 									"    var jsonData = pm.response.json();\r",
-									"    pm.expect(jsonData[0][\"COUNT(*)\"]).to.be.eql(5);\r",
+									"    \r",
+									"    try {\r",
+									"        pm.expect(jsonData[0][\"COUNT(*)\"]).to.be.eql(5);\r",
+									"    } catch (error) {\r",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
+									"    }\r",
 									"});"
 								],
 								"type": "text/javascript"
@@ -2653,12 +3201,21 @@
 								"id": "6858e9a6-09d5-4b1a-a559-50ef8e63dccb",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {\r",
-									"    pm.response.to.have.status(200);\r",
+									"    try {\r",
+									"        pm.response.to.have.status(200);\r",
+									"    } catch (error) {\r",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
+									"    }\r",
 									"});\r",
 									"\r",
 									"pm.test(\"Correct number of records\", function () {\r",
 									"    var jsonData = pm.response.json();\r",
-									"    pm.expect(jsonData[0][\"COUNT(*)\"]).to.be.eql(0);\r",
+									"    \r",
+									"    try {\r",
+									"        pm.expect(jsonData[0][\"COUNT(*)\"]).to.be.eql(0);\r",
+									"    } catch (error) {\r",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
+									"    }\r",
 									"});"
 								],
 								"type": "text/javascript"
@@ -2715,6 +3272,528 @@
 					"response": []
 				},
 				{
+					"name": "Confirm pressure attributes node 1",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "6858e9a6-09d5-4b1a-a559-50ef8e63dccb",
+								"exec": [
+									"let expected_attributes = [ \"psi\", \"id\" ]\r",
+									"\r",
+									"pm.test(\"Status code is 200\", function () {\r",
+									"    try {\r",
+									"        pm.response.to.have.status(200);\r",
+									"    } catch (error) {\r",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
+									"    }\r",
+									"});\r",
+									"\r",
+									"pm.test(\"Describe all shows propagated attributes\", function () {\r",
+									"    var jsonData = pm.response.json();\r",
+									"    \r",
+									"    try {\r",
+									"        let value_found;\r",
+									"        jsonData.bearing.pressure.attributes.forEach((attr_obj) =>{\r",
+									"            if(!expected_attributes.includes(attr_obj.attribute)) {\r",
+									"                 value_found = false;\r",
+									"            }\r",
+									"        });\r",
+									"        pm.expect(value_found).to.not.be.false;\r",
+									"    } catch (error) {\r",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
+									"    }\r",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password_ct}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username_ct}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"type": "any"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"name": "Content-Type",
+								"type": "text",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"describe_all\"\n}"
+						},
+						"url": {
+							"raw": "http://{{node1_host}}:{{node_port}}",
+							"protocol": "http",
+							"host": [
+								"{{node1_host}}"
+							],
+							"port": "{{node_port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Confirm pressure attributes node 2",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "6858e9a6-09d5-4b1a-a559-50ef8e63dccb",
+								"exec": [
+									"let expected_attributes = [ \"psi\", \"id\" ]\r",
+									"\r",
+									"pm.test(\"Status code is 200\", function () {\r",
+									"    try {\r",
+									"        pm.response.to.have.status(200);\r",
+									"    } catch (error) {\r",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
+									"    }\r",
+									"});\r",
+									"\r",
+									"pm.test(\"Describe all shows propagated attributes\", function () {\r",
+									"    var jsonData = pm.response.json();\r",
+									"    \r",
+									"    try {\r",
+									"        let value_found;\r",
+									"        jsonData.bearing.pressure.attributes.forEach((attr_obj) =>{\r",
+									"            if(!expected_attributes.includes(attr_obj.attribute)) {\r",
+									"                 value_found = false;\r",
+									"            }\r",
+									"        });\r",
+									"        pm.expect(value_found).to.not.be.false;\r",
+									"    } catch (error) {\r",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
+									"    }\r",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password_ct}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username_ct}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"type": "any"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"name": "Content-Type",
+								"type": "text",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"describe_all\"\n}"
+						},
+						"url": {
+							"raw": "http://{{node2_host}}:{{node_port}}",
+							"protocol": "http",
+							"host": [
+								"{{node2_host}}"
+							],
+							"port": "{{node_port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Confirm pressure attributes node 3",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "6858e9a6-09d5-4b1a-a559-50ef8e63dccb",
+								"exec": [
+									"let expected_attributes = [ \"psi\", \"id\" ]\r",
+									"\r",
+									"pm.test(\"Status code is 200\", function () {\r",
+									"    try {\r",
+									"        pm.response.to.have.status(200);\r",
+									"    } catch (error) {\r",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
+									"    }\r",
+									"});\r",
+									"\r",
+									"pm.test(\"Describe all shows propagated attributes\", function () {\r",
+									"    var jsonData = pm.response.json();\r",
+									"    \r",
+									"    try {\r",
+									"        let value_found;\r",
+									"        jsonData.bearing.pressure.attributes.forEach((attr_obj) =>{\r",
+									"            if(!expected_attributes.includes(attr_obj.attribute)) {\r",
+									"                 value_found = false;\r",
+									"            }\r",
+									"        });\r",
+									"        pm.expect(value_found).to.not.be.false;\r",
+									"    } catch (error) {\r",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
+									"    }\r",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password_ct}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username_ct}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"type": "any"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"name": "Content-Type",
+								"type": "text",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"describe_all\"\n}"
+						},
+						"url": {
+							"raw": "http://{{node3_host}}:{{node_port}}",
+							"protocol": "http",
+							"host": [
+								"{{node3_host}}"
+							],
+							"port": "{{node_port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Confirm pressure attributes node 4",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "6858e9a6-09d5-4b1a-a559-50ef8e63dccb",
+								"exec": [
+									"let expected_attributes = [ \"psi\", \"id\" ]\r",
+									"\r",
+									"pm.test(\"Status code is 200\", function () {\r",
+									"    try {\r",
+									"        pm.response.to.have.status(200);\r",
+									"    } catch (error) {\r",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
+									"    }\r",
+									"});\r",
+									"\r",
+									"pm.test(\"Describe all shows propagated attributes\", function () {\r",
+									"    var jsonData = pm.response.json();\r",
+									"    \r",
+									"    try {\r",
+									"        let value_found;\r",
+									"        jsonData.bearing.pressure.attributes.forEach((attr_obj) =>{\r",
+									"            if(!expected_attributes.includes(attr_obj.attribute)) {\r",
+									"                 value_found = false;\r",
+									"            }\r",
+									"        });\r",
+									"        pm.expect(value_found).to.not.be.false;\r",
+									"    } catch (error) {\r",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
+									"    }\r",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password_ct}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username_ct}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"type": "any"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"name": "Content-Type",
+								"type": "text",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"describe_all\"\n}"
+						},
+						"url": {
+							"raw": "http://{{node4_host}}:{{node_port}}",
+							"protocol": "http",
+							"host": [
+								"{{node4_host}}"
+							],
+							"port": "{{node_port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Confirm pressure attributes node 5",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "6858e9a6-09d5-4b1a-a559-50ef8e63dccb",
+								"exec": [
+									"let expected_attributes = [ \"psi\", \"id\" ]\r",
+									"\r",
+									"pm.test(\"Status code is 200\", function () {\r",
+									"    try {\r",
+									"        pm.response.to.have.status(200);\r",
+									"    } catch (error) {\r",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
+									"    }\r",
+									"});\r",
+									"\r",
+									"pm.test(\"Describe all shows propagated attributes\", function () {\r",
+									"    var jsonData = pm.response.json();\r",
+									"    \r",
+									"    try {\r",
+									"        let value_found;\r",
+									"        jsonData.bearing.pressure.attributes.forEach((attr_obj) =>{\r",
+									"            if(!expected_attributes.includes(attr_obj.attribute)) {\r",
+									"                 value_found = false;\r",
+									"            }\r",
+									"        });\r",
+									"        pm.expect(value_found).to.not.be.false;\r",
+									"    } catch (error) {\r",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
+									"    }\r",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password_ct}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username_ct}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"type": "any"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"name": "Content-Type",
+								"type": "text",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"describe_all\"\n}"
+						},
+						"url": {
+							"raw": "http://{{node5_host}}:{{node_port}}",
+							"protocol": "http",
+							"host": [
+								"{{node5_host}}"
+							],
+							"port": "{{node_port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Confirm pressure attributes node 6",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "6858e9a6-09d5-4b1a-a559-50ef8e63dccb",
+								"exec": [
+									"let expected_attributes = [ \"psi\", \"id\" ]\r",
+									"\r",
+									"pm.test(\"Status code is 200\", function () {\r",
+									"    try {\r",
+									"        pm.response.to.have.status(200);\r",
+									"    } catch (error) {\r",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
+									"    }\r",
+									"});\r",
+									"\r",
+									"pm.test(\"Describe all shows propagated attributes\", function () {\r",
+									"    var jsonData = pm.response.json();\r",
+									"    \r",
+									"    try {\r",
+									"        let value_found;\r",
+									"        jsonData.bearing.pressure.attributes.forEach((attr_obj) =>{\r",
+									"            if(!expected_attributes.includes(attr_obj.attribute)) {\r",
+									"                 value_found = false;\r",
+									"            }\r",
+									"        });\r",
+									"        pm.expect(value_found).to.not.be.false;\r",
+									"    } catch (error) {\r",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
+									"    }\r",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password_ct}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username_ct}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"type": "any"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"name": "Content-Type",
+								"type": "text",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"describe_all\"\n}"
+						},
+						"url": {
+							"raw": "http://{{node6_host}}:{{node_port}}",
+							"protocol": "http",
+							"host": [
+								"{{node6_host}}"
+							],
+							"port": "{{node_port}}"
+						}
+					},
+					"response": []
+				},
+				{
 					"name": "CSV data load rpm data node 3",
 					"event": [
 						{
@@ -2732,8 +3811,7 @@
 									"    \r",
 									"    eval(pm.globals.get(\"function:getJobIdCSVct\"))(jsonData, null);\r",
 									"});\r",
-									"\r",
-									"setTimeout(()=>{}, 500);"
+									""
 								],
 								"type": "text/javascript"
 							}
@@ -2903,12 +3981,21 @@
 								"id": "6858e9a6-09d5-4b1a-a559-50ef8e63dccb",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {\r",
-									"    pm.response.to.have.status(200);\r",
+									"    try {\r",
+									"        pm.response.to.have.status(200);\r",
+									"    } catch (error) {\r",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
+									"    }\r",
 									"});\r",
 									"\r",
 									"pm.test(\"Correct number of records\", function () {\r",
 									"    var jsonData = pm.response.json();\r",
-									"    pm.expect(jsonData[0][\"COUNT(*)\"]).to.be.eql(14);\r",
+									"    \r",
+									"    try {\r",
+									"        pm.expect(jsonData[0][\"COUNT(*)\"]).to.be.eql(14);\r",
+									"    } catch (error) {\r",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
+									"    }\r",
 									"});"
 								],
 								"type": "text/javascript"
@@ -2973,12 +4060,21 @@
 								"id": "6858e9a6-09d5-4b1a-a559-50ef8e63dccb",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {\r",
-									"    pm.response.to.have.status(200);\r",
+									"    try {\r",
+									"        pm.response.to.have.status(200);\r",
+									"    } catch (error) {\r",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
+									"    }\r",
 									"});\r",
 									"\r",
 									"pm.test(\"Correct number of records\", function () {\r",
 									"    var jsonData = pm.response.json();\r",
-									"    pm.expect(jsonData[0][\"COUNT(*)\"]).to.be.eql(14);\r",
+									"    \r",
+									"    try {\r",
+									"        pm.expect(jsonData[0][\"COUNT(*)\"]).to.be.eql(14);\r",
+									"    } catch (error) {\r",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
+									"    }\r",
 									"});"
 								],
 								"type": "text/javascript"
@@ -3043,12 +4139,21 @@
 								"id": "6858e9a6-09d5-4b1a-a559-50ef8e63dccb",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {\r",
-									"    pm.response.to.have.status(200);\r",
+									"    try {\r",
+									"        pm.response.to.have.status(200);\r",
+									"    } catch (error) {\r",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
+									"    }\r",
 									"});\r",
 									"\r",
 									"pm.test(\"Correct number of records\", function () {\r",
 									"    var jsonData = pm.response.json();\r",
-									"    pm.expect(jsonData[0][\"COUNT(*)\"]).to.be.eql(14);\r",
+									"    \r",
+									"    try {\r",
+									"        pm.expect(jsonData[0][\"COUNT(*)\"]).to.be.eql(14);\r",
+									"    } catch (error) {\r",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
+									"    }\r",
 									"});"
 								],
 								"type": "text/javascript"
@@ -3113,12 +4218,21 @@
 								"id": "6858e9a6-09d5-4b1a-a559-50ef8e63dccb",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {\r",
-									"    pm.response.to.have.status(200);\r",
+									"    try {\r",
+									"        pm.response.to.have.status(200);\r",
+									"    } catch (error) {\r",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
+									"    }\r",
 									"});\r",
 									"\r",
 									"pm.test(\"Correct number of records\", function () {\r",
 									"    var jsonData = pm.response.json();\r",
-									"    pm.expect(jsonData[0][\"COUNT(*)\"]).to.be.eql(0);\r",
+									"    \r",
+									"    try {\r",
+									"        pm.expect(jsonData[0][\"COUNT(*)\"]).to.be.eql(0);\r",
+									"    } catch (error) {\r",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
+									"    }\r",
 									"});\r",
 									""
 								],
@@ -3193,8 +4307,7 @@
 									"    \r",
 									"    eval(pm.globals.get(\"function:getJobIdCSVFilect\"))(jsonData, null);\r",
 									"});\r",
-									"\r",
-									"setTimeout(()=>{}, 500);"
+									""
 								],
 								"type": "text/javascript"
 							}
@@ -3365,12 +4478,21 @@
 								"id": "6858e9a6-09d5-4b1a-a559-50ef8e63dccb",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {\r",
-									"    pm.response.to.have.status(200);\r",
+									"    try {\r",
+									"        pm.response.to.have.status(200);\r",
+									"    } catch (error) {\r",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
+									"    }\r",
 									"});\r",
 									"\r",
 									"pm.test(\"Correct number of records\", function () {\r",
 									"    var jsonData = pm.response.json();\r",
-									"    pm.expect(jsonData[0][\"COUNT(*)\"]).to.be.eql(1000);\r",
+									"    \r",
+									"    try {\r",
+									"        pm.expect(jsonData[0][\"COUNT(*)\"]).to.be.eql(1000);\r",
+									"    } catch (error) {\r",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
+									"    }\r",
 									"});"
 								],
 								"type": "text/javascript"
@@ -3435,12 +4557,21 @@
 								"id": "6858e9a6-09d5-4b1a-a559-50ef8e63dccb",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {\r",
-									"    pm.response.to.have.status(200);\r",
+									"    try {\r",
+									"        pm.response.to.have.status(200);\r",
+									"    } catch (error) {\r",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
+									"    }\r",
 									"});\r",
 									"\r",
 									"pm.test(\"Correct number of records\", function () {\r",
 									"    var jsonData = pm.response.json();\r",
-									"    pm.expect(jsonData[0][\"COUNT(*)\"]).to.be.eql(0);\r",
+									"    \r",
+									"    try {\r",
+									"        pm.expect(jsonData[0][\"COUNT(*)\"]).to.be.eql(0);\r",
+									"    } catch (error) {\r",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
+									"    }\r",
 									"});"
 								],
 								"type": "text/javascript"
@@ -3505,12 +4636,21 @@
 								"id": "6858e9a6-09d5-4b1a-a559-50ef8e63dccb",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {\r",
-									"    pm.response.to.have.status(200);\r",
+									"    try {\r",
+									"        pm.response.to.have.status(200);\r",
+									"    } catch (error) {\r",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
+									"    }\r",
 									"});\r",
 									"\r",
 									"pm.test(\"Correct number of records\", function () {\r",
 									"    var jsonData = pm.response.json();\r",
-									"    pm.expect(jsonData[0][\"COUNT(*)\"]).to.be.eql(1000);\r",
+									"    \r",
+									"    try {\r",
+									"        pm.expect(jsonData[0][\"COUNT(*)\"]).to.be.eql(1000);\r",
+									"    } catch (error) {\r",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
+									"    }\r",
 									"});"
 								],
 								"type": "text/javascript"
@@ -3575,12 +4715,21 @@
 								"id": "6858e9a6-09d5-4b1a-a559-50ef8e63dccb",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {\r",
-									"    pm.response.to.have.status(200);\r",
+									"    try {\r",
+									"        pm.response.to.have.status(200);\r",
+									"    } catch (error) {\r",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
+									"    }\r",
 									"});\r",
 									"\r",
 									"pm.test(\"Correct number of records\", function () {\r",
 									"    var jsonData = pm.response.json();\r",
-									"    pm.expect(jsonData[0][\"COUNT(*)\"]).to.be.eql(0);\r",
+									"    \r",
+									"    try {\r",
+									"        pm.expect(jsonData[0][\"COUNT(*)\"]).to.be.eql(0);\r",
+									"    } catch (error) {\r",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
+									"    }\r",
 									"});"
 								],
 								"type": "text/javascript"
@@ -3718,14 +4867,16 @@
 									"    {\r",
 									"        \"rpm\": 11,\r",
 									"        \"rad_hr\": null,\r",
-									"        \"hz\": \"Test\"\r",
+									"        \"hz\": \"Test\",\r",
+									"        \"rad_min\": null\r",
 									"    },\r",
 									"    {\r",
 									"        \"rpm\": 21,\r",
 									"        \"rad_hr\": 199,\r",
-									"        \"hz\": null\r",
+									"        \"hz\": null,\r",
+									"        \"rad_min\": null\r",
 									"    }\r",
-									"]\r",
+									"];\r",
 									"\r",
 									"pm.test(\"Status code is 200\", function () {\r",
 									"    pm.response.to.have.status(200);\r",
@@ -3813,12 +4964,21 @@
 									"]\r",
 									"\r",
 									"pm.test(\"Status code is 200\", function () {\r",
-									"    pm.response.to.have.status(200);\r",
+									"    try {\r",
+									"        pm.response.to.have.status(200);\r",
+									"    } catch (error) {\r",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
+									"    }\r",
 									"});\r",
 									"\r",
 									"pm.test(\"Correct number of records\", function () {\r",
 									"    var jsonData = pm.response.json();\r",
-									"    pm.expect(jsonData).to.eql(expected_result);\r",
+									"    \r",
+									"    try {\r",
+									"        pm.expect(jsonData).to.eql(expected_result);\r",
+									"    } catch (error) {\r",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
+									"    }\r",
 									"});"
 								],
 								"type": "text/javascript"
@@ -3898,12 +5058,21 @@
 									"]\r",
 									"\r",
 									"pm.test(\"Status code is 200\", function () {\r",
-									"    pm.response.to.have.status(200);\r",
+									"    try {\r",
+									"        pm.response.to.have.status(200);\r",
+									"    } catch (error) {\r",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
+									"    }\r",
 									"});\r",
 									"\r",
 									"pm.test(\"Correct number of records\", function () {\r",
 									"    var jsonData = pm.response.json();\r",
-									"    pm.expect(jsonData).to.eql(expected_result);\r",
+									"    \r",
+									"    try {\r",
+									"        pm.expect(jsonData).to.eql(expected_result);\r",
+									"    } catch (error) {\r",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
+									"    }\r",
 									"});"
 								],
 								"type": "text/javascript"
@@ -4016,7 +5185,7 @@
 									"        1,\r",
 									"        3\r",
 									"    ]\r",
-									"}\r",
+									"};\r",
 									"\r",
 									"pm.test(\"Status code is 200\", function () {\r",
 									"    pm.response.to.have.status(200);\r",
@@ -4024,7 +5193,7 @@
 									"\r",
 									"pm.test(\"Correct number of updated records\", function () {\r",
 									"    var jsonData = pm.response.json();\r",
-									"    pm.expect(jsonData).to.eql(expected_result)\r",
+									"    pm.expect(jsonData).to.eql(expected_result);\r",
 									"});"
 								],
 								"type": "text/javascript"
@@ -4067,7 +5236,7 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\t\"operation\":\"update\",\n\t\"schema\":\"{{bear_schema}}\",\n\t\"table\":\"{{temp_table}}\",\n\t\"records\": [\n\t  {\n\t    \"id\": 1,\n\t\t\"sensorData1\": 122,\n\t  \t\"sensorData2\": \"test\"\n\t  },\n\t\t{\n\t    \"id\": 3,\n\t    \"sensorData1\": \"null\",\n\t    \"sensorData2\": 351\n\t  }\n\t]\n}\n\n"
+							"raw": "{\n\t\"operation\":\"update\",\n\t\"schema\":\"{{bear_schema}}\",\n\t\"table\":\"{{temp_table}}\",\n\t\"records\": [\n\t  {\n\t    \"id\": 1,\n\t\t\"sensorData1\": 122,\n\t  \t\"sensorData2\": \"test\"\n\t  },\n\t\t{\n\t    \"id\": 3,\n\t    \"sensorData1\": \"null\",\n\t    \"sensorData2\": 351,\n\t    \"extraAttribute\": \"harper\"\n\t  }\n\t]\n}\n\n"
 						},
 						"url": {
 							"raw": "http://{{node1_host}}:{{node_port}}",
@@ -4182,15 +5351,24 @@
 									"        \"sensorData1\": null,\r",
 									"        \"sensorData2\": 351\r",
 									"    }\r",
-									"]\r",
+									"];\r",
 									"\r",
 									"pm.test(\"Status code is 200\", function () {\r",
-									"    pm.response.to.have.status(200);\r",
+									"    try {\r",
+									"        pm.response.to.have.status(200);\r",
+									"    } catch (error) {\r",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
+									"    }\r",
 									"});\r",
 									"\r",
-									"pm.test(\"Correct number of records\", function () {\r",
+									"pm.test(\"Records match expected result\", function () {\r",
 									"    var jsonData = pm.response.json();\r",
-									"    pm.expect(jsonData).to.eql(expected_result);\r",
+									"    \r",
+									"    try {\r",
+									"        pm.expect(jsonData).to.eql(expected_result);\r",
+									"    } catch (error) {\r",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
+									"    }\r",
 									"});"
 								],
 								"type": "text/javascript"
@@ -4247,33 +5425,37 @@
 					"response": []
 				},
 				{
-					"name": "Confirm noSQL update node 1 Copy",
+					"name": "Confirm noSQL update temp attributes node 1",
 					"event": [
 						{
 							"listen": "test",
 							"script": {
 								"id": "6858e9a6-09d5-4b1a-a559-50ef8e63dccb",
 								"exec": [
-									"let expected_result = [\r",
-									"    {\r",
-									"        \"id\": 1,\r",
-									"        \"sensorData1\": 122,\r",
-									"        \"sensorData2\": \"test\"\r",
-									"    },\r",
-									"    {\r",
-									"        \"id\": 3,\r",
-									"        \"sensorData1\": null,\r",
-									"        \"sensorData2\": 351\r",
-									"    }\r",
-									"]\r",
+									"let expected_attributes = [ \"id\", \"sensorData1\", \"sensorData2\", \"extraAttribute\" ];\r",
 									"\r",
 									"pm.test(\"Status code is 200\", function () {\r",
-									"    pm.response.to.have.status(200);\r",
+									"    try {\r",
+									"        pm.response.to.have.status(200);\r",
+									"    } catch (error) {\r",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
+									"    }\r",
 									"});\r",
 									"\r",
-									"pm.test(\"Correct number of records\", function () {\r",
+									"pm.test(\"Describe all shows propagated attributes\", function () {\r",
 									"    var jsonData = pm.response.json();\r",
-									"    pm.expect(jsonData).to.eql(expected_result);\r",
+									"    \r",
+									"    try {\r",
+									"        let value_found;\r",
+									"        jsonData.bearing.temperature.attributes.forEach((attr_obj) =>{\r",
+									"            if(!expected_attributes.includes(attr_obj.attribute)) {\r",
+									"                 value_found = false;\r",
+									"            }\r",
+									"        });\r",
+									"        pm.expect(value_found).to.not.be.false;\r",
+									"    } catch (error) {\r",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
+									"    }\r",
 									"});"
 								],
 								"type": "text/javascript"
@@ -4316,13 +5498,448 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\t\"operation\":\"search_by_hash\",\n\t\"schema\": \"{{bear_schema}}\",\n\t\"table\": \"{{temp_table}}\",\n\t\"hash_values\":[1,3],\n\t\"get_attributes\": [\"id\", \"sensorData1\", \"sensorData2\"]\n}"
+							"raw": "{\n\t\"operation\":\"describe_all\"\n}"
 						},
 						"url": {
 							"raw": "http://{{node1_host}}:{{node_port}}",
 							"protocol": "http",
 							"host": [
 								"{{node1_host}}"
+							],
+							"port": "{{node_port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Confirm noSQL update temp attributes node 2",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "6858e9a6-09d5-4b1a-a559-50ef8e63dccb",
+								"exec": [
+									"let expected_attributes = [ \"id\", \"sensorData1\", \"sensorData2\", \"extraAttribute\" ];\r",
+									"\r",
+									"pm.test(\"Status code is 200\", function () {\r",
+									"    try {\r",
+									"        pm.response.to.have.status(200);\r",
+									"    } catch (error) {\r",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
+									"    }\r",
+									"});\r",
+									"\r",
+									"pm.test(\"Describe all shows propagated attributes\", function () {\r",
+									"    var jsonData = pm.response.json();\r",
+									"    \r",
+									"    try {\r",
+									"        let value_found;\r",
+									"        jsonData.bearing.temperature.attributes.forEach((attr_obj) =>{\r",
+									"            if(!expected_attributes.includes(attr_obj.attribute)) {\r",
+									"                 value_found = false;\r",
+									"            }\r",
+									"        });\r",
+									"        pm.expect(value_found).to.not.be.false;\r",
+									"    } catch (error) {\r",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
+									"    }\r",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password_ct}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username_ct}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"type": "any"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"name": "Content-Type",
+								"type": "text",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"describe_all\"\n}"
+						},
+						"url": {
+							"raw": "http://{{node2_host}}:{{node_port}}",
+							"protocol": "http",
+							"host": [
+								"{{node2_host}}"
+							],
+							"port": "{{node_port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Confirm noSQL update temp attributes node 3",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "6858e9a6-09d5-4b1a-a559-50ef8e63dccb",
+								"exec": [
+									"let expected_attributes = [ \"id\", \"sensorData1\", \"sensorData2\", \"extraAttribute\" ];\r",
+									"\r",
+									"pm.test(\"Status code is 200\", function () {\r",
+									"    try {\r",
+									"        pm.response.to.have.status(200);\r",
+									"    } catch (error) {\r",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
+									"    }\r",
+									"});\r",
+									"\r",
+									"pm.test(\"Describe all shows propagated attributes\", function () {\r",
+									"    var jsonData = pm.response.json();\r",
+									"    \r",
+									"    try {\r",
+									"        let value_found;\r",
+									"        jsonData.bearing.temperature.attributes.forEach((attr_obj) =>{\r",
+									"            if(!expected_attributes.includes(attr_obj.attribute)) {\r",
+									"                 value_found = false;\r",
+									"            }\r",
+									"        });\r",
+									"        pm.expect(value_found).to.not.be.false;\r",
+									"    } catch (error) {\r",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
+									"    }\r",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password_ct}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username_ct}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"type": "any"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"name": "Content-Type",
+								"type": "text",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"describe_all\"\n}"
+						},
+						"url": {
+							"raw": "http://{{node3_host}}:{{node_port}}",
+							"protocol": "http",
+							"host": [
+								"{{node3_host}}"
+							],
+							"port": "{{node_port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Confirm noSQL update temp attributes node 4",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "6858e9a6-09d5-4b1a-a559-50ef8e63dccb",
+								"exec": [
+									"let expected_attributes = [ \"id\", \"sensorData1\", \"sensorData2\", \"extraAttribute\" ];\r",
+									"\r",
+									"pm.test(\"Status code is 200\", function () {\r",
+									"    try {\r",
+									"        pm.response.to.have.status(200);\r",
+									"    } catch (error) {\r",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
+									"    }\r",
+									"});\r",
+									"\r",
+									"pm.test(\"Describe all shows propagated attributes\", function () {\r",
+									"    var jsonData = pm.response.json();\r",
+									"    \r",
+									"    try {\r",
+									"        let value_found;\r",
+									"        jsonData.bearing.temperature.attributes.forEach((attr_obj) =>{\r",
+									"            if(!expected_attributes.includes(attr_obj.attribute)) {\r",
+									"                 value_found = false;\r",
+									"            }\r",
+									"        });\r",
+									"        pm.expect(value_found).to.not.be.false;\r",
+									"    } catch (error) {\r",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
+									"    }\r",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password_ct}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username_ct}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"type": "any"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"name": "Content-Type",
+								"type": "text",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"describe_all\"\n}"
+						},
+						"url": {
+							"raw": "http://{{node4_host}}:{{node_port}}",
+							"protocol": "http",
+							"host": [
+								"{{node4_host}}"
+							],
+							"port": "{{node_port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Confirm noSQL update temp attributes node 5",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "6858e9a6-09d5-4b1a-a559-50ef8e63dccb",
+								"exec": [
+									"let expected_attributes = [ \"id\", \"sensorData1\", \"sensorData2\", \"extraAttribute\" ];\r",
+									"\r",
+									"pm.test(\"Status code is 200\", function () {\r",
+									"    try {\r",
+									"        pm.response.to.have.status(200);\r",
+									"    } catch (error) {\r",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
+									"    }\r",
+									"});\r",
+									"\r",
+									"pm.test(\"Describe all shows propagated attributes\", function () {\r",
+									"    var jsonData = pm.response.json();\r",
+									"    \r",
+									"    try {\r",
+									"        let value_found;\r",
+									"        jsonData.bearing.temperature.attributes.forEach((attr_obj) =>{\r",
+									"            if(!expected_attributes.includes(attr_obj.attribute)) {\r",
+									"                 value_found = false;\r",
+									"            }\r",
+									"        });\r",
+									"        pm.expect(value_found).to.not.be.false;\r",
+									"    } catch (error) {\r",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
+									"    }\r",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password_ct}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username_ct}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"type": "any"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"name": "Content-Type",
+								"type": "text",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"describe_all\"\n}"
+						},
+						"url": {
+							"raw": "http://{{node5_host}}:{{node_port}}",
+							"protocol": "http",
+							"host": [
+								"{{node5_host}}"
+							],
+							"port": "{{node_port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Confirm noSQL update temp attributes node 6",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "6858e9a6-09d5-4b1a-a559-50ef8e63dccb",
+								"exec": [
+									"let expected_attributes = [ \"id\", \"sensorData1\", \"sensorData2\", \"extraAttribute\" ];\r",
+									"\r",
+									"pm.test(\"Status code is 200\", function () {\r",
+									"    try {\r",
+									"        pm.response.to.have.status(200);\r",
+									"    } catch (error) {\r",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
+									"    }\r",
+									"});\r",
+									"\r",
+									"pm.test(\"Describe all shows propagated attributes\", function () {\r",
+									"    var jsonData = pm.response.json();\r",
+									"    \r",
+									"    try {\r",
+									"        let value_found;\r",
+									"        jsonData.bearing.temperature.attributes.forEach((attr_obj) =>{\r",
+									"            if(!expected_attributes.includes(attr_obj.attribute)) {\r",
+									"                 value_found = false;\r",
+									"            }\r",
+									"        });\r",
+									"        pm.expect(value_found).to.not.be.false;\r",
+									"    } catch (error) {\r",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
+									"    }\r",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password_ct}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username_ct}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"type": "any"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"name": "Content-Type",
+								"type": "text",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"describe_all\"\n}"
+						},
+						"url": {
+							"raw": "http://{{node6_host}}:{{node_port}}",
+							"protocol": "http",
+							"host": [
+								"{{node6_host}}"
 							],
 							"port": "{{node_port}}"
 						}
@@ -4394,7 +6011,7 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\t\"operation\":\"sql\",\n\t\"sql\":\"update {{bear_schema}}.{{press_table}} set psi = 'fault' where id = 22\"\n}\n"
+							"raw": "{\n\t\"operation\":\"sql\",\n\t\"sql\":\"update {{bear_schema}}.{{press_table}} set psiUPDATE = 'fault' where id = 22\"\n}\n"
 						},
 						"url": {
 							"raw": "http://{{node2_host}}:{{node_port}}",
@@ -4417,10 +6034,11 @@
 								"exec": [
 									"let expected_result = [\r",
 									"    {\r",
-									"        \"psi\": \"fault\",\r",
+									"        \"psiUPDATE\": \"fault\",\r",
+									"        \"psi\": 145,\r",
 									"        \"id\": 22\r",
 									"    }\r",
-									"]\r",
+									"];\r",
 									"\r",
 									"pm.test(\"Status code is 200\", function () {\r",
 									"    pm.response.to.have.status(200);\r",
@@ -4494,18 +6112,28 @@
 								"exec": [
 									"let expected_result = [\r",
 									"    {\r",
-									"        \"psi\": \"fault\",\r",
+									"        \"psiUPDATE\": \"fault\",\r",
+									"        \"psi\": 145,\r",
 									"        \"id\": 22\r",
 									"    }\r",
-									"]\r",
+									"];\r",
 									"\r",
 									"pm.test(\"Status code is 200\", function () {\r",
-									"    pm.response.to.have.status(200);\r",
+									"    try {\r",
+									"        pm.response.to.have.status(200);\r",
+									"    } catch (error) {\r",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
+									"    }\r",
 									"});\r",
 									"\r",
 									"pm.test(\"Updated record exists as expected\", function () {\r",
 									"    var jsonData = pm.response.json();\r",
-									"    pm.expect(jsonData).to.eql(expected_result);\r",
+									"    \r",
+									"    try {\r",
+									"        pm.expect(jsonData).to.eql(expected_result);\r",
+									"    } catch (error) {\r",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
+									"    }\r",
 									"});"
 								],
 								"type": "text/javascript"
@@ -4571,18 +6199,28 @@
 								"exec": [
 									"let expected_result = [\r",
 									"    {\r",
-									"        \"psi\": \"fault\",\r",
+									"        \"psiUPDATE\": \"fault\",\r",
+									"        \"psi\": 145,\r",
 									"        \"id\": 22\r",
 									"    }\r",
-									"]\r",
+									"];\r",
 									"\r",
 									"pm.test(\"Status code is 200\", function () {\r",
-									"    pm.response.to.have.status(200);\r",
+									"    try {\r",
+									"        pm.response.to.have.status(200);\r",
+									"    } catch (error) {\r",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
+									"    }\r",
 									"});\r",
 									"\r",
 									"pm.test(\"Updated record exists as expected\", function () {\r",
 									"    var jsonData = pm.response.json();\r",
-									"    pm.expect(jsonData).to.eql(expected_result);\r",
+									"    \r",
+									"    try {\r",
+									"        pm.expect(jsonData).to.eql(expected_result);\r",
+									"    } catch (error) {\r",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
+									"    }\r",
 									"});"
 								],
 								"type": "text/javascript"
@@ -4626,6 +6264,528 @@
 						"body": {
 							"mode": "raw",
 							"raw": "{\n\t\"operation\":\"sql\",\n\t\"sql\":\"select * from {{bear_schema}}.{{press_table}} where id = 22\"\n}"
+						},
+						"url": {
+							"raw": "http://{{node6_host}}:{{node_port}}",
+							"protocol": "http",
+							"host": [
+								"{{node6_host}}"
+							],
+							"port": "{{node_port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Confirm SQL update pressure attributes node 1",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "6858e9a6-09d5-4b1a-a559-50ef8e63dccb",
+								"exec": [
+									"let expected_attributes = [ \"id\", \"psi\", \"psiUPDATE\" ];\r",
+									"\r",
+									"pm.test(\"Status code is 200\", function () {\r",
+									"    try {\r",
+									"        pm.response.to.have.status(200);\r",
+									"    } catch (error) {\r",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
+									"    }\r",
+									"});\r",
+									"\r",
+									"pm.test(\"Describe all shows propagated attributes\", function () {\r",
+									"    var jsonData = pm.response.json();\r",
+									"    \r",
+									"    try {\r",
+									"        let value_found;\r",
+									"        jsonData.bearing.pressure.attributes.forEach((attr_obj) =>{\r",
+									"            if(!expected_attributes.includes(attr_obj.attribute)) {\r",
+									"                 value_found = false;\r",
+									"            }\r",
+									"        });\r",
+									"        pm.expect(value_found).to.not.be.false;\r",
+									"    } catch (error) {\r",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
+									"    }\r",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password_ct}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username_ct}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"type": "any"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"name": "Content-Type",
+								"type": "text",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"describe_all\"\n}"
+						},
+						"url": {
+							"raw": "http://{{node1_host}}:{{node_port}}",
+							"protocol": "http",
+							"host": [
+								"{{node1_host}}"
+							],
+							"port": "{{node_port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Confirm SQL update pressure attributes node 2",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "6858e9a6-09d5-4b1a-a559-50ef8e63dccb",
+								"exec": [
+									"let expected_attributes = [ \"id\", \"psi\", \"psiUPDATE\" ];\r",
+									"\r",
+									"pm.test(\"Status code is 200\", function () {\r",
+									"    try {\r",
+									"        pm.response.to.have.status(200);\r",
+									"    } catch (error) {\r",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
+									"    }\r",
+									"});\r",
+									"\r",
+									"pm.test(\"Describe all shows propagated attributes\", function () {\r",
+									"    var jsonData = pm.response.json();\r",
+									"    \r",
+									"    try {\r",
+									"        let value_found;\r",
+									"        jsonData.bearing.pressure.attributes.forEach((attr_obj) =>{\r",
+									"            if(!expected_attributes.includes(attr_obj.attribute)) {\r",
+									"                 value_found = false;\r",
+									"            }\r",
+									"        });\r",
+									"        pm.expect(value_found).to.not.be.false;\r",
+									"    } catch (error) {\r",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
+									"    }\r",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password_ct}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username_ct}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"type": "any"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"name": "Content-Type",
+								"type": "text",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"describe_all\"\n}"
+						},
+						"url": {
+							"raw": "http://{{node2_host}}:{{node_port}}",
+							"protocol": "http",
+							"host": [
+								"{{node2_host}}"
+							],
+							"port": "{{node_port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Confirm SQL update pressure attributes node 3",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "6858e9a6-09d5-4b1a-a559-50ef8e63dccb",
+								"exec": [
+									"let expected_attributes = [ \"id\", \"psi\", \"psiUPDATE\" ];\r",
+									"\r",
+									"pm.test(\"Status code is 200\", function () {\r",
+									"    try {\r",
+									"        pm.response.to.have.status(200);\r",
+									"    } catch (error) {\r",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
+									"    }\r",
+									"});\r",
+									"\r",
+									"pm.test(\"Describe all shows propagated attributes\", function () {\r",
+									"    var jsonData = pm.response.json();\r",
+									"    \r",
+									"    try {\r",
+									"        let value_found;\r",
+									"        jsonData.bearing.pressure.attributes.forEach((attr_obj) =>{\r",
+									"            if(!expected_attributes.includes(attr_obj.attribute)) {\r",
+									"                 value_found = false;\r",
+									"            }\r",
+									"        });\r",
+									"        pm.expect(value_found).to.not.be.false;\r",
+									"    } catch (error) {\r",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
+									"    }\r",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password_ct}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username_ct}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"type": "any"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"name": "Content-Type",
+								"type": "text",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"describe_all\"\n}"
+						},
+						"url": {
+							"raw": "http://{{node3_host}}:{{node_port}}",
+							"protocol": "http",
+							"host": [
+								"{{node3_host}}"
+							],
+							"port": "{{node_port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Confirm SQL update pressure attributes node 4",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "6858e9a6-09d5-4b1a-a559-50ef8e63dccb",
+								"exec": [
+									"let expected_attributes = [ \"id\", \"psi\", \"psiUPDATE\" ];\r",
+									"\r",
+									"pm.test(\"Status code is 200\", function () {\r",
+									"    try {\r",
+									"        pm.response.to.have.status(200);\r",
+									"    } catch (error) {\r",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
+									"    }\r",
+									"});\r",
+									"\r",
+									"pm.test(\"Describe all shows propagated attributes\", function () {\r",
+									"    var jsonData = pm.response.json();\r",
+									"    \r",
+									"    try {\r",
+									"        let value_found;\r",
+									"        jsonData.bearing.pressure.attributes.forEach((attr_obj) =>{\r",
+									"            if(!expected_attributes.includes(attr_obj.attribute)) {\r",
+									"                 value_found = false;\r",
+									"            }\r",
+									"        });\r",
+									"        pm.expect(value_found).to.not.be.false;\r",
+									"    } catch (error) {\r",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
+									"    }\r",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password_ct}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username_ct}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"type": "any"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"name": "Content-Type",
+								"type": "text",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"describe_all\"\n}"
+						},
+						"url": {
+							"raw": "http://{{node4_host}}:{{node_port}}",
+							"protocol": "http",
+							"host": [
+								"{{node4_host}}"
+							],
+							"port": "{{node_port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Confirm SQL update pressure attributes node 5",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "6858e9a6-09d5-4b1a-a559-50ef8e63dccb",
+								"exec": [
+									"let expected_attributes = [ \"id\", \"psi\", \"psiUPDATE\" ];\r",
+									"\r",
+									"pm.test(\"Status code is 200\", function () {\r",
+									"    try {\r",
+									"        pm.response.to.have.status(200);\r",
+									"    } catch (error) {\r",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
+									"    }\r",
+									"});\r",
+									"\r",
+									"pm.test(\"Describe all shows propagated attributes\", function () {\r",
+									"    var jsonData = pm.response.json();\r",
+									"    \r",
+									"    try {\r",
+									"        let value_found;\r",
+									"        jsonData.bearing.pressure.attributes.forEach((attr_obj) =>{\r",
+									"            if(!expected_attributes.includes(attr_obj.attribute)) {\r",
+									"                 value_found = false;\r",
+									"            }\r",
+									"        });\r",
+									"        pm.expect(value_found).to.not.be.false;\r",
+									"    } catch (error) {\r",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
+									"    }\r",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password_ct}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username_ct}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"type": "any"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"name": "Content-Type",
+								"type": "text",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"describe_all\"\n}"
+						},
+						"url": {
+							"raw": "http://{{node5_host}}:{{node_port}}",
+							"protocol": "http",
+							"host": [
+								"{{node5_host}}"
+							],
+							"port": "{{node_port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Confirm SQL update pressure attributes node 6",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "6858e9a6-09d5-4b1a-a559-50ef8e63dccb",
+								"exec": [
+									"let expected_attributes = [ \"id\", \"psi\", \"psiUPDATE\" ];\r",
+									"\r",
+									"pm.test(\"Status code is 200\", function () {\r",
+									"    try {\r",
+									"        pm.response.to.have.status(200);\r",
+									"    } catch (error) {\r",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
+									"    }\r",
+									"});\r",
+									"\r",
+									"pm.test(\"Describe all shows propagated attributes\", function () {\r",
+									"    var jsonData = pm.response.json();\r",
+									"    \r",
+									"    try {\r",
+									"        let value_found;\r",
+									"        jsonData.bearing.pressure.attributes.forEach((attr_obj) =>{\r",
+									"            if(!expected_attributes.includes(attr_obj.attribute)) {\r",
+									"                 value_found = false;\r",
+									"            }\r",
+									"        });\r",
+									"        pm.expect(value_found).to.not.be.false;\r",
+									"    } catch (error) {\r",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
+									"    }\r",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password_ct}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username_ct}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"type": "any"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"name": "Content-Type",
+								"type": "text",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"describe_all\"\n}"
 						},
 						"url": {
 							"raw": "http://{{node6_host}}:{{node_port}}",
@@ -4737,12 +6897,21 @@
 									"]\r",
 									"\r",
 									"pm.test(\"Status code is 200\", function () {\r",
-									"    pm.response.to.have.status(200);\r",
+									"    try {\r",
+									"        pm.response.to.have.status(200);\r",
+									"    } catch (error) {\r",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
+									"    }\r",
 									"});\r",
 									"\r",
-									"pm.test(\"Correct number of records\", function () {\r",
+									"pm.test(\"Updated record exists as expected\", function () {\r",
 									"    var jsonData = pm.response.json();\r",
-									"    pm.expect(jsonData).to.eql(expected_result);\r",
+									"    \r",
+									"    try {\r",
+									"        pm.expect(jsonData).to.eql(expected_result);\r",
+									"    } catch (error) {\r",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
+									"    }\r",
 									"});"
 								],
 								"type": "text/javascript"
@@ -4818,12 +6987,21 @@
 									"]\r",
 									"\r",
 									"pm.test(\"Status code is 200\", function () {\r",
-									"    pm.response.to.have.status(200);\r",
+									"    try {\r",
+									"        pm.response.to.have.status(200);\r",
+									"    } catch (error) {\r",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
+									"    }\r",
 									"});\r",
 									"\r",
-									"pm.test(\"Correct number of records\", function () {\r",
+									"pm.test(\"Updated record exists as expected\", function () {\r",
 									"    var jsonData = pm.response.json();\r",
-									"    pm.expect(jsonData).to.eql(expected_result);\r",
+									"    \r",
+									"    try {\r",
+									"        pm.expect(jsonData).to.eql(expected_result);\r",
+									"    } catch (error) {\r",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
+									"    }\r",
 									"});"
 								],
 								"type": "text/javascript"
@@ -4899,12 +7077,21 @@
 									"]\r",
 									"\r",
 									"pm.test(\"Status code is 200\", function () {\r",
-									"    pm.response.to.have.status(200);\r",
+									"    try {\r",
+									"        pm.response.to.have.status(200);\r",
+									"    } catch (error) {\r",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
+									"    }\r",
 									"});\r",
 									"\r",
-									"pm.test(\"Correct number of records\", function () {\r",
+									"pm.test(\"Updated record exists as expected\", function () {\r",
 									"    var jsonData = pm.response.json();\r",
-									"    pm.expect(jsonData).to.eql(expected_result);\r",
+									"    \r",
+									"    try {\r",
+									"        pm.expect(jsonData).to.eql(expected_result);\r",
+									"    } catch (error) {\r",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
+									"    }\r",
 									"});"
 								],
 								"type": "text/javascript"
@@ -5040,7 +7227,7 @@
 					"response": []
 				},
 				{
-					"name": "Confirm noSQL update node 4",
+					"name": "Confirm noSQL update node 4 B",
 					"event": [
 						{
 							"listen": "test",
@@ -5059,12 +7246,21 @@
 									"]\r",
 									"\r",
 									"pm.test(\"Status code is 200\", function () {\r",
-									"    pm.response.to.have.status(200);\r",
+									"    try {\r",
+									"        pm.response.to.have.status(200);\r",
+									"    } catch (error) {\r",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
+									"    }\r",
 									"});\r",
 									"\r",
-									"pm.test(\"Correct number of records\", function () {\r",
+									"pm.test(\"Updated record exists as expected\", function () {\r",
 									"    var jsonData = pm.response.json();\r",
-									"    pm.expect(jsonData).to.eql(expected_result);\r",
+									"    \r",
+									"    try {\r",
+									"        pm.expect(jsonData).to.eql(expected_result);\r",
+									"    } catch (error) {\r",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
+									"    }\r",
 									"});"
 								],
 								"type": "text/javascript"
@@ -5121,7 +7317,7 @@
 					"response": []
 				},
 				{
-					"name": "Confirm noSQL update node 5",
+					"name": "Confirm noSQL update node 5 B",
 					"event": [
 						{
 							"listen": "test",
@@ -5140,12 +7336,21 @@
 									"]\r",
 									"\r",
 									"pm.test(\"Status code is 200\", function () {\r",
-									"    pm.response.to.have.status(200);\r",
+									"    try {\r",
+									"        pm.response.to.have.status(200);\r",
+									"    } catch (error) {\r",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
+									"    }\r",
 									"});\r",
 									"\r",
-									"pm.test(\"Correct number of records\", function () {\r",
+									"pm.test(\"Updated record exists as expected\", function () {\r",
 									"    var jsonData = pm.response.json();\r",
-									"    pm.expect(jsonData).to.eql(expected_result);\r",
+									"    \r",
+									"    try {\r",
+									"        pm.expect(jsonData).to.eql(expected_result);\r",
+									"    } catch (error) {\r",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
+									"    }\r",
 									"});"
 								],
 								"type": "text/javascript"
@@ -5209,24 +7414,33 @@
 							"script": {
 								"id": "6858e9a6-09d5-4b1a-a559-50ef8e63dccb",
 								"exec": [
-									"let updated_values = [\r",
+									"let expected_result = [\r",
 									"    {\r",
 									"        \"rpm\": 11,\r",
-									"        \"hz\": \"harper\"\r",
+									"        \"hz\": \"update\"\r",
 									"    },\r",
 									"    {\r",
 									"        \"rpm\": 21,\r",
-									"        \"hz\": \"alby\"\r",
+									"        \"hz\": \"update\"\r",
 									"    }\r",
 									"]\r",
 									"\r",
 									"pm.test(\"Status code is 200\", function () {\r",
-									"    pm.response.to.have.status(200);\r",
+									"    try {\r",
+									"        pm.response.to.have.status(200);\r",
+									"    } catch (error) {\r",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
+									"    }\r",
 									"});\r",
 									"\r",
-									"pm.test(\"Correct number of records\", function () {\r",
+									"pm.test(\"Records not updated\", function () {\r",
 									"    var jsonData = pm.response.json();\r",
-									"    pm.expect(jsonData).to.not.eql(updated_values);\r",
+									"    \r",
+									"    try {\r",
+									"        pm.expect(jsonData).to.eql(expected_result);\r",
+									"    } catch (error) {\r",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
+									"    }\r",
 									"});"
 								],
 								"type": "text/javascript"
@@ -5446,12 +7660,21 @@
 								"id": "6858e9a6-09d5-4b1a-a559-50ef8e63dccb",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {\r",
-									"    pm.response.to.have.status(200);\r",
+									"    try {\r",
+									"        pm.response.to.have.status(200);\r",
+									"    } catch (error) {\r",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
+									"    }\r",
 									"});\r",
 									"\r",
 									"pm.test(\"Correct number of records\", function () {\r",
 									"    var jsonData = pm.response.json();\r",
-									"    pm.expect(jsonData[0][\"COUNT(*)\"]).to.be.eql(7);\r",
+									"    \r",
+									"    try {\r",
+									"        pm.expect(jsonData[0][\"COUNT(*)\"]).to.be.eql(7);\r",
+									"    } catch (error) {\r",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
+									"    }\r",
 									"});"
 								],
 								"type": "text/javascript"
@@ -5516,12 +7739,21 @@
 								"id": "6858e9a6-09d5-4b1a-a559-50ef8e63dccb",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {\r",
-									"    pm.response.to.have.status(200);\r",
+									"    try {\r",
+									"        pm.response.to.have.status(200);\r",
+									"    } catch (error) {\r",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
+									"    }\r",
 									"});\r",
 									"\r",
 									"pm.test(\"Correct number of records\", function () {\r",
 									"    var jsonData = pm.response.json();\r",
-									"    pm.expect(jsonData[0][\"COUNT(*)\"]).to.be.eql(7);\r",
+									"    \r",
+									"    try {\r",
+									"        pm.expect(jsonData[0][\"COUNT(*)\"]).to.be.eql(7);\r",
+									"    } catch (error) {\r",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
+									"    }\r",
 									"});"
 								],
 								"type": "text/javascript"
@@ -5735,12 +7967,21 @@
 								"id": "6858e9a6-09d5-4b1a-a559-50ef8e63dccb",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {\r",
-									"    pm.response.to.have.status(200);\r",
+									"    try {\r",
+									"        pm.response.to.have.status(200);\r",
+									"    } catch (error) {\r",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
+									"    }\r",
 									"});\r",
 									"\r",
 									"pm.test(\"Correct number of records\", function () {\r",
 									"    var jsonData = pm.response.json();\r",
-									"    pm.expect(jsonData[0][\"COUNT(*)\"]).to.be.eql(7);\r",
+									"    \r",
+									"    try {\r",
+									"        pm.expect(jsonData[0][\"COUNT(*)\"]).to.be.eql(7);\r",
+									"    } catch (error) {\r",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
+									"    }\r",
 									"});"
 								],
 								"type": "text/javascript"
@@ -5805,12 +8046,21 @@
 								"id": "6858e9a6-09d5-4b1a-a559-50ef8e63dccb",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {\r",
-									"    pm.response.to.have.status(200);\r",
+									"    try {\r",
+									"        pm.response.to.have.status(200);\r",
+									"    } catch (error) {\r",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
+									"    }\r",
 									"});\r",
 									"\r",
 									"pm.test(\"Correct number of records\", function () {\r",
 									"    var jsonData = pm.response.json();\r",
-									"    pm.expect(jsonData[0][\"COUNT(*)\"]).to.be.eql(4);\r",
+									"    \r",
+									"    try {\r",
+									"        pm.expect(jsonData[0][\"COUNT(*)\"]).to.be.eql(4);\r",
+									"    } catch (error) {\r",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
+									"    }\r",
 									"});"
 								],
 								"type": "text/javascript"
@@ -5953,12 +8203,21 @@
 								"id": "6858e9a6-09d5-4b1a-a559-50ef8e63dccb",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {\r",
-									"    pm.response.to.have.status(200);\r",
+									"    try {\r",
+									"        pm.response.to.have.status(200);\r",
+									"    } catch (error) {\r",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
+									"    }\r",
 									"});\r",
 									"\r",
 									"pm.test(\"Correct number of records\", function () {\r",
 									"    var jsonData = pm.response.json();\r",
-									"    pm.expect(jsonData[0][\"COUNT(*)\"]).to.be.eql(1);\r",
+									"    \r",
+									"    try {\r",
+									"        pm.expect(jsonData[0][\"COUNT(*)\"]).to.be.eql(1);\r",
+									"    } catch (error) {\r",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
+									"    }\r",
 									"});"
 								],
 								"type": "text/javascript"
@@ -6023,12 +8282,21 @@
 								"id": "6858e9a6-09d5-4b1a-a559-50ef8e63dccb",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {\r",
-									"    pm.response.to.have.status(200);\r",
+									"    try {\r",
+									"        pm.response.to.have.status(200);\r",
+									"    } catch (error) {\r",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
+									"    }\r",
 									"});\r",
 									"\r",
 									"pm.test(\"Correct number of records\", function () {\r",
 									"    var jsonData = pm.response.json();\r",
-									"    pm.expect(jsonData[0][\"COUNT(*)\"]).to.be.eql(1001);\r",
+									"    \r",
+									"    try {\r",
+									"        pm.expect(jsonData[0][\"COUNT(*)\"]).to.be.eql(1001);\r",
+									"    } catch (error) {\r",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
+									"    }\r",
 									"});"
 								],
 								"type": "text/javascript"
@@ -6093,12 +8361,21 @@
 								"id": "6858e9a6-09d5-4b1a-a559-50ef8e63dccb",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {\r",
-									"    pm.response.to.have.status(200);\r",
+									"    try {\r",
+									"        pm.response.to.have.status(200);\r",
+									"    } catch (error) {\r",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
+									"    }\r",
 									"});\r",
 									"\r",
 									"pm.test(\"Correct number of records\", function () {\r",
 									"    var jsonData = pm.response.json();\r",
-									"    pm.expect(jsonData[0][\"COUNT(*)\"]).to.be.eql(0);\r",
+									"    \r",
+									"    try {\r",
+									"        pm.expect(jsonData[0][\"COUNT(*)\"]).to.be.eql(0);\r",
+									"    } catch (error) {\r",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);\r",
+									"    }\r",
 									"});"
 								],
 								"type": "text/javascript"
@@ -9597,7 +11874,36 @@
 				"id": "f205302e-9417-4026-a0c3-fb5168069093",
 				"type": "text/javascript",
 				"exec": [
-					""
+					"// Retries a request a set amount of times with an incrementing timeout in-between retries. ",
+					"// This function is only called when a test fails. If the test fails more than the retry limit the error is thrown.",
+					"postman.setGlobalVariable(\"function:retryRequest\", (request, error) => {",
+					"    let current_attempt = pm.environment.get('current_attempt');",
+					"    let current_request = pm.environment.get('current_request');",
+					"    let retry_limit = pm.environment.get('retry_limit');",
+					"    let retry_delay_const = pm.environment.get('retry_delay_const');",
+					"    let retry_delay = pm.environment.get('retry_delay');",
+					"    ",
+					"    console.log(`### Request: ${request.name} was resent due to failing with the error: ${error} ###`);",
+					"    ",
+					"    //If this is the first time this function is called for current request, reset environment variables.",
+					"    if (current_request !== request.name) {",
+					"        pm.environment.set('retry_delay', retry_delay_const);",
+					"        retry_delay = pm.environment.get('retry_delay');",
+					"        pm.environment.set('current_attempt', 0);",
+					"        current_attempt = pm.environment.get('current_attempt');",
+					"        pm.environment.set('current_request', request.name);",
+					"        current_request = pm.environment.get('current_request');",
+					"    }",
+					"    ",
+					"    if (current_attempt < retry_limit) {",
+					"        postman.setNextRequest(request.name);",
+					"        pm.environment.set('current_attempt', (parseInt(current_attempt) + 1));",
+					"        pm.environment.set('retry_delay', 500 + (250 * current_attempt));",
+					"        setTimeout(() => {}, retry_delay);",
+					"    } else {",
+					"        throw error;",
+					"    }",
+					"});"
 				]
 			}
 		}

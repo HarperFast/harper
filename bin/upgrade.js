@@ -32,6 +32,7 @@ const path = require('path');
 const fs_extra = require('fs-extra');
 const { isHarperRunning } = require('../utility/common_utils');
 const hdbInfoController = require('../data_layer/hdbInfoController');
+const global_schema = require('../utility/globalSchema');
 
 const UPGRADE_DIR_NAME= 'hdb_upgrade';
 const TAR_FILE_NAME = 'hdb-latest.tar';
@@ -51,7 +52,7 @@ const DOWNLOAD_URL = 'http://products.harperdb.io/api/update?os=';
 
 let Spinner = CLI.Spinner;
 let countdown = new Spinner(`Upgrading HarperDB `, ['⣾', '⣽', '⣻', '⢿', '⡿', '⣟', '⣯', '⣷']);
-
+let p_set_schema_global = promisify(global_schema.setSchemaDataToGlobal);
 module.exports = {
     upgrade,
     startUpgrade,
@@ -192,6 +193,7 @@ async function startUpgrade() {
         let curr_version_path = path.join(__dirname, '../', 'package.json');
         let curr_package_json = fs.readFileSync(curr_version_path, 'utf8');
         CURRENT_VERSION_NUM = JSON.parse(curr_package_json).version;
+        await p_set_schema_global();
     } catch(e) {
         printToLogAndConsole('Error loading the currently installed version number');
         log.error(e);

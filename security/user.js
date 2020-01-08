@@ -58,9 +58,9 @@ async function addUser(user) {
 
     let search_obj = {
         schema: 'system',
-        table : 'hdb_role',
+        table: 'hdb_role',
         hash_values: [clean_user.role],
-        hash_attribute : 'id',
+        hash_attribute: 'id',
         get_attributes: ['id', 'permission', 'role']
     };
 
@@ -69,11 +69,11 @@ async function addUser(user) {
         logger.error(err);
         throw err;
     });
-    if(!search_role || search_role.length < 1){
-        throw new Error("Role not found.");
+    if (!search_role || search_role.length < 1) {
+        throw new Error('Role not found.');
     }
 
-    if(search_role[0].permission.cluster_user === true){
+    if (search_role[0].permission.cluster_user === true) {
         clean_user.hash = crypto_hash.encrypt(clean_user.password);
     }
 

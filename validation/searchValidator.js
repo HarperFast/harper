@@ -1,6 +1,7 @@
 const validate = require('validate.js'),
     _ = require('lodash'),
     validator = require('./validationWrapper');
+const hdb_terms = require('../utility/common_utils');
 
 let search_by_hash_constraints = {
     schema: {
@@ -33,7 +34,7 @@ let search_by_hash_constraints = {
         presence: true
     },
     get_attributes: {
-        presence: true,
+        presence: true
     }
 };
 
@@ -64,7 +65,7 @@ let search_by_hashes_constraints = {
         presence: true
     },
     get_attributes: {
-        presence: true,
+        presence: true
     }
 };
 
@@ -145,18 +146,30 @@ module.exports = function (search_object, type) {
         case 'conditions':
             validation_error = validator.validateObject(search_object, search_by_conditions);
             break;
+        default:
+            throw new Error(`Error validating search, unknown type: ${type}`);
     }
 
-    // validate table and attribute if format valition is valid
+    // validate table and attribute if format validation is valid
     if (!validation_error) {
+        if (!hdb_terms.isEmpty(search_object.hash_values) && !Array.isArray(search_object.hash_values)) {
+            return new Error('hash_values must be an array');
+        }
+
+        if (!hdb_terms.isEmpty(search_object.get_attributes) && !Array.isArray(search_object.get_attributes)) {
+            return new Error('get_attributes must be an array');
+        }
+
         if (search_object.schema !== 'system') { // skip validation for system schema
-            if (!global.hdb_schema[search_object.schema] || !global.hdb_schema[search_object.schema][search_object.table]) {
-                return new Error(`invalid table ${search_object.schema}.${search_object.table}`);
+            let check_schema_table = hdb_terms.checkGlobalSchemaTable(search_object.schema, search_object.table);
+            if (check_schema_table) {
+                return new Error(check_schema_table);
             }
+
             let all_table_attributes = global.hdb_schema[search_object.schema][search_object.table].attributes;
-            let unknown_attributes =  _.filter(search_object.get_attributes, (attribute)=> {
+            let unknown_attributes = _.filter(search_object.get_attributes, (attribute) => {
                 return attribute !== '*' && attribute.attribute !== '*' && // skip check for asterik attribute
-                    !_.some(all_table_attributes, (table_attribute)=> { // attribute should match one of the attribute in global
+                    !_.some(all_table_attributes, (table_attribute) => { // attribute should match one of the attribute in global
                         return table_attribute === attribute || table_attribute.attribute === attribute || table_attribute.attribute === attribute.attribute;
                     });
             });
@@ -170,6 +183,6 @@ module.exports = function (search_object, type) {
             }
         }
     }
+
     return validation_error;
-    // TODO: need to add validation to check if array for get attributes
 };

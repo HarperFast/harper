@@ -44,19 +44,17 @@ const ESCAPED_PERIOD_REGEX = /^U\+002E$/;
 const ESCAPED_DOUBLE_PERIOD_REGEX = /^U\+002EU\+002E$/;
 const MOMENT_DAYS_TAG = 'd';
 const API_TURNOVER_SEC = 999999;
+const WILDCARD_SEARCH_VALUE = '*';
 
 // Name of the System schema
 const SYSTEM_SCHEMA_NAME = 'system';
 const HASH_FOLDER_NAME = '__hdb_hash';
-const SYSTEM_TABLE_HASH = 'id';
 const CLUSTERING_VERSION_HEADER_NAME = 'hdb_version';
 const HDB_HOME_DIR_NAME = '.harperdb';
 const HDB_FILE_SUFFIX = '.hdb';
 const LICENSE_KEY_DIR_NAME = 'keys';
 const BOOT_PROPS_FILE_NAME = 'hdb_boot_properties.file';
 const UPDATE_FILE_NAME = '.updateConfig.json';
-const HDB_INFO_TABLE_NAME = 'hdb_info';
-const HDB_INTO_TABLE_HASH_ATTRIBUTE = 'id';
 const RESTART_CODE = 'SIGTSTP';
 const RESTART_CODE_NUM = 24;
 const RESTART_TIMEOUT_MS = 60000;
@@ -65,6 +63,7 @@ const BLOB_FOLDER_NAME = 'blob';
 const HDB_TRASH_DIR = 'trash';
 const SCHEMA_DIR_NAME = 'schema';
 const LIMIT_COUNT_NAME = '.count';
+const ID_ATTRIBUTE_STRING = 'id';
 
 const HELIUM_URL_PREFIX = 'he://';
 
@@ -103,7 +102,20 @@ const SYSTEM_TABLE_NAMES = {
     ROLE_TABLE_NAME: 'hdb_role',
     SCHEMA_TABLE_NAME: 'hdb_schema',
     TABLE_TABLE_NAME: 'hdb_table',
-    USER_TABLE_NAME: 'hdb_user'
+    USER_TABLE_NAME: 'hdb_user',
+    INFO_TABLE_NAME: 'hdb_info'
+};
+
+const SYSTEM_TABLE_HASH_ATTRIBUTES = {
+    JOB_TABLE_HASH_ATTRIBUTE: 'id',
+    NODE_TABLE_HASH_ATTRIBUTE: 'name',
+    ATTRIBUTE_TABLE_HASH_ATTRIBUTE: 'id',
+    LICENSE_TABLE_HASH_ATTRIBUTE: 'license_key',
+    ROLE_TABLE_HASH_ATTRIBUTE: 'id',
+    SCHEMA_TABLE_HASH_ATTRIBUTE: 'name',
+    TABLE_TABLE_HASH_ATTRIBUTE: 'id',
+    USER_TABLE_HASH_ATTRIBUTE: 'username',
+    INFO_TABLE_ATTRIBUTE: 'info_id'
 };
 
 const HDB_INTERNAL_SC_CHANNEL_PREFIX = 'hdb_internal:';
@@ -214,6 +226,7 @@ const OPERATIONS_ENUM = {
     UPDATE_JOB: 'update_job',
     GET_FINGERPRINT: 'get_fingerprint',
     SET_LICENSE: 'set_license',
+    GET_REGISTRATION_INFO: 'registration_info',
     CONFIGURE_CLUSTER: 'configure_cluster',
     CLUSTER_STATUS: 'cluster_status',
     DROP_ATTRIBUTE: 'drop_attribute',
@@ -404,14 +417,18 @@ const WEBSOCKET_CLOSE_CODE_DESCRIPTION_LOOKUP = {
     1006 : 'CLOSE_ABNORMAL',
     1007 : 'UNSUPPORTED_PAYLOAD',
     1008 : 'POLICY_VIOLATION',
-    1009 : 'CLOSE_TOO_LARGE',
-    1010 : 'MANDATORY_EXTENSION',
-    1011 : 'SERVER_ERROR',
-    1012 : 'SERVICE_RESTART',
-    1013 : 'SERVER_BUSY',
-    1014 : 'BAD_GATEWAY',
-    1015 : 'HANDSHAKE_FAIL',
-    4141 : 'LICENSE_LIMIT_REACHED'
+    1009: 'CLOSE_TOO_LARGE',
+    1010: 'MANDATORY_EXTENSION',
+    1011: 'SERVER_ERROR',
+    1012: 'SERVICE_RESTART',
+    1013: 'SERVER_BUSY',
+    1014: 'BAD_GATEWAY',
+    1015: 'HANDSHAKE_FAIL',
+    4141: 'LICENSE_LIMIT_REACHED'
+};
+
+const NODE_ERROR_CODES = {
+    ENOENT: 'ENOENT'
 };
 
 const HELIUM_RESPONSE_CODES = {
@@ -458,7 +475,6 @@ const HELIUM_VALUE_RANGE_SEARCH_OPS = {
     RANGE_UPPER: "(]"
 };
 
-const HDB_LICENSE_NAME = 'hdb_license';
 const CLUSTERING_MESSAGE_TYPES = cluster_types.CORE_ROOM_MSG_TYPE_ENUM;
 const ORIGINATOR_SET_VALUE = cluster_types.ORIGINATOR_SET_VALUE;
 const NEW_LINE = '\r\n';
@@ -497,18 +513,15 @@ module.exports = {
     SC_PROC_NAME,
     SC_PROC_DESCRIPTOR,
     SYSTEM_SCHEMA_NAME,
-    SYSTEM_TABLE_HASH,
-    HDB_INFO_TABLE_NAME,
-    HDB_INTO_TABLE_HASH_ATTRIBUTE,
     HASH_FOLDER_NAME,
     HDB_HOME_DIR_NAME,
     UPDATE_FILE_NAME,
     LICENSE_KEY_DIR_NAME,
-    CLUSTERING_VERSION_HEADER_NAME,
     BOOT_PROPS_FILE_NAME,
     JOB_TYPE_ENUM,
     JOB_STATUS_ENUM,
     SYSTEM_TABLE_NAMES,
+    SYSTEM_TABLE_HASH_ATTRIBUTES,
     OPERATIONS_ENUM,
     HTTP_STATUS_CODES,
     GEO_CONVERSION_ENUM,
@@ -532,6 +545,7 @@ module.exports = {
     HDB_FILE_PERMISSIONS,
     SCHEMA_DIR_NAME,
     LIMIT_COUNT_NAME,
+    ID_ATTRIBUTE_STRING,
     INSERT_MODULE_ENUM,
     UPGRADE_JSON_FIELD_NAMES_ENUM,
     RESTART_CODE,
@@ -553,7 +567,6 @@ module.exports = {
     STORAGE_TYPES_ENUM,
     HELIUM_RESPONSE_CODES,
     HELIUM_TIME_STAMP_ENUM,
-    HDB_LICENSE_NAME,
     SEARCH_NOT_FOUND_MESSAGE,
     SEARCH_ATTRIBUTE_NOT_FOUND,
     LICENSE_ROLE_DENIED_RESPONSE,
@@ -577,6 +590,8 @@ module.exports = {
     LOOPBACK,
     CODE_EXTENSION,
     COMPILED_EXTENSION,
+    WILDCARD_SEARCH_VALUE,
+    NODE_ERROR_CODES,
     JAVASCRIPT_EXTENSION,
     PermissionResponseObject,
     PermissionAttributeResponseObject,
