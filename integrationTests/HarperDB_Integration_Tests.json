@@ -4573,7 +4573,7 @@
 											"",
 											"pm.test(\"insert array into table confirm\", function () {",
 											"    var jsonData = pm.response.json();",
-											"    pm.expect(jsonData.error.includes(\"There was an error adding a job: No such file or directory /Users/davidcockerill/Desktop/harperdb/test/data/integrationTestsCsvs//Suppliers_wrong.csv\")).to.be.true;",
+											"    pm.expect(jsonData.error.includes(\"There was an error adding a job: No such file or directory\")).to.be.true;",
 											"});"
 										],
 										"type": "text/javascript"
