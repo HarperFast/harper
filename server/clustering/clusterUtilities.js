@@ -604,12 +604,21 @@ function restartHDB() {
         child.on('data', () => {
             log.error('Restart successful');
         });
-    } catch(err) {
+    } catch (err) {
         let msg = `There was an error restarting HarperDB.  Please restart manually. ${err}`;
         console.log(msg);
         log.error(msg);
         throw err;
     }
+}
+
+/**
+ * Test if the passed value is null or undefined.  This will not check string length.
+ * @param value - the value to test
+ * @returns {boolean}
+ */
+function isEmpty(value) {
+    return (value === undefined || value === null);
 }
 
 module.exports = {
@@ -622,5 +631,6 @@ module.exports = {
     clusterMessageHandler: clusterMessageHandler,
     authHeaderToUser: authHeaderToUser,
     setEnterprise: setEnterprise,
-    restartHDB: restartHDB
+    restartHDB: restartHDB,
+    isEmpty
 };
