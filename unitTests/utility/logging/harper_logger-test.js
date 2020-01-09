@@ -713,7 +713,7 @@ describe('Test harper_logger ', () => {
             fs_mkdir_stub = sandbox.stub().returns();
             fs_stub = {
                 existsSync: fs_existsSync_stub,
-                mkdir: fs_mkdir_stub
+                mkdirSync: fs_mkdir_stub
             };
             const initWinstonLogger_stub = sandbox.stub().returns();
             const trace_stub = sandbox.stub().returns();
@@ -758,6 +758,18 @@ describe('Test harper_logger ', () => {
             const test_location = harper_log_rw.__get__('log_location');
 
             expect(test_location).to.equal(default_test_log_path);
+        });
+
+        it('set log location w/ log path with diff ext', () => {
+            harper_log_rw.__set__('log_location', undefined)
+
+            const test_log_path = `${default_test_log_dir}/test_log.txt`;
+
+            setLogLocation_rw(test_log_path);
+
+            const test_location = harper_log_rw.__get__('log_location');
+
+            expect(test_location).to.equal(test_log_path);
         });
 
         it('set log location w/ log dir path and daily turned on', () => {

@@ -389,7 +389,7 @@ function setLogLocation(log_location_setting) {
         log_file_name = DEFAULT_LOG_FILE_NAME;
     } else {
         try {
-            const has_log_ext = path.extname(log_location_setting) === '.log';
+            const has_log_ext = path.extname(log_location_setting).length > 1;
             if (has_log_ext) {
                 const log_settings_directory = path.parse(log_location_setting).dir;
                 const log_settings_name = path.parse(log_location_setting).base;
@@ -400,11 +400,13 @@ function setLogLocation(log_location_setting) {
                 } else {
                     log_directory = log_settings_directory;
                     log_file_name = log_settings_name;
-                    fs.mkdir(log_settings_directory,{ recursive: true },(err) => {
+                    try {
+                        fs.mkdirSync(log_settings_directory,{ recursive: true });
+                    } catch(err) {
                         write_log(INFO, `Attempted to create log directory from settings file but failed.  Using default log path - 'hdb/log/hdb_log.log'`);
                         log_directory = default_log_directory;
                         log_file_name = DEFAULT_LOG_FILE_NAME;
-                    });
+                    }
                 }
             } else {
                 if (fs.existsSync(log_location_setting)) {
@@ -412,10 +414,12 @@ function setLogLocation(log_location_setting) {
                     log_file_name = DEFAULT_LOG_FILE_NAME;
                 } else {
                     log_directory = log_location_setting;
-                    fs.mkdir(log_location_setting,{ recursive: true },(err) => {
+                    try {
+                        fs.mkdirSync(log_location_setting,{ recursive: true });
+                    } catch(err) {
                         write_log(INFO, `Attempted to create log directory from settings file but failed.  Using default log path - 'hdb/log/hdb_log.log'`);
                         log_directory = default_log_directory;
-                    });
+                    }
 
                     log_file_name = DEFAULT_LOG_FILE_NAME;
                 }
