@@ -32,14 +32,15 @@ async function updateRecords(update_obj) {
             return record[schema_table.hash_attribute];
         });
         let data_wrapper = await processRows(update_obj, attributes, schema_table, existing_map);
-        await checkForNewAttributes(update_obj.hdb_auth_header, schema_table, attributes);
+        let new_attributes = await checkForNewAttributes(update_obj.hdb_auth_header, schema_table, attributes);
         await unlinkFiles(data_wrapper.unlinks);
         await processData(data_wrapper);
 
         return {
             written_hashes: data_wrapper.written_hashes,
             skipped_hashes: data_wrapper.skipped_hashes,
-            schema_table
+            schema_table,
+            new_attributes
         };
     } catch(err) {
         throw err;

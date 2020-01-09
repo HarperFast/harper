@@ -2,7 +2,6 @@
 
 const h_utils = require('../../../../utility/common_utils');
 const logger = require('../../../../utility/logging/harper_logger');
-const hdb_terms = require('../../../../utility/hdbTerms');
 const fsCreateAttribute = require('../fsMethods/fsCreateAttribute');
 const signalling = require('../../../../utility/signalling');
 
@@ -20,7 +19,7 @@ module.exports = checkForNewAttributes;
 async function checkForNewAttributes(hdb_auth_header, table_schema, data_attributes){
     try {
         if (h_utils.isEmptyOrZeroLength(data_attributes)) {
-            return;
+            return data_attributes;
         }
 
         let raw_attributes = [];
@@ -35,7 +34,7 @@ async function checkForNewAttributes(hdb_auth_header, table_schema, data_attribu
         });
 
         if (new_attributes.length === 0) {
-            return;
+            return new_attributes;
         }
 
         await Promise.all(
@@ -43,6 +42,8 @@ async function checkForNewAttributes(hdb_auth_header, table_schema, data_attribu
                 await createNewAttribute(hdb_auth_header, table_schema.schema, table_schema.name, attribute);
             })
         );
+
+        return new_attributes;
     } catch(e){
         throw e;
     }
@@ -81,31 +82,7 @@ async function createNewAttribute(hdb_auth_header,schema, table, attribute) {
 async function createAttribute(create_attribute_object) {
     let attribute_structure;
     try {
-        if(global.clustering_on
-            && !create_attribute_object.delegated && create_attribute_object.schema !== 'system') {
-
-            attribute_structure = await fsCreateAttribute(create_attribute_object);
-            create_attribute_object.delegated = true;
-            create_attribute_object.operation = 'create_attribute';
-            create_attribute_object.id = attribute_structure.id;
-
-            let payload = {
-                "type": "clustering_payload",
-                "pid": process.pid,
-                "clustering_type": "broadcast",
-                "id": attribute_structure.id,
-                "body": create_attribute_object
-            };
-
-            h_utils.callProcessSend(payload);
-            signalling.signalSchemaChange({type: 'schema'});
-
-            return attribute_structure;
-        }
         attribute_structure = await fsCreateAttribute(create_attribute_object);
-        let create_att_msg = h_utils.getClusterMessage(hdb_terms.CLUSTERING_MESSAGE_TYPES.HDB_TRANSACTION);
-        create_att_msg.transaction = create_attribute_object;
-        h_utils.sendTransactionToSocketCluster(hdb_terms.INTERNAL_SC_CHANNELS.CREATE_ATTRIBUTE, create_att_msg);
         signalling.signalSchemaChange({type: 'schema'});
 
         return attribute_structure;
