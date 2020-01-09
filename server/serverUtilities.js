@@ -25,8 +25,6 @@ const global_schema = require('../utility/globalSchema');
 const operation_function_caller = require(`../utility/OperationFunctionCaller`);
 const common_utils = require(`../utility/common_utils`);
 const env = require(`../utility/environment/environmentManager`);
-const master_cluster_rate_limiter = require('../server/apiLimiter/MasterClusterRateLimiter');
-const CounterObject = require('../server/apiLimiter/CounterObject');
 
 const UNAUTH_RESPONSE = 403;
 const UNAUTHORIZED_TEXT = 'You are not authorized to perform the operation specified';
@@ -340,7 +338,6 @@ function chooseOperation(json, callback) {
                 error_response.response = UNAUTH_RESPONSE;
                 error_response.error = UNAUTHORIZED_TEXT;
                 return callback(error_response, null);
-                //return callback(`You do not have the required permissions: ${perms_list}`, null);//${util.inspect(perms_list)}`, null);
             }
         } else {
             let function_to_check = (job_operation_function === undefined ? operation_function : job_operation_function);
@@ -355,7 +352,6 @@ function chooseOperation(json, callback) {
                 response.response = UNAUTH_RESPONSE;
                 response.error = UNAUTHORIZED_TEXT;
                 response[terms.UNAUTHORIZED_PERMISSION_NAME] = verify_perms_result;
-                //return callback({"response": UNAUTH_RESPONSE, `${terms.UNAUTHORIZED_PERMISSION_NAME}`:verify_perms_result}, null);
                 return callback(response);
             }
         }

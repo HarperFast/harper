@@ -130,7 +130,6 @@ function verifyPermsAst(ast, user_object, operation) {
         let parsed_ast = new bucket(ast);
         let schemas = parsed_ast.getSchemas();
         let schema_table_map = new Map();
-        let failed_permissions = [];
         let failed_permission_objects = [];
         // Should not continue if there are no schemas defined and there are table columns defined.
         // This is defined so we can do calc selects like : SELECT ABS(-12)
@@ -164,8 +163,6 @@ function verifyPermsAst(ast, user_object, operation) {
             let has_permissions = hasPermissions(user_object, operation, schema_table_map); //NOSONAR;
             if(has_permissions && has_permissions.length) {
                 has_permissions.forEach((has_perms)=> {
-                   failed_permissions.push(has_perms);
-
                     let failed_perm_object = new terms.PermissionResponseObject();
                     failed_perm_object.schema = schemas[s];
                     failed_perm_object.table = has_perms.table;
@@ -231,7 +228,6 @@ function hasPermissions(user_object, op, schema_table_map ) {
                             failed_table.schema = schema_table;
                             failed_table.table = table;
                             failed_table.required_table_permissions.push(perms);
-                            //unauthorized_table.push({"table":table, "required_permission":perms});
                             unauthorized_table.push(failed_table);
                             return unauthorized_table;
                         }
@@ -293,13 +289,9 @@ function verifyPerms(request_json, operation) {
     // TODO - after testing, just return the result of the checkAttributePerms call
     let unauthorized_attributes = checkAttributePerms(getRecordAttributes(request_json), getAttributeRestrictions(request_json.hdb_user, operation_schema, table),op, table, operation_schema);
     if(unauthorized_attributes && unauthorized_attributes.length > 0) {
-        //return unauthorized_attributes;
-        //let error_response = {};
-        //error_response[terms.UNAUTHORIZED_PERMISSION_NAME] = unauthorized_attributes;
-        //return error_response;
         return unauthorized_attributes;
     }
-    // as with verifyPerms, we assume wide open permissions unless otherwise specified.  If we get here, just let it go.
+    // We assume wide open permissions unless otherwise specified.  If we get here, just let it go.
     return [];
 }
 
@@ -309,6 +301,8 @@ function verifyPerms(request_json, operation) {
  * @param record_attributes - An array of the attributes specified in the operation
  * @param role_attribute_restrictions - A Map of each restriction in the user role, specified as [table_name, [attribute_restrictions]].
  * @param operation
+ * @param table_name - name of the table being checked
+ * @param schema_name - name of schema being checked.
  * @returns {Array} - empty array if permissions match, errors are an array of objects.
  */
 function checkAttributePerms(record_attributes, role_attribute_restrictions, operation, table_name, schema_name) {
