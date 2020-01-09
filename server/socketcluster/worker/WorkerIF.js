@@ -158,7 +158,7 @@ class WorkerIF extends SCWorker{
                 if(result) {
                     log.trace(`****issue in room publish in rules****`);
                     let error_result = cluster_utils.isEmpty(types.ERROR_CODES_REVERSE_LOOKUP[result]) ? result : types.ERROR_CODES_REVERSE_LOOKUP[result];
-                    return next(`Issue in room publish in rules: ${error_result}`);
+                    return next(`Issue in room publish in rules: ${error_result} ${req.channel}`);
                 }
                 log.trace(`****pass room publish in rules****`);
                 return next();
