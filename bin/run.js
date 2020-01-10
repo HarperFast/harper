@@ -313,16 +313,20 @@ async function checkPermission() {
 async function kickOffExpress() {
     try {
         let license = hdb_license.licenseSearch();
-
-        if(license.storage_type === terms.STORAGE_TYPES_ENUM.HELIUM){
+        if(license.storage_type === terms.STORAGE_TYPES_ENUM.HELIUM) {
             let helium = await helium_utils.checkHeliumServerRunning();
             await helium_utils.createSystemDataStores(helium);
         }
-
         let args = createForkArgs();
+        let mem_value = undefined;
+        if (env.get('MAX_MEMORY')){
+            let mem_setting_name = env.get("MAX_MEMORY");
+            mem_value = '--max-old-space-size=' + mem_setting_name;
+        }
         child = fork(args[0], [args[1], args[2]], {
             detached: true,
-            stdio: 'ignore'
+            stdio: 'ignore',
+            execArgv: [mem_value]
         });
     } catch(err) {
         console.error(`There was an error starting the REST server.  Please try again.`);
@@ -339,12 +343,7 @@ function createForkArgs(){
     if(terms.CODE_EXTENSION === terms.COMPILED_EXTENSION){
         args.push(path.resolve(__dirname, '../', 'node_modules', 'bytenode', 'cli.js'));
     }
-
     args.push(path.resolve(__dirname, '../', 'server', terms.HDB_PROC_NAME));
-
-    if (env.get('MAX_MEMORY')){
-        args.push(`--max-old-space-size=${env.get('MAX_MEMORY')}`);
-    }
     return args;
 }
 
