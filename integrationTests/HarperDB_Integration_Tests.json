@@ -1,6 +1,6 @@
 {
 	"info": {
-		"_postman_id": "ca781c25-7146-489f-985e-2cee898543cc",
+		"_postman_id": "928d153e-c8c3-4b62-9368-0b244d2cd3bb",
 		"name": "HarperDB Integration Tests",
 		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
 	},
@@ -4573,7 +4573,7 @@
 											"",
 											"pm.test(\"insert array into table confirm\", function () {",
 											"    var jsonData = pm.response.json();",
-											"    pm.expect(jsonData.error.includes('There was an error adding a job: ENOENT: no such file or directory')).to.be.true;",
+											"    pm.expect(jsonData.error.includes(\"There was an error adding a job: No such file or directory\")).to.be.true;",
 											"});"
 										],
 										"type": "text/javascript"
