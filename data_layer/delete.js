@@ -49,9 +49,9 @@ async function deleteFilesBefore(delete_obj) {
         throw new Error('Invalid table.');
     }
 
-    let check_schema_table_exist = common_utils.checkSchemaTableExist(delete_obj.schema, delete_obj.table);
-    if (check_schema_table_exist) {
-        throw new Error(check_schema_table_exist);
+    let invalid_schema_table_msg = common_utils.checkSchemaTableExist(delete_obj.schema, delete_obj.table);
+    if (invalid_schema_table_msg) {
+        throw new Error(invalid_schema_table_msg);
     }
 
     try {
@@ -74,9 +74,9 @@ async function deleteRecord(delete_object) {
         throw validation;
     }
 
-    let check_schema_table_exist = common_utils.checkSchemaTableExist(delete_object.schema, delete_object.table);
-    if (check_schema_table_exist) {
-        throw new Error(check_schema_table_exist);
+    let invalid_schema_table_msg = common_utils.checkSchemaTableExist(delete_object.schema, delete_object.table);
+    if (invalid_schema_table_msg) {
+        throw new Error(invalid_schema_table_msg);
     }
 
     try {

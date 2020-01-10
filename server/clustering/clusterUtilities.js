@@ -177,7 +177,7 @@ function nodeValidation(node_object) {
         delete node_object.hdb_user;
         delete node_object.hdb_auth_header;
     } catch (err) {
-        log.error(`Error delete node_object auth properties: ${err}`);
+        log.warn(`Error delete node_object auth properties: ${err}`);
     }
 }
 

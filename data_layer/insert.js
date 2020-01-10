@@ -110,9 +110,9 @@ async function insertData(insert_object){
         throw new Error('invalid operation, must be insert');
     }
 
-    let check_schema_table_exist = hdb_utils.checkSchemaTableExist(insert_object.schema, insert_object.table);
-    if (check_schema_table_exist) {
-        throw new Error(check_schema_table_exist);
+    let invalid_schema_table_msg = hdb_utils.checkSchemaTableExist(insert_object.schema, insert_object.table);
+    if (invalid_schema_table_msg) {
+        throw new Error(invalid_schema_table_msg);
     }
 
     try {
@@ -120,7 +120,7 @@ async function insertData(insert_object){
         await p_schema_to_global();
 
         return returnObject(INSERT_ACTION, bridge_insert_result.written_hashes, insert_object, bridge_insert_result.skipped_hashes, bridge_insert_result.new_attributes);
-    } catch(e){
+    } catch (e) {
         throw (e);
     }
 }
@@ -134,9 +134,9 @@ async function updateData(update_object) {
         throw new Error('invalid operation, must be update');
     }
 
-    let check_schema_table_exist = hdb_utils.checkSchemaTableExist(update_object.schema, update_object.table);
-    if (check_schema_table_exist) {
-        throw new Error(check_schema_table_exist);
+    let invalid_schema_table_msg = hdb_utils.checkSchemaTableExist(update_object.schema, update_object.table);
+    if (invalid_schema_table_msg) {
+        throw new Error(invalid_schema_table_msg);
     }
 
     try {
@@ -146,7 +146,7 @@ async function updateData(update_object) {
         }
 
         return returnObject(UPDATE_ACTION, bridge_update_result.written_hashes, update_object, bridge_update_result.skipped_hashes, bridge_update_result.new_attributes);
-    } catch(e){
+    } catch (e) {
         throw (e);
     }
 }

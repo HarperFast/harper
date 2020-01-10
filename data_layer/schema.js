@@ -6,6 +6,7 @@ const uuidV4 = require('uuid/v4');
 const env = require('../utility/environment/environmentManager');
 const clone = require('clone');
 const signalling = require('../utility/signalling');
+const hdb_util = require('../utility/common_utils');
 const util = require('util');
 const harperBridge = require('./harperBridge/harperBridge');
 
@@ -135,9 +136,9 @@ async function dropTable(drop_table_object) {
         throw validation_error;
     }
 
-    let check_schema_table_exist = hdb_util.checkSchemaTableExist(drop_table_object.schema, drop_table_object.table);
-    if (check_schema_table_exist) {
-        throw check_schema_table_exist;
+    let invalid_schema_table_msg = hdb_util.checkSchemaTableExist(drop_table_object.schema, drop_table_object.table);
+    if (invalid_schema_table_msg) {
+        throw invalid_schema_table_msg;
     }
 
     try {
