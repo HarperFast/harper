@@ -620,7 +620,7 @@ function createSettingsFile(mount_status, callback) {
             `   ;Setting LOGGER to 1 uses the WINSTON logger.\n` +
             `   ; 2 Uses the more performant PINO logger.\n` +
             `${HDB_SETTINGS_NAMES.LOGGER_KEY} = 1\n` +
-            `   ;The path where log files will be written.\n` +
+            `   ;The path where log files will be written. If there is no file name included in the path, the log file will be created by default as 'hdb_log.log' \n` +
             `${HDB_SETTINGS_NAMES.LOG_PATH_KEY} = ${wizard_result.HDB_ROOT}/log/hdb_log.log\n` +
             `   ;Set to true to enable daily log file rotations - each log file name will be prepended with YYYY-MM-DD (for WINSTON logger only).\n` +
             `${HDB_SETTINGS_NAMES.LOG_DAILY_ROTATE_KEY} = FALSE\n` +
