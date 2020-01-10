@@ -119,7 +119,6 @@ describe('Tests for file system module fsCreateAttribute', () => {
         let insert_update_val_rw;
         let process_rows_rw;
         let process_data_rw;
-        let convert_op_rw;
         let validate_fake = {
             schema_table: SCHEMA_TABLE_TEST,
             hashes: WRITTEN_HASH_TEST,
@@ -132,20 +131,17 @@ describe('Tests for file system module fsCreateAttribute', () => {
         let insert_update_val_stub = sandbox.stub().returns(validate_fake);
         let process_rows_stub = sandbox.stub().resolves(process_rows_fake);
         let process_data_stub = sandbox.stub();
-        let convert_op_stub = sandbox.stub();
 
         before(() => {
             insert_update_val_rw = fsCreateAttribute.__set__('insertUpdateValidate', insert_update_val_stub);
             process_rows_rw = fsCreateAttribute.__set__('processRows', process_rows_stub);
             process_data_rw = fsCreateAttribute.__set__('processData', process_data_stub);
-            convert_op_rw = fsCreateAttribute.__set__('convertOperationToTransaction', convert_op_stub);
         });
 
         after(() => {
             insert_update_val_rw();
             process_rows_rw();
             process_data_rw();
-            convert_op_rw();
         });
 
         it('Test all stubs are called as expected and valid object is returned', async () => {

@@ -8,9 +8,7 @@
  */
 const insert_validator = require('../validation/insertValidator');
 const hdb_utils = require('../utility/common_utils');
-const hdb_terms = require('../utility/hdbTerms');
 const util = require('util');
-const logger = require('../utility/logging/harper_logger');
 const env = require('../utility/environment/environmentManager');
 // Leave this unused signalling import here. Due to circular dependencies we bring it in early to load it before the bridge
 const harperBridge = require('./harperBridge/harperBridge');
@@ -18,7 +16,6 @@ const global_schema = require('../utility/globalSchema');
 
 const p_global_schema = util.promisify(global_schema.getTableSchema);
 const p_schema_to_global = util.promisify(global_schema.setSchemaDataToGlobal);
-
 
 //for release 2.0 we need to turn off threading.  this variable will control the enable/disable
 const UPDATE_ACTION = 'updated';
@@ -29,7 +26,6 @@ module.exports = {
     update: updateData,
     validation
 };
-
 
 // TODO: We have duplicate validation code, here and in the bridge.
 /**
@@ -121,31 +117,11 @@ async function insertData(insert_object){
 
     try {
         let bridge_insert_result = await harperBridge.createRecords(insert_object);
-        convertOperationToTransaction(insert_object, bridge_insert_result.written_hashes, bridge_insert_result.schema_table.hash_attribute);
         await p_schema_to_global();
 
         return returnObject(INSERT_ACTION, bridge_insert_result.written_hashes, insert_object, bridge_insert_result.skipped_hashes, bridge_insert_result.new_attributes);
     } catch(e){
         throw (e);
-    }
-}
-
-function convertOperationToTransaction(write_object, written_hashes, hash_attribute){
-    if(global.hdb_socket_client !== undefined && write_object.schema !== 'system' && Array.isArray(written_hashes) && written_hashes.length > 0){
-        let transaction = {
-            operation: write_object.operation,
-            schema: write_object.schema,
-            table: write_object.table,
-            records:[]
-        };
-
-        write_object.records.forEach(record =>{
-            if(written_hashes.indexOf(hdb_utils.autoCast(record[hash_attribute])) >= 0) {
-                transaction.records.push(record);
-            }
-        });
-        let insert_msg = hdb_utils.getClusterMessage(hdb_terms.CLUSTERING_MESSAGE_TYPES.HDB_TRANSACTION);
-        insert_msg.transaction = transaction;
     }
 }
 
@@ -168,7 +144,6 @@ async function updateData(update_object) {
         if (!hdb_utils.isEmpty(bridge_update_result.existing_rows)) {
             return returnObject(bridge_update_result.update_action, [], update_object, bridge_update_result.hashes);
         }
-        convertOperationToTransaction(update_object, bridge_update_result.written_hashes, bridge_update_result.schema_table.hash_attribute);
 
         return returnObject(UPDATE_ACTION, bridge_update_result.written_hashes, update_object, bridge_update_result.skipped_hashes, bridge_update_result.new_attributes);
     } catch(e){

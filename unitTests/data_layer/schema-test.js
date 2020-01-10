@@ -217,7 +217,6 @@ describe('Test schema module', function() {
         let residence_validator_stub = sinon.stub(schema_validator, 'validateTableResidence');
         let harper_bridge_stub;
 
-
         before(() => {
             harper_bridge_stub = sinon.stub(harperBridge, 'createTable');
             global.hdb_schema = {};
@@ -508,7 +507,6 @@ describe('Test schema module', function() {
      */
     describe('Create attribute', function() {
         let bridge_create_attr_stub;
-        let call_process_send_stub = sinon.stub(common, 'callProcessSend');
         let attribute_structure_fake = {message:'inserted 1 of 1 records', skipped_hashes:'', inserted_hashes:''};
         sinon.stub(process, 'pid').value('8877');
         let payload_fake = {
@@ -527,43 +525,10 @@ describe('Test schema module', function() {
             sandbox.restore();
         });
 
-
-        it('should call process send and return attribute structure with clustering on', async function() {
-            global.clustering_on = true;
-
-            let result = await schema.createAttribute(CREATE_ATTR_OBJECT_TEST);
-
-            expect(bridge_create_attr_stub).to.have.been.calledOnce;
-            expect(bridge_create_attr_stub).to.have.been.calledWith(CREATE_ATTR_OBJECT_TEST);
-            expect(call_process_send_stub).to.have.been.calledOnce;
-            expect(call_process_send_stub).to.have.been.calledWith(payload_fake);
-            expect(signal_schema_change_stub).to.have.been.calledOnce;
-            expect(result).to.equal(attribute_structure_fake);
-        });
-
-        it('should catch thrown error from callProcessSend', async function() {
-            CREATE_ATTR_OBJECT_TEST.delegated = false;
-            global.clustering_on = true;
-            let call_process_send_err = 'Error with process send';
-            call_process_send_stub.throws(new Error(call_process_send_err));
-            let error;
-
-            try {
-                await schema.createAttribute(CREATE_ATTR_OBJECT_TEST);
-            } catch(err) {
-                error = err;
-            }
-
-            expect(error).to.be.instanceOf(Error);
-            expect(error.message).to.equal(call_process_send_err);
-            expect(logger_error_stub).to.have.been.calledWith(error);
-        });
-
         it('should return attribute structure with clustering off', async function() {
             global.clustering_on = false;
             let result = await schema.createAttribute(CREATE_ATTR_OBJECT_TEST);
             expect(bridge_create_attr_stub).to.have.been.calledWith(CREATE_ATTR_OBJECT_TEST);
-            expect(call_process_send_stub).to.have.been.callCount(0);
             expect(signal_schema_change_stub).to.have.been.calledOnce;
             expect(result).to.equal(attribute_structure_fake);
         });
