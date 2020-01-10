@@ -1,5 +1,7 @@
 "use strict";
 
+const _ = require('lodash');
+
 //TODO: Look into a way to import these defs from socketcluster
 const MIDDLEWARE_TYPE = {
     MIDDLEWARE_HANDSHAKE_WS: 'handshakeWS',
@@ -36,6 +38,11 @@ const ERROR_CODES = {
     WORKER_RULE_FAILURE: 12, // There was a failure of a worker rule
     WORKER_RULE_ERROR: 13 // There was an error when evaluating a worker rule
 };
+
+/**
+ * Used for looking up key names by the value.
+ */
+const ERROR_CODES_REVERSE_LOOKUP = _.invert(ERROR_CODES);
 
 const PREMADE_MIDDLEWARE_TYPES = {
     GENERIC: 10,
@@ -119,5 +126,6 @@ module.exports = {
     HDB_HEADER_NAME,
     ROTATING_TRANSACTION_LOG_ENUM,
     EMIT_TYPES,
-    ORIGINATOR_SET_VALUE
+    ORIGINATOR_SET_VALUE,
+    ERROR_CODES_REVERSE_LOOKUP
 };
