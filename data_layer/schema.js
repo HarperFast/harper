@@ -73,9 +73,9 @@ async function createTableStructure(create_table_object) {
 
     validation.validateTableResidence(create_table_object.residence);
 
-    let check_schema_exists = hdb_util.checkSchemaExists(create_table_object.schema);
-    if (check_schema_exists) {
-        throw check_schema_exists;
+    let invalid_schema_msg = hdb_util.checkSchemaExists(create_table_object.schema);
+    if (invalid_schema_msg) {
+        throw invalid_schema_msg;
     }
 
     if (!hdb_util.checkTableExists(create_table_object.schema, create_table_object.table)) {
@@ -113,9 +113,9 @@ async function dropSchema(drop_schema_object) {
         throw validation_error;
     }
 
-    let check_schema_exists = hdb_util.checkSchemaExists(drop_schema_object.schema);
-    if (check_schema_exists) {
-        throw check_schema_exists;
+    let invalid_schema_msg = hdb_util.checkSchemaExists(drop_schema_object.schema);
+    if (invalid_schema_msg) {
+        throw invalid_schema_msg;
     }
 
     try {
