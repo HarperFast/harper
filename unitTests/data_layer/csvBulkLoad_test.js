@@ -276,8 +276,8 @@ describe('Test csvBulkLoad.js', () => {
         it('Test that in case of error remove dir is called to cleanup temp dir', async () => {
             let error_msg = 'Error csv loading file';
             let error;
-            csv_file_load_stub.throws(new Error(error_msg));
-            sandbox.stub(fs,'existsSync').returns(true);
+            csv_file_load_stub.throws(error_msg);
+            sandbox.stub(fs, 'existsSync').returns(true);
 
             try {
                 await csv_rewire.csvURLLoad(CSV_URL_MESSAGE);
@@ -286,7 +286,7 @@ describe('Test csvBulkLoad.js', () => {
             }
 
             expect(remove_dir_stub).to.have.been.calledWith(CSV_URL_TEMP_DIR);
-            expect(error.message).to.equal(error_msg);
+            expect(error).to.equal(`Error loading downloaded CSV data into HarperDB: ${error_msg}`);
         });
     });
 
@@ -312,8 +312,13 @@ describe('Test csvBulkLoad.js', () => {
         });
 
         it('Test error is handled from request promise module', async () => {
-            let test_err_rest = await test_utils.testError(downloadCSVFile_rw('wwwwww.badurl.com'), 'Error downloading CSV file from wwwwww.badurl.com, status code: undefined, message: Error: Invalid URI "wwwwww.badurl.com"');
-            expect(test_err_rest).to.be.true;
+            let error;
+            try {
+                await downloadCSVFile_rw('wwwwww.badurl.com');
+            } catch (err) {
+                error = err;
+            }
+            expect(error).to.be.equal('Error downloading CSV file from wwwwww.badurl.com, status code: undefined. Check the log for more information.');
         });
 
         it('Test for nominal behaviour, stubs are called as expected', async () => {
@@ -433,22 +438,7 @@ describe('Test csvBulkLoad.js', () => {
             expect(error.message).to.equal('Validation error');
             expect(validation_msg_stub).to.have.been.calledOnce;
         });
-        
-        it('Test exception from fs.access is caught', async () => {
-            fs_access_stub.throws(new Error('Access error'));
-            let error;
 
-            try {
-                await csv_rewire.csvFileLoad(json_message_fake);
-            } catch(err) {
-                error = err;
-            }
-
-            expect(error).to.be.instanceof(Error);
-            expect(error.message).to.equal('Access error');
-            expect(fs_access_stub).to.have.been.calledOnce;
-        });
-        
         it('Test success message is returned', async () => {
             let result = await csv_rewire.csvFileLoad(json_message_fake);
 

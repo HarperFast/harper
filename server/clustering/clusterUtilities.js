@@ -162,13 +162,22 @@ function nodeValidation(node_object) {
     }
 
     let subscription_validation = undefined;
-    if(!hdb_utils.isEmptyOrZeroLength(node_object.subscriptions)) {
+    if (!hdb_utils.isEmptyOrZeroLength(node_object.subscriptions)) {
         for (let b = 0; b < node_object.subscriptions.length; b++) {
             subscription_validation = node_subscription_validator(node_object.subscriptions[b]);
             if (subscription_validation) {
                 throw new Error(subscription_validation);
             }
         }
+    }
+
+    // hdb_user and hdb_auth_header aren't required after this point and shouldn't
+    // be included in the insert objects records for add node.
+    try {
+        delete node_object.hdb_user;
+        delete node_object.hdb_auth_header;
+    } catch (err) {
+        log.warn(`Error delete node_object auth properties: ${err}`);
     }
 }
 

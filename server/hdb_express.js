@@ -389,6 +389,7 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
 
         auth.authorize(req, res, function (err, user) {
             if (err) {
+                harper_logger.warn(err);
                 harper_logger.warn(`{"ip":"${req.connection.remoteAddress}", "error":"${err.stack}"`);
                 if (typeof err === 'string') {
                     return res.status(terms.HTTP_STATUS_CODES.UNAUTHORIZED).send({error: err});

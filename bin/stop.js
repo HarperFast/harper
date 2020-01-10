@@ -50,6 +50,7 @@ async function stop() {
         log.info(`Stopping ${hdb_terms.HDB_PROC_NAME} - ${hdb_terms.HDB_PROC_DESCRIPTOR}.`);
         await killProcs(hdb_terms.SC_PROC_NAME, hdb_terms.SC_PROC_DESCRIPTOR);
         log.info(`Stopping ${hdb_terms.SC_PROC_NAME} - ${hdb_terms.SC_PROC_DESCRIPTOR}.`);
+        log.notify(`HarperDB has stopped`);
     } catch(err){
         console.error(err);
         throw err;
@@ -79,7 +80,6 @@ async function killProcs(proc_name, descriptor){
         });
 
         await checkHdbProcsEnd(proc_name);
-        log.notify(`HarperDB has stopped`);
     }catch( err) {
         throw err;
     }
