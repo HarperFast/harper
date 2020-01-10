@@ -26,6 +26,8 @@ const FAILURE_CODE = 'failed';
 const FOREGROUND_ARG = 'foreground';
 const ENOENT_ERR_CODE = -2;
 
+const MEM_SETTING_KEY = '--max-old-space-size=';
+
 // promisified functions
 const p_install_install = promisify(install.install);
 
@@ -313,15 +315,15 @@ async function checkPermission() {
 async function kickOffExpress() {
     try {
         let license = hdb_license.licenseSearch();
-        if(license.storage_type === terms.STORAGE_TYPES_ENUM.HELIUM) {
+        if( license.storage_type === terms.STORAGE_TYPES_ENUM.HELIUM ) {
             let helium = await helium_utils.checkHeliumServerRunning();
             await helium_utils.createSystemDataStores(helium);
         }
         let args = createForkArgs();
-        let mem_value = undefined;
-        if (env.get('MAX_MEMORY')){
-            let mem_setting_name = env.get("MAX_MEMORY");
-            mem_value = '--max-old-space-size=' + mem_setting_name;
+        let mem_value = MEM_SETTING_KEY + terms.HDB_SETTINGS_DEFAULT_VALUES.MAX_MEMORY;
+        let mem_setting_name = env.get(terms.HDB_SETTINGS_NAMES.MAX_MEMORY_KEY);
+        if(mem_setting_name) {
+            mem_value = MEM_SETTING_KEY + mem_setting_name;
         }
         child = fork(args[0], [args[1], args[2]], {
             detached: true,
