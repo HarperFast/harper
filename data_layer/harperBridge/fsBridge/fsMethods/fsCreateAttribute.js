@@ -5,7 +5,6 @@ const schema_validator = require('../../../../validation/schema_validator');
 const hdb_terms = require('../../../../utility/hdbTerms');
 const insertUpdateValidate = require('../../bridgeUtility/insertUpdateValidate');
 const returnObject = require('../../bridgeUtility/insertUpdateReturnObj');
-const convertOperationToTransaction = require('../../bridgeUtility/convertOperationToTransaction');
 const processData = require('../fsUtility/processData');
 const processRows = require('../fsUtility/processRows');
 const uuidV4 = require('uuid/v4');
@@ -86,7 +85,6 @@ async function insertData(insert_object){
         let { schema_table, attributes } = insertUpdateValidate(insert_object);
         let { written_hashes, skipped_hashes, ...data_wrapper } = await processRows(insert_object, attributes, schema_table, null);
         await processData(data_wrapper);
-        convertOperationToTransaction(insert_object, written_hashes, schema_table.hash_attribute);
 
         return returnObject(INSERT_ACTION, written_hashes, insert_object, skipped_hashes);
     } catch(err){

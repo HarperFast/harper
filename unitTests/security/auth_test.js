@@ -99,7 +99,7 @@ describe('Test authorize function', function () {
 
     it('Cannot complete request Basic authorization:  Invalid password', function (done) {
         auth.authorize(invalid_password_basic_request, null, function (err, user) {
-            assert.equal(err, 'Cannot complete request:  Invalid password', 'Cannot complete request:  Invalid password');
+            assert.equal(err, 'Login failed');
             done();
         });
     });
@@ -133,7 +133,7 @@ describe('Test authorize function', function () {
 
     it('Cannot complete request Other authorization:  Invalid password', function (done) {
         auth.authorize(invalid_password_other_request, null, function (err, user) {
-            assert.equal(err, 'Cannot complete request:  Invalid password', 'Cannot complete request:  Invalid password');
+            assert.equal(err, 'Login failed');
             done();
         });
     });
