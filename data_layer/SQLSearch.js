@@ -75,7 +75,10 @@ class SQLSearch {
 
         try {
             // Search for fetch attribute values and consolidate them into this.data[table].__merged_data property
-            await this._getFetchAttributeValues();
+            const simple_query_results = await this._getFetchAttributeValues();
+            if (simple_query_results) {
+                return simple_query_results;
+            }
         } catch (err) {
             log.error('Error thrown from getFetchAttributeValues in SQLSearch class method search.');
             log.error(err);
@@ -109,7 +112,6 @@ class SQLSearch {
 
         try {
             search_results = await this._finalSQL();
-            log.trace(`Search results: ${search_results}`);
             return search_results;
         } catch (err) {
             log.error('Error thrown from finalSQL in SQLSearch class method search.');
@@ -388,8 +390,29 @@ class SQLSearch {
             this._addFetchColumns(this.columns.where);
         }
 
-        //the bitwise or '|' is intentionally used because i want both conditions checked regardless of whether the left condition is false
-        if ((!this.columns.where && this.fetch_attributes.length === 0) | where_string.indexOf(WHERE_CLAUSE_IS_NULL) > -1) {
+        //We need to check if the select includes aggregators - if so, cannot treat as a simple select query
+        // and need to run through alasql
+        let select_columns_aggregators = false;
+        if (this.statement.columns) {
+            this.statement.columns.forEach(col => {
+                if (col.aggregatorid) {
+                    select_columns_aggregators = true;
+                    return;
+                }
+            });
+        }
+        const simple_select_query = !select_columns_aggregators && Object.keys(this.statement).length === 2
+            && !!this.statement.columns && !!this.statement.from && this.statement.from.length === 1;
+        if (simple_select_query) {
+            this.columns.columns.forEach(column => {
+                let found = this._findColumn(column);
+                if (found) {
+                    this.fetch_attributes.push(found);
+                }
+            });
+        }
+        //the bitwise or '|' is intentionally used because I want both conditions checked regardless of whether the left condition is false
+        else if ((!this.columns.where && this.fetch_attributes.length === 0) | where_string.indexOf(WHERE_CLAUSE_IS_NULL) > -1) {
             //get unique ids of tables if there is no join or the where is performing an is null check
             this.tables.forEach(table => {
                 let hash_attribute = {
@@ -547,6 +570,9 @@ class SQLSearch {
                 }
             }
         }
+        if (simple_select_query) {
+            return Object.values(Object.values(this.data)[0].__merged_data);
+        }
     }
 
     /**
@@ -558,7 +584,8 @@ class SQLSearch {
     async _processJoins() {
         let table_data = [];
         let select = [];
-        //TODO possibly need to loop the from here, need to investigate
+        //TODO need to loop from here to ensure cross joins are covered - i.e. 'from tablea a, tableb b, tablec c' -
+        // this is not high priority but is covered in CORE-894
         let from_statement = this.statement.from[0];
         let tables = [from_statement];
         let from_clause = [
@@ -736,7 +763,8 @@ class SQLSearch {
      */
     async _finalSQL() {
         let table_data = [];
-        //TODO possibly need to loop the from here, need to investigate
+        //TODO need to loop from here to ensure cross joins are covered - i.e. 'from tablea a, tableb b, tablec c' -
+        // this is not high priority but is covered in CORE-894
         let from_statement = this.statement.from[0];
         table_data.push(Object.values(this.data[`${from_statement.databaseid_orig}_${from_statement.tableid_orig}`].__merged_data));
         from_statement.as = (from_statement.as ? from_statement.as : from_statement.tableid);
@@ -757,7 +785,7 @@ class SQLSearch {
             let sql = this._buildSQL();
             log.trace(`Final SQL: ${sql}`);
             final_results = await alasql.promise(sql, table_data);
-            log.trace(`Final AlaSQL results: ${final_results}`);
+            log.trace(`Final AlaSQL results data included ${final_results.length} rows`);
         } catch(e) {
             log.error('Error thrown from AlaSQL in SQLSearch class method finalSQL.');
             log.error(e);

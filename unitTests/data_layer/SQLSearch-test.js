@@ -1020,15 +1020,16 @@ describe('Test FileSystem Class',function() {
 
     describe('_getFetchAttributeValues()',function() {
 
-        it('should set hash values to the data[table].__merged_data property for basic full table select', mochaAsyncWrapper(async function() {
-            const expected_result = TEST_DATA_DOG.map(col => ({ [HASH_ATTRIBUTE]: col.id}));
+        it('should return all requested data from the data[table].__merged_data property for basic full table select', mochaAsyncWrapper(async function() {
+            const expected_result = TEST_DATA_DOG;
             const test_sql_basic = sql_basic_dog_select;
             setupTestInstance(test_sql_basic);
 
-            await test_instance._getFetchAttributeValues();
+            const test_result = await test_instance._getFetchAttributeValues();
 
             expect(Object.values(test_instance.data[dog_schema_table_id].__merged_data)).to.deep.equal(expected_result);
-            expect(_getDataByValue_spy.calledOnce).to.equal(true);
+            expect(test_result).to.deep.equal(expected_result);
+            expect(_getDataByValue_spy.callCount).to.equal(4);
         }));
 
         it('should set values to the data[table].__merged_data property for specified hash attributes from WHERE clause', mochaAsyncWrapper(async function() {
