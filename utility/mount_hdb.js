@@ -48,10 +48,16 @@ module.exports = function (logger, hdb_path, callback) {
     makeDirectory(path.join(hdb_path, 'schema/system/hdb_schema/__hdb_hash/name'));
     makeDirectory(path.join(hdb_path, 'schema/system/hdb_schema/__hdb_hash/createddate'));
     makeDirectory(path.join(hdb_path, 'schema/system/hdb_table'));
+    makeDirectory(path.join(hdb_path, 'schema/system/hdb_table/id'));
     makeDirectory(path.join(hdb_path, 'schema/system/hdb_table/schema'));
     makeDirectory(path.join(hdb_path, 'schema/system/hdb_table/name'));
     makeDirectory(path.join(hdb_path, 'schema/system/hdb_table/hash_attribute'));
     makeDirectory(path.join(hdb_path, 'schema/system/hdb_table/residence'));
+    makeDirectory(path.join(hdb_path, 'schema/system/hdb_table/__hdb_hash/id'));
+    makeDirectory(path.join(hdb_path, 'schema/system/hdb_table/__hdb_hash/name'));
+    makeDirectory(path.join(hdb_path, 'schema/system/hdb_table/__hdb_hash/hash_attribute'));
+    makeDirectory(path.join(hdb_path, 'schema/system/hdb_table/__hdb_hash/schema'));
+    makeDirectory(path.join(hdb_path, 'schema/system/hdb_table/__hdb_hash/residence'));
     makeDirectory(path.join(hdb_path, 'schema/system/hdb_user'));
     makeDirectory(path.join(hdb_path, 'schema/system/hdb_role'));
     makeDirectory(path.join(hdb_path, 'schema/system/hdb_nodes'));
