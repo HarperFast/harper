@@ -46,6 +46,10 @@ directive2_0_0.environment_variables.push(
     'daily log files which may consume a large amount of storage depending on your log settings'])
 );
 
+directive2_0_0.environment_variables.push(
+    new env_variable(`${HDB_SETTINGS_NAMES.MAX_MEMORY_KEY}`, `false`, [`;The max memory, in MB, assigned to each HDB process.  Default is 1500 MB.`])
+);
+
 // Move the utilities/keys/060493.ks file to its new home in ~/.harperdb/keys/
 directive2_0_0.functions.push(() => {
     let old_keys_path = undefined;

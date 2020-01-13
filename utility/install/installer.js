@@ -643,7 +643,7 @@ function createSettingsFile(mount_status, callback) {
             `${HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY}=${wizard_result.NODE_NAME}\n` +
             `   ;The user used to connect to other instances of HarperDB, this user must have a role of cluster_user. \n` +
             `${HDB_SETTINGS_NAMES.CLUSTERING_USER_KEY}=${wizard_result.CLUSTERING_USERNAME}\n` +
-            `   ;The max memory, in MB, assigned to each HDB process.  Default is 1500 Mb.\n` +
+            `   ;The max memory, in MB, assigned to each HDB process.  Default is 1500 MB.\n` +
             `${HDB_SETTINGS_NAMES.MAX_MEMORY_KEY}=${hdb_terms.HDB_SETTINGS_DEFAULT_VALUES.MAX_MEMORY}\n`
         ;
 
