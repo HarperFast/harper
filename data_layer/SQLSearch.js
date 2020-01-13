@@ -392,16 +392,9 @@ class SQLSearch {
 
         //We need to check if the select includes aggregators - if so, cannot treat as a simple select query
         // and need to run through alasql
-        let select_columns_aggregators = false;
-        if (this.statement.columns) {
-            this.statement.columns.forEach(col => {
-                if (col.aggregatorid) {
-                    select_columns_aggregators = true;
-                    return;
-                }
-            });
-        }
-        const simple_select_query = !select_columns_aggregators && Object.keys(this.statement).length === 2
+        const has_aggregators = hasColumnAggregators(this.statement.columns);
+
+        const simple_select_query = !has_aggregators && Object.keys(this.statement).length === 2
             && !!this.statement.columns && !!this.statement.from && this.statement.from.length === 1;
         if (simple_select_query) {
             this.columns.columns.forEach(column => {
@@ -820,3 +813,15 @@ class SQLSearch {
 }
 
 module.exports = SQLSearch;
+
+function hasColumnAggregators(columns) {
+    let has_aggregators = false;
+    for (let col of columns ) {
+        if (col.aggregatorid) {
+            has_aggregators = true;
+            break;
+        }
+    };
+
+    return has_aggregators;
+}
