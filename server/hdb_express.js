@@ -400,7 +400,7 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
             server_utilities.chooseOperation(req.body, (err, operation_function) => {
                 if (err) {
                     harper_logger.error(err);
-                    if(err && err.response === server_utilities.UNAUTH_RESPONSE) {
+                    if(err.response && err.response === server_utilities.UNAUTH_RESPONSE) {
                         return res.status(terms.HTTP_STATUS_CODES.FORBIDDEN).send(err);
                     }
                     if (typeof err === 'string') {
