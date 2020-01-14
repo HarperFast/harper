@@ -304,7 +304,6 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
     const compression = require('compression');
 
     const app = express();
-    let license;
 
     // rate limiter
     const apiLimiterClusterRateLimiter = require('./apiLimiter/apiLimiterClusterRateLimiter');
@@ -402,8 +401,8 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
             server_utilities.chooseOperation(req.body, (err, operation_function) => {
                 if (err) {
                     harper_logger.error(err);
-                    if(err === server_utilities.UNAUTH_RESPONSE) {
-                        return res.status(terms.HTTP_STATUS_CODES.FORBIDDEN).send({error: server_utilities.UNAUTHORIZED_TEXT});
+                    if(err.response && err.response === server_utilities.UNAUTH_RESPONSE) {
+                        return res.status(terms.HTTP_STATUS_CODES.FORBIDDEN).send(err);
                     }
                     if (typeof err === 'string') {
                         return res.status(terms.HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR).send({error: err});
