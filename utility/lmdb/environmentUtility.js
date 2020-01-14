@@ -9,6 +9,70 @@ const MAP_SIZE = 1000 * 1024 * 1024 * 1024;
 //allow up to 10,000 named data bases in an environment
 const MAX_DBS = 10000;
 const INTERNAL_DBIS_NAME = '__dbis__';
+const MDB_FILE_NAME = 'data.mdb';
+
+/***  VALIDATION FUNCTIONS ***/
+
+/**
+ * validates the base_path & env_name exist.  checks base_path is a valid path
+ * @param base_path
+ * @param env_name
+ */
+async function pathEnvNameValidation(base_path, env_name){
+    if(base_path === undefined){
+        throw new Error('base_path is required');
+    }
+
+    if(env_name === undefined){
+        throw new Error('env_name is required');
+    }
+
+    //verify the base_path is valid
+    try {
+        await fs.access(base_path);
+    } catch(e){
+        if(e.code === 'ENOENT'){
+            throw new Error('invalid base_path');
+        }
+
+        throw e;
+    }
+}
+
+/**
+ * checks the environment file exists
+ * @param base_path
+ * @param env_name
+ * @returns {Promise<void>}
+ */
+async function validateEnvironmentPath(base_path, env_name){
+    try {
+        await fs.access(path.join(base_path, env_name, MDB_FILE_NAME), fs.constants.R_OK | fs.constants.F_OK);
+    } catch(e){
+        if(e.code === 'ENOENT'){
+            throw new Error('invalid environment');
+        }
+
+        throw e;
+    }
+}
+
+/**
+ * validates the env & dbi_name variables exist
+ * @param env
+ * @param dbi_name
+ */
+function validateEnvDBIName(env, dbi_name){
+    if(env === undefined){
+        throw new Error('env is required');
+    }
+
+    if(dbi_name === undefined){
+        throw new Error('dbi_name is required');
+    }
+}
+
+/***  ENVIRONMENT FUNCTIONS ***/
 
 /**
  * creates a new environment
@@ -17,10 +81,12 @@ const INTERNAL_DBIS_NAME = '__dbis__';
  * @returns {Promise<lmdb.Env>} - LMDB environment object
  */
 async function createEnvironment(base_path, env_name) {
+    await pathEnvNameValidation(base_path, env_name);
+
     try {
-        await fs.access(path.join(base_path, env_name, 'data.mdb'), fs.constants.R_OK | fs.constants.F_OK);
+        await fs.access(path.join(base_path, env_name, MDB_FILE_NAME), fs.constants.R_OK | fs.constants.F_OK);
         //if no error is thrown the environment already exists so we return the handle to that environment
-        return openEnvironment(base_path, env_name);
+        return await openEnvironment(base_path, env_name);
     } catch(e){
         if (e.code === 'ENOENT'){
             await fs.mkdirp(path.join(base_path, env_name));
@@ -43,6 +109,7 @@ async function createEnvironment(base_path, env_name) {
 
             dbi.close();
 
+            //add environment to global variable to cache reference to environment & named databases
             if(global.lmdb_map === undefined) {
                 global.lmdb_map = Object.create(null);
             }
@@ -61,7 +128,11 @@ async function createEnvironment(base_path, env_name) {
  * @param base_path - the base pase under which the envrinment resides
  * @param env_name -  the name of the environment
  */
-function openEnvironment(base_path, env_name){
+async function openEnvironment(base_path, env_name){
+    await pathEnvNameValidation(base_path, env_name);
+
+    await validateEnvironmentPath(base_path, env_name);
+
     if(global.lmdb_map === undefined) {
         global.lmdb_map = Object.create(null);
     }
@@ -83,7 +154,7 @@ function openEnvironment(base_path, env_name){
 
     let dbis = listDBIs(env);
 
-    Object.keys(dbis).forEach(dbi=>{
+    dbis.forEach(dbi=>{
         openDBI(env, dbi);
     });
 
@@ -92,6 +163,7 @@ function openEnvironment(base_path, env_name){
     return env;
 }
 
+
 /**
  * deletes the environment from the file system & removes the reference from global
  * @param base_path
@@ -99,12 +171,16 @@ function openEnvironment(base_path, env_name){
  * @returns {Promise<void>}
  */
 async function deleteEnvironment(base_path, env_name) {
+    await pathEnvNameValidation(base_path, env_name);
+    await validateEnvironmentPath(base_path, env_name);
+
     await fs.remove(path.join(base_path, env_name));
     if(global.lmdb_map !== undefined) {
         delete global.lmdb_map[env_name];
     }
 }
 
+/***  DBI FUNCTIONS ***/
 
 /**
  * lists & stats named databases in an environment
@@ -112,21 +188,21 @@ async function deleteEnvironment(base_path, env_name) {
  * @returns {[]}
  */
 function listDBIs(env){
-    let dbis = {};
+    if(env === undefined){
+        throw new Error('env is required');
+    }
 
-    let default_dbi = env.openDbi({
-        name:INTERNAL_DBIS_NAME,
-        create: false
-    });
+    let dbis = [];
+
+    let default_dbi = openDBI(env, INTERNAL_DBIS_NAME);
 
     let txn = env.beginTxn({readOnly: true });
 
     let cursor = new lmdb.Cursor(txn, default_dbi);
 
     for (let found = cursor.goToFirst(); found !== null; found = cursor.goToNext()) {
-        let dbi_name = cursor.getCurrentString();
-        if(dbi_name !== INTERNAL_DBIS_NAME) {
-            dbis[dbi_name] = statDBI(env, dbi_name);
+        if(found !== INTERNAL_DBIS_NAME) {
+            dbis.push(found);
         }
     }
 
@@ -140,6 +216,8 @@ function listDBIs(env){
  * @returns {*}
  */
 function createDBI(env, dbi_name){
+    validateEnvDBIName(env, dbi_name);
+
     let new_dbi = env.openDbi({
         name: dbi_name,
         create: true,
@@ -163,15 +241,26 @@ function createDBI(env, dbi_name){
  * @returns {*}
  */
 function openDBI(env, dbi_name){
+    validateEnvDBIName(env, dbi_name);
+
     if(env.dbis[dbi_name] !== undefined){
         return env.dbis[dbi_name];
     }
 
-    let dbi = env.openDbi({
-        name: dbi_name,
-        create: false,
-        dupSort: true
-    });
+    let dbi;
+    try {
+        dbi = env.openDbi({
+            name: dbi_name,
+            create: false,
+            dupSort: true
+        });
+    } catch(e){
+        if(e.message.startsWith('MDB_NOTFOUND') === true){
+            throw new Error('dbi does not exist');
+        }
+
+        throw e;
+    }
 
     env.dbis[dbi_name] = dbi;
     return dbi;
@@ -184,6 +273,7 @@ function openDBI(env, dbi_name){
  * @returns {void | Promise<Stats> | *}
  */
 function statDBI(env, dbi_name){
+    validateEnvDBIName(env, dbi_name);
     let dbi = openDBI(env, dbi_name);
     let txn = env.beginTxn();
     let stats = dbi.stat(txn);
@@ -197,12 +287,18 @@ function statDBI(env, dbi_name){
  * @param dbi_name
  */
 function dropDBI(env, dbi_name){
+    validateEnvDBIName(env, dbi_name);
+
     let dbi = openDBI(env, dbi_name);
     dbi.drop();
 
+    if(env.dbis !== undefined){
+        delete env.dbis[dbi_name];
+    }
+
     let dbis = openDBI(env, INTERNAL_DBIS_NAME);
     let txn = env.beginTxn();
-    txn.putString(dbis, dbi_name);
+    txn.del(dbis, dbi_name);
     txn.commit();
 }
 
