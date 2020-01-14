@@ -468,7 +468,7 @@ describe("Test LMDB environmentUtility module", ()=>{
                 let err;
                 let dbi;
                 try {
-                    dbi = await lmdb_env_util.createDBI(env, ID_DBI_NAME);
+                    dbi = await lmdb_env_util.createDBI(env, ID_DBI_NAME, true);
                 }catch(e){
                     err = e;
                 }
@@ -566,7 +566,7 @@ describe("Test LMDB environmentUtility module", ()=>{
 
                 env = await lmdb_env_util.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
                 env2 = await lmdb_env_util.createEnvironment(BASE_TEST_PATH, BAD_TEST_ENVIRONMENT_NAME);
-                await lmdb_env_util.createDBI(env, ID_DBI_NAME);
+                await lmdb_env_util.createDBI(env, ID_DBI_NAME, true);
             });
 
             after(async () => {

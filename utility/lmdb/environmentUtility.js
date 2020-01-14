@@ -213,15 +213,16 @@ function listDBIs(env){
  * creates a new named database in an environment
  * @param env
  * @param dbi_name
+ * @param dup_sort
  * @returns {*}
  */
-function createDBI(env, dbi_name){
+function createDBI(env, dbi_name, dup_sort){
     validateEnvDBIName(env, dbi_name);
 
     let new_dbi = env.openDbi({
         name: dbi_name,
         create: true,
-        dupSort: true
+        dupSort: dup_sort === true
     });
 
     let dbis = openDBI(env, INTERNAL_DBIS_NAME);
