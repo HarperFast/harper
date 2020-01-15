@@ -49,7 +49,6 @@ function insertRecords(env, hash_attribute, all_attributes , records){
 
         return result;
     }catch(e){
-        console.log(e);
         if(txn !== undefined){
             txn.abort();
         }
