@@ -166,7 +166,7 @@ function nodeValidation(node_object) {
         for (let b = 0; b < node_object.subscriptions.length; b++) {
             subscription_validation = node_subscription_validator(node_object.subscriptions[b]);
             if (subscription_validation) {
-                throw new Error(subscription_validation);
+                throw subscription_validation;
             }
         }
     }
