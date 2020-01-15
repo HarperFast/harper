@@ -213,6 +213,29 @@ describe('Test clusterUtilities' , ()=> {
                 cluster_utils_node_validation(obj);
             });
         });
+
+        it('Pass in system table name system, get error', () => {
+            let obj = test_util.deepClone(ADD_NODE);
+            let sub_obj = test_util.deepClone(SUBSCRIPTIONS_OBJECT);
+            sub_obj.channel = 'system:hdb_info';
+            obj.subscriptions = [sub_obj];
+
+            assert.throws(() => {
+                cluster_utils_node_validation(obj);
+            }, (err) => {
+                assert.deepStrictEqual(err, 'Error: Channel invalid, channel cannot begin with reserved word: system:hdb_info');
+            });
+        });
+
+        it('Pass in system table name hdb_internal, get error', () => {
+            let obj = test_util.deepClone(ADD_NODE);
+            obj.subscriptions = {};
+            assert.throws(() => {
+                cluster_utils_node_validation(obj);
+            }, (err) => {
+                assert.deepStrictEqual(err, 'this');
+            });
+        });
     });
 
     describe('Test updateNode', () => {
