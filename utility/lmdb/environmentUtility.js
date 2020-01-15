@@ -15,8 +15,8 @@ const MDB_FILE_NAME = 'data.mdb';
 
 /**
  * validates the base_path & env_name exist.  checks base_path is a valid path
- * @param base_path
- * @param env_name
+ * @param {String} base_path
+ * @param {String} env_name
  */
 async function pathEnvNameValidation(base_path, env_name){
     if(base_path === undefined){
@@ -41,8 +41,8 @@ async function pathEnvNameValidation(base_path, env_name){
 
 /**
  * checks the environment file exists
- * @param base_path
- * @param env_name
+ * @param {String} base_path
+ * @param {String} env_name
  * @returns {Promise<void>}
  */
 async function validateEnvironmentPath(base_path, env_name){
@@ -59,7 +59,7 @@ async function validateEnvironmentPath(base_path, env_name){
 
 /**
  * validates the env & dbi_name variables exist
- * @param env
+ * @param {lmdb.Env} env
  * @param dbi_name
  */
 function validateEnvDBIName(env, dbi_name){
@@ -125,8 +125,8 @@ async function createEnvironment(base_path, env_name) {
 /**
  * opens an environment
  * @returns {lmdb.Env}
- * @param base_path - the base pase under which the envrinment resides
- * @param env_name -  the name of the environment
+ * @param {String} base_path - the base pase under which the envrinment resides
+ * @param {String} env_name -  the name of the environment
  */
 async function openEnvironment(base_path, env_name){
     await pathEnvNameValidation(base_path, env_name);
@@ -166,8 +166,8 @@ async function openEnvironment(base_path, env_name){
 
 /**
  * deletes the environment from the file system & removes the reference from global
- * @param base_path
- * @param env_name
+ * @param {String} base_path
+ * @param {String} env_name
  * @returns {Promise<void>}
  */
 async function deleteEnvironment(base_path, env_name) {
@@ -184,7 +184,7 @@ async function deleteEnvironment(base_path, env_name) {
 
 /**
  * lists & stats named databases in an environment
- * @param env - environment object
+ * @param {lmdb.Env} env - environment object
  * @returns {[]}
  */
 function listDBIs(env){
@@ -195,7 +195,7 @@ function listDBIs(env){
     let dbis = [];
 
     let default_dbi = openDBI(env, INTERNAL_DBIS_NAME);
-
+//TODO implement TransactionCursor
     let txn = env.beginTxn({readOnly: true });
 
     let cursor = new lmdb.Cursor(txn, default_dbi);
@@ -211,9 +211,9 @@ function listDBIs(env){
 
 /**
  * creates a new named database in an environment
- * @param env
- * @param dbi_name
- * @param dup_sort
+ * @param {lmdb.Env} env
+ * @param {String} dbi_name
+ * @param {Boolean} [dup_sort]
  * @returns {*}
  */
 function createDBI(env, dbi_name, dup_sort){
@@ -237,8 +237,8 @@ function createDBI(env, dbi_name, dup_sort){
 
 /**
  * opens an existing named database from an environment
- * @param env
- * @param dbi_name
+ * @param {lmdb.env} env
+ * @param {String} dbi_name
  * @returns {*}
  */
 function openDBI(env, dbi_name){
@@ -269,8 +269,8 @@ function openDBI(env, dbi_name){
 
 /**
  * gets the statistics for a named database from the environment
- * @param env
- * @param dbi_name
+ * @param {lmdb.Env} env
+ * @param {String} dbi_name
  * @returns {void | Promise<Stats> | *}
  */
 function statDBI(env, dbi_name){
@@ -284,8 +284,8 @@ function statDBI(env, dbi_name){
 
 /**
  * removes a named database from an environment
- * @param env
- * @param dbi_name
+ * @param {lmdb.Env} env
+ * @param {String} dbi_name
  */
 function dropDBI(env, dbi_name){
     validateEnvDBIName(env, dbi_name);
@@ -297,6 +297,7 @@ function dropDBI(env, dbi_name){
         delete env.dbis[dbi_name];
     }
 
+    //TODO implemenmt delete function when it's created
     let dbis = openDBI(env, INTERNAL_DBIS_NAME);
     let txn = env.beginTxn();
     txn.del(dbis, dbi_name);

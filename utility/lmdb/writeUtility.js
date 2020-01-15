@@ -18,7 +18,7 @@ function insertRecords(env, hash_attribute, all_attributes , records){
     try {
 
         //dbis must be opened / created before starting the transaction
-        initializeDBIs(env, records,hash_attribute, all_attributes);
+        initializeDBIs(env, hash_attribute, all_attributes);
 
         txn = env.beginTxn();
 
@@ -58,15 +58,18 @@ function insertRecords(env, hash_attribute, all_attributes , records){
 }
 
 /**
- * validates the parameters for LMDB
+ *
  * @param {lmdb.Env} env - lmdb environment object
  * @param {String} hash_attribute - name of the table's hash attribute
  * @param {Array.<String>} all_attributes - list of all attributes to write to the database
- * @param  {Array.<Object>} records - object array records to insert
  */
-function validateInsert(env, hash_attribute, all_attributes , records){
+function validateBasic(env, hash_attribute, all_attributes){
     if(env === undefined){
         throw new Error('env is required');
+    }
+
+    if(!(env instanceof lmdb.Env)){
+        throw new Error('invalid environment object');
     }
 
     if(hash_attribute === undefined){
@@ -80,6 +83,17 @@ function validateInsert(env, hash_attribute, all_attributes , records){
     if(!Array.isArray(all_attributes)){
         throw new Error('all_attributes must be an array');
     }
+}
+
+/**
+ * validates the parameters for LMDB
+ * @param {lmdb.Env} env - lmdb environment object
+ * @param {String} hash_attribute - name of the table's hash attribute
+ * @param {Array.<String>} all_attributes - list of all attributes to write to the database
+ * @param  {Array.<Object>} records - object array records to insert
+ */
+function validateInsert(env, hash_attribute, all_attributes , records){
+    validateBasic(env, hash_attribute, all_attributes);
 
     if(records === undefined){
         throw new Error('records is required');
@@ -107,6 +121,7 @@ function stringifyData(raw_value){
         value = raw_value.toString();
     }
 
+    //LMDB has a 511 byte limit for keys, so we return null if the byte size is larger than 511 to not index that value
     if(Buffer.byteLength(value) > MAX_BYTE_SIZE){
         return null;
     }
@@ -119,15 +134,14 @@ function stringifyData(raw_value){
  * @param {lmdb.Env} env - lmdb environment object
  * @param {String} hash_attribute - name of the table's hash attribute
  * @param {Array.<String>} all_attributes - list of all attributes to write to the database
- * @param  {Array.<Object>} records - object array records to insert
  */
-function initializeDBIs(env, records, hash_attribute, all_attributes){
+function initializeDBIs(env, hash_attribute, all_attributes){
     for(let x = 0; x < all_attributes.length; x++){
         let attribute = all_attributes[x];
         try {
             environment_util.openDBI(env, attribute);
         } catch (e) {
-            if (e.message.startsWith('MDB_NOTFOUND') === true) {
+            if (e.message === 'dbi does not exist') {
                 environment_util.createDBI(env, attribute, attribute !== hash_attribute );
             } else {
                 throw e;

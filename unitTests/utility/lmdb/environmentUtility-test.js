@@ -143,7 +143,7 @@ describe("Test LMDB environmentUtility module", ()=>{
                 err = e;
             }
 
-            assert.deepEqual(err, ENV_REQUIRED_ERROR);
+            assert.deepStrictEqual(err, ENV_REQUIRED_ERROR);
         });
 
         it('call function no dbi_name', async ()=>{
@@ -154,7 +154,7 @@ describe("Test LMDB environmentUtility module", ()=>{
                 err = e;
             }
 
-            assert.deepEqual(err, DBI_NAME_REQUIRED_ERROR);
+            assert.deepStrictEqual(err, DBI_NAME_REQUIRED_ERROR);
         });
 
         it('call function happy path', async ()=>{
@@ -165,7 +165,7 @@ describe("Test LMDB environmentUtility module", ()=>{
                 err = e;
             }
 
-            assert.deepEqual(err, undefined);
+            assert.deepStrictEqual(err, undefined);
         });
     });
 
@@ -187,7 +187,7 @@ describe("Test LMDB environmentUtility module", ()=>{
                 err = e;
             }
 
-            assert.deepEqual(err, BASE_PATH_REQUIRED_ERROR);
+            assert.deepStrictEqual(err, BASE_PATH_REQUIRED_ERROR);
         });
 
         it('call function no env_name', async()=>{
@@ -198,7 +198,7 @@ describe("Test LMDB environmentUtility module", ()=>{
                 err = e;
             }
 
-            assert.deepEqual(err, ENV_NAME_REQUIRED_ERROR);
+            assert.deepStrictEqual(err, ENV_NAME_REQUIRED_ERROR);
         });
 
         it('call function invalid base_path', async ()=>{
@@ -209,7 +209,7 @@ describe("Test LMDB environmentUtility module", ()=>{
                 err = e;
             }
 
-            assert.deepEqual(err, INVALID_BASE_PATH_ERROR);
+            assert.deepStrictEqual(err, INVALID_BASE_PATH_ERROR);
         });
 
         it('call function happy path', async ()=>{
@@ -220,7 +220,7 @@ describe("Test LMDB environmentUtility module", ()=>{
                 env_err = e;
             }
 
-            assert.deepEqual(env_err, undefined);
+            assert.deepStrictEqual(env_err, undefined);
 
             let err;
             try {
@@ -229,10 +229,10 @@ describe("Test LMDB environmentUtility module", ()=>{
                 err = e;
             }
 
-            assert.deepEqual(err, undefined);
+            assert.deepStrictEqual(err, undefined);
 
-            assert.notDeepEqual(global.lmdb_map, undefined);
-            assert.notDeepEqual(global.lmdb_map[TEST_ENVIRONMENT_NAME], undefined);
+            assert.notDeepStrictEqual(global.lmdb_map, undefined);
+            assert.notDeepStrictEqual(global.lmdb_map[TEST_ENVIRONMENT_NAME], undefined);
         });
 
         it('create existing environment', async ()=>{
@@ -244,7 +244,7 @@ describe("Test LMDB environmentUtility module", ()=>{
                 env_err = e;
             }
 
-            assert.deepEqual(env_err, undefined);
+            assert.deepStrictEqual(env_err, undefined);
 
             let err;
             try {
@@ -253,10 +253,10 @@ describe("Test LMDB environmentUtility module", ()=>{
                 err = e;
             }
 
-            assert.deepEqual(err, undefined);
+            assert.deepStrictEqual(err, undefined);
 
-            assert.notDeepEqual(global.lmdb_map, undefined);
-            assert.notDeepEqual(global.lmdb_map[TEST_ENVIRONMENT_NAME], undefined);
+            assert.notDeepStrictEqual(global.lmdb_map, undefined);
+            assert.notDeepStrictEqual(global.lmdb_map[TEST_ENVIRONMENT_NAME], undefined);
         });
     });
 
@@ -282,7 +282,7 @@ describe("Test LMDB environmentUtility module", ()=>{
                 err = e;
             }
 
-            assert.deepEqual(err, BASE_PATH_REQUIRED_ERROR);
+            assert.deepStrictEqual(err, BASE_PATH_REQUIRED_ERROR);
         });
 
         it('call function no env_name', async()=>{
@@ -293,7 +293,7 @@ describe("Test LMDB environmentUtility module", ()=>{
                 err = e;
             }
 
-            assert.deepEqual(err, ENV_NAME_REQUIRED_ERROR);
+            assert.deepStrictEqual(err, ENV_NAME_REQUIRED_ERROR);
         });
 
         it('call function invalid base_path', async ()=>{
@@ -304,7 +304,7 @@ describe("Test LMDB environmentUtility module", ()=>{
                 err = e;
             }
 
-            assert.deepEqual(err, INVALID_BASE_PATH_ERROR);
+            assert.deepStrictEqual(err, INVALID_BASE_PATH_ERROR);
         });
 
         it('open non-existent environment', async ()=>{
@@ -315,7 +315,7 @@ describe("Test LMDB environmentUtility module", ()=>{
                 err = e;
             }
 
-            assert.deepEqual(err, INVALID_ENVIRONMENT_ERROR);
+            assert.deepStrictEqual(err, INVALID_ENVIRONMENT_ERROR);
         });
 
         it('happy path test', async ()=>{
@@ -327,10 +327,10 @@ describe("Test LMDB environmentUtility module", ()=>{
                 err = e;
             }
 
-            assert.deepEqual(err, undefined);
-            assert.notDeepEqual(env, undefined);
-            assert.notDeepEqual(global.lmdb_map[TEST_ENVIRONMENT_NAME], undefined);
-            assert.deepEqual(env, global.lmdb_map[TEST_ENVIRONMENT_NAME]);
+            assert.deepStrictEqual(err, undefined);
+            assert.notDeepStrictEqual(env, undefined);
+            assert.notDeepStrictEqual(global.lmdb_map[TEST_ENVIRONMENT_NAME], undefined);
+            assert.deepStrictEqual(env, global.lmdb_map[TEST_ENVIRONMENT_NAME]);
         });
 
     });
@@ -357,7 +357,7 @@ describe("Test LMDB environmentUtility module", ()=>{
                 err = e;
             }
 
-            assert.deepEqual(err, BASE_PATH_REQUIRED_ERROR);
+            assert.deepStrictEqual(err, BASE_PATH_REQUIRED_ERROR);
         });
 
         it('call function no env_name', async()=>{
@@ -368,7 +368,7 @@ describe("Test LMDB environmentUtility module", ()=>{
                 err = e;
             }
 
-            assert.deepEqual(err, ENV_NAME_REQUIRED_ERROR);
+            assert.deepStrictEqual(err, ENV_NAME_REQUIRED_ERROR);
         });
 
         it('call function invalid base_path', async ()=>{
@@ -379,7 +379,7 @@ describe("Test LMDB environmentUtility module", ()=>{
                 err = e;
             }
 
-            assert.deepEqual(err, INVALID_BASE_PATH_ERROR);
+            assert.deepStrictEqual(err, INVALID_BASE_PATH_ERROR);
         });
 
         it('call function invalid environment', async ()=>{
@@ -390,7 +390,7 @@ describe("Test LMDB environmentUtility module", ()=>{
                 err = e;
             }
 
-            assert.deepEqual(err, INVALID_ENVIRONMENT_ERROR);
+            assert.deepStrictEqual(err, INVALID_ENVIRONMENT_ERROR);
         });
 
         it('happy path', async ()=>{
@@ -401,7 +401,7 @@ describe("Test LMDB environmentUtility module", ()=>{
                 err = e;
             }
 
-            assert.deepEqual(err, undefined);
+            assert.deepStrictEqual(err, undefined);
 
             let access_err;
             try{
@@ -411,7 +411,7 @@ describe("Test LMDB environmentUtility module", ()=>{
             }
 
             assert(access_err.code === 'ENOENT');
-            assert.deepEqual(global.lmdb_map[TEST_ENVIRONMENT_NAME], undefined);
+            assert.deepStrictEqual(global.lmdb_map[TEST_ENVIRONMENT_NAME], undefined);
         });
 
         describe("Test createDBI function", ()=> {
@@ -437,7 +437,7 @@ describe("Test LMDB environmentUtility module", ()=>{
                     err = e;
                 }
 
-                assert.deepEqual(err, ENV_REQUIRED_ERROR);
+                assert.deepStrictEqual(err, ENV_REQUIRED_ERROR);
             });
 
             it('call function no dbi_name', async ()=>{
@@ -448,7 +448,7 @@ describe("Test LMDB environmentUtility module", ()=>{
                     err = e;
                 }
 
-                assert.deepEqual(err, DBI_NAME_REQUIRED_ERROR);
+                assert.deepStrictEqual(err, DBI_NAME_REQUIRED_ERROR);
             });
 
             it('call function happy path', async ()=>{
@@ -460,8 +460,8 @@ describe("Test LMDB environmentUtility module", ()=>{
                     err = e;
                 }
 
-                assert.deepEqual(err, undefined);
-                assert.notDeepEqual(dbi, undefined);
+                assert.deepStrictEqual(err, undefined);
+                assert.notDeepStrictEqual(dbi, undefined);
             });
 
             it('call function on existing dbi', async ()=>{
@@ -473,8 +473,8 @@ describe("Test LMDB environmentUtility module", ()=>{
                     err = e;
                 }
 
-                assert.deepEqual(err, undefined);
-                assert.notDeepEqual(dbi, undefined);
+                assert.deepStrictEqual(err, undefined);
+                assert.notDeepStrictEqual(dbi, undefined);
             });
         });
 
@@ -502,7 +502,7 @@ describe("Test LMDB environmentUtility module", ()=>{
                     err = e;
                 }
 
-                assert.deepEqual(err, ENV_REQUIRED_ERROR);
+                assert.deepStrictEqual(err, ENV_REQUIRED_ERROR);
             });
 
             it('call function no dbi_name', async ()=>{
@@ -513,7 +513,7 @@ describe("Test LMDB environmentUtility module", ()=>{
                     err = e;
                 }
 
-                assert.deepEqual(err, DBI_NAME_REQUIRED_ERROR);
+                assert.deepStrictEqual(err, DBI_NAME_REQUIRED_ERROR);
             });
 
             it('call function happy path', async ()=>{
@@ -525,8 +525,8 @@ describe("Test LMDB environmentUtility module", ()=>{
                     err = e;
                 }
 
-                assert.deepEqual(err, undefined);
-                assert.notDeepEqual(dbi, undefined);
+                assert.deepStrictEqual(err, undefined);
+                assert.notDeepStrictEqual(dbi, undefined);
             });
 
             it('call function dbi not initialized', async ()=>{
@@ -539,8 +539,8 @@ describe("Test LMDB environmentUtility module", ()=>{
                     err = e;
                 }
 
-                assert.deepEqual(err, undefined);
-                assert.notDeepEqual(dbi, undefined);
+                assert.deepStrictEqual(err, undefined);
+                assert.notDeepStrictEqual(dbi, undefined);
             });
 
             it('call function on dbi no exist', async ()=>{
@@ -552,8 +552,8 @@ describe("Test LMDB environmentUtility module", ()=>{
                     err = e;
                 }
 
-                assert.deepEqual(err, DBI_NO_EXIST_ERROR);
-                assert.deepEqual(dbi, undefined);
+                assert.deepStrictEqual(err, DBI_NO_EXIST_ERROR);
+                assert.deepStrictEqual(dbi, undefined);
             });
         });
 
@@ -583,7 +583,7 @@ describe("Test LMDB environmentUtility module", ()=>{
                     err = e;
                 }
 
-                assert.deepEqual(err, ENV_REQUIRED_ERROR);
+                assert.deepStrictEqual(err, ENV_REQUIRED_ERROR);
             });
 
             it('call function happy path', async ()=>{
@@ -595,8 +595,8 @@ describe("Test LMDB environmentUtility module", ()=>{
                     err = e;
                 }
 
-                assert.deepEqual(err, undefined);
-                assert.deepEqual(dbis, [ID_DBI_NAME]);
+                assert.deepStrictEqual(err, undefined);
+                assert.deepStrictEqual(dbis, [ID_DBI_NAME]);
             });
 
             it('call function no dbis', async ()=>{
@@ -608,8 +608,8 @@ describe("Test LMDB environmentUtility module", ()=>{
                     err = e;
                 }
 
-                assert.deepEqual(err, undefined);
-                assert.deepEqual(dbis, []);
+                assert.deepStrictEqual(err, undefined);
+                assert.deepStrictEqual(dbis, []);
             });
         });
 
@@ -637,7 +637,7 @@ describe("Test LMDB environmentUtility module", ()=>{
                     err = e;
                 }
 
-                assert.deepEqual(err, ENV_REQUIRED_ERROR);
+                assert.deepStrictEqual(err, ENV_REQUIRED_ERROR);
             });
 
             it('call function no dbi_name', async ()=>{
@@ -648,7 +648,7 @@ describe("Test LMDB environmentUtility module", ()=>{
                     err = e;
                 }
 
-                assert.deepEqual(err, DBI_NAME_REQUIRED_ERROR);
+                assert.deepStrictEqual(err, DBI_NAME_REQUIRED_ERROR);
             });
 
             it('call function happy path', async ()=>{
@@ -660,9 +660,9 @@ describe("Test LMDB environmentUtility module", ()=>{
                     err = e;
                 }
 
-                assert.deepEqual(err, undefined);
-                assert.notDeepEqual(stat, undefined);
-                assert.deepEqual(stat, {
+                assert.deepStrictEqual(err, undefined);
+                assert.notDeepStrictEqual(stat, undefined);
+                assert.deepStrictEqual(stat, {
                     "pageSize": 4096,
                     "treeDepth": 0,
                     "treeBranchPageCount": 0,
@@ -681,8 +681,8 @@ describe("Test LMDB environmentUtility module", ()=>{
                     err = e;
                 }
 
-                assert.deepEqual(err, DBI_NO_EXIST_ERROR);
-                assert.deepEqual(stat, undefined);
+                assert.deepStrictEqual(err, DBI_NO_EXIST_ERROR);
+                assert.deepStrictEqual(stat, undefined);
             });
         });
 
@@ -710,7 +710,7 @@ describe("Test LMDB environmentUtility module", ()=>{
                     err = e;
                 }
 
-                assert.deepEqual(err, ENV_REQUIRED_ERROR);
+                assert.deepStrictEqual(err, ENV_REQUIRED_ERROR);
             });
 
             it('call function no dbi_name', async ()=>{
@@ -721,7 +721,7 @@ describe("Test LMDB environmentUtility module", ()=>{
                     err = e;
                 }
 
-                assert.deepEqual(err, DBI_NAME_REQUIRED_ERROR);
+                assert.deepStrictEqual(err, DBI_NAME_REQUIRED_ERROR);
             });
 
             it('call function happy path', async ()=>{
@@ -732,7 +732,7 @@ describe("Test LMDB environmentUtility module", ()=>{
                     err = e;
                 }
 
-                assert.deepEqual(err, undefined);
+                assert.deepStrictEqual(err, undefined);
 
                 let open_err;
                 let dbi;
@@ -742,8 +742,8 @@ describe("Test LMDB environmentUtility module", ()=>{
                     open_err = e;
                 }
 
-                assert.deepEqual(dbi, undefined);
-                assert.deepEqual(open_err, DBI_NO_EXIST_ERROR);
+                assert.deepStrictEqual(dbi, undefined);
+                assert.deepStrictEqual(open_err, DBI_NO_EXIST_ERROR);
 
             });
 
@@ -755,7 +755,7 @@ describe("Test LMDB environmentUtility module", ()=>{
                     err = e;
                 }
 
-                assert.deepEqual(err, DBI_NO_EXIST_ERROR);
+                assert.deepStrictEqual(err, DBI_NO_EXIST_ERROR);
             });
         });
 
