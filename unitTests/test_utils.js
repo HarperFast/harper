@@ -4,6 +4,7 @@ const fs = require('fs-extra');
 const moment = require('moment');
 const sinon = require('sinon');
 const uuid = require('uuid/v4');
+const assert = require('assert');
 
 const sql = require('../sqlTranslator/index');
 const SelectValidator = require('../sqlTranslator/SelectValidator');
@@ -732,6 +733,28 @@ async function testError(test_func, error_msg) {
     return error instanceof Error && error.message === error_msg;
 }
 
+async function assertErrorAsync(test_func, args, error_object){
+    let error;
+    try{
+        await test_func.apply(null, args);
+    } catch(e){
+        error = e;
+    }
+
+    assert.deepStrictEqual(error, error_object);
+}
+
+function assertErrorSync(test_func, args, error_object){
+    let error;
+    try{
+        test_func.apply(null, args);
+    } catch(e){
+        error = e;
+    }
+
+    assert.deepStrictEqual(error, error_object);
+}
+
 /**
  * Helium specific function to delete system datastores after they have been used for testing.
  * @param helium_instance
@@ -795,5 +818,7 @@ module.exports = {
     generateAPIMessage,
     deleteSystemDataStores,
     buildHeliumTestVolume,
-    teardownHeliumTestVolume
+    teardownHeliumTestVolume,
+    assertErrorSync,
+    assertErrorAsync
 };

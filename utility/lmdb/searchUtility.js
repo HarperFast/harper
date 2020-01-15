@@ -2,12 +2,13 @@
 
 const data_stores= require('./environmentUtility');
 const Transaction_Cursor = require('./TransactionCursor');
+const lmdb = require('node-lmdb');
 
 /**
  *
- * @param env
- * @param attribute
- * @param fetch_attributes
+ * @param {lmdb.Env} env
+ * @param {String} attribute
+ * @param {Array.<Object>} fetch_attributes
  * @returns {[]}
  */
 function searchAll(env, attribute, fetch_attributes){
@@ -24,8 +25,8 @@ function searchAll(env, attribute, fetch_attributes){
 
 /**
  *
- * @param env
- * @param attribute
+ * @param {lmdb.Env} env
+ * @param {String} attribute
  * @returns {number}
  */
 function countAll(env, attribute){
@@ -35,8 +36,8 @@ function countAll(env, attribute){
 
 /**
  *
- * @param env
- * @param attribute
+ * @param {lmdb.Env} env
+ * @param {String} attribute
  * @param search_value
  * @returns {[]}
  */
@@ -54,8 +55,8 @@ function equals(env, attribute, search_value){
 
 /**
  *
- * @param env
- * @param attribute
+ * @param {lmdb.Env} env
+ * @param {String} attribute
  * @param search_value
  * @returns {[]}
  */
@@ -78,8 +79,8 @@ function startsWith(env, attribute, search_value){
 
 /**
  *
- * @param env
- * @param attribute
+ * @param {lmdb.Env} env
+ * @param {String} attribute
  * @param search_value
  * @returns {[]}
  */
@@ -99,8 +100,8 @@ function endsWith(env, attribute, search_value){
 
 /**
  *
- * @param env
- * @param attribute
+ * @param {lmdb.Env} env
+ * @param {String} attribute
  * @param search_value
  * @returns {[]}
  */
@@ -120,14 +121,27 @@ function contains(env, attribute, search_value){
 
 /**
  *
- * @param env
- * @param primary_attribute
- * @param fetch_attributes
- * @param id
+ * @param {lmdb.Env} env
+ * @param {String} hash_attribute
+ * @param {Array.<String>} fetch_attributes
+ * @param {String} id
  * @returns {{}}
  */
-function getById(env, primary_attribute, fetch_attributes, id) {
-    let txn = new Transaction_Cursor(env, primary_attribute);
+function getById(env, hash_attribute, fetch_attributes, id) {
+    validateEnv(env);
+
+    if(hash_attribute === undefined){
+        throw new Error('hash_attribute is required');
+    }
+
+    validateFetchAttributes(fetch_attributes);
+
+    if(id === undefined){
+        throw new Error('id is required');
+    }
+
+
+    let txn = new Transaction_Cursor(env, hash_attribute);
 
     txn.cursor.goToKey(id);
 
@@ -142,6 +156,13 @@ function getById(env, primary_attribute, fetch_attributes, id) {
     return obj;
 }
 
+/**
+ *
+ * @param {lmdb.Env} env
+ * @param {String} primary_attribute
+ * @param {String} id
+ * @returns {boolean}
+ */
 function checkKeyExists(env, primary_attribute, id) {
     let found_key = true;
     let txn = new Transaction_Cursor(env, primary_attribute);
@@ -156,7 +177,16 @@ function checkKeyExists(env, primary_attribute, id) {
     return found_key;
 }
 
+/**
+ *
+ * @param {lmdb.Env} env
+ * @param {String} primary_attribute
+ * @param {Array.<String>} fetch_attributes
+ * @param {Array.<String>} ids
+ * @returns {[]}
+ */
 function batchGetById(env, primary_attribute, fetch_attributes, ids) {
+
     let txn = new Transaction_Cursor(env, primary_attribute);
 
     let results = [];
@@ -179,6 +209,30 @@ function batchGetById(env, primary_attribute, fetch_attributes, ids) {
     txn.close();
 
     return results;
+}
+
+/**
+ *
+ * @param env
+ */
+function validateEnv(env){
+    if(env === undefined){
+        throw new Error('env is required');
+    }
+
+    if(!(env instanceof lmdb.Env)){
+        throw new Error('invalid environment object');
+    }
+}
+
+function validateFetchAttributes(fetch_attributes){
+    if(fetch_attributes === undefined){
+        throw new Error('fetch_attributes is required');
+    }
+
+    if(! Array.isArray(fetch_attributes)){
+        throw new Error('fetch_attributes must be an array');
+    }
 }
 
 module.exports = {
