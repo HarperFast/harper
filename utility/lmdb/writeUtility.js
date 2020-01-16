@@ -1,24 +1,26 @@
 "use strict";
 const lmdb = require('node-lmdb');
 const environment_util = require('./environmentUtility');
+const LMDB_ERRORS = require('../commonErrors').LMDB_ERRORS_ENUM;
+
 const MAX_BYTE_SIZE = 511;
 
 /**
  * inserts records into LMDB
  * @param {lmdb.Env} env - lmdb environment object
  * @param {String} hash_attribute - name of the table's hash attribute
- * @param {Array.<String>} all_attributes - list of all attributes to write to the database
+ * @param {Array.<String>} write_attributes - list of all attributes to write to the database
  * @param  {Array.<Object>} records - object array records to insert
  * @returns {{written: [], skipped: []}}
  */
-function insertRecords(env, hash_attribute, all_attributes , records){
-    validateInsert(env, hash_attribute, all_attributes , records);
+function insertRecords(env, hash_attribute, write_attributes , records){
+    validateInsert(env, hash_attribute, write_attributes , records);
 
     let txn = undefined;
     try {
 
         //dbis must be opened / created before starting the transaction
-        initializeDBIs(env, hash_attribute, all_attributes);
+        initializeDBIs(env, hash_attribute, write_attributes);
 
         txn = env.beginTxn();
 
@@ -30,8 +32,8 @@ function insertRecords(env, hash_attribute, all_attributes , records){
             let record = records[k];
             let primary_key = record[hash_attribute].toString();
 //TODO when search is implemented add check key exists
-            for (let x = 0; x < all_attributes.length; x++){
-                let attribute = all_attributes[x];
+            for (let x = 0; x < write_attributes.length; x++){
+                let attribute = write_attributes[x];
 
                 if (attribute === hash_attribute) {
                     txn.putString(env.dbis[attribute], primary_key, JSON.stringify(record));
@@ -57,30 +59,30 @@ function insertRecords(env, hash_attribute, all_attributes , records){
 }
 
 /**
- *
+ * common validation function for env, hash_attribute & fetch_attributes
  * @param {lmdb.Env} env - lmdb environment object
  * @param {String} hash_attribute - name of the table's hash attribute
- * @param {Array.<String>} all_attributes - list of all attributes to write to the database
+ * @param {Array.<String>} write_attributes - list of all attributes to write to the database
  */
-function validateBasic(env, hash_attribute, all_attributes){
-    if(env === undefined){
-        throw new Error('env is required');
-    }
-
+function validateBasic(env, hash_attribute, write_attributes){
     if(!(env instanceof lmdb.Env)){
-        throw new Error('invalid environment object');
+        if(env === undefined){
+            throw LMDB_ERRORS.ENV_REQUIRED;
+        }
+
+        throw LMDB_ERRORS.INVALID_ENVIRONMENT;
     }
 
     if(hash_attribute === undefined){
-        throw new Error('hash_attribute is required');
+        throw LMDB_ERRORS.HASH_ATTRIBUTE_REQUIRED;
     }
 
-    if(all_attributes === undefined){
-        throw new Error('all_attributes is required');
-    }
+    if(!Array.isArray(write_attributes)){
+        if(write_attributes === undefined){
+            throw LMDB_ERRORS.WRITE_ATTRIBUTES_REQUIRED;
+        }
 
-    if(!Array.isArray(all_attributes)){
-        throw new Error('all_attributes must be an array');
+        throw LMDB_ERRORS.WRITE_ATTRIBUTES_MUST_BE_ARRAY;
     }
 }
 
@@ -88,18 +90,18 @@ function validateBasic(env, hash_attribute, all_attributes){
  * validates the parameters for LMDB
  * @param {lmdb.Env} env - lmdb environment object
  * @param {String} hash_attribute - name of the table's hash attribute
- * @param {Array.<String>} all_attributes - list of all attributes to write to the database
+ * @param {Array.<String>} write_attributes - list of all attributes to write to the database
  * @param  {Array.<Object>} records - object array records to insert
  */
-function validateInsert(env, hash_attribute, all_attributes , records){
-    validateBasic(env, hash_attribute, all_attributes);
-
-    if(records === undefined){
-        throw new Error('records is required');
-    }
+function validateInsert(env, hash_attribute, write_attributes , records){
+    validateBasic(env, hash_attribute, write_attributes);
 
     if(!Array.isArray(records)){
-        throw new Error('records must be an array');
+        if(records === undefined){
+            throw LMDB_ERRORS.RECORDS_REQUIRED;
+        }
+
+        throw LMDB_ERRORS.RECORDS_MUST_BE_ARRAY;
     }
 }
 
@@ -132,11 +134,11 @@ function stringifyData(raw_value){
  * opens/ creates all specified attributes
  * @param {lmdb.Env} env - lmdb environment object
  * @param {String} hash_attribute - name of the table's hash attribute
- * @param {Array.<String>} all_attributes - list of all attributes to write to the database
+ * @param {Array.<String>} write_attributes - list of all attributes to write to the database
  */
-function initializeDBIs(env, hash_attribute, all_attributes){
-    for(let x = 0; x < all_attributes.length; x++){
-        let attribute = all_attributes[x];
+function initializeDBIs(env, hash_attribute, write_attributes){
+    for(let x = 0; x < write_attributes.length; x++){
+        let attribute = write_attributes[x];
         try {
             environment_util.openDBI(env, attribute);
         } catch (e) {
