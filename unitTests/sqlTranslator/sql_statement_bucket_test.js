@@ -1,4 +1,4 @@
-"use strict"
+"use strict";
 /**
  * Test the sql_statement_bucket module.
  */
@@ -315,7 +315,7 @@ describe(`Test getSelectAttributes`, function () {
         let statement = new Map();
         let table_lookup = new Map();
         getSelectAttributes(TEST_SELECT, statement, table_lookup);
-        assert.equal(statement.get(SCHEMA_NAME).get(TABLE_NAME).length, 1);
+        assert.equal(statement.get(SCHEMA_NAME).get(TABLE_NAME).length, 2);
         assert.equal(Array.from(statement.get(SCHEMA_NAME).keys()).length, 1);
         assert.equal(Array.from(statement.keys()).length, 1);
     });

@@ -92,6 +92,13 @@ function postValidateChecks(object, validate_res) {
             try {
                 fs.accessSync(object.file_path,fs.constants.R_OK | fs.constants.F_OK);
             } catch(err) {
+                if (err.code === hdb_terms.NODE_ERROR_CODES.ENOENT) {
+                    return new Error(`No such file or directory ${err.path}`);
+                }
+
+                if (err.code === hdb_terms.NODE_ERROR_CODES.EACCES) {
+                    return new Error(`Permission denied ${err.path}`);
+                }
                 return err;
             }
 

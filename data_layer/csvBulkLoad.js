@@ -103,18 +103,34 @@ async function csvURLLoad(json_message) {
 
     try {
         await downloadCSVFile(json_message.csv_url);
-        let bulk_load_result = await csvFileLoad(csv_file_load_obj);
+    } catch (err) {
+        await cleanUpTempDL();
+        throw err;
+    }
 
+    try {
+        let bulk_load_result = await csvFileLoad(csv_file_load_obj);
         // Remove the downloaded temporary CSV file and directory once csvFileLoad complete
         await hdb_utils.removeDir(TEMP_DOWNLOAD_DIR);
 
         return bulk_load_result;
     } catch (err) {
-        // If an error is thrown and removeDir above is skipped, cleanup the temporary downloaded data.
-        if (fs.existsSync(TEMP_DOWNLOAD_DIR)) {
+        await cleanUpTempDL();
+        throw `Error loading downloaded CSV data into HarperDB: ${err}`;
+    }
+}
+
+/**
+ * If an error is thrown and removeDir is skipped, cleanup the temporary downloaded data.
+ * @returns {Promise<void>}
+ */
+async function cleanUpTempDL() {
+    if (fs.existsSync(TEMP_DOWNLOAD_DIR)) {
+        try {
             await hdb_utils.removeDir(TEMP_DOWNLOAD_DIR);
+        } catch (err) {
+            logger.error(`Error removing temporary CSV URL download directory: ${err}`);
         }
-        throw err;
     }
 }
 
@@ -135,7 +151,8 @@ async function downloadCSVFile(url) {
     try {
         response = await request_promise(options);
     } catch(err) {
-        throw new Error (`Error downloading CSV file from ${url}, status code: ${err.statusCode}, message: ${err.message}`);
+        logger.error(err);
+        throw `Error downloading CSV file from ${url}, status code: ${err.statusCode}. Check the log for more information.`;
     }
 
     validateResponse(response, url);
@@ -184,8 +201,6 @@ async function csvFileLoad(json_message) {
     }
 
     try {
-        // check file exists and have perms to read, throws exception if fails
-        await fs.access(json_message.file_path, fs.constants.R_OK | fs.constants.F_OK);
         let bulk_load_result = await callPapaParse(json_message);
 
         return buildCSVResponseMsg(bulk_load_result.records, bulk_load_result.number_written);

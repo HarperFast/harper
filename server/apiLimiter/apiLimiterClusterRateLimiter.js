@@ -6,8 +6,7 @@ const license = require('../../utility/registration/hdb_license');
 const hdb_util = require('../../utility/common_utils');
 const terms = require('../../utility/hdbTerms');
 
-const RATE_LIMIT_MAX = 2;
-const LIMIT_RESET_IN_SECONDS = 86400; // # seconds in a day, will reset after 1 day
+const HOURS_DIVISOR = 3600;
 const CONSUME_TIMEOUT_IN_MS = 3000;
 
 let limiter = undefined;
@@ -66,7 +65,8 @@ async function rateLimiter(req, res, next) {
         return next();
     } catch(err) {
         log.notify(`You have reached your API limit within 24 hours. ${terms.SUPPORT_HELP_MSG}`);
-        res.status(terms.HTTP_STATUS_CODES.TOO_MANY_REQUESTS).send({error: `You have reached your request limit of ${RATE_LIMIT_MAX}. Your request limit will reset in ${Math.floor((err._msBeforeNext/1000)/3600)} hours.`});
+        let lic = await license.getLicense();
+        res.status(terms.HTTP_STATUS_CODES.TOO_MANY_REQUESTS).send({error: `You have reached your request limit of ${lic.api_call}. Your request limit will reset in ${Math.floor((err._msBeforeNext/CONSUME_TIMEOUT_IN_MS)/HOURS_DIVISOR)} hours.`});
     }
 }
 

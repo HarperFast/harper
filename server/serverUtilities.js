@@ -25,8 +25,6 @@ const global_schema = require('../utility/globalSchema');
 const operation_function_caller = require(`../utility/OperationFunctionCaller`);
 const common_utils = require(`../utility/common_utils`);
 const env = require(`../utility/environment/environmentManager`);
-const master_cluster_rate_limiter = require('../server/apiLimiter/MasterClusterRateLimiter');
-const CounterObject = require('../server/apiLimiter/CounterObject');
 
 const UNAUTH_RESPONSE = 403;
 const UNAUTHORIZED_TEXT = 'You are not authorized to perform the operation specified';
@@ -332,9 +330,14 @@ function chooseOperation(json, callback) {
             let sql_statement = (json.operation === 'sql' ? json.sql : json.search_operation.sql);
             let parsed_sql_object = sql.convertSQLToAST(sql_statement);
             json.parsed_sql_object = parsed_sql_object;
-            if (!sql.checkASTPermissions(json, parsed_sql_object)) {
+            let ast_perm_check = sql.checkASTPermissions(json, parsed_sql_object);
+            if (ast_perm_check && ast_perm_check.length > 0) {
                 harper_logger.error(`${UNAUTH_RESPONSE} from operation ${json.search_operation}`);
-                return callback(UNAUTH_RESPONSE, `${UNAUTH_RESPONSE} from operation ${json.search_operation}`);
+                let error_response = {};
+                error_response[terms.UNAUTHORIZED_PERMISSION_NAME] = ast_perm_check;
+                error_response.response = UNAUTH_RESPONSE;
+                error_response.error = UNAUTHORIZED_TEXT;
+                return callback(error_response, null);
             }
         } else {
             let function_to_check = (job_operation_function === undefined ? operation_function : job_operation_function);
@@ -342,9 +345,14 @@ function chooseOperation(json, callback) {
             if (!operation_json.hdb_user) {
                 operation_json.hdb_user = json.hdb_user;
             }
-            if (!op_auth.verifyPerms(operation_json, function_to_check)) {
-                harper_logger.error(`${UNAUTH_RESPONSE} from operation ${json.search_operation}`);
-                return callback(UNAUTH_RESPONSE, null);
+            let verify_perms_result = op_auth.verifyPerms(operation_json, function_to_check);
+            if (verify_perms_result && Object.keys(verify_perms_result).length > 0) {
+                harper_logger.error(`${UNAUTH_RESPONSE} from operation ${json.operation}`);
+                let response = {};
+                response.response = UNAUTH_RESPONSE;
+                response.error = UNAUTHORIZED_TEXT;
+                response[terms.UNAUTHORIZED_PERMISSION_NAME] = verify_perms_result;
+                return callback(response);
             }
         }
     } catch (e) {

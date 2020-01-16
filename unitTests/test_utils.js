@@ -302,14 +302,6 @@ function tearDownMockFSSystem() {
 }
 
 /**
- * Accepts a
- * @param system_schema_object
- */
-function createMockSystemSchema(system_schema_object) {
-
-}
-
-/**
  * This method is used in `createMockFS()` to create the mock FS structure for the schema > system directory
  * TODO: Right now, this method does not return paths to specific directories or files being created.  This functionality
  ** should be added as when needed in future tests in the `system` array value returned from `createMockFS()`.

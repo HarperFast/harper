@@ -668,14 +668,9 @@ describe('Test checkSchemaTableExist', () => {
 
     it('Test no schema', () => {
         global.hdb_schema = 'test_no_schema';
-        let error;
-        try {
-            cu_rewire.checkSchemaTableExist(test_obj.schema, test_obj.table);
-        } catch(err) {
-            error = err;
-        }
+        let result = cu_rewire.checkSchemaTableExist(test_obj.schema, test_obj.table);
 
-        expect(error.message).to.equal(`Schema '${test_obj.schema}' does not exist`);
+        expect(result).to.equal(`Schema '${test_obj.schema}' does not exist`);
     });
 
     it('Test no table', () => {
@@ -684,14 +679,9 @@ describe('Test checkSchemaTableExist', () => {
                 "test_no_table": {}
             }
         };
-        let error;
-        try {
-            cu_rewire.checkSchemaTableExist(test_obj.schema, test_obj.table);
-        } catch(err) {
-            error = err;
-        }
+        let result = cu_rewire.checkSchemaTableExist(test_obj.schema, test_obj.table);
 
-        expect(error.message).to.equal(`Table '${test_obj.table}' does not exist in schema '${test_obj.schema}'`);
+        expect(result).to.equal(`Table '${test_obj.table}' does not exist in schema '${test_obj.schema}'`);
     });
 });
 

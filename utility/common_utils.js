@@ -62,6 +62,8 @@ module.exports = {
     createEventPromise,
     checkProcessRunning,
     checkSchemaTableExist,
+    checkSchemaExists,
+    checkTableExists,
     getStartOfTomorrowInSeconds,
     getLimitKey,
     isObject
@@ -652,12 +654,37 @@ async function checkProcessRunning(proc_name){
  * @param table
  */
 function checkSchemaTableExist(schema, table) {
-    if (!global.hdb_schema[schema]) {
-        throw new Error(`Schema '${schema}' does not exist`);
+    let schema_not_exist = checkSchemaExists(schema);
+    if (schema_not_exist) {
+        return schema_not_exist;
     }
 
+    let table_not_exist = checkTableExists(schema, table);
+    if (table_not_exist) {
+        return table_not_exist;
+    }
+}
+
+/**
+ * Checks the global schema to see if a schema exist.
+ * @param schema
+ * @returns {string}
+ */
+function checkSchemaExists(schema) {
+    if (!global.hdb_schema[schema]) {
+        return `Schema '${schema}' does not exist`;
+    }
+}
+
+/**
+ * Checks the global schema to see if a table exist.
+ * @param schema
+ * @param table
+ * @returns {string}
+ */
+function checkTableExists(schema, table) {
     if (!global.hdb_schema[schema][table]) {
-        throw new Error(`Table '${table}' does not exist in schema '${schema}'`);
+        return `Table '${table}' does not exist in schema '${schema}'`;
     }
 }
 

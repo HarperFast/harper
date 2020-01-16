@@ -162,13 +162,22 @@ function nodeValidation(node_object) {
     }
 
     let subscription_validation = undefined;
-    if(!hdb_utils.isEmptyOrZeroLength(node_object.subscriptions)) {
+    if (!hdb_utils.isEmptyOrZeroLength(node_object.subscriptions)) {
         for (let b = 0; b < node_object.subscriptions.length; b++) {
             subscription_validation = node_subscription_validator(node_object.subscriptions[b]);
             if (subscription_validation) {
-                throw new Error(subscription_validation);
+                throw subscription_validation;
             }
         }
+    }
+
+    // hdb_user and hdb_auth_header aren't required after this point and shouldn't
+    // be included in the insert objects records for add node.
+    try {
+        delete node_object.hdb_user;
+        delete node_object.hdb_auth_header;
+    } catch (err) {
+        log.warn(`Error delete node_object auth properties: ${err}`);
     }
 }
 
@@ -604,12 +613,21 @@ function restartHDB() {
         child.on('data', () => {
             log.error('Restart successful');
         });
-    } catch(err) {
+    } catch (err) {
         let msg = `There was an error restarting HarperDB.  Please restart manually. ${err}`;
         console.log(msg);
         log.error(msg);
         throw err;
     }
+}
+
+/**
+ * Test if the passed value is null or undefined.  This will not check string length.
+ * @param value - the value to test
+ * @returns {boolean}
+ */
+function isEmpty(value) {
+    return (value === undefined || value === null);
 }
 
 module.exports = {
@@ -622,5 +640,6 @@ module.exports = {
     clusterMessageHandler: clusterMessageHandler,
     authHeaderToUser: authHeaderToUser,
     setEnterprise: setEnterprise,
-    restartHDB: restartHDB
+    restartHDB: restartHDB,
+    isEmpty
 };

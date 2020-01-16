@@ -1,6 +1,6 @@
 {
 	"info": {
-		"_postman_id": "ca781c25-7146-489f-985e-2cee898543cc",
+		"_postman_id": "928d153e-c8c3-4b62-9368-0b244d2cd3bb",
 		"name": "HarperDB Integration Tests",
 		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
 	},
@@ -4573,7 +4573,7 @@
 											"",
 											"pm.test(\"insert array into table confirm\", function () {",
 											"    var jsonData = pm.response.json();",
-											"    pm.expect(jsonData.error.includes('There was an error adding a job: ENOENT: no such file or directory')).to.be.true;",
+											"    pm.expect(jsonData.error.includes(\"There was an error adding a job: No such file or directory\")).to.be.true;",
 											"});"
 										],
 										"type": "text/javascript"
@@ -13176,6 +13176,11 @@
 								"exec": [
 									"pm.test(\"Status code is 403\", function () {",
 									"    pm.response.to.have.status(403);",
+									"});",
+									"",
+									"pm.test(\"required_table_permissions is not empty\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.unauthorized_access[0].required_table_permissions.length).to.eql(1);",
 									"});"
 								]
 							}
@@ -13440,6 +13445,11 @@
 								"exec": [
 									"pm.test(\"Status code is 403\", function () {",
 									"    pm.response.to.have.status(403);",
+									"});",
+									"",
+									"pm.test(\"required_table_permissions is update\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.unauthorized_access[0].required_table_permissions[0]).to.eql(\"update\");",
 									"});"
 								]
 							}
@@ -13638,6 +13648,16 @@
 								"exec": [
 									"pm.test(\"Status code is 403\", function () {",
 									"    pm.response.to.have.status(403);",
+									"});",
+									"",
+									"pm.test(\"required_table_permissions is not empty\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.unauthorized_access[0].required_table_permissions.length).to.eql(1);",
+									"});",
+									"",
+									"pm.test(\"required_table_permissions is delete\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.unauthorized_access[0].required_table_permissions[0]).to.eql(\"delete\");",
 									"});"
 								]
 							}
@@ -13704,6 +13724,16 @@
 								"exec": [
 									"pm.test(\"Status code is 403\", function () {",
 									"    pm.response.to.have.status(403);",
+									"});",
+									"",
+									"pm.test(\"required_table_permissions is not empty\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.unauthorized_access[0].required_attribute_permissions[0].attribute_name).to.eql(\"companyname\");",
+									"});",
+									"",
+									"pm.test(\"required_attribute_permissions is read\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.unauthorized_access[0].required_attribute_permissions[0].required_permissions[0]).to.eql(\"read\");",
 									"});"
 								]
 							}
@@ -13770,6 +13800,16 @@
 								"exec": [
 									"pm.test(\"Status code is 403\", function () {",
 									"    pm.response.to.have.status(403);",
+									"});",
+									"",
+									"pm.test(\"required_attribute_permissions is not empty\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.unauthorized_access[0].required_attribute_permissions[0].attribute_name).to.eql(\"companyname\");",
+									"});",
+									"",
+									"pm.test(\"required_attribute_permissions is update\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.unauthorized_access[0].required_attribute_permissions[0].required_permissions[0]).to.eql(\"update\");",
 									"});"
 								]
 							}
@@ -13836,6 +13876,16 @@
 								"exec": [
 									"pm.test(\"Status code is 403\", function () {",
 									"    pm.response.to.have.status(403);",
+									"});",
+									"",
+									"pm.test(\"required_attribute_permissions is not empty\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.unauthorized_access[0].required_attribute_permissions[0].attribute_name).to.eql(\"companyname\");",
+									"});",
+									"",
+									"pm.test(\"required_attribute_permissions is insert\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.unauthorized_access[0].required_attribute_permissions[0].required_permissions[0]).to.eql(\"insert\");",
 									"});"
 								]
 							}
@@ -14993,6 +15043,11 @@
 								"exec": [
 									"pm.test(\"Status code is 403\", function () {",
 									"    pm.response.to.have.status(403);",
+									"});",
+									"",
+									"pm.test(\"required_table_permissions is read\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.unauthorized_access[0].required_table_permissions[0]).to.eql(\"read\");",
 									"});"
 								]
 							}
@@ -15257,6 +15312,11 @@
 								"exec": [
 									"pm.test(\"Status code is 403\", function () {",
 									"    pm.response.to.have.status(403);",
+									"});",
+									"",
+									"pm.test(\"required_table_permissions is insert\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.unauthorized_access[1].required_table_permissions[0]).to.eql(\"insert\");",
 									"});"
 								]
 							}
@@ -15521,6 +15581,11 @@
 								"exec": [
 									"pm.test(\"Status code is 403\", function () {",
 									"    pm.response.to.have.status(403);",
+									"});",
+									"",
+									"pm.test(\"required_table_permissions is update\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.unauthorized_access[1].required_table_permissions[0]).to.eql(\"update\");",
 									"});"
 								]
 							}
@@ -15719,6 +15784,11 @@
 								"exec": [
 									"pm.test(\"Status code is 403\", function () {",
 									"    pm.response.to.have.status(403);",
+									"});",
+									"",
+									"pm.test(\"required_table_permissions is delete\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.unauthorized_access[0].required_table_permissions[0]).to.eql(\"delete\");",
 									"});"
 								]
 							}
@@ -15785,6 +15855,16 @@
 								"exec": [
 									"pm.test(\"Status code is 403\", function () {",
 									"    pm.response.to.have.status(403);",
+									"});",
+									"",
+									"pm.test(\"required_table_permissions is not empty\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.unauthorized_access[0].required_attribute_permissions[0].attribute_name).to.eql(\"companyname\");",
+									"});",
+									"",
+									"pm.test(\"required_attribute_permissions is read\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.unauthorized_access[0].required_attribute_permissions[0].required_permissions[0]).to.eql(\"read\");",
 									"});"
 								]
 							}
@@ -15851,6 +15931,16 @@
 								"exec": [
 									"pm.test(\"Status code is 403\", function () {",
 									"    pm.response.to.have.status(403);",
+									"});",
+									"",
+									"pm.test(\"required_attribute_permissions is not empty\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.unauthorized_access[0].required_attribute_permissions[0].attribute_name).to.eql(\"companyname\");",
+									"});",
+									"",
+									"pm.test(\"required_attribute_permissions is update\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.unauthorized_access[0].required_attribute_permissions[0].required_permissions[0]).to.eql(\"update\");",
 									"});"
 								]
 							}
@@ -15917,6 +16007,16 @@
 								"exec": [
 									"pm.test(\"Status code is 403\", function () {",
 									"    pm.response.to.have.status(403);",
+									"});",
+									"",
+									"pm.test(\"required_attribute_permissions is not empty\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.unauthorized_access[0].required_attribute_permissions[0].attribute_name).to.eql(\"companyname\");",
+									"});",
+									"",
+									"pm.test(\"required_attribute_permissions is insert\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.unauthorized_access[0].required_attribute_permissions[0].required_permissions[0]).to.eql(\"insert\");",
 									"});"
 								]
 							}
