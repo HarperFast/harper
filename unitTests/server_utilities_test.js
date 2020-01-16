@@ -126,16 +126,16 @@ describe(`Test chooseOperation`, function () {
         chooseOperation(TEST_JSON_SUPER_USER, function(err, found) {
             assert.ok(err === null );
             done();
-        })
+        });
     });
     it('Invalid operation specified in json.', function (done) {
         let chooseOperation = server_utilities.__get__('chooseOperation');
         let test_copy = clone(TEST_JSON);
         test_copy.operation = 'blah';
         chooseOperation(test_copy, function(err, found) {
-            assert.ok(err === 403);
+            assert.ok(err.response === 403);
             done();
-        })
+        });
     });
 });
 

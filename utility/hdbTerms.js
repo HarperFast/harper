@@ -312,7 +312,8 @@ const HDB_SETTINGS_NAMES = {
     INSTALL_USER: 'install_user',
     CLUSTERING_USER_KEY: 'CLUSTERING_USER',
     HELIUM_VOLUME_PATH_KEY: 'HELIUM_VOLUME_PATH',
-    HELIUM_SERVER_HOST_KEY: 'HELIUM_SERVER_HOST'
+    HELIUM_SERVER_HOST_KEY: 'HELIUM_SERVER_HOST',
+    MAX_MEMORY_KEY: 'MAX_MEMORY'
 };
 
 /**
@@ -339,7 +340,8 @@ const HDB_SETTINGS_DEFAULT_VALUES = {
     CLUSTERING_PORT: '5545',
     CLUSTERING: 'false',
     MAX_HDB_PROCESSES: 4,
-    HELIUM_SERVER_HOST: 'localhost:41000'
+    HELIUM_SERVER_HOST: 'localhost:41000',
+    MAX_MEMORY: 1500
 };
 
 // Describes all available job types
@@ -428,7 +430,8 @@ const WEBSOCKET_CLOSE_CODE_DESCRIPTION_LOOKUP = {
 };
 
 const NODE_ERROR_CODES = {
-    ENOENT: 'ENOENT'
+    ENOENT: 'ENOENT',
+    EACCES: 'EACCES'
 };
 
 const HELIUM_RESPONSE_CODES = {
@@ -478,6 +481,28 @@ const HELIUM_VALUE_RANGE_SEARCH_OPS = {
 const CLUSTERING_MESSAGE_TYPES = cluster_types.CORE_ROOM_MSG_TYPE_ENUM;
 const ORIGINATOR_SET_VALUE = cluster_types.ORIGINATOR_SET_VALUE;
 const NEW_LINE = '\r\n';
+
+/**
+ * This object organizes permission checks into a cohesive response object that will be returned to
+ * the user in the case of a failed permissions check.
+ */
+class PermissionResponseObject {
+    constructor() {
+        this.schema = undefined;
+        this.table = undefined;
+        this.required_table_permissions = [];
+        this.required_attribute_permissions = [];
+    }
+}
+
+class PermissionAttributeResponseObject {
+    constructor() {
+        this.attribute_name = undefined;
+        this.required_permissions = [];
+    }
+}
+
+const UNAUTHORIZED_PERMISSION_NAME = 'unauthorized_access';
 
 module.exports = {
     LOCAL_HARPERDB_OPERATIONS,
@@ -568,7 +593,10 @@ module.exports = {
     LOOPBACK,
     CODE_EXTENSION,
     COMPILED_EXTENSION,
-    JAVASCRIPT_EXTENSION,
     WILDCARD_SEARCH_VALUE,
-    NODE_ERROR_CODES
+    NODE_ERROR_CODES,
+    JAVASCRIPT_EXTENSION,
+    PermissionResponseObject,
+    PermissionAttributeResponseObject,
+    UNAUTHORIZED_PERMISSION_NAME
 };

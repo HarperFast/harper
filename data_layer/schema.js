@@ -6,6 +6,7 @@ const uuidV4 = require('uuid/v4');
 const env = require('../utility/environment/environmentManager');
 const clone = require('clone');
 const signalling = require('../utility/signalling');
+const hdb_util = require('../utility/common_utils');
 const util = require('util');
 const harperBridge = require('./harperBridge/harperBridge');
 
@@ -29,7 +30,6 @@ async function createSchema(schema_create_object) {
 
         return schema_structure;
     } catch(err) {
-        logger.error(err);
         throw err;
     }
 }
@@ -40,8 +40,8 @@ async function createSchemaStructure(schema_create_object) {
         throw validation_error;
     }
 
-    if (global.hdb_schema[schema_create_object.schema]) {
-        throw new Error(`schema ${schema_create_object.schema} already exists`);
+    if (!hdb_util.checkSchemaExists(schema_create_object.schema)) {
+        throw `schema ${schema_create_object.schema} already exists`;
     }
 
     try {
@@ -60,7 +60,6 @@ async function createTable(create_table_object) {
 
         return create_table_structure;
     } catch(err) {
-        logger.error(err);
         throw err;
     }
 }
@@ -74,12 +73,13 @@ async function createTableStructure(create_table_object) {
 
     validation.validateTableResidence(create_table_object.residence);
 
-    if (!global.hdb_schema[create_table_object.schema]) {
-        throw new Error(`schema ${create_table_object.schema} does not exist`);
+    let invalid_schema_msg = hdb_util.checkSchemaExists(create_table_object.schema);
+    if (invalid_schema_msg) {
+        throw invalid_schema_msg;
     }
 
-    if (global.hdb_schema[create_table_object.schema][create_table_object.table]) {
-        throw new Error(`table ${create_table_object.table} already exists in schema ${create_table_object.schema}`);
+    if (!hdb_util.checkTableExists(create_table_object.schema, create_table_object.table)) {
+        throw `table ${create_table_object.table} already exists in schema ${create_table_object.schema}`;
     }
 
     let table_system_data = {
@@ -113,6 +113,11 @@ async function dropSchema(drop_schema_object) {
         throw validation_error;
     }
 
+    let invalid_schema_msg = hdb_util.checkSchemaExists(drop_schema_object.schema);
+    if (invalid_schema_msg) {
+        throw invalid_schema_msg;
+    }
+
     try {
         await harperBridge.dropSchema(drop_schema_object);
         signalling.signalSchemaChange(signalling.SCHEMA_CHANGE_MESSAGE);
@@ -120,8 +125,7 @@ async function dropSchema(drop_schema_object) {
         const SCHEMA_DELETE_MSG = `successfully deleted schema ${drop_schema_object.schema}`;
 
         return SCHEMA_DELETE_MSG;
-    } catch(err) {
-        logger.error(err);
+    } catch (err) {
         throw err;
     }
 }
@@ -132,14 +136,18 @@ async function dropTable(drop_table_object) {
         throw validation_error;
     }
 
+    let invalid_schema_table_msg = hdb_util.checkSchemaTableExist(drop_table_object.schema, drop_table_object.table);
+    if (invalid_schema_table_msg) {
+        throw invalid_schema_table_msg;
+    }
+
     try {
         await harperBridge.dropTable(drop_table_object);
         signalling.signalSchemaChange({type: 'schema'});
         const TABLE_DELETE_MSG = `successfully deleted table ${drop_table_object.schema}.${drop_table_object.table}`;
 
         return TABLE_DELETE_MSG;
-    } catch(err) {
-        logger.error(err);
+    } catch (err) {
         throw err;
     }
 }

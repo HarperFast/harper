@@ -94,7 +94,8 @@ class ServerSocket{
      * @param error
      */
     errorHandler(error){
-        log.error(error);
+        log.error(`Error in server socket: ${error}`);
+        log.info(error);
     }
 
     /**

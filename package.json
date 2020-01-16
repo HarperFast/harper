@@ -71,7 +71,7 @@
     "recursive-iterator": "^3.3.0",
     "request": "^2.88.0",
     "request-promise-native": "^1.0.5",
-    "socketcluster": "^14.3.3",
+    "socketcluster": "^14.4.2",
     "socketcluster-client": "^14.2.2",
     "tar-fs": "^1.16.3",
     "truncate-utf8-bytes": "^1.0.2",

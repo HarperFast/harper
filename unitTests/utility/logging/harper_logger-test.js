@@ -19,17 +19,22 @@ const moment = require('moment');
 const winston = require('winston');
 const path = require('path');
 
-const rewire = require('rewire');
-let harper_log = rewire('../../../utility/logging/harper_logger');
-
 const default_test_log_dir = path.join(process.cwd(), "../", "unitTests");
 const default_test_log_name = 'test_log.log';
 const default_test_log_path = path.join(default_test_log_dir, default_test_log_name);
 // Create log location for Winston daily rotation file tests
+const daily_file_name_template = `%DATE%_${default_test_log_name}`;
+const daily_file_path_template = path.join(default_test_log_dir, daily_file_name_template);
 let current_date = moment().format("YYYY-MM-DD");
 let daily_file_name = `${current_date}_${default_test_log_name}`;
 let daily_test_log_path = path.join(default_test_log_dir, daily_file_name);
 let file_change_results = false;
+
+const rewire = require('rewire');
+let harper_log_rw = rewire('../../../utility/logging/harper_logger');
+let setLogType_rw = harper_log_rw.__get__('setLogType');
+let setLogLocation_rw = harper_log_rw.__get__('setLogLocation');
+harper_log_rw.__set__('DEFAULT_LOG_FILE_NAME', default_test_log_name);
 
 // Create variable to use for watchers and for ensuring test logs are cleaned up after testing
 let output_file_path;
@@ -44,6 +49,7 @@ const INFO_LOG_MESSAGE = 'INFO_MSG';
 const DEBUG_LOG_MESSAGE = 'DEBUG_MSG';
 const TRACE_LOG_MESSAGE = 'TRACE_MSG';
 
+const sandbox = sinon.createSandbox();
 let harper_notify_spy = undefined;
 let harper_debug_spy = undefined;
 let harper_trace_spy = undefined;
@@ -51,8 +57,6 @@ let harper_error_spy = undefined;
 let harper_info_spy = undefined;
 let harper_warn_spy = undefined;
 let harper_fatal_spy = undefined;
-
-const sandbox = sinon.createSandbox();
 
 let watcher = undefined;
 
@@ -62,13 +66,13 @@ const PINO = 2;
 const ZEROIZE_OUTPUT_FILE = true;
 
 function printLogs() {
-    harper_log.fatal(FATAL_LOG_MESSAGE);
-    harper_log.info(INFO_LOG_MESSAGE);
-    harper_log.debug(DEBUG_LOG_MESSAGE);
-    harper_log.error(ERROR_LOG_MESSAGE);
-    harper_log.warn(WARN_LOG_MESSAGE);
-    harper_log.trace(TRACE_LOG_MESSAGE);
-    harper_log.notify(NOTIFY_LOG_MESSAGE);
+    harper_log_rw.fatal(FATAL_LOG_MESSAGE);
+    harper_log_rw.info(INFO_LOG_MESSAGE);
+    harper_log_rw.debug(DEBUG_LOG_MESSAGE);
+    harper_log_rw.error(ERROR_LOG_MESSAGE);
+    harper_log_rw.warn(WARN_LOG_MESSAGE);
+    harper_log_rw.trace(TRACE_LOG_MESSAGE);
+    harper_log_rw.notify(NOTIFY_LOG_MESSAGE);
 }
 
 function zeroizeOutputFile() {
@@ -78,30 +82,32 @@ function zeroizeOutputFile() {
 }
 
 function rewireDefaultLogger(log_type) {
+    harper_log_rw.__set__("win_logger", undefined);
+    harper_log_rw.__set__("pin_logger", undefined);
     const test_log_type = log_type ? log_type : WINSTON;
-    harper_log = rewire('../../../utility/logging/harper_logger');
-    harper_log.__set__("log_type", test_log_type);
-    harper_log.__set__("log_location", default_test_log_path);
-    harper_log.__set__("daily_rotate", undefined);
+    harper_log_rw.__set__("log_type", test_log_type);
+    harper_log_rw.__set__("log_level", harper_log_rw.ERR);
+    harper_log_rw.__set__("daily_rotate", undefined);
+    setLogLocation_rw(default_test_log_path);
 }
 
 function rewireDailyLogger() {
-    harper_log = rewire('../../../utility/logging/harper_logger');
-    harper_log.__set__("log_type", WINSTON);
-    harper_log.__set__("log_location", default_test_log_path);
-    harper_log.__set__("log_directory", default_test_log_dir);
-    harper_log.__set__("hdb_log_file_name", default_test_log_name);
-    harper_log.__set__("daily_rotate", true);
+    harper_log_rw.__set__("win_logger", undefined);
+    harper_log_rw.__set__("pin_logger", undefined);
+    harper_log_rw.__set__("log_type", WINSTON);
+    harper_log_rw.__set__("log_level", harper_log_rw.ERR);
+    harper_log_rw.__set__("daily_rotate", true);
+    setLogLocation_rw(default_test_log_path);
 }
 
-function resetLoggerSpies() {
-    harper_trace_spy = sandbox.spy(harper_log, 'trace');
-    harper_debug_spy = sandbox.spy(harper_log, 'debug');
-    harper_info_spy = sandbox.spy(harper_log, 'info');
-    harper_warn_spy = sandbox.spy(harper_log, 'warn');
-    harper_error_spy = sandbox.spy(harper_log, 'error');
-    harper_fatal_spy = sandbox.spy(harper_log, 'fatal');
-    harper_notify_spy = sandbox.spy(harper_log, 'notify');
+function setLoggerSpies() {
+    harper_trace_spy = sandbox.spy(harper_log_rw, 'trace');
+    harper_debug_spy = sandbox.spy(harper_log_rw, 'debug');
+    harper_info_spy = sandbox.spy(harper_log_rw, 'info');
+    harper_warn_spy = sandbox.spy(harper_log_rw, 'warn');
+    harper_error_spy = sandbox.spy(harper_log_rw, 'error');
+    harper_fatal_spy = sandbox.spy(harper_log_rw, 'fatal');
+    harper_notify_spy = sandbox.spy(harper_log_rw, 'notify');
 }
 
 function unlinkTestLog(path) {
@@ -110,11 +116,19 @@ function unlinkTestLog(path) {
     }
 }
 
+function deleteTestLogs(done) {
+    setTimeout(() => {
+        unlinkTestLog(default_test_log_path);
+        unlinkTestLog(daily_test_log_path);
+        done();
+    }, 200);
+}
+
 function log_something(level, done) {
-    harper_log.setLogLevel(level);
-    harper_log.notify(LOG_DELIMITER+level);
+    harper_log_rw.setLogLevel(level);
+    harper_log_rw.notify(LOG_DELIMITER+level);
     printLogs();
-    harper_log.notify(LOG_DELIMITER+level);
+    harper_log_rw.notify(LOG_DELIMITER+level);
     setTimeout(() => {
         fs.readFile(output_file_path, function read(err, data) {
             if(err) {
@@ -199,6 +213,32 @@ function log_something(level, done) {
     }, 100);
 }
 
+function createTestOutputFile() {
+    if (!fs.existsSync(output_file_path)) {
+        try {
+            fs.writeFileSync(output_file_path, '');
+        } catch (e) {
+            console.log("Cannot write file ", e);
+        }
+    }
+}
+
+function setLogWatcher(test_location) {
+    const watch_path = test_location ? test_location : output_file_path;
+
+    try {
+        watcher = fs.watch(watch_path, {persistent: false}, (eventType, filename) => {
+            if (filename) {
+                file_change_results = true;
+            } else {
+                console.log(`filename not found`);
+            }
+        });
+    } catch(err) {
+        console.error(err);
+    }
+}
+
 // NOTES
 /*
     Mocha is not very good at test reuse.  Even though the tests are the same for both
@@ -218,38 +258,23 @@ function log_something(level, done) {
  */
 
 describe('Test harper_logger ', () => {
+    before(() => {
+        setLoggerSpies();
+    })
     after((done) => {
         sandbox.restore();
-        rewireDefaultLogger();
-        setTimeout(() => {
-            unlinkTestLog(default_test_log_path);
-            unlinkTestLog(daily_test_log_path);
-            done();
-        }, 200);
+        rewire('../../../utility/logging/harper_logger');
+        deleteTestLogs(done);
     });
 
     describe(`Test log writing - Winston`, () => {
         before(() => {
             rewireDefaultLogger();
-            resetLoggerSpies();
             output_file_path = default_test_log_path;
             file_change_results = false;
-            harper_log.setLogType(WINSTON);
-            if (!fs.existsSync(output_file_path)) {
-                try {
-                    fs.writeFileSync(output_file_path, '');
-                } catch (e) {
-                    console.log("Cannot write file ", e);
-                }
-            }
 
-            watcher = fs.watch(output_file_path, {persistent: false}, (eventType, filename) => {
-                if (filename) {
-                    file_change_results = true;
-                } else {
-                    console.log(`filename not found`);
-                }
-            });
+            createTestOutputFile();
+            setLogWatcher();
         });
 
         beforeEach(() => {
@@ -262,8 +287,8 @@ describe('Test harper_logger ', () => {
         });
 
         it('Test Trace Level', (done) => {
-            harper_log.setLogLevel(harper_log.TRACE);
-            harper_log.trace(TRACE_LOG_MESSAGE);
+            harper_log_rw.setLogLevel(harper_log_rw.TRACE);
+            harper_log_rw.trace(TRACE_LOG_MESSAGE);
 
             assert.equal(harper_trace_spy.calledOnce,true, "logger 'trace' function was not called.");
             setTimeout(() => {
@@ -272,8 +297,8 @@ describe('Test harper_logger ', () => {
             }, 100);
         });
         it('Test Debug Level', (done) => {
-            harper_log.setLogLevel(harper_log.DEBUG);
-            harper_log.debug(DEBUG_LOG_MESSAGE);
+            harper_log_rw.setLogLevel(harper_log_rw.DEBUG);
+            harper_log_rw.debug(DEBUG_LOG_MESSAGE);
 
             assert.equal(harper_debug_spy.calledOnce,true, "logger 'debug' function was not called.");
             setTimeout(() => {
@@ -282,8 +307,8 @@ describe('Test harper_logger ', () => {
             }, 100);
         });
         it('Test Info Level', (done) => {
-            harper_log.setLogLevel(harper_log.INFO);
-            harper_log.info(INFO_LOG_MESSAGE);
+            harper_log_rw.setLogLevel(harper_log_rw.INFO);
+            harper_log_rw.info(INFO_LOG_MESSAGE);
 
             assert.equal(harper_info_spy.calledOnce,true, "logger 'info' function was not called.");
             setTimeout(() => {
@@ -292,8 +317,8 @@ describe('Test harper_logger ', () => {
             }, 100);
         });
         it('Test Warn Level', (done) => {
-            harper_log.setLogLevel(harper_log.WARN);
-            harper_log.warn(WARN_LOG_MESSAGE);
+            harper_log_rw.setLogLevel(harper_log_rw.WARN);
+            harper_log_rw.warn(WARN_LOG_MESSAGE);
 
             assert.equal(harper_warn_spy.calledOnce,true, "logger 'warn' function was not called.");
             setTimeout(() => {
@@ -302,8 +327,8 @@ describe('Test harper_logger ', () => {
             }, 100);
         });
         it('Test Error Level', (done) => {
-            harper_log.setLogLevel(harper_log.ERR);
-            harper_log.error(ERROR_LOG_MESSAGE);
+            harper_log_rw.setLogLevel(harper_log_rw.ERR);
+            harper_log_rw.error(ERROR_LOG_MESSAGE);
 
             assert.equal(harper_error_spy.calledOnce,true, "logger 'error' function was not called.");
 
@@ -313,8 +338,8 @@ describe('Test harper_logger ', () => {
             }, 100);
         });
         it('Test Fatal Level', (done) => {
-            harper_log.setLogLevel(harper_log.FATAL);
-            harper_log.fatal(FATAL_LOG_MESSAGE);
+            harper_log_rw.setLogLevel(harper_log_rw.FATAL);
+            harper_log_rw.fatal(FATAL_LOG_MESSAGE);
 
             assert.equal(harper_fatal_spy.calledOnce,true, "logger 'fatal' function was not called.");
 
@@ -325,8 +350,8 @@ describe('Test harper_logger ', () => {
         });
 
         it('Test Notify Level', (done) => {
-            harper_log.setLogLevel(harper_log.NOTIFY);
-            harper_log.notify(NOTIFY_LOG_MESSAGE);
+            harper_log_rw.setLogLevel(harper_log_rw.NOTIFY);
+            harper_log_rw.notify(NOTIFY_LOG_MESSAGE);
             assert.equal(harper_notify_spy.calledOnce,true, "logger 'notify' function was not called.");
 
             setTimeout(() => {
@@ -339,38 +364,26 @@ describe('Test harper_logger ', () => {
     describe(`Test log writing - WINSTON w/ Daily File Rotation`, () => {
         before(() => {
             rewireDailyLogger();
-            resetLoggerSpies();
             output_file_path = daily_test_log_path;
-            if (!fs.existsSync(output_file_path)) {
-                try {
-                    fs.writeFileSync(output_file_path, '');
-                } catch (e) {
-                    console.log("Cannot write file ", e);
-                }
-            }
 
-            watcher = fs.watch(output_file_path, {persistent: false}, (eventType, filename) => {
-                if (filename) {
-                    file_change_results = true;
-                } else {
-                    console.log(`filename not found`);
-                }
-            });
+            createTestOutputFile();
+            setLogWatcher();
         });
 
         beforeEach(() => {
             file_change_results = false;
+            sandbox.reset();
         });
 
         after(() => {
             zeroizeOutputFile();
             watcher.close();
-            sandbox.resetHistory();
+            sandbox.reset();
         });
 
         it('Test Trace Level', (done) => {
-            harper_log.setLogLevel(harper_log.TRACE);
-            harper_log.trace(TRACE_LOG_MESSAGE);
+            harper_log_rw.setLogLevel(harper_log_rw.TRACE);
+            harper_log_rw.trace(TRACE_LOG_MESSAGE);
 
             assert.equal(harper_trace_spy.calledOnce,true, "logger 'trace' function was not called.");
             setTimeout(() => {
@@ -379,8 +392,8 @@ describe('Test harper_logger ', () => {
             }, 100);
         });
         it('Test Debug Level', (done) => {
-            harper_log.setLogLevel(harper_log.DEBUG);
-            harper_log.debug(DEBUG_LOG_MESSAGE);
+            harper_log_rw.setLogLevel(harper_log_rw.DEBUG);
+            harper_log_rw.debug(DEBUG_LOG_MESSAGE);
 
             assert.equal(harper_debug_spy.calledOnce,true, "logger 'debug' function was not called.");
             setTimeout(() => {
@@ -389,8 +402,8 @@ describe('Test harper_logger ', () => {
             }, 100);
         });
         it('Test Info Level', (done) => {
-            harper_log.setLogLevel(harper_log.INFO);
-            harper_log.info(INFO_LOG_MESSAGE);
+            harper_log_rw.setLogLevel(harper_log_rw.INFO);
+            harper_log_rw.info(INFO_LOG_MESSAGE);
 
             assert.equal(harper_info_spy.calledOnce,true, "logger 'info' function was not called.");
             setTimeout(() => {
@@ -399,8 +412,8 @@ describe('Test harper_logger ', () => {
             }, 100);
         });
         it('Test Warn Level', (done) => {
-            harper_log.setLogLevel(harper_log.WARN);
-            harper_log.warn(WARN_LOG_MESSAGE);
+            harper_log_rw.setLogLevel(harper_log_rw.WARN);
+            harper_log_rw.warn(WARN_LOG_MESSAGE);
 
             assert.equal(harper_warn_spy.calledOnce,true, "logger 'warn' function was not called.");
             setTimeout(() => {
@@ -409,8 +422,8 @@ describe('Test harper_logger ', () => {
             }, 100);
         });
         it('Test Error Level', (done) => {
-            harper_log.setLogLevel(harper_log.ERR);
-            harper_log.error(ERROR_LOG_MESSAGE);
+            harper_log_rw.setLogLevel(harper_log_rw.ERR);
+            harper_log_rw.error(ERROR_LOG_MESSAGE);
 
             assert.equal(harper_error_spy.calledOnce,true, "logger 'error' function was not called.");
 
@@ -420,8 +433,8 @@ describe('Test harper_logger ', () => {
             }, 100);
         });
         it('Test Fatal Level', (done) => {
-            harper_log.setLogLevel(harper_log.FATAL);
-            harper_log.fatal(FATAL_LOG_MESSAGE);
+            harper_log_rw.setLogLevel(harper_log_rw.FATAL);
+            harper_log_rw.fatal(FATAL_LOG_MESSAGE);
 
             assert.equal(harper_fatal_spy.calledOnce,true, "logger 'fatal' function was not called.");
 
@@ -432,8 +445,8 @@ describe('Test harper_logger ', () => {
         });
 
         it('Test Notify Level', (done) => {
-            harper_log.setLogLevel(harper_log.NOTIFY);
-            harper_log.notify(NOTIFY_LOG_MESSAGE);
+            harper_log_rw.setLogLevel(harper_log_rw.NOTIFY);
+            harper_log_rw.notify(NOTIFY_LOG_MESSAGE);
             assert.equal(harper_notify_spy.calledOnce,true, "logger 'notify' function was not called.");
 
             setTimeout(() => {
@@ -446,23 +459,10 @@ describe('Test harper_logger ', () => {
     describe(`Test log writing - PINO`, () => {
         before(() => {
             rewireDefaultLogger(PINO);
-            resetLoggerSpies();
             output_file_path = default_test_log_path;
-            if(!fs.existsSync(output_file_path)) {
-                try {
-                    fs.writeFileSync(output_file_path, '');
-                } catch (e) {
-                    console.log("Cannot write file ", e);
-                }
-            }
 
-            watcher = fs.watch(output_file_path, {persistent: false}, (eventType, filename) => {
-                if(filename) {
-                    file_change_results = true;
-                } else {
-                    console.log(`filename not found`);
-                }
-            });
+            createTestOutputFile();
+            setLogWatcher();
         });
 
         beforeEach(() => {
@@ -476,8 +476,8 @@ describe('Test harper_logger ', () => {
         });
 
         it('Test Trace Level', (done) => {
-            harper_log.setLogLevel(harper_log.TRACE);
-            harper_log.trace(TRACE_LOG_MESSAGE);
+            harper_log_rw.setLogLevel(harper_log_rw.TRACE);
+            harper_log_rw.trace(TRACE_LOG_MESSAGE);
             assert.equal(harper_trace_spy.calledOnce,true, "logger 'trace' function was not called.");
             setTimeout(() => {
                 assert.equal(file_change_results, true, "Did not detect a file change after calling trace.");
@@ -486,8 +486,8 @@ describe('Test harper_logger ', () => {
         });
 
         it('Test Debug Level', (done) => {
-            harper_log.setLogLevel(harper_log.DEBUG);
-            harper_log.debug(DEBUG_LOG_MESSAGE);
+            harper_log_rw.setLogLevel(harper_log_rw.DEBUG);
+            harper_log_rw.debug(DEBUG_LOG_MESSAGE);
             assert.equal(harper_debug_spy.calledOnce,true, "logger 'debug' function was not called.");
             setTimeout(() => {
                 assert.equal(file_change_results, true, "Did not detect a file change after calling debug.");
@@ -496,8 +496,8 @@ describe('Test harper_logger ', () => {
         });
 
         it('Test Info Level', (done) => {
-            harper_log.setLogLevel(harper_log.INFO);
-            harper_log.info(INFO_LOG_MESSAGE);
+            harper_log_rw.setLogLevel(harper_log_rw.INFO);
+            harper_log_rw.info(INFO_LOG_MESSAGE);
             assert.equal(harper_info_spy.calledOnce,true, "logger 'info' function was not called.");
             setTimeout(() => {
                 assert.equal(file_change_results, true, "Did not detect a file change after calling info.");
@@ -506,8 +506,8 @@ describe('Test harper_logger ', () => {
         });
 
         it('Test Warn Level', (done) => {
-            harper_log.setLogLevel(harper_log.WARN);
-            harper_log.warn(WARN_LOG_MESSAGE);
+            harper_log_rw.setLogLevel(harper_log_rw.WARN);
+            harper_log_rw.warn(WARN_LOG_MESSAGE);
             assert.equal(harper_warn_spy.calledOnce,true, "logger 'warn' function was not called.");
             setTimeout(() => {
                 assert.equal(file_change_results, true, "Did not detect a file change after calling warn.");
@@ -516,8 +516,8 @@ describe('Test harper_logger ', () => {
         });
 
         it('Test Error Level', (done) => {
-            harper_log.setLogLevel(harper_log.ERR);
-            harper_log.error(ERROR_LOG_MESSAGE);
+            harper_log_rw.setLogLevel(harper_log_rw.ERR);
+            harper_log_rw.error(ERROR_LOG_MESSAGE);
             assert.equal(harper_error_spy.calledOnce,true, "logger 'error' function was not called.");
 
             setTimeout(() => {
@@ -527,8 +527,8 @@ describe('Test harper_logger ', () => {
         });
 
         it('Test Fatal Level', (done) => {
-            harper_log.setLogLevel(harper_log.FATAL);
-            harper_log.fatal(FATAL_LOG_MESSAGE);
+            harper_log_rw.setLogLevel(harper_log_rw.FATAL);
+            harper_log_rw.fatal(FATAL_LOG_MESSAGE);
             assert.equal(harper_fatal_spy.calledOnce,true, "logger 'fatal' function was not called.");
 
             setTimeout(() => {
@@ -538,8 +538,8 @@ describe('Test harper_logger ', () => {
         });
 
         it('Test Notify Level', (done) => {
-            harper_log.setLogLevel(harper_log.NOTIFY);
-            harper_log.notify(NOTIFY_LOG_MESSAGE);
+            harper_log_rw.setLogLevel(harper_log_rw.NOTIFY);
+            harper_log_rw.notify(NOTIFY_LOG_MESSAGE);
             assert.equal(harper_notify_spy.calledOnce,true, "logger 'notify' function was not called.");
 
             setTimeout(() => {
@@ -559,31 +559,31 @@ describe('Test harper_logger ', () => {
         });
 
         it('Set log level to notify, should only see notify messages', (done) => {
-            log_something(harper_log.NOTIFY, done);
+            log_something(harper_log_rw.NOTIFY, done);
         });
 
         it('Set log level to fatal, should only see fatal message', (done) => {
-            log_something(harper_log.FATAL, done);
+            log_something(harper_log_rw.FATAL, done);
         });
 
         it('Set log level to error, should only see error and fatal message', (done) => {
-            log_something(harper_log.ERR, done);
+            log_something(harper_log_rw.ERR, done);
         });
 
         it('Set log level to warn, should only see error, fatal, warn message', (done) => {
-            log_something(harper_log.WARN, done);
+            log_something(harper_log_rw.WARN, done);
         });
 
         it('Set log level to info, should see error, fatal, warn, info message', (done) => {
-            log_something(harper_log.INFO, done);
+            log_something(harper_log_rw.INFO, done);
         });
 
         it('Set log level to debug, should see all but trace', (done) => {
-            log_something(harper_log.DEBUG, done);
+            log_something(harper_log_rw.DEBUG, done);
         });
 
         it('Set log level to trace, should see all messages', (done) => {
-            log_something(harper_log.TRACE, done);
+            log_something(harper_log_rw.TRACE, done);
         });
     });
 
@@ -598,31 +598,31 @@ describe('Test harper_logger ', () => {
         });
 
         it('Set log level to notify, should only see notify messages', (done) => {
-            log_something(harper_log.NOTIFY, done);
+            log_something(harper_log_rw.NOTIFY, done);
         });
 
         it('Set log level to fatal, should only see fatal message', (done) => {
-            log_something(harper_log.FATAL, done);
+            log_something(harper_log_rw.FATAL, done);
         });
 
         it('Set log level to error, should only see error and fatal message', (done) => {
-            log_something(harper_log.ERR, done);
+            log_something(harper_log_rw.ERR, done);
         });
 
         it('Set log level to warn, should only see error, fatal, warn message', (done) => {
-            log_something(harper_log.WARN, done);
+            log_something(harper_log_rw.WARN, done);
         });
 
         it('Set log level to info, should see error, fatal, warn, info message', (done) => {
-            log_something(harper_log.INFO, done);
+            log_something(harper_log_rw.INFO, done);
         });
 
         it('Set log level to debug, should see all but trace', (done) => {
-            log_something(harper_log.DEBUG, done);
+            log_something(harper_log_rw.DEBUG, done);
         });
 
         it('Set log level to trace, should see all messages', (done) => {
-            log_something(harper_log.TRACE, done);
+            log_something(harper_log_rw.TRACE, done);
         });
     });
 
@@ -638,61 +638,57 @@ describe('Test harper_logger ', () => {
         });
 
         it('Set log level to notify, should only see notify messages', (done) => {
-            log_something(harper_log.NOTIFY, done);
+            log_something(harper_log_rw.NOTIFY, done);
         });
 
         it('Set log level to fatal, should only see fatal message', (done) => {
-            log_something(harper_log.FATAL, done);
+            log_something(harper_log_rw.FATAL, done);
         });
 
         it('Set log level to error, should only see error and fatal message', (done) => {
-            log_something(harper_log.ERR, done);
+            log_something(harper_log_rw.ERR, done);
         });
 
         it('Set log level to warn, should only see error, fatal, warn message', (done) => {
-            log_something(harper_log.WARN, done);
+            log_something(harper_log_rw.WARN, done);
         });
 
         it('Set log level to info, should see error, fatal, warn, info message', (done) => {
-            log_something(harper_log.INFO, done);
+            log_something(harper_log_rw.INFO, done);
         });
 
         it('Set log level to debug, should see all but trace', (done) => {
-            log_something(harper_log.DEBUG, done);
+            log_something(harper_log_rw.DEBUG, done);
         });
 
         it('Set log level to trace, should see all messages', (done) => {
-            log_something(harper_log.TRACE, done);
+            log_something(harper_log_rw.TRACE, done);
         });
     });
 
     describe(`Test setLogType`, () => {
         before(() => {
             rewireDefaultLogger();
-            harper_log.setLogType(WINSTON);
-            file_change_results = false;
-
-            watcher = fs.watch(output_file_path, {persistent: false}, (eventType, filename) => {
-                if(filename) {
-                    file_change_results = true;
-                } else {
-                    console.log(`filename not found`);
-                }
-            });
+            setLogWatcher();
         });
+
+        beforeEach(() => {
+            file_change_results = false;
+        });
+
         after(() => {
             zeroizeOutputFile();
             watcher.close();
         });
         it('Pass in empty value, expect error written in log.', (done) => {
-            harper_log.setLogType('');
+            setLogType_rw('');
             setTimeout(() => {
                 assert.equal(file_change_results, true, "Did not detect a file change passing bad argument to setLogType.");
                 done();
             }, 100);
         });
         it('Pass invalid value, expect error written in log.', (done) => {
-            harper_log.setLogType(12);
+            setLogType_rw(12);
             setTimeout(() => {
                 assert.equal(file_change_results, true, "Did not detect a file change passing bad argument to setLogType.");
                 done();
@@ -701,81 +697,162 @@ describe('Test harper_logger ', () => {
     });
 
     describe(`Test setLogLocation`, () => {
-        let new_output_file = undefined;
-        let default_path = undefined;
+        let initWinstonLogger_orig;
+        let trace_orig;
+        let write_log_orig;
+        let fs_existsSync_stub;
+        let fs_mkdir_stub;
+        let fs_stub;
 
         before(() => {
-            default_path = default_test_log_path;
-            new_output_file = path.join(default_test_log_dir, 'new_test_log.log');
-        });
+            initWinstonLogger_orig = harper_log_rw.__get__('initWinstonLogger');
+            trace_orig = harper_log_rw.__get__('trace');
+            write_log_orig = harper_log_rw.__get__('write_log');;
 
+            fs_existsSync_stub = sandbox.stub().returns(true);
+            fs_mkdir_stub = sandbox.stub().returns();
+            fs_stub = {
+                existsSync: fs_existsSync_stub,
+                mkdirSync: fs_mkdir_stub
+            };
+            const initWinstonLogger_stub = sandbox.stub().returns();
+            const trace_stub = sandbox.stub().returns();
+            const write_log_stub = sandbox.stub().returns();
+            harper_log_rw.__set__('fs', fs_stub);
+            harper_log_rw.__set__('initWinstonLogger', initWinstonLogger_stub);
+            harper_log_rw.__set__('trace', trace_stub);
+            harper_log_rw.__set__('write_log', write_log_stub);
+        })
         beforeEach(() => {
             rewireDefaultLogger();
         });
 
         afterEach(() => {
-            file_change_results = false;
-            watcher.close();
+            sandbox.restore();
+            harper_log_rw.__set__('fs', fs_stub);
         });
 
         after(() => {
-            unlinkTestLog(new_output_file);
-            unlinkTestLog(default_test_log_path);
+            harper_log_rw.__set__('fs', fs);
+            harper_log_rw.__set__('initWinstonLogger', initWinstonLogger_orig);
+            harper_log_rw.__set__('trace', trace_orig);
+            harper_log_rw.__set__('write_log', write_log_orig);
+        })
+
+        it('set log location w/ log file path',() => {
+            harper_log_rw.__set__('log_location', undefined)
+
+            setLogLocation_rw(default_test_log_path);
+
+            const test_location = harper_log_rw.__get__('log_location');
+
+            expect(test_location).to.equal(default_test_log_path);
+
         });
 
-        it('set log location', (done) => {
-            harper_log.error('test');
-            harper_log.setLogLocation(new_output_file);
-            harper_log.error('new log path was set');
-            // need to wait for the logger to create and write to the file.
-            setTimeout(() => {
-                try {
-                    watcher = fs.watch(new_output_file, {persistent: false}, (eventType, filename) => {
-                        if (filename) {
-                            file_change_results = true;
-                        } else {
-                            console.log(`filename not found`);
-                        }
-                    });
-                } catch(err) {
-                    console.error(err);
-                }
-                harper_log.error('test in new path');
-                setTimeout(() => {
-                    // Had to play with the timing on this to make it constantly pass.  Might need to be slower depending on the
-                    // event loop and specs of any given system the test is run on.  Not the best way to test, but works for now.
-                    assert.equal(file_change_results, true, "Did not detect a file change to new log file. This might be a timing issue with the test, not the functionality.");
-                    done();
-                }, 200);
-            }, 200);
+        it('set log location w/ log dir path', () => {
+            harper_log_rw.__set__('log_location', undefined)
+
+            setLogLocation_rw(default_test_log_dir);
+
+            const test_location = harper_log_rw.__get__('log_location');
+
+            expect(test_location).to.equal(default_test_log_path);
         });
 
-        it('set log location with bad path, expect log written to default path', (done) => {
+        it('set log location w/ log path with diff ext', () => {
+            harper_log_rw.__set__('log_location', undefined)
+
+            const test_log_path = `${default_test_log_dir}/test_log.txt`;
+
+            setLogLocation_rw(test_log_path);
+
+            const test_location = harper_log_rw.__get__('log_location');
+
+            expect(test_location).to.equal(test_log_path);
+        });
+
+        it('set log location w/ log dir path and daily turned on', () => {
+            harper_log_rw.__set__('daily_rotate', true);
+            harper_log_rw.__set__('log_location', undefined)
+
+            setLogLocation_rw(default_test_log_dir);
+
+            const test_location = harper_log_rw.__get__('log_location');
+
+            expect(test_location).to.equal(daily_file_path_template);
+        });
+
+        it('set log location with undefined, expect log location set to default path', () => {
+            harper_log_rw.__set__('log_location', undefined)
+
             const bad_log_path = undefined;
-            let curr_path = harper_log.__get__('log_location');
-            harper_log.error('test');
-            harper_log.setLogLocation(bad_log_path);
-            harper_log.error('bad log path was set');
+            output_file_path = default_test_log_path;
 
-            // need to wait for the logger to create and write to the file.
-            try {
-                watcher = fs.watch(curr_path, {persistent: false}, (eventType, filename) => {
-                    if (filename) {
-                        file_change_results = true;
-                    } else {
-                        console.log(`filename not found`);
-                    }
-                });
-            } catch(err) {
-                console.error(err);
-            }
-            harper_log.error('test in new path');
-            setTimeout(() => {
-                // Had to play with the timing on this to make it constantly pass.  Might need to be slower depending on the
-                // event loop and specs of any given system the test is run on.  Not the best way to test, but works for now.
-                assert.equal(file_change_results, true, 'Expected log written to default path.');
-                done();
-            }, 200);
+            setLogLocation_rw(bad_log_path);
+
+            const test_log_path = harper_log_rw.__get__('log_location');
+
+            expect(test_log_path.includes(`log/${default_test_log_name}`)).to.equal(true);
+        });
+
+        it('set log location with file path that doesnt exist', () => {
+            harper_log_rw.__set__('log_location', undefined)
+
+            fs_existsSync_stub.returns(false);
+            harper_log_rw.__set__('fs', fs_stub);
+
+            const bad_log_path = 'log/log/sams/log.log';
+
+            setLogLocation_rw(bad_log_path);
+
+            const test_location = harper_log_rw.__get__('log_location');
+
+            expect(test_location).to.equal(bad_log_path);
+        });
+
+        it('set daily log location with file path that doesnt exist', () => {
+            harper_log_rw.__set__('daily_rotate', true);
+            harper_log_rw.__set__('log_location', undefined)
+
+            fs_existsSync_stub.returns(false);
+            harper_log_rw.__set__('fs', fs_stub);
+
+            const bad_log_path = 'log/log/sams/log.log';
+            const bad_log_path_daily = 'log/log/sams/%DATE%_log.log';
+
+            setLogLocation_rw(bad_log_path);
+
+            const test_location = harper_log_rw.__get__('log_location');
+
+            expect(test_location).to.equal(bad_log_path_daily);
+        });
+
+        it('set log location with file path that doesnt exist and mkdir error', () => {
+            harper_log_rw.__set__('log_location', undefined);
+            fs_existsSync_stub.returns(false);
+            fs_mkdir_stub.throws();
+            harper_log_rw.__set__('fs', fs_stub);
+
+            const bad_log_path = 'log/log/sams/log.log';
+            setLogLocation_rw(bad_log_path);
+
+            const test_location = harper_log_rw.__get__('log_location');
+            expect(test_location.includes(`log/${default_test_log_name}`)).to.equal(true);
+        });
+
+        it('set daily log location with file path that doesnt exist and mkdir error', () => {
+            harper_log_rw.__set__('daily_rotate', true);
+            harper_log_rw.__set__('log_location', undefined)
+            fs_existsSync_stub.returns(false);
+            fs_mkdir_stub.throws();
+            harper_log_rw.__set__('fs', fs_stub);
+
+            const bad_log_path = 'log/log/sams/log.log';
+            setLogLocation_rw(bad_log_path);
+
+            const test_location = harper_log_rw.__get__('log_location');
+            expect(test_location.includes(`log/${daily_file_name_template}`)).to.equal(true);
         });
     });
 });
@@ -807,43 +884,36 @@ describe("Test read_log ", () => {
     let test_read_log_obj;
 
     before(() => {
+        rewireDefaultLogger();
         winston_configure_spy = sandbox.spy(winston, "configure");
         winston_query_spy = sandbox.spy(winston, "query");
-        rewireDefaultLogger();
-        harper_log.setLogType(WINSTON);
-        harper_log.setLogLevel(harper_log.ERR);
-        if(fs.existsSync(default_test_log_path)) {
-            try {
-                zeroizeOutputFile();
-            } catch (e) {
-                console.log("Cannot write file ", e);
-            }
-        }
-        harper_log.error(ERROR_LOG_MESSAGE);
-        harper_log.error(ERROR_LOG_MESSAGE);
+        output_file_path = default_test_log_path;
+
+        harper_log_rw.error(ERROR_LOG_MESSAGE);
+        harper_log_rw.error(ERROR_LOG_MESSAGE);
+        harper_log_rw.notify(NOTIFY_LOG_MESSAGE);
+        harper_log_rw.fatal(FATAL_LOG_MESSAGE);
     });
 
     beforeEach(() => {
-        harper_log.setLogType(WINSTON);
+        setLogType_rw(WINSTON);
         test_read_log_obj = test_utils.deepClone(TEST_READ_LOG_OBJECT);
     });
 
     afterEach(() => {
-        sandbox.resetHistory();
+        sandbox.reset();
     });
 
-    after(() => {
-        rewireDefaultLogger();
-        unlinkTestLog(default_test_log_path);
-        unlinkTestLog(daily_test_log_path);
-        sandbox.restore();
+    after((done) => {
+        deleteTestLogs(done);
+        rewire('../../../utility/logging/harper_logger');
     });
 
     it("Should call the query method if the validator does NOT return anything", test_utils.mochaAsyncWrapper(async () => {
         let queryResults;
         let errorResponse;
         try {
-            queryResults = await harper_log.readLog(test_read_log_obj);
+            queryResults = await harper_log_rw.readLog(test_read_log_obj);
         } catch(e) {
             errorResponse = e;
         }
@@ -859,7 +929,7 @@ describe("Test read_log ", () => {
         test_read_log_obj.until="BOGO Jamba Juice!";
 
         try {
-            queryResults = await harper_log.readLog(test_read_log_obj);
+            queryResults = await harper_log_rw.readLog(test_read_log_obj);
         } catch(e) {
             errorResponse = e;
         }
@@ -869,12 +939,12 @@ describe("Test read_log ", () => {
 
     describe("setting default Winston configuration for query", () => {
         afterEach(() => {
-            sandbox.resetHistory();
+            sandbox.reset();
         });
 
         it("Should configure a winston with the file name `install_log.log` when log equals install_log ", () => {
             test_read_log_obj.log = "install_log";
-            harper_log.readLog(test_read_log_obj);
+            harper_log_rw.readLog(test_read_log_obj);
 
             expect(winston_configure_spy.args[0][0].transports[0].filename).to.equal('install_log.log');
             expect(winston_configure_spy.calledOnce).to.equal(true);
@@ -882,22 +952,22 @@ describe("Test read_log ", () => {
 
         it("Should configure a winston with the file name `run_log.log` when log equals run_log ", () => {
             test_read_log_obj.log = "run_log";
-            harper_log.readLog(test_read_log_obj);
+            harper_log_rw.readLog(test_read_log_obj);
 
             expect(winston_configure_spy.args[0][0].transports[0].filename).to.equal('run_log.log');
             expect(winston_configure_spy.calledOnce).to.equal(true);
         });
 
         it("Should configure winston when there is no log set in the read_log_object ", () => {
-            harper_log.readLog(test_read_log_obj);
+            harper_log_rw.readLog(test_read_log_obj);
 
             expect(default_test_log_path).to.include(winston_configure_spy.args[0][0].transports[0].filename);
             expect(winston_query_spy.calledOnce).to.equal(true);
         });
 
         it("Should configure winston to query for logs when Pino is set as the logger ", () => {
-            harper_log.setLogType(PINO);
-            harper_log.readLog(test_read_log_obj);
+            setLogType_rw(PINO);
+            harper_log_rw.readLog(test_read_log_obj);
 
             expect(default_test_log_name).to.include(winston_configure_spy.args[0][0].transports[0].filename);
             expect(winston_configure_spy.calledOnce).to.equal(true);
@@ -905,38 +975,41 @@ describe("Test read_log ", () => {
     });
 
     describe("bones.query() 'options' parameter ", () => {
-        const default_options_fields = harper_log.__get__('DEFAULT_LOGGER_FIELDS');
+        const default_options_fields = harper_log_rw.__get__('DEFAULT_LOGGER_FIELDS');
         let queryResults;
 
         afterEach(() => {
             queryResults = undefined;
-            sandbox.resetHistory();
+            sandbox.reset();
         });
 
-        it("Should include 'limit' and 'fields' properties by default ", test_utils.mochaAsyncWrapper( async () => {
+        it("Should include 'level', 'limit' and 'fields' properties by default ", test_utils.mochaAsyncWrapper( async () => {
             delete test_read_log_obj['limit'];
             try {
-                queryResults = await harper_log.readLog(test_read_log_obj);
+                queryResults = await harper_log_rw.readLog(test_read_log_obj);
             } catch(e) {
                 expect(e).to.be.null('readLog() should not have thrown an error');
             }
 
-            expect(queryResults.file.length).to.equal(2);
+            const fileResults = Object.values(queryResults.file);
+            expect(Object.keys(fileResults[0]).length).to.equal(3);
 
             const winston_options = winston_query_spy.args[0][0];
             expect(winston_options.limit).to.equal(DEFAULT_OPTIONS_LIMIT);
             expect(winston_options.fields).to.deep.equal(default_options_fields.WIN);
         }));
 
-        it("Should include default 'limit' and 'fields' properties for Pino ", test_utils.mochaAsyncWrapper( async () => {
+        it("Should include default 'level', 'limit' and 'fields' properties for Pino ", test_utils.mochaAsyncWrapper( async () => {
             test_read_log_obj.limit = null;
-            harper_log.setLogType(PINO);
+            setLogType_rw(PINO);
             try {
-                queryResults = await harper_log.readLog(test_read_log_obj);
+                queryResults = await harper_log_rw.readLog(test_read_log_obj);
             } catch(e) {
                 expect(e).to.equal(null, 'readLog() should not have thrown an error');
             }
-            expect(queryResults.file.length).to.equal(2);
+
+            const fileResults = Object.values(queryResults.file);
+            expect(Object.keys(fileResults[0]).length).to.equal(3);
 
             const winston_options = winston_query_spy.args[0][0];
             expect(winston_options.limit).to.equal(DEFAULT_OPTIONS_LIMIT);
@@ -945,7 +1018,7 @@ describe("Test read_log ", () => {
 
         it("Should include all values from the read_log_object that is passed in ", test_utils.mochaAsyncWrapper( async () => {
             try {
-                queryResults = await harper_log.readLog(test_read_log_obj);
+                queryResults = await harper_log_rw.readLog(test_read_log_obj);
             } catch(e) {
                 expect(e).to.equal(null, 'readLog() should not have thrown an error');
             }
@@ -962,6 +1035,8 @@ describe("Test read_log ", () => {
                 }
             });
             expect(queryResults.file.length).to.equal(2);
+            const fileResults = Object.values(queryResults.file);
+            expect(Object.keys(fileResults[0]).length).to.equal(3);
         }));
 
         it("Should default the 'from' and 'until' properties to represent the previous 24 hours if not included in request ", test_utils.mochaAsyncWrapper( async () => {
@@ -970,7 +1045,7 @@ describe("Test read_log ", () => {
             const current_date = getMomentDate();
 
             try {
-                queryResults = await harper_log.readLog(test_read_log_obj);
+                queryResults = await harper_log_rw.readLog(test_read_log_obj);
             } catch(e) {
                 expect(e).to.equal(null, 'readLog() should not have thrown an error');
             }
@@ -985,7 +1060,7 @@ describe("Test read_log ", () => {
             delete test_read_log_obj['until'];
 
             try {
-                queryResults = await harper_log.readLog(test_read_log_obj);
+                queryResults = await harper_log_rw.readLog(test_read_log_obj);
             } catch(e) {
                 expect(e).to.equal(null, 'readLog() should not have thrown an error');
             }
@@ -996,15 +1071,15 @@ describe("Test read_log ", () => {
             expect(moment(winston_options.from).isSame(test_read_log_obj.from, 'day')).to.equal(true);
         }));
 
-        it("Should NOT include a 'level' property if not included in request", test_utils.mochaAsyncWrapper( async () => {
+        it("Should include all logs when 'level' property if not included in request", test_utils.mochaAsyncWrapper( async () => {
             delete test_read_log_obj['level'];
             try {
-                queryResults = await harper_log.readLog(test_read_log_obj);
+                queryResults = await harper_log_rw.readLog(test_read_log_obj);
             } catch(e) {
                 expect(e).to.equal(null, 'readLog() should not have thrown an error');
             }
 
-            expect(queryResults.file.length).to.equal(2);
+            expect(queryResults.file.length).to.equal(4);
             const winston_options = winston_query_spy.args[0][0];
             expect(winston_options.level).to.equal(undefined);
         }));
@@ -1012,7 +1087,7 @@ describe("Test read_log ", () => {
         it("Should default 'limit' property to 100 if not included in request ", test_utils.mochaAsyncWrapper( async () => {
             delete test_read_log_obj['limit'];
             try {
-                queryResults = await harper_log.readLog(test_read_log_obj);
+                queryResults = await harper_log_rw.readLog(test_read_log_obj);
             } catch(e) {
                 expect(e).to.equal(null, 'readLog() should not have thrown an error');
             }
@@ -1025,7 +1100,7 @@ describe("Test read_log ", () => {
         it("Should default 'order' property to 'desc' if not included in request", test_utils.mochaAsyncWrapper( async () => {
             delete test_read_log_obj['order'];
             try {
-                queryResults = await harper_log.readLog(test_read_log_obj);
+                queryResults = await harper_log_rw.readLog(test_read_log_obj);
             } catch(e) {
                 expect(e).to.equal(null, 'readLog() should not have thrown an error');
             }
@@ -1037,7 +1112,7 @@ describe("Test read_log ", () => {
 
         it("Should default 'start' property to 0 if not included in request ", test_utils.mochaAsyncWrapper( async () => {
             try {
-                queryResults = await harper_log.readLog(test_read_log_obj);
+                queryResults = await harper_log_rw.readLog(test_read_log_obj);
             } catch(e) {
                 expect(e).to.equal(null, 'readLog() should not have thrown an error');
             }
@@ -1061,7 +1136,7 @@ describe("Test read_log ", () => {
 
         it("Should configure a winston with the file name `install_log.log` when log equals install_log ", () => {
             test_read_log_obj.log = "install_log";
-            harper_log.readLog(test_read_log_obj);
+            harper_log_rw.readLog(test_read_log_obj);
 
             expect(winston_configure_spy.args[0][0].transports[0].filename).to.equal('install_log.log');
             expect(winston_configure_spy.calledOnce).to.equal(true);
@@ -1069,14 +1144,14 @@ describe("Test read_log ", () => {
 
         it("Should configure a winston with the file name `run_log.log` when log equals run_log ", () => {
             test_read_log_obj.log = "run_log";
-            harper_log.readLog(test_read_log_obj);
+            harper_log_rw.readLog(test_read_log_obj);
 
             expect(winston_configure_spy.args[0][0].transports[0].filename).to.equal('run_log.log');
             expect(winston_configure_spy.calledOnce).to.equal(true);
         });
 
         it("Should configure a winston with daily rotation when there is no log set in the read_log_object ", () => {
-            harper_log.readLog(test_read_log_obj);
+            harper_log_rw.readLog(test_read_log_obj);
 
             expect(test_daily_file_template).to.include(winston_configure_spy.args[0][0].transports[0].filename);
             expect(winston_query_spy.calledOnce).to.equal(true);

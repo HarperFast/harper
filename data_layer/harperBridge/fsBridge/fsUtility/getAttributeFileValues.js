@@ -171,7 +171,7 @@ async function validateHashValuesExist(table_path, hash_attr, hash_files) {
             await fs.access(common_utils.buildFolderPath(hash_path, value + hdb_terms.HDB_FILE_SUFFIX), fs.constants.F_OK);
             existing_hash_values.push(value);
         } catch (e) {
-            log.error(e);
+            log.info(`Error thrown from fs access in validateHashValuesExist: ${e}`);
             // no-op
         }
     }));

@@ -7,6 +7,7 @@ const terms = require('../../../utility/hdbTerms');
 const room_factory = require('../room/roomFactory');
 const WorkerObjects = require('./WorkerObjects');
 const env = require('../../../utility/environment/environmentManager');
+const cluster_utils = require('../../clustering/clusterUtilities');
 
 /**
  * This is a super class that is used to represent some kind of worker clustering will use for message passing.  Since Javascript doesn't have enforceable interfaces,
@@ -156,7 +157,8 @@ class WorkerIF extends SCWorker{
             .then((result) => {
                 if(result) {
                     log.trace(`****issue in room publish in rules****`);
-                    return next(result);
+                    let error_result = cluster_utils.isEmpty(types.ERROR_CODES_REVERSE_LOOKUP[result]) ? result : types.ERROR_CODES_REVERSE_LOOKUP[result];
+                    return next(`Issue in room publish in rules ${error_result}`);
                 }
                 log.trace(`****pass room publish in rules****`);
                 return next();
@@ -164,7 +166,7 @@ class WorkerIF extends SCWorker{
             .catch((err) => {
                 log.trace(`****exception in room publish in rules****`);
                 log.info(err);
-                return next(types.ERROR_CODES.MIDDLEWARE_ERROR);
+                return next(`Exception in room publish in rules: ${types.ERROR_CODES_REVERSE_LOOKUP[types.ERROR_CODES.MIDDLEWARE_ERROR]}`);
             });
     }
 
@@ -226,7 +228,7 @@ class WorkerIF extends SCWorker{
     evalRoomPublishInMiddleware(req, next) {
         log.debug(`____evaluating room publish in middleware on message type: ${req.type}____`);
         let result = this.evalRoomMiddleware(req, next, types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_IN);
-        if(!result) {
+        if (!result) {
             log.trace(`____passed all publish in middleware____`);
             return next();
         }
@@ -234,7 +236,8 @@ class WorkerIF extends SCWorker{
         let msg = `Message was swallowed in PublishIn middleware.`;
         log.info(msg);
         log.debug(`____finished evaluating room publish in middleware____`);
-        return next(`${msg} ${result}`);
+        let error_result = cluster_utils.isEmpty(types.ERROR_CODES_REVERSE_LOOKUP[result]) ? result : types.ERROR_CODES_REVERSE_LOOKUP[result];
+        return next(`${msg} ${error_result}`);
     }
 
     /**
@@ -247,7 +250,7 @@ class WorkerIF extends SCWorker{
     evalRoomPublishOutMiddleware(req, next) {
         log.debug(`____evaluating room publish out middleware on message type: ${req.type}____`);
         let result = this.evalRoomMiddleware(req, next, types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_OUT);
-        if(!result) {
+        if (!result) {
             log.trace(`____passed all publish out middleware____`);
             return next();
         }
@@ -255,7 +258,8 @@ class WorkerIF extends SCWorker{
         // There was a problem in the middleware, parse the returned ERROR_CODE and log appropriately.
         let msg = `Message was swallowed in PublishOut middleware.`;
         log.info(msg);
-        return next(`${msg} ${result}`);
+        let error_result = cluster_utils.isEmpty(types.ERROR_CODES_REVERSE_LOOKUP[result]) ? result : types.ERROR_CODES_REVERSE_LOOKUP[result];
+        return next(`${msg} ${error_result}`);
     }
 
     /**
@@ -268,13 +272,14 @@ class WorkerIF extends SCWorker{
     evalRoomSubscribeMiddleware(req, next) {
         log.trace(`evaluating room subscribe middleware`);
         let result = this.evalRoomMiddleware(req, next, types.MIDDLEWARE_TYPE.MIDDLEWARE_SUBSCRIBE);
-        if(!result) {
+        if (!result) {
             return next();
         }
         // There was a problem in the middleware, parse the returned ERROR_CODE and log appropriately.
         let msg = `Message was swallowed in Subscribe middleware.`;
         log.info(msg);
-        return next(`${msg} ${result}`);
+        let error_result = cluster_utils.isEmpty(types.ERROR_CODES_REVERSE_LOOKUP[result]) ? result : types.ERROR_CODES_REVERSE_LOOKUP[result];
+        return next(`${msg} ${error_result}`);
     }
 
     /**
@@ -287,12 +292,13 @@ class WorkerIF extends SCWorker{
     evalRoomAuthenticateMiddleware(req, next) {
         log.trace(`evaluating room authenticate middleware`);
         let result = this.evalRoomMiddleware(req, next, types.MIDDLEWARE_TYPE.MIDDLEWARE_AUTHENTICATE);
-        if(!result) {
+        if (!result) {
             return next();
         }
         let msg = `Message was swallowed in Authenticate middleware.`;
         log.info(msg);
-        return next(`${msg} ${result}`);
+        let error_result = cluster_utils.isEmpty(types.ERROR_CODES_REVERSE_LOOKUP[result]) ? result : types.ERROR_CODES_REVERSE_LOOKUP[result];
+        return next(`${msg} ${error_result}`);
     }
 
     run() {
