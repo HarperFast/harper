@@ -57,7 +57,7 @@ function insertRecords(env, hash_attribute, all_attributes , records){
 }
 
 /**
- *
+ * common validation function for env, hash_attribute & fetch_attributes
  * @param {lmdb.Env} env - lmdb environment object
  * @param {String} hash_attribute - name of the table's hash attribute
  * @param {Array.<String>} all_attributes - list of all attributes to write to the database

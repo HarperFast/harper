@@ -15,8 +15,8 @@ const MDB_FILE_NAME = 'data.mdb';
 
 /**
  * validates the base_path & env_name exist.  checks base_path is a valid path
- * @param {String} base_path
- * @param {String} env_name
+ * @param {String} base_path - top level path the environment folder and the data.mdb file live under
+ * @param {String} env_name - name of environment
  */
 async function pathEnvNameValidation(base_path, env_name){
     if(base_path === undefined){
@@ -41,8 +41,8 @@ async function pathEnvNameValidation(base_path, env_name){
 
 /**
  * checks the environment file exists
- * @param {String} base_path
- * @param {String} env_name
+ * @param {String} base_path - top level path the environment folder and the data.mdb file live under
+ * @param {String} env_name - name of environment
  * @returns {Promise<void>}
  */
 async function validateEnvironmentPath(base_path, env_name){
@@ -59,8 +59,8 @@ async function validateEnvironmentPath(base_path, env_name){
 
 /**
  * validates the env & dbi_name variables exist
- * @param {lmdb.Env} env
- * @param dbi_name
+ * @param {lmdb.Env} env - lmdb environment object
+ * @param {String} dbi_name - name of the dbi (KV store)
  */
 function validateEnvDBIName(env, dbi_name){
     if(env === undefined){
@@ -124,7 +124,7 @@ async function createEnvironment(base_path, env_name) {
 
 /**
  * opens an environment
- * @returns {lmdb.Env}
+ * @returns {lmdb.Env} - lmdb environment object
  * @param {String} base_path - the base pase under which the envrinment resides
  * @param {String} env_name -  the name of the environment
  */
@@ -166,9 +166,8 @@ async function openEnvironment(base_path, env_name){
 
 /**
  * deletes the environment from the file system & removes the reference from global
- * @param {String} base_path
- * @param {String} env_name
- * @returns {Promise<void>}
+ * @param {String} base_path - top level path the environment folder and the data.mdb file live under
+ * @param {String} env_name - name of environment
  */
 async function deleteEnvironment(base_path, env_name) {
     await pathEnvNameValidation(base_path, env_name);
@@ -184,8 +183,8 @@ async function deleteEnvironment(base_path, env_name) {
 
 /**
  * lists & stats named databases in an environment
- * @param {lmdb.Env} env - environment object
- * @returns {[]}
+ * @param {lmdb.Env} env - environment object used high level to interact with all data in an environment
+ * @returns {[String]} - list of dbi names in the environment
  */
 function listDBIs(env){
     if(env === undefined){
@@ -211,10 +210,10 @@ function listDBIs(env){
 
 /**
  * creates a new named database in an environment
- * @param {lmdb.Env} env
- * @param {String} dbi_name
- * @param {Boolean} [dup_sort]
- * @returns {*}
+ * @param {lmdb.Env} env - environment object used high level to interact with all data in an environment
+ * @param {String} dbi_name - name of the dbi (KV store)
+ * @param {Boolean} [dup_sort] - optional, determines if the dbi allows duplicate keys or not
+ * @returns {*} - reference to the dbi
  */
 function createDBI(env, dbi_name, dup_sort){
     validateEnvDBIName(env, dbi_name);
@@ -237,9 +236,9 @@ function createDBI(env, dbi_name, dup_sort){
 
 /**
  * opens an existing named database from an environment
- * @param {lmdb.Env} env
- * @param {String} dbi_name
- * @returns {*}
+ * @param {lmdb.Env} env - environment object used thigh level to interact with all data in an environment
+ * @param {String} dbi_name - name of the dbi (KV store)
+ * @returns {*} - returns reference to the dbi
  */
 function openDBI(env, dbi_name){
     validateEnvDBIName(env, dbi_name);
@@ -269,9 +268,9 @@ function openDBI(env, dbi_name){
 
 /**
  * gets the statistics for a named database from the environment
- * @param {lmdb.Env} env
- * @param {String} dbi_name
- * @returns {void | Promise<Stats> | *}
+ * @param {lmdb.Env} env - environment object used thigh level to interact with all data in an environment
+ * @param {String} dbi_name - name of the dbi (KV store)
+ * @returns {void | Promise<Stats> | *} - object holding stats for the dbi
  */
 function statDBI(env, dbi_name){
     validateEnvDBIName(env, dbi_name);
@@ -284,8 +283,8 @@ function statDBI(env, dbi_name){
 
 /**
  * removes a named database from an environment
- * @param {lmdb.Env} env
- * @param {String} dbi_name
+ * @param {lmdb.Env} env - environment object used thigh level to interact with all data in an environment
+ * @param {String} dbi_name - name of the dbi (KV store)
  */
 function dropDBI(env, dbi_name){
     validateEnvDBIName(env, dbi_name);

@@ -6,11 +6,11 @@ const lmdb = require('node-lmdb');
 const log = require('../logging/harper_logger');
 
 /**
- *
- * @param {lmdb.Env} env
- * @param {String} hash_attribute
- * @param {Array.<Object>} fetch_attributes
- * @returns {[]}
+ * iterates the entire  hash_attribute dbi and returns all objects back
+ * @param {lmdb.Env} env - environment object used thigh level to interact with all data in an environment
+ * @param {String} hash_attribute - name of the hash_attribute for this environment
+ * @param {Array.<String>} fetch_attributes - string array of attributes to pull from the object
+ * @returns {Array.<Object>} - object array of fetched records
  */
 function searchAll(env, hash_attribute, fetch_attributes){
     validateEnv(env);
@@ -41,10 +41,10 @@ function searchAll(env, hash_attribute, fetch_attributes){
 }
 
 /**
- *
- * @param {lmdb.Env} env
- * @param {String} hash_attribute
- * @returns {number}
+ * counts all records in an environment based on the count from stating the hash_attribute  dbi
+ * @param {lmdb.Env} env - environment object used thigh level to interact with all data in an environment
+ * @param {String} hash_attribute - name of the hash_attribute for this environment
+ * @returns {number} - number of records in the environment
  */
 function countAll(env, hash_attribute){
     validateEnv(env);
@@ -58,11 +58,11 @@ function countAll(env, hash_attribute){
 }
 
 /**
- *
- * @param {lmdb.Env} env
- * @param {String} attribute
- * @param search_value
- * @returns {[]}
+ * performs an equal search on the key of a named dbi, returns a list of ids where their keys literally match the search_value
+ * @param {lmdb.Env} env - environment object used thigh level to interact with all data in an environment
+ * @param {String} attribute - name of the attribute (dbi) to search
+ * @param search_value - value to search
+ * @returns {[]} - ids matching the search
  */
 function equals(env, attribute, search_value){
     validateComparisonFunctions(env, attribute, search_value);
@@ -79,11 +79,11 @@ function equals(env, attribute, search_value){
 }
 
 /**
- *
- * @param {lmdb.Env} env
- * @param {String} attribute
- * @param search_value
- * @returns {[]}
+ * performs an startsWith search on the key of a named dbi, returns a list of ids where their keys begin with the search_value
+ * @param {lmdb.Env} env - environment object used thigh level to interact with all data in an environment
+ * @param {String} attribute - name of the attribute (dbi) to search
+ * @param search_value - value to search
+ * @returns {[]} - ids matching the search
  */
 function startsWith(env, attribute, search_value){
     validateComparisonFunctions(env, attribute, search_value);
@@ -105,11 +105,11 @@ function startsWith(env, attribute, search_value){
 }
 
 /**
- *
- * @param {lmdb.Env} env
- * @param {String} attribute
- * @param search_value
- * @returns {[]}
+ * performs an endsWith search on the key of a named dbi, returns a list of ids where their keys end with search_value
+ * @param {lmdb.Env} env - environment object used thigh level to interact with all data in an environment
+ * @param {String} attribute - name of the attribute (dbi) to search
+ * @param search_value - value to search
+ * @returns {[]} - ids matching the search
  */
 function endsWith(env, attribute, search_value){
     validateComparisonFunctions(env, attribute, search_value);
@@ -128,11 +128,11 @@ function endsWith(env, attribute, search_value){
 }
 
 /**
- *
- * @param {lmdb.Env} env
- * @param {String} attribute
- * @param search_value
- * @returns {[]}
+ * performs a cotains search on the key of a named dbi, returns a list of ids where their keys contain the search_value
+ * @param {lmdb.Env} env - environment object used thigh level to interact with all data in an environment
+ * @param {String} attribute - name of the attribute (dbi) to search
+ * @param search_value - value to search
+ * @returns {[]} - ids matching the search
  */
 function contains(env, attribute, search_value){
     validateComparisonFunctions(env, attribute, search_value);
@@ -151,12 +151,12 @@ function contains(env, attribute, search_value){
 }
 
 /**
- *
- * @param {lmdb.Env} env
- * @param {String} hash_attribute
- * @param {Array.<String>} fetch_attributes
- * @param {String} id
- * @returns {{}}
+ * finds a single record based on the id passed
+ * @param {lmdb.Env} env - environment object used thigh level to interact with all data in an environment
+ * @param {String} hash_attribute - name of the hash_attribute for this environment
+ * @param {Array.<String>} fetch_attributes - string array of attributes to pull from the object
+ * @param {String} id - id value to search
+ * @returns {{}} - object found
  */
 function searchByHash(env, hash_attribute, fetch_attributes, id) {
     validateEnv(env);
@@ -188,11 +188,11 @@ function searchByHash(env, hash_attribute, fetch_attributes, id) {
 }
 
 /**
- *
- * @param {lmdb.Env} env
- * @param {String} hash_attribute
- * @param {String} id
- * @returns {boolean}
+ * checks if a hash value exists based on the id passed
+ * @param {lmdb.Env} env - environment object used thigh level to interact with all data in an environment
+ * @param {String} hash_attribute - name of the hash_attribute for this environment
+ * @param {String} id - id value to check exists
+ * @returns {boolean} - whether the hash exists (true) or not (false)
  */
 function checkHashExists(env, hash_attribute, id) {
     validateEnv(env);
@@ -219,12 +219,12 @@ function checkHashExists(env, hash_attribute, id) {
 }
 
 /**
- *
- * @param {lmdb.Env} env
- * @param {String} hash_attribute
- * @param {Array.<String>} fetch_attributes
- * @param {Array.<String>} ids
- * @returns {[]}
+ * finds an array of records based on the ids passed
+ * @param {lmdb.Env} env - environment object used thigh level to interact with all data in an environment
+ * @param {String} hash_attribute - name of the hash_attribute for this environment
+ * @param {Array.<String>} fetch_attributes - string array of attributes to pull from the object
+ * @param {Array.<String>} ids - list of ids to search
+ * @returns {Array.<Object>} - object array of records found
  */
 function batchSearchByHash(env, hash_attribute, fetch_attributes, ids) {
     validateEnv(env);
@@ -271,8 +271,8 @@ function batchSearchByHash(env, hash_attribute, fetch_attributes, ids) {
 }
 
 /**
- *
- * @param env
+ * validates the env argument
+ * @param env - environment object used thigh level to interact with all data in an environment
  */
 function validateEnv(env){
     if(env === undefined){
@@ -284,6 +284,10 @@ function validateEnv(env){
     }
 }
 
+/**
+ * validates the fetch_attributes argument
+ * @param fetch_attributes - string array of attributes to pull from the object
+ */
 function validateFetchAttributes(fetch_attributes){
     if(fetch_attributes === undefined){
         throw new Error('fetch_attributes is required');
@@ -294,6 +298,12 @@ function validateFetchAttributes(fetch_attributes){
     }
 }
 
+/**
+ * common validation function for all of the comparison searches (equals, startsWith, endsWith, contains)
+ * @param {lmdb.Env} env - environment object used thigh level to interact with all data in an environment
+ * @param attribute - name of the attribute (dbi) to search
+ * @param search_value - value to search
+ */
 function validateComparisonFunctions(env, attribute, search_value){
     validateEnv(env);
     if(attribute === undefined){
