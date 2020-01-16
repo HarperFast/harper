@@ -3,6 +3,7 @@
 const data_stores= require('./environmentUtility');
 const Transaction_Cursor = require('./TransactionCursor');
 const lmdb = require('node-lmdb');
+const log = require('../logging/harper_logger');
 
 /**
  *
@@ -260,7 +261,7 @@ function batchSearchByHash(env, hash_attribute, fetch_attributes, ids) {
                 results.push(obj);
             }
         }catch(e){
-
+            log.warn(e);
         }
     }
 

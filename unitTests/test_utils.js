@@ -123,9 +123,9 @@ function preTestPrep() {
     env.initTestEnvironment();
 }
 
-function makeTheDir(path) {
-    if(!fs.existsSync(path)) {
-        fs.mkdirSync(path);
+function makeTheDir(path_value) {
+    if(!fs.existsSync(path_value)) {
+        fs.mkdirSync(path_value);
     }
 }
 
@@ -733,7 +733,7 @@ async function testError(test_func, error_msg) {
     return error instanceof Error && error.message === error_msg;
 }
 
-async function assertErrorAsync(test_func, args, error_object){
+async function assertErrorAsync(test_func, args, error_object, message){
     let error;
     let result;
     try{

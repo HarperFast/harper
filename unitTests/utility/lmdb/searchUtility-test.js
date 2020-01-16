@@ -2,7 +2,6 @@
 
 const search_util = require('../../../utility/lmdb/searchUtility');
 const rewire = require('rewire');
-const rw_search_util = rewire('../../../utility/lmdb/searchUtility');
 const fs = require('fs-extra');
 const environment_utility = require('../../../utility/lmdb/environmentUtility');
 const write_utility = require('../../../utility/lmdb/writeUtility');
@@ -21,6 +20,15 @@ const MULTI_RECORD_ARRAY = [
     {id:2, name:'Jerry', age:32},
     {id:3, name: 'Hank', age: 57},
     {id:4, name:'Joy', age: 44, city:'Denver'}
+];
+
+
+const MULTI_RECORD_ARRAY2 = [
+    {id:1, name:'Kyle', age:46, city:'Denver'},
+    {id:2, name:'Jerry', age:32},
+    {id:3, name: 'Hank', age: 57},
+    {id:4, name:'Joy', age: 44, city:'Denver'},
+    {id:5, name:'Fran', age: 44, city:'Denvertown'},
 ];
 
 const ENV_REQUIRED_ERROR = new Error('env is required');
@@ -291,7 +299,7 @@ describe('Test searchUtility module', ()=>{
             global.lmdb_map = undefined;
             env = await environment_utility.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
             await environment_utility.createDBI(env, 'id');
-            write_utility.insertRecords(env, HASH_ATTRIBUTE_NAME, All_ATTRIBUTES, MULTI_RECORD_ARRAY);
+            write_utility.insertRecords(env, HASH_ATTRIBUTE_NAME, All_ATTRIBUTES, MULTI_RECORD_ARRAY2);
         });
 
         after(async () => {
@@ -304,21 +312,129 @@ describe('Test searchUtility module', ()=>{
             test_utils.assertErrorSync(search_util.startsWith, [HASH_ATTRIBUTE_NAME], INVALID_ENVIRONMENT_ERROR, 'invalid env variable');
             test_utils.assertErrorSync(search_util.startsWith, [env], ATTRIBUTE_REQUIRED_ERROR, 'no hash attribute');
             test_utils.assertErrorSync(search_util.startsWith, [env, 'city'], SEARCH_VALUE_REQUIRED_ERROR, 'no search_value');
-            test_utils.assertErrorSync(search_util.startsWith, [env, 'city', 'Denver'], undefined, 'all arguments');
+            test_utils.assertErrorSync(search_util.startsWith, [env, 'city', 'D'], undefined, 'all arguments');
         });
 
         it("test search on city", () => {
-            let results = test_utils.assertErrorSync(search_util.equals, [env, 'city', 'Denver'], undefined, 'all arguments');
-            assert.deepStrictEqual(results, ['1', '4']);
+            let results = test_utils.assertErrorSync(search_util.startsWith, [env, 'city', 'Den'], undefined, 'all arguments');
+            assert.deepStrictEqual(results, ['1', '4', '5']);
         });
 
-        it("test search on city with only partial value", () => {
-            let results = test_utils.assertErrorSync(search_util.equals, [env, 'city', 'Den'], undefined, 'all arguments');
+        it("test search on city with Denver", () => {
+            let results = test_utils.assertErrorSync(search_util.startsWith, [env, 'city', 'Denver'], undefined, 'all arguments');
+            assert.deepStrictEqual(results, ['1', '4', '5']);
+        });
+
+        it("test search on city with Denvert", () => {
+            let results = test_utils.assertErrorSync(search_util.startsWith, [env, 'city', 'Denvert'], undefined, 'all arguments');
+            assert.deepStrictEqual(results, ['5']);
+        });
+
+        it("test search on city with non-existent value", () => {
+            let results = test_utils.assertErrorSync(search_util.startsWith, [env, 'city', 'FoCo'], undefined, 'all arguments');
             assert.deepStrictEqual(results, []);
         });
 
         it("test search on attribute no exist", () => {
-            let results = test_utils.assertErrorSync(search_util.equals, [env, 'fake', 'bad'], DBI_NO_EXIST_ERROR);
+            let results = test_utils.assertErrorSync(search_util.startsWith, [env, 'fake', 'bad'], DBI_NO_EXIST_ERROR);
+            assert.deepStrictEqual(results, undefined);
+        });
+    });
+
+    describe('test endsWith function', ()=> {
+        let env;
+        before(async () => {
+            await fs.mkdirp(BASE_TEST_PATH);
+            global.lmdb_map = undefined;
+            env = await environment_utility.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
+            await environment_utility.createDBI(env, 'id');
+            write_utility.insertRecords(env, HASH_ATTRIBUTE_NAME, All_ATTRIBUTES, MULTI_RECORD_ARRAY2);
+        });
+
+        after(async () => {
+            await fs.remove(BASE_TEST_PATH);
+            global.lmdb_map = undefined;
+        });
+
+        it("test validation", () => {
+            test_utils.assertErrorSync(search_util.endsWith, [], ENV_REQUIRED_ERROR, 'test no args');
+            test_utils.assertErrorSync(search_util.endsWith, [HASH_ATTRIBUTE_NAME], INVALID_ENVIRONMENT_ERROR, 'invalid env variable');
+            test_utils.assertErrorSync(search_util.endsWith, [env], ATTRIBUTE_REQUIRED_ERROR, 'no hash attribute');
+            test_utils.assertErrorSync(search_util.endsWith, [env, 'city'], SEARCH_VALUE_REQUIRED_ERROR, 'no search_value');
+            test_utils.assertErrorSync(search_util.endsWith, [env, 'city', 'Denver'], undefined, 'all arguments');
+        });
+
+        it("test search on city", () => {
+            let results = test_utils.assertErrorSync(search_util.endsWith, [env, 'city', 'ver'], undefined, 'all arguments');
+            assert.deepStrictEqual(results, ['1', '4']);
+        });
+
+        it("test search on city with Denver", () => {
+            let results = test_utils.assertErrorSync(search_util.endsWith, [env, 'city', 'Denver'], undefined, 'all arguments');
+            assert.deepStrictEqual(results, ['1', '4']);
+        });
+
+        it("test search on city with town", () => {
+            let results = test_utils.assertErrorSync(search_util.endsWith, [env, 'city', 'town'], undefined, 'all arguments');
+            assert.deepStrictEqual(results, ['5']);
+        });
+
+        it("test search on city with non-existent value", () => {
+            let results = test_utils.assertErrorSync(search_util.endsWith, [env, 'city', 'FoCo'], undefined, 'all arguments');
+            assert.deepStrictEqual(results, []);
+        });
+
+        it("test search on attribute no exist", () => {
+            let results = test_utils.assertErrorSync(search_util.endsWith, [env, 'fake', 'bad'], DBI_NO_EXIST_ERROR);
+            assert.deepStrictEqual(results, undefined);
+        });
+    });
+
+    describe('test contains function', ()=> {
+        let env;
+        before(async () => {
+            await fs.mkdirp(BASE_TEST_PATH);
+            global.lmdb_map = undefined;
+            env = await environment_utility.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
+            await environment_utility.createDBI(env, 'id');
+            write_utility.insertRecords(env, HASH_ATTRIBUTE_NAME, All_ATTRIBUTES, MULTI_RECORD_ARRAY2);
+        });
+
+        after(async () => {
+            await fs.remove(BASE_TEST_PATH);
+            global.lmdb_map = undefined;
+        });
+
+        it("test validation", () => {
+            test_utils.assertErrorSync(search_util.contains, [], ENV_REQUIRED_ERROR, 'test no args');
+            test_utils.assertErrorSync(search_util.contains, [HASH_ATTRIBUTE_NAME], INVALID_ENVIRONMENT_ERROR, 'invalid env variable');
+            test_utils.assertErrorSync(search_util.contains, [env], ATTRIBUTE_REQUIRED_ERROR, 'no hash attribute');
+            test_utils.assertErrorSync(search_util.contains, [env, 'city'], SEARCH_VALUE_REQUIRED_ERROR, 'no search_value');
+            test_utils.assertErrorSync(search_util.contains, [env, 'city', 'Denver'], undefined, 'all arguments');
+        });
+
+        it("test search on city", () => {
+            let results = test_utils.assertErrorSync(search_util.contains, [env, 'city', 'ver'], undefined, 'all arguments');
+            assert.deepStrictEqual(results, ['1', '4', '5']);
+        });
+
+        it("test search on city with Denver", () => {
+            let results = test_utils.assertErrorSync(search_util.contains, [env, 'city', 'Denver'], undefined, 'all arguments');
+            assert.deepStrictEqual(results, ['1', '4', '5']);
+        });
+
+        it("test search on city with town", () => {
+            let results = test_utils.assertErrorSync(search_util.contains, [env, 'city', 'town'], undefined, 'all arguments');
+            assert.deepStrictEqual(results, ['5']);
+        });
+
+        it("test search on city with non-existent value", () => {
+            let results = test_utils.assertErrorSync(search_util.contains, [env, 'city', 'FoCo'], undefined, 'all arguments');
+            assert.deepStrictEqual(results, []);
+        });
+
+        it("test search on attribute no exist", () => {
+            let results = test_utils.assertErrorSync(search_util.contains, [env, 'fake', 'bad'], DBI_NO_EXIST_ERROR);
             assert.deepStrictEqual(results, undefined);
         });
     });

@@ -237,7 +237,7 @@ function createDBI(env, dbi_name, dup_sort){
 
 /**
  * opens an existing named database from an environment
- * @param {lmdb.env} env
+ * @param {lmdb.Env} env
  * @param {String} dbi_name
  * @returns {*}
  */
