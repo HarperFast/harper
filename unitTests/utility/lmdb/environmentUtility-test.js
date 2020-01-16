@@ -41,47 +41,19 @@ describe("Test LMDB environmentUtility module", ()=>{
         });
 
         it('call function no args', async ()=>{
-            let err;
-            try{
-                await rw_validator();
-            } catch(e){
-                err = e;
-            }
-
-            assert.deepEqual(err, BASE_PATH_REQUIRED_ERROR);
+            await test_utils.assertErrorAsync(rw_validator, [], BASE_PATH_REQUIRED_ERROR);
         });
 
         it('call function no env_name', async()=>{
-            let err;
-            try {
-                await rw_validator(BASE_TEST_PATH);
-            }catch(e){
-                err = e;
-            }
-
-            assert.deepEqual(err, ENV_NAME_REQUIRED_ERROR);
+            await test_utils.assertErrorAsync(rw_validator, [BASE_TEST_PATH], ENV_NAME_REQUIRED_ERROR);
         });
 
         it('call function invalid base_path', async ()=>{
-            let err;
-            try {
-                await rw_validator(INVALID_BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
-            }catch(e){
-                err = e;
-            }
-
-            assert.deepEqual(err, INVALID_BASE_PATH_ERROR);
+            await test_utils.assertErrorAsync(rw_validator, [INVALID_BASE_TEST_PATH, TEST_ENVIRONMENT_NAME], INVALID_BASE_PATH_ERROR);
         });
 
         it('call function happy path', async ()=>{
-            let err;
-            try {
-                await rw_validator(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
-            }catch(e){
-                err = e;
-            }
-
-            assert.deepEqual(err, undefined);
+            await test_utils.assertErrorAsync(rw_validator, [BASE_TEST_PATH, TEST_ENVIRONMENT_NAME], undefined);
         });
     });
 
@@ -99,25 +71,11 @@ describe("Test LMDB environmentUtility module", ()=>{
         });
 
         it('call function invalid base_path', async ()=>{
-            let err;
-            try {
-                await rw_validator(INVALID_BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
-            }catch(e){
-                err = e;
-            }
-
-            assert.deepEqual(err, INVALID_ENVIRONMENT_ERROR);
+            await test_utils.assertErrorAsync(rw_validator, [INVALID_BASE_TEST_PATH, TEST_ENVIRONMENT_NAME], INVALID_ENVIRONMENT_ERROR);
         });
 
         it('call function happy path', async ()=>{
-            let err;
-            try {
-                await rw_validator(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
-            }catch(e){
-                err = e;
-            }
-
-            assert.deepEqual(err, undefined);
+            await test_utils.assertErrorAsync(rw_validator, [BASE_TEST_PATH, TEST_ENVIRONMENT_NAME], undefined);
         });
     });
 
@@ -136,36 +94,15 @@ describe("Test LMDB environmentUtility module", ()=>{
         });
 
         it('call function no args', async ()=>{
-            let err;
-            try {
-                await rw_validator();
-            }catch(e){
-                err = e;
-            }
-
-            assert.deepStrictEqual(err, ENV_REQUIRED_ERROR);
+            await test_utils.assertErrorAsync(rw_validator, [], ENV_REQUIRED_ERROR);
         });
 
         it('call function no dbi_name', async ()=>{
-            let err;
-            try {
-                await rw_validator(env);
-            }catch(e){
-                err = e;
-            }
-
-            assert.deepStrictEqual(err, DBI_NAME_REQUIRED_ERROR);
+            await test_utils.assertErrorAsync(rw_validator, [env], DBI_NAME_REQUIRED_ERROR);
         });
 
         it('call function happy path', async ()=>{
-            let err;
-            try {
-                await rw_validator(env, ID_DBI_NAME);
-            }catch(e){
-                err = e;
-            }
-
-            assert.deepStrictEqual(err, undefined);
+            await test_utils.assertErrorAsync(rw_validator, [env, ID_DBI_NAME], undefined);
         });
     });
 
@@ -180,47 +117,19 @@ describe("Test LMDB environmentUtility module", ()=>{
         });
 
         it('call function no args', async ()=>{
-            let err;
-            try{
-                await lmdb_env_util.createEnvironment();
-            } catch(e){
-                err = e;
-            }
-
-            assert.deepStrictEqual(err, BASE_PATH_REQUIRED_ERROR);
+            await test_utils.assertErrorAsync(lmdb_env_util.createEnvironment, [], BASE_PATH_REQUIRED_ERROR);
         });
 
         it('call function no env_name', async()=>{
-            let err;
-            try {
-                await lmdb_env_util.createEnvironment(BASE_TEST_PATH);
-            }catch(e){
-                err = e;
-            }
-
-            assert.deepStrictEqual(err, ENV_NAME_REQUIRED_ERROR);
+            await test_utils.assertErrorAsync(lmdb_env_util.createEnvironment, [BASE_TEST_PATH], ENV_NAME_REQUIRED_ERROR);
         });
 
         it('call function invalid base_path', async ()=>{
-            let err;
-            try {
-                await lmdb_env_util.createEnvironment(INVALID_BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
-            }catch(e){
-                err = e;
-            }
-
-            assert.deepStrictEqual(err, INVALID_BASE_PATH_ERROR);
+            await test_utils.assertErrorAsync(lmdb_env_util.createEnvironment, [INVALID_BASE_TEST_PATH, TEST_ENVIRONMENT_NAME], INVALID_BASE_PATH_ERROR);
         });
 
         it('call function happy path', async ()=>{
-            let env_err;
-            try {
-                await lmdb_env_util.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
-            } catch(e){
-                env_err = e;
-            }
-
-            assert.deepStrictEqual(env_err, undefined);
+            await test_utils.assertErrorAsync(lmdb_env_util.createEnvironment, [BASE_TEST_PATH, TEST_ENVIRONMENT_NAME], undefined);
 
             let err;
             try {
@@ -237,14 +146,8 @@ describe("Test LMDB environmentUtility module", ()=>{
 
         it('create existing environment', async ()=>{
             global.lmdb_map = undefined;
-            let env_err;
-            try {
-                await lmdb_env_util.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
-            } catch(e){
-                env_err = e;
-            }
 
-            assert.deepStrictEqual(env_err, undefined);
+            await test_utils.assertErrorAsync(lmdb_env_util.createEnvironment, [BASE_TEST_PATH, TEST_ENVIRONMENT_NAME], undefined);
 
             let err;
             try {
@@ -275,47 +178,19 @@ describe("Test LMDB environmentUtility module", ()=>{
         });
 
         it('call function no args', async ()=>{
-            let err;
-            try{
-                await lmdb_env_util.openEnvironment();
-            } catch(e){
-                err = e;
-            }
-
-            assert.deepStrictEqual(err, BASE_PATH_REQUIRED_ERROR);
+            await test_utils.assertErrorAsync(lmdb_env_util.openEnvironment, [], BASE_PATH_REQUIRED_ERROR);
         });
 
         it('call function no env_name', async()=>{
-            let err;
-            try {
-                await lmdb_env_util.openEnvironment(BASE_TEST_PATH);
-            }catch(e){
-                err = e;
-            }
-
-            assert.deepStrictEqual(err, ENV_NAME_REQUIRED_ERROR);
+            await test_utils.assertErrorAsync(lmdb_env_util.openEnvironment, [BASE_TEST_PATH], ENV_NAME_REQUIRED_ERROR);
         });
 
         it('call function invalid base_path', async ()=>{
-            let err;
-            try {
-                await lmdb_env_util.openEnvironment(INVALID_BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
-            }catch(e){
-                err = e;
-            }
-
-            assert.deepStrictEqual(err, INVALID_BASE_PATH_ERROR);
+            await test_utils.assertErrorAsync(lmdb_env_util.openEnvironment, [INVALID_BASE_TEST_PATH, TEST_ENVIRONMENT_NAME], INVALID_BASE_PATH_ERROR);
         });
 
         it('open non-existent environment', async ()=>{
-            let err;
-            try {
-                await lmdb_env_util.openEnvironment(BASE_TEST_PATH, BAD_TEST_ENVIRONMENT_NAME);
-            }catch(e){
-                err = e;
-            }
-
-            assert.deepStrictEqual(err, INVALID_ENVIRONMENT_ERROR);
+            await test_utils.assertErrorAsync(lmdb_env_util.openEnvironment, [BASE_TEST_PATH, BAD_TEST_ENVIRONMENT_NAME], INVALID_ENVIRONMENT_ERROR);
         });
 
         it('happy path test', async ()=>{
@@ -350,58 +225,23 @@ describe("Test LMDB environmentUtility module", ()=>{
         });
 
         it('call function no args', async ()=>{
-            let err;
-            try{
-                await lmdb_env_util.deleteEnvironment();
-            } catch(e){
-                err = e;
-            }
-
-            assert.deepStrictEqual(err, BASE_PATH_REQUIRED_ERROR);
+            await test_utils.assertErrorAsync(lmdb_env_util.deleteEnvironment, [], BASE_PATH_REQUIRED_ERROR);
         });
 
         it('call function no env_name', async()=>{
-            let err;
-            try {
-                await lmdb_env_util.deleteEnvironment(BASE_TEST_PATH);
-            }catch(e){
-                err = e;
-            }
-
-            assert.deepStrictEqual(err, ENV_NAME_REQUIRED_ERROR);
+            await test_utils.assertErrorAsync(lmdb_env_util.deleteEnvironment, [BASE_TEST_PATH], ENV_NAME_REQUIRED_ERROR);
         });
 
         it('call function invalid base_path', async ()=>{
-            let err;
-            try {
-                await lmdb_env_util.deleteEnvironment(INVALID_BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
-            }catch(e){
-                err = e;
-            }
-
-            assert.deepStrictEqual(err, INVALID_BASE_PATH_ERROR);
+            await test_utils.assertErrorAsync(lmdb_env_util.deleteEnvironment, [INVALID_BASE_TEST_PATH, TEST_ENVIRONMENT_NAME], INVALID_BASE_PATH_ERROR);
         });
 
         it('call function invalid environment', async ()=>{
-            let err;
-            try {
-                await lmdb_env_util.deleteEnvironment(BASE_TEST_PATH, BAD_TEST_ENVIRONMENT_NAME);
-            }catch(e){
-                err = e;
-            }
-
-            assert.deepStrictEqual(err, INVALID_ENVIRONMENT_ERROR);
+            await test_utils.assertErrorAsync(lmdb_env_util.deleteEnvironment, [BASE_TEST_PATH, BAD_TEST_ENVIRONMENT_NAME], INVALID_ENVIRONMENT_ERROR);
         });
 
         it('happy path', async ()=>{
-            let err;
-            try {
-                await lmdb_env_util.deleteEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
-            }catch(e){
-                err = e;
-            }
-
-            assert.deepStrictEqual(err, undefined);
+            await test_utils.assertErrorAsync(lmdb_env_util.deleteEnvironment, [BASE_TEST_PATH, TEST_ENVIRONMENT_NAME], undefined);
 
             let access_err;
             try{
@@ -430,25 +270,11 @@ describe("Test LMDB environmentUtility module", ()=>{
             });
 
             it('call function no args', async ()=>{
-                let err;
-                try {
-                    await lmdb_env_util.createDBI();
-                }catch(e){
-                    err = e;
-                }
-
-                assert.deepStrictEqual(err, ENV_REQUIRED_ERROR);
+                await test_utils.assertErrorAsync(lmdb_env_util.createDBI, [], ENV_REQUIRED_ERROR);
             });
 
             it('call function no dbi_name', async ()=>{
-                let err;
-                try {
-                    await lmdb_env_util.createDBI(env);
-                }catch(e){
-                    err = e;
-                }
-
-                assert.deepStrictEqual(err, DBI_NAME_REQUIRED_ERROR);
+                await test_utils.assertErrorAsync(lmdb_env_util.createDBI, [env], DBI_NAME_REQUIRED_ERROR);
             });
 
             it('call function happy path', async ()=>{
@@ -495,25 +321,11 @@ describe("Test LMDB environmentUtility module", ()=>{
             });
 
             it('call function no args', async ()=>{
-                let err;
-                try {
-                    await lmdb_env_util.openDBI();
-                }catch(e){
-                    err = e;
-                }
-
-                assert.deepStrictEqual(err, ENV_REQUIRED_ERROR);
+                await test_utils.assertErrorAsync(lmdb_env_util.openDBI, [], ENV_REQUIRED_ERROR);
             });
 
             it('call function no dbi_name', async ()=>{
-                let err;
-                try {
-                    await lmdb_env_util.openDBI(env);
-                }catch(e){
-                    err = e;
-                }
-
-                assert.deepStrictEqual(err, DBI_NAME_REQUIRED_ERROR);
+                await test_utils.assertErrorAsync(lmdb_env_util.openDBI, [env], DBI_NAME_REQUIRED_ERROR);
             });
 
             it('call function happy path', async ()=>{
@@ -576,14 +388,7 @@ describe("Test LMDB environmentUtility module", ()=>{
             });
 
             it('call function no args', async ()=>{
-                let err;
-                try {
-                    await lmdb_env_util.listDBIs();
-                }catch(e){
-                    err = e;
-                }
-
-                assert.deepStrictEqual(err, ENV_REQUIRED_ERROR);
+                await test_utils.assertErrorAsync(lmdb_env_util.listDBIs, [], ENV_REQUIRED_ERROR);
             });
 
             it('call function happy path', async ()=>{
@@ -630,25 +435,11 @@ describe("Test LMDB environmentUtility module", ()=>{
             });
 
             it('call function no args', async ()=>{
-                let err;
-                try {
-                    await lmdb_env_util.statDBI();
-                }catch(e){
-                    err = e;
-                }
-
-                assert.deepStrictEqual(err, ENV_REQUIRED_ERROR);
+                await test_utils.assertErrorAsync(lmdb_env_util.statDBI, [], ENV_REQUIRED_ERROR);
             });
 
             it('call function no dbi_name', async ()=>{
-                let err;
-                try {
-                    await lmdb_env_util.statDBI(env);
-                }catch(e){
-                    err = e;
-                }
-
-                assert.deepStrictEqual(err, DBI_NAME_REQUIRED_ERROR);
+                await test_utils.assertErrorAsync(lmdb_env_util.statDBI, [env], DBI_NAME_REQUIRED_ERROR);
             });
 
             it('call function happy path', async ()=>{
@@ -703,36 +494,15 @@ describe("Test LMDB environmentUtility module", ()=>{
             });
 
             it('call function no args', async ()=>{
-                let err;
-                try {
-                    await lmdb_env_util.dropDBI();
-                }catch(e){
-                    err = e;
-                }
-
-                assert.deepStrictEqual(err, ENV_REQUIRED_ERROR);
+                await test_utils.assertErrorAsync(lmdb_env_util.dropDBI, [], ENV_REQUIRED_ERROR);
             });
 
             it('call function no dbi_name', async ()=>{
-                let err;
-                try {
-                    await lmdb_env_util.dropDBI(env);
-                }catch(e){
-                    err = e;
-                }
-
-                assert.deepStrictEqual(err, DBI_NAME_REQUIRED_ERROR);
+                await test_utils.assertErrorAsync(lmdb_env_util.dropDBI, [env], DBI_NAME_REQUIRED_ERROR);
             });
 
             it('call function happy path', async ()=>{
-                let err;
-                try {
-                    await lmdb_env_util.dropDBI(env, ID_DBI_NAME);
-                }catch(e){
-                    err = e;
-                }
-
-                assert.deepStrictEqual(err, undefined);
+                await test_utils.assertErrorAsync(lmdb_env_util.dropDBI, [env, ID_DBI_NAME], undefined);
 
                 let open_err;
                 let dbi;
@@ -748,14 +518,7 @@ describe("Test LMDB environmentUtility module", ()=>{
             });
 
             it('call function on dbi no exist', async ()=>{
-                let err;
-                try {
-                    await lmdb_env_util.dropDBI(env, 'id2');
-                }catch(e){
-                    err = e;
-                }
-
-                assert.deepStrictEqual(err, DBI_NO_EXIST_ERROR);
+                await test_utils.assertErrorAsync(lmdb_env_util.dropDBI, [env, 'id2'], DBI_NO_EXIST_ERROR);
             });
         });
 

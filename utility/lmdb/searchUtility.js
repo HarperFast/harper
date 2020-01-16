@@ -7,16 +7,32 @@ const lmdb = require('node-lmdb');
 /**
  *
  * @param {lmdb.Env} env
- * @param {String} attribute
+ * @param {String} hash_attribute
  * @param {Array.<Object>} fetch_attributes
  * @returns {[]}
  */
-function searchAll(env, attribute, fetch_attributes){
-    let txn = new Transaction_Cursor(env, attribute);
+function searchAll(env, hash_attribute, fetch_attributes){
+    validateEnv(env);
+
+    if(hash_attribute === undefined){
+        throw new Error('hash_attribute is required');
+    }
+
+    validateFetchAttributes(fetch_attributes);
+
+    let txn = new Transaction_Cursor(env, hash_attribute);
 
     let results = [];
     for (let found = txn.cursor.goToFirst(); found !== null; found = txn.cursor.goToNext()) {
-        results.push(JSON.parse(txn.cursor.getCurrentString()));
+        let obj = {};
+        let value = JSON.parse(txn.cursor.getCurrentString());
+
+        for(let x = 0; x < fetch_attributes.length; x++){
+            let attribute = fetch_attributes[x];
+            obj[attribute] = value[attribute];
+        }
+
+        results.push(obj);
     }
 
     txn.close();
@@ -26,11 +42,17 @@ function searchAll(env, attribute, fetch_attributes){
 /**
  *
  * @param {lmdb.Env} env
- * @param {String} attribute
+ * @param {String} hash_attribute
  * @returns {number}
  */
-function countAll(env, attribute){
-    let stat = data_stores.statDBI(env, attribute);
+function countAll(env, hash_attribute){
+    validateEnv(env);
+
+    if(hash_attribute === undefined){
+        throw new Error('hash_attribute is required');
+    }
+
+    let stat = data_stores.statDBI(env, hash_attribute);
     return stat.entryCount;
 }
 
@@ -42,10 +64,12 @@ function countAll(env, attribute){
  * @returns {[]}
  */
 function equals(env, attribute, search_value){
+    validateComparisonFunctions(env, attribute, search_value);
+
     let txn = new Transaction_Cursor(env, attribute);
 
     let results = [];
-    for (let found = (txn.cursor.goToKey(search_value) === search_value); found !== null; found = txn.cursor.goToNextDup()) {
+    for (let found = txn.cursor.goToKey(search_value); found !== null; found = txn.cursor.goToNextDup()) {
         let value = txn.cursor.getCurrentString();
         results.push(value);
     }
@@ -61,6 +85,8 @@ function equals(env, attribute, search_value){
  * @returns {[]}
  */
 function startsWith(env, attribute, search_value){
+    validateComparisonFunctions(env, attribute, search_value);
+
     let txn = new Transaction_Cursor(env, attribute);
 
     let results = [];
@@ -85,6 +111,8 @@ function startsWith(env, attribute, search_value){
  * @returns {[]}
  */
 function endsWith(env, attribute, search_value){
+    validateComparisonFunctions(env, attribute, search_value);
+
     let txn = new Transaction_Cursor(env, attribute);
 
     let results = [];
@@ -106,6 +134,8 @@ function endsWith(env, attribute, search_value){
  * @returns {[]}
  */
 function contains(env, attribute, search_value){
+    validateComparisonFunctions(env, attribute, search_value);
+
     let txn = new Transaction_Cursor(env, attribute);
 
     let results = [];
@@ -127,7 +157,7 @@ function contains(env, attribute, search_value){
  * @param {String} id
  * @returns {{}}
  */
-function getById(env, hash_attribute, fetch_attributes, id) {
+function searchByHash(env, hash_attribute, fetch_attributes, id) {
     validateEnv(env);
 
     if(hash_attribute === undefined){
@@ -140,18 +170,18 @@ function getById(env, hash_attribute, fetch_attributes, id) {
         throw new Error('id is required');
     }
 
-
     let txn = new Transaction_Cursor(env, hash_attribute);
 
-    txn.cursor.goToKey(id);
+    let obj = null;
+    let found = txn.cursor.goToKey(id);
+    if(found === id) {
+        obj = {};
+        let value = JSON.parse(txn.cursor.getCurrentString());
 
-    let value = JSON.parse(txn.cursor.getCurrentString());
-    let obj = {};
-
-    fetch_attributes.forEach(attribute=>{
-        obj[attribute] = value[attribute];
-    });
-
+        fetch_attributes.forEach(attribute => {
+            obj[attribute] = value[attribute];
+        });
+    }
     txn.close();
     return obj;
 }
@@ -159,17 +189,27 @@ function getById(env, hash_attribute, fetch_attributes, id) {
 /**
  *
  * @param {lmdb.Env} env
- * @param {String} primary_attribute
+ * @param {String} hash_attribute
  * @param {String} id
  * @returns {boolean}
  */
-function checkKeyExists(env, primary_attribute, id) {
+function checkHashExists(env, hash_attribute, id) {
+    validateEnv(env);
+
+    if(hash_attribute === undefined){
+        throw new Error('hash_attribute is required');
+    }
+
+    if(id === undefined){
+        throw new Error('id is required');
+    }
+
     let found_key = true;
-    let txn = new Transaction_Cursor(env, primary_attribute);
+    let txn = new Transaction_Cursor(env, hash_attribute);
 
     let key = txn.cursor.goToKey(id);
 
-    if(key === null || key === undefined){
+    if(key !== id){
         found_key = false;
     }
 
@@ -180,31 +220,49 @@ function checkKeyExists(env, primary_attribute, id) {
 /**
  *
  * @param {lmdb.Env} env
- * @param {String} primary_attribute
+ * @param {String} hash_attribute
  * @param {Array.<String>} fetch_attributes
  * @param {Array.<String>} ids
  * @returns {[]}
  */
-function batchGetById(env, primary_attribute, fetch_attributes, ids) {
+function batchSearchByHash(env, hash_attribute, fetch_attributes, ids) {
+    validateEnv(env);
 
-    let txn = new Transaction_Cursor(env, primary_attribute);
+    if(hash_attribute === undefined){
+        throw new Error('hash_attribute is required');
+    }
+
+    validateFetchAttributes(fetch_attributes);
+
+    if(ids === undefined){
+        throw new Error('ids is required');
+    }
+
+    if(!Array.isArray(ids)){
+        throw new Error('ids must be an array');
+    }
+
+    let txn = new Transaction_Cursor(env, hash_attribute);
 
     let results = [];
-    ids.forEach(id=>{
+
+    for(let x = 0; x < ids.length; x++){
+        let id = ids[x];
         try {
-            txn.cursor.goToKey(id);
+            let key = txn.cursor.goToKey(id);
+            if(key === id) {
+                let orig = JSON.parse(txn.cursor.getCurrentString());
+                let obj = {};
 
-            let orig = JSON.parse(txn.cursor.getCurrentString());
-            let obj = {};
-
-            fetch_attributes.forEach(attribute=>{
-                obj[attribute] = orig[attribute];
-            });
-            results.push(obj);
+                fetch_attributes.forEach(attribute => {
+                    obj[attribute] = orig[attribute];
+                });
+                results.push(obj);
+            }
         }catch(e){
-            console.error(e);
+
         }
-    });
+    }
 
     txn.close();
 
@@ -235,6 +293,17 @@ function validateFetchAttributes(fetch_attributes){
     }
 }
 
+function validateComparisonFunctions(env, attribute, search_value){
+    validateEnv(env);
+    if(attribute === undefined){
+        throw new Error('attribute is required');
+    }
+
+    if(search_value === undefined){
+        throw new Error('search_value is required');
+    }
+}
+
 module.exports = {
     searchAll,
     countAll,
@@ -242,7 +311,7 @@ module.exports = {
     startsWith,
     endsWith,
     contains,
-    getById,
-    batchGetById,
-    checkKeyExists
+    searchByHash,
+    batchSearchByHash,
+    checkHashExists
 };

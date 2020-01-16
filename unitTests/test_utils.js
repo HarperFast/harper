@@ -735,24 +735,28 @@ async function testError(test_func, error_msg) {
 
 async function assertErrorAsync(test_func, args, error_object){
     let error;
+    let result;
     try{
-        await test_func.apply(null, args);
+        result = await test_func.apply(null, args);
     } catch(e){
         error = e;
     }
 
-    assert.deepStrictEqual(error, error_object);
+    assert.deepStrictEqual(error, error_object, message);
+    return result;
 }
 
-function assertErrorSync(test_func, args, error_object){
+function assertErrorSync(test_func, args, error_object, message){
     let error;
+    let result;
     try{
-        test_func.apply(null, args);
+        result = test_func.apply(null, args);
     } catch(e){
         error = e;
     }
 
-    assert.deepStrictEqual(error, error_object);
+    assert.deepStrictEqual(error, error_object, message);
+    return result;
 }
 
 /**

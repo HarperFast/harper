@@ -43,91 +43,35 @@ describe("Test writeUtility module", ()=>{
         });
 
         it("pass no args", ()=>{
-            let err;
-            try {
-                rw_insert_validator();
-            } catch(e){
-                err = e;
-            }
-
-            assert.deepStrictEqual(err, ENV_REQUIRED_ERROR);
+            test_utils.assertErrorSync(rw_insert_validator, [], ENV_REQUIRED_ERROR);
         });
 
         it("pass invalid env", ()=>{
-            let err;
-            try {
-                rw_insert_validator('test');
-            } catch(e){
-                err = e;
-            }
-
-            assert.deepStrictEqual(err, INVALID_ENV_ERROR);
+            test_utils.assertErrorSync(rw_insert_validator, ['test'], INVALID_ENV_ERROR);
         });
 
         it("pass valid env, no other args", ()=>{
-            let err;
-            try {
-                rw_insert_validator(env);
-            } catch(e){
-                err = e;
-            }
-
-            assert.deepStrictEqual(err, HASH_ATTRIBUTE_REQUIRED_ERROR);
+            test_utils.assertErrorSync(rw_insert_validator, [env], HASH_ATTRIBUTE_REQUIRED_ERROR);
         });
 
         it("pass valid env hash_attribute", ()=>{
-            let err;
-            try {
-                rw_insert_validator(env, HASH_ATTRIBUTE_NAME);
-            } catch(e){
-                err = e;
-            }
-
-            assert.deepStrictEqual(err, ALL_ATTRIBUTES_REQUIRED_ERROR);
+            test_utils.assertErrorSync(rw_insert_validator, [env, HASH_ATTRIBUTE_NAME], ALL_ATTRIBUTES_REQUIRED_ERROR);
         });
 
         it("pass valid env hash_attribute, invalid all_attributes", ()=>{
-            let err;
-            try {
-                rw_insert_validator(env, HASH_ATTRIBUTE_NAME, HASH_ATTRIBUTE_NAME);
-            } catch(e){
-                err = e;
-            }
-
-            assert.deepStrictEqual(err, ALL_ATTRIBUTES_AS_ARRAY_ERROR);
+            test_utils.assertErrorSync(rw_insert_validator, [env, HASH_ATTRIBUTE_NAME, HASH_ATTRIBUTE_NAME], ALL_ATTRIBUTES_AS_ARRAY_ERROR);
         });
 
         it("pass valid env hash_attribute all_attributes", ()=>{
-            let err;
-            try {
-                rw_insert_validator(env, HASH_ATTRIBUTE_NAME, ALL_ATTRIBUTES);
-            } catch(e){
-                err = e;
-            }
-
-            assert.deepStrictEqual(err, RECORDS_REQUIRED_ERROR);
+            test_utils.assertErrorSync(rw_insert_validator, [env, HASH_ATTRIBUTE_NAME, ALL_ATTRIBUTES], RECORDS_REQUIRED_ERROR);
         });
 
         it("pass valid env hash_attribute all_attributes, invalid records", ()=>{
-            let err;
-            try {
-                rw_insert_validator(env, HASH_ATTRIBUTE_NAME, ALL_ATTRIBUTES, ONE_RECORD_ARRAY[0]);
-            } catch(e){
-                err = e;
-            }
-
-            assert.deepStrictEqual(err, RECORDS_IS_ARRAY_ERROR);
+            test_utils.assertErrorSync(rw_insert_validator, [env, HASH_ATTRIBUTE_NAME, ALL_ATTRIBUTES, ONE_RECORD_ARRAY[0]], RECORDS_IS_ARRAY_ERROR);
         });
 
         it("pass valid env hash_attribute all_attributes records", ()=>{
-            let err;
-            try {
-                rw_insert_validator(env, HASH_ATTRIBUTE_NAME, ALL_ATTRIBUTES, ONE_RECORD_ARRAY);
-            } catch(e){
-                err = e;
-            }
-
-            assert.deepStrictEqual(err, undefined);
+            test_utils.assertErrorSync(rw_insert_validator, [env, HASH_ATTRIBUTE_NAME, ALL_ATTRIBUTES, ONE_RECORD_ARRAY], undefined);
         });
     });
 
@@ -242,14 +186,7 @@ describe("Test writeUtility module", ()=>{
         });
 
         it("pass valid env hash_attribute all_attributes", ()=>{
-            let err;
-            try {
-                rw_init_dbis(env, HASH_ATTRIBUTE_NAME, [HASH_ATTRIBUTE_NAME]);
-            } catch(e){
-                err = e;
-            }
-
-            assert.deepStrictEqual(err, undefined);
+            test_utils.assertErrorSync(rw_init_dbis, [env, HASH_ATTRIBUTE_NAME, [HASH_ATTRIBUTE_NAME]], undefined);
         });
 
         it('test with new attributes', ()=>{
@@ -303,91 +240,35 @@ describe("Test writeUtility module", ()=>{
         });
 
         it("pass no args", ()=>{
-            let err;
-            try {
-                write_utility.insertRecords();
-            } catch(e){
-                err = e;
-            }
-
-            assert.deepStrictEqual(err, ENV_REQUIRED_ERROR);
+            test_utils.assertErrorSync(write_utility.insertRecords, [], ENV_REQUIRED_ERROR);
         });
 
         it("pass invalid env", ()=>{
-            let err;
-            try {
-                write_utility.insertRecords('test');
-            } catch(e){
-                err = e;
-            }
-
-            assert.deepStrictEqual(err, INVALID_ENV_ERROR);
+            test_utils.assertErrorSync(write_utility.insertRecords, ['test'], INVALID_ENV_ERROR);
         });
 
         it("pass valid env, no other args", ()=>{
-            let err;
-            try {
-                write_utility.insertRecords(env);
-            } catch(e){
-                err = e;
-            }
-
-            assert.deepStrictEqual(err, HASH_ATTRIBUTE_REQUIRED_ERROR);
+            test_utils.assertErrorSync(write_utility.insertRecords, [env], HASH_ATTRIBUTE_REQUIRED_ERROR);
         });
 
         it("pass valid env hash_attribute", ()=>{
-            let err;
-            try {
-                write_utility.insertRecords(env, HASH_ATTRIBUTE_NAME);
-            } catch(e){
-                err = e;
-            }
-
-            assert.deepStrictEqual(err, ALL_ATTRIBUTES_REQUIRED_ERROR);
+            test_utils.assertErrorSync(write_utility.insertRecords, [env, HASH_ATTRIBUTE_NAME], ALL_ATTRIBUTES_REQUIRED_ERROR);
         });
 
         it("pass valid env hash_attribute, invalid all_attributes", ()=>{
-            let err;
-            try {
-                write_utility.insertRecords(env, HASH_ATTRIBUTE_NAME, HASH_ATTRIBUTE_NAME);
-            } catch(e){
-                err = e;
-            }
-
-            assert.deepStrictEqual(err, ALL_ATTRIBUTES_AS_ARRAY_ERROR);
+            test_utils.assertErrorSync(write_utility.insertRecords, [env, HASH_ATTRIBUTE_NAME, HASH_ATTRIBUTE_NAME], ALL_ATTRIBUTES_AS_ARRAY_ERROR);
         });
 
         it("pass valid env hash_attribute all_attributes", ()=>{
-            let err;
-            try {
-                write_utility.insertRecords(env, HASH_ATTRIBUTE_NAME, ALL_ATTRIBUTES);
-            } catch(e){
-                err = e;
-            }
-
-            assert.deepStrictEqual(err, RECORDS_REQUIRED_ERROR);
+            test_utils.assertErrorSync(write_utility.insertRecords, [env, HASH_ATTRIBUTE_NAME, ALL_ATTRIBUTES], RECORDS_REQUIRED_ERROR);
         });
 
         it("pass valid env hash_attribute all_attributes, invalid records", ()=>{
-            let err;
-            try {
-                write_utility.insertRecords(env, HASH_ATTRIBUTE_NAME, ALL_ATTRIBUTES, ONE_RECORD_ARRAY[0]);
-            } catch(e){
-                err = e;
-            }
-
-            assert.deepStrictEqual(err, RECORDS_IS_ARRAY_ERROR);
+            test_utils.assertErrorSync(write_utility.insertRecords, [env, HASH_ATTRIBUTE_NAME, ALL_ATTRIBUTES, ONE_RECORD_ARRAY[0]], RECORDS_IS_ARRAY_ERROR);
         });
 
         it("pass valid env hash_attribute all_attributes records", ()=>{
-            let err;
-            try {
-                write_utility.insertRecords(env, HASH_ATTRIBUTE_NAME, ALL_ATTRIBUTES, ONE_RECORD_ARRAY);
-            } catch(e){
-                err = e;
-            }
-
-            assert.deepStrictEqual(err, undefined);
+            test_utils.assertErrorSync(write_utility.insertRecords, [env, HASH_ATTRIBUTE_NAME, ALL_ATTRIBUTES, ONE_RECORD_ARRAY], undefined);
         });
     });
 });
