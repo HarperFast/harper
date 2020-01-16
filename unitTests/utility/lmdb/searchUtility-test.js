@@ -1,13 +1,13 @@
 'use strict';
 
 const search_util = require('../../../utility/lmdb/searchUtility');
-const rewire = require('rewire');
 const fs = require('fs-extra');
 const environment_utility = require('../../../utility/lmdb/environmentUtility');
 const write_utility = require('../../../utility/lmdb/writeUtility');
 const test_utils = require('../../test_utils');
 const path = require('path');
 const assert = require('assert');
+const LMDB_TEST_ERRORS = require('../../commonTestErrors').LMDB_ERRORS_ENUM;
 
 const BASE_TEST_PATH = path.join(test_utils.getMockFSPath(), 'lmdbTest');
 const TEST_ENVIRONMENT_NAME = 'test';
@@ -31,18 +31,6 @@ const MULTI_RECORD_ARRAY2 = [
     {id:5, name:'Fran', age: 44, city:'Denvertown'},
 ];
 
-const ENV_REQUIRED_ERROR = new Error('env is required');
-const INVALID_ENVIRONMENT_ERROR = new Error('invalid environment object');
-const FETCH_ATTRIBUTES_REQUIRED_ERROR = new Error('fetch_attributes is required');
-const FETCH_ATTRIBUTES_NOT_ARRAY_ERROR = new Error('fetch_attributes must be an array');
-const HASH_ATTRIBUTE_REQUIRED_ERROR = new Error('hash_attribute is required');
-const ID_REQUIRED_ERROR = new Error('id is required');
-const IDS_REQUIRED_ERROR = new Error('ids is required');
-const IDS_NOT_ARRAY_ERROR = new Error('ids must be an array');
-const ATTRIBUTE_REQUIRED_ERROR = new Error('attribute is required');
-const SEARCH_VALUE_REQUIRED_ERROR = new Error('search_value is required');
-const DBI_NO_EXIST_ERROR = new Error('dbi does not exist');
-
 describe('Test searchUtility module', ()=>{
     describe('test searchByHash function', ()=>{
         let env;
@@ -60,12 +48,12 @@ describe('Test searchUtility module', ()=>{
         });
 
         it("test validation", ()=>{
-            test_utils.assertErrorSync(search_util.searchByHash, [], ENV_REQUIRED_ERROR, 'test no args');
-            test_utils.assertErrorSync(search_util.searchByHash, [HASH_ATTRIBUTE_NAME], INVALID_ENVIRONMENT_ERROR, 'invalid env variable');
-            test_utils.assertErrorSync(search_util.searchByHash, [env], HASH_ATTRIBUTE_REQUIRED_ERROR, 'no hash attribute');
-            test_utils.assertErrorSync(search_util.searchByHash, [env, HASH_ATTRIBUTE_NAME], FETCH_ATTRIBUTES_REQUIRED_ERROR, 'no fetch_attributes');
-            test_utils.assertErrorSync(search_util.searchByHash, [env, HASH_ATTRIBUTE_NAME, HASH_ATTRIBUTE_NAME], FETCH_ATTRIBUTES_NOT_ARRAY_ERROR, 'invalid fetch_attributes');
-            test_utils.assertErrorSync(search_util.searchByHash, [env, HASH_ATTRIBUTE_NAME, SOME_ATTRIBUTES], ID_REQUIRED_ERROR, 'no id');
+            test_utils.assertErrorSync(search_util.searchByHash, [], LMDB_TEST_ERRORS.ENV_REQUIRED, 'test no args');
+            test_utils.assertErrorSync(search_util.searchByHash, [HASH_ATTRIBUTE_NAME], LMDB_TEST_ERRORS.INVALID_ENVIRONMENT, 'invalid env variable');
+            test_utils.assertErrorSync(search_util.searchByHash, [env], LMDB_TEST_ERRORS.HASH_ATTRIBUTE_REQUIRED, 'no hash attribute');
+            test_utils.assertErrorSync(search_util.searchByHash, [env, HASH_ATTRIBUTE_NAME], LMDB_TEST_ERRORS.FETCH_ATTRIBUTES_REQUIRED, 'no fetch_attributes');
+            test_utils.assertErrorSync(search_util.searchByHash, [env, HASH_ATTRIBUTE_NAME, HASH_ATTRIBUTE_NAME], LMDB_TEST_ERRORS.FETCH_ATTRIBUTES_MUST_BE_ARRAY, 'invalid fetch_attributes');
+            test_utils.assertErrorSync(search_util.searchByHash, [env, HASH_ATTRIBUTE_NAME, SOME_ATTRIBUTES], LMDB_TEST_ERRORS.ID_REQUIRED, 'no id');
             test_utils.assertErrorSync(search_util.searchByHash, [env, HASH_ATTRIBUTE_NAME, SOME_ATTRIBUTES, MULTI_RECORD_ARRAY[0][HASH_ATTRIBUTE_NAME]],
                 undefined, 'all arguments sent');
         });
@@ -115,14 +103,14 @@ describe('Test searchUtility module', ()=>{
         });
 
         it("test validation", ()=>{
-            test_utils.assertErrorSync(search_util.batchSearchByHash, [], ENV_REQUIRED_ERROR, 'test no args');
-            test_utils.assertErrorSync(search_util.batchSearchByHash, [HASH_ATTRIBUTE_NAME], INVALID_ENVIRONMENT_ERROR, 'invalid env variable');
-            test_utils.assertErrorSync(search_util.batchSearchByHash, [env], HASH_ATTRIBUTE_REQUIRED_ERROR, 'no hash attribute');
-            test_utils.assertErrorSync(search_util.batchSearchByHash, [env, HASH_ATTRIBUTE_NAME], FETCH_ATTRIBUTES_REQUIRED_ERROR, 'no fetch_attributes');
-            test_utils.assertErrorSync(search_util.batchSearchByHash, [env, HASH_ATTRIBUTE_NAME, HASH_ATTRIBUTE_NAME], FETCH_ATTRIBUTES_NOT_ARRAY_ERROR, 'invalid fetch_attributes');
-            test_utils.assertErrorSync(search_util.batchSearchByHash, [env, HASH_ATTRIBUTE_NAME, SOME_ATTRIBUTES], IDS_REQUIRED_ERROR, 'no id');
+            test_utils.assertErrorSync(search_util.batchSearchByHash, [], LMDB_TEST_ERRORS.ENV_REQUIRED, 'test no args');
+            test_utils.assertErrorSync(search_util.batchSearchByHash, [HASH_ATTRIBUTE_NAME], LMDB_TEST_ERRORS.INVALID_ENVIRONMENT, 'invalid env variable');
+            test_utils.assertErrorSync(search_util.batchSearchByHash, [env], LMDB_TEST_ERRORS.HASH_ATTRIBUTE_REQUIRED, 'no hash attribute');
+            test_utils.assertErrorSync(search_util.batchSearchByHash, [env, HASH_ATTRIBUTE_NAME], LMDB_TEST_ERRORS.FETCH_ATTRIBUTES_REQUIRED, 'no fetch_attributes');
+            test_utils.assertErrorSync(search_util.batchSearchByHash, [env, HASH_ATTRIBUTE_NAME, HASH_ATTRIBUTE_NAME], LMDB_TEST_ERRORS.FETCH_ATTRIBUTES_MUST_BE_ARRAY, 'invalid fetch_attributes');
+            test_utils.assertErrorSync(search_util.batchSearchByHash, [env, HASH_ATTRIBUTE_NAME, SOME_ATTRIBUTES], LMDB_TEST_ERRORS.IDS_REQUIRED, 'no id');
             test_utils.assertErrorSync(search_util.batchSearchByHash, [env, HASH_ATTRIBUTE_NAME, SOME_ATTRIBUTES, "1"],
-                IDS_NOT_ARRAY_ERROR, 'invalid ids');
+                LMDB_TEST_ERRORS.IDS_MUST_BE_ARRAY, 'invalid ids');
             test_utils.assertErrorSync(search_util.batchSearchByHash, [env, HASH_ATTRIBUTE_NAME, SOME_ATTRIBUTES, ["1", "3", "2"]],
                 undefined, 'all correct arguments');
         });
@@ -165,10 +153,10 @@ describe('Test searchUtility module', ()=>{
         });
 
         it("test validation", () => {
-            test_utils.assertErrorSync(search_util.checkHashExists, [], ENV_REQUIRED_ERROR, 'test no args');
-            test_utils.assertErrorSync(search_util.checkHashExists, [HASH_ATTRIBUTE_NAME], INVALID_ENVIRONMENT_ERROR, 'invalid env variable');
-            test_utils.assertErrorSync(search_util.checkHashExists, [env], HASH_ATTRIBUTE_REQUIRED_ERROR, 'no hash attribute');
-            test_utils.assertErrorSync(search_util.checkHashExists, [env, HASH_ATTRIBUTE_NAME], ID_REQUIRED_ERROR, 'no id');
+            test_utils.assertErrorSync(search_util.checkHashExists, [], LMDB_TEST_ERRORS.ENV_REQUIRED, 'test no args');
+            test_utils.assertErrorSync(search_util.checkHashExists, [HASH_ATTRIBUTE_NAME], LMDB_TEST_ERRORS.INVALID_ENVIRONMENT, 'invalid env variable');
+            test_utils.assertErrorSync(search_util.checkHashExists, [env], LMDB_TEST_ERRORS.HASH_ATTRIBUTE_REQUIRED, 'no hash attribute');
+            test_utils.assertErrorSync(search_util.checkHashExists, [env, HASH_ATTRIBUTE_NAME], LMDB_TEST_ERRORS.ID_REQUIRED, 'no id');
             test_utils.assertErrorSync(search_util.checkHashExists, [env, HASH_ATTRIBUTE_NAME, "1"],
                 undefined, 'all correct arguments');
         });
@@ -204,11 +192,11 @@ describe('Test searchUtility module', ()=>{
         });
 
         it("test validation", () => {
-            test_utils.assertErrorSync(search_util.searchAll, [], ENV_REQUIRED_ERROR, 'test no args');
-            test_utils.assertErrorSync(search_util.searchAll, [HASH_ATTRIBUTE_NAME], INVALID_ENVIRONMENT_ERROR, 'invalid env variable');
-            test_utils.assertErrorSync(search_util.searchAll, [env], HASH_ATTRIBUTE_REQUIRED_ERROR, 'no hash attribute');
-            test_utils.assertErrorSync(search_util.searchAll, [env, HASH_ATTRIBUTE_NAME], FETCH_ATTRIBUTES_REQUIRED_ERROR, 'no fetch_attributes');
-            test_utils.assertErrorSync(search_util.searchAll, [env, HASH_ATTRIBUTE_NAME, HASH_ATTRIBUTE_NAME], FETCH_ATTRIBUTES_NOT_ARRAY_ERROR, 'invalid fetch_attributes');
+            test_utils.assertErrorSync(search_util.searchAll, [], LMDB_TEST_ERRORS.ENV_REQUIRED, 'test no args');
+            test_utils.assertErrorSync(search_util.searchAll, [HASH_ATTRIBUTE_NAME], LMDB_TEST_ERRORS.INVALID_ENVIRONMENT, 'invalid env variable');
+            test_utils.assertErrorSync(search_util.searchAll, [env], LMDB_TEST_ERRORS.HASH_ATTRIBUTE_REQUIRED, 'no hash attribute');
+            test_utils.assertErrorSync(search_util.searchAll, [env, HASH_ATTRIBUTE_NAME], LMDB_TEST_ERRORS.FETCH_ATTRIBUTES_REQUIRED, 'no fetch_attributes');
+            test_utils.assertErrorSync(search_util.searchAll, [env, HASH_ATTRIBUTE_NAME, HASH_ATTRIBUTE_NAME], LMDB_TEST_ERRORS.FETCH_ATTRIBUTES_MUST_BE_ARRAY, 'invalid fetch_attributes');
             test_utils.assertErrorSync(search_util.searchAll, [env, HASH_ATTRIBUTE_NAME, SOME_ATTRIBUTES], undefined, 'all arguments sent');
         });
 
@@ -241,9 +229,9 @@ describe('Test searchUtility module', ()=>{
         });
 
         it("test validation", () => {
-            test_utils.assertErrorSync(search_util.countAll, [], ENV_REQUIRED_ERROR, 'test no args');
-            test_utils.assertErrorSync(search_util.countAll, [HASH_ATTRIBUTE_NAME], INVALID_ENVIRONMENT_ERROR, 'invalid env variable');
-            test_utils.assertErrorSync(search_util.countAll, [env], HASH_ATTRIBUTE_REQUIRED_ERROR, 'no hash attribute');
+            test_utils.assertErrorSync(search_util.countAll, [], LMDB_TEST_ERRORS.ENV_REQUIRED, 'test no args');
+            test_utils.assertErrorSync(search_util.countAll, [HASH_ATTRIBUTE_NAME], LMDB_TEST_ERRORS.INVALID_ENVIRONMENT, 'invalid env variable');
+            test_utils.assertErrorSync(search_util.countAll, [env], LMDB_TEST_ERRORS.HASH_ATTRIBUTE_REQUIRED, 'no hash attribute');
             test_utils.assertErrorSync(search_util.countAll, [env, HASH_ATTRIBUTE_NAME], undefined, 'all arguments');
         });
 
@@ -269,10 +257,10 @@ describe('Test searchUtility module', ()=>{
         });
 
         it("test validation", () => {
-            test_utils.assertErrorSync(search_util.equals, [], ENV_REQUIRED_ERROR, 'test no args');
-            test_utils.assertErrorSync(search_util.equals, [HASH_ATTRIBUTE_NAME], INVALID_ENVIRONMENT_ERROR, 'invalid env variable');
-            test_utils.assertErrorSync(search_util.equals, [env], ATTRIBUTE_REQUIRED_ERROR, 'no hash attribute');
-            test_utils.assertErrorSync(search_util.equals, [env, 'city'], SEARCH_VALUE_REQUIRED_ERROR, 'no search_value');
+            test_utils.assertErrorSync(search_util.equals, [], LMDB_TEST_ERRORS.ENV_REQUIRED, 'test no args');
+            test_utils.assertErrorSync(search_util.equals, [HASH_ATTRIBUTE_NAME], LMDB_TEST_ERRORS.INVALID_ENVIRONMENT, 'invalid env variable');
+            test_utils.assertErrorSync(search_util.equals, [env], LMDB_TEST_ERRORS.ATTRIBUTE_REQUIRED, 'no hash attribute');
+            test_utils.assertErrorSync(search_util.equals, [env, 'city'], LMDB_TEST_ERRORS.SEARCH_VALUE_REQUIRED, 'no search_value');
             test_utils.assertErrorSync(search_util.equals, [env, 'city', 'Denver'], undefined, 'all arguments');
         });
 
@@ -287,7 +275,7 @@ describe('Test searchUtility module', ()=>{
         });
 
         it("test search on attribute no exist", () => {
-            let results = test_utils.assertErrorSync(search_util.equals, [env, 'fake', 'bad'], DBI_NO_EXIST_ERROR);
+            let results = test_utils.assertErrorSync(search_util.equals, [env, 'fake', 'bad'], LMDB_TEST_ERRORS.DBI_DOES_NOT_EXIST);
             assert.deepStrictEqual(results, undefined);
         });
     });
@@ -308,10 +296,10 @@ describe('Test searchUtility module', ()=>{
         });
 
         it("test validation", () => {
-            test_utils.assertErrorSync(search_util.startsWith, [], ENV_REQUIRED_ERROR, 'test no args');
-            test_utils.assertErrorSync(search_util.startsWith, [HASH_ATTRIBUTE_NAME], INVALID_ENVIRONMENT_ERROR, 'invalid env variable');
-            test_utils.assertErrorSync(search_util.startsWith, [env], ATTRIBUTE_REQUIRED_ERROR, 'no hash attribute');
-            test_utils.assertErrorSync(search_util.startsWith, [env, 'city'], SEARCH_VALUE_REQUIRED_ERROR, 'no search_value');
+            test_utils.assertErrorSync(search_util.startsWith, [], LMDB_TEST_ERRORS.ENV_REQUIRED, 'test no args');
+            test_utils.assertErrorSync(search_util.startsWith, [HASH_ATTRIBUTE_NAME], LMDB_TEST_ERRORS.INVALID_ENVIRONMENT, 'invalid env variable');
+            test_utils.assertErrorSync(search_util.startsWith, [env], LMDB_TEST_ERRORS.ATTRIBUTE_REQUIRED, 'no hash attribute');
+            test_utils.assertErrorSync(search_util.startsWith, [env, 'city'], LMDB_TEST_ERRORS.SEARCH_VALUE_REQUIRED, 'no search_value');
             test_utils.assertErrorSync(search_util.startsWith, [env, 'city', 'D'], undefined, 'all arguments');
         });
 
@@ -336,7 +324,7 @@ describe('Test searchUtility module', ()=>{
         });
 
         it("test search on attribute no exist", () => {
-            let results = test_utils.assertErrorSync(search_util.startsWith, [env, 'fake', 'bad'], DBI_NO_EXIST_ERROR);
+            let results = test_utils.assertErrorSync(search_util.startsWith, [env, 'fake', 'bad'], LMDB_TEST_ERRORS.DBI_DOES_NOT_EXIST);
             assert.deepStrictEqual(results, undefined);
         });
     });
@@ -357,10 +345,10 @@ describe('Test searchUtility module', ()=>{
         });
 
         it("test validation", () => {
-            test_utils.assertErrorSync(search_util.endsWith, [], ENV_REQUIRED_ERROR, 'test no args');
-            test_utils.assertErrorSync(search_util.endsWith, [HASH_ATTRIBUTE_NAME], INVALID_ENVIRONMENT_ERROR, 'invalid env variable');
-            test_utils.assertErrorSync(search_util.endsWith, [env], ATTRIBUTE_REQUIRED_ERROR, 'no hash attribute');
-            test_utils.assertErrorSync(search_util.endsWith, [env, 'city'], SEARCH_VALUE_REQUIRED_ERROR, 'no search_value');
+            test_utils.assertErrorSync(search_util.endsWith, [], LMDB_TEST_ERRORS.ENV_REQUIRED, 'test no args');
+            test_utils.assertErrorSync(search_util.endsWith, [HASH_ATTRIBUTE_NAME], LMDB_TEST_ERRORS.INVALID_ENVIRONMENT, 'invalid env variable');
+            test_utils.assertErrorSync(search_util.endsWith, [env], LMDB_TEST_ERRORS.ATTRIBUTE_REQUIRED, 'no hash attribute');
+            test_utils.assertErrorSync(search_util.endsWith, [env, 'city'], LMDB_TEST_ERRORS.SEARCH_VALUE_REQUIRED, 'no search_value');
             test_utils.assertErrorSync(search_util.endsWith, [env, 'city', 'Denver'], undefined, 'all arguments');
         });
 
@@ -385,7 +373,7 @@ describe('Test searchUtility module', ()=>{
         });
 
         it("test search on attribute no exist", () => {
-            let results = test_utils.assertErrorSync(search_util.endsWith, [env, 'fake', 'bad'], DBI_NO_EXIST_ERROR);
+            let results = test_utils.assertErrorSync(search_util.endsWith, [env, 'fake', 'bad'], LMDB_TEST_ERRORS.DBI_DOES_NOT_EXIST);
             assert.deepStrictEqual(results, undefined);
         });
     });
@@ -406,10 +394,10 @@ describe('Test searchUtility module', ()=>{
         });
 
         it("test validation", () => {
-            test_utils.assertErrorSync(search_util.contains, [], ENV_REQUIRED_ERROR, 'test no args');
-            test_utils.assertErrorSync(search_util.contains, [HASH_ATTRIBUTE_NAME], INVALID_ENVIRONMENT_ERROR, 'invalid env variable');
-            test_utils.assertErrorSync(search_util.contains, [env], ATTRIBUTE_REQUIRED_ERROR, 'no hash attribute');
-            test_utils.assertErrorSync(search_util.contains, [env, 'city'], SEARCH_VALUE_REQUIRED_ERROR, 'no search_value');
+            test_utils.assertErrorSync(search_util.contains, [], LMDB_TEST_ERRORS.ENV_REQUIRED, 'test no args');
+            test_utils.assertErrorSync(search_util.contains, [HASH_ATTRIBUTE_NAME], LMDB_TEST_ERRORS.INVALID_ENVIRONMENT, 'invalid env variable');
+            test_utils.assertErrorSync(search_util.contains, [env], LMDB_TEST_ERRORS.ATTRIBUTE_REQUIRED, 'no hash attribute');
+            test_utils.assertErrorSync(search_util.contains, [env, 'city'], LMDB_TEST_ERRORS.SEARCH_VALUE_REQUIRED, 'no search_value');
             test_utils.assertErrorSync(search_util.contains, [env, 'city', 'Denver'], undefined, 'all arguments');
         });
 
@@ -434,7 +422,7 @@ describe('Test searchUtility module', ()=>{
         });
 
         it("test search on attribute no exist", () => {
-            let results = test_utils.assertErrorSync(search_util.contains, [env, 'fake', 'bad'], DBI_NO_EXIST_ERROR);
+            let results = test_utils.assertErrorSync(search_util.contains, [env, 'fake', 'bad'], LMDB_TEST_ERRORS.DBI_DOES_NOT_EXIST);
             assert.deepStrictEqual(results, undefined);
         });
     });

@@ -3,6 +3,7 @@
 const lmdb = require('node-lmdb');
 const fs = require('fs-extra');
 const path = require('path');
+const LMDB_ERRORS = require('../commonErrors').LMDB_ERRORS_ENUM;
 
 //allow an environment to grow up to 1 TB
 const MAP_SIZE = 1000 * 1024 * 1024 * 1024;
@@ -20,11 +21,11 @@ const MDB_FILE_NAME = 'data.mdb';
  */
 async function pathEnvNameValidation(base_path, env_name){
     if(base_path === undefined){
-        throw new Error('base_path is required');
+        throw LMDB_ERRORS.BASE_PATH_REQUIRED;
     }
 
     if(env_name === undefined){
-        throw new Error('env_name is required');
+        throw LMDB_ERRORS.ENV_NAME_REQUIRED;
     }
 
     //verify the base_path is valid
@@ -32,7 +33,7 @@ async function pathEnvNameValidation(base_path, env_name){
         await fs.access(base_path);
     } catch(e){
         if(e.code === 'ENOENT'){
-            throw new Error('invalid base_path');
+            throw LMDB_ERRORS.INVALID_BASE_PATH;
         }
 
         throw e;
@@ -50,7 +51,7 @@ async function validateEnvironmentPath(base_path, env_name){
         await fs.access(path.join(base_path, env_name, MDB_FILE_NAME), fs.constants.R_OK | fs.constants.F_OK);
     } catch(e){
         if(e.code === 'ENOENT'){
-            throw new Error('invalid environment');
+            throw LMDB_ERRORS.INVALID_ENVIRONMENT;
         }
 
         throw e;
@@ -64,11 +65,11 @@ async function validateEnvironmentPath(base_path, env_name){
  */
 function validateEnvDBIName(env, dbi_name){
     if(env === undefined){
-        throw new Error('env is required');
+        throw LMDB_ERRORS.ENV_REQUIRED;
     }
 
     if(dbi_name === undefined){
-        throw new Error('dbi_name is required');
+        throw LMDB_ERRORS.DBI_NAME_REQUIRED;
     }
 }
 
@@ -188,7 +189,7 @@ async function deleteEnvironment(base_path, env_name) {
  */
 function listDBIs(env){
     if(env === undefined){
-        throw new Error('env is required');
+        throw LMDB_ERRORS.ENV_REQUIRED;
     }
 
     let dbis = [];
@@ -256,7 +257,7 @@ function openDBI(env, dbi_name){
         });
     } catch(e){
         if(e.message.startsWith('MDB_NOTFOUND') === true){
-            throw new Error('dbi does not exist');
+            throw LMDB_ERRORS.DBI_DOES_NOT_EXIST;
         }
 
         throw e;

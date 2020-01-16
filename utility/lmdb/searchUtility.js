@@ -4,6 +4,7 @@ const data_stores= require('./environmentUtility');
 const Transaction_Cursor = require('./TransactionCursor');
 const lmdb = require('node-lmdb');
 const log = require('../logging/harper_logger');
+const LMDB_ERRORS = require('../commonErrors').LMDB_ERRORS_ENUM;
 
 /**
  * iterates the entire  hash_attribute dbi and returns all objects back
@@ -16,7 +17,7 @@ function searchAll(env, hash_attribute, fetch_attributes){
     validateEnv(env);
 
     if(hash_attribute === undefined){
-        throw new Error('hash_attribute is required');
+        throw LMDB_ERRORS.HASH_ATTRIBUTE_REQUIRED;
     }
 
     validateFetchAttributes(fetch_attributes);
@@ -50,7 +51,7 @@ function countAll(env, hash_attribute){
     validateEnv(env);
 
     if(hash_attribute === undefined){
-        throw new Error('hash_attribute is required');
+        throw LMDB_ERRORS.HASH_ATTRIBUTE_REQUIRED;
     }
 
     let stat = data_stores.statDBI(env, hash_attribute);
@@ -162,13 +163,13 @@ function searchByHash(env, hash_attribute, fetch_attributes, id) {
     validateEnv(env);
 
     if(hash_attribute === undefined){
-        throw new Error('hash_attribute is required');
+        throw LMDB_ERRORS.HASH_ATTRIBUTE_REQUIRED;
     }
 
     validateFetchAttributes(fetch_attributes);
 
     if(id === undefined){
-        throw new Error('id is required');
+        throw LMDB_ERRORS.ID_REQUIRED;
     }
 
     let txn = new Transaction_Cursor(env, hash_attribute);
@@ -198,11 +199,11 @@ function checkHashExists(env, hash_attribute, id) {
     validateEnv(env);
 
     if(hash_attribute === undefined){
-        throw new Error('hash_attribute is required');
+        throw LMDB_ERRORS.HASH_ATTRIBUTE_REQUIRED;
     }
 
     if(id === undefined){
-        throw new Error('id is required');
+        throw LMDB_ERRORS.ID_REQUIRED;
     }
 
     let found_key = true;
@@ -230,17 +231,17 @@ function batchSearchByHash(env, hash_attribute, fetch_attributes, ids) {
     validateEnv(env);
 
     if(hash_attribute === undefined){
-        throw new Error('hash_attribute is required');
+        throw LMDB_ERRORS.HASH_ATTRIBUTE_REQUIRED;
     }
 
     validateFetchAttributes(fetch_attributes);
 
-    if(ids === undefined){
-        throw new Error('ids is required');
-    }
-
     if(!Array.isArray(ids)){
-        throw new Error('ids must be an array');
+        if(ids === undefined){
+            throw LMDB_ERRORS.IDS_REQUIRED;
+        }
+
+        throw LMDB_ERRORS.IDS_MUST_BE_ARRAY;
     }
 
     let txn = new Transaction_Cursor(env, hash_attribute);
@@ -275,12 +276,13 @@ function batchSearchByHash(env, hash_attribute, fetch_attributes, ids) {
  * @param env - environment object used thigh level to interact with all data in an environment
  */
 function validateEnv(env){
-    if(env === undefined){
-        throw new Error('env is required');
-    }
-
     if(!(env instanceof lmdb.Env)){
-        throw new Error('invalid environment object');
+
+        if(env === undefined){
+            throw LMDB_ERRORS.ENV_REQUIRED;
+        }
+
+        throw LMDB_ERRORS.INVALID_ENVIRONMENT;
     }
 }
 
@@ -289,12 +291,11 @@ function validateEnv(env){
  * @param fetch_attributes - string array of attributes to pull from the object
  */
 function validateFetchAttributes(fetch_attributes){
-    if(fetch_attributes === undefined){
-        throw new Error('fetch_attributes is required');
-    }
-
-    if(! Array.isArray(fetch_attributes)){
-        throw new Error('fetch_attributes must be an array');
+    if(!Array.isArray(fetch_attributes)){
+        if(fetch_attributes === undefined){
+            throw LMDB_ERRORS.FETCH_ATTRIBUTES_REQUIRED;
+        }
+        throw LMDB_ERRORS.FETCH_ATTRIBUTES_MUST_BE_ARRAY;
     }
 }
 
@@ -307,11 +308,11 @@ function validateFetchAttributes(fetch_attributes){
 function validateComparisonFunctions(env, attribute, search_value){
     validateEnv(env);
     if(attribute === undefined){
-        throw new Error('attribute is required');
+        throw LMDB_ERRORS.ATTRIBUTE_REQUIRED;
     }
 
     if(search_value === undefined){
-        throw new Error('search_value is required');
+        throw LMDB_ERRORS.SEARCH_VALUE_REQUIRED;
     }
 }
 
