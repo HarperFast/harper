@@ -3,6 +3,7 @@
 const lmdb = require('node-lmdb');
 const fs = require('fs-extra');
 const path = require('path');
+const common = require('./commonUtility');
 const LMDB_ERRORS = require('../commonErrors').LMDB_ERRORS_ENUM;
 
 //allow an environment to grow up to 1 TB
@@ -64,9 +65,7 @@ async function validateEnvironmentPath(base_path, env_name){
  * @param {String} dbi_name - name of the dbi (KV store)
  */
 function validateEnvDBIName(env, dbi_name){
-    if(env === undefined){
-        throw LMDB_ERRORS.ENV_REQUIRED;
-    }
+    common.validateEnv(env);
 
     if(dbi_name === undefined){
         throw LMDB_ERRORS.DBI_NAME_REQUIRED;
@@ -188,9 +187,7 @@ async function deleteEnvironment(base_path, env_name) {
  * @returns {[String]} - list of dbi names in the environment
  */
 function listDBIs(env){
-    if(env === undefined){
-        throw LMDB_ERRORS.ENV_REQUIRED;
-    }
+    common.validateEnv(env);
 
     let dbis = [];
 
@@ -304,6 +301,27 @@ function dropDBI(env, dbi_name){
     txn.commit();
 }
 
+/**
+ * opens/ creates all specified attributes
+ * @param {lmdb.Env} env - lmdb environment object
+ * @param {String} hash_attribute - name of the table's hash attribute
+ * @param {Array.<String>} write_attributes - list of all attributes to write to the database
+ */
+function initializeDBIs(env, hash_attribute, write_attributes){
+    for(let x = 0; x < write_attributes.length; x++){
+        let attribute = write_attributes[x];
+        try {
+            openDBI(env, attribute);
+        } catch (e) {
+            if (e.message === 'dbi does not exist') {
+                createDBI(env, attribute, attribute !== hash_attribute );
+            } else {
+                throw e;
+            }
+        }
+    }
+}
+
 module.exports = {
     openDBI,
     openEnvironment,
@@ -312,5 +330,6 @@ module.exports = {
     createDBI,
     dropDBI,
     statDBI,
-    deleteEnvironment
+    deleteEnvironment,
+    initializeDBIs
 };

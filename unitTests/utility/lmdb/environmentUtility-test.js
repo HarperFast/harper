@@ -14,6 +14,7 @@ const INVALID_BASE_TEST_PATH = '/bad/path/zzz/';
 const TEST_ENVIRONMENT_NAME = 'test';
 const BAD_TEST_ENVIRONMENT_NAME = 'bad_test';
 const ID_DBI_NAME = 'id';
+const ALL_ATTRIBUTES = ['id', 'name', 'age'];
 
 
 describe("Test LMDB environmentUtility module", ()=>{
@@ -421,6 +422,60 @@ describe("Test LMDB environmentUtility module", ()=>{
                 await test_utils.assertErrorAsync(lmdb_env_util.dropDBI, [env, 'id2'], LMDB_TEST_ERRORS.DBI_DOES_NOT_EXIST);
             });
         });
+
+    describe("Test initializeDBIs function", ()=>{
+        let env;
+        before(async ()=>{
+            await fs.mkdirp(BASE_TEST_PATH);
+            global.lmdb_map = undefined;
+            env = await lmdb_env_util.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
+            await lmdb_env_util.createDBI(env, 'id');
+        });
+
+        after(async ()=>{
+            await fs.remove(BASE_TEST_PATH);
+            global.lmdb_map = undefined;
+        });
+
+        it("pass valid env hash_attribute all_attributes", ()=>{
+            test_utils.assertErrorSync(lmdb_env_util.initializeDBIs, [env, ID_DBI_NAME, [ID_DBI_NAME]], undefined);
+        });
+
+        it('test with new attributes', ()=>{
+            let list_e;
+            let dbis;
+            try{
+                dbis = lmdb_env_util.listDBIs(env);
+            }catch (e) {
+                list_e = e;
+            }
+            assert.deepStrictEqual(list_e, undefined);
+            assert.deepStrictEqual(dbis, [ID_DBI_NAME]);
+
+            let err;
+            try{
+                lmdb_env_util.initializeDBIs(env, ID_DBI_NAME, ALL_ATTRIBUTES);
+            }catch (e) {
+                err = e;
+            }
+
+            assert.deepStrictEqual(err, undefined);
+
+            let list_err;
+            try{
+                dbis = lmdb_env_util.listDBIs(env);
+            }catch (e) {
+                list_err = e;
+            }
+
+            assert.deepStrictEqual(list_err, undefined);
+            assert.deepStrictEqual(dbis, [
+                "age",
+                "id",
+                "name"
+            ]);
+        });
+    });
 
 
 });

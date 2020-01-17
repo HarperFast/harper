@@ -4,6 +4,7 @@ const data_stores= require('./environmentUtility');
 const Transaction_Cursor = require('./TransactionCursor');
 const lmdb = require('node-lmdb');
 const log = require('../logging/harper_logger');
+const common = require('./commonUtility');
 const LMDB_ERRORS = require('../commonErrors').LMDB_ERRORS_ENUM;
 
 /**
@@ -14,7 +15,7 @@ const LMDB_ERRORS = require('../commonErrors').LMDB_ERRORS_ENUM;
  * @returns {Array.<Object>} - object array of fetched records
  */
 function searchAll(env, hash_attribute, fetch_attributes){
-    validateEnv(env);
+    common.validateEnv(env);
 
     if(hash_attribute === undefined){
         throw LMDB_ERRORS.HASH_ATTRIBUTE_REQUIRED;
@@ -42,13 +43,34 @@ function searchAll(env, hash_attribute, fetch_attributes){
 }
 
 /**
+ * iterates a dbi and returns the key/value pairing for each entry
+ * @param env
+ * @param attribute
+ * @returns {Array.<Array>}
+ */
+function iterateDBI(env, attribute){
+    common.validateEnv(env);
+    if(attribute === undefined){
+        throw LMDB_ERRORS.ATTRIBUTE_REQUIRED;
+    }
+
+    let txn = new Transaction_Cursor(env, attribute);
+    let results = [];
+    for (let found = txn.cursor.goToFirst(); found !== null; found = txn.cursor.goToNext()) {
+        results.push([found, txn.cursor.getCurrentString()]);
+    }
+    txn.close();
+    return results;
+}
+
+/**
  * counts all records in an environment based on the count from stating the hash_attribute  dbi
  * @param {lmdb.Env} env - environment object used thigh level to interact with all data in an environment
  * @param {String} hash_attribute - name of the hash_attribute for this environment
  * @returns {number} - number of records in the environment
  */
 function countAll(env, hash_attribute){
-    validateEnv(env);
+    common.validateEnv(env);
 
     if(hash_attribute === undefined){
         throw LMDB_ERRORS.HASH_ATTRIBUTE_REQUIRED;
@@ -160,7 +182,7 @@ function contains(env, attribute, search_value){
  * @returns {{}} - object found
  */
 function searchByHash(env, hash_attribute, fetch_attributes, id) {
-    validateEnv(env);
+    common.validateEnv(env);
 
     if(hash_attribute === undefined){
         throw LMDB_ERRORS.HASH_ATTRIBUTE_REQUIRED;
@@ -196,7 +218,7 @@ function searchByHash(env, hash_attribute, fetch_attributes, id) {
  * @returns {boolean} - whether the hash exists (true) or not (false)
  */
 function checkHashExists(env, hash_attribute, id) {
-    validateEnv(env);
+    common.validateEnv(env);
 
     if(hash_attribute === undefined){
         throw LMDB_ERRORS.HASH_ATTRIBUTE_REQUIRED;
@@ -228,7 +250,7 @@ function checkHashExists(env, hash_attribute, id) {
  * @returns {Array.<Object>} - object array of records found
  */
 function batchSearchByHash(env, hash_attribute, fetch_attributes, ids) {
-    validateEnv(env);
+    common.validateEnv(env);
 
     if(hash_attribute === undefined){
         throw LMDB_ERRORS.HASH_ATTRIBUTE_REQUIRED;
@@ -272,21 +294,6 @@ function batchSearchByHash(env, hash_attribute, fetch_attributes, ids) {
 }
 
 /**
- * validates the env argument
- * @param env - environment object used thigh level to interact with all data in an environment
- */
-function validateEnv(env){
-    if(!(env instanceof lmdb.Env)){
-
-        if(env === undefined){
-            throw LMDB_ERRORS.ENV_REQUIRED;
-        }
-
-        throw LMDB_ERRORS.INVALID_ENVIRONMENT;
-    }
-}
-
-/**
  * validates the fetch_attributes argument
  * @param fetch_attributes - string array of attributes to pull from the object
  */
@@ -306,7 +313,7 @@ function validateFetchAttributes(fetch_attributes){
  * @param search_value - value to search
  */
 function validateComparisonFunctions(env, attribute, search_value){
-    validateEnv(env);
+    common.validateEnv(env);
     if(attribute === undefined){
         throw LMDB_ERRORS.ATTRIBUTE_REQUIRED;
     }
@@ -315,6 +322,8 @@ function validateComparisonFunctions(env, attribute, search_value){
         throw LMDB_ERRORS.SEARCH_VALUE_REQUIRED;
     }
 }
+
+//TODO for numeric range search we will need to iterate the entire dbi, check if the string is a number and compare to the range. this is due to strings being stored lexicographically
 
 module.exports = {
     searchAll,
@@ -325,5 +334,6 @@ module.exports = {
     contains,
     searchByHash,
     batchSearchByHash,
-    checkHashExists
+    checkHashExists,
+    iterateDBI
 };
