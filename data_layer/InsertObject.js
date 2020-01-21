@@ -4,6 +4,13 @@
  * This class represents the data that is passed into the Insert functions.
  */
 class InsertObject {
+    /**
+     * @param {String} operation
+     * @param {String} schema
+     * @param {String} table
+     * @param {String} hash_attribute
+     * @param {Array.<Object>} records
+     */
     constructor(operation, schema, table, hash_attribute, records) {
         this.operation = operation;
         this.schema = schema;

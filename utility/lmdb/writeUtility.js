@@ -4,6 +4,11 @@ const environment_util = require('./environmentUtility');
 const common = require('./commonUtility');
 const search_utility = require('./searchUtility');
 const LMDB_ERRORS = require('../commonErrors').LMDB_ERRORS_ENUM;
+const hdb_terms = require('../hdbTerms');
+const hdb_utils = require('../common_utils');
+
+const CREATED_TIME_ATTRIBUTE_NAME = hdb_terms.TIME_STAMP_NAMES_ENUM.CREATED_TIME;
+const UPDATED_TIME_ATTRIBUTE_NAME = hdb_terms.TIME_STAMP_NAMES_ENUM.UPDATED_TIME;
 
 /**
  * inserts records into LMDB
@@ -11,7 +16,7 @@ const LMDB_ERRORS = require('../commonErrors').LMDB_ERRORS_ENUM;
  * @param {String} hash_attribute - name of the table's hash attribute
  * @param {Array.<String>} write_attributes - list of all attributes to write to the database
  * @param  {Array.<Object>} records - object array records to insert
- * @returns {{written: [], skipped: []}}
+ * @returns {{written_hashes: [], skipped_hashes: []}}
  */
 function insertRecords(env, hash_attribute, write_attributes , records){
     validateWrite(env, hash_attribute, write_attributes , records);
@@ -25,11 +30,13 @@ function insertRecords(env, hash_attribute, write_attributes , records){
         txn = env.beginTxn();
 
         let result = {
-            written: [],
-            skipped: []
+            written_hashes: [],
+            skipped_hashes: []
         };
         for(let k = 0; k < records.length; k++){
             let record = records[k];
+            setTimestamps(record, true);
+            let cast_hash_value = hdb_utils.autoCast(record[hash_attribute]);
             let primary_key = record[hash_attribute].toString();
 
             // with the flag noOverwrite: true we can force lmdb to throw an error if the key already exists.
@@ -38,7 +45,7 @@ function insertRecords(env, hash_attribute, write_attributes , records){
                 txn.putString(env.dbis[hash_attribute], primary_key, JSON.stringify(record), {noOverwrite: true});
             } catch(e){
                 if(e.message.startsWith('MDB_KEYEXIST') === true){
-                    result.skipped.push(primary_key);
+                    result.skipped_hashes.push(cast_hash_value);
                     continue;
                 }else{
                     throw e;
@@ -55,7 +62,7 @@ function insertRecords(env, hash_attribute, write_attributes , records){
                     }
                 }
             }
-            result.written.push(primary_key);
+            result.written_hashes.push(cast_hash_value);
         }
 
         txn.commit();
@@ -70,12 +77,25 @@ function insertRecords(env, hash_attribute, write_attributes , records){
 }
 
 /**
+ * auto sets the createdtime & updatedtime stamps on a record
+ * @param {Object} record
+ * @param {Boolean} is_insert
+ */
+function setTimestamps(record, is_insert){
+    let timestamp = Date.now();
+    record[UPDATED_TIME_ATTRIBUTE_NAME] = timestamp;
+    if(is_insert === true) {
+        record[CREATED_TIME_ATTRIBUTE_NAME] = timestamp;
+    }
+}
+
+/**
  * inserts records into LMDB
  * @param {lmdb.Env} env - lmdb environment object
  * @param {String} hash_attribute - name of the table's hash attribute
  * @param {Array.<String>} write_attributes - list of all attributes to write to the database
  * @param  {Array.<Object>} records - object array records to insert
- * @returns {{written: [], skipped: []}}
+ * @returns {{written_hashes: [], skipped_hashes: []}}
  */
 function updateRecords(env, hash_attribute, write_attributes , records){
     //validate
@@ -92,19 +112,21 @@ function updateRecords(env, hash_attribute, write_attributes , records){
         txn = env.beginTxn();
 
         let result = {
-            written: [],
-            skipped: []
+            written_hashes: [],
+            skipped_hashes: []
         };
 
         //iterate update records
         for(let x = 0; x < records.length; x++){
             let record = records[x];
+            setTimestamps(record, false);
+            let cast_hash_value = hdb_utils.autoCast(record[hash_attribute]);
             let hash_value = record[hash_attribute].toString();
             //grab existing record
             let existing_record = search_utility.searchByHash(env, hash_attribute, write_attributes, hash_value);
 
             if(existing_record === null){
-                result.skipped.push(hash_value);
+                result.skipped_hashes.push(cast_hash_value);
                 continue;
             }
 
@@ -131,7 +153,7 @@ function updateRecords(env, hash_attribute, write_attributes , records){
 
             let merged_record = Object.assign(existing_record, record);
             txn.putString(env.dbis[hash_attribute], hash_value.toString(), JSON.stringify(merged_record));
-            result.written.push(hash_value);
+            result.written_hashes.push(cast_hash_value);
         }
 
         //commit transaction

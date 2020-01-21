@@ -9,9 +9,11 @@ const test_utils = require('../../test_utils');
 const fs = require('fs-extra');
 const LMDB_TEST_ERRORS = require('../../commonTestErrors').LMDB_ERRORS_ENUM;
 
-const BASE_TEST_PATH = path.join(test_utils.getMockFSPath(), 'lmdbTest');
+const LMDB_TEST_FOLDER_NAME = 'lmdbTest';
+const BASE_TEST_PATH = path.join(test_utils.getMockFSPath(), LMDB_TEST_FOLDER_NAME);
 const INVALID_BASE_TEST_PATH = '/bad/path/zzz/';
 const TEST_ENVIRONMENT_NAME = 'test';
+const CACHED_ENV_NAME = `${LMDB_TEST_FOLDER_NAME}.${TEST_ENVIRONMENT_NAME}`;
 const BAD_TEST_ENVIRONMENT_NAME = 'bad_test';
 const ID_DBI_NAME = 'id';
 const ALL_ATTRIBUTES = ['id', 'name', 'age'];
@@ -128,7 +130,7 @@ describe("Test LMDB environmentUtility module", ()=>{
             await test_utils.assertErrorAsync(await fs.access, [path.join(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME, 'data.mdb')], undefined, 'test path exists');
 
             assert.notDeepStrictEqual(global.lmdb_map, undefined);
-            assert.notDeepStrictEqual(global.lmdb_map[TEST_ENVIRONMENT_NAME], undefined);
+            assert.notDeepStrictEqual(global.lmdb_map[CACHED_ENV_NAME], undefined);
         });
 
         it('create existing environment', async ()=>{
@@ -139,7 +141,7 @@ describe("Test LMDB environmentUtility module", ()=>{
             await test_utils.assertErrorAsync(await fs.access, [path.join(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME, 'data.mdb')], undefined, 'test path exists');
 
             assert.notDeepStrictEqual(global.lmdb_map, undefined);
-            assert.notDeepStrictEqual(global.lmdb_map[TEST_ENVIRONMENT_NAME], undefined);
+            assert.notDeepStrictEqual(global.lmdb_map[CACHED_ENV_NAME], undefined);
         });
     });
 
@@ -177,8 +179,8 @@ describe("Test LMDB environmentUtility module", ()=>{
             let env = await test_utils.assertErrorAsync(lmdb_env_util.openEnvironment, [BASE_TEST_PATH, TEST_ENVIRONMENT_NAME], undefined);
 
             assert.notDeepStrictEqual(env, undefined);
-            assert.notDeepStrictEqual(global.lmdb_map[TEST_ENVIRONMENT_NAME], undefined);
-            assert.deepStrictEqual(env, global.lmdb_map[TEST_ENVIRONMENT_NAME]);
+            assert.notDeepStrictEqual(global.lmdb_map[CACHED_ENV_NAME], undefined);
+            assert.deepStrictEqual(env, global.lmdb_map[CACHED_ENV_NAME]);
         });
 
     });
@@ -224,7 +226,7 @@ describe("Test LMDB environmentUtility module", ()=>{
             }
 
             assert(access_err.code === 'ENOENT');
-            assert.deepStrictEqual(global.lmdb_map[TEST_ENVIRONMENT_NAME], undefined);
+            assert.deepStrictEqual(global.lmdb_map[CACHED_ENV_NAME], undefined);
         });
     });
 
