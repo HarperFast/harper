@@ -426,4 +426,41 @@ describe('Test searchUtility module', ()=>{
             assert.deepStrictEqual(results, undefined);
         });
     });
+
+    describe('test iterateDBI function', ()=> {
+        let env;
+        before(async () => {
+            await fs.mkdirp(BASE_TEST_PATH);
+            global.lmdb_map = undefined;
+            env = await environment_utility.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
+            await environment_utility.createDBI(env, 'id');
+            write_utility.insertRecords(env, HASH_ATTRIBUTE_NAME, All_ATTRIBUTES, MULTI_RECORD_ARRAY2);
+        });
+
+        after(async () => {
+            await fs.remove(BASE_TEST_PATH);
+            global.lmdb_map = undefined;
+        });
+
+        it("test validation", () => {
+            test_utils.assertErrorSync(search_util.iterateDBI, [], LMDB_TEST_ERRORS.ENV_REQUIRED, 'test no args');
+            test_utils.assertErrorSync(search_util.iterateDBI, [HASH_ATTRIBUTE_NAME], LMDB_TEST_ERRORS.INVALID_ENVIRONMENT, 'invalid env variable');
+            test_utils.assertErrorSync(search_util.iterateDBI, [env], LMDB_TEST_ERRORS.ATTRIBUTE_REQUIRED, 'no hash attribute');
+            test_utils.assertErrorSync(search_util.iterateDBI, [env, 'city'], undefined, 'no search_value');
+        });
+
+        it("test iterate on city", () => {
+            let results = test_utils.assertErrorSync(search_util.iterateDBI, [env, 'city'], undefined, 'city iterate');
+            assert.deepStrictEqual(results, [
+                ['Denver', '1'],
+                ['Denver', '4'],
+                ['Denvertown', '5'],
+            ]);
+        });
+
+        it("test search on attribute no exist", () => {
+            let results = test_utils.assertErrorSync(search_util.contains, [env, 'fake', 'bad'], LMDB_TEST_ERRORS.DBI_DOES_NOT_EXIST);
+            assert.deepStrictEqual(results, undefined);
+        });
+    });
 });
