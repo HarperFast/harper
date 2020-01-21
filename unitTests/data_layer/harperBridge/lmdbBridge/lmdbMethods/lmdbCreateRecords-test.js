@@ -85,7 +85,31 @@ const EXPECTED_SEARCH_RECORDS = [
     }
 ];
 
-const ALL_FETCH_ATTRIBUTES = ['__createdtime__', '__updatedtime__', 'age', 'breed', 'height', 'id', 'name']
+const NO_NEW_ATTR_TEST = [
+    {
+        attribute: "name"
+    },
+    {
+        attribute: "breed"
+    },
+    {
+        attribute: "age"
+    },
+    {
+        attribute: "id"
+    },
+    {
+        attribute: "height"
+    },
+    {
+        attribute: "__createdtime__"
+    },
+    {
+        attribute: "__updatedtime__"
+    }
+];
+
+const ALL_FETCH_ATTRIBUTES = ['__createdtime__', '__updatedtime__', 'age', 'breed', 'height', 'id', 'name'];
 
 const SCHEMA_TABLE_TEST = {
     id: "c43762be-4943-4d10-81fb-1b857ed6cf3a",
@@ -172,11 +196,77 @@ describe('Test lmdbCreateRecords module', ()=>{
                 }
             };
 
-            let results = await test_utils.assertErrorAsync(lmdb_create_records, [INSERT_OBJECT_TEST], undefined);
+            let insert_obj = test_utils.deepClone(INSERT_OBJECT_TEST);
+
+            let results = await test_utils.assertErrorAsync(lmdb_create_records, [insert_obj], undefined);
             assert.deepStrictEqual(results, expected_return_result);
 
             let records = test_utils.assertErrorSync(search_utility.batchSearchByHash, [env, HASH_ATTRIBUTE_NAME, ALL_FETCH_ATTRIBUTES, [ '8', '9', '12', '10' ] ], undefined);
-            assert.deepStrictEqual(records, INSERT_OBJECT_TEST.records);
+            assert.deepStrictEqual(records, insert_obj.records);
         });
+    });
+
+    it('Test inserting existing and non-existing rows', async () => {
+        let expected_result = {
+            written_hashes: [ 8, 9, 12, 10 ],
+            skipped_hashes: [],
+            schema_table: {
+                attributes: [],
+                hash_attribute: HASH_ATTRIBUTE_NAME,
+                residence: undefined,
+                schema: LMDB_TEST_FOLDER_NAME,
+                name: TEST_ENVIRONMENT_NAME
+            }
+        };
+
+        let results = await test_utils.assertErrorAsync(lmdb_create_records, [INSERT_OBJECT_TEST], undefined);
+        assert.deepStrictEqual(results, expected_result);
+
+        global.hdb_schema[SCHEMA_TABLE_TEST.schema][SCHEMA_TABLE_TEST.name]['attributes'] = NO_NEW_ATTR_TEST;
+        let insert_obj = test_utils.deepClone(INSERT_OBJECT_TEST);
+        let new_records = [
+            {
+                name: "Harper",
+                breed: "Mutt",
+                id: "8",
+                age: 5
+            },
+            {
+                name: "Penny",
+                breed: "Mutt",
+                id: "9",
+                age: 5,
+                height: 145
+            },
+            {
+                name: "David",
+                breed: "Mutt",
+                id: "123"
+            },
+            {
+                name: "Rob",
+                breed: "Mutt",
+                id: "1232",
+                age: 5,
+                height: 145
+            }
+        ];
+        insert_obj.records = new_records;
+        let expected_return_result = {
+            written_hashes: [ 123, 1232 ],
+            skipped_hashes: [ 8, 9 ],
+            schema_table: {
+                attributes: NO_NEW_ATTR_TEST,
+                hash_attribute: 'id',
+                residence: undefined,
+                schema: 'dev',
+                name: 'dog'
+            }
+        };
+
+        let result = await test_utils.assertErrorAsync(lmdb_create_records, [insert_obj], undefined);
+        assert.deepStrictEqual(result, expected_return_result);
+        let records = test_utils.assertErrorSync(search_utility.batchSearchByHash, [env, HASH_ATTRIBUTE_NAME, ALL_FETCH_ATTRIBUTES, ['8', '9', '123', '1232'] ], undefined);
+        assert.deepStrictEqual(records, insert_obj.records);
     });
 });
