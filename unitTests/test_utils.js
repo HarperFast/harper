@@ -4,6 +4,7 @@ const fs = require('fs-extra');
 const moment = require('moment');
 const sinon = require('sinon');
 const uuid = require('uuid/v4');
+const assert = require('assert');
 
 const sql = require('../sqlTranslator/index');
 const SelectValidator = require('../sqlTranslator/SelectValidator');
@@ -122,9 +123,9 @@ function preTestPrep() {
     env.initTestEnvironment();
 }
 
-function makeTheDir(path) {
-    if(!fs.existsSync(path)) {
-        fs.mkdirSync(path);
+function makeTheDir(path_value) {
+    if(!fs.existsSync(path_value)) {
+        fs.mkdirSync(path_value);
     }
 }
 
@@ -724,6 +725,32 @@ async function testError(test_func, error_msg) {
     return error instanceof Error && error.message === error_msg;
 }
 
+async function assertErrorAsync(test_func, args, error_object, message){
+    let error;
+    let result;
+    try{
+        result = await test_func.apply(null, args);
+    } catch(e){
+        error = e;
+    }
+
+    assert.deepStrictEqual(error, error_object, message);
+    return result;
+}
+
+function assertErrorSync(test_func, args, error_object, message){
+    let error;
+    let result;
+    try{
+        result = test_func.apply(null, args);
+    } catch(e){
+        error = e;
+    }
+
+    assert.deepStrictEqual(error, error_object, message);
+    return result;
+}
+
 /**
  * Helium specific function to delete system datastores after they have been used for testing.
  * @param helium_instance
@@ -787,5 +814,7 @@ module.exports = {
     generateAPIMessage,
     deleteSystemDataStores,
     buildHeliumTestVolume,
-    teardownHeliumTestVolume
+    teardownHeliumTestVolume,
+    assertErrorSync,
+    assertErrorAsync
 };

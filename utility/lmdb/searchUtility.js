@@ -1,0 +1,329 @@
+'use strict';
+
+const data_stores= require('./environmentUtility');
+const Transaction_Cursor = require('./TransactionCursor');
+const lmdb = require('node-lmdb');
+const log = require('../logging/harper_logger');
+const LMDB_ERRORS = require('../commonErrors').LMDB_ERRORS_ENUM;
+
+/**
+ * iterates the entire  hash_attribute dbi and returns all objects back
+ * @param {lmdb.Env} env - environment object used thigh level to interact with all data in an environment
+ * @param {String} hash_attribute - name of the hash_attribute for this environment
+ * @param {Array.<String>} fetch_attributes - string array of attributes to pull from the object
+ * @returns {Array.<Object>} - object array of fetched records
+ */
+function searchAll(env, hash_attribute, fetch_attributes){
+    validateEnv(env);
+
+    if(hash_attribute === undefined){
+        throw LMDB_ERRORS.HASH_ATTRIBUTE_REQUIRED;
+    }
+
+    validateFetchAttributes(fetch_attributes);
+
+    let txn = new Transaction_Cursor(env, hash_attribute);
+
+    let results = [];
+    for (let found = txn.cursor.goToFirst(); found !== null; found = txn.cursor.goToNext()) {
+        let obj = {};
+        let value = JSON.parse(txn.cursor.getCurrentString());
+
+        for(let x = 0; x < fetch_attributes.length; x++){
+            let attribute = fetch_attributes[x];
+            obj[attribute] = value[attribute];
+        }
+
+        results.push(obj);
+    }
+
+    txn.close();
+    return results;
+}
+
+/**
+ * counts all records in an environment based on the count from stating the hash_attribute  dbi
+ * @param {lmdb.Env} env - environment object used thigh level to interact with all data in an environment
+ * @param {String} hash_attribute - name of the hash_attribute for this environment
+ * @returns {number} - number of records in the environment
+ */
+function countAll(env, hash_attribute){
+    validateEnv(env);
+
+    if(hash_attribute === undefined){
+        throw LMDB_ERRORS.HASH_ATTRIBUTE_REQUIRED;
+    }
+
+    let stat = data_stores.statDBI(env, hash_attribute);
+    return stat.entryCount;
+}
+
+/**
+ * performs an equal search on the key of a named dbi, returns a list of ids where their keys literally match the search_value
+ * @param {lmdb.Env} env - environment object used thigh level to interact with all data in an environment
+ * @param {String} attribute - name of the attribute (dbi) to search
+ * @param search_value - value to search
+ * @returns {[]} - ids matching the search
+ */
+function equals(env, attribute, search_value){
+    validateComparisonFunctions(env, attribute, search_value);
+
+    let txn = new Transaction_Cursor(env, attribute);
+
+    let results = [];
+    for (let found = txn.cursor.goToKey(search_value); found !== null; found = txn.cursor.goToNextDup()) {
+        let value = txn.cursor.getCurrentString();
+        results.push(value);
+    }
+    txn.close();
+    return results;
+}
+
+/**
+ * performs an startsWith search on the key of a named dbi, returns a list of ids where their keys begin with the search_value
+ * @param {lmdb.Env} env - environment object used thigh level to interact with all data in an environment
+ * @param {String} attribute - name of the attribute (dbi) to search
+ * @param search_value - value to search
+ * @returns {[]} - ids matching the search
+ */
+function startsWith(env, attribute, search_value){
+    validateComparisonFunctions(env, attribute, search_value);
+
+    let txn = new Transaction_Cursor(env, attribute);
+
+    let results = [];
+    for (let found = txn.cursor.goToRange(search_value); found !== null; found = txn.cursor.goToNext()) {
+        let value = txn.cursor.getCurrentString();
+
+        if(found.startsWith(search_value)){
+            results.push(value);
+        } else{
+            txn.cursor.goToLast();
+        }
+    }
+    txn.close();
+    return results;
+}
+
+/**
+ * performs an endsWith search on the key of a named dbi, returns a list of ids where their keys end with search_value
+ * @param {lmdb.Env} env - environment object used thigh level to interact with all data in an environment
+ * @param {String} attribute - name of the attribute (dbi) to search
+ * @param search_value - value to search
+ * @returns {[]} - ids matching the search
+ */
+function endsWith(env, attribute, search_value){
+    validateComparisonFunctions(env, attribute, search_value);
+
+    let txn = new Transaction_Cursor(env, attribute);
+
+    let results = [];
+    for (let found = txn.cursor.goToFirst(); found !== null; found = txn.cursor.goToNext()) {
+        let value = txn.cursor.getCurrentString();
+        if(found.endsWith(search_value)){
+            results.push(value);
+        }
+    }
+    txn.close();
+    return results;
+}
+
+/**
+ * performs a cotains search on the key of a named dbi, returns a list of ids where their keys contain the search_value
+ * @param {lmdb.Env} env - environment object used thigh level to interact with all data in an environment
+ * @param {String} attribute - name of the attribute (dbi) to search
+ * @param search_value - value to search
+ * @returns {[]} - ids matching the search
+ */
+function contains(env, attribute, search_value){
+    validateComparisonFunctions(env, attribute, search_value);
+
+    let txn = new Transaction_Cursor(env, attribute);
+
+    let results = [];
+    for (let found = txn.cursor.goToFirst(); found !== null; found = txn.cursor.goToNext()) {
+        //let value = cursor.getCurrentString();
+        if(found.includes(search_value)){
+            results.push(txn.cursor.getCurrentString());
+        }
+    }
+    txn.close();
+    return results;
+}
+
+/**
+ * finds a single record based on the id passed
+ * @param {lmdb.Env} env - environment object used thigh level to interact with all data in an environment
+ * @param {String} hash_attribute - name of the hash_attribute for this environment
+ * @param {Array.<String>} fetch_attributes - string array of attributes to pull from the object
+ * @param {String} id - id value to search
+ * @returns {{}} - object found
+ */
+function searchByHash(env, hash_attribute, fetch_attributes, id) {
+    validateEnv(env);
+
+    if(hash_attribute === undefined){
+        throw LMDB_ERRORS.HASH_ATTRIBUTE_REQUIRED;
+    }
+
+    validateFetchAttributes(fetch_attributes);
+
+    if(id === undefined){
+        throw LMDB_ERRORS.ID_REQUIRED;
+    }
+
+    let txn = new Transaction_Cursor(env, hash_attribute);
+
+    let obj = null;
+    let found = txn.cursor.goToKey(id);
+    if(found === id) {
+        obj = {};
+        let value = JSON.parse(txn.cursor.getCurrentString());
+
+        fetch_attributes.forEach(attribute => {
+            obj[attribute] = value[attribute];
+        });
+    }
+    txn.close();
+    return obj;
+}
+
+/**
+ * checks if a hash value exists based on the id passed
+ * @param {lmdb.Env} env - environment object used thigh level to interact with all data in an environment
+ * @param {String} hash_attribute - name of the hash_attribute for this environment
+ * @param {String} id - id value to check exists
+ * @returns {boolean} - whether the hash exists (true) or not (false)
+ */
+function checkHashExists(env, hash_attribute, id) {
+    validateEnv(env);
+
+    if(hash_attribute === undefined){
+        throw LMDB_ERRORS.HASH_ATTRIBUTE_REQUIRED;
+    }
+
+    if(id === undefined){
+        throw LMDB_ERRORS.ID_REQUIRED;
+    }
+
+    let found_key = true;
+    let txn = new Transaction_Cursor(env, hash_attribute);
+
+    let key = txn.cursor.goToKey(id);
+
+    if(key !== id){
+        found_key = false;
+    }
+
+    txn.close();
+    return found_key;
+}
+
+/**
+ * finds an array of records based on the ids passed
+ * @param {lmdb.Env} env - environment object used thigh level to interact with all data in an environment
+ * @param {String} hash_attribute - name of the hash_attribute for this environment
+ * @param {Array.<String>} fetch_attributes - string array of attributes to pull from the object
+ * @param {Array.<String>} ids - list of ids to search
+ * @returns {Array.<Object>} - object array of records found
+ */
+function batchSearchByHash(env, hash_attribute, fetch_attributes, ids) {
+    validateEnv(env);
+
+    if(hash_attribute === undefined){
+        throw LMDB_ERRORS.HASH_ATTRIBUTE_REQUIRED;
+    }
+
+    validateFetchAttributes(fetch_attributes);
+
+    if(!Array.isArray(ids)){
+        if(ids === undefined){
+            throw LMDB_ERRORS.IDS_REQUIRED;
+        }
+
+        throw LMDB_ERRORS.IDS_MUST_BE_ARRAY;
+    }
+
+    let txn = new Transaction_Cursor(env, hash_attribute);
+
+    let results = [];
+
+    for(let x = 0; x < ids.length; x++){
+        let id = ids[x];
+        try {
+            let key = txn.cursor.goToKey(id);
+            if(key === id) {
+                let orig = JSON.parse(txn.cursor.getCurrentString());
+                let obj = {};
+
+                fetch_attributes.forEach(attribute => {
+                    obj[attribute] = orig[attribute];
+                });
+                results.push(obj);
+            }
+        }catch(e){
+            log.warn(e);
+        }
+    }
+
+    txn.close();
+
+    return results;
+}
+
+/**
+ * validates the env argument
+ * @param env - environment object used thigh level to interact with all data in an environment
+ */
+function validateEnv(env){
+    if(!(env instanceof lmdb.Env)){
+
+        if(env === undefined){
+            throw LMDB_ERRORS.ENV_REQUIRED;
+        }
+
+        throw LMDB_ERRORS.INVALID_ENVIRONMENT;
+    }
+}
+
+/**
+ * validates the fetch_attributes argument
+ * @param fetch_attributes - string array of attributes to pull from the object
+ */
+function validateFetchAttributes(fetch_attributes){
+    if(!Array.isArray(fetch_attributes)){
+        if(fetch_attributes === undefined){
+            throw LMDB_ERRORS.FETCH_ATTRIBUTES_REQUIRED;
+        }
+        throw LMDB_ERRORS.FETCH_ATTRIBUTES_MUST_BE_ARRAY;
+    }
+}
+
+/**
+ * common validation function for all of the comparison searches (equals, startsWith, endsWith, contains)
+ * @param {lmdb.Env} env - environment object used thigh level to interact with all data in an environment
+ * @param attribute - name of the attribute (dbi) to search
+ * @param search_value - value to search
+ */
+function validateComparisonFunctions(env, attribute, search_value){
+    validateEnv(env);
+    if(attribute === undefined){
+        throw LMDB_ERRORS.ATTRIBUTE_REQUIRED;
+    }
+
+    if(search_value === undefined){
+        throw LMDB_ERRORS.SEARCH_VALUE_REQUIRED;
+    }
+}
+
+module.exports = {
+    searchAll,
+    countAll,
+    equals,
+    startsWith,
+    endsWith,
+    contains,
+    searchByHash,
+    batchSearchByHash,
+    checkHashExists
+};
