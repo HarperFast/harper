@@ -29,7 +29,8 @@ module.exports = lmdbCreateRecords;
 async function lmdbCreateRecords(insert_obj) {
     try {
         let { schema_table, attributes } = insertUpdateValidate(insert_obj);
-        lmdbProcessRows(insert_obj, attributes, schema_table);
+
+        lmdbProcessRows(insert_obj, attributes, schema_table.hash_attribute);
 
         if (insert_obj.schema !== hdb_terms.SYSTEM_SCHEMA_NAME) {
             if (!attributes.includes(hdb_terms.TIME_STAMP_NAMES_ENUM.CREATED_TIME)) {

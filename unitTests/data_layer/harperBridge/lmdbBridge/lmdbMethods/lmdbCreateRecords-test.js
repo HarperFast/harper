@@ -55,6 +55,7 @@ const EXPECTED_SEARCH_RECORDS = [
         __updatedtime__: TIMESTAMP,
         name: "Harper",
         breed: "Mutt",
+        height: undefined,
         id: "8",
         age: 5
     },
@@ -70,8 +71,10 @@ const EXPECTED_SEARCH_RECORDS = [
     {
         __createdtime__:TIMESTAMP,
         __updatedtime__: TIMESTAMP,
+        age: undefined,
         name: "David",
         breed: "Mutt",
+        height:undefined,
         id: "12"
     },
     {
@@ -202,7 +205,7 @@ describe('Test lmdbCreateRecords module', ()=>{
             assert.deepStrictEqual(results, expected_return_result);
 
             let records = test_utils.assertErrorSync(search_utility.batchSearchByHash, [env, HASH_ATTRIBUTE_NAME, ALL_FETCH_ATTRIBUTES, [ '8', '9', '12', '10' ] ], undefined);
-            assert.deepStrictEqual(records, insert_obj.records);
+            assert.deepStrictEqual(records, EXPECTED_SEARCH_RECORDS);
         });
 
         it('Test inserting existing and non-existing rows', async () => {
@@ -251,7 +254,7 @@ describe('Test lmdbCreateRecords module', ()=>{
                 }
             ];
 
-            let new_records_excpected =  [
+            let new_records_excpected = [
                 {
                     "__createdtime__": TIMESTAMP,
                     "__updatedtime__": TIMESTAMP,
