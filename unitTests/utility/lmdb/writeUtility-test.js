@@ -13,7 +13,6 @@ const LMDB_TEST_ERRORS = require('../../commonTestErrors').LMDB_ERRORS_ENUM;
 const sinon = require('sinon');
 
 const TIMESTAMP = Date.now();
-const date_stub = sinon.stub(Date, 'now').returns(TIMESTAMP);
 
 const BASE_TEST_PATH = path.join(test_utils.getMockFSPath(), 'lmdbTest');
 const TEST_ENVIRONMENT_NAME = 'test';
@@ -40,9 +39,9 @@ const sandbox = sinon.createSandbox();
 const UPDATE_ONE_FAKE_RECORD = {id:111, name:'FAKE ROW', age:'0'};
 
 describe("Test writeUtility module", ()=>{
-
+    let date_stub;
     before(()=>{
-
+        date_stub = sandbox.stub(Date, 'now').returns(TIMESTAMP);
     });
 
     after(()=>{
@@ -80,8 +79,12 @@ describe("Test writeUtility module", ()=>{
     });
 
     describe("Test insertRecords function", ()=>{
+        before(()=>{
+            date_stub = sandbox.stub(Date, 'now').returns(TIMESTAMP);
+        });
         let env;
         beforeEach(async ()=>{
+
             await fs.mkdirp(BASE_TEST_PATH);
             global.lmdb_map = undefined;
             env = await environment_utility.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);

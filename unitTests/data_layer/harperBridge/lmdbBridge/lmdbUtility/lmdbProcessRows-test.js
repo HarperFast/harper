@@ -11,7 +11,7 @@ const sinon = require('sinon');
 
 const MOCK_UUID_VALUE = 'cool-uuid-value';
 const sandbox = sinon.createSandbox();
-let uuid_stub = sandbox.stub(uuid, 'v4').returns(MOCK_UUID_VALUE);
+
 const test_utils = require('../../../../test_utils');
 const assert = require('assert');
 
@@ -71,6 +71,12 @@ const LONG_CHAR_TEST = "z2xFuWBiQgjAAAzgAK80e35FCuFzNHpicBWzsWZW055mFHwBxdU5yE5K
     "vAy7MT49mg6wn5yCqPEPFkcva2FNRYSNxljmu1XxN65mTKiTw2lvM0Yl2o0";
 
 describe('Test lmdbProcessRows module', ()=>{
+    let uuid_stub;
+
+    before(()=>{
+        uuid_stub = sandbox.stub(uuid, 'v4').returns(MOCK_UUID_VALUE);
+    });
+
     after(()=>{
         uuid_stub.restore();
     });

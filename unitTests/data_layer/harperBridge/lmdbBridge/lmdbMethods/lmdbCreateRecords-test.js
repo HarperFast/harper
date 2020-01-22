@@ -123,11 +123,12 @@ const SCHEMA_TABLE_TEST = {
 };
 
 const sandbox = sinon.createSandbox();
-const date_stub = sandbox.stub(Date, 'now').returns(TIMESTAMP);
+
 describe('Test lmdbCreateRecords module', ()=>{
     let rw_base_schema_path = lmdb_create_records.__set__('BASE_SCHEMA_PATH', test_utils.getMockFSPath());
+    let date_stub;
     before(()=>{
-
+        date_stub = sandbox.stub(Date, 'now').returns(TIMESTAMP);
 
         global.hdb_schema = {
             [SCHEMA_TABLE_TEST.schema]: {
