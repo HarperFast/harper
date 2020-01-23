@@ -62,7 +62,7 @@ describe('Test searchUtility module', ()=>{
             let record = test_utils.assertErrorSync(search_util.searchByHash, [env, HASH_ATTRIBUTE_NAME, SOME_ATTRIBUTES, "3"],
                 undefined, 'all arguments sent');
 
-            assert.deepStrictEqual(record, MULTI_RECORD_ARRAY[2]);
+            assert.deepStrictEqual(record, {"age": 57, "id": 3, "name": "Hank"});
         });
 
         it("test select record no exist", ()=>{

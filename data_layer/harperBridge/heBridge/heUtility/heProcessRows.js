@@ -78,8 +78,8 @@ function processRows(insert_obj, attributes, schema_table, hashes) {
 
     if (!is_system_schema) {
         // Pushes created time and updated time attributes to datastores array
-        datastores.push(`${schema}/${table}/${hdb_terms.HELIUM_TIME_STAMP_ENUM.CREATED_TIME}`);
-        datastores.push(`${schema}/${table}/${hdb_terms.HELIUM_TIME_STAMP_ENUM.UPDATED_TIME}`);
+        datastores.push(`${schema}/${table}/${hdb_terms.TIME_STAMP_NAMES_ENUM.CREATED_TIME}`);
+        datastores.push(`${schema}/${table}/${hdb_terms.TIME_STAMP_NAMES_ENUM.UPDATED_TIME}`);
     }
 
     return {

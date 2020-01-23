@@ -113,8 +113,8 @@ async function createEnvironment(base_path, env_name) {
             if(global.lmdb_map === undefined) {
                 global.lmdb_map = Object.create(null);
             }
-
-            global.lmdb_map[env_name] = env;
+            let full_name = getCachedEnvironmentName(base_path, env_name);
+            global.lmdb_map[full_name] = env;
 
             return env;
         }
@@ -131,15 +131,17 @@ async function createEnvironment(base_path, env_name) {
 async function openEnvironment(base_path, env_name){
     await pathEnvNameValidation(base_path, env_name);
 
-    await validateEnvironmentPath(base_path, env_name);
+    let full_name = getCachedEnvironmentName(base_path, env_name);
 
     if(global.lmdb_map === undefined) {
         global.lmdb_map = Object.create(null);
     }
 
-    if(global.lmdb_map[env_name] !== undefined){
-        return global.lmdb_map[env_name];
+    if(global.lmdb_map[full_name] !== undefined){
+        return global.lmdb_map[full_name];
     }
+
+    await validateEnvironmentPath(base_path, env_name);
 
     let env = new lmdb.Env();
     env.open({
@@ -158,11 +160,10 @@ async function openEnvironment(base_path, env_name){
         openDBI(env, dbi);
     });
 
-    global.lmdb_map[env_name] = env;
+    global.lmdb_map[full_name] = env;
 
     return env;
 }
-
 
 /**
  * deletes the environment from the file system & removes the reference from global
@@ -175,8 +176,21 @@ async function deleteEnvironment(base_path, env_name) {
 
     await fs.remove(path.join(base_path, env_name));
     if(global.lmdb_map !== undefined) {
-        delete global.lmdb_map[env_name];
+        let full_name = getCachedEnvironmentName(base_path, env_name);
+        delete global.lmdb_map[full_name];
     }
+}
+
+/**
+ * creates a composite name for the environment based on the parent folder name & the environment name.
+ * This forces uniqueness when same environment names live under different parent folders
+ * @param base_path
+ * @param env_name
+ * @returns {string}
+ */
+function getCachedEnvironmentName(base_path, env_name){
+    let schema_name = path.basename(base_path);
+    return `${schema_name}.${env_name}`;
 }
 
 /***  DBI FUNCTIONS ***/

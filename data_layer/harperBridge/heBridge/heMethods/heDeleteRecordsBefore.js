@@ -41,7 +41,7 @@ function heDeleteRecordsBefore(delete_obj) {
     // Uses helium api to search for values in a scheme.tables timestamp column that are less than passed date.
     try {
         // We currently compare passed timestamp to the created time attribute
-        let search_attribute = heGenerateDataStoreName(delete_obj.schema, delete_obj.table, hdb_terms.HELIUM_TIME_STAMP_ENUM.CREATED_TIME);
+        let search_attribute = heGenerateDataStoreName(delete_obj.schema, delete_obj.table, hdb_terms.TIME_STAMP_NAMES_ENUM.CREATED_TIME);
         let return_attribute = heGenerateDataStoreName(delete_obj.schema, delete_obj.table, schema_table_hash);
         search_result = hdb_helium.searchByValueRange(search_attribute, hdb_terms.HELIUM_VALUE_RANGE_SEARCH_OPS.LESS, parsed_search_date, null, [return_attribute]);
     } catch(err) {

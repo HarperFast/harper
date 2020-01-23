@@ -25,14 +25,14 @@ function heCreateTable(table_system_data, table_create_obj) {
         operation: hdb_terms.OPERATIONS_ENUM.CREATE_ATTRIBUTE,
         schema: table_create_obj.schema,
         table: table_create_obj.table,
-        attribute: hdb_terms.HELIUM_TIME_STAMP_ENUM.CREATED_TIME,
+        attribute: hdb_terms.TIME_STAMP_NAMES_ENUM.CREATED_TIME,
     };
 
     let updated_time_attr = {
         operation: hdb_terms.OPERATIONS_ENUM.CREATE_ATTRIBUTE,
         schema: table_create_obj.schema,
         table: table_create_obj.table,
-        attribute: hdb_terms.HELIUM_TIME_STAMP_ENUM.UPDATED_TIME,
+        attribute: hdb_terms.TIME_STAMP_NAMES_ENUM.UPDATED_TIME,
     };
 
     let hash_attr = {
