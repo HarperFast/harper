@@ -1,5 +1,6 @@
 "use strict";
 
+//NOTE: Any changes made to these errors must also be made to unitTests/commonTestErrors.js otherwise the unit tests will fail
 const LMDB_ERRORS_ENUM = {
     BASE_PATH_REQUIRED: new Error('base_path is required'),
     ENV_NAME_REQUIRED: new Error('env_name is required'),
