@@ -8,6 +8,7 @@ const env_mgr = require('../../../../utility/environment/environmentManager');
 const system_schema = require('../../../../json/systemSchema');
 const schema_validator = require('../../../../validation/schema_validator');
 const uuid = require('uuid');
+const returnObject = require('../../bridgeUtility/insertUpdateReturnObj');
 
 if(!env_mgr.isInitialized()){
     env_mgr.initSync();
@@ -21,7 +22,9 @@ for(let x = 0; x < HDB_TABLE_INFO.attributes.length; x++){
     hdb_attribute_attributes.push(HDB_TABLE_INFO.attributes[x].attribute);
 }
 
-let HDB_ATTRBUTE_ENV;
+const ACTION = 'inserted';
+const SYSTEM_SCHEMA_PATH = path.join(BASE_SCHEMA_PATH, hdb_terms.SYSTEM_SCHEMA_NAME);
+
 
 module.exports = lmdbCreateAttribute;
 
@@ -63,16 +66,12 @@ async function lmdbCreateAttribute(create_attribute_obj) {
         let env = await environment_utility.openEnvironment(path.join(BASE_SCHEMA_PATH, create_attribute_obj.schema), create_attribute_obj.table);
         environment_utility.createDBI(env, create_attribute_obj.attribute, true);
 
-        await getHDBAttributeEnvironment();
+        let hdb_attribute_env = await environment_utility.openEnvironment(SYSTEM_SCHEMA_PATH, hdb_terms.SYSTEM_TABLE_NAMES.ATTRIBUTE_TABLE_NAME);
 
-        write_utility.insertRecords(HDB_ATTRBUTE_ENV, HDB_TABLE_INFO.hash_attribute, hdb_attribute_attributes, [record]);
+        let {written_hashes, skipped_hashes} = write_utility.insertRecords(hdb_attribute_env, HDB_TABLE_INFO.hash_attribute, hdb_attribute_attributes, [record]);
+
+        return returnObject(ACTION, written_hashes, {records:[record]}, skipped_hashes);
     } catch(e){
         throw e;
-    }
-}
-
-async function getHDBAttributeEnvironment(){
-    if(HDB_ATTRBUTE_ENV === undefined){
-        HDB_ATTRBUTE_ENV = await environment_utility.openEnvironment(path.join(BASE_SCHEMA_PATH, hdb_terms.SYSTEM_SCHEMA_NAME), hdb_terms.SYSTEM_TABLE_NAMES.ATTRIBUTE_TABLE_NAME);
     }
 }

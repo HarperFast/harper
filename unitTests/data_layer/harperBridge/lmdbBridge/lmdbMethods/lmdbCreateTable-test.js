@@ -78,12 +78,14 @@ describe("test lmdbCreateTable module", ()=>{
     let hdb_table_env;
     let hdb_attribute_env;
     let date_stub;
-    before(async ()=>{
 
+    before(async ()=>{
+        global.lmdb_map = undefined;
+        env_mgr.setProperty('HDB_ROOT', BASE_PATH);
         global.hdb_schema = {system: systemSchema};
         date_stub = sandbox.stub(Date, 'now').returns(TIMESTAMP);
         await fs.mkdirp(BASE_TEST_PATH);
-        global.lmdb_map = undefined;
+
 
         hdb_schema_env = await environment_utility.createEnvironment(BASE_TEST_PATH, systemSchema.hdb_schema.name);
         environment_utility.createDBI(hdb_schema_env, systemSchema.hdb_schema.hash_attribute, false);
@@ -93,14 +95,14 @@ describe("test lmdbCreateTable module", ()=>{
 
         hdb_attribute_env = await environment_utility.createEnvironment(BASE_TEST_PATH, systemSchema.hdb_attribute.name);
         environment_utility.createDBI(hdb_attribute_env, systemSchema.hdb_attribute.hash_attribute, false);
-
+        environment_utility.createDBI(hdb_attribute_env, 'schema_table', true);
 
         await lmdb_create_schema(CREATE_SCHEMA_DEV);
         await lmdb_create_schema(CREATE_SCHEMA_PROD);
-
     });
 
     after(async ()=>{
+
         env_mgr.setProperty('HDB_ROOT', root_original);
         date_stub.restore();
         delete global.hdb_schema;
@@ -120,16 +122,17 @@ describe("test lmdbCreateTable module", ()=>{
 
         await test_utils.assertErrorAsync(fs.access, [table_path], undefined);
 
-        let table_record = await test_utils.assertErrorAsync(search_utility.searchByHash,
+        let table_record = test_utils.assertErrorSync(search_utility.searchByHash,
             [hdb_table_env, systemSchema.hdb_table.hash_attribute, HDB_TABLE_ATTRIBUTES, TABLE_SYSTEM_DATA_TEST_A.id], undefined);
         assert.deepStrictEqual(table_record, expected_table);
 
-        let all_dbis = await test_utils.assertErrorAsync(environment_utility.listDBIs, [new_env], undefined);
+        let all_dbis = test_utils.assertErrorSync(environment_utility.listDBIs, [new_env], undefined);
 
         assert.deepStrictEqual(all_dbis, expected_attributes);
-        let attribute_ids = await test_utils.assertErrorAsync(search_utility.equals,
+        let attribute_ids = test_utils.assertErrorSync(search_utility.equals,
             [hdb_attribute_env, 'schema_table', `${TABLE_SYSTEM_DATA_TEST_A.schema}.${TABLE_SYSTEM_DATA_TEST_A.name}`], undefined);
-        let attribute_records = await test_utils.assertErrorAsync(search_utility.batchSearchByHash,
+
+        let attribute_records = test_utils.assertErrorSync(search_utility.batchSearchByHash,
             [hdb_attribute_env, systemSchema.hdb_attribute.hash_attribute, HDB_ATTRIBUTE_ATTRIBUTES, attribute_ids], undefined);
         assert.deepStrictEqual(attribute_records.length, 3);
         attribute_records.forEach(record=>{
@@ -149,7 +152,7 @@ describe("test lmdbCreateTable module", ()=>{
 
         await test_utils.assertErrorAsync(fs.access, [table_path], undefined);
 
-        let table_record = await test_utils.assertErrorAsync(search_utility.searchByHash,
+        let table_record = test_utils.assertErrorSync(search_utility.searchByHash,
             [hdb_table_env, systemSchema.hdb_table.hash_attribute, HDB_TABLE_ATTRIBUTES, TABLE_SYSTEM_DATA_TEST_B.id], undefined);
         assert.deepStrictEqual(table_record, expected_table);
 
@@ -158,6 +161,7 @@ describe("test lmdbCreateTable module", ()=>{
         assert.deepStrictEqual(all_dbis, expected_attributes);
         let attribute_ids = await test_utils.assertErrorAsync(search_utility.equals,
             [hdb_attribute_env, 'schema_table', `${TABLE_SYSTEM_DATA_TEST_B.schema}.${TABLE_SYSTEM_DATA_TEST_B.name}`], undefined);
+
         let attribute_records = await test_utils.assertErrorAsync(search_utility.batchSearchByHash,
             [hdb_attribute_env, systemSchema.hdb_attribute.hash_attribute, HDB_ATTRIBUTE_ATTRIBUTES, attribute_ids], undefined);
         assert.deepStrictEqual(attribute_records.length, 3);

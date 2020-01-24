@@ -30,9 +30,7 @@ const constraints = {
             message: "name can only contain alpha numeric characters or underscores"
         },
         length: {
-            minimum:1,
             maximum: 250,
-            tooShort: 'cannot be less than 1 character',
             tooLong: 'cannot exceed 250 characters'
         }
     },
@@ -52,7 +50,8 @@ const constraints = {
 
 function makeAttributesStrings(object) {
     for (let attr in object) {
-        object[attr] = object[attr].toString();
+        //setting the attribute to null allows the presence validators to work, also attempting to stringify a non-existent attribute throws an exception
+        object[attr] = (object[attr] === null || object[attr]=== undefined) ? object[attr] : object[attr].toString();
     }
     return object;
 }

@@ -19,7 +19,7 @@ let hdb_table_attributes = [];
 for(let x = 0; x < HDB_TABLE_INFO.attributes.length; x++){
     hdb_table_attributes.push(HDB_TABLE_INFO.attributes[x].attribute);
 }
-let HDB_TABLE_ENV;
+const SYSTEM_SCHEMA_PATH = path.join(BASE_SCHEMA_PATH, hdb_terms.SYSTEM_SCHEMA_NAME);
 
 module.exports = lmdbCreateTable;
 
@@ -57,20 +57,14 @@ async function lmdbCreateTable(table_system_data, table_create_obj) {
         //create the new environment
         await environment_utility.createEnvironment(schema_path, table_create_obj.table);
 
-        await getHDBTableEnvironment();
+        let hdb_table_env = await environment_utility.openEnvironment(SYSTEM_SCHEMA_PATH, hdb_terms.SYSTEM_TABLE_NAMES.TABLE_TABLE_NAME);
         //add the meta data to system.hdb_table
-        write_utility.insertRecords(HDB_TABLE_ENV, HDB_TABLE_INFO.hash_attribute, hdb_table_attributes, [table_system_data]);
+        write_utility.insertRecords(hdb_table_env, HDB_TABLE_INFO.hash_attribute, hdb_table_attributes, [table_system_data]);
         //create attributes for hash attribute created/updated time stamps
         await lmdb_create_attribute(created_time_attr);
         await lmdb_create_attribute(updated_time_attr);
         await lmdb_create_attribute(hash_attr);
     }catch (e) {
         throw e;
-    }
-}
-
-async function getHDBTableEnvironment(){
-    if(HDB_TABLE_ENV === undefined){
-        HDB_TABLE_ENV = await environment_utility.openEnvironment(path.join(BASE_SCHEMA_PATH, hdb_terms.SYSTEM_SCHEMA_NAME), hdb_terms.SYSTEM_TABLE_NAMES.TABLE_TABLE_NAME);
     }
 }
