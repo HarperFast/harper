@@ -164,7 +164,6 @@ function contains(env, attribute, search_value){
 
     let results = [];
     for (let found = txn.cursor.goToFirst(); found !== null; found = txn.cursor.goToNext()) {
-        //let value = cursor.getCurrentString();
         if(found.includes(search_value)){
             results.push(txn.cursor.getCurrentString());
         }
