@@ -1,5 +1,4 @@
-const validate = require('validate.js'),
-    validator = require('./validationWrapper');
+const validator = require('./validationWrapper');
 
 const constraints = {
     schema: {
@@ -29,8 +28,13 @@ const constraints = {
         format: {
             pattern: "^[a-zA-Z0-9_]*$",
             message: "name can only contain alpha numeric characters or underscores"
+        },
+        length: {
+            minimum:1,
+            maximum: 250,
+            tooShort: 'cannot be less than 1 character',
+            tooLong: 'cannot exceed 250 characters'
         }
-
     },
     hash_attribute: {
         presence: true,
@@ -120,8 +124,6 @@ function validateTableResidence(residence){
             throw new Error(`residence must be a string array, item '${residence[x]}' is not a string`);
         }
     }
-
-    return;
 }
 
 module.exports = {
