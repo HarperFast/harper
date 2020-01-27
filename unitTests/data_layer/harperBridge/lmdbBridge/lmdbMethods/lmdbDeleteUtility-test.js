@@ -16,7 +16,7 @@ env_mgr.setProperty('HDB_ROOT', BASE_PATH);
 
 const rewire = require('rewire');
 const lmdb_create_records = rewire('../../../../../data_layer/harperBridge/lmdbBridge/lmdbMethods/lmdbCreateRecords');
-const lmdb_update_records = rewire('../../../../../data_layer/harperBridge/lmdbBridge/lmdbMethods/lmdbUpdateRecords');
+const lmdb_delete_records = rewire('../../../../../data_layer/harperBridge/lmdbBridge/lmdbMethods/lmdbDeleteRecords');
 const lmdb_create_schema = require('../../../../../data_layer/harperBridge/lmdbBridge/lmdbMethods/lmdbCreateSchema');
 const lmdb_create_table = require('../../../../../data_layer/harperBridge/lmdbBridge/lmdbMethods/lmdbCreateTable');
 const environment_utility = require('../../../../../utility/lmdb/environmentUtility');
@@ -66,30 +66,6 @@ const INSERT_OBJECT_TEST = {
     ]
 };
 
-const NO_NEW_ATTR_TEST = [
-    {
-        attribute: "name"
-    },
-    {
-        attribute: "breed"
-    },
-    {
-        attribute: "age"
-    },
-    {
-        attribute: "id"
-    },
-    {
-        attribute: "height"
-    },
-    {
-        attribute: "__createdtime__"
-    },
-    {
-        attribute: "__updatedtime__"
-    }
-];
-
 const ALL_FETCH_ATTRIBUTES = ['__createdtime__', '__updatedtime__', 'age', 'breed', 'height', 'id', 'name'];
 
 const SCHEMA_TABLE_TEST = {
@@ -122,7 +98,7 @@ const TABLE_SYSTEM_DATA_TEST_A = {
 
 const sandbox = sinon.createSandbox();
 
-describe('Test lmdbUpdateRecords module', ()=>{
+describe('Test lmdbDeleteRecords module', ()=>{
     let date_stub;
     let hdb_schema_env;
     let hdb_table_env;
@@ -137,7 +113,7 @@ describe('Test lmdbUpdateRecords module', ()=>{
         env_mgr.setProperty('HDB_ROOT', root_original);
     });
 
-    describe('Test lmdbUpdateRecords function', ()=>{
+    describe('Test lmdbDeleteRecords function', ()=>{
 
         beforeEach(async ()=>{
             date_stub.restore();
@@ -183,118 +159,82 @@ describe('Test lmdbUpdateRecords module', ()=>{
             delete global.hdb_schema;
         });
 
-        it('Test updating 1 row', async ()=>{
-            const update_obj = {
-                operation: "update",
-                schema: "dev",
+        it('Test deleting 1 row', async ()=>{
+            let delete_obj = {
+                operation: "delete",
                 table: "dog",
-                records: [
-                    {
-                        name: "Beethoven",
-                        breed: "St. Bernard",
-                        id: "10",
-                        height:undefined,
-                        age: 10
-                    }
-                ]
+                schema: "dev",
+                hash_values: [ 8 ]
+            };
+            let expected_result = {
+                message: '1 record successfully deleted',
+                deleted_hashes: [ 8 ],
+                skipped_hashes: []
             };
 
-            let expected_return_result = {
-                written_hashes: [ 10],
-                skipped_hashes: [],
-                schema_table: {
-                    attributes: [],
-                    hash_attribute: HASH_ATTRIBUTE_NAME,
-                    residence: undefined,
-                    schema: INSERT_OBJECT_TEST.schema,
-                    name: INSERT_OBJECT_TEST.table
-                }
-            };
-
-            let expected_search = test_utils.deepClone(update_obj.records[0]);
-            expected_search.__createdtime__=INSERT_TIMESTAMP;
-            expected_search.__updatedtime__=TIMESTAMP;
-            expected_search.height = undefined;
-
-
-            let results = await test_utils.assertErrorAsync(lmdb_update_records, [update_obj], undefined);
-            assert.deepStrictEqual(results, expected_return_result);
+            let results = await test_utils.assertErrorAsync(lmdb_delete_records, [delete_obj], undefined);
+            assert.deepStrictEqual(results, expected_result);
 
             let dog_env = await test_utils.assertErrorAsync(environment_utility.openEnvironment,[path.join(BASE_SCHEMA_PATH, INSERT_OBJECT_TEST.schema), INSERT_OBJECT_TEST.table], undefined);
-            let record = test_utils.assertErrorSync(search_utility.searchByHash, [dog_env, HASH_ATTRIBUTE_NAME, ALL_FETCH_ATTRIBUTES, '10'], undefined);
-            assert.deepStrictEqual(record, expected_search);
-
-            //make sure the height index does not have an entry for id 10
-            let height_results = test_utils.assertErrorSync(search_utility.iterateDBI, [dog_env, "height"], undefined);
-            height_results.forEach(result=>{
-                assert(result.indexOf(10) < 0);
+            let record = test_utils.assertErrorSync(search_utility.searchByHash, [dog_env, HASH_ATTRIBUTE_NAME, ALL_FETCH_ATTRIBUTES, '8'], undefined);
+            assert.deepStrictEqual(record, null);
+            //iterate all dbis and make sure all references to hash 8 are gone
+            ALL_FETCH_ATTRIBUTES.forEach(attribute=>{
+                if(attribute !== HASH_ATTRIBUTE_NAME) {
+                    let attr_results = test_utils.assertErrorSync(search_utility.iterateDBI, [dog_env, "height"], undefined);
+                    attr_results.forEach(result=>{
+                        assert(result[1] !== '8');
+                    });
+                }
             });
 
         });
 
-        it('Test update record with no hash attribute', async () => {
-            const update_obj = {
-                operation: "update",
-                schema: "dev",
+        it('Test deleting two values from table, one that does not exist', async () => {
+            let delete_obj = {
+                operation: "delete",
                 table: "dog",
-                records: [
-                    {
-                        name: "Beethoven",
-                        breed: "St. Bernard",
-                        height:undefined,
-                        age: 10
-                    }
-                ]
+                schema: "dev",
+                hash_values: [ 8, 9999 ]
+            };
+            let expected_result = {
+                message: '1 record successfully deleted',
+                deleted_hashes: [ 8 ],
+                skipped_hashes: [ 9999]
             };
 
-            let no_hash_error = new Error('a valid hash attribute must be provided with update record, check log for more info');
+            let results = await test_utils.assertErrorAsync(lmdb_delete_records, [delete_obj], undefined);
+            assert.deepStrictEqual(results, expected_result);
 
-            let update1 = test_utils.deepClone(update_obj);
-            await test_utils.assertErrorAsync(lmdb_update_records, [update1], no_hash_error);
-
-            let update2 = test_utils.deepClone(update_obj);
-            update2.id = null;
-            await test_utils.assertErrorAsync(lmdb_update_records, [update2], no_hash_error);
-
-            let update3 = test_utils.deepClone(update_obj);
-            update3.id = undefined;
-            await test_utils.assertErrorAsync(lmdb_update_records, [update3], no_hash_error);
-
-            let update4 = test_utils.deepClone(update_obj);
-            update4.id = '';
-            await test_utils.assertErrorAsync(lmdb_update_records, [update4], no_hash_error);
+            let dog_env = await test_utils.assertErrorAsync(environment_utility.openEnvironment,[path.join(BASE_SCHEMA_PATH, INSERT_OBJECT_TEST.schema), INSERT_OBJECT_TEST.table], undefined);
+            let record = test_utils.assertErrorSync(search_utility.searchByHash, [dog_env, HASH_ATTRIBUTE_NAME, ALL_FETCH_ATTRIBUTES, '8'], undefined);
+            assert.deepStrictEqual(record, null);
+            //iterate all dbis and make sure all references to hash 8 are gone
+            ALL_FETCH_ATTRIBUTES.forEach(attribute=>{
+                if(attribute !== HASH_ATTRIBUTE_NAME) {
+                    let attr_results = test_utils.assertErrorSync(search_utility.iterateDBI, [dog_env, "height"], undefined);
+                    attr_results.forEach(result=>{
+                        assert(result[1] !== '8');
+                    });
+                }
+            });
         });
 
-        it('Test updating a row that does not exist', async () => {
-            const update_obj = {
-                operation: "update",
-                schema: "dev",
+        it('Test deleting two values from table that do not exist', async () => {
+            let delete_obj = {
+                operation: "delete",
                 table: "dog",
-                records: [
-                    {
-                        name: "Beethoven",
-                        breed: "St. Bernard",
-                        height:undefined,
-                        id:"faker",
-                        age: 10
-                    }
-                ]
+                schema: "dev",
+                hash_values: [ 8888, 9999 ]
             };
-
             let expected_result = {
-                written_hashes: [],
-                skipped_hashes: [ 'faker'],
-                schema_table:
-                    { attributes: NO_NEW_ATTR_TEST,
-                        hash_attribute: 'id',
-                        residence: undefined,
-                        schema: update_obj.schema,
-                        name: update_obj.table }
+                message: '0 records successfully deleted',
+                deleted_hashes: [ ],
+                skipped_hashes: [ 8888, 9999]
             };
 
-            let results = await test_utils.assertErrorAsync(lmdb_update_records, [update_obj], undefined);
-            assert.deepStrictEqual(results.written_hashes, expected_result.written_hashes);
-            assert.deepStrictEqual(results.skipped_hashes, expected_result.skipped_hashes);
+            let results = await test_utils.assertErrorAsync(lmdb_delete_records, [delete_obj], undefined);
+            assert.deepStrictEqual(results, expected_result);
         });
 
     });

@@ -5,6 +5,7 @@ const common = require('./commonUtility');
 const LMDB_ERRORS = require('../commonErrors').LMDB_ERRORS_ENUM;
 let search_utility = require('./searchUtility');
 let log = require('../logging/harper_logger');
+const hdb_utils = require('../common_utils');
 
 /**
  *  deletes rows and their entries in all indices
@@ -42,16 +43,22 @@ function deleteRecords(env, hash_attribute, ids){
         //create write transaction, this will lock out other writes/deletes out until complete
         txn = env.beginTxn();
 
+        for(let x = 0; x < ids.length; x++){
+            ids[x] = ids[x].toString();
+        }
+
         //fetch records & find keys to delete
-        let records = search_utility.batchSearchByHash(env, hash_attribute, all_dbis, ids);
+        let records = search_utility.batchSearchByHash(env, hash_attribute, all_dbis, ids, deleted.skipped);
 
         //iterate records and process deletes
         let hash_value;
+        let cast_hash_value;
         for(let x = 0; x < records.length; x++){
             try {
                 let record = records[x];
                 //always just delete the hash_attribute entry upfront
                 hash_value = record[hash_attribute].toString();
+                cast_hash_value = hdb_utils.autoCast(record[hash_attribute]);
                 txn.del(env.dbis[hash_attribute], hash_value);
 
                 //iterate & delete the non-hash attribute entries
@@ -64,10 +71,10 @@ function deleteRecords(env, hash_attribute, ids){
                         }
                     }
                 }
-                deleted.deleted.push(hash_value);
+                deleted.deleted.push(cast_hash_value);
             }catch(e){
                 log.warn(e);
-                deleted.skipped.push(hash_value);
+                deleted.skipped.push(cast_hash_value);
             }
         }
 
