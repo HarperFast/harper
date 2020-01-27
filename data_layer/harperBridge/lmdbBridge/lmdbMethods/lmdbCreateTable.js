@@ -7,6 +7,7 @@ const path = require('path');
 const env_mgr = require('../../../../utility/environment/environmentManager');
 const system_schema = require('../../../../json/systemSchema');
 const lmdb_create_attribute = require('./lmdbCreateAttribute');
+const CreateAttribute = require('../../../CreateAttributeObject');
 
 if(!env_mgr.isInitialized()){
     env_mgr.initSync();
@@ -32,26 +33,9 @@ module.exports = lmdbCreateTable;
 async function lmdbCreateTable(table_system_data, table_create_obj) {
     let schema_path = path.join(BASE_SCHEMA_PATH, table_create_obj.schema);
 
-    let created_time_attr = {
-        operation: hdb_terms.OPERATIONS_ENUM.CREATE_ATTRIBUTE,
-        schema: table_create_obj.schema,
-        table: table_create_obj.table,
-        attribute: hdb_terms.TIME_STAMP_NAMES_ENUM.CREATED_TIME,
-    };
-
-    let updated_time_attr = {
-        operation: hdb_terms.OPERATIONS_ENUM.CREATE_ATTRIBUTE,
-        schema: table_create_obj.schema,
-        table: table_create_obj.table,
-        attribute: hdb_terms.TIME_STAMP_NAMES_ENUM.UPDATED_TIME,
-    };
-
-    let hash_attr = {
-        operation: hdb_terms.OPERATIONS_ENUM.CREATE_ATTRIBUTE,
-        schema: table_create_obj.schema,
-        table: table_create_obj.table,
-        attribute: table_create_obj.hash_attribute,
-    };
+    let created_time_attr = new CreateAttribute(table_create_obj.schema, table_create_obj.table, hdb_terms.TIME_STAMP_NAMES_ENUM.CREATED_TIME);
+    let updated_time_attr = new CreateAttribute(table_create_obj.schema, table_create_obj.table, hdb_terms.TIME_STAMP_NAMES_ENUM.UPDATED_TIME);
+    let hash_attr = new CreateAttribute(table_create_obj.schema, table_create_obj.table, table_create_obj.hash_attribute);
 
     try {
         //create the new environment
