@@ -13,6 +13,9 @@ const License = require('../../utility/registration/licenseObjects').ExtendedLic
 const INVALID_LICENSE_FORMAT_MSG = 'invalid license key format';
 const LICENSE_HASH_PREFIX = '061183';
 const LICENSE_KEY_DELIMITER = 'mofi25';
+const ALGORITHM = 'aes-256-cbc';
+const IV_LENGTH = 16;
+const KEY_LENGTH = 32;
 const env = require('../../utility/environment/environmentManager');
 
 const LICENSE_FILE = path.join(hdb_utils.getHomeDir(), terms.HDB_HOME_DIR_NAME, terms.LICENSE_KEY_DIR_NAME, terms.LICENSE_FILE_NAME);
@@ -98,15 +101,18 @@ function validateLicense(license_key, company) {
             license_validation_object.valid_machine = false;
             return;
         }
-        let decipher = crypto.createDecipher('aes192', fingerprint);
+
+        let license_tokens = license_key.split(LICENSE_KEY_DELIMITER);
+        let iv = license_tokens[1];
+        iv = Buffer.concat([Buffer.from(iv)], IV_LENGTH);
+        let key = Buffer.concat([Buffer.from(fingerprint)], KEY_LENGTH);
+        let decipher = crypto.createDecipheriv(ALGORITHM, key, iv);
 
         license_validation_object.valid_date = true;
         license_validation_object.valid_license = true;
         license_validation_object.valid_machine = true;
-        let license_tokens = null;
         let decrypted = null;
         try {
-            license_tokens = license_key.split(LICENSE_KEY_DELIMITER);
             decrypted = decipher.update(license_tokens[0], 'hex', 'utf8');
             decrypted.trim();
             decrypted += decipher.final('utf8');

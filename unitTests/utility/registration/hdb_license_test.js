@@ -11,14 +11,18 @@ const test_utils = require('../../test_utils');
 test_utils.preTestPrep();
 const license_objects = require('../../../utility/registration/licenseObjects');
 
+const LICENSE_KEY_DELIMITER = 'mofi25';
+
 const LICENSES = [
-    {license_key: {
-        exp_date: moment().add(1, 'year').unix(),
-        storage_type: 'helium',
-        api_call: 10000,
-        version: '2.0.0',
-        enterprise: true
-    },
+    {
+        license_key: {
+            exp_date: moment().add(1, 'year').unix(),
+            storage_type: 'helium',
+            api_call: 10000,
+            version: '2.0.0',
+            enterprise: true,
+            fingerprint: undefined
+        },
     company:'harperdb'
     },
     {license_key: {
@@ -26,7 +30,8 @@ const LICENSES = [
             storage_type: 'helium',
             api_call: 10000,
             version: '2.0.0',
-            enterprise: true
+            enterprise: true,
+            fingerprint: undefined
         },
         company:'harperdb'
     }];
@@ -351,7 +356,7 @@ describe(`Test validateLicense`, function () {
         licenseKeyObject.fingerprint = fingerprint;
         let license = license_generator.generateLicense(licenseKeyObject);
         try {
-            let validation = hdb_license.validateLicense('wrong_license', 'hdb');
+            let validation = hdb_license.validateLicense(`wrong_license${LICENSE_KEY_DELIMITER}wrong`, 'hdb');
         }catch(e){
             err = e;
         }
