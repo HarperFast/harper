@@ -12,12 +12,13 @@ class BaseLicense{
      * @param api_call {Number} - number of daily allowed API calls
      * @param version {String} - licensed version
      */
-    constructor(exp_date = 0, storage_type = terms.STORAGE_TYPES_ENUM.FILE_SYSTEM, api_call = terms.LICENSE_VALUES.API_CALL_DEFAULT, version = terms.LICENSE_VALUES.VERSION_DEFAULT, fingerprint) {
+    constructor(exp_date = 0, storage_type = terms.STORAGE_TYPES_ENUM.FILE_SYSTEM, api_call = terms.LICENSE_VALUES.API_CALL_DEFAULT, version = terms.LICENSE_VALUES.VERSION_DEFAULT, fingerprint, ram = 4) {
         this.exp_date = exp_date;
         this.storage_type = storage_type;
         this.api_call = api_call;
         this.version = version;
         this.fingerprint = fingerprint;
+        this.ram = ram;
     }
 }
 

@@ -21,7 +21,8 @@ const LICENSES = [
             api_call: 10000,
             version: '2.0.0',
             enterprise: true,
-            fingerprint: undefined
+            fingerprint: undefined,
+            ram: 4
         },
     company:'harperdb'
     },
@@ -31,7 +32,8 @@ const LICENSES = [
             api_call: 10000,
             version: '2.0.0',
             enterprise: true,
-            fingerprint: undefined
+            fingerprint: undefined,
+            ram: 4
         },
         company:'harperdb'
     }];
