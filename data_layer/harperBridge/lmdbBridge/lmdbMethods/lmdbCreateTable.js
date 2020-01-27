@@ -8,6 +8,7 @@ const env_mgr = require('../../../../utility/environment/environmentManager');
 const system_schema = require('../../../../json/systemSchema');
 const lmdb_create_attribute = require('./lmdbCreateAttribute');
 const CreateAttribute = require('../../../CreateAttributeObject');
+const log = require('../../../../utility/logging/harper_logger');
 
 if(!env_mgr.isInitialized()){
     env_mgr.initSync();
@@ -45,10 +46,24 @@ async function lmdbCreateTable(table_system_data, table_create_obj) {
         //add the meta data to system.hdb_table
         write_utility.insertRecords(hdb_table_env, HDB_TABLE_INFO.hash_attribute, hdb_table_attributes, [table_system_data]);
         //create attributes for hash attribute created/updated time stamps
-        await lmdb_create_attribute(created_time_attr);
-        await lmdb_create_attribute(updated_time_attr);
-        await lmdb_create_attribute(hash_attr);
+
+        await createAttribute(created_time_attr);
+        await createAttribute(updated_time_attr);
+        await createAttribute(hash_attr);
     }catch (e) {
         throw e;
+    }
+}
+
+/**
+ * used to individually create the required attributes for a new table, logs a warning if any fail
+ * @param {CreateAttribute} attribute_object
+ * @returns {Promise<void>}
+ */
+async function createAttribute(attribute_object){
+    try{
+        await lmdb_create_attribute(attribute_object);
+    }catch(e){
+        log.warn(`failed to create attribute ${attribute_object.attribute} due to ${e.message}`);
     }
 }
