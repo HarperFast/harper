@@ -23,7 +23,7 @@ const LICENSES = [
             version: '2.0.0',
             enterprise: true,
             fingerprint: undefined,
-            ram: hdb_terms.RAM_ALLOCATION_ENUM.DEVELOPMENT
+            ram: hdb_terms.RAM_ALLOCATION_ENUM.DEFAULT
         },
     company:'harperdb'
     },
@@ -34,7 +34,7 @@ const LICENSES = [
             version: '2.0.0',
             enterprise: true,
             fingerprint: undefined,
-            ram: hdb_terms.RAM_ALLOCATION_ENUM.DEVELOPMENT
+            ram: hdb_terms.RAM_ALLOCATION_ENUM.DEFAULT
         },
         company:'harperdb'
     }];
