@@ -117,12 +117,17 @@ function validateLicense(license_key, company) {
             decrypted.trim();
             decrypted += decipher.final('utf8');
         } catch (e) {
-            license_validation_object.valid_license = false;
-            license_validation_object.valid_machine = false;
+            let old_license = checkOldLicense(license_tokens[0], fingerprint);
+            if (old_license) {
+                decrypted = old_license;
+            } else {
+                license_validation_object.valid_license = false;
+                license_validation_object.valid_machine = false;
 
-            console.error(INVALID_LICENSE_FORMAT_MSG);
-            log.error(INVALID_LICENSE_FORMAT_MSG);
-            throw new Error(INVALID_LICENSE_FORMAT_MSG);
+                console.error(INVALID_LICENSE_FORMAT_MSG);
+                log.error(INVALID_LICENSE_FORMAT_MSG);
+                throw new Error(INVALID_LICENSE_FORMAT_MSG);
+            }
         }
 
         let license_obj;
@@ -158,9 +163,26 @@ function validateLicense(license_key, company) {
 }
 
 /**
+ * Licenses created pre 01-27-2020 were encrypted using an older deprecated cipher.
+ * Here we check them against that older cipher.
+ * @param license
+ */
+function checkOldLicense(license, fingerprint) {
+    try {
+        let decipher = crypto.createDecipher('aes192', fingerprint);
+        let decrypted = decipher.update(license, 'hex', 'utf8');
+        decrypted.trim();
+        decrypted += decipher.final('utf8');
+        return decrypted;
+    } catch (err) {
+        log.warn('Check old license failed');
+    }
+}
+
+/**
  * search for the hdb license, validate & return
  */
-function licenseSearch(){
+function licenseSearch() {
     let license_values = new License();
     license_values.api_call = 0;
     let licenses = [];
