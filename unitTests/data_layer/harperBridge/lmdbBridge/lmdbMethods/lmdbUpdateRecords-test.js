@@ -19,7 +19,7 @@ const lmdb_create_records = rewire('../../../../../data_layer/harperBridge/lmdbB
 const lmdb_update_records = rewire('../../../../../data_layer/harperBridge/lmdbBridge/lmdbMethods/lmdbUpdateRecords');
 const lmdb_create_schema = require('../../../../../data_layer/harperBridge/lmdbBridge/lmdbMethods/lmdbCreateSchema');
 const lmdb_create_table = require('../../../../../data_layer/harperBridge/lmdbBridge/lmdbMethods/lmdbCreateTable');
-const environment_utility = require('../../../../../utility/lmdb/environmentUtility');
+const environment_utility = rewire('../../../../../utility/lmdb/environmentUtility');
 const search_utility = require('../../../../../utility/lmdb/searchUtility');
 const assert = require('assert');
 const fs = require('fs-extra');
@@ -31,7 +31,6 @@ insert_date.setMinutes(insert_date.getMinutes() - 10);
 const INSERT_TIMESTAMP = insert_date.getTime();
 
 const TIMESTAMP = Date.now();
-const TEST_ENVIRONMENT_NAME = 'dog';
 const HASH_ATTRIBUTE_NAME = 'id';
 
 const INSERT_OBJECT_TEST = {
@@ -66,45 +65,6 @@ const INSERT_OBJECT_TEST = {
         }
     ]
 };
-
-const EXPECTED_SEARCH_RECORDS = [
-    {
-        __createdtime__:TIMESTAMP,
-        __updatedtime__: TIMESTAMP,
-        name: "Harper",
-        breed: "Mutt",
-        height: undefined,
-        id: "8",
-        age: 5
-    },
-    {
-        __createdtime__:TIMESTAMP,
-        __updatedtime__: TIMESTAMP,
-        name: "Penny",
-        breed: "Mutt",
-        id: "9",
-        age: 5,
-        height: 145
-    },
-    {
-        __createdtime__:TIMESTAMP,
-        __updatedtime__: TIMESTAMP,
-        age: undefined,
-        name: "David",
-        breed: "Mutt",
-        height:undefined,
-        id: "12"
-    },
-    {
-        __createdtime__:TIMESTAMP,
-        __updatedtime__: TIMESTAMP,
-        name: "Rob",
-        breed: "Mutt",
-        id: "10",
-        age: 5,
-        height: 145
-    }
-];
 
 const NO_NEW_ATTR_TEST = [
     {
@@ -163,26 +123,25 @@ const TABLE_SYSTEM_DATA_TEST_A = {
 const sandbox = sinon.createSandbox();
 
 describe('Test lmdbUpdateRecords module', ()=>{
-    let rw_base_schema_path = lmdb_create_records.__set__('BASE_SCHEMA_PATH', BASE_SCHEMA_PATH);
-    let rw_base_schema_path_update = lmdb_update_records.__set__('BASE_SCHEMA_PATH', BASE_SCHEMA_PATH);
     let date_stub;
     let hdb_schema_env;
     let hdb_table_env;
     let hdb_attribute_env;
+    let rw_env_util;
     before(()=>{
+        rw_env_util = environment_utility.__set__('MAP_SIZE', 10*1024*1024*1024);
         date_stub = sandbox.stub(Date, 'now').returns(TIMESTAMP);
         env_mgr.setProperty('HDB_ROOT', BASE_PATH);
     });
 
     after(()=>{
+        rw_env_util();
         date_stub.restore();
-        rw_base_schema_path();
-        rw_base_schema_path_update();
         env_mgr.setProperty('HDB_ROOT', root_original);
     });
 
-    describe('Test lmdbCreateRecords function', ()=>{
-        let env;
+    describe('Test lmdbUpdateRecords function', ()=>{
+
         beforeEach(async ()=>{
             date_stub.restore();
             date_stub = sandbox.stub(Date, 'now').returns(INSERT_TIMESTAMP);

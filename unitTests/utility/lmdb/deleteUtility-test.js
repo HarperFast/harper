@@ -1,9 +1,10 @@
 "use strict";
 
+const rewire = require('rewire');
 const delete_utility = require('../../../utility/lmdb/deleteUtility');
 const search_util = require('../../../utility/lmdb/searchUtility');
 const fs = require('fs-extra');
-const environment_utility = require('../../../utility/lmdb/environmentUtility');
+const environment_utility = rewire('../../../utility/lmdb/environmentUtility');
 const write_utility = require('../../../utility/lmdb/writeUtility');
 const test_utils = require('../../test_utils');
 const path = require('path');
@@ -13,7 +14,6 @@ const LMDB_TEST_ERRORS = require('../../commonTestErrors').LMDB_ERRORS_ENUM;
 const BASE_TEST_PATH = path.join(test_utils.getMockFSPath(), 'lmdbTest');
 const TEST_ENVIRONMENT_NAME = 'test';
 const HASH_ATTRIBUTE_NAME = 'id';
-const SOME_ATTRIBUTES = ['id', 'name', 'age'];
 const All_ATTRIBUTES = ['id', 'name', 'age', 'city'];
 
 const MULTI_RECORD_ARRAY = [
@@ -36,6 +36,15 @@ const IDS = ['1', '2', '3', '4', '5'];
 
 describe('Test deleteUtility', ()=>{
     let env;
+    let rw_env_util;
+    before(()=>{
+        rw_env_util = environment_utility.__set__('MAP_SIZE', 10*1024*1024*1024);
+    });
+
+    after(()=>{
+        rw_env_util();
+    });
+
     beforeEach(async ()=>{
         await fs.mkdirp(BASE_TEST_PATH);
         global.lmdb_map = undefined;

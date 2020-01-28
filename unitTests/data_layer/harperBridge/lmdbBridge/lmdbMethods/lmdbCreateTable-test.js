@@ -18,7 +18,7 @@ env_mgr.setProperty('HDB_ROOT', BASE_PATH);
 const rewire = require('rewire');
 const lmdb_create_schema = require('../../../../../data_layer/harperBridge/lmdbBridge/lmdbMethods/lmdbCreateSchema');
 const lmdb_create_table = rewire('../../../../../data_layer/harperBridge/lmdbBridge/lmdbMethods/lmdbCreateTable');
-const environment_utility = require('../../../../../utility/lmdb/environmentUtility');
+const environment_utility = rewire('../../../../../utility/lmdb/environmentUtility');
 const search_utility = require('../../../../../utility/lmdb/searchUtility');
 const systemSchema = require('../../../../../json/systemSchema');
 
@@ -78,8 +78,9 @@ describe("test lmdbCreateTable module", ()=>{
     let hdb_table_env;
     let hdb_attribute_env;
     let date_stub;
-
+    let rw_env_util;
     before(async ()=>{
+        rw_env_util = environment_utility.__set__('MAP_SIZE', 10*1024*1024*1024);
         global.lmdb_map = undefined;
         env_mgr.setProperty('HDB_ROOT', BASE_PATH);
         global.hdb_schema = {system: systemSchema};
@@ -102,7 +103,7 @@ describe("test lmdbCreateTable module", ()=>{
     });
 
     after(async ()=>{
-
+        rw_env_util();
         env_mgr.setProperty('HDB_ROOT', root_original);
         date_stub.restore();
         delete global.hdb_schema;
