@@ -18,7 +18,7 @@ const rewire = require('rewire');
 const lmdb_create_records = rewire('../../../../../data_layer/harperBridge/lmdbBridge/lmdbMethods/lmdbCreateRecords');
 const lmdb_create_schema = require('../../../../../data_layer/harperBridge/lmdbBridge/lmdbMethods/lmdbCreateSchema');
 const lmdb_create_table = require('../../../../../data_layer/harperBridge/lmdbBridge/lmdbMethods/lmdbCreateTable');
-const environment_utility = require('../../../../../utility/lmdb/environmentUtility');
+const environment_utility = rewire('../../../../../utility/lmdb/environmentUtility');
 const search_utility = require('../../../../../utility/lmdb/searchUtility');
 const assert = require('assert');
 const fs = require('fs-extra');
@@ -26,7 +26,6 @@ const sinon = require('sinon');
 const systemSchema = require('../../../../../json/systemSchema');
 
 const TIMESTAMP = Date.now();
-const TEST_ENVIRONMENT_NAME = 'dog';
 const HASH_ATTRIBUTE_NAME = 'id';
 
 const INSERT_OBJECT_TEST = {
@@ -158,25 +157,28 @@ const TABLE_SYSTEM_DATA_TEST_A = {
 const sandbox = sinon.createSandbox();
 
 describe('Test lmdbCreateRecords module', ()=>{
-    let rw_base_schema_path = lmdb_create_records.__set__('BASE_SCHEMA_PATH', BASE_SCHEMA_PATH);
+    let rw_base_schema_path;
     let date_stub;
     let hdb_schema_env;
     let hdb_table_env;
     let hdb_attribute_env;
+    let rw_env_util;
     before(()=>{
+        rw_base_schema_path = lmdb_create_records.__set__('BASE_SCHEMA_PATH', BASE_SCHEMA_PATH);
+        rw_env_util = environment_utility.__set__('MAP_SIZE', 10*1024*1024*1024);
         date_stub = sandbox.stub(Date, 'now').returns(TIMESTAMP);
         env_mgr.setProperty('HDB_ROOT', BASE_PATH);
 
     });
 
     after(()=>{
+        rw_env_util();
         date_stub.restore();
         rw_base_schema_path();
         env_mgr.setProperty('HDB_ROOT', root_original);
     });
 
     describe('Test lmdbCreateRecords function', ()=>{
-        let env;
         beforeEach(async ()=>{
 
             global.hdb_schema = {
@@ -367,7 +369,7 @@ describe('Test lmdbCreateRecords module', ()=>{
         it('Test that no hash error from processRows is thrown', async () => {
             let insert_obj = test_utils.deepClone(INSERT_OBJECT_TEST);
 
-            let records_no_hash = [
+            insert_obj.records = [
                 {
                     name: "Harper",
                     breed: "Mutt",
@@ -381,7 +383,6 @@ describe('Test lmdbCreateRecords module', ()=>{
                     height: 145
                 }
             ];
-            insert_obj.records = records_no_hash;
             insert_obj.operation = 'update';
 
             await test_utils.assertErrorAsync(lmdb_create_records, [insert_obj], new Error('a valid hash attribute must be provided with update record, check log for more info'));
