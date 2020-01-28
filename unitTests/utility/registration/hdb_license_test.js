@@ -10,6 +10,7 @@ const moment = require('moment');
 const test_utils = require('../../test_utils');
 test_utils.preTestPrep();
 const license_objects = require('../../../utility/registration/licenseObjects');
+const hdb_terms = require('../../../utility/hdbTerms');
 
 const LICENSE_KEY_DELIMITER = 'mofi25';
 
@@ -22,7 +23,7 @@ const LICENSES = [
             version: '2.0.0',
             enterprise: true,
             fingerprint: undefined,
-            ram: 8
+            ram: hdb_terms.RAM_ALLOCATION_ENUM.DEVELOPMENT
         },
     company:'harperdb'
     },
@@ -33,7 +34,7 @@ const LICENSES = [
             version: '2.0.0',
             enterprise: true,
             fingerprint: undefined,
-            ram: 8
+            ram: hdb_terms.RAM_ALLOCATION_ENUM.DEVELOPMENT
         },
         company:'harperdb'
     }];
