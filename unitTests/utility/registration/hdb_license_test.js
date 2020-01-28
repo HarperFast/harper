@@ -22,7 +22,7 @@ const LICENSES = [
             version: '2.0.0',
             enterprise: true,
             fingerprint: undefined,
-            ram: 4
+            ram: 8
         },
     company:'harperdb'
     },
@@ -33,7 +33,7 @@ const LICENSES = [
             version: '2.0.0',
             enterprise: true,
             fingerprint: undefined,
-            ram: 4
+            ram: 8
         },
         company:'harperdb'
     }];

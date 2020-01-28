@@ -66,7 +66,7 @@ async function register(){
             api_call: api_call,
             version: terms.LICENSE_VALUES.VERSION_DEFAULT,
             exp_date: moment().add(1, 'year').format('YYYY-MM-DD'),
-            ram: 4
+            ram: 8
         };
         console.log('generating license');
         let generated_license = license_generator.generateLicense(license_object);
