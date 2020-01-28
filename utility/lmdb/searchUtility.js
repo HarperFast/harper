@@ -6,6 +6,7 @@ const lmdb = require('node-lmdb');
 const log = require('../logging/harper_logger');
 const common = require('./commonUtility');
 const LMDB_ERRORS = require('../commonErrors').LMDB_ERRORS_ENUM;
+const hdb_utils = require('../common_utils');
 
 /**
  * iterates the entire  hash_attribute dbi and returns all objects back
@@ -246,9 +247,10 @@ function checkHashExists(env, hash_attribute, id) {
  * @param {String} hash_attribute - name of the hash_attribute for this environment
  * @param {Array.<String>} fetch_attributes - string array of attributes to pull from the object
  * @param {Array.<String>} ids - list of ids to search
+ * @param {[]} [not_found] - meant to be an array passed by reference so that skipped ids can be aggregated.
  * @returns {Array.<Object>} - object array of records found
  */
-function batchSearchByHash(env, hash_attribute, fetch_attributes, ids) {
+function batchSearchByHash(env, hash_attribute, fetch_attributes, ids, not_found) {
     common.validateEnv(env);
 
     if(hash_attribute === undefined){
@@ -263,6 +265,10 @@ function batchSearchByHash(env, hash_attribute, fetch_attributes, ids) {
         }
 
         throw LMDB_ERRORS.IDS_MUST_BE_ARRAY;
+    }
+
+    if(!Array.isArray(not_found)){
+        not_found = [];
     }
 
     let txn = new Transaction_Cursor(env, hash_attribute);
@@ -281,6 +287,8 @@ function batchSearchByHash(env, hash_attribute, fetch_attributes, ids) {
                     obj[attribute] = orig[attribute];
                 });
                 results.push(obj);
+            }else {
+                not_found.push(hdb_utils.autoCast(id));
             }
         }catch(e){
             log.warn(e);
