@@ -248,7 +248,7 @@ function checkHashExists(env, hash_attribute, id) {
  * @param {Array.<String>} fetch_attributes - string array of attributes to pull from the object
  * @param {Array.<String>} ids - list of ids to search
  * @param {[]} [not_found] - meant to be an array passed by reference so that skipped ids can be aggregated.
- * @returns {{}} - object array of records found
+ * @returns {Array.<Object>} - object array of records found
  */
 function batchSearchByHash(env, hash_attribute, fetch_attributes, ids, not_found) {
     common.validateEnv(env);
@@ -273,7 +273,7 @@ function batchSearchByHash(env, hash_attribute, fetch_attributes, ids, not_found
 
     let txn = new Transaction_Cursor(env, hash_attribute);
 
-    let results = {};
+    let results = [];
 
     for(let x = 0; x < ids.length; x++){
         let id = ids[x];
@@ -286,7 +286,7 @@ function batchSearchByHash(env, hash_attribute, fetch_attributes, ids, not_found
                 fetch_attributes.forEach(attribute => {
                     obj[attribute] = orig[attribute];
                 });
-                results[id] = obj;
+                results.push(obj);
             }else {
                 not_found.push(hdb_utils.autoCast(id));
             }

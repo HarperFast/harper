@@ -83,20 +83,20 @@ const EXPECTED_SEARCH_RECORDS = [
     {
         __createdtime__:TIMESTAMP,
         __updatedtime__: TIMESTAMP,
-        name: "Rob",
-        breed: "Mutt",
-        id: "10",
-        age: 5,
-        height: 145
-    },
-    {
-        __createdtime__:TIMESTAMP,
-        __updatedtime__: TIMESTAMP,
         age: undefined,
         name: "David",
         breed: "Mutt",
         height:undefined,
         id: "12"
+    },
+    {
+        __createdtime__:TIMESTAMP,
+        __updatedtime__: TIMESTAMP,
+        name: "Rob",
+        breed: "Mutt",
+        id: "10",
+        age: 5,
+        height: 145
     }
 ];
 
@@ -237,7 +237,7 @@ describe('Test lmdbCreateRecords module', ()=>{
 
             let dog_env = await test_utils.assertErrorAsync(environment_utility.openEnvironment,[path.join(BASE_SCHEMA_PATH, INSERT_OBJECT_TEST.schema), INSERT_OBJECT_TEST.table], undefined);
             let records = test_utils.assertErrorSync(search_utility.batchSearchByHash, [dog_env, HASH_ATTRIBUTE_NAME, ALL_FETCH_ATTRIBUTES, [ '8', '9', '12', '10' ] ], undefined);
-            assert.deepStrictEqual(Object.values(records), EXPECTED_SEARCH_RECORDS);
+            assert.deepStrictEqual(records, EXPECTED_SEARCH_RECORDS);
         });
 
         it('Test inserting existing and non-existing rows', async () => {
@@ -342,7 +342,7 @@ describe('Test lmdbCreateRecords module', ()=>{
             assert.deepStrictEqual(result, expected_return_result);
             let dog_env = await test_utils.assertErrorAsync(environment_utility.openEnvironment,[path.join(BASE_SCHEMA_PATH, INSERT_OBJECT_TEST.schema), INSERT_OBJECT_TEST.table], undefined);
             let records = test_utils.assertErrorSync(search_utility.batchSearchByHash, [dog_env, HASH_ATTRIBUTE_NAME, ALL_FETCH_ATTRIBUTES, ['8', '9', '123', '1232'] ], undefined);
-            assert.deepStrictEqual(Object.values(records), new_records_excpected);
+            assert.deepStrictEqual(records, new_records_excpected);
         });
 
         it('Test inserting rows that already exist', async () => {
