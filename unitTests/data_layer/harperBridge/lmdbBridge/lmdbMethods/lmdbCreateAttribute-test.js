@@ -135,7 +135,6 @@ describe("test lmdbCreateAttribute module", ()=>{
             [hdb_attribute_env, systemSchema.hdb_attribute.hash_attribute, HDB_ATTRIBUTE_ATTRIBUTES, MOCK_UUID_VALUE], undefined);
         assert.deepStrictEqual(attribute_record, expected_search_result);
     });
-/*
     it('Test that datastore is not created because it already exists', async () => {
         let expected_result = {
             message: 'inserted 0 of 1 records',
@@ -168,6 +167,6 @@ describe("test lmdbCreateAttribute module", ()=>{
         create_attr_obj = test_utils.deepClone(CREATE_ATTR_OBJ_TEST);
         create_attr_obj.attribute = 'slash/er';
         await test_utils.assertErrorAsync(lmdb_create_attribute, [create_attr_obj],new Error('Attribute name can only contain alpha numeric characters or underscores'));
-    });*/
+    });
 
 });

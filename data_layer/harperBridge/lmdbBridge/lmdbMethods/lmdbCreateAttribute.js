@@ -7,7 +7,7 @@ const path = require('path');
 const env_mgr = require('../../../../utility/environment/environmentManager');
 const system_schema = require('../../../../json/systemSchema');
 const schema_validator = require('../../../../validation/schema_validator');
-const uuid = require('uuid');
+const CreateAttribute = require('../../../CreateAttributeObject');
 const returnObject = require('../../bridgeUtility/insertUpdateReturnObj');
 
 if(!env_mgr.isInitialized()){
@@ -53,13 +53,7 @@ async function lmdbCreateAttribute(create_attribute_obj) {
     }
 
     //insert the attribute meta_data into system.hdb_attribute
-    let record = {
-        schema: create_attribute_obj.schema,
-        table: create_attribute_obj.table,
-        attribute: create_attribute_obj.attribute,
-        id: create_attribute_obj.id ? create_attribute_obj.id : uuid.v4(),
-        schema_table: create_attribute_obj.schema + '.' + create_attribute_obj.table
-    };
+    let record = new CreateAttribute(create_attribute_obj.schema, create_attribute_obj.table, create_attribute_obj.attribute, create_attribute_obj.id);
 
     try {
         //create dbi into the environment for this table
