@@ -1,0 +1,186 @@
+'use strict';
+
+const path = require('path');
+const env_mgr = require('../../../../../utility/environment/environmentManager');
+if(!env_mgr.isInitialized()){
+    env_mgr.initSync();
+}
+const test_utils = require('../../../../test_utils');
+const LMDB_TEST_FOLDER_NAME = 'system';
+const SCHEMA_NAME = 'schema';
+const BASE_PATH = test_utils.getMockFSPath();
+const BASE_SCHEMA_PATH = path.join(BASE_PATH, SCHEMA_NAME);
+const BASE_TEST_PATH = path.join(BASE_SCHEMA_PATH, LMDB_TEST_FOLDER_NAME);
+const root_original = env_mgr.get('HDB_ROOT');
+env_mgr.setProperty('HDB_ROOT', BASE_PATH);
+
+
+const rewire = require('rewire');
+const lmdb_create_schema = require('../../../../../data_layer/harperBridge/lmdbBridge/lmdbMethods/lmdbCreateSchema');
+const lmdb_create_table = rewire('../../../../../data_layer/harperBridge/lmdbBridge/lmdbMethods/lmdbCreateTable');
+const environment_utility = require('../../../../../utility/lmdb/environmentUtility');
+const search_utility = require('../../../../../utility/lmdb/searchUtility');
+const systemSchema = require('../../../../../json/systemSchema');
+
+const assert = require('assert');
+const fs = require('fs-extra');
+
+const sinon = require('sinon');
+
+const sandbox = sinon.createSandbox();
+const TIMESTAMP = Date.now();
+
+const CREATE_SCHEMA_DEV = {
+    operation: 'create_schema',
+    schema: 'dev'
+};
+
+const CREATE_SCHEMA_PROD = {
+    operation: 'create_schema',
+    schema: 'prod'
+};
+
+const CREATE_TABLE_OBJ_TEST_A = {
+    operation: 'create_table',
+    schema: 'dev',
+    table: 'catsdrool',
+    hash_attribute: 'id'
+};
+
+const TABLE_SYSTEM_DATA_TEST_A = {
+    name: CREATE_TABLE_OBJ_TEST_A.table,
+    schema: CREATE_TABLE_OBJ_TEST_A.schema,
+    id: '82j3r4',
+    hash_attribute: CREATE_TABLE_OBJ_TEST_A.hash_attribute,
+    residence: '*'
+};
+
+const CREATE_TABLE_OBJ_TEST_B = {
+    operation: 'create_table',
+    schema: 'prod',
+    table: 'coolDogNames',
+    hash_attribute: 'name',
+};
+
+const TABLE_SYSTEM_DATA_TEST_B = {
+    name: CREATE_TABLE_OBJ_TEST_B.table,
+    schema: CREATE_TABLE_OBJ_TEST_B.schema,
+    id: 'fd23fds',
+    hash_attribute: CREATE_TABLE_OBJ_TEST_B.hash_attribute,
+    residence: '*'
+};
+
+const HDB_TABLE_ATTRIBUTES = ['id', 'name', 'hash_attribute', 'schema', 'residence'];
+const HDB_ATTRIBUTE_ATTRIBUTES = ['id', 'schema', 'table', 'attribute', 'schema_table'];
+
+describe("test lmdbCreateTable module", ()=>{
+    let hdb_schema_env;
+    let hdb_table_env;
+    let hdb_attribute_env;
+    let date_stub;
+
+    before(async ()=>{
+        global.lmdb_map = undefined;
+        env_mgr.setProperty('HDB_ROOT', BASE_PATH);
+        global.hdb_schema = {system: systemSchema};
+        date_stub = sandbox.stub(Date, 'now').returns(TIMESTAMP);
+        await fs.mkdirp(BASE_TEST_PATH);
+
+
+        hdb_schema_env = await environment_utility.createEnvironment(BASE_TEST_PATH, systemSchema.hdb_schema.name);
+        environment_utility.createDBI(hdb_schema_env, systemSchema.hdb_schema.hash_attribute, false);
+
+        hdb_table_env = await environment_utility.createEnvironment(BASE_TEST_PATH, systemSchema.hdb_table.name);
+        environment_utility.createDBI(hdb_table_env, systemSchema.hdb_table.hash_attribute, false);
+
+        hdb_attribute_env = await environment_utility.createEnvironment(BASE_TEST_PATH, systemSchema.hdb_attribute.name);
+        environment_utility.createDBI(hdb_attribute_env, systemSchema.hdb_attribute.hash_attribute, false);
+        environment_utility.createDBI(hdb_attribute_env, 'schema_table', true);
+
+        await lmdb_create_schema(CREATE_SCHEMA_DEV);
+        await lmdb_create_schema(CREATE_SCHEMA_PROD);
+    });
+
+    after(async ()=>{
+
+        env_mgr.setProperty('HDB_ROOT', root_original);
+        date_stub.restore();
+        delete global.hdb_schema;
+        await fs.remove(BASE_PATH);
+        global.lmdb_map = undefined;
+    });
+
+    it('Test creating a table under the dev schema', async ()=>{
+        let expected_table = test_utils.deepClone(TABLE_SYSTEM_DATA_TEST_A);
+        let schema_path = path.join(BASE_SCHEMA_PATH, CREATE_TABLE_OBJ_TEST_A.schema);
+        let table_path = path.join(schema_path, CREATE_TABLE_OBJ_TEST_A.table, 'data.mdb');
+        let expected_attributes = ['__createdtime__', '__updatedtime__', 'id'];
+
+        await test_utils.assertErrorAsync(lmdb_create_table, [TABLE_SYSTEM_DATA_TEST_A, CREATE_TABLE_OBJ_TEST_A], undefined);
+
+        let new_env = await test_utils.assertErrorAsync(environment_utility.openEnvironment, [schema_path, CREATE_TABLE_OBJ_TEST_A.table], undefined);
+
+        await test_utils.assertErrorAsync(fs.access, [table_path], undefined);
+
+        let table_record = test_utils.assertErrorSync(search_utility.searchByHash,
+            [hdb_table_env, systemSchema.hdb_table.hash_attribute, HDB_TABLE_ATTRIBUTES, TABLE_SYSTEM_DATA_TEST_A.id], undefined);
+        assert.deepStrictEqual(table_record, expected_table);
+
+        let all_dbis = test_utils.assertErrorSync(environment_utility.listDBIs, [new_env], undefined);
+
+        assert.deepStrictEqual(all_dbis, expected_attributes);
+        let attribute_ids = test_utils.assertErrorSync(search_utility.equals,
+            [hdb_attribute_env, 'schema_table', `${TABLE_SYSTEM_DATA_TEST_A.schema}.${TABLE_SYSTEM_DATA_TEST_A.name}`], undefined);
+
+        let attribute_records = test_utils.assertErrorSync(search_utility.batchSearchByHash,
+            [hdb_attribute_env, systemSchema.hdb_attribute.hash_attribute, HDB_ATTRIBUTE_ATTRIBUTES, attribute_ids], undefined);
+        assert.deepStrictEqual(attribute_records.length, 3);
+        attribute_records.forEach(record=>{
+            assert(expected_attributes.indexOf(record.attribute) > -1);
+        });
+    });
+
+    it('Test creating a table under the prod schema', async ()=>{
+        let expected_table = test_utils.deepClone(TABLE_SYSTEM_DATA_TEST_B);
+        let schema_path = path.join(BASE_SCHEMA_PATH, CREATE_TABLE_OBJ_TEST_B.schema);
+        let table_path = path.join(schema_path, CREATE_TABLE_OBJ_TEST_B.table, 'data.mdb');
+        let expected_attributes = ['__createdtime__', '__updatedtime__', 'name'];
+
+        await test_utils.assertErrorAsync(lmdb_create_table, [TABLE_SYSTEM_DATA_TEST_B, CREATE_TABLE_OBJ_TEST_B], undefined);
+
+        let new_env = await test_utils.assertErrorAsync(environment_utility.openEnvironment, [schema_path, CREATE_TABLE_OBJ_TEST_B.table], undefined);
+
+        await test_utils.assertErrorAsync(fs.access, [table_path], undefined);
+
+        let table_record = test_utils.assertErrorSync(search_utility.searchByHash,
+            [hdb_table_env, systemSchema.hdb_table.hash_attribute, HDB_TABLE_ATTRIBUTES, TABLE_SYSTEM_DATA_TEST_B.id], undefined);
+        assert.deepStrictEqual(table_record, expected_table);
+
+        let all_dbis = await test_utils.assertErrorAsync(environment_utility.listDBIs, [new_env], undefined);
+
+        assert.deepStrictEqual(all_dbis, expected_attributes);
+        let attribute_ids = await test_utils.assertErrorAsync(search_utility.equals,
+            [hdb_attribute_env, 'schema_table', `${TABLE_SYSTEM_DATA_TEST_B.schema}.${TABLE_SYSTEM_DATA_TEST_B.name}`], undefined);
+
+        let attribute_records = await test_utils.assertErrorAsync(search_utility.batchSearchByHash,
+            [hdb_attribute_env, systemSchema.hdb_attribute.hash_attribute, HDB_ATTRIBUTE_ATTRIBUTES, attribute_ids], undefined);
+        assert.deepStrictEqual(attribute_records.length, 3);
+        attribute_records.forEach(record=>{
+            assert(expected_attributes.indexOf(record.attribute) > -1);
+        });
+    });
+
+    it('Test that error from lmdbCreateRecords is caught', async () => {
+        let error_msg = new Error('I am broken');
+        let rw = lmdb_create_table.__set__('write_utility', {
+            insertRecords: ()=>{
+                throw error_msg;
+            }
+        });
+
+        await test_utils.assertErrorAsync(lmdb_create_table, [TABLE_SYSTEM_DATA_TEST_B, CREATE_TABLE_OBJ_TEST_B], error_msg);
+
+
+        rw();
+    });
+});
