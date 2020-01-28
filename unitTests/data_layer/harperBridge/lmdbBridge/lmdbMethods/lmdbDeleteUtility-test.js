@@ -258,7 +258,7 @@ describe('Test lmdbDeleteRecords module', ()=>{
 
             let dog_env = await test_utils.assertErrorAsync(environment_utility.openEnvironment,[path.join(BASE_SCHEMA_PATH, INSERT_OBJECT_TEST.schema), INSERT_OBJECT_TEST.table], undefined);
             let record = test_utils.assertErrorSync(search_utility.batchSearchByHash, [dog_env, HASH_ATTRIBUTE_NAME, ALL_FETCH_ATTRIBUTES, ['12', '10']], undefined);
-            assert.deepStrictEqual(record, []);
+            assert.deepStrictEqual(Object.values(record), []);
             //iterate all dbis and make sure all references to hash 8 are gone
             ALL_FETCH_ATTRIBUTES.forEach(attribute=>{
                 if(attribute !== HASH_ATTRIBUTE_NAME) {
