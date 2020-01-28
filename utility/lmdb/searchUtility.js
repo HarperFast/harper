@@ -263,9 +263,10 @@ function batchSearchByHash(env, hash_attribute, fetch_attributes, ids, not_found
                 let orig = JSON.parse(txn.cursor.getCurrentString());
                 let obj = {};
 
-                fetch_attributes.forEach(attribute => {
+                for(let k = 0; k < fetch_attributes.length; k++){
+                    let attribute = fetch_attributes[k];
                     obj[attribute] = orig[attribute];
-                });
+                }
                 results.push(obj);
             }else {
                 not_found.push(hdb_utils.autoCast(id));
@@ -302,9 +303,10 @@ function batchSearchByHashToMap(env, hash_attribute, fetch_attributes, ids, not_
                 let orig = JSON.parse(txn.cursor.getCurrentString());
                 let obj = {};
 
-                fetch_attributes.forEach(attribute => {
+                for(let k = 0; k < fetch_attributes.length; k++){
+                    let attribute = fetch_attributes[k];
                     obj[attribute] = orig[attribute];
-                });
+                }
                 results[id] = obj;
             }else {
                 not_found.push(hdb_utils.autoCast(id));
