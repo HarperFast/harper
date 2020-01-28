@@ -12,7 +12,7 @@ class BaseLicense{
      * @param api_call {Number} - number of daily allowed API calls
      * @param version {String} - licensed version
      */
-    constructor(exp_date = 0, storage_type = terms.STORAGE_TYPES_ENUM.FILE_SYSTEM, api_call = terms.LICENSE_VALUES.API_CALL_DEFAULT, version = terms.LICENSE_VALUES.VERSION_DEFAULT, fingerprint, ram = terms.RAM_ALLOCATION_ENUM.DEVELOPMENT) {
+    constructor(exp_date = 0, storage_type = terms.STORAGE_TYPES_ENUM.FILE_SYSTEM, api_call = terms.LICENSE_VALUES.API_CALL_DEFAULT, version = terms.LICENSE_VALUES.VERSION_DEFAULT, fingerprint, ram = terms.RAM_ALLOCATION_ENUM.DEFAULT) {
         this.exp_date = exp_date;
         this.storage_type = storage_type;
         this.api_call = api_call;
@@ -33,7 +33,7 @@ class ExtendedLicense extends BaseLicense{
      * @param version {String} - licensed version
      * @param enterprise {Boolean} - states if this is a licensed instance
      */
-    constructor(exp_date = 0, storage_type = terms.STORAGE_TYPES_ENUM.FILE_SYSTEM, api_call = terms.LICENSE_VALUES.API_CALL_DEFAULT, version = terms.LICENSE_VALUES.VERSION_DEFAULT, fingerprint, ram = terms.RAM_ALLOCATION_ENUM.DEVELOPMENT, enterprise = false) {
+    constructor(exp_date = 0, storage_type = terms.STORAGE_TYPES_ENUM.FILE_SYSTEM, api_call = terms.LICENSE_VALUES.API_CALL_DEFAULT, version = terms.LICENSE_VALUES.VERSION_DEFAULT, fingerprint, ram = terms.RAM_ALLOCATION_ENUM.DEFAULT, enterprise = false) {
         super(exp_date, storage_type, api_call, version, fingerprint, ram);
         this.enterprise = enterprise;
     }

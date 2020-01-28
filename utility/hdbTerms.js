@@ -235,9 +235,10 @@ const OPERATIONS_ENUM = {
     CATCHUP: 'catchup'
 };
 
-// The maximum ram allocation in GB per HDB child process
+// The maximum ram allocation in MB per HDB child process
 const RAM_ALLOCATION_ENUM = {
-    DEVELOPMENT: 8
+    DEVELOPMENT: 8000,
+    DEFAULT: 1500
 };
 
 // Defines operations that should be propagated to the cluster.
