@@ -19,7 +19,7 @@ const rewire = require('rewire');
 const lmdb_create_schema = require('../../../../../data_layer/harperBridge/lmdbBridge/lmdbMethods/lmdbCreateSchema');
 const lmdb_create_table = rewire('../../../../../data_layer/harperBridge/lmdbBridge/lmdbMethods/lmdbCreateTable');
 const lmdb_create_attribute = rewire('../../../../../data_layer/harperBridge/lmdbBridge/lmdbMethods/lmdbCreateAttribute');
-const environment_utility = require('../../../../../utility/lmdb/environmentUtility');
+const environment_utility = rewire('../../../../../utility/lmdb/environmentUtility');
 const search_utility = require('../../../../../utility/lmdb/searchUtility');
 const systemSchema = require('../../../../../json/systemSchema');
 
@@ -83,8 +83,9 @@ describe("test lmdbCreateAttribute module", ()=>{
     let hdb_schema_env;
     let hdb_table_env;
     let hdb_attribute_env;
-
+    let rw_env_util;
     before(async ()=>{
+        rw_env_util = environment_utility.__set__('MAP_SIZE', 10*1024*1024*1024);
         //uuid_stub = sandbox.stub(uuid, 'v4').returns(MOCK_UUID_VALUE);
         global.hdb_schema = {system: systemSchema};
         env_mgr.setProperty('HDB_ROOT', BASE_PATH);
@@ -108,6 +109,7 @@ describe("test lmdbCreateAttribute module", ()=>{
     });
 
     after(async ()=>{
+        rw_env_util();
         env_mgr.setProperty('HDB_ROOT', root_original);
         delete global.hdb_schema;
         await fs.remove(BASE_PATH);
@@ -135,7 +137,6 @@ describe("test lmdbCreateAttribute module", ()=>{
             [hdb_attribute_env, systemSchema.hdb_attribute.hash_attribute, HDB_ATTRIBUTE_ATTRIBUTES, MOCK_UUID_VALUE], undefined);
         assert.deepStrictEqual(attribute_record, expected_search_result);
     });
-/*
     it('Test that datastore is not created because it already exists', async () => {
         let expected_result = {
             message: 'inserted 0 of 1 records',
@@ -168,6 +169,6 @@ describe("test lmdbCreateAttribute module", ()=>{
         create_attr_obj = test_utils.deepClone(CREATE_ATTR_OBJ_TEST);
         create_attr_obj.attribute = 'slash/er';
         await test_utils.assertErrorAsync(lmdb_create_attribute, [create_attr_obj],new Error('Attribute name can only contain alpha numeric characters or underscores'));
-    });*/
+    });
 
 });

@@ -2,7 +2,7 @@
 
 const rewire = require('rewire');
 const write_utility = rewire('../../../utility/lmdb/writeUtility');
-const environment_utility = require('../../../utility/lmdb/environmentUtility');
+const environment_utility = rewire('../../../utility/lmdb/environmentUtility');
 const rw_write_validator = write_utility.__get__('validateWrite');
 const search_util = require('../../../utility/lmdb/searchUtility');
 const assert = require('assert');
@@ -40,11 +40,14 @@ const UPDATE_ONE_FAKE_RECORD = {id:111, name:'FAKE ROW', age:'0'};
 
 describe("Test writeUtility module", ()=>{
     let date_stub;
+    let rw_env_util;
     before(()=>{
+        rw_env_util = environment_utility.__set__('MAP_SIZE', 10*1024*1024*1024);
         date_stub = sandbox.stub(Date, 'now').returns(TIMESTAMP);
     });
 
     after(()=>{
+        rw_env_util();
         date_stub.restore();
     });
 

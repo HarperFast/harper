@@ -41,6 +41,8 @@ async function lmdbDeleteRecords(delete_obj) {
 
         if(hdb_utils.isEmptyOrZeroLength(delete_obj.hash_values)){
             return createDeleteResponse([], []);
+        } else if(!Array.isArray(delete_obj.hash_values)){
+            throw new Error('hash_values must be an array');
         }
 
         let env_base_path = path.join(BASE_SCHEMA_PATH, delete_obj.schema);

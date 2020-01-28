@@ -19,7 +19,7 @@ const lmdb_create_records = rewire('../../../../../data_layer/harperBridge/lmdbB
 const lmdb_update_records = rewire('../../../../../data_layer/harperBridge/lmdbBridge/lmdbMethods/lmdbUpdateRecords');
 const lmdb_create_schema = require('../../../../../data_layer/harperBridge/lmdbBridge/lmdbMethods/lmdbCreateSchema');
 const lmdb_create_table = require('../../../../../data_layer/harperBridge/lmdbBridge/lmdbMethods/lmdbCreateTable');
-const environment_utility = require('../../../../../utility/lmdb/environmentUtility');
+const environment_utility = rewire('../../../../../utility/lmdb/environmentUtility');
 const search_utility = require('../../../../../utility/lmdb/searchUtility');
 const assert = require('assert');
 const fs = require('fs-extra');
@@ -127,12 +127,15 @@ describe('Test lmdbUpdateRecords module', ()=>{
     let hdb_schema_env;
     let hdb_table_env;
     let hdb_attribute_env;
+    let rw_env_util;
     before(()=>{
+        rw_env_util = environment_utility.__set__('MAP_SIZE', 10*1024*1024*1024);
         date_stub = sandbox.stub(Date, 'now').returns(TIMESTAMP);
         env_mgr.setProperty('HDB_ROOT', BASE_PATH);
     });
 
     after(()=>{
+        rw_env_util();
         date_stub.restore();
         env_mgr.setProperty('HDB_ROOT', root_original);
     });

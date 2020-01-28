@@ -2,7 +2,8 @@
 
 const search_util = require('../../../utility/lmdb/searchUtility');
 const fs = require('fs-extra');
-const environment_utility = require('../../../utility/lmdb/environmentUtility');
+const rewire = require('rewire');
+const environment_utility = rewire('../../../utility/lmdb/environmentUtility');
 const write_utility = require('../../../utility/lmdb/writeUtility');
 const test_utils = require('../../test_utils');
 const path = require('path');
@@ -34,7 +35,9 @@ const MULTI_RECORD_ARRAY2 = [
 describe('Test searchUtility module', ()=>{
     describe('test searchByHash function', ()=>{
         let env;
+        let rw_env_util;
         before(async ()=>{
+            rw_env_util = environment_utility.__set__('MAP_SIZE', 10*1024*1024*1024);
             await fs.mkdirp(BASE_TEST_PATH);
             global.lmdb_map = undefined;
             env = await environment_utility.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
@@ -43,6 +46,7 @@ describe('Test searchUtility module', ()=>{
         });
 
         after(async ()=>{
+            rw_env_util();
             await fs.remove(BASE_TEST_PATH);
             global.lmdb_map = undefined;
         });

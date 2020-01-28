@@ -19,7 +19,7 @@ const lmdb_create_records = rewire('../../../../../data_layer/harperBridge/lmdbB
 const lmdb_delete_records = rewire('../../../../../data_layer/harperBridge/lmdbBridge/lmdbMethods/lmdbDeleteRecords');
 const lmdb_create_schema = require('../../../../../data_layer/harperBridge/lmdbBridge/lmdbMethods/lmdbCreateSchema');
 const lmdb_create_table = require('../../../../../data_layer/harperBridge/lmdbBridge/lmdbMethods/lmdbCreateTable');
-const environment_utility = require('../../../../../utility/lmdb/environmentUtility');
+const environment_utility = rewire('../../../../../utility/lmdb/environmentUtility');
 const search_utility = require('../../../../../utility/lmdb/searchUtility');
 const assert = require('assert');
 const fs = require('fs-extra');
@@ -103,14 +103,18 @@ describe('Test lmdbDeleteRecords module', ()=>{
     let hdb_schema_env;
     let hdb_table_env;
     let hdb_attribute_env;
+    let rw_env_util;
     before(()=>{
+        rw_env_util = environment_utility.__set__('MAP_SIZE', 10*1024*1024*1024);
         date_stub = sandbox.stub(Date, 'now').returns(TIMESTAMP);
         env_mgr.setProperty('HDB_ROOT', BASE_PATH);
     });
 
     after(()=>{
+        rw_env_util();
         date_stub.restore();
         env_mgr.setProperty('HDB_ROOT', root_original);
+        global.lmdb_map = undefined;
     });
 
     describe('Test lmdbDeleteRecords function', ()=>{
@@ -237,7 +241,123 @@ describe('Test lmdbDeleteRecords module', ()=>{
             assert.deepStrictEqual(results, expected_result);
         });
 
+        it('Test deleting multiple values from table', async () => {
+            let delete_obj = {
+                operation: "delete",
+                table: "dog",
+                schema: "dev",
+                hash_values: [ 12, 10 ]
+            };
+            let expected_result = {
+                message: '2 records successfully deleted',
+                deleted_hashes: [ 12, 10 ],
+                skipped_hashes: [ ]
+            };
+            let results = await test_utils.assertErrorAsync(lmdb_delete_records, [delete_obj], undefined);
+            assert.deepStrictEqual(results, expected_result);
+
+            let dog_env = await test_utils.assertErrorAsync(environment_utility.openEnvironment,[path.join(BASE_SCHEMA_PATH, INSERT_OBJECT_TEST.schema), INSERT_OBJECT_TEST.table], undefined);
+            let record = test_utils.assertErrorSync(search_utility.batchSearchByHash, [dog_env, HASH_ATTRIBUTE_NAME, ALL_FETCH_ATTRIBUTES, ['12', '10']], undefined);
+            assert.deepStrictEqual(record, []);
+            //iterate all dbis and make sure all references to hash 8 are gone
+            ALL_FETCH_ATTRIBUTES.forEach(attribute=>{
+                if(attribute !== HASH_ATTRIBUTE_NAME) {
+                    let attr_results = test_utils.assertErrorSync(search_utility.iterateDBI, [dog_env, "height"], undefined);
+                    attr_results.forEach(result=>{
+                        assert(delete_obj.hash_values.indexOf(result[1]) < 0);
+                    });
+                }
+            });
+        });
+
+        it('Test that error from  deleteRows is caught and thrown',async () => {
+            let delete_obj = {
+                operation: "delete",
+                table: "dog",
+                schema: "dev",
+                hash_values: 12
+            };
+
+            await test_utils.assertErrorAsync(lmdb_delete_records, [delete_obj], new Error('hash_values must be an array'));
+        });
+
+        it('Test passing no hash_values or records', async () => {
+            let delete_obj = {
+                operation: "delete",
+                table: "dog",
+                schema: "dev"
+            };
+
+            let expected_result = {
+                message: '0 records successfully deleted',
+                deleted_hashes: [ ],
+                skipped_hashes: [ ]
+            };
+
+            let results = await test_utils.assertErrorAsync(lmdb_delete_records, [delete_obj], undefined);
+
+            assert.deepStrictEqual(results, expected_result);
+
+        });
+
+        it('Test passing records instead of hash_values', async () => {
+            let delete_obj = {
+                operation: "delete",
+                table: "dog",
+                schema: "dev",
+                records:[
+                    {
+                        id: 10
+                    }
+                ]
+            };
+
+            let expected_result = {
+                message: '1 record successfully deleted',
+                deleted_hashes: [10 ],
+                skipped_hashes: [ ]
+            };
+
+            let results = await test_utils.assertErrorAsync(lmdb_delete_records, [delete_obj], undefined);
+
+            assert.deepStrictEqual(results, expected_result);
+        });
+
+        it('Test passing records instead of hash_values where record hash no hash value', async () => {
+            let delete_obj = {
+                operation: "delete",
+                table: "dog",
+                schema: "dev",
+                records:[
+                    {
+                        name: 'Riley'
+                    }
+                ]
+            };
+
+            let expected_result = {
+                message: '0 records successfully deleted',
+                deleted_hashes: [ ],
+                skipped_hashes: [ ]
+            };
+
+            let results = await test_utils.assertErrorAsync(lmdb_delete_records, [delete_obj], undefined);
+
+            assert.deepStrictEqual(results, expected_result);
+        });
+
+        it('Test that error thrown if hash not present',async () => {
+            global.hdb_schema['dev']['dog']['hash_attribute'] = null;
+
+            let delete_obj = {
+                operation: "delete",
+                table: "dog",
+                schema: "dev",
+                hash_values: [12]
+            };
+
+            await test_utils.assertErrorAsync(lmdb_delete_records, [delete_obj], new Error(`could not retrieve hash attribute for schema:${delete_obj.schema} and table ${delete_obj.table}`));
+        });
+
     });
-
-
 });
