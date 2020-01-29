@@ -16,6 +16,7 @@ const LICENSES = [
         exp_date: moment().add(1, 'year').unix(),
         storage_type: 'helium',
         api_call: 10000,
+        ram_limit: 1024,
         version: '2.0.0',
         enterprise: true
     },
@@ -25,6 +26,7 @@ const LICENSES = [
             exp_date: moment().add(2, 'year').unix(),
             storage_type: 'helium',
             api_call: 10000,
+            ram_limit: 5000,
             version: '2.0.0',
             enterprise: true
         },
@@ -50,7 +52,7 @@ describe(`Test generateFingerPrint`, function () {
 
         // delete finger print file if exist
         let finger_print_file = hdb_license.__get__('FINGER_PRINT_FILE');
-        if (fs.existsSync(finger_print_file)) {            
+        if (fs.existsSync(finger_print_file)) {
             fs.unlinkSync(finger_print_file);
         }
 

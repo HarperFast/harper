@@ -341,7 +341,7 @@ const HDB_SETTINGS_DEFAULT_VALUES = {
     CLUSTERING: 'false',
     MAX_HDB_PROCESSES: 4,
     HELIUM_SERVER_HOST: 'localhost:41000',
-    MAX_MEMORY: 1500
+    MAX_MEMORY: ''
 };
 
 // Describes all available job types
@@ -386,6 +386,7 @@ const HELIUM_START_SERVER_COMMAND = '--server';
 
 const LICENSE_VALUES = {
     API_CALL_DEFAULT: 10000,
+    RAM_MB_DEFAULT: 1024,
     VERSION_DEFAULT: '2.0.0'
 };
 

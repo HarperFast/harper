@@ -160,6 +160,7 @@ async function getRegistrationInfo() {
         registered: false,
         version: null,
         storage_type: null,
+        ram_limit: null,
         license_expiration_date: null,
         daily_api_calls_current: null,
         daily_api_calls_limit: null
@@ -189,6 +190,7 @@ async function getRegistrationInfo() {
     reg_info_obj.registered = license.enterprise;
     reg_info_obj.version = version.version();
     reg_info_obj.storage_type = license.storage_type;
+    reg_info_obj.ram_limit = license.ram_limit;
     reg_info_obj.license_expiration_date = license.enterprise ? license.exp_date : null;
     reg_info_obj.daily_api_calls_limit = license.api_call;
     reg_info_obj.daily_api_calls_current = current_api_calls._consumedPoints;

@@ -72,6 +72,7 @@ function validateLicense(license_key, company) {
         valid_date: false,
         valid_machine: false,
         exp_date: null,
+        ram_limit: terms.LICENSE_VALUES.RAM_MB_DEFAULT,
         storage_type: terms.STORAGE_TYPES_ENUM.FILE_SYSTEM,
         api_call: terms.LICENSE_VALUES.API_CALL_DEFAULT,
         version: terms.LICENSE_VALUES.VERSION_DEFAULT
@@ -128,6 +129,7 @@ function validateLicense(license_key, company) {
                 license_validation_object.version = license_obj.version;
                 license_validation_object.storage_type = license_obj.storage_type;
                 license_validation_object.exp_date = license_obj.exp_date;
+                license_validation_object.ram_limit = license_obj.ram_limit;
             } catch (e) {
                 console.error(INVALID_LICENSE_FORMAT_MSG);
                 log.error(INVALID_LICENSE_FORMAT_MSG);
@@ -181,6 +183,7 @@ function licenseSearch(){
             if (license_validation.valid_machine === true && license_validation.valid_date === true && license_validation.valid_machine === true) {
                 license_values.exp_date = license_validation.exp_date > license_values.exp_date ? license_validation.exp_date : license_values.exp_date;
                 license_values.api_call += license_validation.api_call;
+                license_values.ram_limit = license_validation.ram_limit;
                 license_values.storage_type = license_validation.storage_type;
                 license_values.enterprise = true;
             }
@@ -188,6 +191,7 @@ function licenseSearch(){
             log.error('There was an error parsing the license string.');
             log.error(e);
             license_values.api_call = terms.LICENSE_VALUES.API_CALL_DEFAULT;
+            license_values.ram_limit = terms.LICENSE_VALUES.RAM_MB_DEFAULT;
             license_values.storage_type = terms.STORAGE_TYPES_ENUM.FILE_SYSTEM;
             license_values.enterprise = false;
         }

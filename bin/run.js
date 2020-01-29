@@ -315,15 +315,22 @@ async function checkPermission() {
 async function kickOffExpress() {
     try {
         let license = hdb_license.licenseSearch();
-        if( license.storage_type === terms.STORAGE_TYPES_ENUM.HELIUM ) {
+        if (license.storage_type === terms.STORAGE_TYPES_ENUM.HELIUM) {
             let helium = await helium_utils.checkHeliumServerRunning();
             await helium_utils.createSystemDataStores(helium);
         }
         let args = createForkArgs();
-        let mem_value = MEM_SETTING_KEY + terms.HDB_SETTINGS_DEFAULT_VALUES.MAX_MEMORY;
+        let mem_value = MEM_SETTING_KEY + license.ram_limit;
         let mem_setting_name = env.get(terms.HDB_SETTINGS_NAMES.MAX_MEMORY_KEY);
-        if(mem_setting_name) {
-            mem_value = MEM_SETTING_KEY + mem_setting_name;
+        if (mem_setting_name) {
+            if (mem_setting_name < license.ram_limit) {
+                mem_value = MEM_SETTING_KEY + mem_setting_name;
+                console.log(colors.magenta(`Max memory set to ${mem_setting_name} MB.`));
+            } else {
+                // TODO - DO WE WANT TO LOG THIS TO CONSOLE HERE OR DO LOG.INFO in harperdb.js
+                console.log(colors.magenta(`Max memory allocated for this license is: ${license.ram_limit} MB. Upgrade your plan to increase RAM.`));
+                //TODO - maybe insert a telemetry call here to flag that customer w/ on premise license is trying to increase RAM?
+            }
         }
         child = fork(args[0], [args[1], args[2]], {
             detached: true,
