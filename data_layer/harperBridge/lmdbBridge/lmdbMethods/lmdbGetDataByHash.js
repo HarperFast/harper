@@ -16,7 +16,7 @@ const BASE_SCHEMA_PATH = path.join(env_mgr.getHdbBasePath(), hdb_terms.SCHEMA_DI
 module.exports = lmdbGetDataByHash;
 
 /**
- * fetches a record by it's hash value
+ * fetches records by their hash values and returns a map of the results
  * @param {SearchByHashObject} search_object
  */
 async function lmdbGetDataByHash(search_object) {
@@ -33,7 +33,7 @@ async function lmdbGetDataByHash(search_object) {
             search_object.hash_values[x] = search_object.hash_values[x].toString();
         }
 
-        return search_utility.batchSearchByHash(environment, table_info.hash_attribute, search_object.get_attributes, search_object.hash_values);
+        return search_utility.batchSearchByHashToMap(environment, table_info.hash_attribute, search_object.get_attributes, search_object.hash_values);
     } catch(err) {
         throw err;
     }

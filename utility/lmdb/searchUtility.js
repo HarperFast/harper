@@ -247,10 +247,90 @@ function checkHashExists(env, hash_attribute, id) {
  * @param {String} hash_attribute - name of the hash_attribute for this environment
  * @param {Array.<String>} fetch_attributes - string array of attributes to pull from the object
  * @param {Array.<String>} ids - list of ids to search
- * @param {[]} [not_found] - meant to be an array passed by reference so that skipped ids can be aggregated.
+ * @param {[]} [not_found] - optional, meant to be an array passed by reference so that skipped ids can be aggregated.
  * @returns {Array.<Object>} - object array of records found
  */
 function batchSearchByHash(env, hash_attribute, fetch_attributes, ids, not_found) {
+    let txn = initializeBatchSearchByHash(env, hash_attribute, fetch_attributes, ids, not_found);
+
+    let results = [];
+
+    for(let x = 0; x < ids.length; x++){
+        let id = ids[x];
+        try {
+            let key = txn.cursor.goToKey(id);
+            if(key === id) {
+                let orig = JSON.parse(txn.cursor.getCurrentString());
+                let obj = {};
+
+                for(let k = 0; k < fetch_attributes.length; k++){
+                    let attribute = fetch_attributes[k];
+                    obj[attribute] = orig[attribute];
+                }
+                results.push(obj);
+            }else {
+                not_found.push(hdb_utils.autoCast(id));
+            }
+        }catch(e){
+            log.warn(e);
+        }
+    }
+
+    txn.close();
+
+    return results;
+}
+
+/**
+ * finds an array of records based on the ids passed and returns a map of the results
+ * @param {lmdb.Env} env - environment object used thigh level to interact with all data in an environment
+ * @param {String} hash_attribute - name of the hash_attribute for this environment
+ * @param {Array.<String>} fetch_attributes - string array of attributes to pull from the object
+ * @param {Array.<String>} ids - list of ids to search
+ * @param {[]} [not_found] - optional, meant to be an array passed by reference so that skipped ids can be aggregated.
+ * @returns {{}} - object array of records found
+ */
+function batchSearchByHashToMap(env, hash_attribute, fetch_attributes, ids, not_found) {
+    let txn = initializeBatchSearchByHash(env, hash_attribute, fetch_attributes, ids, not_found);
+
+    let results = {};
+
+    for(let x = 0; x < ids.length; x++){
+        let id = ids[x];
+        try {
+            let key = txn.cursor.goToKey(id);
+            if(key === id) {
+                let orig = JSON.parse(txn.cursor.getCurrentString());
+                let obj = {};
+
+                for(let k = 0; k < fetch_attributes.length; k++){
+                    let attribute = fetch_attributes[k];
+                    obj[attribute] = orig[attribute];
+                }
+                results[id] = obj;
+            }else {
+                not_found.push(hdb_utils.autoCast(id));
+            }
+        }catch(e){
+            log.warn(e);
+        }
+    }
+
+    txn.close();
+
+    return results;
+}
+
+/**
+ * function used to intialize the batchSearchByHash functions
+ * @param {lmdb.Env} env - environment object used thigh level to interact with all data in an environment
+ * @param {String} hash_attribute - name of the hash_attribute for this environment
+ * @param {Array.<String>} fetch_attributes - string array of attributes to pull from the object
+ * @param {Array.<String>} ids - list of ids to search
+ * @param {[]} [not_found] -optional,  meant to be an array passed by reference so that skipped ids can be aggregated.
+ * @returns {TransactionCursor}
+ */
+function initializeBatchSearchByHash(env, hash_attribute, fetch_attributes, ids, not_found){
     common.validateEnv(env);
 
     if(hash_attribute === undefined){
@@ -271,33 +351,7 @@ function batchSearchByHash(env, hash_attribute, fetch_attributes, ids, not_found
         not_found = [];
     }
 
-    let txn = new Transaction_Cursor(env, hash_attribute);
-
-    let results = [];
-
-    for(let x = 0; x < ids.length; x++){
-        let id = ids[x];
-        try {
-            let key = txn.cursor.goToKey(id);
-            if(key === id) {
-                let orig = JSON.parse(txn.cursor.getCurrentString());
-                let obj = {};
-
-                fetch_attributes.forEach(attribute => {
-                    obj[attribute] = orig[attribute];
-                });
-                results.push(obj);
-            }else {
-                not_found.push(hdb_utils.autoCast(id));
-            }
-        }catch(e){
-            log.warn(e);
-        }
-    }
-
-    txn.close();
-
-    return results;
+    return new Transaction_Cursor(env, hash_attribute);
 }
 
 /**
@@ -341,6 +395,7 @@ module.exports = {
     contains,
     searchByHash,
     batchSearchByHash,
+    batchSearchByHashToMap,
     checkHashExists,
     iterateDBI
 };
