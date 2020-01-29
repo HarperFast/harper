@@ -235,6 +235,12 @@ const OPERATIONS_ENUM = {
     CATCHUP: 'catchup'
 };
 
+// The maximum ram allocation in MB per HDB child process
+const RAM_ALLOCATION_ENUM = {
+    DEVELOPMENT: 8000,
+    DEFAULT: 1500
+};
+
 // Defines operations that should be propagated to the cluster.
 let CLUSTER_OPERATIONS = {};
 CLUSTER_OPERATIONS[OPERATIONS_ENUM.CREATE_SCHEMA] = OPERATIONS_ENUM.CREATE_SCHEMA;
@@ -598,5 +604,6 @@ module.exports = {
     JAVASCRIPT_EXTENSION,
     PermissionResponseObject,
     PermissionAttributeResponseObject,
-    UNAUTHORIZED_PERMISSION_NAME
+    UNAUTHORIZED_PERMISSION_NAME,
+    RAM_ALLOCATION_ENUM
 };
