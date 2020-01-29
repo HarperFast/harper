@@ -95,13 +95,13 @@ async function parseLicense(license, company) {
 
     try {
         log.info('writing license to disk');
-        await fs.appendFile(LICENSE_FILE, JSON.stringify({"license_key": license, "company": company}) + terms.NEW_LINE);
+        await fs.writeFile(LICENSE_FILE, JSON.stringify({"license_key": license, "company": company}));
     }catch(e){
         log.error('Failed to write License');
         throw e;
     }
 
-    return license;
+    return 'Registration successful.';
 }
 
 async function register() {

@@ -10,25 +10,31 @@ const moment = require('moment');
 const test_utils = require('../../test_utils');
 test_utils.preTestPrep();
 const license_objects = require('../../../utility/registration/licenseObjects');
+const hdb_terms = require('../../../utility/hdbTerms');
+
+const LICENSE_KEY_DELIMITER = 'mofi25';
 
 const LICENSES = [
-    {license_key: {
-        exp_date: moment().add(1, 'year').unix(),
-        storage_type: 'helium',
-        api_call: 10000,
-        ram_limit: 1024,
-        version: '2.0.0',
-        enterprise: true
-    },
+    {
+        license_key: {
+            exp_date: moment().add(1, 'year').unix(),
+            storage_type: 'helium',
+            api_call: 10000,
+            version: '2.0.0',
+            enterprise: true,
+            fingerprint: undefined,
+            ram: hdb_terms.RAM_ALLOCATION_ENUM.DEFAULT
+        },
     company:'harperdb'
     },
     {license_key: {
             exp_date: moment().add(2, 'year').unix(),
             storage_type: 'helium',
             api_call: 10000,
-            ram_limit: 5000,
             version: '2.0.0',
-            enterprise: true
+            enterprise: true,
+            fingerprint: undefined,
+            ram: hdb_terms.RAM_ALLOCATION_ENUM.DEFAULT
         },
         company:'harperdb'
     }];

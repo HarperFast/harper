@@ -235,6 +235,12 @@ const OPERATIONS_ENUM = {
     CATCHUP: 'catchup'
 };
 
+// The maximum ram allocation in MB per HDB child process
+const RAM_ALLOCATION_ENUM = {
+    DEVELOPMENT: 8000,
+    DEFAULT: 1024
+};
+
 // Defines operations that should be propagated to the cluster.
 let CLUSTER_OPERATIONS = {};
 CLUSTER_OPERATIONS[OPERATIONS_ENUM.CREATE_SCHEMA] = OPERATIONS_ENUM.CREATE_SCHEMA;
@@ -341,7 +347,7 @@ const HDB_SETTINGS_DEFAULT_VALUES = {
     CLUSTERING: 'false',
     MAX_HDB_PROCESSES: 4,
     HELIUM_SERVER_HOST: 'localhost:41000',
-    MAX_MEMORY: ''
+    MAX_MEMORY: 1500
 };
 
 // Describes all available job types
@@ -386,7 +392,6 @@ const HELIUM_START_SERVER_COMMAND = '--server';
 
 const LICENSE_VALUES = {
     API_CALL_DEFAULT: 10000,
-    RAM_MB_DEFAULT: 1024,
     VERSION_DEFAULT: '2.0.0'
 };
 
