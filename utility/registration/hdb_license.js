@@ -75,9 +75,9 @@ function validateLicense(license_key, company) {
         valid_date: false,
         valid_machine: false,
         exp_date: null,
-        ram_limit: terms.LICENSE_VALUES.RAM_MB_DEFAULT,
         storage_type: terms.STORAGE_TYPES_ENUM.FILE_SYSTEM,
         api_call: terms.LICENSE_VALUES.API_CALL_DEFAULT,
+        ram_limit: terms.RAM_ALLOCATION_ENUM.DEFAULT,
         version: terms.LICENSE_VALUES.VERSION_DEFAULT
     };
     if(!license_key) {
@@ -219,7 +219,7 @@ function licenseSearch() {
             log.error('There was an error parsing the license string.');
             log.error(e);
             license_values.api_call = terms.LICENSE_VALUES.API_CALL_DEFAULT;
-            license_values.ram_limit = terms.LICENSE_VALUES.RAM_MB_DEFAULT;
+            license_values.ram_limit = terms.RAM_ALLOCATION_ENUM.DEFAULT;
             license_values.storage_type = terms.STORAGE_TYPES_ENUM.FILE_SYSTEM;
             license_values.enterprise = false;
         }

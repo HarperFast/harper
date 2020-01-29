@@ -325,11 +325,8 @@ async function kickOffExpress() {
         if (mem_setting_name) {
             if (mem_setting_name < license.ram_limit) {
                 mem_value = MEM_SETTING_KEY + mem_setting_name;
-                console.log(colors.magenta(`Max memory set to ${mem_setting_name} MB.`));
             } else {
-                // TODO - DO WE WANT TO LOG THIS TO CONSOLE HERE OR DO LOG.INFO in harperdb.js
                 console.log(colors.magenta(`Max memory allocated for this license is: ${license.ram_limit} MB. Upgrade your plan to increase RAM.`));
-                //TODO - maybe insert a telemetry call here to flag that customer w/ on premise license is trying to increase RAM?
             }
         }
         child = fork(args[0], [args[1], args[2]], {

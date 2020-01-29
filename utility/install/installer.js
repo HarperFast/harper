@@ -643,8 +643,8 @@ function createSettingsFile(mount_status, callback) {
             `${HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY}=${wizard_result.NODE_NAME}\n` +
             `   ;The user used to connect to other instances of HarperDB, this user must have a role of cluster_user. \n` +
             `${HDB_SETTINGS_NAMES.CLUSTERING_USER_KEY}=${wizard_result.CLUSTERING_USERNAME}\n` +
-            `   ;The max memory, in MB, assigned to each HDB process.  Default is ${hdb_terms.LICENSE_VALUES.RAM_MB_DEFAULT} MB.\n` +
-            `${HDB_SETTINGS_NAMES.MAX_MEMORY_KEY}= `
+            `   ;The max memory, in MB, assigned to each HDB process.  Default is ${hdb_terms.RAM_ALLOCATION_ENUM.DEFAULT} MB.\n` +
+            `${HDB_SETTINGS_NAMES.MAX_MEMORY_KEY}=`
         ;
 
         winston.info('info', `hdb_props_value ${JSON.stringify(hdb_props_value)}`);
