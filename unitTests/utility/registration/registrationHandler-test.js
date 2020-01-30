@@ -137,7 +137,8 @@ describe(`Test getRegistrationInfo`,function() {
         enterprise: true,
         storage_type: 'fs',
         exp_date: 12345,
-        api_call: 1000
+        api_call: 1000,
+        ram_limit: 12345
     }
     let test_api_calls = 55;
     let test_version = '2.0.000';
@@ -171,6 +172,7 @@ describe(`Test getRegistrationInfo`,function() {
         assert.equal(result.license_expiration_date, test_license.exp_date, `Expected value to be ${test_license.exp_date}`);
         assert.equal(result.daily_api_calls_current, test_api_calls, `Expected value to be ${test_api_calls}`);
         assert.equal(result.daily_api_calls_limit, test_license.api_call, `Expected value to be ${test_license.api_call}`);
+        assert.equal(result.ram_limit, test_license.ram_limit, `Expected value to be ${test_license.ram_limit}`);
     });
 
     it('Should return null for expiration date if not registered', async function () {

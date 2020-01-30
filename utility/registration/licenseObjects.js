@@ -33,7 +33,7 @@ class ExtendedLicense extends BaseLicense{
      * @param version {String} - licensed version
      * @param enterprise {Boolean} - states if this is a licensed instance
      */
-    constructor(exp_date = 0, storage_type = terms.STORAGE_TYPES_ENUM.FILE_SYSTEM, api_call = terms.LICENSE_VALUES.API_CALL_DEFAULT, version = terms.LICENSE_VALUES.VERSION_DEFAULT, ram_limit= terms.RAM_ALLOCATION_ENUM.DEFAULT, fingerprint, enterprise = false) {
+    constructor(exp_date = 0, storage_type = terms.STORAGE_TYPES_ENUM.FILE_SYSTEM, api_call = terms.LICENSE_VALUES.API_CALL_DEFAULT, ram_limit= terms.RAM_ALLOCATION_ENUM.DEFAULT, version = terms.LICENSE_VALUES.VERSION_DEFAULT, fingerprint, enterprise = false) {
         super(exp_date, storage_type, api_call, ram_limit, version, fingerprint);
         this.enterprise = enterprise;
     }
