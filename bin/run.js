@@ -321,14 +321,7 @@ async function kickOffExpress() {
         }
         let args = createForkArgs();
         let mem_value = MEM_SETTING_KEY + license.ram_limit;
-        let mem_setting_name = env.get(terms.HDB_SETTINGS_NAMES.MAX_MEMORY_KEY);
-        if (mem_setting_name) {
-            if (mem_setting_name < license.ram_limit) {
-                mem_value = MEM_SETTING_KEY + mem_setting_name;
-            } else {
-                console.log(colors.magenta(`Max memory allocated for this license is: ${license.ram_limit} MB. Upgrade your plan to increase RAM.`));
-            }
-        }
+
         child = fork(args[0], [args[1], args[2]], {
             detached: true,
             stdio: 'ignore',

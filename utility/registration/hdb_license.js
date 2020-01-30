@@ -140,7 +140,9 @@ function validateLicense(license_key, company) {
                 license_validation_object.version = license_obj.version;
                 license_validation_object.storage_type = license_obj.storage_type;
                 license_validation_object.exp_date = license_obj.exp_date;
-                license_validation_object.ram_limit = license_obj.ram_limit;
+                if (license_obj.ram_limit) {
+                    license_validation_object.ram_limit = license_obj.ram_limit;
+                }
             } catch (e) {
                 console.error(INVALID_LICENSE_FORMAT_MSG);
                 log.error(INVALID_LICENSE_FORMAT_MSG);

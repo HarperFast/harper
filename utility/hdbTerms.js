@@ -340,8 +340,7 @@ const HDB_SETTINGS_DEFAULT_VALUES = {
     CLUSTERING_PORT: '5545',
     CLUSTERING: 'false',
     MAX_HDB_PROCESSES: 4,
-    HELIUM_SERVER_HOST: 'localhost:41000',
-    MAX_MEMORY: ''
+    HELIUM_SERVER_HOST: 'localhost:41000'
 };
 
 // Describes all available job types
