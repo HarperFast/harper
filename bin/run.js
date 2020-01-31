@@ -320,7 +320,8 @@ async function kickOffExpress() {
             await helium_utils.createSystemDataStores(helium);
         }
         let args = createForkArgs();
-        let mem_value = MEM_SETTING_KEY + license.ram_allocation;
+        let mem_value = license.ram_allocation ? MEM_SETTING_KEY + license.ram_allocation
+            : MEM_SETTING_KEY + terms.RAM_ALLOCATION_ENUM.DEFAULT;
 
         child = fork(args[0], [args[1], args[2]], {
             detached: true,
