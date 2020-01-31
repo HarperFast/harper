@@ -44,7 +44,7 @@ const constraints = {
             greaterThan: 0
         }
     },
-    ram_limit:{
+    ram_allocation:{
         presence:true,
         numericality:{
             onlyInteger: true,

@@ -23,10 +23,10 @@ if(!env.isInitialized()) {
 const ARGS = minimist(process.argv.slice(2));
 let RESET_SUCCESS_MSG = 'successfully reset license';
 async function register(){
-    if(ARGS.help || (ARGS.api_call === undefined && ARGS.ram_limit === undefined && ARGS.storage_type === undefined && ARGS.reset_license === undefined)){
+    if(ARGS.help || (ARGS.api_call === undefined && ARGS.ram_allocation === undefined && ARGS.storage_type === undefined && ARGS.reset_license === undefined)){
         console.log('available arguments --api_call, --storage_type, or reset_license.  All can be used in conjunction with each other\n' +
             '--api_call is an integer specify the number of api call / day this node can perform ex: --api_call=100000\n ' +
-            '--ram_limit is an integer specify the max memory in MB to allocate to this node ex: --ram_limit=1024\n ' +
+            '--ram_allocation is an integer specify the max memory in MB to allocate to this node ex: --ram_allocation=1024\n ' +
             '--storage_type specifies the data storage type this node will use value can be: \'helium\' or \'fs\' ex: --storage_type=helium\n' +
             '--reset_license will delete the existing license file');
         return;
@@ -47,10 +47,10 @@ async function register(){
         }
     }
 
-    if(ARGS.api_call !== undefined || ARGS.storage_type !== undefined || ARGS.ram_limit !== undefined) {
+    if(ARGS.api_call !== undefined || ARGS.storage_type !== undefined || ARGS.ram_allocation !== undefined) {
         let api_call = ARGS.api_call === undefined ? terms.LICENSE_VALUES.API_CALL_DEFAULT : ARGS.api_call;
         let storage_type = ARGS.storage_type === undefined ? terms.STORAGE_TYPES_ENUM.FILE_SYSTEM : ARGS.storage_type;
-        let ram_limit = ARGS.ram_limit === undefined ? terms.RAM_ALLOCATION_ENUM.DEVELOPMENT : ARGS.ram_limit;
+        let ram_allocation = ARGS.ram_allocation === undefined ? terms.RAM_ALLOCATION_ENUM.DEVELOPMENT : ARGS.ram_allocation;
         if(!Number.isInteger(api_call)){
             throw new Error('argument api_call must be an integer');
         }
@@ -59,8 +59,8 @@ async function register(){
             throw new Error(`argument storage_type must have value 'helium' or 'fs'`);
         }
 
-        if(!Number.isInteger(ram_limit)){
-            throw new Error('argument ram_limit must be an integer');
+        if(!Number.isInteger(ram_allocation)){
+            throw new Error('argument ram_allocation must be an integer');
         }
 
         console.log('creating fingerprint');
@@ -70,7 +70,7 @@ async function register(){
             fingerprint: fingerprint,
             storage_type: storage_type,
             api_call: api_call,
-            ram_limit: ram_limit,
+            ram_allocation: ram_allocation,
             version: terms.LICENSE_VALUES.VERSION_DEFAULT,
             exp_date: moment().add(1, 'year').format('YYYY-MM-DD')
         };

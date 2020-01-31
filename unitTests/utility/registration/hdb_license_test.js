@@ -21,7 +21,7 @@ const LICENSES = [
             storage_type: 'helium',
             api_call: 10000,
             version: '2.0.0',
-            ram_limit: hdb_terms.RAM_ALLOCATION_ENUM.DEFAULT,
+            ram_allocation: hdb_terms.RAM_ALLOCATION_ENUM.DEFAULT,
             enterprise: true,
             fingerprint: undefined
         },
@@ -32,7 +32,7 @@ const LICENSES = [
             storage_type: 'helium',
             api_call: 10000,
             version: '2.0.0',
-            ram_limit: 2500,
+            ram_allocation: 2500,
             enterprise: true,
             fingerprint: undefined
         },
@@ -86,7 +86,7 @@ describe(`Test generateLicense`, function () {
             fingerprint: 'whatever',
             storage_type: 'helium',
             api_call: 90000,
-            ram_limit: hdb_terms.RAM_ALLOCATION_ENUM.DEFAULT,
+            ram_allocation: hdb_terms.RAM_ALLOCATION_ENUM.DEFAULT,
             version: '2.0.0'};
 
         let err = null;
@@ -108,7 +108,7 @@ describe(`Test generateLicense`, function () {
         let licenseKeyObject = { exp_date: moment().subtract(1, 'day').format('YYYY-MM-DD'), company: 'hdb', fingerprint: 'whatever',
             storage_type: 'helium',
             api_call: 90000,
-            ram_limit: hdb_terms.RAM_ALLOCATION_ENUM.DEFAULT,
+            ram_allocation: hdb_terms.RAM_ALLOCATION_ENUM.DEFAULT,
             version: '2.0.0'};
 
         let err = null;
@@ -130,7 +130,7 @@ describe(`Test generateLicense`, function () {
         let licenseKeyObject = { exp_date: moment().add(1, 'day').utc().format('YYYY-MM-DD'), company: null, fingerprint: 'whatever',
             storage_type: 'helium',
             api_call: 90000,
-            ram_limit: hdb_terms.RAM_ALLOCATION_ENUM.DEFAULT,
+            ram_allocation: hdb_terms.RAM_ALLOCATION_ENUM.DEFAULT,
             version: '2.0.0'};
 
         let err = null;
@@ -152,7 +152,7 @@ describe(`Test generateLicense`, function () {
         let licenseKeyObject = { exp_date: null, company: 'hdb', fingerprint: 'whatever',
             storage_type: 'helium',
             api_call: 90000,
-            ram_limit: hdb_terms.RAM_ALLOCATION_ENUM.DEFAULT,
+            ram_allocation: hdb_terms.RAM_ALLOCATION_ENUM.DEFAULT,
             version: '2.0.0'};
 
         let err = null;
@@ -174,7 +174,7 @@ describe(`Test generateLicense`, function () {
         // prepare license key obj which *expire date is blank* with dummy fingerprint (no fingerprint validation in generate license process)
         let licenseKeyObject = { exp_date: moment().add(1, 'day').utc().format('YYYY-MM-DD'), company: 'hdb', fingerprint: 'whatever',
             api_call: 90000,
-            ram_limit: hdb_terms.RAM_ALLOCATION_ENUM.DEFAULT,
+            ram_allocation: hdb_terms.RAM_ALLOCATION_ENUM.DEFAULT,
             version: '2.0.0'};
 
         let err = null;
@@ -197,7 +197,7 @@ describe(`Test generateLicense`, function () {
         let licenseKeyObject = { exp_date: moment().add(1, 'day').utc().format('YYYY-MM-DD'), company: 'hdb', fingerprint: 'whatever',
             storage_type: 'blorp',
             api_call: 90000,
-            ram_limit: hdb_terms.RAM_ALLOCATION_ENUM.DEFAULT,
+            ram_allocation: hdb_terms.RAM_ALLOCATION_ENUM.DEFAULT,
             version: '2.0.0'};
 
         let err = null;
@@ -219,7 +219,7 @@ describe(`Test generateLicense`, function () {
         // prepare license key obj which *expire date is blank* with dummy fingerprint (no fingerprint validation in generate license process)
         let licenseKeyObject = { exp_date: moment().add(1, 'day').utc().format('YYYY-MM-DD'), company: 'hdb', fingerprint: 'whatever',
             storage_type: 'fs',
-            ram_limit: hdb_terms.RAM_ALLOCATION_ENUM.DEFAULT,
+            ram_allocation: hdb_terms.RAM_ALLOCATION_ENUM.DEFAULT,
             version: '2.0.0'};
 
         let err = null;
@@ -242,7 +242,7 @@ describe(`Test generateLicense`, function () {
         let licenseKeyObject = { exp_date: moment().add(1, 'day').utc().format('YYYY-MM-DD'), company: 'hdb', fingerprint: 'whatever',
             storage_type: 'fs',
             api_call: "thousand",
-            ram_limit: hdb_terms.RAM_ALLOCATION_ENUM.DEFAULT,
+            ram_allocation: hdb_terms.RAM_ALLOCATION_ENUM.DEFAULT,
             version: '2.0.0'};
 
         let err = null;
@@ -258,14 +258,14 @@ describe(`Test generateLicense`, function () {
         assert.equal(license, null, 'license value should be null');
     });
 
-    it('Pass ram_limit as string, expect failed to generate license with proper error message', function () {
+    it('Pass ram_allocation as string, expect failed to generate license with proper error message', function () {
         // rewire hdb_license instance locally to keep internal cipher const fresh from another test
         const license_generator = rewire('../../../utility/devops/licenseGenerator');
         // prepare license key obj which *expire date is blank* with dummy fingerprint (no fingerprint validation in generate license process)
         let licenseKeyObject = { exp_date: moment().add(1, 'day').utc().format('YYYY-MM-DD'), company: 'hdb', fingerprint: 'whatever',
             storage_type: 'fs',
             api_call: 90000,
-            ram_limit: "thousand",
+            ram_allocation: "thousand",
             version: '2.0.0'};
 
         let err = null;
@@ -277,11 +277,11 @@ describe(`Test generateLicense`, function () {
         }
 
         assert.notEqual(err, null, 'generate license should get error');
-        assert.equal(err, "Error: Ram limit is not a number", "error message should mention that ram limit must be a number");
+        assert.equal(err, "Error: Ram allocation is not a number", "error message should mention that ram limit must be a number");
         assert.equal(license, null, 'license value should be null');
     });
 
-    it('Pass no ram_limit, expect failed to generate license with proper error message', function () {
+    it('Pass no ram_allocation, expect failed to generate license with proper error message', function () {
         // rewire hdb_license instance locally to keep internal cipher const fresh from another test
         const license_generator = rewire('../../../utility/devops/licenseGenerator');
         // prepare license key obj which *expire date is blank* with dummy fingerprint (no fingerprint validation in generate license process)
@@ -299,7 +299,7 @@ describe(`Test generateLicense`, function () {
         }
 
         assert.notEqual(err, null, 'generate license should get error');
-        assert.equal(err, "Error: Ram limit can't be blank", "error message should mention that ram_limit can't be blank");
+        assert.equal(err, "Error: Ram allocation can't be blank", "error message should mention that ram_allocation can't be blank");
         assert.equal(license, null, 'license value should be null');
     });
 });
@@ -312,7 +312,7 @@ describe(`Test validateLicense`, function () {
         let licenseKeyObject = { exp_date: moment().add(1, 'day').utc().format('YYYY-MM-DD'), company: 'hdb',
             storage_type: 'helium',
             api_call: 90000,
-            ram_limit: hdb_terms.RAM_ALLOCATION_ENUM.DEFAULT,
+            ram_allocation: hdb_terms.RAM_ALLOCATION_ENUM.DEFAULT,
             version: '2.0.0'};
 
         let err = null;
@@ -333,7 +333,7 @@ describe(`Test validateLicense`, function () {
         let licenseKeyObject = { exp_date: moment().add(1, 'day').utc().format('YYYY-MM-DD'), company: 'hdb',
             storage_type: 'fs',
             api_call: 90000,
-            ram_limit: hdb_terms.RAM_ALLOCATION_ENUM.DEFAULT,
+            ram_allocation: hdb_terms.RAM_ALLOCATION_ENUM.DEFAULT,
             version: '2.0.0'};
 
         let err = null;
@@ -354,7 +354,7 @@ describe(`Test validateLicense`, function () {
         let licenseKeyObject = { exp_date: moment().subtract(1, 'day').utc().format('YYYY-MM-DD'), company: 'hdb',
             storage_type: 'helium',
             api_call: 90000,
-            ram_limit: hdb_terms.RAM_ALLOCATION_ENUM.DEFAULT,
+            ram_allocation: hdb_terms.RAM_ALLOCATION_ENUM.DEFAULT,
             version: '2.0.0'};
 
         let err = null;
@@ -386,7 +386,7 @@ describe(`Test validateLicense`, function () {
         let licenseKeyObject = { exp_date: moment().add(1, 'day').utc().format('YYYY-MM-DD'), company: 'hdb',
             storage_type: 'helium',
             api_call: 90000,
-            ram_limit: hdb_terms.RAM_ALLOCATION_ENUM.DEFAULT,
+            ram_allocation: hdb_terms.RAM_ALLOCATION_ENUM.DEFAULT,
             version: '2.0.0'};
 
         let err = null;
@@ -407,7 +407,7 @@ describe(`Test validateLicense`, function () {
         let licenseKeyObject = { exp_date: moment().add(1, 'day').utc().format('YYYY-MM-DD'), company: 'hdb',
             storage_type: 'helium',
             api_call: 90000,
-            ram_limit: hdb_terms.RAM_ALLOCATION_ENUM.DEFAULT,
+            ram_allocation: hdb_terms.RAM_ALLOCATION_ENUM.DEFAULT,
             version: '2.0.0'};
 
         let err = null;
@@ -432,7 +432,7 @@ describe(`Test validateLicense`, function () {
         let licenseKeyObject = { exp_date: moment().add(1, 'day').utc().format('YYYY-MM-DD'), company: 'hdb',
             storage_type: 'helium',
             api_call: 90000,
-            ram_limit: hdb_terms.RAM_ALLOCATION_ENUM.DEFAULT,
+            ram_allocation: hdb_terms.RAM_ALLOCATION_ENUM.DEFAULT,
             version: '2.0.0'};
 
         let err = null;
