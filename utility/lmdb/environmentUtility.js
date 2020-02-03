@@ -6,13 +6,13 @@ const path = require('path');
 const common = require('./commonUtility');
 const LMDB_ERRORS = require('../commonErrors').LMDB_ERRORS_ENUM;
 const DBIDefinition = require('./DBIDefinition');
-
+const lmdb_terms = require('./terms');
 //allow an environment to grow up to 1 TB
 const MAP_SIZE = 1000 * 1024 * 1024 * 1024;
 //allow up to 10,000 named data bases in an environment
 const MAX_DBS = 10000;
-const INTERNAL_DBIS_NAME = '__dbis__';
-const DBI_DEFINITION_NAME = '__dbi_defintion__';
+const INTERNAL_DBIS_NAME = lmdb_terms.INTERNAL_DBIS_NAME;
+const DBI_DEFINITION_NAME = lmdb_terms.DBI_DEFINITION_NAME;
 const MDB_FILE_NAME = 'data.mdb';
 
 /***  VALIDATION FUNCTIONS ***/

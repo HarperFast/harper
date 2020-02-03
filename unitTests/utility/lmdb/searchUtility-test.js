@@ -258,12 +258,12 @@ describe('Test searchUtility module', ()=>{
 
             let rows = test_utils.assertErrorSync(search_util.searchAll, [env, HASH_ATTRIBUTE_NAME, All_ATTRIBUTES], undefined, 'search');
 
-            assert.deepStrictEqual(rows, [
-                {id:1, name:'Kyle', age:46, city:'Denver'},
-                {id:2, name:'Jerry', age:32, city:undefined},
-                {id:3, name: 'Hank', age: 57, city:undefined},
-                {id:4, name:'Joy', age: 44, city:'Denver'}
-            ]);
+            let expected = [];
+            expected.push(Object.assign(Object.create(null), {id:1, name:'Kyle', age:46, city:'Denver'}));
+            expected.push(Object.assign(Object.create(null), {id:2, name:'Jerry', age:32, city:undefined}));
+            expected.push(Object.assign(Object.create(null), {id:3, name: 'Hank', age: 57, city:undefined}));
+            expected.push(Object.assign(Object.create(null), {id:4, name:'Joy', age: 44, city:'Denver'}));
+            assert.deepStrictEqual(rows, expected);
         });
     });
 
@@ -414,6 +414,65 @@ describe('Test searchUtility module', ()=>{
         it("test search on city with Denver", () => {
             let results = test_utils.assertErrorSync(search_util.endsWith, [env, 'city', 'Denver'], undefined, 'all arguments');
             assert.deepStrictEqual(results, ['1', '4']);
+        });
+
+        it("test search on city with town", () => {
+            let results = test_utils.assertErrorSync(search_util.endsWith, [env, 'city', 'town'], undefined, 'all arguments');
+            assert.deepStrictEqual(results, ['5']);
+        });
+
+        it("test search on city with non-existent value", () => {
+            let results = test_utils.assertErrorSync(search_util.endsWith, [env, 'city', 'FoCo'], undefined, 'all arguments');
+            assert.deepStrictEqual(results, []);
+        });
+
+        it("test search on attribute no exist", () => {
+            let results = test_utils.assertErrorSync(search_util.endsWith, [env, 'fake', 'bad'], LMDB_TEST_ERRORS.DBI_DOES_NOT_EXIST);
+            assert.deepStrictEqual(results, undefined);
+        });
+    });
+
+    describe('test greaterThan function', ()=> {
+        let env;
+        before(async () => {
+            await fs.mkdirp(BASE_TEST_PATH);
+            global.lmdb_map = undefined;
+            env = await environment_utility.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
+            await environment_utility.createDBI(env, 'id', false);
+
+            let records = [];
+            for(let x = 0; x < 10000; x++){
+                records.push({id:x, val:x});
+            }
+            write_utility.insertRecords(env, HASH_ATTRIBUTE_NAME, ['id', 'val'], records);
+        });
+
+        after(async () => {
+            await fs.remove(BASE_TEST_PATH);
+            global.lmdb_map = undefined;
+        });
+
+        it("test validation", () => {
+            test_utils.assertErrorSync(search_util.greaterThan, [], LMDB_TEST_ERRORS.ENV_REQUIRED, 'test no args');
+            test_utils.assertErrorSync(search_util.greaterThan, [HASH_ATTRIBUTE_NAME], LMDB_TEST_ERRORS.INVALID_ENVIRONMENT, 'invalid env variable');
+            test_utils.assertErrorSync(search_util.greaterThan, [env], LMDB_TEST_ERRORS.ATTRIBUTE_REQUIRED, 'no hash attribute');
+            test_utils.assertErrorSync(search_util.greaterThan, [env, 'val'], LMDB_TEST_ERRORS.SEARCH_VALUE_REQUIRED, 'no search_value');
+            test_utils.assertErrorSync(search_util.greaterThan, [env, 'val', '11111111'], undefined, 'all arguments');
+        });
+
+        it("test greater than 100", () => {
+
+            let expected_results = [];
+            for(let x = 101; x < 10000; x++){
+                expected_results.push(x.toString());
+            }
+            let results = test_utils.assertErrorSync(search_util.greaterThan, [env, 'val', '100'], undefined);
+            assert.deepStrictEqual(results, expected_results.sort());
+        });
+
+        it("test greater than 227", () => {
+            let results = test_utils.assertErrorSync(search_util.greaterThan, [env, 'val', '227'], undefined);
+            assert.deepStrictEqual(results.length, 8502);
         });
 
         it("test search on city with town", () => {

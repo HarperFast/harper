@@ -1,12 +1,71 @@
 'use strict';
 
-const data_stores= require('./environmentUtility');
+const environment_utility = require('./environmentUtility');
 const Transaction_Cursor = require('./TransactionCursor');
 const lmdb = require('node-lmdb');
 const log = require('../logging/harper_logger');
 const common = require('./commonUtility');
+const lmdb_terms = require('./terms');
 const LMDB_ERRORS = require('../commonErrors').LMDB_ERRORS_ENUM;
 const hdb_utils = require('../common_utils');
+const cursor_functions = require('./searchCursorFunctions');
+
+/** UTILITY CURSOR FUNCTIONS **/
+
+/**
+ *
+ * @param {lmdb.Env} env
+ * @param {String} attribute
+ * @param {Function} eval_function
+ * @returns {[]}
+ */
+function iterateFullIndex(env, attribute, eval_function){
+    let results = [];
+    let txn = new Transaction_Cursor(env, attribute);
+    for (let found = txn.cursor.goToFirst(); found !== null; found = txn.cursor.goToNext()) {
+        eval_function(found, txn.cursor, results);
+    }
+    txn.close();
+    return results;
+}
+
+/**
+ *
+ * @param {lmdb.Env} env
+ * @param {String} attribute
+ * @param {String|Number} search_value
+ * @param {Function} eval_function
+ * @returns {[]}
+ */
+function iterateRangeNext(env, attribute, search_value, eval_function){
+    let txn = new Transaction_Cursor(env, attribute);
+
+    let results = [];
+    for (let found = txn.cursor.goToRange(search_value); found !== null; found = txn.cursor.goToNext()) {
+        eval_function(search_value, found, txn.cursor, results);
+    }
+    txn.close();
+    return results;
+}
+
+/**
+ *
+ * @param {lmdb.Env} env
+ * @param {String} attribute
+ * @param {String|Number} search_value
+ * @param {Function} eval_function
+ * @returns {[]}
+ */
+function iterateRangePrev(env, attribute, search_value, eval_function){
+    let txn = new Transaction_Cursor(env, attribute);
+
+    let results = [];
+    for (let found = txn.cursor.goToRange(search_value); found !== null; found = txn.cursor.goToPrev()) {
+        eval_function(search_value, found, txn.cursor, results);
+    }
+    txn.close();
+    return results;
+}
 
 /**
  * iterates the entire  hash_attribute dbi and returns all objects back
@@ -24,23 +83,8 @@ function searchAll(env, hash_attribute, fetch_attributes){
 
     validateFetchAttributes(fetch_attributes);
 
-    let txn = new Transaction_Cursor(env, hash_attribute);
 
-    let results = [];
-    for (let found = txn.cursor.goToFirst(); found !== null; found = txn.cursor.goToNext()) {
-        let obj = {};
-        let value = JSON.parse(txn.cursor.getCurrentString());
-
-        for(let x = 0; x < fetch_attributes.length; x++){
-            let attribute = fetch_attributes[x];
-            obj[attribute] = value[attribute];
-        }
-
-        results.push(obj);
-    }
-
-    txn.close();
-    return results;
+    return iterateFullIndex(env, hash_attribute, cursor_functions.searchAll.bind(null, fetch_attributes));
 }
 
 /**
@@ -55,13 +99,7 @@ function iterateDBI(env, attribute){
         throw LMDB_ERRORS.ATTRIBUTE_REQUIRED;
     }
 
-    let txn = new Transaction_Cursor(env, attribute);
-    let results = [];
-    for (let found = txn.cursor.goToFirst(); found !== null; found = txn.cursor.goToNext()) {
-        results.push([found, txn.cursor.getCurrentString()]);
-    }
-    txn.close();
-    return results;
+    return iterateFullIndex(env, attribute, cursor_functions.iterateDBI);
 }
 
 /**
@@ -77,7 +115,7 @@ function countAll(env, hash_attribute){
         throw LMDB_ERRORS.HASH_ATTRIBUTE_REQUIRED;
     }
 
-    let stat = data_stores.statDBI(env, hash_attribute);
+    let stat = environment_utility.statDBI(env, hash_attribute);
     return stat.entryCount;
 }
 
@@ -112,20 +150,7 @@ function equals(env, attribute, search_value){
 function startsWith(env, attribute, search_value){
     validateComparisonFunctions(env, attribute, search_value);
 
-    let txn = new Transaction_Cursor(env, attribute);
-
-    let results = [];
-    for (let found = txn.cursor.goToRange(search_value); found !== null; found = txn.cursor.goToNext()) {
-        let value = txn.cursor.getCurrentString();
-
-        if(found.startsWith(search_value)){
-            results.push(value);
-        } else{
-            txn.cursor.goToLast();
-        }
-    }
-    txn.close();
-    return results;
+    return iterateRangeNext(env, attribute, search_value, cursor_functions.startsWith);
 }
 
 /**
@@ -138,39 +163,154 @@ function startsWith(env, attribute, search_value){
 function endsWith(env, attribute, search_value){
     validateComparisonFunctions(env, attribute, search_value);
 
-    let txn = new Transaction_Cursor(env, attribute);
-
-    let results = [];
-    for (let found = txn.cursor.goToFirst(); found !== null; found = txn.cursor.goToNext()) {
-        let value = txn.cursor.getCurrentString();
-        if(found.endsWith(search_value)){
-            results.push(value);
-        }
-    }
-    txn.close();
-    return results;
+    return iterateFullIndex(env, attribute, cursor_functions.endsWith.bind(null, search_value));
 }
 
 /**
  * performs a cotains search on the key of a named dbi, returns a list of ids where their keys contain the search_value
  * @param {lmdb.Env} env - environment object used thigh level to interact with all data in an environment
  * @param {String} attribute - name of the attribute (dbi) to search
- * @param search_value - value to search
+ * @param {String|Number} search_value - value to search
  * @returns {[]} - ids matching the search
  */
 function contains(env, attribute, search_value){
     validateComparisonFunctions(env, attribute, search_value);
 
-    let txn = new Transaction_Cursor(env, attribute);
+    return iterateFullIndex(env, attribute, cursor_functions.contains.bind(null, search_value));
+}
 
-    let results = [];
-    for (let found = txn.cursor.goToFirst(); found !== null; found = txn.cursor.goToNext()) {
-        if(found.includes(search_value)){
-            results.push(txn.cursor.getCurrentString());
-        }
+/** RANGE FUNCTIONS **/
+
+/**
+ *
+ * @param env
+ * @param attribute
+ * @param search_value
+ * @returns {{}}
+ */
+function initializeRangeFunction(env, attribute, search_value){
+    validateComparisonFunctions(env, attribute, search_value);
+
+    let dbi = environment_utility.openDBI(env, attribute);
+    let search_info = new Object(null);
+    search_info.search_value_is_numeric = isNaN(search_value);
+    search_info.dbi_numeric_key = dbi[lmdb_terms.DBI_DEFINITION_NAME].int_key;
+
+
+    //if we are trying to compare a non-numeric value to numeric keys we throw an error
+    if(search_info.search_value_is_numeric === false && search_info.dbi_numeric_key === true){
+        throw LMDB_ERRORS.CANNOT_COMPARE_STRING_TO_NUMERIC_KEYS;
     }
-    txn.close();
-    return results;
+
+    return search_info;
+}
+
+/**
+ *
+ * @param env
+ * @param attribute
+ * @param search_value
+ * @returns {*[]}
+ */
+function greaterThan(env, attribute, search_value){
+    let search_info = initializeRangeFunction(env, attribute, search_value);
+
+    if(search_info.search_value_is_numeric === false){
+        return iterateFullIndex(env, attribute, cursor_functions.greaterThanStringCompare.bind(null, search_value));
+    }
+
+    if(search_info.search_value_is_numeric === true && search_info.dbi_numeric_key === false){
+        return iterateFullIndex(env, attribute, cursor_functions.greaterThanStringToNumberCompare.bind(null, Number(search_value)));
+    }
+
+    if(search_info.search_value_is_numeric === true && search_info.dbi_numeric_key === true){
+        //add 1 to the search value because we want everything greater than the search value & the key is an int
+        return iterateRangeNext(env, attribute, Number(search_value) + 1, cursor_functions.addResult);
+    }
+}
+
+function greaterThanEqual(env, attribute, search_value){
+    let search_info = initializeRangeFunction(env, attribute, search_value);
+
+    if(search_info.search_value_is_numeric === false){
+        return iterateFullIndex(env, attribute, cursor_functions.greaterThanEqualStringCompare.bind(null, search_value));
+    }
+
+    if(search_info.search_value_is_numeric === true && search_info.dbi_numeric_key === false){
+        return iterateFullIndex(env, attribute, cursor_functions.greaterThanEqualStringToNumberCompare.bind(null, Number(search_value)));
+    }
+
+    if(search_info.search_value_is_numeric === true && search_info.dbi_numeric_key === true){
+        return iterateRangeNext(env, attribute, Number(search_value), cursor_functions.addResult);
+    }
+}
+
+function lessThan(env, attribute, search_value){
+    let search_info = initializeRangeFunction(env, attribute, search_value);
+
+    if(search_info.search_value_is_numeric === false){
+        return iterateFullIndex(env, attribute, cursor_functions.lessThanStringCompare.bind(null, search_value));
+    }
+
+    if(search_info.search_value_is_numeric === true && search_info.dbi_numeric_key === false){
+        return iterateFullIndex(env, attribute, cursor_functions.lessThanStringToNumberCompare.bind(null, Number(search_value)));
+    }
+
+    if(search_info.search_value_is_numeric === true && search_info.dbi_numeric_key === true){
+        //subtract 1 from the search value because we want everything less than the search value & the key is an int
+        return iterateRangePrev(env, attribute, Number(search_value) -1, cursor_functions.addResult);
+    }
+}
+
+function lessThanEqual(env, attribute, search_value){
+    let search_info = initializeRangeFunction(env, attribute, search_value);
+
+    if(search_info.search_value_is_numeric === false){
+        return iterateFullIndex(env, attribute, cursor_functions.lessThanEqualStringCompare.bind(null, search_value));
+    }
+
+    if(search_info.search_value_is_numeric === true && search_info.dbi_numeric_key === false){
+        return iterateFullIndex(env, attribute, cursor_functions.lessThanEqualStringToNumberCompare.bind(null, Number(search_value)));
+    }
+
+    if(search_info.search_value_is_numeric === true && search_info.dbi_numeric_key === true){
+        return iterateRangePrev(env, attribute, Number(search_value), cursor_functions.addResult);
+    }
+}
+
+function between(env, attribute, start_value, end_value){
+    common.validateEnv(env);
+    if(attribute === undefined){
+        throw LMDB_ERRORS.ATTRIBUTE_REQUIRED;
+    }
+
+    if(start_value === undefined){
+        throw LMDB_ERRORS.START_VALUE_REQUIRED;
+    }
+
+    if(end_value === undefined){
+        throw LMDB_ERRORS.END_VALUE_REQUIRED;
+    }
+
+    if(isNaN(start_value)){
+        throw new Error('start_value must be a number');
+    }
+
+    if(isNaN(end_value)){
+        throw new Error('end_value must be a number');
+    }
+
+    if(!(end_value <= start_value)){
+        throw new Error('end_value must be greater than start_value');
+    }
+
+    let dbi = environment_utility.openDBI(env, attribute);
+
+    if(dbi[lmdb_terms.DBI_DEFINITION_NAME].int_key === false){
+        return iterateFullIndex(env, attribute, cursor_functions.betweenStringToNumberCompare.bind(null, Number(start_value), Number(end_value)));
+    }
+
+    return iterateRangeNext(env, attribute, Number(start_value), cursor_functions.betweenNumericCompare.bind(null, Number(end_value)));
 }
 
 /**
@@ -397,5 +537,10 @@ module.exports = {
     batchSearchByHash,
     batchSearchByHashToMap,
     checkHashExists,
-    iterateDBI
+    iterateDBI,
+    greaterThan,
+    greaterThanEqual,
+    lessThan,
+    lessThanEqual,
+    between
 };

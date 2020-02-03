@@ -1,5 +1,6 @@
 "use strict";
 
+const lmdb_terms = require('../utility/lmdb/terms');
 /**
  * the purpose of this is to hold the expected errors to check from our functions being tested
  */
@@ -24,8 +25,8 @@ const LMDB_ERRORS_ENUM = {
     WRITE_ATTRIBUTES_MUST_BE_ARRAY: new Error('write_attributes must be an array'),
     RECORDS_REQUIRED: new Error('records is required'),
     RECORDS_MUST_BE_ARRAY: new Error('records must be an array'),
-    CANNOT_CREATE_INTERNAL_DBIS_NAME: new Error('cannot create a dbi named __dbis__'),
-    CANNOT_DROP_INTERNAL_DBIS_NAME: new Error('cannot drop a dbi named __dbis__')
+    CANNOT_CREATE_INTERNAL_DBIS_NAME: new Error(`cannot create a dbi named ${lmdb_terms.INTERNAL_DBIS_NAME}`),
+    CANNOT_DROP_INTERNAL_DBIS_NAME: new Error(`cannot drop a dbi named ${lmdb_terms.INTERNAL_DBIS_NAME}`)
 };
 
 module.exports = {
