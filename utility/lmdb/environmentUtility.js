@@ -24,11 +24,11 @@ const MDB_FILE_NAME = 'data.mdb';
  */
 async function pathEnvNameValidation(base_path, env_name){
     if(base_path === undefined){
-        throw LMDB_ERRORS.BASE_PATH_REQUIRED;
+        throw new Error(LMDB_ERRORS.BASE_PATH_REQUIRED);
     }
 
     if(env_name === undefined){
-        throw LMDB_ERRORS.ENV_NAME_REQUIRED;
+        throw new Error(LMDB_ERRORS.ENV_NAME_REQUIRED);
     }
 
     //verify the base_path is valid
@@ -36,7 +36,7 @@ async function pathEnvNameValidation(base_path, env_name){
         await fs.access(base_path);
     } catch(e){
         if(e.code === 'ENOENT'){
-            throw LMDB_ERRORS.INVALID_BASE_PATH;
+            throw new Error(LMDB_ERRORS.INVALID_BASE_PATH);
         }
 
         throw e;
@@ -54,7 +54,7 @@ async function validateEnvironmentPath(base_path, env_name){
         await fs.access(path.join(base_path, env_name, MDB_FILE_NAME), fs.constants.R_OK | fs.constants.F_OK);
     } catch(e){
         if(e.code === 'ENOENT'){
-            throw LMDB_ERRORS.INVALID_ENVIRONMENT;
+            throw new Error(LMDB_ERRORS.INVALID_ENVIRONMENT);
         }
 
         throw e;
@@ -70,7 +70,7 @@ function validateEnvDBIName(env, dbi_name){
     common.validateEnv(env);
 
     if(dbi_name === undefined){
-        throw LMDB_ERRORS.DBI_NAME_REQUIRED;
+        throw new Error(LMDB_ERRORS.DBI_NAME_REQUIRED);
     }
 }
 
@@ -297,7 +297,7 @@ function createDBI(env, dbi_name, dup_sort, int_key){
     validateEnvDBIName(env, dbi_name);
 
     if(dbi_name === INTERNAL_DBIS_NAME){
-        throw LMDB_ERRORS.CANNOT_CREATE_INTERNAL_DBIS_NAME;
+        throw new Error(LMDB_ERRORS.CANNOT_CREATE_INTERNAL_DBIS_NAME);
     }
 
     try {
@@ -305,7 +305,7 @@ function createDBI(env, dbi_name, dup_sort, int_key){
         return openDBI(env, dbi_name);
     } catch(e) {
         //if not create it
-        if(e === LMDB_ERRORS.DBI_DOES_NOT_EXIST) {
+        if(e.message === LMDB_ERRORS.DBI_DOES_NOT_EXIST) {
             let new_dbi = env.openDbi({
                 name: dbi_name,
                 create: true,
@@ -355,7 +355,7 @@ function openDBI(env, dbi_name){
         });
     } catch(e){
         if(e.message.startsWith('MDB_NOTFOUND') === true){
-            throw LMDB_ERRORS.DBI_DOES_NOT_EXIST;
+            throw new Error(LMDB_ERRORS.DBI_DOES_NOT_EXIST);
         }
 
         throw e;
@@ -389,7 +389,7 @@ function dropDBI(env, dbi_name){
     validateEnvDBIName(env, dbi_name);
 
     if(dbi_name === INTERNAL_DBIS_NAME){
-        throw LMDB_ERRORS.CANNOT_DROP_INTERNAL_DBIS_NAME;
+        throw new Error(LMDB_ERRORS.CANNOT_DROP_INTERNAL_DBIS_NAME);
     }
 
     let dbi = openDBI(env, dbi_name);
@@ -422,7 +422,7 @@ function initializeDBIs(env, hash_attribute, write_attributes){
                 openDBI(env, attribute);
             } catch (e) {
                 //if not opened, create it
-                if (e === LMDB_ERRORS.DBI_DOES_NOT_EXIST) {
+                if (e.message === LMDB_ERRORS.DBI_DOES_NOT_EXIST) {
                     createDBI(env, attribute, attribute !== hash_attribute);
                 } else {
                     throw e;

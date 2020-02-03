@@ -12,10 +12,10 @@ function validateEnv(env){
     if(!(env instanceof lmdb.Env)){
 
         if(env === undefined){
-            throw LMDB_ERRORS.ENV_REQUIRED;
+            throw new Error(LMDB_ERRORS.ENV_REQUIRED);
         }
 
-        throw LMDB_ERRORS.INVALID_ENVIRONMENT;
+        throw new Error(LMDB_ERRORS.INVALID_ENVIRONMENT);
     }
 }
 
