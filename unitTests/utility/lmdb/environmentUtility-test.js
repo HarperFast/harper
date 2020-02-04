@@ -1,5 +1,6 @@
 "use strict";
 
+const DBIDefinition = require('../../../utility/lmdb/DBIDefinition');
 const lmdb_env_util = require('../../../utility/lmdb/environmentUtility');
 const rewire = require('rewire');
 const rw_lmdb_env_util = rewire('../../../utility/lmdb/environmentUtility');
@@ -128,23 +129,30 @@ describe("Test LMDB environmentUtility module", ()=>{
         });
 
         it('call function happy path', async ()=>{
-            await test_utils.assertErrorAsync(lmdb_env_util.createEnvironment, [BASE_TEST_PATH, TEST_ENVIRONMENT_NAME], undefined, 'happy path');
+            let env = await test_utils.assertErrorAsync(lmdb_env_util.createEnvironment, [BASE_TEST_PATH, TEST_ENVIRONMENT_NAME], undefined, 'happy path');
 
             await test_utils.assertErrorAsync(await fs.access, [path.join(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME, 'data.mdb')], undefined, 'test path exists');
 
             assert.notDeepStrictEqual(global.lmdb_map, undefined);
             assert.notDeepStrictEqual(global.lmdb_map[CACHED_ENV_NAME], undefined);
+
+            //test to make sure the internal dbi exists
+            await test_utils.assertErrorAsync(lmdb_env_util.openDBI, [env, '__dbis__'], undefined);
+
         });
 
         it('create existing environment', async ()=>{
             global.lmdb_map = undefined;
 
-            await test_utils.assertErrorAsync(lmdb_env_util.createEnvironment, [BASE_TEST_PATH, TEST_ENVIRONMENT_NAME], undefined);
+            let env = await test_utils.assertErrorAsync(lmdb_env_util.createEnvironment, [BASE_TEST_PATH, TEST_ENVIRONMENT_NAME], undefined);
 
             await test_utils.assertErrorAsync(await fs.access, [path.join(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME, 'data.mdb')], undefined, 'test path exists');
 
             assert.notDeepStrictEqual(global.lmdb_map, undefined);
             assert.notDeepStrictEqual(global.lmdb_map[CACHED_ENV_NAME], undefined);
+
+            //test to make sure the internal dbi exists
+            await test_utils.assertErrorAsync(lmdb_env_util.openDBI, [env, '__dbis__'], undefined);
         });
     });
 
@@ -184,6 +192,9 @@ describe("Test LMDB environmentUtility module", ()=>{
             assert.notDeepStrictEqual(env, undefined);
             assert.notDeepStrictEqual(global.lmdb_map[CACHED_ENV_NAME], undefined);
             assert.deepStrictEqual(env, global.lmdb_map[CACHED_ENV_NAME]);
+
+            //test to make sure the internal dbi exists
+            await test_utils.assertErrorAsync(lmdb_env_util.openDBI, [env, '__dbis__'], undefined);
         });
 
     });
@@ -235,14 +246,14 @@ describe("Test LMDB environmentUtility module", ()=>{
 
         describe("Test createDBI function", ()=> {
             let env;
-            before(async () => {
+            beforeEach(async () => {
                 global.lmdb_map = undefined;
                 await fs.mkdirp(BASE_TEST_PATH);
 
                 env = await lmdb_env_util.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
             });
 
-            after(async () => {
+            afterEach(async () => {
                 await fs.remove(BASE_TEST_PATH);
                 test_utils.tearDownMockFS();
                 global.lmdb_map = undefined;
@@ -256,17 +267,87 @@ describe("Test LMDB environmentUtility module", ()=>{
                 await test_utils.assertErrorAsync(lmdb_env_util.createDBI, [env], LMDB_TEST_ERRORS.DBI_NAME_REQUIRED);
             });
 
+            it('call function with internal dbi name', async ()=>{
+                await test_utils.assertErrorAsync(lmdb_env_util.createDBI, [env, '__dbis__'], LMDB_TEST_ERRORS.CANNOT_CREATE_INTERNAL_DBIS_NAME);
+            });
+
             it('call function happy path', async ()=>{
                 let dbi = await test_utils.assertErrorAsync(lmdb_env_util.createDBI, [env, ID_DBI_NAME], undefined);
                 assert.notDeepStrictEqual(dbi, undefined);
                 assert(dbi.constructor.name === 'Dbi');
+
+                assert.notDeepStrictEqual(global.lmdb_map[CACHED_ENV_NAME], undefined);
+                assert.deepStrictEqual(env, global.lmdb_map[CACHED_ENV_NAME]);
+
+                assert.notDeepStrictEqual(global.lmdb_map[CACHED_ENV_NAME].dbis[ID_DBI_NAME], undefined);
+                assert.deepStrictEqual(global.lmdb_map[CACHED_ENV_NAME].dbis[ID_DBI_NAME], dbi);
+
+                assert.deepStrictEqual(global.lmdb_map[CACHED_ENV_NAME].dbis[ID_DBI_NAME].__dbi_defintion__, new DBIDefinition(false, false));
+            });
+
+            it('call function with dup_sort = true', async ()=>{
+                let dbi = await test_utils.assertErrorAsync(lmdb_env_util.createDBI, [env, ID_DBI_NAME, true], undefined);
+                assert.notDeepStrictEqual(dbi, undefined);
+                assert(dbi.constructor.name === 'Dbi');
+
+                assert.notDeepStrictEqual(global.lmdb_map[CACHED_ENV_NAME], undefined);
+                assert.deepStrictEqual(env, global.lmdb_map[CACHED_ENV_NAME]);
+
+                assert.notDeepStrictEqual(global.lmdb_map[CACHED_ENV_NAME].dbis[ID_DBI_NAME], undefined);
+                assert.deepStrictEqual(global.lmdb_map[CACHED_ENV_NAME].dbis[ID_DBI_NAME], dbi);
+
+                assert.deepStrictEqual(global.lmdb_map[CACHED_ENV_NAME].dbis[ID_DBI_NAME].__dbi_defintion__, new DBIDefinition(true, false));
+            });
+
+            it('call function with dup_key & int_key = true', async ()=>{
+                let dbi = await test_utils.assertErrorAsync(lmdb_env_util.createDBI, [env, ID_DBI_NAME, true, true], undefined);
+                assert.notDeepStrictEqual(dbi, undefined);
+                assert(dbi.constructor.name === 'Dbi');
+
+                assert.notDeepStrictEqual(global.lmdb_map[CACHED_ENV_NAME], undefined);
+                assert.deepStrictEqual(env, global.lmdb_map[CACHED_ENV_NAME]);
+
+                assert.notDeepStrictEqual(global.lmdb_map[CACHED_ENV_NAME].dbis[ID_DBI_NAME], undefined);
+                assert.deepStrictEqual(global.lmdb_map[CACHED_ENV_NAME].dbis[ID_DBI_NAME], dbi);
+
+                assert.deepStrictEqual(global.lmdb_map[CACHED_ENV_NAME].dbis[ID_DBI_NAME].__dbi_defintion__, new DBIDefinition(true, true));
+            });
+
+            it('call function with dup_key = false & int_key = true', async ()=>{
+                let dbi = await test_utils.assertErrorAsync(lmdb_env_util.createDBI, [env, ID_DBI_NAME, false, true], undefined);
+                assert.notDeepStrictEqual(dbi, undefined);
+                assert(dbi.constructor.name === 'Dbi');
+
+                assert.notDeepStrictEqual(global.lmdb_map[CACHED_ENV_NAME], undefined);
+                assert.deepStrictEqual(env, global.lmdb_map[CACHED_ENV_NAME]);
+
+                assert.notDeepStrictEqual(global.lmdb_map[CACHED_ENV_NAME].dbis[ID_DBI_NAME], undefined);
+                assert.deepStrictEqual(global.lmdb_map[CACHED_ENV_NAME].dbis[ID_DBI_NAME], dbi);
+
+                assert.deepStrictEqual(global.lmdb_map[CACHED_ENV_NAME].dbis[ID_DBI_NAME].__dbi_defintion__, new DBIDefinition(false, true));
             });
 
             it('call function on existing dbi', async ()=>{
-                let dbi = await test_utils.assertErrorAsync(lmdb_env_util.createDBI, [env, ID_DBI_NAME], undefined);
-
+                let dbi = await test_utils.assertErrorAsync(lmdb_env_util.createDBI, [env, ID_DBI_NAME, true, true], undefined);
                 assert.notDeepStrictEqual(dbi, undefined);
                 assert(dbi.constructor.name === 'Dbi');
+
+                assert.notDeepStrictEqual(global.lmdb_map[CACHED_ENV_NAME], undefined);
+                assert.deepStrictEqual(env, global.lmdb_map[CACHED_ENV_NAME]);
+
+                assert.notDeepStrictEqual(global.lmdb_map[CACHED_ENV_NAME].dbis[ID_DBI_NAME], undefined);
+                assert.deepStrictEqual(global.lmdb_map[CACHED_ENV_NAME].dbis[ID_DBI_NAME], dbi);
+
+                assert.deepStrictEqual(global.lmdb_map[CACHED_ENV_NAME].dbis[ID_DBI_NAME].__dbi_defintion__, new DBIDefinition(true, true));
+
+
+                let dbi2 = await test_utils.assertErrorAsync(lmdb_env_util.createDBI, [env, ID_DBI_NAME], undefined);
+
+                assert.notDeepStrictEqual(dbi, undefined);
+                assert.deepStrictEqual(dbi, dbi2);
+                assert(dbi.constructor.name === 'Dbi');
+
+                assert.deepStrictEqual(global.lmdb_map[CACHED_ENV_NAME].dbis[ID_DBI_NAME].__dbi_defintion__, new DBIDefinition(true, true));
             });
         });
 
@@ -277,7 +358,7 @@ describe("Test LMDB environmentUtility module", ()=>{
                 await fs.mkdirp(BASE_TEST_PATH);
 
                 env = await lmdb_env_util.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
-                await lmdb_env_util.createDBI(env, ID_DBI_NAME);
+                await lmdb_env_util.createDBI(env, ID_DBI_NAME, true, false);
             });
 
             after(async () => {
@@ -298,6 +379,14 @@ describe("Test LMDB environmentUtility module", ()=>{
                 let dbi = await test_utils.assertErrorAsync(lmdb_env_util.openDBI, [env, ID_DBI_NAME], undefined);
                 assert.notDeepStrictEqual(dbi, undefined);
                 assert(dbi.constructor.name === 'Dbi');
+
+                assert.notDeepStrictEqual(global.lmdb_map[CACHED_ENV_NAME], undefined);
+                assert.deepStrictEqual(env, global.lmdb_map[CACHED_ENV_NAME]);
+
+                assert.notDeepStrictEqual(global.lmdb_map[CACHED_ENV_NAME].dbis[ID_DBI_NAME], undefined);
+                assert.deepStrictEqual(global.lmdb_map[CACHED_ENV_NAME].dbis[ID_DBI_NAME], dbi);
+
+                assert.deepStrictEqual(global.lmdb_map[CACHED_ENV_NAME].dbis[ID_DBI_NAME].__dbi_defintion__, new DBIDefinition(true, false));
             });
 
             it('call function dbi not initialized', async ()=>{
@@ -307,6 +396,14 @@ describe("Test LMDB environmentUtility module", ()=>{
                 let dbi = await test_utils.assertErrorAsync(lmdb_env_util.openDBI, [env, ID_DBI_NAME], undefined);
                 assert.notDeepStrictEqual(dbi, undefined);
                 assert(dbi.constructor.name === 'Dbi');
+
+                assert.notDeepStrictEqual(global.lmdb_map[CACHED_ENV_NAME], undefined);
+                assert.deepStrictEqual(env, global.lmdb_map[CACHED_ENV_NAME]);
+
+                assert.notDeepStrictEqual(global.lmdb_map[CACHED_ENV_NAME].dbis[ID_DBI_NAME], undefined);
+                assert.deepStrictEqual(global.lmdb_map[CACHED_ENV_NAME].dbis[ID_DBI_NAME], dbi);
+
+                assert.deepStrictEqual(global.lmdb_map[CACHED_ENV_NAME].dbis[ID_DBI_NAME].__dbi_defintion__, new DBIDefinition(true, false));
             });
 
             it('call function on dbi no exist', async ()=>{
@@ -315,7 +412,7 @@ describe("Test LMDB environmentUtility module", ()=>{
             });
         });
 
-        describe("Test listDBIs function", ()=> {
+        describe("Test listDBIDefinitions function", ()=> {
             let env;
             let env2;
             before(async () => {
@@ -325,6 +422,7 @@ describe("Test LMDB environmentUtility module", ()=>{
                 env = await lmdb_env_util.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
                 env2 = await lmdb_env_util.createEnvironment(BASE_TEST_PATH, BAD_TEST_ENVIRONMENT_NAME);
                 await lmdb_env_util.createDBI(env, ID_DBI_NAME, true);
+                await lmdb_env_util.createDBI(env, 'temperature', true, true);
             });
 
             after(async () => {
@@ -334,20 +432,59 @@ describe("Test LMDB environmentUtility module", ()=>{
             });
 
             it('call function no args', async ()=>{
-                await test_utils.assertErrorAsync(lmdb_env_util.listDBIs, [], LMDB_TEST_ERRORS.ENV_REQUIRED);
+                await test_utils.assertErrorAsync(lmdb_env_util.listDBIDefinitions, [], LMDB_TEST_ERRORS.ENV_REQUIRED);
             });
 
             it('call function happy path', async ()=>{
-                let dbis = await test_utils.assertErrorAsync(lmdb_env_util.listDBIs, [env], undefined);
+                let dbis = await test_utils.assertErrorAsync(lmdb_env_util.listDBIDefinitions, [env], undefined);
 
-                assert.deepStrictEqual(dbis, [ID_DBI_NAME]);
+                let expected = Object.create(null);
+                expected.id = new DBIDefinition(true, false);
+                expected.temperature = new DBIDefinition(true, true);
+
+                assert.deepStrictEqual(expected, dbis);
             });
 
             it('call function no dbis', async ()=>{
-                let dbis = await test_utils.assertErrorAsync(lmdb_env_util.listDBIs, [env2], undefined);
-                assert.deepStrictEqual(dbis, []);
+                let dbis = await test_utils.assertErrorAsync(lmdb_env_util.listDBIDefinitions, [env2], undefined);
+                assert.deepStrictEqual(dbis, Object.create(null));
             });
         });
+
+    describe("Test listDBIs function", ()=> {
+        let env;
+        let env2;
+        before(async () => {
+            global.lmdb_map = undefined;
+            await fs.mkdirp(BASE_TEST_PATH);
+
+            env = await lmdb_env_util.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
+            env2 = await lmdb_env_util.createEnvironment(BASE_TEST_PATH, BAD_TEST_ENVIRONMENT_NAME);
+            await lmdb_env_util.createDBI(env, ID_DBI_NAME, true);
+            await lmdb_env_util.createDBI(env, 'temperature', true, true);
+        });
+
+        after(async () => {
+            await fs.remove(BASE_TEST_PATH);
+            test_utils.tearDownMockFS();
+            global.lmdb_map = undefined;
+        });
+
+        it('call function no args', async ()=>{
+            await test_utils.assertErrorAsync(lmdb_env_util.listDBIs, [], LMDB_TEST_ERRORS.ENV_REQUIRED);
+        });
+
+        it('call function happy path', async ()=>{
+            let dbis = await test_utils.assertErrorAsync(lmdb_env_util.listDBIs, [env], undefined);
+
+            assert.deepStrictEqual(dbis, ['id', 'temperature']);
+        });
+
+        it('call function no dbis', async ()=>{
+            let dbis = await test_utils.assertErrorAsync(lmdb_env_util.listDBIs, [env2], undefined);
+            assert.deepStrictEqual(dbis, []);
+        });
+    });
 
         describe("Test statDBI function", ()=> {
             let env;
@@ -416,11 +553,22 @@ describe("Test LMDB environmentUtility module", ()=>{
                 await test_utils.assertErrorAsync(lmdb_env_util.dropDBI, [env], LMDB_TEST_ERRORS.DBI_NAME_REQUIRED);
             });
 
+            it('call function with internal dbi name', async ()=>{
+                await test_utils.assertErrorAsync(lmdb_env_util.dropDBI, [env, '__dbis__'], LMDB_TEST_ERRORS.CANNOT_DROP_INTERNAL_DBIS_NAME);
+            });
+
             it('call function happy path', async ()=>{
                 await test_utils.assertErrorAsync(lmdb_env_util.dropDBI, [env, ID_DBI_NAME], undefined);
 
                 let dbi = await test_utils.assertErrorAsync(lmdb_env_util.openDBI, [env, ID_DBI_NAME], LMDB_TEST_ERRORS.DBI_DOES_NOT_EXIST);
                 assert.deepStrictEqual(dbi, undefined);
+
+                assert.notDeepStrictEqual(global.lmdb_map[CACHED_ENV_NAME], undefined);
+                assert.deepStrictEqual(env, global.lmdb_map[CACHED_ENV_NAME]);
+
+                assert.deepStrictEqual(global.lmdb_map[CACHED_ENV_NAME].dbis[ID_DBI_NAME], undefined);
+                assert.deepStrictEqual(global.lmdb_map[CACHED_ENV_NAME].dbis[ID_DBI_NAME], dbi);
+
             });
 
             it('call function on dbi no exist', async ()=>{
@@ -450,12 +598,16 @@ describe("Test LMDB environmentUtility module", ()=>{
             let list_e;
             let dbis;
             try{
-                dbis = lmdb_env_util.listDBIs(env);
+                dbis = lmdb_env_util.listDBIDefinitions(env);
             }catch (e) {
                 list_e = e;
             }
+
+            let expected = Object.create(null);
+            expected.id = new DBIDefinition(false, false);
+
             assert.deepStrictEqual(list_e, undefined);
-            assert.deepStrictEqual(dbis, [ID_DBI_NAME]);
+            assert.deepStrictEqual(dbis, expected);
 
             let err;
             try{
@@ -468,17 +620,15 @@ describe("Test LMDB environmentUtility module", ()=>{
 
             let list_err;
             try{
-                dbis = lmdb_env_util.listDBIs(env);
+                dbis = lmdb_env_util.listDBIDefinitions(env);
             }catch (e) {
                 list_err = e;
             }
 
+            expected.age = new DBIDefinition(true, false);
+            expected.name = new DBIDefinition(true, false);
             assert.deepStrictEqual(list_err, undefined);
-            assert.deepStrictEqual(dbis, [
-                "age",
-                "id",
-                "name"
-            ]);
+            assert.deepStrictEqual(dbis, expected);
         });
     });
 

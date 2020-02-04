@@ -1,7 +1,7 @@
 'use strict';
 
-const data_stores= require('./environmentUtility');
-const Transaction_Cursor = require('./TransactionCursor');
+const environment_utility= require('./environmentUtility');
+const Transaction_Cursor = environment_utility.TransactionCursor;
 const lmdb = require('node-lmdb');
 const log = require('../logging/harper_logger');
 const common = require('./commonUtility');
@@ -19,7 +19,7 @@ function searchAll(env, hash_attribute, fetch_attributes){
     common.validateEnv(env);
 
     if(hash_attribute === undefined){
-        throw LMDB_ERRORS.HASH_ATTRIBUTE_REQUIRED;
+        throw new Error(LMDB_ERRORS.HASH_ATTRIBUTE_REQUIRED);
     }
 
     validateFetchAttributes(fetch_attributes);
@@ -52,7 +52,7 @@ function searchAll(env, hash_attribute, fetch_attributes){
 function iterateDBI(env, attribute){
     common.validateEnv(env);
     if(attribute === undefined){
-        throw LMDB_ERRORS.ATTRIBUTE_REQUIRED;
+        throw new Error(LMDB_ERRORS.ATTRIBUTE_REQUIRED);
     }
 
     let txn = new Transaction_Cursor(env, attribute);
@@ -74,10 +74,10 @@ function countAll(env, hash_attribute){
     common.validateEnv(env);
 
     if(hash_attribute === undefined){
-        throw LMDB_ERRORS.HASH_ATTRIBUTE_REQUIRED;
+        throw new Error(LMDB_ERRORS.HASH_ATTRIBUTE_REQUIRED);
     }
 
-    let stat = data_stores.statDBI(env, hash_attribute);
+    let stat = environment_utility.statDBI(env, hash_attribute);
     return stat.entryCount;
 }
 
@@ -185,13 +185,13 @@ function searchByHash(env, hash_attribute, fetch_attributes, id) {
     common.validateEnv(env);
 
     if(hash_attribute === undefined){
-        throw LMDB_ERRORS.HASH_ATTRIBUTE_REQUIRED;
+        throw new Error(LMDB_ERRORS.HASH_ATTRIBUTE_REQUIRED);
     }
 
     validateFetchAttributes(fetch_attributes);
 
     if(id === undefined){
-        throw LMDB_ERRORS.ID_REQUIRED;
+        throw new Error(LMDB_ERRORS.ID_REQUIRED);
     }
 
     let txn = new Transaction_Cursor(env, hash_attribute);
@@ -221,11 +221,11 @@ function checkHashExists(env, hash_attribute, id) {
     common.validateEnv(env);
 
     if(hash_attribute === undefined){
-        throw LMDB_ERRORS.HASH_ATTRIBUTE_REQUIRED;
+        throw new Error(LMDB_ERRORS.HASH_ATTRIBUTE_REQUIRED);
     }
 
     if(id === undefined){
-        throw LMDB_ERRORS.ID_REQUIRED;
+        throw new Error(LMDB_ERRORS.ID_REQUIRED);
     }
 
     let found_key = true;
@@ -334,17 +334,17 @@ function initializeBatchSearchByHash(env, hash_attribute, fetch_attributes, ids,
     common.validateEnv(env);
 
     if(hash_attribute === undefined){
-        throw LMDB_ERRORS.HASH_ATTRIBUTE_REQUIRED;
+        throw new Error(LMDB_ERRORS.HASH_ATTRIBUTE_REQUIRED);
     }
 
     validateFetchAttributes(fetch_attributes);
 
     if(!Array.isArray(ids)){
         if(ids === undefined){
-            throw LMDB_ERRORS.IDS_REQUIRED;
+            throw new Error(LMDB_ERRORS.IDS_REQUIRED);
         }
 
-        throw LMDB_ERRORS.IDS_MUST_BE_ARRAY;
+        throw new Error(LMDB_ERRORS.IDS_MUST_BE_ARRAY);
     }
 
     if(!Array.isArray(not_found)){
@@ -361,9 +361,9 @@ function initializeBatchSearchByHash(env, hash_attribute, fetch_attributes, ids,
 function validateFetchAttributes(fetch_attributes){
     if(!Array.isArray(fetch_attributes)){
         if(fetch_attributes === undefined){
-            throw LMDB_ERRORS.FETCH_ATTRIBUTES_REQUIRED;
+            throw new Error(LMDB_ERRORS.FETCH_ATTRIBUTES_REQUIRED);
         }
-        throw LMDB_ERRORS.FETCH_ATTRIBUTES_MUST_BE_ARRAY;
+        throw new Error(LMDB_ERRORS.FETCH_ATTRIBUTES_MUST_BE_ARRAY);
     }
 }
 
@@ -376,11 +376,11 @@ function validateFetchAttributes(fetch_attributes){
 function validateComparisonFunctions(env, attribute, search_value){
     common.validateEnv(env);
     if(attribute === undefined){
-        throw LMDB_ERRORS.ATTRIBUTE_REQUIRED;
+        throw new Error(LMDB_ERRORS.ATTRIBUTE_REQUIRED);
     }
 
     if(search_value === undefined){
-        throw LMDB_ERRORS.SEARCH_VALUE_REQUIRED;
+        throw new Error(LMDB_ERRORS.SEARCH_VALUE_REQUIRED);
     }
 }
 

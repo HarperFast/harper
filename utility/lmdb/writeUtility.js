@@ -178,15 +178,15 @@ function validateBasic(env, hash_attribute, write_attributes){
     common.validateEnv(env);
 
     if(hash_attribute === undefined){
-        throw LMDB_ERRORS.HASH_ATTRIBUTE_REQUIRED;
+        throw new Error(LMDB_ERRORS.HASH_ATTRIBUTE_REQUIRED);
     }
 
     if(!Array.isArray(write_attributes)){
         if(write_attributes === undefined){
-            throw LMDB_ERRORS.WRITE_ATTRIBUTES_REQUIRED;
+            throw new Error(LMDB_ERRORS.WRITE_ATTRIBUTES_REQUIRED);
         }
 
-        throw LMDB_ERRORS.WRITE_ATTRIBUTES_MUST_BE_ARRAY;
+        throw new Error(LMDB_ERRORS.WRITE_ATTRIBUTES_MUST_BE_ARRAY);
     }
 }
 
@@ -202,10 +202,10 @@ function validateWrite(env, hash_attribute, write_attributes , records){
 
     if(!Array.isArray(records)){
         if(records === undefined){
-            throw LMDB_ERRORS.RECORDS_REQUIRED;
+            throw new Error(LMDB_ERRORS.RECORDS_REQUIRED);
         }
 
-        throw LMDB_ERRORS.RECORDS_MUST_BE_ARRAY;
+        throw new Error(LMDB_ERRORS.RECORDS_MUST_BE_ARRAY);
     }
 }
 

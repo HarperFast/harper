@@ -4,14 +4,41 @@ const lmdb = require('node-lmdb');
 const fs = require('fs-extra');
 const path = require('path');
 const common = require('./commonUtility');
+const log = require('../logging/harper_logger');
 const LMDB_ERRORS = require('../commonErrors').LMDB_ERRORS_ENUM;
+const DBIDefinition = require('./DBIDefinition');
 
 //allow an environment to grow up to 1 TB
 const MAP_SIZE = 1000 * 1024 * 1024 * 1024;
 //allow up to 10,000 named data bases in an environment
 const MAX_DBS = 10000;
 const INTERNAL_DBIS_NAME = '__dbis__';
+const DBI_DEFINITION_NAME = '__dbi_defintion__';
 const MDB_FILE_NAME = 'data.mdb';
+
+/**
+ * This class is used to create the transaction & cursor objects needed to perform search on a dbi as well as a function to close both objects after use
+ */
+class TransactionCursor{
+    /**
+     * create the TransactionCursor object
+     * @param {lmdb.Env} env - environment object to create the transaction & cursor from
+     * @param {String} attribute - name of the attribute to create the cursor against
+     */
+    constructor(env, attribute) {
+        this.dbi = openDBI(env, attribute);
+        this.txn = env.beginTxn({ readOnly: true });
+        this.cursor = new lmdb.Cursor(this.txn, this.dbi);
+    }
+
+    /**
+     * function to close the read cursor & abort the transaction
+     */
+    close(){
+        this.cursor.close();
+        this.txn.abort();
+    }
+}
 
 /***  VALIDATION FUNCTIONS ***/
 
@@ -22,11 +49,11 @@ const MDB_FILE_NAME = 'data.mdb';
  */
 async function pathEnvNameValidation(base_path, env_name){
     if(base_path === undefined){
-        throw LMDB_ERRORS.BASE_PATH_REQUIRED;
+        throw new Error(LMDB_ERRORS.BASE_PATH_REQUIRED);
     }
 
     if(env_name === undefined){
-        throw LMDB_ERRORS.ENV_NAME_REQUIRED;
+        throw new Error(LMDB_ERRORS.ENV_NAME_REQUIRED);
     }
 
     //verify the base_path is valid
@@ -34,7 +61,7 @@ async function pathEnvNameValidation(base_path, env_name){
         await fs.access(base_path);
     } catch(e){
         if(e.code === 'ENOENT'){
-            throw LMDB_ERRORS.INVALID_BASE_PATH;
+            throw new Error(LMDB_ERRORS.INVALID_BASE_PATH);
         }
 
         throw e;
@@ -52,7 +79,7 @@ async function validateEnvironmentPath(base_path, env_name){
         await fs.access(path.join(base_path, env_name, MDB_FILE_NAME), fs.constants.R_OK | fs.constants.F_OK);
     } catch(e){
         if(e.code === 'ENOENT'){
-            throw LMDB_ERRORS.INVALID_ENVIRONMENT;
+            throw new Error(LMDB_ERRORS.INVALID_ENVIRONMENT);
         }
 
         throw e;
@@ -68,7 +95,7 @@ function validateEnvDBIName(env, dbi_name){
     common.validateEnv(env);
 
     if(dbi_name === undefined){
-        throw LMDB_ERRORS.DBI_NAME_REQUIRED;
+        throw new Error(LMDB_ERRORS.DBI_NAME_REQUIRED);
     }
 }
 
@@ -155,10 +182,9 @@ async function openEnvironment(base_path, env_name){
     env.dbis = Object.create(null);
 
     let dbis = listDBIs(env);
-
-    dbis.forEach(dbi=>{
-        openDBI(env, dbi);
-    });
+    for(let x = 0; x < dbis.length; x++){
+        openDBI(env, dbis[x]);
+    }
 
     global.lmdb_map[full_name] = env;
 
@@ -196,28 +222,76 @@ function getCachedEnvironmentName(base_path, env_name){
 /***  DBI FUNCTIONS ***/
 
 /**
- * lists & stats named databases in an environment
+ * lists dbis in a map with their defintition as the value
  * @param {lmdb.Env} env - environment object used high level to interact with all data in an environment
- * @returns {[String]} - list of dbi names in the environment
+ * @returns {{String, DBIDefinition}}
+ */
+function listDBIDefinitions(env){
+    common.validateEnv(env);
+
+    let dbis = Object.create(null);
+
+    let txn = new TransactionCursor(env, INTERNAL_DBIS_NAME);
+
+    for (let found = txn.cursor.goToFirst(); found !== null; found = txn.cursor.goToNext()) {
+        if(found !== INTERNAL_DBIS_NAME) {
+            try {
+                dbis[found] = Object.assign(new DBIDefinition(), JSON.parse(txn.cursor.getCurrentString()));
+            }catch(e){
+                log.warn(`an internal error occurred: unable to parse DBI Definition for ${found}`);
+            }
+        }
+    }
+
+    txn.close();
+    return dbis;
+}
+
+/**
+ * lists all dbis in an environment
+ * @param {lmdb.Env} env - environment object used high level to interact with all data in an environment
+ * @returns {[String]}
  */
 function listDBIs(env){
     common.validateEnv(env);
 
     let dbis = [];
 
-    let default_dbi = openDBI(env, INTERNAL_DBIS_NAME);
-//TODO implement TransactionCursor
-    let txn = env.beginTxn({readOnly: true });
+    let txn = new TransactionCursor(env, INTERNAL_DBIS_NAME);
 
-    let cursor = new lmdb.Cursor(txn, default_dbi);
-
-    for (let found = cursor.goToFirst(); found !== null; found = cursor.goToNext()) {
+    for (let found = txn.cursor.goToFirst(); found !== null; found = txn.cursor.goToNext()) {
         if(found !== INTERNAL_DBIS_NAME) {
             dbis.push(found);
         }
     }
-
+    txn.close();
     return dbis;
+}
+
+/**
+ * fetches an individual dbi definition from the internal dbi
+ * @param env
+ * @param dbi_name
+ * @returns {DBIDefinition}
+ */
+function getDBIDefinition(env, dbi_name){
+
+    let txn = new TransactionCursor(env, INTERNAL_DBIS_NAME);
+
+    let dbi_definition = new DBIDefinition();
+    let found = txn.cursor.goToKey(dbi_name);
+    if(found === null){
+        return dbi_definition;
+    }
+
+    try {
+        dbi_definition = Object.assign(dbi_definition, JSON.parse(txn.cursor.getCurrentString()));
+    }catch(e){
+        log.warn(`an internal error occurred: unable to parse DBI Definition for ${found}`);
+    }
+
+    txn.close();
+    return dbi_definition;
 }
 
 /**
@@ -225,25 +299,44 @@ function listDBIs(env){
  * @param {lmdb.Env} env - environment object used high level to interact with all data in an environment
  * @param {String} dbi_name - name of the dbi (KV store)
  * @param {Boolean} [dup_sort] - optional, determines if the dbi allows duplicate keys or not
+ * @param {Boolean} [int_key] - optional, dictates if the key is an int, if not the key is a string by default
  * @returns {*} - reference to the dbi
  */
-function createDBI(env, dbi_name, dup_sort){
+function createDBI(env, dbi_name, dup_sort, int_key){
     validateEnvDBIName(env, dbi_name);
 
-    let new_dbi = env.openDbi({
-        name: dbi_name,
-        create: true,
-        dupSort: dup_sort === true
-    });
+    if(dbi_name === INTERNAL_DBIS_NAME){
+        throw new Error(LMDB_ERRORS.CANNOT_CREATE_INTERNAL_DBIS_NAME);
+    }
 
-    let dbis = openDBI(env, INTERNAL_DBIS_NAME);
-    let txn = env.beginTxn();
-    txn.putString(dbis, dbi_name, dbi_name);
-    txn.commit();
+    try {
+        //first check if the dbi exists
+        return openDBI(env, dbi_name);
+    } catch(e) {
+        //if not create it
+        if(e.message === LMDB_ERRORS.DBI_DOES_NOT_EXIST) {
+            let new_dbi = env.openDbi({
+                name: dbi_name,
+                create: true,
+                dupSort: dup_sort === true,
+                keyIsUint32: int_key === true
+            });
 
-    env.dbis[dbi_name] = new_dbi;
+            let dbi_definition = new DBIDefinition(dup_sort === true, int_key === true);
+            new_dbi[DBI_DEFINITION_NAME] = dbi_definition;
 
-    return new_dbi;
+            let dbis = openDBI(env, INTERNAL_DBIS_NAME);
+            let txn = env.beginTxn();
+            txn.putString(dbis, dbi_name, JSON.stringify(dbi_definition));
+            txn.commit();
+
+            env.dbis[dbi_name] = new_dbi;
+
+            return new_dbi;
+        }
+
+        throw e;
+    }
 }
 
 /**
@@ -259,21 +352,27 @@ function openDBI(env, dbi_name){
         return env.dbis[dbi_name];
     }
 
+    let dbi_definition = new DBIDefinition();
+    if(dbi_name !== INTERNAL_DBIS_NAME){
+        dbi_definition = getDBIDefinition(env, dbi_name);
+    }
+
     let dbi;
     try {
         dbi = env.openDbi({
             name: dbi_name,
             create: false,
-            dupSort: true
+            dupSort: dbi_definition.dup_sort,
+            keyIsUint32: dbi_definition.int_key
         });
     } catch(e){
         if(e.message.startsWith('MDB_NOTFOUND') === true){
-            throw LMDB_ERRORS.DBI_DOES_NOT_EXIST;
+            throw new Error(LMDB_ERRORS.DBI_DOES_NOT_EXIST);
         }
 
         throw e;
     }
-
+    dbi[DBI_DEFINITION_NAME] = dbi_definition;
     env.dbis[dbi_name] = dbi;
     return dbi;
 }
@@ -301,6 +400,10 @@ function statDBI(env, dbi_name){
 function dropDBI(env, dbi_name){
     validateEnvDBIName(env, dbi_name);
 
+    if(dbi_name === INTERNAL_DBIS_NAME){
+        throw new Error(LMDB_ERRORS.CANNOT_DROP_INTERNAL_DBIS_NAME);
+    }
+
     let dbi = openDBI(env, dbi_name);
     dbi.drop();
 
@@ -308,7 +411,6 @@ function dropDBI(env, dbi_name){
         delete env.dbis[dbi_name];
     }
 
-    //TODO implemenmt delete function when it's created
     let dbis = openDBI(env, INTERNAL_DBIS_NAME);
     let txn = env.beginTxn();
     txn.del(dbis, dbi_name);
@@ -324,13 +426,19 @@ function dropDBI(env, dbi_name){
 function initializeDBIs(env, hash_attribute, write_attributes){
     for(let x = 0; x < write_attributes.length; x++){
         let attribute = write_attributes[x];
-        try {
-            openDBI(env, attribute);
-        } catch (e) {
-            if (e.message === 'dbi does not exist') {
-                createDBI(env, attribute, attribute !== hash_attribute );
-            } else {
-                throw e;
+
+        //check the internal cache to see if the dbi has been intialized
+        if(!env.dbis[attribute]) {
+            //if the dbi has not been intialized & cached attempt to open
+            try {
+                openDBI(env, attribute);
+            } catch (e) {
+                //if not opened, create it
+                if (e.message === LMDB_ERRORS.DBI_DOES_NOT_EXIST) {
+                    createDBI(env, attribute, attribute !== hash_attribute);
+                } else {
+                    throw e;
+                }
             }
         }
     }
@@ -341,9 +449,11 @@ module.exports = {
     openEnvironment,
     createEnvironment,
     listDBIs,
+    listDBIDefinitions,
     createDBI,
     dropDBI,
     statDBI,
     deleteEnvironment,
-    initializeDBIs
+    initializeDBIs,
+    TransactionCursor
 };
