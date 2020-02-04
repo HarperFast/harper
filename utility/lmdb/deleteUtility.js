@@ -19,15 +19,15 @@ function deleteRecords(env, hash_attribute, ids){
     common.validateEnv(env);
 
     if(hash_attribute === undefined){
-        throw LMDB_ERRORS.HASH_ATTRIBUTE_REQUIRED;
+        throw new Error(LMDB_ERRORS.HASH_ATTRIBUTE_REQUIRED);
     }
 
     if(!Array.isArray(ids)){
         if(ids === undefined){
-            throw LMDB_ERRORS.IDS_REQUIRED;
+            throw new Error(LMDB_ERRORS.IDS_REQUIRED);
         }
 
-        throw LMDB_ERRORS.IDS_MUST_BE_ARRAY;
+        throw new Error(LMDB_ERRORS.IDS_MUST_BE_ARRAY);
     }
 
     let deleted = {
