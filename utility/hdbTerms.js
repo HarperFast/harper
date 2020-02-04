@@ -235,12 +235,6 @@ const OPERATIONS_ENUM = {
     CATCHUP: 'catchup'
 };
 
-// The maximum ram allocation in MB per HDB child process
-const RAM_ALLOCATION_ENUM = {
-    DEVELOPMENT: 8000,
-    DEFAULT: 1500
-};
-
 // Defines operations that should be propagated to the cluster.
 let CLUSTER_OPERATIONS = {};
 CLUSTER_OPERATIONS[OPERATIONS_ENUM.CREATE_SCHEMA] = OPERATIONS_ENUM.CREATE_SCHEMA;
@@ -346,8 +340,7 @@ const HDB_SETTINGS_DEFAULT_VALUES = {
     CLUSTERING_PORT: '5545',
     CLUSTERING: 'false',
     MAX_HDB_PROCESSES: 4,
-    HELIUM_SERVER_HOST: 'localhost:41000',
-    MAX_MEMORY: 1500
+    HELIUM_SERVER_HOST: 'localhost:41000'
 };
 
 // Describes all available job types
@@ -393,6 +386,12 @@ const HELIUM_START_SERVER_COMMAND = '--server';
 const LICENSE_VALUES = {
     API_CALL_DEFAULT: 10000,
     VERSION_DEFAULT: '2.0.0'
+};
+
+// The maximum ram allocation in MB per HDB child process
+const RAM_ALLOCATION_ENUM = {
+    DEVELOPMENT: 8192, //8GB
+    DEFAULT: 1024 //1GB
 };
 
 const CLUSTER_EVENTS_DEFS_ENUM = {
@@ -573,6 +572,7 @@ module.exports = {
     CLUSTERING_PAYLOAD_FILE_NAME,
     HELIUM_URL_PREFIX,
     LICENSE_VALUES,
+    RAM_ALLOCATION_ENUM,
     STORAGE_TYPES_ENUM,
     HELIUM_RESPONSE_CODES,
     HELIUM_TIME_STAMP_ENUM,
@@ -604,6 +604,5 @@ module.exports = {
     JAVASCRIPT_EXTENSION,
     PermissionResponseObject,
     PermissionAttributeResponseObject,
-    UNAUTHORIZED_PERMISSION_NAME,
-    RAM_ALLOCATION_ENUM
+    UNAUTHORIZED_PERMISSION_NAME
 };
