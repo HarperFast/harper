@@ -10,7 +10,7 @@ class DBIDefinition{
      * @param {Boolean} dup_sort - allow duplicate keys, or not
      * @param {Boolean} int_key - defines if the key entries are integers or not
      */
-    constructor(dup_sort, int_key) {
+    constructor(dup_sort = false, int_key = false) {
         this.dup_sort = dup_sort;
         this.int_key = int_key;
     }

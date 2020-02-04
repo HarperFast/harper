@@ -4,6 +4,7 @@ const lmdb = require('node-lmdb');
 const fs = require('fs-extra');
 const path = require('path');
 const common = require('./commonUtility');
+const log = require('../logging/harper_logger');
 const LMDB_ERRORS = require('../commonErrors').LMDB_ERRORS_ENUM;
 const DBIDefinition = require('./DBIDefinition');
 
@@ -14,6 +15,30 @@ const MAX_DBS = 10000;
 const INTERNAL_DBIS_NAME = '__dbis__';
 const DBI_DEFINITION_NAME = '__dbi_defintion__';
 const MDB_FILE_NAME = 'data.mdb';
+
+/**
+ * This class is used to create the transaction & cursor objects needed to perform search on a dbi as well as a function to close both objects after use
+ */
+class TransactionCursor{
+    /**
+     * create the TransactionCursor object
+     * @param {lmdb.Env} env - environment object to create the transaction & cursor from
+     * @param {String} attribute - name of the attribute to create the cursor against
+     */
+    constructor(env, attribute) {
+        this.dbi = openDBI(env, attribute);
+        this.txn = env.beginTxn({ readOnly: true });
+        this.cursor = new lmdb.Cursor(this.txn, this.dbi);
+    }
+
+    /**
+     * function to close the read cursor & abort the transaction
+     */
+    close(){
+        this.cursor.close();
+        this.txn.abort();
+    }
+}
 
 /***  VALIDATION FUNCTIONS ***/
 
@@ -206,20 +231,19 @@ function listDBIDefinitions(env){
 
     let dbis = Object.create(null);
 
-    //we can't use the TransactionCursor object here as it would create a circular dependency
-    let dbi = openDBI(env, INTERNAL_DBIS_NAME);
-    let txn = env.beginTxn({ readOnly: true });
-    let cursor = new lmdb.Cursor(txn, dbi);
+    let txn = new TransactionCursor(env, INTERNAL_DBIS_NAME);
 
-    for (let found = cursor.goToFirst(); found !== null; found = cursor.goToNext()) {
+    for (let found = txn.cursor.goToFirst(); found !== null; found = txn.cursor.goToNext()) {
         if(found !== INTERNAL_DBIS_NAME) {
-            dbis[found] = Object.assign(new DBIDefinition(), JSON.parse(cursor.getCurrentString()));
+            try {
+                dbis[found] = Object.assign(new DBIDefinition(), JSON.parse(txn.cursor.getCurrentString()));
+            }catch(e){
+                log.warn(`an internal error occurred: unable to parse DBI Definition for ${found}`);
+            }
         }
     }
 
-    cursor.close();
-    txn.abort();
-
+    txn.close();
     return dbis;
 }
 
@@ -233,20 +257,14 @@ function listDBIs(env){
 
     let dbis = [];
 
-    //we can't use the TransactionCursor object here as it would create a circular dependency
-    let dbi = openDBI(env, INTERNAL_DBIS_NAME);
-    let txn = env.beginTxn({ readOnly: true });
-    let cursor = new lmdb.Cursor(txn, dbi);
+    let txn = new TransactionCursor(env, INTERNAL_DBIS_NAME);
 
-    for (let found = cursor.goToFirst(); found !== null; found = cursor.goToNext()) {
+    for (let found = txn.cursor.goToFirst(); found !== null; found = txn.cursor.goToNext()) {
         if(found !== INTERNAL_DBIS_NAME) {
             dbis.push(found);
         }
     }
-
-    cursor.close();
-    txn.abort();
-
+    txn.close();
     return dbis;
 }
 
@@ -257,31 +275,22 @@ function listDBIs(env){
  * @returns {DBIDefinition}
  */
 function getDBIDefinition(env, dbi_name){
-    //we can't use the TransactionCursor object here as it would create a circular dependency
-    let dbi = env.openDbi({
-        name: INTERNAL_DBIS_NAME,
-        create: false,
-        dupSort: false
-    });
 
-    let txn = env.beginTxn({ readOnly: true });
-    let cursor = new lmdb.Cursor(txn, dbi);
+    let txn = new TransactionCursor(env, INTERNAL_DBIS_NAME);
 
     let dbi_definition = new DBIDefinition();
-    let found = cursor.goToKey(dbi_name);
+    let found = txn.cursor.goToKey(dbi_name);
     if(found === null){
         return dbi_definition;
     }
 
     try {
-        dbi_definition = Object.assign(dbi_definition, JSON.parse(cursor.getCurrentString()));
+        dbi_definition = Object.assign(dbi_definition, JSON.parse(txn.cursor.getCurrentString()));
     }catch(e){
-        return dbi_definition;
+        log.warn(`an internal error occurred: unable to parse DBI Definition for ${found}`);
     }
 
-    cursor.close();
-    txn.abort();
-
+    txn.close();
     return dbi_definition;
 }
 
@@ -343,7 +352,10 @@ function openDBI(env, dbi_name){
         return env.dbis[dbi_name];
     }
 
-    let dbi_definition = getDBIDefinition(env, dbi_name);
+    let dbi_definition = new DBIDefinition();
+    if(dbi_name !== INTERNAL_DBIS_NAME){
+        dbi_definition = getDBIDefinition(env, dbi_name);
+    }
 
     let dbi;
     try {
@@ -442,5 +454,6 @@ module.exports = {
     dropDBI,
     statDBI,
     deleteEnvironment,
-    initializeDBIs
+    initializeDBIs,
+    TransactionCursor
 };

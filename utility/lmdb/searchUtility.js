@@ -1,7 +1,7 @@
 'use strict';
 
-const data_stores= require('./environmentUtility');
-const Transaction_Cursor = require('./TransactionCursor');
+const environment_utility= require('./environmentUtility');
+const Transaction_Cursor = environment_utility.TransactionCursor;
 const lmdb = require('node-lmdb');
 const log = require('../logging/harper_logger');
 const common = require('./commonUtility');
@@ -77,7 +77,7 @@ function countAll(env, hash_attribute){
         throw new Error(LMDB_ERRORS.HASH_ATTRIBUTE_REQUIRED);
     }
 
-    let stat = data_stores.statDBI(env, hash_attribute);
+    let stat = environment_utility.statDBI(env, hash_attribute);
     return stat.entryCount;
 }
 
