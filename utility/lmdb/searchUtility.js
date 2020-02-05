@@ -13,7 +13,7 @@ const cursor_functions = require('./searchCursorFunctions');
 /** UTILITY CURSOR FUNCTIONS **/
 
 /**
- *
+ * Creates the basis for a full iteration of a dbi with an evaluation function used to determine the logic inside the iteration
  * @param {lmdb.Env} env
  * @param {String} attribute
  * @param {Function} eval_function
@@ -30,7 +30,7 @@ function iterateFullIndex(env, attribute, eval_function){
 }
 
 /**
- *
+ * Creates the basis for a forward range search of a dbi with an evaluation function used to determine the logic inside the iteration
  * @param {lmdb.Env} env
  * @param {String} attribute
  * @param {String|Number} search_value
@@ -40,8 +40,14 @@ function iterateFullIndex(env, attribute, eval_function){
 function iterateRangeNext(env, attribute, search_value, eval_function){
     let txn = new Transaction_Cursor(env, attribute);
 
+    //if the first value in the dbi is less than the search value then we seek to the value, otherwise we keep the cursor at the first item
+    let found = txn.cursor.goToFirst();
+    if((isNaN(found) === true && found.toString() < search_value.toString()) || (isNaN(found) === false && Number(found) < Number(search_value))){
+        found = txn.cursor.goToRange(search_value);
+    }
+
     let results = [];
-    for (let found = txn.cursor.goToRange(search_value); found !== null; found = txn.cursor.goToNext()) {
+    for (found; found !== null; found = txn.cursor.goToNext()) {
         eval_function(search_value, found, txn.cursor, results);
     }
     txn.close();
@@ -49,7 +55,7 @@ function iterateRangeNext(env, attribute, search_value, eval_function){
 }
 
 /**
- *
+ * Creates the basis for a previous range search of a dbi with an evaluation function used to determine the logic inside the iteration
  * @param {lmdb.Env} env
  * @param {String} attribute
  * @param {String|Number} search_value
@@ -60,7 +66,13 @@ function iterateRangePrev(env, attribute, search_value, eval_function){
     let txn = new Transaction_Cursor(env, attribute);
 
     let results = [];
-    for (let found = txn.cursor.goToRange(search_value); found !== null; found = txn.cursor.goToPrev()) {
+    //if the last value in the dbi is greater than the search value then we seek to the value, otherwise we keep the cursor at the last item
+    let found = txn.cursor.goToLast();
+    if((isNaN(found) === true && found > search_value.toString()) || (isNaN(found) === false && Number(found) > Number(search_value))){
+        found = txn.cursor.goToRange(search_value);
+    }
+
+    for (found; found !== null; found = txn.cursor.goToPrev()) {
         eval_function(search_value, found, txn.cursor, results);
     }
     txn.close();
@@ -82,7 +94,6 @@ function searchAll(env, hash_attribute, fetch_attributes){
     }
 
     validateFetchAttributes(fetch_attributes);
-
 
     return iterateFullIndex(env, hash_attribute, cursor_functions.searchAll.bind(null, fetch_attributes));
 }
@@ -182,10 +193,10 @@ function contains(env, attribute, search_value){
 /** RANGE FUNCTIONS **/
 
 /**
- *
- * @param env
- * @param attribute
- * @param search_value
+ * performs standard validation on range functions
+ * @param {lmdb.Env} env
+ * @param {String} attribute
+ * @param {String|Number} search_value
  * @returns {{}}
  */
 function initializeRangeFunction(env, attribute, search_value){
@@ -193,23 +204,23 @@ function initializeRangeFunction(env, attribute, search_value){
 
     let dbi = environment_utility.openDBI(env, attribute);
     let search_info = new Object(null);
-    search_info.search_value_is_numeric = isNaN(search_value);
+    search_info.search_value_is_numeric = isNaN(search_value) === false;
     search_info.dbi_numeric_key = dbi[lmdb_terms.DBI_DEFINITION_NAME].int_key;
 
 
     //if we are trying to compare a non-numeric value to numeric keys we throw an error
     if(search_info.search_value_is_numeric === false && search_info.dbi_numeric_key === true){
-        throw LMDB_ERRORS.CANNOT_COMPARE_STRING_TO_NUMERIC_KEYS;
+        throw new Error(LMDB_ERRORS.CANNOT_COMPARE_STRING_TO_NUMERIC_KEYS);
     }
 
     return search_info;
 }
 
 /**
- *
- * @param env
- * @param attribute
- * @param search_value
+ * performs a greater than search for string / numeric search value
+ * @param {lmdb.Env} env
+ * @param {String} attribute
+ * @param {String|Number} search_value
  * @returns {*[]}
  */
 function greaterThan(env, attribute, search_value){
@@ -225,10 +236,17 @@ function greaterThan(env, attribute, search_value){
 
     if(search_info.search_value_is_numeric === true && search_info.dbi_numeric_key === true){
         //add 1 to the search value because we want everything greater than the search value & the key is an int
-        return iterateRangeNext(env, attribute, Number(search_value) + 1, cursor_functions.addResult);
+        return iterateRangeNext(env, attribute, parseInt(search_value) + 1, cursor_functions.addResult);
     }
 }
 
+/**
+ * performs a greater than equal search for string / numeric search value
+ * @param {lmdb.Env} env
+ * @param {String} attribute
+ * @param {String|Number} search_value
+ * @returns {*[]}
+ */
 function greaterThanEqual(env, attribute, search_value){
     let search_info = initializeRangeFunction(env, attribute, search_value);
 
@@ -241,10 +259,17 @@ function greaterThanEqual(env, attribute, search_value){
     }
 
     if(search_info.search_value_is_numeric === true && search_info.dbi_numeric_key === true){
-        return iterateRangeNext(env, attribute, Number(search_value), cursor_functions.addResult);
+        return iterateRangeNext(env, attribute, parseInt(search_value), cursor_functions.addResult);
     }
 }
 
+/**
+ * performs a less than search for string / numeric search value
+ * @param {lmdb.Env} env
+ * @param {String} attribute
+ * @param {String|Number} search_value
+ * @returns {*[]}
+ */
 function lessThan(env, attribute, search_value){
     let search_info = initializeRangeFunction(env, attribute, search_value);
 
@@ -257,11 +282,17 @@ function lessThan(env, attribute, search_value){
     }
 
     if(search_info.search_value_is_numeric === true && search_info.dbi_numeric_key === true){
-        //subtract 1 from the search value because we want everything less than the search value & the key is an int
-        return iterateRangePrev(env, attribute, Number(search_value) -1, cursor_functions.addResult);
+        return iterateRangePrev(env, attribute, parseInt(search_value), cursor_functions.lessThanNumericCompare);
     }
 }
 
+/**
+ * performs a less than equal search for string / numeric search value
+ * @param {lmdb.Env} env
+ * @param {String} attribute
+ * @param {String|Number} search_value
+ * @returns {*[]}
+ */
 function lessThanEqual(env, attribute, search_value){
     let search_info = initializeRangeFunction(env, attribute, search_value);
 
@@ -274,43 +305,54 @@ function lessThanEqual(env, attribute, search_value){
     }
 
     if(search_info.search_value_is_numeric === true && search_info.dbi_numeric_key === true){
-        return iterateRangePrev(env, attribute, Number(search_value), cursor_functions.addResult);
+        //need to add 1 to the value other wise when prev is called it skips all but the first entry of the search_value
+        return iterateRangePrev(env, attribute, parseInt(search_value) + 1, cursor_functions.lessThanEqualNumericCompare);
     }
 }
 
+/**
+ * performs a between search for string / numeric search value
+ * @param {lmdb.Env} env
+ * @param {String} attribute
+ * @param {String|Number} start_value
+ * @param {String|Number}end_value
+ * @returns {*[]}
+ */
 function between(env, attribute, start_value, end_value){
     common.validateEnv(env);
     if(attribute === undefined){
-        throw LMDB_ERRORS.ATTRIBUTE_REQUIRED;
+        throw new Error(LMDB_ERRORS.ATTRIBUTE_REQUIRED);
     }
 
     if(start_value === undefined){
-        throw LMDB_ERRORS.START_VALUE_REQUIRED;
+        throw new Error(LMDB_ERRORS.START_VALUE_REQUIRED);
     }
 
     if(end_value === undefined){
-        throw LMDB_ERRORS.END_VALUE_REQUIRED;
+        throw new Error(LMDB_ERRORS.END_VALUE_REQUIRED);
     }
 
-    if(isNaN(start_value)){
-        throw new Error('start_value must be a number');
-    }
-
-    if(isNaN(end_value)){
-        throw new Error('end_value must be a number');
-    }
-
-    if(!(end_value <= start_value)){
-        throw new Error('end_value must be greater than start_value');
+    if( start_value >= end_value){
+        throw new Error(LMDB_ERRORS.END_VALUE_MUST_BE_GREATER_THAN_START_VALUE);
     }
 
     let dbi = environment_utility.openDBI(env, attribute);
+    let dbi_int_key = dbi[lmdb_terms.DBI_DEFINITION_NAME].int_key;
 
-    if(dbi[lmdb_terms.DBI_DEFINITION_NAME].int_key === false){
+    //if we are trying to compare a non-numeric value to numeric keys we throw an error
+    if((isNaN(start_value) === true || isNaN(end_value) === true) && dbi_int_key === true){
+        throw new Error(LMDB_ERRORS.CANNOT_COMPARE_STRING_TO_NUMERIC_KEYS);
+    }
+
+    if(dbi_int_key === false && (isNaN(start_value) === true || isNaN(end_value) === true)){
+        return iterateFullIndex(env, attribute, cursor_functions.betweenStringCompare.bind(null, start_value.toString(), end_value.toString()));
+    }
+
+    if(dbi_int_key === false && isNaN(start_value) === false && isNaN(end_value) === false){
         return iterateFullIndex(env, attribute, cursor_functions.betweenStringToNumberCompare.bind(null, Number(start_value), Number(end_value)));
     }
 
-    return iterateRangeNext(env, attribute, Number(start_value), cursor_functions.betweenNumericCompare.bind(null, Number(end_value)));
+    return iterateRangeNext(env, attribute, parseInt(start_value), cursor_functions.betweenNumericCompare.bind(null, parseInt(end_value)));
 }
 
 /**
@@ -523,8 +565,6 @@ function validateComparisonFunctions(env, attribute, search_value){
         throw new Error(LMDB_ERRORS.SEARCH_VALUE_REQUIRED);
     }
 }
-
-//TODO for numeric range search we will need to iterate the entire dbi, check if the string is a number and compare to the range. this is due to strings being stored lexicographically
 
 module.exports = {
     searchAll,

@@ -22,14 +22,21 @@ function validateEnv(env){
 /**
  * converts raw data to it's string version
  * @param raw_value
- * @returns {string|null}
+ * @param is_int
+ * @returns {Number|String|null}
  */
-function stringifyData(raw_value){
+function stringifyData(raw_value, is_int){
     if(raw_value === null || raw_value === undefined || raw_value === ''){
         return null;
     }
 
+
+    if(is_int){
+        return parseInt(raw_value);
+    }
+
     let value;
+
     try {
         value = typeof raw_value === 'object' ? JSON.stringify(raw_value) : raw_value.toString();
     } catch(e){

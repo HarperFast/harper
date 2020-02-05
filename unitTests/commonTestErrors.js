@@ -26,7 +26,11 @@ const LMDB_ERRORS_ENUM = {
     RECORDS_REQUIRED: new Error('records is required'),
     RECORDS_MUST_BE_ARRAY: new Error('records must be an array'),
     CANNOT_CREATE_INTERNAL_DBIS_NAME: new Error(`cannot create a dbi named ${lmdb_terms.INTERNAL_DBIS_NAME}`),
-    CANNOT_DROP_INTERNAL_DBIS_NAME: new Error(`cannot drop a dbi named ${lmdb_terms.INTERNAL_DBIS_NAME}`)
+    CANNOT_DROP_INTERNAL_DBIS_NAME: new Error(`cannot drop a dbi named ${lmdb_terms.INTERNAL_DBIS_NAME}`),
+    START_VALUE_REQUIRED: new Error('start_value is required'),
+    END_VALUE_REQUIRED: new Error('end_value is required'),
+    CANNOT_COMPARE_STRING_TO_NUMERIC_KEYS: new Error('cannot compare a string to numeric keys'),
+    END_VALUE_MUST_BE_GREATER_THAN_START_VALUE: new Error('end_value must be greater than start_value')
 };
 
 module.exports = {
