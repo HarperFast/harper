@@ -1,5 +1,23 @@
 'use strict';
 
+const v8 = require('v8');
+const field = 'heapUsed';
+
+let mbStart_gfa;
+let gbStart_gfa;
+let mbEnd_gfa;
+let gbAlloc_gfa;
+
+let mbStart_pj;
+let gbStart_pj;
+let mbEnd_pj;
+let gbAlloc_pj;
+
+let mbStart_fsql;
+let gbStart_fsql;
+let mbEnd_fsql;
+let gbAlloc_fsql;
+
 /**
  * SQLSearch.js
  * This class is used to receive the alasql generated AST from a SQL SELECT,
@@ -152,6 +170,8 @@ class SQLSearch {
             this.data[schema_table] = {};
             this.data[schema_table].__hash_name = global.hdb_schema[table.databaseid][table.tableid].hash_attribute;
             this.data[schema_table].__merged_data = {};
+            // this.data[schema_table].__merged_data = Object.create(null);
+            this.data[schema_table].__merged_attributes = [];
             this.data[schema_table].__has_hash = false;
         });
     }
@@ -282,6 +302,8 @@ class SQLSearch {
                     if (node.columnid && !node.columnid.startsWith('`')) {
                         node.columnid_orig = node.columnid;
                         node.columnid = `\`${node.columnid}\``;
+                        //TODO - ADD ARR INDEX HERE? PROB NOT
+                        // THIS MAY NO LONGER BE NECESSARY HERE IF WE ARE USING INDEX NUMBER...
                     }
                     if (node.tableid && !node.tableid.startsWith('`')) {
                         node.tableid_orig = node.tableid;
@@ -377,6 +399,11 @@ class SQLSearch {
      * @private
      */
     async _getFetchAttributeValues() {
+        //TODO REMOVE CODE
+        // mbStart_gfa = process.memoryUsage();
+        // gbStart_gfa = mbStart_gfa[field] / 1024 / 1024 / 1024;
+        // console.log(`Start ${Math.round(gbStart_gfa * 100) / 100} GB`);
+
         //get all unique attributes
         this._addFetchColumns(this.columns.joins);
 
@@ -424,20 +451,22 @@ class SQLSearch {
         // do we need this uniqueby, could just use object as map
         this.fetch_attributes = _.uniqBy(this.fetch_attributes, attribute => [attribute.table.databaseid, attribute.table.tableid, attribute.attribute].join());
 
+        //TODO - REMOVE AFTER ARR UPDATES
         // create an attr template for each table row to ensure each row has a null value for attrs not returned in the search
-        const fetch_attributes_objs = this.fetch_attributes.reduce((acc, attr) => {
-            const schema_table = `${attr.table.databaseid}_${attr.table.tableid}`;
-            if (!acc[schema_table]) {
-                const hash_name = this.data[schema_table].__hash_name;
-                acc[schema_table] = { [hash_name]: null };
-            }
-            acc[schema_table][attr.attribute] = null;
-            return acc;
-        }, {});
+        // const fetch_attributes_objs = this.fetch_attributes.reduce((acc, attr) => {
+        //     const schema_table = `${attr.table.databaseid}_${attr.table.tableid}`;
+        //     if (!acc[schema_table]) {
+        //         const hash_name = this.data[schema_table].__hash_name;
+        //         acc[schema_table] = { [hash_name]: null };
+        //     }
+        //     // acc[schema_table][attr.attribute] = null;
+        //     return acc;
+        // }, {});
 
         for (const attribute of this.fetch_attributes) {
+            //update
             const schema_table = `${attribute.table.databaseid}_${attribute.table.tableid}`;
-            this.data[schema_table][`${attribute.attribute}`] = {};
+            // this.data[schema_table][`${attribute.attribute}`] = {};
             let hash_name = this.data[schema_table].__hash_name;
 
             let search_object = {
@@ -464,11 +493,15 @@ class SQLSearch {
                         this.data[schema_table].__has_hash = true;
                         search_object.hash_values = Array.from(this.exact_search_values[object_path].values);
                         const attribute_values = Object.values(await harperBridge.getDataByHash(search_object));
+
+                        if (attrUntracked(hash_name, this.data[schema_table].__merged_attributes) && attribute_values.length > 0) {
+                            this.data[schema_table].__merged_attributes.push(hash_name);
+                        }
+
                         attribute_values.forEach(hash_obj => {
                             const hash_val = hash_obj[hash_name];
                             if (!this.data[schema_table].__merged_data[hash_val]) {
-                                this.data[schema_table].__merged_data[hash_val] = Object.assign({}, fetch_attributes_objs[schema_table]);
-                                this.data[schema_table].__merged_data[hash_val][hash_name] = hash_val;
+                                this.data[schema_table].__merged_data[hash_val] = [hash_val];
                             }
                         });
                     } catch (e) {
@@ -480,14 +513,22 @@ class SQLSearch {
                         search_object.search_attribute = attribute.attribute;
                         await Promise.all(Array.from(this.exact_search_values[object_path].values).map(async (value) => {
                             search_object.search_value = value;
-                            const attr_vals = await harperBridge.getDataByValue(search_object);
-                            Object.keys(attr_vals).forEach(hash_val => {
+                            const attribute_values = await harperBridge.getDataByValue(search_object);
+
+                            if (attrUntracked(hash_name, this.data[schema_table].__merged_attributes) && attribute_values.length > 0) {
+                                this.data[schema_table].__merged_attributes.push(hash_name);
+                            }
+                            if (attrUntracked(attribute.attribute, this.data[schema_table].__merged_attributes) && attribute_values.length > 0) {
+                                this.data[schema_table].__merged_attributes.push(attribute.attribute);
+                            }
+
+                            Object.keys(attribute_values).forEach(hash_val => {
                                 if (!this.data[schema_table].__merged_data[hash_val]) {
-                                    this.data[schema_table].__merged_data[hash_val] = Object.assign({}, fetch_attributes_objs[schema_table]);
-                                    this.data[schema_table].__merged_data[hash_val][hash_name] = common_utils.autoCast(hash_val);
-                                    this.data[schema_table].__merged_data[hash_val][attribute.attribute] = attr_vals[hash_val][attribute.attribute];
+                                    // this.data[schema_table].__merged_data[hash_val] = Object.assign({}, fetch_attributes_objs[schema_table]);
+                                    this.data[schema_table].__merged_data[hash_val] = [common_utils.autoCast(hash_val)];
+                                    this.data[schema_table].__merged_data[hash_val].push(attribute_values[hash_val][attribute.attribute]);
                                 } else {
-                                    this.data[schema_table].__merged_data[hash_val][attribute.attribute] = attr_vals[hash_val][attribute.attribute];
+                                    this.data[schema_table].__merged_data[hash_val].push(attribute_values[hash_val][attribute.attribute]);
                                 }
                             });
                         }));
@@ -506,23 +547,39 @@ class SQLSearch {
                             search_object.search_attribute = comp.attribute;
                             search_object.search_value = comp.search_value;
                             const matching_data = await harperBridge.getDataByValue(search_object, comp.operation);
+
                             if (is_hash) {
                                 this.data[schema_table].__has_hash = true;
-                                Object.values(matching_data).forEach(hash_obj => {
+                                const matching_data_values = Object.values(matching_data);
+
+                                if (attrUntracked(hash_name, this.data[schema_table].__merged_attributes) && matching_data_values.length > 0) {
+                                    this.data[schema_table].__merged_attributes.push(hash_name);
+                                }
+
+                                matching_data_values.forEach(hash_obj => {
                                     const hash_val = hash_obj[hash_name];
                                     if (!this.data[schema_table].__merged_data[hash_val]) {
-                                        this.data[schema_table].__merged_data[hash_val] = Object.assign({}, fetch_attributes_objs[schema_table]);
-                                        this.data[schema_table].__merged_data[hash_val][hash_name] = common_utils.autoCast(hash_val);
+                                        // this.data[schema_table].__merged_data[hash_val] = [common_utils.autoCast(hash_val)];
+                                        this.data[schema_table].__merged_data[hash_val] = [hash_val];
                                     }
                                 });
                             } else {
-                                Object.keys(matching_data).forEach(hash_val => {
+                                const matching_data_keys = Object.keys(matching_data);
+
+                                if (attrUntracked(hash_name, this.data[schema_table].__merged_attributes) && matching_data_keys.length > 0) {
+                                    this.data[schema_table].__merged_attributes.push(hash_name);
+                                }
+                                if (attrUntracked(attribute.attribute, this.data[schema_table].__merged_attributes) && matching_data_keys.length > 0) {
+                                    this.data[schema_table].__merged_attributes.push(attribute.attribute);
+                                }
+
+                                matching_data_keys.forEach(hash_val => {
                                     if (!this.data[schema_table].__merged_data[hash_val]) {
-                                        this.data[schema_table].__merged_data[hash_val] = Object.assign({}, fetch_attributes_objs[schema_table]);
-                                        this.data[schema_table].__merged_data[hash_val][hash_name] = common_utils.autoCast(hash_val);
-                                        this.data[schema_table].__merged_data[hash_val][attribute.attribute] = matching_data[hash_val][attribute.attribute];
+                                        // this.data[schema_table].__merged_data[hash_val] = Object.assign({}, fetch_attributes_objs[schema_table]);
+                                        this.data[schema_table].__merged_data[hash_val] = [common_utils.autoCast(hash_val)];
+                                        this.data[schema_table].__merged_data[hash_val].push(matching_data[hash_val][attribute.attribute]);
                                     } else {
-                                        this.data[schema_table].__merged_data[hash_val][attribute.attribute] = matching_data[hash_val][attribute.attribute];
+                                        this.data[schema_table].__merged_data[hash_val].push(matching_data[hash_val][attribute.attribute]);
                                     }
                                 });
                             }
@@ -538,21 +595,35 @@ class SQLSearch {
                         const matching_data = await harperBridge.getDataByValue(search_object);
                         if (is_hash) {
                             this.data[schema_table].__has_hash = true;
-                            Object.values(matching_data).forEach(hash_obj => {
+                            const matching_data_values = Object.values(matching_data);
+
+                            if (attrUntracked(hash_name, this.data[schema_table].__merged_attributes) && matching_data_values.length > 0) {
+                                this.data[schema_table].__merged_attributes.push(hash_name);
+                            }
+
+                            matching_data_values.forEach(hash_obj => {
                                 const hash_val = hash_obj[hash_name];
                                 if (!this.data[schema_table].__merged_data[hash_val]) {
-                                    this.data[schema_table].__merged_data[hash_val] = Object.assign({}, fetch_attributes_objs[schema_table]);
-                                    this.data[schema_table].__merged_data[hash_val][hash_name] = common_utils.autoCast(hash_val);
+                                    this.data[schema_table].__merged_data[hash_val] = [hash_val];
+                                    // this.data[schema_table].__merged_data[hash_val] = [common_utils.autoCast(hash_val)];
                                 }
                             });
                         } else {
-                            Object.keys(matching_data).forEach(hash_val => {
+                            const matching_data_keys = Object.keys(matching_data);
+
+                            if (attrUntracked(hash_name, this.data[schema_table].__merged_attributes) && matching_data_keys.length > 0) {
+                                this.data[schema_table].__merged_attributes.push(hash_name);
+                            }
+                            if (attrUntracked(attribute.attribute, this.data[schema_table].__merged_attributes) && matching_data_keys.length > 0) {
+                                this.data[schema_table].__merged_attributes.push(attribute.attribute);
+                            }
+
+                            matching_data_keys.forEach(hash_val => {
                                 if (!this.data[schema_table].__merged_data[hash_val]) {
-                                    this.data[schema_table].__merged_data[hash_val] = Object.assign({}, fetch_attributes_objs[schema_table]);
-                                    this.data[schema_table].__merged_data[hash_val][hash_name] = common_utils.autoCast(hash_val);
-                                    this.data[schema_table].__merged_data[hash_val][attribute.attribute] = matching_data[hash_val][attribute.attribute];
+                                    this.data[schema_table].__merged_data[hash_val] = [common_utils.autoCast(hash_val)];
+                                    this.data[schema_table].__merged_data[hash_val].push(matching_data[hash_val][attribute.attribute]);
                                 } else {
-                                    this.data[schema_table].__merged_data[hash_val][attribute.attribute] = matching_data[hash_val][attribute.attribute];
+                                    this.data[schema_table].__merged_data[hash_val].push(matching_data[hash_val][attribute.attribute]);
                                 }
                             });
                         }
@@ -563,6 +634,15 @@ class SQLSearch {
                 }
             }
         }
+
+        //TODO REMOVE CODE
+        // mbEnd_gfa = process.memoryUsage();
+        // const mbNow = mbEnd_gfa[field] / 1024 / 1024 / 1024;
+        // console.log(`Total allocated       ${Math.round(mbNow * 100) / 100} GB`);
+        // gbAlloc_gfa = Math.round((mbNow - gbStart_gfa) * 100) / 100
+        // console.log(`Allocated for __getFetchAttrs - ${gbAlloc_gfa} GB`);
+
+        //TODO - UPDATE THIS TO DO THE DIRECT SEARCH WHEN VALUE IS SET TO TRUE....
         if (simple_select_query) {
             return Object.values(Object.values(this.data)[0].__merged_data);
         }
@@ -575,6 +655,11 @@ class SQLSearch {
      * @private
      */
     async _processJoins() {
+        //TODO REMOVE CODE
+        // mbStart_pj = process.memoryUsage();
+        // gbStart_pj = mbStart_pj[field] / 1024 / 1024 / 1024;
+        // console.log(`Start ${Math.round(gbStart_pj * 100) / 100} GB`);
+
         let table_data = [];
         let select = [];
         //TODO need to loop from here to ensure cross joins are covered - i.e. 'from tablea a, tableb b, tablec c' -
@@ -587,6 +672,7 @@ class SQLSearch {
 
         table_data.push(Object.values(this.data[`${from_statement.databaseid_orig}_${from_statement.tableid_orig}`].__merged_data));
 
+        //TODO - ADD ARR INDEX
         if (this.statement.joins) {
             this.statement.joins.forEach(join => {
                 tables.push(join.table);
@@ -596,6 +682,7 @@ class SQLSearch {
                     from += ' ON ' + join.on.toString();
                 }
                 from_clause.push(from);
+                //TODO - push arr from merged data
                 table_data.push(Object.values(this.data[`${join.table.databaseid_orig}_${join.table.tableid_orig}`].__merged_data));
             });
         }
@@ -613,16 +700,20 @@ class SQLSearch {
             });
             select.push(`${(table.as ? table.as : table.tableid)}.\`${hash}\` AS "${table.tableid_orig}.${hash}"`);
 
+            //TODO - update to grab `existing attrs` from the new attr arr in merged data object
             for (let prop in this.data[`${table.databaseid_orig}_${table.tableid_orig}`].__merged_data) {
+                //SAM NOTE - this will be resolved by an attr array for __merged_data
                 existing_attributes[table.tableid_orig] = Object.keys(this.data[`${table.databaseid_orig}_${table.tableid_orig}`].__merged_data[prop]);
                 //This break is here b/c we only need to get attr keys from the first object.
                 break;
             }
         });
 
+        //TODO - SAM - how is WHERE column getting indexed?
         //TODO there is an error with between statements being converted back to string.  need to handle
         let where_clause = this.statement.where ? 'WHERE ' + this.statement.where : '';
 
+        //TODO - SAM - how is ORDER column getting indexed?
         let order_clause = '';
         if (this.statement.order) {
             //in this stage we only want to order by non-aggregates
@@ -633,6 +724,7 @@ class SQLSearch {
             }
         }
 
+        //TODO - SAM - how is LIMIT column getting indexed?
         let limit = this.statement.limit ? 'LIMIT ' + this.statement.limit : '';
 
         //we should only select the primary key of each table then remove the rows that exist from each table
@@ -640,6 +732,8 @@ class SQLSearch {
 
         try {
             joined = await alasql.promise(`SELECT ${select.join(',')} FROM ${from_clause.join(' ')} ${where_clause} ${order_clause} ${limit}`, table_data);
+            // joined = await alasql.promise(`SELECT MATRIX ${select.join(',')} FROM ${from_clause.join(' ')} ${where_clause} ${order_clause} ${limit}`, table_data);
+            table_data = null;
         } catch(e) {
             log.error('Error thrown from AlaSQL in SQLSearch class method processJoins.');
             log.error(e);
@@ -668,6 +762,13 @@ class SQLSearch {
             'existing_attributes': existing_attributes,
             'joined_length': joined ? joined.length : 0
         };
+        //TODO REMOVE CODE
+        // mbEnd_pj = process.memoryUsage();
+        // const mbNow = mbEnd_pj[field] / 1024 / 1024 / 1024;
+        // console.log(`Total allocated       ${Math.round(mbNow * 100) / 100} GB`);
+        // gbAlloc_pj = Math.round((mbNow - gbStart_pj) * 100) / 100;
+        // console.log(`Allocated for __processJoins - ${gbAlloc_pj} GB`);
+
         return join_results;
     }
 
@@ -755,6 +856,11 @@ class SQLSearch {
      * @private
      */
     async _finalSQL() {
+        //TODO REMOVE CODE
+        // mbStart_fsql = process.memoryUsage();
+        // gbStart_fsql = mbStart_fsql[field] / 1024 / 1024 / 1024;
+        // console.log(`Start ${Math.round(gbStart_fsql * 100) / 100} GB`);
+
         let table_data = [];
         //TODO need to loop from here to ensure cross joins are covered - i.e. 'from tablea a, tableb b, tablec c' -
         // this is not high priority but is covered in CORE-894
@@ -784,6 +890,14 @@ class SQLSearch {
             log.error(e);
             throw new Error('There was a problem running the generated sql.');
         }
+
+        //TODO REMOVE CODE
+        // mbEnd_fsql = process.memoryUsage();
+        // const mbNow = mbEnd_fsql[field] / 1024 / 1024 / 1024;
+        // console.log(`Total allocated       ${Math.round(mbNow * 100) / 100} GB`);
+        // gbAlloc_fsql = Math.round((mbNow - gbStart_fsql) * 100) / 100;
+        // console.log(`Allocated for __finalSQL - ${gbAlloc_fsql} GB`);
+
         return final_results;
     }
 
@@ -824,4 +938,8 @@ function hasColumnAggregators(columns) {
     };
 
     return has_aggregators;
+}
+
+function attrUntracked(attr, arr) {
+    return arr.indexOf(attr) === -1;
 }
