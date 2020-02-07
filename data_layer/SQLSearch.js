@@ -392,6 +392,32 @@ class SQLSearch {
         }
     }
 
+    _addColumnToMergedAttributes(schema_table, attr) {
+        this.data[schema_table].__merged_attributes.push(attr);
+        //TODO - consider adding value to a map with the index as the value for faster lookup below?
+    }
+
+    _getMergedAttributeIndex(schema_table, attr) {
+        const attr_index = this.data[schema_table].__merged_attributes.indexOf(attr);
+
+        if (attr_index === -1) {
+            //TODO - what to do for error handling here?  Anything or just skip the update if it returns -1
+        }
+
+        return attr_index;
+    }
+
+    _setMergedHashAttribute(schema_table, hash_value) {
+        this.data[schema_table].__merged_data[hash_value].splice(0, 1, hash_value);
+    }
+
+    _updateMergedAttribute(schema_table, hash_value, attr, update_value) {
+        const attr_index = this._getMergedAttributeIndex(schema_table, attr);
+        if (attr_index > -1) {
+            this.data[schema_table].__merged_data[hash_value].splice(attr_index, 1, update_value);
+        }
+    }
+
     /**
      * Gets all values for the where, join, & order by attributes and converts the raw indexed data into individual
      * rows by hash attribute consolidated based on tables
@@ -451,17 +477,27 @@ class SQLSearch {
         // do we need this uniqueby, could just use object as map
         this.fetch_attributes = _.uniqBy(this.fetch_attributes, attribute => [attribute.table.databaseid, attribute.table.tableid, attribute.attribute].join());
 
-        //TODO - REMOVE AFTER ARR UPDATES
-        // create an attr template for each table row to ensure each row has a null value for attrs not returned in the search
-        // const fetch_attributes_objs = this.fetch_attributes.reduce((acc, attr) => {
-        //     const schema_table = `${attr.table.databaseid}_${attr.table.tableid}`;
-        //     if (!acc[schema_table]) {
-        //         const hash_name = this.data[schema_table].__hash_name;
-        //         acc[schema_table] = { [hash_name]: null };
-        //     }
-        //     // acc[schema_table][attr.attribute] = null;
-        //     return acc;
-        // }, {});
+        if (simple_select_query) {
+            return await this._simpleSQLQuery();
+        }
+
+        // create a template for each table row to ensure each row has a null value for attrs not returned in the search
+        const fetch_attr_row_templates = this.fetch_attributes.reduce((acc, attr) => {
+            const schema_table = `${attr.table.databaseid}_${attr.table.tableid}`;
+            const hash_name = this.data[schema_table].__hash_name;
+
+            if (!acc[schema_table]) {
+                acc[schema_table] = [hash_name];
+                this._addColumnToMergedAttributes(schema_table, hash_name);
+            }
+
+            if (attr.attribute !== hash_name) {
+                acc[schema_table].push(null);
+                this._addColumnToMergedAttributes(schema_table, attr.attribute);
+            }
+
+            return acc;
+        }, {});
 
         for (const attribute of this.fetch_attributes) {
             //update
@@ -494,14 +530,11 @@ class SQLSearch {
                         search_object.hash_values = Array.from(this.exact_search_values[object_path].values);
                         const attribute_values = Object.values(await harperBridge.getDataByHash(search_object));
 
-                        if (attrUntracked(hash_name, this.data[schema_table].__merged_attributes) && attribute_values.length > 0) {
-                            this.data[schema_table].__merged_attributes.push(hash_name);
-                        }
-
                         attribute_values.forEach(hash_obj => {
                             const hash_val = hash_obj[hash_name];
                             if (!this.data[schema_table].__merged_data[hash_val]) {
-                                this.data[schema_table].__merged_data[hash_val] = [hash_val];
+                                this.data[schema_table].__merged_data[hash_val] = [...fetch_attr_row_templates[schema_table]];
+                                this._setMergedHashAttribute(schema_table, hash_val);
                             }
                         });
                     } catch (e) {
@@ -515,20 +548,13 @@ class SQLSearch {
                             search_object.search_value = value;
                             const attribute_values = await harperBridge.getDataByValue(search_object);
 
-                            if (attrUntracked(hash_name, this.data[schema_table].__merged_attributes) && attribute_values.length > 0) {
-                                this.data[schema_table].__merged_attributes.push(hash_name);
-                            }
-                            if (attrUntracked(attribute.attribute, this.data[schema_table].__merged_attributes) && attribute_values.length > 0) {
-                                this.data[schema_table].__merged_attributes.push(attribute.attribute);
-                            }
-
                             Object.keys(attribute_values).forEach(hash_val => {
                                 if (!this.data[schema_table].__merged_data[hash_val]) {
-                                    // this.data[schema_table].__merged_data[hash_val] = Object.assign({}, fetch_attributes_objs[schema_table]);
-                                    this.data[schema_table].__merged_data[hash_val] = [common_utils.autoCast(hash_val)];
-                                    this.data[schema_table].__merged_data[hash_val].push(attribute_values[hash_val][attribute.attribute]);
+                                    this.data[schema_table].__merged_data[hash_val] = [...fetch_attr_row_templates[schema_table]];
+                                    this._setMergedHashAttribute(schema_table, common_utils.autoCast(hash_val));
+                                    this._updateMergedAttribute(schema_table, hash_val, attribute.attribute, attribute_values[hash_val][attribute.attribute]);
                                 } else {
-                                    this.data[schema_table].__merged_data[hash_val].push(attribute_values[hash_val][attribute.attribute]);
+                                    this._updateMergedAttribute(schema_table, hash_val, attribute.attribute, attribute_values[hash_val][attribute.attribute]);
                                 }
                             });
                         }));
@@ -552,34 +578,24 @@ class SQLSearch {
                                 this.data[schema_table].__has_hash = true;
                                 const matching_data_values = Object.values(matching_data);
 
-                                if (attrUntracked(hash_name, this.data[schema_table].__merged_attributes) && matching_data_values.length > 0) {
-                                    this.data[schema_table].__merged_attributes.push(hash_name);
-                                }
-
                                 matching_data_values.forEach(hash_obj => {
                                     const hash_val = hash_obj[hash_name];
                                     if (!this.data[schema_table].__merged_data[hash_val]) {
                                         // this.data[schema_table].__merged_data[hash_val] = [common_utils.autoCast(hash_val)];
-                                        this.data[schema_table].__merged_data[hash_val] = [hash_val];
+                                        this.data[schema_table].__merged_data[hash_val] = [...fetch_attr_row_templates[schema_table]];
+                                        this._setMergedHashAttribute(schema_table, hash_val);
                                     }
                                 });
                             } else {
                                 const matching_data_keys = Object.keys(matching_data);
 
-                                if (attrUntracked(hash_name, this.data[schema_table].__merged_attributes) && matching_data_keys.length > 0) {
-                                    this.data[schema_table].__merged_attributes.push(hash_name);
-                                }
-                                if (attrUntracked(attribute.attribute, this.data[schema_table].__merged_attributes) && matching_data_keys.length > 0) {
-                                    this.data[schema_table].__merged_attributes.push(attribute.attribute);
-                                }
-
                                 matching_data_keys.forEach(hash_val => {
                                     if (!this.data[schema_table].__merged_data[hash_val]) {
-                                        // this.data[schema_table].__merged_data[hash_val] = Object.assign({}, fetch_attributes_objs[schema_table]);
-                                        this.data[schema_table].__merged_data[hash_val] = [common_utils.autoCast(hash_val)];
-                                        this.data[schema_table].__merged_data[hash_val].push(matching_data[hash_val][attribute.attribute]);
+                                        this.data[schema_table].__merged_data[hash_val] = [...fetch_attr_row_templates[schema_table]];
+                                        this._setMergedHashAttribute(schema_table, common_utils.autoCast(hash_val));
+                                        this._updateMergedAttribute(schema_table, hash_val, attribute.attribute, matching_data[hash_val][attribute.attribute]);
                                     } else {
-                                        this.data[schema_table].__merged_data[hash_val].push(matching_data[hash_val][attribute.attribute]);
+                                        this._updateMergedAttribute(schema_table, hash_val, attribute.attribute, matching_data[hash_val][attribute.attribute]);
                                     }
                                 });
                             }
@@ -597,33 +613,23 @@ class SQLSearch {
                             this.data[schema_table].__has_hash = true;
                             const matching_data_values = Object.values(matching_data);
 
-                            if (attrUntracked(hash_name, this.data[schema_table].__merged_attributes) && matching_data_values.length > 0) {
-                                this.data[schema_table].__merged_attributes.push(hash_name);
-                            }
-
                             matching_data_values.forEach(hash_obj => {
                                 const hash_val = hash_obj[hash_name];
                                 if (!this.data[schema_table].__merged_data[hash_val]) {
-                                    this.data[schema_table].__merged_data[hash_val] = [hash_val];
-                                    // this.data[schema_table].__merged_data[hash_val] = [common_utils.autoCast(hash_val)];
+                                    this.data[schema_table].__merged_data[hash_val] = [...fetch_attr_row_templates[schema_table]];
+                                    this._setMergedHashAttribute(schema_table, hash_val);
                                 }
                             });
                         } else {
                             const matching_data_keys = Object.keys(matching_data);
 
-                            if (attrUntracked(hash_name, this.data[schema_table].__merged_attributes) && matching_data_keys.length > 0) {
-                                this.data[schema_table].__merged_attributes.push(hash_name);
-                            }
-                            if (attrUntracked(attribute.attribute, this.data[schema_table].__merged_attributes) && matching_data_keys.length > 0) {
-                                this.data[schema_table].__merged_attributes.push(attribute.attribute);
-                            }
-
                             matching_data_keys.forEach(hash_val => {
                                 if (!this.data[schema_table].__merged_data[hash_val]) {
-                                    this.data[schema_table].__merged_data[hash_val] = [common_utils.autoCast(hash_val)];
-                                    this.data[schema_table].__merged_data[hash_val].push(matching_data[hash_val][attribute.attribute]);
+                                    this.data[schema_table].__merged_data[hash_val] = [...fetch_attr_row_templates[schema_table]];
+                                    this._setMergedHashAttribute(schema_table, common_utils.autoCast(hash_val));
+                                    this._updateMergedAttribute(schema_table, hash_val, attribute.attribute, matching_data[hash_val][attribute.attribute]);
                                 } else {
-                                    this.data[schema_table].__merged_data[hash_val].push(matching_data[hash_val][attribute.attribute]);
+                                    this._updateMergedAttribute(schema_table, hash_val, attribute.attribute, matching_data[hash_val][attribute.attribute]);
                                 }
                             });
                         }
@@ -641,11 +647,6 @@ class SQLSearch {
         // console.log(`Total allocated       ${Math.round(mbNow * 100) / 100} GB`);
         // gbAlloc_gfa = Math.round((mbNow - gbStart_gfa) * 100) / 100
         // console.log(`Allocated for __getFetchAttrs - ${gbAlloc_gfa} GB`);
-
-        //TODO - UPDATE THIS TO DO THE DIRECT SEARCH WHEN VALUE IS SET TO TRUE....
-        if (simple_select_query) {
-            return Object.values(Object.values(this.data)[0].__merged_data);
-        }
     }
 
     /**
@@ -924,6 +925,68 @@ class SQLSearch {
 
         return sql;
     }
+
+    async _simpleSQLQuery() {
+        const fetch_attributes_objs = this.fetch_attributes.reduce((acc, attr) => {
+            const schema_table = `${attr.table.databaseid}_${attr.table.tableid}`;
+            if (!acc[schema_table]) {
+                const hash_name = this.data[schema_table].__hash_name;
+                acc[schema_table] = {[hash_name]: null};
+            }
+            acc[schema_table][attr.attribute] = null;
+            return acc;
+        }, {});
+
+        for (const attribute of this.fetch_attributes) {
+            const schema_table = `${attribute.table.databaseid}_${attribute.table.tableid}`;
+            let hash_name = this.data[schema_table].__hash_name;
+
+            let search_object = {
+                schema: attribute.table.databaseid,
+                table: attribute.table.tableid,
+                get_attributes: [attribute.attribute]
+            };
+            let is_hash = false;
+
+            //check if this attribute is the hash attribute for a table, if it is we need to read the files from the __hdh_hash
+            // folder, otherwise pull from the value index
+            if (attribute.attribute === hash_name) {
+                is_hash = true;
+            }
+
+            try {
+                search_object.search_attribute = attribute.attribute;
+                search_object.search_value = '*';
+                const matching_data = await harperBridge.getDataByValue(search_object);
+
+                if (is_hash) {
+                    this.data[schema_table].__has_hash = true;
+                    Object.values(matching_data).forEach(hash_obj => {
+                        const hash_val = hash_obj[hash_name];
+                        if (!this.data[schema_table].__merged_data[hash_val]) {
+                            this.data[schema_table].__merged_data[hash_val] = Object.assign({}, fetch_attributes_objs[schema_table]);
+                            this.data[schema_table].__merged_data[hash_val][hash_name] = common_utils.autoCast(hash_val);
+                        }
+                    });
+                } else {
+                    Object.keys(matching_data).forEach(hash_val => {
+                        if (!this.data[schema_table].__merged_data[hash_val]) {
+                            this.data[schema_table].__merged_data[hash_val] = Object.assign({}, fetch_attributes_objs[schema_table]);
+                            this.data[schema_table].__merged_data[hash_val][hash_name] = common_utils.autoCast(hash_val);
+                            this.data[schema_table].__merged_data[hash_val][attribute.attribute] = matching_data[hash_val][attribute.attribute];
+                        } else {
+                            this.data[schema_table].__merged_data[hash_val][attribute.attribute] = matching_data[hash_val][attribute.attribute];
+                        }
+                    });
+                }
+            } catch (err) {
+                log.error('There was an error when processing this SQL operation.  Check your logs');
+                log.error(err);
+            }
+        }
+
+        return Object.values(Object.values(this.data)[0].__merged_data);
+    }
 }
 
 module.exports = SQLSearch;
@@ -940,6 +1003,6 @@ function hasColumnAggregators(columns) {
     return has_aggregators;
 }
 
-function attrUntracked(attr, arr) {
-    return arr.indexOf(attr) === -1;
-}
+// function attrUntracked(attr, arr) {
+//     return arr.indexOf(attr) === -1;
+// }
