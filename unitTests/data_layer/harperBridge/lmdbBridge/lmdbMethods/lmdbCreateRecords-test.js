@@ -230,6 +230,11 @@ describe('Test lmdbCreateRecords module', ()=>{
                 }
             };
 
+            let expected_search = [];
+            EXPECTED_SEARCH_RECORDS.forEach(record=>{
+                expected_search.push(test_utils.assignObjecttoNullObject(record));
+            });
+
             let insert_obj = test_utils.deepClone(INSERT_OBJECT_TEST);
 
             let results = await test_utils.assertErrorAsync(lmdb_create_records, [insert_obj], undefined);
@@ -237,7 +242,7 @@ describe('Test lmdbCreateRecords module', ()=>{
 
             let dog_env = await test_utils.assertErrorAsync(environment_utility.openEnvironment,[path.join(BASE_SCHEMA_PATH, INSERT_OBJECT_TEST.schema), INSERT_OBJECT_TEST.table], undefined);
             let records = test_utils.assertErrorSync(search_utility.batchSearchByHash, [dog_env, HASH_ATTRIBUTE_NAME, ALL_FETCH_ATTRIBUTES, [ '8', '9', '12', '10' ] ], undefined);
-            assert.deepStrictEqual(records, EXPECTED_SEARCH_RECORDS);
+            assert.deepStrictEqual(records, expected_search);
         });
 
         it('Test inserting existing and non-existing rows', async () => {
@@ -287,7 +292,7 @@ describe('Test lmdbCreateRecords module', ()=>{
             ];
 
             let new_records_excpected = [
-                {
+                test_utils.assignObjecttoNullObject({
                     "__createdtime__": TIMESTAMP,
                     "__updatedtime__": TIMESTAMP,
                     name: "Harper",
@@ -295,8 +300,8 @@ describe('Test lmdbCreateRecords module', ()=>{
                     id: "8",
                     height:undefined,
                     age: 5
-                },
-                {
+                }),
+                test_utils.assignObjecttoNullObject({
                     "__createdtime__": TIMESTAMP,
                     "__updatedtime__": TIMESTAMP,
                     name: "Penny",
@@ -304,8 +309,8 @@ describe('Test lmdbCreateRecords module', ()=>{
                     id: "9",
                     age: 5,
                     height: 145
-                },
-                {
+                }),
+                test_utils.assignObjecttoNullObject({
                     "__createdtime__": TIMESTAMP,
                     "__updatedtime__": TIMESTAMP,
                     age: undefined,
@@ -313,8 +318,8 @@ describe('Test lmdbCreateRecords module', ()=>{
                     breed: "Mutt",
                     height:undefined,
                     id: "123"
-                },
-                {
+                }),
+                test_utils.assignObjecttoNullObject({
                     "__createdtime__": TIMESTAMP,
                     "__updatedtime__": TIMESTAMP,
                     name: "Rob",
@@ -322,7 +327,7 @@ describe('Test lmdbCreateRecords module', ()=>{
                     id: "1232",
                     age: 5,
                     height: 145
-                }
+                })
             ];
 
             insert_obj.records = new_records;

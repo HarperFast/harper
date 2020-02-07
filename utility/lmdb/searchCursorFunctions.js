@@ -1,22 +1,47 @@
 'use strict';
 
+function parseRow(cursor, get_whole_row, attributes){
+    let return_object = Object.create(null);
+    let original_object = JSON.parse(cursor.getCurrentString());
+
+    if(get_whole_row === true){
+        return_object = Object.assign(return_object, original_object);
+    } else {
+        for (let x = 0; x < attributes.length; x++) {
+            let attribute = attributes[x];
+            return_object[attribute] = original_object[attribute];
+        }
+    }
+
+    return return_object;
+}
+
 /**
  * The internal iterator function for searchAll
  * @param {[String]} attributes
+ * @param {Boolean} get_whole_row
  * @param {String|Number} found
  * @param {lmdb.Cursor} cursor
  * @param {[]} results
  */
-function searchAll(attributes, found, cursor, results){
-    let obj = Object.create(null);
-    let value = JSON.parse(cursor.getCurrentString());
-
-    for(let x = 0; x < attributes.length; x++){
-        let attribute = attributes[x];
-        obj[attribute] = value[attribute];
-    }
+function searchAll(attributes, get_whole_row, found, cursor, results){
+    let obj = parseRow(cursor, get_whole_row, attributes);
 
     results.push(obj);
+}
+
+/**
+* The internal iterator function for searchAllToMap
+ * @param {[String]} attributes
+* @param {Boolean} get_whole_row
+* @param {String|Number} found
+* @param {lmdb.Cursor} cursor
+* @param {Object} results
+*/
+function searchAllToMap(attributes, get_whole_row, found, cursor, results){
+    let obj = parseRow(cursor, get_whole_row, attributes);
+
+    results[found] = obj;
 }
 
 /**
@@ -30,16 +55,19 @@ function iterateDBI(found, cursor, results){
 }
 
 /**
- * The internal iterator function for startsWith
+ * The internal iterator function for startsWith, if we are executing a startswith on an int keyed dbi we do not want end the cursor if the value does not start with the compare_value,
+ *  this is because the next value would be the next numeric value instead of the next lexographic value
+ * @param {Boolean} int_key
  * @param {String} compare_value
  * @param {*} found
  * @param {lmdb.Cursor} cursor
  * @param {[]} results
  */
-function startsWith(compare_value, found, cursor, results){
-    if(found.startsWith(compare_value)){
+function startsWith(int_key, compare_value, found, cursor, results){
+    let found_str = found.toString();
+    if(found_str.startsWith(compare_value)){
         results.push(cursor.getCurrentString());
-    } else{
+    } else if(int_key === false){
         cursor.goToLast();
     }
 }
@@ -52,7 +80,8 @@ function startsWith(compare_value, found, cursor, results){
  * @param {[]} results
  */
 function endsWith(compare_value, found, cursor, results){
-    if(found.endsWith(compare_value)){
+    let found_str = found.toString();
+    if(found_str.endsWith(compare_value)){
         results.push(cursor.getCurrentString());
     }
 }
@@ -65,7 +94,8 @@ function endsWith(compare_value, found, cursor, results){
  * @param {[]} results
  */
 function contains(compare_value, found, cursor, results){
-    if(found.includes(compare_value)){
+    let found_str = found.toString();
+    if(found_str.includes(compare_value)){
         results.push(cursor.getCurrentString());
     }
 }
@@ -265,7 +295,9 @@ function betweenNumericCompare(end_value, start_value, found, cursor, results) {
 }
 
 module.exports = {
+    parseRow,
     searchAll,
+    searchAllToMap,
     iterateDBI,
     startsWith,
     endsWith,

@@ -27,6 +27,7 @@ class TransactionCursor{
      */
     constructor(env, attribute) {
         this.dbi = openDBI(env, attribute);
+        this.int_key = this.dbi[lmdb_terms.DBI_DEFINITION_NAME].int_key;
         this.txn = env.beginTxn({ readOnly: true });
         this.cursor = new lmdb.Cursor(this.txn, this.dbi);
     }

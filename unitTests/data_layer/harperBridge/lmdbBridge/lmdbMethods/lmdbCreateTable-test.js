@@ -112,7 +112,7 @@ describe("test lmdbCreateTable module", ()=>{
     });
 
     it('Test creating a table under the dev schema', async ()=>{
-        let expected_table = test_utils.deepClone(TABLE_SYSTEM_DATA_TEST_A);
+        let expected_table = test_utils.assignObjecttoNullObject(TABLE_SYSTEM_DATA_TEST_A);
         let schema_path = path.join(BASE_SCHEMA_PATH, CREATE_TABLE_OBJ_TEST_A.schema);
         let table_path = path.join(schema_path, CREATE_TABLE_OBJ_TEST_A.table, 'data.mdb');
         let expected_attributes = ['__createdtime__', '__updatedtime__', 'id'];
@@ -142,7 +142,7 @@ describe("test lmdbCreateTable module", ()=>{
     });
 
     it('Test creating a table under the prod schema', async ()=>{
-        let expected_table = test_utils.deepClone(TABLE_SYSTEM_DATA_TEST_B);
+        let expected_table = test_utils.assignObjecttoNullObject(TABLE_SYSTEM_DATA_TEST_B);
         let schema_path = path.join(BASE_SCHEMA_PATH, CREATE_TABLE_OBJ_TEST_B.schema);
         let table_path = path.join(schema_path, CREATE_TABLE_OBJ_TEST_B.table, 'data.mdb');
         let expected_attributes = ['__createdtime__', '__updatedtime__', 'name'];

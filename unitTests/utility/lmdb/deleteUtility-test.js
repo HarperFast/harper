@@ -69,8 +69,13 @@ describe('Test deleteUtility', ()=>{
         });
 
         it('delete all records', ()=>{
+            let expected_compare = [];
+            MULTI_RECORD_ARRAY_COMPARE.forEach(compare=>{
+                expected_compare.push(test_utils.assignObjecttoNullObject(compare));
+            });
+
             let records = test_utils.assertErrorSync(search_util.batchSearchByHash, [env, HASH_ATTRIBUTE_NAME, All_ATTRIBUTES, IDS], undefined);
-            assert.deepStrictEqual(records, MULTI_RECORD_ARRAY_COMPARE);
+            assert.deepStrictEqual(records, expected_compare);
 
             test_utils.assertErrorSync(delete_utility.deleteRecords, [env, HASH_ATTRIBUTE_NAME, IDS], undefined);
 
@@ -87,18 +92,18 @@ describe('Test deleteUtility', ()=>{
         it('delete some records', ()=>{
             let some_ids = ['2', '4'];
             let some_record_compare = [
-                {
+                test_utils.assignObjecttoNullObject({
                     "age": 32,
                     "city": undefined,
                     "id": 2,
                     "name": "Jerry",
-                },
-                {
+                }),
+                test_utils.assignObjecttoNullObject({
                     "age": 44,
                     "city": "Denver",
                     "id": 4,
                     "name": "Joy"
-                }
+                })
             ];
 
             let records = test_utils.assertErrorSync(search_util.batchSearchByHash, [env, HASH_ATTRIBUTE_NAME, All_ATTRIBUTES, some_ids], undefined);

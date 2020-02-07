@@ -1,8 +1,8 @@
 'use strict';
 
-const search_util = require('../../../utility/lmdb/searchUtility');
-const fs = require('fs-extra');
 const rewire = require('rewire');
+const search_util = rewire('../../../utility/lmdb/searchUtility');
+const fs = require('fs-extra');
 const environment_utility = rewire('../../../utility/lmdb/environmentUtility');
 const write_utility = require('../../../utility/lmdb/writeUtility');
 const test_utils = require('../../test_utils');
@@ -10,6 +10,7 @@ const path = require('path');
 const assert = require('assert');
 const test_data = require('../../testData');
 const LMDB_TEST_ERRORS = require('../../commonTestErrors').LMDB_ERRORS_ENUM;
+const set_whole_row_flag = search_util.__get__('setGetWholeRowFlag');
 
 const BASE_TEST_PATH = path.join(test_utils.getMockFSPath(), 'lmdbTest');
 const TEST_ENVIRONMENT_NAME = 'test';
@@ -67,7 +68,7 @@ describe('Test searchUtility module', ()=>{
             let record = test_utils.assertErrorSync(search_util.searchByHash, [env, HASH_ATTRIBUTE_NAME, SOME_ATTRIBUTES, "3"],
                 undefined, 'all arguments sent');
 
-            assert.deepStrictEqual(record, {"age": 57, "id": 3, "name": "Hank"});
+            assert.deepStrictEqual(record, test_utils.assignObjecttoNullObject({"age": 57, "id": 3, "name": "Hank"}));
         });
 
         it("test select record no exist", ()=>{
@@ -81,14 +82,14 @@ describe('Test searchUtility module', ()=>{
             let record = test_utils.assertErrorSync(search_util.searchByHash, [env, HASH_ATTRIBUTE_NAME, ["id", "name"], "2"],
                 undefined, 'all arguments sent');
 
-            assert.deepStrictEqual(record, {id:2, name:"Jerry"});
+            assert.deepStrictEqual(record, test_utils.assignObjecttoNullObject({id:2, name:"Jerry"}));
         });
 
         it("test select record only id & name and non-exsitent attribute", ()=>{
             let record = test_utils.assertErrorSync(search_util.searchByHash, [env, HASH_ATTRIBUTE_NAME, ["id", "name", "dob"], "2"],
                 undefined, 'all arguments sent');
 
-            assert.deepStrictEqual(record, {id:2, name:"Jerry", dob:undefined});
+            assert.deepStrictEqual(record, test_utils.assignObjecttoNullObject({id:2, name:"Jerry", dob:undefined}));
         });
     });
 
@@ -124,21 +125,26 @@ describe('Test searchUtility module', ()=>{
             let row = test_utils.assertErrorSync(search_util.batchSearchByHash, [env, HASH_ATTRIBUTE_NAME, SOME_ATTRIBUTES, ["1"]],
                 undefined, 'fetch single row');
 
-            assert.deepStrictEqual(row, [{id:1, name:'Kyle', age:46}]);
+            assert.deepStrictEqual(row, [test_utils.assignObjecttoNullObject( {id:1, name:'Kyle', age:46})]);
         });
 
         it("test fetch multiple records", ()=>{
             let row = test_utils.assertErrorSync(search_util.batchSearchByHash, [env, HASH_ATTRIBUTE_NAME, SOME_ATTRIBUTES, ["1", "4", "2"]],
                 undefined, 'fetch multi rows');
 
-            assert.deepStrictEqual(row, [{id:1, name:'Kyle', age:46}, {id:4, name:'Joy', age: 44}, {id:2, name:'Jerry', age:32}]);
+            assert.deepStrictEqual(row, [
+                test_utils.assignObjecttoNullObject({id:1, name:'Kyle', age:46}),
+                test_utils.assignObjecttoNullObject({id:4, name:'Joy', age: 44}),
+                test_utils.assignObjecttoNullObject({id:2, name:'Jerry', age:32})]);
         });
 
         it("test fetch multiple records some don't exist", ()=>{
             let row = test_utils.assertErrorSync(search_util.batchSearchByHash, [env, HASH_ATTRIBUTE_NAME, SOME_ATTRIBUTES, ["1","fake", "4", "55", "2"]],
                 undefined, 'fetch single row');
 
-            assert.deepStrictEqual(row, [{id:1, name:'Kyle', age:46}, {id:4, name:'Joy', age: 44}, {id:2, name:'Jerry', age:32}]);
+            assert.deepStrictEqual(row, [test_utils.assignObjecttoNullObject({id:1, name:'Kyle', age:46}),
+                test_utils.assignObjecttoNullObject({id:4, name:'Joy', age: 44}),
+                test_utils.assignObjecttoNullObject({id:2, name:'Jerry', age:32})]);
         });
     });
 
@@ -174,21 +180,29 @@ describe('Test searchUtility module', ()=>{
             let row = test_utils.assertErrorSync(search_util.batchSearchByHashToMap, [env, HASH_ATTRIBUTE_NAME, SOME_ATTRIBUTES, ["1"]],
                 undefined, 'fetch single row');
 
-            assert.deepStrictEqual(row, {1:{id:1, name:'Kyle', age:46}});
+            assert.deepStrictEqual(row, test_utils.assignObjecttoNullObject({1: test_utils.assignObjecttoNullObject({id:1, name:'Kyle', age:46})}));
         });
 
         it("test fetch multiple records", ()=>{
             let row = test_utils.assertErrorSync(search_util.batchSearchByHashToMap, [env, HASH_ATTRIBUTE_NAME, SOME_ATTRIBUTES, ["1", "4", "2"]],
                 undefined, 'fetch multi rows');
 
-            assert.deepStrictEqual(row, {1:{id:1, name:'Kyle', age:46}, 2: {id:2, name:'Jerry', age:32}, 4:{id:4, name:'Joy', age: 44}});
+            let expected = test_utils.assignObjecttoNullObject({1: test_utils.assignObjecttoNullObject({id:1, name:'Kyle', age:46}),
+                2: test_utils.assignObjecttoNullObject({id:2, name:'Jerry', age:32}),
+                4: test_utils.assignObjecttoNullObject({id:4, name:'Joy', age: 44})
+            });
+
+            assert.deepStrictEqual(row, expected);
         });
 
         it("test fetch multiple records some don't exist", ()=>{
             let row = test_utils.assertErrorSync(search_util.batchSearchByHashToMap, [env, HASH_ATTRIBUTE_NAME, SOME_ATTRIBUTES, ["1","fake", "4", "55", "2"]],
                 undefined, 'fetch single row');
-
-            assert.deepStrictEqual(row, {1:{id:1, name:'Kyle', age:46}, 2: {id:2, name:'Jerry', age:32}, 4:{id:4, name:'Joy', age: 44}});
+            let expected = test_utils.assignObjecttoNullObject( {1: test_utils.assignObjecttoNullObject( {id:1, name:'Kyle', age:46}),
+                2: test_utils.assignObjecttoNullObject( {id:2, name:'Jerry', age:32}),
+                4: test_utils.assignObjecttoNullObject( {id:4, name:'Joy', age: 44})
+            });
+            assert.deepStrictEqual(row, expected);
         });
     });
 
@@ -260,10 +274,47 @@ describe('Test searchUtility module', ()=>{
             let rows = test_utils.assertErrorSync(search_util.searchAll, [env, HASH_ATTRIBUTE_NAME, All_ATTRIBUTES], undefined, 'search');
 
             let expected = [];
-            expected.push(Object.assign(Object.create(null), {id:1, name:'Kyle', age:46, city:'Denver'}));
-            expected.push(Object.assign(Object.create(null), {id:2, name:'Jerry', age:32, city:undefined}));
-            expected.push(Object.assign(Object.create(null), {id:3, name: 'Hank', age: 57, city:undefined}));
-            expected.push(Object.assign(Object.create(null), {id:4, name:'Joy', age: 44, city:'Denver'}));
+            expected.push(test_utils.assignObjecttoNullObject( {id:1, name:'Kyle', age:46, city:'Denver'}));
+            expected.push(test_utils.assignObjecttoNullObject( {id:2, name:'Jerry', age:32, city:undefined}));
+            expected.push(test_utils.assignObjecttoNullObject( {id:3, name: 'Hank', age: 57, city:undefined}));
+            expected.push(test_utils.assignObjecttoNullObject( {id:4, name:'Joy', age: 44, city:'Denver'}));
+            assert.deepStrictEqual(rows, expected);
+        });
+    });
+
+    describe('test searchAllToMap function', ()=> {
+        let env;
+        before(async () => {
+            await fs.mkdirp(BASE_TEST_PATH);
+            global.lmdb_map = undefined;
+            env = await environment_utility.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
+            await environment_utility.createDBI(env, 'id');
+            write_utility.insertRecords(env, HASH_ATTRIBUTE_NAME, SOME_ATTRIBUTES, MULTI_RECORD_ARRAY);
+        });
+
+        after(async () => {
+            await fs.remove(BASE_TEST_PATH);
+            global.lmdb_map = undefined;
+        });
+
+        it("test validation", () => {
+            test_utils.assertErrorSync(search_util.searchAllToMap, [], LMDB_TEST_ERRORS.ENV_REQUIRED, 'test no args');
+            test_utils.assertErrorSync(search_util.searchAllToMap, [HASH_ATTRIBUTE_NAME], LMDB_TEST_ERRORS.INVALID_ENVIRONMENT, 'invalid env variable');
+            test_utils.assertErrorSync(search_util.searchAllToMap, [env], LMDB_TEST_ERRORS.HASH_ATTRIBUTE_REQUIRED, 'no hash attribute');
+            test_utils.assertErrorSync(search_util.searchAllToMap, [env, HASH_ATTRIBUTE_NAME], LMDB_TEST_ERRORS.FETCH_ATTRIBUTES_REQUIRED, 'no fetch_attributes');
+            test_utils.assertErrorSync(search_util.searchAllToMap, [env, HASH_ATTRIBUTE_NAME, HASH_ATTRIBUTE_NAME], LMDB_TEST_ERRORS.FETCH_ATTRIBUTES_MUST_BE_ARRAY, 'invalid fetch_attributes');
+            test_utils.assertErrorSync(search_util.searchAllToMap, [env, HASH_ATTRIBUTE_NAME, SOME_ATTRIBUTES], undefined, 'all arguments sent');
+        });
+
+        it("searchAllToMap rows", ()=>{
+
+            let rows = test_utils.assertErrorSync(search_util.searchAllToMap, [env, HASH_ATTRIBUTE_NAME, All_ATTRIBUTES], undefined, 'search');
+
+            let expected = Object.create(null);
+            expected['1'] = test_utils.assignObjecttoNullObject({id:1, name:'Kyle', age:46, city:'Denver'});
+            expected['2'] = test_utils.assignObjecttoNullObject({id:2, name:'Jerry', age:32, city:undefined});
+            expected['3'] = test_utils.assignObjecttoNullObject({id:3, name: 'Hank', age: 57, city:undefined});
+            expected['4'] = test_utils.assignObjecttoNullObject({id:4, name:'Joy', age: 44, city:'Denver'});
             assert.deepStrictEqual(rows, expected);
         });
     });
@@ -293,6 +344,23 @@ describe('Test searchUtility module', ()=>{
         it("test count", () => {
             let count = test_utils.assertErrorSync(search_util.countAll, [env, HASH_ATTRIBUTE_NAME], undefined, 'all arguments');
             assert.deepStrictEqual(count, 4);
+        });
+    });
+
+    describe('test setGetWholeRowFlag function', ()=> {
+        it("test just * in get_attributes", () => {
+            let flag = test_utils.assertErrorSync(set_whole_row_flag, [['*']], undefined, 'all arguments');
+            assert.deepStrictEqual(flag, true);
+        });
+
+        it("test just id in get_attributes", () => {
+            let flag = test_utils.assertErrorSync(set_whole_row_flag, [['id']], undefined, 'all arguments');
+            assert.deepStrictEqual(flag, false);
+        });
+
+        it("test just multiple attributes in get_attributes", () => {
+            let flag = test_utils.assertErrorSync(set_whole_row_flag, [['id','name','age']], undefined, 'all arguments');
+            assert.deepStrictEqual(flag, false);
         });
     });
 

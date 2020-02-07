@@ -6,6 +6,7 @@ const lmdb = require('node-lmdb');
 const log = require('../logging/harper_logger');
 const common = require('./commonUtility');
 const lmdb_terms = require('./terms');
+const hdb_terms = require('../hdbTerms');
 const LMDB_ERRORS = require('../commonErrors').LMDB_ERRORS_ENUM;
 const hdb_utils = require('../common_utils');
 const cursor_functions = require('./searchCursorFunctions');
@@ -30,6 +31,23 @@ function iterateFullIndex(env, attribute, eval_function){
 }
 
 /**
+ * Creates the basis for a full iteration of a dbi with an evaluation function used to determine the logic inside the iteration
+ * @param {lmdb.Env} env
+ * @param {String} attribute
+ * @param {Function} eval_function
+ * @returns {[]}
+ */
+function iterateFullIndexToMap(env, attribute, eval_function){
+    let results = Object.create(null);
+    let txn = new Transaction_Cursor(env, attribute);
+    for (let found = txn.cursor.goToFirst(); found !== null; found = txn.cursor.goToNext()) {
+        eval_function(found, txn.cursor, results);
+    }
+    txn.close();
+    return results;
+}
+
+/**
  * Creates the basis for a forward range search of a dbi with an evaluation function used to determine the logic inside the iteration
  * @param {lmdb.Env} env
  * @param {String} attribute
@@ -40,9 +58,13 @@ function iterateFullIndex(env, attribute, eval_function){
 function iterateRangeNext(env, attribute, search_value, eval_function){
     let txn = new Transaction_Cursor(env, attribute);
 
+    if(txn.int_key === true){
+        search_value = parseInt(search_value);
+    }
+
     //if the first value in the dbi is less than the search value then we seek to the value, otherwise we keep the cursor at the first item
     let found = txn.cursor.goToFirst();
-    if((isNaN(found) === true && found.toString() < search_value.toString()) || (isNaN(found) === false && Number(found) < Number(search_value))){
+    if((isNaN(found) === true && found.toString() < search_value.toString()) || (isNaN(found) === false && Number(found) < search_value)){
         found = txn.cursor.goToRange(search_value);
     }
 
@@ -65,10 +87,14 @@ function iterateRangeNext(env, attribute, search_value, eval_function){
 function iterateRangePrev(env, attribute, search_value, eval_function){
     let txn = new Transaction_Cursor(env, attribute);
 
+    if(txn.int_key === true){
+        search_value = parseInt(search_value);
+    }
+
     let results = [];
     //if the last value in the dbi is greater than the search value then we seek to the value, otherwise we keep the cursor at the last item
     let found = txn.cursor.goToLast();
-    if((isNaN(found) === true && found > search_value.toString()) || (isNaN(found) === false && Number(found) > Number(search_value))){
+    if((isNaN(found) === true && found > search_value.toString()) || (isNaN(found) === false && Number(found) > search_value)){
         found = txn.cursor.goToRange(search_value);
     }
 
@@ -77,6 +103,20 @@ function iterateRangePrev(env, attribute, search_value, eval_function){
     }
     txn.close();
     return results;
+}
+
+/**
+ * determines if the intent is to return the whole row based on fetch_attributes having 1 entry that is wildcard * or %
+ * @param fetch_attributes
+ * @returns {boolean}
+ */
+function setGetWholeRowFlag(fetch_attributes){
+    let get_whole_row = false;
+    if(fetch_attributes.length === 1 && hdb_terms.SEARCH_WILDCARDS.indexOf(fetch_attributes[0]) >= 0){
+        get_whole_row = true;
+    }
+
+    return get_whole_row;
 }
 
 /**
@@ -95,7 +135,30 @@ function searchAll(env, hash_attribute, fetch_attributes){
 
     validateFetchAttributes(fetch_attributes);
 
-    return iterateFullIndex(env, hash_attribute, cursor_functions.searchAll.bind(null, fetch_attributes));
+    let get_whole_row = setGetWholeRowFlag(fetch_attributes);
+
+    return iterateFullIndex(env, hash_attribute, cursor_functions.searchAll.bind(null, fetch_attributes, get_whole_row));
+}
+
+/**
+* iterates the entire  hash_attribute dbi and returns all objects back in a map
+* @param {lmdb.Env} env - environment object used thigh level to interact with all data in an environment
+* @param {String} hash_attribute - name of the hash_attribute for this environment
+* @param {Array.<String>} fetch_attributes - string array of attributes to pull from the object
+* @returns {{String|Number, Object}} - object array of fetched records
+*/
+function searchAllToMap(env, hash_attribute, fetch_attributes){
+    common.validateEnv(env);
+
+    if(hash_attribute === undefined){
+        throw new Error(LMDB_ERRORS.HASH_ATTRIBUTE_REQUIRED);
+    }
+
+    validateFetchAttributes(fetch_attributes);
+
+    let get_whole_row = setGetWholeRowFlag(fetch_attributes);
+
+    return iterateFullIndexToMap(env, hash_attribute, cursor_functions.searchAllToMap.bind(null, fetch_attributes, get_whole_row));
 }
 
 /**
@@ -142,6 +205,10 @@ function equals(env, attribute, search_value){
 
     let txn = new Transaction_Cursor(env, attribute);
 
+    if(txn.int_key === true){
+        search_value = parseInt(search_value);
+    }
+
     let results = [];
     for (let found = txn.cursor.goToKey(search_value); found !== null; found = txn.cursor.goToNextDup()) {
         let value = txn.cursor.getCurrentString();
@@ -160,8 +227,8 @@ function equals(env, attribute, search_value){
  */
 function startsWith(env, attribute, search_value){
     validateComparisonFunctions(env, attribute, search_value);
-
-    return iterateRangeNext(env, attribute, search_value, cursor_functions.startsWith);
+    let dbi = environment_utility.openDBI(env, attribute);
+    return iterateRangeNext(env, attribute, search_value, cursor_functions.startsWith.bind(null, dbi[lmdb_terms.DBI_DEFINITION_NAME].int_key));
 }
 
 /**
@@ -376,17 +443,14 @@ function searchByHash(env, hash_attribute, fetch_attributes, id) {
         throw new Error(LMDB_ERRORS.ID_REQUIRED);
     }
 
+    let get_whole_row = setGetWholeRowFlag(fetch_attributes);
+
     let txn = new Transaction_Cursor(env, hash_attribute);
 
     let obj = null;
     let found = txn.cursor.goToKey(id);
     if(found === id) {
-        obj = {};
-        let value = JSON.parse(txn.cursor.getCurrentString());
-
-        fetch_attributes.forEach(attribute => {
-            obj[attribute] = value[attribute];
-        });
+        obj = cursor_functions.parseRow(txn.cursor, get_whole_row, fetch_attributes);
     }
     txn.close();
     return obj;
@@ -396,7 +460,7 @@ function searchByHash(env, hash_attribute, fetch_attributes, id) {
  * checks if a hash value exists based on the id passed
  * @param {lmdb.Env} env - environment object used thigh level to interact with all data in an environment
  * @param {String} hash_attribute - name of the hash_attribute for this environment
- * @param {String} id - id value to check exists
+ * @param {String|Number} id - id value to check exists
  * @returns {boolean} - whether the hash exists (true) or not (false)
  */
 function checkHashExists(env, hash_attribute, id) {
@@ -412,6 +476,10 @@ function checkHashExists(env, hash_attribute, id) {
 
     let found_key = true;
     let txn = new Transaction_Cursor(env, hash_attribute);
+
+    if(txn.int_key === true){
+        id = parseInt(id);
+    }
 
     let key = txn.cursor.goToKey(id);
 
@@ -435,6 +503,8 @@ function checkHashExists(env, hash_attribute, id) {
 function batchSearchByHash(env, hash_attribute, fetch_attributes, ids, not_found) {
     let txn = initializeBatchSearchByHash(env, hash_attribute, fetch_attributes, ids, not_found);
 
+    let get_whole_row = setGetWholeRowFlag(fetch_attributes);
+
     let results = [];
 
     for(let x = 0; x < ids.length; x++){
@@ -442,14 +512,7 @@ function batchSearchByHash(env, hash_attribute, fetch_attributes, ids, not_found
         try {
             let key = txn.cursor.goToKey(id);
             if(key === id) {
-                let orig = JSON.parse(txn.cursor.getCurrentString());
-                let obj = {};
-
-                for(let k = 0; k < fetch_attributes.length; k++){
-                    let attribute = fetch_attributes[k];
-                    obj[attribute] = orig[attribute];
-                }
-                results.push(obj);
+                cursor_functions.searchAll(fetch_attributes, get_whole_row, key, txn.cursor, results);
             }else {
                 not_found.push(hdb_utils.autoCast(id));
             }
@@ -475,20 +538,16 @@ function batchSearchByHash(env, hash_attribute, fetch_attributes, ids, not_found
 function batchSearchByHashToMap(env, hash_attribute, fetch_attributes, ids, not_found) {
     let txn = initializeBatchSearchByHash(env, hash_attribute, fetch_attributes, ids, not_found);
 
-    let results = {};
+    let results = Object.create(null);
+
+    let get_whole_row = setGetWholeRowFlag(fetch_attributes);
 
     for(let x = 0; x < ids.length; x++){
         let id = ids[x];
         try {
             let key = txn.cursor.goToKey(id);
             if(key === id) {
-                let orig = JSON.parse(txn.cursor.getCurrentString());
-                let obj = {};
-
-                for(let k = 0; k < fetch_attributes.length; k++){
-                    let attribute = fetch_attributes[k];
-                    obj[attribute] = orig[attribute];
-                }
+                let obj = cursor_functions.parseRow(txn.cursor, get_whole_row, fetch_attributes);
                 results[id] = obj;
             }else {
                 not_found.push(hdb_utils.autoCast(id));
@@ -547,6 +606,8 @@ function validateFetchAttributes(fetch_attributes){
         }
         throw new Error(LMDB_ERRORS.FETCH_ATTRIBUTES_MUST_BE_ARRAY);
     }
+
+
 }
 
 /**
@@ -568,6 +629,7 @@ function validateComparisonFunctions(env, attribute, search_value){
 
 module.exports = {
     searchAll,
+    searchAllToMap,
     countAll,
     equals,
     startsWith,

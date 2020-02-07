@@ -1,44 +1,31 @@
 'use strict';
 
-const search_utility = require('../../../../utility/lmdb/searchUtility');
 const SearchObject = require('../../../SearchObject');
-const path = require('path');
-const hdb_terms = require('../../../../utility/hdbTerms');
-const env_mgr = require('../../../../utility/environment/environmentManager');
-const system_schema = require('../../../../json/systemSchema.json');
-if(!env_mgr.isInitialized()){
-    env_mgr.initSync();
-}
-
-const BASE_SCHEMA_PATH = path.join(env_mgr.getHdbBasePath(), hdb_terms.SCHEMA_DIR_NAME);
+const search_validator = require('../../../../validation/searchValidator');
+const common_utils = require('../../../../utility/common_utils');
+const lmdb_terms = require('../../../../utility/lmdb/terms');
+const execute_search = require('../lmdbUtility/lmdbSearch');
 
 module.exports = lmdbGetDataByValue;
 
-// Search Object
-// {
-//   schema:String, // schema to search
-//   table:String, // table to search
-//   search_attribute: String // attribute to search for value on
-//   search_value:String, // string value to search for
-//   get_attributes:Array // attributes to return with search result
-// }
-
 /**
- * gets records by value
+ * gets records by value returns a map of objects
  * @param {SearchObject} search_object
+ * @param {lmdb_terms.SEARCH_COMPARATORS} [comparator]
+ * @returns {{String|Number, Object}}
  */
-function lmdbGetDataByValue(search_object, comparator) {
-    //TODO implement comparator search
-    let search_function = undefined;
-
-    let table_info = null;
-    if (search_object.schema === hdb_terms.SYSTEM_SCHEMA_NAME) {
-        table_info = system_schema[search_object.table];
-    } else {
-        table_info = global.hdb_schema[search_object.schema][search_object.table];
+async function lmdbGetDataByValue(search_object, comparator) {
+    let comparator_search = !common_utils.isEmpty(comparator);
+    if (comparator_search && lmdb_terms.SEARCH_COMPARATORS_REVERSE_LOOKUP[comparator] === undefined) {
+        throw new Error(`Value search comparator - ${comparator} - is not valid`);
     }
 
-    if(search_object.search_value === '*'){
-        search_function = search_utility.iterateDBI;
+    let validation_error = search_validator(search_object, 'value');
+    if (validation_error) {
+        throw validation_error;
     }
+
+    let return_map = true;
+    return await execute_search(search_object, comparator, return_map);
 }
+

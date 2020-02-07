@@ -28,7 +28,8 @@ const LMDB_ERRORS_ENUM = {
     START_VALUE_REQUIRED: 'start_value is required',
     END_VALUE_REQUIRED: 'end_value is required',
     CANNOT_COMPARE_STRING_TO_NUMERIC_KEYS: 'cannot compare a string to numeric keys',
-    END_VALUE_MUST_BE_GREATER_THAN_START_VALUE: 'end_value must be greater than start_value'
+    END_VALUE_MUST_BE_GREATER_THAN_START_VALUE: 'end_value must be greater than start_value',
+    UKNOWN_SEARCH_TYPE: 'unknown search type'
 };
 
 module.exports = {

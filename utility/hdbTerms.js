@@ -504,6 +504,8 @@ class PermissionAttributeResponseObject {
     }
 }
 
+const SEARCH_WILDCARDS = ['*', '%'];
+
 const UNAUTHORIZED_PERMISSION_NAME = 'unauthorized_access';
 
 module.exports = {
@@ -601,5 +603,6 @@ module.exports = {
     JAVASCRIPT_EXTENSION,
     PermissionResponseObject,
     PermissionAttributeResponseObject,
-    UNAUTHORIZED_PERMISSION_NAME
+    UNAUTHORIZED_PERMISSION_NAME,
+    SEARCH_WILDCARDS
 };
