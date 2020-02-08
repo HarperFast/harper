@@ -194,7 +194,7 @@ class SQLSearch {
                 let attribute_key = common_utils.buildFolderPath(found_column.table.databaseid, found_column.table.tableid, found_column.attribute);
 
                 // Check for value range search first
-                if (!common_utils.isEmpty(hdbTerms.FS_VALUE_SEARCH_COMPARATORS_REVERSE_LOOKUP[node.op])) {
+                if (!common_utils.isEmpty(hdbTerms.VALUE_SEARCH_COMPARATORS_REVERSE_LOOKUP[node.op])) {
                     if (common_utils.isEmpty(this.comparator_search_values[attribute_key])) {
                         this.comparator_search_values[attribute_key] = {
                             ignore: false,

@@ -21,7 +21,6 @@ const environment_utility = rewire('../../../../../utility/lmdb/environmentUtili
 const write_utility = require('../../../../../utility/lmdb/writeUtility');
 const SearchObject = require('../../../../../data_layer/SearchObject');
 const lmdb_search = rewire('../../../../../data_layer/harperBridge/lmdbBridge/lmdbMethods/lmdbGetDataByValue');
-const lmdb_terms = require('../../../../../utility/lmdb/terms');
 const hdb_terms = require('../../../../../utility/hdbTerms');
 const assert = require('assert');
 const fs = require('fs-extra');
@@ -233,7 +232,7 @@ describe('test lmdbGetDataByValue module', ()=>{
             });
 
             let search_object = new SearchObject('dev', 'test', 'temperature', '25', 'id', ['*']);
-            let results = await test_utils.assertErrorAsync(lmdb_search, [search_object, lmdb_terms.SEARCH_COMPARATORS.GREATER], undefined);
+            let results = await test_utils.assertErrorAsync(lmdb_search, [search_object, hdb_terms.VALUE_SEARCH_COMPARATORS.GREATER], undefined);
             assert.deepStrictEqual(results, expected);
         });
 
@@ -246,7 +245,7 @@ describe('test lmdbGetDataByValue module', ()=>{
             });
 
             let search_object = new SearchObject('dev', 'test', 'temperature', '40', 'id', ['*']);
-            let results = await test_utils.assertErrorAsync(lmdb_search, [search_object, lmdb_terms.SEARCH_COMPARATORS.GREATER_OR_EQ], undefined);
+            let results = await test_utils.assertErrorAsync(lmdb_search, [search_object, hdb_terms.VALUE_SEARCH_COMPARATORS.GREATER_OR_EQ], undefined);
             assert.deepStrictEqual(results, expected);
         });
 
@@ -259,7 +258,7 @@ describe('test lmdbGetDataByValue module', ()=>{
             });
 
             let search_object = new SearchObject('dev', 'test', 'temperature', '25', 'id', ['*']);
-            let results = await test_utils.assertErrorAsync(lmdb_search, [search_object, lmdb_terms.SEARCH_COMPARATORS.LESS], undefined);
+            let results = await test_utils.assertErrorAsync(lmdb_search, [search_object, hdb_terms.VALUE_SEARCH_COMPARATORS.LESS], undefined);
             assert.deepStrictEqual(results, expected);
         });
 
@@ -272,7 +271,7 @@ describe('test lmdbGetDataByValue module', ()=>{
             });
 
             let search_object = new SearchObject('dev', 'test', 'temperature', '40', 'id', ['*']);
-            let results = await test_utils.assertErrorAsync(lmdb_search, [search_object, lmdb_terms.SEARCH_COMPARATORS.LESS_OR_EQ], undefined);
+            let results = await test_utils.assertErrorAsync(lmdb_search, [search_object, hdb_terms.VALUE_SEARCH_COMPARATORS.LESS_OR_EQ], undefined);
             assert.deepStrictEqual(results, expected);
         });
 
@@ -285,7 +284,7 @@ describe('test lmdbGetDataByValue module', ()=>{
             });
 
             let search_object = new SearchObject('dev', 'test', 'temperature', '40', 'id', ['*'], '66');
-            let results = await test_utils.assertErrorAsync(lmdb_search, [search_object, lmdb_terms.SEARCH_COMPARATORS.BETWEEN], undefined);
+            let results = await test_utils.assertErrorAsync(lmdb_search, [search_object, hdb_terms.VALUE_SEARCH_COMPARATORS.BETWEEN], undefined);
             assert.deepStrictEqual(results, expected);
 
         });

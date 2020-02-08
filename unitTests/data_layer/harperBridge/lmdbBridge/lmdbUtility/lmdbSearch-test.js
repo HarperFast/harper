@@ -418,7 +418,7 @@ describe('test lmdbSearch module', ()=>{
             });
 
             let search_object = new SearchObject('dev', 'test', 'temperature', '25', 'id', ['*']);
-            let results = await test_utils.assertErrorAsync(lmdb_search, [search_object, lmdb_terms.SEARCH_COMPARATORS.GREATER], undefined);
+            let results = await test_utils.assertErrorAsync(lmdb_search, [search_object, hdb_terms.VALUE_SEARCH_COMPARATORS.GREATER], undefined);
             assert.deepEqual(results.length, expected.length);
 
             results.forEach(result=>{
@@ -442,7 +442,7 @@ describe('test lmdbSearch module', ()=>{
             });
 
             let search_object = new SearchObject('dev', 'test', 'temperature', '40', 'id', ['*']);
-            let results = await test_utils.assertErrorAsync(lmdb_search, [search_object, lmdb_terms.SEARCH_COMPARATORS.GREATER_OR_EQ], undefined);
+            let results = await test_utils.assertErrorAsync(lmdb_search, [search_object, hdb_terms.VALUE_SEARCH_COMPARATORS.GREATER_OR_EQ], undefined);
             assert.deepEqual(results.length, expected.length);
 
             results.forEach(result=>{
@@ -466,7 +466,7 @@ describe('test lmdbSearch module', ()=>{
             });
 
             let search_object = new SearchObject('dev', 'test', 'temperature', '25', 'id', ['*']);
-            let results = await test_utils.assertErrorAsync(lmdb_search, [search_object, lmdb_terms.SEARCH_COMPARATORS.LESS], undefined);
+            let results = await test_utils.assertErrorAsync(lmdb_search, [search_object, hdb_terms.VALUE_SEARCH_COMPARATORS.LESS], undefined);
             assert.deepEqual(results.length, expected.length);
 
             results.forEach(result=>{
@@ -490,7 +490,7 @@ describe('test lmdbSearch module', ()=>{
             });
 
             let search_object = new SearchObject('dev', 'test', 'temperature', '40', 'id', ['*']);
-            let results = await test_utils.assertErrorAsync(lmdb_search, [search_object, lmdb_terms.SEARCH_COMPARATORS.LESS_OR_EQ], undefined);
+            let results = await test_utils.assertErrorAsync(lmdb_search, [search_object, hdb_terms.VALUE_SEARCH_COMPARATORS.LESS_OR_EQ], undefined);
             assert.deepEqual(results.length, expected.length);
 
             results.forEach(result=>{
@@ -514,7 +514,7 @@ describe('test lmdbSearch module', ()=>{
             });
 
             let search_object = new SearchObject('dev', 'test', 'temperature', '40', 'id', ['*'], '66');
-            let results = await test_utils.assertErrorAsync(lmdb_search, [search_object, lmdb_terms.SEARCH_COMPARATORS.BETWEEN], undefined);
+            let results = await test_utils.assertErrorAsync(lmdb_search, [search_object, hdb_terms.VALUE_SEARCH_COMPARATORS.BETWEEN], undefined);
             assert.deepEqual(results.length, expected.length);
 
             results.forEach(result=>{

@@ -1,18 +1,7 @@
 'use strict';
 
-const _ = require('lodash');
-
 const INTERNAL_DBIS_NAME = '__dbis__';
 const DBI_DEFINITION_NAME = '__dbi_defintion__';
-
-const SEARCH_COMPARATORS = {
-  LESS: "<",
-  LESS_OR_EQ: "<=",
-  GREATER: ">",
-  GREATER_OR_EQ: ">=",
-  BETWEEN: "..."
-};
-const SEARCH_COMPARATORS_REVERSE_LOOKUP = _.invert(SEARCH_COMPARATORS);
 
 const SEARCH_TYPES = {
   EQUALS: 'equals',
@@ -28,7 +17,5 @@ const SEARCH_TYPES = {
 module.exports = {
   INTERNAL_DBIS_NAME,
   DBI_DEFINITION_NAME,
-  SEARCH_COMPARATORS,
-  SEARCH_COMPARATORS_REVERSE_LOOKUP,
   SEARCH_TYPES
 };

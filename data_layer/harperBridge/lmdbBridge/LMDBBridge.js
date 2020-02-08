@@ -10,7 +10,6 @@ const lmdbGetDataByHash = require('./lmdbMethods/lmdbGetDataByHash');
 const lmdbSearchByHash = require('./lmdbMethods/lmdbSearchByHash');
 const lmdbGetDataByValue = require('./lmdbMethods/lmdbGetDataByValue');
 const lmdbSearchByValue = require('./lmdbMethods/lmdbSearchByValue');
-const lmdbSearchByConditions = require('./lmdbMethods/lmdbSearchByConditions');
 const lmdbDropSchema = require('./lmdbMethods/lmdbDropSchema');
 const lmdbCreateTable = require('./lmdbMethods/lmdbCreateTable');
 const lmdbUpdateRecords = require('./lmdbMethods/lmdbUpdateRecords');
@@ -33,10 +32,6 @@ class LMDBBridge extends BridgeMethods {
     }
 
     async searchByValue(search_object) {
-
-    }
-
-    async searchByConditions(search_object) {
 
     }
 

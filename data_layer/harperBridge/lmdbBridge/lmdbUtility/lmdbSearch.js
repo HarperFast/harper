@@ -22,74 +22,78 @@ let WILDCARD_REPLACE_REGEX = new RegExp(/[*%]/, 'g');
 /**
  * executes a specific search based on the evaluation of the search_object & optional comparator & returns the results
  * @param {SearchObject} search_object
- * @param {lmdb_terms.SEARCH_COMPARATORS} [comparator]
+ * @param {hdb_terms.VALUE_SEARCH_COMPARATORS} [comparator]
  * @param {Boolean} return_map
  */
 async function executeSearch(search_object, comparator, return_map){
-    let table_info = null;
-    if (search_object.schema === hdb_terms.SYSTEM_SCHEMA_NAME) {
-        table_info = system_schema[search_object.table];
-    } else {
-        table_info = global.hdb_schema[search_object.schema][search_object.table];
-    }
-
-    let schema_path = path.join(BASE_SCHEMA_PATH, search_object.schema);
-    let env = await environment_utility.openEnvironment(schema_path, search_object.table);
-    let ids = [];
-    if(common_utils.isEmpty(comparator)){
-        let search_type = createSearchTypeFromSearchObject(search_object, table_info.hash_attribute, return_map);
-        search_object.search_value = search_object.search_value.replace(WILDCARD_REPLACE_REGEX, '');
-        switch (search_type) {
-            case lmdb_terms.SEARCH_TYPES.EQUALS:
-                ids = search_utility.equals(env, search_object.search_attribute, search_object.search_value);
-                break;
-            case lmdb_terms.SEARCH_TYPES.CONTAINS:
-                ids = search_utility.contains(env, search_object.search_attribute, search_object.search_value);
-                break;
-            case lmdb_terms.SEARCH_TYPES.ENDS_WITH:
-                ids = search_utility.endsWith(env, search_object.search_attribute, search_object.search_value);
-                break;
-            case lmdb_terms.SEARCH_TYPES.STARTS_WITH:
-                ids = search_utility.startsWith(env, search_object.search_attribute, search_object.search_value);
-                break;
-            case lmdb_terms.SEARCH_TYPES.BATCH_SEARCH_BY_HASH:
-                return search_utility.batchSearchByHash(env, search_object.search_attribute, search_object.get_attributes, [search_object.search_value]);
-            case lmdb_terms.SEARCH_TYPES.BATCH_SEARCH_BY_HASH_TO_MAP:
-                return search_utility.batchSearchByHashToMap(env, search_object.search_attribute, search_object.get_attributes, [search_object.search_value]);
-            case lmdb_terms.SEARCH_TYPES.SEARCH_ALL:
-                return search_utility.searchAll(env, table_info.hash_attribute, search_object.get_attributes);
-            case lmdb_terms.SEARCH_TYPES.SEARCH_ALL_TO_MAP:
-                return search_utility.searchAllToMap(env, table_info.hash_attribute, search_object.get_attributes);
-            default:
-                return ids;
+    try {
+        let table_info = null;
+        if (search_object.schema === hdb_terms.SYSTEM_SCHEMA_NAME) {
+            table_info = system_schema[search_object.table];
+        } else {
+            table_info = global.hdb_schema[search_object.schema][search_object.table];
         }
-    } else{
-        switch (comparator) {
-            case lmdb_terms.SEARCH_COMPARATORS.BETWEEN:
-                ids = search_utility.between(env, search_object.search_attribute, search_object.search_value, search_object.end_value);
-                break;
-            case lmdb_terms.SEARCH_COMPARATORS.GREATER:
-                ids = search_utility.greaterThan(env, search_object.search_attribute, search_object.search_value);
-                break;
-            case lmdb_terms.SEARCH_COMPARATORS.GREATER_OR_EQ:
-                ids = search_utility.greaterThanEqual(env, search_object.search_attribute, search_object.search_value);
-                break;
-            case lmdb_terms.SEARCH_COMPARATORS.LESS:
-                ids = search_utility.lessThan(env, search_object.search_attribute, search_object.search_value);
-                break;
-            case lmdb_terms.SEARCH_COMPARATORS.LESS_OR_EQ:
-                ids = search_utility.lessThanEqual(env, search_object.search_attribute, search_object.search_value);
-                break;
-            default:
-                return ids;
+
+        let schema_path = path.join(BASE_SCHEMA_PATH, search_object.schema);
+        let env = await environment_utility.openEnvironment(schema_path, search_object.table);
+        let ids = [];
+        if (common_utils.isEmpty(comparator)) {
+            let search_type = createSearchTypeFromSearchObject(search_object, table_info.hash_attribute, return_map);
+            search_object.search_value = search_object.search_value.replace(WILDCARD_REPLACE_REGEX, '');
+            switch (search_type) {
+                case lmdb_terms.SEARCH_TYPES.EQUALS:
+                    ids = search_utility.equals(env, search_object.search_attribute, search_object.search_value);
+                    break;
+                case lmdb_terms.SEARCH_TYPES.CONTAINS:
+                    ids = search_utility.contains(env, search_object.search_attribute, search_object.search_value);
+                    break;
+                case lmdb_terms.SEARCH_TYPES.ENDS_WITH:
+                    ids = search_utility.endsWith(env, search_object.search_attribute, search_object.search_value);
+                    break;
+                case lmdb_terms.SEARCH_TYPES.STARTS_WITH:
+                    ids = search_utility.startsWith(env, search_object.search_attribute, search_object.search_value);
+                    break;
+                case lmdb_terms.SEARCH_TYPES.BATCH_SEARCH_BY_HASH:
+                    return search_utility.batchSearchByHash(env, search_object.search_attribute, search_object.get_attributes, [search_object.search_value]);
+                case lmdb_terms.SEARCH_TYPES.BATCH_SEARCH_BY_HASH_TO_MAP:
+                    return search_utility.batchSearchByHashToMap(env, search_object.search_attribute, search_object.get_attributes, [search_object.search_value]);
+                case lmdb_terms.SEARCH_TYPES.SEARCH_ALL:
+                    return search_utility.searchAll(env, table_info.hash_attribute, search_object.get_attributes);
+                case lmdb_terms.SEARCH_TYPES.SEARCH_ALL_TO_MAP:
+                    return search_utility.searchAllToMap(env, table_info.hash_attribute, search_object.get_attributes);
+                default:
+                    return ids;
+            }
+        } else {
+            switch (comparator) {
+                case hdb_terms.VALUE_SEARCH_COMPARATORS.BETWEEN:
+                    ids = search_utility.between(env, search_object.search_attribute, search_object.search_value, search_object.end_value);
+                    break;
+                case hdb_terms.VALUE_SEARCH_COMPARATORS.GREATER:
+                    ids = search_utility.greaterThan(env, search_object.search_attribute, search_object.search_value);
+                    break;
+                case hdb_terms.VALUE_SEARCH_COMPARATORS.GREATER_OR_EQ:
+                    ids = search_utility.greaterThanEqual(env, search_object.search_attribute, search_object.search_value);
+                    break;
+                case hdb_terms.VALUE_SEARCH_COMPARATORS.LESS:
+                    ids = search_utility.lessThan(env, search_object.search_attribute, search_object.search_value);
+                    break;
+                case hdb_terms.VALUE_SEARCH_COMPARATORS.LESS_OR_EQ:
+                    ids = search_utility.lessThanEqual(env, search_object.search_attribute, search_object.search_value);
+                    break;
+                default:
+                    return ids;
+            }
         }
-    }
 
-    if(return_map === true){
-        return search_utility.batchSearchByHashToMap(env, table_info.hash_attribute, search_object.get_attributes, ids);
-    }
+        if (return_map === true) {
+            return search_utility.batchSearchByHashToMap(env, table_info.hash_attribute, search_object.get_attributes, ids);
+        }
 
-    return search_utility.batchSearchByHash(env, table_info.hash_attribute, search_object.get_attributes, ids);
+        return search_utility.batchSearchByHash(env, table_info.hash_attribute, search_object.get_attributes, ids);
+    }catch(e){
+        throw e;
+    }
 }
 
 /**

@@ -29,7 +29,7 @@ module.exports = fsGetDataByValue;
 async function fsGetDataByValue(search_object, comparator) {
     try {
         let comparator_search = !common_utils.isEmpty(comparator);
-        if (comparator_search && !hdb_terms.FS_VALUE_SEARCH_COMPARATORS_REVERSE_LOOKUP[comparator]) {
+        if (comparator_search && !hdb_terms.VALUE_SEARCH_COMPARATORS_REVERSE_LOOKUP[comparator]) {
             throw new Error(`Value search comparator - ${comparator} - is not valid`);
         }
         let validation_error = search_validator(search_object, 'value');
