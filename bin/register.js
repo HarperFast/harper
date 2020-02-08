@@ -10,7 +10,7 @@ async function register() {
         if (!result) {
             return (`Registration failed.`);
         }
-        return (`Registration result: ${result}`);
+        return result;
     } catch (e) {
         logger.error(e);
     }

@@ -43,6 +43,13 @@ const constraints = {
             onlyInteger: true,
             greaterThan: 0
         }
+    },
+    ram_allocation:{
+        presence:true,
+        numericality:{
+            onlyInteger: true,
+            greaterThan: 0
+        }
     }
 };
 

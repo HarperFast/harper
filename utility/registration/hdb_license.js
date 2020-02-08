@@ -13,6 +13,9 @@ const License = require('../../utility/registration/licenseObjects').ExtendedLic
 const INVALID_LICENSE_FORMAT_MSG = 'invalid license key format';
 const LICENSE_HASH_PREFIX = '061183';
 const LICENSE_KEY_DELIMITER = 'mofi25';
+const ALGORITHM = 'aes-256-cbc';
+const IV_LENGTH = 16;
+const KEY_LENGTH = 32;
 const env = require('../../utility/environment/environmentManager');
 
 const LICENSE_FILE = path.join(hdb_utils.getHomeDir(), terms.HDB_HOME_DIR_NAME, terms.LICENSE_KEY_DIR_NAME, terms.LICENSE_FILE_NAME);
@@ -74,6 +77,7 @@ function validateLicense(license_key, company) {
         exp_date: null,
         storage_type: terms.STORAGE_TYPES_ENUM.FILE_SYSTEM,
         api_call: terms.LICENSE_VALUES.API_CALL_DEFAULT,
+        ram_allocation: terms.RAM_ALLOCATION_ENUM.DEFAULT,
         version: terms.LICENSE_VALUES.VERSION_DEFAULT
     };
     if(!license_key) {
@@ -98,25 +102,33 @@ function validateLicense(license_key, company) {
             license_validation_object.valid_machine = false;
             return;
         }
-        let decipher = crypto.createDecipher('aes192', fingerprint);
+
+        let license_tokens = license_key.split(LICENSE_KEY_DELIMITER);
+        let iv = license_tokens[1];
+        iv = Buffer.concat([Buffer.from(iv)], IV_LENGTH);
+        let key = Buffer.concat([Buffer.from(fingerprint)], KEY_LENGTH);
+        let decipher = crypto.createDecipheriv(ALGORITHM, key, iv);
 
         license_validation_object.valid_date = true;
         license_validation_object.valid_license = true;
         license_validation_object.valid_machine = true;
-        let license_tokens = null;
         let decrypted = null;
         try {
-            license_tokens = license_key.split(LICENSE_KEY_DELIMITER);
             decrypted = decipher.update(license_tokens[0], 'hex', 'utf8');
             decrypted.trim();
             decrypted += decipher.final('utf8');
         } catch (e) {
-            license_validation_object.valid_license = false;
-            license_validation_object.valid_machine = false;
+            let old_license = checkOldLicense(license_tokens[0], fingerprint);
+            if (old_license) {
+                decrypted = old_license;
+            } else {
+                license_validation_object.valid_license = false;
+                license_validation_object.valid_machine = false;
 
-            console.error(INVALID_LICENSE_FORMAT_MSG);
-            log.error(INVALID_LICENSE_FORMAT_MSG);
-            throw new Error(INVALID_LICENSE_FORMAT_MSG);
+                console.error(INVALID_LICENSE_FORMAT_MSG);
+                log.error(INVALID_LICENSE_FORMAT_MSG);
+                throw new Error(INVALID_LICENSE_FORMAT_MSG);
+            }
         }
 
         let license_obj;
@@ -128,6 +140,9 @@ function validateLicense(license_key, company) {
                 license_validation_object.version = license_obj.version;
                 license_validation_object.storage_type = license_obj.storage_type;
                 license_validation_object.exp_date = license_obj.exp_date;
+                if (license_obj.ram_allocation) {
+                    license_validation_object.ram_allocation = license_obj.ram_allocation;
+                }
             } catch (e) {
                 console.error(INVALID_LICENSE_FORMAT_MSG);
                 log.error(INVALID_LICENSE_FORMAT_MSG);
@@ -152,9 +167,26 @@ function validateLicense(license_key, company) {
 }
 
 /**
+ * Licenses created pre 01-27-2020 were encrypted using an older deprecated cipher.
+ * Here we check them against that older cipher.
+ * @param license
+ */
+function checkOldLicense(license, fingerprint) {
+    try {
+        let decipher = crypto.createDecipher('aes192', fingerprint);
+        let decrypted = decipher.update(license, 'hex', 'utf8');
+        decrypted.trim();
+        decrypted += decipher.final('utf8');
+        return decrypted;
+    } catch (err) {
+        log.warn('Check old license failed');
+    }
+}
+
+/**
  * search for the hdb license, validate & return
  */
-function licenseSearch(){
+function licenseSearch() {
     let license_values = new License();
     license_values.api_call = 0;
     let licenses = [];
@@ -181,6 +213,7 @@ function licenseSearch(){
             if (license_validation.valid_machine === true && license_validation.valid_date === true && license_validation.valid_machine === true) {
                 license_values.exp_date = license_validation.exp_date > license_values.exp_date ? license_validation.exp_date : license_values.exp_date;
                 license_values.api_call += license_validation.api_call;
+                license_values.ram_allocation = license_validation.ram_allocation;
                 license_values.storage_type = license_validation.storage_type;
                 license_values.enterprise = true;
             }
@@ -188,6 +221,7 @@ function licenseSearch(){
             log.error('There was an error parsing the license string.');
             log.error(e);
             license_values.api_call = terms.LICENSE_VALUES.API_CALL_DEFAULT;
+            license_values.ram_allocation = terms.RAM_ALLOCATION_ENUM.DEFAULT;
             license_values.storage_type = terms.STORAGE_TYPES_ENUM.FILE_SYSTEM;
             license_values.enterprise = false;
         }

@@ -1,7 +1,7 @@
 const hdb_license = require('./hdb_license');
 const colors = require("colors/safe");
 const log = require('../logging/harper_logger');
-const check_permisison = require('../check_permissions');
+const check_permission = require('../check_permissions');
 const prompt = require('prompt');
 const {promisify} = require('util');
 const terms = require('../hdbTerms');
@@ -51,7 +51,7 @@ async function setLicense(json_message) {
  */
 async function getFingerprint() {
     try {
-        check_permisison.checkPermission();
+        check_permission.checkPermission();
     } catch(err) {
         log.error(err);
         throw new Error('You do not have permission to generate a fingerprint.');
@@ -95,13 +95,13 @@ async function parseLicense(license, company) {
 
     try {
         log.info('writing license to disk');
-        await fs.appendFile(LICENSE_FILE, JSON.stringify({"license_key": license, "company": company}) + terms.NEW_LINE);
+        await fs.writeFile(LICENSE_FILE, JSON.stringify({"license_key": license, "company": company}));
     }catch(e){
         log.error('Failed to write License');
         throw e;
     }
 
-    return license;
+    return 'Registration successful.';
 }
 
 async function register() {
@@ -122,7 +122,7 @@ async function register() {
  */
 async function promptForRegistration() {
     try {
-        check_permisison.checkPermission();
+        check_permission.checkPermission();
     } catch(err) {
         return console.error(err.message);
     }
@@ -160,6 +160,7 @@ async function getRegistrationInfo() {
         registered: false,
         version: null,
         storage_type: null,
+        ram_allocation: null,
         license_expiration_date: null,
         daily_api_calls_current: null,
         daily_api_calls_limit: null
@@ -189,6 +190,7 @@ async function getRegistrationInfo() {
     reg_info_obj.registered = license.enterprise;
     reg_info_obj.version = version.version();
     reg_info_obj.storage_type = license.storage_type;
+    reg_info_obj.ram_allocation = license.ram_allocation;
     reg_info_obj.license_expiration_date = license.enterprise ? license.exp_date : null;
     reg_info_obj.daily_api_calls_limit = license.api_call;
     reg_info_obj.daily_api_calls_current = current_api_calls._consumedPoints;
