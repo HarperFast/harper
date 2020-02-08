@@ -1,10 +1,13 @@
-'use strict';
+"use strict";
 
-class SearchByHashObject{
+/**
+ * This class represents the data that is passed into NoSQL search by hashes.
+ */
+class SearchByHashObject {
     /**
      * @param {String} schema
      * @param {String} table
-     * @param {[]} hash_values
+     * @param {Array.<String|Number>} hash_values
      * @param {Array.<String>} get_attributes
      */
     constructor(schema, table, hash_values, get_attributes) {

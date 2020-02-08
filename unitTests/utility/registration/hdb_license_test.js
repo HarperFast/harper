@@ -10,23 +10,31 @@ const moment = require('moment');
 const test_utils = require('../../test_utils');
 test_utils.preTestPrep();
 const license_objects = require('../../../utility/registration/licenseObjects');
+const hdb_terms = require('../../../utility/hdbTerms');
+
+const LICENSE_KEY_DELIMITER = 'mofi25';
 
 const LICENSES = [
-    {license_key: {
-        exp_date: moment().add(1, 'year').unix(),
-        storage_type: 'helium',
-        api_call: 10000,
-        version: '2.0.0',
-        enterprise: true
-    },
-    company:'harperdb'
+    {
+        license_key: {
+            exp_date: moment().add(1, 'year').unix(),
+            storage_type: 'helium',
+            api_call: 10000,
+            version: '2.0.0',
+            ram_allocation: hdb_terms.RAM_ALLOCATION_ENUM.DEFAULT,
+            enterprise: true,
+            fingerprint: undefined
+        },
+        company:'harperdb'
     },
     {license_key: {
             exp_date: moment().add(2, 'year').unix(),
             storage_type: 'helium',
             api_call: 10000,
             version: '2.0.0',
-            enterprise: true
+            ram_allocation: 2500,
+            enterprise: true,
+            fingerprint: undefined
         },
         company:'harperdb'
     }];
@@ -50,7 +58,7 @@ describe(`Test generateFingerPrint`, function () {
 
         // delete finger print file if exist
         let finger_print_file = hdb_license.__get__('FINGER_PRINT_FILE');
-        if (fs.existsSync(finger_print_file)) {            
+        if (fs.existsSync(finger_print_file)) {
             fs.unlinkSync(finger_print_file);
         }
 
@@ -78,6 +86,7 @@ describe(`Test generateLicense`, function () {
             fingerprint: 'whatever',
             storage_type: 'helium',
             api_call: 90000,
+            ram_allocation: hdb_terms.RAM_ALLOCATION_ENUM.DEFAULT,
             version: '2.0.0'};
 
         let err = null;
@@ -99,6 +108,7 @@ describe(`Test generateLicense`, function () {
         let licenseKeyObject = { exp_date: moment().subtract(1, 'day').format('YYYY-MM-DD'), company: 'hdb', fingerprint: 'whatever',
             storage_type: 'helium',
             api_call: 90000,
+            ram_allocation: hdb_terms.RAM_ALLOCATION_ENUM.DEFAULT,
             version: '2.0.0'};
 
         let err = null;
@@ -120,6 +130,7 @@ describe(`Test generateLicense`, function () {
         let licenseKeyObject = { exp_date: moment().add(1, 'day').utc().format('YYYY-MM-DD'), company: null, fingerprint: 'whatever',
             storage_type: 'helium',
             api_call: 90000,
+            ram_allocation: hdb_terms.RAM_ALLOCATION_ENUM.DEFAULT,
             version: '2.0.0'};
 
         let err = null;
@@ -141,6 +152,7 @@ describe(`Test generateLicense`, function () {
         let licenseKeyObject = { exp_date: null, company: 'hdb', fingerprint: 'whatever',
             storage_type: 'helium',
             api_call: 90000,
+            ram_allocation: hdb_terms.RAM_ALLOCATION_ENUM.DEFAULT,
             version: '2.0.0'};
 
         let err = null;
@@ -162,6 +174,7 @@ describe(`Test generateLicense`, function () {
         // prepare license key obj which *expire date is blank* with dummy fingerprint (no fingerprint validation in generate license process)
         let licenseKeyObject = { exp_date: moment().add(1, 'day').utc().format('YYYY-MM-DD'), company: 'hdb', fingerprint: 'whatever',
             api_call: 90000,
+            ram_allocation: hdb_terms.RAM_ALLOCATION_ENUM.DEFAULT,
             version: '2.0.0'};
 
         let err = null;
@@ -173,7 +186,7 @@ describe(`Test generateLicense`, function () {
         }
 
         assert.notEqual(err, null, 'generate license should get error');
-        assert.equal(err, "Error: Storage type can't be blank", "error message should mention that expire date can't be blank");
+        assert.equal(err, "Error: Storage type can't be blank", "error message should mention that storage_type can't be blank");
         assert.equal(license, null, 'license value should be null');
     });
 
@@ -183,6 +196,97 @@ describe(`Test generateLicense`, function () {
         // prepare license key obj which *expire date is blank* with dummy fingerprint (no fingerprint validation in generate license process)
         let licenseKeyObject = { exp_date: moment().add(1, 'day').utc().format('YYYY-MM-DD'), company: 'hdb', fingerprint: 'whatever',
             storage_type: 'blorp',
+            api_call: 90000,
+            ram_allocation: hdb_terms.RAM_ALLOCATION_ENUM.DEFAULT,
+            version: '2.0.0'};
+
+        let err = null;
+        let license = undefined;
+        try {
+            license = license_generator.generateLicense(licenseKeyObject);
+        } catch(e) {
+            err = e;
+        }
+
+        assert.notEqual(err, null, 'generate license should get error');
+        assert.equal(err, "Error: blorp is not included in the list", "error message should mention that the provided storage_type is not valid");
+        assert.equal(license, null, 'license value should be null');
+    });
+
+    it('Pass no api_call, expect failed to generate license with proper error message', function () {
+        // rewire hdb_license instance locally to keep internal cipher const fresh from another test
+        const license_generator = rewire('../../../utility/devops/licenseGenerator');
+        // prepare license key obj which *expire date is blank* with dummy fingerprint (no fingerprint validation in generate license process)
+        let licenseKeyObject = { exp_date: moment().add(1, 'day').utc().format('YYYY-MM-DD'), company: 'hdb', fingerprint: 'whatever',
+            storage_type: 'fs',
+            ram_allocation: hdb_terms.RAM_ALLOCATION_ENUM.DEFAULT,
+            version: '2.0.0'};
+
+        let err = null;
+        let license = undefined;
+        try {
+            license = license_generator.generateLicense(licenseKeyObject);
+        } catch(e) {
+            err = e;
+        }
+
+        assert.notEqual(err, null, 'generate license should get error');
+        assert.equal(err, "Error: Api call can't be blank", "error message should mention that api_call can't be blank");
+        assert.equal(license, null, 'license value should be null');
+    });
+
+    it('Pass api_call as string, expect failed to generate license with proper error message', function () {
+        // rewire hdb_license instance locally to keep internal cipher const fresh from another test
+        const license_generator = rewire('../../../utility/devops/licenseGenerator');
+        // prepare license key obj which *expire date is blank* with dummy fingerprint (no fingerprint validation in generate license process)
+        let licenseKeyObject = { exp_date: moment().add(1, 'day').utc().format('YYYY-MM-DD'), company: 'hdb', fingerprint: 'whatever',
+            storage_type: 'fs',
+            api_call: "thousand",
+            ram_allocation: hdb_terms.RAM_ALLOCATION_ENUM.DEFAULT,
+            version: '2.0.0'};
+
+        let err = null;
+        let license = undefined;
+        try {
+            license = license_generator.generateLicense(licenseKeyObject);
+        } catch(e) {
+            err = e;
+        }
+
+        assert.notEqual(err, null, 'generate license should get error');
+        assert.equal(err, "Error: Api call is not a number", "error message should mention that api_call should be a number");
+        assert.equal(license, null, 'license value should be null');
+    });
+
+    it('Pass ram_allocation as string, expect failed to generate license with proper error message', function () {
+        // rewire hdb_license instance locally to keep internal cipher const fresh from another test
+        const license_generator = rewire('../../../utility/devops/licenseGenerator');
+        // prepare license key obj which *expire date is blank* with dummy fingerprint (no fingerprint validation in generate license process)
+        let licenseKeyObject = { exp_date: moment().add(1, 'day').utc().format('YYYY-MM-DD'), company: 'hdb', fingerprint: 'whatever',
+            storage_type: 'fs',
+            api_call: 90000,
+            ram_allocation: "thousand",
+            version: '2.0.0'};
+
+        let err = null;
+        let license = undefined;
+        try {
+            license = license_generator.generateLicense(licenseKeyObject);
+        } catch(e) {
+            err = e;
+        }
+
+        assert.notEqual(err, null, 'generate license should get error');
+        assert.equal(err, "Error: Ram allocation is not a number", "error message should mention that ram limit must be a number");
+        assert.equal(license, null, 'license value should be null');
+    });
+
+    it('Pass no ram_allocation, expect failed to generate license with proper error message', function () {
+        // rewire hdb_license instance locally to keep internal cipher const fresh from another test
+        const license_generator = rewire('../../../utility/devops/licenseGenerator');
+        // prepare license key obj which *expire date is blank* with dummy fingerprint (no fingerprint validation in generate license process)
+        let licenseKeyObject = { exp_date: moment().add(1, 'day').utc().format('YYYY-MM-DD'), company: 'hdb', fingerprint: 'whatever',
+            storage_type: 'fs',
             api_call: 90000,
             version: '2.0.0'};
 
@@ -195,50 +299,7 @@ describe(`Test generateLicense`, function () {
         }
 
         assert.notEqual(err, null, 'generate license should get error');
-        assert.equal(err, "Error: blorp is not included in the list", "error message should mention that expire date can't be blank");
-        assert.equal(license, null, 'license value should be null');
-    });
-
-    it('Pass no api_call, expect failed to generate license with proper error message', function () {
-        // rewire hdb_license instance locally to keep internal cipher const fresh from another test
-        const license_generator = rewire('../../../utility/devops/licenseGenerator');
-        // prepare license key obj which *expire date is blank* with dummy fingerprint (no fingerprint validation in generate license process)
-        let licenseKeyObject = { exp_date: moment().add(1, 'day').utc().format('YYYY-MM-DD'), company: 'hdb', fingerprint: 'whatever',
-            storage_type: 'fs',
-            version: '2.0.0'};
-
-        let err = null;
-        let license = undefined;
-        try {
-            license = license_generator.generateLicense(licenseKeyObject);
-        } catch(e) {
-            err = e;
-        }
-
-        assert.notEqual(err, null, 'generate license should get error');
-        assert.equal(err, "Error: Api call can't be blank", "error message should mention that expire date can't be blank");
-        assert.equal(license, null, 'license value should be null');
-    });
-
-    it('Pass api_call as string, expect failed to generate license with proper error message', function () {
-        // rewire hdb_license instance locally to keep internal cipher const fresh from another test
-        const license_generator = rewire('../../../utility/devops/licenseGenerator');
-        // prepare license key obj which *expire date is blank* with dummy fingerprint (no fingerprint validation in generate license process)
-        let licenseKeyObject = { exp_date: moment().add(1, 'day').utc().format('YYYY-MM-DD'), company: 'hdb', fingerprint: 'whatever',
-            storage_type: 'fs',
-            api_call: "thousand",
-            version: '2.0.0'};
-
-        let err = null;
-        let license = undefined;
-        try {
-            license = license_generator.generateLicense(licenseKeyObject);
-        } catch(e) {
-            err = e;
-        }
-
-        assert.notEqual(err, null, 'generate license should get error');
-        assert.equal(err, "Error: Api call is not a number", "error message should mention that expire date can't be blank");
+        assert.equal(err, "Error: Ram allocation can't be blank", "error message should mention that ram_allocation can't be blank");
         assert.equal(license, null, 'license value should be null');
     });
 });
@@ -251,6 +312,7 @@ describe(`Test validateLicense`, function () {
         let licenseKeyObject = { exp_date: moment().add(1, 'day').utc().format('YYYY-MM-DD'), company: 'hdb',
             storage_type: 'helium',
             api_call: 90000,
+            ram_allocation: hdb_terms.RAM_ALLOCATION_ENUM.DEFAULT,
             version: '2.0.0'};
 
         let err = null;
@@ -264,13 +326,14 @@ describe(`Test validateLicense`, function () {
         assert.equal(validation.valid_license, true, 'license validation should be valid');
         assert.equal(validation.valid_machine, true, 'machine validation should be valid');
     });
-    it('Nominal with fs styorage_type, validate valid license with pass', async function ( ) {
+    it('Nominal with fs storage_type, validate valid license with pass', async function ( ) {
         // rewire hdb_license instance locally to keep internal cipher const fresh from another test
         const hdb_license = rewire('../../../utility/registration/hdb_license');
         const license_generator = rewire('../../../utility/devops/licenseGenerator');
         let licenseKeyObject = { exp_date: moment().add(1, 'day').utc().format('YYYY-MM-DD'), company: 'hdb',
             storage_type: 'fs',
             api_call: 90000,
+            ram_allocation: hdb_terms.RAM_ALLOCATION_ENUM.DEFAULT,
             version: '2.0.0'};
 
         let err = null;
@@ -291,6 +354,7 @@ describe(`Test validateLicense`, function () {
         let licenseKeyObject = { exp_date: moment().subtract(1, 'day').utc().format('YYYY-MM-DD'), company: 'hdb',
             storage_type: 'helium',
             api_call: 90000,
+            ram_allocation: hdb_terms.RAM_ALLOCATION_ENUM.DEFAULT,
             version: '2.0.0'};
 
         let err = null;
@@ -322,6 +386,7 @@ describe(`Test validateLicense`, function () {
         let licenseKeyObject = { exp_date: moment().add(1, 'day').utc().format('YYYY-MM-DD'), company: 'hdb',
             storage_type: 'helium',
             api_call: 90000,
+            ram_allocation: hdb_terms.RAM_ALLOCATION_ENUM.DEFAULT,
             version: '2.0.0'};
 
         let err = null;
@@ -342,6 +407,7 @@ describe(`Test validateLicense`, function () {
         let licenseKeyObject = { exp_date: moment().add(1, 'day').utc().format('YYYY-MM-DD'), company: 'hdb',
             storage_type: 'helium',
             api_call: 90000,
+            ram_allocation: hdb_terms.RAM_ALLOCATION_ENUM.DEFAULT,
             version: '2.0.0'};
 
         let err = null;
@@ -351,7 +417,7 @@ describe(`Test validateLicense`, function () {
         licenseKeyObject.fingerprint = fingerprint;
         let license = license_generator.generateLicense(licenseKeyObject);
         try {
-            let validation = hdb_license.validateLicense('wrong_license', 'hdb');
+            let validation = hdb_license.validateLicense(`wrong_license${LICENSE_KEY_DELIMITER}wrong`, 'hdb');
         }catch(e){
             err = e;
         }
@@ -366,6 +432,7 @@ describe(`Test validateLicense`, function () {
         let licenseKeyObject = { exp_date: moment().add(1, 'day').utc().format('YYYY-MM-DD'), company: 'hdb',
             storage_type: 'helium',
             api_call: 90000,
+            ram_allocation: hdb_terms.RAM_ALLOCATION_ENUM.DEFAULT,
             version: '2.0.0'};
 
         let err = null;
@@ -390,8 +457,8 @@ describe('test licenseSearch', ()=>{
     it('test no license in hdb_license', ()=>{
         const hdb_license = rewire('../../../utility/registration/hdb_license');
         hdb_license.__set__('fs', {readFileSync : (file, format)=>{
-            return [];
-        }});
+                return [];
+            }});
 
         let err = undefined;
         let license = undefined;
