@@ -123,7 +123,8 @@ describe("test lmdbCreateAttribute module", ()=>{
             inserted_hashes: [ MOCK_UUID_VALUE ]
         };
 
-        let expected_search_result = {id: MOCK_UUID_VALUE, schema: CREATE_ATTR_OBJ_TEST.schema, table: CREATE_ATTR_OBJ_TEST.table, attribute: CREATE_ATTR_OBJ_TEST.attribute, schema_table: `${CREATE_ATTR_OBJ_TEST.schema}.${CREATE_ATTR_OBJ_TEST.table}`};
+        let expected_search_result = test_utils.assignObjecttoNullObject(
+            {id: MOCK_UUID_VALUE, schema: CREATE_ATTR_OBJ_TEST.schema, table: CREATE_ATTR_OBJ_TEST.table, attribute: CREATE_ATTR_OBJ_TEST.attribute, schema_table: `${CREATE_ATTR_OBJ_TEST.schema}.${CREATE_ATTR_OBJ_TEST.table}`});
 
         let results = await test_utils.assertErrorAsync(lmdb_create_attribute, [CREATE_ATTR_OBJ_TEST],undefined);
         assert.deepStrictEqual(results, expected_result);

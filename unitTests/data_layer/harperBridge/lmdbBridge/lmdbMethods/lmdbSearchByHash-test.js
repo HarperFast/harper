@@ -191,7 +191,7 @@ describe('Test lmdbGetDataByHash module', ()=>{
             exp_obj.__updatedtime__ = TIMESTAMP;
             exp_obj.__createdtime__ = TIMESTAMP;
             exp_obj.height = undefined;
-            let expected_result = [exp_obj];
+            let expected_result = [test_utils.assignObjecttoNullObject(exp_obj)];
 
             let search_obj = new SearchByHashObject('dev', 'dog', [8], ALL_FETCH_ATTRIBUTES);
             let results = await test_utils.assertErrorAsync(lmdb_search_by_hash, [search_obj], undefined);
@@ -200,7 +200,7 @@ describe('Test lmdbGetDataByHash module', ()=>{
         });
 
         it('test finding 1 row some attributes', async()=>{
-            let expected_result = [{name: 'Harper'}];
+            let expected_result = [test_utils.assignObjecttoNullObject({name: 'Harper'})];
 
             let search_obj = new SearchByHashObject('dev', 'dog', [8], ['name']);
             let results = await test_utils.assertErrorAsync(lmdb_search_by_hash, [search_obj], undefined);
@@ -210,7 +210,7 @@ describe('Test lmdbGetDataByHash module', ()=>{
 
         it('test finding multiple rows row, some attributes', async()=>{
 
-            let expected_result = [{id:'10', height:145},{id:'8', height:undefined}];
+            let expected_result = [test_utils.assignObjecttoNullObject({id:'10', height:145}),test_utils.assignObjecttoNullObject({id:'8', height:undefined})];
 
             let search_obj = new SearchByHashObject('dev', 'dog', [10, 8], ['id', 'height']);
             let results = await test_utils.assertErrorAsync(lmdb_search_by_hash, [search_obj], undefined);

@@ -3,8 +3,9 @@
 const environment_util = require('./environmentUtility');
 const common = require('./commonUtility');
 const LMDB_ERRORS = require('../commonErrors').LMDB_ERRORS_ENUM;
-let search_utility = require('./searchUtility');
-let log = require('../logging/harper_logger');
+const search_utility = require('./searchUtility');
+const lmdb_terms = require('./terms');
+const log = require('../logging/harper_logger');
 const hdb_utils = require('../common_utils');
 
 /**
@@ -65,7 +66,7 @@ function deleteRecords(env, hash_attribute, ids){
                 for (let y = 0; y < all_dbis.length; y++) {
                     let attribute = all_dbis[y];
                     if (attribute !== hash_attribute) {
-                        let value = common.stringifyData(record[attribute]);
+                        let value = common.stringifyData(record[attribute], env.dbis[attribute][lmdb_terms.DBI_DEFINITION_NAME].int_key);
                         if (value !== null) {
                             txn.del(env.dbis[attribute], value, hash_value);
                         }

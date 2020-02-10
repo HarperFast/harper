@@ -214,7 +214,7 @@ describe('Test lmdbUpdateRecords module', ()=>{
                 }
             };
 
-            let expected_search = test_utils.deepClone(update_obj.records[0]);
+            let expected_search = test_utils.assignObjecttoNullObject(update_obj.records[0]);
             expected_search.__createdtime__=INSERT_TIMESTAMP;
             expected_search.__updatedtime__=TIMESTAMP;
             expected_search.height = undefined;

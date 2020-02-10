@@ -4,6 +4,7 @@ const environment_util = require('./environmentUtility');
 const common = require('./commonUtility');
 const search_utility = require('./searchUtility');
 const LMDB_ERRORS = require('../commonErrors').LMDB_ERRORS_ENUM;
+const lmdb_terms = require('./terms');
 const hdb_terms = require('../hdbTerms');
 const hdb_utils = require('../common_utils');
 
@@ -56,7 +57,7 @@ function insertRecords(env, hash_attribute, write_attributes , records){
                 let attribute = write_attributes[x];
 
                 if (attribute !== hash_attribute) {
-                    let value = common.stringifyData(record[attribute]);
+                    let value = common.stringifyData(record[attribute], env.dbis[attribute][lmdb_terms.DBI_DEFINITION_NAME].int_key);
                     if(value !== null) {
                         txn.putString(env.dbis[attribute], value, primary_key);
                     }

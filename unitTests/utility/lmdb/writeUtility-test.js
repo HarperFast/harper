@@ -82,12 +82,18 @@ describe("Test writeUtility module", ()=>{
     });
 
     describe("Test insertRecords function", ()=>{
+        let stub;
         before(()=>{
+            date_stub.restore();
+
+        });
+
+        after(()=>{
             date_stub = sandbox.stub(Date, 'now').returns(TIMESTAMP);
         });
         let env;
         beforeEach(async ()=>{
-
+            date_stub = sandbox.stub(Date, 'now').returns(TIMESTAMP);
             await fs.mkdirp(BASE_TEST_PATH);
             global.lmdb_map = undefined;
             env = await environment_utility.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
@@ -95,6 +101,7 @@ describe("Test writeUtility module", ()=>{
         });
 
         afterEach(async ()=>{
+            date_stub.restore();
             await fs.remove(BASE_TEST_PATH);
             global.lmdb_map = undefined;
         });
@@ -125,7 +132,8 @@ describe("Test writeUtility module", ()=>{
             assert.deepStrictEqual(result, {written_hashes: [1], skipped_hashes: []});
 
             records = test_utils.assertErrorSync(search_util.searchAll, [env, HASH_ATTRIBUTE_NAME, ALL_ATTRIBUTES], undefined);
-            assert.deepStrictEqual(records, ONE_RECORD_ARRAY_EXPECTED);
+            let expected = [Object.assign(Object.create(null), ONE_RECORD_ARRAY_EXPECTED[0])];
+            assert.deepStrictEqual(records, expected);
         });
 
         //TODO validate existing records being inserted are added to skipped
@@ -136,7 +144,8 @@ describe("Test writeUtility module", ()=>{
             assert.deepStrictEqual(result, {written_hashes: [1], skipped_hashes: []});
 
             let records = test_utils.assertErrorSync(search_util.searchAll, [env, HASH_ATTRIBUTE_NAME, ALL_ATTRIBUTES], undefined);
-            assert.deepStrictEqual(records, ONE_RECORD_ARRAY_EXPECTED);
+            let expected = [Object.assign(Object.create(null), ONE_RECORD_ARRAY_EXPECTED[0])];
+            assert.deepStrictEqual(records, expected);
 
             result = test_utils.assertErrorSync(write_utility.insertRecords, [env, HASH_ATTRIBUTE_NAME, ALL_ATTRIBUTES, ONE_RECORD_ARRAY], undefined,
                 "pass valid env hash_attribute all_attributes records");
@@ -181,7 +190,8 @@ describe("Test writeUtility module", ()=>{
             let all_attributes_for_update = ['__createdtime__', '__updatedtime__','age', 'height', 'id', 'name'];
 
             let records = test_utils.assertErrorSync(search_util.searchAll, [env, HASH_ATTRIBUTE_NAME, ALL_ATTRIBUTES], undefined);
-            assert.deepStrictEqual(records, ONE_RECORD_ARRAY_EXPECTED);
+            let expected = [Object.assign(Object.create(null), ONE_RECORD_ARRAY_EXPECTED[0])];
+            assert.deepStrictEqual(records, expected);
 
             let results = test_utils.assertErrorSync(write_utility.updateRecords, [env, HASH_ATTRIBUTE_NAME, all_attributes_for_update, UPDATE_ONE_RECORD_ARRAY], undefined);
             assert.deepStrictEqual(results, {written_hashes:[1], skipped_hashes:[]});
@@ -190,14 +200,16 @@ describe("Test writeUtility module", ()=>{
             assert.deepStrictEqual(all_dbis, all_attributes_for_update);
 
             records = test_utils.assertErrorSync(search_util.searchAll, [env, HASH_ATTRIBUTE_NAME, all_dbis], undefined);
-            assert.deepStrictEqual(records,UPDATE_ONE_RECORD_ARRAY_EXPECTED);
+            let expected2 = [Object.assign(Object.create(null), UPDATE_ONE_RECORD_ARRAY_EXPECTED[0])];
+            assert.deepStrictEqual(records,expected2);
         });
 
         it("test update one existing row & one non-existing row", ()=>{
             let all_attributes_for_update = ['__createdtime__', '__updatedtime__','age', 'height', 'id', 'name'];
 
             let records = test_utils.assertErrorSync(search_util.searchAll, [env, HASH_ATTRIBUTE_NAME, ALL_ATTRIBUTES], undefined);
-            assert.deepStrictEqual(records, ONE_RECORD_ARRAY);
+            let expected = [Object.assign(Object.create(null), ONE_RECORD_ARRAY_EXPECTED[0])];
+            assert.deepStrictEqual(records, expected);
 
             let results = test_utils.assertErrorSync(write_utility.updateRecords, [env, HASH_ATTRIBUTE_NAME, all_attributes_for_update, UPDATE_ONE_RECORD_ARRAY.concat(UPDATE_ONE_FAKE_RECORD)], undefined);
             assert.deepStrictEqual(results, {written_hashes:[1], skipped_hashes:[111]});
@@ -206,7 +218,8 @@ describe("Test writeUtility module", ()=>{
             assert.deepStrictEqual(all_dbis, all_attributes_for_update);
 
             records = test_utils.assertErrorSync(search_util.searchAll, [env, HASH_ATTRIBUTE_NAME, all_dbis], undefined);
-            assert.deepStrictEqual(records,UPDATE_ONE_RECORD_ARRAY_EXPECTED);
+            let expected2 = [Object.assign(Object.create(null), UPDATE_ONE_RECORD_ARRAY_EXPECTED[0])];
+            assert.deepStrictEqual(records,expected2);
         });
     });
 });

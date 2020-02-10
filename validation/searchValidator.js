@@ -74,7 +74,7 @@ let search_by_value_constraints = {
         presence: true,
         format: {
             pattern: "^[a-zA-Z0-9_]*$",
-            message: "schema must be alpha numeric"
+            message: "must be alpha numeric"
         },
         length: {
             maximum: 250,
@@ -85,7 +85,7 @@ let search_by_value_constraints = {
         presence: true,
         format: {
             pattern: "^[a-zA-Z0-9_]*$",
-            message: "schema must be alpha numeric"
+            message: "must be alpha numeric"
         },
         length: {
             maximum: 250,

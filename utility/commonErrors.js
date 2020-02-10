@@ -1,5 +1,7 @@
 "use strict";
 
+const lmdb_terms = require('./lmdb/terms');
+
 //NOTE: Any changes made to these errors must also be made to unitTests/commonTestErrors.js otherwise the unit tests will fail
 const LMDB_ERRORS_ENUM = {
     BASE_PATH_REQUIRED: 'base_path is required',
@@ -21,8 +23,13 @@ const LMDB_ERRORS_ENUM = {
     WRITE_ATTRIBUTES_MUST_BE_ARRAY: 'write_attributes must be an array',
     RECORDS_REQUIRED: 'records is required',
     RECORDS_MUST_BE_ARRAY: 'records must be an array',
-    CANNOT_CREATE_INTERNAL_DBIS_NAME: 'cannot create a dbi named __dbis__',
-    CANNOT_DROP_INTERNAL_DBIS_NAME: 'cannot drop a dbi named __dbis__'
+    CANNOT_CREATE_INTERNAL_DBIS_NAME: `cannot create a dbi named ${lmdb_terms.INTERNAL_DBIS_NAME}`,
+    CANNOT_DROP_INTERNAL_DBIS_NAME: `cannot drop a dbi named ${lmdb_terms.INTERNAL_DBIS_NAME}`,
+    START_VALUE_REQUIRED: 'start_value is required',
+    END_VALUE_REQUIRED: 'end_value is required',
+    CANNOT_COMPARE_STRING_TO_NUMERIC_KEYS: 'cannot compare a string to numeric keys',
+    END_VALUE_MUST_BE_GREATER_THAN_START_VALUE: 'end_value must be greater than start_value',
+    UKNOWN_SEARCH_TYPE: 'unknown search type'
 };
 
 module.exports = {

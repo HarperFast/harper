@@ -40,7 +40,6 @@ const {
 
 const MOCK_FS_ARGS_ERROR_MSG = "Null, undefined, and/or empty string argument values not allowed when building mock HDB FS for testing";
 const UNIT_TEST_DIR = __dirname;
-const TEST_FS_DIR = "envDir/schema";
 const ENV_DIR_NAME = 'envDir';
 const HELIUM_VOLUME_PATH = `${UNIT_TEST_DIR}/envDir/helium`;
 const HELIUM_TEARDOWN_PATH = `${UNIT_TEST_DIR}/envDir`;
@@ -757,7 +756,7 @@ function assertErrorSync(test_func, args, error_object, message){
  */
 function deleteSystemDataStores(helium_instance) {
     try {
-        helium_instance.deleteDataStores(SYSTEM_DATASTORES)
+        helium_instance.deleteDataStores(SYSTEM_DATASTORES);
     } catch(err) {
         console.log(err);
     }
@@ -771,7 +770,7 @@ function buildHeliumTestVolume() {
     try {
         fs.mkdirpSync(HELIUM_VOLUME_PATH);
         env.setProperty("HELIUM_VOLUME_PATH", HELIUM_VOLUME_PATH);
-        let  helium = helium_utils.initializeHelium();
+        let helium = helium_utils.initializeHelium();
         try {
             helium_utils.createSystemDataStores(helium);
         } catch(e){}
@@ -792,6 +791,16 @@ function teardownHeliumTestVolume(he_instance) {
     } catch(err) {
         console.log(err);
     }
+}
+
+/**
+ * assigns objects to an null object, which is how we create objects in lmdb
+ * @returns {*[]}
+ * @param objects
+ */
+function assignObjectToNullObject(...objects){
+    objects.unshift(Object.create(null));
+    return Object.assign.apply(null, objects);
 }
 
 module.exports = {
@@ -816,5 +825,6 @@ module.exports = {
     buildHeliumTestVolume,
     teardownHeliumTestVolume,
     assertErrorSync,
-    assertErrorAsync
+    assertErrorAsync,
+    assignObjecttoNullObject: assignObjectToNullObject
 };
