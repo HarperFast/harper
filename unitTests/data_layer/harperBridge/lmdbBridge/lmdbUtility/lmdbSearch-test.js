@@ -1363,5 +1363,105 @@ describe('test lmdbSearch module', ()=>{
             assert(Object.keys(results).length > 0);
             assert.deepStrictEqual(results, expected);
         });
+
+        it('test multiple searches in flight', async()=>{
+            let between_search_object = new SearchObject('dev', 'test', 'temperature', '40', 'id', ['*'], '66');
+            let between_expected = [];
+            test_data.forEach(data=>{
+                if(data.temperature >= 40 && data.temperature <= 66){
+                    between_expected.push(data);
+                }
+            });
+
+            let less_equal_search_object = new SearchObject('dev', 'test', 'temperature', '40', 'id', ['*']);
+            let less_equal_expected = [];
+            test_data.forEach(data=>{
+                if(data.temperature <= 40){
+                    less_equal_expected.push(data);
+                }
+            });
+
+            let less_search_object = new SearchObject('dev', 'test', 'temperature', '25', 'id', ['*']);
+            let less_expected = [];
+            test_data.forEach(data=>{
+                if(data.temperature < 25){
+                    less_expected.push(data);
+                }
+            });
+
+            let greaterequal_search_object = new SearchObject('dev', 'test', 'temperature', '40', 'id', ['*']);
+            let greaterequal_expected = [];
+            test_data.forEach(data=>{
+                if(data.temperature >= 40){
+                    greaterequal_expected.push(data);
+                }
+            });
+
+            let contains_search_object = new SearchObject('dev', 'test', 'city', '*bert*', 'id', ['*']);
+            let contains_expected = [];
+            test_data.forEach(data=>{
+                if(data.city.includes('bert') === true){
+                    contains_expected.push(data);
+                }
+            });
+
+            let [between_results, less_equal_results, less_results, greater_equal_results, contains_results] = await Promise.all([
+                thread_search_function(between_search_object, lmdb_terms.SEARCH_TYPES.BETWEEN, HASH_ATTRIBUTE_NAME),
+                thread_search_function(less_equal_search_object, lmdb_terms.SEARCH_TYPES.LESS_THAN_EQUAL, HASH_ATTRIBUTE_NAME),
+                thread_search_function(less_search_object, lmdb_terms.SEARCH_TYPES.LESS_THAN, HASH_ATTRIBUTE_NAME),
+                thread_search_function(greaterequal_search_object, lmdb_terms.SEARCH_TYPES.GREATER_THAN_EQUAL, HASH_ATTRIBUTE_NAME),
+                thread_search_function(contains_search_object, lmdb_terms.SEARCH_TYPES.CONTAINS, HASH_ATTRIBUTE_NAME)]);
+
+            assert.notDeepStrictEqual(between_results, undefined);
+            assert.notDeepStrictEqual(between_results.length, 0);
+            between_results.forEach(result=>{
+                between_expected.forEach(expect=>{
+                    if(result.id === expect.id){
+                        assert.deepStrictEqual(result, expect);
+                    }
+                });
+            });
+
+            assert.notDeepStrictEqual(less_equal_results, undefined);
+            assert.notDeepStrictEqual(less_equal_results.length, 0);
+            less_equal_results.forEach(result=>{
+                less_equal_expected.forEach(expect=>{
+                    if(result.id === expect.id){
+                        assert.deepStrictEqual(result, expect);
+                    }
+                });
+            });
+
+            assert.notDeepStrictEqual(less_results, undefined);
+            assert.notDeepStrictEqual(less_results.length, 0);
+            less_results.forEach(result=>{
+                less_expected.forEach(expect=>{
+                    if(result.id === expect.id){
+                        assert.deepStrictEqual(result, expect);
+                    }
+                });
+            });
+
+            assert.notDeepStrictEqual(greater_equal_results, undefined);
+            assert.notDeepStrictEqual(greater_equal_results.length, 0);
+            greater_equal_results.forEach(result=>{
+                greaterequal_expected.forEach(expect=>{
+                    if(result.id === expect.id){
+                        assert.deepStrictEqual(result, expect);
+                    }
+                });
+            });
+
+            assert.notDeepStrictEqual(contains_results, undefined);
+            assert.notDeepStrictEqual(contains_results.length, 0);
+            contains_results.forEach(result=>{
+                contains_expected.forEach(expect=>{
+                    if(result.id === expect.id){
+                        assert.deepStrictEqual(result, expect);
+                    }
+                });
+            });
+
+        });
     });
 });

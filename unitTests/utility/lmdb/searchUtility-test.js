@@ -35,11 +35,18 @@ const MULTI_RECORD_ARRAY2 = [
 ];
 
 describe('Test searchUtility module', ()=>{
+    let rw_env_util;
+    before(()=> {
+        rw_env_util = environment_utility.__set__('MAP_SIZE', 10 * 1024 * 1024 * 1024);
+    });
+
+    after(()=> {
+        rw_env_util();
+    });
+
     describe('test searchByHash function', ()=>{
         let env;
-        let rw_env_util;
         before(async ()=>{
-            rw_env_util = environment_utility.__set__('MAP_SIZE', 10*1024*1024*1024);
             await fs.mkdirp(BASE_TEST_PATH);
             global.lmdb_map = undefined;
             env = await environment_utility.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
@@ -48,7 +55,6 @@ describe('Test searchUtility module', ()=>{
         });
 
         after(async ()=>{
-            rw_env_util();
             await fs.remove(BASE_TEST_PATH);
             global.lmdb_map = undefined;
         });
