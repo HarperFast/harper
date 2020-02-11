@@ -31,7 +31,8 @@ const LMDB_ERRORS_ENUM = {
     END_VALUE_REQUIRED: new Error('end_value is required'),
     CANNOT_COMPARE_STRING_TO_NUMERIC_KEYS: new Error('cannot compare a string to numeric keys'),
     END_VALUE_MUST_BE_GREATER_THAN_START_VALUE: new Error('end_value must be greater than start_value'),
-    UKNOWN_SEARCH_TYPE: new Error('unknown search type')
+    UKNOWN_SEARCH_TYPE: new Error('unknown search type'),
+    CANNOT_DROP_TABLE_HASH_ATTRIBUTE: new Error('cannot drop a table\'s hash attribute')
 };
 
 module.exports = {

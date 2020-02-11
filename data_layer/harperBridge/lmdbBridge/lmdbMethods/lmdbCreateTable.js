@@ -7,7 +7,7 @@ const path = require('path');
 const env_mgr = require('../../../../utility/environment/environmentManager');
 const system_schema = require('../../../../json/systemSchema');
 const lmdb_create_attribute = require('./lmdbCreateAttribute');
-const CreateAttribute = require('../../../CreateAttributeObject');
+const LMDBCreateAttributeObject = require('../lmdbUtility/LMDBCreateAttributeObject');
 const log = require('../../../../utility/logging/harper_logger');
 
 if(!env_mgr.isInitialized()){
@@ -34,9 +34,9 @@ module.exports = lmdbCreateTable;
 async function lmdbCreateTable(table_system_data, table_create_obj) {
     let schema_path = path.join(BASE_SCHEMA_PATH, table_create_obj.schema);
 
-    let created_time_attr = new CreateAttribute(table_create_obj.schema, table_create_obj.table, hdb_terms.TIME_STAMP_NAMES_ENUM.CREATED_TIME);
-    let updated_time_attr = new CreateAttribute(table_create_obj.schema, table_create_obj.table, hdb_terms.TIME_STAMP_NAMES_ENUM.UPDATED_TIME);
-    let hash_attr = new CreateAttribute(table_create_obj.schema, table_create_obj.table, table_create_obj.hash_attribute);
+    let created_time_attr = new LMDBCreateAttributeObject(table_create_obj.schema, table_create_obj.table, hdb_terms.TIME_STAMP_NAMES_ENUM.CREATED_TIME, undefined, true);
+    let updated_time_attr = new LMDBCreateAttributeObject(table_create_obj.schema, table_create_obj.table, hdb_terms.TIME_STAMP_NAMES_ENUM.UPDATED_TIME, undefined, true);
+    let hash_attr = new LMDBCreateAttributeObject(table_create_obj.schema, table_create_obj.table, table_create_obj.hash_attribute, undefined, false);
 
     try {
         //create the new environment
@@ -57,7 +57,7 @@ async function lmdbCreateTable(table_system_data, table_create_obj) {
 
 /**
  * used to individually create the required attributes for a new table, logs a warning if any fail
- * @param {CreateAttribute} attribute_object
+ * @param {LMDBCreateAttributeObject} attribute_object
  * @returns {Promise<void>}
  */
 async function createAttribute(attribute_object){
