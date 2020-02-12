@@ -3,6 +3,7 @@
 const h_utils = require('../../../../utility/common_utils');
 const logger = require('../../../../utility/logging/harper_logger');
 const lmdbCreateAttribute = require('../lmdbMethods/lmdbCreateAttribute');
+const LMDBCreateAttributeObject = require('./LMDBCreateAttributeObject');
 const signalling = require('../../../../utility/signalling');
 
 const ATTRIBUTE_ALREADY_EXISTS = 'attribute already exists';
@@ -57,11 +58,7 @@ async function lmdbCheckForNewAttributes(hdb_auth_header, table_schema, data_att
 * @param attribute
 */
 async function createNewAttribute(hdb_auth_header,schema, table, attribute) {
-    let attribute_object = {
-        schema:schema,
-        table:table,
-        attribute:attribute
-    };
+    let attribute_object = new LMDBCreateAttributeObject(schema, table, attribute);
 
     if(hdb_auth_header){
         attribute_object.hdb_auth_header = hdb_auth_header;
@@ -79,6 +76,11 @@ async function createNewAttribute(hdb_auth_header,schema, table, attribute) {
     }
 }
 
+/**
+ *
+ * @param {LMDBCreateAttributeObject} create_attribute_object
+ * @returns {Promise<*>}
+ */
 async function createAttribute(create_attribute_object) {
     let attribute_structure;
     try {

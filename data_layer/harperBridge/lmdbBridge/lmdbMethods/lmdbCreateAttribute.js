@@ -7,7 +7,7 @@ const path = require('path');
 const env_mgr = require('../../../../utility/environment/environmentManager');
 const system_schema = require('../../../../json/systemSchema');
 const schema_validator = require('../../../../validation/schema_validator');
-const CreateAttribute = require('../../../CreateAttributeObject');
+const LMDBCreateAttributeObject = require('../lmdbUtility/LMDBCreateAttributeObject');
 const returnObject = require('../../bridgeUtility/insertUpdateReturnObj');
 
 if(!env_mgr.isInitialized()){
@@ -30,7 +30,7 @@ module.exports = lmdbCreateAttribute;
 
 /**
  * First adds the attribute to the system attribute table, then creates the dbi.
- * @param create_attribute_obj
+ * @param {LMDBCreateAttributeObject} create_attribute_obj
  * @returns {{skipped_hashes: *, update_hashes: *, message: string}}
  */
 async function lmdbCreateAttribute(create_attribute_obj) {
@@ -38,6 +38,10 @@ async function lmdbCreateAttribute(create_attribute_obj) {
     if (validation_error) {
         throw validation_error;
     }
+
+    //the validator strings everything so we need to recast the booleans on create_attribute_obj
+    create_attribute_obj.int_key = create_attribute_obj.int_key === "true";
+    create_attribute_obj.dup_sort = create_attribute_obj.dup_sort === "true";
 
     let attributes_obj_array = [];
     //on initial creation of a table it will not exist in hdb_schema yet
@@ -53,12 +57,12 @@ async function lmdbCreateAttribute(create_attribute_obj) {
     }
 
     //insert the attribute meta_data into system.hdb_attribute
-    let record = new CreateAttribute(create_attribute_obj.schema, create_attribute_obj.table, create_attribute_obj.attribute, create_attribute_obj.id);
+    let record = new LMDBCreateAttributeObject(create_attribute_obj.schema, create_attribute_obj.table, create_attribute_obj.attribute, create_attribute_obj.id);
 
     try {
         //create dbi into the environment for this table
         let env = await environment_utility.openEnvironment(path.join(BASE_SCHEMA_PATH, create_attribute_obj.schema), create_attribute_obj.table);
-        environment_utility.createDBI(env, create_attribute_obj.attribute, true);
+        environment_utility.createDBI(env, create_attribute_obj.attribute, create_attribute_obj.dup_sort, create_attribute_obj.int_key);
 
         let hdb_attribute_env = await environment_utility.openEnvironment(SYSTEM_SCHEMA_PATH, hdb_terms.SYSTEM_TABLE_NAMES.ATTRIBUTE_TABLE_NAME);
 

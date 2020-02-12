@@ -24,11 +24,12 @@ class TransactionCursor{
      * create the TransactionCursor object
      * @param {lmdb.Env} env - environment object to create the transaction & cursor from
      * @param {String} attribute - name of the attribute to create the cursor against
+     * @param {Boolean} [write_cursor] - optional, dictates if the cursor created will be a readOnly cursor or not
      */
-    constructor(env, attribute) {
+    constructor(env, attribute, write_cursor = false) {
         this.dbi = openDBI(env, attribute);
         this.int_key = this.dbi[lmdb_terms.DBI_DEFINITION_NAME].int_key;
-        this.txn = env.beginTxn({ readOnly: true });
+        this.txn = env.beginTxn({ readOnly: write_cursor === false });
         this.cursor = new lmdb.Cursor(this.txn, this.dbi);
     }
 
@@ -38,6 +39,14 @@ class TransactionCursor{
     close(){
         this.cursor.close();
         this.txn.abort();
+    }
+
+    /**
+     * function to close the read cursor & abort the transaction
+     */
+    commit(){
+        this.cursor.close();
+        this.txn.commit();
     }
 }
 
