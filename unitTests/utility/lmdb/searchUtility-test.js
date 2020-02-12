@@ -36,16 +36,16 @@ const MULTI_RECORD_ARRAY2 = [
 
 describe('Test searchUtility module', ()=>{
     let rw_env_util;
-    before(async ()=> {
+    before(()=> {
         rw_env_util = environment_utility.__set__('MAP_SIZE', 10 * 1024 * 1024 * 1024);
     });
 
-    after(async ()=> {
+    after(()=> {
         rw_env_util();
     });
+
     describe('test searchByHash function', ()=>{
         let env;
-
         before(async ()=>{
             await fs.mkdirp(BASE_TEST_PATH);
             global.lmdb_map = undefined;
