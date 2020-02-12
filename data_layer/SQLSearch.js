@@ -39,6 +39,7 @@ const SEARCH_ERROR_MSG = 'There was a problem performing this search. Please che
 
 //here we call to define and import custom functions to alasql
 alasql_function_importer(alasql);
+alasql.options.joinstar = 'underscore'
 
 class SQLSearch {
     /**
@@ -112,6 +113,7 @@ class SQLSearch {
         let join_results;
         try {
             // Consolidate initial data required for first pass of sql join - narrows list of hash ids for second pass to collect all data resulting from sql request
+            //TODO - SAM - add check here if processJoins is necessary - if there is no where, join, limit, orderby
             join_results = await this._processJoins();
         } catch (err) {
             log.error('Error thrown from processJoins in SQLSearch class method search.');
@@ -170,7 +172,6 @@ class SQLSearch {
             this.data[schema_table] = {};
             this.data[schema_table].__hash_name = global.hdb_schema[table.databaseid][table.tableid].hash_attribute;
             this.data[schema_table].__merged_data = {};
-            // this.data[schema_table].__merged_data = Object.create(null);
             this.data[schema_table].__merged_attributes = [];
             this.data[schema_table].__has_hash = false;
         });
@@ -302,8 +303,6 @@ class SQLSearch {
                     if (node.columnid && !node.columnid.startsWith('`')) {
                         node.columnid_orig = node.columnid;
                         node.columnid = `\`${node.columnid}\``;
-                        //TODO - ADD ARR INDEX HERE? PROB NOT
-                        // THIS MAY NO LONGER BE NECESSARY HERE IF WE ARE USING INDEX NUMBER...
                     }
                     if (node.tableid && !node.tableid.startsWith('`')) {
                         node.tableid_orig = node.tableid;
@@ -315,6 +314,7 @@ class SQLSearch {
                     }
 
                     if (node.as && typeof node.as === "string") {
+                        node.as_orig = node.as;
                         node.as = `\`${node.as}\``;
                     }
                 }
@@ -335,6 +335,10 @@ class SQLSearch {
     _findColumn(column) {
         //look to see if this attribute exists on one of the tables we are selecting from
         let found_columns = this.all_table_attributes.filter(attribute => {
+            if (column.columnid_orig) {
+                return (attribute.table.as === column.tableid_orig || attribute.table.tableid === column.tableid_orig) && attribute.attribute === column.columnid_orig;
+            }
+
             if (column.tableid) {
                 return (attribute.table.as === column.tableid || attribute.table.tableid === column.tableid) && attribute.attribute === column.columnid;
             }
@@ -344,7 +348,12 @@ class SQLSearch {
 
         //this is to handle aliases.  if we did not find the actual column we look at the aliases in the select columns
         if (common_utils.isEmptyOrZeroLength(found_columns)) {
-            found_columns = this.columns.columns.filter(select_column => column.columnid === select_column.as);
+            // found_columns = this.columns.columns.filter(select_column => column.columnid === select_column.as);
+            //TODO - confirm the code below is still needed here...think original above should still work
+            const found_alias = this.columns.columns.filter(select_column => select_column.as ? column.columnid === select_column.as : false);
+            if (!common_utils.isEmptyOrZeroLength(found_alias)) {
+                found_columns = this.all_table_attributes.filter(col => col.attribute === found_alias[0].columnid);
+            }
         }
 
         return found_columns[0];
@@ -387,6 +396,11 @@ class SQLSearch {
                 let found = this._findColumn(attribute);
                 if (found) {
                     this.fetch_attributes.push(clone(found));
+                    const schema_table = `${found.table.databaseid}_${found.table.tableid}`;
+                    const is_hash = found.attribute === this.data[schema_table].__hash_name;
+                    if (is_hash) {
+                        this.data[schema_table].__has_hash = true;
+                    }
                 }
             });
         }
@@ -450,12 +464,7 @@ class SQLSearch {
         const simple_select_query = !has_aggregators && Object.keys(this.statement).length === 2
             && !!this.statement.columns && !!this.statement.from && this.statement.from.length === 1;
         if (simple_select_query) {
-            this.columns.columns.forEach(column => {
-                let found = this._findColumn(column);
-                if (found) {
-                    this.fetch_attributes.push(found);
-                }
-            });
+            this._addFetchColumns(this.columns.columns);
         }
         //the bitwise or '|' is intentionally used because I want both conditions checked regardless of whether the left condition is false
         else if ((!this.columns.where && this.fetch_attributes.length === 0) | where_string.indexOf(WHERE_CLAUSE_IS_NULL) > -1) {
@@ -465,13 +474,13 @@ class SQLSearch {
                     columnid: global.hdb_schema[table.databaseid][table.tableid].hash_attribute,
                     tableid: table.tableid
                 };
-                let found = this._findColumn(hash_attribute);
-                this.fetch_attributes.push(found);
+                this._addFetchColumns([hash_attribute]);
             });
         }
 
         if (this.columns.order) {
-            this._addFetchColumns(this.columns.order);
+            this._updateOrderByToAliases();
+            this._addNonAggregatorsToFetchColumns();
         }
 
         // do we need this uniqueby, could just use object as map
@@ -485,10 +494,14 @@ class SQLSearch {
         const fetch_attr_row_templates = this.fetch_attributes.reduce((acc, attr) => {
             const schema_table = `${attr.table.databaseid}_${attr.table.tableid}`;
             const hash_name = this.data[schema_table].__hash_name;
+            // const has_hash = this.data[schema_table].__has_hash;
 
             if (!acc[schema_table]) {
-                acc[schema_table] = [hash_name];
-                this._addColumnToMergedAttributes(schema_table, hash_name);
+                acc[schema_table] = [];
+                // if (has_hash) {
+                    acc[schema_table].push(null);
+                    this._addColumnToMergedAttributes(schema_table, hash_name);
+                // }
             }
 
             if (attr.attribute !== hash_name) {
@@ -500,9 +513,7 @@ class SQLSearch {
         }, {});
 
         for (const attribute of this.fetch_attributes) {
-            //update
             const schema_table = `${attribute.table.databaseid}_${attribute.table.tableid}`;
-            // this.data[schema_table][`${attribute.attribute}`] = {};
             let hash_name = this.data[schema_table].__hash_name;
 
             let search_object = {
@@ -526,7 +537,6 @@ class SQLSearch {
                 !common_utils.isEmptyOrZeroLength(this.exact_search_values[object_path].values)) {
                 if (is_hash) {
                     try {
-                        this.data[schema_table].__has_hash = true;
                         search_object.hash_values = Array.from(this.exact_search_values[object_path].values);
                         const attribute_values = Object.values(await harperBridge.getDataByHash(search_object));
 
@@ -534,7 +544,9 @@ class SQLSearch {
                             const hash_val = hash_obj[hash_name];
                             if (!this.data[schema_table].__merged_data[hash_val]) {
                                 this.data[schema_table].__merged_data[hash_val] = [...fetch_attr_row_templates[schema_table]];
-                                this._setMergedHashAttribute(schema_table, hash_val);
+                                // if (has_hash) {
+                                    this._setMergedHashAttribute(schema_table, hash_val);
+                                // }
                             }
                         });
                     } catch (e) {
@@ -551,8 +563,8 @@ class SQLSearch {
                             Object.keys(attribute_values).forEach(hash_val => {
                                 if (!this.data[schema_table].__merged_data[hash_val]) {
                                     this.data[schema_table].__merged_data[hash_val] = [...fetch_attr_row_templates[schema_table]];
-                                    this._setMergedHashAttribute(schema_table, common_utils.autoCast(hash_val));
                                     this._updateMergedAttribute(schema_table, hash_val, attribute.attribute, attribute_values[hash_val][attribute.attribute]);
+                                    this._setMergedHashAttribute(schema_table, common_utils.autoCast(hash_val));
                                 } else {
                                     this._updateMergedAttribute(schema_table, hash_val, attribute.attribute, attribute_values[hash_val][attribute.attribute]);
                                 }
@@ -575,13 +587,11 @@ class SQLSearch {
                             const matching_data = await harperBridge.getDataByValue(search_object, comp.operation);
 
                             if (is_hash) {
-                                this.data[schema_table].__has_hash = true;
                                 const matching_data_values = Object.values(matching_data);
 
                                 matching_data_values.forEach(hash_obj => {
                                     const hash_val = hash_obj[hash_name];
                                     if (!this.data[schema_table].__merged_data[hash_val]) {
-                                        // this.data[schema_table].__merged_data[hash_val] = [common_utils.autoCast(hash_val)];
                                         this.data[schema_table].__merged_data[hash_val] = [...fetch_attr_row_templates[schema_table]];
                                         this._setMergedHashAttribute(schema_table, hash_val);
                                     }
@@ -592,8 +602,8 @@ class SQLSearch {
                                 matching_data_keys.forEach(hash_val => {
                                     if (!this.data[schema_table].__merged_data[hash_val]) {
                                         this.data[schema_table].__merged_data[hash_val] = [...fetch_attr_row_templates[schema_table]];
-                                        this._setMergedHashAttribute(schema_table, common_utils.autoCast(hash_val));
                                         this._updateMergedAttribute(schema_table, hash_val, attribute.attribute, matching_data[hash_val][attribute.attribute]);
+                                        this._setMergedHashAttribute(schema_table, common_utils.autoCast(hash_val));
                                     } else {
                                         this._updateMergedAttribute(schema_table, hash_val, attribute.attribute, matching_data[hash_val][attribute.attribute]);
                                     }
@@ -610,7 +620,6 @@ class SQLSearch {
                         search_object.search_value = '*';
                         const matching_data = await harperBridge.getDataByValue(search_object);
                         if (is_hash) {
-                            this.data[schema_table].__has_hash = true;
                             const matching_data_values = Object.values(matching_data);
 
                             matching_data_values.forEach(hash_obj => {
@@ -626,8 +635,8 @@ class SQLSearch {
                             matching_data_keys.forEach(hash_val => {
                                 if (!this.data[schema_table].__merged_data[hash_val]) {
                                     this.data[schema_table].__merged_data[hash_val] = [...fetch_attr_row_templates[schema_table]];
-                                    this._setMergedHashAttribute(schema_table, common_utils.autoCast(hash_val));
                                     this._updateMergedAttribute(schema_table, hash_val, attribute.attribute, matching_data[hash_val][attribute.attribute]);
+                                    this._setMergedHashAttribute(schema_table, common_utils.autoCast(hash_val));
                                 } else {
                                     this._updateMergedAttribute(schema_table, hash_val, attribute.attribute, matching_data[hash_val][attribute.attribute]);
                                 }
@@ -647,6 +656,13 @@ class SQLSearch {
         // console.log(`Total allocated       ${Math.round(mbNow * 100) / 100} GB`);
         // gbAlloc_gfa = Math.round((mbNow - gbStart_gfa) * 100) / 100
         // console.log(`Allocated for __getFetchAttrs - ${gbAlloc_gfa} GB`);
+    }
+
+    _addNonAggregatorsToFetchColumns() {
+        const non_aggr_order_by_cols = this.statement.order.filter(ob => !ob.is_aggregator);
+        const non_aggr_columnids = non_aggr_order_by_cols.map(col => ({ columnid: col.expression.columnid_orig }));
+
+        this._addFetchColumns(non_aggr_columnids);
     }
 
     /**
@@ -673,7 +689,6 @@ class SQLSearch {
 
         table_data.push(Object.values(this.data[`${from_statement.databaseid_orig}_${from_statement.tableid_orig}`].__merged_data));
 
-        //TODO - ADD ARR INDEX
         if (this.statement.joins) {
             this.statement.joins.forEach(join => {
                 tables.push(join.table);
@@ -683,7 +698,7 @@ class SQLSearch {
                     from += ' ON ' + join.on.toString();
                 }
                 from_clause.push(from);
-                //TODO - push arr from merged data
+
                 table_data.push(Object.values(this.data[`${join.table.databaseid_orig}_${join.table.tableid_orig}`].__merged_data));
             });
         }
@@ -701,39 +716,31 @@ class SQLSearch {
             });
             select.push(`${(table.as ? table.as : table.tableid)}.\`${hash}\` AS "${table.tableid_orig}.${hash}"`);
 
-            //TODO - update to grab `existing attrs` from the new attr arr in merged data object
-            for (let prop in this.data[`${table.databaseid_orig}_${table.tableid_orig}`].__merged_data) {
-                //SAM NOTE - this will be resolved by an attr array for __merged_data
-                existing_attributes[table.tableid_orig] = Object.keys(this.data[`${table.databaseid_orig}_${table.tableid_orig}`].__merged_data[prop]);
-                //This break is here b/c we only need to get attr keys from the first object.
-                break;
-            }
+            existing_attributes[table.tableid_orig] = this.data[`${table.databaseid_orig}_${table.tableid_orig}`].__merged_attributes;
         });
 
-        //TODO - SAM - how is WHERE column getting indexed?
         //TODO there is an error with between statements being converted back to string.  need to handle
         let where_clause = this.statement.where ? 'WHERE ' + this.statement.where : '';
 
-        //TODO - SAM - how is ORDER column getting indexed?
         let order_clause = '';
         if (this.statement.order) {
             //in this stage we only want to order by non-aggregates
-            let non_aggr_order_by = this.statement.order.filter(order_by => !order_by.expression.aggregatorid);
+            let non_aggr_order_by = this.statement.order.filter(ob => !ob.is_aggregator);
 
             if (!common_utils.isEmptyOrZeroLength(non_aggr_order_by)) {
                 order_clause = 'ORDER BY ' + non_aggr_order_by.toString();
             }
         }
 
-        //TODO - SAM - how is LIMIT column getting indexed?
         let limit = this.statement.limit ? 'LIMIT ' + this.statement.limit : '';
 
         //we should only select the primary key of each table then remove the rows that exist from each table
         let joined =[];
 
         try {
-            joined = await alasql.promise(`SELECT ${select.join(',')} FROM ${from_clause.join(' ')} ${where_clause} ${order_clause} ${limit}`, table_data);
-            // joined = await alasql.promise(`SELECT MATRIX ${select.join(',')} FROM ${from_clause.join(' ')} ${where_clause} ${order_clause} ${limit}`, table_data);
+            const initial_sql = `SELECT ${select.join(',')} FROM ${from_clause.join(' ')} ${where_clause} ${order_clause} ${limit}`;
+            const final_sql_operation = this._convertColumnsToIndexes(initial_sql, tables);
+            joined = await alasql.promise(final_sql_operation, table_data);
             table_data = null;
         } catch(e) {
             log.error('Error thrown from AlaSQL in SQLSearch class method processJoins.');
@@ -771,6 +778,43 @@ class SQLSearch {
         // console.log(`Allocated for __processJoins - ${gbAlloc_pj} GB`);
 
         return join_results;
+    }
+
+    _updateOrderByToAliases() {
+        this.statement.order.forEach(order_by => {
+            //We don't need to do anything with the alias if the orderby is an aggregator
+            if (order_by.expression.aggregatorid) return;
+
+            const found_column = this.statement.columns.filter(col => {
+                col.is_aggregator = !!col.aggregatorid;
+                const col_expression = col.is_aggregator ? col.expression : col;
+                const col_as = col.is_aggregator ? col.as : col_expression.as;
+
+                if (!order_by.expression.tableid) {
+                    return col_expression.columnid_orig === order_by.expression.columnid_orig || order_by.expression.columnid_orig === col_as;
+                } else {
+                        return col_expression.columnid_orig === order_by.expression.columnid_orig && col_expression.tableid_orig === order_by.expression.tableid_orig;
+                }
+            });
+
+            if (found_column[0]) {
+                if (found_column[0].as && !order_by.expression.tableid) {
+                    order_by.expression.columnid = `[${found_column[0].as_orig}]`;
+                    order_by.expression.columnid_orig = found_column[0].as_orig;
+                }
+                else {
+                    let alias_expression = new alasql.yy.Column();
+                    if (found_column[0].as) {
+                        alias_expression.columnid = `[${found_column[0].as_orig}]`
+                        alias_expression.columnid_orig = found_column[0].as_orig;
+                    } else {
+                        alias_expression.columnid = `[${found_column[0].columnid_orig}]`
+                        alias_expression.columnid_orig = order_by.expression.columnid;
+                    }
+                    order_by.expression = alias_expression;
+                }
+            }
+        });
     }
 
     /**
@@ -828,22 +872,26 @@ class SQLSearch {
                 return acc;
             }, {});
 
-            await Promise.all(Object.values(table_searches).map(async table => {
+            for (const table of Object.values(table_searches)) {
+                const schema_table = `${table.schema}_${table.table}`;
+                this.data[schema_table].__merged_attributes.push(...table.columns);
+
                 const search_object = {
                     schema: table.schema,
                     table: table.table,
-                    hash_values: Object.keys(this.data[`${table.schema}_${table.table}`].__merged_data),
+                    hash_values: Object.keys(this.data[schema_table].__merged_data),
                     get_attributes: table.columns
                 };
+
                 const search_result = await harperBridge.getDataByHash(search_object);
-                Object.keys(search_result).forEach(the_id => {
+
+                Object.keys(this.data[schema_table].__merged_data).forEach(the_id => {
                     const the_row = search_result[the_id];
-                    this.data[`${table.schema}_${table.table}`].__merged_data[the_id] = {
-                        ...this.data[`${table.schema}_${table.table}`].__merged_data[the_id],
-                        ...the_row
-                    };
+                    table.columns.forEach(val => {
+                        this.data[schema_table].__merged_data[the_id].push(the_row[val]);
+                    });
                 });
-            }));
+            };
         } catch(e) {
             log.error('Error thrown from getDataByHash function in SQLSearch class method getData.');
             log.error(e);
@@ -873,18 +921,38 @@ class SQLSearch {
 
         if (this.statement.joins) {
             this.statement.joins.forEach(join => {
-                join.as = (join.as ? join.as : join.table.tableid);
+                join.as = join.as ? join.as : join.table.tableid;
 
                 table_data.push(Object.values(this.data[`${join.table.databaseid_orig}_${join.table.tableid_orig}`].__merged_data));
                 join.table.databaseid = '';
                 join.table.tableid = '?';
             });
         }
+        let wildcard_index = -1;
+        this.statement.columns.forEach((col, index) => {
+            if (col.columnid_orig === '*') {
+                wildcard_index = index;
+            }
+
+            if (!col.aggregatorid && !col.funcid) {
+                // col.as = col.as ? col.as : `[${col.tableid_orig}.${col.columnid_orig}]`
+                col.as = col.as ? `[${col.as}]` : `[${col.columnid_orig}]`;
+            }
+
+            if (col.aggregatorid && col.expression.columnid_orig !== '*') {
+                col.as = col.as ? `${col.as}` : `\`${col.aggregatorid}(${col.expression.tableid_orig}.${col.expression.columnid_orig})\``;
+            }
+        });
+
+        if (this.statement.columns.length > 1 && wildcard_index >= 0) {
+            this.statement.columns.splice(wildcard_index, 1);
+        }
         let final_results = undefined;
         try {
             let sql = this._buildSQL();
             log.trace(`Final SQL: ${sql}`);
             final_results = await alasql.promise(sql, table_data);
+            table_data = null;
             log.trace(`Final AlaSQL results data included ${final_results.length} rows`);
         } catch(e) {
             log.error('Error thrown from AlaSQL in SQLSearch class method finalSQL.');
@@ -911,19 +979,48 @@ class SQLSearch {
     _buildSQL(){
         let sql = this.statement.toString();
 
-        this.statement.columns.filter(column => {
+        this.statement.columns.forEach(column => {
             if (column.funcid && column.as) {
                 let column_string = column.toString()
                     .replace(' AS ' + column.as, '');
                 sql = sql.replace(column.toString(), column_string);
             }
 
-            if (column.as !== null && column.as !== undefined) {
-                column.toString();
-            }
+            // if (column.as !== null && column.as !== undefined) {
+            //     column.toString();
+            // }
         });
 
-        return sql;
+        return this._convertColumnsToIndexes(sql, this.tables);
+    }
+
+    _convertColumnsToIndexes(sql_statement, tables) {
+        let final_sql = sql_statement;
+        const tables_map = {};
+        tables.forEach(table => {
+            if (table.databaseid_orig) {
+                tables_map[`${table.databaseid_orig}_${table.tableid_orig}`] = table.as ? table.as : table.tableid;
+            } else {
+                tables_map[`${table.databaseid}_${table.tableid}`] = `\`${table.as ? table.as : table.tableid}\``;
+            }
+        });
+        Object.keys(this.data).forEach(schema_table => {
+            this.data[schema_table].__merged_attributes.forEach((attr, index) => {
+                const table = tables_map[schema_table];
+                let find;
+                let replace;
+                if (tables.length > 1) {
+                    find = new RegExp(`${table}.\`${attr}\``, 'g');
+                    replace = `${table}.[${index}]`;
+                } else {
+                    find = new RegExp(`\`${attr}\``, 'g');
+                    replace = `[${index}]`;
+                }
+
+                final_sql = final_sql.replace(find, replace);
+            });
+        });
+        return final_sql;
     }
 
     async _simpleSQLQuery() {
@@ -960,7 +1057,7 @@ class SQLSearch {
                 const matching_data = await harperBridge.getDataByValue(search_object);
 
                 if (is_hash) {
-                    this.data[schema_table].__has_hash = true;
+                    // this.data[schema_table].__has_hash = true;
                     Object.values(matching_data).forEach(hash_obj => {
                         const hash_val = hash_obj[hash_name];
                         if (!this.data[schema_table].__merged_data[hash_val]) {
@@ -1002,7 +1099,3 @@ function hasColumnAggregators(columns) {
 
     return has_aggregators;
 }
-
-// function attrUntracked(attr, arr) {
-//     return arr.indexOf(attr) === -1;
-// }
