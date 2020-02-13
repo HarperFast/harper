@@ -91,7 +91,7 @@ describe('test validateDropSchema module', ()=>{
 
     describe('test methods', ()=>{
         let timestamps = [];
-        beforeEach(async () => {
+        before(async () => {
             timestamps = [];
             await fs.mkdirp(SYSTEM_SCHEMA_PATH);
             await fs.mkdirp(DEV_SCHEMA_PATH);
@@ -167,7 +167,7 @@ describe('test validateDropSchema module', ()=>{
             ];
         });
 
-        afterEach(async () => {
+        after(async () => {
             await fs.remove(BASE_PATH);
             global.lmdb_map = undefined;
         });
@@ -209,25 +209,5 @@ describe('test validateDropSchema module', ()=>{
             assert.deepStrictEqual(search_result.length, 200);
         });
 
-        it('Test delete all of records', async()=>{
-            let expected = {
-                message: '1000 records successfully deleted',
-                deleted_hashes:[],
-                skipped_hashes:[]
-            };
-
-            for(let x = 0; x < 1000; x++){
-                expected.deleted_hashes.push(x);
-            }
-
-            let delete_before = {schema:'dev', table:'test', date: new Date(timestamps[9]).toISOString()};
-            let results = await test_utils.assertErrorAsync(delete_records_before, [delete_before], undefined);
-            assert.deepStrictEqual(results.message, expected.message);
-            assert.deepStrictEqual(results.deleted_hashes.sort(), expected.deleted_hashes.sort());
-
-            let search_obj = new SearchObject('dev', 'test', '__createdtime__', timestamps[9], undefined, ['id']);
-            let search_result = await search_by_value(search_obj, hdb_terms.VALUE_SEARCH_COMPARATORS.LESS);
-            assert.deepStrictEqual(search_result, []);
-        });
     });
 });
