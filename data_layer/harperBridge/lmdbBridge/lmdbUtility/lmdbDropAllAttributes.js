@@ -25,7 +25,7 @@ async function lmdbDropAllAttributes(drop_obj) {
             current_attribute = schema_table.attributes[i].attribute;
             let drop_attr_object = new DropAttributeObject(drop_obj.schema, drop_obj.table, current_attribute);
             try {
-                await drop_attribute(drop_attr_object);
+                await drop_attribute(drop_attr_object, false);
             } catch(e){
                 if(e.message !== LMDB_ERROR.DBI_DOES_NOT_EXIST){
                     log.error(e);
