@@ -29,7 +29,6 @@ async function lmdbDropAllAttributes(drop_obj) {
             } catch(e){
                 if(e.message !== LMDB_ERROR.DBI_DOES_NOT_EXIST){
                     log.error(e);
-                    throw e;
                 }
             }
         }
