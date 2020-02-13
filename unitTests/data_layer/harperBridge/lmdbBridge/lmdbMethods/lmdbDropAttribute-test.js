@@ -235,24 +235,6 @@ describe('test lmdbDropAttribute module', ()=>{
             global.lmdb_map = undefined;
         });
 
-        it('test removing hash attribute column', async()=>{
-            let drop_object = new DropAttributeObject('dev', 'test', 'id');
-            await test_utils.assertErrorAsync(lmdb_drop_attribute, [drop_object],
-                LMDB_ERRORS.CANNOT_DROP_TABLE_HASH_ATTRIBUTE);
-        });
-
-        it('test removing created timestamp column', async()=>{
-            let drop_object = new DropAttributeObject('dev', 'test', '__createdtime__');
-            await test_utils.assertErrorAsync(lmdb_drop_attribute, [drop_object],
-                new Error('cannot drop internal timestamp attribute: __createdtime__'));
-        });
-
-        it('test removing updatedf timestamp column', async()=>{
-            let drop_object = new DropAttributeObject('dev', 'test', '__updatedtime__');
-            await test_utils.assertErrorAsync(lmdb_drop_attribute, [drop_object],
-                new Error('cannot drop internal timestamp attribute: __updatedtime__'));
-        });
-
         it('test removing temperature_str', async()=>{
             let tbl_env = await environment_utility.openEnvironment(DEV_SCHEMA_PATH, 'test');
             let dbis = await test_utils.assertErrorAsync(environment_utility.listDBIs, [tbl_env], undefined);

@@ -3,10 +3,10 @@
 const validation = require('../validation/schema_validator');
 const logger = require('../utility/logging/harper_logger');
 const uuidV4 = require('uuid/v4');
-const env = require('../utility/environment/environmentManager');
 const clone = require('clone');
 const signalling = require('../utility/signalling');
 const hdb_util = require('../utility/common_utils');
+const hdb_terms = require('../utility/hdbTerms');
 const util = require('util');
 const harperBridge = require('./harperBridge/harperBridge');
 
@@ -165,6 +165,10 @@ async function dropAttribute(drop_attribute_object) {
 
     if(drop_attribute_object.attribute === global.hdb_schema[drop_attribute_object.schema][drop_attribute_object.table].hash_attribute) {
         throw new Error('You cannot drop a hash attribute');
+    }
+
+    if(hdb_terms.TIME_STAMP_NAMES.indexOf(drop_attribute_object.attribute) >= 0){
+        throw new Error(`cannot drop internal timestamp attribute: ${drop_attribute_object.attribute}`);
     }
 
     try {
