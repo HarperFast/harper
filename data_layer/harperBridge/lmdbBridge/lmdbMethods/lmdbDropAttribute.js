@@ -24,9 +24,10 @@ module.exports = lmdbDropAttribute;
 /**
  * First deletes the attribute/dbi from lmdb then removes its record from system table
  * @param {DropAttributeObject} drop_attribute_obj
+ * @param {Boolean} [remove_data] - optional, defaults to false
  * @returns {undefined}
  */
-async function lmdbDropAttribute(drop_attribute_obj) {
+async function lmdbDropAttribute(drop_attribute_obj, remove_data = true) {
     let table_info;
     if (drop_attribute_obj.schema === hdb_terms.SYSTEM_SCHEMA_NAME) {
         table_info = system_schema[drop_attribute_obj.table];
@@ -42,8 +43,10 @@ async function lmdbDropAttribute(drop_attribute_obj) {
         let env = await environment_utility.openEnvironment(schema_path, drop_attribute_obj.table);
         environment_utility.dropDBI(env, drop_attribute_obj.attribute);
 
-        removeAttributeFromAllObjects(drop_attribute_obj, env, table_info.hash_attribute);
-
+        //in the scenario of drop table / schema we don't need to remove individual elements since we are removing entire environments
+        if(remove_data === true) {
+            removeAttributeFromAllObjects(drop_attribute_obj, env, table_info.hash_attribute);
+        }
         return delete_results;
     } catch (e) {
         throw e;
