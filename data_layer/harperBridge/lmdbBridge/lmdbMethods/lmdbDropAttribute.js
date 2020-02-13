@@ -9,7 +9,6 @@ const environment_utility = require('../../../../utility/lmdb/environmentUtility
 const system_schema = require('../../../../json/systemSchema.json');
 const search_by_value = require('./lmdbSearchByValue');
 const delete_records = require('./lmdbDeleteRecords');
-const LMDB_ERROR = require('../../../../utility/commonErrors').LMDB_ERRORS_ENUM;
 
 const env_mngr = require('../../../../utility/environment/environmentManager');
 const path = require('path');
@@ -35,17 +34,9 @@ async function lmdbDropAttribute(drop_attribute_obj) {
         table_info = global.hdb_schema[drop_attribute_obj.schema][drop_attribute_obj.table];
     }
 
-    if(drop_attribute_obj.attribute === table_info.hash_attribute){
-        throw new Error(LMDB_ERROR.CANNOT_DROP_TABLE_HASH_ATTRIBUTE);
-    }
-
-    if(hdb_terms.TIME_STAMP_NAMES.indexOf(drop_attribute_obj.attribute) >= 0){
-        throw new Error(`cannot drop internal timestamp attribute: ${drop_attribute_obj.attribute}`);
-    }
-
     try {
         //remove meta data
-        let delete_results = dropAttributeFromSystem(drop_attribute_obj);
+        let delete_results = await dropAttributeFromSystem(drop_attribute_obj);
         //drop dbi
         let schema_path = path.join(BASE_SCHEMA_PATH, drop_attribute_obj.schema);
         let env = await environment_utility.openEnvironment(schema_path, drop_attribute_obj.table);
