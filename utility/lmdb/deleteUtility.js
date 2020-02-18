@@ -66,9 +66,10 @@ function deleteRecords(env, hash_attribute, ids){
                 for (let y = 0; y < all_dbis.length; y++) {
                     let attribute = all_dbis[y];
                     if (attribute !== hash_attribute) {
-                        let value = common.stringifyData(record[attribute], env.dbis[attribute][lmdb_terms.DBI_DEFINITION_NAME].int_key);
+                        let dbi = env.dbis[attribute];
+                        let value = common.convertKeyValueToWrite(record[attribute], dbi[lmdb_terms.DBI_DEFINITION_NAME].key_type);
                         if (value !== null) {
-                            txn.del(env.dbis[attribute], value, hash_value);
+                            txn.del(dbi, value, hash_value);
                         }
                     }
                 }

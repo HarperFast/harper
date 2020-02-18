@@ -7,11 +7,14 @@ const common = require('./commonUtility');
 const log = require('../logging/harper_logger');
 const LMDB_ERRORS = require('../commonErrors').LMDB_ERRORS_ENUM;
 const DBIDefinition = require('./DBIDefinition');
+const OpenDBIObject = require('./OpenDBIObject');
+const OpenEnvironmentObject = require('./OpenEnvironmentObject');
 const lmdb_terms = require('./terms');
 //allow an environment to grow up to 1 TB
 const MAP_SIZE = 1000 * 1024 * 1024 * 1024;
 //allow up to 10,000 named data bases in an environment
 const MAX_DBS = 10000;
+const MAX_READERS = 1000;
 const INTERNAL_DBIS_NAME = lmdb_terms.INTERNAL_DBIS_NAME;
 const DBI_DEFINITION_NAME = lmdb_terms.DBI_DEFINITION_NAME;
 const MDB_FILE_NAME = 'data.mdb';
@@ -28,7 +31,7 @@ class TransactionCursor{
      */
     constructor(env, attribute, write_cursor = false) {
         this.dbi = openDBI(env, attribute);
-        this.int_key = this.dbi[lmdb_terms.DBI_DEFINITION_NAME].int_key;
+        this.key_type = this.dbi[lmdb_terms.DBI_DEFINITION_NAME].key_type;
         this.txn = env.beginTxn({ readOnly: write_cursor === false });
         this.cursor = new lmdb.Cursor(this.txn, this.dbi);
     }
@@ -126,23 +129,16 @@ async function createEnvironment(base_path, env_name) {
         return await openEnvironment(base_path, env_name);
     } catch(e){
         if (e.code === 'ENOENT'){
-            await fs.mkdirp(path.join(base_path, env_name));
+            let environment_path = path.join(base_path, env_name);
+            await fs.mkdirp(environment_path);
             let env = new lmdb.Env();
-            env.open({
-                path: path.join(base_path, env_name),
-                mapSize: MAP_SIZE,
-                maxDbs: MAX_DBS,
-                noMetaSync: true,
-                noSync: true
-            });
+            let env_init = new OpenEnvironmentObject(environment_path, MAP_SIZE, MAX_DBS, true, true, MAX_READERS);
+            env.open(env_init);
 
             env.dbis = Object.create(null);
             //next we create an internal dbi to track the named databases
-            let dbi = env.openDbi({
-                name: INTERNAL_DBIS_NAME,
-                create: true,
-                dupSort: false
-            });
+            let dbi_init = new OpenDBIObject(INTERNAL_DBIS_NAME, true, false, lmdb_terms.DBI_KEY_TYPES.STRING);
+            let dbi = env.openDbi(dbi_init);
 
             dbi.close();
 
@@ -181,13 +177,9 @@ async function openEnvironment(base_path, env_name){
     await validateEnvironmentPath(base_path, env_name);
 
     let env = new lmdb.Env();
-    env.open({
-        path: path.join(base_path, env_name),
-        maxDbs: MAX_DBS,
-        mapSize: MAP_SIZE,
-        noMetaSync: true,
-        noSync: true
-    });
+    let env_path = path.join(base_path, env_name);
+    let env_init = new OpenEnvironmentObject(env_path, MAP_SIZE, MAX_DBS, true, true, MAX_READERS);
+    env.open(env_init);
 
     env.dbis = Object.create(null);
 
@@ -309,10 +301,10 @@ function getDBIDefinition(env, dbi_name){
  * @param {lmdb.Env} env - environment object used high level to interact with all data in an environment
  * @param {String} dbi_name - name of the dbi (KV store)
  * @param {Boolean} [dup_sort] - optional, determines if the dbi allows duplicate keys or not
- * @param {Boolean} [int_key] - optional, dictates if the key is an int, if not the key is a string by default
+ * @param {lmdb_terms.DBI_KEY_TYPES} [key_type] - optional, dictates what data format the of the key, default is string
  * @returns {*} - reference to the dbi
  */
-function createDBI(env, dbi_name, dup_sort, int_key){
+function createDBI(env, dbi_name, dup_sort, key_type){
     validateEnvDBIName(env, dbi_name);
 
     if(dbi_name === INTERNAL_DBIS_NAME){
@@ -325,14 +317,10 @@ function createDBI(env, dbi_name, dup_sort, int_key){
     } catch(e) {
         //if not create it
         if(e.message === LMDB_ERRORS.DBI_DOES_NOT_EXIST) {
-            let new_dbi = env.openDbi({
-                name: dbi_name,
-                create: true,
-                dupSort: dup_sort === true,
-                keyIsUint32: int_key === true
-            });
+            let dbi_init = new OpenDBIObject(dbi_name, true, dup_sort, key_type);
+            let new_dbi = env.openDbi(dbi_init);
 
-            let dbi_definition = new DBIDefinition(dup_sort === true, int_key === true);
+            let dbi_definition = new DBIDefinition(dup_sort === true, key_type);
             new_dbi[DBI_DEFINITION_NAME] = dbi_definition;
 
             let dbis = openDBI(env, INTERNAL_DBIS_NAME);
@@ -369,12 +357,8 @@ function openDBI(env, dbi_name){
 
     let dbi;
     try {
-        dbi = env.openDbi({
-            name: dbi_name,
-            create: false,
-            dupSort: dbi_definition.dup_sort,
-            keyIsUint32: dbi_definition.int_key
-        });
+        let dbi_init = new OpenDBIObject(dbi_name, false, dbi_definition.dup_sort, dbi_definition.key_type);
+        dbi = env.openDbi(dbi_init);
     } catch(e){
         if(e.message.startsWith('MDB_NOTFOUND') === true){
             throw new Error(LMDB_ERRORS.DBI_DOES_NOT_EXIST);
