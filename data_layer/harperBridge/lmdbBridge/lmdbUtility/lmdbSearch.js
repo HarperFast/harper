@@ -68,6 +68,8 @@ async function executeSearch(search_object, search_type, hash_attribute, return_
         let env = await environment_utility.openEnvironment(schema_path, search_object.table);
         let ids = [];
 
+        search_object.search_value = search_object.search_value.toString();
+
             search_object.search_value = search_object.search_value.replace(WILDCARD_REPLACE_REGEX, '');
             switch (search_type) {
                 case lmdb_terms.SEARCH_TYPES.EQUALS:
