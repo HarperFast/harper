@@ -1,18 +1,14 @@
 'use strict';
 
-const path = require('path');
-const env_mgr = require('../../../../../utility/environment/environmentManager');
-if(!env_mgr.isInitialized()){
-    env_mgr.initSync();
-}
 const test_utils = require('../../../../test_utils');
+test_utils.preTestPrep();
+const path = require('path');
+
 const SYSTEM_FOLDER_NAME = 'system';
 const SCHEMA_NAME = 'schema';
 const BASE_PATH = test_utils.getMockFSPath();
 const BASE_SCHEMA_PATH = path.join(BASE_PATH, SCHEMA_NAME);
 const SYSTEM_SCHEMA_PATH = path.join(BASE_SCHEMA_PATH, SYSTEM_FOLDER_NAME);
-const root_original = env_mgr.get('HDB_ROOT');
-env_mgr.setProperty('HDB_ROOT', BASE_PATH);
 
 const rewire = require('rewire');
 const lmdb_create_records = rewire('../../../../../data_layer/harperBridge/lmdbBridge/lmdbMethods/lmdbCreateRecords');
@@ -167,15 +163,12 @@ describe('Test lmdbCreateRecords module', ()=>{
         rw_base_schema_path = lmdb_create_records.__set__('BASE_SCHEMA_PATH', BASE_SCHEMA_PATH);
         rw_env_util = environment_utility.__set__('MAP_SIZE', 10*1024*1024*1024);
         date_stub = sandbox.stub(Date, 'now').returns(TIMESTAMP);
-        env_mgr.setProperty('HDB_ROOT', BASE_PATH);
-
     });
 
     after(()=>{
         rw_env_util();
         date_stub.restore();
         rw_base_schema_path();
-        env_mgr.setProperty('HDB_ROOT', root_original);
     });
 
     describe('Test lmdbCreateRecords function', ()=>{

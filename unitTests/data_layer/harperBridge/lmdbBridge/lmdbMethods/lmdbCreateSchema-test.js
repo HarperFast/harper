@@ -1,11 +1,9 @@
 'use strict';
 
-const path = require('path');
-const env_mgr = require('../../../../../utility/environment/environmentManager');
-if(!env_mgr.isInitialized()){
-    env_mgr.initSync();
-}
 const test_utils = require('../../../../test_utils');
+test_utils.preTestPrep();
+const path = require('path');
+
 const LMDB_TEST_FOLDER_NAME = 'system';
 const SCHEMA_NAME = 'schema';
 const BASE_PATH = test_utils.getMockFSPath();
@@ -13,8 +11,6 @@ const BASE_SCHEMA_PATH = path.join(BASE_PATH, SCHEMA_NAME);
 const BASE_TEST_PATH = path.join(BASE_SCHEMA_PATH, LMDB_TEST_FOLDER_NAME);
 const TEST_ENVIRONMENT_NAME = 'hdb_schema';
 const HASH_ATTRIBUTE_NAME = 'name';
-const root_original = env_mgr.get('HDB_ROOT');
-env_mgr.setProperty('HDB_ROOT', BASE_PATH);
 
 const rewire = require('rewire');
 const lmdb_create_schema = rewire('../../../../../data_layer/harperBridge/lmdbBridge/lmdbMethods/lmdbCreateSchema');
@@ -50,7 +46,6 @@ describe('test lmdbCreateSchema module', ()=>{
 
     after(async ()=>{
         rw_env_util();
-        env_mgr.setProperty('HDB_ROOT', root_original);
         date_stub.restore();
         delete global.hdb_schema;
         await fs.remove(BASE_PATH);

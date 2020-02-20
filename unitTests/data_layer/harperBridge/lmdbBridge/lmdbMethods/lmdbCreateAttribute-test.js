@@ -1,18 +1,14 @@
 'use strict';
 
-const path = require('path');
-const env_mgr = require('../../../../../utility/environment/environmentManager');
-if(!env_mgr.isInitialized()){
-    env_mgr.initSync();
-}
 const test_utils = require('../../../../test_utils');
+test_utils.preTestPrep();
+
+const path = require('path');
 const LMDB_TEST_FOLDER_NAME = 'system';
 const SCHEMA_NAME = 'schema';
 const BASE_PATH = test_utils.getMockFSPath();
 const BASE_SCHEMA_PATH = path.join(BASE_PATH, SCHEMA_NAME);
 const BASE_TEST_PATH = path.join(BASE_SCHEMA_PATH, LMDB_TEST_FOLDER_NAME);
-const root_original = env_mgr.get('HDB_ROOT');
-env_mgr.setProperty('HDB_ROOT', BASE_PATH);
 
 
 const rewire = require('rewire');
@@ -88,7 +84,6 @@ describe("test lmdbCreateAttribute module", ()=>{
         rw_env_util = environment_utility.__set__('MAP_SIZE', 10*1024*1024*1024);
         //uuid_stub = sandbox.stub(uuid, 'v4').returns(MOCK_UUID_VALUE);
         global.hdb_schema = {system: systemSchema};
-        env_mgr.setProperty('HDB_ROOT', BASE_PATH);
         await fs.mkdirp(BASE_TEST_PATH);
         global.lmdb_map = undefined;
 
@@ -110,7 +105,6 @@ describe("test lmdbCreateAttribute module", ()=>{
 
     after(async ()=>{
         rw_env_util();
-        env_mgr.setProperty('HDB_ROOT', root_original);
         delete global.hdb_schema;
         await fs.remove(BASE_PATH);
         global.lmdb_map = undefined;

@@ -6,9 +6,6 @@ const sinon = require('sinon');
 const uuid = require('uuid/v4');
 const assert = require('assert');
 
-const sql = require('../sqlTranslator/index');
-const SelectValidator = require('../sqlTranslator/SelectValidator');
-
 const env = require('../utility/environment/environmentManager');
 const terms = require('../utility/hdbTerms');
 const common_utils = require('../utility/common_utils');
@@ -659,22 +656,6 @@ function setGlobalSchema(hash_attribute, schema, table, table_id, attributes_key
     }
 }
 
-/**
- * Converts a sql statement into an AST object for an alasql operation
- * @param sql_statement
- * @returns {SelectValidator}
- */
-function generateMockAST(sql_statement) {
-    try {
-        const test_ast = sql.convertSQLToAST(sql_statement);
-        const validated_ast = new SelectValidator(test_ast.ast.statements[0]);
-        validated_ast.validate();
-        return validated_ast;
-    } catch(e) {
-        console.log(e);
-    }
-}
-
 function sortDesc(data, sort_by) {
     if (sort_by) {
         return data.sort((a, b) => b[sort_by] - a[sort_by]);
@@ -816,7 +797,6 @@ module.exports = {
     tearDownMockFSSystem,
     makeTheDir,
     getMockFSPath,
-    generateMockAST,
     sortAsc,
     sortDesc,
     testError,
