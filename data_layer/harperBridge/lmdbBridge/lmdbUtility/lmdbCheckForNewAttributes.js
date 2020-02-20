@@ -58,7 +58,7 @@ async function lmdbCheckForNewAttributes(hdb_auth_header, table_schema, data_att
 * @param attribute
 */
 async function createNewAttribute(hdb_auth_header,schema, table, attribute) {
-    let attribute_object = new LMDBCreateAttributeObject(schema, table, attribute);
+    let attribute_object = new LMDBCreateAttributeObject(schema, table, attribute, undefined, true);
 
     if(hdb_auth_header){
         attribute_object.hdb_auth_header = hdb_auth_header;

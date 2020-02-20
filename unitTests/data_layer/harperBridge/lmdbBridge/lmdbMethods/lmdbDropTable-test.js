@@ -209,6 +209,9 @@ describe('test lmdbDropTable module', ()=>{
             global.hdb_schema.dev.test.attributes = [
                 {attribute:'id'},
                 {attribute:'temperature'},
+                {attribute:'temperature_double'},
+                {attribute:'temperature_pos'},
+                {attribute:'temperature_neg'},
                 {attribute:'temperature_str'},
                 {attribute:'city'},
                 {attribute:'state'},

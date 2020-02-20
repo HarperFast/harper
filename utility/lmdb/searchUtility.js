@@ -22,9 +22,15 @@ const cursor_functions = require('./searchCursorFunctions');
  */
 function iterateFullIndex(env, attribute, eval_function){
     let results = [];
+    let stat = environment_utility.statDBI(env, attribute);
+    if(stat.entryCount === 0){
+        return results;
+    }
+
     let txn = new Transaction_Cursor(env, attribute);
     for (let found = txn.cursor.goToFirst(); found !== null; found = txn.cursor.goToNext()) {
-        eval_function(found, txn.cursor, results);
+        let key_value = common.convertKeyValueFromSearch(found, txn.key_type);
+        eval_function(key_value, txn, results);
     }
     txn.close();
     return results;
@@ -39,9 +45,15 @@ function iterateFullIndex(env, attribute, eval_function){
  */
 function iterateFullIndexToMap(env, attribute, eval_function){
     let results = Object.create(null);
+
+    let stat = environment_utility.statDBI(env, attribute);
+    if(stat.entryCount === 0){
+        return results;
+    }
     let txn = new Transaction_Cursor(env, attribute);
     for (let found = txn.cursor.goToFirst(); found !== null; found = txn.cursor.goToNext()) {
-        eval_function(found, txn.cursor, results);
+        let key_value = common.convertKeyValueFromSearch(found, txn.key_type);
+        eval_function(key_value, txn, results);
     }
     txn.close();
     return results;
@@ -56,24 +68,141 @@ function iterateFullIndexToMap(env, attribute, eval_function){
  * @returns {[]}
  */
 function iterateRangeNext(env, attribute, search_value, eval_function){
-    let txn = new Transaction_Cursor(env, attribute);
-
-    if(txn.int_key === true){
-        search_value = parseInt(search_value);
+    let results = [];
+    let stat = environment_utility.statDBI(env, attribute);
+    if(stat.entryCount === 0){
+        return results;
     }
+
+    let txn = new Transaction_Cursor(env, attribute);
 
     //if the first value in the dbi is less than the search value then we seek to the value, otherwise we keep the cursor at the first item
     let found = txn.cursor.goToFirst();
-    if((isNaN(found) === true && found.toString() < search_value.toString()) || (isNaN(found) === false && Number(found) < search_value)){
-        found = txn.cursor.goToRange(search_value);
+    let found_converted = common.convertKeyValueFromSearch(found, txn.key_type);
+
+    if((isNaN(found_converted) === true && found_converted.toString() < search_value.toString()) || (isNaN(found_converted) === false && Number(found_converted) < search_value)){
+        let search_value_converted = common.convertKeyValueToWrite(search_value, txn.key_type);
+        found = txn.cursor.goToRange(search_value_converted);
     }
 
-    let results = [];
     for (found; found !== null; found = txn.cursor.goToNext()) {
-        eval_function(search_value, found, txn.cursor, results);
+        let key_value = common.convertKeyValueFromSearch(found, txn.key_type);
+        eval_function(search_value, key_value, txn, results);
     }
     txn.close();
     return results;
+}
+
+/**
+ * specific iterator function for perfroming betweens on numeric columns
+ * for this function specifically it is important to remember that the buffer representations of numbers are stored in the following order:
+ * 0,1,2,3,4,5,6.....1000,-1,-2,-3,-4,-5,-6....-1000
+ * as such we need to do some work with the cursor in order to move to the point we need depending on the type of range we are searching.
+ * another important point to remember is the search is always iterating forward.  this makes sense for positive number searches,
+ * but get wonky for negative number searches and especially for a range of between -4 & 6.  the reason is we will start the iterator at 0, move forward to 6,
+ * then we need to jump forward to the highest negative number and stop at the start of our range (-4).
+ * @param {lmdb.Env} env
+ * @param {String} attribute
+ * @param {Number} start_value
+ * @param {Number} end_value
+ * @returns {[]}
+ */
+function iterateRangeBetween(env, attribute, start_value, end_value){
+    let txn = undefined;
+    try {
+        let results = [];
+        let stat = environment_utility.statDBI(env, attribute);
+        if (stat.entryCount === 0) {
+            return results;
+        }
+
+        txn = new Transaction_Cursor(env, attribute);
+        let first_key = txn.cursor.goToFirst();
+        let last_key = txn.cursor.goToLast();
+        let first_key_value = first_key.readDoubleBE(0);
+        let last_key_value = last_key.readDoubleBE(0);
+        let find_max_converted = common.convertKeyValueToWrite(Number.MIN_VALUE * -1, txn.key_type);
+        let min_value;
+        let max_value;
+        if (first_key_value < 0 && last_key_value < 0) {
+            min_value = last_key;
+            max_value = first_key;
+        } else if (first_key_value > 0 && last_key_value > 0) {
+            min_value = first_key;
+            max_value = last_key;
+        } else {
+            min_value = last_key;
+
+            txn.cursor.goToRange(find_max_converted);
+            max_value = txn.cursor.goToPrev();
+        }
+
+        let start_value_converted = common.convertKeyValueToWrite(start_value, txn.key_type);
+        let end_value_converted = common.convertKeyValueToWrite(end_value, txn.key_type);
+
+        //determine the maximum key we need to iterate towards
+        let end_key = txn.cursor.goToRange(end_value_converted);
+        if (end_key === null) {
+            end_key = max_value;
+        }
+        if (end_value >= 0 && end_key.readDoubleBE(0) < 0) {
+            end_key = max_value;
+        }
+
+        //determine the starting point for the iterator.
+        let start_key;
+        //if end_value is a positive and  start_value is negative we will start at the beginning of the lowest positive number which is the beginning of the iterator,
+        // otherwise we jump the iterator to the start value, that would be when the values are both positive or both negative
+        if (end_value >= 0 && start_value < 0) {
+            start_key = txn.cursor.goToFirst();
+        } else {
+            start_key = txn.cursor.goToRange(start_value_converted);
+        }
+
+        if (start_key === null) {
+            start_key = min_value;
+        }
+
+        //in the scenario where both values are negative we need to swap them, this is because negative numbers are ordered highest to lowest.  i.e. -1,-2,-3,...-1000.  our end point then is actually based on our start_value
+        if (start_value < 0 && end_value < 0) {
+            [start_key, end_key] = [end_key, start_key];
+        }
+
+        let end_key_value = end_key.readDoubleBE(0);
+
+        let met_end_value = false;
+
+        for (let found = txn.cursor.goToRange(start_key); found !== null; found = txn.cursor.goToNext()) {
+            let key_value = common.convertKeyValueFromSearch(found, txn.key_type);
+            if (key_value === end_key_value) {
+                met_end_value = true;
+            }
+
+            if (met_end_value === true && key_value !== end_key_value) {
+                if (end_key_value >= 0 && start_value < 0) {
+                    //when we have a scenario where end_value is positive and start_value is negative we first search all the positive numbers from the beginning of the iterator.
+                    // we then need to jump ahead to search negative values. and we change the end_key_value to be the start_key.
+                    txn.cursor.goToRange(find_max_converted);
+                    txn.cursor.goToPrev();
+                    met_end_value = false;
+                    end_key_value = start_key.readDoubleBE(0);
+                    continue;
+                }
+
+                txn.cursor.goToLast();
+            }
+
+            if (key_value >= start_value && key_value <= end_value) {
+                results.push(txn.cursor.getCurrentString());
+            }
+        }
+        txn.close();
+        return results;
+    } catch(e){
+        if(txn !== undefined){
+            txn.close();
+        }
+    }
 }
 
 /**
@@ -84,25 +213,37 @@ function iterateRangeNext(env, attribute, search_value, eval_function){
  * @param {Function} eval_function
  * @returns {[]}
  */
-function iterateRangePrev(env, attribute, search_value, eval_function){
-    let txn = new Transaction_Cursor(env, attribute);
+function iterateLessThan(env, attribute, search_value, eval_function){
+    let txn = undefined;
+    try {
+        txn = new Transaction_Cursor(env, attribute);
+        let results = [];
+        let stat = environment_utility.statDBI(env, attribute);
+        if(stat.entryCount === 0){
+            return results;
+        }
 
-    if(txn.int_key === true){
-        search_value = parseInt(search_value);
-    }
+        //if the last value in the dbi is greater than the search value then we seek to the value, otherwise we keep the cursor at the last item
+        let found = txn.cursor.goToLast();
+        let found_converted = common.convertKeyValueFromSearch(found, txn.key_type);
 
-    let results = [];
-    //if the last value in the dbi is greater than the search value then we seek to the value, otherwise we keep the cursor at the last item
-    let found = txn.cursor.goToLast();
-    if((isNaN(found) === true && found > search_value.toString()) || (isNaN(found) === false && Number(found) > search_value)){
-        found = txn.cursor.goToRange(search_value);
-    }
+        if (found_converted > search_value) {
+            let search_value_converted = common.convertKeyValueToWrite(search_value, txn.key_type);
+            found = txn.cursor.goToRange(search_value_converted);
+        }
 
-    for (found; found !== null; found = txn.cursor.goToPrev()) {
-        eval_function(search_value, found, txn.cursor, results);
+        for (found; found !== null; found = txn.cursor.goToPrev()) {
+            let key_value = common.convertKeyValueFromSearch(found, txn.key_type);
+            eval_function(search_value, key_value, txn, results);
+        }
+
+        return results;
+    }catch(e) {
+        if(txn !== undefined){
+            txn.close();
+        }
+        throw e;
     }
-    txn.close();
-    return results;
 }
 
 /**
@@ -205,9 +346,7 @@ function equals(env, attribute, search_value){
 
     let txn = new Transaction_Cursor(env, attribute);
 
-    if(txn.int_key === true){
-        search_value = parseInt(search_value);
-    }
+    search_value = common.convertKeyValueToWrite(search_value, txn.key_type);
 
     let results = [];
     for (let found = txn.cursor.goToKey(search_value); found !== null; found = txn.cursor.goToNextDup()) {
@@ -272,7 +411,7 @@ function initializeRangeFunction(env, attribute, search_value){
     let dbi = environment_utility.openDBI(env, attribute);
     let search_info = new Object(null);
     search_info.search_value_is_numeric = isNaN(search_value) === false;
-    search_info.dbi_numeric_key = dbi[lmdb_terms.DBI_DEFINITION_NAME].int_key;
+    search_info.dbi_numeric_key = dbi[lmdb_terms.DBI_DEFINITION_NAME].key_type === lmdb_terms.DBI_KEY_TYPES.NUMBER;
 
 
     //if we are trying to compare a non-numeric value to numeric keys we throw an error
@@ -303,7 +442,7 @@ function greaterThan(env, attribute, search_value){
 
     if(search_info.search_value_is_numeric === true && search_info.dbi_numeric_key === true){
         //add 1 to the search value because we want everything greater than the search value & the key is an int
-        return iterateRangeNext(env, attribute, parseInt(search_value) + 1, cursor_functions.addResult);
+        return iterateRangeNext(env, attribute, Number(search_value), cursor_functions.greaterThanNumericCompare);
     }
 }
 
@@ -326,7 +465,7 @@ function greaterThanEqual(env, attribute, search_value){
     }
 
     if(search_info.search_value_is_numeric === true && search_info.dbi_numeric_key === true){
-        return iterateRangeNext(env, attribute, parseInt(search_value), cursor_functions.addResult);
+        return iterateRangeNext(env, attribute, Number(search_value), cursor_functions.greaterThaEqualNumericCompare);
     }
 }
 
@@ -349,7 +488,7 @@ function lessThan(env, attribute, search_value){
     }
 
     if(search_info.search_value_is_numeric === true && search_info.dbi_numeric_key === true){
-        return iterateRangePrev(env, attribute, parseInt(search_value), cursor_functions.lessThanNumericCompare);
+        return iterateLessThan(env, attribute, Number(search_value), cursor_functions.lessThanNumericCompare);
     }
 }
 
@@ -373,7 +512,7 @@ function lessThanEqual(env, attribute, search_value){
 
     if(search_info.search_value_is_numeric === true && search_info.dbi_numeric_key === true){
         //need to add 1 to the value other wise when prev is called it skips all but the first entry of the search_value
-        return iterateRangePrev(env, attribute, parseInt(search_value) + 1, cursor_functions.lessThanEqualNumericCompare);
+        return iterateLessThan(env, attribute, Number(search_value), cursor_functions.lessThanEqualNumericCompare);
     }
 }
 
@@ -387,6 +526,7 @@ function lessThanEqual(env, attribute, search_value){
  */
 function between(env, attribute, start_value, end_value){
     common.validateEnv(env);
+
     if(attribute === undefined){
         throw new Error(LMDB_ERRORS.ATTRIBUTE_REQUIRED);
     }
@@ -399,12 +539,18 @@ function between(env, attribute, start_value, end_value){
         throw new Error(LMDB_ERRORS.END_VALUE_REQUIRED);
     }
 
-    if( start_value >= end_value){
+    let dbi = environment_utility.openDBI(env, attribute);
+    let key_type = dbi[lmdb_terms.DBI_DEFINITION_NAME].key_type;
+
+    if(key_type === lmdb_terms.DBI_KEY_TYPES.NUMBER){
+        [start_value, end_value] = [Number(start_value), Number(end_value)];
+    }
+
+    if (start_value >= end_value) {
         throw new Error(LMDB_ERRORS.END_VALUE_MUST_BE_GREATER_THAN_START_VALUE);
     }
 
-    let dbi = environment_utility.openDBI(env, attribute);
-    let dbi_int_key = dbi[lmdb_terms.DBI_DEFINITION_NAME].int_key;
+    let dbi_int_key = (key_type === lmdb_terms.DBI_KEY_TYPES.NUMBER);
 
     //if we are trying to compare a non-numeric value to numeric keys we throw an error
     if((isNaN(start_value) === true || isNaN(end_value) === true) && dbi_int_key === true){
@@ -419,7 +565,7 @@ function between(env, attribute, start_value, end_value){
         return iterateFullIndex(env, attribute, cursor_functions.betweenStringToNumberCompare.bind(null, Number(start_value), Number(end_value)));
     }
 
-    return iterateRangeNext(env, attribute, parseInt(start_value), cursor_functions.betweenNumericCompare.bind(null, parseInt(end_value)));
+    return iterateRangeBetween(env, attribute, Number(start_value), Number(end_value));
 }
 
 /**
@@ -450,7 +596,7 @@ function searchByHash(env, hash_attribute, fetch_attributes, id) {
     let obj = null;
     let found = txn.cursor.goToKey(id);
     if(found === id) {
-        obj = cursor_functions.parseRow(txn.cursor, get_whole_row, fetch_attributes);
+        obj = cursor_functions.parseRow(txn, get_whole_row, fetch_attributes);
     }
     txn.close();
     return obj;
@@ -512,7 +658,7 @@ function batchSearchByHash(env, hash_attribute, fetch_attributes, ids, not_found
         try {
             let key = txn.cursor.goToKey(id);
             if(key === id) {
-                cursor_functions.searchAll(fetch_attributes, get_whole_row, key, txn.cursor, results);
+                cursor_functions.searchAll(fetch_attributes, get_whole_row, key, txn, results);
             }else {
                 not_found.push(hdb_utils.autoCast(id));
             }
@@ -547,7 +693,7 @@ function batchSearchByHashToMap(env, hash_attribute, fetch_attributes, ids, not_
         try {
             let key = txn.cursor.goToKey(id);
             if(key === id) {
-                let obj = cursor_functions.parseRow(txn.cursor, get_whole_row, fetch_attributes);
+                let obj = cursor_functions.parseRow(txn, get_whole_row, fetch_attributes);
                 results[id] = obj;
             }else {
                 not_found.push(hdb_utils.autoCast(id));

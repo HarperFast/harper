@@ -19,8 +19,14 @@ const SEARCH_TYPES = {
   BETWEEN: 'between'
 };
 
+const DBI_KEY_TYPES = {
+    STRING: 'string',
+    NUMBER: 'number'
+};
+
 module.exports = {
   INTERNAL_DBIS_NAME,
   DBI_DEFINITION_NAME,
-  SEARCH_TYPES
+  SEARCH_TYPES,
+  DBI_KEY_TYPES
 };
