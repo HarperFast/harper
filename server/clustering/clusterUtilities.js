@@ -148,15 +148,20 @@ function nodeValidation(node_object) {
         if((node_object.host === 'localhost' || node_object.host === '127.0.0.1')) {
             throw new Error(DUPLICATE_ERR_MSG);
         }
-        if(addresses && addresses.includes(node_object.host)) {
+        if (addresses && addresses.includes(node_object.host)) {
             throw new Error(DUPLICATE_ERR_MSG);
         }
-        if(os.hostname() === node_object.host) {
+        if (os.hostname() === node_object.host) {
             throw new Error(DUPLICATE_ERR_MSG);
         }
     }
 
-    if(!hdb_utils.isEmptyOrZeroLength(node_object.subscriptions) && !Array.isArray(node_object.subscriptions)) {
+    // If no subscriptions property is passed create one and set to empty array
+    if (hdb_utils.isEmpty(node_object.subscriptions)) {
+        node_object.subscriptions = [];
+    }
+
+    if (!hdb_utils.isEmptyOrZeroLength(node_object.subscriptions) && !Array.isArray(node_object.subscriptions)) {
         log.error(`${SUBSCRIPTIONS_MUST_BE_ARRAY}: ${node_object.subscriptions}`);
         throw new Error(SUBSCRIPTIONS_MUST_BE_ARRAY);
     }
