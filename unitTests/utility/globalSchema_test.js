@@ -1,13 +1,13 @@
 'use strict';
 
+const test_util = require('../test_utils');
+test_util.preTestPrep();
 const assert = require('assert');
 const async = require('async');
 const system_schema = require('../../json/systemSchema.json');
 const rewire = require('rewire');
 const schema = rewire('../../data_layer/schemaDescribe');
 const global_schema = rewire('../../utility/globalSchema');
-const test_util = require('../test_utils');
-test_util.preTestPrep();
 
 const TEST_DATA_BIRD = [
     {

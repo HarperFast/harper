@@ -20,59 +20,129 @@ const lmdbDropAttribute = require('./lmdbMethods/lmdbDropAttribute');
 class LMDBBridge extends BridgeMethods {
 
     async getDataByHash(search_object) {
-
+        try {
+            return await lmdbGetDataByHash(search_object);
+        } catch(err) {
+            log.error(err);
+            throw err;
+        }
     }
 
     async searchByHash(search_object) {
-
+        try {
+            return await lmdbSearchByHash(search_object);
+        } catch(err) {
+            log.error(err);
+            throw err;
+        }
     }
 
     async getDataByValue(search_object, comparator) {
-
+        try {
+            return await lmdbGetDataByValue(search_object, comparator);
+        } catch(err) {
+            log.error(err);
+            throw err;
+        }
     }
 
     async searchByValue(search_object) {
-
+        try {
+            return await lmdbSearchByValue(search_object);
+        } catch(err) {
+            log.error(err);
+            throw err;
+        }
     }
 
     async createSchema(schema_create_obj) {
-
+        try {
+            return await lmdbCreateSchema(schema_create_obj);
+        } catch(err) {
+            log.error(err);
+            throw err;
+        }
     }
 
     async dropSchema(drop_schema_obj) {
-
+        try {
+            return await lmdbDropSchema(drop_schema_obj);
+        } catch(err) {
+            log.error(err);
+            throw err;
+        }
     }
 
     async createTable(table, table_create_obj) {
-
+        try {
+            return await lmdbCreateTable(table, table_create_obj);
+        } catch(err) {
+            log.error(err);
+            throw err;
+        }
     }
 
     async dropTable(drop_table_obj) {
-
+        try {
+            return await lmdbDropTable(drop_table_obj);
+        } catch(err) {
+            log.error(err);
+            throw err;
+        }
     }
 
     async createAttribute(create_attribute_obj) {
-
+        try {
+            return await lmdbCreateAttribute(create_attribute_obj);
+        } catch(err) {
+            log.error(err);
+            throw err;
+        }
     }
 
     async createRecords(insert_obj) {
-
+        try {
+            return await lmdbCreateRecords(insert_obj);
+        } catch(err) {
+            log.error(err);
+            throw err;
+        }
     }
 
     async updateRecords(update_obj) {
-
+        try {
+            return await lmdbUpdateRecords(update_obj);
+        } catch(err) {
+            log.error(err);
+            throw err;
+        }
     }
 
     async deleteRecords(delete_obj) {
-
+        try {
+            return await lmdbDeleteRecords(delete_obj);
+        } catch(err) {
+            log.error(err);
+            throw err;
+        }
     }
 
     async deleteRecordsBefore(delete_obj) {
-
+        try {
+            return await lmdbDeleteRecordsBefore(delete_obj);
+        } catch(err) {
+            log.error(err);
+            throw err;
+        }
     }
 
     async dropAttribute(drop_attr_obj) {
-
+        try {
+            return await lmdbDropAttribute(drop_attr_obj);
+        } catch(err) {
+            log.error(err);
+            throw err;
+        }
     }
 }
 

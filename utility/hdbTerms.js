@@ -377,7 +377,8 @@ const CLUSTER_CONNECTION_DIRECTION_ENUM = {
 
 const STORAGE_TYPES_ENUM = {
     FILE_SYSTEM: 'fs',
-    HELIUM: 'helium'
+    HELIUM: 'helium',
+    LMDB: 'lmdb'
 };
 
 const HELIUM_PROCESS_NAME = 'helium';
