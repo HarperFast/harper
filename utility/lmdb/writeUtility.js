@@ -26,6 +26,14 @@ function insertRecords(env, hash_attribute, write_attributes , records){
     try {
 
         //dbis must be opened / created before starting the transaction
+        if(write_attributes.indexOf(hdb_terms.TIME_STAMP_NAMES_ENUM.CREATED_TIME) <0){
+            write_attributes.push(hdb_terms.TIME_STAMP_NAMES_ENUM.CREATED_TIME);
+        }
+
+        if(write_attributes.indexOf(hdb_terms.TIME_STAMP_NAMES_ENUM.UPDATED_TIME) <0){
+            write_attributes.push(hdb_terms.TIME_STAMP_NAMES_ENUM.UPDATED_TIME);
+        }
+
         environment_util.initializeDBIs(env, hash_attribute, write_attributes);
 
         txn = env.beginTxn();
@@ -37,14 +45,6 @@ function insertRecords(env, hash_attribute, write_attributes , records){
         for(let k = 0; k < records.length; k++){
             let record = records[k];
             setTimestamps(record, true);
-
-            if(write_attributes.indexOf(hdb_terms.TIME_STAMP_NAMES_ENUM.CREATED_TIME) <0){
-                write_attributes.push(hdb_terms.TIME_STAMP_NAMES_ENUM.CREATED_TIME);
-            }
-
-            if(write_attributes.indexOf(hdb_terms.TIME_STAMP_NAMES_ENUM.UPDATED_TIME) <0){
-                write_attributes.push(hdb_terms.TIME_STAMP_NAMES_ENUM.UPDATED_TIME);
-            }
 
             let cast_hash_value = hdb_utils.autoCast(record[hash_attribute]);
             let primary_key = record[hash_attribute].toString();
@@ -116,6 +116,14 @@ function updateRecords(env, hash_attribute, write_attributes , records){
 
     //init all dbis
         //dbis must be opened / created before starting the transaction
+        if(write_attributes.indexOf(hdb_terms.TIME_STAMP_NAMES_ENUM.CREATED_TIME) <0){
+            write_attributes.push(hdb_terms.TIME_STAMP_NAMES_ENUM.CREATED_TIME);
+        }
+
+        if(write_attributes.indexOf(hdb_terms.TIME_STAMP_NAMES_ENUM.UPDATED_TIME) <0){
+            write_attributes.push(hdb_terms.TIME_STAMP_NAMES_ENUM.UPDATED_TIME);
+        }
+
         environment_util.initializeDBIs(env, hash_attribute, write_attributes);
 
         //create write transaction to lock data changes rows
@@ -130,13 +138,7 @@ function updateRecords(env, hash_attribute, write_attributes , records){
         for(let x = 0; x < records.length; x++){
             let record = records[x];
             setTimestamps(record, false);
-            if(write_attributes.indexOf(hdb_terms.TIME_STAMP_NAMES_ENUM.CREATED_TIME) <0){
-                write_attributes.push(hdb_terms.TIME_STAMP_NAMES_ENUM.CREATED_TIME);
-            }
 
-            if(write_attributes.indexOf(hdb_terms.TIME_STAMP_NAMES_ENUM.UPDATED_TIME) <0){
-                write_attributes.push(hdb_terms.TIME_STAMP_NAMES_ENUM.UPDATED_TIME);
-            }
             let cast_hash_value = hdb_utils.autoCast(record[hash_attribute]);
             let hash_value = record[hash_attribute].toString();
             //grab existing record

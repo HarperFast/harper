@@ -51,8 +51,8 @@ describe('Test searchUtility module', ()=>{
             await fs.mkdirp(BASE_TEST_PATH);
             global.lmdb_map = undefined;
             env = await environment_utility.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
-            await environment_utility.createDBI(env, 'id');
-            write_utility.insertRecords(env, HASH_ATTRIBUTE_NAME, SOME_ATTRIBUTES, MULTI_RECORD_ARRAY);
+            await environment_utility.createDBI(env, 'id', false);
+            write_utility.insertRecords(env, HASH_ATTRIBUTE_NAME, test_utils.deepClone(SOME_ATTRIBUTES), MULTI_RECORD_ARRAY);
         });
 
         after(async ()=>{
@@ -107,7 +107,7 @@ describe('Test searchUtility module', ()=>{
             global.lmdb_map = undefined;
             env = await environment_utility.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
             await environment_utility.createDBI(env, 'id');
-            write_utility.insertRecords(env, HASH_ATTRIBUTE_NAME, SOME_ATTRIBUTES, MULTI_RECORD_ARRAY);
+            write_utility.insertRecords(env, HASH_ATTRIBUTE_NAME, test_utils.deepClone(SOME_ATTRIBUTES), MULTI_RECORD_ARRAY);
         });
 
         after(async ()=>{
@@ -162,7 +162,7 @@ describe('Test searchUtility module', ()=>{
             global.lmdb_map = undefined;
             env = await environment_utility.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
             await environment_utility.createDBI(env, 'id');
-            write_utility.insertRecords(env, HASH_ATTRIBUTE_NAME, SOME_ATTRIBUTES, MULTI_RECORD_ARRAY);
+            write_utility.insertRecords(env, HASH_ATTRIBUTE_NAME, test_utils.deepClone(SOME_ATTRIBUTES), MULTI_RECORD_ARRAY);
         });
 
         after(async ()=>{
@@ -220,7 +220,7 @@ describe('Test searchUtility module', ()=>{
             global.lmdb_map = undefined;
             env = await environment_utility.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
             await environment_utility.createDBI(env, 'id');
-            write_utility.insertRecords(env, HASH_ATTRIBUTE_NAME, SOME_ATTRIBUTES, MULTI_RECORD_ARRAY);
+            write_utility.insertRecords(env, HASH_ATTRIBUTE_NAME, test_utils.deepClone(SOME_ATTRIBUTES), MULTI_RECORD_ARRAY);
         });
 
         after(async () => {
@@ -259,7 +259,7 @@ describe('Test searchUtility module', ()=>{
             global.lmdb_map = undefined;
             env = await environment_utility.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
             await environment_utility.createDBI(env, 'id');
-            write_utility.insertRecords(env, HASH_ATTRIBUTE_NAME, SOME_ATTRIBUTES, MULTI_RECORD_ARRAY);
+            write_utility.insertRecords(env, HASH_ATTRIBUTE_NAME, test_utils.deepClone(SOME_ATTRIBUTES), MULTI_RECORD_ARRAY);
         });
 
         after(async () => {
@@ -296,7 +296,7 @@ describe('Test searchUtility module', ()=>{
             global.lmdb_map = undefined;
             env = await environment_utility.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
             await environment_utility.createDBI(env, 'id');
-            write_utility.insertRecords(env, HASH_ATTRIBUTE_NAME, SOME_ATTRIBUTES, MULTI_RECORD_ARRAY);
+            write_utility.insertRecords(env, HASH_ATTRIBUTE_NAME, test_utils.deepClone(SOME_ATTRIBUTES), MULTI_RECORD_ARRAY);
         });
 
         after(async () => {
@@ -333,7 +333,7 @@ describe('Test searchUtility module', ()=>{
             global.lmdb_map = undefined;
             env = await environment_utility.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
             await environment_utility.createDBI(env, 'id');
-            write_utility.insertRecords(env, HASH_ATTRIBUTE_NAME, SOME_ATTRIBUTES, MULTI_RECORD_ARRAY);
+            write_utility.insertRecords(env, HASH_ATTRIBUTE_NAME, test_utils.deepClone(SOME_ATTRIBUTES), MULTI_RECORD_ARRAY);
         });
 
         after(async () => {
@@ -378,7 +378,7 @@ describe('Test searchUtility module', ()=>{
             global.lmdb_map = undefined;
             env = await environment_utility.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
             await environment_utility.createDBI(env, 'id');
-            write_utility.insertRecords(env, HASH_ATTRIBUTE_NAME, All_ATTRIBUTES, MULTI_RECORD_ARRAY);
+            write_utility.insertRecords(env, HASH_ATTRIBUTE_NAME, test_utils.deepClone(All_ATTRIBUTES), MULTI_RECORD_ARRAY);
         });
 
         after(async () => {
@@ -417,7 +417,7 @@ describe('Test searchUtility module', ()=>{
             global.lmdb_map = undefined;
             env = await environment_utility.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
             await environment_utility.createDBI(env, 'id');
-            write_utility.insertRecords(env, HASH_ATTRIBUTE_NAME, All_ATTRIBUTES, MULTI_RECORD_ARRAY2);
+            write_utility.insertRecords(env, HASH_ATTRIBUTE_NAME, test_utils.deepClone(All_ATTRIBUTES), MULTI_RECORD_ARRAY2);
         });
 
         after(async () => {
@@ -466,7 +466,7 @@ describe('Test searchUtility module', ()=>{
             global.lmdb_map = undefined;
             env = await environment_utility.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
             await environment_utility.createDBI(env, 'id');
-            write_utility.insertRecords(env, HASH_ATTRIBUTE_NAME, All_ATTRIBUTES, MULTI_RECORD_ARRAY2);
+            write_utility.insertRecords(env, HASH_ATTRIBUTE_NAME, test_utils.deepClone(All_ATTRIBUTES), MULTI_RECORD_ARRAY2);
         });
 
         after(async () => {
@@ -2342,7 +2342,7 @@ describe('Test searchUtility module', ()=>{
             global.lmdb_map = undefined;
             env = await environment_utility.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
             await environment_utility.createDBI(env, 'id');
-            write_utility.insertRecords(env, HASH_ATTRIBUTE_NAME, All_ATTRIBUTES, MULTI_RECORD_ARRAY2);
+            write_utility.insertRecords(env, HASH_ATTRIBUTE_NAME, test_utils.deepClone(All_ATTRIBUTES), MULTI_RECORD_ARRAY2);
         });
 
         after(async () => {
@@ -2391,7 +2391,7 @@ describe('Test searchUtility module', ()=>{
             global.lmdb_map = undefined;
             env = await environment_utility.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
             await environment_utility.createDBI(env, 'id');
-            write_utility.insertRecords(env, HASH_ATTRIBUTE_NAME, All_ATTRIBUTES, MULTI_RECORD_ARRAY2);
+            write_utility.insertRecords(env, HASH_ATTRIBUTE_NAME, test_utils.deepClone(All_ATTRIBUTES), MULTI_RECORD_ARRAY2);
         });
 
         after(async () => {

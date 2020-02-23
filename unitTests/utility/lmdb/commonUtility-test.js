@@ -77,22 +77,22 @@ describe("Test commonUtility module", ()=>{
         });
 
         it("test 511 character limit", ()=>{
-            const string_511 = 'Fam 3 wolf moon hammocks pinterest, man braid austin hoodie you probably haven\'t heard of them schlitz polaroid XOXO butcher. Flexitarian leggings cold-pressed live-edge jean shorts plaid, pickled vegan raclette 8-bit literally. Chambray you probably haven\'t heard of them listicle locavore ethical lomo taxidermy viral actually. Try-hard kickstarter adaptogen, seitan sustainable yuccie tilde williamsburg meh hammock raclette single-origin coffee. Butcher celiac cold-pressed tumblr. Subway tile 3 wolf moons.';
-            const string_512 = string_511 + 'i';
+            const string_254 = 'Fam 3 wolf moon hammocks pinterest, man braid austin hoodie you probably haven\'t heard of them schlitz polaroid XOXO butcher. Flexitarian leggings cold-pressed live-edge jean shorts plaid, pickled vegan raclette 8-bit literally. Chambray you probably hav';
+            const string_255 = string_254 + 'i';
             let err;
             let response;
             let response1;
             try {
-                response = common.stringifyData(string_511);
-                response1 = common.stringifyData(string_512);
+                response = common.stringifyData(string_254);
+                response1 = common.stringifyData(string_255);
             } catch(e){
                 err = e;
             }
 
             assert.deepStrictEqual(err, undefined);
-            assert.deepStrictEqual(Buffer.byteLength(string_511), 511);
-            assert.deepStrictEqual(Buffer.byteLength(string_512), 512);
-            assert.deepStrictEqual(response, string_511);
+            assert.deepStrictEqual(Buffer.byteLength(string_254), 254);
+            assert.deepStrictEqual(Buffer.byteLength(string_255), 255);
+            assert.deepStrictEqual(response, string_254);
             assert.deepStrictEqual(response1, null);
         });
     });

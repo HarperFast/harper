@@ -19,6 +19,8 @@ const SEARCH_TYPES = {
   BETWEEN: 'between'
 };
 
+const TIMESTAMP_NAMES = ['__createdtime__', '__updatedtime__'];
+
 const DBI_KEY_TYPES = {
     STRING: 'string',
     NUMBER: 'number'
@@ -28,5 +30,6 @@ module.exports = {
   INTERNAL_DBIS_NAME,
   DBI_DEFINITION_NAME,
   SEARCH_TYPES,
-  DBI_KEY_TYPES
+  DBI_KEY_TYPES,
+  TIMESTAMP_NAMES
 };

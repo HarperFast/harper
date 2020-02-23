@@ -14,7 +14,7 @@ const lmdb_terms = require('./terms');
 const MAP_SIZE = 100 * 1024 * 1024 * 1024;
 //allow up to 10,000 named data bases in an environment
 const MAX_DBS = 10000;
-const MAX_READERS = 1000;
+const MAX_READERS = 10000;
 const INTERNAL_DBIS_NAME = lmdb_terms.INTERNAL_DBIS_NAME;
 const DBI_DEFINITION_NAME = lmdb_terms.DBI_DEFINITION_NAME;
 const MDB_FILE_NAME = 'data.mdb';
@@ -429,7 +429,8 @@ function initializeDBIs(env, hash_attribute, write_attributes){
             } catch (e) {
                 //if not opened, create it
                 if (e.message === LMDB_ERRORS.DBI_DOES_NOT_EXIST) {
-                    createDBI(env, attribute, attribute !== hash_attribute);
+                    let key_type = lmdb_terms.TIMESTAMP_NAMES.indexOf(attribute) >=0 ? lmdb_terms.DBI_KEY_TYPES.NUMBER : lmdb_terms.DBI_KEY_TYPES.STRING;
+                    createDBI(env, attribute, attribute !== hash_attribute, key_type);
                 } else {
                     throw e;
                 }
