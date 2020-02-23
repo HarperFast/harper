@@ -58,7 +58,7 @@ function setPropsFilePath(path_value) {
         return null;
     }
     try {
-        BOOT_PROPS_FILE_PATH = path;
+        BOOT_PROPS_FILE_PATH = path_value;
     } catch (e) {
         log.warn(`Path is invalid.`);
         return null;
@@ -325,10 +325,9 @@ function getDataStoreType(){
     //set lmdb as the default
     data_store_type = hdb_terms.STORAGE_TYPES_ENUM.LMDB;
 
-    let user_path = path.join(getHdbBasePath(), hdb_terms.SCHEMA_DIR_NAME, hdb_terms.SYSTEM_SCHEMA_NAME, hdb_terms.SYSTEM_TABLE_NAMES.USER_TABLE_NAME);
-
     let readdir_results = undefined;
     try {
+        let user_path = path.join(getHdbBasePath(), hdb_terms.SCHEMA_DIR_NAME, hdb_terms.SYSTEM_SCHEMA_NAME, hdb_terms.SYSTEM_TABLE_NAMES.USER_TABLE_NAME);
         readdir_results = fs.readdirSync(user_path);
         let is_lmdb = false;
         for(let x = 0; x < readdir_results.length; x++){

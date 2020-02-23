@@ -3,18 +3,12 @@
 const hdb_terms = require('../../../../utility/hdbTerms');
 const environment_utility = require('../../../../utility/lmdb/environmentUtility');
 const write_utility = require('../../../../utility/lmdb/writeUtility');
+const {getSystemSchemaPath,getBaseSchemaPath} = require('../lmdbUtility/initializePaths');
 const path = require('path');
-const env_mgr = require('../../../../utility/environment/environmentManager');
 const system_schema = require('../../../../json/systemSchema');
 const schema_validator = require('../../../../validation/schema_validator');
 const LMDBCreateAttributeObject = require('../lmdbUtility/LMDBCreateAttributeObject');
 const returnObject = require('../../bridgeUtility/insertUpdateReturnObj');
-
-if(!env_mgr.isInitialized()){
-    env_mgr.initSync();
-}
-
-const BASE_SCHEMA_PATH = path.join(env_mgr.getHdbBasePath(), hdb_terms.SCHEMA_DIR_NAME);
 
 const HDB_TABLE_INFO = system_schema.hdb_attribute;
 let hdb_attribute_attributes = [];
@@ -23,8 +17,6 @@ for(let x = 0; x < HDB_TABLE_INFO.attributes.length; x++){
 }
 
 const ACTION = 'inserted';
-const SYSTEM_SCHEMA_PATH = path.join(BASE_SCHEMA_PATH, hdb_terms.SYSTEM_SCHEMA_NAME);
-
 
 module.exports = lmdbCreateAttribute;
 
@@ -61,10 +53,10 @@ async function lmdbCreateAttribute(create_attribute_obj) {
 
     try {
         //create dbi into the environment for this table
-        let env = await environment_utility.openEnvironment(path.join(BASE_SCHEMA_PATH, create_attribute_obj.schema), create_attribute_obj.table);
+        let env = await environment_utility.openEnvironment(path.join(getBaseSchemaPath(), create_attribute_obj.schema), create_attribute_obj.table);
         environment_utility.createDBI(env, create_attribute_obj.attribute, create_attribute_obj.dup_sort, create_attribute_obj.key_type);
 
-        let hdb_attribute_env = await environment_utility.openEnvironment(SYSTEM_SCHEMA_PATH, hdb_terms.SYSTEM_TABLE_NAMES.ATTRIBUTE_TABLE_NAME);
+        let hdb_attribute_env = await environment_utility.openEnvironment(getSystemSchemaPath(), hdb_terms.SYSTEM_TABLE_NAMES.ATTRIBUTE_TABLE_NAME);
 
         let {written_hashes, skipped_hashes} = write_utility.insertRecords(hdb_attribute_env, HDB_TABLE_INFO.hash_attribute, hdb_attribute_attributes, [record]);
 

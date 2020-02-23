@@ -7,11 +7,13 @@
 const fs = require('fs');
 const path = require('path');
 const terms = require('../utility/hdbTerms');
-const env_mngr = require('../utility/environment/environmentManager');
+const lmdb_terms = require('../utility/lmdb/terms');
+
 const lmdb_environment_utility = require('../utility/lmdb/environmentUtility');
 const system_schema = require('../json/systemSchema');
 
 module.exports = function (logger, hdb_path, callback) {
+    const env_mngr = require('../utility/environment/environmentManager');
     let system_schema_path = path.join(hdb_path, 'schema', 'system');
 
     makeDirectory(logger, hdb_path);
@@ -29,6 +31,7 @@ module.exports = function (logger, hdb_path, callback) {
 
     if(env_mngr.getDataStoreType() === terms.STORAGE_TYPES_ENUM.FILE_SYSTEM){
         createFSTables(system_schema_path, logger);
+        return callback(null, 'complete');
     } else if(env_mngr.getDataStoreType() === terms.STORAGE_TYPES_ENUM.LMDB){
         createLMDBTables(system_schema_path, logger).then(()=>{
             callback(null, 'complete');
@@ -36,8 +39,6 @@ module.exports = function (logger, hdb_path, callback) {
             callback(e);
         });
     }
-
-    callback(null, 'complete');
 };
 
 /**
@@ -83,7 +84,11 @@ async function createLMDBTables(schema_path, logger){
         for(let y = 0; y < attributes.length; y++){
             let attribute_name = attributes[y].attribute;
             try {
-                await lmdb_environment_utility.createDBI(table_env, attribute_name, attribute_name !== hash_attribute);
+                if(terms.TIME_STAMP_NAMES.indexOf(attribute_name) >=0){
+                    await lmdb_environment_utility.createDBI(table_env, attribute_name, true, lmdb_terms.DBI_KEY_TYPES.NUMBER);
+                } else {
+                    await lmdb_environment_utility.createDBI(table_env, attribute_name, attribute_name !== hash_attribute);
+                }
             } catch(e){
                 logger.error(`issue creating dbi for ${terms.SYSTEM_SCHEMA_NAME}.${table_name}.${attribute_name}: ${e}`);
                 throw e;

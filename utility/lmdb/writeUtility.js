@@ -37,6 +37,15 @@ function insertRecords(env, hash_attribute, write_attributes , records){
         for(let k = 0; k < records.length; k++){
             let record = records[k];
             setTimestamps(record, true);
+
+            if(write_attributes.indexOf(hdb_terms.TIME_STAMP_NAMES_ENUM.CREATED_TIME) <0){
+                write_attributes.push(hdb_terms.TIME_STAMP_NAMES_ENUM.CREATED_TIME);
+            }
+
+            if(write_attributes.indexOf(hdb_terms.TIME_STAMP_NAMES_ENUM.UPDATED_TIME) <0){
+                write_attributes.push(hdb_terms.TIME_STAMP_NAMES_ENUM.UPDATED_TIME);
+            }
+
             let cast_hash_value = hdb_utils.autoCast(record[hash_attribute]);
             let primary_key = record[hash_attribute].toString();
 
@@ -121,6 +130,13 @@ function updateRecords(env, hash_attribute, write_attributes , records){
         for(let x = 0; x < records.length; x++){
             let record = records[x];
             setTimestamps(record, false);
+            if(write_attributes.indexOf(hdb_terms.TIME_STAMP_NAMES_ENUM.CREATED_TIME) <0){
+                write_attributes.push(hdb_terms.TIME_STAMP_NAMES_ENUM.CREATED_TIME);
+            }
+
+            if(write_attributes.indexOf(hdb_terms.TIME_STAMP_NAMES_ENUM.UPDATED_TIME) <0){
+                write_attributes.push(hdb_terms.TIME_STAMP_NAMES_ENUM.UPDATED_TIME);
+            }
             let cast_hash_value = hdb_utils.autoCast(record[hash_attribute]);
             let hash_value = record[hash_attribute].toString();
             //grab existing record
@@ -145,7 +161,14 @@ function updateRecords(env, hash_attribute, write_attributes , records){
 
                 //if the update cleared out the attribute value we need to delete it from the index
                 if(str_existing_value !== null) {
-                    txn.del(dbi, str_existing_value, hash_value);
+                    try {
+                        txn.del(dbi, str_existing_value, hash_value);
+                    }catch(e){
+                        //this is the code for attempting to delete an entry that does not exist
+                        if(e.code !== -30798){
+                            throw e;
+                        }
+                    }
                 }
 
                 if(str_new_value !== null){

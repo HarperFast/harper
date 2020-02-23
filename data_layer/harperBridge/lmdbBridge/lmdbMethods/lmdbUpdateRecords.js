@@ -7,13 +7,7 @@ const hdb_terms = require('../../../../utility/hdbTerms');
 const lmdb_update_records = require('../../../../utility/lmdb/writeUtility').updateRecords;
 const environment_utility = require('../../../../utility/lmdb/environmentUtility');
 const path = require('path');
-const env = require('../../../../utility/environment/environmentManager');
-
-if(!env.isInitialized()){
-    env.initSync();
-}
-
-const BASE_SCHEMA_PATH = path.join(env.getHdbBasePath(), hdb_terms.SCHEMA_DIR_NAME);
+const {getBaseSchemaPath} = require('../lmdbUtility/initializePaths');
 
 module.exports = lmdbUpdateRecords;
 
@@ -40,7 +34,7 @@ async function lmdbUpdateRecords(update_obj) {
         }
 
         await lmdb_check_new_attributes(update_obj.hdb_auth_header, schema_table, attributes);
-        let env_base_path = path.join(BASE_SCHEMA_PATH, update_obj.schema);
+        let env_base_path = path.join(getBaseSchemaPath(), update_obj.schema);
         let environment = await environment_utility.openEnvironment(env_base_path, update_obj.table);
         let lmdb_response = lmdb_update_records(environment, schema_table.hash_attribute, attributes, update_obj.records);
 

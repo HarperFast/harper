@@ -153,14 +153,12 @@ const TABLE_SYSTEM_DATA_TEST_A = {
 const sandbox = sinon.createSandbox();
 
 describe('Test lmdbCreateRecords module', ()=>{
-    let rw_base_schema_path;
     let date_stub;
     let hdb_schema_env;
     let hdb_table_env;
     let hdb_attribute_env;
     let rw_env_util;
     before(()=>{
-        rw_base_schema_path = lmdb_create_records.__set__('BASE_SCHEMA_PATH', BASE_SCHEMA_PATH);
         rw_env_util = environment_utility.__set__('MAP_SIZE', 10*1024*1024*1024);
         date_stub = sandbox.stub(Date, 'now').returns(TIMESTAMP);
     });
@@ -168,7 +166,6 @@ describe('Test lmdbCreateRecords module', ()=>{
     after(()=>{
         rw_env_util();
         date_stub.restore();
-        rw_base_schema_path();
     });
 
     describe('Test lmdbCreateRecords function', ()=>{

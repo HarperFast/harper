@@ -9,14 +9,10 @@ const path = require('path');
 const common_utils = require('../../../../utility/common_utils');
 const lmdb_terms = require('../../../../utility/lmdb/terms');
 const hdb_terms = require('../../../../utility/hdbTerms');
-const env_mgr = require('../../../../utility/environment/environmentManager');
+const {getBaseSchemaPath} = require('../lmdbUtility/initializePaths');
 const system_schema = require('../../../../json/systemSchema.json');
 const LMDB_ERRORS = require('../../../../utility/commonErrors').LMDB_ERRORS_ENUM;
-if(!env_mgr.isInitialized()){
-    env_mgr.initSync();
-}
 
-const BASE_SCHEMA_PATH = path.join(env_mgr.getHdbBasePath(), hdb_terms.SCHEMA_DIR_NAME);
 const WILDCARDS = hdb_terms.SEARCH_WILDCARDS;
 
 const WILDCARD_REPLACE_REGEX = new RegExp(/[*%]/, 'g');
@@ -41,7 +37,7 @@ async function prepSearch(search_object, comparator, return_map){
 
     let search_type = createSearchTypeFromSearchObject(search_object, table_info.hash_attribute, return_map, comparator);
 
-    let schema_path = path.join(BASE_SCHEMA_PATH, search_object.schema);
+    let schema_path = path.join(getBaseSchemaPath(), search_object.schema);
     let env = await environment_utility.openEnvironment(schema_path, search_object.table);
     let stat = environment_utility.statDBI(env, search_object.search_attribute);
     let results;
@@ -64,7 +60,7 @@ async function prepSearch(search_object, comparator, return_map){
  */
 async function executeSearch(search_object, search_type, hash_attribute, return_map){
     try {
-        let schema_path = path.join(BASE_SCHEMA_PATH, search_object.schema);
+        let schema_path = path.join(getBaseSchemaPath(), search_object.schema);
         let env = await environment_utility.openEnvironment(schema_path, search_object.table);
         let ids = [];
 

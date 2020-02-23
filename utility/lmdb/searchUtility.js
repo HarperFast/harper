@@ -646,7 +646,7 @@ function checkHashExists(env, hash_attribute, id) {
  * @param {[]} [not_found] - optional, meant to be an array passed by reference so that skipped ids can be aggregated.
  * @returns {Array.<Object>} - object array of records found
  */
-function batchSearchByHash(env, hash_attribute, fetch_attributes, ids, not_found) {
+function batchSearchByHash(env, hash_attribute, fetch_attributes, ids, not_found = []) {
     let txn = initializeBatchSearchByHash(env, hash_attribute, fetch_attributes, ids, not_found);
 
     let get_whole_row = setGetWholeRowFlag(fetch_attributes);
@@ -681,7 +681,7 @@ function batchSearchByHash(env, hash_attribute, fetch_attributes, ids, not_found
  * @param {[]} [not_found] - optional, meant to be an array passed by reference so that skipped ids can be aggregated.
  * @returns {{}} - object array of records found
  */
-function batchSearchByHashToMap(env, hash_attribute, fetch_attributes, ids, not_found) {
+function batchSearchByHashToMap(env, hash_attribute, fetch_attributes, ids, not_found = []) {
     let txn = initializeBatchSearchByHash(env, hash_attribute, fetch_attributes, ids, not_found);
 
     let results = Object.create(null);

@@ -7,15 +7,8 @@ const delete_records = require('./lmdbDeleteRecords');
 const drop_all_attributes = require('../lmdbUtility/lmdbDropAllAttributes');
 const hdb_terms = require('../../../../utility/hdbTerms');
 const fs = require('fs-extra');
-
-const env_mngr = require('../../../../utility/environment/environmentManager');
+const {getBaseSchemaPath} = require('../lmdbUtility/initializePaths');
 const path = require('path');
-
-if(!env_mngr.isInitialized()){
-    env_mngr.initSync();
-}
-
-const BASE_SCHEMA_PATH = path.join(env_mngr.getHdbBasePath(), hdb_terms.SCHEMA_DIR_NAME);
 
 module.exports = lmdbDropTable;
 
@@ -28,7 +21,7 @@ async function lmdbDropTable(drop_table_obj) {
         await drop_all_attributes(drop_table_obj);
         await dropTableFromSystem(drop_table_obj);
 
-        let environment_path = path.join(BASE_SCHEMA_PATH, drop_table_obj.schema, drop_table_obj.table);
+        let environment_path = path.join(getBaseSchemaPath(), drop_table_obj.schema, drop_table_obj.table);
         await fs.remove(environment_path);
     } catch(err) {
         throw err;

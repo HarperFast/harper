@@ -51,7 +51,7 @@ const constraints = {
 function makeAttributesStrings(object) {
     for (let attr in object) {
         //setting the attribute to null allows the presence validators to work, also attempting to stringify a non-existent attribute throws an exception
-        object[attr] = (object[attr] === null || object[attr]=== undefined) ? object[attr] : object[attr].toString();
+        object[attr] = (object[attr] === null || object[attr]=== undefined || typeof object[attr] === 'object') ? object[attr] : object[attr].toString();
     }
     return object;
 }
