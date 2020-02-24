@@ -57,7 +57,7 @@ function insertRecords(env, hash_attribute, write_attributes , records){
                 let attribute = write_attributes[x];
 
                 if (attribute !== hash_attribute) {
-                    let value = common.stringifyData(record[attribute], env.dbis[attribute][lmdb_terms.DBI_DEFINITION_NAME].int_key);
+                    let value = common.convertKeyValueToWrite(record[attribute], env.dbis[attribute][lmdb_terms.DBI_DEFINITION_NAME].key_type);
                     if(value !== null) {
                         txn.putString(env.dbis[attribute], value, primary_key);
                     }
@@ -136,19 +136,20 @@ function updateRecords(env, hash_attribute, write_attributes , records){
                 if(key === hash_attribute){
                     continue;
                 }
+                let dbi = env.dbis[key];
 
                 let existing_value = existing_record[key];
 
-                let str_new_value = common.stringifyData(value);
-                let str_existing_value = common.stringifyData(existing_value);
+                let str_new_value = common.convertKeyValueToWrite(value, dbi[lmdb_terms.DBI_DEFINITION_NAME].key_type);
+                let str_existing_value = common.convertKeyValueToWrite(existing_value, dbi[lmdb_terms.DBI_DEFINITION_NAME].key_type);
 
                 //if the update cleared out the attribute value we need to delete it from the index
                 if(str_existing_value !== null) {
-                    txn.del(env.dbis[key], str_existing_value, hash_value);
+                    txn.del(dbi, str_existing_value, hash_value);
                 }
 
                 if(str_new_value !== null){
-                    txn.putString(env.dbis[key], str_new_value, hash_value);
+                    txn.putString(dbi, str_new_value, hash_value);
                 }
             }
 

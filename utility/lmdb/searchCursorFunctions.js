@@ -1,8 +1,10 @@
 'use strict';
 
-function parseRow(cursor, get_whole_row, attributes){
+const common = require('./commonUtility');
+
+function parseRow(txn, get_whole_row, attributes){
     let return_object = Object.create(null);
-    let original_object = JSON.parse(cursor.getCurrentString());
+    let original_object = JSON.parse(txn.cursor.getCurrentString());
 
     if(get_whole_row === true){
         return_object = Object.assign(return_object, original_object);
@@ -21,11 +23,11 @@ function parseRow(cursor, get_whole_row, attributes){
  * @param {[String]} attributes
  * @param {Boolean} get_whole_row
  * @param {String|Number} found
- * @param {lmdb.Cursor} cursor
+ * @param {lmdb.Cursor} txn
  * @param {[]} results
  */
-function searchAll(attributes, get_whole_row, found, cursor, results){
-    let obj = parseRow(cursor, get_whole_row, attributes);
+function searchAll(attributes, get_whole_row, found, txn, results){
+    let obj = parseRow(txn, get_whole_row, attributes);
 
     results.push(obj);
 }
@@ -35,11 +37,11 @@ function searchAll(attributes, get_whole_row, found, cursor, results){
  * @param {[String]} attributes
 * @param {Boolean} get_whole_row
 * @param {String|Number} found
-* @param {lmdb.Cursor} cursor
+* @param {lmdb.Cursor} txn
 * @param {Object} results
 */
-function searchAllToMap(attributes, get_whole_row, found, cursor, results){
-    let obj = parseRow(cursor, get_whole_row, attributes);
+function searchAllToMap(attributes, get_whole_row, found, txn, results){
+    let obj = parseRow(txn, get_whole_row, attributes);
 
     results[found] = obj;
 }
@@ -47,11 +49,11 @@ function searchAllToMap(attributes, get_whole_row, found, cursor, results){
 /**
  * The internal iterator function for iterateDBI
  * @param {*} found
- * @param {lmdb.Cursor} cursor
+ * @param {lmdb.Cursor} txn
  * @param {[]} results
  */
-function iterateDBI(found, cursor, results){
-    results.push([found, cursor.getCurrentString()]);
+function iterateDBI(found, txn, results){
+    results.push([found, txn.cursor.getCurrentString()]);
 }
 
 /**
@@ -60,15 +62,15 @@ function iterateDBI(found, cursor, results){
  * @param {Boolean} int_key
  * @param {String} compare_value
  * @param {*} found
- * @param {lmdb.Cursor} cursor
+ * @param {lmdb.Cursor} txn
  * @param {[]} results
  */
-function startsWith(int_key, compare_value, found, cursor, results){
+function startsWith(int_key, compare_value, found, txn, results){
     let found_str = found.toString();
     if(found_str.startsWith(compare_value)){
-        results.push(cursor.getCurrentString());
+        results.push(txn.cursor.getCurrentString());
     } else if(int_key === false){
-        cursor.goToLast();
+        txn.cursor.goToLast();
     }
 }
 
@@ -76,13 +78,13 @@ function startsWith(int_key, compare_value, found, cursor, results){
  * The internal iterator function for endsWith
  * @param {String} compare_value
  * @param {*} found
- * @param {lmdb.Cursor} cursor
+ * @param {lmdb.Cursor} txn
  * @param {[]} results
  */
-function endsWith(compare_value, found, cursor, results){
+function endsWith(compare_value, found, txn, results){
     let found_str = found.toString();
     if(found_str.endsWith(compare_value)){
-        results.push(cursor.getCurrentString());
+        results.push(txn.cursor.getCurrentString());
     }
 }
 
@@ -90,13 +92,13 @@ function endsWith(compare_value, found, cursor, results){
  * The internal iterator function for contains
  * @param {String} compare_value
  * @param {*} found
- * @param {lmdb.Cursor} cursor
+ * @param {lmdb.Cursor} txn
  * @param {[]} results
  */
-function contains(compare_value, found, cursor, results){
+function contains(compare_value, found, txn, results){
     let found_str = found.toString();
     if(found_str.includes(compare_value)){
-        results.push(cursor.getCurrentString());
+        results.push(txn.cursor.getCurrentString());
     }
 }
 
@@ -104,145 +106,191 @@ function contains(compare_value, found, cursor, results){
  * The internal iterator function for greater than, used for string keyed dbis and a string compare_value
  * @param {String} compare_value
  * @param {String} found
- * @param {lmdb.Cursor} cursor
+ * @param {lmdb.Cursor} txn
  * @param {[]} results
 
  */
-function greaterThanStringCompare(compare_value, found, cursor, results) {
+function greaterThanStringCompare(compare_value, found, txn, results) {
     if (found > compare_value) {
-        results.push(cursor.getCurrentString());
+        results.push(txn.cursor.getCurrentString());
     }
 }
 
 /**
  * The internal iterator function for greater than, used for string keyed dbis and a numeric compare_value
  * @param {String} found
- * @param {lmdb.Cursor} cursor
+ * @param {lmdb.Cursor} txn
  * @param {[]} results
  * @param {Number} compare_value
  */
-function greaterThanStringToNumberCompare(compare_value, found, cursor, results) {
+function greaterThanStringToNumberCompare(compare_value, found, txn, results) {
     let found_number = Number(found);
     if(found_number > compare_value){
-        results.push(cursor.getCurrentString());
+        results.push(txn.cursor.getCurrentString());
+    }
+}
+
+/**
+ * The internal iterator function for greater than, used for numeric keyed dbis and a numeric compare_value
+ * @param {String} found
+ * @param {lmdb.Cursor} txn
+ * @param {[]} results
+ * @param {Number} compare_value
+ */
+function greaterThanNumericCompare(compare_value, found, txn, results) {
+    if(found < compare_value){
+        txn.cursor.goToLast();
+    } else if(found > compare_value) {
+        results.push(txn.cursor.getCurrentString());
     }
 }
 
 /**
  * The internal iterator function for greater than equal, used for string keyed dbis and a sring compare_value
  * @param {String} found
- * @param {lmdb.Cursor} cursor
+ * @param {lmdb.Cursor} txn
  * @param {[]} results
  * @param {String} compare_value
  */
-function greaterThanEqualStringCompare(compare_value, found, cursor, results) {
+function greaterThanEqualStringCompare(compare_value, found, txn, results) {
     if (found >= compare_value) {
-        results.push(cursor.getCurrentString());
+        results.push(txn.cursor.getCurrentString());
     }
 }
 
 /**
  * The internal iterator function for greater than equal, used for string keyed dbis and a numeric compare_value
  * @param {String} found
- * @param {lmdb.Cursor} cursor
+ * @param {lmdb.Cursor} txn
  * @param {[]} results
  * @param {Number} compare_value
  */
-function greaterThanEqualStringToNumberCompare(compare_value, found, cursor, results) {
+function greaterThanEqualStringToNumberCompare(compare_value, found, txn, results) {
     let found_number = Number(found);
     if(found_number >= compare_value){
-        results.push(cursor.getCurrentString());
+        results.push(txn.cursor.getCurrentString());
+    }
+}
+
+/**
+ * The internal iterator function for greater than, used for numeric keyed dbis and a numeric compare_value
+ * @param {String} found
+ * @param {lmdb.Cursor} txn
+ * @param {[]} results
+ * @param {Number} compare_value
+ */
+function greaterThaEqualNumericCompare(compare_value, found, txn, results) {
+    if(found < compare_value){
+        txn.cursor.goToLast();
+    } else {
+        results.push(txn.cursor.getCurrentString());
     }
 }
 
 /**
  * The internal iterator function for adding the value with no comparison check
  * @param {Number} found
- * @param {lmdb.Cursor} cursor
+ * @param {lmdb.Cursor} txn
  * @param {[]} results
  * @param {Number} compare_value
  */
-function addResult(compare_value, found, cursor, results) {
-    results.push(cursor.getCurrentString());
+function addResult(compare_value, found, txn, results) {
+    results.push(txn.cursor.getCurrentString());
 }
 
 /**
  * The internal iterator function for less than, used for string keyed dbis and a string compare_value
  * @param {String} found
- * @param {lmdb.Cursor} cursor
+ * @param {lmdb.Cursor} txn
  * @param {[]} results
  * @param {String} compare_value
  */
-function lessThanStringCompare(compare_value, found, cursor, results) {
+function lessThanStringCompare(compare_value, found, txn, results) {
     if (found < compare_value) {
-        results.push(cursor.getCurrentString());
+        results.push(txn.cursor.getCurrentString());
     }
 }
 
 /**
  * The internal iterator function for less than, used for string keyed dbis and a numeric compare_value
  * @param {String} found
- * @param {lmdb.Cursor} cursor
+ * @param {lmdb.Cursor} txn
  * @param {[]} results
  * @param {Number} compare_value
  */
-function lessThanStringToNumberCompare(compare_value, found, cursor, results) {
+function lessThanStringToNumberCompare(compare_value, found, txn, results) {
     let found_number = Number(found);
     if(found_number < compare_value){
-        results.push(cursor.getCurrentString());
+        results.push(txn.cursor.getCurrentString());
     }
 }
 
 /**
- * The internal iterator function for less than, used for int keyed dbis
+ * The internal iterator function for less than, used for number keyed dbis
  * @param {Number} found
- * @param {lmdb.Cursor} cursor
+ * @param {lmdb.Cursor} txn
  * @param {[]} results
  * @param {Number} compare_value
  */
-function lessThanNumericCompare(compare_value, found, cursor, results) {
+function lessThanNumericCompare(compare_value, found, txn, results) {
     if(found < compare_value){
-        results.push(cursor.getCurrentString());
+        results.push(txn.cursor.getCurrentString());
+    } else if(compare_value < 0){
+        txn.cursor.goToFirst();
+    } else {
+        let search_value_converted = common.convertKeyValueToWrite(compare_value, txn.key_type);
+        txn.cursor.goToRange(search_value_converted);
     }
 }
 
 /**
  * The internal iterator function for less than equal, used for string keyed dbis and a string compare_value
  * @param {String} found
- * @param {lmdb.Cursor} cursor
+ * @param {lmdb.Cursor} txn
  * @param {[]} results
  * @param {String} compare_value
  */
-function lessThanEqualStringCompare(compare_value, found, cursor, results) {
+function lessThanEqualStringCompare(compare_value, found, txn, results) {
     if (found <= compare_value) {
-        results.push(cursor.getCurrentString());
+        results.push(txn.cursor.getCurrentString());
     }
 }
 
 /**
  * The internal iterator function for less than equal, used for string keyed dbis and a number compare_value
  * @param {String} found
- * @param {lmdb.Cursor} cursor
+ * @param {lmdb.Cursor} txn
  * @param {[]} results
  * @param {Number} compare_value
  */
-function lessThanEqualStringToNumberCompare(compare_value, found, cursor, results) {
+function lessThanEqualStringToNumberCompare(compare_value, found, txn, results) {
     let found_number = Number(found);
     if(found_number <= compare_value){
-        results.push(cursor.getCurrentString());
+        results.push(txn.cursor.getCurrentString());
     }
 }
 
 /**
  * The internal iterator function for less than equal, used for int keyed dbis
  * @param {Number} found
- * @param {lmdb.Cursor} cursor
+ * @param {lmdb.Cursor} txn
  * @param {[]} results
  * @param {Number} compare_value
  */
-function lessThanEqualNumericCompare(compare_value, found, cursor, results) {
-    if(found <= (compare_value - 1)){
-        results.push(cursor.getCurrentString());
+function lessThanEqualNumericCompare(compare_value, found, txn, results) {
+    if(found <= compare_value){
+        results.push(txn.cursor.getCurrentString());
+    } else if(compare_value < 0){
+        txn.cursor.goToFirst();
+    } else {
+        let search_value_converted = common.convertKeyValueToWrite(compare_value, txn.key_type);
+        let key = txn.cursor.goToRange(search_value_converted);
+        let key_converted = common.convertKeyValueFromSearch(key, txn.key_type);
+        if(key_converted === compare_value) {
+            txn.cursor.goToLastDup();
+            results.push(txn.cursor.getCurrentString());
+        }
+
     }
 }
 
@@ -251,13 +299,13 @@ function lessThanEqualNumericCompare(compare_value, found, cursor, results) {
  * @param {String} start_value
  * @param {String} end_value
  * @param {String} found
- * @param {lmdb.Cursor} cursor
+ * @param {lmdb.Cursor} txn
  * @param {[]} results
 
  */
-function betweenStringCompare(start_value, end_value, found, cursor, results) {
+function betweenStringCompare(start_value, end_value, found, txn, results) {
     if (found >= start_value && found <= end_value) {
-        results.push(cursor.getCurrentString());
+        results.push(txn.cursor.getCurrentString());
     }
 }
 
@@ -266,31 +314,13 @@ function betweenStringCompare(start_value, end_value, found, cursor, results) {
  * @param {Number} start_value
  * @param {Number} end_value
  * @param {String} found
- * @param {lmdb.Cursor} cursor
+ * @param {lmdb.Cursor} txn
  * @param {[]} results
  */
-function betweenStringToNumberCompare(start_value,end_value, found, cursor, results) {
+function betweenStringToNumberCompare(start_value,end_value, found, txn, results) {
     let found_number = Number(found);
     if (found_number >= start_value && found_number <= end_value) {
-        results.push(cursor.getCurrentString());
-    }
-}
-
-/**
- * The internal iterator function for between, used for int keyed dbis
- * @param {Number} end_value
- * @param {Number} start_value
- * @param {Number} found
- * @param {lmdb.Cursor} cursor
- * @param {[]} results
- */
-function betweenNumericCompare(end_value, start_value, found, cursor, results) {
-    //if the found value is greater than the end_value we tell the cursor to go to the end of the dbi which closes the iterator
-    if(found > end_value){
-        cursor.goToLast();
-    } else{
-        //since we are starting at the start_value we don't need to do a compare since the dbi begins where we want
-        results.push(cursor.getCurrentString());
+        results.push(txn.cursor.getCurrentString());
     }
 }
 
@@ -304,8 +334,10 @@ module.exports = {
     contains,
     greaterThanStringCompare,
     greaterThanStringToNumberCompare,
+    greaterThanNumericCompare,
     greaterThanEqualStringCompare,
     greaterThanEqualStringToNumberCompare,
+    greaterThaEqualNumericCompare,
     addResult,
     lessThanStringCompare,
     lessThanStringToNumberCompare,
@@ -314,6 +346,5 @@ module.exports = {
     lessThanEqualStringToNumberCompare,
     lessThanEqualNumericCompare,
     betweenStringCompare,
-    betweenStringToNumberCompare,
-    betweenNumericCompare
+    betweenStringToNumberCompare
 };
