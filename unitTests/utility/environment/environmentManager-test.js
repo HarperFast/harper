@@ -1,4 +1,4 @@
-'use strict'
+'use strict';
 
 const sinon = require('sinon');
 const assert = require('assert');
@@ -9,6 +9,7 @@ test_utils.preTestPrep();
 const terms = require('../../../utility/hdbTerms');
 const PropertiesReader = require('properties-reader');
 const fs = require('fs-extra');
+const path = require('path');
 
 const TEST_PROP_1_NAME = 'root';
 const TEST_PROP_2_NAME = 'path';
@@ -571,5 +572,89 @@ describe('Test writeSettingsFileSync', () => {
         assert.equal(write_stub.called, false, 'expected write not to be called');
         assert.equal(copy_stub.called, true, 'copy should have been called');
         assert.equal((result instanceof Error), true, 'expected exception');
+    });
+
+});
+
+describe('test getDataStoreType', ()=>{
+    let rw_hdb_base_path;
+    let rw_data_store_type;
+    beforeEach(()=>{
+        rw_hdb_base_path = env_rw.__set__('getHdbBasePath', ()=> path.resolve(__dirname, '../../../envDir'));
+        rw_data_store_type = env_rw.__set__('data_store_type', undefined);
+    });
+
+    afterEach(()=>{
+        rw_hdb_base_path();
+        rw_data_store_type();
+    });
+
+    it('test no hdb folders, no command arguments', ()=>{
+        let err = undefined;
+        let type = undefined;
+        try{
+            type = env_rw.getDataStoreType();
+        } catch(e){
+            err = e;
+        }
+
+        assert.deepStrictEqual(err, undefined);
+        assert.deepStrictEqual(type, terms.STORAGE_TYPES_ENUM.LMDB);
+    });
+
+    it('test no hdb folders, argument of --data_store=fs', ()=>{
+        process.argv.push('--data_store=fs');
+
+        let err = undefined;
+        let type = undefined;
+        try{
+            type = env_rw.getDataStoreType();
+        } catch(e){
+            err = e;
+        }
+
+        assert.deepStrictEqual(err, undefined);
+        assert.deepStrictEqual(type, terms.STORAGE_TYPES_ENUM.FILE_SYSTEM);
+
+        process.argv.pop();
+    });
+
+    it('test with hdb folders for fs', ()=>{
+        let user_path = path.resolve(__dirname, '../../../envDir/schema/system/hdb_user/__hdb_hash');
+        fs.mkdirpSync(user_path);
+
+        let err = undefined;
+        let type = undefined;
+        try{
+            type = env_rw.getDataStoreType();
+        } catch(e){
+            err = e;
+        }
+
+        assert.deepStrictEqual(err, undefined);
+        assert.deepStrictEqual(type, terms.STORAGE_TYPES_ENUM.FILE_SYSTEM);
+
+        fs.removeSync(path.resolve(__dirname, '../../../envDir/schema'));
+    });
+
+    it('test with hdb mdb data file', ()=>{
+        let user_path = path.resolve(__dirname, '../../../envDir/schema/system/hdb_user/');
+
+        fs.mkdirpSync(user_path);
+        fs.writeFileSync(path.join(user_path, 'data.mdb'), 'test');
+
+        let err = undefined;
+        let type = undefined;
+        try{
+            type = env_rw.getDataStoreType();
+        } catch(e){
+            err = e;
+        }
+
+        assert.deepStrictEqual(err, undefined);
+        assert.deepStrictEqual(type, terms.STORAGE_TYPES_ENUM.LMDB);
+
+        fs.removeSync(path.resolve(__dirname, '../../../envDir/schema'));
+
     });
 });

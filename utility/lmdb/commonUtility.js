@@ -5,7 +5,7 @@ const lmdb = require('node-lmdb');
 const lmdb_terms = require('./terms');
 const Buffer = require('buffer').Buffer;
 
-const MAX_BYTE_SIZE = 511;
+const MAX_BYTE_SIZE = 254;
 /**
  * validates the env argument
  * @param env - environment object used thigh level to interact with all data in an environment

@@ -3,15 +3,8 @@
 const hdb_utils = require('../../../../utility/common_utils');
 const delete_utility = require('../../../../utility/lmdb/deleteUtility');
 const environment_utility = require('../../../../utility/lmdb/environmentUtility');
-const hdb_terms = require('../../../../utility/hdbTerms');
-const env = require('../../../../utility/environment/environmentManager');
 const path = require('path');
-
-if(!env.isInitialized()){
-    env.initSync();
-}
-
-const BASE_SCHEMA_PATH = path.join(env.getHdbBasePath(), hdb_terms.SCHEMA_DIR_NAME);
+const {getBaseSchemaPath} = require('../lmdbUtility/initializePaths');
 
 module.exports = lmdbDeleteRecords;
 
@@ -45,7 +38,7 @@ async function lmdbDeleteRecords(delete_obj) {
             throw new Error('hash_values must be an array');
         }
 
-        let env_base_path = path.join(BASE_SCHEMA_PATH, delete_obj.schema);
+        let env_base_path = path.join(getBaseSchemaPath(), delete_obj.schema);
         let environment = await environment_utility.openEnvironment(env_base_path, delete_obj.table);
 
         let response = delete_utility.deleteRecords(environment, hash_attribute, delete_obj.hash_values);

@@ -9,15 +9,8 @@ const environment_utility = require('../../../../utility/lmdb/environmentUtility
 const system_schema = require('../../../../json/systemSchema.json');
 const search_by_value = require('./lmdbSearchByValue');
 const delete_records = require('./lmdbDeleteRecords');
-
-const env_mngr = require('../../../../utility/environment/environmentManager');
+const {getBaseSchemaPath} = require('../lmdbUtility/initializePaths');
 const path = require('path');
-
-if(!env_mngr.isInitialized()){
-    env_mngr.initSync();
-}
-
-const BASE_SCHEMA_PATH = path.join(env_mngr.getHdbBasePath(), hdb_terms.SCHEMA_DIR_NAME);
 
 module.exports = lmdbDropAttribute;
 
@@ -39,7 +32,7 @@ async function lmdbDropAttribute(drop_attribute_obj, remove_data = true) {
         //remove meta data
         let delete_results = await dropAttributeFromSystem(drop_attribute_obj);
         //drop dbi
-        let schema_path = path.join(BASE_SCHEMA_PATH, drop_attribute_obj.schema);
+        let schema_path = path.join(getBaseSchemaPath(), drop_attribute_obj.schema);
         let env = await environment_utility.openEnvironment(schema_path, drop_attribute_obj.table);
         environment_utility.dropDBI(env, drop_attribute_obj.attribute);
 

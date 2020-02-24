@@ -16,7 +16,6 @@ class OpenDBIObject{
         this.name = name;
         this.create = create;
         this.dupSort = dup_sort === true;
-
         switch(key_type){
             case lmdb_terms.DBI_KEY_TYPES.STRING:
                 this.keyIsString = true;

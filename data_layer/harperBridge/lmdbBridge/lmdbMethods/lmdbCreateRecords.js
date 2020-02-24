@@ -10,13 +10,7 @@ const environment_utility = require('../../../../utility/lmdb/environmentUtility
 const path = require('path');
 
 const lmdb_check_new_attributes = require('../lmdbUtility/lmdbCheckForNewAttributes');
-const env = require('../../../../utility/environment/environmentManager');
-
-if(!env.isInitialized()){
-    env.initSync();
-}
-
-const BASE_SCHEMA_PATH = path.join(env.getHdbBasePath(), hdb_terms.SCHEMA_DIR_NAME);
+const {getBaseSchemaPath} = require('../lmdbUtility/initializePaths');
 
 module.exports = lmdbCreateRecords;
 
@@ -43,7 +37,7 @@ async function lmdbCreateRecords(insert_obj) {
         }
 
         await lmdb_check_new_attributes(insert_obj.hdb_auth_header, schema_table, attributes);
-        let env_base_path = path.join(BASE_SCHEMA_PATH, insert_obj.schema);
+        let env_base_path = path.join(getBaseSchemaPath(), insert_obj.schema);
         let environment = await environment_utility.openEnvironment(env_base_path, insert_obj.table);
         let lmdb_response = lmdb_insert_records(environment, schema_table.hash_attribute, attributes, insert_obj.records);
 

@@ -1,16 +1,18 @@
 'use strict';
 
 const test_utils = require('../test_utils');
+const sql_test_utils = require('../sqlTestUtils');
 test_utils.preTestPrep();
 const {
     createMockFS,
     deepClone,
     mochaAsyncWrapper,
     tearDownMockFS,
-    generateMockAST,
     sortAsc,
     sortDesc
 } = test_utils;
+
+const generateMockAST = sql_test_utils.generateMockAST;
 
 const chai = require('chai');
 const { expect } = chai;
@@ -19,7 +21,6 @@ const sinon = require('sinon');
 const fs = require('fs-extra');
 const path = require('path');
 const Papa = require('papaparse');
-const rewire = require('rewire');
 const SQLSearch = require('../../data_layer/SQLSearch');
 const harperBridge = require('../../data_layer/harperBridge/harperBridge');
 const log = require('../../utility/logging/harper_logger');
@@ -138,7 +139,7 @@ describe('Test FileSystem Class',function() {
     afterEach(function() {
         test_instance = null;
         sandbox.resetHistory();
-    })
+    });
 
     after(function() {
         tearDownMockFS();
@@ -383,7 +384,7 @@ describe('Test FileSystem Class',function() {
         }));
 
         it('should return requested attributes from 5 table join statement for specified companyname', mochaAsyncWrapper(async function() {
-            const test_companyname = "Alfreds Futterkiste"
+            const test_companyname = "Alfreds Futterkiste";
             const expected_customer_data = sql_integration_data.customers.data.filter(row => row.companyname === test_companyname)[0];
             const test_sql_statement = `SELECT a.customerid, a.companyname, a.contactmame, b.orderid, b.shipname, d.productid, d.productname, d.unitprice, c.quantity, c.discount, e.employeeid, e.firstname, e.lastname FROM ${TEST_SCHEMA_NORTHWND}.customers a JOIN ${TEST_SCHEMA_NORTHWND}.orders b ON a.customerid = b.customerid JOIN ${TEST_SCHEMA_NORTHWND}.orderdetails c ON b.orderid = c.orderid JOIN ${TEST_SCHEMA_NORTHWND}.products d ON c.productid = d.productid JOIN ${TEST_SCHEMA_NORTHWND}.employees e ON b.employeeid = e.employeeid WHERE a.companyname = '${test_companyname}'`;
             setupTestInstance(test_sql_statement);
@@ -429,7 +430,7 @@ describe('Test FileSystem Class',function() {
 
             const search_results = await test_instance.search();
 
-            expect(search_results.length).to.equal(test_limit)
+            expect(search_results.length).to.equal(test_limit);
             expect(sortTestRows(search_results)).to.deep.equal(sortTestRows(expected_results));
         }));
 
@@ -497,7 +498,7 @@ describe('Test FileSystem Class',function() {
         }));
 
         it('should return longtext values based on regex', mochaAsyncWrapper(async function() {
-            const test_regex = "dock"
+            const test_regex = "dock";
             const expected_results = TEST_DATA_LONGTEXT.filter(row => row.remarks.includes(test_regex));
             const test_sql_statement = `SELECT * FROM dev.longtext where remarks regexp '${test_regex}'`;
             setupTestInstance(test_sql_statement);
@@ -874,7 +875,7 @@ describe('Test FileSystem Class',function() {
 
         function backtickString(string_val) {
           return `\`${string_val}\``;
-        };
+        }
 
         it('should add backticks to all schema elements in statement property',function() {
             const test_sql_statement = "SELECT d.id AS id, d.name, d.breed, c.age FROM dev.dog d JOIN dev.cat c ON d.id = c.id ORDER BY id";
@@ -1139,7 +1140,7 @@ describe('Test FileSystem Class',function() {
 
         it('should set row attr values that do not come back as null in final row data in to the data[table].__merged_data property', mochaAsyncWrapper(async function() {
             const name_attr_key = "name";
-            const null_attr_key = "null_attr"
+            const null_attr_key = "null_attr";
             const expected_result_name = TEST_DATA_CAT.reduce((acc, col) => {
                 acc[`${col.id}`] = {
                     [HASH_ATTRIBUTE]: col.id,
@@ -1164,7 +1165,7 @@ describe('Test FileSystem Class',function() {
 
         after(function() {
             _getData_spy.restore();
-        })
+        });
 
         it('should return/skip if row_count equals 0', mochaAsyncWrapper(async function() {
             const existing_attrs = { dog: ['id']};
@@ -1373,7 +1374,7 @@ describe('Test FileSystem Class',function() {
             const test_sql_statement = `SELECT * FROM dev.longtext WHERE remarks regexp '${test_regex}'`;
             const expected_attr_keys = Object.keys(TEST_DATA_LONGTEXT[0]);
             setupTestInstance(test_sql_statement);
-            await test_instance._getFetchAttributeValues();;
+            await test_instance._getFetchAttributeValues();
 
             const test_results = await test_instance._processJoins();
 

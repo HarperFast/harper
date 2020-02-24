@@ -19,6 +19,12 @@
       },
       {
         "attribute":"residence"
+      },
+      {
+        "attribute":"__createdtime__"
+      },
+      {
+        "attribute": "__updatedtime__"
       }
     ]
   },
@@ -42,6 +48,12 @@
       },
       {
         "attribute": "schema_table"
+      },
+      {
+        "attribute":"__createdtime__"
+      },
+      {
+        "attribute": "__updatedtime__"
       }
     ]
   },
@@ -56,6 +68,12 @@
       },
       {
         "attribute":"createddate"
+      },
+      {
+        "attribute":"__createdtime__"
+      },
+      {
+        "attribute": "__updatedtime__"
       }
     ]
   },
@@ -79,6 +97,12 @@
       },
       {
         "attribute": "hash"
+      },
+      {
+        "attribute":"__createdtime__"
+      },
+      {
+        "attribute": "__updatedtime__"
       }
     ]
   },
@@ -95,6 +119,12 @@
       },
       {
         "attribute":"permission"
+      },
+      {
+        "attribute":"__createdtime__"
+      },
+      {
+        "attribute": "__updatedtime__"
       }
     ],
     "residence":["*"]
@@ -130,6 +160,12 @@
       },
       {
         "attribute": "created_datetime"
+      },
+      {
+        "attribute":"__createdtime__"
+      },
+      {
+        "attribute": "__updatedtime__"
       }
     ]
   },
@@ -143,6 +179,12 @@
       },
       {
         "attribute": "company"
+      },
+      {
+        "attribute":"__createdtime__"
+      },
+      {
+        "attribute": "__updatedtime__"
       }
     ]
   },
@@ -159,6 +201,12 @@
       },
       {
         "attribute": "hdb_version_num"
+      },
+      {
+        "attribute":"__createdtime__"
+      },
+      {
+        "attribute": "__updatedtime__"
       }
     ]
   },
@@ -181,6 +229,12 @@
       },
       {
         "attribute":"subscriptions"
+      },
+      {
+        "attribute":"__createdtime__"
+      },
+      {
+        "attribute": "__updatedtime__"
       }
     ]
   }

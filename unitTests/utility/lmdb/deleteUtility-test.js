@@ -50,7 +50,7 @@ describe('Test deleteUtility', ()=>{
         global.lmdb_map = undefined;
         env = await environment_utility.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
         await environment_utility.createDBI(env, HASH_ATTRIBUTE_NAME, false);
-        write_utility.insertRecords(env, HASH_ATTRIBUTE_NAME, All_ATTRIBUTES, MULTI_RECORD_ARRAY);
+        write_utility.insertRecords(env, HASH_ATTRIBUTE_NAME, test_utils.deepClone(All_ATTRIBUTES), MULTI_RECORD_ARRAY);
     });
 
     afterEach(async ()=>{
