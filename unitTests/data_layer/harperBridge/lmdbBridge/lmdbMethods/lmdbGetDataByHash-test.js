@@ -32,25 +32,25 @@ const INSERT_OBJECT_TEST = {
         {
             name: "Harper",
             breed: "Mutt",
-            id: "8",
+            id: 8,
             age: 5
         },
         {
             name: "Penny",
             breed: "Mutt",
-            id: "9",
+            id: 9,
             age: 5,
             height: 145
         },
         {
             name: "David",
             breed: "Mutt",
-            id: "12"
+            id: 12
         },
         {
             name: "Rob",
             breed: "Mutt",
-            id: "10",
+            id: 10,
             age: 5,
             height: 145
         }
@@ -208,8 +208,8 @@ describe('Test lmdbGetDataByHash module', ()=>{
         it('test finding multiple rows row, some attributes', async()=>{
 
             let expected_result = test_utils.assignObjecttoNullObject({
-                8:   test_utils.assignObjecttoNullObject({id:'8', height:undefined}),
-                10:   test_utils.assignObjecttoNullObject({id:'10', height:145})
+                8:   test_utils.assignObjecttoNullObject({id:8, height:undefined}),
+                10:   test_utils.assignObjecttoNullObject({id:10, height:145})
             });
 
             let search_obj = new SearchByHashObject('dev', 'dog', [10, 8], ['id', 'height']);

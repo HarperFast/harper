@@ -23,7 +23,7 @@ const ONE_RECORD_ARRAY = [
 ];
 
 const ONE_RECORD_ARRAY_EXPECTED = [
-    {__createdtime__: TIMESTAMP, __updatedtime__: TIMESTAMP,id:1, name:'Kyle', age:'46'}
+    {__createdtime__: TIMESTAMP, __updatedtime__: TIMESTAMP,id:1, name:'Kyle', age:46}
 ];
 
 const UPDATE_ONE_RECORD_ARRAY = [
@@ -31,12 +31,12 @@ const UPDATE_ONE_RECORD_ARRAY = [
 ];
 
 const UPDATE_ONE_RECORD_ARRAY_EXPECTED = [
-    {__createdtime__: TIMESTAMP, __updatedtime__: TIMESTAMP, id:1, name:'Kyle Bernhardy', age:'46', height:'6\'1"'}
+    {__createdtime__: TIMESTAMP, __updatedtime__: TIMESTAMP, id:1, name:'Kyle Bernhardy', age:46, height:'6\'1"'}
 ];
 
 const sandbox = sinon.createSandbox();
 
-const UPDATE_ONE_FAKE_RECORD = {id:111, name:'FAKE ROW', age:'0'};
+const UPDATE_ONE_FAKE_RECORD = {id:111, name:'FAKE ROW', age:0};
 
 describe("Test writeUtility module", ()=>{
     let date_stub;
@@ -248,7 +248,7 @@ describe("Test writeUtility module", ()=>{
             assert.deepStrictEqual(all_dbis, all_attributes_for_update);*/
 
             records = test_utils.assertErrorSync(search_util.searchAll, [env, HASH_ATTRIBUTE_NAME, ['id', 'name', 'city', 'age']], undefined);
-            let expected2 = [Object.assign(Object.create(null), {id:1, name: 'Kyle', city:'Denver', age: "46"})];
+            let expected2 = [Object.assign(Object.create(null), {id:1, name: 'Kyle', city:'Denver', age: 46})];
             assert.deepStrictEqual(records,expected2);
         });
     });

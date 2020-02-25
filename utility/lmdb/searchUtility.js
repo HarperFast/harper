@@ -1,7 +1,7 @@
 'use strict';
 
 const environment_utility= require('./environmentUtility');
-const Transaction_Cursor = environment_utility.TransactionCursor;
+const TransactionCursor = environment_utility.TransactionCursor;
 const lmdb = require('node-lmdb');
 const log = require('../logging/harper_logger');
 const common = require('./commonUtility');
@@ -27,13 +27,22 @@ function iterateFullIndex(env, attribute, eval_function){
         return results;
     }
 
-    let txn = new Transaction_Cursor(env, attribute);
-    for (let found = txn.cursor.goToFirst(); found !== null; found = txn.cursor.goToNext()) {
-        let key_value = common.convertKeyValueFromSearch(found, txn.key_type);
-        eval_function(key_value, txn, results);
+    let txn = undefined;
+    try {
+        txn = new TransactionCursor(env, attribute);
+        for (let found = txn.cursor.goToFirst(); found !== null; found = txn.cursor.goToNext()) {
+            let key_value = common.convertKeyValueFromSearch(found, txn.key_type);
+            eval_function(key_value, txn, results);
+        }
+        txn.close();
+        return results;
+    }catch(e){
+        if(txn !== undefined){
+            txn.close();
+        }
+
+        throw e;
     }
-    txn.close();
-    return results;
 }
 
 /**
@@ -50,13 +59,22 @@ function iterateFullIndexToMap(env, attribute, eval_function){
     if(stat.entryCount === 0){
         return results;
     }
-    let txn = new Transaction_Cursor(env, attribute);
-    for (let found = txn.cursor.goToFirst(); found !== null; found = txn.cursor.goToNext()) {
-        let key_value = common.convertKeyValueFromSearch(found, txn.key_type);
-        eval_function(key_value, txn, results);
+    let txn = undefined;
+    try {
+        txn = new TransactionCursor(env, attribute);
+        for (let found = txn.cursor.goToFirst(); found !== null; found = txn.cursor.goToNext()) {
+            let key_value = common.convertKeyValueFromSearch(found, txn.key_type);
+            eval_function(key_value, txn, results);
+        }
+        txn.close();
+        return results;
+    }catch(e){
+        if(txn !== undefined){
+            txn.close();
+        }
+
+        throw e;
     }
-    txn.close();
-    return results;
 }
 
 /**
@@ -74,23 +92,32 @@ function iterateRangeNext(env, attribute, search_value, eval_function){
         return results;
     }
 
-    let txn = new Transaction_Cursor(env, attribute);
+    let txn = undefined;
+    try {
+        txn = new TransactionCursor(env, attribute);
 
-    //if the first value in the dbi is less than the search value then we seek to the value, otherwise we keep the cursor at the first item
-    let found = txn.cursor.goToFirst();
-    let found_converted = common.convertKeyValueFromSearch(found, txn.key_type);
+        //if the first value in the dbi is less than the search value then we seek to the value, otherwise we keep the cursor at the first item
+        let found = txn.cursor.goToFirst();
+        let found_converted = common.convertKeyValueFromSearch(found, txn.key_type);
 
-    if((isNaN(found_converted) === true && found_converted.toString() < search_value.toString()) || (isNaN(found_converted) === false && Number(found_converted) < search_value)){
-        let search_value_converted = common.convertKeyValueToWrite(search_value, txn.key_type);
-        found = txn.cursor.goToRange(search_value_converted);
+        if ((isNaN(found_converted) === true && found_converted.toString() < search_value.toString()) || (isNaN(found_converted) === false && Number(found_converted) < search_value)) {
+            let search_value_converted = common.convertKeyValueToWrite(search_value, txn.key_type);
+            found = txn.cursor.goToRange(search_value_converted);
+        }
+
+        for (found; found !== null; found = txn.cursor.goToNext()) {
+            let key_value = common.convertKeyValueFromSearch(found, txn.key_type);
+            eval_function(search_value, key_value, txn, results);
+        }
+        txn.close();
+        return results;
+    }catch(e){
+        if(txn !== undefined){
+            txn.close();
+        }
+
+        throw e;
     }
-
-    for (found; found !== null; found = txn.cursor.goToNext()) {
-        let key_value = common.convertKeyValueFromSearch(found, txn.key_type);
-        eval_function(search_value, key_value, txn, results);
-    }
-    txn.close();
-    return results;
 }
 
 /**
@@ -116,7 +143,7 @@ function iterateRangeBetween(env, attribute, start_value, end_value){
             return results;
         }
 
-        txn = new Transaction_Cursor(env, attribute);
+        txn = new TransactionCursor(env, attribute);
         let first_key = txn.cursor.goToFirst();
         let last_key = txn.cursor.goToLast();
         let first_key_value = first_key.readDoubleBE(0);
@@ -202,6 +229,8 @@ function iterateRangeBetween(env, attribute, start_value, end_value){
         if(txn !== undefined){
             txn.close();
         }
+
+        throw e;
     }
 }
 
@@ -216,7 +245,7 @@ function iterateRangeBetween(env, attribute, start_value, end_value){
 function iterateLessThan(env, attribute, search_value, eval_function){
     let txn = undefined;
     try {
-        txn = new Transaction_Cursor(env, attribute);
+        txn = new TransactionCursor(env, attribute);
         let results = [];
         let stat = environment_utility.statDBI(env, attribute);
         if(stat.entryCount === 0){
@@ -344,17 +373,26 @@ function countAll(env, hash_attribute){
 function equals(env, attribute, search_value){
     validateComparisonFunctions(env, attribute, search_value);
 
-    let txn = new Transaction_Cursor(env, attribute);
+    let txn = undefined;
+    try {
+        txn = new TransactionCursor(env, attribute);
 
-    search_value = common.convertKeyValueToWrite(search_value, txn.key_type);
+        search_value = common.convertKeyValueToWrite(search_value, txn.key_type);
 
-    let results = [];
-    for (let found = txn.cursor.goToKey(search_value); found !== null; found = txn.cursor.goToNextDup()) {
-        let value = txn.cursor.getCurrentString();
-        results.push(value);
+        let results = [];
+        for (let found = txn.cursor.goToKey(search_value); found !== null; found = txn.cursor.goToNextDup()) {
+            let value = txn.cursor.getCurrentString();
+            results.push(value);
+        }
+        txn.close();
+        return results;
+    }catch(e){
+        if(txn !== undefined){
+            txn.close();
+        }
+
+        throw e;
     }
-    txn.close();
-    return results;
 }
 
 /**
@@ -591,15 +629,24 @@ function searchByHash(env, hash_attribute, fetch_attributes, id) {
 
     let get_whole_row = setGetWholeRowFlag(fetch_attributes);
 
-    let txn = new Transaction_Cursor(env, hash_attribute);
+    let txn = undefined;
+    try {
+        txn = new TransactionCursor(env, hash_attribute);
 
-    let obj = null;
-    let found = txn.cursor.goToKey(id);
-    if(found === id) {
-        obj = cursor_functions.parseRow(txn, get_whole_row, fetch_attributes);
+        let obj = null;
+        let found = txn.cursor.goToKey(id);
+        if (found === id) {
+            obj = cursor_functions.parseRow(txn, get_whole_row, fetch_attributes);
+        }
+        txn.close();
+        return obj;
+    }catch(e){
+        if(txn !== undefined){
+            txn.close();
+        }
+
+        throw e;
     }
-    txn.close();
-    return obj;
 }
 
 /**
@@ -620,21 +667,28 @@ function checkHashExists(env, hash_attribute, id) {
         throw new Error(LMDB_ERRORS.ID_REQUIRED);
     }
 
-    let found_key = true;
-    let txn = new Transaction_Cursor(env, hash_attribute);
+    let txn = undefined;
+    try {
+        let found_key = true;
+        txn = new TransactionCursor(env, hash_attribute);
 
-    if(txn.int_key === true){
-        id = parseInt(id);
+        id = common.convertKeyValueToWrite(id, txn.key_type);
+
+        let key = txn.cursor.goToKey(id);
+
+        if (key !== id) {
+            found_key = false;
+        }
+
+        txn.close();
+        return found_key;
+    }catch(e){
+        if(txn !== undefined){
+            txn.close();
+        }
+
+        throw e;
     }
-
-    let key = txn.cursor.goToKey(id);
-
-    if(key !== id){
-        found_key = false;
-    }
-
-    txn.close();
-    return found_key;
 }
 
 /**
@@ -738,7 +792,7 @@ function initializeBatchSearchByHash(env, hash_attribute, fetch_attributes, ids,
         not_found = [];
     }
 
-    return new Transaction_Cursor(env, hash_attribute);
+    return new TransactionCursor(env, hash_attribute);
 }
 
 /**

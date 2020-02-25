@@ -181,7 +181,7 @@ describe('test validateDropSchema module', ()=>{
 
         it('Test delete first chunk of records', async()=>{
             let expected = {
-                message: '100 records successfully deleted',
+                message: '100 of 100 records successfully deleted',
                 deleted_hashes:[],
                 skipped_hashes:[]
             };
