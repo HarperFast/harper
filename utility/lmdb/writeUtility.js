@@ -142,7 +142,7 @@ function updateRecords(env, hash_attribute, write_attributes , records){
             let cast_hash_value = hdb_utils.autoCast(record[hash_attribute]);
             let hash_value = record[hash_attribute].toString();
             //grab existing record
-            let existing_record = search_utility.searchByHash(env, hash_attribute, write_attributes, hash_value);
+            let existing_record = search_utility.searchByHash(env, hash_attribute, ['*'], hash_value);
 
             if(existing_record === null){
                 result.skipped_hashes.push(cast_hash_value);
@@ -155,27 +155,33 @@ function updateRecords(env, hash_attribute, write_attributes , records){
                     continue;
                 }
                 let dbi = env.dbis[key];
-
+                if(dbi === undefined){
+                    continue;
+                }
                 let existing_value = existing_record[key];
 
                 let str_new_value = common.convertKeyValueToWrite(value, dbi[lmdb_terms.DBI_DEFINITION_NAME].key_type);
                 let str_existing_value = common.convertKeyValueToWrite(existing_value, dbi[lmdb_terms.DBI_DEFINITION_NAME].key_type);
+                if(str_new_value === str_existing_value) {
+                    continue;
+                }
 
                 //if the update cleared out the attribute value we need to delete it from the index
-                if(str_existing_value !== null) {
+                if (str_existing_value !== null) {
                     try {
                         txn.del(dbi, str_existing_value, hash_value);
-                    }catch(e){
+                    } catch (e) {
                         //this is the code for attempting to delete an entry that does not exist
-                        if(e.code !== -30798){
+                        if (e.code !== -30798) {
                             throw e;
                         }
                     }
                 }
 
-                if(str_new_value !== null){
+                if (str_new_value !== null) {
                     txn.putString(dbi, str_new_value, hash_value);
                 }
+
             }
 
             let merged_record = Object.assign(existing_record, record);
