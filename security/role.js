@@ -155,7 +155,7 @@ async function dropRole(role){
         throw new Error(`Role not found`);
     }
 
-    let search_user_by_roleid = new SearchObject(terms.SYSTEM_SCHEMA_NAME, terms.SYSTEM_TABLE_NAMES.USER_TABLE_NAME, 'roleid', role.id, undefined, ['username', 'active']);
+    let search_user_by_roleid = new SearchObject(terms.SYSTEM_SCHEMA_NAME, terms.SYSTEM_TABLE_NAMES.USER_TABLE_NAME, 'role', role.id, undefined, ['username', 'active']);
     let found_users = await p_search_search_by_value(search_user_by_roleid);
     let active_users = false;
     if(hdb_utils.isEmptyOrZeroLength(found_users) === false){

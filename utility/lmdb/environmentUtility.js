@@ -32,7 +32,7 @@ class TransactionCursor{
     constructor(env, attribute, write_cursor = false) {
         this.dbi = openDBI(env, attribute);
         this.key_type = this.dbi[lmdb_terms.DBI_DEFINITION_NAME].key_type;
-        this.txn = env.beginTxn({ readOnly: write_cursor === false });
+        this.txn = env.beginTxn();
         this.cursor = new lmdb.Cursor(this.txn, this.dbi);
     }
 
@@ -121,6 +121,7 @@ function validateEnvDBIName(env, dbi_name){
  * @returns {Promise<lmdb.Env>} - LMDB environment object
  */
 async function createEnvironment(base_path, env_name) {
+    env_name = env_name.toString();
     await pathEnvNameValidation(base_path, env_name);
 
     try {
@@ -162,6 +163,7 @@ async function createEnvironment(base_path, env_name) {
  * @param {String} env_name -  the name of the environment
  */
 async function openEnvironment(base_path, env_name){
+    env_name = env_name.toString();
     await pathEnvNameValidation(base_path, env_name);
 
     let full_name = getCachedEnvironmentName(base_path, env_name);
@@ -305,6 +307,7 @@ function getDBIDefinition(env, dbi_name){
  * @returns {*} - reference to the dbi
  */
 function createDBI(env, dbi_name, dup_sort, key_type){
+    dbi_name = dbi_name.toString();
     validateEnvDBIName(env, dbi_name);
 
     if(dbi_name === INTERNAL_DBIS_NAME){
@@ -344,6 +347,7 @@ function createDBI(env, dbi_name, dup_sort, key_type){
  * @returns {*} - returns reference to the dbi
  */
 function openDBI(env, dbi_name){
+    dbi_name = dbi_name.toString();
     validateEnvDBIName(env, dbi_name);
 
     if(env.dbis[dbi_name] !== undefined){
@@ -378,6 +382,7 @@ function openDBI(env, dbi_name){
  * @returns {void | Promise<Stats> | *} - object holding stats for the dbi
  */
 function statDBI(env, dbi_name){
+    dbi_name = dbi_name.toString();
     validateEnvDBIName(env, dbi_name);
     let dbi = openDBI(env, dbi_name);
     let txn = env.beginTxn();
@@ -392,6 +397,7 @@ function statDBI(env, dbi_name){
  * @param {String} dbi_name - name of the dbi (KV store)
  */
 function dropDBI(env, dbi_name){
+    dbi_name = dbi_name.toString();
     validateEnvDBIName(env, dbi_name);
 
     if(dbi_name === INTERNAL_DBIS_NAME){
