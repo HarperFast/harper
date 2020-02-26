@@ -30,7 +30,7 @@ async function lmdbCreateTable(table_system_data, table_create_obj) {
 
     let created_time_attr = new LMDBCreateAttributeObject(table_create_obj.schema, table_create_obj.table, hdb_terms.TIME_STAMP_NAMES_ENUM.CREATED_TIME, undefined, true, lmdb_terms.DBI_KEY_TYPES.NUMBER);
     let updated_time_attr = new LMDBCreateAttributeObject(table_create_obj.schema, table_create_obj.table, hdb_terms.TIME_STAMP_NAMES_ENUM.UPDATED_TIME, undefined, true, lmdb_terms.DBI_KEY_TYPES.NUMBER);
-    let hash_attr = new LMDBCreateAttributeObject(table_create_obj.schema, table_create_obj.table, table_create_obj.hash_attribute, undefined, false, lmdb_terms.DBI_KEY_TYPES.STRING);
+    let hash_attr = new LMDBCreateAttributeObject(table_create_obj.schema, table_create_obj.table, table_create_obj.hash_attribute, undefined, false, lmdb_terms.DBI_KEY_TYPES.STRING, true);
 
     try {
         //create the new environment

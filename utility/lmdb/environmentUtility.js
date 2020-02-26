@@ -32,6 +32,7 @@ class TransactionCursor{
     constructor(env, attribute, write_cursor = false) {
         this.dbi = openDBI(env, attribute);
         this.key_type = this.dbi[lmdb_terms.DBI_DEFINITION_NAME].key_type;
+        this.is_hash_attribute = this.dbi[lmdb_terms.DBI_DEFINITION_NAME].is_hash_attribute;
         this.txn = env.beginTxn({ readOnly: write_cursor === false });
         this.cursor = new lmdb.Cursor(this.txn, this.dbi);
     }
@@ -329,7 +330,7 @@ function getDBIDefinition(env, dbi_name){
  * @param {lmdb_terms.DBI_KEY_TYPES} [key_type] - optional, dictates what data format the of the key, default is string
  * @returns {*} - reference to the dbi
  */
-function createDBI(env, dbi_name, dup_sort, key_type){
+function createDBI(env, dbi_name, dup_sort, key_type, is_hash_attribute= false){
     validateEnvDBIName(env, dbi_name);
     dbi_name = dbi_name.toString();
     if(dbi_name === INTERNAL_DBIS_NAME){
@@ -345,7 +346,7 @@ function createDBI(env, dbi_name, dup_sort, key_type){
             let dbi_init = new OpenDBIObject(dbi_name, true, dup_sort, key_type);
             let new_dbi = env.openDbi(dbi_init);
 
-            let dbi_definition = new DBIDefinition(dup_sort === true, key_type);
+            let dbi_definition = new DBIDefinition(dup_sort === true, key_type, is_hash_attribute);
             new_dbi[DBI_DEFINITION_NAME] = dbi_definition;
 
             let dbis = openDBI(env, INTERNAL_DBIS_NAME);
@@ -456,7 +457,7 @@ function initializeDBIs(env, hash_attribute, write_attributes){
                 //if not opened, create it
                 if (e.message === LMDB_ERRORS.DBI_DOES_NOT_EXIST) {
                     let key_type = lmdb_terms.TIMESTAMP_NAMES.indexOf(attribute) >=0 ? lmdb_terms.DBI_KEY_TYPES.NUMBER : lmdb_terms.DBI_KEY_TYPES.STRING;
-                    createDBI(env, attribute, attribute !== hash_attribute, key_type);
+                    createDBI(env, attribute, attribute !== hash_attribute, key_type, attribute === hash_attribute);
                 } else {
                     throw e;
                 }
