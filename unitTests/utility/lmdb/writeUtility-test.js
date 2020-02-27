@@ -23,7 +23,7 @@ const ONE_RECORD_ARRAY = [
 ];
 
 const ONE_RECORD_ARRAY_EXPECTED = [
-    {__createdtime__: TIMESTAMP, __updatedtime__: TIMESTAMP,id:1, name:'Kyle', age:'46'}
+    {__createdtime__: TIMESTAMP, __updatedtime__: TIMESTAMP,id:1, name:'Kyle', age:46}
 ];
 
 const UPDATE_ONE_RECORD_ARRAY = [
@@ -31,12 +31,12 @@ const UPDATE_ONE_RECORD_ARRAY = [
 ];
 
 const UPDATE_ONE_RECORD_ARRAY_EXPECTED = [
-    {__createdtime__: TIMESTAMP, __updatedtime__: TIMESTAMP, id:1, name:'Kyle Bernhardy', age:'46', height:'6\'1"'}
+    {__createdtime__: TIMESTAMP, __updatedtime__: TIMESTAMP, id:1, name:'Kyle Bernhardy', age:46, height:'6\'1"'}
 ];
 
 const sandbox = sinon.createSandbox();
 
-const UPDATE_ONE_FAKE_RECORD = {id:111, name:'FAKE ROW', age:'0'};
+const UPDATE_ONE_FAKE_RECORD = {id:111, name:'FAKE ROW', age:0};
 
 describe("Test writeUtility module", ()=>{
     let date_stub;
@@ -158,15 +158,27 @@ describe("Test writeUtility module", ()=>{
 
     describe("Test updateRecords function", ()=>{
         let env;
+
+        before(()=>{
+            date_stub.restore();
+
+        });
+
+        after(()=>{
+            date_stub = sandbox.stub(Date, 'now').returns(TIMESTAMP);
+        });
+
         beforeEach(async ()=>{
+            date_stub = sandbox.stub(Date, 'now').returns(TIMESTAMP);
             await fs.mkdirp(BASE_TEST_PATH);
             global.lmdb_map = undefined;
             env = await environment_utility.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
             await environment_utility.createDBI(env, 'id', false);
-            write_utility.insertRecords(env, HASH_ATTRIBUTE_NAME, ALL_ATTRIBUTES, ONE_RECORD_ARRAY);
+            write_utility.insertRecords(env, HASH_ATTRIBUTE_NAME, test_utils.deepClone(ALL_ATTRIBUTES), ONE_RECORD_ARRAY);
         });
 
         afterEach(async ()=>{
+            date_stub.restore();
             await fs.remove(BASE_TEST_PATH);
             global.lmdb_map = undefined;
         });
@@ -219,6 +231,24 @@ describe("Test writeUtility module", ()=>{
 
             records = test_utils.assertErrorSync(search_util.searchAll, [env, HASH_ATTRIBUTE_NAME, all_dbis], undefined);
             let expected2 = [Object.assign(Object.create(null), UPDATE_ONE_RECORD_ARRAY_EXPECTED[0])];
+            assert.deepStrictEqual(records,expected2);
+        });
+
+        it("test partially updating row & make sure other attributes are untouched", ()=>{
+            let all_attributes_for_update = ['__createdtime__', '__updatedtime__','age', 'height', 'id', 'name', 'city'];
+
+            let records = test_utils.assertErrorSync(search_util.searchAll, [env, HASH_ATTRIBUTE_NAME, ALL_ATTRIBUTES], undefined);
+            let expected = [Object.assign(Object.create(null), ONE_RECORD_ARRAY_EXPECTED[0])];
+            assert.deepStrictEqual(records, expected);
+
+            let results = test_utils.assertErrorSync(write_utility.updateRecords, [env, HASH_ATTRIBUTE_NAME, all_attributes_for_update, [{id:1, city:'Denver'}]], undefined);
+            assert.deepStrictEqual(results, {written_hashes:[1], skipped_hashes:[]});
+
+            /*let all_dbis = test_utils.assertErrorSync(environment_utility.listDBIs, [env], undefined);
+            assert.deepStrictEqual(all_dbis, all_attributes_for_update);*/
+
+            records = test_utils.assertErrorSync(search_util.searchAll, [env, HASH_ATTRIBUTE_NAME, ['id', 'name', 'city', 'age']], undefined);
+            let expected2 = [Object.assign(Object.create(null), {id:1, name: 'Kyle', city:'Denver', age: 46})];
             assert.deepStrictEqual(records,expected2);
         });
     });

@@ -189,7 +189,7 @@ describe('Test lmdbUpdateRecords module', ()=>{
                     {
                         name: "Beethoven",
                         breed: "St. Bernard",
-                        id: "10",
+                        id: 10,
                         height:undefined,
                         age: 10
                     }

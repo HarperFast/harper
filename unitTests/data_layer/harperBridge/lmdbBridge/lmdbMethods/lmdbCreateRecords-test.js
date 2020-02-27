@@ -64,7 +64,7 @@ const EXPECTED_SEARCH_RECORDS = [
         name: "Harper",
         breed: "Mutt",
         height: undefined,
-        id: "8",
+        id: 8,
         age: 5
     },
     {
@@ -72,7 +72,7 @@ const EXPECTED_SEARCH_RECORDS = [
         __updatedtime__: TIMESTAMP,
         name: "Penny",
         breed: "Mutt",
-        id: "9",
+        id: 9,
         age: 5,
         height: 145
     },
@@ -83,14 +83,14 @@ const EXPECTED_SEARCH_RECORDS = [
         name: "David",
         breed: "Mutt",
         height:undefined,
-        id: "12"
+        id: 12
     },
     {
         __createdtime__:TIMESTAMP,
         __updatedtime__: TIMESTAMP,
         name: "Rob",
         breed: "Mutt",
-        id: "10",
+        id: 10,
         age: 5,
         height: 145
     }
@@ -287,7 +287,7 @@ describe('Test lmdbCreateRecords module', ()=>{
                     "__updatedtime__": TIMESTAMP,
                     name: "Harper",
                     breed: "Mutt",
-                    id: "8",
+                    id: 8,
                     height:undefined,
                     age: 5
                 }),
@@ -296,7 +296,7 @@ describe('Test lmdbCreateRecords module', ()=>{
                     "__updatedtime__": TIMESTAMP,
                     name: "Penny",
                     breed: "Mutt",
-                    id: "9",
+                    id: 9,
                     age: 5,
                     height: 145
                 }),
@@ -307,14 +307,14 @@ describe('Test lmdbCreateRecords module', ()=>{
                     name: "David",
                     breed: "Mutt",
                     height:undefined,
-                    id: "123"
+                    id: 123
                 }),
                 test_utils.assignObjecttoNullObject({
                     "__createdtime__": TIMESTAMP,
                     "__updatedtime__": TIMESTAMP,
                     name: "Rob",
                     breed: "Mutt",
-                    id: "1232",
+                    id: 1232,
                     age: 5,
                     height: 145
                 })

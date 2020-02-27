@@ -54,7 +54,7 @@ describe('test lmdbCreateSchema module', ()=>{
 
     it('Test that a new schema is added to the system datastore', async()=>{
 
-        let expected_search_result = test_utils.assignObjecttoNullObject({name: 'horses', createddate: ''+TIMESTAMP});
+        let expected_search_result = test_utils.assignObjecttoNullObject({name: 'horses', createddate: TIMESTAMP});
 
         await test_utils.assertErrorAsync(lmdb_create_schema, [CREATE_SCHEMA_OBJ_TEST_A], undefined);
 

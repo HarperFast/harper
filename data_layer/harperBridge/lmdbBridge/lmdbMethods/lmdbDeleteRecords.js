@@ -56,9 +56,11 @@ async function lmdbDeleteRecords(delete_obj) {
  * @returns {{skipped_hashes: [], deleted_hashes: [], message: string}}
  */
 function createDeleteResponse(deleted, skipped){
-    let plural = (deleted.length === 1) ? 'record' : 'records';
+    let total = deleted.length + skipped.length;
+    let plural = (total === 1) ? 'record' : 'records';
+
     return {
-        message: `${deleted.length} ${plural} successfully deleted`,
+        message: `${deleted.length} of ${total} ${plural} successfully deleted`,
         deleted_hashes: deleted,
         skipped_hashes: skipped
     };

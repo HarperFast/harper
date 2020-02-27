@@ -1,6 +1,7 @@
 'use strict';
 
 const common = require('./commonUtility');
+const auto_cast = require('../common_utils').autoCast;
 
 function parseRow(txn, get_whole_row, attributes){
     let return_object = Object.create(null);
@@ -11,7 +12,7 @@ function parseRow(txn, get_whole_row, attributes){
     } else {
         for (let x = 0; x < attributes.length; x++) {
             let attribute = attributes[x];
-            return_object[attribute] = original_object[attribute];
+            return_object[attribute] = auto_cast(original_object[attribute]);
         }
     }
 

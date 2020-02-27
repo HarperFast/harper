@@ -165,7 +165,7 @@ describe('Test lmdbDeleteRecords module', ()=>{
                 hash_values: [ 8 ]
             };
             let expected_result = {
-                message: '1 record successfully deleted',
+                message: '1 of 1 record successfully deleted',
                 deleted_hashes: [ 8 ],
                 skipped_hashes: []
             };
@@ -196,7 +196,7 @@ describe('Test lmdbDeleteRecords module', ()=>{
                 hash_values: [ 8, 9999 ]
             };
             let expected_result = {
-                message: '1 record successfully deleted',
+                message: '1 of 2 records successfully deleted',
                 deleted_hashes: [ 8 ],
                 skipped_hashes: [ 9999]
             };
@@ -226,7 +226,7 @@ describe('Test lmdbDeleteRecords module', ()=>{
                 hash_values: [ 8888, 9999 ]
             };
             let expected_result = {
-                message: '0 records successfully deleted',
+                message: '0 of 2 records successfully deleted',
                 deleted_hashes: [ ],
                 skipped_hashes: [ 8888, 9999]
             };
@@ -243,7 +243,7 @@ describe('Test lmdbDeleteRecords module', ()=>{
                 hash_values: [ 12, 10 ]
             };
             let expected_result = {
-                message: '2 records successfully deleted',
+                message: '2 of 2 records successfully deleted',
                 deleted_hashes: [ 12, 10 ],
                 skipped_hashes: [ ]
             };
@@ -283,7 +283,7 @@ describe('Test lmdbDeleteRecords module', ()=>{
             };
 
             let expected_result = {
-                message: '0 records successfully deleted',
+                message: '0 of 0 records successfully deleted',
                 deleted_hashes: [ ],
                 skipped_hashes: [ ]
             };
@@ -307,7 +307,7 @@ describe('Test lmdbDeleteRecords module', ()=>{
             };
 
             let expected_result = {
-                message: '1 record successfully deleted',
+                message: '1 of 1 record successfully deleted',
                 deleted_hashes: [10 ],
                 skipped_hashes: [ ]
             };
@@ -330,7 +330,7 @@ describe('Test lmdbDeleteRecords module', ()=>{
             };
 
             let expected_result = {
-                message: '0 records successfully deleted',
+                message: '0 of 0 records successfully deleted',
                 deleted_hashes: [ ],
                 skipped_hashes: [ ]
             };
