@@ -2,6 +2,7 @@
 
 const common = require('./commonUtility');
 const auto_cast = require('../common_utils').autoCast;
+const lmdb_terms = require('./terms');
 
 function parseRow(txn, get_whole_row, attributes){
     let return_object = Object.create(null);
@@ -58,19 +59,33 @@ function iterateDBI(found, txn, results){
 }
 
 /**
+ * internal function used to add hash value to results, in the scenario of a hash_attribute dbi we just need to add the found key, otherwise we get the value
+ * @param {*} found
+ * @param {lmdb.Cursor} txn
+ * @param {[]} results
+ */
+function pushResults(found, txn, results){
+    if(txn.is_hash_attribute === true){
+        results.push(found);
+    } else {
+        results.push(txn.cursor.getCurrentString());
+    }
+}
+
+/**
  * The internal iterator function for startsWith, if we are executing a startswith on an int keyed dbi we do not want end the cursor if the value does not start with the compare_value,
  *  this is because the next value would be the next numeric value instead of the next lexographic value
- * @param {Boolean} int_key
+ * @param {lmdb_terms.DBI_KEY_TYPES} key_type
  * @param {String} compare_value
  * @param {*} found
  * @param {lmdb.Cursor} txn
  * @param {[]} results
  */
-function startsWith(int_key, compare_value, found, txn, results){
+function startsWith(key_type, compare_value, found, txn, results){
     let found_str = found.toString();
     if(found_str.startsWith(compare_value)){
-        results.push(txn.cursor.getCurrentString());
-    } else if(int_key === false){
+        pushResults(found, txn, results);
+    } else if(key_type === lmdb_terms.DBI_KEY_TYPES.STRING){
         txn.cursor.goToLast();
     }
 }
@@ -85,7 +100,7 @@ function startsWith(int_key, compare_value, found, txn, results){
 function endsWith(compare_value, found, txn, results){
     let found_str = found.toString();
     if(found_str.endsWith(compare_value)){
-        results.push(txn.cursor.getCurrentString());
+        pushResults(found, txn, results);
     }
 }
 
@@ -99,7 +114,7 @@ function endsWith(compare_value, found, txn, results){
 function contains(compare_value, found, txn, results){
     let found_str = found.toString();
     if(found_str.includes(compare_value)){
-        results.push(txn.cursor.getCurrentString());
+        pushResults(found, txn, results);
     }
 }
 
@@ -113,7 +128,7 @@ function contains(compare_value, found, txn, results){
  */
 function greaterThanStringCompare(compare_value, found, txn, results) {
     if (found > compare_value) {
-        results.push(txn.cursor.getCurrentString());
+        pushResults(found, txn, results);
     }
 }
 
@@ -127,7 +142,7 @@ function greaterThanStringCompare(compare_value, found, txn, results) {
 function greaterThanStringToNumberCompare(compare_value, found, txn, results) {
     let found_number = Number(found);
     if(found_number > compare_value){
-        results.push(txn.cursor.getCurrentString());
+        pushResults(found, txn, results);
     }
 }
 
@@ -142,7 +157,7 @@ function greaterThanNumericCompare(compare_value, found, txn, results) {
     if(found < compare_value){
         txn.cursor.goToLast();
     } else if(found > compare_value) {
-        results.push(txn.cursor.getCurrentString());
+        pushResults(found, txn, results);
     }
 }
 
@@ -155,7 +170,7 @@ function greaterThanNumericCompare(compare_value, found, txn, results) {
  */
 function greaterThanEqualStringCompare(compare_value, found, txn, results) {
     if (found >= compare_value) {
-        results.push(txn.cursor.getCurrentString());
+        pushResults(found, txn, results);
     }
 }
 
@@ -169,7 +184,7 @@ function greaterThanEqualStringCompare(compare_value, found, txn, results) {
 function greaterThanEqualStringToNumberCompare(compare_value, found, txn, results) {
     let found_number = Number(found);
     if(found_number >= compare_value){
-        results.push(txn.cursor.getCurrentString());
+        pushResults(found, txn, results);
     }
 }
 
@@ -184,7 +199,7 @@ function greaterThaEqualNumericCompare(compare_value, found, txn, results) {
     if(found < compare_value){
         txn.cursor.goToLast();
     } else {
-        results.push(txn.cursor.getCurrentString());
+        pushResults(found, txn, results);
     }
 }
 
@@ -196,7 +211,7 @@ function greaterThaEqualNumericCompare(compare_value, found, txn, results) {
  * @param {Number} compare_value
  */
 function addResult(compare_value, found, txn, results) {
-    results.push(txn.cursor.getCurrentString());
+    pushResults(found, txn, results);
 }
 
 /**
@@ -208,7 +223,7 @@ function addResult(compare_value, found, txn, results) {
  */
 function lessThanStringCompare(compare_value, found, txn, results) {
     if (found < compare_value) {
-        results.push(txn.cursor.getCurrentString());
+        pushResults(found, txn, results);
     }
 }
 
@@ -222,7 +237,7 @@ function lessThanStringCompare(compare_value, found, txn, results) {
 function lessThanStringToNumberCompare(compare_value, found, txn, results) {
     let found_number = Number(found);
     if(found_number < compare_value){
-        results.push(txn.cursor.getCurrentString());
+        pushResults(found, txn, results);
     }
 }
 
@@ -235,7 +250,7 @@ function lessThanStringToNumberCompare(compare_value, found, txn, results) {
  */
 function lessThanNumericCompare(compare_value, found, txn, results) {
     if(found < compare_value){
-        results.push(txn.cursor.getCurrentString());
+        pushResults(found, txn, results);
     } else if(compare_value < 0){
         txn.cursor.goToFirst();
     } else {
@@ -253,7 +268,7 @@ function lessThanNumericCompare(compare_value, found, txn, results) {
  */
 function lessThanEqualStringCompare(compare_value, found, txn, results) {
     if (found <= compare_value) {
-        results.push(txn.cursor.getCurrentString());
+        pushResults(found, txn, results);
     }
 }
 
@@ -267,7 +282,7 @@ function lessThanEqualStringCompare(compare_value, found, txn, results) {
 function lessThanEqualStringToNumberCompare(compare_value, found, txn, results) {
     let found_number = Number(found);
     if(found_number <= compare_value){
-        results.push(txn.cursor.getCurrentString());
+        pushResults(found, txn, results);
     }
 }
 
@@ -280,7 +295,7 @@ function lessThanEqualStringToNumberCompare(compare_value, found, txn, results) 
  */
 function lessThanEqualNumericCompare(compare_value, found, txn, results) {
     if(found <= compare_value){
-        results.push(txn.cursor.getCurrentString());
+        pushResults(found, txn, results);
     } else if(compare_value < 0){
         txn.cursor.goToFirst();
     } else {
@@ -288,8 +303,8 @@ function lessThanEqualNumericCompare(compare_value, found, txn, results) {
         let key = txn.cursor.goToRange(search_value_converted);
         let key_converted = common.convertKeyValueFromSearch(key, txn.key_type);
         if(key_converted === compare_value) {
-            txn.cursor.goToLastDup();
-            results.push(txn.cursor.getCurrentString());
+            key = txn.cursor.goToLastDup();
+            pushResults(key, txn, results);
         }
 
     }
@@ -306,7 +321,7 @@ function lessThanEqualNumericCompare(compare_value, found, txn, results) {
  */
 function betweenStringCompare(start_value, end_value, found, txn, results) {
     if (found >= start_value && found <= end_value) {
-        results.push(txn.cursor.getCurrentString());
+        pushResults(found, txn, results);
     }
 }
 
@@ -321,7 +336,7 @@ function betweenStringCompare(start_value, end_value, found, txn, results) {
 function betweenStringToNumberCompare(start_value,end_value, found, txn, results) {
     let found_number = Number(found);
     if (found_number >= start_value && found_number <= end_value) {
-        results.push(txn.cursor.getCurrentString());
+        pushResults(found, txn, results);
     }
 }
 
@@ -347,5 +362,6 @@ module.exports = {
     lessThanEqualStringToNumberCompare,
     lessThanEqualNumericCompare,
     betweenStringCompare,
-    betweenStringToNumberCompare
+    betweenStringToNumberCompare,
+    pushResults
 };

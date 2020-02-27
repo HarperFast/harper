@@ -377,7 +377,8 @@ describe('Test searchUtility module', ()=>{
             await fs.mkdirp(BASE_TEST_PATH);
             global.lmdb_map = undefined;
             env = await environment_utility.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
-            await environment_utility.createDBI(env, 'id');
+            await environment_utility.createDBI(env, 'id', false, lmdb_terms.DBI_KEY_TYPES.STRING, true);
+            await environment_utility.createDBI(env, 'age', true, lmdb_terms.DBI_KEY_TYPES.NUMBER, false);
             write_utility.insertRecords(env, HASH_ATTRIBUTE_NAME, test_utils.deepClone(All_ATTRIBUTES), MULTI_RECORD_ARRAY);
         });
 
@@ -408,6 +409,26 @@ describe('Test searchUtility module', ()=>{
             let results = test_utils.assertErrorSync(search_util.equals, [env, 'fake', 'bad'], LMDB_TEST_ERRORS.DBI_DOES_NOT_EXIST);
             assert.deepStrictEqual(results, undefined);
         });
+
+        it("test search on age (number attribute)", () => {
+            let results = test_utils.assertErrorSync(search_util.equals, [env, 'age', 46], undefined);
+            assert.deepStrictEqual(results, ['1']);
+        });
+
+        it("test search on age (number attribute) value doesn't exist", () => {
+            let results = test_utils.assertErrorSync(search_util.equals, [env, 'age', 100], undefined);
+            assert.deepStrictEqual(results, []);
+        });
+
+        it("test search on hash attribute (id)", () => {
+            let results = test_utils.assertErrorSync(search_util.equals, [env, 'id', 1], undefined);
+            assert.deepStrictEqual(results, ['1']);
+        });
+
+        it("test search on hash attribute (id), value doesn't exist", () => {
+            let results = test_utils.assertErrorSync(search_util.equals, [env, 'id', 100], undefined);
+            assert.deepStrictEqual(results, []);
+        });
     });
 
     describe('test startsWith function', ()=> {
@@ -416,7 +437,7 @@ describe('Test searchUtility module', ()=>{
             await fs.mkdirp(BASE_TEST_PATH);
             global.lmdb_map = undefined;
             env = await environment_utility.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
-            await environment_utility.createDBI(env, 'id');
+            await environment_utility.createDBI(env, 'id', false, lmdb_terms.DBI_KEY_TYPES.STRING, true);
             write_utility.insertRecords(env, HASH_ATTRIBUTE_NAME, test_utils.deepClone(All_ATTRIBUTES), MULTI_RECORD_ARRAY2);
         });
 
@@ -457,6 +478,11 @@ describe('Test searchUtility module', ()=>{
             let results = test_utils.assertErrorSync(search_util.startsWith, [env, 'fake', 'bad'], LMDB_TEST_ERRORS.DBI_DOES_NOT_EXIST);
             assert.deepStrictEqual(results, undefined);
         });
+
+        it("test search on hash attribute", () => {
+            let results = test_utils.assertErrorSync(search_util.startsWith, [env, 'id', '1'], undefined);
+            assert.deepStrictEqual(results, ['1']);
+        });
     });
 
     describe('test endsWith function', ()=> {
@@ -465,7 +491,7 @@ describe('Test searchUtility module', ()=>{
             await fs.mkdirp(BASE_TEST_PATH);
             global.lmdb_map = undefined;
             env = await environment_utility.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
-            await environment_utility.createDBI(env, 'id');
+            await environment_utility.createDBI(env, 'id', false, lmdb_terms.DBI_KEY_TYPES.STRING, true);
             write_utility.insertRecords(env, HASH_ATTRIBUTE_NAME, test_utils.deepClone(All_ATTRIBUTES), MULTI_RECORD_ARRAY2);
         });
 
@@ -506,6 +532,11 @@ describe('Test searchUtility module', ()=>{
             let results = test_utils.assertErrorSync(search_util.endsWith, [env, 'fake', 'bad'], LMDB_TEST_ERRORS.DBI_DOES_NOT_EXIST);
             assert.deepStrictEqual(results, undefined);
         });
+
+        it("test search on hash attribute", () => {
+            let results = test_utils.assertErrorSync(search_util.endsWith, [env, 'id', '1'], undefined);
+            assert.deepStrictEqual(results, ['1']);
+        });
     });
 
     describe('test greaterThan function', ()=> {
@@ -514,7 +545,7 @@ describe('Test searchUtility module', ()=>{
             await fs.mkdirp(BASE_TEST_PATH);
             global.lmdb_map = undefined;
             env = await environment_utility.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
-            await environment_utility.createDBI(env, 'id', false);
+            await environment_utility.createDBI(env, 'id', false, lmdb_terms.DBI_KEY_TYPES.STRING, true);
             await environment_utility.createDBI(env, 'temperature', true, lmdb_terms.DBI_KEY_TYPES.NUMBER);
             await environment_utility.createDBI(env, 'temperature_double', true, lmdb_terms.DBI_KEY_TYPES.NUMBER);
             await environment_utility.createDBI(env, 'temperature_str', true, lmdb_terms.DBI_KEY_TYPES.STRING);
@@ -535,6 +566,69 @@ describe('Test searchUtility module', ()=>{
             test_utils.assertErrorSync(search_util.greaterThan, [env, 'temperature'], LMDB_TEST_ERRORS.SEARCH_VALUE_REQUIRED, 'no search_value');
             test_utils.assertErrorSync(search_util.greaterThan, [env, 'temperature_str', '11111111'], undefined, 'all arguments');
             test_utils.assertErrorSync(search_util.greaterThan, [env, 'temperature', 'tester'], LMDB_TEST_ERRORS.CANNOT_COMPARE_STRING_TO_NUMERIC_KEYS, 'bad key search');
+        });
+
+        /** TEST HASH ATTRIBUTE **/
+        it("test greater than 100 on hash column", () => {
+            let expected = [];
+
+            for(let x = 0; x < test_data.length; x++){
+                if(parseInt(test_data[x].id) > 100){
+                    expected.push(test_data[x].id);
+                }
+            }
+
+            let results = test_utils.assertErrorSync(search_util.greaterThan, [env, 'id', '100'], undefined);
+            assert.deepStrictEqual(results.sort(), expected.sort());
+        });
+
+        it("test greater than 11 on hash column", () => {
+            let expected = [];
+
+            for(let x = 0; x < test_data.length; x++){
+                if(parseInt(test_data[x].id) > 11){
+                    expected.push(test_data[x].id);
+                }
+            }
+
+            let results = test_utils.assertErrorSync(search_util.greaterThan, [env, 'id', '11'], undefined);
+            assert.deepStrictEqual(results.sort(), expected.sort());
+        });
+
+        it("test greater than 0 on hash column", () => {
+            let expected = [];
+
+            for(let x = 0; x < test_data.length; x++){
+                if(parseInt(test_data[x].id) > 0){
+                    expected.push(test_data[x].id);
+                }
+            }
+
+            let results = test_utils.assertErrorSync(search_util.greaterThan, [env, 'id', '0'], undefined);
+            assert.deepStrictEqual(results.sort(), expected.sort());
+        });
+
+        it("test greater than 1001 (max value) on hash column", () => {
+            let results = test_utils.assertErrorSync(search_util.greaterThan, [env, 'id', '1001'], undefined);
+            assert.deepStrictEqual(results.sort(), []);
+        });
+
+        it("test greater than 1111 (a value larger than the max) on hash column", () => {
+            let results = test_utils.assertErrorSync(search_util.greaterThan, [env, 'id', '1111'], undefined);
+            assert.deepStrictEqual(results.sort(), []);
+        });
+
+        it("test greater than -8 on hash column", () => {
+            let expected = [];
+
+            for(let x = 0; x < test_data.length; x++){
+                if(test_data[x].id > -8){
+                    expected.push(test_data[x].id);
+                }
+            }
+
+            let results = test_utils.assertErrorSync(search_util.greaterThan, [env, 'id', '-8'], undefined);
+            assert.deepStrictEqual(results.sort(), expected.sort());
         });
 
         /** TEST FLOAT **/
@@ -825,7 +919,7 @@ describe('Test searchUtility module', ()=>{
             await fs.mkdirp(BASE_TEST_PATH);
             global.lmdb_map = undefined;
             env = await environment_utility.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
-            await environment_utility.createDBI(env, 'id', false);
+            await environment_utility.createDBI(env, 'id', false, lmdb_terms.DBI_KEY_TYPES.STRING, true);
             await environment_utility.createDBI(env, 'temperature', true, lmdb_terms.DBI_KEY_TYPES.NUMBER);
             await environment_utility.createDBI(env, 'temperature_double', true, lmdb_terms.DBI_KEY_TYPES.NUMBER);
             await environment_utility.createDBI(env, 'temperature_str', true, lmdb_terms.DBI_KEY_TYPES.STRING);
@@ -846,6 +940,69 @@ describe('Test searchUtility module', ()=>{
             test_utils.assertErrorSync(search_util.greaterThanEqual, [env, 'temperature'], LMDB_TEST_ERRORS.SEARCH_VALUE_REQUIRED, 'no search_value');
             test_utils.assertErrorSync(search_util.greaterThanEqual, [env, 'temperature_str', '11111111'], undefined, 'all arguments');
             test_utils.assertErrorSync(search_util.greaterThanEqual, [env, 'temperature', 'tester'], LMDB_TEST_ERRORS.CANNOT_COMPARE_STRING_TO_NUMERIC_KEYS, 'bad key search');
+        });
+
+        /** TEST HASH ATTRIBUTE **/
+        it("test greater than equal 100 on hash column", () => {
+            let expected = [];
+
+            for(let x = 0; x < test_data.length; x++){
+                if(parseInt(test_data[x].id) >= 100){
+                    expected.push(test_data[x].id);
+                }
+            }
+
+            let results = test_utils.assertErrorSync(search_util.greaterThanEqual, [env, 'id', '100'], undefined);
+            assert.deepStrictEqual(results.sort(), expected.sort());
+        });
+
+        it("test greater than equal 11 on hash column", () => {
+            let expected = [];
+
+            for(let x = 0; x < test_data.length; x++){
+                if(parseInt(test_data[x].id) >= 11){
+                    expected.push(test_data[x].id);
+                }
+            }
+
+            let results = test_utils.assertErrorSync(search_util.greaterThanEqual, [env, 'id', '11'], undefined);
+            assert.deepStrictEqual(results.sort(), expected.sort());
+        });
+
+        it("test greater than equal 0 on hash column", () => {
+            let expected = [];
+
+            for(let x = 0; x < test_data.length; x++){
+                if(parseInt(test_data[x].id) >= 0){
+                    expected.push(test_data[x].id);
+                }
+            }
+
+            let results = test_utils.assertErrorSync(search_util.greaterThanEqual, [env, 'id', '0'], undefined);
+            assert.deepStrictEqual(results.sort(), expected.sort());
+        });
+
+        it("test greater than equal 1000 (max value) on hash column", () => {
+            let results = test_utils.assertErrorSync(search_util.greaterThanEqual, [env, 'id', '1000'], undefined);
+            assert.deepStrictEqual(results.sort(), ['1000']);
+        });
+
+        it("test greater than equal 1111 (a value larger than the max) on hash column", () => {
+            let results = test_utils.assertErrorSync(search_util.greaterThanEqual, [env, 'id', '1111'], undefined);
+            assert.deepStrictEqual(results.sort(), []);
+        });
+
+        it("test greater than equal -8 on hash column", () => {
+            let expected = [];
+
+            for(let x = 0; x < test_data.length; x++){
+                if(test_data[x].id >= -8){
+                    expected.push(test_data[x].id);
+                }
+            }
+
+            let results = test_utils.assertErrorSync(search_util.greaterThanEqual, [env, 'id', '-8'], undefined);
+            assert.deepStrictEqual(results.sort(), expected.sort());
         });
 
         /** DOUBLE **/
@@ -1204,7 +1361,7 @@ describe('Test searchUtility module', ()=>{
             await fs.mkdirp(BASE_TEST_PATH);
             global.lmdb_map = undefined;
             env = await environment_utility.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
-            await environment_utility.createDBI(env, 'id', false);
+            await environment_utility.createDBI(env, 'id', false, lmdb_terms.DBI_KEY_TYPES.STRING, true);
             await environment_utility.createDBI(env, 'temperature', true, lmdb_terms.DBI_KEY_TYPES.NUMBER);
             await environment_utility.createDBI(env, 'temperature_double', true, lmdb_terms.DBI_KEY_TYPES.NUMBER);
             await environment_utility.createDBI(env, 'temperature_str', true, lmdb_terms.DBI_KEY_TYPES.NUMBER);
@@ -1226,6 +1383,78 @@ describe('Test searchUtility module', ()=>{
             test_utils.assertErrorSync(search_util.lessThan, [env, 'temperature_str', '11111111'], undefined, 'all arguments');
             test_utils.assertErrorSync(search_util.lessThan, [env, 'temperature', 'tester'], LMDB_TEST_ERRORS.CANNOT_COMPARE_STRING_TO_NUMERIC_KEYS, 'bad key search');
         });
+
+        /** TEST HASH ATTRIBUTE **/
+        it("test lessThan 100 on hash column", () => {
+            let expected = [];
+
+            for(let x = 0; x < test_data.length; x++){
+                if(parseInt(test_data[x].id) < 100){
+                    expected.push(test_data[x].id);
+                }
+            }
+
+            let results = test_utils.assertErrorSync(search_util.lessThan, [env, 'id', '100'], undefined);
+            assert.deepStrictEqual(results.sort(), expected.sort());
+        });
+
+        it("test lessThan 11 on hash column", () => {
+            let expected = [];
+
+            for(let x = 0; x < test_data.length; x++){
+                if(parseInt(test_data[x].id) < 11){
+                    expected.push(test_data[x].id);
+                }
+            }
+
+            let results = test_utils.assertErrorSync(search_util.lessThan, [env, 'id', '11'], undefined);
+            assert.deepStrictEqual(results.sort(), expected.sort());
+        });
+
+        it("test lessThan 0 on hash column", () => {
+            let expected = [];
+
+            for(let x = 0; x < test_data.length; x++){
+                if(parseInt(test_data[x].id) < 0){
+                    expected.push(test_data[x].id);
+                }
+            }
+
+            let results = test_utils.assertErrorSync(search_util.lessThan, [env, 'id', '0'], undefined);
+            assert.deepStrictEqual(results.sort(), expected.sort());
+        });
+
+        it("test lessThan 1000 (max value) on hash column", () => {
+            let expected = [];
+
+            for(let x = 0; x < test_data.length; x++){
+                if(parseInt(test_data[x].id) < 1000){
+                    expected.push(test_data[x].id);
+                }
+            }
+
+            let results = test_utils.assertErrorSync(search_util.lessThan, [env, 'id', '1000'], undefined);
+            assert.deepStrictEqual(results.sort(), expected.sort());
+        });
+
+        it("test lessThan 1111 (a value larger than the max) on hash column", () => {
+            let expected = [];
+
+            for(let x = 0; x < test_data.length; x++){
+                if(parseInt(test_data[x].id) < 1111){
+                    expected.push(test_data[x].id);
+                }
+            }
+            let results = test_utils.assertErrorSync(search_util.lessThan, [env, 'id', '1111'], undefined);
+            assert.deepStrictEqual(results.sort(), expected.sort());
+        });
+
+        it("test lessThan -8 on hash column", () => {
+            let results = test_utils.assertErrorSync(search_util.lessThan, [env, 'id', '-8'], undefined);
+            assert.deepStrictEqual(results.sort(), []);
+        });
+
+        /**DOUBLE**/
 
         it("test lessThan 100 on double key column", () => {
             let expected = [];
@@ -1581,7 +1810,7 @@ describe('Test searchUtility module', ()=>{
             await fs.mkdirp(BASE_TEST_PATH);
             global.lmdb_map = undefined;
             env = await environment_utility.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
-            await environment_utility.createDBI(env, 'id', false);
+            await environment_utility.createDBI(env, 'id', false, lmdb_terms.DBI_KEY_TYPES.STRING, true);
             await environment_utility.createDBI(env, 'temperature', true, lmdb_terms.DBI_KEY_TYPES.NUMBER);
             await environment_utility.createDBI(env, 'temperature_double', true, lmdb_terms.DBI_KEY_TYPES.NUMBER);
             await environment_utility.createDBI(env, 'temperature_str', true, lmdb_terms.DBI_KEY_TYPES.STRING);
@@ -1602,6 +1831,76 @@ describe('Test searchUtility module', ()=>{
             test_utils.assertErrorSync(search_util.lessThanEqual, [env, 'temperature'], LMDB_TEST_ERRORS.SEARCH_VALUE_REQUIRED, 'no search_value');
             test_utils.assertErrorSync(search_util.lessThanEqual, [env, 'temperature_str', '11111111'], undefined, 'all arguments');
             test_utils.assertErrorSync(search_util.lessThanEqual, [env, 'temperature', 'tester'], LMDB_TEST_ERRORS.CANNOT_COMPARE_STRING_TO_NUMERIC_KEYS, 'bad key search');
+        });
+
+        /** TEST HASH ATTRIBUTE **/
+        it("test lessThanEqual 100 on hash column", () => {
+            let expected = [];
+
+            for(let x = 0; x < test_data.length; x++){
+                if(parseInt(test_data[x].id) <= 100){
+                    expected.push(test_data[x].id);
+                }
+            }
+
+            let results = test_utils.assertErrorSync(search_util.lessThanEqual, [env, 'id', '100'], undefined);
+            assert.deepStrictEqual(results.sort(), expected.sort());
+        });
+
+        it("test lessThanEqual 11 on hash column", () => {
+            let expected = [];
+
+            for(let x = 0; x < test_data.length; x++){
+                if(parseInt(test_data[x].id) <= 11){
+                    expected.push(test_data[x].id);
+                }
+            }
+
+            let results = test_utils.assertErrorSync(search_util.lessThanEqual, [env, 'id', '11'], undefined);
+            assert.deepStrictEqual(results.sort(), expected.sort());
+        });
+
+        it("test lessThanEqual 0 on hash column", () => {
+            let expected = [];
+
+            for(let x = 0; x < test_data.length; x++){
+                if(parseInt(test_data[x].id) <= 0){
+                    expected.push(test_data[x].id);
+                }
+            }
+
+            let results = test_utils.assertErrorSync(search_util.lessThanEqual, [env, 'id', '0'], undefined);
+            assert.deepStrictEqual(results.sort(), expected.sort());
+        });
+
+        it("test lessThanEqual 1000 (max value) on hash column", () => {
+            let expected = [];
+
+            for(let x = 0; x < test_data.length; x++){
+                if(parseInt(test_data[x].id) <= 1000){
+                    expected.push(test_data[x].id);
+                }
+            }
+
+            let results = test_utils.assertErrorSync(search_util.lessThanEqual, [env, 'id', '1000'], undefined);
+            assert.deepStrictEqual(results.sort(), expected.sort());
+        });
+
+        it("test lessThanEqual 1111 (a value larger than the max) on hash column", () => {
+            let expected = [];
+
+            for(let x = 0; x < test_data.length; x++){
+                if(parseInt(test_data[x].id) <= 1111){
+                    expected.push(test_data[x].id);
+                }
+            }
+            let results = test_utils.assertErrorSync(search_util.lessThanEqual, [env, 'id', '1111'], undefined);
+            assert.deepStrictEqual(results.sort(), expected.sort());
+        });
+
+        it("test lessThanEqual -8 on hash column", () => {
+            let results = test_utils.assertErrorSync(search_util.lessThanEqual, [env, 'id', '-8'], undefined);
+            assert.deepStrictEqual(results.sort(), []);
         });
 
         /** DOUBLE **/
@@ -1978,7 +2277,7 @@ describe('Test searchUtility module', ()=>{
             await fs.mkdirp(BASE_TEST_PATH);
             global.lmdb_map = undefined;
             env = await environment_utility.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
-            await environment_utility.createDBI(env, 'id', false);
+            await environment_utility.createDBI(env, 'id', false, lmdb_terms.DBI_KEY_TYPES.STRING, true);
             await environment_utility.createDBI(env, 'temperature', true, lmdb_terms.DBI_KEY_TYPES.NUMBER);
             await environment_utility.createDBI(env, 'temperature_double', true, lmdb_terms.DBI_KEY_TYPES.NUMBER);
             await environment_utility.createDBI(env, 'temperature_str', true, lmdb_terms.DBI_KEY_TYPES.STRING);
@@ -2006,6 +2305,105 @@ describe('Test searchUtility module', ()=>{
             test_utils.assertErrorSync(search_util.between, [env, 'temperature', 1, 11], undefined, 'allgood');
             test_utils.assertErrorSync(search_util.between, [env, 'temperature_str', 'CC', 'A'], LMDB_TEST_ERRORS.END_VALUE_MUST_BE_GREATER_THAN_START_VALUE, 'end less than start');
             test_utils.assertErrorSync(search_util.between, [env, 'temperature_str', 'A', 'CC'], undefined, 'end less than start');
+        });
+
+        /** HASH ATTRIBUTE **/
+
+        it("test between 11 & 100 on hash column", () => {
+            let expected = [];
+
+            for(let x = 0; x < test_data.length; x++){
+                if(parseInt(test_data[x].id) <= 100 && parseInt(test_data[x].id) >= 11){
+                    expected.push(test_data[x].id);
+                }
+            }
+
+            let results = test_utils.assertErrorSync(search_util.between, [env, 'id', '11', 100], undefined);
+            assert.notDeepStrictEqual(results.sort(), []);
+            assert.deepStrictEqual(results.sort(), expected.sort());
+        });
+
+        it("test between 0 and 111 on hash column", () => {
+            let expected = [];
+
+            for(let x = 0; x < test_data.length; x++){
+                if(parseInt(test_data[x].id) >= 0 && parseInt(test_data[x].id) <= 111){
+                    expected.push(test_data[x].id);
+                }
+            }
+
+            let results = test_utils.assertErrorSync(search_util.between, [env, 'id', '0', '111'], undefined);
+            assert.deepStrictEqual(results.sort(), expected.sort());
+        });
+
+        it("test between 0 and 11111 on hash column", () => {
+            let expected = [];
+
+            for(let x = 0; x < test_data.length; x++){
+                if(parseInt(test_data[x].id) >= 0 && parseInt(test_data[x].id) <= 11111){
+                    expected.push(test_data[x].id);
+                }
+            }
+
+            let results = test_utils.assertErrorSync(search_util.between, [env, 'id', '0', '11111'], undefined);
+            assert.deepStrictEqual(results.sort(), expected.sort());
+        });
+
+        it("test between 110 and 111 on hash column", () => {
+            let expected = [];
+
+            for(let x = 0; x < test_data.length; x++){
+                if(parseInt(test_data[x].id) >= 110 && parseInt(test_data[x].id) <= 111){
+                    expected.push(test_data[x].id);
+                }
+            }
+
+            let results = test_utils.assertErrorSync(search_util.between, [env, 'id', '110', '111'], undefined);
+            assert.notDeepStrictEqual(results, []);
+            assert.deepStrictEqual(results.sort(), expected.sort());
+        });
+
+
+        it("test between -8999 and 1111 on hash column", () => {
+            let expected = [];
+
+            for(let x = 0; x < test_data.length; x++){
+                if(test_data[x].id >= -8999 && test_data[x].id <= 1111){
+                    expected.push(test_data[x].id);
+                }
+            }
+
+            let results = test_utils.assertErrorSync(search_util.between, [env, 'id', '-8999', '1111'], undefined);
+            assert.notDeepStrictEqual(results, []);
+            assert.deepStrictEqual(results.sort(), expected.sort());
+        });
+
+        it("test between -2 and 10 on hash column", () => {
+            let expected = [];
+
+            for(let x = 0; x < test_data.length; x++){
+                if(test_data[x].id >= -2 && test_data[x].id <= 10){
+                    expected.push(test_data[x].id);
+                }
+            }
+
+            let results = test_utils.assertErrorSync(search_util.between, [env, 'id', '-2', '10'], undefined);
+            assert.notDeepStrictEqual(results, []);
+            assert.deepStrictEqual(results.sort(), expected.sort());
+        });
+
+        it("test between -2 and 0 on hash column", () => {
+            let expected = [];
+
+            for(let x = 0; x < test_data.length; x++){
+                if(test_data[x].id >= -2 && test_data[x].id <= 0){
+                    expected.push(test_data[x].id);
+                }
+            }
+
+            let results = test_utils.assertErrorSync(search_util.between, [env, 'id', '-2', '0'], undefined);
+            assert.notDeepStrictEqual(results, []);
+            assert.deepStrictEqual(results.sort(), expected.sort());
         });
 
         /** DOUBLE **/

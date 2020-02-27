@@ -220,7 +220,7 @@ function iterateRangeBetween(env, attribute, start_value, end_value){
             }
 
             if (key_value >= start_value && key_value <= end_value) {
-                results.push(txn.cursor.getCurrentString());
+                cursor_functions.pushResults(key_value, txn, results);
             }
         }
         txn.close();
@@ -377,12 +377,16 @@ function equals(env, attribute, search_value){
     try {
         txn = new TransactionCursor(env, attribute);
 
-        search_value = common.convertKeyValueToWrite(search_value, txn.key_type);
+        let converted_search_value = common.convertKeyValueToWrite(search_value, txn.key_type);
 
         let results = [];
-        for (let found = txn.cursor.goToKey(search_value); found !== null; found = txn.cursor.goToNextDup()) {
-            let value = txn.cursor.getCurrentString();
-            results.push(value);
+        for (let found = txn.cursor.goToKey(converted_search_value); found !== null; found = txn.cursor.goToNextDup()) {
+            let key_value = common.convertKeyValueFromSearch(found, txn.key_type);
+            if(search_value.toString() !== key_value.toString()){
+                txn.cursor.goToLast();
+                continue;
+            }
+            cursor_functions.pushResults(key_value, txn, results);
         }
         txn.close();
         return results;
@@ -405,7 +409,7 @@ function equals(env, attribute, search_value){
 function startsWith(env, attribute, search_value){
     validateComparisonFunctions(env, attribute, search_value);
     let dbi = environment_utility.openDBI(env, attribute);
-    return iterateRangeNext(env, attribute, search_value, cursor_functions.startsWith.bind(null, dbi[lmdb_terms.DBI_DEFINITION_NAME].int_key));
+    return iterateRangeNext(env, attribute, search_value, cursor_functions.startsWith.bind(null, dbi[lmdb_terms.DBI_DEFINITION_NAME].key_type));
 }
 
 /**
