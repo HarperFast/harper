@@ -23,7 +23,7 @@ const ONE_RECORD_ARRAY = [
 ];
 
 const ONE_RECORD_ARRAY_EXPECTED = [
-    {__createdtime__: TIMESTAMP, __updatedtime__: TIMESTAMP,id:1, name:'Kyle', age:46}
+    {__blob__: undefined,__createdtime__: TIMESTAMP, __updatedtime__: TIMESTAMP,id:1, name:'Kyle', age:46}
 ];
 
 const UPDATE_ONE_RECORD_ARRAY = [
@@ -31,7 +31,7 @@ const UPDATE_ONE_RECORD_ARRAY = [
 ];
 
 const UPDATE_ONE_RECORD_ARRAY_EXPECTED = [
-    {__createdtime__: TIMESTAMP, __updatedtime__: TIMESTAMP, id:1, name:'Kyle Bernhardy', age:46, height:'6\'1"'}
+    {__blob__: undefined, __createdtime__: TIMESTAMP, __updatedtime__: TIMESTAMP, id:1, name:'Kyle Bernhardy', age:46, height:'6\'1"'}
 ];
 
 const sandbox = sinon.createSandbox();
@@ -98,6 +98,7 @@ describe("Test writeUtility module", ()=>{
             global.lmdb_map = undefined;
             env = await environment_utility.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
             await environment_utility.createDBI(env, 'id', false);
+            await environment_utility.createDBI(env, '__blob__', false);
         });
 
         afterEach(async ()=>{
@@ -153,6 +154,28 @@ describe("Test writeUtility module", ()=>{
             assert.deepStrictEqual(result, {written_hashes: [], skipped_hashes: [1]});
         });
 
+        it("test long text is written to blob dbi", ()=>{
+            let record = {
+                id: 10000,
+                text: 'Occupy messenger bag microdosing yr, kale chips neutra la croix VHS ugh wayfarers street art. Ethical cronut whatever, cold-pressed viral post-ironic man bun swag marfa green juice. Knausgaard gluten-free selvage ethical subway tile sartorial man bun butcher selfies raclette paleo. Fam brunch plaid woke authentic dreamcatcher hot chicken quinoa gochujang slow-carb selfies keytar PBR&B street art pinterest. Narwhal tote bag glossier paleo cronut salvia cloud bread craft beer butcher meditation fingerstache hella migas 8-bit messenger bag. Tattooed schlitz palo santo gluten-free, wayfarers tumeric squid. Hella keytar thundercats chambray, occupy iPhone paleo slow-carb jianbing everyday carry 90\'s distillery polaroid fanny pack. Kombucha cray PBR&B shoreditch 8-bit, adaptogen vinyl swag meditation 3 wolf moon. Selvage art party retro kitsch pour-over iPhone street art celiac etsy cred cliche gastropub. Kombucha migas marfa listicle cliche. Godard kombucha ennui lumbersexual, austin pop-up raclette retro. Man braid kale chips pitchfork, tote bag hoodie poke mumblecore. Bitters shoreditch tbh everyday carry keffiyeh raw denim kale chips.'
+            };
+
+            let result = test_utils.assertErrorSync(write_utility.insertRecords, [env, HASH_ATTRIBUTE_NAME, ['id', 'text'], [record]], undefined);
+
+            assert.deepStrictEqual(result, {written_hashes: [record.id], skipped_hashes: []});
+
+            let records = test_utils.assertErrorSync(search_util.searchAll, [env, HASH_ATTRIBUTE_NAME, Object.keys(record)], undefined);
+            let expected = [Object.assign(Object.create(null), record)];
+            assert.deepStrictEqual(records, [test_utils.assignObjecttoNullObject(record)]);
+
+            let txn = new environment_utility.TransactionCursor(env, '__blob__');
+            let key = txn.cursor.goToKey(`text/${record.id}`);
+            assert.deepStrictEqual(key, `text/${record.id}`);
+            let value = txn.cursor.getCurrentString();
+            assert.deepStrictEqual(value, record.text);
+            txn.close();
+        });
+
         //TODO validate records exist in all indices
     });
 
@@ -174,6 +197,7 @@ describe("Test writeUtility module", ()=>{
             global.lmdb_map = undefined;
             env = await environment_utility.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
             await environment_utility.createDBI(env, 'id', false);
+            await environment_utility.createDBI(env, '__blob__', false);
             write_utility.insertRecords(env, HASH_ATTRIBUTE_NAME, test_utils.deepClone(ALL_ATTRIBUTES), ONE_RECORD_ARRAY);
         });
 
@@ -199,7 +223,7 @@ describe("Test writeUtility module", ()=>{
         });
 
         it("test update one existing row", ()=>{
-            let all_attributes_for_update = ['__createdtime__', '__updatedtime__','age', 'height', 'id', 'name'];
+            let all_attributes_for_update = ['__blob__', '__createdtime__', '__updatedtime__','age', 'height', 'id', 'name'];
 
             let records = test_utils.assertErrorSync(search_util.searchAll, [env, HASH_ATTRIBUTE_NAME, ALL_ATTRIBUTES], undefined);
             let expected = [Object.assign(Object.create(null), ONE_RECORD_ARRAY_EXPECTED[0])];
@@ -217,7 +241,7 @@ describe("Test writeUtility module", ()=>{
         });
 
         it("test update one existing row & one non-existing row", ()=>{
-            let all_attributes_for_update = ['__createdtime__', '__updatedtime__','age', 'height', 'id', 'name'];
+            let all_attributes_for_update = ['__blob__','__createdtime__', '__updatedtime__','age', 'height', 'id', 'name'];
 
             let records = test_utils.assertErrorSync(search_util.searchAll, [env, HASH_ATTRIBUTE_NAME, ALL_ATTRIBUTES], undefined);
             let expected = [Object.assign(Object.create(null), ONE_RECORD_ARRAY_EXPECTED[0])];
@@ -235,7 +259,7 @@ describe("Test writeUtility module", ()=>{
         });
 
         it("test partially updating row & make sure other attributes are untouched", ()=>{
-            let all_attributes_for_update = ['__createdtime__', '__updatedtime__','age', 'height', 'id', 'name', 'city'];
+            let all_attributes_for_update = ['__blob__','__createdtime__', '__updatedtime__','age', 'height', 'id', 'name', 'city'];
 
             let records = test_utils.assertErrorSync(search_util.searchAll, [env, HASH_ATTRIBUTE_NAME, ALL_ATTRIBUTES], undefined);
             let expected = [Object.assign(Object.create(null), ONE_RECORD_ARRAY_EXPECTED[0])];
@@ -251,5 +275,45 @@ describe("Test writeUtility module", ()=>{
             let expected2 = [Object.assign(Object.create(null), {id:1, name: 'Kyle', city:'Denver', age: 46})];
             assert.deepStrictEqual(records,expected2);
         });
+
+        it("test partially updating row to have long text, then change the long text", ()=>{
+            let all_attributes_for_update = ['__blob__', '__createdtime__', '__updatedtime__','age', 'height', 'id', 'name', 'city', 'text'];
+            let record = {
+                id: 1,
+                text: 'Occupy messenger bag microdosing yr, kale chips neutra la croix VHS ugh wayfarers street art. Ethical cronut whatever, cold-pressed viral post-ironic man bun swag marfa green juice. Knausgaard gluten-free selvage ethical subway tile sartorial man bun butcher selfies raclette paleo. Fam brunch plaid woke authentic dreamcatcher hot chicken quinoa gochujang slow-carb selfies keytar PBR&B street art pinterest. Narwhal tote bag glossier paleo cronut salvia cloud bread craft beer butcher meditation fingerstache hella migas 8-bit messenger bag. Tattooed schlitz palo santo gluten-free, wayfarers tumeric squid. Hella keytar thundercats chambray, occupy iPhone paleo slow-carb jianbing everyday carry 90\'s distillery polaroid fanny pack. Kombucha cray PBR&B shoreditch 8-bit, adaptogen vinyl swag meditation 3 wolf moon. Selvage art party retro kitsch pour-over iPhone street art celiac etsy cred cliche gastropub. Kombucha migas marfa listicle cliche. Godard kombucha ennui lumbersexual, austin pop-up raclette retro. Man braid kale chips pitchfork, tote bag hoodie poke mumblecore. Bitters shoreditch tbh everyday carry keffiyeh raw denim kale chips.'
+            };
+
+            let records = test_utils.assertErrorSync(search_util.searchAll, [env, HASH_ATTRIBUTE_NAME, ALL_ATTRIBUTES], undefined);
+            let expected = [Object.assign(Object.create(null), ONE_RECORD_ARRAY_EXPECTED[0])];
+            assert.deepStrictEqual(records, expected);
+
+            let results = test_utils.assertErrorSync(write_utility.updateRecords, [env, HASH_ATTRIBUTE_NAME, all_attributes_for_update, [record]], undefined);
+            assert.deepStrictEqual(results, {written_hashes:[1], skipped_hashes:[]});
+
+            records = test_utils.assertErrorSync(search_util.searchAll, [env, HASH_ATTRIBUTE_NAME, ['id', 'name', 'city', 'age', 'text']], undefined);
+            let expected2 = [Object.assign(Object.create(null), {id:1, name: 'Kyle', city:undefined, age: 46, text:record.text})];
+            assert.deepStrictEqual(records,expected2);
+
+            let txn = new environment_utility.TransactionCursor(env, '__blob__');
+            let key = txn.cursor.goToKey(`text/${record.id}`);
+            assert.deepStrictEqual(key, `text/${record.id}`);
+            let value = txn.cursor.getCurrentString();
+            assert.deepStrictEqual(value, record.text);
+            txn.close();
+
+            //set text to undefined & verify it's gone
+
+            results = test_utils.assertErrorSync(write_utility.updateRecords, [env, HASH_ATTRIBUTE_NAME, all_attributes_for_update, [{id:1, text:undefined}]], undefined);
+            assert.deepStrictEqual(results, {written_hashes:[1], skipped_hashes:[]});
+
+            records = test_utils.assertErrorSync(search_util.searchAll, [env, HASH_ATTRIBUTE_NAME, ['id', 'name', 'city', 'age', 'text']], undefined);
+            expected2 = [Object.assign(Object.create(null), {id:1, name: 'Kyle', city:undefined, age: 46, text:undefined})];
+            assert.deepStrictEqual(records,expected2);
+            txn = new environment_utility.TransactionCursor(env, '__blob__');
+            key = txn.cursor.goToKey(`text/${record.id}`);
+            assert.deepStrictEqual(key, null);
+            txn.close();
+        });
+
     });
 });

@@ -93,7 +93,7 @@ describe("Test commonUtility module", ()=>{
             assert.deepStrictEqual(Buffer.byteLength(string_254), 254);
             assert.deepStrictEqual(Buffer.byteLength(string_255), 255);
             assert.deepStrictEqual(response, string_254);
-            assert.deepStrictEqual(response1, null);
+            assert.deepStrictEqual(response1, string_255);
         });
     });
 });

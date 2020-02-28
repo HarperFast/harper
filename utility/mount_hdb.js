@@ -77,8 +77,6 @@ async function createLMDBTables(schema_path, logger){
             throw e;
         }
 
-        let hash_attribute = system_schema[table_name].hash_attribute;
-
         //create all dbis
         let attributes = system_schema[table_name].attributes;
         for(let y = 0; y < attributes.length; y++){
@@ -87,7 +85,7 @@ async function createLMDBTables(schema_path, logger){
                 if(terms.TIME_STAMP_NAMES.indexOf(attribute_name) >=0){
                     await lmdb_environment_utility.createDBI(table_env, attribute_name, true, lmdb_terms.DBI_KEY_TYPES.NUMBER);
                 } else {
-                    await lmdb_environment_utility.createDBI(table_env, attribute_name, attribute_name !== hash_attribute);
+                    await lmdb_environment_utility.createDBI(table_env, attribute_name, false);
                 }
             } catch(e){
                 logger.error(`issue creating dbi for ${terms.SYSTEM_SCHEMA_NAME}.${table_name}.${attribute_name}: ${e}`);

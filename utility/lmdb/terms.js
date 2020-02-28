@@ -1,7 +1,9 @@
 'use strict';
 
 const INTERNAL_DBIS_NAME = '__dbis__';
+const BLOB_DBI_NAME = '__blob__';
 const DBI_DEFINITION_NAME = '__dbi_defintion__';
+const MAX_BYTE_SIZE = 254;
 
 const SEARCH_TYPES = {
   EQUALS: 'equals',
@@ -31,5 +33,7 @@ module.exports = {
   DBI_DEFINITION_NAME,
   SEARCH_TYPES,
   DBI_KEY_TYPES,
-  TIMESTAMP_NAMES
+  TIMESTAMP_NAMES,
+  BLOB_DBI_NAME,
+  MAX_BYTE_SIZE
 };
