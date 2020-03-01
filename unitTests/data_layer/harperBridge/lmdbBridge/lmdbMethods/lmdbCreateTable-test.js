@@ -160,7 +160,7 @@ describe("test lmdbCreateTable module", ()=>{
 
         let attribute_records = await test_utils.assertErrorAsync(search_utility.batchSearchByHash,
             [hdb_attribute_env, systemSchema.hdb_attribute.hash_attribute, HDB_ATTRIBUTE_ATTRIBUTES, attribute_ids], undefined);
-        assert.deepStrictEqual(attribute_records.length, 4);
+        assert.deepStrictEqual(attribute_records.length, 3);
         attribute_records.forEach(record=>{
             assert(expected_attributes.indexOf(record.attribute) > -1);
         });

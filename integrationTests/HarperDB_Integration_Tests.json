@@ -2456,11 +2456,11 @@
 									"raw": "{\n\t\"operation\":\"get_job\",\n\t\"id\": \"{{job_id}}\"\n}"
 								},
 								"url": {
-									"raw": "{{host}}:9925",
+									"raw": "{{host}}:{{port}}",
 									"host": [
 										"{{host}}"
 									],
-									"port": "9925"
+									"port": "{{port}}"
 								}
 							},
 							"response": []
@@ -2804,12 +2804,11 @@
 									"raw": "{\n\t\"operation\":\"get_job\",\n\t\"id\": \"{{job_id}}\"\n}"
 								},
 								"url": {
-									"raw": "http://localhost:9925",
-									"protocol": "http",
+									"raw": "{{host}}:{{port}}",
 									"host": [
-										"localhost"
+										"{{host}}"
 									],
-									"port": "9925"
+									"port": "{{port}}"
 								}
 							},
 							"response": []
@@ -2899,10 +2898,10 @@
 											"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"SELECT d.id, d.dog_name, d.owner_name, b.name, b.section FROM dev.dog AS d INNER JOIN dev.breed AS b ON d.breed_id = b.id WHERE d.owner_name IN ('Kyle', 'Zach', 'Stephen') AND b.section = 'Mutt' ORDER BY d.dog_name\"\n}"
 										},
 										"url": {
-											"raw": "http://localhost:9925",
+											"raw": "{{host}}:{{port}}",
 											"protocol": "http",
 											"host": [
-												"localhost"
+												"{{host}}"
 											],
 											"port": "9925"
 										}
@@ -3273,12 +3272,11 @@
 									"raw": "{\n\t\"operation\":\"get_job\",\n\t\"id\": \"{{job_id}}\"\n}"
 								},
 								"url": {
-									"raw": "http://localhost:9925",
-									"protocol": "http",
+									"raw": "{{host}}:{{port}}",
 									"host": [
-										"localhost"
+										"{{host}}"
 									],
-									"port": "9925"
+									"port": "{{port}}"
 								}
 							},
 							"response": []
@@ -3525,12 +3523,11 @@
 									"raw": "{\n\t\"operation\":\"get_job\",\n\t\"id\": \"{{job_id}}\"\n}"
 								},
 								"url": {
-									"raw": "http://localhost:9925",
-									"protocol": "http",
+									"raw": "{{host}}:{{port}}",
 									"host": [
-										"localhost"
+										"{{host}}"
 									],
-									"port": "9925"
+									"port": "{{port}}"
 								}
 							},
 							"response": []
@@ -4368,11 +4365,11 @@
 											"raw": "{\n\t\"operation\":\"get_job\",\n\t\"id\": \"{{job_id}}\"\n}"
 										},
 										"url": {
-											"raw": "{{host}}:9925",
+											"raw": "{{host}}:{{port}}",
 											"host": [
 												"{{host}}"
 											],
-											"port": "9925"
+											"port": "{{port}}"
 										}
 									},
 									"response": []
@@ -12822,14 +12819,11 @@
 							"raw": "{\n\"operation\":\"add_user\",\n\"role\":\"{{role_id}}\",\n\"username\":\"test_user\",\n\"password\":\"{{password}}\", \n\"active\":true\n\n}"
 						},
 						"url": {
-							"raw": "{{host}}:9925/",
+							"raw": "{{host}}:{{port}}",
 							"host": [
 								"{{host}}"
 							],
-							"port": "9925",
-							"path": [
-								""
-							]
+							"port": "{{port}}"
 						},
 						"description": "Method for adding users.  Users can be assigned roles which provide granular access at a table, operation, and attirbute level.  \n\n<ul>\n<li><b>operation </b> <i>(required) </i> - must always be 'add_user'</li>\n\n<li><b>role </b><i>(required) </i>- id of the role you wish to assign to the user.  See add_role for more detail.  </li>\n\n<li><b>username </b> <i>(required)</i> - username assigned to the user.  It can not be altered after adding the user.  It serves as the hash. </li>\n\n<li><b>password </b> <i>(required) </i>- clear text for password.  HarperDB will encrypt the password upon reciept. </li>\n\n</ul>"
 					},
@@ -12888,14 +12882,11 @@
 							"raw": "{\n\"operation\":\"search_by_value\",\n\"table\":\"{{supp_tb}}\",\n\"schema\":\"{{schema}}\",\n\"hash_attribute\":\"id\",\n\"search_attribute\":\"{{supp_id}}\",\n\"search_value\":\"*\",\n\"get_attributes\":[\"{{supp_id}}\"]\n}"
 						},
 						"url": {
-							"raw": "{{host}}:9925/",
+							"raw": "{{host}}:{{port}}",
 							"host": [
 								"{{host}}"
 							],
-							"port": "9925",
-							"path": [
-								""
-							]
+							"port": "{{port}}"
 						},
 						"description": "Method for adding users.  Users can be assigned roles which provide granular access at a table, operation, and attirbute level.  \n\n<ul>\n<li><b>operation </b> <i>(required) </i> - must always be 'add_user'</li>\n\n<li><b>role </b><i>(required) </i>- id of the role you wish to assign to the user.  See add_role for more detail.  </li>\n\n<li><b>username </b> <i>(required)</i> - username assigned to the user.  It can not be altered after adding the user.  It serves as the hash. </li>\n\n<li><b>password </b> <i>(required) </i>- clear text for password.  HarperDB will encrypt the password upon reciept. </li>\n\n</ul>"
 					},
@@ -12954,14 +12945,11 @@
 							"raw": "{\n\"operation\":\"search_by_value\",\n\"table\":\"{{supp_tb}}\",\n\"schema\":\"{{schema}}\",\n\"hash_attribute\":\"id\",\n\"search_attribute\":\"{{supp_id}}\",\n\"search_value\":\"*\",\n\"get_attributes\":[\"{{supp_id}}\"]\n}"
 						},
 						"url": {
-							"raw": "{{host}}:9925/",
+							"raw": "{{host}}:{{port}}",
 							"host": [
 								"{{host}}"
 							],
-							"port": "9925",
-							"path": [
-								""
-							]
+							"port": "{{port}}"
 						},
 						"description": "Method for adding users.  Users can be assigned roles which provide granular access at a table, operation, and attirbute level.  \n\n<ul>\n<li><b>operation </b> <i>(required) </i> - must always be 'add_user'</li>\n\n<li><b>role </b><i>(required) </i>- id of the role you wish to assign to the user.  See add_role for more detail.  </li>\n\n<li><b>username </b> <i>(required)</i> - username assigned to the user.  It can not be altered after adding the user.  It serves as the hash. </li>\n\n<li><b>password </b> <i>(required) </i>- clear text for password.  HarperDB will encrypt the password upon reciept. </li>\n\n</ul>"
 					},
@@ -13020,14 +13008,11 @@
 							"raw": "{\n\"operation\":\"search_by_value\",\n\"table\":\"{{regi_tb}}\",\n\"schema\":\"{{schema}}\",\n\"hash_attribute\":\"id\",\n\"search_attribute\":\"{{regi_id}}\",\n\"search_value\":\"*\",\n\"get_attributes\":[\"*\"]\n}"
 						},
 						"url": {
-							"raw": "{{host}}:9925/",
+							"raw": "{{host}}:{{port}}",
 							"host": [
 								"{{host}}"
 							],
-							"port": "9925",
-							"path": [
-								""
-							]
+							"port": "{{port}}"
 						},
 						"description": "Method for adding users.  Users can be assigned roles which provide granular access at a table, operation, and attirbute level.  \n\n<ul>\n<li><b>operation </b> <i>(required) </i> - must always be 'add_user'</li>\n\n<li><b>role </b><i>(required) </i>- id of the role you wish to assign to the user.  See add_role for more detail.  </li>\n\n<li><b>username </b> <i>(required)</i> - username assigned to the user.  It can not be altered after adding the user.  It serves as the hash. </li>\n\n<li><b>password </b> <i>(required) </i>- clear text for password.  HarperDB will encrypt the password upon reciept. </li>\n\n</ul>"
 					},
@@ -13086,14 +13071,11 @@
 							"raw": "{\n\"operation\":\"search_by_value\",\n\"table\":\"{{regi_tb}}\",\n\"schema\":\"{{schema}}\",\n\"hash_attribute\":\"id\",\n\"search_attribute\":\"{{regi_id}}\",\n\"search_value\":\"*\",\n\"get_attributes\":[\"*\"]\n}"
 						},
 						"url": {
-							"raw": "{{host}}:9925/",
+							"raw": "{{host}}:{{port}}",
 							"host": [
 								"{{host}}"
 							],
-							"port": "9925",
-							"path": [
-								""
-							]
+							"port": "{{port}}"
 						},
 						"description": "Method for adding users.  Users can be assigned roles which provide granular access at a table, operation, and attirbute level.  \n\n<ul>\n<li><b>operation </b> <i>(required) </i> - must always be 'add_user'</li>\n\n<li><b>role </b><i>(required) </i>- id of the role you wish to assign to the user.  See add_role for more detail.  </li>\n\n<li><b>username </b> <i>(required)</i> - username assigned to the user.  It can not be altered after adding the user.  It serves as the hash. </li>\n\n<li><b>password </b> <i>(required) </i>- clear text for password.  HarperDB will encrypt the password upon reciept. </li>\n\n</ul>"
 					},
@@ -13152,14 +13134,11 @@
 							"raw": "{\n  \"operation\":\"insert\",\n  \"schema\":\"{{schema}}\",\n  \"table\":\"{{regi_tb}}\",\n  \"records\": [\n    {\n      \"{{regi_id}}\":16,\n      \"regiondescription\":\"test description\"\n    }\n  ]\n}"
 						},
 						"url": {
-							"raw": "{{host}}:9925/",
+							"raw": "{{host}}:{{port}}",
 							"host": [
 								"{{host}}"
 							],
-							"port": "9925",
-							"path": [
-								""
-							]
+							"port": "{{port}}"
 						},
 						"description": "Method for adding users.  Users can be assigned roles which provide granular access at a table, operation, and attirbute level.  \n\n<ul>\n<li><b>operation </b> <i>(required) </i> - must always be 'add_user'</li>\n\n<li><b>role </b><i>(required) </i>- id of the role you wish to assign to the user.  See add_role for more detail.  </li>\n\n<li><b>username </b> <i>(required)</i> - username assigned to the user.  It can not be altered after adding the user.  It serves as the hash. </li>\n\n<li><b>password </b> <i>(required) </i>- clear text for password.  HarperDB will encrypt the password upon reciept. </li>\n\n</ul>"
 					},
@@ -13223,14 +13202,11 @@
 							"raw": "{\n  \"operation\":\"insert\",\n  \"schema\":\"{{schema}}\",\n  \"table\":\"{{regi_tb}}\",\n  \"records\": [\n    {\n      \"{{regi_id}}\":17,\n      \"regiondescription\":\"test description\"\n    }\n  ]\n}"
 						},
 						"url": {
-							"raw": "{{host}}:9925/",
+							"raw": "{{host}}:{{port}}",
 							"host": [
 								"{{host}}"
 							],
-							"port": "9925",
-							"path": [
-								""
-							]
+							"port": "{{port}}"
 						},
 						"description": "Method for adding users.  Users can be assigned roles which provide granular access at a table, operation, and attirbute level.  \n\n<ul>\n<li><b>operation </b> <i>(required) </i> - must always be 'add_user'</li>\n\n<li><b>role </b><i>(required) </i>- id of the role you wish to assign to the user.  See add_role for more detail.  </li>\n\n<li><b>username </b> <i>(required)</i> - username assigned to the user.  It can not be altered after adding the user.  It serves as the hash. </li>\n\n<li><b>password </b> <i>(required) </i>- clear text for password.  HarperDB will encrypt the password upon reciept. </li>\n\n</ul>"
 					},
@@ -13289,14 +13265,11 @@
 							"raw": "{\n  \"operation\":\"insert\",\n  \"schema\":\"{{schema}}\",\n  \"table\":\"{{terr_tb}}\",\n  \"records\": [\n    {\n      \"{{terr_id}}\":123456,\n      \"territorydescription\":\"test description\"\n    }\n  ]\n}"
 						},
 						"url": {
-							"raw": "{{host}}:9925/",
+							"raw": "{{host}}:{{port}}",
 							"host": [
 								"{{host}}"
 							],
-							"port": "9925",
-							"path": [
-								""
-							]
+							"port": "{{port}}"
 						},
 						"description": "Method for adding users.  Users can be assigned roles which provide granular access at a table, operation, and attirbute level.  \n\n<ul>\n<li><b>operation </b> <i>(required) </i> - must always be 'add_user'</li>\n\n<li><b>role </b><i>(required) </i>- id of the role you wish to assign to the user.  See add_role for more detail.  </li>\n\n<li><b>username </b> <i>(required)</i> - username assigned to the user.  It can not be altered after adding the user.  It serves as the hash. </li>\n\n<li><b>password </b> <i>(required) </i>- clear text for password.  HarperDB will encrypt the password upon reciept. </li>\n\n</ul>"
 					},
@@ -13355,14 +13328,11 @@
 							"raw": "{\n  \"operation\":\"insert\",\n  \"schema\":\"{{schema}}\",\n  \"table\":\"{{terr_tb}}\",\n  \"records\": [\n    {\n      \"{{terr_id}}\":1234567,\n      \"territorydescription\":\"test description\"\n    }\n  ]\n}"
 						},
 						"url": {
-							"raw": "{{host}}:9925/",
+							"raw": "{{host}}:{{port}}",
 							"host": [
 								"{{host}}"
 							],
-							"port": "9925",
-							"path": [
-								""
-							]
+							"port": "{{port}}"
 						},
 						"description": "Method for adding users.  Users can be assigned roles which provide granular access at a table, operation, and attirbute level.  \n\n<ul>\n<li><b>operation </b> <i>(required) </i> - must always be 'add_user'</li>\n\n<li><b>role </b><i>(required) </i>- id of the role you wish to assign to the user.  See add_role for more detail.  </li>\n\n<li><b>username </b> <i>(required)</i> - username assigned to the user.  It can not be altered after adding the user.  It serves as the hash. </li>\n\n<li><b>password </b> <i>(required) </i>- clear text for password.  HarperDB will encrypt the password upon reciept. </li>\n\n</ul>"
 					},
@@ -13421,14 +13391,11 @@
 							"raw": "{\n  \"operation\":\"update\",\n  \"schema\":\"{{schema}}\",\n  \"table\":\"{{terr_tb}}\",\n  \"records\": [\n    {\n      \"{{terr_id}}\":123456,\n      \"territorydescription\":\"test description updated\"\n    }\n  ]\n}"
 						},
 						"url": {
-							"raw": "{{host}}:9925/",
+							"raw": "{{host}}:{{port}}",
 							"host": [
 								"{{host}}"
 							],
-							"port": "9925",
-							"path": [
-								""
-							]
+							"port": "{{port}}"
 						},
 						"description": "Method for adding users.  Users can be assigned roles which provide granular access at a table, operation, and attirbute level.  \n\n<ul>\n<li><b>operation </b> <i>(required) </i> - must always be 'add_user'</li>\n\n<li><b>role </b><i>(required) </i>- id of the role you wish to assign to the user.  See add_role for more detail.  </li>\n\n<li><b>username </b> <i>(required)</i> - username assigned to the user.  It can not be altered after adding the user.  It serves as the hash. </li>\n\n<li><b>password </b> <i>(required) </i>- clear text for password.  HarperDB will encrypt the password upon reciept. </li>\n\n</ul>"
 					},
@@ -13492,14 +13459,11 @@
 							"raw": "{\n  \"operation\":\"update\",\n  \"schema\":\"{{schema}}\",\n  \"table\":\"{{terr_tb}}\",\n  \"records\": [\n    {\n      \"{{terr_id}}\":1234567,\n      \"territorydescription\":\"test description updated\"\n    }\n  ]\n}"
 						},
 						"url": {
-							"raw": "{{host}}:9925/",
+							"raw": "{{host}}:{{port}}",
 							"host": [
 								"{{host}}"
 							],
-							"port": "9925",
-							"path": [
-								""
-							]
+							"port": "{{port}}"
 						},
 						"description": "Method for adding users.  Users can be assigned roles which provide granular access at a table, operation, and attirbute level.  \n\n<ul>\n<li><b>operation </b> <i>(required) </i> - must always be 'add_user'</li>\n\n<li><b>role </b><i>(required) </i>- id of the role you wish to assign to the user.  See add_role for more detail.  </li>\n\n<li><b>username </b> <i>(required)</i> - username assigned to the user.  It can not be altered after adding the user.  It serves as the hash. </li>\n\n<li><b>password </b> <i>(required) </i>- clear text for password.  HarperDB will encrypt the password upon reciept. </li>\n\n</ul>"
 					},
@@ -13558,14 +13522,11 @@
 							"raw": "{\n  \"operation\":\"update\",\n  \"schema\":\"{{schema}}\",\n  \"table\":\"{{cate_tb}}\",\n  \"records\": [\n    {\n      \"{{cate_id}}\":1,\n      \"description\":\"test description updated\"\n    }\n  ]\n}"
 						},
 						"url": {
-							"raw": "{{host}}:9925/",
+							"raw": "{{host}}:{{port}}",
 							"host": [
 								"{{host}}"
 							],
-							"port": "9925",
-							"path": [
-								""
-							]
+							"port": "{{port}}"
 						},
 						"description": "Method for adding users.  Users can be assigned roles which provide granular access at a table, operation, and attirbute level.  \n\n<ul>\n<li><b>operation </b> <i>(required) </i> - must always be 'add_user'</li>\n\n<li><b>role </b><i>(required) </i>- id of the role you wish to assign to the user.  See add_role for more detail.  </li>\n\n<li><b>username </b> <i>(required)</i> - username assigned to the user.  It can not be altered after adding the user.  It serves as the hash. </li>\n\n<li><b>password </b> <i>(required) </i>- clear text for password.  HarperDB will encrypt the password upon reciept. </li>\n\n</ul>"
 					},
@@ -13624,14 +13585,11 @@
 							"raw": "{\n  \"operation\":\"delete\",\n  \"table\":\"{{cate_tb}}\",\n  \"schema\":\"{{schema}}\",\n  \"hash_values\":[1]\n}"
 						},
 						"url": {
-							"raw": "{{host}}:9925/",
+							"raw": "{{host}}:{{port}}",
 							"host": [
 								"{{host}}"
 							],
-							"port": "9925",
-							"path": [
-								""
-							]
+							"port": "{{port}}"
 						},
 						"description": "Method for adding users.  Users can be assigned roles which provide granular access at a table, operation, and attirbute level.  \n\n<ul>\n<li><b>operation </b> <i>(required) </i> - must always be 'add_user'</li>\n\n<li><b>role </b><i>(required) </i>- id of the role you wish to assign to the user.  See add_role for more detail.  </li>\n\n<li><b>username </b> <i>(required)</i> - username assigned to the user.  It can not be altered after adding the user.  It serves as the hash. </li>\n\n<li><b>password </b> <i>(required) </i>- clear text for password.  HarperDB will encrypt the password upon reciept. </li>\n\n</ul>"
 					},
@@ -13700,14 +13658,11 @@
 							"raw": "{\n  \"operation\":\"delete\",\n  \"table\":\"{{cate_tb}}\",\n  \"schema\":\"{{schema}}\",\n  \"hash_values\":[2]\n}"
 						},
 						"url": {
-							"raw": "{{host}}:9925/",
+							"raw": "{{host}}:{{port}}",
 							"host": [
 								"{{host}}"
 							],
-							"port": "9925",
-							"path": [
-								""
-							]
+							"port": "{{port}}"
 						},
 						"description": "Method for adding users.  Users can be assigned roles which provide granular access at a table, operation, and attirbute level.  \n\n<ul>\n<li><b>operation </b> <i>(required) </i> - must always be 'add_user'</li>\n\n<li><b>role </b><i>(required) </i>- id of the role you wish to assign to the user.  See add_role for more detail.  </li>\n\n<li><b>username </b> <i>(required)</i> - username assigned to the user.  It can not be altered after adding the user.  It serves as the hash. </li>\n\n<li><b>password </b> <i>(required) </i>- clear text for password.  HarperDB will encrypt the password upon reciept. </li>\n\n</ul>"
 					},
@@ -13776,14 +13731,11 @@
 							"raw": "{\n\"operation\":\"search_by_value\",\n\"table\":\"{{ship_tb}}\",\n\"schema\":\"{{schema}}\",\n\"hash_attribute\":\"id\",\n\"search_attribute\":\"{{ship_id}}\",\n\"search_value\":\"*\",\n\"get_attributes\":[\"companyname\"]\n}"
 						},
 						"url": {
-							"raw": "{{host}}:9925/",
+							"raw": "{{host}}:{{port}}",
 							"host": [
 								"{{host}}"
 							],
-							"port": "9925",
-							"path": [
-								""
-							]
+							"port": "{{port}}"
 						},
 						"description": "Method for adding users.  Users can be assigned roles which provide granular access at a table, operation, and attirbute level.  \n\n<ul>\n<li><b>operation </b> <i>(required) </i> - must always be 'add_user'</li>\n\n<li><b>role </b><i>(required) </i>- id of the role you wish to assign to the user.  See add_role for more detail.  </li>\n\n<li><b>username </b> <i>(required)</i> - username assigned to the user.  It can not be altered after adding the user.  It serves as the hash. </li>\n\n<li><b>password </b> <i>(required) </i>- clear text for password.  HarperDB will encrypt the password upon reciept. </li>\n\n</ul>"
 					},
@@ -13852,14 +13804,11 @@
 							"raw": "\n{\n  \"operation\":\"update\",\n  \"schema\":\"{{schema}}\",\n  \"table\":\"{{ship_tb}}\",\n  \"records\": [{\n    \"{{ship_id}}\": 1,\n    \"companyname\": \"bad update name\"\n  }]\n}\n"
 						},
 						"url": {
-							"raw": "{{host}}:9925/",
+							"raw": "{{host}}:{{port}}",
 							"host": [
 								"{{host}}"
 							],
-							"port": "9925",
-							"path": [
-								""
-							]
+							"port": "{{port}}"
 						},
 						"description": "Method for adding users.  Users can be assigned roles which provide granular access at a table, operation, and attirbute level.  \n\n<ul>\n<li><b>operation </b> <i>(required) </i> - must always be 'add_user'</li>\n\n<li><b>role </b><i>(required) </i>- id of the role you wish to assign to the user.  See add_role for more detail.  </li>\n\n<li><b>username </b> <i>(required)</i> - username assigned to the user.  It can not be altered after adding the user.  It serves as the hash. </li>\n\n<li><b>password </b> <i>(required) </i>- clear text for password.  HarperDB will encrypt the password upon reciept. </li>\n\n</ul>"
 					},
@@ -13928,14 +13877,11 @@
 							"raw": "{\n  \"operation\":\"insert\",\n  \"schema\":\"{{schema}}\",\n  \"table\":\"{{ship_tb}}\",\n  \"records\": [{\n      \"{{ship_id}}\": 1,\n      \"companyname\": \"bad update name\",\n      \"phone\": \"(503) 555-9831\"\n    }]\n}\n"
 						},
 						"url": {
-							"raw": "{{host}}:9925/",
+							"raw": "{{host}}:{{port}}",
 							"host": [
 								"{{host}}"
 							],
-							"port": "9925",
-							"path": [
-								""
-							]
+							"port": "{{port}}"
 						},
 						"description": "Method for adding users.  Users can be assigned roles which provide granular access at a table, operation, and attirbute level.  \n\n<ul>\n<li><b>operation </b> <i>(required) </i> - must always be 'add_user'</li>\n\n<li><b>role </b><i>(required) </i>- id of the role you wish to assign to the user.  See add_role for more detail.  </li>\n\n<li><b>username </b> <i>(required)</i> - username assigned to the user.  It can not be altered after adding the user.  It serves as the hash. </li>\n\n<li><b>password </b> <i>(required) </i>- clear text for password.  HarperDB will encrypt the password upon reciept. </li>\n\n</ul>"
 					},
@@ -13994,14 +13940,11 @@
 							"raw": "{\n  \"operation\":\"insert\",\n  \"schema\":\"{{schema}}\",\n  \"table\":\"{{ship_tb}}\",\n  \"records\": [{\n      \"{{ship_id}}\": 1,\n      \"phone\": \"(503) 555-1111\"\n    }]\n}\n"
 						},
 						"url": {
-							"raw": "{{host}}:9925/",
+							"raw": "{{host}}:{{port}}",
 							"host": [
 								"{{host}}"
 							],
-							"port": "9925",
-							"path": [
-								""
-							]
+							"port": "{{port}}"
 						},
 						"description": "Method for adding users.  Users can be assigned roles which provide granular access at a table, operation, and attirbute level.  \n\n<ul>\n<li><b>operation </b> <i>(required) </i> - must always be 'add_user'</li>\n\n<li><b>role </b><i>(required) </i>- id of the role you wish to assign to the user.  See add_role for more detail.  </li>\n\n<li><b>username </b> <i>(required)</i> - username assigned to the user.  It can not be altered after adding the user.  It serves as the hash. </li>\n\n<li><b>password </b> <i>(required) </i>- clear text for password.  HarperDB will encrypt the password upon reciept. </li>\n\n</ul>"
 					},
@@ -14060,11 +14003,11 @@
 							"raw": "{\n  \"operation\":\"drop_user\",\n  \"username\":\"test_user\"\n}"
 						},
 						"url": {
-							"raw": "{{host}}:9925",
+							"raw": "{{host}}:{{port}}",
 							"host": [
 								"{{host}}"
 							],
-							"port": "9925"
+							"port": "{{port}}"
 						},
 						"description": "This method is used for dropping a role.  \n\n<i>You cannot drop a role with associated users.  </i>\n\n<ul>\n<li><b>operation </b><i>(required)</i> - this must always be drop_role </li>\n<li><b>id </b><i>(required) </i> - this is the id of the role you are dropping\n</ul>"
 					},
@@ -14123,11 +14066,11 @@
 							"raw": "{\n\"operation\":\"drop_role\",\n\"id\":\"{{role_id}}\"\n\n}"
 						},
 						"url": {
-							"raw": "{{host}}:9925",
+							"raw": "{{host}}:{{port}}",
 							"host": [
 								"{{host}}"
 							],
-							"port": "9925"
+							"port": "{{port}}"
 						},
 						"description": "This method is used for dropping a role.  \n\n<i>You cannot drop a role with associated users.  </i>\n\n<ul>\n<li><b>operation </b><i>(required)</i> - this must always be drop_role </li>\n<li><b>id </b><i>(required) </i> - this is the id of the role you are dropping\n</ul>"
 					},
@@ -14737,14 +14680,11 @@
 							"raw": "{\n\"operation\":\"add_user\",\n\"role\":\"{{role_id}}\",\n\"username\":\"test_user\",\n\"password\":\"{{password}}\", \n\"active\":true\n\n}"
 						},
 						"url": {
-							"raw": "{{host}}:9925/",
+							"raw": "{{host}}:{{port}}",
 							"host": [
 								"{{host}}"
 							],
-							"port": "9925",
-							"path": [
-								""
-							]
+							"port": "{{port}}"
 						},
 						"description": "Method for adding users.  Users can be assigned roles which provide granular access at a table, operation, and attirbute level.  \n\n<ul>\n<li><b>operation </b> <i>(required) </i> - must always be 'add_user'</li>\n\n<li><b>role </b><i>(required) </i>- id of the role you wish to assign to the user.  See add_role for more detail.  </li>\n\n<li><b>username </b> <i>(required)</i> - username assigned to the user.  It can not be altered after adding the user.  It serves as the hash. </li>\n\n<li><b>password </b> <i>(required) </i>- clear text for password.  HarperDB will encrypt the password upon reciept. </li>\n\n</ul>"
 					},
@@ -14814,11 +14754,11 @@
 							"raw": "{\n\t\"operation\":\"list_users\"\n}"
 						},
 						"url": {
-							"raw": "{{host}}:9925",
+							"raw": "{{host}}:{{port}}",
 							"host": [
 								"{{host}}"
 							],
-							"port": "9925"
+							"port": "{{port}}"
 						},
 						"description": "Method for getting user info.  \n\n<ul>\n<li><b>operation </b> <i>(required) </i> - must always be 'user_info'</li>"
 					},
@@ -14881,11 +14821,11 @@
 							"raw": "{\n\"operation\":\"alter_user\",\n\"role\":\"blahblah\",\n\"username\":\"test_user\"\n\n}"
 						},
 						"url": {
-							"raw": "{{host}}:9925",
+							"raw": "{{host}}:{{port}}",
 							"host": [
 								"{{host}}"
 							],
-							"port": "9925"
+							"port": "{{port}}"
 						},
 						"description": "Method for altering users.  Users can be assigned roles which provide granular access at a table, operation, and attirbute level.  Use this method to change password as well.  \n\n<ul>\n\n<li><b>operation</b> <i>(required)</i> - must always be 'alter_user'</li>\n\n<li><b>role</b> <i>(optional) </i>- id of the role you wish to assign to the user.  See add_role for more detail. </li> \n\n<li><b>username </b><i>(required)</i> - username assigned to the user.  It can not be altered after adding the user.  It serves as the hash. </li>\n\n<li> <b>password</b><i> (optional) </i>- clear text for password.  HarperDB will encrypt the password upon reciept. </li>\n</ul>"
 					},
@@ -14956,11 +14896,11 @@
 							"raw": "{\n\t\"operation\":\"list_users\"\n}"
 						},
 						"url": {
-							"raw": "{{host}}:9925",
+							"raw": "{{host}}:{{port}}",
 							"host": [
 								"{{host}}"
 							],
-							"port": "9925"
+							"port": "{{port}}"
 						},
 						"description": "Method for getting user info.  \n\n<ul>\n<li><b>operation </b> <i>(required) </i> - must always be 'user_info'</li>"
 					},
@@ -15019,14 +14959,11 @@
 							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"select * from {{schema}}.{{supp_tb}}\"\n}"
 						},
 						"url": {
-							"raw": "{{host}}:9925/",
+							"raw": "{{host}}:{{port}}",
 							"host": [
 								"{{host}}"
 							],
-							"port": "9925",
-							"path": [
-								""
-							]
+							"port": "{{port}}"
 						},
 						"description": "Method for adding users.  Users can be assigned roles which provide granular access at a table, operation, and attirbute level.  \n\n<ul>\n<li><b>operation </b> <i>(required) </i> - must always be 'add_user'</li>\n\n<li><b>role </b><i>(required) </i>- id of the role you wish to assign to the user.  See add_role for more detail.  </li>\n\n<li><b>username </b> <i>(required)</i> - username assigned to the user.  It can not be altered after adding the user.  It serves as the hash. </li>\n\n<li><b>password </b> <i>(required) </i>- clear text for password.  HarperDB will encrypt the password upon reciept. </li>\n\n</ul>"
 					},
@@ -15090,14 +15027,11 @@
 							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"select * from {{schema}}.{{supp_tb}}\"\n}"
 						},
 						"url": {
-							"raw": "{{host}}:9925/",
+							"raw": "{{host}}:{{port}}",
 							"host": [
 								"{{host}}"
 							],
-							"port": "9925",
-							"path": [
-								""
-							]
+							"port": "{{port}}"
 						},
 						"description": "Method for adding users.  Users can be assigned roles which provide granular access at a table, operation, and attirbute level.  \n\n<ul>\n<li><b>operation </b> <i>(required) </i> - must always be 'add_user'</li>\n\n<li><b>role </b><i>(required) </i>- id of the role you wish to assign to the user.  See add_role for more detail.  </li>\n\n<li><b>username </b> <i>(required)</i> - username assigned to the user.  It can not be altered after adding the user.  It serves as the hash. </li>\n\n<li><b>password </b> <i>(required) </i>- clear text for password.  HarperDB will encrypt the password upon reciept. </li>\n\n</ul>"
 					},
@@ -15156,14 +15090,11 @@
 							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"select * from {{schema}}.{{regi_tb}}\"\n}"
 						},
 						"url": {
-							"raw": "{{host}}:9925/",
+							"raw": "{{host}}:{{port}}",
 							"host": [
 								"{{host}}"
 							],
-							"port": "9925",
-							"path": [
-								""
-							]
+							"port": "{{port}}"
 						},
 						"description": "Method for adding users.  Users can be assigned roles which provide granular access at a table, operation, and attirbute level.  \n\n<ul>\n<li><b>operation </b> <i>(required) </i> - must always be 'add_user'</li>\n\n<li><b>role </b><i>(required) </i>- id of the role you wish to assign to the user.  See add_role for more detail.  </li>\n\n<li><b>username </b> <i>(required)</i> - username assigned to the user.  It can not be altered after adding the user.  It serves as the hash. </li>\n\n<li><b>password </b> <i>(required) </i>- clear text for password.  HarperDB will encrypt the password upon reciept. </li>\n\n</ul>"
 					},
@@ -15222,14 +15153,11 @@
 							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"select * from {{schema}}.{{regi_tb}}\"\n}"
 						},
 						"url": {
-							"raw": "{{host}}:9925/",
+							"raw": "{{host}}:{{port}}",
 							"host": [
 								"{{host}}"
 							],
-							"port": "9925",
-							"path": [
-								""
-							]
+							"port": "{{port}}"
 						},
 						"description": "Method for adding users.  Users can be assigned roles which provide granular access at a table, operation, and attirbute level.  \n\n<ul>\n<li><b>operation </b> <i>(required) </i> - must always be 'add_user'</li>\n\n<li><b>role </b><i>(required) </i>- id of the role you wish to assign to the user.  See add_role for more detail.  </li>\n\n<li><b>username </b> <i>(required)</i> - username assigned to the user.  It can not be altered after adding the user.  It serves as the hash. </li>\n\n<li><b>password </b> <i>(required) </i>- clear text for password.  HarperDB will encrypt the password upon reciept. </li>\n\n</ul>"
 					},
@@ -15288,14 +15216,11 @@
 							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"insert into northnwd.region (regionid, regiondescription) values ('16', 'test description');\"\n}"
 						},
 						"url": {
-							"raw": "{{host}}:9925/",
+							"raw": "{{host}}:{{port}}",
 							"host": [
 								"{{host}}"
 							],
-							"port": "9925",
-							"path": [
-								""
-							]
+							"port": "{{port}}"
 						},
 						"description": "Method for adding users.  Users can be assigned roles which provide granular access at a table, operation, and attirbute level.  \n\n<ul>\n<li><b>operation </b> <i>(required) </i> - must always be 'add_user'</li>\n\n<li><b>role </b><i>(required) </i>- id of the role you wish to assign to the user.  See add_role for more detail.  </li>\n\n<li><b>username </b> <i>(required)</i> - username assigned to the user.  It can not be altered after adding the user.  It serves as the hash. </li>\n\n<li><b>password </b> <i>(required) </i>- clear text for password.  HarperDB will encrypt the password upon reciept. </li>\n\n</ul>"
 					},
@@ -15359,14 +15284,11 @@
 							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"insert into northnwd.region (regionid, regiondescription) values ('17', 'test description');\"\n}"
 						},
 						"url": {
-							"raw": "{{host}}:9925/",
+							"raw": "{{host}}:{{port}}",
 							"host": [
 								"{{host}}"
 							],
-							"port": "9925",
-							"path": [
-								""
-							]
+							"port": "{{port}}"
 						},
 						"description": "Method for adding users.  Users can be assigned roles which provide granular access at a table, operation, and attirbute level.  \n\n<ul>\n<li><b>operation </b> <i>(required) </i> - must always be 'add_user'</li>\n\n<li><b>role </b><i>(required) </i>- id of the role you wish to assign to the user.  See add_role for more detail.  </li>\n\n<li><b>username </b> <i>(required)</i> - username assigned to the user.  It can not be altered after adding the user.  It serves as the hash. </li>\n\n<li><b>password </b> <i>(required) </i>- clear text for password.  HarperDB will encrypt the password upon reciept. </li>\n\n</ul>"
 					},
@@ -15425,14 +15347,11 @@
 							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"insert into northnwd.territories (regionid, territoryid, territorydescription) values ('1', '65', 'Im a test');\"\n}"
 						},
 						"url": {
-							"raw": "{{host}}:9925/",
+							"raw": "{{host}}:{{port}}",
 							"host": [
 								"{{host}}"
 							],
-							"port": "9925",
-							"path": [
-								""
-							]
+							"port": "{{port}}"
 						},
 						"description": "Method for adding users.  Users can be assigned roles which provide granular access at a table, operation, and attirbute level.  \n\n<ul>\n<li><b>operation </b> <i>(required) </i> - must always be 'add_user'</li>\n\n<li><b>role </b><i>(required) </i>- id of the role you wish to assign to the user.  See add_role for more detail.  </li>\n\n<li><b>username </b> <i>(required)</i> - username assigned to the user.  It can not be altered after adding the user.  It serves as the hash. </li>\n\n<li><b>password </b> <i>(required) </i>- clear text for password.  HarperDB will encrypt the password upon reciept. </li>\n\n</ul>"
 					},
@@ -15491,14 +15410,11 @@
 							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"insert into northnwd.territories (regionid, territoryid, territorydescription) values ('1', '65', 'Im a test');\"\n}"
 						},
 						"url": {
-							"raw": "{{host}}:9925/",
+							"raw": "{{host}}:{{port}}",
 							"host": [
 								"{{host}}"
 							],
-							"port": "9925",
-							"path": [
-								""
-							]
+							"port": "{{port}}"
 						},
 						"description": "Method for adding users.  Users can be assigned roles which provide granular access at a table, operation, and attirbute level.  \n\n<ul>\n<li><b>operation </b> <i>(required) </i> - must always be 'add_user'</li>\n\n<li><b>role </b><i>(required) </i>- id of the role you wish to assign to the user.  See add_role for more detail.  </li>\n\n<li><b>username </b> <i>(required)</i> - username assigned to the user.  It can not be altered after adding the user.  It serves as the hash. </li>\n\n<li><b>password </b> <i>(required) </i>- clear text for password.  HarperDB will encrypt the password upon reciept. </li>\n\n</ul>"
 					},
@@ -15557,14 +15473,11 @@
 							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"update northnwd.territories set territorydescription = 'update test' where territoryid = 65\"\n}\n"
 						},
 						"url": {
-							"raw": "{{host}}:9925/",
+							"raw": "{{host}}:{{port}}",
 							"host": [
 								"{{host}}"
 							],
-							"port": "9925",
-							"path": [
-								""
-							]
+							"port": "{{port}}"
 						},
 						"description": "Method for adding users.  Users can be assigned roles which provide granular access at a table, operation, and attirbute level.  \n\n<ul>\n<li><b>operation </b> <i>(required) </i> - must always be 'add_user'</li>\n\n<li><b>role </b><i>(required) </i>- id of the role you wish to assign to the user.  See add_role for more detail.  </li>\n\n<li><b>username </b> <i>(required)</i> - username assigned to the user.  It can not be altered after adding the user.  It serves as the hash. </li>\n\n<li><b>password </b> <i>(required) </i>- clear text for password.  HarperDB will encrypt the password upon reciept. </li>\n\n</ul>"
 					},
@@ -15628,14 +15541,11 @@
 							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"update northnwd.territories set territorydescription = 'update test' where territoryid = 65\"\n}\n"
 						},
 						"url": {
-							"raw": "{{host}}:9925/",
+							"raw": "{{host}}:{{port}}",
 							"host": [
 								"{{host}}"
 							],
-							"port": "9925",
-							"path": [
-								""
-							]
+							"port": "{{port}}"
 						},
 						"description": "Method for adding users.  Users can be assigned roles which provide granular access at a table, operation, and attirbute level.  \n\n<ul>\n<li><b>operation </b> <i>(required) </i> - must always be 'add_user'</li>\n\n<li><b>role </b><i>(required) </i>- id of the role you wish to assign to the user.  See add_role for more detail.  </li>\n\n<li><b>username </b> <i>(required)</i> - username assigned to the user.  It can not be altered after adding the user.  It serves as the hash. </li>\n\n<li><b>password </b> <i>(required) </i>- clear text for password.  HarperDB will encrypt the password upon reciept. </li>\n\n</ul>"
 					},
@@ -15694,14 +15604,11 @@
 							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"update northnwd.categories set description = 'update test' where categoryid = 2\"\n}"
 						},
 						"url": {
-							"raw": "{{host}}:9925/",
+							"raw": "{{host}}:{{port}}",
 							"host": [
 								"{{host}}"
 							],
-							"port": "9925",
-							"path": [
-								""
-							]
+							"port": "{{port}}"
 						},
 						"description": "Method for adding users.  Users can be assigned roles which provide granular access at a table, operation, and attirbute level.  \n\n<ul>\n<li><b>operation </b> <i>(required) </i> - must always be 'add_user'</li>\n\n<li><b>role </b><i>(required) </i>- id of the role you wish to assign to the user.  See add_role for more detail.  </li>\n\n<li><b>username </b> <i>(required)</i> - username assigned to the user.  It can not be altered after adding the user.  It serves as the hash. </li>\n\n<li><b>password </b> <i>(required) </i>- clear text for password.  HarperDB will encrypt the password upon reciept. </li>\n\n</ul>"
 					},
@@ -15760,14 +15667,11 @@
 							"raw": "{ \n  \"operation\":\"sql\",\n  \"sql\":\"delete from northnwd.categories where categoryid = 2\"\n}"
 						},
 						"url": {
-							"raw": "{{host}}:9925/",
+							"raw": "{{host}}:{{port}}",
 							"host": [
 								"{{host}}"
 							],
-							"port": "9925",
-							"path": [
-								""
-							]
+							"port": "{{port}}"
 						},
 						"description": "Method for adding users.  Users can be assigned roles which provide granular access at a table, operation, and attirbute level.  \n\n<ul>\n<li><b>operation </b> <i>(required) </i> - must always be 'add_user'</li>\n\n<li><b>role </b><i>(required) </i>- id of the role you wish to assign to the user.  See add_role for more detail.  </li>\n\n<li><b>username </b> <i>(required)</i> - username assigned to the user.  It can not be altered after adding the user.  It serves as the hash. </li>\n\n<li><b>password </b> <i>(required) </i>- clear text for password.  HarperDB will encrypt the password upon reciept. </li>\n\n</ul>"
 					},
@@ -15831,14 +15735,11 @@
 							"raw": "{ \n  \"operation\":\"sql\",\n  \"sql\":\"delete from northnwd.categories where categoryid = 2\"\n}"
 						},
 						"url": {
-							"raw": "{{host}}:9925/",
+							"raw": "{{host}}:{{port}}",
 							"host": [
 								"{{host}}"
 							],
-							"port": "9925",
-							"path": [
-								""
-							]
+							"port": "{{port}}"
 						},
 						"description": "Method for adding users.  Users can be assigned roles which provide granular access at a table, operation, and attirbute level.  \n\n<ul>\n<li><b>operation </b> <i>(required) </i> - must always be 'add_user'</li>\n\n<li><b>role </b><i>(required) </i>- id of the role you wish to assign to the user.  See add_role for more detail.  </li>\n\n<li><b>username </b> <i>(required)</i> - username assigned to the user.  It can not be altered after adding the user.  It serves as the hash. </li>\n\n<li><b>password </b> <i>(required) </i>- clear text for password.  HarperDB will encrypt the password upon reciept. </li>\n\n</ul>"
 					},
@@ -15907,14 +15808,11 @@
 							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"select * from {{schema}}.{{ship_tb}}\"\n}"
 						},
 						"url": {
-							"raw": "{{host}}:9925/",
+							"raw": "{{host}}:{{port}}",
 							"host": [
 								"{{host}}"
 							],
-							"port": "9925",
-							"path": [
-								""
-							]
+							"port": "{{port}}"
 						},
 						"description": "Method for adding users.  Users can be assigned roles which provide granular access at a table, operation, and attirbute level.  \n\n<ul>\n<li><b>operation </b> <i>(required) </i> - must always be 'add_user'</li>\n\n<li><b>role </b><i>(required) </i>- id of the role you wish to assign to the user.  See add_role for more detail.  </li>\n\n<li><b>username </b> <i>(required)</i> - username assigned to the user.  It can not be altered after adding the user.  It serves as the hash. </li>\n\n<li><b>password </b> <i>(required) </i>- clear text for password.  HarperDB will encrypt the password upon reciept. </li>\n\n</ul>"
 					},
@@ -15983,14 +15881,11 @@
 							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"update northnwd.{{ship_tb}} set companyname = 'bad update name' where {{ship_id}} = 1\"\n}\n"
 						},
 						"url": {
-							"raw": "{{host}}:9925/",
+							"raw": "{{host}}:{{port}}",
 							"host": [
 								"{{host}}"
 							],
-							"port": "9925",
-							"path": [
-								""
-							]
+							"port": "{{port}}"
 						},
 						"description": "Method for adding users.  Users can be assigned roles which provide granular access at a table, operation, and attirbute level.  \n\n<ul>\n<li><b>operation </b> <i>(required) </i> - must always be 'add_user'</li>\n\n<li><b>role </b><i>(required) </i>- id of the role you wish to assign to the user.  See add_role for more detail.  </li>\n\n<li><b>username </b> <i>(required)</i> - username assigned to the user.  It can not be altered after adding the user.  It serves as the hash. </li>\n\n<li><b>password </b> <i>(required) </i>- clear text for password.  HarperDB will encrypt the password upon reciept. </li>\n\n</ul>"
 					},
@@ -16059,14 +15954,11 @@
 							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"insert into northnwd.shippers (shipperid, companyname, phone) values ('1', 'bad update name', '(503) 555-9831');\"\n}\n\n"
 						},
 						"url": {
-							"raw": "{{host}}:9925/",
+							"raw": "{{host}}:{{port}}",
 							"host": [
 								"{{host}}"
 							],
-							"port": "9925",
-							"path": [
-								""
-							]
+							"port": "{{port}}"
 						},
 						"description": "Method for adding users.  Users can be assigned roles which provide granular access at a table, operation, and attirbute level.  \n\n<ul>\n<li><b>operation </b> <i>(required) </i> - must always be 'add_user'</li>\n\n<li><b>role </b><i>(required) </i>- id of the role you wish to assign to the user.  See add_role for more detail.  </li>\n\n<li><b>username </b> <i>(required)</i> - username assigned to the user.  It can not be altered after adding the user.  It serves as the hash. </li>\n\n<li><b>password </b> <i>(required) </i>- clear text for password.  HarperDB will encrypt the password upon reciept. </li>\n\n</ul>"
 					},
@@ -16121,14 +16013,11 @@
 							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"insert into northnwd.shippers (shipperid, phone) values ('1', '(503) 555-9831');\"\n}"
 						},
 						"url": {
-							"raw": "{{host}}:9925/",
+							"raw": "{{host}}:{{port}}",
 							"host": [
 								"{{host}}"
 							],
-							"port": "9925",
-							"path": [
-								""
-							]
+							"port": "{{port}}"
 						},
 						"description": "Method for adding users.  Users can be assigned roles which provide granular access at a table, operation, and attirbute level.  \n\n<ul>\n<li><b>operation </b> <i>(required) </i> - must always be 'add_user'</li>\n\n<li><b>role </b><i>(required) </i>- id of the role you wish to assign to the user.  See add_role for more detail.  </li>\n\n<li><b>username </b> <i>(required)</i> - username assigned to the user.  It can not be altered after adding the user.  It serves as the hash. </li>\n\n<li><b>password </b> <i>(required) </i>- clear text for password.  HarperDB will encrypt the password upon reciept. </li>\n\n</ul>"
 					},
@@ -16194,11 +16083,11 @@
 							"raw": "{\n  \"operation\":\"drop_user\",\n  \"username\":\"test_user\"\n}"
 						},
 						"url": {
-							"raw": "{{host}}:9925",
+							"raw": "{{host}}:{{port}}",
 							"host": [
 								"{{host}}"
 							],
-							"port": "9925"
+							"port": "{{port}}"
 						},
 						"description": "This method is used for dropping a role.  \n\n<i>You cannot drop a role with associated users.  </i>\n\n<ul>\n<li><b>operation </b><i>(required)</i> - this must always be drop_role </li>\n<li><b>id </b><i>(required) </i> - this is the id of the role you are dropping\n</ul>"
 					},
@@ -16264,11 +16153,11 @@
 							"raw": "{\n\"operation\":\"drop_role\",\n\"id\":\"{{role_id}}\"\n\n}"
 						},
 						"url": {
-							"raw": "{{host}}:9925",
+							"raw": "{{host}}:{{port}}",
 							"host": [
 								"{{host}}"
 							],
-							"port": "9925"
+							"port": "{{port}}"
 						},
 						"description": "This method is used for dropping a role.  \n\n<i>You cannot drop a role with associated users.  </i>\n\n<ul>\n<li><b>operation </b><i>(required)</i> - this must always be drop_role </li>\n<li><b>id </b><i>(required) </i> - this is the id of the role you are dropping\n</ul>"
 					},
@@ -16420,14 +16309,11 @@
 							"raw": "{\n\"operation\":\"add_user\",\n\"role\":\"{{role_id}}\",\n\"username\":\"test_user\",\n\"password\":\"{{password}}\", \n\"active\":true\n\n}"
 						},
 						"url": {
-							"raw": "{{host}}:9925/",
+							"raw": "{{host}}:{{port}}",
 							"host": [
 								"{{host}}"
 							],
-							"port": "9925",
-							"path": [
-								""
-							]
+							"port": "{{port}}"
 						},
 						"description": "Method for adding users.  Users can be assigned roles which provide granular access at a table, operation, and attirbute level.  \n\n<ul>\n<li><b>operation </b> <i>(required) </i> - must always be 'add_user'</li>\n\n<li><b>role </b><i>(required) </i>- id of the role you wish to assign to the user.  See add_role for more detail.  </li>\n\n<li><b>username </b> <i>(required)</i> - username assigned to the user.  It can not be altered after adding the user.  It serves as the hash. </li>\n\n<li><b>password </b> <i>(required) </i>- clear text for password.  HarperDB will encrypt the password upon reciept. </li>\n\n</ul>"
 					},
@@ -17390,14 +17276,11 @@
 							"raw": "{\n  \"operation\":\"create_schema\",\n  \"schema\": \"test_job\"\n}"
 						},
 						"url": {
-							"raw": "{{host}}:9925/",
+							"raw": "{{host}}:{{port}}",
 							"host": [
 								"{{host}}"
 							],
-							"port": "9925",
-							"path": [
-								""
-							]
+							"port": "{{port}}"
 						},
 						"description": "Method for adding users.  Users can be assigned roles which provide granular access at a table, operation, and attirbute level.  \n\n<ul>\n<li><b>operation </b> <i>(required) </i> - must always be 'add_user'</li>\n\n<li><b>role </b><i>(required) </i>- id of the role you wish to assign to the user.  See add_role for more detail.  </li>\n\n<li><b>username </b> <i>(required)</i> - username assigned to the user.  It can not be altered after adding the user.  It serves as the hash. </li>\n\n<li><b>password </b> <i>(required) </i>- clear text for password.  HarperDB will encrypt the password upon reciept. </li>\n\n</ul>"
 					},
@@ -17458,14 +17341,11 @@
 							"raw": "{\n  \"operation\":\"create_table\",\n  \"schema\":\"test_job\",\n  \"table\":\"runner\",\n  \"hash_attribute\": \"runner_id\"\n}"
 						},
 						"url": {
-							"raw": "{{host}}:9925/",
+							"raw": "{{host}}:{{port}}",
 							"host": [
 								"{{host}}"
 							],
-							"port": "9925",
-							"path": [
-								""
-							]
+							"port": "{{port}}"
 						},
 						"description": "Method for adding users.  Users can be assigned roles which provide granular access at a table, operation, and attirbute level.  \n\n<ul>\n<li><b>operation </b> <i>(required) </i> - must always be 'add_user'</li>\n\n<li><b>role </b><i>(required) </i>- id of the role you wish to assign to the user.  See add_role for more detail.  </li>\n\n<li><b>username </b> <i>(required)</i> - username assigned to the user.  It can not be altered after adding the user.  It serves as the hash. </li>\n\n<li><b>password </b> <i>(required) </i>- clear text for password.  HarperDB will encrypt the password upon reciept. </li>\n\n</ul>"
 					},
@@ -17534,14 +17414,11 @@
 							"raw": "{\n\"operation\":\"insert\",\n\"schema\":\"test_job\",\n\"table\":\"runner\",\n\"records\": [\n  {\n    \"name\":\"Harper\",\n    \"shoes\":\"Nike\",\n    \"runner_id\":\"1\",\n    \"age\":55\n  }\n]\n\n}"
 						},
 						"url": {
-							"raw": "{{host}}:9925/",
+							"raw": "{{host}}:{{port}}",
 							"host": [
 								"{{host}}"
 							],
-							"port": "9925",
-							"path": [
-								""
-							]
+							"port": "{{port}}"
 						},
 						"description": "Method for adding users.  Users can be assigned roles which provide granular access at a table, operation, and attirbute level.  \n\n<ul>\n<li><b>operation </b> <i>(required) </i> - must always be 'add_user'</li>\n\n<li><b>role </b><i>(required) </i>- id of the role you wish to assign to the user.  See add_role for more detail.  </li>\n\n<li><b>username </b> <i>(required)</i> - username assigned to the user.  It can not be altered after adding the user.  It serves as the hash. </li>\n\n<li><b>password </b> <i>(required) </i>- clear text for password.  HarperDB will encrypt the password upon reciept. </li>\n\n</ul>"
 					},
@@ -17605,14 +17482,11 @@
 							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"select * from test_job.runner\"\n}"
 						},
 						"url": {
-							"raw": "{{host}}:9925/",
+							"raw": "{{host}}:{{port}}",
 							"host": [
 								"{{host}}"
 							],
-							"port": "9925",
-							"path": [
-								""
-							]
+							"port": "{{port}}"
 						},
 						"description": "Method for adding users.  Users can be assigned roles which provide granular access at a table, operation, and attirbute level.  \n\n<ul>\n<li><b>operation </b> <i>(required) </i> - must always be 'add_user'</li>\n\n<li><b>role </b><i>(required) </i>- id of the role you wish to assign to the user.  See add_role for more detail.  </li>\n\n<li><b>username </b> <i>(required)</i> - username assigned to the user.  It can not be altered after adding the user.  It serves as the hash. </li>\n\n<li><b>password </b> <i>(required) </i>- clear text for password.  HarperDB will encrypt the password upon reciept. </li>\n\n</ul>"
 					},
@@ -17667,14 +17541,11 @@
 							"raw": "{\n\t\"operation\":\"delete_files_before\",\n\t\"date\":\"2018-06-14\",\n\t\"schema\":\"dev\",\n\t\"schema\":\"dog\"\n}"
 						},
 						"url": {
-							"raw": "{{host}}:9925/",
+							"raw": "{{host}}:{{port}}",
 							"host": [
 								"{{host}}"
 							],
-							"port": "9925",
-							"path": [
-								""
-							]
+							"port": "{{port}}"
 						},
 						"description": "Method for adding users.  Users can be assigned roles which provide granular access at a table, operation, and attirbute level.  \n\n<ul>\n<li><b>operation </b> <i>(required) </i> - must always be 'add_user'</li>\n\n<li><b>role </b><i>(required) </i>- id of the role you wish to assign to the user.  See add_role for more detail.  </li>\n\n<li><b>username </b> <i>(required)</i> - username assigned to the user.  It can not be altered after adding the user.  It serves as the hash. </li>\n\n<li><b>password </b> <i>(required) </i>- clear text for password.  HarperDB will encrypt the password upon reciept. </li>\n\n</ul>"
 					},
@@ -17744,14 +17615,11 @@
 							"raw": "{\n\t\"operation\":\"delete_files_before\",\n\t\"date\":\"{{date_tomorrow}}\",\n\t\"schema\":\"test_job\",\n\t\"table\":\"runner\"\n}"
 						},
 						"url": {
-							"raw": "{{host}}:9925/",
+							"raw": "{{host}}:{{port}}",
 							"host": [
 								"{{host}}"
 							],
-							"port": "9925",
-							"path": [
-								""
-							]
+							"port": "{{port}}"
 						},
 						"description": "Method for adding users.  Users can be assigned roles which provide granular access at a table, operation, and attirbute level.  \n\n<ul>\n<li><b>operation </b> <i>(required) </i> - must always be 'add_user'</li>\n\n<li><b>role </b><i>(required) </i>- id of the role you wish to assign to the user.  See add_role for more detail.  </li>\n\n<li><b>username </b> <i>(required)</i> - username assigned to the user.  It can not be altered after adding the user.  It serves as the hash. </li>\n\n<li><b>password </b> <i>(required) </i>- clear text for password.  HarperDB will encrypt the password upon reciept. </li>\n\n</ul>"
 					},
@@ -17815,14 +17683,11 @@
 							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"select * from test_job.runner\"\n}"
 						},
 						"url": {
-							"raw": "{{host}}:9925/",
+							"raw": "{{host}}:{{port}}",
 							"host": [
 								"{{host}}"
 							],
-							"port": "9925",
-							"path": [
-								""
-							]
+							"port": "{{port}}"
 						}
 					},
 					"response": []
@@ -17895,11 +17760,11 @@
 							"raw": "{\n\t\"operation\":\"search_jobs_by_start_date\",\n\t\"from_date\": \t\"{{date_yesterday}}\",\n\t\"to_date\": \t\"{{date_tomorrow}}\"\n}"
 						},
 						"url": {
-							"raw": "{{host}}:9925",
+							"raw": "{{host}}:{{port}}",
 							"host": [
 								"{{host}}"
 							],
-							"port": "9925"
+							"port": "{{port}}"
 						}
 					},
 					"response": []
@@ -17962,11 +17827,11 @@
 							"raw": "{\n\t\"operation\":\"get_job\",\n\t\"id\": \"{{job_id}}\"\n}"
 						},
 						"url": {
-							"raw": "{{host}}:9925",
+							"raw": "{{host}}:{{port}}",
 							"host": [
 								"{{host}}"
 							],
-							"port": "9925"
+							"port": "{{port}}"
 						}
 					},
 					"response": []
@@ -18025,11 +17890,11 @@
 							"raw": "{\n\t\"operation\":\"delete_job\",\n\t\"id\":\"{{job_id}}\"\n}"
 						},
 						"url": {
-							"raw": "{{host}}:9925",
+							"raw": "{{host}}:{{port}}",
 							"host": [
 								"{{host}}"
 							],
-							"port": "9925"
+							"port": "{{port}}"
 						}
 					},
 					"response": []
@@ -18092,11 +17957,11 @@
 							"raw": "{\n\t\"operation\":\"get_job\",\n\t\"id\": \"{{job_id}}\"\n}"
 						},
 						"url": {
-							"raw": "{{host}}:9925",
+							"raw": "{{host}}:{{port}}",
 							"host": [
 								"{{host}}"
 							],
-							"port": "9925"
+							"port": "{{port}}"
 						}
 					},
 					"response": []
@@ -18154,14 +18019,11 @@
 							"raw": "{\n  \"operation\":\"csv_data_load\",\n  \"schema\":\"{{schema}}\",\n  \"table\":\"{{regi_tb}}\",\n  \"data\":\"regionid, regiondescription\\n'17', 'test description'\\n\"\n}"
 						},
 						"url": {
-							"raw": "{{host}}:9925/",
+							"raw": "{{host}}:{{port}}",
 							"host": [
 								"{{host}}"
 							],
-							"port": "9925",
-							"path": [
-								""
-							]
+							"port": "{{port}}"
 						},
 						"description": "Method for adding users.  Users can be assigned roles which provide granular access at a table, operation, and attirbute level.  \n\n<ul>\n<li><b>operation </b> <i>(required) </i> - must always be 'add_user'</li>\n\n<li><b>role </b><i>(required) </i>- id of the role you wish to assign to the user.  See add_role for more detail.  </li>\n\n<li><b>username </b> <i>(required)</i> - username assigned to the user.  It can not be altered after adding the user.  It serves as the hash. </li>\n\n<li><b>password </b> <i>(required) </i>- clear text for password.  HarperDB will encrypt the password upon reciept. </li>\n\n</ul>"
 					},
@@ -18220,14 +18082,11 @@
 							"raw": "{\n  \"operation\":\"csv_data_load\",\n  \"schema\":\"{{schema}}\",\n  \"table\":\"{{regi_tb}}\",\n  \"data\":\"regionid, regiondescription\\n'17', 'test description'\\n\"\n}"
 						},
 						"url": {
-							"raw": "{{host}}:9925/",
+							"raw": "{{host}}:{{port}}",
 							"host": [
 								"{{host}}"
 							],
-							"port": "9925",
-							"path": [
-								""
-							]
+							"port": "{{port}}"
 						},
 						"description": "Method for adding users.  Users can be assigned roles which provide granular access at a table, operation, and attirbute level.  \n\n<ul>\n<li><b>operation </b> <i>(required) </i> - must always be 'add_user'</li>\n\n<li><b>role </b><i>(required) </i>- id of the role you wish to assign to the user.  See add_role for more detail.  </li>\n\n<li><b>username </b> <i>(required)</i> - username assigned to the user.  It can not be altered after adding the user.  It serves as the hash. </li>\n\n<li><b>password </b> <i>(required) </i>- clear text for password.  HarperDB will encrypt the password upon reciept. </li>\n\n</ul>"
 					},
@@ -18282,14 +18141,11 @@
 							"raw": "{\n  \"operation\":\"csv_file_load\",\n  \"action\":\"insert\",\n  \"schema\":\"{{schema}}\",\n  \"table\":\"{{supp_tb}}\",\n  \"file_path\":\"{{files_location}}Suppliers.csv\"\n}"
 						},
 						"url": {
-							"raw": "{{host}}:9925/",
+							"raw": "{{host}}:{{port}}",
 							"host": [
 								"{{host}}"
 							],
-							"port": "9925",
-							"path": [
-								""
-							]
+							"port": "{{port}}"
 						},
 						"description": "Method for adding users.  Users can be assigned roles which provide granular access at a table, operation, and attirbute level.  \n\n<ul>\n<li><b>operation </b> <i>(required) </i> - must always be 'add_user'</li>\n\n<li><b>role </b><i>(required) </i>- id of the role you wish to assign to the user.  See add_role for more detail.  </li>\n\n<li><b>username </b> <i>(required)</i> - username assigned to the user.  It can not be altered after adding the user.  It serves as the hash. </li>\n\n<li><b>password </b> <i>(required) </i>- clear text for password.  HarperDB will encrypt the password upon reciept. </li>\n\n</ul>"
 					},
@@ -18344,14 +18200,11 @@
 							"raw": "{\n\t\"operation\":\"export_local\",\n\t\"path\":\"./\",\n\t\"filename\":\"test_export.json\",\n\t\"format\":\"json\",\n\t\"search_operation\": {\n        \"operation\":\"sql\",\n        \"sql\":\"select * from {{schema}}.{{ship_tb}}\"\n    }\n}"
 						},
 						"url": {
-							"raw": "{{host}}:9925/",
+							"raw": "{{host}}:{{port}}",
 							"host": [
 								"{{host}}"
 							],
-							"port": "9925",
-							"path": [
-								""
-							]
+							"port": "{{port}}"
 						},
 						"description": "Method for adding users.  Users can be assigned roles which provide granular access at a table, operation, and attirbute level.  \n\n<ul>\n<li><b>operation </b> <i>(required) </i> - must always be 'add_user'</li>\n\n<li><b>role </b><i>(required) </i>- id of the role you wish to assign to the user.  See add_role for more detail.  </li>\n\n<li><b>username </b> <i>(required)</i> - username assigned to the user.  It can not be altered after adding the user.  It serves as the hash. </li>\n\n<li><b>password </b> <i>(required) </i>- clear text for password.  HarperDB will encrypt the password upon reciept. </li>\n\n</ul>"
 					},
@@ -18406,14 +18259,11 @@
 							"raw": "{\n\t\"operation\":\"export_local\",\n\t\"path\":\"./\",\n\t\"filename\":\"test_export.json\",\n\t\"format\":\"json\",\n\t\"search_operation\": {\n\t  \"operation\":\"search_by_hash\",\n\t  \"schema\":\"{{schema}}\",\n\t  \"table\":\"{{ship_tb}}\",\n\t  \"hash_attribute\": \"{{ship_id}}\",\n\t  \"hash_values\":[1],\n\t  \"get_attributes\": [\"companyname\"]\n\t}\n}"
 						},
 						"url": {
-							"raw": "{{host}}:9925/",
+							"raw": "{{host}}:{{port}}",
 							"host": [
 								"{{host}}"
 							],
-							"port": "9925",
-							"path": [
-								""
-							]
+							"port": "{{port}}"
 						},
 						"description": "Method for adding users.  Users can be assigned roles which provide granular access at a table, operation, and attirbute level.  \n\n<ul>\n<li><b>operation </b> <i>(required) </i> - must always be 'add_user'</li>\n\n<li><b>role </b><i>(required) </i>- id of the role you wish to assign to the user.  See add_role for more detail.  </li>\n\n<li><b>username </b> <i>(required)</i> - username assigned to the user.  It can not be altered after adding the user.  It serves as the hash. </li>\n\n<li><b>password </b> <i>(required) </i>- clear text for password.  HarperDB will encrypt the password upon reciept. </li>\n\n</ul>"
 					},
@@ -18468,14 +18318,11 @@
 							"raw": "{\n\t\"operation\":\"export_local\",\n\t\"path\":\"./\",\n\t\"filename\":\"test_export.json\",\n\t\"format\":\"json\",\n\t\"search_operation\": {\n        \"operation\":\"sql\",\n        \"sql\":\"select * from {{schema}}.{{ship_tb}}\"\n    }\n}"
 						},
 						"url": {
-							"raw": "{{host}}:9925/",
+							"raw": "{{host}}:{{port}}",
 							"host": [
 								"{{host}}"
 							],
-							"port": "9925",
-							"path": [
-								""
-							]
+							"port": "{{port}}"
 						},
 						"description": "Method for adding users.  Users can be assigned roles which provide granular access at a table, operation, and attirbute level.  \n\n<ul>\n<li><b>operation </b> <i>(required) </i> - must always be 'add_user'</li>\n\n<li><b>role </b><i>(required) </i>- id of the role you wish to assign to the user.  See add_role for more detail.  </li>\n\n<li><b>username </b> <i>(required)</i> - username assigned to the user.  It can not be altered after adding the user.  It serves as the hash. </li>\n\n<li><b>password </b> <i>(required) </i>- clear text for password.  HarperDB will encrypt the password upon reciept. </li>\n\n</ul>"
 					},
@@ -18530,14 +18377,11 @@
 							"raw": "{\n\t\"operation\":\"export_local\",\n\t\"path\":\"./\",\n\t\"filename\":\"test_export\",\n\t\"format\":\"json\",\n\t\"search_operation\": {\n\t  \"operation\":\"search_by_hash\",\n\t  \"schema\":\"{{schema}}\",\n\t  \"table\":\"{{supp_tb}}\",\n\t  \"hash_attribute\": \"{{supp_id}}\",\n\t  \"hash_values\":[1],\n\t  \"get_attributes\": [\"{{supp_id}}\"]\n\t}\n}"
 						},
 						"url": {
-							"raw": "{{host}}:9925/",
+							"raw": "{{host}}:{{port}}",
 							"host": [
 								"{{host}}"
 							],
-							"port": "9925",
-							"path": [
-								""
-							]
+							"port": "{{port}}"
 						},
 						"description": "Method for adding users.  Users can be assigned roles which provide granular access at a table, operation, and attirbute level.  \n\n<ul>\n<li><b>operation </b> <i>(required) </i> - must always be 'add_user'</li>\n\n<li><b>role </b><i>(required) </i>- id of the role you wish to assign to the user.  See add_role for more detail.  </li>\n\n<li><b>username </b> <i>(required)</i> - username assigned to the user.  It can not be altered after adding the user.  It serves as the hash. </li>\n\n<li><b>password </b> <i>(required) </i>- clear text for password.  HarperDB will encrypt the password upon reciept. </li>\n\n</ul>"
 					},
@@ -18596,11 +18440,11 @@
 							"raw": "{\n  \"operation\":\"drop_user\",\n  \"username\":\"test_user\"\n}"
 						},
 						"url": {
-							"raw": "{{host}}:9925",
+							"raw": "{{host}}:{{port}}",
 							"host": [
 								"{{host}}"
 							],
-							"port": "9925"
+							"port": "{{port}}"
 						},
 						"description": "This method is used for dropping a role.  \n\n<i>You cannot drop a role with associated users.  </i>\n\n<ul>\n<li><b>operation </b><i>(required)</i> - this must always be drop_role </li>\n<li><b>id </b><i>(required) </i> - this is the id of the role you are dropping\n</ul>"
 					},
@@ -18659,11 +18503,11 @@
 							"raw": "{\n\"operation\":\"drop_role\",\n\"id\":\"{{role_id}}\"\n}"
 						},
 						"url": {
-							"raw": "{{host}}:9925",
+							"raw": "{{host}}:{{port}}",
 							"host": [
 								"{{host}}"
 							],
-							"port": "9925"
+							"port": "{{port}}"
 						},
 						"description": "This method is used for dropping a role.  \n\n<i>You cannot drop a role with associated users.  </i>\n\n<ul>\n<li><b>operation </b><i>(required)</i> - this must always be drop_role </li>\n<li><b>id </b><i>(required) </i> - this is the id of the role you are dropping\n</ul>"
 					},
@@ -19122,15 +18966,11 @@
 									"raw": "{\n\t\"operation\":\"delete_files_before\",\n\t\"date\":\"{{insert_timestamp}}\",\n\t\"schema\":\"test_delete_before\",\n\t\"table\":\"address\"\n}\n"
 								},
 								"url": {
-									"raw": "http://localhost:9925/",
-									"protocol": "http",
+									"raw": "{{host}}:{{port}}",
 									"host": [
-										"localhost"
+										"{{host}}"
 									],
-									"port": "9925",
-									"path": [
-										""
-									]
+									"port": "{{port}}"
 								}
 							},
 							"response": []
@@ -19238,12 +19078,11 @@
 									"raw": "{\n\t\"operation\":\"get_job\",\n\t\"id\": \"{{job_id}}\"\n}"
 								},
 								"url": {
-									"raw": "http://localhost:9925",
-									"protocol": "http",
+									"raw": "{{host}}:{{port}}",
 									"host": [
-										"localhost"
+										"{{host}}"
 									],
-									"port": "9925"
+									"port": "{{port}}"
 								}
 							},
 							"response": []
@@ -21860,11 +21699,11 @@
 							"raw": "{\n    \"operation\": \"alter_role\",\n    \"role\": \"bad_user_2\",\n    \"id\": \"{{role_id}}\",\n    \"permission\": {\n        \"super_user\": false,\n        \"crapschema\": {\n            \"tables\": {\n                \"blahblah\": {\n                    \"read\": false,\n                    \"insert\": false,\n                    \"update\": false,\n                    \"delete\": false,\n                    \"attribute_restrictions\": [\n                        {\n                            \"attribute_name\": \"name\",\n                            \"read\": false,\n                            \"insert\": false,\n                            \"update\": true,\n                            \"delete\": false\n                        }\n                    ]\n                }\n            }\n        },\n        \"dev\": {\n            \"tables\": {\n                \"craptable\": {\n                    \"read\": false,\n                    \"insert\": false,\n                    \"update\": false,\n                    \"delete\": false,\n                    \"attribute_restrictions\": [\n                        {\n                            \"attribute_name\": \"name\",\n                            \"read\": false,\n                            \"insert\": false,\n                            \"update\": true,\n                            \"delete\": false\n                        }\n                    ]\n                },\n                \"dog\": {\n                    \"read\": false,\n                    \"insert\": false,\n                    \"update\": false,\n                    \"delete\": false,\n                    \"attribute_restrictions\": [\n                        {\n                            \"attribute_name\": \"name\",\n                            \"read\": false,\n                            \"insert\": false,\n                            \"update\": true,\n                            \"delete\": false\n                        },\n                        {\n                            \"attribute_name\": \"crapattribute\",\n                            \"read\": false,\n                            \"insert\": false,\n                            \"update\": true,\n                            \"delete\": false\n                        }\n                    ]\n                }\n            }\n        }\n    }\n}"
 						},
 						"url": {
-							"raw": "{{host}}:9925",
+							"raw": "{{host}}:{{port}}",
 							"host": [
 								"{{host}}"
 							],
-							"port": "9925"
+							"port": "{{port}}"
 						},
 						"description": "Method for altering  roles.  Roles are assigned to users to give them specifc permisisons.  \n\n<ul>\n<li><b>operation</b><i> (required)</i> - must always be 'alter_role'</li>\n\n<li><b>role</b><i> (optional)</i> - name of role you are defining </li>\n\n<li><b>permission </b><i>(optional)</i> - object defining permissions for users associated with this role </li>\n\n<li> <b>permission.super_admin (optional) </b> - boolean which if set to true gives users associated with this role full access to all operations and methods. </li>\n\n\n\nTo learn more about managing roles view our help desk article \nhttps://harperdbhelp.zendesk.com/hc/en-us/articles/115010158848"
 					},
@@ -21939,11 +21778,11 @@
 							"raw": "{\n\"operation\":\"list_roles\"\n\n}"
 						},
 						"url": {
-							"raw": "{{host}}:9925",
+							"raw": "{{host}}:{{port}}",
 							"host": [
 								"{{host}}"
 							],
-							"port": "9925"
+							"port": "{{port}}"
 						},
 						"description": "Method for listing all roles.  \n\n<ul>\n<li><b>operation </b> <i>(required) </i> - must always be 'list_roles'</li>"
 					},
@@ -21992,11 +21831,11 @@
 							"raw": "{\n  \"operation\": \"alter_role\",\n  \"role\": \"user_role_update\",\n  \"id\": \"{{role_id}}\",\n  \"permission\": {\n    \"super_user\": false,\n    \"{{schema}}\": {\n      \"tables\": {\n        \"{{cust_tb}}\": {\n          \"read\": false,\n          \"insert\": false,\n          \"update\": false,\n          \"delete\": false,\n          \"attribute_restrictions\": [\n            {\n              \"attribute_name\": \"fax\",\n              \"read\": false,\n              \"insert\": false,\n              \"update\": false,\n              \"delete\": false\n            }\n          ]\n        }\n      }\n    }\n    }\n  }"
 						},
 						"url": {
-							"raw": "{{host}}:9925",
+							"raw": "{{host}}:{{port}}",
 							"host": [
 								"{{host}}"
 							],
-							"port": "9925"
+							"port": "{{port}}"
 						},
 						"description": "Method for altering  roles.  Roles are assigned to users to give them specifc permisisons.  \n\n<ul>\n<li><b>operation</b><i> (required)</i> - must always be 'alter_role'</li>\n\n<li><b>role</b><i> (optional)</i> - name of role you are defining </li>\n\n<li><b>permission </b><i>(optional)</i> - object defining permissions for users associated with this role </li>\n\n<li> <b>permission.super_admin (optional) </b> - boolean which if set to true gives users associated with this role full access to all operations and methods. </li>\n\n\n\nTo learn more about managing roles view our help desk article \nhttps://harperdbhelp.zendesk.com/hc/en-us/articles/115010158848"
 					},
@@ -22071,11 +21910,11 @@
 							"raw": "{\n\"operation\":\"list_roles\"\n\n}"
 						},
 						"url": {
-							"raw": "{{host}}:9925",
+							"raw": "{{host}}:{{port}}",
 							"host": [
 								"{{host}}"
 							],
-							"port": "9925"
+							"port": "{{port}}"
 						},
 						"description": "Method for listing all roles.  \n\n<ul>\n<li><b>operation </b> <i>(required) </i> - must always be 'list_roles'</li>"
 					},
@@ -22134,11 +21973,11 @@
 							"raw": "{\n\"operation\":\"drop_role\",\n\"id\":\"{{role_id}}\"\n\n}"
 						},
 						"url": {
-							"raw": "{{host}}:9925",
+							"raw": "{{host}}:{{port}}",
 							"host": [
 								"{{host}}"
 							],
-							"port": "9925"
+							"port": "{{port}}"
 						},
 						"description": "This method is used for dropping a role.  \n\n<i>You cannot drop a role with associated users.  </i>\n\n<ul>\n<li><b>operation </b><i>(required)</i> - this must always be drop_role </li>\n<li><b>id </b><i>(required) </i> - this is the id of the role you are dropping\n</ul>"
 					},
@@ -22268,14 +22107,11 @@
 							"raw": "{\n\"operation\":\"add_user\",\n\"role\":\"{{role_id}}\",\n\"username\":\"test_user\",\n\"password\":\"{{password}}\", \n\"active\":true\n\n}"
 						},
 						"url": {
-							"raw": "{{host}}:9925/",
+							"raw": "{{host}}:{{port}}",
 							"host": [
 								"{{host}}"
 							],
-							"port": "9925",
-							"path": [
-								""
-							]
+							"port": "{{port}}"
 						},
 						"description": "Method for adding users.  Users can be assigned roles which provide granular access at a table, operation, and attirbute level.  \n\n<ul>\n<li><b>operation </b> <i>(required) </i> - must always be 'add_user'</li>\n\n<li><b>role </b><i>(required) </i>- id of the role you wish to assign to the user.  See add_role for more detail.  </li>\n\n<li><b>username </b> <i>(required)</i> - username assigned to the user.  It can not be altered after adding the user.  It serves as the hash. </li>\n\n<li><b>password </b> <i>(required) </i>- clear text for password.  HarperDB will encrypt the password upon reciept. </li>\n\n</ul>"
 					},
@@ -22339,14 +22175,11 @@
 							"raw": "{\n\"operation\":\"alter_user\",\n\"role\":\"\",\n\"username\":\"test_user\",\n\"password\":\"{{password}}\", \n\"active\":true\n\n}"
 						},
 						"url": {
-							"raw": "{{host}}:9925/",
+							"raw": "{{host}}:{{port}}",
 							"host": [
 								"{{host}}"
 							],
-							"port": "9925",
-							"path": [
-								""
-							]
+							"port": "{{port}}"
 						}
 					},
 					"response": []
@@ -22410,14 +22243,11 @@
 							"raw": "{\n\"operation\":\"alter_user\",\n\"username\":\"test_user\",\n\"password\":\"{{password}}\", \n\"active\":false\n\n}"
 						},
 						"url": {
-							"raw": "{{host}}:9925/",
+							"raw": "{{host}}:{{port}}",
 							"host": [
 								"{{host}}"
 							],
-							"port": "9925",
-							"path": [
-								""
-							]
+							"port": "{{port}}"
 						}
 					},
 					"response": []
@@ -22486,11 +22316,11 @@
 							"raw": "{\n\"operation\":\"list_users\"\n\n}"
 						},
 						"url": {
-							"raw": "{{host}}:9925",
+							"raw": "{{host}}:{{port}}",
 							"host": [
 								"{{host}}"
 							],
-							"port": "9925"
+							"port": "{{port}}"
 						},
 						"description": "Method for listing all users.  \n\n<ul>\n<li><b>operation </b> <i>(required) </i> - must always be 'list_users'</li>"
 					},
@@ -22549,11 +22379,11 @@
 							"raw": "{\n  \"operation\":\"drop_user\",\n  \"username\":\"test_user\"\n}"
 						},
 						"url": {
-							"raw": "{{host}}:9925",
+							"raw": "{{host}}:{{port}}",
 							"host": [
 								"{{host}}"
 							],
-							"port": "9925"
+							"port": "{{port}}"
 						},
 						"description": "This method is used for dropping a role.  \n\n<i>You cannot drop a role with associated users.  </i>\n\n<ul>\n<li><b>operation </b><i>(required)</i> - this must always be drop_role </li>\n<li><b>id </b><i>(required) </i> - this is the id of the role you are dropping\n</ul>"
 					},
@@ -22612,11 +22442,11 @@
 							"raw": "{\n\"operation\":\"drop_role\",\n\"id\":\"{{role_id}}\"\n\n}"
 						},
 						"url": {
-							"raw": "{{host}}:9925",
+							"raw": "{{host}}:{{port}}",
 							"host": [
 								"{{host}}"
 							],
-							"port": "9925"
+							"port": "{{port}}"
 						},
 						"description": "This method is used for dropping a role.  \n\n<i>You cannot drop a role with associated users.  </i>\n\n<ul>\n<li><b>operation </b><i>(required)</i> - this must always be drop_role </li>\n<li><b>id </b><i>(required) </i> - this is the id of the role you are dropping\n</ul>"
 					},
@@ -22866,12 +22696,11 @@
 									"raw": "{\n\"operation\":\"create_schema\",\n\"schema\":\"dev\"\n}"
 								},
 								"url": {
-									"raw": "http://localhost:9925",
-									"protocol": "http",
+									"raw": "{{host}}:{{port}}",
 									"host": [
-										"localhost"
+										"{{host}}"
 									],
-									"port": "9925"
+									"port": "{{port}}"
 								}
 							},
 							"status": "OK",
@@ -23024,10 +22853,10 @@
 									"raw": "{\n\"operation\":\"create_schema\",\n\"schema\":\"dev\"\n}"
 								},
 								"url": {
-									"raw": "http://localhost:9925",
+									"raw": "{{host}}:{{port}}",
 									"protocol": "http",
 									"host": [
-										"localhost"
+										"{{host}}"
 									],
 									"port": "9925"
 								}
@@ -23183,12 +23012,11 @@
 									"raw": "{\n\"operation\":\"create_schema\",\n\"schema\":\"dev\"\n}"
 								},
 								"url": {
-									"raw": "http://localhost:9925",
-									"protocol": "http",
+									"raw": "{{host}}:{{port}}",
 									"host": [
-										"localhost"
+										"{{host}}"
 									],
-									"port": "9925"
+									"port": "{{port}}"
 								}
 							},
 							"status": "OK",
@@ -23341,11 +23169,11 @@
 									"raw": "{\n\"operation\":\"create_schema\",\n\"schema\":\"dev\"\n}"
 								},
 								"url": {
-									"raw": "{{host}}:9925",
+									"raw": "{{host}}:{{port}}",
 									"host": [
 										"{{host}}"
 									],
-									"port": "9925"
+									"port": "{{port}}"
 								}
 							},
 							"status": "OK",
@@ -23498,11 +23326,11 @@
 									"raw": "{\n\"operation\":\"describe_table\",\n\"table\":\"dog\",\n\"schema\":\"dev\"\n}"
 								},
 								"url": {
-									"raw": "{{host}}:9925",
+									"raw": "{{host}}:{{port}}",
 									"host": [
 										"{{host}}"
 									],
-									"port": "9925"
+									"port": "{{port}}"
 								}
 							},
 							"status": "OK",
@@ -23613,11 +23441,11 @@
 							"raw": "{\n\t\"operation\":\"get_fingerprint\"\n}"
 						},
 						"url": {
-							"raw": "{{host}}:9925",
+							"raw": "{{host}}:{{port}}",
 							"host": [
 								"{{host}}"
 							],
-							"port": "9925"
+							"port": "{{port}}"
 						},
 						"description": "We first need to create a Schema.  A Schema can be thought of as a container of tables that are independent from tables in other schemas.  An example might be the Schema dev with a table called dog.  The Schema prod may also have a table dog. \n\nNote that if you see the error response \"Cannot complete request: User 'admin' not found\", you need to set the basic auth to the user and password you entered during the install process.  What the heck is basic auth?  Read our article on it here: https://harperdbhelp.zendesk.com/hc/en-us/articles/115010250207-Basic-Auth-with-Postman"
 					},
@@ -23643,11 +23471,11 @@
 									"raw": "{\n\"operation\":\"create_schema\",\n\"schema\":\"dev\"\n}"
 								},
 								"url": {
-									"raw": "{{host}}:9925",
+									"raw": "{{host}}:{{port}}",
 									"host": [
 										"{{host}}"
 									],
-									"port": "9925"
+									"port": "{{port}}"
 								}
 							},
 							"status": "OK",
@@ -23770,11 +23598,11 @@
 							"raw": "{\n\"operation\":\"set_license\",\n\"key\":\"uFFG7xAZG11ec9d335bfe27c4ec5555310bd4a27f\",\n\"company\":\"harperdb.io\"\n}"
 						},
 						"url": {
-							"raw": "{{host}}:9925",
+							"raw": "{{host}}:{{port}}",
 							"host": [
 								"{{host}}"
 							],
-							"port": "9925"
+							"port": "{{port}}"
 						},
 						"description": "We first need to create a Schema.  A Schema can be thought of as a container of tables that are independent from tables in other schemas.  An example might be the Schema dev with a table called dog.  The Schema prod may also have a table dog. \n\nNote that if you see the error response \"Cannot complete request: User 'admin' not found\", you need to set the basic auth to the user and password you entered during the install process.  What the heck is basic auth?  Read our article on it here: https://harperdbhelp.zendesk.com/hc/en-us/articles/115010250207-Basic-Auth-with-Postman"
 					},
@@ -23800,11 +23628,11 @@
 									"raw": "{\n\"operation\":\"create_schema\",\n\"schema\":\"dev\"\n}"
 								},
 								"url": {
-									"raw": "{{host}}:9925",
+									"raw": "{{host}}:{{port}}",
 									"host": [
 										"{{host}}"
 									],
-									"port": "9925"
+									"port": "{{port}}"
 								}
 							},
 							"status": "OK",
@@ -24000,11 +23828,11 @@
 							"raw": "{\n\"operation\":\"set_license\",\n\"key\":\"\",\n\"company\":\"harperdb.io\"\n}"
 						},
 						"url": {
-							"raw": "{{host}}:9925",
+							"raw": "{{host}}:{{port}}",
 							"host": [
 								"{{host}}"
 							],
-							"port": "9925"
+							"port": "{{port}}"
 						},
 						"description": "We first need to create a Schema.  A Schema can be thought of as a container of tables that are independent from tables in other schemas.  An example might be the Schema dev with a table called dog.  The Schema prod may also have a table dog. \n\nNote that if you see the error response \"Cannot complete request: User 'admin' not found\", you need to set the basic auth to the user and password you entered during the install process.  What the heck is basic auth?  Read our article on it here: https://harperdbhelp.zendesk.com/hc/en-us/articles/115010250207-Basic-Auth-with-Postman"
 					},
@@ -24030,11 +23858,11 @@
 									"raw": "{\n\"operation\":\"create_schema\",\n\"schema\":\"dev\"\n}"
 								},
 								"url": {
-									"raw": "{{host}}:9925",
+									"raw": "{{host}}:{{port}}",
 									"host": [
 										"{{host}}"
 									],
-									"port": "9925"
+									"port": "{{port}}"
 								}
 							},
 							"status": "OK",
@@ -24152,11 +23980,11 @@
 							"raw": "{\n\t\"operation\": \"configure_cluster\",\n\t\"clustering\": \"true\",\n\t\"clustering_PORT\": \"12345\",\n\t\"NODE_NAME\":\"server\"\n}"
 						},
 						"url": {
-							"raw": "{{host}}:9925",
+							"raw": "{{host}}:{{port}}",
 							"host": [
 								"{{host}}"
 							],
-							"port": "9925"
+							"port": "{{port}}"
 						},
 						"description": "We first need to create a Schema.  A Schema can be thought of as a container of tables that are independent from tables in other schemas.  An example might be the Schema dev with a table called dog.  The Schema prod may also have a table dog. \n\nNote that if you see the error response \"Cannot complete request: User 'admin' not found\", you need to set the basic auth to the user and password you entered during the install process.  What the heck is basic auth?  Read our article on it here: https://harperdbhelp.zendesk.com/hc/en-us/articles/115010250207-Basic-Auth-with-Postman"
 					},
@@ -24182,11 +24010,11 @@
 									"raw": "{\n\"operation\":\"create_schema\",\n\"schema\":\"dev\"\n}"
 								},
 								"url": {
-									"raw": "{{host}}:9925",
+									"raw": "{{host}}:{{port}}",
 									"host": [
 										"{{host}}"
 									],
-									"port": "9925"
+									"port": "{{port}}"
 								}
 							},
 							"status": "OK",
@@ -24306,11 +24134,11 @@
 							"raw": "{\n\t\"operation\": \"configure_cluster\",\n\t\"clustering\": \"true\",\n\t\"clustering_PORT\": \"1\",\n\t\"NODE_NAME\":\"some_name\"\n}"
 						},
 						"url": {
-							"raw": "{{host}}:9925",
+							"raw": "{{host}}:{{port}}",
 							"host": [
 								"{{host}}"
 							],
-							"port": "9925"
+							"port": "{{port}}"
 						},
 						"description": "We first need to create a Schema.  A Schema can be thought of as a container of tables that are independent from tables in other schemas.  An example might be the Schema dev with a table called dog.  The Schema prod may also have a table dog. \n\nNote that if you see the error response \"Cannot complete request: User 'admin' not found\", you need to set the basic auth to the user and password you entered during the install process.  What the heck is basic auth?  Read our article on it here: https://harperdbhelp.zendesk.com/hc/en-us/articles/115010250207-Basic-Auth-with-Postman"
 					},
@@ -24336,11 +24164,11 @@
 									"raw": "{\n\"operation\":\"create_schema\",\n\"schema\":\"dev\"\n}"
 								},
 								"url": {
-									"raw": "{{host}}:9925",
+									"raw": "{{host}}:{{port}}",
 									"host": [
 										"{{host}}"
 									],
-									"port": "9925"
+									"port": "{{port}}"
 								}
 							},
 							"status": "OK",

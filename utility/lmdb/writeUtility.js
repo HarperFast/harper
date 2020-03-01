@@ -74,7 +74,7 @@ function insertRecords(env, hash_attribute, write_attributes , records){
                     let value = common.convertKeyValueToWrite(record[attribute], env.dbis[attribute][lmdb_terms.DBI_DEFINITION_NAME].key_type);
                     if(value !== null) {
                         //LMDB has a 511 byte limit for keys, so we return null if the byte size is larger than 511 to not index that value
-                        if(Buffer.byteLength(value) > MAX_BYTE_SIZE){
+                        if(typeof value === 'string' && Buffer.byteLength(value) > MAX_BYTE_SIZE){
                             let key = `${attribute}/${primary_key}`;
                             txn.putString(env.dbis[lmdb_terms.BLOB_DBI_NAME], key, value);
                         }else {

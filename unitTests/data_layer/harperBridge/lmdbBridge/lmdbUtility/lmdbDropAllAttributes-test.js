@@ -161,7 +161,7 @@ describe('test lmdbDropAllAttributes module', ()=>{
 
             let env = await test_utils.assertErrorAsync(environment_utility.openEnvironment, [DEV_SCHEMA_PATH, 'test'], undefined);
             let dbis = await test_utils.assertErrorAsync(environment_utility.listDBIs, [env], undefined);
-            assert.deepStrictEqual(dbis.length, 0);
+            assert.deepStrictEqual(dbis.length, 1);
 
             for(let x = 0; x < results.length; x++){
                 await test_utils.assertErrorAsync(environment_utility.openDBI, [env, results[x].attribute], LMDB_ERRORS.DBI_DOES_NOT_EXIST);

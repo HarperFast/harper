@@ -468,13 +468,16 @@ describe("Test LMDB environmentUtility module", ()=>{
                 let expected = Object.create(null);
                 expected.id = new DBIDefinition(false, lmdb_terms.DBI_KEY_TYPES.STRING, true);
                 expected.temperature = new DBIDefinition(true, lmdb_terms.DBI_KEY_TYPES.NUMBER, false);
+                expected[lmdb_terms.BLOB_DBI_NAME] = new DBIDefinition(false, lmdb_terms.DBI_KEY_TYPES.STRING, false);
 
                 assert.deepStrictEqual(expected, dbis);
             });
 
             it('call function no dbis', async ()=>{
                 let dbis = await test_utils.assertErrorAsync(lmdb_env_util.listDBIDefinitions, [env2], undefined);
-                assert.deepStrictEqual(dbis, Object.create(null));
+                let expected = Object.create(null);
+                expected[lmdb_terms.BLOB_DBI_NAME] = new DBIDefinition(false, lmdb_terms.DBI_KEY_TYPES.STRING, false);
+                assert.deepStrictEqual(dbis, expected);
             });
         });
 
@@ -504,12 +507,12 @@ describe("Test LMDB environmentUtility module", ()=>{
         it('call function happy path', async ()=>{
             let dbis = await test_utils.assertErrorAsync(lmdb_env_util.listDBIs, [env], undefined);
 
-            assert.deepStrictEqual(dbis, ['id', 'temperature']);
+            assert.deepStrictEqual(dbis, [lmdb_terms.BLOB_DBI_NAME, 'id', 'temperature']);
         });
 
         it('call function no dbis', async ()=>{
             let dbis = await test_utils.assertErrorAsync(lmdb_env_util.listDBIs, [env2], undefined);
-            assert.deepStrictEqual(dbis, []);
+            assert.deepStrictEqual(dbis, [lmdb_terms.BLOB_DBI_NAME]);
         });
     });
 
@@ -632,6 +635,7 @@ describe("Test LMDB environmentUtility module", ()=>{
 
             let expected = Object.create(null);
             expected.id = new DBIDefinition(false, lmdb_terms.DBI_KEY_TYPES.STRING, false);
+            expected[lmdb_terms.BLOB_DBI_NAME] = new DBIDefinition(false, lmdb_terms.DBI_KEY_TYPES.STRING, false);
 
             assert.deepStrictEqual(list_e, undefined);
             assert.deepStrictEqual(dbis, expected);
