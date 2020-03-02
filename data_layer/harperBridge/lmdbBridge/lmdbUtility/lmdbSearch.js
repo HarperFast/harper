@@ -15,7 +15,6 @@ const LMDB_ERRORS = require('../../../../utility/commonErrors').LMDB_ERRORS_ENUM
 
 const WILDCARDS = hdb_terms.SEARCH_WILDCARDS;
 
-const WILDCARD_REPLACE_REGEX = new RegExp(/[*%]/, 'g');
 const LMDB_THREAD_SEARCH_MODULE_PATH = path.join(__dirname, 'lmdbThreadSearch');
 
 const DBI_ENTRY_COUNT_LIMIT = 1000000;
@@ -66,46 +65,45 @@ async function executeSearch(search_object, search_type, hash_attribute, return_
 
         search_object.search_value = search_object.search_value.toString();
 
-            search_object.search_value = search_object.search_value.replace(WILDCARD_REPLACE_REGEX, '');
-            switch (search_type) {
-                case lmdb_terms.SEARCH_TYPES.EQUALS:
-                    ids = search_utility.equals(env, search_object.search_attribute, search_object.search_value);
-                    break;
-                case lmdb_terms.SEARCH_TYPES.CONTAINS:
-                    ids = search_utility.contains(env, search_object.search_attribute, search_object.search_value);
-                    break;
-                case lmdb_terms.SEARCH_TYPES.ENDS_WITH:
-                    ids = search_utility.endsWith(env, search_object.search_attribute, search_object.search_value);
-                    break;
-                case lmdb_terms.SEARCH_TYPES.STARTS_WITH:
-                    ids = search_utility.startsWith(env, search_object.search_attribute, search_object.search_value);
-                    break;
-                case lmdb_terms.SEARCH_TYPES.BATCH_SEARCH_BY_HASH:
-                    return search_utility.batchSearchByHash(env, search_object.search_attribute, search_object.get_attributes, [search_object.search_value]);
-                case lmdb_terms.SEARCH_TYPES.BATCH_SEARCH_BY_HASH_TO_MAP:
-                    return search_utility.batchSearchByHashToMap(env, search_object.search_attribute, search_object.get_attributes, [search_object.search_value]);
-                case lmdb_terms.SEARCH_TYPES.SEARCH_ALL:
-                    return search_utility.searchAll(env, hash_attribute, search_object.get_attributes);
-                case lmdb_terms.SEARCH_TYPES.SEARCH_ALL_TO_MAP:
-                    return search_utility.searchAllToMap(env, hash_attribute, search_object.get_attributes);
-                case lmdb_terms.SEARCH_TYPES.BETWEEN:
-                    ids = search_utility.between(env, search_object.search_attribute, search_object.search_value, search_object.end_value);
-                    break;
-                case lmdb_terms.SEARCH_TYPES.GREATER_THAN:
-                    ids = search_utility.greaterThan(env, search_object.search_attribute, search_object.search_value);
-                    break;
-                case lmdb_terms.SEARCH_TYPES.GREATER_THAN_EQUAL:
-                    ids = search_utility.greaterThanEqual(env, search_object.search_attribute, search_object.search_value);
-                    break;
-                case lmdb_terms.SEARCH_TYPES.LESS_THAN:
-                    ids = search_utility.lessThan(env, search_object.search_attribute, search_object.search_value);
-                    break;
-                case lmdb_terms.SEARCH_TYPES.LESS_THAN_EQUAL:
-                    ids = search_utility.lessThanEqual(env, search_object.search_attribute, search_object.search_value);
-                    break;
-                default:
-                    return ids;
-            }
+        switch (search_type) {
+            case lmdb_terms.SEARCH_TYPES.EQUALS:
+                ids = search_utility.equals(env, search_object.search_attribute, search_object.search_value);
+                break;
+            case lmdb_terms.SEARCH_TYPES.CONTAINS:
+                ids = search_utility.contains(env, search_object.search_attribute, search_object.search_value);
+                break;
+            case lmdb_terms.SEARCH_TYPES.ENDS_WITH:
+                ids = search_utility.endsWith(env, search_object.search_attribute, search_object.search_value);
+                break;
+            case lmdb_terms.SEARCH_TYPES.STARTS_WITH:
+                ids = search_utility.startsWith(env, search_object.search_attribute, search_object.search_value);
+                break;
+            case lmdb_terms.SEARCH_TYPES.BATCH_SEARCH_BY_HASH:
+                return search_utility.batchSearchByHash(env, search_object.search_attribute, search_object.get_attributes, [search_object.search_value]);
+            case lmdb_terms.SEARCH_TYPES.BATCH_SEARCH_BY_HASH_TO_MAP:
+                return search_utility.batchSearchByHashToMap(env, search_object.search_attribute, search_object.get_attributes, [search_object.search_value]);
+            case lmdb_terms.SEARCH_TYPES.SEARCH_ALL:
+                return search_utility.searchAll(env, hash_attribute, search_object.get_attributes);
+            case lmdb_terms.SEARCH_TYPES.SEARCH_ALL_TO_MAP:
+                return search_utility.searchAllToMap(env, hash_attribute, search_object.get_attributes);
+            case lmdb_terms.SEARCH_TYPES.BETWEEN:
+                ids = search_utility.between(env, search_object.search_attribute, search_object.search_value, search_object.end_value);
+                break;
+            case lmdb_terms.SEARCH_TYPES.GREATER_THAN:
+                ids = search_utility.greaterThan(env, search_object.search_attribute, search_object.search_value);
+                break;
+            case lmdb_terms.SEARCH_TYPES.GREATER_THAN_EQUAL:
+                ids = search_utility.greaterThanEqual(env, search_object.search_attribute, search_object.search_value);
+                break;
+            case lmdb_terms.SEARCH_TYPES.LESS_THAN:
+                ids = search_utility.lessThan(env, search_object.search_attribute, search_object.search_value);
+                break;
+            case lmdb_terms.SEARCH_TYPES.LESS_THAN_EQUAL:
+                ids = search_utility.lessThanEqual(env, search_object.search_attribute, search_object.search_value);
+                break;
+            default:
+                return ids;
+        }
 
         if (return_map === true) {
             return search_utility.batchSearchByHashToMap(env, hash_attribute, search_object.get_attributes, ids);
@@ -148,14 +146,18 @@ function createSearchTypeFromSearchObject(search_object, hash_attribute, return_
         }
 
         if (WILDCARDS.indexOf(first_search_character) >= 0 && WILDCARDS.indexOf(last_search_character) >= 0) {
+            //this removes the first  & last character from the search value
+            search_object.search_value = search_object.search_value.slice(1, -1);
             return lmdb_terms.SEARCH_TYPES.CONTAINS;
         }
 
         if (WILDCARDS.indexOf(first_search_character) >= 0) {
+            search_object.search_value = search_object.search_value.substr(1);
             return lmdb_terms.SEARCH_TYPES.ENDS_WITH;
         }
 
         if (WILDCARDS.indexOf(last_search_character) >= 0) {
+            search_object.search_value = search_object.search_value.slice(0, -1);
             return lmdb_terms.SEARCH_TYPES.STARTS_WITH;
         }
 

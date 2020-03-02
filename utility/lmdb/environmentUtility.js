@@ -143,6 +143,8 @@ async function createEnvironment(base_path, env_name) {
 
             dbi.close();
 
+            createDBI(env, lmdb_terms.BLOB_DBI_NAME, false, lmdb_terms.DBI_KEY_TYPES.STRING, false);
+
             //add environment to global variable to cache reference to environment & named databases
             if(global.lmdb_map === undefined) {
                 global.lmdb_map = Object.create(null);

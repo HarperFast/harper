@@ -389,6 +389,59 @@ function equals(env, attribute, search_value){
             cursor_functions.pushResults(key_value, txn, results);
         }
         txn.close();
+
+        if(Buffer.byteLength(search_value.toString()) > lmdb_terms.MAX_BYTE_SIZE) {
+            blobSearch(env, attribute, search_value.toString(), lmdb_terms.SEARCH_TYPES.EQUALS, results);
+        }
+        return results;
+    }catch(e){
+        if(txn !== undefined){
+            txn.close();
+        }
+
+        throw e;
+    }
+}
+
+function blobSearch(env, attribute, search_value, search_type, results = []){
+    let txn = undefined;
+    try{
+        txn = new TransactionCursor(env, lmdb_terms.BLOB_DBI_NAME);
+        let range_value = `${attribute}/`;
+        for(let found = txn.cursor.goToRange(range_value); found !== null; found = txn.cursor.goToNext()){
+            if(found.startsWith(range_value) === false){
+                txn.cursor.goToLast();
+                continue;
+            }
+
+            let text = txn.cursor.getCurrentString();
+            let hash_value = found.replace(range_value, '');
+            switch(search_type){
+                case lmdb_terms.SEARCH_TYPES.EQUALS:
+                    if(text === search_value){
+                        results.push(hash_value);
+                    }
+                    break;
+                case lmdb_terms.SEARCH_TYPES.STARTS_WITH:
+                    if(text.startsWith(search_value) === true){
+                        results.push(hash_value);
+                    }
+                    break;
+                case lmdb_terms.SEARCH_TYPES.ENDS_WITH:
+                    if(text.endsWith(search_value) === true){
+                        results.push(hash_value);
+                    }
+                    break;
+                case lmdb_terms.SEARCH_TYPES.CONTAINS:
+                    if(text.indexOf(search_value) >= 0){
+                        results.push(hash_value);
+                    }
+                    break;
+                default:
+                    break;
+            }
+        }
+        txn.cursor.close();
         return results;
     }catch(e){
         if(txn !== undefined){
@@ -409,7 +462,9 @@ function equals(env, attribute, search_value){
 function startsWith(env, attribute, search_value){
     validateComparisonFunctions(env, attribute, search_value);
     let dbi = environment_utility.openDBI(env, attribute);
-    return iterateRangeNext(env, attribute, search_value, cursor_functions.startsWith.bind(null, dbi[lmdb_terms.DBI_DEFINITION_NAME].key_type));
+    let results = iterateRangeNext(env, attribute, search_value, cursor_functions.startsWith.bind(null, dbi[lmdb_terms.DBI_DEFINITION_NAME].key_type));
+    results = blobSearch(env, attribute, search_value, lmdb_terms.SEARCH_TYPES.STARTS_WITH, results);
+    return results;
 }
 
 /**
@@ -422,7 +477,9 @@ function startsWith(env, attribute, search_value){
 function endsWith(env, attribute, search_value){
     validateComparisonFunctions(env, attribute, search_value);
 
-    return iterateFullIndex(env, attribute, cursor_functions.endsWith.bind(null, search_value));
+    let results = iterateFullIndex(env, attribute, cursor_functions.endsWith.bind(null, search_value));
+    results = blobSearch(env, attribute, search_value, lmdb_terms.SEARCH_TYPES.ENDS_WITH, results);
+    return results;
 }
 
 /**
@@ -435,7 +492,9 @@ function endsWith(env, attribute, search_value){
 function contains(env, attribute, search_value){
     validateComparisonFunctions(env, attribute, search_value);
 
-    return iterateFullIndex(env, attribute, cursor_functions.contains.bind(null, search_value));
+    let results = iterateFullIndex(env, attribute, cursor_functions.contains.bind(null, search_value));
+    results = blobSearch(env, attribute, search_value, lmdb_terms.SEARCH_TYPES.CONTAINS, results);
+    return results;
 }
 
 /** RANGE FUNCTIONS **/

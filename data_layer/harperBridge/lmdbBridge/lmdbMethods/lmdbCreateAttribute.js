@@ -32,7 +32,7 @@ async function lmdbCreateAttribute(create_attribute_obj) {
     }
 
     //the validator strings everything so we need to recast the booleans on create_attribute_obj
-    create_attribute_obj.int_key = create_attribute_obj.int_key === "true";
+    create_attribute_obj.is_hash_attribute = create_attribute_obj.is_hash_attribute === "true";
     create_attribute_obj.dup_sort = create_attribute_obj.dup_sort === "true";
 
     let attributes_obj_array = [];

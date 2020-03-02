@@ -15,9 +15,11 @@ let test_data = require('../../../../testData');
 const rewire = require('rewire');
 const environment_utility = rewire('../../../../../utility/lmdb/environmentUtility');
 const SearchObject = require('../../../../../data_layer/SearchObject');
+const SearchByHashObject = require('../../../../../data_layer/SearchByHashObject');
 const DropAttributeObject = require('../../../../../data_layer/DropAttributeObject');
 const lmdb_drop_table = rewire('../../../../../data_layer/harperBridge/lmdbBridge/lmdbMethods/lmdbDropTable');
 const search_by_value = require('../../../../../data_layer/harperBridge/lmdbBridge/lmdbMethods/lmdbSearchByValue');
+const search_by_hash = require('../../../../../data_layer/harperBridge/lmdbBridge/lmdbMethods/lmdbSearchByHash');
 const lmdb_create_schema = require('../../../../../data_layer/harperBridge/lmdbBridge/lmdbMethods/lmdbCreateSchema');
 const lmdb_create_table = require('../../../../../data_layer/harperBridge/lmdbBridge/lmdbMethods/lmdbCreateTable');
 const lmdb_create_records = require('../../../../../data_layer/harperBridge/lmdbBridge/lmdbMethods/lmdbCreateRecords');
@@ -105,7 +107,7 @@ describe('test lmdbDropTable module', ()=>{
             global.hdb_schema.dev.test.attributes = [
                 {attribute:'id'},
                 {attribute:'__updatedtime__'},
-                {attribute:'__createdtime__'},
+                {attribute:'__createdtime__'}
             ];
 
             await lmdb_create_records(INSERT_OBJECT_TEST);
@@ -117,7 +119,7 @@ describe('test lmdbDropTable module', ()=>{
                 {attribute:'city'},
                 {attribute:'state'},
                 {attribute:'__updatedtime__'},
-                {attribute:'__createdtime__'},
+                {attribute:'__createdtime__'}
             ];
         });
 
@@ -197,7 +199,7 @@ describe('test lmdbDropTable module', ()=>{
             global.hdb_schema.dev.test.attributes = [
                 {attribute:'id'},
                 {attribute:'__updatedtime__'},
-                {attribute:'__createdtime__'},
+                {attribute:'__createdtime__'}
             ];
             await lmdb_create_records(INSERT_OBJECT_TEST);
             global.hdb_schema.dev.test.attributes = [
@@ -210,7 +212,7 @@ describe('test lmdbDropTable module', ()=>{
                 {attribute:'city'},
                 {attribute:'state'},
                 {attribute:'__updatedtime__'},
-                {attribute:'__createdtime__'},
+                {attribute:'__createdtime__'}
             ];
         });
 
@@ -272,6 +274,11 @@ describe('test lmdbDropTable module', ()=>{
             }
 
             assert.deepStrictEqual(found_tbl, undefined);
+
+            //search for the table by id
+            let hash_search = new SearchByHashObject('system', 'hdb_attribute', [TABLE_SYSTEM_DATA_TEST_A.id], ['*']);
+            search_table_results = await search_by_hash(hash_search);
+            assert.deepStrictEqual(search_table_results, []);
 
             search_attr_obj = new SearchObject('system', 'hdb_attribute', 'schema_table', 'dev.test', undefined, ['attribute']);
             search_attr_results = await search_by_value(search_attr_obj);

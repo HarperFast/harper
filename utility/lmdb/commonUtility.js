@@ -5,7 +5,6 @@ const lmdb = require('node-lmdb');
 const lmdb_terms = require('./terms');
 const Buffer = require('buffer').Buffer;
 
-const MAX_BYTE_SIZE = 254;
 /**
  * validates the env argument
  * @param env - environment object used thigh level to interact with all data in an environment
@@ -37,11 +36,6 @@ function stringifyData(raw_value){
         value = typeof raw_value === 'object' ? JSON.stringify(raw_value) : raw_value.toString();
     } catch(e){
         value = raw_value.toString();
-    }
-
-    //LMDB has a 511 byte limit for keys, so we return null if the byte size is larger than 511 to not index that value
-    if(Buffer.byteLength(value) > MAX_BYTE_SIZE){
-        return null;
     }
 
     return value;

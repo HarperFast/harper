@@ -76,7 +76,6 @@ async function createLMDBTables(schema_path, logger){
             logger.error(`issue creating environment for ${terms.SYSTEM_SCHEMA_NAME}.${table_name}: ${e}`);
             throw e;
         }
-
         let hash_attribute = system_schema[table_name].hash_attribute;
 
         //create all dbis
@@ -86,8 +85,10 @@ async function createLMDBTables(schema_path, logger){
             try {
                 if(terms.TIME_STAMP_NAMES.indexOf(attribute_name) >=0){
                     await lmdb_environment_utility.createDBI(table_env, attribute_name, true, lmdb_terms.DBI_KEY_TYPES.NUMBER);
-                } else {
-                    await lmdb_environment_utility.createDBI(table_env, attribute_name, attribute_name !== hash_attribute);
+                } else if (attribute_name === hash_attribute){
+                    await lmdb_environment_utility.createDBI(table_env, attribute_name, false, lmdb_terms.DBI_KEY_TYPES.STRING, true);
+                } else{
+                    await lmdb_environment_utility.createDBI(table_env, attribute_name, true, lmdb_terms.DBI_KEY_TYPES.STRING, false);
                 }
             } catch(e){
                 logger.error(`issue creating dbi for ${terms.SYSTEM_SCHEMA_NAME}.${table_name}.${attribute_name}: ${e}`);

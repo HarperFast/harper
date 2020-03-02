@@ -9,6 +9,7 @@ const terms = require('../utility/hdbTerms');
 
 // Promisified functions
 let p_search_search_by_value = promisify(search.searchByValue);
+let p_search_search_by_hash = promisify(search.searchByHash);
 
 const NAME_ATTRIBUTE_STRING = 'name';
 const HASH_ATTRIBUTE_STRING = 'hash_attribute';
@@ -167,10 +168,8 @@ async function describeSchema(describe_schema_object) {
         schema_search_obj.hash_attribute = terms.SYSTEM_TABLE_HASH_ATTRIBUTES.SCHEMA_TABLE_HASH_ATTRIBUTE;
         schema_search_obj.hash_values = [describe_schema_object.schema];
         schema_search_obj.get_attributes = [NAME_ATTRIBUTE_STRING];
-        schema_search_obj.search_value = terms.WILDCARD_SEARCH_VALUE;
-        schema_search_obj.search_attribute = terms.WILDCARD_SEARCH_VALUE;
 
-        let schema = await p_search_search_by_value(schema_search_obj);
+        let schema = await p_search_search_by_hash(schema_search_obj);
         if (schema && schema.length < 1) {
             throw new Error('schema not found');
         } else {

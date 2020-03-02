@@ -110,6 +110,7 @@ describe("test lmdbCreateTable module", ()=>{
         let schema_path = path.join(BASE_SCHEMA_PATH, CREATE_TABLE_OBJ_TEST_A.schema);
         let table_path = path.join(schema_path, CREATE_TABLE_OBJ_TEST_A.table, 'data.mdb');
         let expected_attributes = ['__createdtime__', '__updatedtime__', 'id'];
+        let expected_dbis = ['__blob__' , '__createdtime__', '__updatedtime__', 'id'];
 
         await test_utils.assertErrorAsync(lmdb_create_table, [TABLE_SYSTEM_DATA_TEST_A, CREATE_TABLE_OBJ_TEST_A], undefined);
 
@@ -123,7 +124,7 @@ describe("test lmdbCreateTable module", ()=>{
 
         let all_dbis = test_utils.assertErrorSync(environment_utility.listDBIs, [new_env], undefined);
 
-        assert.deepStrictEqual(all_dbis, expected_attributes);
+        assert.deepStrictEqual(all_dbis, expected_dbis);
         let attribute_ids = test_utils.assertErrorSync(search_utility.equals,
             [hdb_attribute_env, 'schema_table', `${TABLE_SYSTEM_DATA_TEST_A.schema}.${TABLE_SYSTEM_DATA_TEST_A.name}`], undefined);
 
@@ -139,7 +140,7 @@ describe("test lmdbCreateTable module", ()=>{
         let expected_table = test_utils.assignObjecttoNullObject(TABLE_SYSTEM_DATA_TEST_B);
         let schema_path = path.join(BASE_SCHEMA_PATH, CREATE_TABLE_OBJ_TEST_B.schema);
         let table_path = path.join(schema_path, CREATE_TABLE_OBJ_TEST_B.table, 'data.mdb');
-        let expected_attributes = ['__createdtime__', '__updatedtime__', 'name'];
+        let expected_attributes = ['__blob__', '__createdtime__', '__updatedtime__', 'name'];
 
         await test_utils.assertErrorAsync(lmdb_create_table, [TABLE_SYSTEM_DATA_TEST_B, CREATE_TABLE_OBJ_TEST_B], undefined);
 
@@ -174,7 +175,6 @@ describe("test lmdbCreateTable module", ()=>{
         });
 
         await test_utils.assertErrorAsync(lmdb_create_table, [TABLE_SYSTEM_DATA_TEST_B, CREATE_TABLE_OBJ_TEST_B], error_msg);
-
 
         rw();
     });
