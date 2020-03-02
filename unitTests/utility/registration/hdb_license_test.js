@@ -1,4 +1,4 @@
-"use strict"
+"use strict";
 /**
  * Test the hdb_license module.
  */
@@ -18,7 +18,7 @@ const LICENSES = [
     {
         license_key: {
             exp_date: moment().add(1, 'year').unix(),
-            storage_type: 'helium',
+            storage_type: 'fs',
             api_call: 10000,
             version: '2.0.0',
             ram_allocation: hdb_terms.RAM_ALLOCATION_ENUM.DEFAULT,
@@ -29,7 +29,7 @@ const LICENSES = [
     },
     {license_key: {
             exp_date: moment().add(2, 'year').unix(),
-            storage_type: 'helium',
+            storage_type: 'fs',
             api_call: 10000,
             version: '2.0.0',
             ram_allocation: 2500,
@@ -84,7 +84,7 @@ describe(`Test generateLicense`, function () {
             exp_date: moment().add(1, 'day').utc().format('YYYY-MM-DD'),
             company: 'hdb',
             fingerprint: 'whatever',
-            storage_type: 'helium',
+            storage_type: 'fs',
             api_call: 90000,
             ram_allocation: hdb_terms.RAM_ALLOCATION_ENUM.DEFAULT,
             version: '2.0.0'};
@@ -106,7 +106,7 @@ describe(`Test generateLicense`, function () {
         const license_generator = rewire('../../../utility/devops/licenseGenerator');
         // prepare license key obj which *expire today* with dummy fingerprint (no fingerprint validation in generate license process)
         let licenseKeyObject = { exp_date: moment().subtract(1, 'day').format('YYYY-MM-DD'), company: 'hdb', fingerprint: 'whatever',
-            storage_type: 'helium',
+            storage_type: 'fs',
             api_call: 90000,
             ram_allocation: hdb_terms.RAM_ALLOCATION_ENUM.DEFAULT,
             version: '2.0.0'};
@@ -128,7 +128,7 @@ describe(`Test generateLicense`, function () {
         const license_generator = rewire('../../../utility/devops/licenseGenerator');
         // prepare license key obj which expire tomorrow with *blank company* and dummy fingerprint (no fingerprint validation in generate license process)
         let licenseKeyObject = { exp_date: moment().add(1, 'day').utc().format('YYYY-MM-DD'), company: null, fingerprint: 'whatever',
-            storage_type: 'helium',
+            storage_type: 'fs',
             api_call: 90000,
             ram_allocation: hdb_terms.RAM_ALLOCATION_ENUM.DEFAULT,
             version: '2.0.0'};
@@ -150,7 +150,7 @@ describe(`Test generateLicense`, function () {
         const license_generator = rewire('../../../utility/devops/licenseGenerator');
         // prepare license key obj which *expire date is blank* with dummy fingerprint (no fingerprint validation in generate license process)
         let licenseKeyObject = { exp_date: null, company: 'hdb', fingerprint: 'whatever',
-            storage_type: 'helium',
+            storage_type: 'fs',
             api_call: 90000,
             ram_allocation: hdb_terms.RAM_ALLOCATION_ENUM.DEFAULT,
             version: '2.0.0'};
@@ -310,7 +310,7 @@ describe(`Test validateLicense`, function () {
         const hdb_license = rewire('../../../utility/registration/hdb_license');
         const license_generator = rewire('../../../utility/devops/licenseGenerator');
         let licenseKeyObject = { exp_date: moment().add(1, 'day').utc().format('YYYY-MM-DD'), company: 'hdb',
-            storage_type: 'helium',
+            storage_type: 'fs',
             api_call: 90000,
             ram_allocation: hdb_terms.RAM_ALLOCATION_ENUM.DEFAULT,
             version: '2.0.0'};
@@ -352,7 +352,7 @@ describe(`Test validateLicense`, function () {
         const hdb_license = rewire('../../../utility/registration/hdb_license');
         const license_generator = rewire('../../../utility/devops/licenseGenerator');
         let licenseKeyObject = { exp_date: moment().subtract(1, 'day').utc().format('YYYY-MM-DD'), company: 'hdb',
-            storage_type: 'helium',
+            storage_type: 'fs',
             api_call: 90000,
             ram_allocation: hdb_terms.RAM_ALLOCATION_ENUM.DEFAULT,
             version: '2.0.0'};
@@ -384,7 +384,7 @@ describe(`Test validateLicense`, function () {
         const hdb_license = rewire('../../../utility/registration/hdb_license');
         const license_generator = rewire('../../../utility/devops/licenseGenerator');
         let licenseKeyObject = { exp_date: moment().add(1, 'day').utc().format('YYYY-MM-DD'), company: 'hdb',
-            storage_type: 'helium',
+            storage_type: 'fs',
             api_call: 90000,
             ram_allocation: hdb_terms.RAM_ALLOCATION_ENUM.DEFAULT,
             version: '2.0.0'};
@@ -405,7 +405,7 @@ describe(`Test validateLicense`, function () {
         const hdb_license = rewire('../../../utility/registration/hdb_license');
         const license_generator = rewire('../../../utility/devops/licenseGenerator');
         let licenseKeyObject = { exp_date: moment().add(1, 'day').utc().format('YYYY-MM-DD'), company: 'hdb',
-            storage_type: 'helium',
+            storage_type: 'fs',
             api_call: 90000,
             ram_allocation: hdb_terms.RAM_ALLOCATION_ENUM.DEFAULT,
             version: '2.0.0'};
@@ -430,7 +430,7 @@ describe(`Test validateLicense`, function () {
         const hdb_license = rewire('../../../utility/registration/hdb_license');
         const license_generator = rewire('../../../utility/devops/licenseGenerator');
         let licenseKeyObject = { exp_date: moment().add(1, 'day').utc().format('YYYY-MM-DD'), company: 'hdb',
-            storage_type: 'helium',
+            storage_type: 'fs',
             api_call: 90000,
             ram_allocation: hdb_terms.RAM_ALLOCATION_ENUM.DEFAULT,
             version: '2.0.0'};
