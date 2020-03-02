@@ -440,9 +440,9 @@ class SQLSearch {
      */
     async _getFetchAttributeValues() {
         //TODO REMOVE CODE
-        // mbStart_gfa = process.memoryUsage();
-        // gbStart_gfa = mbStart_gfa[field] / 1024 / 1024 / 1024;
-        // console.log(`Start ${Math.round(gbStart_gfa * 100) / 100} GB`);
+        mbStart_gfa = process.memoryUsage();
+        gbStart_gfa = mbStart_gfa[field] / 1024 / 1024 / 1024;
+        console.log(`Start ${Math.round(gbStart_gfa * 100) / 100} GB`);
 
         //get all unique attributes
         this._addFetchColumns(this.columns.joins);
@@ -651,11 +651,11 @@ class SQLSearch {
         }
 
         //TODO REMOVE CODE
-        // mbEnd_gfa = process.memoryUsage();
-        // const mbNow = mbEnd_gfa[field] / 1024 / 1024 / 1024;
-        // console.log(`Total allocated       ${Math.round(mbNow * 100) / 100} GB`);
-        // gbAlloc_gfa = Math.round((mbNow - gbStart_gfa) * 100) / 100
-        // console.log(`Allocated for __getFetchAttrs - ${gbAlloc_gfa} GB`);
+        mbEnd_gfa = process.memoryUsage();
+        const mbNow = mbEnd_gfa[field] / 1024 / 1024 / 1024;
+        console.log(`Total allocated       ${Math.round(mbNow * 100) / 100} GB`);
+        gbAlloc_gfa = Math.round((mbNow - gbStart_gfa) * 100) / 100
+        console.log(`Allocated for __getFetchAttrs - ${gbAlloc_gfa} GB`);
     }
 
     _addNonAggregatorsToFetchColumns() {
@@ -673,9 +673,9 @@ class SQLSearch {
      */
     async _processJoins() {
         //TODO REMOVE CODE
-        // mbStart_pj = process.memoryUsage();
-        // gbStart_pj = mbStart_pj[field] / 1024 / 1024 / 1024;
-        // console.log(`Start ${Math.round(gbStart_pj * 100) / 100} GB`);
+        mbStart_pj = process.memoryUsage();
+        gbStart_pj = mbStart_pj[field] / 1024 / 1024 / 1024;
+        console.log(`Start ${Math.round(gbStart_pj * 100) / 100} GB`);
 
         let table_data = [];
         let select = [];
@@ -771,11 +771,11 @@ class SQLSearch {
             'joined_length': joined ? joined.length : 0
         };
         //TODO REMOVE CODE
-        // mbEnd_pj = process.memoryUsage();
-        // const mbNow = mbEnd_pj[field] / 1024 / 1024 / 1024;
-        // console.log(`Total allocated       ${Math.round(mbNow * 100) / 100} GB`);
-        // gbAlloc_pj = Math.round((mbNow - gbStart_pj) * 100) / 100;
-        // console.log(`Allocated for __processJoins - ${gbAlloc_pj} GB`);
+        mbEnd_pj = process.memoryUsage();
+        const mbNow = mbEnd_pj[field] / 1024 / 1024 / 1024;
+        console.log(`Total allocated       ${Math.round(mbNow * 100) / 100} GB`);
+        gbAlloc_pj = Math.round((mbNow - gbStart_pj) * 100) / 100;
+        console.log(`Allocated for __processJoins - ${gbAlloc_pj} GB`);
 
         return join_results;
     }
@@ -906,9 +906,9 @@ class SQLSearch {
      */
     async _finalSQL() {
         //TODO REMOVE CODE
-        // mbStart_fsql = process.memoryUsage();
-        // gbStart_fsql = mbStart_fsql[field] / 1024 / 1024 / 1024;
-        // console.log(`Start ${Math.round(gbStart_fsql * 100) / 100} GB`);
+        mbStart_fsql = process.memoryUsage();
+        gbStart_fsql = mbStart_fsql[field] / 1024 / 1024 / 1024;
+        console.log(`Start ${Math.round(gbStart_fsql * 100) / 100} GB`);
 
         let table_data = [];
         //TODO need to loop from here to ensure cross joins are covered - i.e. 'from tablea a, tableb b, tablec c' -
@@ -940,7 +940,11 @@ class SQLSearch {
             }
 
             if (col.aggregatorid && col.expression.columnid_orig !== '*') {
-                col.as = col.as ? `${col.as}` : `\`${col.aggregatorid}(${col.expression.tableid_orig}.${col.expression.columnid_orig})\``;
+                col.as = col.as ?
+                    `${col.as}` :
+                    col.expression.tableid_orig ?
+                        `\`${col.aggregatorid}(${col.expression.tableid_orig}.${col.expression.columnid_orig})\`` :
+                        `\`${col.aggregatorid}(${col.expression.columnid_orig})\``;
             }
         });
 
@@ -952,7 +956,6 @@ class SQLSearch {
             let sql = this._buildSQL();
             log.trace(`Final SQL: ${sql}`);
             final_results = await alasql.promise(sql, table_data);
-            table_data = null;
             log.trace(`Final AlaSQL results data included ${final_results.length} rows`);
         } catch(e) {
             log.error('Error thrown from AlaSQL in SQLSearch class method finalSQL.');
@@ -961,11 +964,11 @@ class SQLSearch {
         }
 
         //TODO REMOVE CODE
-        // mbEnd_fsql = process.memoryUsage();
-        // const mbNow = mbEnd_fsql[field] / 1024 / 1024 / 1024;
-        // console.log(`Total allocated       ${Math.round(mbNow * 100) / 100} GB`);
-        // gbAlloc_fsql = Math.round((mbNow - gbStart_fsql) * 100) / 100;
-        // console.log(`Allocated for __finalSQL - ${gbAlloc_fsql} GB`);
+        mbEnd_fsql = process.memoryUsage();
+        const mbNow = mbEnd_fsql[field] / 1024 / 1024 / 1024;
+        console.log(`Total allocated       ${Math.round(mbNow * 100) / 100} GB`);
+        gbAlloc_fsql = Math.round((mbNow - gbStart_fsql) * 100) / 100;
+        console.log(`Allocated for __finalSQL - ${gbAlloc_fsql} GB`);
 
         return final_results;
     }
