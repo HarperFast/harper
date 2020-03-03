@@ -1,22 +1,22 @@
 'use strict';
 
-const v8 = require('v8');
-const field = 'heapUsed';
-
-let mbStart_gfa;
-let gbStart_gfa;
-let mbEnd_gfa;
-let gbAlloc_gfa;
-
-let mbStart_pj;
-let gbStart_pj;
-let mbEnd_pj;
-let gbAlloc_pj;
-
-let mbStart_fsql;
-let gbStart_fsql;
-let mbEnd_fsql;
-let gbAlloc_fsql;
+// const v8 = require('v8');
+// const field = 'heapUsed';
+//
+// let mbStart_gfa;
+// let gbStart_gfa;
+// let mbEnd_gfa;
+// let gbAlloc_gfa;
+//
+// let mbStart_pj;
+// let gbStart_pj;
+// let mbEnd_pj;
+// let gbAlloc_pj;
+//
+// let mbStart_fsql;
+// let gbStart_fsql;
+// let mbEnd_fsql;
+// let gbAlloc_fsql;
 
 /**
  * SQLSearch.js
@@ -39,7 +39,7 @@ const SEARCH_ERROR_MSG = 'There was a problem performing this search. Please che
 
 //here we call to define and import custom functions to alasql
 alasql_function_importer(alasql);
-alasql.options.joinstar = 'underscore'
+// alasql.options.joinstar = 'underscore';
 
 class SQLSearch {
     /**
@@ -113,7 +113,6 @@ class SQLSearch {
         let join_results;
         try {
             // Consolidate initial data required for first pass of sql join - narrows list of hash ids for second pass to collect all data resulting from sql request
-            //TODO - SAM - add check here if processJoins is necessary - if there is no where, join, limit, orderby
             join_results = await this._processJoins();
         } catch (err) {
             log.error('Error thrown from processJoins in SQLSearch class method search.');
@@ -205,7 +204,6 @@ class SQLSearch {
         for (let {node} of new RecursiveIterator(this.statement.where)) {
             if (node && node.left && node.right && (node.left.columnid || node.right.value) && node.op) {
                 let values = new Set();
-                // TODO - explore what scenarios would be handled here - when would a left.columnid not be present?
                 let column = node.left.columnid ? node.left : node.right;
                 let found_column = this._findColumn(column);
                 if(!found_column) {
@@ -440,9 +438,9 @@ class SQLSearch {
      */
     async _getFetchAttributeValues() {
         //TODO REMOVE CODE
-        mbStart_gfa = process.memoryUsage();
-        gbStart_gfa = mbStart_gfa[field] / 1024 / 1024 / 1024;
-        console.log(`Start ${Math.round(gbStart_gfa * 100) / 100} GB`);
+        // mbStart_gfa = process.memoryUsage();
+        // gbStart_gfa = mbStart_gfa[field] / 1024 / 1024 / 1024;
+        // console.log(`Start ${Math.round(gbStart_gfa * 100) / 100} GB`);
 
         //get all unique attributes
         this._addFetchColumns(this.columns.joins);
@@ -651,11 +649,57 @@ class SQLSearch {
         }
 
         //TODO REMOVE CODE
-        mbEnd_gfa = process.memoryUsage();
-        const mbNow = mbEnd_gfa[field] / 1024 / 1024 / 1024;
-        console.log(`Total allocated       ${Math.round(mbNow * 100) / 100} GB`);
-        gbAlloc_gfa = Math.round((mbNow - gbStart_gfa) * 100) / 100
-        console.log(`Allocated for __getFetchAttrs - ${gbAlloc_gfa} GB`);
+        // mbEnd_gfa = process.memoryUsage();
+        // const mbNow = mbEnd_gfa[field] / 1024 / 1024 / 1024;
+        // console.log(`Total allocated       ${Math.round(mbNow * 100) / 100} GB`);
+        // gbAlloc_gfa = Math.round((mbNow - gbStart_gfa) * 100) / 100;
+        // console.log(`Allocated for __getFetchAttrs - ${gbAlloc_gfa} GB`);
+    }
+
+    _updateOrderByToAliases() {
+        this.statement.order.forEach(order_by => {
+            //We don't need to do anything with the alias if the orderby is an aggregator
+            if (order_by.expression.aggregatorid) return;
+
+            const found_column = this.statement.columns.filter(col => {
+                col.is_aggregator = !!col.aggregatorid;
+                const col_expression = col.is_aggregator ? col.expression : col;
+                const col_as = col.is_aggregator ? col.as : col_expression.as;
+
+                if (!order_by.expression.tableid) {
+                    return col_expression.columnid_orig === order_by.expression.columnid_orig || order_by.expression.columnid === col_as;
+                } else {
+                    return col_expression.columnid_orig === order_by.expression.columnid_orig && col_expression.tableid_orig === order_by.expression.tableid_orig;
+                }
+            });
+
+            //TODO - fix this bug and remove this check below.
+            if (found_column.length !== 1) {
+                console.log(`BUG with validator passing multiple vals for same table column - ${order_by}`, found_column)
+                return;
+            }
+            let select_column = found_column[0];
+
+            order_by.is_aggregator = select_column.is_aggregator;
+            if (select_column.as && !order_by.expression.tableid) {
+                order_by.expression.columnid = select_column.as;
+                order_by.expression.columnid_orig = select_column.as_orig;
+            }
+            else {
+                let alias_expression = new alasql.yy.Column();
+                if (select_column.as) {
+                    alias_expression.columnid = select_column.as;
+                    alias_expression.columnid_orig = select_column.as_orig;
+                } else {
+                    alias_expression.columnid = select_column.columnid;
+                    alias_expression.columnid_orig = order_by.expression.columnid;
+                }
+                order_by.expression = alias_expression;
+            }
+            if (!order_by.is_aggregator) {
+                order_by.initial_select_column = Object.assign({}, select_column);
+            }
+        });
     }
 
     _addNonAggregatorsToFetchColumns() {
@@ -673,9 +717,9 @@ class SQLSearch {
      */
     async _processJoins() {
         //TODO REMOVE CODE
-        mbStart_pj = process.memoryUsage();
-        gbStart_pj = mbStart_pj[field] / 1024 / 1024 / 1024;
-        console.log(`Start ${Math.round(gbStart_pj * 100) / 100} GB`);
+        // mbStart_pj = process.memoryUsage();
+        // gbStart_pj = mbStart_pj[field] / 1024 / 1024 / 1024;
+        // console.log(`Start ${Math.round(gbStart_pj * 100) / 100} GB`);
 
         let table_data = [];
         let select = [];
@@ -727,8 +771,13 @@ class SQLSearch {
             //in this stage we only want to order by non-aggregates
             let non_aggr_order_by = this.statement.order.filter(ob => !ob.is_aggregator);
 
+            //need to treat hash values with the alias built above
             if (!common_utils.isEmptyOrZeroLength(non_aggr_order_by)) {
                 order_clause = 'ORDER BY ' + non_aggr_order_by.toString();
+                non_aggr_order_by.forEach(ob => {
+                    const { tableid, columnid, as } = ob.initial_select_column;
+                    select.push(`${tableid}.${columnid} AS ${as}`);
+                });
             }
         }
 
@@ -771,50 +820,13 @@ class SQLSearch {
             'joined_length': joined ? joined.length : 0
         };
         //TODO REMOVE CODE
-        mbEnd_pj = process.memoryUsage();
-        const mbNow = mbEnd_pj[field] / 1024 / 1024 / 1024;
-        console.log(`Total allocated       ${Math.round(mbNow * 100) / 100} GB`);
-        gbAlloc_pj = Math.round((mbNow - gbStart_pj) * 100) / 100;
-        console.log(`Allocated for __processJoins - ${gbAlloc_pj} GB`);
+        // mbEnd_pj = process.memoryUsage();
+        // const mbNow = mbEnd_pj[field] / 1024 / 1024 / 1024;
+        // console.log(`Total allocated       ${Math.round(mbNow * 100) / 100} GB`);
+        // gbAlloc_pj = Math.round((mbNow - gbStart_pj) * 100) / 100;
+        // console.log(`Allocated for __processJoins - ${gbAlloc_pj} GB`);
 
         return join_results;
-    }
-
-    _updateOrderByToAliases() {
-        this.statement.order.forEach(order_by => {
-            //We don't need to do anything with the alias if the orderby is an aggregator
-            if (order_by.expression.aggregatorid) return;
-
-            const found_column = this.statement.columns.filter(col => {
-                col.is_aggregator = !!col.aggregatorid;
-                const col_expression = col.is_aggregator ? col.expression : col;
-                const col_as = col.is_aggregator ? col.as : col_expression.as;
-
-                if (!order_by.expression.tableid) {
-                    return col_expression.columnid_orig === order_by.expression.columnid_orig || order_by.expression.columnid_orig === col_as;
-                } else {
-                        return col_expression.columnid_orig === order_by.expression.columnid_orig && col_expression.tableid_orig === order_by.expression.tableid_orig;
-                }
-            });
-
-            if (found_column[0]) {
-                if (found_column[0].as && !order_by.expression.tableid) {
-                    order_by.expression.columnid = `[${found_column[0].as_orig}]`;
-                    order_by.expression.columnid_orig = found_column[0].as_orig;
-                }
-                else {
-                    let alias_expression = new alasql.yy.Column();
-                    if (found_column[0].as) {
-                        alias_expression.columnid = `[${found_column[0].as_orig}]`
-                        alias_expression.columnid_orig = found_column[0].as_orig;
-                    } else {
-                        alias_expression.columnid = `[${found_column[0].columnid_orig}]`
-                        alias_expression.columnid_orig = order_by.expression.columnid;
-                    }
-                    order_by.expression = alias_expression;
-                }
-            }
-        });
     }
 
     /**
@@ -906,9 +918,9 @@ class SQLSearch {
      */
     async _finalSQL() {
         //TODO REMOVE CODE
-        mbStart_fsql = process.memoryUsage();
-        gbStart_fsql = mbStart_fsql[field] / 1024 / 1024 / 1024;
-        console.log(`Start ${Math.round(gbStart_fsql * 100) / 100} GB`);
+        // mbStart_fsql = process.memoryUsage();
+        // gbStart_fsql = mbStart_fsql[field] / 1024 / 1024 / 1024;
+        // console.log(`Start ${Math.round(gbStart_fsql * 100) / 100} GB`);
 
         let table_data = [];
         //TODO need to loop from here to ensure cross joins are covered - i.e. 'from tablea a, tableb b, tablec c' -
@@ -936,15 +948,15 @@ class SQLSearch {
 
             if (!col.aggregatorid && !col.funcid) {
                 // col.as = col.as ? col.as : `[${col.tableid_orig}.${col.columnid_orig}]`
-                col.as = col.as ? `[${col.as}]` : `[${col.columnid_orig}]`;
+                col.as = col.as ? `[${col.as_orig}]` : `[${col.columnid_orig}]`;
             }
 
             if (col.aggregatorid && col.expression.columnid_orig !== '*') {
                 col.as = col.as ?
                     `${col.as}` :
                     col.expression.tableid_orig ?
-                        `\`${col.aggregatorid}(${col.expression.tableid_orig}.${col.expression.columnid_orig})\`` :
-                        `\`${col.aggregatorid}(${col.expression.columnid_orig})\``;
+                        `[${col.aggregatorid}(${col.expression.tableid_orig}.${col.expression.columnid_orig})]` :
+                        `[${col.aggregatorid}(${col.expression.columnid_orig})]`;
             }
         });
 
@@ -964,11 +976,11 @@ class SQLSearch {
         }
 
         //TODO REMOVE CODE
-        mbEnd_fsql = process.memoryUsage();
-        const mbNow = mbEnd_fsql[field] / 1024 / 1024 / 1024;
-        console.log(`Total allocated       ${Math.round(mbNow * 100) / 100} GB`);
-        gbAlloc_fsql = Math.round((mbNow - gbStart_fsql) * 100) / 100;
-        console.log(`Allocated for __finalSQL - ${gbAlloc_fsql} GB`);
+        // mbEnd_fsql = process.memoryUsage();
+        // const mbNow = mbEnd_fsql[field] / 1024 / 1024 / 1024;
+        // console.log(`Total allocated       ${Math.round(mbNow * 100) / 100} GB`);
+        // gbAlloc_fsql = Math.round((mbNow - gbStart_fsql) * 100) / 100;
+        // console.log(`Allocated for __finalSQL - ${gbAlloc_fsql} GB`);
 
         return final_results;
     }
