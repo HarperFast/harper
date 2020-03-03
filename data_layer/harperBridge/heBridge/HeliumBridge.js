@@ -11,7 +11,6 @@ const heGetDataByHash = require('./heMethods/heGetDataByHash');
 const heSearchByHash = require('./heMethods/heSearchByHash');
 const heGetDataByValue = require('./heMethods/heGetDataByValue');
 const heSearchByValue = require('./heMethods/heSearchByValue');
-const heSearchByConditions = require('./heMethods/heSearchByConditions');
 const heDropTable = require('./heMethods/heDropTable');
 const heDropAttribute = require('./heMethods/heDropAttribute');
 const heDropSchema = require('./heMethods/heDropSchema');
@@ -113,15 +112,6 @@ class HeliumBridge extends BridgeMethods {
     async searchByValue(search_object) {
         try {
             return heSearchByValue(search_object);
-        } catch(err) {
-            log.error(err);
-            throw err;
-        }
-    }
-
-    async searchByConditions(search_object) {
-        try {
-            return await heSearchByConditions(search_object);
         } catch(err) {
             log.error(err);
             throw err;
