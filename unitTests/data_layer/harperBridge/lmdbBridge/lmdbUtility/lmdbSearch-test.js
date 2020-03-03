@@ -776,6 +776,9 @@ describe('test lmdbSearch module', ()=>{
             test_data = require('../../../../testData');
             rw_ts_path = lmdb_search.__set__('LMDB_THREAD_SEARCH_MODULE_PATH', path.join(__dirname, '_lmdbThreadSearch'));
             await fs.mkdirp(SYSTEM_SCHEMA_PATH);
+            let temp_env = await environment_utility.createEnvironment(SYSTEM_SCHEMA_PATH, 'hdb_temp');
+            environment_utility.createDBI(temp_env, 'id', false);
+
             await fs.mkdirp(DEV_SCHEMA_PATH);
             global.lmdb_map = undefined;
 

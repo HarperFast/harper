@@ -9,7 +9,7 @@ const path = require('path');
 const common_utils = require('../../../../utility/common_utils');
 const lmdb_terms = require('../../../../utility/lmdb/terms');
 const hdb_terms = require('../../../../utility/hdbTerms');
-const {getBaseSchemaPath} = require('../lmdbUtility/initializePaths');
+const {getBaseSchemaPath, getSystemSchemaPath} = require('../lmdbUtility/initializePaths');
 const system_schema = require('../../../../json/systemSchema.json');
 const LMDB_ERRORS = require('../../../../utility/commonErrors').LMDB_ERRORS_ENUM;
 
@@ -41,11 +41,11 @@ async function prepSearch(search_object, comparator, return_map){
     let stat = environment_utility.statDBI(env, search_object.search_attribute);
     let results;
 
-    if(search_type !== lmdb_terms.SEARCH_TYPES.BATCH_SEARCH_BY_HASH && search_type !== lmdb_terms.SEARCH_TYPES.BATCH_SEARCH_BY_HASH_TO_MAP && stat.entryCount > DBI_ENTRY_COUNT_LIMIT){
+    /*if(search_type !== lmdb_terms.SEARCH_TYPES.BATCH_SEARCH_BY_HASH && search_type !== lmdb_terms.SEARCH_TYPES.BATCH_SEARCH_BY_HASH_TO_MAP && stat.entryCount > DBI_ENTRY_COUNT_LIMIT){
         results = await threadSearch(search_object, search_type, table_info.hash_attribute, return_map);
-    } else{
+    } else{*/
         results = await executeSearch(search_object, search_type, table_info.hash_attribute, return_map);
-    }
+    //}
 
     return results;
 }
@@ -193,12 +193,25 @@ function threadSearch(search_object, search_type, hash_attribute, return_map){
         const forked = fork(LMDB_THREAD_SEARCH_MODULE_PATH);
         let thread_search_object = new ThreadSearchObject(search_object, search_type, hash_attribute, return_map);
         forked.send(thread_search_object);
-        forked.on('message', data=>{
+        forked.on('message', async data=>{
             forked.kill("SIGINT");
             if(data.error !== undefined){
                 reject(Object.assign(new Error(), data));
             } else {
-                resolve(data);
+                console.log(search_object);
+                let env = await environment_utility.openEnvironment(getSystemSchemaPath(), 'hdb_temp');
+                let txn = new environment_utility.TransactionCursor(env, 'id', true);
+                txn.cursor.goToKey(data);
+
+                let raw = txn.cursor.getCurrentString();
+                console.time('pull');
+
+                let results = JSON.parse(raw);
+                console.timeEnd('pull');
+                txn.txn.del(env.dbis['id'], data);
+                txn.commit();
+
+                resolve(results);
             }
         });
 

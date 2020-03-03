@@ -37,7 +37,7 @@ function getSystemSchemaPath(){
     }
 
     if(env.getHdbBasePath() !== undefined){
-        SYSTEM_SCHEMA_PATH = path.join(BASE_SCHEMA_PATH, hdb_terms.SYSTEM_SCHEMA_NAME);
+        SYSTEM_SCHEMA_PATH = path.join(getBaseSchemaPath(), hdb_terms.SYSTEM_SCHEMA_NAME);
         return SYSTEM_SCHEMA_PATH;
     }
 }
