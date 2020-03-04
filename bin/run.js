@@ -18,7 +18,6 @@ const upgrade_prompt = require('../utility/userInterface/upgradePrompt');
 const upgrade = require('./upgrade');
 const version = require('./version');
 const hdb_license = require('../utility/registration/hdb_license');
-const helium_utils = require('../utility/helium/heliumUtils');
 
 // These may change to match unix return codes (i.e. 0, 1)
 const SUCCESS_CODE = 'success';
@@ -315,10 +314,7 @@ async function checkPermission() {
 async function kickOffExpress() {
     try {
         let license = hdb_license.licenseSearch();
-        if (license.storage_type === terms.STORAGE_TYPES_ENUM.HELIUM) {
-            let helium = await helium_utils.checkHeliumServerRunning();
-            await helium_utils.createSystemDataStores(helium);
-        }
+
         let args = createForkArgs();
         let mem_value = license.ram_allocation ? MEM_SETTING_KEY + license.ram_allocation
             : MEM_SETTING_KEY + terms.RAM_ALLOCATION_ENUM.DEFAULT;

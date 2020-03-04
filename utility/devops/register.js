@@ -55,10 +55,6 @@ async function register(){
             throw new Error('argument api_call must be an integer');
         }
 
-        if([terms.STORAGE_TYPES_ENUM.HELIUM, terms.STORAGE_TYPES_ENUM.FILE_SYSTEM].indexOf(storage_type) < 0){
-            throw new Error(`argument storage_type must have value 'helium' or 'fs'`);
-        }
-
         if(!Number.isInteger(ram_allocation)){
             throw new Error('argument ram_allocation must be an integer');
         }
