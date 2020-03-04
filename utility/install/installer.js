@@ -22,10 +22,10 @@ const os = require('os');
 const user_schema = require('../../security/user');
 const comm = require('../common_utils');
 const hdb_terms = require('../hdbTerms');
-const crypto = require('crypto');
 const hdbInfoController = require('../../data_layer/hdbInfoController');
 const version = require('../../bin/version');
 const LOG_LOCATION = ('../install_log.log');
+const minimist = require('minimist');
 
 module.exports = {
     install: run_install
@@ -38,7 +38,6 @@ let wizard_result;
 let existing_users = [];
 let keep_data = false;
 let check_install_path = false;
-const NODE_NAME_BYTE_LENGTH = 4;
 const KEY_PAIR_BITS = 2048;
 
 env.initSync();
@@ -360,6 +359,14 @@ function wizard(err, callback) {
         }
     };
 
+    const ARGS = minimist(process.argv.slice(2));
+    if(ARGS.enable_clustering === undefined){
+        delete install_schema.properties.NODE_NAME;
+        delete install_schema.properties.CLUSTERING_PASSWORD;
+        delete install_schema.properties.CLUSTERING_PORT;
+        delete install_schema.properties.CLUSTERING_USERNAME;
+    }
+
     console.log(colors.magenta('' + fs.readFileSync(path.join(__dirname, './ascii_logo.txt'))));
     console.log(colors.magenta('                    Installer'));
 
@@ -437,11 +444,14 @@ function createClusterUser(callback){
         }
     };
 
-    let user = {
-        username: wizard_result.CLUSTERING_USERNAME,
-        password: wizard_result.CLUSTERING_PASSWORD,
-        active: true
-    };
+    let user = undefined;
+    if(wizard_result.CLUSTERING_USERNAME !== undefined && wizard_result.CLUSTERING_PASSWORD !== undefined){
+        user = {
+            username: wizard_result.CLUSTERING_USERNAME,
+            password: wizard_result.CLUSTERING_PASSWORD,
+            active: true
+        };
+    }
 
     createAdminUser(role, user, (err)=>{
         if(err){
@@ -464,7 +474,7 @@ function createAdminUser(role, admin_user, callback) {
     const cb_user_add_user = util.callbackify(user_ops.addUser);
 
     schema.setSchemaDataToGlobal(() => {
-        if (keep_data) {
+        if (keep_data && admin_user !== undefined) {
             // Look for existing role if this is a reinstall
             cb_role_list_role((null), (err, res) => {
                 winston.info(`found ${res.length} existing roles.`);
@@ -525,6 +535,10 @@ function createAdminUser(role, admin_user, callback) {
                     return callback(err);
                 }
 
+                if(admin_user === undefined){
+                    return callback(null);
+                }
+
                 admin_user.role = res.id;
 
                 cb_user_add_user(admin_user, (add_user_err) => {
@@ -581,13 +595,12 @@ function createSettingsFile(mount_status, callback) {
             //No-op, should only get here in the case of android.  Defaulted to 4.
         }
         const path_module = require('path');
-        let node_name = null;
-        try {
-            node_name = crypto.randomBytes(NODE_NAME_BYTE_LENGTH).toString('hex');
-        } catch (random_bytes_err) {
-            winston.error('There was an error generating a random name for node name.  Defaulting to some_node.');
-            node_name = 'some_node';
-        }
+
+        const ARGS = minimist(process.argv.slice(2));
+        let clustering_enabled = ARGS.enable_clustering !== undefined;
+        let clustering_port = wizard_result.CLUSTERING_PORT !== undefined ? wizard_result.CLUSTERING_PORT : '';
+        let node_name = wizard_result.NODE_NAME !== undefined ? wizard_result.NODE_NAME : '';
+        let clustering_username = wizard_result.CLUSTERING_USERNAME !== undefined ? wizard_result.CLUSTERING_USERNAME : '';
 
         let HDB_SETTINGS_NAMES = hdb_terms.HDB_SETTINGS_NAMES;
 
@@ -636,13 +649,13 @@ function createSettingsFile(mount_status, callback) {
             `   ;Set the max number of processes HarperDB will start.  This can also be limited by number of cores and licenses.\n` +
             `${HDB_SETTINGS_NAMES.MAX_HDB_PROCESSES} = ${num_cores}\n` +
             `   ;Set to true to enable clustering.  Requires a valid enterprise license.\n` +
-            `${HDB_SETTINGS_NAMES.CLUSTERING_ENABLED_KEY} = true\n` +
+            `${HDB_SETTINGS_NAMES.CLUSTERING_ENABLED_KEY} = ${clustering_enabled}\n` +
             `   ;The port that will be used for HarperDB clustering.\n` +
-            `${HDB_SETTINGS_NAMES.CLUSTERING_PORT_KEY} = ${wizard_result.CLUSTERING_PORT}\n` +
+            `${HDB_SETTINGS_NAMES.CLUSTERING_PORT_KEY} = ${clustering_port}\n` +
             `   ;The name of this node in your HarperDB cluster topology.  This must be a value unique from the rest of your cluster node names.\n` +
-            `${HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY}=${wizard_result.NODE_NAME}\n` +
+            `${HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY}=${node_name}\n` +
             `   ;The user used to connect to other instances of HarperDB, this user must have a role of cluster_user. \n` +
-            `${HDB_SETTINGS_NAMES.CLUSTERING_USER_KEY}=${wizard_result.CLUSTERING_USERNAME}\n`
+            `${HDB_SETTINGS_NAMES.CLUSTERING_USER_KEY}=${clustering_username}\n`
         ;
 
         winston.info('info', `hdb_props_value ${JSON.stringify(hdb_props_value)}`);
