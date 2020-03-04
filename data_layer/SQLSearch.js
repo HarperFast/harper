@@ -71,7 +71,7 @@ class SQLSearch {
         this._getColumns();
         this._getTables();
         this._conditionsToFetchAttributeValues();
-        this._setAliasesForColumns()
+        this._setAliasesForColumns();
         this._backtickAllSchemaItems();
     }
 
@@ -680,8 +680,8 @@ class SQLSearch {
             }
 
             const found_column = this.statement.columns.filter(col => {
-                const col_expression = !!col.aggregatorid ? col.expression : col;
-                const col_alias = !!col.aggregatorid ? col.as_orig : col_expression.as_orig;
+                const col_expression = col.aggregatorid ? col.expression : col;
+                const col_alias = col.aggregatorid ? col.as_orig : col_expression.as_orig;
 
                 if (!order_by.expression.tableid) {
                     return col_expression.columnid_orig === order_by.expression.columnid_orig || order_by.expression.columnid_orig === col_alias;
@@ -786,7 +786,7 @@ class SQLSearch {
                     if (tableid) {
                         select.push(`${tableid}.${columnid} AS ${ob.expression.columnid}`);
                     } else {
-                        select.push(`${columnid} AS ${ob.expression.columnid}`)
+                        select.push(`${columnid} AS ${ob.expression.columnid}`);
                     }
                 });
             }
