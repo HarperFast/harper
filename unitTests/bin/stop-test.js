@@ -85,7 +85,7 @@ describe('Test stop.js' , () => {
             let result = await stop.restartProcesses(json_message_fake);
 
             expect(signal_stub).to.have.been.calledOnce;
-            expect(signal_stub).to.have.been.calledWith(json_message_fake.force);
+            expect(signal_stub).to.have.been.calledWith(true);
             expect(result).to.equal(RESTART_RESPONSE_HARD);
         });
 

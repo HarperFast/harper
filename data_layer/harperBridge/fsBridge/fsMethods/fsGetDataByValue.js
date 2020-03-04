@@ -37,6 +37,7 @@ async function fsGetDataByValue(search_object, comparator) {
             throw validation_error;
         }
         let operation = '=';
+        search_object.search_value = search_object.search_value.toString();
         if (search_object.search_value !== '*' && search_object.search_value !== '%'
             && (search_object.search_value.includes('*') || search_object.search_value.includes('%'))) {
             operation = 'like';

@@ -12,8 +12,8 @@ const RESTART_RESPONSE_HARD = `Force restarting HarperDB`;
 const CHECK_PROCS_LOOP_LIMIT = 5;
 
 module.exports = {
-    stop: stop,
-    restartProcesses: restartProcesses
+    stop,
+    restartProcesses
 };
 
 /**
@@ -26,11 +26,11 @@ async function restartProcesses(json_message) {
         json_message.force = false;
     }
     try {
-        if (json_message.force === 'true') {
-            signal.signalRestart(json_message.force);
+        if (json_message.force === true || json_message.force === 'true') {
+            signal.signalRestart(true);
             return RESTART_RESPONSE_HARD;
         }
-        signal.signalRestart(json_message.force);
+        signal.signalRestart(false);
         return RESTART_RESPONSE_SOFT;
     } catch(err) {
         let msg = `There was an error restarting HarperDB. ${err}`;
