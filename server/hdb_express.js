@@ -242,17 +242,11 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
     }
 
     async function launch() {
-        const helium_utils = require('../utility/helium/heliumUtils');
         let license_values = hdb_license.licenseSearch();
         global.clustering_on = env.get('CLUSTERING');
 
         await p_schema_to_global();
         await user_schema.setUsersToGlobal();
-
-        if(license_values.storage_type === terms.STORAGE_TYPES_ENUM.HELIUM){
-            let helium = await helium_utils.checkHeliumServerRunning();
-            await helium_utils.createSystemDataStores(helium);
-        }
 
         harper_logger.notify(`HarperDB successfully started`);
         harper_logger.info(`Master ${process.pid} is running`);

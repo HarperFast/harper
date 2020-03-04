@@ -34,7 +34,7 @@ const constraints = {
     storage_type:{
         presence:true,
         inclusion: {
-            within: [terms.STORAGE_TYPES_ENUM.FILE_SYSTEM, terms.STORAGE_TYPES_ENUM.HELIUM]
+            within: [terms.STORAGE_TYPES_ENUM.FILE_SYSTEM]
         }
     },
     api_call:{

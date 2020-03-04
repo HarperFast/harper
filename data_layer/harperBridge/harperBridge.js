@@ -24,10 +24,6 @@ function getBridge() {
 
             harper_bridge = new FileSystemBridge();
             break;
-        case terms.STORAGE_TYPES_ENUM.HELIUM:
-            const HeliumBridge = require('./heBridge/HeliumBridge');
-            harper_bridge = new HeliumBridge();
-            break;
         default:
 
             harper_bridge = new FileSystemBridge();
