@@ -173,6 +173,7 @@ class SQLSearch {
             this.data[schema_table].__hash_name = global.hdb_schema[table.databaseid][table.tableid].hash_attribute;
             this.data[schema_table].__merged_data = {};
             this.data[schema_table].__merged_attributes = [];
+            this.data[schema_table].__merged_attr_map = {};
             this.data[schema_table].__has_hash = false;
         });
     }
@@ -286,6 +287,10 @@ class SQLSearch {
     }
 
     _setAliasesForColumns() {
+        //this scenario is reached by doing a select with only calculations and, therefore, this step can be skipped.
+        if (common_utils.isEmptyOrZeroLength(this.all_table_attributes) && common_utils.isEmptyOrZeroLength(this.statement.from) && common_utils.isEmptyOrZeroLength(this.columns.columns)) {
+            return;
+        }
         let wildcard_index = -1;
         this.statement.columns.forEach((col, index) => {
             if (col.columnid === '*') {
@@ -373,10 +378,8 @@ class SQLSearch {
             return attribute.attribute === column.columnid;
         });
 
-        //this is to handle aliases.  if we did not find the actual column we look at the aliases in the select columns
+        //this is to handle aliases.  if we did not find the actual column we look at the aliases in the select columns and then return the matching column from all_table_attrs, if it exists
         if (common_utils.isEmptyOrZeroLength(found_columns)) {
-            // found_columns = this.columns.columns.filter(select_column => column.columnid === select_column.as);
-            //TODO - confirm the code below is still needed here...think original above should still work
             const found_alias = this.columns.columns.filter(select_column => select_column.as ? column.columnid === select_column.as : false);
             if (!common_utils.isEmptyOrZeroLength(found_alias)) {
                 found_columns = this.all_table_attributes.filter(col => col.attribute === found_alias[0].columnid);
@@ -435,17 +438,7 @@ class SQLSearch {
 
     _addColumnToMergedAttributes(schema_table, attr) {
         this.data[schema_table].__merged_attributes.push(attr);
-        //TODO - consider adding value to a map with the index as the value for faster lookup below?
-    }
-
-    _getMergedAttributeIndex(schema_table, attr) {
-        const attr_index = this.data[schema_table].__merged_attributes.indexOf(attr);
-
-        if (attr_index === -1) {
-            //TODO - what to do for error handling here?  Anything or just skip the update if it returns -1
-        }
-
-        return attr_index;
+        this.data[schema_table].__merged_attr_map[attr] = this.data[schema_table].__merged_attributes.length - 1;
     }
 
     _setMergedHashAttribute(schema_table, hash_value) {
@@ -453,10 +446,8 @@ class SQLSearch {
     }
 
     _updateMergedAttribute(schema_table, hash_value, attr, update_value) {
-        const attr_index = this._getMergedAttributeIndex(schema_table, attr);
-        if (attr_index > -1) {
-            this.data[schema_table].__merged_data[hash_value].splice(attr_index, 1, update_value);
-        }
+        const attr_index = this.data[schema_table].__merged_attr_map[attr];
+        this.data[schema_table].__merged_data[hash_value].splice(attr_index, 1, update_value);
     }
 
     /**
@@ -571,9 +562,9 @@ class SQLSearch {
                                 this._setMergedHashAttribute(schema_table, hash_val);
                             }
                         });
-                    } catch (e) {
+                    } catch (err) {
                         log.error('Error thrown from getDataByHash function in SQLSearch class method getFetchAttributeValues exact match.');
-                        log.error(e);
+                        log.error(err);
                     }
                 } else {
                     try {
@@ -689,9 +680,8 @@ class SQLSearch {
             }
 
             const found_column = this.statement.columns.filter(col => {
-                col.is_aggregator = !!col.aggregatorid;
-                const col_expression = col.is_aggregator ? col.expression : col;
-                const col_alias = col.is_aggregator ? col.as_orig : col_expression.as_orig;
+                const col_expression = !!col.aggregatorid ? col.expression : col;
+                const col_alias = !!col.aggregatorid ? col.as_orig : col_expression.as_orig;
 
                 if (!order_by.expression.tableid) {
                     return col_expression.columnid_orig === order_by.expression.columnid_orig || order_by.expression.columnid_orig === col_alias;
@@ -700,35 +690,21 @@ class SQLSearch {
                 }
             });
 
-            //TODO - fix this bug and remove this check below.
-            if (found_column.length !== 1) {
-                console.log(`BUG with validator passing multiple vals for same table column - ${order_by}`, found_column)
-                return;
-            }
             let select_column = found_column[0];
 
-            order_by.is_aggregator = select_column.is_aggregator;
+            order_by.is_aggregator = !!select_column.aggregatorid;
             if (select_column.as && !order_by.expression.tableid) {
                 order_by.expression.columnid = select_column.as;
                 order_by.expression.columnid_orig = select_column.as_orig;
             }
             else {
                 let alias_expression = new alasql.yy.Column();
-                // if (select_column.as) {
-                    alias_expression.columnid = select_column.as;
-                    alias_expression.columnid_orig = select_column.as_orig;
-                // } else {
-                //     alias_expression.columnid = `[${select_column.columnid}]`;
-                //     alias_expression.columnid_orig = order_by.expression.columnid;
-                // }
+                alias_expression.columnid = select_column.as;
+                alias_expression.columnid_orig = select_column.as_orig;
                 order_by.expression = alias_expression;
             }
             if (!order_by.is_aggregator) {
                 order_by.initial_select_column = Object.assign({}, select_column);
-                // if (!select_column.tableid) {
-                //     const table_data = this._findColumn({columnid: select_column.columnid_orig})
-                //     order_by.initial_select_column.tableid = table_data.table.tableid;
-                // }
             }
         });
     }
@@ -736,7 +712,6 @@ class SQLSearch {
     _addNonAggregatorsToFetchColumns() {
         const non_aggr_order_by_cols = this.statement.order.filter(ob => !ob.is_aggregator);
         const non_aggr_columnids = non_aggr_order_by_cols.map(col => ({ columnid: col.expression.columnid_orig }));
-
         this._addFetchColumns(non_aggr_columnids);
     }
 
@@ -759,7 +734,7 @@ class SQLSearch {
         let from_statement = this.statement.from[0];
         let tables = [from_statement];
         let from_clause = [
-            '? ' + (from_statement.as ? ' AS ' + from_statement.as : from_statement.tableid_orig)
+            '? ' + (from_statement.as ? ' AS ' + from_statement.as : from_statement.tableid)
         ];
 
         table_data.push(Object.values(this.data[`${from_statement.databaseid_orig}_${from_statement.tableid_orig}`].__merged_data));
@@ -802,11 +777,11 @@ class SQLSearch {
             //in this stage we only want to order by non-aggregates
             let non_aggr_order_by = this.statement.order.filter(ob => !ob.is_aggregator);
 
-            //need to treat hash values with the alias built above
             if (!common_utils.isEmptyOrZeroLength(non_aggr_order_by)) {
                 order_clause = 'ORDER BY ' + non_aggr_order_by.toString();
+                //because of the alasql bug with orderby (CORE-929), we need to add the ORDER BY column to the select with the
+                // alias to ensure it's available for sorting in the first pass
                 non_aggr_order_by.forEach(ob => {
-                    //if this is already added from the FROM or JOIN statement, we can ignore here and need to use the hardcoded alias above
                     const {tableid, columnid} = ob.initial_select_column;
                     if (tableid) {
                         select.push(`${tableid}.${columnid} AS ${ob.expression.columnid}`);
@@ -820,6 +795,7 @@ class SQLSearch {
         let limit = this.statement.limit ? 'LIMIT ' + this.statement.limit : '';
 
         //we should only select the primary key of each table then remove the rows that exist from each table
+        //see note above about selecting appropriate orderby columns as well due to bug in alasql (CORE-929)
         let joined =[];
 
         try {
@@ -827,9 +803,9 @@ class SQLSearch {
             const final_sql_operation = this._convertColumnsToIndexes(initial_sql, tables);
             joined = await alasql.promise(final_sql_operation, table_data);
             table_data = null;
-        } catch(e) {
+        } catch(err) {
             log.error('Error thrown from AlaSQL in SQLSearch class method processJoins.');
-            log.error(e);
+            log.error(err);
             throw new Error('There was a problem processing the data.');
         }
 
@@ -982,9 +958,9 @@ class SQLSearch {
             log.trace(`Final SQL: ${sql}`);
             final_results = await alasql.promise(sql, table_data);
             log.trace(`Final AlaSQL results data included ${final_results.length} rows`);
-        } catch(e) {
+        } catch(err) {
             log.error('Error thrown from AlaSQL in SQLSearch class method finalSQL.');
-            log.error(e);
+            log.error(err);
             throw new Error('There was a problem running the generated sql.');
         }
 
@@ -1013,10 +989,6 @@ class SQLSearch {
                     .replace(' AS ' + column.as, '');
                 sql = sql.replace(column.toString(), column_string);
             }
-
-            // if (column.as !== null && column.as !== undefined) {
-            //     column.toString();
-            // }
         });
 
         return this._convertColumnsToIndexes(sql, this.tables);
@@ -1085,7 +1057,6 @@ class SQLSearch {
                 const matching_data = await harperBridge.getDataByValue(search_object);
 
                 if (is_hash) {
-                    // this.data[schema_table].__has_hash = true;
                     Object.values(matching_data).forEach(hash_obj => {
                         const hash_val = hash_obj[hash_name];
                         if (!this.data[schema_table].__merged_data[hash_val]) {
