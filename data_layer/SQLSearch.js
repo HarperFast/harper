@@ -71,6 +71,7 @@ class SQLSearch {
         this._getColumns();
         this._getTables();
         this._conditionsToFetchAttributeValues();
+        this._setAliasesForColumns()
         this._backtickAllSchemaItems();
     }
 
@@ -209,7 +210,7 @@ class SQLSearch {
                 if(!found_column) {
                     continue;
                 }
-                //buildFolderPath returns the needed key for FS (attribute dir key) and for Helium (datastore key)
+                //buildFolderPath returns the needed key for FS (attribute dir key)
                 let attribute_key = common_utils.buildFolderPath(found_column.table.databaseid, found_column.table.tableid, found_column.attribute);
 
                 // Check for value range search first
@@ -284,6 +285,34 @@ class SQLSearch {
         }
     }
 
+    _setAliasesForColumns() {
+        let wildcard_index = -1;
+        this.statement.columns.forEach((col, index) => {
+            if (col.columnid === '*') {
+                wildcard_index = index;
+                return;
+            }
+
+            if (!col.aggregatorid && !col.funcid) {
+                col.as_orig = col.as ? col.as : col.columnid;
+                col.as = `[${col.as_orig}]`;
+            }
+
+            if (col.aggregatorid && col.expression.columnid !== '*') {
+                col.as_orig = col.as ?
+                    col.as :
+                    col.expression.tableid ?
+                        `${col.aggregatorid}(${col.expression.tableid}.${col.expression.columnid})` :
+                        `${col.aggregatorid}(${col.expression.columnid})`;
+                col.as = `[${col.as_orig}]`;
+            }
+        });
+
+        if (this.statement.columns.length > 1 && wildcard_index >= 0) {
+            this.statement.columns.splice(wildcard_index, 1);
+        }
+    }
+
     /**
      * Automatically adds backticks "`" to all schema elements, the reason for this is in SQL you can surround a reserved
      * word with backticks as an escape to allow a schema element which is named the same as a reserved word to be used.
@@ -311,7 +340,7 @@ class SQLSearch {
                         node.databaseid = `\`${node.databaseid}\``;
                     }
 
-                    if (node.as && typeof node.as === "string") {
+                    if (node.as && typeof node.as === "string" && !node.as.startsWith('[')) {
                         node.as_orig = node.as;
                         node.as = `\`${node.as}\``;
                     }
@@ -492,14 +521,11 @@ class SQLSearch {
         const fetch_attr_row_templates = this.fetch_attributes.reduce((acc, attr) => {
             const schema_table = `${attr.table.databaseid}_${attr.table.tableid}`;
             const hash_name = this.data[schema_table].__hash_name;
-            // const has_hash = this.data[schema_table].__has_hash;
 
             if (!acc[schema_table]) {
                 acc[schema_table] = [];
-                // if (has_hash) {
-                    acc[schema_table].push(null);
-                    this._addColumnToMergedAttributes(schema_table, hash_name);
-                // }
+                acc[schema_table].push(null);
+                this._addColumnToMergedAttributes(schema_table, hash_name);
             }
 
             if (attr.attribute !== hash_name) {
@@ -542,9 +568,7 @@ class SQLSearch {
                             const hash_val = hash_obj[hash_name];
                             if (!this.data[schema_table].__merged_data[hash_val]) {
                                 this.data[schema_table].__merged_data[hash_val] = [...fetch_attr_row_templates[schema_table]];
-                                // if (has_hash) {
-                                    this._setMergedHashAttribute(schema_table, hash_val);
-                                // }
+                                this._setMergedHashAttribute(schema_table, hash_val);
                             }
                         });
                     } catch (e) {
@@ -659,15 +683,18 @@ class SQLSearch {
     _updateOrderByToAliases() {
         this.statement.order.forEach(order_by => {
             //We don't need to do anything with the alias if the orderby is an aggregator
-            if (order_by.expression.aggregatorid) return;
+            if (order_by.expression.aggregatorid) {
+                order_by.is_aggregator = true;
+                return;
+            }
 
             const found_column = this.statement.columns.filter(col => {
                 col.is_aggregator = !!col.aggregatorid;
                 const col_expression = col.is_aggregator ? col.expression : col;
-                const col_as = col.is_aggregator ? col.as : col_expression.as;
+                const col_alias = col.is_aggregator ? col.as_orig : col_expression.as_orig;
 
                 if (!order_by.expression.tableid) {
-                    return col_expression.columnid_orig === order_by.expression.columnid_orig || order_by.expression.columnid === col_as;
+                    return col_expression.columnid_orig === order_by.expression.columnid_orig || order_by.expression.columnid_orig === col_alias;
                 } else {
                     return col_expression.columnid_orig === order_by.expression.columnid_orig && col_expression.tableid_orig === order_by.expression.tableid_orig;
                 }
@@ -687,17 +714,21 @@ class SQLSearch {
             }
             else {
                 let alias_expression = new alasql.yy.Column();
-                if (select_column.as) {
+                // if (select_column.as) {
                     alias_expression.columnid = select_column.as;
                     alias_expression.columnid_orig = select_column.as_orig;
-                } else {
-                    alias_expression.columnid = select_column.columnid;
-                    alias_expression.columnid_orig = order_by.expression.columnid;
-                }
+                // } else {
+                //     alias_expression.columnid = `[${select_column.columnid}]`;
+                //     alias_expression.columnid_orig = order_by.expression.columnid;
+                // }
                 order_by.expression = alias_expression;
             }
             if (!order_by.is_aggregator) {
                 order_by.initial_select_column = Object.assign({}, select_column);
+                // if (!select_column.tableid) {
+                //     const table_data = this._findColumn({columnid: select_column.columnid_orig})
+                //     order_by.initial_select_column.tableid = table_data.table.tableid;
+                // }
             }
         });
     }
@@ -728,7 +759,7 @@ class SQLSearch {
         let from_statement = this.statement.from[0];
         let tables = [from_statement];
         let from_clause = [
-            '? ' + (from_statement.as ? ' AS ' + from_statement.as : from_statement.tableid)
+            '? ' + (from_statement.as ? ' AS ' + from_statement.as : from_statement.tableid_orig)
         ];
 
         table_data.push(Object.values(this.data[`${from_statement.databaseid_orig}_${from_statement.tableid_orig}`].__merged_data));
@@ -775,8 +806,13 @@ class SQLSearch {
             if (!common_utils.isEmptyOrZeroLength(non_aggr_order_by)) {
                 order_clause = 'ORDER BY ' + non_aggr_order_by.toString();
                 non_aggr_order_by.forEach(ob => {
-                    const { tableid, columnid, as } = ob.initial_select_column;
-                    select.push(`${tableid}.${columnid} AS ${as}`);
+                    //if this is already added from the FROM or JOIN statement, we can ignore here and need to use the hardcoded alias above
+                    const {tableid, columnid} = ob.initial_select_column;
+                    if (tableid) {
+                        select.push(`${tableid}.${columnid} AS ${ob.expression.columnid}`);
+                    } else {
+                        select.push(`${columnid} AS ${ob.expression.columnid}`)
+                    }
                 });
             }
         }
@@ -787,7 +823,7 @@ class SQLSearch {
         let joined =[];
 
         try {
-            const initial_sql = `SELECT ${select.join(',')} FROM ${from_clause.join(' ')} ${where_clause} ${order_clause} ${limit}`;
+            const initial_sql = `SELECT ${select.join(', ')} FROM ${from_clause.join(' ')} ${where_clause} ${order_clause} ${limit}`;
             const final_sql_operation = this._convertColumnsToIndexes(initial_sql, tables);
             joined = await alasql.promise(final_sql_operation, table_data);
             table_data = null;
@@ -939,29 +975,6 @@ class SQLSearch {
                 join.table.databaseid = '';
                 join.table.tableid = '?';
             });
-        }
-        let wildcard_index = -1;
-        this.statement.columns.forEach((col, index) => {
-            if (col.columnid_orig === '*') {
-                wildcard_index = index;
-            }
-
-            if (!col.aggregatorid && !col.funcid) {
-                // col.as = col.as ? col.as : `[${col.tableid_orig}.${col.columnid_orig}]`
-                col.as = col.as ? `[${col.as_orig}]` : `[${col.columnid_orig}]`;
-            }
-
-            if (col.aggregatorid && col.expression.columnid_orig !== '*') {
-                col.as = col.as ?
-                    `${col.as}` :
-                    col.expression.tableid_orig ?
-                        `[${col.aggregatorid}(${col.expression.tableid_orig}.${col.expression.columnid_orig})]` :
-                        `[${col.aggregatorid}(${col.expression.columnid_orig})]`;
-            }
-        });
-
-        if (this.statement.columns.length > 1 && wildcard_index >= 0) {
-            this.statement.columns.splice(wildcard_index, 1);
         }
         let final_results = undefined;
         try {
