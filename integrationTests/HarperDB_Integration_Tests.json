@@ -1,6 +1,6 @@
 {
 	"info": {
-		"_postman_id": "928d153e-c8c3-4b62-9368-0b244d2cd3bb",
+		"_postman_id": "28bc1318-f241-41fc-bc20-5d2ed5a91156",
 		"name": "HarperDB Integration Tests",
 		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
 	},
@@ -7254,6 +7254,145 @@
 						"body": {
 							"mode": "raw",
 							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"select a.{{ords_id}}, a.productid, d.companyname, d.contactmame, b.productname, sum(a.unitprice) as unitprice, sum(a.quantity), sum(a.discount) from {{schema}}.{{ordd_tb}} a join {{schema}}.{{prod_tb}} b on a.{{prod_id}}=b.{{prod_id}} join {{schema}}.{{ords_tb}} c on a.{{ords_id}}=c.{{ords_id}} join {{schema}}.{{cust_tb}} d on c.{{cust_id}}=d.{{cust_id}} group by a.{{ords_id}}, a.productid, d.companyname, d.contactmame, b.productname order by unitprice desc, d.companyname \"\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "select most buyer orderby price asc & companyname alias",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "4f99ba1e-12df-4948-91de-57a6d3f10f92",
+								"exec": [
+									"pm.test(\"sql test most buyer\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData[0].compname).to.eql(\"Berglunds snabbk\\ufffdp\");",
+									"    pm.expect(jsonData[1].compname).to.eql(\"Great Lakes Food Market\");",
+									"});",
+									""
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"select a.{{ords_id}}, a.productid, d.companyname as compname, d.contactmame, b.productname, sum(a.unitprice) as unitprice, sum(a.quantity), sum(a.discount) from {{schema}}.{{ordd_tb}} a join {{schema}}.{{prod_tb}} b on a.{{prod_id}}=b.{{prod_id}} join {{schema}}.{{ords_tb}} c on a.{{ords_id}}=c.{{ords_id}} join {{schema}}.{{cust_tb}} d on c.{{cust_id}}=d.{{cust_id}} group by a.{{ords_id}}, a.productid, d.companyname, d.contactmame, b.productname order by unitprice desc, compname \"\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "select most buyer orderby order_id asc & product_id desc",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "4f99ba1e-12df-4948-91de-57a6d3f10f92",
+								"exec": [
+									"pm.test(\"sql test lowest order id\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData[0].ords_id).to.eql(10248);",
+									"    pm.expect(jsonData[1].ords_id).to.eql(10248);",
+									"    pm.expect(jsonData[19].ords_id).to.eql(10254);",
+									"    pm.expect(jsonData[0].companyname).to.eql(\"Vins et alcools Chevalier\");",
+									"    pm.expect(jsonData[19].companyname).to.eql(\"Chop-suey Chinese\");",
+									"});",
+									"",
+									"pm.test(\"sql test highest product id\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData[0].productid).to.eql(72);",
+									"    pm.expect(jsonData[1].productid).to.eql(42);",
+									"    pm.expect(jsonData[19].productid).to.eql(24);",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"select a.{{ords_id}} as ords_id, a.productid, d.companyname as companyname, d.contactmame, b.productname, sum(a.unitprice) as unitprice, sum(a.quantity), sum(a.discount) from {{schema}}.{{ordd_tb}} a join {{schema}}.{{prod_tb}} b on a.{{prod_id}}=b.{{prod_id}} join {{schema}}.{{ords_tb}} c on a.{{ords_id}}=c.{{ords_id}} join {{schema}}.{{cust_tb}} d on c.{{cust_id}}=d.{{cust_id}} group by a.{{ords_id}}, a.productid, d.companyname, d.contactmame, b.productname order by ords_id, a.productid desc\"\n}"
 						},
 						"url": {
 							"raw": "{{host}}:{{port}}",
