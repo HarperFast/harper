@@ -895,12 +895,20 @@ describe('Test FileSystem Class',function() {
                            expect(item_vals.tableid).to.equal(backtickString(initial_val.tableid));
                            expect(item_vals.columnid_orig).to.equal(initial_val.columnid);
                            expect(item_vals.tableid_orig).to.equal(initial_val.tableid);
+                           if (initial_val.as) {
+                               expect(item_vals.as).to.equal(backtickString(initial_val.as));
+                               expect(item_vals.as_orig).to.equal(initial_val.as);
+                           }
                            break;
                        case 'from':
                            expect(item_vals.databaseid).to.equal(backtickString(initial_val.databaseid));
                            expect(item_vals.tableid).to.equal(backtickString(initial_val.tableid));
                            expect(item_vals.databaseid_orig).to.equal(initial_val.databaseid);
                            expect(item_vals.tableid_orig).to.equal(initial_val.tableid);
+                           if (initial_val.as) {
+                               expect(item_vals.as).to.equal(backtickString(initial_val.as));
+                               expect(item_vals.as_orig).to.equal(initial_val.as);
+                           }
                            break;
                        case 'joins':
                            expect(item_vals.on.left.columnid).to.equal(backtickString(initial_val.on.left.columnid));
@@ -915,6 +923,10 @@ describe('Test FileSystem Class',function() {
                            expect(item_vals.on.right.tableid_orig).to.equal(initial_val.on.right.tableid);
                            expect(item_vals.table.databaseid_orig).to.equal(initial_val.table.databaseid);
                            expect(item_vals.table.tableid_orig).to.equal(initial_val.table.tableid);
+                           if (initial_val.table.as) {
+                               expect(item_vals.table.as).to.equal(backtickString(initial_val.table.as));
+                               expect(item_vals.table.as_orig).to.equal(initial_val.table.as);
+                           }
                            break;
                        case 'order':
                            expect(item_vals.expression.columnid).to.equal(backtickString(initial_val.expression.columnid));
@@ -949,9 +961,9 @@ describe('Test FileSystem Class',function() {
 
             const test_result = test_instance._findColumn(test_column);
 
-            expect(test_result.as).to.equal(test_alias);
-            expect(test_result.columnid).to.equal('name');
-            expect(test_result.tableid).to.equal('d');
+            expect(test_result.attribute).to.equal('name');
+            expect(test_result.table.databaseid).to.equal(TEST_SCHEMA);
+            expect(test_result.table.tableid).to.equal(TEST_TABLE_DOG);
         });
 
         it('should NOT return data for column that does not exist',function() {

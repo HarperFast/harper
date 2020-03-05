@@ -380,9 +380,12 @@ class SQLSearch {
 
         //this is to handle aliases.  if we did not find the actual column we look at the aliases in the select columns and then return the matching column from all_table_attrs, if it exists
         if (common_utils.isEmptyOrZeroLength(found_columns)) {
+            // found_columns = this.columns.columns.filter(select_column => select_column.as ? column.columnid === select_column.as : false);
             const found_alias = this.columns.columns.filter(select_column => select_column.as ? column.columnid === select_column.as : false);
             if (!common_utils.isEmptyOrZeroLength(found_alias)) {
-                found_columns = this.all_table_attributes.filter(col => col.attribute === found_alias[0].columnid);
+                found_columns = this.all_table_attributes.filter(col => col.attribute === found_alias[0].columnid
+                    && (found_alias[0].tableid && found_alias[0].tableid === (col.table.as ? col.table.as : col.table.tableid))
+                );
             }
         }
 
@@ -478,8 +481,9 @@ class SQLSearch {
         //We need to check if the select includes aggregators - if so, cannot treat as a simple select query
         // and need to run through alasql
         const has_aggregators = hasColumnAggregators(this.statement.columns);
+        const has_select_ops = hasColumnOps(this.statement.columns);
 
-        const simple_select_query = !has_aggregators && Object.keys(this.statement).length === 2
+        const simple_select_query = !has_aggregators && !has_select_ops && Object.keys(this.statement).length === 2
             && !!this.statement.columns && !!this.statement.from && this.statement.from.length === 1;
         if (simple_select_query) {
             this._addFetchColumns(this.columns.columns);
@@ -496,7 +500,7 @@ class SQLSearch {
             });
         }
 
-        if (this.columns.order) {
+        if (this.statement.order) {
             this._updateOrderByToAliases();
             this._addNonAggregatorsToFetchColumns();
         }
@@ -679,6 +683,13 @@ class SQLSearch {
                 return;
             }
 
+            if (order_by.expression.value) {
+                order_by.is_ordinal = true;
+                return;
+            } else {
+                order_by.is_ordinal = false;
+            }
+
             const found_column = this.statement.columns.filter(col => {
                 const col_expression = col.aggregatorid ? col.expression : col;
                 const col_alias = col.aggregatorid ? col.as_orig : col_expression.as_orig;
@@ -710,7 +721,7 @@ class SQLSearch {
     }
 
     _addNonAggregatorsToFetchColumns() {
-        const non_aggr_order_by_cols = this.statement.order.filter(ob => !ob.is_aggregator);
+        const non_aggr_order_by_cols = this.statement.order.filter(ob => !ob.is_aggregator && !ob.is_ordinal);
         const non_aggr_columnids = non_aggr_order_by_cols.map(col => ({ columnid: col.expression.columnid_orig }));
         this._addFetchColumns(non_aggr_columnids);
     }
@@ -775,18 +786,17 @@ class SQLSearch {
         let order_clause = '';
         if (this.statement.order) {
             //in this stage we only want to order by non-aggregates
-            let non_aggr_order_by = this.statement.order.filter(ob => !ob.is_aggregator);
+            let non_aggr_order_by = this.statement.order.filter(ob => !ob.is_aggregator && !ob.is_ordinal && ob.initial_select_column);
 
             if (!common_utils.isEmptyOrZeroLength(non_aggr_order_by)) {
                 order_clause = 'ORDER BY ' + non_aggr_order_by.toString();
                 //because of the alasql bug with orderby (CORE-929), we need to add the ORDER BY column to the select with the
                 // alias to ensure it's available for sorting in the first pass
                 non_aggr_order_by.forEach(ob => {
-                    const {tableid, columnid} = ob.initial_select_column;
-                    if (tableid) {
-                        select.push(`${tableid}.${columnid} AS ${ob.expression.columnid}`);
+                    if (ob.initial_select_column.tableid) {
+                        select.push(`${ob.initial_select_column.tableid}.${ob.initial_select_column.columnid} AS ${ob.expression.columnid}`);
                     } else {
-                        select.push(`${columnid} AS ${ob.expression.columnid}`);
+                        select.push(`${ob.initial_select_column.columnid} AS ${ob.expression.columnid}`);
                     }
                 });
             }
@@ -1097,4 +1107,16 @@ function hasColumnAggregators(columns) {
     };
 
     return has_aggregators;
+}
+
+function hasColumnOps(columns) {
+    let has_ops = false;
+    for (let col of columns) {
+        if (col.op) {
+            has_ops = true;
+            break;
+        }
+    }
+
+    return has_ops;
 }
