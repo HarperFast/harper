@@ -478,13 +478,9 @@ class SQLSearch {
             this._addFetchColumns(this.columns.where);
         }
 
-        //We need to check if the select includes aggregators - if so, cannot treat as a simple select query
-        // and need to run through alasql
-        const has_aggregators = hasColumnAggregators(this.statement.columns);
-        const has_select_ops = hasColumnOps(this.statement.columns);
-
-        const simple_select_query = !has_aggregators && !has_select_ops && Object.keys(this.statement).length === 2
-            && !!this.statement.columns && !!this.statement.from && this.statement.from.length === 1;
+        //We need to check if statement only includes basic columns and a from value in the statement
+        // - if so, cannot treat as a simple select query and need to run through alasql
+        const simple_select_query = this._isSimpleSelect();
         if (simple_select_query) {
             this._addFetchColumns(this.columns.columns);
         }
@@ -673,6 +669,25 @@ class SQLSearch {
         // console.log(`Total allocated       ${Math.round(mbNow * 100) / 100} GB`);
         // gbAlloc_gfa = Math.round((mbNow - gbStart_gfa) * 100) / 100;
         // console.log(`Allocated for __getFetchAttrs - ${gbAlloc_gfa} GB`);
+    }
+
+    _isSimpleSelect() {
+        let isSimpleSelect = true;
+
+        if (Object.keys(this.statement).length !== 2 ||
+            !this.statement.columns || !this.statement.from || this.statement.from.length !== 1) {
+            isSimpleSelect = false;
+            return isSimpleSelect;
+        }
+
+        this.statement.columns.forEach(col => {
+            if (col instanceof alasql.yy.Columns === false) {
+                isSimpleSelect = false;
+                return;
+            }
+        })
+
+        return isSimpleSelect;
     }
 
     _updateOrderByToAliases() {
@@ -1096,27 +1111,3 @@ class SQLSearch {
 }
 
 module.exports = SQLSearch;
-
-function hasColumnAggregators(columns) {
-    let has_aggregators = false;
-    for (let col of columns ) {
-        if (col.aggregatorid) {
-            has_aggregators = true;
-            break;
-        }
-    };
-
-    return has_aggregators;
-}
-
-function hasColumnOps(columns) {
-    let has_ops = false;
-    for (let col of columns) {
-        if (col.op) {
-            has_ops = true;
-            break;
-        }
-    }
-
-    return has_ops;
-}
