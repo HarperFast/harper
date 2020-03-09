@@ -1,23 +1,5 @@
 'use strict';
 
-// const v8 = require('v8');
-// const field = 'heapUsed';
-//
-// let mbStart_gfa;
-// let gbStart_gfa;
-// let mbEnd_gfa;
-// let gbAlloc_gfa;
-//
-// let mbStart_pj;
-// let gbStart_pj;
-// let mbEnd_pj;
-// let gbAlloc_pj;
-//
-// let mbStart_fsql;
-// let gbStart_fsql;
-// let mbEnd_fsql;
-// let gbAlloc_fsql;
-
 /**
  * SQLSearch.js
  * This class is used to receive the alasql generated AST from a SQL SELECT,
@@ -39,7 +21,6 @@ const SEARCH_ERROR_MSG = 'There was a problem performing this search. Please che
 
 //here we call to define and import custom functions to alasql
 alasql_function_importer(alasql);
-// alasql.options.joinstar = 'underscore';
 
 class SQLSearch {
     /**
@@ -286,6 +267,11 @@ class SQLSearch {
         }
     }
 
+    /**
+     * Iterates the columns in the AST and assigns an alias to each column if one does not exist.  This is necessary to ensure
+     * that the final result returned from alasql include the correct column header
+     * @private
+     */
     _setAliasesForColumns() {
         //this scenario is reached by doing a select with only calculations and, therefore, this step can be skipped.
         if (common_utils.isEmptyOrZeroLength(this.all_table_attributes) && common_utils.isEmptyOrZeroLength(this.statement.from) && common_utils.isEmptyOrZeroLength(this.columns.columns)) {
@@ -439,15 +425,36 @@ class SQLSearch {
         }
     }
 
+    /**
+     * Adds new attribute metadata for the specified table to enable more easily accessing/adding/updating row data being built out
+     * @param schema_table <String> the table to add the metadata to
+     * @param attr <String> the attribute to add to the table row metadata
+     * @private
+     */
     _addColumnToMergedAttributes(schema_table, attr) {
         this.data[schema_table].__merged_attributes.push(attr);
         this.data[schema_table].__merged_attr_map[attr] = this.data[schema_table].__merged_attributes.length - 1;
     }
 
+    /**
+     * Adds the hash attribute to the specified table - this is similar to the above but unique for hash attributes because we always
+     * add hash keys to the first index position in the table metadata and do not need to add it to the `__merged_attr_map`
+     * @param schema_table <String> the table to add the metadata to
+     * @param hash_value <String> the hash key to add to the table row metadata
+     * @private
+     */
     _setMergedHashAttribute(schema_table, hash_value) {
         this.data[schema_table].__merged_data[hash_value].splice(0, 1, hash_value);
     }
 
+    /**
+     * Updates the table row data for a specific hash value
+     * @param schema_table <String> the table to update the hash value row in
+     * @param hash_value <String> the hash value to update an attr for
+     * @param attr <String> the attr to update in the table row
+     * @param update_value <String> the value to update in the table row
+     * @private
+     */
     _updateMergedAttribute(schema_table, hash_value, attr, update_value) {
         const attr_index = this.data[schema_table].__merged_attr_map[attr];
         this.data[schema_table].__merged_data[hash_value].splice(attr_index, 1, update_value);
@@ -455,16 +462,12 @@ class SQLSearch {
 
     /**
      * Gets all values for the where, join, & order by attributes and converts the raw indexed data into individual
-     * rows by hash attribute consolidated based on tables
+     * rows by hash attribute consolidated based on tables. If the SQL statement is a simple SELECT query, this method
+     * will return the results from that select and bypass the additional alasql steps.
      * @returns {Promise<void>}
      * @private
      */
     async _getFetchAttributeValues() {
-        //TODO REMOVE CODE
-        // mbStart_gfa = process.memoryUsage();
-        // gbStart_gfa = mbStart_gfa[field] / 1024 / 1024 / 1024;
-        // console.log(`Start ${Math.round(gbStart_gfa * 100) / 100} GB`);
-
         //get all unique attributes
         this._addFetchColumns(this.columns.joins);
 
@@ -662,15 +665,13 @@ class SQLSearch {
                 }
             }
         }
-
-        //TODO REMOVE CODE
-        // mbEnd_gfa = process.memoryUsage();
-        // const mbNow = mbEnd_gfa[field] / 1024 / 1024 / 1024;
-        // console.log(`Total allocated       ${Math.round(mbNow * 100) / 100} GB`);
-        // gbAlloc_gfa = Math.round((mbNow - gbStart_gfa) * 100) / 100;
-        // console.log(`Allocated for __getFetchAttrs - ${gbAlloc_gfa} GB`);
     }
 
+    /**
+     * Checks if SQL statement only includes basic SELECT columns FROM one table
+     * @returns {boolean} is SQL statement a simple select
+     * @private
+     */
     _isSimpleSelect() {
         let isSimpleSelect = true;
 
@@ -690,6 +691,11 @@ class SQLSearch {
         return isSimpleSelect;
     }
 
+    /**
+     * Updates the AST order by values to utilize the aliases already set for the corresponding column values.  This is required to
+     * resolve a bug in alasql where column values/references in the order by are not parsed by the library correctly.
+     * @private
+     */
     _updateOrderByToAliases() {
         this.statement.order.forEach(order_by => {
             //We don't need to do anything with the alias if the orderby is an aggregator
@@ -735,6 +741,11 @@ class SQLSearch {
         });
     }
 
+    /**
+     * This ensures that the non-aggregator columns included in the order by statement are included in the table data for the
+     * first pass of alasql
+     * @private
+     */
     _addNonAggregatorsToFetchColumns() {
         const non_aggr_order_by_cols = this.statement.order.filter(ob => !ob.is_aggregator && !ob.is_ordinal);
         const non_aggr_columnids = non_aggr_order_by_cols.map(col => ({ columnid: col.expression.columnid_orig }));
@@ -748,11 +759,6 @@ class SQLSearch {
      * @private
      */
     async _processJoins() {
-        //TODO REMOVE CODE
-        // mbStart_pj = process.memoryUsage();
-        // gbStart_pj = mbStart_pj[field] / 1024 / 1024 / 1024;
-        // console.log(`Start ${Math.round(gbStart_pj * 100) / 100} GB`);
-
         let table_data = [];
         let select = [];
         //TODO need to loop from here to ensure cross joins are covered - i.e. 'from tablea a, tableb b, tablec c' -
@@ -856,12 +862,6 @@ class SQLSearch {
             'existing_attributes': existing_attributes,
             'joined_length': joined ? joined.length : 0
         };
-        //TODO REMOVE CODE
-        // mbEnd_pj = process.memoryUsage();
-        // const mbNow = mbEnd_pj[field] / 1024 / 1024 / 1024;
-        // console.log(`Total allocated       ${Math.round(mbNow * 100) / 100} GB`);
-        // gbAlloc_pj = Math.round((mbNow - gbStart_pj) * 100) / 100;
-        // console.log(`Allocated for __processJoins - ${gbAlloc_pj} GB`);
 
         return join_results;
     }
@@ -954,11 +954,6 @@ class SQLSearch {
      * @private
      */
     async _finalSQL() {
-        //TODO REMOVE CODE
-        // mbStart_fsql = process.memoryUsage();
-        // gbStart_fsql = mbStart_fsql[field] / 1024 / 1024 / 1024;
-        // console.log(`Start ${Math.round(gbStart_fsql * 100) / 100} GB`);
-
         let table_data = [];
         //TODO need to loop from here to ensure cross joins are covered - i.e. 'from tablea a, tableb b, tablec c' -
         // this is not high priority but is covered in CORE-894
@@ -989,13 +984,6 @@ class SQLSearch {
             throw new Error('There was a problem running the generated sql.');
         }
 
-        //TODO REMOVE CODE
-        // mbEnd_fsql = process.memoryUsage();
-        // const mbNow = mbEnd_fsql[field] / 1024 / 1024 / 1024;
-        // console.log(`Total allocated       ${Math.round(mbNow * 100) / 100} GB`);
-        // gbAlloc_fsql = Math.round((mbNow - gbStart_fsql) * 100) / 100;
-        // console.log(`Allocated for __finalSQL - ${gbAlloc_fsql} GB`);
-
         return final_results;
     }
 
@@ -1019,6 +1007,13 @@ class SQLSearch {
         return this._convertColumnsToIndexes(sql, this.tables);
     }
 
+    /**
+     * Updates the sql_statment string to use index values instead of table column names
+     * @param sql_statement
+     * @param tables
+     * @returns {*}
+     * @private
+     */
     _convertColumnsToIndexes(sql_statement, tables) {
         let final_sql = sql_statement;
         const tables_map = {};
@@ -1048,6 +1043,11 @@ class SQLSearch {
         return final_sql;
     }
 
+    /**
+     * Builds out the final result JSON for a simple SQL query to return to the main search method without using alasql
+     * @returns {Promise<unknown[]>}
+     * @private
+     */
     async _simpleSQLQuery() {
         const fetch_attributes_objs = this.fetch_attributes.reduce((acc, attr) => {
             const schema_table = `${attr.table.databaseid}_${attr.table.tableid}`;

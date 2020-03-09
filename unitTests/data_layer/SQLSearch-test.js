@@ -58,6 +58,7 @@ let _getTables_spy;
 let _conditionsToFetchAttributeValues_spy;
 let _backtickAllSchemaItems_spy;
 let _getFetchAttributeValues_spy;
+let _simpleSQLQuery_spy;
 let _getDataByValue_spy;
 let _getDataByHash_spy;
 let _getFinalAttributeData_spy;
@@ -74,6 +75,7 @@ function setClassMethodSpies() {
     _conditionsToFetchAttributeValues_spy = sandbox.spy(SQLSearch.prototype, '_conditionsToFetchAttributeValues');
     _backtickAllSchemaItems_spy = sandbox.spy(SQLSearch.prototype, '_backtickAllSchemaItems');
     _getFetchAttributeValues_spy = sandbox.spy(SQLSearch.prototype, '_getFetchAttributeValues');
+    _simpleSQLQuery_spy = sandbox.spy(SQLSearch.prototype, '_simpleSQLQuery');
     _getDataByValue_spy = sandbox.spy(harperBridge, 'getDataByValue');
     _getDataByHash_spy = sandbox.spy(harperBridge, 'getDataByHash');
     _getFinalAttributeData_spy = sandbox.stub(SQLSearch.prototype, '_getFinalAttributeData').callThrough();
@@ -1032,7 +1034,7 @@ describe('Test FileSystem Class',function() {
 
     describe('_getFetchAttributeValues()',function() {
 
-        it('should return all requested data from the data[table].__merged_data property for basic full table select', mochaAsyncWrapper(async function() {
+        it('should call simpleSQLQuery and return results for simple SELECT statement', mochaAsyncWrapper(async function() {
             const expected_result = TEST_DATA_DOG;
             const test_sql_basic = sql_basic_dog_select;
             setupTestInstance(test_sql_basic);
@@ -1042,6 +1044,7 @@ describe('Test FileSystem Class',function() {
             expect(Object.values(test_instance.data[dog_schema_table_id].__merged_data)).to.deep.equal(expected_result);
             expect(test_result).to.deep.equal(expected_result);
             expect(_getDataByValue_spy.callCount).to.equal(4);
+            expect(_simpleSQLQuery_spy.calledOnce).to.equal(true);
         }));
 
         it('should set values to the data[table].__merged_data property for specified hash attributes from WHERE clause', mochaAsyncWrapper(async function() {
@@ -1064,6 +1067,7 @@ describe('Test FileSystem Class',function() {
             });
             expect(_getDataByHash_spy.calledOnce).to.equal(true);
             expect(_getDataByValue_spy.calledOnce).to.equal(false);
+            expect(_simpleSQLQuery_spy.called).to.equal(false);
         }));
 
         it('should set values to the data[table].__merged_data property for specified attribute value and associated hash key/value pairs from WHERE clause', mochaAsyncWrapper(async function() {
