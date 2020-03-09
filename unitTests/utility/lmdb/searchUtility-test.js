@@ -396,38 +396,55 @@ describe('Test searchUtility module', ()=>{
         });
 
         it("test search on city", () => {
-            let results = test_utils.assertErrorSync(search_util.equals, [env, 'city', 'Denver'], undefined, 'all arguments');
-            assert.deepStrictEqual(results, ['1', '4']);
+            let expected = Object.create(null);
+            expected['1'] = test_utils.assignObjecttoNullObject({id:1, city: 'Denver'});
+            expected['4'] = test_utils.assignObjecttoNullObject({id:4, city: 'Denver'});
+
+            let results = test_utils.assertErrorSync(search_util.equals, [env, 'id', 'city', 'Denver'], undefined, 'all arguments');
+            assert.deepStrictEqual(results, expected);
+        });
+
+        it("test search on city, no hash", () => {
+            let expected = Object.create(null);
+            expected['1'] = test_utils.assignObjecttoNullObject({city: 'Denver'});
+            expected['4'] = test_utils.assignObjecttoNullObject({city: 'Denver'});
+            let results = test_utils.assertErrorSync(search_util.equals, [env, undefined, 'city', 'Denver'], undefined, 'all arguments');
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test search on city with only partial value", () => {
-            let results = test_utils.assertErrorSync(search_util.equals, [env, 'city', 'Den'], undefined, 'all arguments');
-            assert.deepStrictEqual(results, []);
+            let results = test_utils.assertErrorSync(search_util.equals, [env, 'id', 'city', 'Den'], undefined, 'all arguments');
+            assert.deepStrictEqual(results, Object.create(null));
         });
 
         it("test search on attribute no exist", () => {
-            let results = test_utils.assertErrorSync(search_util.equals, [env, 'fake', 'bad'], LMDB_TEST_ERRORS.DBI_DOES_NOT_EXIST);
+            let results = test_utils.assertErrorSync(search_util.equals, [env, 'id', 'fake', 'bad'], LMDB_TEST_ERRORS.DBI_DOES_NOT_EXIST);
             assert.deepStrictEqual(results, undefined);
         });
 
         it("test search on age (number attribute)", () => {
-            let results = test_utils.assertErrorSync(search_util.equals, [env, 'age', 46], undefined);
-            assert.deepStrictEqual(results, ['1']);
+            let expected = Object.create(null);
+            expected['1'] = test_utils.assignObjecttoNullObject({age: 46, id:1});
+
+            let results = test_utils.assertErrorSync(search_util.equals, [env, 'id', 'age', 46], undefined);
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test search on age (number attribute) value doesn't exist", () => {
-            let results = test_utils.assertErrorSync(search_util.equals, [env, 'age', 100], undefined);
-            assert.deepStrictEqual(results, []);
+            let results = test_utils.assertErrorSync(search_util.equals, [env, 'id', 'age', 100], undefined);
+            assert.deepStrictEqual(results, Object.create(null));
         });
 
         it("test search on hash attribute (id)", () => {
-            let results = test_utils.assertErrorSync(search_util.equals, [env, 'id', 1], undefined);
-            assert.deepStrictEqual(results, ['1']);
+            let expected = Object.create(null);
+            expected['1'] = test_utils.assignObjecttoNullObject({id:1});
+            let results = test_utils.assertErrorSync(search_util.equals, [env, 'id','id', 1], undefined);
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test search on hash attribute (id), value doesn't exist", () => {
-            let results = test_utils.assertErrorSync(search_util.equals, [env, 'id', 100], undefined);
-            assert.deepStrictEqual(results, []);
+            let results = test_utils.assertErrorSync(search_util.equals, [env, 'id', 'id', 100], undefined);
+            assert.deepStrictEqual(results, Object.create(null));
         });
     });
 
@@ -455,33 +472,56 @@ describe('Test searchUtility module', ()=>{
         });
 
         it("test search on city", () => {
-            let results = test_utils.assertErrorSync(search_util.startsWith, [env, 'city', 'Den'], undefined, 'all arguments');
-            assert.deepStrictEqual(results, ['1', '4', '5']);
+            let expected = Object.create(null);
+            expected['1'] = test_utils.assignObjecttoNullObject({"city": "Denver","id": 1});
+            expected['4'] = test_utils.assignObjecttoNullObject({"city": "Denver","id": 4});
+            expected['5'] = test_utils.assignObjecttoNullObject({"city": "Denvertown","id": 5});
+
+            let results = test_utils.assertErrorSync(search_util.startsWith, [env, 'id', 'city', 'Den'], undefined, 'all arguments');
+            assert.deepStrictEqual(results, expected);
+        });
+
+        it("test search on city, no hash", () => {
+            let expected = Object.create(null);
+            expected['1'] = test_utils.assignObjecttoNullObject({"city": "Denver"});
+            expected['4'] = test_utils.assignObjecttoNullObject({"city": "Denver"});
+            expected['5'] = test_utils.assignObjecttoNullObject({"city": "Denvertown"});
+
+            let results = test_utils.assertErrorSync(search_util.startsWith, [env, undefined, 'city', 'Den'], undefined, 'all arguments');
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test search on city with Denver", () => {
-            let results = test_utils.assertErrorSync(search_util.startsWith, [env, 'city', 'Denver'], undefined, 'all arguments');
-            assert.deepStrictEqual(results, ['1', '4', '5']);
+            let expected = Object.create(null);
+            expected['1'] = test_utils.assignObjecttoNullObject({"city": "Denver","id": 1});
+            expected['4'] = test_utils.assignObjecttoNullObject({"city": "Denver","id": 4});
+            expected['5'] = test_utils.assignObjecttoNullObject({"city": "Denvertown","id": 5});
+            let results = test_utils.assertErrorSync(search_util.startsWith, [env, 'id', 'city', 'Denver'], undefined, 'all arguments');
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test search on city with Denvert", () => {
-            let results = test_utils.assertErrorSync(search_util.startsWith, [env, 'city', 'Denvert'], undefined, 'all arguments');
-            assert.deepStrictEqual(results, ['5']);
+            let expected = Object.create(null);
+            expected['5'] = test_utils.assignObjecttoNullObject({"city": "Denvertown","id": 5});
+            let results = test_utils.assertErrorSync(search_util.startsWith, [env, 'id', 'city', 'Denvert'], undefined, 'all arguments');
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test search on city with non-existent value", () => {
-            let results = test_utils.assertErrorSync(search_util.startsWith, [env, 'city', 'FoCo'], undefined, 'all arguments');
-            assert.deepStrictEqual(results, []);
+            let results = test_utils.assertErrorSync(search_util.startsWith, [env, 'id', 'city', 'FoCo'], undefined, 'all arguments');
+            assert.deepStrictEqual(results, Object.create(null));
         });
 
         it("test search on attribute no exist", () => {
-            let results = test_utils.assertErrorSync(search_util.startsWith, [env, 'fake', 'bad'], LMDB_TEST_ERRORS.DBI_DOES_NOT_EXIST);
+            let results = test_utils.assertErrorSync(search_util.startsWith, [env, 'id','fake', 'bad'], LMDB_TEST_ERRORS.DBI_DOES_NOT_EXIST);
             assert.deepStrictEqual(results, undefined);
         });
 
         it("test search on hash attribute", () => {
-            let results = test_utils.assertErrorSync(search_util.startsWith, [env, 'id', '1'], undefined);
-            assert.deepStrictEqual(results, ['1']);
+            let expected = Object.create(null);
+            expected['1'] = test_utils.assignObjecttoNullObject({"id": 1});
+            let results = test_utils.assertErrorSync(search_util.startsWith, [env, 'id','id', '1'], undefined);
+            assert.deepStrictEqual(results, expected);
         });
     });
 
