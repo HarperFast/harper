@@ -25,6 +25,10 @@ function insertUpdateValidate(write_object){
         throw new Error('invalid table specified.');
     }
 
+    if (!Array.isArray(write_object.records)) {
+        throw new Error('records must be an array');
+    }
+
     //validate insert_object for required attributes
     let validator = insert_validator(write_object);
     if (validator) {
@@ -34,10 +38,6 @@ function insertUpdateValidate(write_object){
     let schema_table = global.hdb_schema[write_object.schema][write_object.table];
     if (hdb_utils.isEmpty(schema_table)) {
         throw new Error(`could not retrieve schema:${write_object.schema} and table ${write_object.table}`);
-    }
-
-    if (!Array.isArray(write_object.records)) {
-        throw new Error('records must be an array');
     }
 
     let hash_attribute = schema_table.hash_attribute;
