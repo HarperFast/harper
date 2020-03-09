@@ -9639,6 +9639,146 @@
 						}
 					},
 					"response": []
+				},
+				{
+					"name": "select * FROM {{schema}}.{{ords_tb}} LIMIT 100 OFFSET 0",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "65c8d8f9-1a40-4671-b35d-ec57a847cc59",
+								"exec": [
+									"pm.test(\"test 100 records returned\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.length).to.eql(100);",
+									"});",
+									"",
+									"pm.test(\"test first & last orderids\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData[0].orderid).to.eql(10248);",
+									"    pm.expect(jsonData[99].orderid).to.eql(10347);",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"value": true,
+									"type": "boolean"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"select * FROM {{schema}}.{{ords_tb}} LIMIT 100 OFFSET 0\"\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "select * FROM {{schema}}.{{ords_tb}} LIMIT 100 OFFSET 0 Copy",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "65c8d8f9-1a40-4671-b35d-ec57a847cc59",
+								"exec": [
+									"pm.test(\"test 100 records returned\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.length).to.eql(100);",
+									"});",
+									"",
+									"pm.test(\"test first & last orderids\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData[0].orderid).to.eql(10348);",
+									"    pm.expect(jsonData[99].orderid).to.eql(10447);",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"value": true,
+									"type": "boolean"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"select * FROM {{schema}}.{{ords_tb}} LIMIT 100 OFFSET 100\"\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
 				}
 			],
 			"protocolProfileBehavior": {}
@@ -23708,7 +23848,7 @@
 									"pm.test(\"license data returned\", function () {",
 									"    var jsonData = pm.response.json();",
 									"    pm.expect(jsonData.registered).to.eql(true);",
-									"    pm.expect(!!jsonData.version && !!jsonData.storage_type && !!jsonData.license_expiration_date && !!jsonData.daily_api_calls_current && !!jsonData.daily_api_calls_limit).to.eql(true);",
+									"    pm.expect(!!jsonData.version && !!jsonData.storage_type && !!jsonData.license_expiration_date).to.eql(true);",
 									"});"
 								],
 								"type": "text/javascript"
