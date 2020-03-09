@@ -366,7 +366,6 @@ class SQLSearch {
 
         //this is to handle aliases.  if we did not find the actual column we look at the aliases in the select columns and then return the matching column from all_table_attrs, if it exists
         if (common_utils.isEmptyOrZeroLength(found_columns)) {
-            // found_columns = this.columns.columns.filter(select_column => select_column.as ? column.columnid === select_column.as : false);
             const found_alias = this.columns.columns.filter(select_column => select_column.as ? column.columnid === select_column.as : false);
             if (!common_utils.isEmptyOrZeroLength(found_alias)) {
                 found_columns = this.all_table_attributes.filter(col => col.attribute === found_alias[0].columnid
@@ -824,13 +823,14 @@ class SQLSearch {
         }
 
         let limit = this.statement.limit ? 'LIMIT ' + this.statement.limit : '';
+        let offset = this.statement.offset ? 'OFFSET ' + this.statement.offset : '';
 
         //we should only select the primary key of each table then remove the rows that exist from each table
         //see note above about selecting appropriate orderby columns as well due to bug in alasql (CORE-929)
         let joined =[];
 
         try {
-            const initial_sql = `SELECT ${select.join(', ')} FROM ${from_clause.join(' ')} ${where_clause} ${order_clause} ${limit}`;
+            const initial_sql = `SELECT ${select.join(', ')} FROM ${from_clause.join(' ')} ${where_clause} ${order_clause} ${limit} ${offset}`;
             const final_sql_operation = this._convertColumnsToIndexes(initial_sql, tables);
             joined = await alasql.promise(final_sql_operation, table_data);
             table_data = null;
@@ -972,6 +972,12 @@ class SQLSearch {
                 join.table.tableid = '?';
             });
         }
+
+        //since we processed the offset in first sql pass it will force it again which will cause no records to be returned
+        if(this.statement.offset){
+            delete this.statement.offset;
+        }
+
         let final_results = undefined;
         try {
             let sql = this._buildSQL();
