@@ -777,7 +777,7 @@ class SQLSearch {
 
         //since we processed the offset in first sql pass it will force it again which will cause no records to be returned
         if(this.statement.offset){
-            this.statement.offset = undefined;
+            delete this.statement.offset;
         }
 
         let final_results = undefined;
