@@ -681,11 +681,11 @@ class SQLSearch {
         }
 
         this.statement.columns.forEach(col => {
-            if (col instanceof alasql.yy.Columns === false) {
+            if (col instanceof alasql.yy.Column === false) {
                 isSimpleSelect = false;
                 return;
             }
-        })
+        });
 
         return isSimpleSelect;
     }
