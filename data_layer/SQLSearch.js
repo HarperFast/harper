@@ -634,12 +634,13 @@ class SQLSearch {
         }
 
         let limit = this.statement.limit ? 'LIMIT ' + this.statement.limit : '';
+        let offset = this.statement.offset ? 'OFFSET ' + this.statement.offset : '';
 
         //we should only select the primary key of each table then remove the rows that exist from each table
         let joined =[];
 
         try {
-            joined = await alasql.promise(`SELECT ${select.join(',')} FROM ${from_clause.join(' ')} ${where_clause} ${order_clause} ${limit}`, table_data);
+            joined = await alasql.promise(`SELECT ${select.join(',')} FROM ${from_clause.join(' ')} ${where_clause} ${order_clause} ${limit} ${offset}`, table_data);
         } catch(e) {
             log.error('Error thrown from AlaSQL in SQLSearch class method processJoins.');
             log.error(e);
@@ -773,6 +774,12 @@ class SQLSearch {
                 join.table.tableid = '?';
             });
         }
+
+        //since we processed the offset in first sql pass it will force it again which will cause no records to be returned
+        if(this.statement.offset){
+            delete this.statement.offset;
+        }
+
         let final_results = undefined;
         try {
             let sql = this._buildSQL();
@@ -821,7 +828,7 @@ function hasColumnAggregators(columns) {
             has_aggregators = true;
             break;
         }
-    };
+    }
 
     return has_aggregators;
 }
