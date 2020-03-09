@@ -23880,7 +23880,7 @@
 									"pm.test(\"license data returned\", function () {",
 									"    var jsonData = pm.response.json();",
 									"    pm.expect(jsonData.registered).to.eql(true);",
-									"    pm.expect(!!jsonData.version && !!jsonData.storage_type && !!jsonData.license_expiration_date && !!jsonData.daily_api_calls_current && !!jsonData.daily_api_calls_limit).to.eql(true);",
+									"    pm.expect(!!jsonData.version && !!jsonData.storage_type && !!jsonData.license_expiration_date).to.eql(true);",
 									"});"
 								],
 								"type": "text/javascript"
