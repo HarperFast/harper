@@ -170,8 +170,8 @@ describe(`Test getRegistrationInfo`,function() {
         assert.equal(result.version, test_version, `Expected value to be ${test_version}`);
         assert.equal(result.storage_type, test_license.storage_type, `Expected value to be ${test_license.storage_type}`);
         assert.equal(result.license_expiration_date, test_license.exp_date, `Expected value to be ${test_license.exp_date}`);
-        assert.equal(result.daily_api_calls_current, test_api_calls, `Expected value to be ${test_api_calls}`);
-        assert.equal(result.daily_api_calls_limit, test_license.api_call, `Expected value to be ${test_license.api_call}`);
+        //assert.equal(result.daily_api_calls_current, test_api_calls, `Expected value to be ${test_api_calls}`);
+        //assert.equal(result.daily_api_calls_limit, test_license.api_call, `Expected value to be ${test_license.api_call}`);
         assert.equal(result.ram_allocation, test_license.ram_allocation, `Expected value to be ${test_license.ram_allocation}`);
     });
 
@@ -214,7 +214,8 @@ describe(`Test getRegistrationInfo`,function() {
         assert.equal(log_spy.calledOnce,true, 'expected error to be logged');
     });
 
-    it('Should throw and log an error if getDailyAPICalls throws an error', async function () {
+    //commented out as we may want this test back in the future
+    /*it('Should throw and log an error if getDailyAPICalls throws an error', async function () {
         getDailyAPICalls_stub.throws(new Error(err_msg));
         let result;
         try {
@@ -225,6 +226,6 @@ describe(`Test getRegistrationInfo`,function() {
 
         assert.equal(err.message, err_msg,'expected error message');
         assert.equal(log_spy.calledOnce,true, 'expected error to be logged');
-    });
+    });*/
 
 });
