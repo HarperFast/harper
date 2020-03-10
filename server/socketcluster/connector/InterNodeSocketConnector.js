@@ -62,6 +62,8 @@ class InterNodeSocketConnector extends SocketConnector{
             if (this.additional_info && this.connected_timestamp) {
                 //check subscriptions so we can locally fetch catchup and ask for remote catchup
                 this.additional_info.subscriptions.forEach(async (subscription) => {
+                    this.socket.emit('schema_catchup', {}, this.catchupResponseHandler.bind(this));
+
                     if (subscription.publish === true) {
                         try {
                             let catch_up_msg = await sc_util.catchupHandler(subscription.channel, this.connected_timestamp, null);
@@ -108,6 +110,7 @@ class InterNodeSocketConnector extends SocketConnector{
     }
 
     async catchupResponseHandler(error, catchup_msg) {
+        console.log(catchup_msg);
         log.debug('Received catchup message');
         if(error) {
             log.info('Error in catchupResponseHandler');
