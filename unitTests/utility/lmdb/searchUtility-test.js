@@ -549,7 +549,10 @@ describe('Test searchUtility module', ()=>{
         });
 
         it("test search on city", () => {
-            let results = test_utils.assertErrorSync(search_util.endsWith, [env, 'city', 'ver'], undefined, 'all arguments');
+            let expected = Object.create(null);
+            expected['1'] = test_utils.assignObjecttoNullObject({"id": 1, city: 'Denver'});
+            expected['4'] = test_utils.assignObjecttoNullObject({"id": 4, city: 'Denver'});
+            let results = test_utils.assertErrorSync(search_util.endsWith, [env, 'id', 'city', 'ver'], undefined, 'all arguments');
             assert.deepStrictEqual(results, ['1', '4']);
         });
 
