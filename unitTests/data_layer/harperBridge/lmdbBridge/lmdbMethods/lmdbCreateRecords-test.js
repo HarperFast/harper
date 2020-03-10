@@ -127,7 +127,11 @@ const SCHEMA_TABLE_TEST = {
     name: 'dog',
     hash_attribute: HASH_ATTRIBUTE_NAME,
     schema: 'dev',
-    attributes: []
+    attributes: [
+        {attribute: HASH_ATTRIBUTE_NAME},
+        {attribute: '__createdtime__'},
+        {attribute: '__updatedtime__'},
+    ]
 };
 
 const CREATE_SCHEMA_DEV = {
@@ -209,10 +213,16 @@ describe('Test lmdbCreateRecords module', ()=>{
 
         it('Test that rows are inserted correctly and return msg is correct ', async ()=>{
             let expected_return_result = {
+                new_attributes: [
+                    "name",
+                    "breed",
+                    "age",
+                    "height"
+                ],
                 written_hashes: [ 8, 9, 12, 10 ],
                 skipped_hashes: [],
                 schema_table: {
-                    attributes: [],
+                    attributes: SCHEMA_TABLE_TEST.attributes,
                     hash_attribute: HASH_ATTRIBUTE_NAME,
                     residence: undefined,
                     schema: INSERT_OBJECT_TEST.schema,
@@ -237,10 +247,16 @@ describe('Test lmdbCreateRecords module', ()=>{
 
         it('Test inserting existing and non-existing rows', async () => {
             let expected_result = {
+                new_attributes: [
+                    "name",
+                    "breed",
+                    "age",
+                    "height"
+                ],
                 written_hashes: [ 8, 9, 12, 10 ],
                 skipped_hashes: [],
                 schema_table: {
-                    attributes: [],
+                    attributes: SCHEMA_TABLE_TEST.attributes,
                     hash_attribute: HASH_ATTRIBUTE_NAME,
                     residence: undefined,
                     schema: INSERT_OBJECT_TEST.schema,
@@ -322,6 +338,7 @@ describe('Test lmdbCreateRecords module', ()=>{
 
             insert_obj.records = new_records;
             let expected_return_result = {
+                new_attributes: [],
                 written_hashes: [ 123, 1232 ],
                 skipped_hashes: [ 8, 9 ],
                 schema_table: {
