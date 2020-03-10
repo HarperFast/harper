@@ -606,8 +606,9 @@ describe('Test searchUtility module', ()=>{
             for(let x = 0; x < test_data.length; x++){
                 if(parseInt(test_data[x][attribute]) > value){
                     let id = test_data[x].id;
-                    expected[id.toString()] = test_utils.assignObjecttoNullObject({id: id});
-                    expected[id.toString()][attribute] = test_data[x][attribute];
+                    let value = isNaN(test_data[x][attribute]) ? test_data[x][attribute] : Number(test_data[x][attribute]);
+                    expected[id.toString()] = test_utils.assignObjecttoNullObject({id: Number(id)});
+                    expected[id.toString()][attribute] = value;
                 }
             }
 
@@ -643,49 +644,29 @@ describe('Test searchUtility module', ()=>{
 
         /** TEST HASH ATTRIBUTE **/
         it("test greater than 100 on hash column", () => {
-            let expected = Object.create(null);
+            let expected = createExpected('id', 100);
 
-            for(let x = 0; x < test_data.length; x++){
-                if(parseInt(test_data[x].id) > 100){
-                    let id = test_data[x].id;
-                    expected[id.toString()] = test_utils.assignObjecttoNullObject({id: id})
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.greaterThan, [env, 'id', '100'], undefined);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let results = test_utils.assertErrorSync(search_util.greaterThan, [env, 'id', 'id', '100'], undefined);
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test greater than 11 on hash column", () => {
-            let expected = [];
+            let expected = createExpected('id', 11);
 
-            for(let x = 0; x < test_data.length; x++){
-                if(parseInt(test_data[x].id) > 11){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.greaterThan, [env, 'id', '11'], undefined);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let results = test_utils.assertErrorSync(search_util.greaterThan, [env, 'id', 'id', '11'], undefined);
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test greater than 0 on hash column", () => {
-            let expected = [];
+            let expected = createExpected('id', 0);
 
-            for(let x = 0; x < test_data.length; x++){
-                if(parseInt(test_data[x].id) > 0){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.greaterThan, [env, 'id', '0'], undefined);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let results = test_utils.assertErrorSync(search_util.greaterThan, [env, undefined, 'id', '0'], undefined);
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test greater than 1001 (max value) on hash column", () => {
-            let results = test_utils.assertErrorSync(search_util.greaterThan, [env, 'id', '1001'], undefined);
-            assert.deepStrictEqual(results.sort(), []);
+            let results = test_utils.assertErrorSync(search_util.greaterThan, [env, undefined, 'id', '1001'], undefined);
+            assert.deepStrictEqual(results, Object.create(null));
         });
 
         it("test greater than 1111 (a value larger than the max) on hash column", () => {
