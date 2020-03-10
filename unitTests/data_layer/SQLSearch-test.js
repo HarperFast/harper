@@ -606,15 +606,13 @@ describe('Test FileSystem Class',function() {
 
         function checkTestInstanceData(data, table_id, hash_name, has_hash, merged_data) {
             const test_table_obj = data[table_id];
-            const { __hash_name, __has_hash, __merged_data } = test_table_obj;
+            const { __hash_name,  __merged_data } = test_table_obj;
 
             const exp_hash_name = hash_name ? hash_name : 'id';
-            const exp_has_hash = has_hash ? has_hash : false;
             const exp_merged_data = merged_data ? merged_data : {};
 
             expect(test_table_obj).to.be.an('object');
             expect(__hash_name).to.equal(exp_hash_name);
-            expect(__has_hash).to.equal(exp_has_hash);
             expect(__merged_data).to.deep.equal(exp_merged_data);
         }
 

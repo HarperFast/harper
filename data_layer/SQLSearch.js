@@ -155,7 +155,6 @@ class SQLSearch {
             this.data[schema_table].__merged_data = {};
             this.data[schema_table].__merged_attributes = [];
             this.data[schema_table].__merged_attr_map = {};
-            this.data[schema_table].__has_hash = false;
         });
     }
 
@@ -414,11 +413,6 @@ class SQLSearch {
                 let found = this._findColumn(attribute);
                 if (found) {
                     this.fetch_attributes.push(clone(found));
-                    const schema_table = `${found.table.databaseid}_${found.table.tableid}`;
-                    const is_hash = found.attribute === this.data[schema_table].__hash_name;
-                    if (is_hash) {
-                        this.data[schema_table].__has_hash = true;
-                    }
                 }
             });
         }
@@ -923,21 +917,23 @@ class SQLSearch {
 
             for (const table of Object.values(table_searches)) {
                 const schema_table = `${table.schema}_${table.table}`;
+                const merged_hash_keys = Object.keys(this.data[schema_table].__merged_data);
                 this.data[schema_table].__merged_attributes.push(...table.columns);
 
                 const search_object = {
                     schema: table.schema,
                     table: table.table,
-                    hash_values: Object.keys(this.data[schema_table].__merged_data),
+                    hash_values: merged_hash_keys,
                     get_attributes: table.columns
                 };
 
                 const search_result = await harperBridge.getDataByHash(search_object);
 
-                Object.keys(this.data[schema_table].__merged_data).forEach(the_id => {
+                merged_hash_keys.forEach(the_id => {
                     const the_row = search_result[the_id];
                     table.columns.forEach(val => {
-                        this.data[schema_table].__merged_data[the_id].push(the_row[val]);
+                        const attr_val = the_row[val] === undefined ? null : the_row[val];
+                        this.data[schema_table].__merged_data[the_id].push(attr_val);
                     });
                 });
             };
