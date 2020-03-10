@@ -59,11 +59,11 @@ class InterNodeSocketConnector extends SocketConnector{
             if (schema_catch_up_msg) {
                 this.socket.publish(hdb_terms.INTERNAL_SC_CHANNELS.SCHEMA_CATCHUP, schema_catch_up_msg);
             }
+            this.socket.emit('schema_catchup', {}, this.catchupResponseHandler.bind(this));
+
             if (this.additional_info && this.connected_timestamp) {
                 //check subscriptions so we can locally fetch catchup and ask for remote catchup
                 this.additional_info.subscriptions.forEach(async (subscription) => {
-                    this.socket.emit('schema_catchup', {}, this.catchupResponseHandler.bind(this));
-
                     if (subscription.publish === true) {
                         try {
                             let catch_up_msg = await sc_util.catchupHandler(subscription.channel, this.connected_timestamp, null);
