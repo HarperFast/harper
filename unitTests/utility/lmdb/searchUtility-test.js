@@ -553,37 +553,67 @@ describe('Test searchUtility module', ()=>{
             expected['1'] = test_utils.assignObjecttoNullObject({"id": 1, city: 'Denver'});
             expected['4'] = test_utils.assignObjecttoNullObject({"id": 4, city: 'Denver'});
             let results = test_utils.assertErrorSync(search_util.endsWith, [env, 'id', 'city', 'ver'], undefined, 'all arguments');
-            assert.deepStrictEqual(results, ['1', '4']);
+            assert.deepStrictEqual(results, expected);
+        });
+
+        it("test search on city, no hash", () => {
+            let expected = Object.create(null);
+            expected['1'] = test_utils.assignObjecttoNullObject({city: 'Denver'});
+            expected['4'] = test_utils.assignObjecttoNullObject({city: 'Denver'});
+            let results = test_utils.assertErrorSync(search_util.endsWith, [env, undefined, 'city', 'ver'], undefined, 'all arguments');
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test search on city with Denver", () => {
-            let results = test_utils.assertErrorSync(search_util.endsWith, [env, 'city', 'Denver'], undefined, 'all arguments');
-            assert.deepStrictEqual(results, ['1', '4']);
+            let expected = Object.create(null);
+            expected['1'] = test_utils.assignObjecttoNullObject({id: 1, city: 'Denver'});
+            expected['4'] = test_utils.assignObjecttoNullObject({id: 4, city: 'Denver'});
+            let results = test_utils.assertErrorSync(search_util.endsWith, [env, 'id','city', 'Denver'], undefined, 'all arguments');
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test search on city with town", () => {
-            let results = test_utils.assertErrorSync(search_util.endsWith, [env, 'city', 'town'], undefined, 'all arguments');
-            assert.deepStrictEqual(results, ['5']);
+            let expected = Object.create(null);
+            expected['5'] = test_utils.assignObjecttoNullObject({id: 5, city: 'Denvertown'});
+            let results = test_utils.assertErrorSync(search_util.endsWith, [env, 'id', 'city', 'town'], undefined, 'all arguments');
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test search on city with non-existent value", () => {
-            let results = test_utils.assertErrorSync(search_util.endsWith, [env, 'city', 'FoCo'], undefined, 'all arguments');
-            assert.deepStrictEqual(results, []);
+            let results = test_utils.assertErrorSync(search_util.endsWith, [env, 'id', 'city', 'FoCo'], undefined, 'all arguments');
+            assert.deepStrictEqual(results, Object.create(null));
         });
 
         it("test search on attribute no exist", () => {
-            let results = test_utils.assertErrorSync(search_util.endsWith, [env, 'fake', 'bad'], LMDB_TEST_ERRORS.DBI_DOES_NOT_EXIST);
+            let results = test_utils.assertErrorSync(search_util.endsWith, [env, 'id','fake', 'bad'], LMDB_TEST_ERRORS.DBI_DOES_NOT_EXIST);
             assert.deepStrictEqual(results, undefined);
         });
 
         it("test search on hash attribute", () => {
-            let results = test_utils.assertErrorSync(search_util.endsWith, [env, 'id', '1'], undefined);
-            assert.deepStrictEqual(results, ['1']);
+            let expected = Object.create(null);
+            expected['1'] = test_utils.assignObjecttoNullObject({id: 1});
+            let results = test_utils.assertErrorSync(search_util.endsWith, [env, 'id', 'id', '1'], undefined);
+            assert.deepStrictEqual(results, expected);
         });
     });
 
     describe('test greaterThan function', ()=> {
         let env;
+
+        function createExpected(attribute, value){
+            let expected = Object.create(null);
+
+            for(let x = 0; x < test_data.length; x++){
+                if(parseInt(test_data[x][attribute]) > value){
+                    let id = test_data[x].id;
+                    expected[id.toString()] = test_utils.assignObjecttoNullObject({id: id});
+                    expected[id.toString()][attribute] = test_data[x][attribute];
+                }
+            }
+
+            return expected;
+        }
+
         before(async () => {
             await fs.mkdirp(BASE_TEST_PATH);
             global.lmdb_map = undefined;
@@ -613,10 +643,12 @@ describe('Test searchUtility module', ()=>{
 
         /** TEST HASH ATTRIBUTE **/
         it("test greater than 100 on hash column", () => {
-            let expected = [];
+            let expected = Object.create(null);
 
             for(let x = 0; x < test_data.length; x++){
                 if(parseInt(test_data[x].id) > 100){
+                    let id = test_data[x].id;
+                    expected[id.toString()] = test_utils.assignObjecttoNullObject({id: id})
                     expected.push(test_data[x].id);
                 }
             }

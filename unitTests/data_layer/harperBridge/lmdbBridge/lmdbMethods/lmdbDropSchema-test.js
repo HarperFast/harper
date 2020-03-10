@@ -252,7 +252,7 @@ describe('test validateDropSchema module', ()=>{
                 error = e;
             }
 
-            assert.deepStrictEqual(error.message, "ENOENT: no such file or directory, access '/home/kyle/WebstormProjects/harperdb/unitTests/envDir/schema/dev'");
+            assert(error.message.startsWith("ENOENT: no such file or directory"));
 
         });
     });
