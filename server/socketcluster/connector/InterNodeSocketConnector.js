@@ -110,7 +110,6 @@ class InterNodeSocketConnector extends SocketConnector{
     }
 
     async catchupResponseHandler(error, catchup_msg) {
-        console.log(catchup_msg);
         log.debug('Received catchup message');
         if(error) {
             log.info('Error in catchupResponseHandler');
