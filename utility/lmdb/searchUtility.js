@@ -277,16 +277,20 @@ function iterateLessThan(env, attribute, search_value, eval_function){
 
 /**
  * determines if the intent is to return the whole row based on fetch_attributes having 1 entry that is wildcard * or %
+ * @param env
  * @param fetch_attributes
- * @returns {boolean}
+ * @returns {Array}
  */
-function setGetWholeRowFlag(fetch_attributes){
-    let get_whole_row = false;
+function setGetWholeRowAttributes(env, fetch_attributes){
     if(fetch_attributes.length === 1 && hdb_terms.SEARCH_WILDCARDS.indexOf(fetch_attributes[0]) >= 0){
-        get_whole_row = true;
+        fetch_attributes = environment_utility.listDBIs(env);
+        let blob_index = fetch_attributes.indexOf(lmdb_terms.BLOB_DBI_NAME);
+        if(blob_index >= 0){
+            fetch_attributes.splice(blob_index, 1);
+        }
     }
 
-    return get_whole_row;
+    return fetch_attributes;
 }
 
 /**
@@ -305,9 +309,9 @@ function searchAll(env, hash_attribute, fetch_attributes){
 
     validateFetchAttributes(fetch_attributes);
 
-    let get_whole_row = setGetWholeRowFlag(fetch_attributes);
+    fetch_attributes = setGetWholeRowAttributes(env, fetch_attributes);
 
-    return iterateFullIndex(env, hash_attribute, cursor_functions.searchAll.bind(null, fetch_attributes, get_whole_row));
+    return iterateFullIndex(env, hash_attribute, cursor_functions.searchAll.bind(null, fetch_attributes));
 }
 
 /**
@@ -326,9 +330,8 @@ function searchAllToMap(env, hash_attribute, fetch_attributes){
 
     validateFetchAttributes(fetch_attributes);
 
-    let get_whole_row = setGetWholeRowFlag(fetch_attributes);
-
-    return iterateFullIndexToMap(env, hash_attribute, cursor_functions.searchAllToMap.bind(null, fetch_attributes, get_whole_row));
+    fetch_attributes = setGetWholeRowAttributes(env, fetch_attributes);
+    return iterateFullIndexToMap(env, hash_attribute, cursor_functions.searchAllToMap.bind(null, fetch_attributes));
 }
 
 /**
@@ -690,8 +693,7 @@ function searchByHash(env, hash_attribute, fetch_attributes, id) {
         throw new Error(LMDB_ERRORS.ID_REQUIRED);
     }
 
-    let get_whole_row = setGetWholeRowFlag(fetch_attributes);
-
+    fetch_attributes = setGetWholeRowAttributes(env, fetch_attributes);
     let txn = undefined;
     try {
         txn = new TransactionCursor(env, hash_attribute);
@@ -699,7 +701,7 @@ function searchByHash(env, hash_attribute, fetch_attributes, id) {
         let obj = null;
         let found = txn.cursor.goToKey(id);
         if (found === id) {
-            obj = cursor_functions.parseRow(txn, get_whole_row, fetch_attributes);
+            obj = cursor_functions.parseRow(txn, fetch_attributes);
         }
         txn.close();
         return obj;
@@ -766,8 +768,7 @@ function checkHashExists(env, hash_attribute, id) {
 function batchSearchByHash(env, hash_attribute, fetch_attributes, ids, not_found = []) {
     let txn = initializeBatchSearchByHash(env, hash_attribute, fetch_attributes, ids, not_found);
 
-    let get_whole_row = setGetWholeRowFlag(fetch_attributes);
-
+    fetch_attributes = setGetWholeRowAttributes(env, fetch_attributes);
     let results = [];
 
     for(let x = 0; x < ids.length; x++){
@@ -775,7 +776,7 @@ function batchSearchByHash(env, hash_attribute, fetch_attributes, ids, not_found
         try {
             let key = txn.cursor.goToKey(id);
             if(key === id) {
-                cursor_functions.searchAll(fetch_attributes, get_whole_row, key, txn, results);
+                cursor_functions.searchAll(fetch_attributes, key, txn, results);
             }else {
                 not_found.push(hdb_utils.autoCast(id));
             }
@@ -803,14 +804,14 @@ function batchSearchByHashToMap(env, hash_attribute, fetch_attributes, ids, not_
 
     let results = Object.create(null);
 
-    let get_whole_row = setGetWholeRowFlag(fetch_attributes);
+    fetch_attributes = setGetWholeRowAttributes(env, fetch_attributes);
 
     for(let x = 0; x < ids.length; x++){
         let id = ids[x];
         try {
             let key = txn.cursor.goToKey(id);
             if(key === id) {
-                let obj = cursor_functions.parseRow(txn, get_whole_row, fetch_attributes);
+                let obj = cursor_functions.parseRow(txn, fetch_attributes);
                 results[id] = obj;
             }else {
                 not_found.push(hdb_utils.autoCast(id));

@@ -18,6 +18,7 @@ const lmdb_terms = require('../../../../../utility/lmdb/terms');
 const write_utility = require('../../../../../utility/lmdb/writeUtility');
 const SearchObject = require('../../../../../data_layer/SearchObject');
 const lmdb_search = rewire('../../../../../data_layer/harperBridge/lmdbBridge/lmdbMethods/lmdbGetDataByValue');
+const common_utils = require('../../../../../utility/common_utils');
 const hdb_terms = require('../../../../../utility/hdbTerms');
 const assert = require('assert');
 const fs = require('fs-extra');
@@ -37,6 +38,13 @@ describe('test lmdbGetDataByValue module', ()=>{
     let date_stub;
     let rw_env_util;
     before(()=>{
+        test_data.forEach(record=>{
+            Object.keys(record).forEach(key=>{
+                record[key] = common_utils.autoCast(record[key]);
+            });
+        });
+
+
         rw_env_util = environment_utility.__set__('MAP_SIZE', 10*1024*1024*1024);
         date_stub = sandbox.stub(Date, 'now').returns(TIMESTAMP);
     });
@@ -67,6 +75,9 @@ describe('test lmdbGetDataByValue module', ()=>{
             env = await environment_utility.createEnvironment(DEV_SCHEMA_PATH, 'test');
             await environment_utility.createDBI(env, 'id', false);
             await environment_utility.createDBI(env, 'temperature', true, lmdb_terms.DBI_KEY_TYPES.NUMBER);
+            await environment_utility.createDBI(env, 'temperature_double', true, lmdb_terms.DBI_KEY_TYPES.NUMBER);
+            await environment_utility.createDBI(env, 'temperature_neg', true, lmdb_terms.DBI_KEY_TYPES.NUMBER);
+            await environment_utility.createDBI(env, 'temperature_pos', true, lmdb_terms.DBI_KEY_TYPES.NUMBER);
             await environment_utility.createDBI(env, 'temperature_str', true, lmdb_terms.DBI_KEY_TYPES.STRING);
             await environment_utility.createDBI(env, 'state', true, lmdb_terms.DBI_KEY_TYPES.STRING);
             await environment_utility.createDBI(env, 'city', true, lmdb_terms.DBI_KEY_TYPES.STRING);
@@ -146,7 +157,7 @@ describe('test lmdbGetDataByValue module', ()=>{
         it('test contains on number', async()=>{
             let expected = Object.create(null);
             test_data.forEach(data=>{
-                if(data.temperature.includes(0)){
+                if(data.temperature.toString().includes(0)){
                     expected[data.id] = test_utils.assignObjecttoNullObject(data, TIMESTAMP_OBJECT);
                 }
             });

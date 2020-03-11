@@ -183,7 +183,7 @@ describe('Test lmdbGetDataByHash module', ()=>{
             let exp_obj = test_utils.deepClone(INSERT_OBJECT_TEST.records[0]);
             exp_obj.__updatedtime__ = TIMESTAMP;
             exp_obj.__createdtime__ = TIMESTAMP;
-            exp_obj.height = undefined;
+            exp_obj.height = null;
             let expected_result = [test_utils.assignObjecttoNullObject(exp_obj)];
 
             let search_obj = new SearchByHashObject('dev', 'dog', [8], ALL_FETCH_ATTRIBUTES);
@@ -203,7 +203,7 @@ describe('Test lmdbGetDataByHash module', ()=>{
 
         it('test finding multiple rows row, some attributes', async()=>{
 
-            let expected_result = [test_utils.assignObjecttoNullObject({id:10, height:145}),test_utils.assignObjecttoNullObject({id:8, height:undefined})];
+            let expected_result = [test_utils.assignObjecttoNullObject({id:10, height:145}),test_utils.assignObjecttoNullObject({id:8, height:null})];
 
             let search_obj = new SearchByHashObject('dev', 'dog', [10, 8], ['id', 'height']);
             let results = await test_utils.assertErrorAsync(lmdb_search_by_hash, [search_obj], undefined);

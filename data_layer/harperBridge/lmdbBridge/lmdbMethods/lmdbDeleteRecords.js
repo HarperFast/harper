@@ -38,6 +38,16 @@ async function lmdbDeleteRecords(delete_obj) {
             throw new Error('hash_values must be an array');
         }
 
+        //this is needed for clustering, right now clustering expects delete to have a records array and use that to get the hash_values.
+        if(hdb_utils.isEmptyOrZeroLength(delete_obj.records)){
+            delete_obj.records = [];
+            for(let x = 0; x < delete_obj.hash_values.length; x++){
+                delete_obj.records[x] = {
+                    [hash_attribute]: delete_obj.hash_values[x]
+                };
+            }
+        }
+
         let env_base_path = path.join(getBaseSchemaPath(), delete_obj.schema);
         let environment = await environment_utility.openEnvironment(env_base_path, delete_obj.table);
 

@@ -36,7 +36,7 @@ async function lmdbCreateRecords(insert_obj) {
             }
         }
 
-        await lmdb_check_new_attributes(insert_obj.hdb_auth_header, schema_table, attributes);
+        let new_attributes = await lmdb_check_new_attributes(insert_obj.hdb_auth_header, schema_table, attributes);
         let env_base_path = path.join(getBaseSchemaPath(), insert_obj.schema);
         let environment = await environment_utility.openEnvironment(env_base_path, insert_obj.table);
         let lmdb_response = lmdb_insert_records(environment, schema_table.hash_attribute, attributes, insert_obj.records);
@@ -44,7 +44,8 @@ async function lmdbCreateRecords(insert_obj) {
         return {
             written_hashes: lmdb_response.written_hashes,
             skipped_hashes: lmdb_response.skipped_hashes,
-            schema_table
+            schema_table,
+            new_attributes
         };
     } catch(err) {
         throw err;
