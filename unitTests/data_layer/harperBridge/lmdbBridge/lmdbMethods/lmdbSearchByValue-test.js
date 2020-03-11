@@ -183,7 +183,7 @@ describe('test lmdbSearchByValue module', ()=>{
         it('test contains on number', async()=>{
             let expected = [];
             test_data.forEach(data=>{
-                if(data.temperature.includes(0)){
+                if(data.temperature.toString().includes(0)){
                     expected.push(test_utils.assignObjecttoNullObject(data, TIMESTAMP_OBJECT));
                 }
             });

@@ -12,6 +12,7 @@ const assert = require('assert');
 const test_data = require('../../testData');
 const LMDB_TEST_ERRORS = require('../../commonTestErrors').LMDB_ERRORS_ENUM;
 const set_whole_row_flag = search_util.__get__('setGetWholeRowFlag');
+const common_utils = require('../../../utility/common_utils');
 
 const BASE_TEST_PATH = path.join(test_utils.getMockFSPath(), 'lmdbTest');
 const TEST_ENVIRONMENT_NAME = 'test';
@@ -39,6 +40,11 @@ describe('Test searchUtility module', ()=>{
     let rw_env_util;
     before(()=> {
         rw_env_util = environment_utility.__set__('MAP_SIZE', 10 * 1024 * 1024 * 1024);
+        test_data.forEach(record=>{
+            Object.keys(record).forEach(key=>{
+                record[key] = common_utils.autoCast(record[key]);
+            });
+        });
     });
 
     after(()=> {
@@ -574,7 +580,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(parseInt(test_data[x].id) > 100){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -587,7 +593,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(parseInt(test_data[x].id) > 11){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -600,7 +606,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(parseInt(test_data[x].id) > 0){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -623,7 +629,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(test_data[x].id > -8){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -637,7 +643,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(parseInt(test_data[x].temperature_double) > 100){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -650,7 +656,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(test_data[x].temperature_double > 11){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -663,7 +669,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(test_data[x].temperature_double > 0){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -681,7 +687,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(test_data[x].temperature_double > 110){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -699,7 +705,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(test_data[x].temperature_double > -8.854640366043895){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -713,7 +719,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(parseInt(test_data[x].temperature) > 100){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -726,7 +732,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(parseInt(test_data[x].temperature) > 11){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -739,7 +745,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(parseInt(test_data[x].temperature) > 0){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -757,7 +763,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(parseInt(test_data[x].temperature) > 110){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -775,7 +781,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(test_data[x].temperature > -8){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -789,7 +795,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(parseInt(test_data[x].temperature) > 100){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -802,7 +808,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(parseInt(test_data[x].temperature) > 11){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -815,7 +821,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(parseInt(test_data[x].temperature) > 0){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -833,7 +839,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(parseInt(test_data[x].temperature) > 110){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -851,7 +857,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(test_data[x].state > 'CO'){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -864,7 +870,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(test_data[x].state > 'W'){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -877,7 +883,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(test_data[x].state > 'CC'){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -895,7 +901,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(test_data[x].state > 'AK'){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
             let results = test_utils.assertErrorSync(search_util.greaterThan, [env, 'state', 'AK'], undefined);
@@ -948,7 +954,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(parseInt(test_data[x].id) >= 100){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -961,7 +967,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(parseInt(test_data[x].id) >= 11){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -974,7 +980,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(parseInt(test_data[x].id) >= 0){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -997,7 +1003,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(test_data[x].id >= -8){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -1011,7 +1017,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(test_data[x].temperature_double >= 100){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -1024,7 +1030,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(parseInt(test_data[x].temperature_double) >= 11){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -1037,7 +1043,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(test_data[x].temperature_double >= 0){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -1050,7 +1056,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(test_data[x].temperature_double >= 111){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -1069,7 +1075,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(test_data[x].temperature_double >= 110){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -1082,7 +1088,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(test_data[x].temperature_double > -8.854640366043895){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -1097,7 +1103,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(parseInt(test_data[x].temperature) >= 100){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -1110,7 +1116,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(parseInt(test_data[x].temperature) >= 11){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -1123,7 +1129,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(parseInt(test_data[x].temperature) >= 0){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -1136,7 +1142,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(parseInt(test_data[x].temperature) >= 111){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -1155,7 +1161,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(parseInt(test_data[x].temperature) >= 110){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -1168,7 +1174,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(parseInt(test_data[x].temperature) >= -8){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -1181,7 +1187,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(parseInt(test_data[x].temperature) >= -111){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -1195,7 +1201,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(parseInt(test_data[x].temperature) >= 100){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -1208,7 +1214,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(parseInt(test_data[x].temperature) >= 11){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -1221,7 +1227,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(parseInt(test_data[x].temperature) >= 0){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -1234,7 +1240,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(parseInt(test_data[x].temperature) >= 111){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -1248,7 +1254,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(parseInt(test_data[x].temperature) >= 110){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -1267,7 +1273,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(test_data[x].state >= 'CO'){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -1280,7 +1286,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(test_data[x].state >= 'W'){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -1293,7 +1299,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(test_data[x].state >= 'WY'){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -1307,7 +1313,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(test_data[x].state >= 'CC'){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -1321,7 +1327,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(test_data[x].state >= 'AK'){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -1335,7 +1341,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(test_data[x].state >= 'A'){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -1390,7 +1396,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(parseInt(test_data[x].id) < 100){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -1403,7 +1409,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(parseInt(test_data[x].id) < 11){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -1416,7 +1422,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(parseInt(test_data[x].id) < 0){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -1429,7 +1435,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(parseInt(test_data[x].id) < 1000){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -1442,7 +1448,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(parseInt(test_data[x].id) < 1111){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
             let results = test_utils.assertErrorSync(search_util.lessThan, [env, 'id', '1111'], undefined);
@@ -1461,7 +1467,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(test_data[x].temperature_double < 100){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -1474,7 +1480,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(test_data[x].temperature_double < 11){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -1487,7 +1493,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(test_data[x].temperature_double < 0){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -1500,7 +1506,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(test_data[x].temperature_double < 111){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -1514,7 +1520,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(test_data[x].temperature_double < 1111){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -1527,7 +1533,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(parseInt(test_data[x].temperature) < -8.854640366043895){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -1547,7 +1553,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(parseInt(test_data[x].temperature) < 100){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -1560,7 +1566,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(parseInt(test_data[x].temperature) < 11){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -1573,7 +1579,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(parseInt(test_data[x].temperature) < 0){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -1586,7 +1592,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(parseInt(test_data[x].temperature) < 111){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -1600,7 +1606,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(parseInt(test_data[x].temperature) < 1111){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -1613,7 +1619,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(parseInt(test_data[x].temperature) < 110){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -1626,7 +1632,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(parseInt(test_data[x].temperature) < -8){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -1646,7 +1652,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(parseInt(test_data[x].temperature) < 100){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -1659,7 +1665,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(parseInt(test_data[x].temperature) < 11){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -1672,7 +1678,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(parseInt(test_data[x].temperature) < 0){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
             let results = test_utils.assertErrorSync(search_util.lessThan, [env, 'temperature_str', '0'], undefined);
@@ -1684,7 +1690,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(parseInt(test_data[x].temperature) < 111){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -1698,7 +1704,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(parseInt(test_data[x].temperature) < 110){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -1712,7 +1718,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(parseInt(test_data[x].temperature) < 1111){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -1725,7 +1731,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(test_data[x].state < 'CO'){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -1738,7 +1744,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(test_data[x].state < 'W'){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -1751,7 +1757,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(test_data[x].state < 'WY'){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -1765,7 +1771,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(test_data[x].state < 'CC'){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -1790,7 +1796,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(test_data[x].state < '1111'){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -1839,7 +1845,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(parseInt(test_data[x].id) <= 100){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -1852,7 +1858,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(parseInt(test_data[x].id) <= 11){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -1865,7 +1871,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(parseInt(test_data[x].id) <= 0){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -1878,7 +1884,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(parseInt(test_data[x].id) <= 1000){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -1891,7 +1897,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(parseInt(test_data[x].id) <= 1111){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
             let results = test_utils.assertErrorSync(search_util.lessThanEqual, [env, 'id', '1111'], undefined);
@@ -1909,7 +1915,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(test_data[x].temperature_double <= 100){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -1922,7 +1928,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(test_data[x].temperature_double <= 11){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -1935,7 +1941,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(test_data[x].temperature_double <= 0){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -1948,7 +1954,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(test_data[x].temperature_double <= 111){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -1962,7 +1968,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(test_data[x].temperature_double <= 1111){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -1975,7 +1981,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(test_data[x].temperature_double <= 110){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -1988,7 +1994,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(test_data[x].temperature_double <= -8.854640366043895){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -2007,7 +2013,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(parseInt(test_data[x].temperature) <= 100){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -2020,7 +2026,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(parseInt(test_data[x].temperature) <= 11){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -2033,7 +2039,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(parseInt(test_data[x].temperature) <= 0){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -2046,7 +2052,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(parseInt(test_data[x].temperature) <= 111){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -2060,7 +2066,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(parseInt(test_data[x].temperature) <= 1111){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -2073,7 +2079,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(parseInt(test_data[x].temperature) <= 110){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -2086,7 +2092,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(parseInt(test_data[x].temperature) <= -8){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -2105,7 +2111,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(parseInt(test_data[x].temperature) <= 100){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -2118,7 +2124,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(parseInt(test_data[x].temperature) <= 11){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -2131,7 +2137,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(parseInt(test_data[x].temperature) <= 0){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -2144,7 +2150,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(parseInt(test_data[x].temperature) <= 111){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -2158,7 +2164,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(parseInt(test_data[x].temperature) <= 110){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -2172,7 +2178,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(parseInt(test_data[x].temperature) <= 1111){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -2185,7 +2191,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(test_data[x].state <= 'CO'){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -2198,7 +2204,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(test_data[x].state <= 'W'){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -2211,7 +2217,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(test_data[x].state <= 'WY'){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -2225,7 +2231,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(test_data[x].state <= 'CC'){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -2239,7 +2245,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(test_data[x].state <= 'AK'){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -2257,7 +2263,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(test_data[x].state <= '1111'){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -2314,7 +2320,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(parseInt(test_data[x].id) <= 100 && parseInt(test_data[x].id) >= 11){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -2328,7 +2334,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(parseInt(test_data[x].id) >= 0 && parseInt(test_data[x].id) <= 111){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -2341,7 +2347,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(parseInt(test_data[x].id) >= 0 && parseInt(test_data[x].id) <= 11111){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -2354,7 +2360,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(parseInt(test_data[x].id) >= 110 && parseInt(test_data[x].id) <= 111){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -2369,7 +2375,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(test_data[x].id >= -8999 && test_data[x].id <= 1111){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -2383,7 +2389,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(test_data[x].id >= -2 && test_data[x].id <= 10){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -2397,7 +2403,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(test_data[x].id >= -2 && test_data[x].id <= 0){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -2413,7 +2419,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(test_data[x].temperature_double <= 100 && test_data[x].temperature_double >= 11){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -2427,7 +2433,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(test_data[x].temperature_double >= 0 && test_data[x].temperature_double <= 111){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -2440,7 +2446,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(test_data[x].temperature_double >= 0 && test_data[x].temperature_double <= 11111){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -2453,7 +2459,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(test_data[x].temperature_double >= 110 && test_data[x].temperature_double <= 111){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -2467,7 +2473,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(test_data[x].temperature_double >= -8.77 && test_data[x].temperature_double <= -2.24564){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -2481,7 +2487,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(test_data[x].temperature_double >= -8999 && test_data[x].temperature_double <= 1111){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -2495,7 +2501,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(test_data[x].temperature_double >= -2.24564 && test_data[x].temperature_double <= 10.432){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -2509,7 +2515,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(test_data[x].temperature_double >= -2.24564 && test_data[x].temperature_double <= 0){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -2525,7 +2531,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(parseInt(test_data[x].temperature) <= 100 && parseInt(test_data[x].temperature) >= 11){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -2539,7 +2545,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(parseInt(test_data[x].temperature) >= 0 && parseInt(test_data[x].temperature) <= 111){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -2552,7 +2558,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(parseInt(test_data[x].temperature) >= 0 && parseInt(test_data[x].temperature) <= 11111){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -2565,7 +2571,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(parseInt(test_data[x].temperature) >= 110 && parseInt(test_data[x].temperature) <= 111){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -2580,7 +2586,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(test_data[x].temperature >= -8 && test_data[x].temperature <= -2){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -2594,7 +2600,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(test_data[x].temperature >= -8999 && test_data[x].temperature <= 1111){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -2608,7 +2614,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(test_data[x].temperature >= -2 && test_data[x].temperature <= 10){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -2622,7 +2628,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(test_data[x].temperature >= -2 && test_data[x].temperature <= 0){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -2638,7 +2644,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(parseInt(test_data[x].temperature_str) <= 100 && parseInt(test_data[x].temperature_str) >= 11){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -2652,7 +2658,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(parseInt(test_data[x].temperature_str) >= 0 && parseInt(test_data[x].temperature_str) <= 111){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -2665,7 +2671,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(parseInt(test_data[x].temperature) >= 0 && parseInt(test_data[x].temperature) <= 11111){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -2678,7 +2684,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(parseInt(test_data[x].temperature) >= 110 && parseInt(test_data[x].temperature) <= 111){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -2692,7 +2698,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(test_data[x].state >= 'CO' && test_data[x].state <= 'WY'){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -2705,7 +2711,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(test_data[x].state >= 'C' && test_data[x].state <= 'W'){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 
@@ -2718,7 +2724,7 @@ describe('Test searchUtility module', ()=>{
 
             for(let x = 0; x < test_data.length; x++){
                 if(test_data[x].state >= 'A' && test_data[x].state <= 'Z'){
-                    expected.push(test_data[x].id);
+                    expected.push(test_data[x].id.toString());
                 }
             }
 

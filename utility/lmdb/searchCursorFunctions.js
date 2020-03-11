@@ -9,7 +9,10 @@ function parseRow(txn, get_whole_row, attributes){
     let original_object = JSON.parse(txn.cursor.getCurrentString());
 
     if(get_whole_row === true){
-        return_object = Object.assign(return_object, original_object);
+        let keys = Object.keys(original_object);
+        for(let x = 0; x < keys.length; x++){
+            return_object[keys[x]] = auto_cast(original_object[keys[x]]);
+        }
     } else {
         for (let x = 0; x < attributes.length; x++) {
             let attribute = attributes[x];

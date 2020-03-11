@@ -24,6 +24,7 @@ const assert = require('assert');
 const fs = require('fs-extra');
 const sinon = require('sinon');
 const systemSchema = require('../../../../../json/systemSchema');
+const common_utils = require('../../../../../utility/common_utils');
 
 const TIMESTAMP = Date.now();
 
@@ -42,6 +43,11 @@ describe('test lmdbSearch module', ()=>{
     let date_stub;
     let rw_env_util;
     before(()=>{
+        test_data.forEach(record=>{
+            Object.keys(record).forEach(key=>{
+                record[key] = common_utils.autoCast(record[key]);
+            });
+        });
         rw_env_util = environment_utility.__set__('MAP_SIZE', 10*1024*1024*1024);
         date_stub = sandbox.stub(Date, 'now').returns(TIMESTAMP);
     });
@@ -364,7 +370,7 @@ describe('test lmdbSearch module', ()=>{
         it('test contains on number', async()=>{
             let expected = [];
             test_data.forEach(data=>{
-                if(data.temperature.includes(0)){
+                if(data.temperature.toString().includes(0)){
                     expected.push(test_utils.assignObjecttoNullObject(data));
                 }
             });
@@ -387,7 +393,7 @@ describe('test lmdbSearch module', ()=>{
 
             let expected = Object.create(null);
             test_data.forEach(data=>{
-                if(data.temperature.includes(0)){
+                if(data.temperature.toString().includes(0)){
                     expected[data.id] = test_utils.assignObjecttoNullObject(data, TIMESTAMP_OBJECT);
                 }
             });
@@ -958,7 +964,7 @@ describe('test lmdbSearch module', ()=>{
         it('test contains on number', async()=>{
             let expected = [];
             test_data.forEach(data=>{
-                if(data.temperature.includes(0)){
+                if(data.temperature.toString().includes(0)){
                     expected.push(data);
                 }
             });
@@ -981,7 +987,7 @@ describe('test lmdbSearch module', ()=>{
 
             let expected = {};
             test_data.forEach(data=>{
-                if(data.temperature.includes(0)){
+                if(data.temperature.toString().includes(0)){
                     expected[data.id] = data;
                 }
             });
