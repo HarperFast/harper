@@ -604,11 +604,11 @@ describe('Test searchUtility module', ()=>{
             let expected = Object.create(null);
 
             for(let x = 0; x < test_data.length; x++){
-                if(parseInt(test_data[x][attribute]) > value){
+                let attr_value = isNaN(test_data[x][attribute]) ? test_data[x][attribute] : Number(test_data[x][attribute]);
+                if(attr_value > value){
                     let id = test_data[x].id;
-                    let value = isNaN(test_data[x][attribute]) ? test_data[x][attribute] : Number(test_data[x][attribute]);
                     expected[id.toString()] = test_utils.assignObjecttoNullObject({id: Number(id)});
-                    expected[id.toString()][attribute] = value;
+                    expected[id.toString()][attribute] = attr_value;
                 }
             }
 
@@ -670,306 +670,210 @@ describe('Test searchUtility module', ()=>{
         });
 
         it("test greater than 1111 (a value larger than the max) on hash column", () => {
-            let results = test_utils.assertErrorSync(search_util.greaterThan, [env, 'id', '1111'], undefined);
-            assert.deepStrictEqual(results.sort(), []);
+            let results = test_utils.assertErrorSync(search_util.greaterThan, [env, 'id', 'id', '1111'], undefined);
+            assert.deepStrictEqual(results, Object.create(null));
         });
 
         it("test greater than -8 on hash column", () => {
-            let expected = [];
+            let expected = createExpected('id', -8);
 
-            for(let x = 0; x < test_data.length; x++){
-                if(test_data[x].id > -8){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.greaterThan, [env, 'id', '-8'], undefined);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let results = test_utils.assertErrorSync(search_util.greaterThan, [env, 'id', 'id', '-8'], undefined);
+            assert.deepStrictEqual(results, expected);
         });
 
         /** TEST FLOAT **/
         it("test greater than 100 on double key column", () => {
-            let expected = [];
+            let expected = createExpected('temperature_double', 100);
 
-            for(let x = 0; x < test_data.length; x++){
-                if(parseInt(test_data[x].temperature_double) > 100){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.greaterThan, [env, 'temperature_double', '100'], undefined);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let results = test_utils.assertErrorSync(search_util.greaterThan, [env, 'id', 'temperature_double', '100'], undefined);
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test greater than 11 on double key column", () => {
-            let expected = [];
+            let expected = createExpected('temperature_double', 11);
+            Object.values(expected).forEach(obj=>{
+                delete obj.id;
+            });
 
-            for(let x = 0; x < test_data.length; x++){
-                if(test_data[x].temperature_double > 11){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.greaterThan, [env, 'temperature_double', '11'], undefined);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let results = test_utils.assertErrorSync(search_util.greaterThan, [env, undefined, 'temperature_double', '11'], undefined);
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test greater than 0 on double key column", () => {
-            let expected = [];
+            let expected = createExpected('temperature_double', 0);
 
-            for(let x = 0; x < test_data.length; x++){
-                if(test_data[x].temperature_double > 0){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.greaterThan, [env, 'temperature_double', '0'], undefined);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let results = test_utils.assertErrorSync(search_util.greaterThan, [env, 'id', 'temperature_double', '0'], undefined);
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test greater than 111 (max temperature) on double key column", () => {
-            let results = test_utils.assertErrorSync(search_util.greaterThan, [env, 'temperature_double', '111'], undefined);
-            assert.deepStrictEqual(results.sort(), []);
+            let expected = createExpected('temperature_double', 111);
+            let results = test_utils.assertErrorSync(search_util.greaterThan, [env, 'id', 'temperature_double', '111'], undefined);
+            assert.deepStrictEqual(results, Object.create(null));
         });
 
         it("test greater than 110 (a temperature not indexed) on double key column", () => {
-            let expected = [];
+            let expected = createExpected('temperature_double', 110);
 
-            for(let x = 0; x < test_data.length; x++){
-                if(test_data[x].temperature_double > 110){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.greaterThan, [env, 'temperature_double', '110'], undefined);
-            assert.deepStrictEqual(results.sort(), expected);
+            let results = test_utils.assertErrorSync(search_util.greaterThan, [env, 'id', 'temperature_double', '110'], undefined);
+            assert.deepStrictEqual(results, expected);
         });
 
-        it("test greater than 1111 (a value larger than the max) on uint key column", () => {
-            let results = test_utils.assertErrorSync(search_util.greaterThan, [env, 'temperature_double', '1111'], undefined);
-            assert.deepStrictEqual(results.sort(), []);
+        it("test greater than 1111 (a value larger than the max) on double key column", () => {
+            let results = test_utils.assertErrorSync(search_util.greaterThan, [env, 'id', 'temperature_double', '1111'], undefined);
+            assert.deepStrictEqual(results, Object.create(null));
         });
 
         it("test greater than -8.854640366043895 on double key column", () => {
-            let expected = [];
+            let expected = createExpected('temperature_double', -8.854640366043895);
 
-            for(let x = 0; x < test_data.length; x++){
-                if(test_data[x].temperature_double > -8.854640366043895){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.greaterThan, [env, 'temperature_double', '-8.854640366043895'], undefined);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let results = test_utils.assertErrorSync(search_util.greaterThan, [env, 'id', 'temperature_double', '-8.854640366043895'], undefined);
+            assert.deepStrictEqual(results, expected);
         });
 
         /** TEST int **/
         it("test greater than 100 on int key column", () => {
-            let expected = [];
+            let expected = createExpected('temperature', 100);
 
-            for(let x = 0; x < test_data.length; x++){
-                if(parseInt(test_data[x].temperature) > 100){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.greaterThan, [env, 'temperature', '100'], undefined);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let results = test_utils.assertErrorSync(search_util.greaterThan, [env, 'id', 'temperature', '100'], undefined);
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test greater than 11 on int key column", () => {
-            let expected = [];
+            let expected = createExpected('temperature', 11);
 
-            for(let x = 0; x < test_data.length; x++){
-                if(parseInt(test_data[x].temperature) > 11){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.greaterThan, [env, 'temperature', '11'], undefined);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let results = test_utils.assertErrorSync(search_util.greaterThan, [env, 'id', 'temperature', '11'], undefined);
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test greater than 0 on uint key column", () => {
-            let expected = [];
+            let expected = createExpected('temperature', 0);
 
-            for(let x = 0; x < test_data.length; x++){
-                if(parseInt(test_data[x].temperature) > 0){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.greaterThan, [env, 'temperature', '0'], undefined);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let results = test_utils.assertErrorSync(search_util.greaterThan, [env, 'id', 'temperature', '0'], undefined);
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test greater than 111 (max temperature) on uint key column", () => {
-            let results = test_utils.assertErrorSync(search_util.greaterThan, [env, 'temperature', '111'], undefined);
-            assert.deepStrictEqual(results.sort(), []);
+            let results = test_utils.assertErrorSync(search_util.greaterThan, [env, 'id', 'temperature', '111'], undefined);
+            assert.deepStrictEqual(results, Object.create(null));
         });
 
         it("test greater than 110 (a temperature not indexed) on uint key column", () => {
-            let expected = [];
+            let expected = createExpected('temperature', 110);
 
-            for(let x = 0; x < test_data.length; x++){
-                if(parseInt(test_data[x].temperature) > 110){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.greaterThan, [env, 'temperature', '110'], undefined);
-            assert.deepStrictEqual(results.sort(), expected);
+            let results = test_utils.assertErrorSync(search_util.greaterThan, [env, 'id', 'temperature', '110'], undefined);
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test greater than 1111 (a value larger than the max) on uint key column", () => {
-            let results = test_utils.assertErrorSync(search_util.greaterThan, [env, 'temperature', '1111'], undefined);
-            assert.deepStrictEqual(results.sort(), []);
+            let results = test_utils.assertErrorSync(search_util.greaterThan, [env, 'id', 'temperature', '1111'], undefined);
+            assert.deepStrictEqual(results, Object.create(null));
         });
 
         it("test greater than -8 on int key column", () => {
-            let expected = [];
+            let expected = createExpected('temperature', -8);
 
-            for(let x = 0; x < test_data.length; x++){
-                if(test_data[x].temperature > -8){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.greaterThan, [env, 'temperature', '-8'], undefined);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let results = test_utils.assertErrorSync(search_util.greaterThan, [env, 'id', 'temperature', '-8'], undefined);
+            assert.deepStrictEqual(results, expected);
         });
 
         /** STRING **/
         it("test greater than 100 on string key column", () => {
-            let expected = [];
+            let expected = createExpected('temperature_str', 100);
 
-            for(let x = 0; x < test_data.length; x++){
-                if(parseInt(test_data[x].temperature) > 100){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.greaterThan, [env, 'temperature_str', '100'], undefined);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let results = test_utils.assertErrorSync(search_util.greaterThan, [env, 'id', 'temperature_str', '100'], undefined);
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test greater than 11 on string key column", () => {
-            let expected = [];
+            let expected = createExpected('temperature_str', 11);
 
-            for(let x = 0; x < test_data.length; x++){
-                if(parseInt(test_data[x].temperature) > 11){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.greaterThan, [env, 'temperature_str', '11'], undefined);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let results = test_utils.assertErrorSync(search_util.greaterThan, [env, 'id', 'temperature_str', '11'], undefined);
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test greater than 0 on string key column", () => {
-            let expected = [];
+            let expected = createExpected('temperature_str', 0);
 
-            for(let x = 0; x < test_data.length; x++){
-                if(parseInt(test_data[x].temperature) > 0){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.greaterThan, [env, 'temperature_str', '0'], undefined);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let results = test_utils.assertErrorSync(search_util.greaterThan, [env, 'id', 'temperature_str', '0'], undefined);
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test greater than 111 (max temperature) on string key column", () => {
-            let results = test_utils.assertErrorSync(search_util.greaterThan, [env, 'temperature_str', '111'], undefined);
-            assert.deepStrictEqual(results.sort(), []);
+            let results = test_utils.assertErrorSync(search_util.greaterThan, [env, 'id', 'temperature_str', '111'], undefined);
+            assert.deepStrictEqual(results, Object.create(null));
         });
 
         it("test greater than 110 (a temperature not indexed) on string key column", () => {
-            let expected = [];
+            let expected = createExpected('temperature_str', 110);
 
-            for(let x = 0; x < test_data.length; x++){
-                if(parseInt(test_data[x].temperature) > 110){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.greaterThan, [env, 'temperature_str', '110'], undefined);
-            assert.deepStrictEqual(results.sort(), expected);
+            let results = test_utils.assertErrorSync(search_util.greaterThan, [env, 'id', 'temperature_str', '110'], undefined);
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test greater than 1111 on string key column", () => {
-            let results = test_utils.assertErrorSync(search_util.greaterThan, [env, 'temperature', '1111'], undefined);
-            assert.deepStrictEqual(results.sort(), []);
+            let results = test_utils.assertErrorSync(search_util.greaterThan, [env, 'id', 'temperature', '1111'], undefined);
+            assert.deepStrictEqual(results, Object.create(null));
         });
 
         it("test greater than CO on string key column", () => {
-            let expected = [];
-
-            for(let x = 0; x < test_data.length; x++){
-                if(test_data[x].state > 'CO'){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.greaterThan, [env, 'state', 'CO'], undefined);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let expected = createExpected('state', 'CO');
+            let results = test_utils.assertErrorSync(search_util.greaterThan, [env, 'id', 'state', 'CO'], undefined);
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test greater than W on string key column", () => {
-            let expected = [];
+            let expected = createExpected('state', 'W');
 
-            for(let x = 0; x < test_data.length; x++){
-                if(test_data[x].state > 'W'){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.greaterThan, [env, 'state', 'W'], undefined);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let results = test_utils.assertErrorSync(search_util.greaterThan, [env, 'id', 'state', 'W'], undefined);
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test greater than CC on string key column", () => {
-            let expected = [];
+            let expected = createExpected('state', 'CC');
 
-            for(let x = 0; x < test_data.length; x++){
-                if(test_data[x].state > 'CC'){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.greaterThan, [env, 'state', 'CC'], undefined);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let results = test_utils.assertErrorSync(search_util.greaterThan, [env, 'id', 'state', 'CC'], undefined);
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test greater than WY (last state code) on string key column", () => {
-            let results = test_utils.assertErrorSync(search_util.greaterThan, [env, 'state', 'WY'], undefined);
-            assert.deepStrictEqual(results.sort(), []);
+            let results = test_utils.assertErrorSync(search_util.greaterThan, [env, 'id', 'state', 'WY'], undefined);
+            assert.deepStrictEqual(results, Object.create(null));
         });
 
         it("test greater than AK (first state code) on string key column", () => {
-            let expected = [];
-
-            for(let x = 0; x < test_data.length; x++){
-                if(test_data[x].state > 'AK'){
-                    expected.push(test_data[x].id);
-                }
-            }
-            let results = test_utils.assertErrorSync(search_util.greaterThan, [env, 'state', 'AK'], undefined);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let expected = createExpected('state', 'AK');
+            let results = test_utils.assertErrorSync(search_util.greaterThan, [env, 'id', 'state', 'AK'], undefined);
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test greater than 1111 on state string key column", () => {
-            let results = test_utils.assertErrorSync(search_util.greaterThan, [env, 'state', '1111'], undefined);
-            assert.deepStrictEqual(results.sort(), []);
+            let results = test_utils.assertErrorSync(search_util.greaterThan, [env, 'id', 'state', '1111'], undefined);
+            assert.deepStrictEqual(results, Object.create(null));
         });
 
         it("test search on attribute no exist", () => {
-            let results = test_utils.assertErrorSync(search_util.greaterThan, [env, 'fake', 'bad'], LMDB_TEST_ERRORS.DBI_DOES_NOT_EXIST);
+            let results = test_utils.assertErrorSync(search_util.greaterThan, [env, 'id', 'fake', 'bad'], LMDB_TEST_ERRORS.DBI_DOES_NOT_EXIST);
             assert.deepStrictEqual(results, undefined);
         });
     });
 
     describe('test greaterThanEqual function', ()=> {
+        function createExpected(attribute, value){
+            let expected = Object.create(null);
+
+            for(let x = 0; x < test_data.length; x++){
+                let attr_value = isNaN(test_data[x][attribute]) ? test_data[x][attribute] : Number(test_data[x][attribute]);
+                if(attr_value >= value){
+                    let id = test_data[x].id;
+                    expected[id.toString()] = test_utils.assignObjecttoNullObject({id: Number(id)});
+                    expected[id.toString()][attribute] = attr_value;
+                }
+            }
+
+            return expected;
+        }
+
         let env;
         before(async () => {
             await fs.mkdirp(BASE_TEST_PATH);
@@ -1000,418 +904,265 @@ describe('Test searchUtility module', ()=>{
 
         /** TEST HASH ATTRIBUTE **/
         it("test greater than equal 100 on hash column", () => {
-            let expected = [];
+            let expected = createExpected('id', '100');
 
-            for(let x = 0; x < test_data.length; x++){
-                if(parseInt(test_data[x].id) >= 100){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.greaterThanEqual, [env, 'id', '100'], undefined);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let results = test_utils.assertErrorSync(search_util.greaterThanEqual, [env, 'id', 'id', '100'], undefined);
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test greater than equal 11 on hash column", () => {
-            let expected = [];
+            let expected = createExpected('id', 11);
 
-            for(let x = 0; x < test_data.length; x++){
-                if(parseInt(test_data[x].id) >= 11){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.greaterThanEqual, [env, 'id', '11'], undefined);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let results = test_utils.assertErrorSync(search_util.greaterThanEqual, [env, undefined, 'id', '11'], undefined);
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test greater than equal 0 on hash column", () => {
-            let expected = [];
+            let expected = createExpected('id', 0);
 
-            for(let x = 0; x < test_data.length; x++){
-                if(parseInt(test_data[x].id) >= 0){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.greaterThanEqual, [env, 'id', '0'], undefined);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let results = test_utils.assertErrorSync(search_util.greaterThanEqual, [env, 'id', 'id', '0'], undefined);
+            assert.deepStrictEqual(results, expected);
         });
 
-        it("test greater than equal 1000 (max value) on hash column", () => {
-            let results = test_utils.assertErrorSync(search_util.greaterThanEqual, [env, 'id', '1000'], undefined);
-            assert.deepStrictEqual(results.sort(), ['1000']);
+        it("test greater than equal 1000 (max value) on hash column", () =>{
+            let expected = createExpected('id', 1000);
+            let results = test_utils.assertErrorSync(search_util.greaterThanEqual, [env, 'id', 'id', '1000'], undefined);
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test greater than equal 1111 (a value larger than the max) on hash column", () => {
-            let results = test_utils.assertErrorSync(search_util.greaterThanEqual, [env, 'id', '1111'], undefined);
-            assert.deepStrictEqual(results.sort(), []);
+            let results = test_utils.assertErrorSync(search_util.greaterThanEqual, [env, 'id', 'id', '1111'], undefined);
+            assert.deepStrictEqual(results, Object.create(null));
         });
 
         it("test greater than equal -8 on hash column", () => {
-            let expected = [];
-
-            for(let x = 0; x < test_data.length; x++){
-                if(test_data[x].id >= -8){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.greaterThanEqual, [env, 'id', '-8'], undefined);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let expected = createExpected('id', -8);
+            let results = test_utils.assertErrorSync(search_util.greaterThanEqual, [env, 'id', 'id', '-8'], undefined);
+            assert.deepStrictEqual(results, expected);
         });
 
         /** DOUBLE **/
         it("test greaterThanEqual 100 on double key column", () => {
-            let expected = [];
+            let expected = createExpected('temperature_double', 100);
 
-            for(let x = 0; x < test_data.length; x++){
-                if(test_data[x].temperature_double >= 100){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.greaterThanEqual, [env, 'temperature_double', '100'], undefined);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let results = test_utils.assertErrorSync(search_util.greaterThanEqual, [env, 'id', 'temperature_double', '100'], undefined);
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test greaterThanEqual 11 on double key column", () => {
-            let expected = [];
+            let expected = createExpected('temperature_double', 11);
 
-            for(let x = 0; x < test_data.length; x++){
-                if(parseInt(test_data[x].temperature_double) >= 11){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.greaterThanEqual, [env, 'temperature_double', '11'], undefined);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let results = test_utils.assertErrorSync(search_util.greaterThanEqual, [env, 'id', 'temperature_double', '11'], undefined);
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test greaterThanEqual 0 on double key column", () => {
-            let expected = [];
+            let expected = createExpected('temperature_double', 0);
 
-            for(let x = 0; x < test_data.length; x++){
-                if(test_data[x].temperature_double >= 0){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.greaterThanEqual, [env, 'temperature_double', '0'], undefined);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let results = test_utils.assertErrorSync(search_util.greaterThanEqual, [env, 'id', 'temperature_double', '0'], undefined);
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test greater than equal 111 on double key column", () => {
-            let expected = [];
+            let expected = createExpected('temperature_double', 111);
 
-            for(let x = 0; x < test_data.length; x++){
-                if(test_data[x].temperature_double >= 111){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.greaterThanEqual, [env, 'temperature_double', '111'], undefined);
-            assert.notDeepStrictEqual(results, []);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let results = test_utils.assertErrorSync(search_util.greaterThanEqual, [env, 'id', 'temperature_double', '111'], undefined);
+            assert.notDeepStrictEqual(results, Object.create(null));
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test greater than equal 1111 on double key column", () => {
-            let results = test_utils.assertErrorSync(search_util.greaterThanEqual, [env, 'temperature_double', '1111'], undefined);
-            assert.deepStrictEqual(results.sort(), []);
+            let results = test_utils.assertErrorSync(search_util.greaterThanEqual, [env, 'id', 'temperature_double', '1111'], undefined);
+            assert.deepStrictEqual(results, Object.create(null));
         });
 
         it("test greaterThanEqual 110 (a temperature not indexed) on double key column", () => {
-            let expected = [];
+            let expected = createExpected('temperature_double', 110);
 
-            for(let x = 0; x < test_data.length; x++){
-                if(test_data[x].temperature_double >= 110){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.greaterThanEqual, [env, 'temperature_double', '110'], undefined);
-            assert.deepStrictEqual(results.sort(), expected);
+            let results = test_utils.assertErrorSync(search_util.greaterThanEqual, [env, 'id', 'temperature_double', '110'], undefined);
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test greater than equal -8.854640366043895 on double key column", () => {
-            let expected = [];
+            let expected = createExpected('temperature_double', -8.854640366043895);
 
-            for(let x = 0; x < test_data.length; x++){
-                if(test_data[x].temperature_double > -8.854640366043895){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.greaterThanEqual, [env, 'temperature_double', '-8.854640366043895'], undefined);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let results = test_utils.assertErrorSync(search_util.greaterThanEqual, [env, 'id', 'temperature_double', '-8.854640366043895'], undefined);
+            assert.deepStrictEqual(results, expected);
         });
 
         /** INT **/
 
         it("test greaterThanEqual 100 on int key column", () => {
-            let expected = [];
+            let expected = createExpected('temperature', 100);
 
-            for(let x = 0; x < test_data.length; x++){
-                if(parseInt(test_data[x].temperature) >= 100){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.greaterThanEqual, [env, 'temperature', '100'], undefined);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let results = test_utils.assertErrorSync(search_util.greaterThanEqual, [env, 'id', 'temperature', '100'], undefined);
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test greaterThanEqual 11 on int key column", () => {
-            let expected = [];
+            let expected = createExpected('temperature', 11);
 
-            for(let x = 0; x < test_data.length; x++){
-                if(parseInt(test_data[x].temperature) >= 11){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.greaterThanEqual, [env, 'temperature', '11'], undefined);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let results = test_utils.assertErrorSync(search_util.greaterThanEqual, [env, 'id', 'temperature', '11'], undefined);
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test greaterThanEqual 0 on int key column", () => {
-            let expected = [];
+            let expected = createExpected('temperature', 0);
 
-            for(let x = 0; x < test_data.length; x++){
-                if(parseInt(test_data[x].temperature) >= 0){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.greaterThanEqual, [env, 'temperature', '0'], undefined);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let results = test_utils.assertErrorSync(search_util.greaterThanEqual, [env, 'id', 'temperature', '0'], undefined);
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test greater than equal 111 on int key column", () => {
-            let expected = [];
+            let expected = createExpected('temperature', 111);
 
-            for(let x = 0; x < test_data.length; x++){
-                if(parseInt(test_data[x].temperature) >= 111){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.greaterThanEqual, [env, 'temperature', '111'], undefined);
-            assert.notDeepStrictEqual(results, []);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let results = test_utils.assertErrorSync(search_util.greaterThanEqual, [env, 'id', 'temperature', '111'], undefined);
+            assert.notDeepStrictEqual(results, Object.create(null));
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test greater than equal 1111 on int key column", () => {
-            let results = test_utils.assertErrorSync(search_util.greaterThanEqual, [env, 'temperature', '1111'], undefined);
-            assert.deepStrictEqual(results.sort(), []);
+            let results = test_utils.assertErrorSync(search_util.greaterThanEqual, [env, 'id', 'temperature', '1111'], undefined);
+            assert.deepStrictEqual(results, Object.create(null));
         });
 
         it("test greaterThanEqual 110 (a temperature not indexed) on int key column", () => {
-            let expected = [];
+            let expected = createExpected('temperature', 110);
 
-            for(let x = 0; x < test_data.length; x++){
-                if(parseInt(test_data[x].temperature) >= 110){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.greaterThanEqual, [env, 'temperature', '110'], undefined);
-            assert.deepStrictEqual(results.sort(), expected);
+            let results = test_utils.assertErrorSync(search_util.greaterThanEqual, [env, 'id', 'temperature', '110'], undefined);
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test greaterThanEqual -8 on int key column", () => {
-            let expected = [];
+            let expected = createExpected('temperature', -8);
 
-            for(let x = 0; x < test_data.length; x++){
-                if(parseInt(test_data[x].temperature) >= -8){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.greaterThanEqual, [env, 'temperature', '-8'], undefined);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let results = test_utils.assertErrorSync(search_util.greaterThanEqual, [env, 'id', 'temperature', '-8'], undefined);
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test greaterThanEqual -111 on int key column", () => {
-            let expected = [];
+            let expected = createExpected('temperature', -111);
 
-            for(let x = 0; x < test_data.length; x++){
-                if(parseInt(test_data[x].temperature) >= -111){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.greaterThanEqual, [env, 'temperature', '-111'], undefined);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let results = test_utils.assertErrorSync(search_util.greaterThanEqual, [env, 'id', 'temperature', '-111'], undefined);
+            assert.deepStrictEqual(results, expected);
         });
 
         /** STRING **/
-        it("test greater than equal 100 on string key column", () => {
-            let expected = [];
+        it("test greater than equal 100 on string key column", () =>{
+            let expected = createExpected('temperature_str', 100);
 
-            for(let x = 0; x < test_data.length; x++){
-                if(parseInt(test_data[x].temperature) >= 100){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.greaterThanEqual, [env, 'temperature_str', '100'], undefined);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let results = test_utils.assertErrorSync(search_util.greaterThanEqual, [env, 'id', 'temperature_str', '100'], undefined);
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test greater than equal 11 on string key column", () => {
-            let expected = [];
+            let expected = createExpected('temperature_str', 11);
 
-            for(let x = 0; x < test_data.length; x++){
-                if(parseInt(test_data[x].temperature) >= 11){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.greaterThanEqual, [env, 'temperature_str', '11'], undefined);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let results = test_utils.assertErrorSync(search_util.greaterThanEqual, [env, 'id', 'temperature_str', '11'], undefined);
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test greater than equal 0 on string key column", () => {
-            let expected = [];
+            let expected = createExpected('temperature_str', 0);
 
-            for(let x = 0; x < test_data.length; x++){
-                if(parseInt(test_data[x].temperature) >= 0){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.greaterThanEqual, [env, 'temperature_str', '0'], undefined);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let results = test_utils.assertErrorSync(search_util.greaterThanEqual, [env, 'id', 'temperature_str', '0'], undefined);
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test greater than equal 111 on string key column", () => {
-            let expected = [];
+            let expected = createExpected('temperature_str', 111);
 
-            for(let x = 0; x < test_data.length; x++){
-                if(parseInt(test_data[x].temperature) >= 111){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.greaterThanEqual, [env, 'temperature_str', '111'], undefined);
-            assert.notDeepStrictEqual(results, []);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let results = test_utils.assertErrorSync(search_util.greaterThanEqual, [env, 'id', 'temperature_str', '111'], undefined);
+            assert.notDeepStrictEqual(results, Object.create(null));
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test greater than equal 110 on string key column", () => {
-            let expected = [];
+            let expected = createExpected('temperature_str', 110);
 
-            for(let x = 0; x < test_data.length; x++){
-                if(parseInt(test_data[x].temperature) >= 110){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.greaterThanEqual, [env, 'temperature_str', '110'], undefined);
-            assert.notDeepStrictEqual(results, []);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let results = test_utils.assertErrorSync(search_util.greaterThanEqual, [env, 'id', 'temperature_str', '110'], undefined);
+            assert.notDeepStrictEqual(results, Object.create(null));
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test greater than equal 1111 on string key column", () => {
-            let results = test_utils.assertErrorSync(search_util.greaterThanEqual, [env, 'temperature', '1111'], undefined);
-            assert.deepStrictEqual(results.sort(), []);
+            let results = test_utils.assertErrorSync(search_util.greaterThanEqual, [env, 'id', 'temperature', '1111'], undefined);
+            assert.deepStrictEqual(results, Object.create(null));
         });
 
         it("test greater than equal CO on string key column", () => {
-            let expected = [];
+            let expected = createExpected('state', 'CO');
 
-            for(let x = 0; x < test_data.length; x++){
-                if(test_data[x].state >= 'CO'){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.greaterThanEqual, [env, 'state', 'CO'], undefined);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let results = test_utils.assertErrorSync(search_util.greaterThanEqual, [env, 'id', 'state', 'CO'], undefined);
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test greater than equal W on string key column", () => {
-            let expected = [];
+            let expected = createExpected('state', 'W');
 
-            for(let x = 0; x < test_data.length; x++){
-                if(test_data[x].state >= 'W'){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.greaterThanEqual, [env, 'state', 'W'], undefined);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let results = test_utils.assertErrorSync(search_util.greaterThanEqual, [env, 'id', 'state', 'W'], undefined);
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test greater than equal WY on state key column", () => {
-            let expected = [];
+            let expected = createExpected('state', 'WY');
 
-            for(let x = 0; x < test_data.length; x++){
-                if(test_data[x].state >= 'WY'){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.greaterThanEqual, [env, 'state', 'WY'], undefined);
-            assert.notDeepStrictEqual(results, []);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let results = test_utils.assertErrorSync(search_util.greaterThanEqual, [env, 'id', 'state', 'WY'], undefined);
+            assert.notDeepStrictEqual(results, Object.create(null));
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test greater than equal CC on state key column", () => {
-            let expected = [];
+            let expected = createExpected('state', 'CC');
 
-            for(let x = 0; x < test_data.length; x++){
-                if(test_data[x].state >= 'CC'){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.greaterThanEqual, [env, 'state', 'CC'], undefined);
-            assert.notDeepStrictEqual(results, []);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let results = test_utils.assertErrorSync(search_util.greaterThanEqual, [env, 'id', 'state', 'CC'], undefined);
+            assert.notDeepStrictEqual(results, Object.create(null));
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test greater than equal AK on state key column", () => {
-            let expected = [];
+            let expected = createExpected('state', 'AK');
 
-            for(let x = 0; x < test_data.length; x++){
-                if(test_data[x].state >= 'AK'){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.greaterThanEqual, [env, 'state', 'AK'], undefined);
-            assert.notDeepStrictEqual(results, []);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let results = test_utils.assertErrorSync(search_util.greaterThanEqual, [env, 'id', 'state', 'AK'], undefined);
+            assert.notDeepStrictEqual(results, Object.create(null));
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test greater than equal A on state key column", () => {
-            let expected = [];
+            let expected = createExpected('state', 'A');
 
-            for(let x = 0; x < test_data.length; x++){
-                if(test_data[x].state >= 'A'){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.greaterThanEqual, [env, 'state', 'A'], undefined);
-            assert.notDeepStrictEqual(results, []);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let results = test_utils.assertErrorSync(search_util.greaterThanEqual, [env, 'id', 'state', 'A'], undefined);
+            assert.notDeepStrictEqual(results, Object.create(null));
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test greater than equal 1111 on state string key column", () => {
-            let results = test_utils.assertErrorSync(search_util.greaterThanEqual, [env, 'state', '1111'], undefined);
-            assert.deepStrictEqual(results.sort(), []);
+            let results = test_utils.assertErrorSync(search_util.greaterThanEqual, [env, 'id', 'state', '1111'], undefined);
+            assert.deepStrictEqual(results, Object.create(null));
         });
 
         it("test search on attribute no exist", () => {
-            let results = test_utils.assertErrorSync(search_util.greaterThanEqual, [env, 'fake', 'bad'], LMDB_TEST_ERRORS.DBI_DOES_NOT_EXIST);
+            let results = test_utils.assertErrorSync(search_util.greaterThanEqual, [env, 'id', 'fake', 'bad'], LMDB_TEST_ERRORS.DBI_DOES_NOT_EXIST);
             assert.deepStrictEqual(results, undefined);
         });
     });
 
     describe('test lessThan function', ()=> {
+        function createExpected(attribute, value){
+            let expected = Object.create(null);
+
+            for(let x = 0; x < test_data.length; x++){
+                let attr_value = isNaN(test_data[x][attribute]) ? test_data[x][attribute] : Number(test_data[x][attribute]);
+                if(attr_value < value){
+                    let id = test_data[x].id;
+                    expected[id.toString()] = test_utils.assignObjecttoNullObject({id: Number(id)});
+                    expected[id.toString()][attribute] = attr_value;
+                }
+            }
+
+            return expected;
+        }
+
         let env;
         before(async () => {
             await fs.mkdirp(BASE_TEST_PATH);
@@ -1442,425 +1193,266 @@ describe('Test searchUtility module', ()=>{
 
         /** TEST HASH ATTRIBUTE **/
         it("test lessThan 100 on hash column", () => {
-            let expected = [];
+            let expected = createExpected('id', 100);
 
-            for(let x = 0; x < test_data.length; x++){
-                if(parseInt(test_data[x].id) < 100){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.lessThan, [env, 'id', '100'], undefined);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let results = test_utils.assertErrorSync(search_util.lessThan, [env, 'id', 'id', '100'], undefined);
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test lessThan 11 on hash column", () => {
-            let expected = [];
+            let expected = createExpected('id', 11);
 
-            for(let x = 0; x < test_data.length; x++){
-                if(parseInt(test_data[x].id) < 11){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.lessThan, [env, 'id', '11'], undefined);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let results = test_utils.assertErrorSync(search_util.lessThan, [env, 'id', 'id', '11'], undefined);
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test lessThan 0 on hash column", () => {
-            let expected = [];
+            let expected = createExpected('id', 0);
 
-            for(let x = 0; x < test_data.length; x++){
-                if(parseInt(test_data[x].id) < 0){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.lessThan, [env, 'id', '0'], undefined);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let results = test_utils.assertErrorSync(search_util.lessThan, [env, 'id', 'id', '0'], undefined);
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test lessThan 1000 (max value) on hash column", () => {
-            let expected = [];
+            let expected = createExpected('id', 1000);
 
-            for(let x = 0; x < test_data.length; x++){
-                if(parseInt(test_data[x].id) < 1000){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.lessThan, [env, 'id', '1000'], undefined);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let results = test_utils.assertErrorSync(search_util.lessThan, [env, 'id', 'id', '1000'], undefined);
+            assert.deepStrictEqual(results, expected);
         });
 
-        it("test lessThan 1111 (a value larger than the max) on hash column", () => {
-            let expected = [];
-
-            for(let x = 0; x < test_data.length; x++){
-                if(parseInt(test_data[x].id) < 1111){
-                    expected.push(test_data[x].id);
-                }
-            }
-            let results = test_utils.assertErrorSync(search_util.lessThan, [env, 'id', '1111'], undefined);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+        it("test lessThan 1111 (a value larger than the max) on hash column", () =>{
+            let expected = createExpected('id', 1111);
+            let results = test_utils.assertErrorSync(search_util.lessThan, [env, 'id', 'id', '1111'], undefined);
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test lessThan -8 on hash column", () => {
-            let results = test_utils.assertErrorSync(search_util.lessThan, [env, 'id', '-8'], undefined);
-            assert.deepStrictEqual(results.sort(), []);
+            let results = test_utils.assertErrorSync(search_util.lessThan, [env, 'id', 'id', '-8'], undefined);
+            assert.deepStrictEqual(results, Object.create(null));
         });
 
         /**DOUBLE**/
 
         it("test lessThan 100 on double key column", () => {
-            let expected = [];
+            let expected = createExpected('temperature_double', 100);
 
-            for(let x = 0; x < test_data.length; x++){
-                if(test_data[x].temperature_double < 100){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.lessThan, [env, 'temperature_double', '100'], undefined);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let results = test_utils.assertErrorSync(search_util.lessThan, [env, 'id', 'temperature_double', '100'], undefined);
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test lessThan 11 on double key column", () => {
-            let expected = [];
+            let expected = createExpected('temperature_double', 11);
 
-            for(let x = 0; x < test_data.length; x++){
-                if(test_data[x].temperature_double < 11){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.lessThan, [env, 'temperature_double', '11'], undefined);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let results = test_utils.assertErrorSync(search_util.lessThan, [env, 'id', 'temperature_double', '11'], undefined);
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test lessThan 0 on double key column", () => {
-            let expected = [];
+            let expected = createExpected('temperature_double', 0);
 
-            for(let x = 0; x < test_data.length; x++){
-                if(test_data[x].temperature_double < 0){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.lessThan, [env, 'temperature_double', '0'], undefined);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let results = test_utils.assertErrorSync(search_util.lessThan, [env, 'id', 'temperature_double', '0'], undefined);
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test lessThan 111 on double key column", () => {
-            let expected = [];
+            let expected = createExpected('temperature_double', 111);
 
-            for(let x = 0; x < test_data.length; x++){
-                if(test_data[x].temperature_double < 111){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.lessThan, [env, 'temperature_double', '111'], undefined);
-            assert.notDeepStrictEqual(results, []);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let results = test_utils.assertErrorSync(search_util.lessThan, [env, 'id', 'temperature_double', '111'], undefined);
+            assert.notDeepStrictEqual(results, Object.create(null));
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test lessThan 1111 on double key column", () => {
-            let expected = [];
+            let expected = createExpected('temperature_double', 1111);
 
-            for(let x = 0; x < test_data.length; x++){
-                if(test_data[x].temperature_double < 1111){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.lessThan, [env, 'temperature_double', '1111'], undefined);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let results = test_utils.assertErrorSync(search_util.lessThan, [env, 'id', 'temperature_double', '1111'], undefined);
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test lessThan -8.854640366043895  on double key column", () => {
-            let expected = [];
+            let expected = createExpected('temperature_double', -8.854640366043895);
 
-            for(let x = 0; x < test_data.length; x++){
-                if(parseInt(test_data[x].temperature) < -8.854640366043895){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.lessThan, [env, 'temperature', '-8.854640366043895'], undefined);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let results = test_utils.assertErrorSync(search_util.lessThan, [env, 'id', 'temperature_double', '-8.854640366043895'], undefined);
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test lessThan -888.854640366043895  on double key column", () => {
-            let results = test_utils.assertErrorSync(search_util.lessThan, [env, 'temperature', '-888.854640366043895'], undefined);
-            assert.deepStrictEqual(results.sort(), []);
+            let results = test_utils.assertErrorSync(search_util.lessThan, [env, 'id', 'temperature_double', '-888.854640366043895'], undefined);
+            assert.deepStrictEqual(results, Object.create(null));
         });
 
         /** INT **/
 
         it("test lessThan 100 on numeric key column", () => {
-            let expected = [];
+            let expected = createExpected('temperature', 100);
 
-            for(let x = 0; x < test_data.length; x++){
-                if(parseInt(test_data[x].temperature) < 100){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.lessThan, [env, 'temperature', '100'], undefined);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let results = test_utils.assertErrorSync(search_util.lessThan, [env, 'id', 'temperature', '100'], undefined);
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test lessThan 11 on numeric key column", () => {
-            let expected = [];
+            let expected = createExpected('temperature', 11);
 
-            for(let x = 0; x < test_data.length; x++){
-                if(parseInt(test_data[x].temperature) < 11){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.lessThan, [env, 'temperature', '11'], undefined);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let results = test_utils.assertErrorSync(search_util.lessThan, [env, 'id', 'temperature', '11'], undefined);
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test lessThan 0 on numeric key column", () => {
-            let expected = [];
+            let expected = createExpected('temperature', 0);
 
-            for(let x = 0; x < test_data.length; x++){
-                if(parseInt(test_data[x].temperature) < 0){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.lessThan, [env, 'temperature', '0'], undefined);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let results = test_utils.assertErrorSync(search_util.lessThan, [env, 'id', 'temperature', '0'], undefined);
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test lessThan 111 on numeric key column", () => {
-            let expected = [];
+            let expected = createExpected('temperature', 111);
 
-            for(let x = 0; x < test_data.length; x++){
-                if(parseInt(test_data[x].temperature) < 111){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.lessThan, [env, 'temperature', '111'], undefined);
-            assert.notDeepStrictEqual(results, []);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let results = test_utils.assertErrorSync(search_util.lessThan, [env, 'id', 'temperature', '111'], undefined);
+            assert.notDeepStrictEqual(results, Object.create(null));
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test lessThan 1111 on numeric key column", () => {
-            let expected = [];
+            let expected = createExpected('temperature', 1111);
 
-            for(let x = 0; x < test_data.length; x++){
-                if(parseInt(test_data[x].temperature) < 1111){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.lessThan, [env, 'temperature', '1111'], undefined);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let results = test_utils.assertErrorSync(search_util.lessThan, [env, 'id', 'temperature', '1111'], undefined);
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test lessThan 110 (a temperature not indexed) on numeric key column", () => {
-            let expected = [];
+            let expected = createExpected('temperature', 110);
 
-            for(let x = 0; x < test_data.length; x++){
-                if(parseInt(test_data[x].temperature) < 110){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.lessThan, [env, 'temperature', '110'], undefined);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let results = test_utils.assertErrorSync(search_util.lessThan, [env, 'id', 'temperature', '110'], undefined);
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test lessThan -8  on numeric key column", () => {
-            let expected = [];
+            let expected = createExpected('temperature', -8);
 
-            for(let x = 0; x < test_data.length; x++){
-                if(parseInt(test_data[x].temperature) < -8){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.lessThan, [env, 'temperature', '-8'], undefined);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let results = test_utils.assertErrorSync(search_util.lessThan, [env, 'id', 'temperature', '-8'], undefined);
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test lessThan -888  on numeric key column", () => {
-            let results = test_utils.assertErrorSync(search_util.lessThan, [env, 'temperature', '-888'], undefined);
-            assert.deepStrictEqual(results.sort(), []);
+            let results = test_utils.assertErrorSync(search_util.lessThan, [env, 'id', 'temperature', '-888'], undefined);
+            assert.deepStrictEqual(results, Object.create(null));
         });
 
         /** STRING **/
 
         it("test lessThan 100 on string key column", () => {
-            let expected = [];
+            let expected = createExpected('temperature_str', 100);
 
-            for(let x = 0; x < test_data.length; x++){
-                if(parseInt(test_data[x].temperature) < 100){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.lessThan, [env, 'temperature_str', '100'], undefined);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let results = test_utils.assertErrorSync(search_util.lessThan, [env, 'id', 'temperature_str', '100'], undefined);
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test lessThan 11 on string key column", () => {
-            let expected = [];
+            let expected = createExpected('temperature_str', 11);
 
-            for(let x = 0; x < test_data.length; x++){
-                if(parseInt(test_data[x].temperature) < 11){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.lessThan, [env, 'temperature_str', '11'], undefined);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let results = test_utils.assertErrorSync(search_util.lessThan, [env, 'id', 'temperature_str', '11'], undefined);
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test lessThan 0 on string key column", () => {
-            let expected = [];
-
-            for(let x = 0; x < test_data.length; x++){
-                if(parseInt(test_data[x].temperature) < 0){
-                    expected.push(test_data[x].id);
-                }
-            }
-            let results = test_utils.assertErrorSync(search_util.lessThan, [env, 'temperature_str', '0'], undefined);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let expected = createExpected('temperature_str', 0);
+            let results = test_utils.assertErrorSync(search_util.lessThan, [env, 'id', 'temperature_str', '0'], undefined);
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test lessThan 111 on string key column", () => {
-            let expected = [];
+            let expected = createExpected('temperature_str', 111);
 
-            for(let x = 0; x < test_data.length; x++){
-                if(parseInt(test_data[x].temperature) < 111){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.lessThan, [env, 'temperature_str', '111'], undefined);
-            assert.notDeepStrictEqual(results, []);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let results = test_utils.assertErrorSync(search_util.lessThan, [env, 'id', 'temperature_str', '111'], undefined);
+            assert.notDeepStrictEqual(results, Object.create(null));
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test lessThan 110 on string key column", () => {
-            let expected = [];
+            let expected = createExpected('temperature_str', 110);
 
-            for(let x = 0; x < test_data.length; x++){
-                if(parseInt(test_data[x].temperature) < 110){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.lessThan, [env, 'temperature_str', '110'], undefined);
-            assert.notDeepStrictEqual(results, []);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let results = test_utils.assertErrorSync(search_util.lessThan, [env, 'id', 'temperature_str', '110'], undefined);
+            assert.notDeepStrictEqual(results, Object.create(null));
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test lessThan 1111 on string key column", () => {
-            let expected = [];
+            let expected = createExpected('temperature_str', 1111);
 
-            for(let x = 0; x < test_data.length; x++){
-                if(parseInt(test_data[x].temperature) < 1111){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.lessThan, [env, 'temperature', '1111'], undefined);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let results = test_utils.assertErrorSync(search_util.lessThan, [env, 'id', 'temperature_str', '1111'], undefined);
+            assert.deepStrictEqual(results, expected);
         });
 
-        it("test lessThan CO on string key column", () => {
-            let expected = [];
+        it("test lessThan CO on string key column", () =>{
+            let expected = createExpected('state', 'CO');
 
-            for(let x = 0; x < test_data.length; x++){
-                if(test_data[x].state < 'CO'){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.lessThan, [env, 'state', 'CO'], undefined);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let results = test_utils.assertErrorSync(search_util.lessThan, [env, 'id', 'state', 'CO'], undefined);
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test lessThan W on string key column", () => {
-            let expected = [];
+            let expected = createExpected('state', 'W');
 
-            for(let x = 0; x < test_data.length; x++){
-                if(test_data[x].state < 'W'){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.lessThan, [env, 'state', 'W'], undefined);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let results = test_utils.assertErrorSync(search_util.lessThan, [env, 'id', 'state', 'W'], undefined);
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test lessThan WY on state key column", () => {
-            let expected = [];
+            let expected = createExpected('state', 'WY');
 
-            for(let x = 0; x < test_data.length; x++){
-                if(test_data[x].state < 'WY'){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.lessThan, [env, 'state', 'WY'], undefined);
-            assert.notDeepStrictEqual(results, []);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let results = test_utils.assertErrorSync(search_util.lessThan, [env, 'id', 'state', 'WY'], undefined);
+            assert.notDeepStrictEqual(results, Object.create(null));
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test lessThan CC on state key column", () => {
-            let expected = [];
+            let expected = createExpected('state', 'CC');
 
-            for(let x = 0; x < test_data.length; x++){
-                if(test_data[x].state < 'CC'){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.lessThan, [env, 'state', 'CC'], undefined);
-            assert.notDeepStrictEqual(results, []);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let results = test_utils.assertErrorSync(search_util.lessThan, [env, 'id', 'state', 'CC'], undefined);
+            assert.notDeepStrictEqual(results, Object.create(null));
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test lessThan AK on state key column", () => {
 
-            let results = test_utils.assertErrorSync(search_util.lessThan, [env, 'state', 'AK'], undefined);
-            assert.deepStrictEqual(results.sort(), []);
+            let results = test_utils.assertErrorSync(search_util.lessThan, [env, 'id', 'state', 'AK'], undefined);
+            assert.deepStrictEqual(results, Object.create((null)));
         });
 
         it("test lessThan A on state key column", () => {
-            let results = test_utils.assertErrorSync(search_util.lessThan, [env, 'state', 'A'], undefined);
-            assert.deepStrictEqual(results.sort(), []);
+            let results = test_utils.assertErrorSync(search_util.lessThan, [env, 'id', 'state', 'A'], undefined);
+            assert.deepStrictEqual(results, Object.create(null));
         });
 
         it("test lessThan 1111 on state string key column", () => {
-            let expected = [];
+            let expected = createExpected('state', '1111');
 
-            for(let x = 0; x < test_data.length; x++){
-                if(test_data[x].state < '1111'){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.lessThan, [env, 'state', '1111'], undefined);
-            assert.deepStrictEqual(results.sort(), []);
+            let results = test_utils.assertErrorSync(search_util.lessThan, [env, 'id', 'state', '1111'], undefined);
+            assert.deepStrictEqual(results, Object.create(null));
         });
 
         it("test search on attribute no exist", () => {
-            let results = test_utils.assertErrorSync(search_util.lessThan, [env, 'fake', 'bad'], LMDB_TEST_ERRORS.DBI_DOES_NOT_EXIST);
+            let results = test_utils.assertErrorSync(search_util.lessThan, [env, 'id', 'fake', 'bad'], LMDB_TEST_ERRORS.DBI_DOES_NOT_EXIST);
             assert.deepStrictEqual(results, undefined);
         });
     });
 
     describe('test lessThanEqual function', ()=> {
+        function createExpected(attribute, value){
+            let expected = Object.create(null);
+
+            for(let x = 0; x < test_data.length; x++){
+                let attr_value = isNaN(test_data[x][attribute]) ? test_data[x][attribute] : Number(test_data[x][attribute]);
+                if(attr_value <= value){
+                    let id = test_data[x].id;
+                    expected[id.toString()] = test_utils.assignObjecttoNullObject({id: Number(id)});
+                    expected[id.toString()][attribute] = attr_value;
+                }
+            }
+
+            return expected;
+        }
+
         let env;
         before(async () => {
             await fs.mkdirp(BASE_TEST_PATH);
@@ -1891,184 +1483,106 @@ describe('Test searchUtility module', ()=>{
 
         /** TEST HASH ATTRIBUTE **/
         it("test lessThanEqual 100 on hash column", () => {
-            let expected = [];
+            let expected = createExpected('id', 100);
 
-            for(let x = 0; x < test_data.length; x++){
-                if(parseInt(test_data[x].id) <= 100){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.lessThanEqual, [env, 'id', '100'], undefined);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let results = test_utils.assertErrorSync(search_util.lessThanEqual, [env, 'id', 'id', '100'], undefined);
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test lessThanEqual 11 on hash column", () => {
-            let expected = [];
+            let expected = createExpected('id', 11);
 
-            for(let x = 0; x < test_data.length; x++){
-                if(parseInt(test_data[x].id) <= 11){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.lessThanEqual, [env, 'id', '11'], undefined);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let results = test_utils.assertErrorSync(search_util.lessThanEqual, [env, 'id', 'id', '11'], undefined);
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test lessThanEqual 0 on hash column", () => {
-            let expected = [];
+            let expected = createExpected('id', 0);
 
-            for(let x = 0; x < test_data.length; x++){
-                if(parseInt(test_data[x].id) <= 0){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.lessThanEqual, [env, 'id', '0'], undefined);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let results = test_utils.assertErrorSync(search_util.lessThanEqual, [env, 'id', 'id', '0'], undefined);
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test lessThanEqual 1000 (max value) on hash column", () => {
-            let expected = [];
+            let expected = createExpected('id', 1000);
 
-            for(let x = 0; x < test_data.length; x++){
-                if(parseInt(test_data[x].id) <= 1000){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.lessThanEqual, [env, 'id', '1000'], undefined);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let results = test_utils.assertErrorSync(search_util.lessThanEqual, [env, 'id', 'id', '1000'], undefined);
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test lessThanEqual 1111 (a value larger than the max) on hash column", () => {
-            let expected = [];
-
-            for(let x = 0; x < test_data.length; x++){
-                if(parseInt(test_data[x].id) <= 1111){
-                    expected.push(test_data[x].id);
-                }
-            }
-            let results = test_utils.assertErrorSync(search_util.lessThanEqual, [env, 'id', '1111'], undefined);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let expected = createExpected('id', 1111);
+            let results = test_utils.assertErrorSync(search_util.lessThanEqual, [env, 'id', 'id', '1111'], undefined);
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test lessThanEqual -8 on hash column", () => {
-            let results = test_utils.assertErrorSync(search_util.lessThanEqual, [env, 'id', '-8'], undefined);
-            assert.deepStrictEqual(results.sort(), []);
+            let results = test_utils.assertErrorSync(search_util.lessThanEqual, [env, 'id', 'id', '-8'], undefined);
+            assert.deepStrictEqual(results, Object.create(null));
         });
 
         /** DOUBLE **/
         it("test lessThanEqual 100 on double key column", () => {
-            let expected = [];
+            let expected = createExpected('temperature_double', 100);
 
-            for(let x = 0; x < test_data.length; x++){
-                if(test_data[x].temperature_double <= 100){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.lessThanEqual, [env, 'temperature_double', '100'], undefined);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let results = test_utils.assertErrorSync(search_util.lessThanEqual, [env, 'id', 'temperature_double', '100'], undefined);
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test lessThanEqual 11 on double key column", () => {
-            let expected = [];
+            let expected = createExpected('temperature_double', 11)
 
-            for(let x = 0; x < test_data.length; x++){
-                if(test_data[x].temperature_double <= 11){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.lessThanEqual, [env, 'temperature_double', '11'], undefined);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let results = test_utils.assertErrorSync(search_util.lessThanEqual, [env, 'id', 'temperature_double', '11'], undefined);
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test lessThanEqual 0 on double key column", () => {
-            let expected = [];
+            let expected = createExpected('temperature_double', 0);
 
-            for(let x = 0; x < test_data.length; x++){
-                if(test_data[x].temperature_double <= 0){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.lessThanEqual, [env, 'temperature_double', '0'], undefined);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let results = test_utils.assertErrorSync(search_util.lessThanEqual, [env, 'id', 'temperature_double', '0'], undefined);
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test lessThanEqual 111 on double key column", () => {
-            let expected = [];
+            let expected = createExpected('temperature_double', 111);
 
-            for(let x = 0; x < test_data.length; x++){
-                if(test_data[x].temperature_double <= 111){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.lessThanEqual, [env, 'temperature_double', '111'], undefined);
-            assert.notDeepStrictEqual(results, []);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let results = test_utils.assertErrorSync(search_util.lessThanEqual, [env, 'id', 'temperature_double', '111'], undefined);
+            assert.notDeepStrictEqual(results, Object.create(null));
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test lessThanEqual 1111 on double key column", () => {
-            let expected = [];
+            let expected = createExpected('temperature_double', 1111);
 
-            for(let x = 0; x < test_data.length; x++){
-                if(test_data[x].temperature_double <= 1111){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.lessThanEqual, [env, 'temperature_double', '1111'], undefined);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let results = test_utils.assertErrorSync(search_util.lessThanEqual, [env, 'id', 'temperature_double', '1111'], undefined);
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test lessThanEqual 110 (a temperature not indexed) on double key column", () => {
-            let expected = [];
+            let expected = createExpected('temperature_double', 110);
 
-            for(let x = 0; x < test_data.length; x++){
-                if(test_data[x].temperature_double <= 110){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.lessThanEqual, [env, 'temperature_double', '110'], undefined);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let results = test_utils.assertErrorSync(search_util.lessThanEqual, [env, 'id', 'temperature_double', '110'], undefined);
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test lessThanEqual -8.854640366043895 on double key column", () => {
-            let expected = [];
+            let expected = createExpected('temperature_double', -8.854640366043895);
 
-            for(let x = 0; x < test_data.length; x++){
-                if(test_data[x].temperature_double <= -8.854640366043895){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.lessThanEqual, [env, 'temperature_double', '-8.854640366043895'], undefined);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let results = test_utils.assertErrorSync(search_util.lessThanEqual, [env, 'id', 'temperature_double', '-8.854640366043895'], undefined);
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test lessThanEqual -888.854640366043895 on double key column", () => {
-             let results = test_utils.assertErrorSync(search_util.lessThanEqual, [env, 'temperature_double', '-888.854640366043895'], undefined);
-            assert.deepStrictEqual(results.sort(), []);
+             let results = test_utils.assertErrorSync(search_util.lessThanEqual, [env, 'id', 'temperature_double', '-888.854640366043895'], undefined);
+            assert.deepStrictEqual(results, Object.create(null));
         });
 
         /** INT **/
         it("test lessThanEqual 100 on int key column", () => {
-            let expected = [];
+            let expected = createExpected('temperature', 100);
 
-            for(let x = 0; x < test_data.length; x++){
-                if(parseInt(test_data[x].temperature) <= 100){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.lessThanEqual, [env, 'temperature', '100'], undefined);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let results = test_utils.assertErrorSync(search_util.lessThanEqual, [env, 'id', 'temperature', '100'], undefined);
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test lessThanEqual 11 on int key column", () => {

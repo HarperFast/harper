@@ -627,16 +627,16 @@ function lessThanEqual(env, hash_attribute, attribute, search_value){
     let search_info = initializeRangeFunction(env, attribute, search_value);
 
     if(search_info.search_value_is_numeric === false){
-        return iterateFullIndex(env, attribute, cursor_functions.lessThanEqualStringCompare.bind(null, search_value));
+        return iterateFullIndex(env, hash_attribute, attribute, cursor_functions.lessThanEqualStringCompare.bind(null, search_value));
     }
 
     if(search_info.search_value_is_numeric === true && search_info.dbi_numeric_key === false){
-        return iterateFullIndex(env, attribute, cursor_functions.lessThanEqualStringToNumberCompare.bind(null, Number(search_value)));
+        return iterateFullIndex(env, hash_attribute, attribute, cursor_functions.lessThanEqualStringToNumberCompare.bind(null, Number(search_value)));
     }
 
     if(search_info.search_value_is_numeric === true && search_info.dbi_numeric_key === true){
         //need to add 1 to the value other wise when prev is called it skips all but the first entry of the search_value
-        return iterateLessThan(env, attribute, Number(search_value), cursor_functions.lessThanEqualNumericCompare);
+        return iterateLessThan(env, hash_attribute, attribute, Number(search_value), cursor_functions.lessThanEqualNumericCompare);
     }
 }
 
