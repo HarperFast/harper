@@ -11,7 +11,7 @@ const path = require('path');
 const assert = require('assert');
 const test_data = require('../../testData');
 const LMDB_TEST_ERRORS = require('../../commonTestErrors').LMDB_ERRORS_ENUM;
-const set_whole_row_flag = search_util.__get__('setGetWholeRowFlag');
+const set_whole_row_flag = search_util.__get__('setGetWholeRowAttributes');
 const common_utils = require('../../../utility/common_utils');
 
 const BASE_TEST_PATH = path.join(test_utils.getMockFSPath(), 'lmdbTest');
@@ -102,7 +102,7 @@ describe('Test searchUtility module', ()=>{
             let record = test_utils.assertErrorSync(search_util.searchByHash, [env, HASH_ATTRIBUTE_NAME, ["id", "name", "dob"], "2"],
                 undefined, 'all arguments sent');
 
-            assert.deepStrictEqual(record, test_utils.assignObjecttoNullObject({id:2, name:"Jerry", dob:undefined}));
+            assert.deepStrictEqual(record, test_utils.assignObjecttoNullObject({id:2, name:"Jerry", dob:null}));
         });
     });
 
@@ -288,8 +288,8 @@ describe('Test searchUtility module', ()=>{
 
             let expected = [];
             expected.push(test_utils.assignObjecttoNullObject( {id:1, name:'Kyle', age:46, city:'Denver'}));
-            expected.push(test_utils.assignObjecttoNullObject( {id:2, name:'Jerry', age:32, city:undefined}));
-            expected.push(test_utils.assignObjecttoNullObject( {id:3, name: 'Hank', age: 57, city:undefined}));
+            expected.push(test_utils.assignObjecttoNullObject( {id:2, name:'Jerry', age:32, city:null}));
+            expected.push(test_utils.assignObjecttoNullObject( {id:3, name: 'Hank', age: 57, city:null}));
             expected.push(test_utils.assignObjecttoNullObject( {id:4, name:'Joy', age: 44, city:'Denver'}));
             assert.deepStrictEqual(rows, expected);
         });
@@ -325,8 +325,8 @@ describe('Test searchUtility module', ()=>{
 
             let expected = Object.create(null);
             expected['1'] = test_utils.assignObjecttoNullObject({id:1, name:'Kyle', age:46, city:'Denver'});
-            expected['2'] = test_utils.assignObjecttoNullObject({id:2, name:'Jerry', age:32, city:undefined});
-            expected['3'] = test_utils.assignObjecttoNullObject({id:3, name: 'Hank', age: 57, city:undefined});
+            expected['2'] = test_utils.assignObjecttoNullObject({id:2, name:'Jerry', age:32, city:null});
+            expected['3'] = test_utils.assignObjecttoNullObject({id:3, name: 'Hank', age: 57, city:null});
             expected['4'] = test_utils.assignObjecttoNullObject({id:4, name:'Joy', age: 44, city:'Denver'});
             assert.deepStrictEqual(rows, expected);
         });
@@ -360,20 +360,34 @@ describe('Test searchUtility module', ()=>{
         });
     });
 
-    describe('test setGetWholeRowFlag function', ()=> {
+    describe('test setGetWholeRowAttributes function', ()=> {
+        let env;
+        before(async () => {
+            await fs.mkdirp(BASE_TEST_PATH);
+            global.lmdb_map = undefined;
+            env = await environment_utility.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
+            await environment_utility.createDBI(env, 'id');
+            write_utility.insertRecords(env, HASH_ATTRIBUTE_NAME, test_utils.deepClone(SOME_ATTRIBUTES), MULTI_RECORD_ARRAY);
+        });
+
+        after(async () => {
+            await fs.remove(BASE_TEST_PATH);
+            global.lmdb_map = undefined;
+        });
+
         it("test just * in get_attributes", () => {
-            let flag = test_utils.assertErrorSync(set_whole_row_flag, [['*']], undefined, 'all arguments');
-            assert.deepStrictEqual(flag, true);
+            let attributes = test_utils.assertErrorSync(set_whole_row_flag, [env, ['*']], undefined, 'all arguments');
+            assert.deepStrictEqual(attributes, ["__createdtime__","__updatedtime__","age","id","name"]);
         });
 
         it("test just id in get_attributes", () => {
-            let flag = test_utils.assertErrorSync(set_whole_row_flag, [['id']], undefined, 'all arguments');
-            assert.deepStrictEqual(flag, false);
+            let attributes = test_utils.assertErrorSync(set_whole_row_flag, [env, ['id']], undefined, 'all arguments');
+            assert.deepStrictEqual(attributes, ['id']);
         });
 
         it("test just multiple attributes in get_attributes", () => {
-            let flag = test_utils.assertErrorSync(set_whole_row_flag, [['id','name','age']], undefined, 'all arguments');
-            assert.deepStrictEqual(flag, false);
+            let attributes = test_utils.assertErrorSync(set_whole_row_flag, [env, ['id','name','age']], undefined, 'all arguments');
+            assert.deepStrictEqual(attributes, ['id','name','age']);
         });
     });
 

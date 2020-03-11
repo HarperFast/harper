@@ -30,13 +30,13 @@ const MULTI_RECORD_ARRAY = [
 
 const MULTI_RECORD_ARRAY_COMPARE = [
     {id:1, name:'Kyle', age:46, city:'Denver'},
-    {id:2, name:'Jerry', age:32, city:undefined},
-    {id:3, name: 'Hank', age: 57, city:undefined},
+    {id:2, name:'Jerry', age:32, city:null},
+    {id:3, name: 'Hank', age: 57, city:null},
     {id:4, name:'Joy', age: 44, city:'Denver'},
     {id:5, name:'Fran', age: 44, city:'Denvertown'},
     {
         id: 6,
-        name:undefined, age: undefined, city:undefined
+        name:null, age: null, city:null
     }
 ];
 
@@ -103,7 +103,7 @@ describe('Test deleteUtility', ()=>{
             let some_record_compare = [
                 test_utils.assignObjecttoNullObject({
                     "age": 32,
-                    "city": undefined,
+                    "city": null,
                     "id": 2,
                     "name": "Jerry",
                 }),

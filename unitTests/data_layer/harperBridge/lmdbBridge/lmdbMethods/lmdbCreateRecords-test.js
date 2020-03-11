@@ -63,7 +63,7 @@ const EXPECTED_SEARCH_RECORDS = [
         __updatedtime__: TIMESTAMP,
         name: "Harper",
         breed: "Mutt",
-        height: undefined,
+        height: null,
         id: 8,
         age: 5
     },
@@ -79,10 +79,10 @@ const EXPECTED_SEARCH_RECORDS = [
     {
         __createdtime__:TIMESTAMP,
         __updatedtime__: TIMESTAMP,
-        age: undefined,
+        age: null,
         name: "David",
         breed: "Mutt",
-        height:undefined,
+        height:null,
         id: 12
     },
     {
@@ -304,7 +304,7 @@ describe('Test lmdbCreateRecords module', ()=>{
                     name: "Harper",
                     breed: "Mutt",
                     id: 8,
-                    height:undefined,
+                    height:null,
                     age: 5
                 }),
                 test_utils.assignObjecttoNullObject({
@@ -319,10 +319,10 @@ describe('Test lmdbCreateRecords module', ()=>{
                 test_utils.assignObjecttoNullObject({
                     "__createdtime__": TIMESTAMP,
                     "__updatedtime__": TIMESTAMP,
-                    age: undefined,
+                    age: null,
                     name: "David",
                     breed: "Mutt",
-                    height:undefined,
+                    height:null,
                     id: 123
                 }),
                 test_utils.assignObjecttoNullObject({

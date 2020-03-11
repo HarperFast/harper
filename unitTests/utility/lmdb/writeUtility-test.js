@@ -23,7 +23,7 @@ const ONE_RECORD_ARRAY = [
 ];
 
 const ONE_RECORD_ARRAY_EXPECTED = [
-    {__blob__: undefined,__createdtime__: TIMESTAMP, __updatedtime__: TIMESTAMP,id:1, name:'Kyle', age:46}
+    {__blob__: null,__createdtime__: TIMESTAMP, __updatedtime__: TIMESTAMP,id:1, name:'Kyle', age:46}
 ];
 
 const UPDATE_ONE_RECORD_ARRAY = [
@@ -31,7 +31,7 @@ const UPDATE_ONE_RECORD_ARRAY = [
 ];
 
 const UPDATE_ONE_RECORD_ARRAY_EXPECTED = [
-    {__blob__: undefined, __createdtime__: TIMESTAMP, __updatedtime__: TIMESTAMP, id:1, name:'Kyle Bernhardy', age:46, height:'6\'1"'}
+    {__blob__: null, __createdtime__: TIMESTAMP, __updatedtime__: TIMESTAMP, id:1, name:'Kyle Bernhardy', age:46, height:'6\'1"'}
 ];
 
 const sandbox = sinon.createSandbox();
@@ -291,7 +291,7 @@ describe("Test writeUtility module", ()=>{
             assert.deepStrictEqual(results, {written_hashes:[1], skipped_hashes:[]});
 
             records = test_utils.assertErrorSync(search_util.searchAll, [env, HASH_ATTRIBUTE_NAME, ['id', 'name', 'city', 'age', 'text']], undefined);
-            let expected2 = [Object.assign(Object.create(null), {id:1, name: 'Kyle', city:undefined, age: 46, text:record.text})];
+            let expected2 = [Object.assign(Object.create(null), {id:1, name: 'Kyle', city:null, age: 46, text:record.text})];
             assert.deepStrictEqual(records,expected2);
 
             let txn = new environment_utility.TransactionCursor(env, '__blob__');
@@ -307,7 +307,7 @@ describe("Test writeUtility module", ()=>{
             assert.deepStrictEqual(results, {written_hashes:[1], skipped_hashes:[]});
 
             records = test_utils.assertErrorSync(search_util.searchAll, [env, HASH_ATTRIBUTE_NAME, ['id', 'name', 'city', 'age', 'text']], undefined);
-            expected2 = [Object.assign(Object.create(null), {id:1, name: 'Kyle', city:undefined, age: 46, text:undefined})];
+            expected2 = [Object.assign(Object.create(null), {id:1, name: 'Kyle', city:null, age: 46, text:null})];
             assert.deepStrictEqual(records,expected2);
             txn = new environment_utility.TransactionCursor(env, '__blob__');
             key = txn.cursor.goToKey(`text/${record.id}`);

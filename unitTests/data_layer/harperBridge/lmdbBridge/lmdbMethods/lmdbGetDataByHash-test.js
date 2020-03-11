@@ -183,7 +183,7 @@ describe('Test lmdbGetDataByHash module', ()=>{
             let exp_obj = test_utils.deepClone(INSERT_OBJECT_TEST.records[0]);
             exp_obj.__updatedtime__ = TIMESTAMP;
             exp_obj.__createdtime__ = TIMESTAMP;
-            exp_obj.height = undefined;
+            exp_obj.height = null;
             let expected_result = test_utils.assignObjecttoNullObject({
               8:   test_utils.assignObjecttoNullObject(exp_obj)
             });
@@ -208,7 +208,7 @@ describe('Test lmdbGetDataByHash module', ()=>{
         it('test finding multiple rows row, some attributes', async()=>{
 
             let expected_result = test_utils.assignObjecttoNullObject({
-                8:   test_utils.assignObjecttoNullObject({id:8, height:undefined}),
+                8:   test_utils.assignObjecttoNullObject({id:8, height:null}),
                 10:   test_utils.assignObjecttoNullObject({id:10, height:145})
             });
 

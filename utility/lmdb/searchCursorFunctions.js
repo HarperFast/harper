@@ -4,20 +4,14 @@ const common = require('./commonUtility');
 const auto_cast = require('../common_utils').autoCast;
 const lmdb_terms = require('./terms');
 
-function parseRow(txn, get_whole_row, attributes){
+function parseRow(txn, attributes){
     let return_object = Object.create(null);
     let original_object = JSON.parse(txn.cursor.getCurrentString());
 
-    if(get_whole_row === true){
-        let keys = Object.keys(original_object);
-        for(let x = 0; x < keys.length; x++){
-            return_object[keys[x]] = auto_cast(original_object[keys[x]]);
-        }
-    } else {
-        for (let x = 0; x < attributes.length; x++) {
-            let attribute = attributes[x];
-            return_object[attribute] = auto_cast(original_object[attribute]);
-        }
+    for (let x = 0; x < attributes.length; x++) {
+        let attribute = attributes[x];
+        let attribute_value = auto_cast(original_object[attribute]);
+        return_object[attribute] = attribute_value === undefined ? null : attribute_value;
     }
 
     return return_object;
@@ -26,13 +20,12 @@ function parseRow(txn, get_whole_row, attributes){
 /**
  * The internal iterator function for searchAll
  * @param {[String]} attributes
- * @param {Boolean} get_whole_row
  * @param {String|Number} found
  * @param {lmdb.Cursor} txn
  * @param {[]} results
  */
-function searchAll(attributes, get_whole_row, found, txn, results){
-    let obj = parseRow(txn, get_whole_row, attributes);
+function searchAll(attributes, found, txn, results){
+    let obj = parseRow(txn, attributes);
 
     results.push(obj);
 }
@@ -40,13 +33,12 @@ function searchAll(attributes, get_whole_row, found, txn, results){
 /**
 * The internal iterator function for searchAllToMap
  * @param {[String]} attributes
-* @param {Boolean} get_whole_row
 * @param {String|Number} found
 * @param {lmdb.Cursor} txn
 * @param {Object} results
 */
-function searchAllToMap(attributes, get_whole_row, found, txn, results){
-    let obj = parseRow(txn, get_whole_row, attributes);
+function searchAllToMap(attributes, found, txn, results){
+    let obj = parseRow(txn, attributes);
 
     results[found] = obj;
 }
