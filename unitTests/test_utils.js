@@ -658,6 +658,13 @@ function sortAsc(data, sort_by) {
     return data.sort((a, b) => a - b);
 }
 
+function sortAttrKeyMap(attrs, hash = 'id') {
+    const final_arr = attrs.sort();
+    const hash_index = final_arr.indexOf(hash);
+    final_arr.splice(hash_index, 1);
+    return [hash, ...final_arr];
+}
+
 function generateAPIMessage(msg_type_enum) {
     let generated_msg = undefined;
     switch(msg_type_enum) {
@@ -742,6 +749,7 @@ module.exports = {
     getMockFSPath,
     sortAsc,
     sortDesc,
+    sortAttrKeyMap,
     testError,
     generateAPIMessage,
     assertErrorSync,
