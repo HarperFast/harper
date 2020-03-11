@@ -119,7 +119,7 @@ async function descTable(describe_table_object) {
                     table_result = table;
                 }
                 if (!table_result.hash_attribute) {
-                    throw new Error(`Invalid table ${table}`);
+                    throw new Error(`Invalid table ${JSON.stringify(table)}`);
                 }
 
                 let attribute_search_obj = {};
