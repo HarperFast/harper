@@ -35,7 +35,7 @@
     "@turf/distance": "^6.0.1",
     "@turf/helpers": "^6.1.4",
     "@turf/length": "^6.0.2",
-    "alasql": "^0.4.11",
+    "alasql": "file:local_dependencies/alasql",
     "async": "^2.6.1",
     "aws-sdk": "^2.389.0",
     "body-parser": "^1.18.3",
