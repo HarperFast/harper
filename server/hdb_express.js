@@ -409,9 +409,39 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
         });
     });
 
+    /**
+     * this function strips away the cached environments from global when a schema item is removed
+     * @param msg
+     */
+    function removeSchemaFromLMDBMap(msg){
+        try{
+            if(global.lmdb_map !== undefined && msg.operation !== undefined){
+                let keys = Object.keys(global.lmdb_map);
+                switch (msg.operation.operation) {
+                    case 'drop_schema':
+                        for(let x = 0; x < keys.length; x ++){
+                            let key = keys[x];
+                            if(key.startsWith(`${msg.operation.schema}.`)){
+                                delete global.lmdb_map[key];
+                            }
+                        }
+                        break;
+                    case 'drop_table':
+                        delete global.lmdb_map[`${msg.operation.schema}.${msg.operation.table}`];
+                        break;
+                    default:
+                        break;
+                }
+            }
+        } catch(e){
+            harper_logger.error(e);
+        }
+    }
+
     process.on('message', (msg) => {
         switch (msg.type) {
             case 'schema':
+                removeSchemaFromLMDBMap(msg);
                 global_schema.schemaSignal((err) => {
                     if (err) {
                         harper_logger.error(err);

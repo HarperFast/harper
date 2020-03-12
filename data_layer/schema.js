@@ -120,7 +120,10 @@ async function dropSchema(drop_schema_object) {
 
     try {
         await harperBridge.dropSchema(drop_schema_object);
-        signalling.signalSchemaChange(signalling.SCHEMA_CHANGE_MESSAGE);
+        let drop_schema_message = signalling.SCHEMA_CHANGE_MESSAGE;
+        drop_schema_message.operation = drop_schema_object;
+
+        signalling.signalSchemaChange(drop_schema_message);
         delete global.hdb_schema[drop_schema_object.schema];
         const SCHEMA_DELETE_MSG = `successfully deleted schema ${drop_schema_object.schema}`;
 
@@ -143,7 +146,9 @@ async function dropTable(drop_table_object) {
 
     try {
         await harperBridge.dropTable(drop_table_object);
-        signalling.signalSchemaChange({type: 'schema'});
+        let drop_table_message = signalling.SCHEMA_CHANGE_MESSAGE;
+        drop_table_message.operation = drop_table_object;
+        signalling.signalSchemaChange(drop_table_message);
         const TABLE_DELETE_MSG = `successfully deleted table ${drop_table_object.schema}.${drop_table_object.table}`;
 
         return TABLE_DELETE_MSG;
