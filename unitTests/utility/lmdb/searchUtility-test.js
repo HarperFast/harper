@@ -137,22 +137,24 @@ describe('Test searchUtility module', ()=>{
         });
 
         it("test fetch multiple records", ()=>{
+            let expected = {"1":{id:1, name:'Kyle', age:46},
+                "4":{id:4, name:'Joy', age: 44},
+                "2":{id:2, name:'Jerry', age:32}};
             let row = test_utils.assertErrorSync(search_util.batchSearchByHash, [env, HASH_ATTRIBUTE_NAME, SOME_ATTRIBUTES, ["1", "4", "2"]],
                 undefined, 'fetch multi rows');
 
-            assert.deepStrictEqual(row, [
-                test_utils.assignObjecttoNullObject({id:1, name:'Kyle', age:46}),
-                test_utils.assignObjecttoNullObject({id:4, name:'Joy', age: 44}),
-                test_utils.assignObjecttoNullObject({id:2, name:'Jerry', age:32})]);
+            assert.deepEqual(row, expected);
         });
 
         it("test fetch multiple records some don't exist", ()=>{
+            let expected = {"1":{id:1, name:'Kyle', age:46},
+                "4": {id:4, name:'Joy', age: 44},
+                "2":{id:2, name:'Jerry', age:32}};
+
             let row = test_utils.assertErrorSync(search_util.batchSearchByHash, [env, HASH_ATTRIBUTE_NAME, SOME_ATTRIBUTES, ["1","fake", "4", "55", "2"]],
                 undefined, 'fetch single row');
 
-            assert.deepStrictEqual(row, [test_utils.assignObjecttoNullObject({id:1, name:'Kyle', age:46}),
-                test_utils.assignObjecttoNullObject({id:4, name:'Joy', age: 44}),
-                test_utils.assignObjecttoNullObject({id:2, name:'Jerry', age:32})]);
+            assert.deepEqual(row, expected);
         });
     });
 
@@ -281,11 +283,12 @@ describe('Test searchUtility module', ()=>{
 
             let rows = test_utils.assertErrorSync(search_util.searchAll, [env, HASH_ATTRIBUTE_NAME, All_ATTRIBUTES], undefined, 'search');
 
-            let expected = [];
-            expected.push(test_utils.assignObjecttoNullObject( {id:1, name:'Kyle', age:46, city:'Denver'}));
-            expected.push(test_utils.assignObjecttoNullObject( {id:2, name:'Jerry', age:32, city:undefined}));
-            expected.push(test_utils.assignObjecttoNullObject( {id:3, name: 'Hank', age: 57, city:undefined}));
-            expected.push(test_utils.assignObjecttoNullObject( {id:4, name:'Joy', age: 44, city:'Denver'}));
+            let expected = {
+                "1":{id: 1, name: 'Kyle', age: 46, city: 'Denver'},
+                "2":{id: 2, name: 'Jerry', age: 32, city: undefined},
+                "3":{id: 3, name: 'Hank', age: 57, city: undefined},
+            expected.push(test_utils.assignObjecttoNullObject({id: 4, name: 'Joy', age: 44, city: 'Denver'}));
+        };
             assert.deepStrictEqual(rows, expected);
         });
     });
