@@ -129,10 +129,11 @@ describe('Test searchUtility module', ()=>{
         });
 
         it("test fetch single record", ()=>{
+            let expected = {"1":{id:1, name:'Kyle', age:46}};
             let row = test_utils.assertErrorSync(search_util.batchSearchByHash, [env, HASH_ATTRIBUTE_NAME, SOME_ATTRIBUTES, ["1"]],
                 undefined, 'fetch single row');
 
-            assert.deepStrictEqual(row, [test_utils.assignObjecttoNullObject( {id:1, name:'Kyle', age:46})]);
+            assert.deepEqual(row, expected);
         });
 
         it("test fetch multiple records", ()=>{
@@ -1586,262 +1587,169 @@ describe('Test searchUtility module', ()=>{
         });
 
         it("test lessThanEqual 11 on int key column", () => {
-            let expected = [];
+            let expected = createExpected('temperature', 11);
 
-            for(let x = 0; x < test_data.length; x++){
-                if(parseInt(test_data[x].temperature) <= 11){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.lessThanEqual, [env, 'temperature', '11'], undefined);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let results = test_utils.assertErrorSync(search_util.lessThanEqual, [env, 'id', 'temperature', '11'], undefined);
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test lessThanEqual 0 on int key column", () => {
-            let expected = [];
+            let expected = createExpected('temperature', 0);
 
-            for(let x = 0; x < test_data.length; x++){
-                if(parseInt(test_data[x].temperature) <= 0){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.lessThanEqual, [env, 'temperature', '0'], undefined);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let results = test_utils.assertErrorSync(search_util.lessThanEqual, [env, 'id', 'temperature', '0'], undefined);
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test lessThanEqual 111 on int key column", () => {
-            let expected = [];
+            let expected = createExpected('temperature', 111);
 
-            for(let x = 0; x < test_data.length; x++){
-                if(parseInt(test_data[x].temperature) <= 111){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.lessThanEqual, [env, 'temperature', '111'], undefined);
-            assert.notDeepStrictEqual(results, []);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let results = test_utils.assertErrorSync(search_util.lessThanEqual, [env, 'id', 'temperature', '111'], undefined);
+            assert.notDeepStrictEqual(results, Object.create(null));
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test lessThanEqual 1111 on int key column", () => {
-            let expected = [];
+            let expected = createExpected('temperature', 1111);
 
-            for(let x = 0; x < test_data.length; x++){
-                if(parseInt(test_data[x].temperature) <= 1111){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.lessThanEqual, [env, 'temperature', '1111'], undefined);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let results = test_utils.assertErrorSync(search_util.lessThanEqual, [env, 'id', 'temperature', '1111'], undefined);
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test lessThanEqual 110 (a temperature not indexed) on int key column", () => {
-            let expected = [];
+            let expected = createExpected('temperature', 110);
 
-            for(let x = 0; x < test_data.length; x++){
-                if(parseInt(test_data[x].temperature) <= 110){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.lessThanEqual, [env, 'temperature', '110'], undefined);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let results = test_utils.assertErrorSync(search_util.lessThanEqual, [env, 'id', 'temperature', '110'], undefined);
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test lessThanEqual -8 on int key column", () => {
-            let expected = [];
+            let expected = createExpected('temperature', -8);
 
-            for(let x = 0; x < test_data.length; x++){
-                if(parseInt(test_data[x].temperature) <= -8){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.lessThanEqual, [env, 'temperature', '-8'], undefined);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let results = test_utils.assertErrorSync(search_util.lessThanEqual, [env, 'id', 'temperature', '-8'], undefined);
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test lessThanEqual -888 (a temperature not indexed) on int key column", () => {
-            let results = test_utils.assertErrorSync(search_util.lessThanEqual, [env, 'temperature', '-888'], undefined);
-            assert.deepStrictEqual(results.sort(), []);
+            let results = test_utils.assertErrorSync(search_util.lessThanEqual, [env, 'id', 'temperature', '-888'], undefined);
+            assert.deepStrictEqual(results, Object.create(null));
         });
 
         /** string **/
         it("test lessThanEqual 100 on string key column", () => {
-            let expected = [];
+            let expected = createExpected('temperature_str', 100);
 
-            for(let x = 0; x < test_data.length; x++){
-                if(parseInt(test_data[x].temperature) <= 100){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.lessThanEqual, [env, 'temperature_str', '100'], undefined);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let results = test_utils.assertErrorSync(search_util.lessThanEqual, [env, 'id', 'temperature_str', '100'], undefined);
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test lessThanEqual 11 on string key column", () => {
-            let expected = [];
+            let expected = createExpected('temperature_str', 11);
 
-            for(let x = 0; x < test_data.length; x++){
-                if(parseInt(test_data[x].temperature) <= 11){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.lessThanEqual, [env, 'temperature_str', '11'], undefined);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let results = test_utils.assertErrorSync(search_util.lessThanEqual, [env, 'id', 'temperature_str', '11'], undefined);
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test lessThanEqual 0 on string key column", () => {
-            let expected = [];
+            let expected = createExpected('temperature_str', 0);
 
-            for(let x = 0; x < test_data.length; x++){
-                if(parseInt(test_data[x].temperature) <= 0){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.lessThanEqual, [env, 'temperature_str', '0'], undefined);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let results = test_utils.assertErrorSync(search_util.lessThanEqual, [env, 'id', 'temperature_str', '0'], undefined);
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test lessThanEqual 111 on string key column", () => {
-            let expected = [];
+            let expected = createExpected('temperature_str', 111);
 
-            for(let x = 0; x < test_data.length; x++){
-                if(parseInt(test_data[x].temperature) <= 111){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.lessThanEqual, [env, 'temperature_str', '111'], undefined);
-            assert.notDeepStrictEqual(results, []);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let results = test_utils.assertErrorSync(search_util.lessThanEqual, [env, 'id', 'temperature_str', '111'], undefined);
+            assert.notDeepStrictEqual(results, Object.create(null));
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test lessThanEqual 110 on string key column", () => {
-            let expected = [];
+            let expected = createExpected('temperature_str', 110);
 
-            for(let x = 0; x < test_data.length; x++){
-                if(parseInt(test_data[x].temperature) <= 110){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.lessThanEqual, [env, 'temperature_str', '110'], undefined);
-            assert.notDeepStrictEqual(results, []);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let results = test_utils.assertErrorSync(search_util.lessThanEqual, [env, 'id', 'temperature_str', '110'], undefined);
+            assert.notDeepStrictEqual(results, Object.create(null));
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test lessThanEqual 1111 on string key column", () => {
-            let expected = [];
+            let expected = createExpected('temperature_str', 1111);
 
-            for(let x = 0; x < test_data.length; x++){
-                if(parseInt(test_data[x].temperature) <= 1111){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.lessThanEqual, [env, 'temperature', '1111'], undefined);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let results = test_utils.assertErrorSync(search_util.lessThanEqual, [env, 'id', 'temperature_str', '1111'], undefined);
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test lessThanEqual CO on string key column", () => {
-            let expected = [];
+            let expected = createExpected('state', 'CO');
 
-            for(let x = 0; x < test_data.length; x++){
-                if(test_data[x].state <= 'CO'){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.lessThanEqual, [env, 'state', 'CO'], undefined);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let results = test_utils.assertErrorSync(search_util.lessThanEqual, [env, 'id', 'state', 'CO'], undefined);
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test lessThanEqual W on string key column", () => {
-            let expected = [];
+            let expected = createExpected('state', 'W');
 
-            for(let x = 0; x < test_data.length; x++){
-                if(test_data[x].state <= 'W'){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.lessThanEqual, [env, 'state', 'W'], undefined);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let results = test_utils.assertErrorSync(search_util.lessThanEqual, [env, 'id', 'state', 'W'], undefined);
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test lessThanEqual WY on state key column", () => {
-            let expected = [];
+            let expected = createExpected('state', 'WY');
 
-            for(let x = 0; x < test_data.length; x++){
-                if(test_data[x].state <= 'WY'){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.lessThanEqual, [env, 'state', 'WY'], undefined);
-            assert.notDeepStrictEqual(results, []);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let results = test_utils.assertErrorSync(search_util.lessThanEqual, [env, 'id', 'state', 'WY'], undefined);
+            assert.notDeepStrictEqual(results, Object.create(null));
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test lessThanEqual CC on state key column", () => {
-            let expected = [];
+            let expected = createExpected('state', 'CC');
 
-            for(let x = 0; x < test_data.length; x++){
-                if(test_data[x].state <= 'CC'){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.lessThanEqual, [env, 'state', 'CC'], undefined);
-            assert.notDeepStrictEqual(results, []);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let results = test_utils.assertErrorSync(search_util.lessThanEqual, [env, 'id', 'state', 'CC'], undefined);
+            assert.notDeepStrictEqual(results, Object.create(null));
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test lessThanEqual AK on state key column", () => {
-            let expected = [];
+            let expected = createExpected('state', 'AK');
 
-            for(let x = 0; x < test_data.length; x++){
-                if(test_data[x].state <= 'AK'){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.lessThanEqual, [env, 'state', 'AK'], undefined);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let results = test_utils.assertErrorSync(search_util.lessThanEqual, [env, 'id', 'state', 'AK'], undefined);
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test lessThanEqual A on state key column", () => {
-            let results = test_utils.assertErrorSync(search_util.lessThanEqual, [env, 'state', 'A'], undefined);
-            assert.deepStrictEqual(results.sort(), []);
+            let results = test_utils.assertErrorSync(search_util.lessThanEqual, [env, 'id', 'state', 'A'], undefined);
+            assert.deepStrictEqual(results, Object.create(null));
         });
 
         it("test lessThanEqual 1111 on state string key column", () => {
-            let expected = [];
+            let expected = createExpected('state', '1111');
 
-            for(let x = 0; x < test_data.length; x++){
-                if(test_data[x].state <= '1111'){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.lessThanEqual, [env, 'state', '1111'], undefined);
-            assert.deepStrictEqual(results.sort(), []);
+            let results = test_utils.assertErrorSync(search_util.lessThanEqual, [env, 'id', 'state', '1111'], undefined);
+            assert.deepStrictEqual(results, Object.create(null));
         });
 
         it("test search on attribute no exist", () => {
-            let results = test_utils.assertErrorSync(search_util.lessThanEqual, [env, 'fake', 'bad'], LMDB_TEST_ERRORS.DBI_DOES_NOT_EXIST);
+            let results = test_utils.assertErrorSync(search_util.lessThanEqual, [env, 'id', 'fake', 'bad'], LMDB_TEST_ERRORS.DBI_DOES_NOT_EXIST);
             assert.deepStrictEqual(results, undefined);
         });
     });
 
     describe('test between function', ()=> {
+        function createExpected(attribute, start_value, end_value){
+            let expected = Object.create(null);
+
+            for(let x = 0; x < test_data.length; x++){
+                let attr_value = isNaN(test_data[x][attribute]) ? test_data[x][attribute] : Number(test_data[x][attribute]);
+                if(attr_value >= start_value && attr_value <= end_value){
+                    let id = test_data[x].id;
+                    expected[id.toString()] = test_utils.assignObjecttoNullObject({id: Number(id)});
+                    expected[id.toString()][attribute] = attr_value;
+                }
+            }
+
+            return expected;
+        }
+
         let env;
         before(async () => {
             await fs.mkdirp(BASE_TEST_PATH);
@@ -1880,430 +1788,258 @@ describe('Test searchUtility module', ()=>{
         /** HASH ATTRIBUTE **/
 
         it("test between 11 & 100 on hash column", () => {
-            let expected = [];
+            let expected = createExpected('id', 11, 100);
 
-            for(let x = 0; x < test_data.length; x++){
-                if(parseInt(test_data[x].id) <= 100 && parseInt(test_data[x].id) >= 11){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.between, [env, 'id', '11', 100], undefined);
-            assert.notDeepStrictEqual(results.sort(), []);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let results = test_utils.assertErrorSync(search_util.between, [env, 'id', 'id', '11', 100], undefined);
+            assert.notDeepStrictEqual(results, Object.create(null));
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test between 0 and 111 on hash column", () => {
-            let expected = [];
+            let expected = createExpected('id', 0, 111);
 
-            for(let x = 0; x < test_data.length; x++){
-                if(parseInt(test_data[x].id) >= 0 && parseInt(test_data[x].id) <= 111){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.between, [env, 'id', '0', '111'], undefined);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let results = test_utils.assertErrorSync(search_util.between, [env, 'id', 'id', '0', '111'], undefined);
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test between 0 and 11111 on hash column", () => {
-            let expected = [];
+            let expected = createExpected('id', 0, 11111);
 
-            for(let x = 0; x < test_data.length; x++){
-                if(parseInt(test_data[x].id) >= 0 && parseInt(test_data[x].id) <= 11111){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.between, [env, 'id', '0', '11111'], undefined);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let results = test_utils.assertErrorSync(search_util.between, [env, 'id','id', '0', '11111'], undefined);
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test between 110 and 111 on hash column", () => {
-            let expected = [];
+            let expected = createExpected('id', 110, 111);
 
-            for(let x = 0; x < test_data.length; x++){
-                if(parseInt(test_data[x].id) >= 110 && parseInt(test_data[x].id) <= 111){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.between, [env, 'id', '110', '111'], undefined);
-            assert.notDeepStrictEqual(results, []);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let results = test_utils.assertErrorSync(search_util.between, [env, 'id', 'id', '110', '111'], undefined);
+            assert.notDeepStrictEqual(results, Object.create(null));
+            assert.deepStrictEqual(results, expected);
         });
 
 
         it("test between -8999 and 1111 on hash column", () => {
-            let expected = [];
+            let expected = createExpected('id', -8999, 1111);
 
-            for(let x = 0; x < test_data.length; x++){
-                if(test_data[x].id >= -8999 && test_data[x].id <= 1111){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.between, [env, 'id', '-8999', '1111'], undefined);
-            assert.notDeepStrictEqual(results, []);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let results = test_utils.assertErrorSync(search_util.between, [env, 'id', 'id', '-8999', '1111'], undefined);
+            assert.notDeepStrictEqual(results, Object.create(null));
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test between -2 and 10 on hash column", () => {
-            let expected = [];
+            let expected = createExpected('id', -2, 10);
 
-            for(let x = 0; x < test_data.length; x++){
-                if(test_data[x].id >= -2 && test_data[x].id <= 10){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.between, [env, 'id', '-2', '10'], undefined);
-            assert.notDeepStrictEqual(results, []);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let results = test_utils.assertErrorSync(search_util.between, [env, 'id', 'id', '-2', '10'], undefined);
+            assert.notDeepStrictEqual(results, Object.create(null));
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test between -2 and 0 on hash column", () => {
-            let expected = [];
+            let expected = createExpected('id', -2, 0);
 
-            for(let x = 0; x < test_data.length; x++){
-                if(test_data[x].id >= -2 && test_data[x].id <= 0){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.between, [env, 'id', '-2', '0'], undefined);
-            assert.notDeepStrictEqual(results, []);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let results = test_utils.assertErrorSync(search_util.between, [env, 'id', 'id', '-2', '0'], undefined);
+            assert.notDeepStrictEqual(results, Object.create(null));
+            assert.deepStrictEqual(results, expected);
         });
 
         /** DOUBLE **/
 
         it("test between 11 & 100 on double key column", () => {
-            let expected = [];
+            let expected = createExpected('temperature_double', 11, 100);
 
-            for(let x = 0; x < test_data.length; x++){
-                if(test_data[x].temperature_double <= 100 && test_data[x].temperature_double >= 11){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.between, [env, 'temperature_double', '11', 100], undefined);
-            assert.notDeepStrictEqual(results.sort(), []);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let results = test_utils.assertErrorSync(search_util.between, [env, 'id', 'temperature_double', '11', 100], undefined);
+            assert.notDeepStrictEqual(results, Object.create(null));
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test between 0 and 111 on double key column", () => {
-            let expected = [];
+            let expected = createExpected('temperature_double', 0, 111);
 
-            for(let x = 0; x < test_data.length; x++){
-                if(test_data[x].temperature_double >= 0 && test_data[x].temperature_double <= 111){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.between, [env, 'temperature_double', '0', '111'], undefined);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let results = test_utils.assertErrorSync(search_util.between, [env, 'id', 'temperature_double', '0', '111'], undefined);
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test between 0 and 11111 on double key column", () => {
-            let expected = [];
+            let expected = createExpected('temperature_double', 0, 11111);
 
-            for(let x = 0; x < test_data.length; x++){
-                if(test_data[x].temperature_double >= 0 && test_data[x].temperature_double <= 11111){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.between, [env, 'temperature_double', '0', '11111'], undefined);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let results = test_utils.assertErrorSync(search_util.between, [env, 'id', 'temperature_double', '0', '11111'], undefined);
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test between 110 and 111 on double key column", () => {
-            let expected = [];
+            let expected = createExpected('temperature_double', 110, 111);
 
-            for(let x = 0; x < test_data.length; x++){
-                if(test_data[x].temperature_double >= 110 && test_data[x].temperature_double <= 111){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.between, [env, 'temperature_double', '110', '111'], undefined);
-            assert.notDeepStrictEqual(results, []);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let results = test_utils.assertErrorSync(search_util.between, [env, 'id', 'temperature_double', '110', '111'], undefined);
+            assert.notDeepStrictEqual(results, Object.create(null));
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test between -8.77 and -2.24564 on double key column", () => {
-            let expected = [];
+            let expected = createExpected('temperature_double', -8.77, -2.24564);
 
-            for(let x = 0; x < test_data.length; x++){
-                if(test_data[x].temperature_double >= -8.77 && test_data[x].temperature_double <= -2.24564){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.between, [env, 'temperature_double', '-8.77', '-2.24564'], undefined);
-            assert.notDeepStrictEqual(results, []);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let results = test_utils.assertErrorSync(search_util.between, [env, 'id', 'temperature_double', '-8.77', '-2.24564'], undefined);
+            assert.notDeepStrictEqual(results, Object.create(null));
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test between -8999 and 1111 on double key column", () => {
-            let expected = [];
+            let expected = createExpected('temperature_double', -8999, 1111);
 
-            for(let x = 0; x < test_data.length; x++){
-                if(test_data[x].temperature_double >= -8999 && test_data[x].temperature_double <= 1111){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.between, [env, 'temperature_double', '-8999', '1111'], undefined);
-            assert.notDeepStrictEqual(results, []);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let results = test_utils.assertErrorSync(search_util.between, [env, 'id', 'temperature_double', '-8999', '1111'], undefined);
+            assert.notDeepStrictEqual(results, Object.create(null));
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test between -2.24564 and 10.432 on double key column", () => {
-            let expected = [];
+            let expected = createExpected('temperature_double', -2.24564, 10.432);
 
-            for(let x = 0; x < test_data.length; x++){
-                if(test_data[x].temperature_double >= -2.24564 && test_data[x].temperature_double <= 10.432){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.between, [env, 'temperature_double', '-2.24564', '10.432'], undefined);
-            assert.notDeepStrictEqual(results, []);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let results = test_utils.assertErrorSync(search_util.between, [env, 'id', 'temperature_double', '-2.24564', '10.432'], undefined);
+            assert.notDeepStrictEqual(results, Object.create(null));
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test between -2.24564 and 0 on double key column", () => {
-            let expected = [];
+            let expected = createExpected('temperature_double', -2.24564, 0);
 
-            for(let x = 0; x < test_data.length; x++){
-                if(test_data[x].temperature_double >= -2.24564 && test_data[x].temperature_double <= 0){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.between, [env, 'temperature_double', '-2.24564', '0'], undefined);
-            assert.notDeepStrictEqual(results, []);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let results = test_utils.assertErrorSync(search_util.between, [env, 'id', 'temperature_double', '-2.24564', '0'], undefined);
+            assert.notDeepStrictEqual(results, Object.create(null));
+            assert.deepStrictEqual(results, expected);
         });
 
         /** INT **/
 
         it("test between 11 & 100 on int key column", () => {
-            let expected = [];
+            let expected = createExpected('temperature', 11, 100);
 
-            for(let x = 0; x < test_data.length; x++){
-                if(parseInt(test_data[x].temperature) <= 100 && parseInt(test_data[x].temperature) >= 11){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.between, [env, 'temperature', '11', 100], undefined);
-            assert.notDeepStrictEqual(results.sort(), []);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let results = test_utils.assertErrorSync(search_util.between, [env, 'id', 'temperature', '11', 100], undefined);
+            assert.notDeepStrictEqual(results, Object.create(null));
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test between 0 and 111 on int key column", () => {
-            let expected = [];
+            let expected = createExpected('temperature', 0, 111);
 
-            for(let x = 0; x < test_data.length; x++){
-                if(parseInt(test_data[x].temperature) >= 0 && parseInt(test_data[x].temperature) <= 111){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.between, [env, 'temperature', '0', '111'], undefined);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let results = test_utils.assertErrorSync(search_util.between, [env, 'id', 'temperature', '0', '111'], undefined);
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test between 0 and 11111 on int key column", () => {
-            let expected = [];
+            let expected = createExpected('temperature', 0, 11111);
 
-            for(let x = 0; x < test_data.length; x++){
-                if(parseInt(test_data[x].temperature) >= 0 && parseInt(test_data[x].temperature) <= 11111){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.between, [env, 'temperature', '0', '11111'], undefined);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let results = test_utils.assertErrorSync(search_util.between, [env, 'id', 'temperature', '0', '11111'], undefined);
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test between 110 and 111 on int key column", () => {
-            let expected = [];
+            let expected = createExpected('temperature', 110, 111);
 
-            for(let x = 0; x < test_data.length; x++){
-                if(parseInt(test_data[x].temperature) >= 110 && parseInt(test_data[x].temperature) <= 111){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.between, [env, 'temperature', '110', '111'], undefined);
-            assert.notDeepStrictEqual(results, []);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let results = test_utils.assertErrorSync(search_util.between, [env, 'id', 'temperature', '110', '111'], undefined);
+            assert.deepStrictEqual(results, expected);
         });
 
 
         it("test between -8 and -2 on int key column", () => {
-            let expected = [];
+            let expected = createExpected('temperature', -8, -2);
 
-            for(let x = 0; x < test_data.length; x++){
-                if(test_data[x].temperature >= -8 && test_data[x].temperature <= -2){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.between, [env, 'temperature', '-8', '-2'], undefined);
-            assert.notDeepStrictEqual(results, []);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let results = test_utils.assertErrorSync(search_util.between, [env, 'id', 'temperature', '-8', '-2'], undefined);
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test between -8999 and 1111 on int key column", () => {
-            let expected = [];
+            let expected = createExpected('temperature', -8999, 1111);
 
-            for(let x = 0; x < test_data.length; x++){
-                if(test_data[x].temperature >= -8999 && test_data[x].temperature <= 1111){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.between, [env, 'temperature', '-8999', '1111'], undefined);
-            assert.notDeepStrictEqual(results, []);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let results = test_utils.assertErrorSync(search_util.between, [env, 'id', 'temperature', '-8999', '1111'], undefined);
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test between -2 and 10 on int key column", () => {
-            let expected = [];
+            let expected = createExpected('temperature', -2, 10);
 
-            for(let x = 0; x < test_data.length; x++){
-                if(test_data[x].temperature >= -2 && test_data[x].temperature <= 10){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.between, [env, 'temperature', '-2', '10'], undefined);
-            assert.notDeepStrictEqual(results, []);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let results = test_utils.assertErrorSync(search_util.between, [env, 'id', 'temperature', '-2', '10'], undefined);
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test between -2 and 0 on int key column", () => {
-            let expected = [];
+            let expected = createExpected('temperature', -2, 0);
 
-            for(let x = 0; x < test_data.length; x++){
-                if(test_data[x].temperature >= -2 && test_data[x].temperature <= 0){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.between, [env, 'temperature', '-2', '0'], undefined);
-            assert.notDeepStrictEqual(results, []);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let results = test_utils.assertErrorSync(search_util.between, [env, 'id', 'temperature', '-2', '0'], undefined);
+            assert.deepStrictEqual(results, expected);
         });
 
         /** STRING **/
 
         it("test between 11 & 100 on string key column", () => {
-            let expected = [];
+            let expected = createExpected('temperature_str', 11, 100);
 
-            for(let x = 0; x < test_data.length; x++){
-                if(parseInt(test_data[x].temperature_str) <= 100 && parseInt(test_data[x].temperature_str) >= 11){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.between, [env, 'temperature_str', '11', 100], undefined);
-            assert.notDeepStrictEqual(results.sort(), []);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let results = test_utils.assertErrorSync(search_util.between, [env, 'id', 'temperature_str', '11', 100], undefined);
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test between 0 and 111 on string key column", () => {
-            let expected = [];
+            let expected = createExpected('temperature_str', 0, 111);
 
-            for(let x = 0; x < test_data.length; x++){
-                if(parseInt(test_data[x].temperature_str) >= 0 && parseInt(test_data[x].temperature_str) <= 111){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.between, [env, 'temperature_str', '0', '111'], undefined);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let results = test_utils.assertErrorSync(search_util.between, [env, 'id', 'temperature_str', '0', '111'], undefined);
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test between 0 and 11111 on string key column", () => {
-            let expected = [];
+            let expected = createExpected('temperature_str', 0, 11111);
 
-            for(let x = 0; x < test_data.length; x++){
-                if(parseInt(test_data[x].temperature) >= 0 && parseInt(test_data[x].temperature) <= 11111){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.between, [env, 'temperature_str', '0', '11111'], undefined);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let results = test_utils.assertErrorSync(search_util.between, [env, 'id', 'temperature_str', '0', '11111'], undefined);
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test between 110 and 111 on string key column", () => {
-            let expected = [];
+            let expected = createExpected('temperature_str', 110, 111);
 
-            for(let x = 0; x < test_data.length; x++){
-                if(parseInt(test_data[x].temperature) >= 110 && parseInt(test_data[x].temperature) <= 111){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.between, [env, 'temperature_str', '110', '111'], undefined);
-            assert.notDeepStrictEqual(results, []);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let results = test_utils.assertErrorSync(search_util.between, [env, 'id', 'temperature_str', '110', '111'], undefined);
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test between CO and WY on string key column", () => {
-            let expected = [];
+            let expected = createExpected('state', 'CO', 'WY');
 
-            for(let x = 0; x < test_data.length; x++){
-                if(test_data[x].state >= 'CO' && test_data[x].state <= 'WY'){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.between, [env, 'state', 'CO', 'WY'], undefined);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let results = test_utils.assertErrorSync(search_util.between, [env, 'id', 'state', 'CO', 'WY'], undefined);
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test between C and W on string key column", () => {
-            let expected = [];
+            let expected = createExpected('state', 'C', 'W');
 
-            for(let x = 0; x < test_data.length; x++){
-                if(test_data[x].state >= 'C' && test_data[x].state <= 'W'){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.between, [env, 'state', 'C', 'W'], undefined);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let results = test_utils.assertErrorSync(search_util.between, [env, 'id', 'state', 'C', 'W'], undefined);
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test between A and Z on string key column", () => {
-            let expected = [];
+            let expected = createExpected('state', 'A', 'Z');
 
-            for(let x = 0; x < test_data.length; x++){
-                if(test_data[x].state >= 'A' && test_data[x].state <= 'Z'){
-                    expected.push(test_data[x].id);
-                }
-            }
-
-            let results = test_utils.assertErrorSync(search_util.between, [env, 'state', 'A', 'Z'], undefined);
-            assert(results.length === 1001);
-            assert.deepStrictEqual(results.sort(), expected.sort());
+            let results = test_utils.assertErrorSync(search_util.between, [env, 'id', 'state', 'A', 'Z'], undefined);
+            assert(Object.keys(results).length === 1001);
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test search on attribute no exist", () => {
-            let results = test_utils.assertErrorSync(search_util.between, [env, 'fake', 'bad', 'good'], LMDB_TEST_ERRORS.DBI_DOES_NOT_EXIST);
+            let results = test_utils.assertErrorSync(search_util.between, [env, 'id', 'fake', 'bad', 'good'], LMDB_TEST_ERRORS.DBI_DOES_NOT_EXIST);
             assert.deepStrictEqual(results, undefined);
         });
     });
 
     describe('test contains function', ()=> {
+        function createExpected(attribute, value){
+            let expected = Object.create(null);
+
+            for(let x = 0; x < MULTI_RECORD_ARRAY2.length; x++){
+                let attr_value = isNaN(MULTI_RECORD_ARRAY2[x][attribute]) ? MULTI_RECORD_ARRAY2[x][attribute] : Number(MULTI_RECORD_ARRAY2[x][attribute]);
+                if(attr_value && attr_value.toString().indexOf(value) >= 0){
+                    let id = MULTI_RECORD_ARRAY2[x].id;
+                    expected[id.toString()] = test_utils.assignObjecttoNullObject({id: Number(id)});
+                    expected[id.toString()][attribute] = attr_value;
+                }
+            }
+
+            return expected;
+        }
+
         let env;
         before(async () => {
             await fs.mkdirp(BASE_TEST_PATH);
@@ -2327,27 +2063,30 @@ describe('Test searchUtility module', ()=>{
         });
 
         it("test search on city", () => {
-            let results = test_utils.assertErrorSync(search_util.contains, [env, 'city', 'ver'], undefined, 'all arguments');
-            assert.deepStrictEqual(results, ['1', '4', '5']);
+            let expected = createExpected('city', 'ver');
+            let results = test_utils.assertErrorSync(search_util.contains, [env, 'id', 'city', 'ver'], undefined, 'all arguments');
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test search on city with Denver", () => {
-            let results = test_utils.assertErrorSync(search_util.contains, [env, 'city', 'Denver'], undefined, 'all arguments');
-            assert.deepStrictEqual(results, ['1', '4', '5']);
+            let expected = createExpected('city', 'Denver');
+            let results = test_utils.assertErrorSync(search_util.contains, [env, 'id', 'city', 'Denver'], undefined, 'all arguments');
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test search on city with town", () => {
-            let results = test_utils.assertErrorSync(search_util.contains, [env, 'city', 'town'], undefined, 'all arguments');
-            assert.deepStrictEqual(results, ['5']);
+            let expected = createExpected('city', 'town');
+            let results = test_utils.assertErrorSync(search_util.contains, [env, 'id', 'city', 'town'], undefined, 'all arguments');
+            assert.deepStrictEqual(results, expected);
         });
 
         it("test search on city with non-existent value", () => {
-            let results = test_utils.assertErrorSync(search_util.contains, [env, 'city', 'FoCo'], undefined, 'all arguments');
-            assert.deepStrictEqual(results, []);
+            let results = test_utils.assertErrorSync(search_util.contains, [env, 'id', 'city', 'FoCo'], undefined, 'all arguments');
+            assert.deepStrictEqual(results, Object.create(null));
         });
 
         it("test search on attribute no exist", () => {
-            let results = test_utils.assertErrorSync(search_util.contains, [env, 'fake', 'bad'], LMDB_TEST_ERRORS.DBI_DOES_NOT_EXIST);
+            let results = test_utils.assertErrorSync(search_util.contains, [env, 'id','fake', 'bad'], LMDB_TEST_ERRORS.DBI_DOES_NOT_EXIST);
             assert.deepStrictEqual(results, undefined);
         });
     });

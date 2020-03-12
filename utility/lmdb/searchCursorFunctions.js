@@ -345,7 +345,8 @@ function lessThanEqualNumericCompare(compare_value, found, txn, results, hash_at
         let key_converted = common.convertKeyValueFromSearch(key, txn.key_type);
         if(key_converted === compare_value) {
             key = txn.cursor.goToLastDup();
-            pushResults(key, txn, results, hash_attribute, attribute);
+            key_converted = common.convertKeyValueFromSearch(key, txn.key_type);
+            pushResults(key_converted, txn, results, hash_attribute, attribute);
         }
 
     }
