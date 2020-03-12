@@ -609,15 +609,8 @@ function restartHDB() {
         let args = (global.running_from_repo ? ['harperdb', 'restart'] : ['restart']);
         let base = env_mgr.get(terms.HDB_SETTINGS_NAMES.PROJECT_DIR_KEY);
         process.chdir(path.join(base, 'bin'));
-        let child = child_process.spawn(command, args);
-        child.on('error', (err) => {
-            log.error('restart error, please manually restart.' + err);
-            console.log('restart error, please manually restart.' + err);
-            throw new Error('Got an error restarting HarperDB.  Please manually restart.');
-        });
-        child.on('data', () => {
-            log.error('Restart successful');
-        });
+        let child = child_process.spawn(command, args, {detached:true, stdio: "ignore"});
+       child.unref();
     } catch (err) {
         let msg = `There was an error restarting HarperDB.  Please restart manually. ${err}`;
         console.log(msg);
