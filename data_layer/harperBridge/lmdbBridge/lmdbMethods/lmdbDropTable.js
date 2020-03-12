@@ -21,7 +21,7 @@ async function lmdbDropTable(drop_table_obj) {
         await drop_all_attributes(drop_table_obj);
         await dropTableFromSystem(drop_table_obj);
 
-        let schema_path = path.join(getBaseSchemaPath(), drop_table_obj.schema, );
+        let schema_path = path.join(getBaseSchemaPath(), drop_table_obj.schema);
         await environment_utility.deleteEnvironment(schema_path, drop_table_obj.table);
     } catch(err) {
         throw err;
