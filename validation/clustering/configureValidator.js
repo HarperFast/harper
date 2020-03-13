@@ -200,7 +200,7 @@ const constraints = {
     NODE_NAME: {
         presence: false,
         format: {
-            pattern: "^[a-zA-Z0-9_]*$",
+            pattern: "^[a-zA-Z0-9_-]*$",
             message: "must be alpha numeric"
         }
     },

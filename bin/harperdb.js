@@ -89,9 +89,9 @@ function harperDBService() {
                 });
                 break;
             case hdb_terms.SERVICE_ACTIONS_ENUM.RESTART:
-                stop.stop().then(
-                    run.run()
-                ).catch((restart_err) => {
+                stop.stop().then(()=> {
+                    run.run();
+                }).catch((restart_err) => {
                     console.error('There was an error stopping harperdb.  Please stop manually with harperdb stop and start again.');
                     process.exit(1);
                 });
