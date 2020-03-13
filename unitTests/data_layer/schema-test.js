@@ -329,7 +329,7 @@ describe('Test schema module', function() {
             let result = await schema.dropSchema(DROP_SCHEMA_OBJECT_TEST);
 
             expect(bridge_drop_schema_stub).to.have.been.calledWith(DROP_SCHEMA_OBJECT_TEST);
-            expect(signal_schema_change_stub).to.have.been.calledWith({type: 'schema'});
+            expect(signal_schema_change_stub).to.have.been.calledWith({ operation: { operation: "drop_schema", schema: "dogsrule" }, type: "schema" });
             expect(result).to.equal(`successfully deleted schema ${DROP_SCHEMA_OBJECT_TEST.schema}`);
         });
 

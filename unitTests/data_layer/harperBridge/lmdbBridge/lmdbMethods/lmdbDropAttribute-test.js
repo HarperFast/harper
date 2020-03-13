@@ -186,8 +186,8 @@ describe('test lmdbDropAttribute module', ()=>{
 
             let search_results = search_utility.searchAll(tbl_env, 'id', ['id', 'temperature_str']);
             search_results.forEach(result =>{
-                assert.notDeepStrictEqual(result.id, undefined);
-                assert.deepStrictEqual(result.temperature_str, undefined);
+                assert.notDeepStrictEqual(result.id, null);
+                assert.deepStrictEqual(result.temperature_str, null);
             });
         });
     });
@@ -241,8 +241,8 @@ describe('test lmdbDropAttribute module', ()=>{
 
             let search_results = search_utility.searchAll(tbl_env, 'id', ['id', 'temperature_str']);
             search_results.forEach(result =>{
-                assert.notDeepStrictEqual(result.id, undefined);
-                assert.deepStrictEqual(result.temperature_str, undefined);
+                assert.notDeepStrictEqual(result.id, null);
+                assert.deepStrictEqual(result.temperature_str, null);
             });
 
             dbis = await test_utils.assertErrorAsync(environment_utility.listDBIs, [tbl_env], undefined);

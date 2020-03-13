@@ -142,7 +142,7 @@ describe('Test lmdbUpdateRecords module', ()=>{
             global.hdb_schema = {
                 [SCHEMA_TABLE_TEST.schema]: {
                     [SCHEMA_TABLE_TEST.name]: {
-                        attributes: SCHEMA_TABLE_TEST.attributes,
+                        attributes: NO_NEW_ATTR_TEST,
                         hash_attribute: SCHEMA_TABLE_TEST.hash_attribute,
                         residence: SCHEMA_TABLE_TEST.residence,
                         schema: SCHEMA_TABLE_TEST.schema,
@@ -197,10 +197,11 @@ describe('Test lmdbUpdateRecords module', ()=>{
             };
 
             let expected_return_result = {
+                new_attributes: [],
                 written_hashes: [ 10],
                 skipped_hashes: [],
                 schema_table: {
-                    attributes: [],
+                    attributes: NO_NEW_ATTR_TEST,
                     hash_attribute: HASH_ATTRIBUTE_NAME,
                     residence: undefined,
                     schema: INSERT_OBJECT_TEST.schema,
@@ -211,7 +212,7 @@ describe('Test lmdbUpdateRecords module', ()=>{
             let expected_search = test_utils.assignObjecttoNullObject(update_obj.records[0]);
             expected_search.__createdtime__=INSERT_TIMESTAMP;
             expected_search.__updatedtime__=TIMESTAMP;
-            expected_search.height = undefined;
+            expected_search.height = null;
 
 
             let results = await test_utils.assertErrorAsync(lmdb_update_records, [update_obj], undefined);

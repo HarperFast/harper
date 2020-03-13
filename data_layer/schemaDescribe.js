@@ -52,18 +52,17 @@ async function describeAll(op_obj) {
         let tables = await p_search_search_by_value(table_search_obj);
 
         let t_results = [];
-        await Promise.all(
-            tables.map(async (table) => {
-                try {
-                    let desc = await descTable({"schema": table.schema, "table": table.name});
-                    if (desc) {
-                        t_results.push(desc);
-                    }
-                } catch (e) {
-                    logger.error(e);
+        for(let table of tables){
+            try {
+                let desc = await descTable({"schema": table.schema, "table": table.name});
+                if (desc) {
+                    t_results.push(desc);
                 }
-            })
-        );
+            } catch (e) {
+                logger.error(e);
+            }
+        }
+
         let hdb_description = {};
         for (let t in t_results) {
             if (hdb_description[t_results[t].schema] == null) {
@@ -112,36 +111,37 @@ async function descTable(describe_table_object) {
         throw new Error("Invalid table");
     }
 
-    await Promise.all(
-        tables.map(async (table) => {
-            try {
-                if (table.schema === describe_table_object.schema) {
-                    table_result = table;
-                }
-                if (!table_result.hash_attribute) {
-                    throw new Error("Invalid table");
-                }
-
-                let attribute_search_obj = {};
-                attribute_search_obj.schema = terms.SYSTEM_SCHEMA_NAME;
-                attribute_search_obj.table = terms.SYSTEM_TABLE_NAMES.ATTRIBUTE_TABLE_NAME;
-                attribute_search_obj.hash_attribute = terms.SYSTEM_TABLE_HASH_ATTRIBUTES.ATTRIBUTE_TABLE_HASH_ATTRIBUTE;
-                attribute_search_obj.search_attribute = SCHEMA_TABLE_ATTRIBUTE_STRING;
-                attribute_search_obj.search_value = describe_table_object.schema + "." + describe_table_object.table;
-                attribute_search_obj.get_attributes = [ATTRIBUTE_NAME_STRING];
-
-                let attributes = await p_search_search_by_value(attribute_search_obj);
-                attributes = _.uniqBy(attributes, (attribute) => {
-                    return attribute.attribute;
-                });
-
-                table_result.attributes = attributes;
-            } catch (err) {
-                logger.error('There was an error getting table attributes.');
-                logger.error(err);
+    for await (let table of tables) {
+        try {
+            if (table.schema !== describe_table_object.schema) {
+                continue;
             }
-        })
-    );
+            table_result = table;
+
+            if (!table_result.hash_attribute) {
+                throw new Error(`Invalid table ${JSON.stringify(table_result)}`);
+            }
+
+            let attribute_search_obj = {};
+            attribute_search_obj.schema = terms.SYSTEM_SCHEMA_NAME;
+            attribute_search_obj.table = terms.SYSTEM_TABLE_NAMES.ATTRIBUTE_TABLE_NAME;
+            attribute_search_obj.hash_attribute = terms.SYSTEM_TABLE_HASH_ATTRIBUTES.ATTRIBUTE_TABLE_HASH_ATTRIBUTE;
+            attribute_search_obj.search_attribute = SCHEMA_TABLE_ATTRIBUTE_STRING;
+            attribute_search_obj.search_value = describe_table_object.schema + "." + describe_table_object.table;
+            attribute_search_obj.get_attributes = [ATTRIBUTE_NAME_STRING];
+
+            let attributes = await p_search_search_by_value(attribute_search_obj);
+            attributes = _.uniqBy(attributes, (attribute) => {
+                return attribute.attribute;
+            });
+
+            table_result.attributes = attributes;
+        } catch (err) {
+            logger.error('There was an error getting table attributes.');
+            logger.error(err);
+
+        }
+    }
     return table_result;
 }
 

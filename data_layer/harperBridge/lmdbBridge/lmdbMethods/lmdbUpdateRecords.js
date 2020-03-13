@@ -33,7 +33,7 @@ async function lmdbUpdateRecords(update_obj) {
             }
         }
 
-        await lmdb_check_new_attributes(update_obj.hdb_auth_header, schema_table, attributes);
+        let new_attributes = await lmdb_check_new_attributes(update_obj.hdb_auth_header, schema_table, attributes);
         let env_base_path = path.join(getBaseSchemaPath(), update_obj.schema);
         let environment = await environment_utility.openEnvironment(env_base_path, update_obj.table);
         let lmdb_response = lmdb_update_records(environment, schema_table.hash_attribute, attributes, update_obj.records);
@@ -41,7 +41,8 @@ async function lmdbUpdateRecords(update_obj) {
         return {
             written_hashes: lmdb_response.written_hashes,
             skipped_hashes: lmdb_response.skipped_hashes,
-            schema_table
+            schema_table,
+            new_attributes
         };
     } catch(err) {
         throw err;

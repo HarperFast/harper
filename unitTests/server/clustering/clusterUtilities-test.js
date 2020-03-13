@@ -485,6 +485,16 @@ describe('Test configureCluster', () => {
         let result = await cluster_utils.configureCluster(test_msg);
         assert.strictEqual(result, CONFIGURE_SUCCESS_RESPONSE, 'Expected success message');
     });
+
+    it(`Test nominal test for NODE_NAME, numbers strings hyphen and underscore`, async () => {
+        let test_msg = {
+            "operation": "configure_cluster",
+            "NODE_NAME": '111-testie_23-good'
+        };
+        let result = await cluster_utils.configureCluster(test_msg);
+        assert.strictEqual(result, CONFIGURE_SUCCESS_RESPONSE, 'Expected success message');
+    });
+
     it(`Test nominal test for NODE_NAME, mix of numbers, chars`, async () => {
         let test_msg = {
             "operation": "configure_cluster",

@@ -72,7 +72,11 @@ function deleteRecords(env, hash_attribute, ids){
                             if(typeof value === 'string' && Buffer.byteLength(value) > lmdb_terms.MAX_BYTE_SIZE){
                                 txn.del(env.dbis[lmdb_terms.BLOB_DBI_NAME], `${attribute}/${hash_value}`);
                             } else {
-                                txn.del(dbi, value, hash_value);
+                                try {
+                                    txn.del(dbi, value, hash_value);
+                                }catch(e){
+                                    log.warn(`cannot delete from attribute: ${attribute}, ${value}:${hash_value}`);
+                                }
                             }
                         }
                     }

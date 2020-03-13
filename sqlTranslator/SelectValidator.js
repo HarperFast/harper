@@ -143,7 +143,7 @@ class SelectValidator {
     }
 
     /**
-     * takes a table and adds all of it's columns to the select. if no table it adds every column from every tabl;e in the select
+     * takes a table and adds all of it's columns to the select. if no table it adds every column from every table in the select
      * @param table_name
      */
     [setColumnsForTable](table_name) {

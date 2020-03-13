@@ -24,6 +24,7 @@ const assert = require('assert');
 const fs = require('fs-extra');
 const sinon = require('sinon');
 const systemSchema = require('../../../../../json/systemSchema');
+const common_utils = require('../../../../../utility/common_utils');
 
 const TIMESTAMP = Date.now();
 
@@ -42,6 +43,11 @@ describe('test lmdbSearch module', ()=>{
     let date_stub;
     let rw_env_util;
     before(()=>{
+        test_data.forEach(record=>{
+            Object.keys(record).forEach(key=>{
+                record[key] = common_utils.autoCast(record[key]);
+            });
+        });
         rw_env_util = environment_utility.__set__('MAP_SIZE', 10*1024*1024*1024);
         date_stub = sandbox.stub(Date, 'now').returns(TIMESTAMP);
     });
@@ -200,6 +206,9 @@ describe('test lmdbSearch module', ()=>{
             env = await environment_utility.createEnvironment(DEV_SCHEMA_PATH, 'test');
             await environment_utility.createDBI(env, 'id', false);
             await environment_utility.createDBI(env, 'temperature', true, lmdb_terms.DBI_KEY_TYPES.NUMBER);
+            await environment_utility.createDBI(env, 'temperature_double', true, lmdb_terms.DBI_KEY_TYPES.NUMBER);
+            await environment_utility.createDBI(env, 'temperature_neg', true, lmdb_terms.DBI_KEY_TYPES.NUMBER);
+            await environment_utility.createDBI(env, 'temperature_pos', true, lmdb_terms.DBI_KEY_TYPES.NUMBER);
             await environment_utility.createDBI(env, 'temperature_str', true, lmdb_terms.DBI_KEY_TYPES.STRING);
             await environment_utility.createDBI(env, 'state', true, lmdb_terms.DBI_KEY_TYPES.STRING);
             await environment_utility.createDBI(env, 'city', true, lmdb_terms.DBI_KEY_TYPES.STRING);
@@ -364,7 +373,7 @@ describe('test lmdbSearch module', ()=>{
         it('test contains on number', async()=>{
             let expected = [];
             test_data.forEach(data=>{
-                if(data.temperature.includes(0)){
+                if(data.temperature.toString().includes(0)){
                     expected.push(test_utils.assignObjecttoNullObject(data));
                 }
             });
@@ -387,7 +396,7 @@ describe('test lmdbSearch module', ()=>{
 
             let expected = Object.create(null);
             test_data.forEach(data=>{
-                if(data.temperature.includes(0)){
+                if(data.temperature.toString().includes(0)){
                     expected[data.id] = test_utils.assignObjecttoNullObject(data, TIMESTAMP_OBJECT);
                 }
             });
@@ -570,6 +579,7 @@ describe('test lmdbSearch module', ()=>{
 
             let expected = Object.create(null);
             test_data.forEach(data=>{
+
                 expected[data.id] = test_utils.assignObjecttoNullObject(data, TIMESTAMP_OBJECT);
             });
 
@@ -796,6 +806,9 @@ describe('test lmdbSearch module', ()=>{
             env = await environment_utility.createEnvironment(DEV_SCHEMA_PATH, 'test');
             await environment_utility.createDBI(env, 'id', false);
             await environment_utility.createDBI(env, 'temperature', true, lmdb_terms.DBI_KEY_TYPES.NUMBER);
+            await environment_utility.createDBI(env, 'temperature_double', true, lmdb_terms.DBI_KEY_TYPES.NUMBER);
+            await environment_utility.createDBI(env, 'temperature_neg', true, lmdb_terms.DBI_KEY_TYPES.NUMBER);
+            await environment_utility.createDBI(env, 'temperature_pos', true, lmdb_terms.DBI_KEY_TYPES.NUMBER);
             await environment_utility.createDBI(env, 'temperature_str', true, lmdb_terms.DBI_KEY_TYPES.STRING);
             await environment_utility.createDBI(env, 'state', true, lmdb_terms.DBI_KEY_TYPES.STRING);
             await environment_utility.createDBI(env, 'city', true, lmdb_terms.DBI_KEY_TYPES.STRING);
@@ -961,7 +974,7 @@ describe('test lmdbSearch module', ()=>{
         it('test contains on number', async()=>{
             let expected = [];
             test_data.forEach(data=>{
-                if(data.temperature.includes(0)){
+                if(data.temperature.toString().includes(0)){
                     expected.push(data);
                 }
             });
@@ -984,7 +997,7 @@ describe('test lmdbSearch module', ()=>{
 
             let expected = {};
             test_data.forEach(data=>{
-                if(data.temperature.includes(0)){
+                if(data.temperature.toString().includes(0)){
                     expected[data.id] = data;
                 }
             });

@@ -68,6 +68,9 @@ describe('test lmdbSearchByValue module', ()=>{
             env = await environment_utility.createEnvironment(DEV_SCHEMA_PATH, 'test');
             await environment_utility.createDBI(env, 'id', false);
             await environment_utility.createDBI(env, 'temperature', true, lmdb_terms.DBI_KEY_TYPES.NUMBER);
+            await environment_utility.createDBI(env, 'temperature_double', true, lmdb_terms.DBI_KEY_TYPES.NUMBER);
+            await environment_utility.createDBI(env, 'temperature_pos', true, lmdb_terms.DBI_KEY_TYPES.NUMBER);
+            await environment_utility.createDBI(env, 'temperature_neg', true, lmdb_terms.DBI_KEY_TYPES.NUMBER);
             await environment_utility.createDBI(env, 'temperature_str', true, lmdb_terms.DBI_KEY_TYPES.STRING);
             await environment_utility.createDBI(env, 'state', true, lmdb_terms.DBI_KEY_TYPES.STRING);
             await environment_utility.createDBI(env, 'city', true, lmdb_terms.DBI_KEY_TYPES.STRING);
@@ -183,7 +186,7 @@ describe('test lmdbSearchByValue module', ()=>{
         it('test contains on number', async()=>{
             let expected = [];
             test_data.forEach(data=>{
-                if(data.temperature.includes(0)){
+                if(data.temperature.toString().includes(0)){
                     expected.push(test_utils.assignObjecttoNullObject(data, TIMESTAMP_OBJECT));
                 }
             });
