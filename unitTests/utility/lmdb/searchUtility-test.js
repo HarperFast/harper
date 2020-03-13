@@ -287,9 +287,8 @@ describe('Test searchUtility module', ()=>{
                 "1":{id: 1, name: 'Kyle', age: 46, city: 'Denver'},
                 "2":{id: 2, name: 'Jerry', age: 32, city: undefined},
                 "3":{id: 3, name: 'Hank', age: 57, city: undefined},
-            expected.push(test_utils.assignObjecttoNullObject({id: 4, name: 'Joy', age: 44, city: 'Denver'}));
-        };
-            assert.deepStrictEqual(rows, expected);
+                "4":{id: 4, name: 'Joy', age: 44, city: 'Denver'}};
+            assert.deepEqual(rows, expected);
         });
     });
 
@@ -395,8 +394,8 @@ describe('Test searchUtility module', ()=>{
             test_utils.assertErrorSync(search_util.equals, [], LMDB_TEST_ERRORS.ENV_REQUIRED, 'test no args');
             test_utils.assertErrorSync(search_util.equals, [HASH_ATTRIBUTE_NAME], LMDB_TEST_ERRORS.INVALID_ENVIRONMENT, 'invalid env variable');
             test_utils.assertErrorSync(search_util.equals, [env], LMDB_TEST_ERRORS.ATTRIBUTE_REQUIRED, 'no hash attribute');
-            test_utils.assertErrorSync(search_util.equals, [env, 'city'], LMDB_TEST_ERRORS.SEARCH_VALUE_REQUIRED, 'no search_value');
-            test_utils.assertErrorSync(search_util.equals, [env, 'city', 'Denver'], undefined, 'all arguments');
+            test_utils.assertErrorSync(search_util.equals, [env, 'id', 'city'], LMDB_TEST_ERRORS.SEARCH_VALUE_REQUIRED, 'no search_value');
+            test_utils.assertErrorSync(search_util.equals, [env, 'id', 'city', 'Denver'], undefined, 'all arguments');
         });
 
         it("test search on city", () => {
@@ -471,8 +470,8 @@ describe('Test searchUtility module', ()=>{
             test_utils.assertErrorSync(search_util.startsWith, [], LMDB_TEST_ERRORS.ENV_REQUIRED, 'test no args');
             test_utils.assertErrorSync(search_util.startsWith, [HASH_ATTRIBUTE_NAME], LMDB_TEST_ERRORS.INVALID_ENVIRONMENT, 'invalid env variable');
             test_utils.assertErrorSync(search_util.startsWith, [env], LMDB_TEST_ERRORS.ATTRIBUTE_REQUIRED, 'no hash attribute');
-            test_utils.assertErrorSync(search_util.startsWith, [env, 'city'], LMDB_TEST_ERRORS.SEARCH_VALUE_REQUIRED, 'no search_value');
-            test_utils.assertErrorSync(search_util.startsWith, [env, 'city', 'D'], undefined, 'all arguments');
+            test_utils.assertErrorSync(search_util.startsWith, [env, 'id', 'city'], LMDB_TEST_ERRORS.SEARCH_VALUE_REQUIRED, 'no search_value');
+            test_utils.assertErrorSync(search_util.startsWith, [env, 'id', 'city', 'D'], undefined, 'all arguments');
         });
 
         it("test search on city", () => {
@@ -548,8 +547,8 @@ describe('Test searchUtility module', ()=>{
             test_utils.assertErrorSync(search_util.endsWith, [], LMDB_TEST_ERRORS.ENV_REQUIRED, 'test no args');
             test_utils.assertErrorSync(search_util.endsWith, [HASH_ATTRIBUTE_NAME], LMDB_TEST_ERRORS.INVALID_ENVIRONMENT, 'invalid env variable');
             test_utils.assertErrorSync(search_util.endsWith, [env], LMDB_TEST_ERRORS.ATTRIBUTE_REQUIRED, 'no hash attribute');
-            test_utils.assertErrorSync(search_util.endsWith, [env, 'city'], LMDB_TEST_ERRORS.SEARCH_VALUE_REQUIRED, 'no search_value');
-            test_utils.assertErrorSync(search_util.endsWith, [env, 'city', 'Denver'], undefined, 'all arguments');
+            test_utils.assertErrorSync(search_util.endsWith, [env,'id',  'city'], LMDB_TEST_ERRORS.SEARCH_VALUE_REQUIRED, 'no search_value');
+            test_utils.assertErrorSync(search_util.endsWith, [env,'id',  'city', 'Denver'], undefined, 'all arguments');
         });
 
         it("test search on city", () => {
@@ -641,9 +640,9 @@ describe('Test searchUtility module', ()=>{
             test_utils.assertErrorSync(search_util.greaterThan, [], LMDB_TEST_ERRORS.ENV_REQUIRED, 'test no args');
             test_utils.assertErrorSync(search_util.greaterThan, [HASH_ATTRIBUTE_NAME], LMDB_TEST_ERRORS.INVALID_ENVIRONMENT, 'invalid env variable');
             test_utils.assertErrorSync(search_util.greaterThan, [env], LMDB_TEST_ERRORS.ATTRIBUTE_REQUIRED, 'no hash attribute');
-            test_utils.assertErrorSync(search_util.greaterThan, [env, 'temperature'], LMDB_TEST_ERRORS.SEARCH_VALUE_REQUIRED, 'no search_value');
-            test_utils.assertErrorSync(search_util.greaterThan, [env, 'temperature_str', '11111111'], undefined, 'all arguments');
-            test_utils.assertErrorSync(search_util.greaterThan, [env, 'temperature', 'tester'], LMDB_TEST_ERRORS.CANNOT_COMPARE_STRING_TO_NUMERIC_KEYS, 'bad key search');
+            test_utils.assertErrorSync(search_util.greaterThan, [env,'id',  'temperature'], LMDB_TEST_ERRORS.SEARCH_VALUE_REQUIRED, 'no search_value');
+            test_utils.assertErrorSync(search_util.greaterThan, [env,'id',  'temperature_str', '11111111'], undefined, 'all arguments');
+            test_utils.assertErrorSync(search_util.greaterThan, [env,'id',  'temperature', 'tester'], LMDB_TEST_ERRORS.CANNOT_COMPARE_STRING_TO_NUMERIC_KEYS, 'bad key search');
         });
 
         /** TEST HASH ATTRIBUTE **/
@@ -901,9 +900,9 @@ describe('Test searchUtility module', ()=>{
             test_utils.assertErrorSync(search_util.greaterThanEqual, [], LMDB_TEST_ERRORS.ENV_REQUIRED, 'test no args');
             test_utils.assertErrorSync(search_util.greaterThanEqual, [HASH_ATTRIBUTE_NAME], LMDB_TEST_ERRORS.INVALID_ENVIRONMENT, 'invalid env variable');
             test_utils.assertErrorSync(search_util.greaterThanEqual, [env], LMDB_TEST_ERRORS.ATTRIBUTE_REQUIRED, 'no hash attribute');
-            test_utils.assertErrorSync(search_util.greaterThanEqual, [env, 'temperature'], LMDB_TEST_ERRORS.SEARCH_VALUE_REQUIRED, 'no search_value');
-            test_utils.assertErrorSync(search_util.greaterThanEqual, [env, 'temperature_str', '11111111'], undefined, 'all arguments');
-            test_utils.assertErrorSync(search_util.greaterThanEqual, [env, 'temperature', 'tester'], LMDB_TEST_ERRORS.CANNOT_COMPARE_STRING_TO_NUMERIC_KEYS, 'bad key search');
+            test_utils.assertErrorSync(search_util.greaterThanEqual, [env,'id',  'temperature'], LMDB_TEST_ERRORS.SEARCH_VALUE_REQUIRED, 'no search_value');
+            test_utils.assertErrorSync(search_util.greaterThanEqual, [env,'id',  'temperature_str', '11111111'], undefined, 'all arguments');
+            test_utils.assertErrorSync(search_util.greaterThanEqual, [env,'id',  'temperature', 'tester'], LMDB_TEST_ERRORS.CANNOT_COMPARE_STRING_TO_NUMERIC_KEYS, 'bad key search');
         });
 
         /** TEST HASH ATTRIBUTE **/
@@ -1190,9 +1189,9 @@ describe('Test searchUtility module', ()=>{
             test_utils.assertErrorSync(search_util.lessThan, [], LMDB_TEST_ERRORS.ENV_REQUIRED, 'test no args');
             test_utils.assertErrorSync(search_util.lessThan, [HASH_ATTRIBUTE_NAME], LMDB_TEST_ERRORS.INVALID_ENVIRONMENT, 'invalid env variable');
             test_utils.assertErrorSync(search_util.lessThan, [env], LMDB_TEST_ERRORS.ATTRIBUTE_REQUIRED, 'no hash attribute');
-            test_utils.assertErrorSync(search_util.lessThan, [env, 'temperature'], LMDB_TEST_ERRORS.SEARCH_VALUE_REQUIRED, 'no search_value');
-            test_utils.assertErrorSync(search_util.lessThan, [env, 'temperature_str', '11111111'], undefined, 'all arguments');
-            test_utils.assertErrorSync(search_util.lessThan, [env, 'temperature', 'tester'], LMDB_TEST_ERRORS.CANNOT_COMPARE_STRING_TO_NUMERIC_KEYS, 'bad key search');
+            test_utils.assertErrorSync(search_util.lessThan, [env,'id',  'temperature'], LMDB_TEST_ERRORS.SEARCH_VALUE_REQUIRED, 'no search_value');
+            test_utils.assertErrorSync(search_util.lessThan, [env,'id',  'temperature_str', '11111111'], undefined, 'all arguments');
+            test_utils.assertErrorSync(search_util.lessThan, [env,'id',  'temperature', 'tester'], LMDB_TEST_ERRORS.CANNOT_COMPARE_STRING_TO_NUMERIC_KEYS, 'bad key search');
         });
 
         /** TEST HASH ATTRIBUTE **/
@@ -1480,9 +1479,9 @@ describe('Test searchUtility module', ()=>{
             test_utils.assertErrorSync(search_util.lessThanEqual, [], LMDB_TEST_ERRORS.ENV_REQUIRED, 'test no args');
             test_utils.assertErrorSync(search_util.lessThanEqual, [HASH_ATTRIBUTE_NAME], LMDB_TEST_ERRORS.INVALID_ENVIRONMENT, 'invalid env variable');
             test_utils.assertErrorSync(search_util.lessThanEqual, [env], LMDB_TEST_ERRORS.ATTRIBUTE_REQUIRED, 'no hash attribute');
-            test_utils.assertErrorSync(search_util.lessThanEqual, [env, 'temperature'], LMDB_TEST_ERRORS.SEARCH_VALUE_REQUIRED, 'no search_value');
-            test_utils.assertErrorSync(search_util.lessThanEqual, [env, 'temperature_str', '11111111'], undefined, 'all arguments');
-            test_utils.assertErrorSync(search_util.lessThanEqual, [env, 'temperature', 'tester'], LMDB_TEST_ERRORS.CANNOT_COMPARE_STRING_TO_NUMERIC_KEYS, 'bad key search');
+            test_utils.assertErrorSync(search_util.lessThanEqual, [env,'id', 'temperature'], LMDB_TEST_ERRORS.SEARCH_VALUE_REQUIRED, 'no search_value');
+            test_utils.assertErrorSync(search_util.lessThanEqual, [env,'id', 'temperature_str', '11111111'], undefined, 'all arguments');
+            test_utils.assertErrorSync(search_util.lessThanEqual, [env,'id', 'temperature', 'tester'], LMDB_TEST_ERRORS.CANNOT_COMPARE_STRING_TO_NUMERIC_KEYS, 'bad key search');
         });
 
         /** TEST HASH ATTRIBUTE **/
@@ -1776,16 +1775,16 @@ describe('Test searchUtility module', ()=>{
             test_utils.assertErrorSync(search_util.between, [], LMDB_TEST_ERRORS.ENV_REQUIRED, 'test no args');
             test_utils.assertErrorSync(search_util.between, [HASH_ATTRIBUTE_NAME], LMDB_TEST_ERRORS.INVALID_ENVIRONMENT, 'invalid env variable');
             test_utils.assertErrorSync(search_util.between, [env], LMDB_TEST_ERRORS.ATTRIBUTE_REQUIRED, 'no attribute');
-            test_utils.assertErrorSync(search_util.between, [env, 'temperature'], LMDB_TEST_ERRORS.START_VALUE_REQUIRED, 'no start value');
-            test_utils.assertErrorSync(search_util.between, [env, 'temperature', 11], LMDB_TEST_ERRORS.END_VALUE_REQUIRED, 'no end value');
-            test_utils.assertErrorSync(search_util.between, [env, 'temperature', 11, 1], LMDB_TEST_ERRORS.END_VALUE_MUST_BE_GREATER_THAN_START_VALUE, 'end less than start');
-            test_utils.assertErrorSync(search_util.between, [env, 'temperature', 'tester', 'zzz'], LMDB_TEST_ERRORS.CANNOT_COMPARE_STRING_TO_NUMERIC_KEYS, 'bad key search');
-            test_utils.assertErrorSync(search_util.between, [env, 'temperature', 1, 'zzz'], LMDB_TEST_ERRORS.CANNOT_COMPARE_STRING_TO_NUMERIC_KEYS, 'bad key search');
+            test_utils.assertErrorSync(search_util.between, [env,'id', 'temperature'], LMDB_TEST_ERRORS.START_VALUE_REQUIRED, 'no start value');
+            test_utils.assertErrorSync(search_util.between, [env,'id', 'temperature', 11], LMDB_TEST_ERRORS.END_VALUE_REQUIRED, 'no end value');
+            test_utils.assertErrorSync(search_util.between, [env,'id', 'temperature', 11, 1], LMDB_TEST_ERRORS.END_VALUE_MUST_BE_GREATER_THAN_START_VALUE, 'end less than start');
+            test_utils.assertErrorSync(search_util.between, [env,'id', 'temperature', 'tester', 'zzz'], LMDB_TEST_ERRORS.CANNOT_COMPARE_STRING_TO_NUMERIC_KEYS, 'bad key search');
+            test_utils.assertErrorSync(search_util.between, [env,'id', 'temperature', 1, 'zzz'], LMDB_TEST_ERRORS.CANNOT_COMPARE_STRING_TO_NUMERIC_KEYS, 'bad key search');
 
-            test_utils.assertErrorSync(search_util.between, [env, 'temperature', 'tester', 11], LMDB_TEST_ERRORS.CANNOT_COMPARE_STRING_TO_NUMERIC_KEYS, 'bad key search');
-            test_utils.assertErrorSync(search_util.between, [env, 'temperature', 1, 11], undefined, 'allgood');
-            test_utils.assertErrorSync(search_util.between, [env, 'temperature_str', 'CC', 'A'], LMDB_TEST_ERRORS.END_VALUE_MUST_BE_GREATER_THAN_START_VALUE, 'end less than start');
-            test_utils.assertErrorSync(search_util.between, [env, 'temperature_str', 'A', 'CC'], undefined, 'end less than start');
+            test_utils.assertErrorSync(search_util.between, [env,'id', 'temperature', 'tester', 11], LMDB_TEST_ERRORS.CANNOT_COMPARE_STRING_TO_NUMERIC_KEYS, 'bad key search');
+            test_utils.assertErrorSync(search_util.between, [env,'id', 'temperature', 1, 11], undefined, 'allgood');
+            test_utils.assertErrorSync(search_util.between, [env,'id', 'temperature_str', 'CC', 'A'], LMDB_TEST_ERRORS.END_VALUE_MUST_BE_GREATER_THAN_START_VALUE, 'end less than start');
+            test_utils.assertErrorSync(search_util.between, [env,'id', 'temperature_str', 'A', 'CC'], undefined, 'end less than start');
         });
 
         /** HASH ATTRIBUTE **/
@@ -2061,8 +2060,8 @@ describe('Test searchUtility module', ()=>{
             test_utils.assertErrorSync(search_util.contains, [], LMDB_TEST_ERRORS.ENV_REQUIRED, 'test no args');
             test_utils.assertErrorSync(search_util.contains, [HASH_ATTRIBUTE_NAME], LMDB_TEST_ERRORS.INVALID_ENVIRONMENT, 'invalid env variable');
             test_utils.assertErrorSync(search_util.contains, [env], LMDB_TEST_ERRORS.ATTRIBUTE_REQUIRED, 'no hash attribute');
-            test_utils.assertErrorSync(search_util.contains, [env, 'city'], LMDB_TEST_ERRORS.SEARCH_VALUE_REQUIRED, 'no search_value');
-            test_utils.assertErrorSync(search_util.contains, [env, 'city', 'Denver'], undefined, 'all arguments');
+            test_utils.assertErrorSync(search_util.contains, [env,'id', 'city'], LMDB_TEST_ERRORS.SEARCH_VALUE_REQUIRED, 'no search_value');
+            test_utils.assertErrorSync(search_util.contains, [env,'id', 'city', 'Denver'], undefined, 'all arguments');
         });
 
         it("test search on city", () => {
@@ -2113,20 +2112,19 @@ describe('Test searchUtility module', ()=>{
             test_utils.assertErrorSync(search_util.iterateDBI, [], LMDB_TEST_ERRORS.ENV_REQUIRED, 'test no args');
             test_utils.assertErrorSync(search_util.iterateDBI, [HASH_ATTRIBUTE_NAME], LMDB_TEST_ERRORS.INVALID_ENVIRONMENT, 'invalid env variable');
             test_utils.assertErrorSync(search_util.iterateDBI, [env], LMDB_TEST_ERRORS.ATTRIBUTE_REQUIRED, 'no hash attribute');
-            test_utils.assertErrorSync(search_util.iterateDBI, [env, 'city'], undefined, 'no search_value');
+            test_utils.assertErrorSync(search_util.iterateDBI, [env,'city'], undefined, 'no search_value');
         });
 
         it("test iterate on city", () => {
             let results = test_utils.assertErrorSync(search_util.iterateDBI, [env, 'city'], undefined, 'city iterate');
-            assert.deepStrictEqual(results, [
-                ['Denver', '1'],
-                ['Denver', '4'],
-                ['Denvertown', '5'],
-            ]);
+            assert.deepEqual(results, {
+                'Denver': ['1', '4'],
+                'Denvertown': ['5']
+            });
         });
 
         it("test search on attribute no exist", () => {
-            let results = test_utils.assertErrorSync(search_util.contains, [env, 'fake', 'bad'], LMDB_TEST_ERRORS.DBI_DOES_NOT_EXIST);
+            let results = test_utils.assertErrorSync(search_util.iterateDBI, [env, 'fake'], LMDB_TEST_ERRORS.DBI_DOES_NOT_EXIST);
             assert.deepStrictEqual(results, undefined);
         });
     });

@@ -54,7 +54,10 @@ function searchAllToMap(attributes, get_whole_row, found, txn, results){
  * @param {[]} results
  */
 function iterateDBI(found, txn, results){
-    results.push([found, txn.cursor.getCurrentString()]);
+    if(results[found] === undefined){
+        results[found] = [];
+    }
+    results[found].push(txn.cursor.getCurrentString());
 }
 
 /**
