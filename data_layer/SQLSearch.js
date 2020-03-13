@@ -49,6 +49,8 @@ class SQLSearch {
         //holds the data from the file system to be evaluated by the sql processor
         this.data = {};
 
+        this.has_aggregator = false;
+
         this._getColumns();
         this._getTables();
         this._conditionsToFetchAttributeValues();
@@ -281,6 +283,10 @@ class SQLSearch {
             if (col.columnid === '*') {
                 wildcard_index = index;
                 return;
+            }
+
+            if (col.aggregatorid) {
+                this.has_aggregator = true;
             }
 
             if (!col.aggregatorid && !col.funcid) {
@@ -817,8 +823,12 @@ class SQLSearch {
             }
         }
 
-        let limit = this.statement.limit ? 'LIMIT ' + this.statement.limit : '';
-        let offset = this.statement.offset ? 'OFFSET ' + this.statement.offset : '';
+        let limit = '';
+        let offset = '';
+        if (!this.has_aggregator || !this.statement.group) {
+            limit = this.statement.limit ? 'LIMIT ' + this.statement.limit : '';
+            offset = this.statement.offset ? 'OFFSET ' + this.statement.offset : '';
+        }
 
         //we should only select the primary key of each table then remove the rows that exist from each table
         //see note above about selecting appropriate orderby columns as well due to bug in alasql (CORE-929)
@@ -971,7 +981,7 @@ class SQLSearch {
         }
 
         //since we processed the offset in first sql pass it will force it again which will cause no records to be returned
-        if(this.statement.offset){
+        if ((!this.has_aggregator || !this.statement.group) && this.statement.offset){
             delete this.statement.offset;
         }
 
