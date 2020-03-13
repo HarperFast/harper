@@ -836,7 +836,6 @@ class SQLSearch {
         try {
             const initial_sql = `SELECT ${select.join(', ')} FROM ${from_clause.join(' ')} ${where_clause} ${order_clause} ${limit} ${offset}`;
             const final_sql_operation = this._convertColumnsToIndexes(initial_sql, tables);
-            console.log('INITIAL SQL: ', final_sql_operation);
             joined = await alasql.promise(final_sql_operation, table_data);
             table_data = null;
         } catch(err) {
@@ -989,7 +988,6 @@ class SQLSearch {
         try {
             let sql = this._buildSQL();
             log.trace(`Final SQL: ${sql}`);
-            console.log('FINAL SQL: ', sql);
             final_results = await alasql.promise(sql, table_data);
             log.trace(`Final AlaSQL results data included ${final_results.length} rows`);
         } catch(err) {
