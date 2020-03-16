@@ -203,7 +203,7 @@ describe('Test lmdbGetDataByHash module', ()=>{
 
         it('test finding multiple rows row, some attributes', async()=>{
 
-            let expected_result = [test_utils.assignObjecttoNullObject({id:10, height:145}),test_utils.assignObjecttoNullObject({id:8, height:null})];
+            let expected_result = [test_utils.assignObjecttoNullObject({id:8, height:null}),test_utils.assignObjecttoNullObject({id:10, height:145})];
 
             let search_obj = new SearchByHashObject('dev', 'dog', [10, 8], ['id', 'height']);
             let results = await test_utils.assertErrorAsync(lmdb_search_by_hash, [search_obj], undefined);

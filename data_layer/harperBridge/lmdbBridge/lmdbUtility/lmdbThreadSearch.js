@@ -21,19 +21,11 @@ async function searcher(thread_search_object){
         environment_utility.initializeDBIs(env, 'id', ['id']);
         let results_id = uuid.v4();
         let txn = env.beginTxn();
-        console.time('stringify');
         let j = JSON.stringify(results);
-        console.timeEnd('stringify');
-        console.time('thread');
-
-        console.time('while');
-
-
-        console.timeEnd('while');
 
         txn.putString(env.dbis['id'], results_id, j);
         txn.commit();
-        console.timeEnd('thread');
+
         process.send(results_id);
     }catch(e){
         process.send({error: e.message, stack: e.stack});

@@ -111,16 +111,40 @@ async function executeSearch(search_object, search_type, hash_attribute, return_
                 return search_results;
         }
 
+        let already_fetched_attributes = [search_object.search_attribute];
+        if(hash_attribute_name !== undefined){
+            already_fetched_attributes.push(hash_attribute_name);
+        }
+        let fetch_more = false;
+        for(let x = 0; x < search_object.get_attributes; x++){
+            if(already_fetched_attributes.indexOf(search_object.get_attributes[x]) < 0){
+                fetch_more = true;
+                break;
+            }
+        }
+
+        if(fetch_more === false){
+            return return_map === true ? search_results : Object.values(search_results);
+        }
+
         let ids = Object.keys(search_results);
-        //todo compare the fetched attributes to the attributes still needed to determine if we need to batch search
         if (return_map === true) {
             return search_utility.batchSearchByHashToMap(env, hash_attribute, search_object.get_attributes, ids);
         }
 
         return search_utility.batchSearchByHash(env, hash_attribute, search_object.get_attributes, ids);
+
     }catch(e){
         throw e;
     }
+}
+
+/**
+ *
+ * @param {SearchObject} search_object
+ */
+function checkToFetchMore(search_object){
+   // if(search_object.)
 }
 
 /**
@@ -206,16 +230,13 @@ function threadSearch(search_object, search_type, hash_attribute, return_map){
             if(data.error !== undefined){
                 reject(Object.assign(new Error(), data));
             } else {
-                console.log(search_object);
                 let env = await environment_utility.openEnvironment(getSystemSchemaPath(), 'hdb_temp');
                 let txn = new environment_utility.TransactionCursor(env, 'id', true);
                 txn.cursor.goToKey(data);
 
                 let raw = txn.cursor.getCurrentString();
-                console.time('pull');
 
                 let results = JSON.parse(raw);
-                console.timeEnd('pull');
                 txn.txn.del(env.dbis['id'], data);
                 txn.commit();
 

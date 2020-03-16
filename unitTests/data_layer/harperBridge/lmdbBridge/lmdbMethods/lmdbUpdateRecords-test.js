@@ -224,7 +224,7 @@ describe('Test lmdbUpdateRecords module', ()=>{
 
             //make sure the height index does not have an entry for id 10
             let height_results = test_utils.assertErrorSync(search_utility.iterateDBI, [dog_env, "height"], undefined);
-            height_results.forEach(result=>{
+            Object.keys(height_results).forEach(result=>{
                 assert(result.indexOf(10) < 0);
             });
 

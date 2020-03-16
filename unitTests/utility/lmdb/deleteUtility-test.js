@@ -78,9 +78,9 @@ describe('Test deleteUtility', ()=>{
         });
 
         it('delete all records', ()=>{
-            let expected_compare = Object.create(null);
+            let expected_compare = [];
             MULTI_RECORD_ARRAY_COMPARE.forEach(compare=>{
-                expected_compare[compare.id.toString()] = test_utils.assignObjecttoNullObject(compare);
+                expected_compare.push(test_utils.assignObjecttoNullObject(compare));
             });
 
             let records = test_utils.assertErrorSync(search_util.batchSearchByHash, [env, HASH_ATTRIBUTE_NAME, All_ATTRIBUTES, IDS], undefined);
@@ -90,7 +90,7 @@ describe('Test deleteUtility', ()=>{
 
             //assert all indices have been cleared
             records = test_utils.assertErrorSync(search_util.batchSearchByHash, [env, HASH_ATTRIBUTE_NAME, All_ATTRIBUTES, IDS], undefined);
-            assert.deepStrictEqual(records, {});
+            assert.deepStrictEqual(records, []);
 
             All_ATTRIBUTES.forEach(attribute=>{
                 let results = test_utils.assertErrorSync(search_util.iterateDBI, [env, attribute], undefined, 'city iterate');
@@ -100,20 +100,19 @@ describe('Test deleteUtility', ()=>{
 
         it('delete some records', ()=>{
             let some_ids = ['2', '4'];
-            let some_record_compare = {"2":
-                test_utils.assignObjecttoNullObject({
+            let some_record_compare = [test_utils.assignObjecttoNullObject({
                     "age": 32,
                     "city": null,
                     "id": 2,
                     "name": "Jerry",
-                }),"4":
+                }),
                 test_utils.assignObjecttoNullObject({
                     "age": 44,
                     "city": "Denver",
                     "id": 4,
                     "name": "Joy"
                 })
-            };
+            ];
 
             let records = test_utils.assertErrorSync(search_util.batchSearchByHash, [env, HASH_ATTRIBUTE_NAME, All_ATTRIBUTES, some_ids], undefined);
             assert.deepStrictEqual(records, some_record_compare);
@@ -122,7 +121,7 @@ describe('Test deleteUtility', ()=>{
 
             //assert can't find the rows
             records = test_utils.assertErrorSync(search_util.batchSearchByHash, [env, HASH_ATTRIBUTE_NAME, All_ATTRIBUTES, some_ids], undefined);
-            assert.deepStrictEqual(records, {});
+            assert.deepStrictEqual(records, []);
 
             //assert indices don't have deleted record entries
             let iterate_results = {'44': ['5'], '46': ['1'], '57': ['3']};
@@ -143,9 +142,9 @@ describe('Test deleteUtility', ()=>{
             let record = test_utils.deepClone(MULTI_RECORD_ARRAY[5]);
             delete record.__updatedtime__;
             delete record.__createdtime__;
-            let some_record_compare = {
-                [record.id]: test_utils.assignObjecttoNullObject(record)
-            };
+            let some_record_compare = [
+                test_utils.assignObjecttoNullObject(record)
+            ];
 
             let records = test_utils.assertErrorSync(search_util.batchSearchByHash, [env, HASH_ATTRIBUTE_NAME, ['id', 'text'], some_ids], undefined);
             assert.deepEqual(records, some_record_compare);
@@ -154,7 +153,7 @@ describe('Test deleteUtility', ()=>{
 
             //assert can't find the rows
             records = test_utils.assertErrorSync(search_util.batchSearchByHash, [env, HASH_ATTRIBUTE_NAME, All_ATTRIBUTES, some_ids], undefined);
-            assert.deepStrictEqual(records, {});
+            assert.deepStrictEqual(records, []);
 
             //assert indices don't have deleted record entries
             let iterate_results = {'32': ['2'], '44': ['4', '5' ], '46': ['1'], '57': ['3']};

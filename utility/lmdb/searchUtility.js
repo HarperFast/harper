@@ -316,7 +316,8 @@ function searchAll(env, hash_attribute, fetch_attributes){
 
     fetch_attributes = setGetWholeRowAttributes(env, fetch_attributes);
 
-    return iterateFullIndex(env, hash_attribute, hash_attribute, cursor_functions.searchAll.bind(null, fetch_attributes));
+    let results = iterateFullIndex(env, hash_attribute, hash_attribute, cursor_functions.searchAll.bind(null, fetch_attributes));
+    return Object.values(results);
 }
 
 /**
@@ -811,7 +812,7 @@ function batchSearchByHash(env, hash_attribute, fetch_attributes, ids, not_found
 
     txn.close();
 
-    return results;
+    return Object.values(results);
 }
 
 /**

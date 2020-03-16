@@ -135,17 +135,18 @@ describe('Test searchUtility module', ()=>{
         });
 
         it("test fetch single record", ()=>{
-            let expected = {"1":{id:1, name:'Kyle', age:46}};
+            let expected = {id:1, name:'Kyle', age:46};
             let row = test_utils.assertErrorSync(search_util.batchSearchByHash, [env, HASH_ATTRIBUTE_NAME, SOME_ATTRIBUTES, ["1"]],
                 undefined, 'fetch single row');
 
-            assert.deepEqual(row, expected);
+            assert.deepEqual(row, [expected]);
         });
 
         it("test fetch multiple records", ()=>{
-            let expected = {"1":{id:1, name:'Kyle', age:46},
-                "4":{id:4, name:'Joy', age: 44},
-                "2":{id:2, name:'Jerry', age:32}};
+            let expected = [{id:1, name:'Kyle', age:46},
+                {id:2, name:'Jerry', age:32},
+                {id:4, name:'Joy', age: 44}
+                ];
             let row = test_utils.assertErrorSync(search_util.batchSearchByHash, [env, HASH_ATTRIBUTE_NAME, SOME_ATTRIBUTES, ["1", "4", "2"]],
                 undefined, 'fetch multi rows');
 
@@ -153,9 +154,9 @@ describe('Test searchUtility module', ()=>{
         });
 
         it("test fetch multiple records some don't exist", ()=>{
-            let expected = {"1":{id:1, name:'Kyle', age:46},
-                "4": {id:4, name:'Joy', age: 44},
-                "2":{id:2, name:'Jerry', age:32}};
+            let expected = [{id:1, name:'Kyle', age:46},
+                {id:2, name:'Jerry', age:32},
+                {id:4, name:'Joy', age: 44}];
 
             let row = test_utils.assertErrorSync(search_util.batchSearchByHash, [env, HASH_ATTRIBUTE_NAME, SOME_ATTRIBUTES, ["1","fake", "4", "55", "2"]],
                 undefined, 'fetch single row');
@@ -289,11 +290,11 @@ describe('Test searchUtility module', ()=>{
 
             let rows = test_utils.assertErrorSync(search_util.searchAll, [env, HASH_ATTRIBUTE_NAME, All_ATTRIBUTES], undefined, 'search');
 
-            let expected = {
-                "1":{id: 1, name: 'Kyle', age: 46, city: 'Denver'},
-                "2":{id: 2, name: 'Jerry', age: 32, city: null},
-                "3":{id: 3, name: 'Hank', age: 57, city: null},
-                "4":{id: 4, name: 'Joy', age: 44, city: 'Denver'}};
+            let expected = [
+                {id: 1, name: 'Kyle', age: 46, city: 'Denver'},
+                {id: 2, name: 'Jerry', age: 32, city: null},
+                {id: 3, name: 'Hank', age: 57, city: null},
+                {id: 4, name: 'Joy', age: 44, city: 'Denver'}];
             assert.deepEqual(rows, expected);
         });
     });
