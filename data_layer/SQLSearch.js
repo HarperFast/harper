@@ -590,8 +590,9 @@ class SQLSearch {
                     try {
                         search_object.search_attribute = attribute.attribute;
                         await Promise.all(Array.from(this.exact_search_values[object_path].values).map(async (value) => {
-                            search_object.search_value = value;
-                            const attribute_values = await harperBridge.getDataByValue(search_object);
+                            let exact_search_object = Object.assign({}, search_object);
+                            exact_search_object.search_value = value;
+                            const attribute_values = await harperBridge.getDataByValue(exact_search_object);
 
                             Object.keys(attribute_values).forEach(hash_val => {
                                 if (!this.data[schema_table].__merged_data[hash_val]) {

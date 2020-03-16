@@ -33,7 +33,8 @@ async function setLicense(json_message) {
     if (json_message && json_message.key && json_message.company) {
         try {
             log.info(`parsing license key: ${json_message.key} and `);
-            let lic = await parseLicense(json_message.key.trim(), json_message.company.trim());
+            let company = json_message.company.toString();
+            let lic = await parseLicense(json_message.key.trim(), company.trim());
         } catch(err) {
             let err_msg = `There was an error parsing the license key.`;
             log.error(err_msg);
