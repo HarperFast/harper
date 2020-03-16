@@ -180,9 +180,9 @@ function updateRecords(env, hash_attribute, write_attributes , records){
                 //if the update cleared out the attribute value we need to delete it from the index
                 if (str_existing_value !== null) {
                     try {
-                        if(Buffer.byteLength(str_existing_value) > MAX_BYTE_SIZE){
+                        if(typeof str_existing_value === 'string' && Buffer.byteLength(str_existing_value) > MAX_BYTE_SIZE){
                             let key_value = `${key}/${hash_value}`;
-                            txn.del(env.dbis[lmdb_terms.BLOB_DBI_NAME], key_value, value);
+                            txn.del(env.dbis[lmdb_terms.BLOB_DBI_NAME], key_value, str_existing_value);
                         }else {
                             txn.del(dbi, str_existing_value, hash_value);
                         }
@@ -196,9 +196,9 @@ function updateRecords(env, hash_attribute, write_attributes , records){
 
                 if (str_new_value !== null) {
                     //LMDB has a 511 byte limit for keys, so we return null if the byte size is larger than 511 to not index that value
-                    if(Buffer.byteLength(str_new_value) > MAX_BYTE_SIZE){
+                    if(typeof str_new_value === 'string' && Buffer.byteLength(str_new_value) > MAX_BYTE_SIZE){
                         let key_value = `${key}/${hash_value}`;
-                        txn.putString(env.dbis[lmdb_terms.BLOB_DBI_NAME], key_value, value);
+                        txn.putString(env.dbis[lmdb_terms.BLOB_DBI_NAME], key_value, str_new_value);
                     }else {
                         txn.putString(dbi, str_new_value, hash_value);
                     }

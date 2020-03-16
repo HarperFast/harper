@@ -293,7 +293,7 @@ describe('test lmdbDropTable module', ()=>{
                 let error = e;
             }
 
-            assert.deepStrictEqual(error.message, "ENOENT: no such file or directory, access '/home/kyle/WebstormProjects/harperdb/unitTests/envDir/schema/dev/test'");
+            assert(error.message.indexOf("ENOENT: no such file or directory") >= 0);
         });
     });
 });
