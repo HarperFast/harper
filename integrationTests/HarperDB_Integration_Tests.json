@@ -1,6 +1,6 @@
 {
 	"info": {
-		"_postman_id": "28bc1318-f241-41fc-bc20-5d2ed5a91156",
+		"_postman_id": "be80df32-9188-4b53-a312-90dab5cb2f36",
 		"name": "HarperDB Integration Tests",
 		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
 	},
@@ -1619,6 +1619,118 @@
 						}
 					},
 					"response": []
+				},
+				{
+					"name": "create_table_dev_books",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "84856ff2-bfb5-4dc6-96b2-d6ec2f2758cf",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"tests[\"Create Table\"] = responseBody.has(\"successfully created.\");"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"type": "text",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"create_table\",\n\t\"schema\":\"dev\",\n\t\"table\":\"books\",\n\t\"hash_attribute\": \"id\"\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "create_table_dev_ratings",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "84856ff2-bfb5-4dc6-96b2-d6ec2f2758cf",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"tests[\"Create Table\"] = responseBody.has(\"successfully created.\");"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"type": "text",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"create_table\",\n\t\"schema\":\"dev\",\n\t\"table\":\"ratings\",\n\t\"hash_attribute\": \"id\"\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
 				}
 			],
 			"protocolProfileBehavior": {}
@@ -2301,7 +2413,7 @@
 											"    var jsonData = pm.response.json();",
 											"    pm.expect(jsonData.message.indexOf('Starting job')).to.eql(0);",
 											"    ",
-											"    eval(pm.globals.get(\"function:getJobId\"))(jsonData, null);",
+											"    eval(pm.globals.get(\"function:getJobId\"))(jsonData, \"12\");",
 											"});",
 											"",
 											"pm.test(\"Status code is 200\", function () {",
@@ -2343,6 +2455,138 @@
 								"body": {
 									"mode": "raw",
 									"raw": "{\n  \"operation\":\"csv_file_load\",\n  \"action\":\"insert\",\n  \"schema\":\"{{schema}}\",\n  \"table\":\"{{ords_tb}}\",\n  \"file_path\":\"{{files_location}}Orders.csv\"\n}"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								},
+								"description": "Import data csv files into orders table"
+							},
+							"response": []
+						},
+						{
+							"name": "12",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "1050650b-b36c-4381-b3f4-5a993c66381f",
+										"exec": [
+											"pm.test(\"Check for job message\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData.message.indexOf('Starting job')).to.eql(0);",
+											"    ",
+											"    eval(pm.globals.get(\"function:getJobId\"))(jsonData, \"13\");",
+											"});",
+											"",
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"operation\":\"csv_file_load\",\n  \"action\":\"insert\",\n  \"schema\":\"dev\",\n  \"table\":\"books\",\n  \"file_path\":\"{{files_location}}Books.csv\"\n}"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								},
+								"description": "Import data csv files into orders table"
+							},
+							"response": []
+						},
+						{
+							"name": "13",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "1050650b-b36c-4381-b3f4-5a993c66381f",
+										"exec": [
+											"pm.test(\"Check for job message\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData.message.indexOf('Starting job')).to.eql(0);",
+											"    ",
+											"    eval(pm.globals.get(\"function:getJobId\"))(jsonData, null);",
+											"});",
+											"",
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"operation\":\"csv_file_load\",\n  \"action\":\"insert\",\n  \"schema\":\"dev\",\n  \"table\":\"ratings\",\n  \"file_path\":\"{{files_location}}BooksRatings.csv\"\n}"
 								},
 								"url": {
 									"raw": "{{host}}:{{port}}",
@@ -9908,6 +10152,387 @@
 						"body": {
 							"mode": "raw",
 							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"select * FROM {{schema}}.{{ords_tb}} LIMIT 100 OFFSET 100\"\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "select AVE(rating) w/ join, group by and order by (1 of 2)",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "65c8d8f9-1a40-4671-b35d-ec57a847cc59",
+								"exec": [
+									"pm.test(\"test 26 records returned\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.length).to.eql(26);",
+									"});",
+									"",
+									"pm.test(\"test ratings listed in correct order\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData[0].rating).to.eql(4.46);",
+									"    pm.expect(jsonData[1].rating).to.eql(4.42);",
+									"    pm.expect(jsonData[25].rating).to.eql(2.77);",
+									"});",
+									"",
+									"pm.test(\"test authors listed in correct order\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData[0].authors).to.eql(\"J.K. Rowling, Mary GrandPré, Rufus Beck\");",
+									"    pm.expect(jsonData[1].authors).to.eql(\"Gabriel García Márquez, Gregory Rabassa\");",
+									"    pm.expect(jsonData[25].authors).to.eql(\"Henry James, Patricia Crick\");",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"value": true,
+									"type": "boolean"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"select b.authors as authors, AVG(r.rating) as rating from dev.ratings as r join dev.books as b on r.book_id = b.id group by b.authors order by rating desc\"\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "select AVE(rating) w/ join, group by and order by (2 of 2)",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "65c8d8f9-1a40-4671-b35d-ec57a847cc59",
+								"exec": [
+									"pm.test(\"test 50 records returned\", function() {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.length).to.eql(50);",
+									"});",
+									"",
+									"pm.test(\"test first & last ids in correct order\", function() {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData[0].id).to.eql(1);",
+									"    pm.expect(jsonData[49].id).to.eql(50);",
+									"});",
+									"",
+									"pm.test(\"random tests for correct values in correct order\", function() {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData[5].id).to.eql(6);",
+									"    pm.expect(jsonData[5].authors).to.eql(\"J.K. Rowling, Mary GrandPré\");",
+									"    pm.expect(jsonData[5][`AVG(r.rating)`]).to.eql(4.09);",
+									"    pm.expect(jsonData[21].id).to.eql(22);",
+									"    pm.expect(jsonData[21].authors).to.eql(\"Edward P. Jones\");",
+									"    pm.expect(jsonData[21][`AVG(r.rating)`]).to.eql(3.73);",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"value": true,
+									"type": "boolean"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"select b.id, b.authors as authors, AVG(r.rating) from dev.ratings as r join dev.books as b on r.book_id = b.id group by b.authors, b.id order by b.id\"\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "select AVE(rating) w/ join and group by (1 of 2)",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "65c8d8f9-1a40-4671-b35d-ec57a847cc59",
+								"exec": [
+									"pm.test(\"test 50 records returned\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.length).to.eql(50);",
+									"});",
+									"",
+									"pm.test(\"test first & last row objects for 3 key/values\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(Object.keys(jsonData[0]).length).to.eql(3);",
+									"    pm.expect(Object.keys(jsonData[49]).length).to.eql(3);",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"value": true,
+									"type": "boolean"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"select b.id, b.authors as authors, AVG(r.rating) from dev.ratings as r join dev.books as b on r.book_id = b.id group by b.authors, b.id\"\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "select AVE(rating) w/ join, gb, ob, and LIMIT",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "65c8d8f9-1a40-4671-b35d-ec57a847cc59",
+								"exec": [
+									"pm.test(\"test 10 records returned\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.length).to.eql(10);",
+									"});",
+									"",
+									"pm.test(\"test first & last ids\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData[0].id).to.eql(1);",
+									"    pm.expect(jsonData[9].id).to.eql(10);",
+									"});",
+									"",
+									"pm.test(\"test for 3 values in row\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(Object.keys(jsonData[0]).length).to.eql(3);",
+									"    pm.expect(Object.keys(jsonData[8]).length).to.eql(3);",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"value": true,
+									"type": "boolean"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"select b.id as id, b.authors as authors, AVG(r.rating) as rating from dev.ratings as r join dev.books as b on r.book_id = b.id group by b.id, b.authors order by id limit 10\"\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "select COUNT(rating) w/ join, gb, ob, limit, and OFFSET",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "65c8d8f9-1a40-4671-b35d-ec57a847cc59",
+								"exec": [
+									"pm.test(\"test 15 records returned\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.length).to.eql(15);",
+									"});",
+									"",
+									"pm.test(\"test first & last authors\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData[0].authors).to.eql(\"Frank Herbert\");",
+									"    pm.expect(jsonData[14].authors).to.eql(\"Marguerite Duras, Barbara Bray, Maxine Hong Kingston\");",
+									"});",
+									"",
+									"pm.test(\"test random row values\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData[9].authors).to.eql(\"J.K. Rowling, Mary GrandPré\");",
+									"    pm.expect(jsonData[0].rating_count).to.eql(400);",
+									"    pm.expect(jsonData[11].rating_count).to.eql(300);",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"value": true,
+									"type": "boolean"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"select b.authors as authors, COUNT(r.rating) as rating_count from dev.ratings as r join dev.books as b on r.book_id = b.id group by b.authors order by b.authors limit 15 offset 5\"\n}"
 						},
 						"url": {
 							"raw": "{{host}}:{{port}}",
