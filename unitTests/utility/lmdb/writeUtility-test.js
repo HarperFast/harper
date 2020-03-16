@@ -125,7 +125,7 @@ describe("Test writeUtility module", ()=>{
         it("test insert one row", ()=>{
             //test no records
             let records = test_utils.assertErrorSync(search_util.searchAll, [env, HASH_ATTRIBUTE_NAME, ALL_ATTRIBUTES], undefined);
-            assert.deepStrictEqual(records, []);
+            assert.deepStrictEqual(records, Object.create(null));
 
             let result = test_utils.assertErrorSync(write_utility.insertRecords, [env, HASH_ATTRIBUTE_NAME, ALL_ATTRIBUTES, ONE_RECORD_ARRAY], undefined,
                 "pass valid env hash_attribute all_attributes records");
@@ -133,8 +133,8 @@ describe("Test writeUtility module", ()=>{
             assert.deepStrictEqual(result, {written_hashes: [1], skipped_hashes: []});
 
             records = test_utils.assertErrorSync(search_util.searchAll, [env, HASH_ATTRIBUTE_NAME, ALL_ATTRIBUTES], undefined);
-            let expected = [Object.assign(Object.create(null), ONE_RECORD_ARRAY_EXPECTED[0])];
-            assert.deepStrictEqual(records, expected);
+            let expected = { [ONE_RECORD_ARRAY_EXPECTED[0].id]: ONE_RECORD_ARRAY_EXPECTED[0]};
+            assert.deepEqual(records, expected);
         });
 
         //TODO validate existing records being inserted are added to skipped
@@ -145,8 +145,8 @@ describe("Test writeUtility module", ()=>{
             assert.deepStrictEqual(result, {written_hashes: [1], skipped_hashes: []});
 
             let records = test_utils.assertErrorSync(search_util.searchAll, [env, HASH_ATTRIBUTE_NAME, ALL_ATTRIBUTES], undefined);
-            let expected = [Object.assign(Object.create(null), ONE_RECORD_ARRAY_EXPECTED[0])];
-            assert.deepStrictEqual(records, expected);
+            let expected = {[ONE_RECORD_ARRAY_EXPECTED[0].id]: ONE_RECORD_ARRAY_EXPECTED[0]};
+            assert.deepEqual(records, expected);
 
             result = test_utils.assertErrorSync(write_utility.insertRecords, [env, HASH_ATTRIBUTE_NAME, ALL_ATTRIBUTES, ONE_RECORD_ARRAY], undefined,
                 "pass valid env hash_attribute all_attributes records");
@@ -165,8 +165,8 @@ describe("Test writeUtility module", ()=>{
             assert.deepStrictEqual(result, {written_hashes: [record.id], skipped_hashes: []});
 
             let records = test_utils.assertErrorSync(search_util.searchAll, [env, HASH_ATTRIBUTE_NAME, Object.keys(record)], undefined);
-            let expected = [Object.assign(Object.create(null), record)];
-            assert.deepStrictEqual(records, [test_utils.assignObjecttoNullObject(record)]);
+            let expected = {[record.id]: record};
+            assert.deepEqual(records, expected);
 
             let txn = new environment_utility.TransactionCursor(env, '__blob__');
             let key = txn.cursor.goToKey(`text/${record.id}`);
@@ -226,8 +226,8 @@ describe("Test writeUtility module", ()=>{
             let all_attributes_for_update = ['__blob__', '__createdtime__', '__updatedtime__','age', 'height', 'id', 'name'];
 
             let records = test_utils.assertErrorSync(search_util.searchAll, [env, HASH_ATTRIBUTE_NAME, ALL_ATTRIBUTES], undefined);
-            let expected = [Object.assign(Object.create(null), ONE_RECORD_ARRAY_EXPECTED[0])];
-            assert.deepStrictEqual(records, expected);
+            let expected = {[ONE_RECORD_ARRAY_EXPECTED[0].id]: ONE_RECORD_ARRAY_EXPECTED[0]};
+            assert.deepEqual(records, expected);
 
             let results = test_utils.assertErrorSync(write_utility.updateRecords, [env, HASH_ATTRIBUTE_NAME, all_attributes_for_update, UPDATE_ONE_RECORD_ARRAY], undefined);
             assert.deepStrictEqual(results, {written_hashes:[1], skipped_hashes:[]});
@@ -236,16 +236,16 @@ describe("Test writeUtility module", ()=>{
             assert.deepStrictEqual(all_dbis, all_attributes_for_update);
 
             records = test_utils.assertErrorSync(search_util.searchAll, [env, HASH_ATTRIBUTE_NAME, all_dbis], undefined);
-            let expected2 = [Object.assign(Object.create(null), UPDATE_ONE_RECORD_ARRAY_EXPECTED[0])];
-            assert.deepStrictEqual(records,expected2);
+            let expected2 = {[UPDATE_ONE_RECORD_ARRAY_EXPECTED[0].id]: UPDATE_ONE_RECORD_ARRAY_EXPECTED[0]};
+            assert.deepEqual(records,expected2);
         });
 
         it("test update one existing row & one non-existing row", ()=>{
             let all_attributes_for_update = ['__blob__','__createdtime__', '__updatedtime__','age', 'height', 'id', 'name'];
 
             let records = test_utils.assertErrorSync(search_util.searchAll, [env, HASH_ATTRIBUTE_NAME, ALL_ATTRIBUTES], undefined);
-            let expected = [Object.assign(Object.create(null), ONE_RECORD_ARRAY_EXPECTED[0])];
-            assert.deepStrictEqual(records, expected);
+            let expected = {[ONE_RECORD_ARRAY_EXPECTED[0].id]: ONE_RECORD_ARRAY_EXPECTED[0]};
+            assert.deepEqual(records, expected);
 
             let results = test_utils.assertErrorSync(write_utility.updateRecords, [env, HASH_ATTRIBUTE_NAME, all_attributes_for_update, UPDATE_ONE_RECORD_ARRAY.concat(UPDATE_ONE_FAKE_RECORD)], undefined);
             assert.deepStrictEqual(results, {written_hashes:[1], skipped_hashes:[111]});
@@ -254,15 +254,15 @@ describe("Test writeUtility module", ()=>{
             assert.deepStrictEqual(all_dbis, all_attributes_for_update);
 
             records = test_utils.assertErrorSync(search_util.searchAll, [env, HASH_ATTRIBUTE_NAME, all_dbis], undefined);
-            let expected2 = [Object.assign(Object.create(null), UPDATE_ONE_RECORD_ARRAY_EXPECTED[0])];
-            assert.deepStrictEqual(records,expected2);
+            let expected2 = {[UPDATE_ONE_RECORD_ARRAY_EXPECTED[0].id]: UPDATE_ONE_RECORD_ARRAY_EXPECTED[0]};
+            assert.deepEqual(records,expected2);
         });
 
         it("test partially updating row & make sure other attributes are untouched", ()=>{
             let all_attributes_for_update = ['__blob__','__createdtime__', '__updatedtime__','age', 'height', 'id', 'name', 'city'];
 
             let records = test_utils.assertErrorSync(search_util.searchAll, [env, HASH_ATTRIBUTE_NAME, ALL_ATTRIBUTES], undefined);
-            let expected = [Object.assign(Object.create(null), ONE_RECORD_ARRAY_EXPECTED[0])];
+            let expected = {[ONE_RECORD_ARRAY_EXPECTED[0].id]: ONE_RECORD_ARRAY_EXPECTED[0]};
             assert.deepStrictEqual(records, expected);
 
             let results = test_utils.assertErrorSync(write_utility.updateRecords, [env, HASH_ATTRIBUTE_NAME, all_attributes_for_update, [{id:1, city:'Denver'}]], undefined);

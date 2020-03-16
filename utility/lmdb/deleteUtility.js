@@ -50,7 +50,7 @@ function deleteRecords(env, hash_attribute, ids){
 
         //fetch records & find keys to delete
         let records = search_utility.batchSearchByHash(env, hash_attribute, all_dbis, ids, deleted.skipped);
-
+        records = Object.values(records);
         //iterate records and process deletes
         let hash_value;
         let cast_hash_value;
