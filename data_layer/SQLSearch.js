@@ -174,9 +174,27 @@ class SQLSearch {
 
         //if there is an OR in the where clause we will not perform exact match search on attributes as it ends up excluding values incorrectly.
         let total_ignore = false;
+
+        //check for OR statement (see not above) and update numeric hash values set as strings in the statement to evaluate the table data
+        // correctly as numbers in alasql which evaluates based on data types
         for (let {node} of new RecursiveIterator(this.statement.where)) {
             if (node && node.op && node.op === 'OR') {
                 total_ignore = true;
+            }
+            if(!common_utils.isEmpty(node) && node.right) {
+                if (node.right.value) {
+                    const where_val = common_utils.autoCast(node.right.value);
+                    if (!isNaN(where_val) && node.right instanceof alasql.yy.StringValue) {
+                        node.right = new alasql.yy.NumValue({ value: where_val });
+                    }
+                } else if (Array.isArray(node.right)) {
+                    node.right.forEach((col, i) => {
+                        const where_val = common_utils.autoCast(col.value);
+                        if (!isNaN(where_val) && col instanceof alasql.yy.StringValue) {
+                            node.right[i] = new alasql.yy.NumValue({ value: where_val });
+                        }
+                    });
+                }
             }
         }
 
