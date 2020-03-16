@@ -18,6 +18,7 @@ const path = require('path');
 const InsertObject = require('../../data_layer/DataLayerObjects').InsertObject;
 const search = require('../../data_layer/search');
 const hdb_license = require('../../utility/registration/hdb_license');
+const NodeObject = require('./NodeObject').Node;
 
 const CLUSTER_PORT = env_mgr.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_PORT_KEY);
 const CONFIGURE_SUCCESS_RESPONSE = 'Successfully configured and loaded clustering configuration.  Some configurations may require a restart of HarperDB to take effect.';
@@ -67,10 +68,16 @@ async function kickOffEnterprise() {
     }
 }
 
+/**
+ *
+ * @param {NodeObject} new_node
+ * @returns {Promise<string|*>}
+ */
 async function addNode(new_node) {
     nodeValidation(new_node);
 
-    let new_node_insert = new InsertObject("insert", terms.SYSTEM_SCHEMA_NAME, terms.SYSTEM_TABLE_NAMES.NODE_TABLE_NAME, null, [new_node]);
+    let node_record = new NodeObject(new_node.name, new_node.host, new_node.port, new_node.subscriptions);
+    let new_node_insert = new InsertObject("insert", terms.SYSTEM_SCHEMA_NAME, terms.SYSTEM_TABLE_NAMES.NODE_TABLE_NAME, null, [node_record]);
     let results = undefined;
 
     if(!(await hdb_license.getLicense()).enterprise) {
@@ -122,7 +129,7 @@ async function addNode(new_node) {
 
 /**
  *
- * @param {./NodeObject} node_object
+ * @param {NodeObject} node_object
  */
 function nodeValidation(node_object) {
     // need to clean up new node as it hads operation and user on it
@@ -188,7 +195,7 @@ function nodeValidation(node_object) {
 
 /**
  *
- * @param {./NodeObject} update_node
+ * @param {NodeObject} update_node
  * @returns {string}
  */
 async function updateNode(update_node) {
@@ -214,7 +221,10 @@ async function updateNode(update_node) {
     let merge_node = node_search[0];
     Object.assign(merge_node, update_node);
     nodeValidation(merge_node);
-    let update_node_object = new InsertObject("update", terms.SYSTEM_SCHEMA_NAME, terms.SYSTEM_TABLE_NAMES.NODE_TABLE_NAME, null, [update_node]);
+
+    let node_record = new NodeObject(update_node.name, update_node.host, update_node.port, update_node.subscriptions);
+
+    let update_node_object = new InsertObject("update", terms.SYSTEM_SCHEMA_NAME, terms.SYSTEM_TABLE_NAMES.NODE_TABLE_NAME, null, [node_record]);
     let results = undefined;
 
     try {
