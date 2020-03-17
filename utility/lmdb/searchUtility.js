@@ -5,6 +5,7 @@ const TransactionCursor = environment_utility.TransactionCursor;
 const lmdb = require('node-lmdb');
 const log = require('../logging/harper_logger');
 const common = require('./commonUtility');
+const auto_cast = require('../common_utils').autoCast;
 const lmdb_terms = require('./terms');
 const hdb_terms = require('../hdbTerms');
 const LMDB_ERRORS = require('../commonErrors').LMDB_ERRORS_ENUM;
@@ -421,7 +422,7 @@ function equals(env, hash_attribute, attribute, search_value){
  * @param search_value
  * @param search_type
  * @param results
- * @returns {*[]}
+ * @returns {*{}}
  */
 function blobSearch(env, hash_attribute, attribute, search_value, search_type, results = []){
     let txn = undefined;
@@ -439,22 +440,22 @@ function blobSearch(env, hash_attribute, attribute, search_value, search_type, r
             switch(search_type){
                 case lmdb_terms.SEARCH_TYPES.EQUALS:
                     if(text === search_value){
-                        results.push(hash_value);
+                        addResultFromBlobSearch(hash_value, text, hash_attribute, attribute, results);
                     }
                     break;
                 case lmdb_terms.SEARCH_TYPES.STARTS_WITH:
                     if(text.startsWith(search_value) === true){
-                        results.push(hash_value);
+                        addResultFromBlobSearch(hash_value, text, hash_attribute, attribute, results);
                     }
                     break;
                 case lmdb_terms.SEARCH_TYPES.ENDS_WITH:
                     if(text.endsWith(search_value) === true){
-                        results.push(hash_value);
+                        addResultFromBlobSearch(hash_value, text, hash_attribute, attribute, results);
                     }
                     break;
                 case lmdb_terms.SEARCH_TYPES.CONTAINS:
                     if(text.indexOf(search_value) >= 0){
-                        results.push(hash_value);
+                        addResultFromBlobSearch(hash_value, text, hash_attribute, attribute, results);
                     }
                     break;
                 default:
@@ -470,6 +471,25 @@ function blobSearch(env, hash_attribute, attribute, search_value, search_type, r
 
         throw e;
     }
+}
+
+/**
+ *
+ * @param {String|Number} hash_value
+ * @param {*} blob_value
+ * @param {String} hash_attribute
+ * @param {String} attribute
+ * @param {Object} results
+ */
+function addResultFromBlobSearch(hash_value, blob_value, hash_attribute, attribute, results){
+    let new_object = Object.create(null);
+    new_object[attribute] = auto_cast(blob_value);
+
+    if(hash_attribute !== undefined) {
+        new_object[hash_attribute] = auto_cast(hash_value);
+    }
+
+    results[hash_value] = new_object;
 }
 
 /**
