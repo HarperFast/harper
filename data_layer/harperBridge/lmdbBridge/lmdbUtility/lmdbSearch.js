@@ -134,7 +134,7 @@ async function executeSearch(search_object, search_type, hash_attribute, return_
  * @param {SearchObject} search_object
  */
 function checkToFetchMore(search_object, hash_attribute){
-    if(search_object.get_attributes === ['*']){
+    if(search_object.get_attributes.length === 1 && search_object.get_attributes[0] === '*'){
         return true;
     }
     let already_fetched_attributes = [search_object.search_attribute];
@@ -143,7 +143,7 @@ function checkToFetchMore(search_object, hash_attribute){
     }
 
     let fetch_more = false;
-    for(let x = 0; x < search_object.get_attributes; x++){
+    for(let x = 0; x < search_object.get_attributes.length; x++){
         if(already_fetched_attributes.indexOf(search_object.get_attributes[x]) < 0){
             fetch_more = true;
             break;
