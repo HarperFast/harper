@@ -1,6 +1,6 @@
 {
 	"info": {
-		"_postman_id": "be80df32-9188-4b53-a312-90dab5cb2f36",
+		"_postman_id": "c929449b-364e-46b4-a044-f0e698421dba",
 		"name": "HarperDB Integration Tests",
 		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
 	},
@@ -6296,7 +6296,7 @@
 											"    pm.response.to.have.status(200);",
 											"});",
 											"",
-											"pm.test(\"verify an array with one object\", function () {",
+											"pm.test(\"verify an array with two object\", function () {",
 											"    var jsonData = pm.response.json();",
 											"    pm.expect(jsonData.length).to.eql(2);",
 											"    pm.expect((typeof jsonData[0])).to.eql(\"object\");",
@@ -6845,18 +6845,314 @@
 					"response": []
 				},
 				{
+					"name": "select by hash as string multiple results",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "54ae73e8-7c19-4558-a36c-0b47e7a7bdc1",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"verify an array with two object\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.length).to.eql(2);",
+									"    pm.expect((typeof jsonData[0])).to.eql(\"object\");",
+									"    pm.expect((typeof jsonData[1])).to.eql(\"object\");",
+									"});",
+									"",
+									"pm.test(\"verify an array with correct objects\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.length).to.eql(2);",
+									"    pm.expect(jsonData[0].employeeid).to.eql(3);",
+									"    pm.expect(jsonData[1].employeeid).to.eql(5);",
+									"});",
+									""
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"value": true,
+									"type": "boolean"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"SELECT * FROM {{schema}}.{{emps_tb}} WHERE {{emps_id}} = '3' OR {{emps_id}} = '5' ORDER BY {{emps_id}}\"\n}\n"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "select w/ where in numeric values as strings",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "65c8d8f9-1a40-4671-b35d-ec57a847cc59",
+								"exec": [
+									"pm.test(\"test 3 records returned\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.length).to.eql(3);",
+									"});",
+									"",
+									"pm.test(\"test rows have correct id\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    jsonData.forEach((row, i) => {",
+									"        pm.expect(row.id).to.eql(i + 1);    ",
+									"    })",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"value": true,
+									"type": "boolean"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"select * from dev.books WHERE id IN('1','2','3') ORDER BY id\"\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "select w/ where value equals \"0\"",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "65c8d8f9-1a40-4671-b35d-ec57a847cc59",
+								"exec": [
+									"pm.test(\"test 15 records returned\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.length).to.eql(4);",
+									"});",
+									"",
+									"pm.test(\"test rows have books_count = 0\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    jsonData.forEach(row => {",
+									"        pm.expect(row.books_count).to.eql(0);    ",
+									"    })",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"value": true,
+									"type": "boolean"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"select * from dev.books WHERE books_count = '0' \"\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "select w/ where value equals \"false\"",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "65c8d8f9-1a40-4671-b35d-ec57a847cc59",
+								"exec": [
+									"pm.test(\"test 25 records returned\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.length).to.eql(25);",
+									"});",
+									"",
+									"pm.test(\"test rows have nytimes_best_seller = false\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    jsonData.forEach(row => {",
+									"        pm.expect(row.nytimes_best_seller).to.eql(false);    ",
+									"    })",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"value": true,
+									"type": "boolean"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"select * from dev.books WHERE nytimes_best_seller = 'false' \"\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
 					"name": "select employees orderby id asc",
 					"event": [
 						{
 							"listen": "test",
 							"script": {
-								"type": "text/javascript",
+								"id": "b521e388-c02f-443a-a126-19fa127b3e1a",
 								"exec": [
-									"pm.test(\"test schema name\", function () {",
+									"pm.test(\"test employeeid order is asc\", function () {",
 									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.length).to.eql(10);",
 									"    pm.expect(jsonData[0].employeeid).to.eql(1);",
+									"    pm.expect(jsonData[1].employeeid).to.eql(2);",
+									"    pm.expect(jsonData[8].employeeid).to.eql(9);",
+									"    pm.expect(jsonData[9].employeeid).to.eql(25);",
 									"});"
-								]
+								],
+								"type": "text/javascript"
 							}
 						}
 					],
