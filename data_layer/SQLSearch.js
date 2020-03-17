@@ -182,7 +182,7 @@ class SQLSearch {
                 total_ignore = true;
             }
             if(!common_utils.isEmpty(node) && node.right) {
-                if (node.right.value) {
+                if (common_utils.isNotEmptyAndHasValue(node.right.value)) {
                     const where_val = common_utils.autoCast(node.right.value);
                     if (!isNaN(where_val) && node.right instanceof alasql.yy.StringValue) {
                         node.right = new alasql.yy.NumValue({ value: where_val });

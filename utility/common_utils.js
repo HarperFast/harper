@@ -66,7 +66,8 @@ module.exports = {
     checkTableExists,
     getStartOfTomorrowInSeconds,
     getLimitKey,
-    isObject
+    isObject,
+    isNotEmptyAndHasValue
 };
 
 /**
@@ -89,6 +90,10 @@ function errorizeMessage(message) {
  */
 function isEmpty(value) {
     return (value === undefined || value === null);
+}
+
+function isNotEmptyAndHasValue(value) {
+    return (!isEmpty(value) && (value || value === 0 || value === '' || isBoolean(value)));
 }
 
 /**
