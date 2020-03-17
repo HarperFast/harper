@@ -111,17 +111,7 @@ async function executeSearch(search_object, search_type, hash_attribute, return_
                 return search_results;
         }
 
-        let already_fetched_attributes = [search_object.search_attribute];
-        if(hash_attribute_name !== undefined){
-            already_fetched_attributes.push(hash_attribute_name);
-        }
-        let fetch_more = false;
-        for(let x = 0; x < search_object.get_attributes; x++){
-            if(already_fetched_attributes.indexOf(search_object.get_attributes[x]) < 0){
-                fetch_more = true;
-                break;
-            }
-        }
+        let fetch_more = checkToFetchMore(search_object, hash_attribute);
 
         if(fetch_more === false){
             return return_map === true ? search_results : Object.values(search_results);
@@ -143,8 +133,24 @@ async function executeSearch(search_object, search_type, hash_attribute, return_
  *
  * @param {SearchObject} search_object
  */
-function checkToFetchMore(search_object){
-   // if(search_object.)
+function checkToFetchMore(search_object, hash_attribute){
+    if(search_object.get_attributes === ['*']){
+        return true;
+    }
+    let already_fetched_attributes = [search_object.search_attribute];
+    if(search_object.get_attributes.indexOf(hash_attribute) >= 0){
+        already_fetched_attributes.push(hash_attribute);
+    }
+
+    let fetch_more = false;
+    for(let x = 0; x < search_object.get_attributes; x++){
+        if(already_fetched_attributes.indexOf(search_object.get_attributes[x]) < 0){
+            fetch_more = true;
+            break;
+        }
+    }
+
+    return fetch_more;
 }
 
 /**
