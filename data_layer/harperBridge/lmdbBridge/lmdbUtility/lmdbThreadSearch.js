@@ -2,10 +2,6 @@
 
 const ThreadSearchObject = require('./ThreadSearchObject');
 const lmdb_search = require('./lmdbSearch');
-const environment_utility = require('../../../../utility/lmdb/environmentUtility');
-const init_paths = require('./initializePaths');
-const uuid = require('uuid');
-const fs = require('fs-extra');
 
 process.on('message', searcher);
 
@@ -16,17 +12,8 @@ process.on('message', searcher);
 async function searcher(thread_search_object){
     try {
         let results = await lmdb_search.executeSearch(thread_search_object.search_object, thread_search_object.search_type, thread_search_object.hash_attribute, thread_search_object.return_map);
-        let env = await environment_utility.openEnvironment(init_paths.getSystemSchemaPath(), 'hdb_temp');
 
-        environment_utility.initializeDBIs(env, 'id', ['id']);
-        let results_id = uuid.v4();
-        let txn = env.beginTxn();
-        let j = JSON.stringify(results);
-
-        txn.putString(env.dbis['id'], results_id, j);
-        txn.commit();
-
-        process.send(results_id);
+        process.send(results);
     }catch(e){
         process.send({error: e.message, stack: e.stack});
     }
