@@ -284,16 +284,16 @@ describe('test lmdbDropTable module', ()=>{
             search_attr_results = await search_by_value(search_attr_obj);
             assert.deepStrictEqual(search_attr_results, []);
 
-            let error;
+            let error = undefined;
             try{
                 await fs.access(path.join(DEV_SCHEMA_PATH, 'test')).catch(e=>{
                     error = e;
                 });
             } catch (e) {
-                let error = e;
+                error = e;
             }
 
-            assert(error.message.indexOf("ENOENT: no such file or directory") >= 0);
+            assert(error.message.startsWith("ENOENT: no such file or directory"));
         });
     });
 });

@@ -180,8 +180,8 @@ describe('Test lmdbDeleteRecords module', ()=>{
             ALL_FETCH_ATTRIBUTES.forEach(attribute=>{
                 if(attribute !== HASH_ATTRIBUTE_NAME) {
                     let attr_results = test_utils.assertErrorSync(search_utility.iterateDBI, [dog_env, "height"], undefined);
-                    attr_results.forEach(result=>{
-                        assert(result[1] !== '8');
+                    Object.keys(attr_results).forEach(result=>{
+                        assert(result !== '8');
                     });
                 }
             });
@@ -211,8 +211,8 @@ describe('Test lmdbDeleteRecords module', ()=>{
             ALL_FETCH_ATTRIBUTES.forEach(attribute=>{
                 if(attribute !== HASH_ATTRIBUTE_NAME) {
                     let attr_results = test_utils.assertErrorSync(search_utility.iterateDBI, [dog_env, "height"], undefined);
-                    attr_results.forEach(result=>{
-                        assert(result[1] !== '8');
+                    Object.keys(attr_results).forEach(result=>{
+                        assert(result !== '8');
                     });
                 }
             });
@@ -244,7 +244,7 @@ describe('Test lmdbDeleteRecords module', ()=>{
             };
             let expected_result = {
                 message: '2 of 2 records successfully deleted',
-                deleted_hashes: [ 12, 10 ],
+                deleted_hashes: [ 10,12 ],
                 skipped_hashes: [ ]
             };
             let results = await test_utils.assertErrorAsync(lmdb_delete_records, [delete_obj], undefined);
@@ -257,7 +257,7 @@ describe('Test lmdbDeleteRecords module', ()=>{
             ALL_FETCH_ATTRIBUTES.forEach(attribute=>{
                 if(attribute !== HASH_ATTRIBUTE_NAME) {
                     let attr_results = test_utils.assertErrorSync(search_utility.iterateDBI, [dog_env, "height"], undefined);
-                    attr_results.forEach(result=>{
+                    Object.keys(attr_results).forEach(result=>{
                         assert(delete_obj.hash_values.indexOf(result[1]) < 0);
                     });
                 }

@@ -252,7 +252,8 @@ describe('test validateDropSchema module', ()=>{
                 error = e;
             }
 
-            assert(error.message.indexOf("ENOENT: no such file or directory") >= 0);
+            assert(error.message.startsWith("ENOENT: no such file or directory"));
+
         });
     });
 });

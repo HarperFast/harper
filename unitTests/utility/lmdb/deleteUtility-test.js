@@ -84,7 +84,7 @@ describe('Test deleteUtility', ()=>{
             });
 
             let records = test_utils.assertErrorSync(search_util.batchSearchByHash, [env, HASH_ATTRIBUTE_NAME, All_ATTRIBUTES, IDS], undefined);
-            assert.deepStrictEqual(records, expected_compare);
+            assert.deepEqual(records, expected_compare);
 
             test_utils.assertErrorSync(delete_utility.deleteRecords, [env, HASH_ATTRIBUTE_NAME, IDS], undefined);
 
@@ -94,14 +94,13 @@ describe('Test deleteUtility', ()=>{
 
             All_ATTRIBUTES.forEach(attribute=>{
                 let results = test_utils.assertErrorSync(search_util.iterateDBI, [env, attribute], undefined, 'city iterate');
-                assert.deepStrictEqual(results, []);
+                assert.deepStrictEqual(results, Object.create(null));
             });
         });
 
         it('delete some records', ()=>{
             let some_ids = ['2', '4'];
-            let some_record_compare = [
-                test_utils.assignObjecttoNullObject({
+            let some_record_compare = [test_utils.assignObjecttoNullObject({
                     "age": 32,
                     "city": null,
                     "id": 2,
@@ -125,14 +124,17 @@ describe('Test deleteUtility', ()=>{
             assert.deepStrictEqual(records, []);
 
             //assert indices don't have deleted record entries
+            let iterate_results = {'44': ['5'], '46': ['1'], '57': ['3']};
             let results = test_utils.assertErrorSync(search_util.iterateDBI, [env, 'age'], undefined, 'age iterate');
-            assert.deepStrictEqual(results, [ [ '44', '5' ], [ '46', '1' ], [ '57', '3' ] ]);
+            assert.deepEqual(results, iterate_results);
 
+            iterate_results = {'Denver': ['1'], 'Denvertown': ['5']};
             results = test_utils.assertErrorSync(search_util.iterateDBI, [env, 'city'], undefined, 'age iterate');
-            assert.deepStrictEqual(results, [ [ 'Denver', '1' ], [ 'Denvertown', '5' ] ]);
+            assert.deepEqual(results, iterate_results);
 
+            iterate_results = {'Fran': ['5'], 'Hank': ['3'], 'Kyle': ['1']};
             results = test_utils.assertErrorSync(search_util.iterateDBI, [env, 'name'], undefined, 'age iterate');
-            assert.deepStrictEqual(results, [ [ 'Fran', '5' ], [ 'Hank', '3' ], [ 'Kyle', '1' ] ]);
+            assert.deepEqual(results, iterate_results);
         });
 
         it('delete record with long text', ()=>{
@@ -145,7 +147,7 @@ describe('Test deleteUtility', ()=>{
             ];
 
             let records = test_utils.assertErrorSync(search_util.batchSearchByHash, [env, HASH_ATTRIBUTE_NAME, ['id', 'text'], some_ids], undefined);
-            assert.deepStrictEqual(records, some_record_compare);
+            assert.deepEqual(records, some_record_compare);
 
             test_utils.assertErrorSync(delete_utility.deleteRecords, [env, HASH_ATTRIBUTE_NAME, some_ids], undefined);
 
@@ -154,17 +156,20 @@ describe('Test deleteUtility', ()=>{
             assert.deepStrictEqual(records, []);
 
             //assert indices don't have deleted record entries
+            let iterate_results = {'32': ['2'], '44': ['4', '5' ], '46': ['1'], '57': ['3']};
             let results = test_utils.assertErrorSync(search_util.iterateDBI, [env, 'age'], undefined, 'age iterate');
-            assert.deepStrictEqual(results, [ ['32', '2'], [ '44', '4' ],[ '44', '5' ], [ '46', '1' ], [ '57', '3' ] ]);
+            assert.deepEqual(results, iterate_results);
 
+            iterate_results = {'Denver': ['1', '4'], 'Denvertown': ['5']};
             results = test_utils.assertErrorSync(search_util.iterateDBI, [env, 'city'], undefined, 'city iterate');
-            assert.deepStrictEqual(results, [ [ 'Denver', '1' ],[ 'Denver', '4' ], [ 'Denvertown', '5' ] ]);
+            assert.deepEqual(results, iterate_results);
 
+            iterate_results = {'Fran': ['5'], 'Hank': ['3'], 'Jerry': ['2'], 'Joy': ['4'], 'Kyle': ['1']};
             results = test_utils.assertErrorSync(search_util.iterateDBI, [env, 'name'], undefined, 'name iterate');
-            assert.deepStrictEqual(results, [ [ 'Fran', '5' ], [ 'Hank', '3' ],[ 'Jerry', '2' ],[ 'Joy', '4' ], [ 'Kyle', '1' ] ]);
+            assert.deepEqual(results, iterate_results);
 
             results = test_utils.assertErrorSync(search_util.iterateDBI, [env, '__blob__'], undefined, 'name iterate');
-            assert.deepStrictEqual(results, []);
+            assert.deepStrictEqual(results, Object.create(null));
         });
     });
 });

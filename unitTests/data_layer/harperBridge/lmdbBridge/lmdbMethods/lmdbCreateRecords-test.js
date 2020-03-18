@@ -79,20 +79,20 @@ const EXPECTED_SEARCH_RECORDS = [
     {
         __createdtime__:TIMESTAMP,
         __updatedtime__: TIMESTAMP,
-        age: null,
-        name: "David",
-        breed: "Mutt",
-        height:null,
-        id: 12
-    },
-    {
-        __createdtime__:TIMESTAMP,
-        __updatedtime__: TIMESTAMP,
         name: "Rob",
         breed: "Mutt",
         id: 10,
         age: 5,
         height: 145
+    },
+    {
+        __createdtime__:TIMESTAMP,
+        __updatedtime__: TIMESTAMP,
+        age: null,
+        name: "David",
+        breed: "Mutt",
+        height:null,
+        id: 12
     }
 ];
 

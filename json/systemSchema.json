@@ -237,5 +237,15 @@
         "attribute": "__updatedtime__"
       }
     ]
+  },
+  "hdb_temp":{
+    "hash_attribute": "id",
+    "name": "hdb_temp",
+    "schema": "system",
+    "attributes":[
+      {
+        "attribute":"id"
+      }
+    ]
   }
 }

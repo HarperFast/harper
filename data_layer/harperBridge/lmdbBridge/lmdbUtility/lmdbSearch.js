@@ -41,9 +41,9 @@ async function prepSearch(search_object, comparator, return_map){
     let stat = environment_utility.statDBI(env, search_object.search_attribute);
     let results;
 
-    if(search_type !== lmdb_terms.SEARCH_TYPES.BATCH_SEARCH_BY_HASH && search_type !== lmdb_terms.SEARCH_TYPES.BATCH_SEARCH_BY_HASH_TO_MAP && stat.entryCount > DBI_ENTRY_COUNT_LIMIT){
+    if((search_type === lmdb_terms.SEARCH_TYPES.SEARCH_ALL || search_type === lmdb_terms.SEARCH_TYPES.SEARCH_ALL_TO_MAP) && stat.entryCount > DBI_ENTRY_COUNT_LIMIT){
         results = await threadSearch(search_object, search_type, table_info.hash_attribute, return_map);
-    } else{
+    } else {
         results = await executeSearch(search_object, search_type, table_info.hash_attribute, return_map);
     }
 
@@ -61,22 +61,28 @@ async function executeSearch(search_object, search_type, hash_attribute, return_
     try {
         let schema_path = path.join(getBaseSchemaPath(), search_object.schema);
         let env = await environment_utility.openEnvironment(schema_path, search_object.table);
-        let ids = [];
+        let search_results = Object.create(null);
+
+        //this is to conditionally not create the hash_attribute as part of the returned objects if it is not selected
+        let hash_attribute_name = hash_attribute;
+        if(search_object.get_attributes.indexOf(hash_attribute) < 0){
+            hash_attribute_name = undefined;
+        }
 
         search_object.search_value = search_object.search_value.toString();
 
         switch (search_type) {
             case lmdb_terms.SEARCH_TYPES.EQUALS:
-                ids = search_utility.equals(env, search_object.search_attribute, search_object.search_value);
+                search_results = search_utility.equals(env, hash_attribute_name, search_object.search_attribute, search_object.search_value);
                 break;
             case lmdb_terms.SEARCH_TYPES.CONTAINS:
-                ids = search_utility.contains(env, search_object.search_attribute, search_object.search_value);
+                search_results = search_utility.contains(env, hash_attribute_name, search_object.search_attribute, search_object.search_value);
                 break;
             case lmdb_terms.SEARCH_TYPES.ENDS_WITH:
-                ids = search_utility.endsWith(env, search_object.search_attribute, search_object.search_value);
+                search_results = search_utility.endsWith(env, hash_attribute_name, search_object.search_attribute, search_object.search_value);
                 break;
             case lmdb_terms.SEARCH_TYPES.STARTS_WITH:
-                ids = search_utility.startsWith(env, search_object.search_attribute, search_object.search_value);
+                search_results = search_utility.startsWith(env, hash_attribute_name, search_object.search_attribute, search_object.search_value);
                 break;
             case lmdb_terms.SEARCH_TYPES.BATCH_SEARCH_BY_HASH:
                 return search_utility.batchSearchByHash(env, search_object.search_attribute, search_object.get_attributes, [search_object.search_value]);
@@ -87,32 +93,64 @@ async function executeSearch(search_object, search_type, hash_attribute, return_
             case lmdb_terms.SEARCH_TYPES.SEARCH_ALL_TO_MAP:
                 return search_utility.searchAllToMap(env, hash_attribute, search_object.get_attributes);
             case lmdb_terms.SEARCH_TYPES.BETWEEN:
-                ids = search_utility.between(env, search_object.search_attribute, search_object.search_value, search_object.end_value);
+                search_results = search_utility.between(env, hash_attribute_name, search_object.search_attribute, search_object.search_value, search_object.end_value);
                 break;
             case lmdb_terms.SEARCH_TYPES.GREATER_THAN:
-                ids = search_utility.greaterThan(env, search_object.search_attribute, search_object.search_value);
+                search_results = search_utility.greaterThan(env, hash_attribute_name, search_object.search_attribute, search_object.search_value);
                 break;
             case lmdb_terms.SEARCH_TYPES.GREATER_THAN_EQUAL:
-                ids = search_utility.greaterThanEqual(env, search_object.search_attribute, search_object.search_value);
+                search_results = search_utility.greaterThanEqual(env, hash_attribute_name, search_object.search_attribute, search_object.search_value);
                 break;
             case lmdb_terms.SEARCH_TYPES.LESS_THAN:
-                ids = search_utility.lessThan(env, search_object.search_attribute, search_object.search_value);
+                search_results = search_utility.lessThan(env, hash_attribute_name, search_object.search_attribute, search_object.search_value);
                 break;
             case lmdb_terms.SEARCH_TYPES.LESS_THAN_EQUAL:
-                ids = search_utility.lessThanEqual(env, search_object.search_attribute, search_object.search_value);
+                search_results = search_utility.lessThanEqual(env, hash_attribute_name, search_object.search_attribute, search_object.search_value);
                 break;
             default:
-                return ids;
+                return search_results;
         }
 
+        let fetch_more = checkToFetchMore(search_object, hash_attribute);
+
+        if(fetch_more === false){
+            return return_map === true ? search_results : Object.values(search_results);
+        }
+
+        let ids = Object.keys(search_results);
         if (return_map === true) {
             return search_utility.batchSearchByHashToMap(env, hash_attribute, search_object.get_attributes, ids);
         }
 
         return search_utility.batchSearchByHash(env, hash_attribute, search_object.get_attributes, ids);
+
     }catch(e){
         throw e;
     }
+}
+
+/**
+ *
+ * @param {SearchObject} search_object
+ */
+function checkToFetchMore(search_object, hash_attribute){
+    if(search_object.get_attributes.length === 1 && search_object.get_attributes[0] === '*'){
+        return true;
+    }
+    let already_fetched_attributes = [search_object.search_attribute];
+    if(search_object.get_attributes.indexOf(hash_attribute) >= 0){
+        already_fetched_attributes.push(hash_attribute);
+    }
+
+    let fetch_more = false;
+    for(let x = 0; x < search_object.get_attributes.length; x++){
+        if(already_fetched_attributes.indexOf(search_object.get_attributes[x]) < 0){
+            fetch_more = true;
+            break;
+        }
+    }
+
+    return fetch_more;
 }
 
 /**
@@ -193,7 +231,7 @@ function threadSearch(search_object, search_type, hash_attribute, return_map){
         const forked = fork(LMDB_THREAD_SEARCH_MODULE_PATH);
         let thread_search_object = new ThreadSearchObject(search_object, search_type, hash_attribute, return_map);
         forked.send(thread_search_object);
-        forked.on('message', data=>{
+        forked.on('message', async data=>{
             forked.kill("SIGINT");
             if(data.error !== undefined){
                 reject(Object.assign(new Error(), data));

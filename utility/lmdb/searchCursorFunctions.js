@@ -22,12 +22,12 @@ function parseRow(txn, attributes){
  * @param {[String]} attributes
  * @param {String|Number} found
  * @param {lmdb.Cursor} txn
- * @param {[]} results
+ * @param {Object} results
  */
 function searchAll(attributes, found, txn, results){
     let obj = parseRow(txn, attributes);
 
-    results.push(obj);
+    results[found] = obj;
 }
 
 /**
@@ -50,21 +50,35 @@ function searchAllToMap(attributes, found, txn, results){
  * @param {[]} results
  */
 function iterateDBI(found, txn, results){
-    results.push([found, txn.cursor.getCurrentString()]);
+    if(results[found] === undefined){
+        results[found] = [];
+    }
+    results[found].push(txn.cursor.getCurrentString());
 }
 
 /**
  * internal function used to add hash value to results, in the scenario of a hash_attribute dbi we just need to add the found key, otherwise we get the value
  * @param {*} found
  * @param {lmdb.Cursor} txn
- * @param {[]} results
+ * @param {Object} results
+ * @param {String} hash_attribute
+ * @param {String} attribute
  */
-function pushResults(found, txn, results){
+function pushResults(found, txn, results, hash_attribute, attribute){
+    let new_object = Object.create(null);
+    new_object[attribute] = auto_cast(found);
+    let hash_value = undefined;
+
     if(txn.is_hash_attribute === true){
-        results.push(found);
+        hash_value = found;
     } else {
-        results.push(txn.cursor.getCurrentString());
+        hash_value = txn.cursor.getCurrentString();
+        if(hash_attribute !== undefined) {
+            new_object[hash_attribute] = auto_cast(hash_value);
+        }
     }
+
+    results[hash_value] = new_object;
 }
 
 /**
@@ -74,12 +88,14 @@ function pushResults(found, txn, results){
  * @param {String} compare_value
  * @param {*} found
  * @param {lmdb.Cursor} txn
- * @param {[]} results
+ * @param {Object} results
+ * @param {String} hash_attribute
+ * @param {String} attribute
  */
-function startsWith(key_type, compare_value, found, txn, results){
+function startsWith(key_type, compare_value, found, txn, results, hash_attribute, attribute){
     let found_str = found.toString();
     if(found_str.startsWith(compare_value)){
-        pushResults(found, txn, results);
+        pushResults(found, txn, results, hash_attribute, attribute);
     } else if(key_type === lmdb_terms.DBI_KEY_TYPES.STRING){
         txn.cursor.goToLast();
     }
@@ -90,12 +106,14 @@ function startsWith(key_type, compare_value, found, txn, results){
  * @param {String} compare_value
  * @param {*} found
  * @param {lmdb.Cursor} txn
- * @param {[]} results
+ * @param {Object} results
+ * @param {String} hash_attribute
+ * @param {String} attribute
  */
-function endsWith(compare_value, found, txn, results){
+function endsWith(compare_value, found, txn, results, hash_attribute, attribute){
     let found_str = found.toString();
     if(found_str.endsWith(compare_value)){
-        pushResults(found, txn, results);
+        pushResults(found, txn, results, hash_attribute, attribute);
     }
 }
 
@@ -104,12 +122,14 @@ function endsWith(compare_value, found, txn, results){
  * @param {String} compare_value
  * @param {*} found
  * @param {lmdb.Cursor} txn
- * @param {[]} results
+ * @param {Object} results
+ * @param {String} hash_attribute
+ * @param {String} attribute
  */
-function contains(compare_value, found, txn, results){
+function contains(compare_value, found, txn, results, hash_attribute, attribute){
     let found_str = found.toString();
     if(found_str.includes(compare_value)){
-        pushResults(found, txn, results);
+        pushResults(found, txn, results, hash_attribute, attribute);
     }
 }
 
@@ -118,12 +138,13 @@ function contains(compare_value, found, txn, results){
  * @param {String} compare_value
  * @param {String} found
  * @param {lmdb.Cursor} txn
- * @param {[]} results
-
+ * @param {Object} results
+ * @param {String} hash_attribute
+ * @param {String} attribute
  */
-function greaterThanStringCompare(compare_value, found, txn, results) {
+function greaterThanStringCompare(compare_value, found, txn, results, hash_attribute, attribute) {
     if (found > compare_value) {
-        pushResults(found, txn, results);
+        pushResults(found, txn, results, hash_attribute, attribute);
     }
 }
 
@@ -131,13 +152,15 @@ function greaterThanStringCompare(compare_value, found, txn, results) {
  * The internal iterator function for greater than, used for string keyed dbis and a numeric compare_value
  * @param {String} found
  * @param {lmdb.Cursor} txn
- * @param {[]} results
+ * @param {Object} results
  * @param {Number} compare_value
+ * @param {String} hash_attribute
+ * @param {String} attribute
  */
-function greaterThanStringToNumberCompare(compare_value, found, txn, results) {
+function greaterThanStringToNumberCompare(compare_value, found, txn, results, hash_attribute, attribute) {
     let found_number = Number(found);
     if(found_number > compare_value){
-        pushResults(found, txn, results);
+        pushResults(found, txn, results, hash_attribute, attribute);
     }
 }
 
@@ -145,14 +168,16 @@ function greaterThanStringToNumberCompare(compare_value, found, txn, results) {
  * The internal iterator function for greater than, used for numeric keyed dbis and a numeric compare_value
  * @param {String} found
  * @param {lmdb.Cursor} txn
- * @param {[]} results
+ * @param {Object} results
  * @param {Number} compare_value
+ * @param {String} hash_attribute
+ * @param {String} attribute
  */
-function greaterThanNumericCompare(compare_value, found, txn, results) {
+function greaterThanNumericCompare(compare_value, found, txn, results, hash_attribute, attribute) {
     if(found < compare_value){
         txn.cursor.goToLast();
     } else if(found > compare_value) {
-        pushResults(found, txn, results);
+        pushResults(found, txn, results, hash_attribute, attribute);
     }
 }
 
@@ -160,12 +185,14 @@ function greaterThanNumericCompare(compare_value, found, txn, results) {
  * The internal iterator function for greater than equal, used for string keyed dbis and a sring compare_value
  * @param {String} found
  * @param {lmdb.Cursor} txn
- * @param {[]} results
+ * @param {Object} results
  * @param {String} compare_value
+ * @param {String} hash_attribute
+ * @param {String} attribute
  */
-function greaterThanEqualStringCompare(compare_value, found, txn, results) {
+function greaterThanEqualStringCompare(compare_value, found, txn, results, hash_attribute, attribute) {
     if (found >= compare_value) {
-        pushResults(found, txn, results);
+        pushResults(found, txn, results, hash_attribute, attribute);
     }
 }
 
@@ -173,13 +200,15 @@ function greaterThanEqualStringCompare(compare_value, found, txn, results) {
  * The internal iterator function for greater than equal, used for string keyed dbis and a numeric compare_value
  * @param {String} found
  * @param {lmdb.Cursor} txn
- * @param {[]} results
+ * @param {Object} results
  * @param {Number} compare_value
+ * @param {String} hash_attribute
+ * @param {String} attribute
  */
-function greaterThanEqualStringToNumberCompare(compare_value, found, txn, results) {
+function greaterThanEqualStringToNumberCompare(compare_value, found, txn, results, hash_attribute, attribute) {
     let found_number = Number(found);
     if(found_number >= compare_value){
-        pushResults(found, txn, results);
+        pushResults(found, txn, results, hash_attribute, attribute);
     }
 }
 
@@ -187,14 +216,16 @@ function greaterThanEqualStringToNumberCompare(compare_value, found, txn, result
  * The internal iterator function for greater than, used for numeric keyed dbis and a numeric compare_value
  * @param {String} found
  * @param {lmdb.Cursor} txn
- * @param {[]} results
+ * @param {Object} results
  * @param {Number} compare_value
+ * @param {String} hash_attribute
+ * @param {String} attribute
  */
-function greaterThaEqualNumericCompare(compare_value, found, txn, results) {
+function greaterThaEqualNumericCompare(compare_value, found, txn, results, hash_attribute, attribute) {
     if(found < compare_value){
         txn.cursor.goToLast();
     } else {
-        pushResults(found, txn, results);
+        pushResults(found, txn, results, hash_attribute, attribute);
     }
 }
 
@@ -202,23 +233,27 @@ function greaterThaEqualNumericCompare(compare_value, found, txn, results) {
  * The internal iterator function for adding the value with no comparison check
  * @param {Number} found
  * @param {lmdb.Cursor} txn
- * @param {[]} results
+ * @param {Object} results
  * @param {Number} compare_value
+ * @param {String} hash_attribute
+ * @param {String} attribute
  */
-function addResult(compare_value, found, txn, results) {
-    pushResults(found, txn, results);
+function addResult(compare_value, found, txn, results, hash_attribute, attribute) {
+    pushResults(found, txn, results, hash_attribute, attribute);
 }
 
 /**
  * The internal iterator function for less than, used for string keyed dbis and a string compare_value
  * @param {String} found
  * @param {lmdb.Cursor} txn
- * @param {[]} results
+ * @param {Object} results
  * @param {String} compare_value
+ * @param {String} hash_attribute
+ * @param {String} attribute
  */
-function lessThanStringCompare(compare_value, found, txn, results) {
+function lessThanStringCompare(compare_value, found, txn, results, hash_attribute, attribute) {
     if (found < compare_value) {
-        pushResults(found, txn, results);
+        pushResults(found, txn, results, hash_attribute, attribute);
     }
 }
 
@@ -226,13 +261,15 @@ function lessThanStringCompare(compare_value, found, txn, results) {
  * The internal iterator function for less than, used for string keyed dbis and a numeric compare_value
  * @param {String} found
  * @param {lmdb.Cursor} txn
- * @param {[]} results
+ * @param {Object} results
  * @param {Number} compare_value
+ * @param {String} hash_attribute
+ * @param {String} attribute
  */
-function lessThanStringToNumberCompare(compare_value, found, txn, results) {
+function lessThanStringToNumberCompare(compare_value, found, txn, results, hash_attribute, attribute) {
     let found_number = Number(found);
     if(found_number < compare_value){
-        pushResults(found, txn, results);
+        pushResults(found, txn, results, hash_attribute, attribute);
     }
 }
 
@@ -240,12 +277,14 @@ function lessThanStringToNumberCompare(compare_value, found, txn, results) {
  * The internal iterator function for less than, used for number keyed dbis
  * @param {Number} found
  * @param {lmdb.Cursor} txn
- * @param {[]} results
+ * @param {Object} results
  * @param {Number} compare_value
+ * @param {String} hash_attribute
+ * @param {String} attribute
  */
-function lessThanNumericCompare(compare_value, found, txn, results) {
+function lessThanNumericCompare(compare_value, found, txn, results, hash_attribute, attribute) {
     if(found < compare_value){
-        pushResults(found, txn, results);
+        pushResults(found, txn, results, hash_attribute, attribute);
     } else if(compare_value < 0){
         txn.cursor.goToFirst();
     } else {
@@ -260,10 +299,12 @@ function lessThanNumericCompare(compare_value, found, txn, results) {
  * @param {lmdb.Cursor} txn
  * @param {[]} results
  * @param {String} compare_value
+ * @param {String} hash_attribute
+ * @param {String} attribute
  */
-function lessThanEqualStringCompare(compare_value, found, txn, results) {
+function lessThanEqualStringCompare(compare_value, found, txn, results, hash_attribute, attribute) {
     if (found <= compare_value) {
-        pushResults(found, txn, results);
+        pushResults(found, txn, results, hash_attribute, attribute);
     }
 }
 
@@ -273,11 +314,13 @@ function lessThanEqualStringCompare(compare_value, found, txn, results) {
  * @param {lmdb.Cursor} txn
  * @param {[]} results
  * @param {Number} compare_value
+ * @param {String} hash_attribute
+ * @param {String} attribute
  */
-function lessThanEqualStringToNumberCompare(compare_value, found, txn, results) {
+function lessThanEqualStringToNumberCompare(compare_value, found, txn, results, hash_attribute, attribute) {
     let found_number = Number(found);
     if(found_number <= compare_value){
-        pushResults(found, txn, results);
+        pushResults(found, txn, results, hash_attribute, attribute);
     }
 }
 
@@ -287,10 +330,12 @@ function lessThanEqualStringToNumberCompare(compare_value, found, txn, results) 
  * @param {lmdb.Cursor} txn
  * @param {[]} results
  * @param {Number} compare_value
+ * @param {String} hash_attribute
+ * @param {String} attribute
  */
-function lessThanEqualNumericCompare(compare_value, found, txn, results) {
+function lessThanEqualNumericCompare(compare_value, found, txn, results, hash_attribute, attribute) {
     if(found <= compare_value){
-        pushResults(found, txn, results);
+        pushResults(found, txn, results, hash_attribute, attribute);
     } else if(compare_value < 0){
         txn.cursor.goToFirst();
     } else {
@@ -299,7 +344,8 @@ function lessThanEqualNumericCompare(compare_value, found, txn, results) {
         let key_converted = common.convertKeyValueFromSearch(key, txn.key_type);
         if(key_converted === compare_value) {
             key = txn.cursor.goToLastDup();
-            pushResults(key, txn, results);
+            key_converted = common.convertKeyValueFromSearch(key, txn.key_type);
+            pushResults(key_converted, txn, results, hash_attribute, attribute);
         }
 
     }
@@ -312,11 +358,12 @@ function lessThanEqualNumericCompare(compare_value, found, txn, results) {
  * @param {String} found
  * @param {lmdb.Cursor} txn
  * @param {[]} results
-
+ * @param {String} hash_attribute
+ * @param {String} attribute
  */
-function betweenStringCompare(start_value, end_value, found, txn, results) {
+function betweenStringCompare(start_value, end_value, found, txn, results, hash_attribute, attribute) {
     if (found >= start_value && found <= end_value) {
-        pushResults(found, txn, results);
+        pushResults(found, txn, results, hash_attribute, attribute);
     }
 }
 
@@ -327,11 +374,13 @@ function betweenStringCompare(start_value, end_value, found, txn, results) {
  * @param {String} found
  * @param {lmdb.Cursor} txn
  * @param {[]} results
+ * @param {String} hash_attribute
+ * @param {String} attribute
  */
-function betweenStringToNumberCompare(start_value,end_value, found, txn, results) {
+function betweenStringToNumberCompare(start_value,end_value, found, txn, results, hash_attribute, attribute) {
     let found_number = Number(found);
     if (found_number >= start_value && found_number <= end_value) {
-        pushResults(found, txn, results);
+        pushResults(found, txn, results, hash_attribute, attribute);
     }
 }
 
