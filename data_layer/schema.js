@@ -180,6 +180,10 @@ async function dropAttribute(drop_attribute_object) {
         await harperBridge.dropAttribute(drop_attribute_object);
         dropAttributeFromGlobal(drop_attribute_object);
 
+        let drop_atribute_message = signalling.SCHEMA_CHANGE_MESSAGE;
+        drop_atribute_message.operation = drop_attribute_object;
+        signalling.signalSchemaChange(drop_atribute_message);
+
         return `successfully deleted attribute '${drop_attribute_object.attribute}'`;
     } catch(err) {
         logger.error(`Got an error deleting attribute ${util.inspect(drop_attribute_object)}.`);
