@@ -417,6 +417,7 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
         try{
             if(global.lmdb_map !== undefined && msg.operation !== undefined){
                 let keys = Object.keys(global.lmdb_map);
+                let cached_environment = undefined;
                 switch (msg.operation.operation) {
                     case 'drop_schema':
                         for(let x = 0; x < keys.length; x ++){
@@ -428,6 +429,12 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
                         break;
                     case 'drop_table':
                         delete global.lmdb_map[`${msg.operation.schema}.${msg.operation.table}`];
+                        break;
+                    case 'drop_attribute':
+                        cached_environment = global.lmdb_map[`${msg.operation.schema}.${msg.operation.table}`];
+                        if(cached_environment !== undefined && typeof cached_environment.dbis === 'object' && cached_environment.dbis[`${msg.operation.attribute}`] !== undefined){
+                            delete cached_environment.dbis[`${msg.operation.attribute}`];
+                        }
                         break;
                     default:
                         break;
