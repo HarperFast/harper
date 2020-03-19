@@ -2090,7 +2090,7 @@
 							"script": {
 								"id": "6858e9a6-09d5-4b1a-a559-50ef8e63dccb",
 								"exec": [
-									"let expected_attributes = [ \"sensorData1\", \"sensorData2\", \"id\" ]\r",
+									"let expected_attributes = [ \"sensorData1\", \"sensorData2\", \"id\", '__createdtime__', '__updatedtime__' ]\r",
 									"\r",
 									"pm.test(\"Status code is 200\", function () {\r",
 									"    try {\r",
@@ -2177,7 +2177,7 @@
 							"script": {
 								"id": "6858e9a6-09d5-4b1a-a559-50ef8e63dccb",
 								"exec": [
-									"let expected_attributes = [ \"sensorData1\", \"sensorData2\", \"id\" ]\r",
+									"let expected_attributes = [ \"sensorData1\", \"sensorData2\", \"id\", '__createdtime__', '__updatedtime__' ]\r",
 									"\r",
 									"pm.test(\"Status code is 200\", function () {\r",
 									"    try {\r",
@@ -2264,7 +2264,7 @@
 							"script": {
 								"id": "6858e9a6-09d5-4b1a-a559-50ef8e63dccb",
 								"exec": [
-									"let expected_attributes = [ \"sensorData1\", \"sensorData2\", \"id\" ]\r",
+									"let expected_attributes = [ \"sensorData1\", \"sensorData2\", \"id\", '__createdtime__', '__updatedtime__' ]\r",
 									"\r",
 									"pm.test(\"Status code is 200\", function () {\r",
 									"    try {\r",
@@ -2351,7 +2351,7 @@
 							"script": {
 								"id": "6858e9a6-09d5-4b1a-a559-50ef8e63dccb",
 								"exec": [
-									"let expected_attributes = [ \"sensorData1\", \"sensorData2\", \"id\" ]\r",
+									"let expected_attributes = [ \"sensorData1\", \"sensorData2\", \"id\", '__createdtime__', '__updatedtime__' ]\r",
 									"\r",
 									"pm.test(\"Status code is 200\", function () {\r",
 									"    try {\r",
@@ -2438,7 +2438,7 @@
 							"script": {
 								"id": "6858e9a6-09d5-4b1a-a559-50ef8e63dccb",
 								"exec": [
-									"let expected_attributes = [ \"sensorData1\", \"sensorData2\", \"id\" ]\r",
+									"let expected_attributes = [ \"sensorData1\", \"sensorData2\", \"id\", '__createdtime__', '__updatedtime__' ]\r",
 									"\r",
 									"pm.test(\"Status code is 200\", function () {\r",
 									"    try {\r",
@@ -4884,6 +4884,12 @@
 									"\r",
 									"pm.test(\"Correct number of records\", function () {\r",
 									"    var jsonData = pm.response.json();\r",
+									"    \r",
+									"    jsonData.forEach(row=>{\r",
+									"        delete row.__createdtime__;\r",
+									"        delete row.__updatedtime__;\r",
+									"    });\r",
+									"    \r",
 									"    pm.expect(jsonData).to.eql(expected_result);\r",
 									"});"
 								],
@@ -4973,6 +4979,11 @@
 									"\r",
 									"pm.test(\"Correct number of records\", function () {\r",
 									"    var jsonData = pm.response.json();\r",
+									"    \r",
+									"    jsonData.forEach(row=>{\r",
+									"        delete row.__createdtime__;\r",
+									"        delete row.__updatedtime__;\r",
+									"    });\r",
 									"    \r",
 									"    try {\r",
 									"        pm.expect(jsonData).to.eql(expected_result);\r",
@@ -5067,6 +5078,11 @@
 									"\r",
 									"pm.test(\"Correct number of records\", function () {\r",
 									"    var jsonData = pm.response.json();\r",
+									"    \r",
+									"    jsonData.forEach(row=>{\r",
+									"        delete row.__createdtime__;\r",
+									"        delete row.__updatedtime__;\r",
+									"    });\r",
 									"    \r",
 									"    try {\r",
 									"        pm.expect(jsonData).to.eql(expected_result);\r",
@@ -5432,7 +5448,7 @@
 							"script": {
 								"id": "6858e9a6-09d5-4b1a-a559-50ef8e63dccb",
 								"exec": [
-									"let expected_attributes = [ \"id\", \"sensorData1\", \"sensorData2\", \"extraAttribute\" ];\r",
+									"let expected_attributes = [ \"id\", \"sensorData1\", \"sensorData2\", \"extraAttribute\", '__createdtime__', '__updatedtime__' ];\r",
 									"\r",
 									"pm.test(\"Status code is 200\", function () {\r",
 									"    try {\r",
@@ -5519,7 +5535,7 @@
 							"script": {
 								"id": "6858e9a6-09d5-4b1a-a559-50ef8e63dccb",
 								"exec": [
-									"let expected_attributes = [ \"id\", \"sensorData1\", \"sensorData2\", \"extraAttribute\" ];\r",
+									"let expected_attributes = [ \"id\", \"sensorData1\", \"sensorData2\", \"extraAttribute\", '__createdtime__', '__updatedtime__' ];\r",
 									"\r",
 									"pm.test(\"Status code is 200\", function () {\r",
 									"    try {\r",
@@ -5606,7 +5622,7 @@
 							"script": {
 								"id": "6858e9a6-09d5-4b1a-a559-50ef8e63dccb",
 								"exec": [
-									"let expected_attributes = [ \"id\", \"sensorData1\", \"sensorData2\", \"extraAttribute\" ];\r",
+									"let expected_attributes = [ \"id\", \"sensorData1\", \"sensorData2\", \"extraAttribute\", '__createdtime__', '__updatedtime__' ];\r",
 									"\r",
 									"pm.test(\"Status code is 200\", function () {\r",
 									"    try {\r",
@@ -5693,7 +5709,7 @@
 							"script": {
 								"id": "6858e9a6-09d5-4b1a-a559-50ef8e63dccb",
 								"exec": [
-									"let expected_attributes = [ \"id\", \"sensorData1\", \"sensorData2\", \"extraAttribute\" ];\r",
+									"let expected_attributes = [ \"id\", \"sensorData1\", \"sensorData2\", \"extraAttribute\", '__createdtime__', '__updatedtime__' ];\r",
 									"\r",
 									"pm.test(\"Status code is 200\", function () {\r",
 									"    try {\r",
@@ -5780,7 +5796,7 @@
 							"script": {
 								"id": "6858e9a6-09d5-4b1a-a559-50ef8e63dccb",
 								"exec": [
-									"let expected_attributes = [ \"id\", \"sensorData1\", \"sensorData2\", \"extraAttribute\" ];\r",
+									"let expected_attributes = [ \"id\", \"sensorData1\", \"sensorData2\", \"extraAttribute\", '__createdtime__', '__updatedtime__' ];\r",
 									"\r",
 									"pm.test(\"Status code is 200\", function () {\r",
 									"    try {\r",
@@ -5867,7 +5883,7 @@
 							"script": {
 								"id": "6858e9a6-09d5-4b1a-a559-50ef8e63dccb",
 								"exec": [
-									"let expected_attributes = [ \"id\", \"sensorData1\", \"sensorData2\", \"extraAttribute\" ];\r",
+									"let expected_attributes = [ \"id\", \"sensorData1\", \"sensorData2\", \"extraAttribute\", '__createdtime__', '__updatedtime__' ];\r",
 									"\r",
 									"pm.test(\"Status code is 200\", function () {\r",
 									"    try {\r",
@@ -6046,6 +6062,10 @@
 									"\r",
 									"pm.test(\"Updated record exists as expected\", function () {\r",
 									"    var jsonData = pm.response.json();\r",
+									"    \r",
+									"    delete jsonData[0].__createdtime__;\r",
+									"    delete jsonData[0].__updatedtime__;\r",
+									"    \r",
 									"    pm.expect(jsonData).to.eql(expected_result);\r",
 									"});"
 								],
@@ -6128,6 +6148,9 @@
 									"\r",
 									"pm.test(\"Updated record exists as expected\", function () {\r",
 									"    var jsonData = pm.response.json();\r",
+									"    \r",
+									"    delete jsonData[0].__createdtime__;\r",
+									"    delete jsonData[0].__updatedtime__;\r",
 									"    \r",
 									"    try {\r",
 									"        pm.expect(jsonData).to.eql(expected_result);\r",
@@ -6216,6 +6239,9 @@
 									"pm.test(\"Updated record exists as expected\", function () {\r",
 									"    var jsonData = pm.response.json();\r",
 									"    \r",
+									"    delete jsonData[0].__createdtime__;\r",
+									"    delete jsonData[0].__updatedtime__;\r",
+									"    \r",
 									"    try {\r",
 									"        pm.expect(jsonData).to.eql(expected_result);\r",
 									"    } catch (error) {\r",
@@ -6284,7 +6310,7 @@
 							"script": {
 								"id": "6858e9a6-09d5-4b1a-a559-50ef8e63dccb",
 								"exec": [
-									"let expected_attributes = [ \"id\", \"psi\", \"psiUPDATE\" ];\r",
+									"let expected_attributes = [ \"id\", \"psi\", \"psiUPDATE\", '__createdtime__', '__updatedtime__' ];\r",
 									"\r",
 									"pm.test(\"Status code is 200\", function () {\r",
 									"    try {\r",
@@ -6371,7 +6397,7 @@
 							"script": {
 								"id": "6858e9a6-09d5-4b1a-a559-50ef8e63dccb",
 								"exec": [
-									"let expected_attributes = [ \"id\", \"psi\", \"psiUPDATE\" ];\r",
+									"let expected_attributes = [ \"id\", \"psi\", \"psiUPDATE\", '__createdtime__', '__updatedtime__' ];\r",
 									"\r",
 									"pm.test(\"Status code is 200\", function () {\r",
 									"    try {\r",
@@ -6458,7 +6484,7 @@
 							"script": {
 								"id": "6858e9a6-09d5-4b1a-a559-50ef8e63dccb",
 								"exec": [
-									"let expected_attributes = [ \"id\", \"psi\", \"psiUPDATE\" ];\r",
+									"let expected_attributes = [ \"id\", \"psi\", \"psiUPDATE\", '__createdtime__', '__updatedtime__' ];\r",
 									"\r",
 									"pm.test(\"Status code is 200\", function () {\r",
 									"    try {\r",
@@ -6545,7 +6571,7 @@
 							"script": {
 								"id": "6858e9a6-09d5-4b1a-a559-50ef8e63dccb",
 								"exec": [
-									"let expected_attributes = [ \"id\", \"psi\", \"psiUPDATE\" ];\r",
+									"let expected_attributes = [ \"id\", \"psi\", \"psiUPDATE\", '__createdtime__', '__updatedtime__' ];\r",
 									"\r",
 									"pm.test(\"Status code is 200\", function () {\r",
 									"    try {\r",
@@ -6632,7 +6658,7 @@
 							"script": {
 								"id": "6858e9a6-09d5-4b1a-a559-50ef8e63dccb",
 								"exec": [
-									"let expected_attributes = [ \"id\", \"psi\", \"psiUPDATE\" ];\r",
+									"let expected_attributes = [ \"id\", \"psi\", \"psiUPDATE\", '__createdtime__', '__updatedtime__' ];\r",
 									"\r",
 									"pm.test(\"Status code is 200\", function () {\r",
 									"    try {\r",
@@ -6719,7 +6745,7 @@
 							"script": {
 								"id": "6858e9a6-09d5-4b1a-a559-50ef8e63dccb",
 								"exec": [
-									"let expected_attributes = [ \"id\", \"psi\", \"psiUPDATE\" ];\r",
+									"let expected_attributes = [ \"id\", \"psi\", \"psiUPDATE\", '__createdtime__', '__updatedtime__' ];\r",
 									"\r",
 									"pm.test(\"Status code is 200\", function () {\r",
 									"    try {\r",
@@ -8125,7 +8151,7 @@
 								"id": "6858e9a6-09d5-4b1a-a559-50ef8e63dccb",
 								"exec": [
 									"let expected_result = {\r",
-									"    \"message\": \"1 record successfully deleted\",\r",
+									"    \"message\": \"1 of 1 record successfully deleted\",\r",
 									"    \"deleted_hashes\": [\r",
 									"        11\r",
 									"    ],\r",
