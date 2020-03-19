@@ -3279,7 +3279,7 @@
 							"script": {
 								"id": "6858e9a6-09d5-4b1a-a559-50ef8e63dccb",
 								"exec": [
-									"let expected_attributes = [ \"psi\", \"id\" ]\r",
+									"let expected_attributes = [ \"psi\", \"id\", '__createdtime__', '__updatedtime__' ]\r",
 									"\r",
 									"pm.test(\"Status code is 200\", function () {\r",
 									"    try {\r",
@@ -3366,7 +3366,7 @@
 							"script": {
 								"id": "6858e9a6-09d5-4b1a-a559-50ef8e63dccb",
 								"exec": [
-									"let expected_attributes = [ \"psi\", \"id\" ]\r",
+									"let expected_attributes = [ \"psi\", \"id\", '__createdtime__', '__updatedtime__' ]\r",
 									"\r",
 									"pm.test(\"Status code is 200\", function () {\r",
 									"    try {\r",
@@ -3453,7 +3453,7 @@
 							"script": {
 								"id": "6858e9a6-09d5-4b1a-a559-50ef8e63dccb",
 								"exec": [
-									"let expected_attributes = [ \"psi\", \"id\" ]\r",
+									"let expected_attributes = [ \"psi\", \"id\", '__createdtime__', '__updatedtime__' ]\r",
 									"\r",
 									"pm.test(\"Status code is 200\", function () {\r",
 									"    try {\r",
@@ -3540,7 +3540,7 @@
 							"script": {
 								"id": "6858e9a6-09d5-4b1a-a559-50ef8e63dccb",
 								"exec": [
-									"let expected_attributes = [ \"psi\", \"id\" ]\r",
+									"let expected_attributes = [ \"psi\", \"id\", '__createdtime__', '__updatedtime__' ]\r",
 									"\r",
 									"pm.test(\"Status code is 200\", function () {\r",
 									"    try {\r",
@@ -3627,7 +3627,7 @@
 							"script": {
 								"id": "6858e9a6-09d5-4b1a-a559-50ef8e63dccb",
 								"exec": [
-									"let expected_attributes = [ \"psi\", \"id\" ]\r",
+									"let expected_attributes = [ \"psi\", \"id\", '__createdtime__', '__updatedtime__' ]\r",
 									"\r",
 									"pm.test(\"Status code is 200\", function () {\r",
 									"    try {\r",
@@ -3714,7 +3714,7 @@
 							"script": {
 								"id": "6858e9a6-09d5-4b1a-a559-50ef8e63dccb",
 								"exec": [
-									"let expected_attributes = [ \"psi\", \"id\" ]\r",
+									"let expected_attributes = [ \"psi\", \"id\", '__createdtime__', '__updatedtime__' ]\r",
 									"\r",
 									"pm.test(\"Status code is 200\", function () {\r",
 									"    try {\r",

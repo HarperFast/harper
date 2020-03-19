@@ -38,7 +38,10 @@ async function lmdbDropSchema(drop_schema_obj) {
             try {
                 await drop_table(delete_table_obj);
             } catch(e) {
-                throw e;
+                //this message would get thrown for an environment that doesn't exist
+                if(e.message !== 'invalid environment') {
+                    throw e;
+                }
             }
         }
 
