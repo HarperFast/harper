@@ -186,27 +186,30 @@ function getSelectAttributes(ast, affected_attributes, table_lookup) {
         }
         affected_attributes.get(schema).get(table_name).push(col.columnid);
     });
-    if(ast.where) {
-        let table, col = undefined;
 
-        if(ast.where.expression.left.tableid) {
-            table = ast.where.expression.left.tableid;
-        } else if(ast.from[0].tableid) {
-            table = ast.from[0].tableid;
-        }
-        if(ast.where.expression.left.columnid) {
-            col = ast.where.expression.left.columnid;
-        }
-        if(table && col) {
-            if (!affected_attributes.get(schema).has(table)) {
-                if (!table_lookup.has(table)) {
-                    harper_logger.info(`table specified as ${table} not found.`);
-                    return;
-                } else {
-                    table = table_lookup.get(table);
+    // It's important to iterate through the WHERE clause as well in case there are other columns that are not included in
+    // the SELECT clause
+    if(ast.where) {
+        const iterator = new RecursiveIterator(ast.where);
+        const from_table = ast.from[0].tableid;
+
+        for(let {node} of iterator) {
+            if(node && node.columnid ) {
+                let table = node.tableid ? node.tableid : from_table;
+
+                if (!affected_attributes.get(schema).has(table)) {
+                    if (!table_lookup.has(table)) {
+                        harper_logger.info(`table specified as ${table} not found.`);
+                        continue;
+                    } else {
+                        table = table_lookup.get(table);
+                    }
+                }
+                //We need to check to ensure this columnid wasn't already set in the Map
+                if (affected_attributes.get(schema).get(table).indexOf(node.columnid) < 0) {
+                    affected_attributes.get(schema).get(table).push(node.columnid);
                 }
             }
-            affected_attributes.get(schema).get(table).push(col);
         }
     }
 }
