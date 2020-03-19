@@ -9228,11 +9228,12 @@
 							"script": {
 								"id": "01a8e391-700e-4115-96c9-f33d227a5579",
 								"exec": [
-									"tests[\"Deleted one row on Node1\"] = responseBody.has(\"1 of 1 records successfully deleted\");",
+									"tests[\"Deleted one row on Node1\"] = responseBody.has(\"1 of 1 record successfully deleted\");",
 									"",
 									"pm.test(\"Deleted hash includes correct hash\", function () {",
 									"    var response = pm.response.json()",
-									"    pm.expect(response.deleted_hashes).to.deep.equal([1]);  ",
+									"    pm.expect(response.deleted_hashes.length === 1);",
+									"    pm.expect(response.deleted_hashes[0] === 1);",
 									"});"
 								],
 								"type": "text/javascript"
