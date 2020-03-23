@@ -7,11 +7,15 @@ const logger = require('../utility/logging/harper_logger');
 const write = require('./insert');
 const clone = require('clone');
 const alasql = require('alasql');
+const alasql_function_importer = require('../sqlTranslator/alasqlFunctionImporter');
 const util = require('util');
 const cb_insert_update = util.callbackify(write.update);
 const terms = require('../utility/hdbTerms');
 const hdb_utils = require('../utility/common_utils');
 const env = require('../utility/environment/environmentManager');
+
+//here we call to define and import custom functions to alasql
+alasql_function_importer(alasql);
 
 module.exports = {
     update: update
@@ -65,11 +69,23 @@ function update(statement, callback){
  * @param columns
  */
 function createUpdateRecord(columns){
+    try {
+
+    } catch(e) {
+        logger.error(e)
+    }
     let record = {};
 
     columns.forEach((column)=>{
         //we want to check to validate that the value attribute exists on column.expression, if it doesn't we use the columnid
-        record[column.column.columnid] = "value" in column.expression ? column.expression.value : column.expression.columnid;
+        if ("funcid" in column.expression) {
+            const func_val = 'func_val';
+            const func_variable = column.expression.funcid === 'CURRENT_TIMESTAMP';
+            const func_value = alasql(`SELECT ${func_variable ? column.expression.funcid : column.expression.toString()} AS [${func_val}]`);
+            record[column.column.columnid] = func_value[0][func_val];
+        } else {
+            record[column.column.columnid] = "value" in column.expression ? column.expression.value : column.expression.columnid;
+        }
     });
 
     return record;
