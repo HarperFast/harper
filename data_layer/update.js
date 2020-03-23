@@ -69,11 +69,6 @@ function update(statement, callback){
  * @param columns
  */
 function createUpdateRecord(columns){
-    try {
-
-    } catch(e) {
-        logger.error(e)
-    }
     let record = {};
 
     columns.forEach((column)=>{
