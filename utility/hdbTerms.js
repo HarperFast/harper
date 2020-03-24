@@ -464,6 +464,19 @@ class PermissionAttributeResponseObject {
 
 const UNAUTHORIZED_PERMISSION_NAME = 'unauthorized_access';
 
+/**
+ * This object includes all supported date and time SQL functions
+ */
+const SUPPORTED_SQL_DATE_FUNCTIONS = {
+    GETDATE: true,
+    CURRENT_DATE: true,
+    CURRENT_TIME: true,
+    CURRENT_TIMESTAMP: true,
+    YEAR: true,
+    MONTH: true,
+    DAY: true
+};
+
 module.exports = {
     LOCAL_HARPERDB_OPERATIONS,
     HDB_SUPPORT_ADDRESS,
@@ -552,5 +565,6 @@ module.exports = {
     JAVASCRIPT_EXTENSION,
     PermissionResponseObject,
     PermissionAttributeResponseObject,
-    UNAUTHORIZED_PERMISSION_NAME
+    UNAUTHORIZED_PERMISSION_NAME,
+    SUPPORTED_SQL_DATE_FUNCTIONS
 };
