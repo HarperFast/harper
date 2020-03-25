@@ -1,13 +1,14 @@
 "use strict";
 
 const moment = require('moment');
+const hdb_time_format = 'YYYY-MM-DDTHH:mm:ss.SSS';
 
 module.exports = {
     current_date: () => {
-        return moment().format('YYYY-MM-DD');
+        return moment().utc().format('YYYY-MM-DD');
     },
     current_time: () => {
-        return moment().format('HH:mm:ss');
+        return moment().utc().format('HH:mm:ss.SSS');
     },
     extract: (date, date_part)=>{
         switch(date_part.toLowerCase()){
@@ -29,13 +30,19 @@ module.exports = {
                 break;
         }
     },
-    'date_format':(date, format)=>{
+    date: (date) => {
+        return moment(date).format(hdb_time_format);
+    },
+    date_format:(date, format)=>{
         return moment(date).format(format);
     },
-    'date_add':(date, value, interval)=>{
-        return moment(date).add(value, interval).format();
+    date_add:(date, value, interval)=>{
+        return moment(date).add(interval, value).format(hdb_time_format);
     },
-    'date_diff':(date_1, date_2, interval)=>{
+    date_sub:(date, value, interval)=>{
+        return moment(date).subtract(interval, value).format(hdb_time_format);
+    },
+    date_diff:(date_1, date_2, interval)=>{
         let first_date = moment(date_1);
         let second_date = moment(date_2);
         if(interval){
@@ -43,6 +50,8 @@ module.exports = {
         } else {
             return first_date.diff(second_date);
         }
-
-    }
+    },
+    now:()=>{
+        return moment().utc().format(hdb_time_format);
+    },
 };

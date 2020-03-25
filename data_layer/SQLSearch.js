@@ -820,7 +820,10 @@ class SQLSearch {
         });
 
         //TODO there is an error with between statements being converted back to string.  need to handle
-        let where_clause = this.statement.where ? 'WHERE ' + this.statement.where : '';
+        let where_clause = '';
+        if (this.statement.where) {
+            where_clause = checkForCurrentTimestamp('WHERE ' + this.statement.where);
+        }
 
         let order_clause = '';
         if (this.statement.order) {
@@ -1025,7 +1028,7 @@ class SQLSearch {
      * @private
      */
     _buildSQL(){
-        let sql = this.statement.toString();
+        let sql = checkForCurrentTimestamp(this.statement.toString());
 
         this.statement.columns.forEach(column => {
             if (column.funcid && column.as) {
@@ -1142,3 +1145,16 @@ class SQLSearch {
 }
 
 module.exports = SQLSearch;
+
+//RESOLVES A BUG IN ALASQL THAT IS PR PENDING - CAN REMOVE WHEN FIX IS RELEASED
+function checkForCurrentTimestamp(where_clause) {
+    const find = 'CURRENT_TIMESTAMP()';
+    const replace = 'CURRENT_TIMESTAMP';
+    const includes_variable = where_clause.includes('CURRENT_TIMESTAMP()');
+
+    if (includes_variable) {
+        where_clause = where_clause.replace(find, replace);
+    }
+
+    return where_clause;
+}
