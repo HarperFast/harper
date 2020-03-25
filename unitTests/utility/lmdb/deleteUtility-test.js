@@ -170,6 +170,19 @@ describe('Test deleteUtility', ()=>{
 
             results = test_utils.assertErrorSync(search_util.iterateDBI, [env, '__blob__'], undefined, 'name iterate');
             assert.deepStrictEqual(results, Object.create(null));
+
+            results = test_utils.assertErrorSync(search_util.iterateDBI, [env, '__createdtime__'], undefined, 'name iterate');
+
+            Object.keys(results).forEach(key=>{
+                assert.deepStrictEqual(results[key].indexOf('6'), -1);
+            });
+        });
+
+        it('delete record that does not exist', ()=>{
+            let some_ids = ['2444444'];
+
+            let results = test_utils.assertErrorSync(delete_utility.deleteRecords, [env, HASH_ATTRIBUTE_NAME, some_ids], undefined);
+            assert.deepStrictEqual(results, { deleted: [], skipped: [ 2444444 ] });
         });
     });
 });
