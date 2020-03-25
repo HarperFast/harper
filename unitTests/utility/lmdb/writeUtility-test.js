@@ -17,7 +17,7 @@ const TIMESTAMP = Date.now();
 const BASE_TEST_PATH = path.join(test_utils.getMockFSPath(), 'lmdbTest');
 const TEST_ENVIRONMENT_NAME = 'test';
 const HASH_ATTRIBUTE_NAME = 'id';
-const ALL_ATTRIBUTES = ['id', 'name', 'age', '__createdtime__', '__updatedtime__'];
+const ALL_ATTRIBUTES = ['id', 'name', 'age', '__createdtime__', '__updatedtime__', '__blob__'];
 const ONE_RECORD_ARRAY = [
     {id:1, name:'Kyle', age:'46'}
 ];
@@ -311,6 +311,45 @@ describe("Test writeUtility module", ()=>{
             assert.deepEqual(records,expected2);
             txn = new environment_utility.TransactionCursor(env, '__blob__');
             key = txn.cursor.goToKey(`text/${record.id}`);
+            assert.deepStrictEqual(key, null);
+            txn.close();
+        });
+
+        it("test partially updating row to have long text which is json, then remove the json", ()=>{
+            let all_attributes_for_update = ['__blob__', '__createdtime__', '__updatedtime__','age', 'height', 'id', 'name', 'city', 'json'];
+            let record = {
+                id: 1,
+                json: {text: 'Occupy messenger bag microdosing yr, kale chips neutra la croix VHS ugh wayfarers street art. Ethical cronut whatever, cold-pressed viral post-ironic man bun swag marfa green juice. Knausgaard gluten-free selvage ethical subway tile sartorial man bun butcher selfies raclette paleo. Fam brunch plaid woke authentic dreamcatcher hot chicken quinoa gochujang slow-carb selfies keytar PBR&B street art pinterest. Narwhal tote bag glossier paleo cronut salvia cloud bread craft beer butcher meditation fingerstache hella migas 8-bit messenger bag. Tattooed schlitz palo santo gluten-free, wayfarers tumeric squid. Hella keytar thundercats chambray, occupy iPhone paleo slow-carb jianbing everyday carry 90\'s distillery polaroid fanny pack. Kombucha cray PBR&B shoreditch 8-bit, adaptogen vinyl swag meditation 3 wolf moon. Selvage art party retro kitsch pour-over iPhone street art celiac etsy cred cliche gastropub. Kombucha migas marfa listicle cliche. Godard kombucha ennui lumbersexual, austin pop-up raclette retro. Man braid kale chips pitchfork, tote bag hoodie poke mumblecore. Bitters shoreditch tbh everyday carry keffiyeh raw denim kale chips.'}
+            };
+
+            let records = test_utils.assertErrorSync(search_util.searchAll, [env, HASH_ATTRIBUTE_NAME, ALL_ATTRIBUTES], undefined);
+            let expected = [ONE_RECORD_ARRAY_EXPECTED[0]];
+            assert.deepEqual(records, expected);
+
+            let results = test_utils.assertErrorSync(write_utility.updateRecords, [env, HASH_ATTRIBUTE_NAME, all_attributes_for_update, [record]], undefined);
+            assert.deepStrictEqual(results, {written_hashes:[1], skipped_hashes:[]});
+
+            records = test_utils.assertErrorSync(search_util.searchAll, [env, HASH_ATTRIBUTE_NAME, ['id', 'name', 'city', 'age', 'json']], undefined);
+            let expected2 = [{id:1, name: 'Kyle', city:null, age: 46, json:record.json}];
+            assert.deepEqual(records,expected2);
+
+            let txn = new environment_utility.TransactionCursor(env, '__blob__');
+            let key = txn.cursor.goToKey(`json/${record.id}`);
+            assert.deepStrictEqual(key, `json/${record.id}`);
+            let value = txn.cursor.getCurrentString();
+            assert.deepStrictEqual(value, JSON.stringify(record.json));
+            txn.close();
+
+            //set json to undefined & verify it's gone
+
+            results = test_utils.assertErrorSync(write_utility.updateRecords, [env, HASH_ATTRIBUTE_NAME, all_attributes_for_update, [{id:1, json:undefined}]], undefined);
+            assert.deepStrictEqual(results, {written_hashes:[1], skipped_hashes:[]});
+
+            records = test_utils.assertErrorSync(search_util.searchAll, [env, HASH_ATTRIBUTE_NAME, ['id', 'name', 'city', 'age', 'json']], undefined);
+            expected2 = [{id:1, name: 'Kyle', city:null, age: 46, json:null}];
+            assert.deepEqual(records,expected2);
+            txn = new environment_utility.TransactionCursor(env, '__blob__');
+            key = txn.cursor.goToKey(`json/${record.id}`);
             assert.deepStrictEqual(key, null);
             txn.close();
         });
