@@ -75,13 +75,13 @@ function createUpdateRecord(columns){
         let record = {};
 
         columns.forEach((column)=>{
-            //we want to check to validate that the value attribute exists on column.expression, if it doesn't we use the columnid
             if ("funcid" in column.expression) {
                 const func_val = 'func_val';
                 const func_variable = column.expression.funcid === 'CURRENT_TIMESTAMP';
                 const func_value = alasql(`SELECT ${func_variable ? column.expression.funcid : column.expression.toString()} AS [${func_val}]`);
                 record[column.column.columnid] = func_value[0][func_val];
             } else {
+                //we want to check to validate that the value attribute exists on column.expression, if it doesn't we use the columnid
                 record[column.column.columnid] = "value" in column.expression ? column.expression.value : column.expression.columnid;
             }
         });
