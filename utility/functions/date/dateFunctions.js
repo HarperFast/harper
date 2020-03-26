@@ -10,7 +10,7 @@ module.exports = {
     current_time: () => {
         return moment().utc().format('HH:mm:ss.SSS');
     },
-    extract: (date, date_part)=>{
+    extract: (date, date_part) => {
         switch(date_part.toLowerCase()){
             case 'year':
                 return moment(date).format('YYYY');
@@ -33,16 +33,16 @@ module.exports = {
     date: (date) => {
         return moment(date).format(hdb_time_format);
     },
-    date_format:(date, format)=>{
+    date_format: (date, format) => {
         return moment(date).format(format);
     },
-    date_add:(date, value, interval)=>{
-        return moment(date).add(interval, value).format(hdb_time_format);
+    date_add: (date, value, interval) => {
+        return moment(date).add(value, interval).format(hdb_time_format);
     },
-    date_sub:(date, value, interval)=>{
-        return moment(date).subtract(interval, value).format(hdb_time_format);
+    date_sub: (date, value, interval) => {
+        return moment(date).subtract(value, interval).format(hdb_time_format);
     },
-    date_diff:(date_1, date_2, interval)=>{
+    date_diff: (date_1, date_2, interval) => {
         let first_date = moment(date_1);
         let second_date = moment(date_2);
         if(interval){
@@ -51,7 +51,7 @@ module.exports = {
             return first_date.diff(second_date);
         }
     },
-    now:()=>{
+    now: () => {
         return moment().utc().format(hdb_time_format);
     },
 };
