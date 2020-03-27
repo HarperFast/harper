@@ -1,11 +1,8 @@
 "use strict";
 
 const RoomIF = require('./RoomIF');
-const types = require('../types');
-const hdb_terms = require('../../../utility/hdbTerms');
 const log = require('../../../utility/logging/harper_logger');
-const {inspect} = require('util');
-const RoomMessageObjects = require('./RoomMessageObjects');
+const socket_utils = require('../util/socketClusterUtils');
 
 /**
  * This is a room that handles messages on the hdb_internal:create_schema channel.  Rooms should not be instantiated directly, instead the room factory should be used.
@@ -49,6 +46,8 @@ class CreateSchemaRoom extends RoomIF {
         try {
             // no-op for now, let it be pushed to the child for processing.
             log.trace('In CreateSchemaRoom');
+
+            await socket_utils.setGlobalSchema();
         } catch(e) {
             log.error(e);
         }
