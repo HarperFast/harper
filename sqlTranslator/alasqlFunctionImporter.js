@@ -25,12 +25,21 @@ module.exports= (alasql)=>{
     CUSTOM FUNCTIONS
      */
     alasql.fn.distinct_array = alasql.fn.DISTINCT_ARRAY = alasql_extension.distinct_array;
+
+    //Date Functions...
     alasql.fn.current_date = alasql.fn.CURRENT_DATE = date_functions.current_date;
     alasql.fn.current_time = alasql.fn.CURRENT_TIME = date_functions.current_time;
     alasql.fn.extract = alasql.fn.EXTRACT = date_functions.extract;
+    alasql.fn.date = alasql.fn.DATE = date_functions.date;
     alasql.fn.date_format = alasql.fn.DATE_FORMAT = date_functions.date_format;
     alasql.fn.date_add = alasql.fn.DATE_ADD = date_functions.date_add;
+    alasql.fn.date_sub = alasql.fn.DATE_SUB = date_functions.date_sub;
     alasql.fn.date_diff = alasql.fn.DATE_DIFF = alasql.fn.datediff = alasql.fn.DATEDIFF = date_functions.date_diff;
+    alasql.fn.now = alasql.fn.NOW = date_functions.now;
+    //GETDATE() and CURRENT_TIMESTAMP reference the date/time value from NOW() in alasql but we need to monkey patch
+    // them here as well with the new now logic
+    alasql.fn.getdate = alasql.fn.GETDATE = date_functions.now;
+    alasql.fn.current_timestamp = alasql.fn.CURRENT_TIMESTAMP = date_functions.now;
 
     /*
     CUSTOM GEO FUNCTIONS
