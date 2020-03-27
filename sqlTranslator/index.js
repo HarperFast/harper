@@ -25,6 +25,7 @@ const env = require('../utility/environment/environmentManager');
 alasql_function_importer(alasql);
 
 let UNAUTHORIZED_RESPONSE = 403;
+const SQL_INSERT_ERROR_MSG = 'There was a problem performing this insert. Please check the logs and try again.';
 
 class ParsedSQLObject {
     constructor() {
@@ -214,23 +215,34 @@ function convertInsert(statement, callback) {
 }
 
 function createDataObjects(columns, values) {
-    let records = values.map(value_objects => {
-        //compare number of values to number of columns, if no match throw error
-        if (columns.length !== value_objects.length) {
-            throw "number of values do not match number of columns in insert";
-        }
-        let record = {};
-        //make sure none of the value entries have a columnid
-        value_objects.forEach((value, x) => {
-            if (value.columnid) {
-                throw "cannot use a column in insert value";
+    try {
+        let records = values.map(value_objects => {
+            //compare number of values to number of columns, if no match throw error
+            if (columns.length !== value_objects.length) {
+                throw "number of values do not match number of columns in insert";
             }
+            let record = {};
+            //make sure none of the value entries have a columnid
+            value_objects.forEach((value, x) => {
+                if (value.columnid) {
+                    throw "cannot use a column in insert value";
+                }
 
-            record[columns[x]] = value.value;
+                if ("funcid" in value) {
+                    const func_val = 'func_val';
+                    const final_value = alasql(`SELECT ${value.toString()} AS [${func_val}]`);
+                    record[columns[x]] = final_value[0][func_val];
+                } else {
+                    record[columns[x]] = value.value;
+                }
+            });
+
+            return record;
         });
 
-        return record;
-    });
-
-    return records;
+        return records;
+    } catch(err) {
+        logger.error(err);
+        throw new Error(SQL_INSERT_ERROR_MSG);
+    }
 }

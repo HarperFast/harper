@@ -1,6 +1,6 @@
 {
 	"info": {
-		"_postman_id": "6e755cc7-5a40-4258-9260-d328fc6b4805",
+		"_postman_id": "7a9ed33a-5185-4f81-93e5-bb326f031682",
 		"name": "HarperDB Integration Tests",
 		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
 	},
@@ -1721,6 +1721,62 @@
 						"body": {
 							"mode": "raw",
 							"raw": "{\n\t\"operation\":\"create_table\",\n\t\"schema\":\"dev\",\n\t\"table\":\"ratings\",\n\t\"hash_attribute\": \"id\"\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "create_table_dev_date_functions",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "84856ff2-bfb5-4dc6-96b2-d6ec2f2758cf",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"tests[\"Create Table\"] = responseBody.has(\"successfully created.\");"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"type": "text",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"create_table\",\n\t\"schema\":\"dev\",\n\t\"table\":\"time_functions\",\n\t\"hash_attribute\": \"id\"\n}"
 						},
 						"url": {
 							"raw": "{{host}}:{{port}}",
@@ -6358,6 +6414,1012 @@
 						}
 					],
 					"description": "Test that response from search is object array ",
+					"protocolProfileBehavior": {},
+					"_postman_isSubFolder": true
+				},
+				{
+					"name": "Date Function Check",
+					"item": [
+						{
+							"name": "insert initial date function data into table",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "403b6b08-c231-4fe5-9afb-96a01c338612",
+										"exec": [
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"SQL insert successful reponse\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData.message).to.eql(\"inserted 4 of 4 records\");",
+											"    pm.expect(jsonData.inserted_hashes[0]).to.eql(1);",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"id": "6f3757ba-a910-40f7-bdf2-4fac031bdcd8",
+										"exec": [
+											"setTimeout(() => {}, 100);"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "saveHelperData",
+											"value": true,
+											"type": "boolean"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"operation\":\"sql\",\n  \"sql\": \"INSERT INTO dev.time_functions (id, c_date, c_time, c_timestamp, getdate, now) VALUES (1, CURRENT_DATE(), CURRENT_TIME(), CURRENT_TIMESTAMP, GETDATE(), NOW()), (2, CURRENT_DATE(), CURRENT_TIME(), CURRENT_TIMESTAMP, GETDATE(), NOW()), (3, CURRENT_DATE(), CURRENT_TIME(), CURRENT_TIMESTAMP, GETDATE(), NOW()), (4, CURRENT_DATE(), CURRENT_TIME(), CURRENT_TIMESTAMP, GETDATE(), NOW())\"\n}\n\n"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "check initial date function data in table",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "403b6b08-c231-4fe5-9afb-96a01c338612",
+										"exec": [
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"SQL select returns 4 rows with correct date/time formats\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData.length).to.eql(4);",
+											"    var current_date = new Date().getUTCDate();",
+											"    jsonData.forEach(row => {",
+											"        pm.expect([1,2,3,4]).to.include(row.id);",
+											"        pm.expect(new Date(row.now).getDate()).to.equal(current_date);",
+											"        pm.expect(row.now).to.match(/[12]\\d{3}-(0[1-9]|1[0-2])-(0[1-9]|[12]\\d|3[01])(T|\\s)(2[0-3]|[01][0-9]):[0-5][0-9]:[0-5][0-9].[0-9][0-9][0-9]$/);",
+											"        pm.expect(new Date(row.getdate).getDate()).to.equal(current_date);",
+											"        pm.expect(row.getdate).to.match(/[12]\\d{3}-(0[1-9]|1[0-2])-(0[1-9]|[12]\\d|3[01])(T|\\s)(2[0-3]|[01][0-9]):[0-5][0-9]:[0-5][0-9].[0-9][0-9][0-9]$/);",
+											"        pm.expect(new Date(row.c_timestamp).getDate()).to.equal(current_date);",
+											"        pm.expect(row.c_timestamp).to.match(/[12]\\d{3}-(0[1-9]|1[0-2])-(0[1-9]|[12]\\d|3[01])(T|\\s)(2[0-3]|[01][0-9]):[0-5][0-9]:[0-5][0-9].[0-9][0-9][0-9]$/);",
+											"        pm.expect(row.c_date).to.match(/[12]\\d{3}-(0[1-9]|1[0-2])-(0[1-9]|[12]\\d|3[01])/);",
+											"        pm.expect(row.c_time).to.match(/^(?:2[0-3]|[01][0-9]):[0-5][0-9]:[0-5][0-9].[0-9][0-9][0-9]$/);",
+											"    })",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"id": "6f3757ba-a910-40f7-bdf2-4fac031bdcd8",
+										"exec": [
+											"setTimeout(() => {}, 100);"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "saveHelperData",
+											"value": true,
+											"type": "boolean"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"operation\":\"sql\",\n  \"sql\": \"SELECT * FROM dev.time_functions\"\n}\n\n"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "update w/ date function data to null in table",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "403b6b08-c231-4fe5-9afb-96a01c338612",
+										"exec": [
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"SQL update successful reponse\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData.message).to.eql(\"updated 4 of 4 records\");",
+											"    pm.expect(jsonData.update_hashes[0]).to.eql(1);",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"id": "6f3757ba-a910-40f7-bdf2-4fac031bdcd8",
+										"exec": [
+											"setTimeout(() => {}, 100);"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "saveHelperData",
+											"value": true,
+											"type": "boolean"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"operation\":\"sql\",\n  \"sql\": \"UPDATE dev.time_functions SET c_date = null, c_time = null, c_timestamp = null, getdate = null, now = null\"\n}\n\n"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "check data set to null in table",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "403b6b08-c231-4fe5-9afb-96a01c338612",
+										"exec": [
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"SQL select returns 4 rows with correct date/time formats\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData.length).to.eql(4);",
+											"    var current_date = new Date().getDate();",
+											"    jsonData.forEach(row => {",
+											"        pm.expect([1,2,3,4]).to.include(row.id);",
+											"        pm.expect(row.now).to.be.null;",
+											"        pm.expect(row.getdate).to.be.null;",
+											"        pm.expect(row.c_timestamp).to.be.null;",
+											"        pm.expect(row.c_date).to.be.null;",
+											"        pm.expect(row.c_time).to.be.null;",
+											"    })",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"id": "6f3757ba-a910-40f7-bdf2-4fac031bdcd8",
+										"exec": [
+											"setTimeout(() => {}, 100);"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "saveHelperData",
+											"value": true,
+											"type": "boolean"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"operation\":\"sql\",\n  \"sql\": \"SELECT * FROM dev.time_functions\"\n}\n\n"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "update w/ new date function data in table",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "403b6b08-c231-4fe5-9afb-96a01c338612",
+										"exec": [
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"SQL update successful reponse\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData.message).to.eql(\"updated 4 of 4 records\");",
+											"    pm.expect(jsonData.update_hashes.length).to.eql(4);",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"id": "6f3757ba-a910-40f7-bdf2-4fac031bdcd8",
+										"exec": [
+											"setTimeout(() => {}, 100);"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "saveHelperData",
+											"value": true,
+											"type": "boolean"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"operation\":\"sql\",\n  \"sql\": \"UPDATE dev.time_functions SET c_date = CURRENT_DATE(), c_time = CURRENT_TIME(), c_timestamp = CURRENT_TIMESTAMP, getdate = GETDATE(), now = NOW()\"\n}\n\n"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "check data updated to correct date values in table",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "403b6b08-c231-4fe5-9afb-96a01c338612",
+										"exec": [
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"SQL select returns 4 rows with correct date/time formats\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData.length).to.eql(4);",
+											"    var current_date = new Date().getUTCDate();",
+											"    jsonData.forEach(row => {",
+											"        pm.expect([1,2,3,4]).to.include(row.id);",
+											"        pm.expect(new Date(row.now).getDate()).to.equal(current_date);",
+											"        pm.expect(row.now).to.match(/[12]\\d{3}-(0[1-9]|1[0-2])-(0[1-9]|[12]\\d|3[01])(T|\\s)(2[0-3]|[01][0-9]):[0-5][0-9]:[0-5][0-9].[0-9][0-9][0-9]$/);",
+											"        pm.expect(new Date(row.getdate).getDate()).to.equal(current_date);",
+											"        pm.expect(row.getdate).to.match(/[12]\\d{3}-(0[1-9]|1[0-2])-(0[1-9]|[12]\\d|3[01])(T|\\s)(2[0-3]|[01][0-9]):[0-5][0-9]:[0-5][0-9].[0-9][0-9][0-9]$/);",
+											"        pm.expect(new Date(row.c_timestamp).getDate()).to.equal(current_date);",
+											"        pm.expect(row.c_timestamp).to.match(/[12]\\d{3}-(0[1-9]|1[0-2])-(0[1-9]|[12]\\d|3[01])(T|\\s)(2[0-3]|[01][0-9]):[0-5][0-9]:[0-5][0-9].[0-9][0-9][0-9]$/);",
+											"        pm.expect(row.c_date).to.match(/^[12]\\d{3}-(0[1-9]|1[0-2])-(0[1-9]|[12]\\d|3[01])$/);",
+											"        pm.expect(row.c_time).to.match(/^(?:2[0-3]|[01][0-9]):[0-5][0-9]:[0-5][0-9].[0-9][0-9][0-9]$/);",
+											"    })",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"id": "6f3757ba-a910-40f7-bdf2-4fac031bdcd8",
+										"exec": [
+											"setTimeout(() => {}, 100);"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "saveHelperData",
+											"value": true,
+											"type": "boolean"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"operation\":\"sql\",\n  \"sql\": \"SELECT * FROM dev.time_functions\"\n}\n\n"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "update w/ other date functions",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "403b6b08-c231-4fe5-9afb-96a01c338612",
+										"exec": [
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"SQL update successful reponse\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData.message).to.eql(\"updated 4 of 4 records\");",
+											"    pm.expect(jsonData.update_hashes.length).to.eql(4);",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"id": "6f3757ba-a910-40f7-bdf2-4fac031bdcd8",
+										"exec": [
+											"setTimeout(() => {}, 100);"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "saveHelperData",
+											"value": true,
+											"type": "boolean"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"operation\":\"sql\",\n  \"sql\": \"UPDATE dev.time_functions SET today = DATE(NOW()), add_day = DATE_ADD(NOW(), 1, 'days'), sub_3_years = DATE_SUB(NOW(), 3, 'years')\"\n}\n\n"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "check other date function updates are correct in table",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "403b6b08-c231-4fe5-9afb-96a01c338612",
+										"exec": [
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"SQL select returns 4 rows with correct date/time formats\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData.length).to.eql(4);",
+											"    var current_date = new Date().getUTCDate();",
+											"    var date_plus_1 = new Date(new Date().setUTCDate(current_date + 1)).getUTCDate();",
+											"    var current_year = new Date().getUTCFullYear();",
+											"    jsonData.forEach(row => {",
+											"        pm.expect([1,2,3,4]).to.include(row.id);",
+											"        pm.expect(new Date(row.today).getDate()).to.equal(current_date);",
+											"        pm.expect(row.c_timestamp).to.match(/[12]\\d{3}-(0[1-9]|1[0-2])-(0[1-9]|[12]\\d|3[01])(T|\\s)(2[0-3]|[01][0-9]):[0-5][0-9]:[0-5][0-9].[0-9][0-9][0-9]$/);",
+											"        pm.expect(new Date(row.add_day).getUTCDate()).to.equal(date_plus_1);",
+											"        pm.expect(row.add_day).to.match(/[12]\\d{3}-(0[1-9]|1[0-2])-(0[1-9]|[12]\\d|3[01])(T|\\s)(2[0-3]|[01][0-9]):[0-5][0-9]:[0-5][0-9].[0-9][0-9][0-9]$/);",
+											"        pm.expect(new Date(row.sub_3_years).getUTCFullYear()).to.equal(current_year - 3);",
+											"        pm.expect(row.sub_3_years).to.match(/[12]\\d{3}-(0[1-9]|1[0-2])-(0[1-9]|[12]\\d|3[01])(T|\\s)(2[0-3]|[01][0-9]):[0-5][0-9]:[0-5][0-9].[0-9][0-9][0-9]$/);",
+											"    })",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"id": "6f3757ba-a910-40f7-bdf2-4fac031bdcd8",
+										"exec": [
+											"setTimeout(() => {}, 100);"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "saveHelperData",
+											"value": true,
+											"type": "boolean"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"operation\":\"sql\",\n  \"sql\": \"SELECT * FROM dev.time_functions\"\n}\n\n"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "update w/ other date functions",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "403b6b08-c231-4fe5-9afb-96a01c338612",
+										"exec": [
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"SQL update successful reponse\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData.message).to.eql(\"updated 2 of 2 records\");",
+											"    pm.expect(jsonData.update_hashes.length).to.eql(2);",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"id": "6f3757ba-a910-40f7-bdf2-4fac031bdcd8",
+										"exec": [
+											"setTimeout(() => {}, 100);"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "saveHelperData",
+											"value": true,
+											"type": "boolean"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"operation\":\"sql\",\n  \"sql\": \"UPDATE dev.time_functions SET add_day = DATE_ADD(NOW(), 5, 'days') WHERE id > 2\"\n}\n\n"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "select with date function in WHERE returns correct rows",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "403b6b08-c231-4fe5-9afb-96a01c338612",
+										"exec": [
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"SQL select returns 2 rows with correct add_day values\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData.length).to.eql(2);",
+											"    var current_date = new Date().getDate();",
+											"    var date_plus_3 = new Date().setDate(current_date + 3);",
+											"    jsonData.forEach(row => {",
+											"        pm.expect([3,4]).to.include(row.id);",
+											"        pm.expect(Date.parse(row.add_day)).to.be.above(date_plus_3);",
+											"    })",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"id": "6f3757ba-a910-40f7-bdf2-4fac031bdcd8",
+										"exec": [
+											"setTimeout(() => {}, 100);"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "saveHelperData",
+											"value": true,
+											"type": "boolean"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"operation\":\"sql\",\n  \"sql\": \"SELECT * FROM dev.time_functions WHERE add_day > DATE_ADD(NOW(), 3, 'days')\"\n}\n\n"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "delete with date function in WHERE deletes correct rows",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "403b6b08-c231-4fe5-9afb-96a01c338612",
+										"exec": [
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"SQL delete successful reponse\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData.message).to.eql(\"2 records successfully deleted\");",
+											"    pm.expect(jsonData.deleted_hashes.length).to.eql(2);",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"id": "6f3757ba-a910-40f7-bdf2-4fac031bdcd8",
+										"exec": [
+											"setTimeout(() => {}, 100);"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "saveHelperData",
+											"value": true,
+											"type": "boolean"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"operation\":\"sql\",\n  \"sql\": \"DELETE FROM dev.time_functions WHERE add_day < DATE_ADD(NOW(), 3, 'days')\"\n}\n\n"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "check that correct rows were deleted based on date function",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "403b6b08-c231-4fe5-9afb-96a01c338612",
+										"exec": [
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"SQL select returns 2 rows with correct add_day values\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData.length).to.eql(2);",
+											"    var current_date = new Date().getDate();",
+											"    var date_plus_3 = new Date().setDate(current_date + 3);",
+											"    jsonData.forEach(row => {",
+											"        pm.expect([3,4]).to.include(row.id);",
+											"        pm.expect(Date.parse(row.add_day)).to.be.above(date_plus_3);",
+											"    })",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"id": "6f3757ba-a910-40f7-bdf2-4fac031bdcd8",
+										"exec": [
+											"setTimeout(() => {}, 100);"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "saveHelperData",
+											"value": true,
+											"type": "boolean"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"operation\":\"sql\",\n  \"sql\": \"SELECT * FROM dev.time_functions\"\n}\n\n"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						}
+					],
 					"protocolProfileBehavior": {},
 					"_postman_isSubFolder": true
 				},
