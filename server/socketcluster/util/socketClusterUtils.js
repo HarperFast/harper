@@ -49,8 +49,8 @@ function getWorkerStatus(status_response_msg, worker) {
                 if (client.additional_info) {
                     conn['subscriptions'] = [];
                     conn.node_name = client.additional_info.server_name;
-                    for (let i = 0; i < client.additional_info.subscriptions.length; i++) {
-                        let sub = client.additional_info.subscriptions[i];
+                    for (let x = 0; x < client.additional_info.subscriptions.length; x++) {
+                        let sub = client.additional_info.subscriptions[x];
                         if (sub.channel.indexOf(hdb_terms.HDB_INTERNAL_SC_CHANNEL_PREFIX) === 0) {
                             continue;
                         }
@@ -71,8 +71,8 @@ function getWorkerStatus(status_response_msg, worker) {
                 let conn = new ConnectionDetails(client.id, client.remoteAddress, client.remotePort, client.state);
                 if (client.channelSubscriptions) {
                     let channel_keys = Object.keys(client.channelSubscriptions);
-                    for (let i = 0; i < channel_keys.length; i++) {
-                        let sub = client.exchange._channels[channel_keys[i]];
+                    for (let x = 0; x < channel_keys.length; x++) {
+                        let sub = client.exchange._channels[channel_keys[x]];
                         if (sub.name.indexOf(hdb_terms.HDB_INTERNAL_SC_CHANNEL_PREFIX) === 0) {
                             continue;
                         }
@@ -288,6 +288,14 @@ function parseConnectionString(req_url) {
     return url.parse(req_url, true).query;
 }
 
+async function setGlobalSchema(){
+    try {
+        await p_set_schema_to_global();
+    } catch(e){
+        log.error(e);
+    }
+}
+
 module.exports = {
     getWorkerStatus,
     createEventPromise,
@@ -295,5 +303,6 @@ module.exports = {
     schemaCatchupHandler,
     requestAndHandleLogin,
     concatSourceMessageHeader,
-    parseConnectionString
+    parseConnectionString,
+    setGlobalSchema
 };
