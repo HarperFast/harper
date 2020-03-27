@@ -230,9 +230,7 @@ function createDataObjects(columns, values) {
 
                 if ("funcid" in value) {
                     const func_val = 'func_val';
-                    const is_func_variable = value.funcid === 'CURRENT_TIMESTAMP';
-                    const func_string = is_func_variable ? value.funcid : value.funcid + '()';
-                    const final_value = alasql(`SELECT ${func_string} AS [${func_val}]`);
+                    const final_value = alasql(`SELECT ${value.toString()} AS [${func_val}]`);
                     record[columns[x]] = final_value[0][func_val];
                 } else {
                     record[columns[x]] = value.value;
