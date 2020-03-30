@@ -7270,7 +7270,7 @@
 											"",
 											"pm.test(\"SQL delete successful reponse\", function () {",
 											"    var jsonData = pm.response.json();",
-											"    pm.expect(jsonData.message).to.eql(\"2 records successfully deleted\");",
+											"    pm.expect(jsonData.message).to.eql(\"2 of 2 records successfully deleted\");",
 											"    pm.expect(jsonData.deleted_hashes.length).to.eql(2);",
 											"});"
 										],
