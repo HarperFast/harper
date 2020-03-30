@@ -7028,9 +7028,9 @@
 											"        pm.expect([1,2,3,4]).to.include(row.id);",
 											"        pm.expect(new Date(row.today).getDate()).to.equal(current_date);",
 											"        pm.expect(row.c_timestamp).to.match(/[12]\\d{3}-(0[1-9]|1[0-2])-(0[1-9]|[12]\\d|3[01])(T|\\s)(2[0-3]|[01][0-9]):[0-5][0-9]:[0-5][0-9].[0-9][0-9][0-9]$/);",
-											"        pm.expect(new Date(row.add_day).getUTCDate()).to.equal(date_plus_1);",
+											"        pm.expect(new Date(row.add_day).getDate()).to.equal(date_plus_1);",
 											"        pm.expect(row.add_day).to.match(/[12]\\d{3}-(0[1-9]|1[0-2])-(0[1-9]|[12]\\d|3[01])(T|\\s)(2[0-3]|[01][0-9]):[0-5][0-9]:[0-5][0-9].[0-9][0-9][0-9]$/);",
-											"        pm.expect(new Date(row.sub_3_years).getUTCFullYear()).to.equal(current_year - 3);",
+											"        pm.expect(new Date(row.sub_3_years).getFullYear()).to.equal(current_year - 3);",
 											"        pm.expect(row.sub_3_years).to.match(/[12]\\d{3}-(0[1-9]|1[0-2])-(0[1-9]|[12]\\d|3[01])(T|\\s)(2[0-3]|[01][0-9]):[0-5][0-9]:[0-5][0-9].[0-9][0-9][0-9]$/);",
 											"    })",
 											"});"
