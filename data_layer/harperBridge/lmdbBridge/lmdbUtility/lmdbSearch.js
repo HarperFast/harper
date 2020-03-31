@@ -69,7 +69,11 @@ async function executeSearch(search_object, search_type, hash_attribute, return_
             hash_attribute_name = undefined;
         }
 
-        search_object.search_value = search_object.search_value.toString();
+        if(typeof search_object.search_value === 'object'){
+            search_object.search_value = JSON.stringify(search_object.search_value);
+        } else {
+            search_object.search_value = search_object.search_value.toString();
+        }
 
         switch (search_type) {
             case lmdb_terms.SEARCH_TYPES.EQUALS:
@@ -132,6 +136,7 @@ async function executeSearch(search_object, search_type, hash_attribute, return_
 /**
  *
  * @param {SearchObject} search_object
+ * @param {String} hash_attribute
  */
 function checkToFetchMore(search_object, hash_attribute){
     if(search_object.get_attributes.length === 1 && search_object.get_attributes[0] === '*'){
@@ -164,6 +169,10 @@ function checkToFetchMore(search_object, hash_attribute){
 function createSearchTypeFromSearchObject(search_object, hash_attribute, return_map, comparator){
     if (common_utils.isEmpty(comparator)) {
         let search_value = search_object.search_value;
+        if(typeof search_value === 'object'){
+            search_value = JSON.stringify(search_value);
+        }
+
         let first_search_character = search_value.charAt(0);
         let last_search_character = search_value.charAt(search_value.length - 1);
         let hash_search = false;

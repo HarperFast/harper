@@ -167,12 +167,21 @@ module.exports = function (search_object, type) {
             }
 
             let all_table_attributes = global.hdb_schema[search_object.schema][search_object.table].attributes;
-            let unknown_attributes = _.filter(search_object.get_attributes, (attribute) => {
+
+            //this clones the get_attributes array
+            let check_attributes = [...search_object.get_attributes];
+
+            if(type === 'value'){
+                check_attributes.push(search_object.search_attribute);
+            }
+
+            let unknown_attributes = _.filter(check_attributes, (attribute) => {
                 return attribute !== '*' && attribute.attribute !== '*' && // skip check for asterik attribute
                     !_.some(all_table_attributes, (table_attribute) => { // attribute should match one of the attribute in global
                         return table_attribute === attribute || table_attribute.attribute === attribute || table_attribute.attribute === attribute.attribute;
                     });
             });
+
             // if any unknown attributes present in the search request then list all indicated as unknown attribute to error message at once split in well format
             // for instance "unknown attribute a, b and c" or "unknown attribute a"
             if (unknown_attributes && unknown_attributes.length > 0) {

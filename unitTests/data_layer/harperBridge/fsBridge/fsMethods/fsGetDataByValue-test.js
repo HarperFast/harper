@@ -41,7 +41,7 @@ const ERR_MSGS = {
     S_ATTR: "Search attribute can't be blank",
     S_VAL: "Search value can't be blank",
     GET_ATTR: "Get attributes can't be blank"
-}
+};
 
 function setupTestData() {
     const test_data = deepClone(TEST_DATA_DOG);
@@ -56,7 +56,7 @@ function setupTestData() {
     createMockFS(HASH_ATTRIBUTE, TEST_SCHEMA, TEST_TABLE_DOG, test_data);
 }
 
-describe('fsGetDataByHash', () => {
+describe('fsGetDataByValue', () => {
 
     before(() => {
         setupTestData();
@@ -65,6 +65,13 @@ describe('fsGetDataByHash', () => {
     after(() => {
         tearDownMockFS();
         rewire('../../../../../data_layer/harperBridge/fsBridge/fsMethods/fsGetDataByValue');
+    });
+
+    it('test schema validation', async()=>{
+        await test_utils.assertErrorAsync(fsGetDataByValue_rw, [{schema:'dev2', table:'dog', search_attribute: 'city', search_value: '*', get_attributes:['*']}], new Error("schema dev2 does not exist"));
+        await test_utils.assertErrorAsync(fsGetDataByValue_rw, [{schema:'dev', table:'fake', search_attribute: 'city', search_value: '*', get_attributes:['*']}], new Error("table dev.fake does not exist"));
+        await test_utils.assertErrorAsync(fsGetDataByValue_rw, [{schema:'dev', table:'dog', search_attribute: 'fake_city', search_value: '*', get_attributes:['*']}], new Error("unknown attribute fake_city"));
+        await test_utils.assertErrorAsync(fsGetDataByValue_rw, [{schema:'dev', table:'dog', search_attribute: 'id', search_value: '*', get_attributes:['id','fake']}], new Error("unknown attribute fake"));
     });
 
     it('Should return results for each hash value passed', mochaAsyncWrapper(async () => {
