@@ -100,7 +100,7 @@ paste the code. See the Postman documentation on supported languages here: https
 ## HarperDB Studio
 Need a UI? HarperDB Studio is a web based UI for managing users, roles, and schemas. The HarperDB Studio also enables you to run NoSQL & SQL queries, create charts, save your favorite queries & charts and share them via live links to your organization.
 
-http://harperdb.io/studio
+https://studio.harperdb.io/
 
 ## Need Help
 
