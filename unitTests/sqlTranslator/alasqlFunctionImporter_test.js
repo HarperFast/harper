@@ -13,9 +13,9 @@ const alasql_function_importer = require('../../sqlTranslator/alasqlFunctionImpo
 alasql_function_importer(alasql);
 
 const expected_formats = {
-    DATE: 'YYYY-MM-DD',
-    TIME: 'HH:mm:ss.SSS',
-    DATE_TIME: 'YYYY-MM-DDTHH:mm:ss.SSS'
+    DATE: 'YYYY-MM-DDZZ',
+    TIME: 'HH:mm:ss.SSSZZ',
+    DATE_TIME: 'YYYY-MM-DDTHH:mm:ss.SSSZZ'
 };
 
 const stub_date = '2020-03-26 ';
@@ -41,7 +41,7 @@ describe('Test functions from alasqlFunctionImporter w/ alasql', () => {
 
         const { test_result } = alasql(generateTestSelect(test_function))[0];
 
-        const expected_result = moment(test_result).format(expected_formats.DATE);
+        const expected_result = moment().utc().format(expected_formats.DATE);
         expect(test_result).to.equal(expected_result);
     });
 
@@ -50,7 +50,7 @@ describe('Test functions from alasqlFunctionImporter w/ alasql', () => {
 
         const { test_result } = alasql(generateTestSelect(test_function))[0];
 
-        const expected_result = moment(stub_date + test_result).format(expected_formats.TIME);
+        const expected_result = moment().utc().format(expected_formats.TIME);
         expect(test_result).to.equal(expected_result);
     });
 
@@ -82,7 +82,7 @@ describe('Test functions from alasqlFunctionImporter w/ alasql', () => {
         expect(millisecond_test_result).to.equal(timestamp_parts.ms);
     });
 
-    it('should return DATE() value in YYYY-MM-DDTHH:mm:ss.SSS format', () => {
+    it('should return DATE() value in YYYY-MM-DDTHH:mm:ss.SSSZZ format', () => {
         const test_function = `DATE('${stub_timestamp}')`;
 
         const { test_result } = alasql(generateTestSelect(test_function))[0];
@@ -205,39 +205,38 @@ describe('Test functions from alasqlFunctionImporter w/ alasql', () => {
         expect(test_result_years).to.equal(expected_results.years);
     });
 
-    it('should return NOW() value in YYYY-MM-DDTHH:mm:ss.SSS format', () => {
+    it('should return NOW() value in unix epoch format', () => {
         const test_function = 'NOW()';
 
         const { test_result } = alasql(generateTestSelect(test_function))[0];
-        const test_result_date = moment(test_result).format(expected_formats.DATE);
+        const test_result_date = moment(test_result).utc().format(expected_formats.DATE);
         const current_date = moment().utc().format(expected_formats.DATE);
-        const expected_result_full = moment(test_result).format(expected_formats.DATE_TIME);
 
-        expect(test_result).to.equal(expected_result_full);
+
+        expect(test_result.toString().length).to.equal(13);
         expect(test_result_date).to.equal(current_date);
     });
 
-    it('should return GETDATE() value in YYYY-MM-DDTHH:mm:ss.SSS format', () => {
+    it('should return GETDATE() value in unix epoch format', () => {
         const test_function = 'GETDATE()';
 
         const { test_result } = alasql(generateTestSelect(test_function))[0];
-        const test_result_date = moment(test_result).format(expected_formats.DATE);
+        const test_result_date = moment(test_result).utc().format(expected_formats.DATE);
         const current_date = moment().utc().format(expected_formats.DATE);
-        const expected_result_full = moment(test_result).format(expected_formats.DATE_TIME);
 
-        expect(test_result).to.equal(expected_result_full);
+        expect(test_result.toString().length).to.equal(13);
         expect(test_result_date).to.equal(current_date);
     });
 
-    it('should return CURRENT_TIMESTAMP value in YYYY-MM-DDTHH:mm:ss.SSS format', () => {
+    it('should return CURRENT_TIMESTAMP value in unix epoch format', () => {
         const test_function = 'CURRENT_TIMESTAMP';
 
         const { test_result } = alasql(generateTestSelect(test_function))[0];
-        const test_result_date = moment(test_result).format(expected_formats.DATE);
+        const test_result_date = moment(test_result).utc().format(expected_formats.DATE);
         const current_date = moment().utc().format(expected_formats.DATE);
         const expected_result_full = moment(test_result).format(expected_formats.DATE_TIME);
 
-        expect(test_result).to.equal(expected_result_full);
+        expect(test_result.toString().length).to.equal(13);
         expect(test_result_date).to.equal(current_date);
     });
 });
