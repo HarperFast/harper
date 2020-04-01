@@ -13,6 +13,8 @@ preTestPrep();
 
 const rewire = require('rewire');
 let fsGetDataByValue_rw = rewire('../../../../../data_layer/harperBridge/fsBridge/fsMethods/fsGetDataByValue');
+const assert = require('assert');
+const SearchObject = require('../../../../../data_layer/SearchObject');
 const { expect } = require('chai');
 
 const { TEST_DATA_DOG } = require('../../../../test_data');
@@ -235,4 +237,47 @@ describe('fsGetDataByValue', () => {
 
         expect(err.message).to.equal(ERR_MSGS.GET_ATTR);
     }));
+
+    it('test search value is json', async()=>{
+        let record = {id:'jsontest', breed:{cool:true}};
+        test_utils.createMockFS('id', TEST_SCHEMA, TEST_TABLE_DOG, [test_utils.deepClone(record)]);
+
+        let search_object = new SearchObject('dev', 'dog', 'breed', record.breed, 'id', ['id', 'breed']);
+        let err = undefined;
+        let result = undefined;
+        try{
+            result = await fsGetDataByValue_rw(search_object);
+        } catch(e) {
+            err = e;
+        }
+
+        expect(err).to.equal(undefined);
+
+        let expected = {
+            [record.id]: record
+        };
+        assert.deepEqual(result, expected);
+    });
+
+    it('test search value is array', async()=>{
+        let record = {id:'arraytest', breed:['awesome', 'great']};
+
+        test_utils.createMockFS('id', TEST_SCHEMA, TEST_TABLE_DOG, [test_utils.deepClone(record)]);
+
+        let search_object = new SearchObject('dev', 'dog', 'breed', record.breed, 'id', ['id', 'breed']);
+        let err = undefined;
+        let result = undefined;
+        try{
+            result = await fsGetDataByValue_rw(search_object);
+        } catch(e) {
+            err = e;
+        }
+
+        expect(err).to.equal(undefined);
+
+        let expected = {
+            [record.id]: record
+        };
+        assert.deepEqual(result, expected);
+    });
 });
