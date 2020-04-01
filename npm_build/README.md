@@ -13,7 +13,14 @@
 
 **BETA Version please report your questions, comments and bugs to support@harperdb.io**
 ## Getting Started
-NodeJS and NPM are prerequisites for downloading the HarperDB application.
+**Prerequisites**
+1. NodeJS 12.X
+2. NPM
+3. GCC Compiler
+4. Make
+5. Python 2.7
+6. (Mac Developers) XCode is required.
+
 The user will need elevated privileges or read and write access to install HarperDB with the -g flag.
 
 ```
@@ -29,10 +36,7 @@ npm install -g harperdb-2.0.0.tgz
 The first time you run HarperDB, it will prompt you to enter some configuration options. Once configured, HarperDB will start automatically.
 * harperdb run
 
-If you did not NPM install globaly your commands will need to be run in node_modules/harperdb/bin/ of the directory you ran NPM in.
-
-From any directory execute the following:
-
+If you did not NPM install globaly your commands will need to be run in node_modules/harperdb/bin/ of the directory you ran NPM install in.
 ```
 harperdb run
 
@@ -107,4 +111,3 @@ http://harperdb.io/studio
 -[Getting Started Examples](http://examples.harperdb.io/)
 
 **Thank You to Rajat Kumar rajat.io for allowing us to take over this package name.  Find his harperdb client at https://www.npmjs.com/package/harperdb-client**
-
