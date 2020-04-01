@@ -16,6 +16,7 @@ const rewire = require('rewire');
 const environment_utility = rewire('../../../../../utility/lmdb/environmentUtility');
 const lmdb_terms = require('../../../../../utility/lmdb/terms');
 const write_utility = require('../../../../../utility/lmdb/writeUtility');
+const delete_utility = require('../../../../../utility/lmdb/deleteUtility');
 const SearchObject = require('../../../../../data_layer/SearchObject');
 const lmdb_search = rewire('../../../../../data_layer/harperBridge/lmdbBridge/lmdbMethods/lmdbGetDataByValue');
 const common_utils = require('../../../../../utility/common_utils');
@@ -100,6 +101,13 @@ describe('test lmdbGetDataByValue module', ()=>{
             await test_utils.assertErrorAsync(lmdb_search, [{schema:'dev', table:'test!er', search_attribute: 'city', search_value: '*', get_attributes:['*']}], new Error("Table must be alpha numeric"));
 
             await test_utils.assertErrorAsync(lmdb_search, [{schema:'dev', table:'test', search_attribute: 'city', search_value: '*', get_attributes:['*']}, '$$'], new Error("Value search comparator - $$ - is not valid"));
+        });
+
+        it('test schema validation', async()=>{
+            await test_utils.assertErrorAsync(lmdb_search, [{schema:'dev2', table:'test', search_attribute: 'city', search_value: '*', get_attributes:['*']}], new Error("schema dev2 does not exist"));
+            await test_utils.assertErrorAsync(lmdb_search, [{schema:'dev', table:'fake', search_attribute: 'city', search_value: '*', get_attributes:['*']}], new Error("table dev.fake does not exist"));
+            await test_utils.assertErrorAsync(lmdb_search, [{schema:'dev', table:'test', search_attribute: 'fake_city', search_value: '*', get_attributes:['*']}], new Error("unknown attribute fake_city"));
+            await test_utils.assertErrorAsync(lmdb_search, [{schema:'dev', table:'test', search_attribute: 'city', search_value: '*', get_attributes:['id','fake']}], new Error("unknown attribute fake"));
         });
 
         it('test equals on string', async()=>{
@@ -217,6 +225,34 @@ describe('test lmdbGetDataByValue module', ()=>{
             let search_object = new SearchObject('dev', 'test', 'temperature', '10%', 'id', ['*']);
             let results = await test_utils.assertErrorAsync(lmdb_search, [search_object], undefined);
             assert.deepStrictEqual(results, expected);
+        });
+
+        it('test search value is json', async()=>{
+            let record = {id:'jsontest', city:{cool:true}};
+            write_utility.insertRecords(env, 'id', ['id', 'city'], [test_utils.deepClone(record)]);
+
+            let search_object = new SearchObject('dev', 'test', 'city', record.city, 'id', ['id', 'city']);
+            let results = await test_utils.assertErrorAsync(lmdb_search, [search_object], undefined);
+            let expected = {
+                [record.id]: record
+            };
+            assert.deepEqual(results, expected);
+
+            delete_utility.deleteRecords(env, 'id', [record.id]);
+        });
+
+        it('test search value is array', async()=>{
+            let record = {id:'arraytest', city:['awesome', 'great']};
+            write_utility.insertRecords(env, 'id', ['id', 'city'], [test_utils.deepClone(record)]);
+
+            let search_object = new SearchObject('dev', 'test', 'city', record.city, 'id', ['id', 'city']);
+            let results = await test_utils.assertErrorAsync(lmdb_search, [search_object], undefined);
+            let expected = {
+                [record.id]: record
+            };
+            assert.deepEqual(results, expected);
+
+            delete_utility.deleteRecords(env, 'id', [record.id]);
         });
 
         it('test searchall', async()=>{
