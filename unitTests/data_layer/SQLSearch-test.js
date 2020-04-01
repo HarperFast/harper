@@ -1429,7 +1429,7 @@ describe('Test FileSystem Class',function() {
             const test_sql_statement = `SELECT id AS hash, UPPER(name) AS first_name, AVG(age) as ave_age FROM dev.dog`;
             setupTestInstance(test_sql_statement);
             const initial_statement_string = test_instance.statement.toString();
-            const expected_sql_string = initial_statement_string.replace(" AS `first_name`", "");
+            const expected_sql_string = initial_statement_string.replace(" AS [first_name]", "");
 
             const test_result = test_instance._buildSQL();
 

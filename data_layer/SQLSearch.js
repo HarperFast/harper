@@ -312,6 +312,11 @@ class SQLSearch {
                 col.as = `[${col.as_orig}]`;
             }
 
+            if (!col.aggregatorid && col.funcid && col.args) {
+                col.as_orig = col.as ? col.as : col.toString();
+                col.as = `[${col.as_orig}]`;
+            }
+
             if (col.aggregatorid && col.expression.columnid !== '*') {
                 col.as_orig = col.as ?
                     col.as :
