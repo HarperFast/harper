@@ -1,14 +1,14 @@
 "use strict";
 
 const moment = require('moment');
-const hdb_time_format = 'YYYY-MM-DDTHH:mm:ss.SSS';
+const hdb_time_format = 'YYYY-MM-DDTHH:mm:ss.SSSZZ';
 
 module.exports = {
     current_date: () => {
-        return moment().utc().format('YYYY-MM-DD');
+        return moment().utc().format('YYYY-MM-DDZZ');
     },
     current_time: () => {
-        return moment().utc().format('HH:mm:ss.SSS');
+        return moment().utc().format('HH:mm:ss.SSSZZ');
     },
     extract: (date, date_part) => {
         switch(date_part.toLowerCase()){
@@ -52,6 +52,6 @@ module.exports = {
         }
     },
     now: () => {
-        return moment().utc().format(hdb_time_format);
+        return parseInt(moment().utc().format('x'));
     },
 };

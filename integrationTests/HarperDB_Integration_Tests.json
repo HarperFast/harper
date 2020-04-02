@@ -6518,13 +6518,15 @@
 											"    jsonData.forEach(row => {",
 											"        pm.expect([1,2,3,4]).to.include(row.id);",
 											"        pm.expect(new Date(row.now).getDate()).to.equal(current_date);",
-											"        pm.expect(row.now).to.match(/[12]\\d{3}-(0[1-9]|1[0-2])-(0[1-9]|[12]\\d|3[01])(T|\\s)(2[0-3]|[01][0-9]):[0-5][0-9]:[0-5][0-9].[0-9][0-9][0-9]$/);",
+											"        pm.expect(row.now.toString().length).to.equal(13);",
 											"        pm.expect(new Date(row.getdate).getDate()).to.equal(current_date);",
-											"        pm.expect(row.getdate).to.match(/[12]\\d{3}-(0[1-9]|1[0-2])-(0[1-9]|[12]\\d|3[01])(T|\\s)(2[0-3]|[01][0-9]):[0-5][0-9]:[0-5][0-9].[0-9][0-9][0-9]$/);",
+											"        pm.expect(row.getdate.toString().length).to.equal(13);",
+											"        pm.expect(row.getdate.toString().length).to.equal(13);",
 											"        pm.expect(new Date(row.c_timestamp).getDate()).to.equal(current_date);",
-											"        pm.expect(row.c_timestamp).to.match(/[12]\\d{3}-(0[1-9]|1[0-2])-(0[1-9]|[12]\\d|3[01])(T|\\s)(2[0-3]|[01][0-9]):[0-5][0-9]:[0-5][0-9].[0-9][0-9][0-9]$/);",
-											"        pm.expect(row.c_date).to.match(/[12]\\d{3}-(0[1-9]|1[0-2])-(0[1-9]|[12]\\d|3[01])/);",
-											"        pm.expect(row.c_time).to.match(/^(?:2[0-3]|[01][0-9]):[0-5][0-9]:[0-5][0-9].[0-9][0-9][0-9]$/);",
+											"        pm.expect(row.c_timestamp.toString().length).to.equal(13);",
+											"        pm.expect(row.c_timestamp.toString().length).to.equal(13);",
+											"        pm.expect(row.c_date).to.match(/\\d{4}-[01]{1}\\d{1}-[0-3]{1}\\d{1}[+][0]{4}$/);",
+											"        pm.expect(row.c_time).to.match(/^[0-2]{1}\\d{1}:[0-6]{1}\\d{1}:[0-6]{1}\\d{1}.\\d{3}[+][0]{4}$/);",
 											"    })",
 											"});"
 										],
@@ -6853,13 +6855,13 @@
 											"    jsonData.forEach(row => {",
 											"        pm.expect([1,2,3,4]).to.include(row.id);",
 											"        pm.expect(new Date(row.now).getDate()).to.equal(current_date);",
-											"        pm.expect(row.now).to.match(/[12]\\d{3}-(0[1-9]|1[0-2])-(0[1-9]|[12]\\d|3[01])(T|\\s)(2[0-3]|[01][0-9]):[0-5][0-9]:[0-5][0-9].[0-9][0-9][0-9]$/);",
+											"        pm.expect(row.now.toString().length).to.equal(13)",
 											"        pm.expect(new Date(row.getdate).getDate()).to.equal(current_date);",
-											"        pm.expect(row.getdate).to.match(/[12]\\d{3}-(0[1-9]|1[0-2])-(0[1-9]|[12]\\d|3[01])(T|\\s)(2[0-3]|[01][0-9]):[0-5][0-9]:[0-5][0-9].[0-9][0-9][0-9]$/);",
+											"        pm.expect(row.getdate.toString().length).to.equal(13)",
 											"        pm.expect(new Date(row.c_timestamp).getDate()).to.equal(current_date);",
-											"        pm.expect(row.c_timestamp).to.match(/[12]\\d{3}-(0[1-9]|1[0-2])-(0[1-9]|[12]\\d|3[01])(T|\\s)(2[0-3]|[01][0-9]):[0-5][0-9]:[0-5][0-9].[0-9][0-9][0-9]$/);",
-											"        pm.expect(row.c_date).to.match(/^[12]\\d{3}-(0[1-9]|1[0-2])-(0[1-9]|[12]\\d|3[01])$/);",
-											"        pm.expect(row.c_time).to.match(/^(?:2[0-3]|[01][0-9]):[0-5][0-9]:[0-5][0-9].[0-9][0-9][0-9]$/);",
+											"        pm.expect(row.c_timestamp.toString().length).to.equal(13)",
+											"        pm.expect(row.c_date).to.match(/\\d{4}-[01]{1}\\d{1}-[0-3]{1}\\d{1}[+][0]{4}$/);",
+											"        pm.expect(row.c_time).to.match(/^[0-2]{1}\\d{1}:[0-6]{1}\\d{1}:[0-6]{1}\\d{1}.\\d{3}[+][0]{4}$/);",
 											"    })",
 											"});"
 										],
@@ -6991,7 +6993,7 @@
 								],
 								"body": {
 									"mode": "raw",
-									"raw": "{\n  \"operation\":\"sql\",\n  \"sql\": \"UPDATE dev.time_functions SET today = NOW(), add_day = DATE_ADD(DATE(), 1, 'days'), sub_3_years = DATE_SUB(DATE(), 3, 'years')\"\n}\n\n"
+									"raw": "{\n  \"operation\":\"sql\",\n  \"sql\": \"UPDATE dev.time_functions SET today = NOW(), add_day = DATE_ADD(DATE(NOW()), 1, 'days'), sub_3_years = DATE_SUB('2020-4-1', 3, 'years')\"\n}\n\n"
 								},
 								"url": {
 									"raw": "{{host}}:{{port}}",
@@ -7021,15 +7023,14 @@
 											"    var current_date = new Date().getDate();",
 											"    var current_date_utc = new Date().getUTCDate();",
 											"    var date_plus_1 = new Date(new Date().setDate(current_date + 1)).getDate();",
-											"    var current_year = new Date().getFullYear();",
 											"    jsonData.forEach(row => {",
 											"        pm.expect([1,2,3,4]).to.include(row.id);",
 											"        pm.expect(new Date(row.today).getDate()).to.equal(current_date_utc);",
-											"        pm.expect(row.c_timestamp).to.match(/[12]\\d{3}-(0[1-9]|1[0-2])-(0[1-9]|[12]\\d|3[01])(T|\\s)(2[0-3]|[01][0-9]):[0-5][0-9]:[0-5][0-9].[0-9][0-9][0-9]$/);",
+											"        pm.expect(row.c_timestamp.toString().length).to.equal(13);",
 											"        pm.expect(new Date(row.add_day).getDate()).to.equal(date_plus_1);",
-											"        pm.expect(row.add_day).to.match(/[12]\\d{3}-(0[1-9]|1[0-2])-(0[1-9]|[12]\\d|3[01])(T|\\s)(2[0-3]|[01][0-9]):[0-5][0-9]:[0-5][0-9].[0-9][0-9][0-9]$/);",
-											"        pm.expect(new Date(row.sub_3_years).getFullYear()).to.equal(current_year - 3);",
-											"        pm.expect(row.sub_3_years).to.match(/[12]\\d{3}-(0[1-9]|1[0-2])-(0[1-9]|[12]\\d|3[01])(T|\\s)(2[0-3]|[01][0-9]):[0-5][0-9]:[0-5][0-9].[0-9][0-9][0-9]$/);",
+											"        pm.expect(row.add_day).to.match(/\\d{4}-[01]{1}\\d{1}-[0-3]{1}\\d{1}T[0-2]{1}\\d{1}:[0-6]{1}\\d{1}:[0-6]{1}\\d{1}.\\d{3}[+|-][0-1][0-9][0-5][0-9]$/);",
+											"        pm.expect(new Date(row.sub_3_years).getFullYear()).to.equal(2017);",
+											"        pm.expect(row.sub_3_years).to.match(/\\d{4}-[01]{1}\\d{1}-[0-3]{1}\\d{1}T[0-2]{1}\\d{1}:[0-6]{1}\\d{1}:[0-6]{1}\\d{1}.\\d{3}[+|-][0-1][0-9][0-5][0-9]$/);",
 											"    })",
 											"});"
 										],
@@ -7161,7 +7162,7 @@
 								],
 								"body": {
 									"mode": "raw",
-									"raw": "{\n  \"operation\":\"sql\",\n  \"sql\": \"UPDATE dev.time_functions SET add_day = DATE_ADD(DATE(), 5, 'days') WHERE id > 2\"\n}\n\n"
+									"raw": "{\n  \"operation\":\"sql\",\n  \"sql\": \"UPDATE dev.time_functions SET add_day = DATE_ADD(DATE(), 5, 'days'), tomorrow_epoch = DATE_FORMAT(DATE_ADD(NOW(), 1, 'days'), 'x') WHERE id > 2\"\n}\n\n"
 								},
 								"url": {
 									"raw": "{{host}}:{{port}}",
@@ -7245,7 +7246,7 @@
 								],
 								"body": {
 									"mode": "raw",
-									"raw": "{\n  \"operation\":\"sql\",\n  \"sql\": \"SELECT * FROM dev.time_functions WHERE add_day > DATE_ADD(NOW(), 3, 'days')\"\n}\n\n"
+									"raw": "{\n  \"operation\":\"sql\",\n  \"sql\": \"SELECT * FROM dev.time_functions WHERE DATE_DIFF(add_day, c_timestamp, 'days') > 3 AND tomorrow_epoch > NOW()\"\n}\n\n"
 								},
 								"url": {
 									"raw": "{{host}}:{{port}}",
@@ -7324,7 +7325,7 @@
 								],
 								"body": {
 									"mode": "raw",
-									"raw": "{\n  \"operation\":\"sql\",\n  \"sql\": \"DELETE FROM dev.time_functions WHERE add_day < DATE_ADD(NOW(), 3, 'days')\"\n}\n\n"
+									"raw": "{\n  \"operation\":\"sql\",\n  \"sql\": \"DELETE FROM dev.time_functions WHERE DATE_DIFF(add_day, c_timestamp, 'days') < 3\"\n}\n\n"
 								},
 								"url": {
 									"raw": "{{host}}:{{port}}",
@@ -7440,8 +7441,8 @@
 											"        pm.expect([3,4]).to.include(row.id);",
 											"        pm.expect(new Date(row.updatedtime).getDate()).to.eql(current_date);",
 											"        pm.expect(new Date(row['DATE(__createdtime__)']).getDate()).to.eql(current_date);",
-											"        pm.expect(row.updatedtime).to.match(/[12]\\d{3}-(0[1-9]|1[0-2])-(0[1-9]|[12]\\d|3[01])(T|\\s)(2[0-3]|[01][0-9]):[0-5][0-9]:[0-5][0-9].[0-9][0-9][0-9]$/);",
-											"        pm.expect(row['DATE(__createdtime__)']).to.match(/[12]\\d{3}-(0[1-9]|1[0-2])-(0[1-9]|[12]\\d|3[01])(T|\\s)(2[0-3]|[01][0-9]):[0-5][0-9]:[0-5][0-9].[0-9][0-9][0-9]$/);",
+											"        pm.expect(row.updatedtime).to.match(/\\d{4}-[01]{1}\\d{1}-[0-3]{1}\\d{1}T[0-2]{1}\\d{1}:[0-6]{1}\\d{1}:[0-6]{1}\\d{1}.\\d{3}[+|-][0-1][0-9][0-5][0-9]$/);",
+											"        pm.expect(row['DATE(__createdtime__)']).to.match(/\\d{4}-[01]{1}\\d{1}-[0-3]{1}\\d{1}T[0-2]{1}\\d{1}:[0-6]{1}\\d{1}:[0-6]{1}\\d{1}.\\d{3}[+|-][0-1][0-9][0-5][0-9]$/);",
 											"    })",
 											"});"
 										],
