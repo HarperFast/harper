@@ -1,4 +1,4 @@
-"use strict"
+"use strict";
 /**
  * Test the registrationHandler module.
  */
@@ -6,13 +6,11 @@
 const assert = require('assert');
 const rewire = require('rewire');
 const fs = require('fs-extra');
-const moment = require('moment');
 const sinon = require('sinon');
 const test_utils = require('../../test_utils');
 test_utils.preTestPrep();
 const reg = rewire('../../../utility/registration/registrationHandler');
 const hdb_license = require('../../../utility/registration/hdb_license');
-const apiLimiter = require('../../../server/apiLimiter/apiLimiterClusterRateLimiter');
 const version = require('../../../bin/version');
 const log = require('../../../utility/logging/harper_logger');
 const check_permissions = require('../../../utility/check_permissions');
@@ -130,7 +128,6 @@ describe(`Test getFingerprint`, function () {
 
 describe(`Test getRegistrationInfo`,function() {
     let getLicense_stub;
-    let getDailyAPICalls_stub;
     let version_stub;
     let log_spy;
     let test_license = {
@@ -149,7 +146,6 @@ describe(`Test getRegistrationInfo`,function() {
     beforeEach(() => {
         sandbox = sinon.createSandbox();
         getLicense_stub = sandbox.stub(hdb_license, "getLicense").resolves(test_license);
-        getDailyAPICalls_stub = sandbox.stub(apiLimiter, "getDailyAPICalls").resolves({ _consumedPoints: test_api_calls });
         version_stub = sandbox.stub(version, "version").returns(test_version);
         log_spy = sandbox.spy(log, "error");
     });
@@ -213,19 +209,5 @@ describe(`Test getRegistrationInfo`,function() {
         assert.equal(err.message, err_msg,'expected error message');
         assert.equal(log_spy.calledOnce,true, 'expected error to be logged');
     });
-
-    //commented out as we may want this test back in the future
-    /*it('Should throw and log an error if getDailyAPICalls throws an error', async function () {
-        getDailyAPICalls_stub.throws(new Error(err_msg));
-        let result;
-        try {
-            await reg.getRegistrationInfo();
-        } catch (e) {
-            err = e;
-        }
-
-        assert.equal(err.message, err_msg,'expected error message');
-        assert.equal(log_spy.calledOnce,true, 'expected error to be logged');
-    });*/
 
 });
