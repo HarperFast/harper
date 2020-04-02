@@ -8,7 +8,6 @@ const terms = require('../hdbTerms');
 const fs = require('fs-extra');
 const path = require('path');
 const hdb_utils = require('../common_utils');
-const apiLimiter = require('../../server/apiLimiter/apiLimiterClusterRateLimiter');
 const version = require('../../bin/version');
 
 //Promisified function
@@ -34,7 +33,7 @@ async function setLicense(json_message) {
         try {
             log.info(`parsing license key: ${json_message.key} and `);
             let company = json_message.company.toString();
-            let lic = await parseLicense(json_message.key.trim(), company.trim());
+            await parseLicense(json_message.key.trim(), company.trim());
         } catch(err) {
             let err_msg = `There was an error parsing the license key.`;
             log.error(err_msg);
@@ -72,6 +71,7 @@ async function getFingerprint() {
 /**
  * Takes the license string received either from the
  * @param license
+ * @param company
  */
 async function parseLicense(license, company) {
     if(!license || !company) {
