@@ -50,8 +50,7 @@ describe('Test functions from alasqlFunctionImporter w/ alasql', () => {
 
         const { test_result } = alasql(generateTestSelect(test_function))[0];
 
-        const expected_result = moment().utc().format(expected_formats.TIME);
-        expect(test_result).to.equal(expected_result);
+        expect(isValidDateFormat(test_result, expected_formats.TIME, true)).to.equal(true);
     });
 
     it('should EXTRACT the correct date parts', () => {
@@ -234,9 +233,15 @@ describe('Test functions from alasqlFunctionImporter w/ alasql', () => {
         const { test_result } = alasql(generateTestSelect(test_function))[0];
         const test_result_date = moment(test_result).utc().format(expected_formats.DATE);
         const current_date = moment().utc().format(expected_formats.DATE);
-        const expected_result_full = moment(test_result).format(expected_formats.DATE_TIME);
 
         expect(test_result.toString().length).to.equal(13);
         expect(test_result_date).to.equal(current_date);
     });
 });
+
+function isValidDateFormat(date, format, isUTC) {
+    if (isUTC) {
+        return moment(date, format).utc().format(format) === date;
+    }
+    return moment(date, format).format(format) === date;
+}
