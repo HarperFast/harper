@@ -26,7 +26,7 @@ module.exports = lmdbCreateTable;
  * @param table_create_obj
  */
 async function lmdbCreateTable(table_system_data, table_create_obj) {
-    let schema_path = path.join(getBaseSchemaPath(), table_create_obj.schema);
+    let schema_path = path.join(getBaseSchemaPath(), table_create_obj.schema.toString());
 
     let created_time_attr = new LMDBCreateAttributeObject(table_create_obj.schema, table_create_obj.table, hdb_terms.TIME_STAMP_NAMES_ENUM.CREATED_TIME, undefined, true, lmdb_terms.DBI_KEY_TYPES.NUMBER);
     let updated_time_attr = new LMDBCreateAttributeObject(table_create_obj.schema, table_create_obj.table, hdb_terms.TIME_STAMP_NAMES_ENUM.UPDATED_TIME, undefined, true, lmdb_terms.DBI_KEY_TYPES.NUMBER);

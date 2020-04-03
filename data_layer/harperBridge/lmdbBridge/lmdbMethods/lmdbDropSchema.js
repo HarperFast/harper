@@ -51,7 +51,7 @@ async function lmdbDropSchema(drop_schema_obj) {
         // Delete the schema from the system > hdb_schema datastore
         await delete_records(delete_schema_obj);
 
-        let schema_path = path.join(getBaseSchemaPath(), delete_schema);
+        let schema_path = path.join(getBaseSchemaPath(), delete_schema.toString());
         await fs.remove(schema_path);
     } catch(err) {
         throw err;

@@ -32,7 +32,7 @@ async function lmdbDropAttribute(drop_attribute_obj, remove_data = true) {
         //remove meta data
         let delete_results = await dropAttributeFromSystem(drop_attribute_obj);
         //drop dbi
-        let schema_path = path.join(getBaseSchemaPath(), drop_attribute_obj.schema);
+        let schema_path = path.join(getBaseSchemaPath(), drop_attribute_obj.schema.toString());
         let env = await environment_utility.openEnvironment(schema_path, drop_attribute_obj.table);
         environment_utility.dropDBI(env, drop_attribute_obj.attribute);
 
