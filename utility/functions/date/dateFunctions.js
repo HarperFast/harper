@@ -3,6 +3,8 @@
 const moment = require('moment');
 const hdb_time_format = 'YYYY-MM-DDTHH:mm:ss.SSSZZ';
 
+moment.suppressDeprecationWarnings = true;
+
 module.exports = {
     current_date: () => {
         return moment().utc().format('YYYY-MM-DDZZ');
