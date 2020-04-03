@@ -535,7 +535,7 @@ function getClusterUser(users, cluster_user_name){
     try {
         for (let x = 0; x < users.length; x++) {
             let user = users[x];
-            if (user.username === cluster_user_name && user.role.permission.cluster_user === true && user.active === true) {
+            if (user.username.toString() === cluster_user_name.toString() && user.role.permission.cluster_user === true && user.active === true) {
                 cluster_user = user;
                 break;
             }

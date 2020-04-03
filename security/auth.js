@@ -60,7 +60,7 @@ function findAndValidateUser(username, password, done) {
     function handleResponse() {
         try {
             let user_tmp = global.hdb_users.filter((hdb_user) => {
-                return hdb_user.username === username;
+                return hdb_user.username.toString() === username.toString();
             })[0];
 
             if (!user_tmp) {
