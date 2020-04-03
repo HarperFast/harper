@@ -28,7 +28,7 @@ async function lmdbDropAllAttributes(drop_obj) {
                 await drop_attribute(drop_attr_object, false);
             } catch(e){
                 if(e.message !== LMDB_ERROR.DBI_DOES_NOT_EXIST){
-                    log.error(`unable to drop attribjute ${drop_obj.schema}.${drop_obj.table}.${current_attribute}:` + e);
+                    log.error(`unable to drop attribute ${drop_obj.schema}.${drop_obj.table}.${current_attribute}:` + e);
                 }
             }
         }

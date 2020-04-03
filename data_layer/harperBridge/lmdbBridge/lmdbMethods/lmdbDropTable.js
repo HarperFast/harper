@@ -9,6 +9,7 @@ const hdb_terms = require('../../../../utility/hdbTerms');
 const environment_utility = require('../../../../utility/lmdb/environmentUtility');
 const {getBaseSchemaPath} = require('../lmdbUtility/initializePaths');
 const path = require('path');
+const log = require('../../../../utility/logging/harper_logger');
 
 module.exports = lmdbDropTable;
 
@@ -21,8 +22,16 @@ async function lmdbDropTable(drop_table_obj) {
         await drop_all_attributes(drop_table_obj);
         await dropTableFromSystem(drop_table_obj);
 
-        let schema_path = path.join(getBaseSchemaPath(), drop_table_obj.schema);
-        await environment_utility.deleteEnvironment(schema_path, drop_table_obj.table);
+        let schema_path = path.join(getBaseSchemaPath(), drop_table_obj.schema.toString());
+        try {
+            await environment_utility.deleteEnvironment(schema_path, drop_table_obj.table);
+        }catch(e){
+            if(e.message === 'invalid environment'){
+                log.warn(`cannot delete environment for ${drop_table_obj.schema}.${drop_table_obj.table}, environment not found`);
+            } else {
+                throw e;
+            }
+        }
     } catch(err) {
         throw err;
     }

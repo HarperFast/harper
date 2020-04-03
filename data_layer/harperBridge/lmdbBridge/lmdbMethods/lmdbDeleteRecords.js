@@ -48,7 +48,7 @@ async function lmdbDeleteRecords(delete_obj) {
             }
         }
 
-        let env_base_path = path.join(getBaseSchemaPath(), delete_obj.schema);
+        let env_base_path = path.join(getBaseSchemaPath(), delete_obj.schema.toString());
         let environment = await environment_utility.openEnvironment(env_base_path, delete_obj.table);
 
         let response = delete_utility.deleteRecords(environment, hash_attribute, delete_obj.hash_values);

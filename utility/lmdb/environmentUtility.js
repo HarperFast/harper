@@ -203,6 +203,7 @@ async function openEnvironment(base_path, env_name){
  */
 async function deleteEnvironment(base_path, env_name) {
     await pathEnvNameValidation(base_path, env_name);
+    env_name = env_name.toString();
     await validateEnvironmentPath(base_path, env_name);
 
     await fs.remove(path.join(base_path, env_name));

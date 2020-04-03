@@ -36,7 +36,7 @@ async function prepSearch(search_object, comparator, return_map){
 
     let search_type = createSearchTypeFromSearchObject(search_object, table_info.hash_attribute, return_map, comparator);
 
-    let schema_path = path.join(getBaseSchemaPath(), search_object.schema);
+    let schema_path = path.join(getBaseSchemaPath(), search_object.schema.toString());
     let env = await environment_utility.openEnvironment(schema_path, search_object.table);
     let stat = environment_utility.statDBI(env, search_object.search_attribute);
     let results;
@@ -59,7 +59,7 @@ async function prepSearch(search_object, comparator, return_map){
  */
 async function executeSearch(search_object, search_type, hash_attribute, return_map){
     try {
-        let schema_path = path.join(getBaseSchemaPath(), search_object.schema);
+        let schema_path = path.join(getBaseSchemaPath(), search_object.schema.toString());
         let env = await environment_utility.openEnvironment(schema_path, search_object.table);
         let search_results = Object.create(null);
 
@@ -171,6 +171,8 @@ function createSearchTypeFromSearchObject(search_object, hash_attribute, return_
         let search_value = search_object.search_value;
         if(typeof search_value === 'object'){
             search_value = JSON.stringify(search_value);
+        } else {
+            search_value = search_value.toString();
         }
 
         let first_search_character = search_value.charAt(0);
