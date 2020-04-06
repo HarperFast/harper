@@ -388,6 +388,7 @@ async function clusterStatus(cluster_status_json) {
         let result = await Promise.race([event_promise, timeout_promise.promise]);
         log.trace(`cluster status result: ${util.inspect(result)}`);
         try {
+            result.node_name = env_mgr.get('NODE_NAME');
             delete result['hdb_header'];
             delete result['__originator'];
             delete result['requestor_channel'];
