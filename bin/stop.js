@@ -46,10 +46,11 @@ async function restartProcesses(json_message) {
 async function stop() {
     console.log("Stopping HarperDB.");
     try {
-        await killProcs(hdb_terms.HDB_PROC_NAME, hdb_terms.HDB_PROC_DESCRIPTOR);
-        log.info(`Stopping ${hdb_terms.HDB_PROC_NAME} - ${hdb_terms.HDB_PROC_DESCRIPTOR}.`);
-        await killProcs(hdb_terms.SC_PROC_NAME, hdb_terms.SC_PROC_DESCRIPTOR);
         log.info(`Stopping ${hdb_terms.SC_PROC_NAME} - ${hdb_terms.SC_PROC_DESCRIPTOR}.`);
+        await killProcs(hdb_terms.SC_PROC_NAME, hdb_terms.SC_PROC_DESCRIPTOR);
+        log.info(`Stopping ${hdb_terms.HDB_PROC_NAME} - ${hdb_terms.HDB_PROC_DESCRIPTOR}.`);
+        await killProcs(hdb_terms.HDB_PROC_NAME, hdb_terms.HDB_PROC_DESCRIPTOR);
+
         log.notify(`HarperDB has stopped`);
     } catch(err){
         console.error(err);
@@ -96,7 +97,6 @@ async function checkHdbProcsEnd(proc_name){
         await async_set_timeout(HDB_PROC_END_TIMEOUT * x++);
 
         let instances = await ps_list.findPs(proc_name);
-
         if(instances.length === 0) {
             go_on = false;
         }
