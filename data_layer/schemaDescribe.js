@@ -1,11 +1,20 @@
+"use strict";
+
 //this is to avoid a circular dependency with insert.  insert needs the describe all function but so does the main schema module.  as such the functions have been broken out into a seperate module.
 const search = require('./search');
 const logger = require('../utility/logging/harper_logger');
 const validator = require('../validation/schema_validator');
 const _ = require('lodash');
+const path = require('path');
 const hdb_utils = require('../utility/common_utils');
 const {promisify} = require('util');
 const terms = require('../utility/hdbTerms');
+const env_mngr = require('../utility/environment/environmentManager');
+if(!env_mngr.isInitialized()){
+    env_mngr.initSync();
+}
+const lmdb_environment_utility = require('../utility/lmdb/environmentUtility');
+const lmdb_init_paths = require('../data_layer/harperBridge/lmdbBridge/lmdbUtility/initializePaths');
 
 // Promisified functions
 let p_search_search_by_value = promisify(search.searchByValue);
@@ -136,6 +145,18 @@ async function descTable(describe_table_object) {
             });
 
             table_result.attributes = attributes;
+
+            if(env_mngr.getDataStoreType() === terms.STORAGE_TYPES_ENUM.LMDB){
+                try {
+                    let schema_path = path.join(lmdb_init_paths.getBaseSchemaPath(), table_result.schema);
+                    let env = await lmdb_environment_utility.openEnvironment(schema_path, table_result.name);
+                    let dbi_stat = lmdb_environment_utility.statDBI(env, table_result.hash_attribute);
+                    table_result.record_count = dbi_stat.entryCount;
+                }catch(e){
+                    logger.warn(`unable to stat table dbi due to ${e}`);
+                }
+            }
+
         } catch (err) {
             logger.error('There was an error getting table attributes.');
             logger.error(err);
