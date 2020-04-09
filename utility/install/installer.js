@@ -619,7 +619,7 @@ function createSettingsFile(mount_status, callback) {
             `   ;The path to the SSL private key used when running with HTTPS enabled.\n` +
             `${HDB_SETTINGS_NAMES.PRIVATE_KEY_KEY} = ${wizard_result.HDB_ROOT}/keys/privateKey.pem\n` +
             `   ;Set to true to enable HTTPS on the HarperDB REST endpoint.  Requires a valid certificate and key.\n` +
-            `${HDB_SETTINGS_NAMES.HTTP_SECURE_ENABLED_KEY} = FALSE\n` +
+            `${HDB_SETTINGS_NAMES.HTTP_SECURE_ENABLED_KEY} = TRUE\n` +
             `   ;Set to true to have HarperDB run using standard HTTP.\n` +
             `${HDB_SETTINGS_NAMES.HTTP_ENABLED_KEY} = TRUE \n` +
             `   ;Set to true to enable Cross Origin Resource Sharing, which allows requests across a domain.\n` +
