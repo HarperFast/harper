@@ -39,12 +39,19 @@ async function thread(argument){
  * @returns {Promise<void>}
  */
 async function waitForSocketToConnect(){
-    if(global.hdb_socket_client === undefined){
+    if(global.hdb_socket_client === undefined || global.hdb_socket_client.socket === undefined){
         return;
     }
+
     let socket = global.hdb_socket_client.socket;
-    let x = 0;
-    while(x < CONNECT_TRIES || (socket.state !== socket.OPEN && socket.authState !== socket.AUTHENTICATED)){
+    if(socket.state === socket.CLOSED){
+        return;
+    }
+
+    for(let x = 0; x < CONNECT_TRIES; x++){
+        if(socket.state === socket.OPEN && socket.authState === socket.AUTHENTICATED){
+            break;
+        }
         await p_timeout(TIMEOUT_MS);
     }
 }
