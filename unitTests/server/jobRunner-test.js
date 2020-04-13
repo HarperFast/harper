@@ -39,7 +39,9 @@ describe('Test parseMessage', function() {
     });
     afterEach(function () {
         sandbox.restore();
-        bulk_load_stub.restore();
+        if(bulk_load_stub) {
+            bulk_load_stub.restore();
+        }
     });
 
     it('Nominal case, parse with no errors', test_util.mochaAsyncWrapper(async function() {
@@ -49,13 +51,14 @@ describe('Test parseMessage', function() {
         runner_message.job = job_object;
 
         update_stub = sandbox.stub(jobs, "updateJob").returns(UPDATE_RESULT);
-        bulk_load_stub = sandbox.stub(csv_bulk_load, "csvDataLoad").returns(BULK_LOAD_RESPONSE);
+        let thread_exec = jobs_runner.__set__("threadExecute", async(arg)=>{return BULK_LOAD_RESPONSE});
 
         let result = await parseMessage(runner_message);
         assert.equal(result.success, true, 'expected success');
         assert.ok(runner_message.job.end_datetime !== undefined, 'Expected end date time to be set');
         assert.equal(runner_message.job.status, hdb_term.JOB_STATUS_ENUM.COMPLETE, 'Expected job status to be complete.');
         assert.ok(runner_message.job.message.length > 0, 'Expected job status to be complete.');
+        thread_exec();
     }));
     it('Invalid message json', async function() {
         let runner_message = new jobs_runner.RunnerMessage();
@@ -151,13 +154,14 @@ describe('Test runCSVJob', function() {
         runner_message.job = job_object;
 
         update_stub = sandbox.stub(jobs, "updateJob").returns(UPDATE_RESULT);
-        bulk_load_stub = sandbox.stub(csv_bulk_load, "csvDataLoad").returns(BULK_LOAD_RESPONSE);
+        let thread_exec = jobs_runner.__set__("threadExecute", async(arg)=>{return BULK_LOAD_RESPONSE});
 
         let result = await runCSVJob(runner_message, csv_bulk_load.csvDataLoad, runner_message.json);
         assert.equal(result.success, true, 'expected success');
         assert.ok(runner_message.job.end_datetime !== undefined, 'Expected end date time to be set');
         assert.equal(runner_message.job.status, hdb_term.JOB_STATUS_ENUM.COMPLETE, 'Expected job status to be complete.');
         assert.ok(runner_message.job.message.length > 0, 'Expected job status to be complete.');
+        thread_exec();
     });
     it('Throw exception during update to test error handling', async function() {
         let runner_message = new jobs_runner.RunnerMessage();
