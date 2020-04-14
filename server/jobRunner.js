@@ -8,6 +8,10 @@ const log = require('../utility/logging/harper_logger');
 const jobs = require('./jobs');
 const hdb_export = require('../data_layer/export');
 const hdb_delete = require('../data_layer/delete');
+const fork = require('child_process').fork;
+const path = require('path');
+const JOB_THREAD_MODULE_PATH = path.join(__dirname, 'jobThread');
+const signal = require('../utility/signalling');
 
 class RunnerResponse {
     constructor(success, message, error) {
@@ -134,9 +138,10 @@ async function runCSVJob(runner_message, operation, argument) {
         // Update with "IN PROGRESS"
         await jobs.updateJob(runner_message.job);
         // Run the operation.
-        result_message = await operation(argument);
+        result_message = await threadExecute(argument);
     } catch(e) {
-        let err_message =`There was an error running ${operation.name} job with id ${runner_message.job.id} - ${e}`;
+        let e_message = e.message !== undefined ? e.message : e;
+        let err_message =`There was an error running ${operation.name} job with id ${runner_message.job.id} - ${e_message}`;
         log.error(err_message);
         runner_message.job.message = err_message;
         runner_message.job.status = hdb_terms.JOB_STATUS_ENUM.ERROR;
@@ -165,6 +170,38 @@ async function runCSVJob(runner_message, operation, argument) {
     response.message = result_message;
     response.success = true;
     return response;
+}
+
+/**
+ * launches & handles response for background process to run job
+ * @param argument
+ * @returns {Promise<unknown>}
+ */
+function threadExecute(argument){
+    return new Promise((resolve, reject)=>{
+        const forked = fork(JOB_THREAD_MODULE_PATH);
+        forked.send(argument);
+        forked.on('message', async data=>{
+            if(data.hasOwnProperty('error')){
+                let err = new Error(data.error);
+                err.stack = data.stack;
+                reject(err);
+                forked.kill("SIGINT");
+            } else if(data.hasOwnProperty('thread_results')){
+                //we have this if statement to stop false processing from schema signalling
+                resolve(data.thread_results);
+                forked.kill("SIGINT");
+            } else if(data.type === signal.SCHEMA_CHANGE_MESSAGE.type){
+                signal.signalSchemaChange(signal.SCHEMA_CHANGE_MESSAGE);
+            }
+        });
+
+        forked.on('error', data=>{
+            forked.kill("SIGINT");
+            reject(data);
+        });
+
+    });
 }
 
 module.exports = {

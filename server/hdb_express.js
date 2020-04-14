@@ -232,6 +232,7 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
     const server_utilities = require('./serverUtilities');
     const cors = require('cors');
     const compression = require('compression');
+    const spawn_cluster_connection = require('./socketcluster/connector/spawnSCConnection');
 
     const app = express();
 
@@ -412,47 +413,12 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
        harper_logger.info(`Server close event received for process ${process.pid}`);
     });
 
-    function spawnSCConnection(){
-        if(env.get('CLUSTERING') !== true){
-            return;
-        }
-
-        const socketclient = require('socketcluster-client');
-        const HDBSocketConnector = require('./socketcluster/connector/HDBSocketConnector');
-        const crypto_hash = require('../security/cryptoHash');
-        let connector_options = require('../json/hdbConnectorOptions');
-
-        //get the CLUSTER_USER
-        let cluster_user_name = env.get('CLUSTERING_USER');
-
-        if(hdb_util.isEmpty(cluster_user_name)){
-            harper_logger.warn('No CLUSTERING_USER found, unable connect to local clustering server');
-            return;
-        }
-
-        let cluster_user = hdb_util.getClusterUser(global.hdb_users, cluster_user_name);
-
-        if(hdb_util.isEmpty(cluster_user)){
-            harper_logger.warn('No CLUSTERING_USER found, unable connect to local clustering server');
-            return;
-        }
-        global.clustering_on = true;
-        let creds = {
-            username: cluster_user.username,
-            password: crypto_hash.decrypt(cluster_user.hash)
-        };
-
-        connector_options.hostname = 'localhost';
-        connector_options.port = env.get('CLUSTERING_PORT');
-        global.hdb_socket_client = new HDBSocketConnector(socketclient, {name: SC_WORKER_NAME_PREFIX + process.pid}, connector_options, creds);
-    }
-
     async function setUp(){
         try {
             harper_logger.trace('Configuring child process.');
             await p_schema_to_global();
             await user_schema.setUsersToGlobal();
-            spawnSCConnection();
+            spawn_cluster_connection(true);
             let license = await hdb_license.getLicense();
         } catch(e) {
             harper_logger.error(e);
