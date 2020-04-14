@@ -6,9 +6,10 @@ const promisify = require('util').promisify;
 const p_schema_to_global = promisify(global_schema.setSchemaDataToGlobal);
 const server_utils = require('../server/serverUtilities');
 const spawn_cluster_connection = require('../server/socketcluster/connector/spawnSCConnection');
+const log = require('../utility/logging/harper_logger');
 const p_timeout = promisify(setTimeout);
 const CONNECT_TRIES = 5;
-const TIMEOUT_MS = 20;
+const TIMEOUT_MS = 50;
 
 process.on('message', thread);
 
@@ -39,21 +40,27 @@ async function thread(argument){
  * @returns {Promise<void>}
  */
 async function waitForSocketToConnect(){
+    log.info('thread socket connection waiting to connect');
     if(global.hdb_socket_client === undefined || global.hdb_socket_client.socket === undefined){
+        log.info('no thread socket connection to confirm');
         return;
     }
 
     let socket = global.hdb_socket_client.socket;
     if(socket.state === socket.CLOSED){
+        log.warn('thread socket connection could not connect to server');
         return;
     }
 
     for(let x = 0; x < CONNECT_TRIES; x++){
         if(socket.state === socket.OPEN && socket.authState === socket.AUTHENTICATED){
+            log.info('thread socket connection successfully authenticated');
             break;
         }
         await p_timeout(TIMEOUT_MS);
     }
+
+    log.info(`thread socket connection exiting confirmation: ${socket.state}, ${socket.authState}`);
 }
 
 module.exports = thread;
