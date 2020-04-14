@@ -72,6 +72,7 @@
     "request-promise-native": "^1.0.5",
     "socketcluster": "^14.4.2",
     "socketcluster-client": "^14.2.2",
+    "systeminformation": "^4.23.3",
     "tar-fs": "^1.16.3",
     "truncate-utf8-bytes": "^1.0.2",
     "underscore": "^1.9.1",
