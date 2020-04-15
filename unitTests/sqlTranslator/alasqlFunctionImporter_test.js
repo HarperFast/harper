@@ -13,13 +13,24 @@ const alasql_function_importer = require('../../sqlTranslator/alasqlFunctionImpo
 alasql_function_importer(alasql);
 
 const expected_formats = {
-    DATE: 'YYYY-MM-DDZZ',
-    TIME: 'HH:mm:ss.SSSZZ',
-    DATE_TIME: 'YYYY-MM-DDTHH:mm:ss.SSSZZ'
+    DATE: 'YYYY-MM-DD',
+    TIME: 'HH:mm:ss.SSS',
+    DATE_TIME: 'YYYY-MM-DDTHH:mm:ss.SSSZZ',
 };
 
-const stub_date = '2020-03-26 ';
-const stub_timestamp = '2020-03-26 15:13:02.041'
+const format_regex = {
+    date_time_regex: /\d{4}-[01]{1}\d{1}-[0-3]{1}\d{1}T[0-2]{1}\d{1}:[0-6]{1}\d{1}:[0-6]{1}\d{1}.\d{3}[+|-][0-1][0-9][0-5][0-9]$/,
+    date_regex: /\d{4}-[01]{1}\d{1}-[0-3]{1}\d{1}$/,
+    time_regex: /[0-2]{1}\d{1}:[0-6]{1}\d{1}:[0-6]{1}\d{1}.\d{3}$/,
+    unix_regex: /\d{13}$/,
+};
+
+const date_time_checks = {
+    DATE_TIME: 'YYYY-MM-DDTHH:mm:sZZ',
+    TIME: 'HH:mm:ss'
+}
+
+const stub_timestamp = '2020-03-26 15:13:02.041+000'
 const timestamp_parts = {
     year: '2020',
     month: '03',
@@ -40,17 +51,22 @@ describe('Test functions from alasqlFunctionImporter w/ alasql', () => {
         const test_function = 'CURRENT_DATE()';
 
         const { test_result } = alasql(generateTestSelect(test_function))[0];
-
         const expected_result = moment().utc().format(expected_formats.DATE);
+
         expect(test_result).to.equal(expected_result);
+        expect(test_result).to.match(format_regex.date_regex);
     });
 
     it('should return CURRENT_TIME() value in HH:mm:ss.SSS format', () => {
         const test_function = 'CURRENT_TIME()';
 
         const { test_result } = alasql(generateTestSelect(test_function))[0];
+        const expected_result = moment().utc().format(date_time_checks.TIME);
+        const test_result_check = moment(test_result, expected_formats.TIME).format(date_time_checks.TIME);
 
-        expect(isValidDateFormat(test_result, expected_formats.TIME, true)).to.equal(true);
+        expect(test_result_check).to.equal(expected_result);
+        expect(test_result).to.match(format_regex.time_regex);
+
     });
 
     it('should EXTRACT the correct date parts', () => {
@@ -86,8 +102,9 @@ describe('Test functions from alasqlFunctionImporter w/ alasql', () => {
 
         const { test_result } = alasql(generateTestSelect(test_function))[0];
 
-        const expected_result = moment(test_result).format(expected_formats.DATE_TIME);
+        const expected_result = moment(test_result).utc().format(expected_formats.DATE_TIME);
         expect(test_result).to.equal(expected_result);
+        expect(test_result).to.match(format_regex.date_time_regex);
     });
 
     it('should return DATE_FORMAT() value in provided format', () => {
@@ -134,13 +151,13 @@ describe('Test functions from alasqlFunctionImporter w/ alasql', () => {
         const { test_result_hours } = alasql(statement_hours)[0];
         const { test_result_months } = alasql(statement_months)[0];
 
-        const expected_result_days = moment(stub_timestamp).add(test_intervals.days, 'days').format(expected_formats.DATE_TIME);
+        const expected_result_days = moment(stub_timestamp).utc().add(test_intervals.days, 'days').valueOf();
         expect(test_result_days).to.equal(expected_result_days);
 
-        const expected_result_hours = moment(stub_timestamp).add(test_intervals.hours, 'hours').format(expected_formats.DATE_TIME);
+        const expected_result_hours = moment(stub_timestamp).utc().add(test_intervals.hours, 'hours').valueOf();
         expect(test_result_hours).to.equal(expected_result_hours);
 
-        const expected_result_months = moment(stub_timestamp).add(test_intervals.months, 'months').format(expected_formats.DATE_TIME);
+        const expected_result_months = moment(stub_timestamp).utc().add(test_intervals.months, 'months').valueOf();
         expect(test_result_months).to.equal(expected_result_months);
     });
 
@@ -161,13 +178,13 @@ describe('Test functions from alasqlFunctionImporter w/ alasql', () => {
         const { test_result_hours } = alasql(statement_hours)[0];
         const { test_result_months } = alasql(statement_months)[0];
 
-        const expected_result_days = moment(stub_timestamp).subtract(test_intervals.days, 'days').format(expected_formats.DATE_TIME);
+        const expected_result_days = moment(stub_timestamp).utc().subtract(test_intervals.days, 'days').valueOf();
         expect(test_result_days).to.equal(expected_result_days);
 
-        const expected_result_hours = moment(stub_timestamp).subtract(test_intervals.hours, 'hours').format(expected_formats.DATE_TIME);
+        const expected_result_hours = moment(stub_timestamp).utc().subtract(test_intervals.hours, 'hours').valueOf();
         expect(test_result_hours).to.equal(expected_result_hours);
 
-        const expected_result_months = moment(stub_timestamp).subtract(test_intervals.months, 'months').format(expected_formats.DATE_TIME);
+        const expected_result_months = moment(stub_timestamp).utc().subtract(test_intervals.months, 'months').valueOf();
         expect(test_result_months).to.equal(expected_result_months);
     });
 
@@ -187,7 +204,7 @@ describe('Test functions from alasqlFunctionImporter w/ alasql', () => {
         const generate_statement = (date1, date2, interval) => `SELECT DATE_DIFF('${date1}', '${date2}', '${interval}') as [test_result_${interval}]`;
 
         const date_1 = stub_timestamp;
-        const date_2 = moment(stub_timestamp).subtract(25, 'months').format(expected_formats.DATE_TIME);
+        const date_2 = moment(stub_timestamp).utc().subtract(25, 'months').format(expected_formats.DATE_TIME);
 
         const expected_results = {
             days: 759,
@@ -212,7 +229,7 @@ describe('Test functions from alasqlFunctionImporter w/ alasql', () => {
         const current_date = moment().utc().format(expected_formats.DATE);
 
 
-        expect(test_result.toString().length).to.equal(13);
+        expect(test_result).to.match(format_regex.unix_regex);
         expect(test_result_date).to.equal(current_date);
     });
 
@@ -223,7 +240,7 @@ describe('Test functions from alasqlFunctionImporter w/ alasql', () => {
         const test_result_date = moment(test_result).utc().format(expected_formats.DATE);
         const current_date = moment().utc().format(expected_formats.DATE);
 
-        expect(test_result.toString().length).to.equal(13);
+        expect(test_result).to.match(format_regex.unix_regex);
         expect(test_result_date).to.equal(current_date);
     });
 
@@ -234,14 +251,27 @@ describe('Test functions from alasqlFunctionImporter w/ alasql', () => {
         const test_result_date = moment(test_result).utc().format(expected_formats.DATE);
         const current_date = moment().utc().format(expected_formats.DATE);
 
-        expect(test_result.toString().length).to.equal(13);
+        expect(test_result).to.match(format_regex.unix_regex);
         expect(test_result_date).to.equal(current_date);
     });
-});
 
-function isValidDateFormat(date, format, isUTC) {
-    if (isUTC) {
-        return moment(date, format).utc().format(format) === date;
-    }
-    return moment(date, format).format(format) === date;
-}
+    it('should return GET_SERVER_TIME value as local timestamp in YYYY-MM-DDTHH:mm:ss.SSSZZ format', () => {
+        const test_function = 'GET_SERVER_TIME()';
+
+        const { test_result } = alasql(generateTestSelect(test_function))[0];
+        const test_result_date = moment(test_result).format(date_time_checks.DATE_TIME);
+        const current_date = moment().format(date_time_checks.DATE_TIME);
+
+        expect(test_result).to.match(format_regex.date_time_regex);
+        expect(test_result_date).to.equal(current_date);
+    });
+
+    it('should return OFFSET_UTC value in YYYY-MM-DDTHH:mm:ss.SSSZZ format', () => {
+        const test_function = `OFFSET_UTC(NOW(), -4)`;
+
+        const { test_result } = alasql(generateTestSelect(test_function))[0];
+
+        expect(test_result).to.include('-0400');
+        expect(test_result).to.match(format_regex.date_time_regex);
+    });
+});
