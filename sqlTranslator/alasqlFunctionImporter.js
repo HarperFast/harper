@@ -36,6 +36,8 @@ module.exports= (alasql)=>{
     alasql.fn.date_sub = alasql.fn.DATE_SUB = date_functions.date_sub;
     alasql.fn.date_diff = alasql.fn.DATE_DIFF = alasql.fn.datediff = alasql.fn.DATEDIFF = date_functions.date_diff;
     alasql.fn.now = alasql.fn.NOW = date_functions.now;
+    alasql.fn.offset_utc = alasql.fn.OFFSET_UTC = date_functions.offset_utc;
+    alasql.fn.get_server_time = alasql.fn.GET_SERVER_TIME = date_functions.get_server_time;
     //GETDATE() and CURRENT_TIMESTAMP reference the date/time value from NOW() in alasql but we need to monkey patch
     // them here as well with the new now logic
     alasql.fn.getdate = alasql.fn.GETDATE = date_functions.now;
