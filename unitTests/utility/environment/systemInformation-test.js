@@ -371,24 +371,6 @@ describe('test systemInformation module', ()=>{
         EXPECTED_PROPERTIES.harperdb_processes.forEach(property=>{
             assert(results.hasOwnProperty(property));
         });
-
-        assert(Array.isArray(results.core));
-        Object.keys(results.core[0]).forEach(key=>{
-            assert(EXPECTED_PROPERTIES.harperdb_processes_core.indexOf(key) >= 0);
-        });
-
-        EXPECTED_PROPERTIES.harperdb_processes_core.forEach(property=>{
-            assert(results.core[0].hasOwnProperty(property));
-        });
-
-        assert(Array.isArray(results.clustering));
-        Object.keys(results.clustering[0]).forEach(key=>{
-            assert(EXPECTED_PROPERTIES.harperdb_processes_core.indexOf(key) >= 0);
-        });
-
-        EXPECTED_PROPERTIES.harperdb_processes_core.forEach(property=>{
-            assert(results.clustering[0].hasOwnProperty(property));
-        });
     });
 
     it('test getAllSystemInformation function fetch all attributes', async ()=>{
