@@ -64,7 +64,7 @@
     "node-forge": "^0.7.6",
     "node-lmdb": "^0.8.0",
     "optimist": "^0.6.1",
-    "papaparse": "^5.0.0",
+    "papaparse": "^5.1.1",
     "passport": "^0.3.2",
     "passport-http": "^0.3.0",
     "passport-local": "^1.0.0",
