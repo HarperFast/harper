@@ -21,6 +21,7 @@ const stop = require('../bin/stop');
 const util = require('util');
 const insert = require('../data_layer/insert');
 const global_schema = require('../utility/globalSchema');
+const system_information = require('../utility/environment/systemInformation');
 
 const operation_function_caller = require(`../utility/OperationFunctionCaller`);
 const common_utils = require(`../utility/common_utils`);
@@ -511,6 +512,9 @@ function getOperationFunction(json){
             break;
         case terms.OPERATIONS_ENUM.CATCHUP:
             operation_function = catchup;
+            break;
+        case terms.OPERATIONS_ENUM.SYSTEM_INFORMATION:
+            operation_function = system_information.getAllSystemInformation;
             break;
         default:
             break;

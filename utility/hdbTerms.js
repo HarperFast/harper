@@ -230,7 +230,8 @@ const OPERATIONS_ENUM = {
     DROP_ATTRIBUTE: 'drop_attribute',
     REMOVE_NODE: 'remove_node',
     RESTART: 'restart',
-    CATCHUP: 'catchup'
+    CATCHUP: 'catchup',
+    SYSTEM_INFORMATION: 'system_information'
 };
 
 // Defines operations that should be propagated to the cluster.
