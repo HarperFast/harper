@@ -127,6 +127,7 @@ class HDBSocketConnector extends SocketConnector{
                     let result = await operation_function_caller.callOperationFunctionAsAwait(operation_function, msg, null);
                     // need to wait for the schema to be added to global.hdb_schema, or compareTableKeys will fail.
                     await p_set_schema_to_global();
+                    await server_utilities.postOperationHandler(msg, result, null);
                 }
                 // no point in doing system schema.
                 if(curr_schema_name !== terms.SYSTEM_SCHEMA_NAME) {
@@ -157,6 +158,7 @@ class HDBSocketConnector extends SocketConnector{
                     let result = await operation_function_caller.callOperationFunctionAsAwait(operation_function, msg, null);
                     // need to wait for the table to be added to global.hdb_schema, or compareAttributeKeys will fail.
                     await p_set_schema_to_global();
+                    await server_utilities.postOperationHandler(msg, result, null);
                 }
                 await this.compareAttributeKeys(schema_object[curr_table_name], schema_name, curr_table_name);
             }
@@ -196,6 +198,7 @@ class HDBSocketConnector extends SocketConnector{
                     }
                     log.trace(`Calling create Attribute on attribute: ${msg.attribute}`);
                     let result = await operation_function_caller.callOperationFunctionAsAwait(operation_function, msg, null);
+                    await server_utilities.postOperationHandler(msg, result, null);
                 } else {
                     let create_attribute = true;
                     if(!global.hdb_schema[schema_name][table_name].attributes) {
@@ -215,6 +218,7 @@ class HDBSocketConnector extends SocketConnector{
                         let {operation_function} = server_utilities.getOperationFunction(msg);
                         try {
                             let result = await operation_function_caller.callOperationFunctionAsAwait(operation_function, msg, null);
+                            await server_utilities.postOperationHandler(msg, result, null);
                         } catch(err) {
                             log.info(`There was a problem creating attribute ${msg.attribute}.  It probably already exists.`);
                             // no-op, some attributes may already exist so do nothing
