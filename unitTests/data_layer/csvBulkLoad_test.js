@@ -660,7 +660,8 @@ describe('Test csvBulkLoad.js', () => {
         it('Test action defaults to insert and correct results are returned', async () => {
             let expected_result = {
                 records: 2,
-                number_written: 5
+                number_written: 5,
+                new_attributes: undefined
             };
 
             let result = await bulk_load_rewire(data_array_fake, schema_fake, table_fake, '');
@@ -672,7 +673,8 @@ describe('Test csvBulkLoad.js', () => {
         it('Test update is called and returned result is correct', async () => {
             let expected_result = {
                 records: 2,
-                number_written: 3
+                number_written: 3,
+                new_attributes: undefined
             };
 
             let result = await bulk_load_rewire(data_array_fake, schema_fake, table_fake, 'update');

@@ -12,6 +12,7 @@ const fs = require('fs-extra');
 hdb_utils.promisifyPapaParse();
 const env = require('../utility/environment/environmentManager');
 const socket_cluster_util = require('../server/socketcluster/util/socketClusterUtils');
+const transact_to_clustering_utils = require('../server/transactToClusteringUtilities');
 const op_func_caller = require('../utility/OperationFunctionCaller');
 
 const CSV_NO_RECORDS_MSG = 'No records parsed from csv file.';
@@ -98,6 +99,7 @@ async function csvURLLoad(json_message) {
         action: json_message.action,
         schema: json_message.schema,
         table: json_message.table,
+        transact_to_cluster: json_message.transact_to_cluster,
         file_path: `${TEMP_DOWNLOAD_DIR}/${TEMP_CSV_FILE}`
     };
 
@@ -419,7 +421,8 @@ async function bulkLoad(records, schema, table, action){
         let number_written = hdb_utils.isEmptyOrZeroLength(modified_hashes) ? 0 : modified_hashes.length;
         let update_status = {
             records: records.length,
-            number_written
+            number_written,
+            new_attributes: write_response.new_attributes
         };
 
         return update_status;
@@ -429,11 +432,15 @@ async function bulkLoad(records, schema, table, action){
 }
 
 async function postCSVLoadFunction(orig_bulk_msg, result, orig_req) {
-    if(!orig_bulk_msg.transact_to_cluster) {
-        return result;
-    }
     let transaction_msg = hdb_utils.getClusterMessage(hdb_terms.CLUSTERING_MESSAGE_TYPES.HDB_TRANSACTION);
     transaction_msg.__transacted = true;
+
+    if(!orig_bulk_msg.transact_to_cluster) {
+        transact_to_clustering_utils.sendAttributeTransaction(result, orig_bulk_msg, transaction_msg, orig_req);
+        delete result.new_attributes;
+        return result;
+    }
+
     transaction_msg.transaction = {
         operation: orig_bulk_msg.action !== undefined ? orig_bulk_msg.action : hdb_terms.OPERATIONS_ENUM.INSERT,
         schema: orig_bulk_msg.schema,
@@ -444,6 +451,9 @@ async function postCSVLoadFunction(orig_bulk_msg, result, orig_req) {
         socket_cluster_util.concatSourceMessageHeader(transaction_msg, orig_req);
     }
     hdb_utils.sendTransactionToSocketCluster(`${orig_bulk_msg.schema}:${orig_bulk_msg.table}`, transaction_msg, env.getProperty(hdb_terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY));
+
+    transact_to_clustering_utils.sendAttributeTransaction(result, orig_bulk_msg, transaction_msg, orig_req);
+    delete result.new_attributes;
 }
 
 /**
