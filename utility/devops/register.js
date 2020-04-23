@@ -7,6 +7,7 @@
 const license = require('../registration/hdb_license');
 const license_generator = require('./licenseGenerator');
 const reg_handler = require('../registration/registrationHandler');
+const environment_utility = require('../environment/environmentManager');
 
 const minimist = require('minimist');
 const fs = require('fs-extra');
@@ -27,7 +28,7 @@ async function register(){
         console.log('available arguments --api_call, --storage_type, or reset_license.  All can be used in conjunction with each other\n' +
             '--api_call is an integer specify the number of api call / day this node can perform ex: --api_call=100000\n ' +
             '--ram_allocation is an integer specify the max memory in MB to allocate to this node ex: --ram_allocation=1024\n ' +
-            '--storage_type specifies the data storage type this node will use value can be: \'helium\' or \'fs\' ex: --storage_type=helium\n' +
+            '--storage_type specifies the data storage type this node will use value can be: \'lmdb\' or \'fs\' ex: --storage_type=fs\n' +
             '--reset_license will delete the existing license file');
         return;
     }
@@ -49,6 +50,8 @@ async function register(){
 
     if(ARGS.api_call !== undefined || ARGS.storage_type !== undefined || ARGS.ram_allocation !== undefined) {
         let api_call = ARGS.api_call === undefined ? terms.LICENSE_VALUES.API_CALL_DEFAULT : ARGS.api_call;
+        //NOTE: storage type is not currently managed via the license but related code is staying in place for potential
+        // later use if/when other storage mechanisms are built into hdb bridge
         let storage_type = ARGS.storage_type === undefined ? terms.STORAGE_TYPES_ENUM.FILE_SYSTEM : ARGS.storage_type;
         let ram_allocation = ARGS.ram_allocation === undefined ? terms.RAM_ALLOCATION_ENUM.DEVELOPMENT : ARGS.ram_allocation;
         if(!Number.isInteger(api_call)){

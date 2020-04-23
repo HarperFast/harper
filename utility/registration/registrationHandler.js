@@ -9,6 +9,7 @@ const fs = require('fs-extra');
 const path = require('path');
 const hdb_utils = require('../common_utils');
 const version = require('../../bin/version');
+const env_utility = require('../environment/environmentManager');
 
 //Promisified function
 let p_prompt_get = promisify(prompt.get);
@@ -180,7 +181,7 @@ async function getRegistrationInfo() {
 
     reg_info_obj.registered = license.enterprise;
     reg_info_obj.version = version.version();
-    reg_info_obj.storage_type = license.storage_type;
+    reg_info_obj.storage_type = env_utility.getDataStoreType();
     reg_info_obj.ram_allocation = license.ram_allocation;
     reg_info_obj.license_expiration_date = license.enterprise ? license.exp_date : null;
 
