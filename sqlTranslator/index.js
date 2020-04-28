@@ -100,7 +100,11 @@ function convertSQLToAST(sql) {
         ast_response.variant = variant;
     } catch(e) {
         let split_error = e.message.split('\n');
-        throw new Error(`Invalid SQL at: ${split_error[1]}`);
+        if (split_error[1]) {
+            throw new Error(`Invalid SQL at: ${split_error[1]}. Please ensure your SQL is valid. Try adding backticks to reserved words and schema table references.`);
+        } else {
+            throw new Error(`We had trouble parsing your request. Please ensure your SQL is valid. Try adding backticks to reserved words and schema table references.`);
+        }
     }
 
     return ast_response;
