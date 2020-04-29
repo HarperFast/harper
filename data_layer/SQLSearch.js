@@ -736,7 +736,7 @@ class SQLSearch {
             });
 
             let select_column = found_column[0];
-
+            //TODO: check for funcid here?
             order_by.is_aggregator = !!select_column.aggregatorid;
             if (select_column.as && !order_by.expression.tableid) {
                 order_by.expression.columnid = select_column.as;
@@ -748,7 +748,7 @@ class SQLSearch {
                 alias_expression.columnid_orig = select_column.as_orig;
                 order_by.expression = alias_expression;
             }
-            if (!order_by.is_aggregator) {
+            if (!order_by.is_aggregator) { //TODO: should this also check for functions - not just aggregators?
                 order_by.initial_select_column = Object.assign({}, select_column);
             }
         });
