@@ -7863,7 +7863,7 @@
 							"script": {
 								"id": "cf29881f-c183-4830-970b-5fd8d2a67b92",
 								"exec": [
-									"setTimeout(()=>{}, 250);"
+									"setTimeout(()=>{}, 500);"
 								],
 								"type": "text/javascript"
 							}
@@ -8717,7 +8717,7 @@
 							"script": {
 								"id": "f700bc1b-5ada-4cb4-b2ab-399455a04047",
 								"exec": [
-									"setTimeout(()=>{}, 250);"
+									"setTimeout(()=>{}, 500);"
 								],
 								"type": "text/javascript"
 							}
@@ -10340,6 +10340,390 @@
 			"name": "Test Cleanup",
 			"item": [
 				{
+					"name": "REMOVE Node2",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "68c8e59b-863b-4176-afb3-a5b8b170b520",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"Node2 removed\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.message).to.eql(\"successfully removed Node2 from manifest\");",
+									"});",
+									""
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"value": true,
+									"type": "boolean"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"remove_node\",\n\t\"name\":\"Node2\"\n}"
+						},
+						"url": {
+							"raw": "{{NODE1_HOST}}:{{SERVER_HDB_PORT}}",
+							"host": [
+								"{{NODE1_HOST}}"
+							],
+							"port": "{{SERVER_HDB_PORT}}"
+						}
+					},
+					"response": [
+						{
+							"name": "Remove Node",
+							"originalRequest": {
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk",
+										"type": "text"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\t\"operation\":\"remove_node\",\n\t\"name\":\"node2\"\n}"
+								},
+								"url": {
+									"raw": "{{HDB_ENDPOINT}}",
+									"host": [
+										"{{HDB_ENDPOINT}}"
+									]
+								}
+							},
+							"status": "OK",
+							"code": 200,
+							"_postman_previewlanguage": "json",
+							"header": [
+								{
+									"key": "Vary",
+									"value": "Origin"
+								},
+								{
+									"key": "Content-Type",
+									"value": "application/json; charset=utf-8"
+								},
+								{
+									"key": "Content-Length",
+									"value": "54"
+								},
+								{
+									"key": "ETag",
+									"value": "W/\"36-5DOQiUhBa8vd+mg6BRSMMJSnkwk\""
+								},
+								{
+									"key": "Date",
+									"value": "Fri, 18 Oct 2019 18:20:59 GMT"
+								},
+								{
+									"key": "Connection",
+									"value": "keep-alive"
+								}
+							],
+							"cookie": [],
+							"body": ""
+						}
+					]
+				},
+				{
+					"name": "REMOVE Node3",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "edda19a3-78b8-47b6-9ec5-b1801cfa0766",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"Node3 removed\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.message).to.eql(\"successfully removed Node3 from manifest\");",
+									"});",
+									""
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"value": true,
+									"type": "boolean"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"remove_node\",\n\t\"name\":\"Node3\"\n}"
+						},
+						"url": {
+							"raw": "{{NODE1_HOST}}:{{SERVER_HDB_PORT}}",
+							"host": [
+								"{{NODE1_HOST}}"
+							],
+							"port": "{{SERVER_HDB_PORT}}"
+						}
+					},
+					"response": [
+						{
+							"name": "Remove Node",
+							"originalRequest": {
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk",
+										"type": "text"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\t\"operation\":\"remove_node\",\n\t\"name\":\"node2\"\n}"
+								},
+								"url": {
+									"raw": "{{HDB_ENDPOINT}}",
+									"host": [
+										"{{HDB_ENDPOINT}}"
+									]
+								}
+							},
+							"status": "OK",
+							"code": 200,
+							"_postman_previewlanguage": "json",
+							"header": [
+								{
+									"key": "Vary",
+									"value": "Origin"
+								},
+								{
+									"key": "Content-Type",
+									"value": "application/json; charset=utf-8"
+								},
+								{
+									"key": "Content-Length",
+									"value": "54"
+								},
+								{
+									"key": "ETag",
+									"value": "W/\"36-5DOQiUhBa8vd+mg6BRSMMJSnkwk\""
+								},
+								{
+									"key": "Date",
+									"value": "Fri, 18 Oct 2019 18:20:59 GMT"
+								},
+								{
+									"key": "Connection",
+									"value": "keep-alive"
+								}
+							],
+							"cookie": [],
+							"body": ""
+						}
+					]
+				},
+				{
+					"name": "REMOVE Node4",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "8dc51021-3f3f-4847-a865-ea4a9948adc5",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"Node4 removed\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.message).to.eql(\"successfully removed Node4 from manifest\");",
+									"});",
+									""
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"value": true,
+									"type": "boolean"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"remove_node\",\n\t\"name\":\"Node4\"\n}"
+						},
+						"url": {
+							"raw": "{{NODE1_HOST}}:{{SERVER_HDB_PORT}}",
+							"host": [
+								"{{NODE1_HOST}}"
+							],
+							"port": "{{SERVER_HDB_PORT}}"
+						}
+					},
+					"response": [
+						{
+							"name": "Remove Node",
+							"originalRequest": {
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk",
+										"type": "text"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\t\"operation\":\"remove_node\",\n\t\"name\":\"node2\"\n}"
+								},
+								"url": {
+									"raw": "{{HDB_ENDPOINT}}",
+									"host": [
+										"{{HDB_ENDPOINT}}"
+									]
+								}
+							},
+							"status": "OK",
+							"code": 200,
+							"_postman_previewlanguage": "json",
+							"header": [
+								{
+									"key": "Vary",
+									"value": "Origin"
+								},
+								{
+									"key": "Content-Type",
+									"value": "application/json; charset=utf-8"
+								},
+								{
+									"key": "Content-Length",
+									"value": "54"
+								},
+								{
+									"key": "ETag",
+									"value": "W/\"36-5DOQiUhBa8vd+mg6BRSMMJSnkwk\""
+								},
+								{
+									"key": "Date",
+									"value": "Fri, 18 Oct 2019 18:20:59 GMT"
+								},
+								{
+									"key": "Connection",
+									"value": "keep-alive"
+								}
+							],
+							"cookie": [],
+							"body": ""
+						}
+					]
+				},
+				{
 					"name": "DROP SCHEMA on Node1",
 					"request": {
 						"auth": {
@@ -10776,390 +11160,6 @@
 									"value": "HarperDB",
 									"name": "x-powered-by",
 									"description": ""
-								}
-							],
-							"cookie": [],
-							"body": ""
-						}
-					]
-				},
-				{
-					"name": "REMOVE Node2",
-					"event": [
-						{
-							"listen": "test",
-							"script": {
-								"id": "68c8e59b-863b-4176-afb3-a5b8b170b520",
-								"exec": [
-									"pm.test(\"Status code is 200\", function () {",
-									"    pm.response.to.have.status(200);",
-									"});",
-									"",
-									"pm.test(\"Node2 removed\", function () {",
-									"    var jsonData = pm.response.json();",
-									"    pm.expect(jsonData.message).to.eql(\"successfully removed Node2 from manifest\");",
-									"});",
-									""
-								],
-								"type": "text/javascript"
-							}
-						}
-					],
-					"request": {
-						"auth": {
-							"type": "basic",
-							"basic": [
-								{
-									"key": "password",
-									"value": "{{password}}",
-									"type": "string"
-								},
-								{
-									"key": "username",
-									"value": "{{username}}",
-									"type": "string"
-								},
-								{
-									"key": "saveHelperData",
-									"value": true,
-									"type": "boolean"
-								},
-								{
-									"key": "showPassword",
-									"value": false,
-									"type": "boolean"
-								}
-							]
-						},
-						"method": "POST",
-						"header": [
-							{
-								"key": "Content-Type",
-								"value": "application/json"
-							}
-						],
-						"body": {
-							"mode": "raw",
-							"raw": "{\n\t\"operation\":\"remove_node\",\n\t\"name\":\"Node2\"\n}"
-						},
-						"url": {
-							"raw": "{{NODE1_HOST}}:{{SERVER_HDB_PORT}}",
-							"host": [
-								"{{NODE1_HOST}}"
-							],
-							"port": "{{SERVER_HDB_PORT}}"
-						}
-					},
-					"response": [
-						{
-							"name": "Remove Node",
-							"originalRequest": {
-								"method": "POST",
-								"header": [
-									{
-										"key": "Content-Type",
-										"value": "application/json"
-									},
-									{
-										"key": "Authorization",
-										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk",
-										"type": "text"
-									}
-								],
-								"body": {
-									"mode": "raw",
-									"raw": "{\n\t\"operation\":\"remove_node\",\n\t\"name\":\"node2\"\n}"
-								},
-								"url": {
-									"raw": "{{HDB_ENDPOINT}}",
-									"host": [
-										"{{HDB_ENDPOINT}}"
-									]
-								}
-							},
-							"status": "OK",
-							"code": 200,
-							"_postman_previewlanguage": "json",
-							"header": [
-								{
-									"key": "Vary",
-									"value": "Origin"
-								},
-								{
-									"key": "Content-Type",
-									"value": "application/json; charset=utf-8"
-								},
-								{
-									"key": "Content-Length",
-									"value": "54"
-								},
-								{
-									"key": "ETag",
-									"value": "W/\"36-5DOQiUhBa8vd+mg6BRSMMJSnkwk\""
-								},
-								{
-									"key": "Date",
-									"value": "Fri, 18 Oct 2019 18:20:59 GMT"
-								},
-								{
-									"key": "Connection",
-									"value": "keep-alive"
-								}
-							],
-							"cookie": [],
-							"body": ""
-						}
-					]
-				},
-				{
-					"name": "REMOVE Node3",
-					"event": [
-						{
-							"listen": "test",
-							"script": {
-								"id": "edda19a3-78b8-47b6-9ec5-b1801cfa0766",
-								"exec": [
-									"pm.test(\"Status code is 200\", function () {",
-									"    pm.response.to.have.status(200);",
-									"});",
-									"",
-									"pm.test(\"Node3 removed\", function () {",
-									"    var jsonData = pm.response.json();",
-									"    pm.expect(jsonData.message).to.eql(\"successfully removed Node3 from manifest\");",
-									"});",
-									""
-								],
-								"type": "text/javascript"
-							}
-						}
-					],
-					"request": {
-						"auth": {
-							"type": "basic",
-							"basic": [
-								{
-									"key": "password",
-									"value": "{{password}}",
-									"type": "string"
-								},
-								{
-									"key": "username",
-									"value": "{{username}}",
-									"type": "string"
-								},
-								{
-									"key": "saveHelperData",
-									"value": true,
-									"type": "boolean"
-								},
-								{
-									"key": "showPassword",
-									"value": false,
-									"type": "boolean"
-								}
-							]
-						},
-						"method": "POST",
-						"header": [
-							{
-								"key": "Content-Type",
-								"value": "application/json"
-							}
-						],
-						"body": {
-							"mode": "raw",
-							"raw": "{\n\t\"operation\":\"remove_node\",\n\t\"name\":\"Node3\"\n}"
-						},
-						"url": {
-							"raw": "{{NODE1_HOST}}:{{SERVER_HDB_PORT}}",
-							"host": [
-								"{{NODE1_HOST}}"
-							],
-							"port": "{{SERVER_HDB_PORT}}"
-						}
-					},
-					"response": [
-						{
-							"name": "Remove Node",
-							"originalRequest": {
-								"method": "POST",
-								"header": [
-									{
-										"key": "Content-Type",
-										"value": "application/json"
-									},
-									{
-										"key": "Authorization",
-										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk",
-										"type": "text"
-									}
-								],
-								"body": {
-									"mode": "raw",
-									"raw": "{\n\t\"operation\":\"remove_node\",\n\t\"name\":\"node2\"\n}"
-								},
-								"url": {
-									"raw": "{{HDB_ENDPOINT}}",
-									"host": [
-										"{{HDB_ENDPOINT}}"
-									]
-								}
-							},
-							"status": "OK",
-							"code": 200,
-							"_postman_previewlanguage": "json",
-							"header": [
-								{
-									"key": "Vary",
-									"value": "Origin"
-								},
-								{
-									"key": "Content-Type",
-									"value": "application/json; charset=utf-8"
-								},
-								{
-									"key": "Content-Length",
-									"value": "54"
-								},
-								{
-									"key": "ETag",
-									"value": "W/\"36-5DOQiUhBa8vd+mg6BRSMMJSnkwk\""
-								},
-								{
-									"key": "Date",
-									"value": "Fri, 18 Oct 2019 18:20:59 GMT"
-								},
-								{
-									"key": "Connection",
-									"value": "keep-alive"
-								}
-							],
-							"cookie": [],
-							"body": ""
-						}
-					]
-				},
-				{
-					"name": "REMOVE Node4",
-					"event": [
-						{
-							"listen": "test",
-							"script": {
-								"id": "8dc51021-3f3f-4847-a865-ea4a9948adc5",
-								"exec": [
-									"pm.test(\"Status code is 200\", function () {",
-									"    pm.response.to.have.status(200);",
-									"});",
-									"",
-									"pm.test(\"Node4 removed\", function () {",
-									"    var jsonData = pm.response.json();",
-									"    pm.expect(jsonData.message).to.eql(\"successfully removed Node4 from manifest\");",
-									"});",
-									""
-								],
-								"type": "text/javascript"
-							}
-						}
-					],
-					"request": {
-						"auth": {
-							"type": "basic",
-							"basic": [
-								{
-									"key": "password",
-									"value": "{{password}}",
-									"type": "string"
-								},
-								{
-									"key": "username",
-									"value": "{{username}}",
-									"type": "string"
-								},
-								{
-									"key": "saveHelperData",
-									"value": true,
-									"type": "boolean"
-								},
-								{
-									"key": "showPassword",
-									"value": false,
-									"type": "boolean"
-								}
-							]
-						},
-						"method": "POST",
-						"header": [
-							{
-								"key": "Content-Type",
-								"value": "application/json"
-							}
-						],
-						"body": {
-							"mode": "raw",
-							"raw": "{\n\t\"operation\":\"remove_node\",\n\t\"name\":\"Node4\"\n}"
-						},
-						"url": {
-							"raw": "{{NODE1_HOST}}:{{SERVER_HDB_PORT}}",
-							"host": [
-								"{{NODE1_HOST}}"
-							],
-							"port": "{{SERVER_HDB_PORT}}"
-						}
-					},
-					"response": [
-						{
-							"name": "Remove Node",
-							"originalRequest": {
-								"method": "POST",
-								"header": [
-									{
-										"key": "Content-Type",
-										"value": "application/json"
-									},
-									{
-										"key": "Authorization",
-										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk",
-										"type": "text"
-									}
-								],
-								"body": {
-									"mode": "raw",
-									"raw": "{\n\t\"operation\":\"remove_node\",\n\t\"name\":\"node2\"\n}"
-								},
-								"url": {
-									"raw": "{{HDB_ENDPOINT}}",
-									"host": [
-										"{{HDB_ENDPOINT}}"
-									]
-								}
-							},
-							"status": "OK",
-							"code": 200,
-							"_postman_previewlanguage": "json",
-							"header": [
-								{
-									"key": "Vary",
-									"value": "Origin"
-								},
-								{
-									"key": "Content-Type",
-									"value": "application/json; charset=utf-8"
-								},
-								{
-									"key": "Content-Length",
-									"value": "54"
-								},
-								{
-									"key": "ETag",
-									"value": "W/\"36-5DOQiUhBa8vd+mg6BRSMMJSnkwk\""
-								},
-								{
-									"key": "Date",
-									"value": "Fri, 18 Oct 2019 18:20:59 GMT"
-								},
-								{
-									"key": "Connection",
-									"value": "keep-alive"
 								}
 							],
 							"cookie": [],
