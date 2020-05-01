@@ -1,6 +1,6 @@
 {
 	"info": {
-		"_postman_id": "7fac5a4e-7a23-4114-ac4e-feea451e05ff",
+		"_postman_id": "957ad104-5ae7-4383-9d76-53f1458b4653",
 		"name": "Four Node Cluster Tests",
 		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
 	},
@@ -14,7 +14,7 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "c72be49f-d8a0-4981-b17b-dfec83df8c9f",
+								"id": "4bcbd9bd-bce4-4c3f-b521-a2b7525ca236",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {",
 									"    pm.response.to.have.status(200);",
@@ -142,7 +142,7 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "e82ef384-8be2-4eb5-a9c1-82288ed50b9a",
+								"id": "303c2cf7-b24f-4469-949c-fddae2079fc9",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {",
 									"    pm.response.to.have.status(200);",
@@ -270,7 +270,7 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "f3a60004-3ae2-4bad-b14f-ab0851158195",
+								"id": "64d8d42c-e007-4123-9fdd-db95db85b887",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {",
 									"    pm.response.to.have.status(200);",
@@ -398,7 +398,7 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "87ecec76-737f-4579-bb7e-dbec5f445e62",
+								"id": "7a341564-73e6-4c69-8522-711b34b76f00",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {",
 									"    pm.response.to.have.status(200);",
@@ -538,7 +538,7 @@
 						{
 							"listen": "prerequest",
 							"script": {
-								"id": "e4bd8016-46e2-42ac-9954-ad1999e11dcc",
+								"id": "6c293453-df27-4a07-a68a-586ce69bd5be",
 								"exec": [
 									"postman.setEnvironmentVariable(\"schema\", \"dev\");",
 									"console.log(postman.getEnvironmentVariable(\"schema\"));",
@@ -550,7 +550,7 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "d9eebe67-0c51-4d87-bb7d-ad42dfffee4d",
+								"id": "6bd577eb-aa54-48b5-ba37-bc03d39547aa",
 								"exec": [
 									"tests[\"Create Schema\"] = responseBody.has(\"schema dev successfully created\");"
 								],
@@ -679,7 +679,7 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "8efdc8a7-7922-4550-b7a5-105a6fbfdfe6",
+								"id": "85502aec-e806-4843-96ae-6e2843dd864b",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {",
 									"    try {",
@@ -705,7 +705,7 @@
 						{
 							"listen": "prerequest",
 							"script": {
-								"id": "b0b67383-bb50-484b-9bb3-d59babbe276c",
+								"id": "a0e924aa-033d-44e3-97e7-e1b6dd66cecc",
 								"exec": [
 									"setTimeout(()=>{}, 100);"
 								],
@@ -828,7 +828,7 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "05676a8c-b297-4e20-8df8-1c5a796a5d77",
+								"id": "a83d328b-58e8-4a6e-aa19-32ba5ad3956d",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {",
 									"    try {",
@@ -966,7 +966,7 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "369b676c-3d08-4341-a45b-d505278bfb75",
+								"id": "66dcb6b5-2970-4a77-ad9b-c4574a5c0e50",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {",
 									"    try {",
@@ -1105,7 +1105,7 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "0ef5a8f6-b7eb-47f0-aed9-81453e761a7d",
+								"id": "4c1aaa09-97ec-432e-b821-aea95ad75acf",
 								"exec": [
 									"tests[\"Create Table\"] = responseBody.has(\"table dev.dog successfully created.\");"
 								],
@@ -1234,7 +1234,7 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "5bc72cfc-5f10-474c-a425-e7869d478080",
+								"id": "ee8688a1-eaa8-479e-9f31-00b916b3a5b5",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {",
 									"    try {",
@@ -1267,7 +1267,7 @@
 						{
 							"listen": "prerequest",
 							"script": {
-								"id": "e29dc6f6-ef18-4003-85b2-b3a21ab74fdf",
+								"id": "62673d29-c33b-46d2-84e1-f7cb43684ce5",
 								"exec": [
 									"setTimeout(()=>{}, 100);"
 								],
@@ -1390,7 +1390,7 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "d5a642fb-0e5c-4de4-a707-32748c80e864",
+								"id": "21174a9e-569e-46d2-8907-f222df037095",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {",
 									"    try {",
@@ -1536,7 +1536,7 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "1f75861a-9d7b-41a8-b74e-fc0ff5c0c740",
+								"id": "186d8174-46af-4e01-b754-87f404414d51",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {",
 									"    try {",
@@ -1681,7 +1681,7 @@
 						{
 							"listen": "prerequest",
 							"script": {
-								"id": "e4bd8016-46e2-42ac-9954-ad1999e11dcc",
+								"id": "4fe2c66a-e5e9-4c34-a026-b9a2868e5301",
 								"exec": [
 									"postman.setEnvironmentVariable(\"schema\", \"dev\");",
 									"console.log(postman.getEnvironmentVariable(\"schema\"));",
@@ -1693,7 +1693,7 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "d9eebe67-0c51-4d87-bb7d-ad42dfffee4d",
+								"id": "12ba1fc0-9205-4c55-9698-f1caae6602ae",
 								"exec": [
 									"tests[\"Drop Schema\"] = responseBody.has(\"successfully deleted table dev.dog\");\r",
 									"\r",
@@ -1825,7 +1825,7 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "b06f584f-ac8b-4010-93de-1bdb664bd1a8",
+								"id": "79ba674b-637a-4c27-86ce-55bb733dd85f",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {",
 									"    pm.response.to.have.status(200);",
@@ -1962,7 +1962,7 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "9b58bd49-2598-433a-8610-529c2702908d",
+								"id": "174064b1-eb74-43a8-92fb-e9857eab6e44",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {",
 									"    pm.response.to.have.status(200);",
@@ -2099,7 +2099,7 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "92ad08df-c21f-450b-b801-e88cd75cef5f",
+								"id": "e40dd25c-00de-48e0-9c28-86c674d4f9d6",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {",
 									"    pm.response.to.have.status(200);",
@@ -2236,7 +2236,7 @@
 						{
 							"listen": "prerequest",
 							"script": {
-								"id": "e4bd8016-46e2-42ac-9954-ad1999e11dcc",
+								"id": "9a08c98e-c57a-42c9-88b3-4e3d65cfa8f9",
 								"exec": [
 									"postman.setEnvironmentVariable(\"schema\", \"dev\");",
 									"console.log(postman.getEnvironmentVariable(\"schema\"));",
@@ -2248,7 +2248,7 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "d9eebe67-0c51-4d87-bb7d-ad42dfffee4d",
+								"id": "8a83881d-4641-4d9d-902d-e8b9f07098d4",
 								"exec": [
 									"tests[\"Drop Schema\"] = responseBody.has(\"successfully deleted schema dev\");\r",
 									"\r",
@@ -2380,7 +2380,7 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "712d1446-1a80-4096-9bc8-d92e44d34562",
+								"id": "7b7f000c-f398-4de6-bb5d-c2d6718470e8",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {",
 									"    pm.response.to.have.status(200);",
@@ -2517,7 +2517,7 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "8d6e8713-aaf8-47c5-954b-3c7766f45d76",
+								"id": "21ea5c4f-f969-4780-801d-d403f4db815a",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {",
 									"    pm.response.to.have.status(200);",
@@ -2654,7 +2654,7 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "aafdab36-5340-47ba-b85c-c0217709903d",
+								"id": "6d69a597-e667-4492-ae25-aa73ce972fbb",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {",
 									"    pm.response.to.have.status(200);",
@@ -2791,7 +2791,7 @@
 						{
 							"listen": "prerequest",
 							"script": {
-								"id": "e4bd8016-46e2-42ac-9954-ad1999e11dcc",
+								"id": "d67f0939-010f-4880-996d-0018d168fe2a",
 								"exec": [
 									"postman.setEnvironmentVariable(\"schema\", \"dev\");",
 									"console.log(postman.getEnvironmentVariable(\"schema\"));",
@@ -2803,7 +2803,7 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "d9eebe67-0c51-4d87-bb7d-ad42dfffee4d",
+								"id": "3f3c41de-7f74-4b16-be95-f74edf702495",
 								"exec": [
 									"tests[\"Re-create Schema\"] = responseBody.has(\"schema dev successfully created\");"
 								],
@@ -2932,7 +2932,7 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "0ef5a8f6-b7eb-47f0-aed9-81453e761a7d",
+								"id": "01ab9772-c0b2-40c6-8d3d-4e6812d3f9bd",
 								"exec": [
 									"tests[\"Re-create Table\"] = responseBody.has(\"table dev.dog successfully created.\");"
 								],
@@ -3061,7 +3061,7 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "170c10e6-c0d8-4246-a364-4ab07f86bc67",
+								"id": "c0789cc5-ecce-40f6-9a69-13aa27dff29c",
 								"exec": [
 									"tests[\"Write Single Record\"] = responseBody.has(\"inserted 1 of 1 records\");",
 									"",
@@ -3192,7 +3192,7 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "dec74f10-bcf7-4af1-9600-797dceb0b06f",
+								"id": "50f5b331-fb7e-4bdb-8956-f033c154e67b",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {",
 									"    try {",
@@ -3335,7 +3335,7 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "8191b9e3-1a4a-42fb-a087-c7f6161e13b1",
+								"id": "5fdb6895-232c-4968-94d9-a3b6ff8316cb",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {",
 									"    try {",
@@ -3478,7 +3478,7 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "43eb8897-819f-43d9-8f0f-3d31c05d746c",
+								"id": "06377d7f-00be-49cb-9083-c8f21652c23c",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {",
 									"    try {",
@@ -3626,7 +3626,7 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "170c10e6-c0d8-4246-a364-4ab07f86bc67",
+								"id": "108b1266-d1d1-4cf1-93b2-e92a1fed06f0",
 								"exec": [
 									"tests[\"Insert Two Records into Node2\"] = responseBody.has(\"inserted 2 of 2 records\");"
 								],
@@ -3755,7 +3755,7 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "ccb7b945-1727-4172-a607-bc154ac525cf",
+								"id": "c3278448-bd48-498b-822c-0959f2ca1261",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {",
 									"    try {",
@@ -3788,7 +3788,7 @@
 						{
 							"listen": "prerequest",
 							"script": {
-								"id": "42847fe0-5c11-4068-a7eb-3cf1b295adb4",
+								"id": "aad8552e-ab5a-472c-aa44-7201bee4b9af",
 								"exec": [
 									"setTimeout(()=>{}, 100);"
 								],
@@ -3912,7 +3912,7 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "80e90f7a-8fb9-4034-b672-273d63870816",
+								"id": "34abfd9a-9c57-4b89-9d0a-ab53c37664f9",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {",
 									"    try {",
@@ -4058,7 +4058,7 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "170c10e6-c0d8-4246-a364-4ab07f86bc67",
+								"id": "3d17bf6f-aec1-494f-a3c0-2e44204a4474",
 								"exec": [
 									"tests[\"Insert Two Records into Node3\"] = responseBody.has(\"inserted 2 of 2 records\");"
 								],
@@ -4187,7 +4187,7 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "df802013-4c4c-41a1-8463-321c72fc5dc5",
+								"id": "3e94ebaf-a249-42d7-923c-b65445025a14",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {",
 									"    try {",
@@ -4219,7 +4219,7 @@
 						{
 							"listen": "prerequest",
 							"script": {
-								"id": "1b26ff39-ac6b-45ca-86a4-3d2c62f96d76",
+								"id": "338a8de8-1e58-4ad9-8973-517cb697e6b0",
 								"exec": [
 									"setTimeout(()=>{}, 100);"
 								],
@@ -4342,7 +4342,7 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "5ff0ac3d-f3ce-4206-b2ad-cb7f983963b6",
+								"id": "13f29631-877e-4d43-8a13-4c4ccc243ff1",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {",
 									"    try {",
@@ -4487,7 +4487,7 @@
 						{
 							"listen": "prerequest",
 							"script": {
-								"id": "92714c77-577e-42a8-84b5-5f94df416d09",
+								"id": "a274e1c4-08ee-4305-b2bd-28b91bd9ea89",
 								"exec": [
 									""
 								],
@@ -4497,7 +4497,7 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "96872c5e-e387-4154-8255-db0241845a41",
+								"id": "f0f78fc6-281f-4e47-ac0e-4c9e6da57efd",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {",
 									"    pm.response.to.have.status(200);",
@@ -4631,7 +4631,7 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "b08b9701-e6e4-4bd9-87e3-5f2896c0d8ce",
+								"id": "999deb5d-96b1-41c0-aaf8-9600669a6a95",
 								"exec": [
 									"tests[\"Update One Record in Node2\"] = responseBody.has(\"updated 1 of 2 records\");",
 									"",
@@ -4764,7 +4764,7 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "ada2bb14-0215-47a6-bd6c-90e1a09b5741",
+								"id": "009e275d-04a4-451b-801a-cfd24b641e8c",
 								"exec": [
 									"//TODO - uncomment out expect statement below when CORE-746",
 									"",
@@ -4793,7 +4793,7 @@
 						{
 							"listen": "prerequest",
 							"script": {
-								"id": "6cbe6a6b-83f9-44d6-a1a6-a640ffeb5e6a",
+								"id": "23d4cf4b-a1eb-4387-b8a7-d32b846b8c9e",
 								"exec": [
 									"setTimeout(()=>{}, 100);"
 								],
@@ -4916,7 +4916,7 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "96f24745-41aa-47e9-95ba-d9438238e075",
+								"id": "366f1986-7fa1-4603-84cb-7dd628433a3f",
 								"exec": [
 									"pm.test(\"Data for hash = 1 updated correctly on Node1\", function () {",
 									"    var response = pm.response.json();",
@@ -5055,7 +5055,7 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "70610332-e1e8-435f-8bf2-7d8b869d7f1c",
+								"id": "55666b07-c72b-486f-9165-88c84871a444",
 								"exec": [
 									"pm.test(\"Data for hash = 1 updated correctly on Node4\", function () {",
 									"    var response = pm.response.json();",
@@ -5194,7 +5194,7 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "eaedbf93-8002-4459-84a7-ab9a6bf44dc4",
+								"id": "105cf052-73ae-4240-9f8d-b1d439964236",
 								"exec": [
 									"pm.test(\"Data for hash = 1 NOT added/updated on Node3\", function () {",
 									"    var response = pm.response.json();",
@@ -5324,7 +5324,7 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "b08b9701-e6e4-4bd9-87e3-5f2896c0d8ce",
+								"id": "f6505ae7-7ce6-48dc-a248-e45fa654ef35",
 								"exec": [
 									"tests[\"Update One Record in Node2\"] = responseBody.has(\"updated 1 of 1 records\");",
 									"",
@@ -5452,7 +5452,7 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "60b7f4dc-b0ed-4497-8451-ca33098906f8",
+								"id": "ea0dfcd1-50a8-43f5-81de-b51d667c7692",
 								"exec": [
 									"pm.test(\"Data for hash = 2 updated correctly on Node1\", function () {",
 									"    var response = pm.response.json();",
@@ -5483,7 +5483,7 @@
 						{
 							"listen": "prerequest",
 							"script": {
-								"id": "d77db463-184d-4e54-a374-b6b9bdd2d240",
+								"id": "18b9577d-153f-4a05-9e9a-c2bd9ddfe882",
 								"exec": [
 									"setTimeout(()=>{}, 100);"
 								],
@@ -5606,7 +5606,7 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "fc22feab-3bd6-4727-a081-a27756c26c6b",
+								"id": "2d0702a6-a339-4baa-b06c-28338220dcf4",
 								"exec": [
 									"pm.test(\"Data for hash = 2 updated correctly on Node4\", function () {",
 									"    var response = pm.response.json();",
@@ -5750,7 +5750,7 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "f79a4f17-bb82-4367-8ad9-96c6c3bd1cf2",
+								"id": "cf546351-8163-475c-8b9c-0d677c070e73",
 								"exec": [
 									"pm.test(\"Data for hash = 2 NOT added/updated on Node3\", function () {",
 									"    var response = pm.response.json();",
@@ -5880,7 +5880,7 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "170c10e6-c0d8-4246-a364-4ab07f86bc67",
+								"id": "a2c607cf-b895-4eb9-aaaf-7f137eb5eef4",
 								"exec": [
 									"tests[\"Insert Two Records into Node2\"] = responseBody.has(\"inserted 2 of 2 records\");"
 								],
@@ -6009,7 +6009,7 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "1d75a536-b4aa-48b9-9376-b6cbd540e1d4",
+								"id": "ad365567-a2e1-4673-b0f2-83214a59867d",
 								"exec": [
 									"pm.test(\"Data for hash = 3 & 4 on Node2\", function () {",
 									"    var response = pm.response.json();",
@@ -6034,7 +6034,7 @@
 						{
 							"listen": "prerequest",
 							"script": {
-								"id": "de222dae-1ae7-4517-84b0-db9306fe430b",
+								"id": "9865ed62-842a-46d6-8e25-9d7d5e521e5f",
 								"exec": [
 									"setTimeout(()=>{}, 100);"
 								],
@@ -6157,7 +6157,7 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "06f85f62-fa71-4c2f-978f-9b3596c6b4a9",
+								"id": "6f632596-29fe-4686-a1c9-be7d931703d0",
 								"exec": [
 									"pm.test(\"Data for hash = 3 & 4 on Node2\", function () {",
 									"    var response = pm.response.json();",
@@ -6291,7 +6291,7 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "8d6f79ea-9b56-4202-8d09-ff0e6a78f6ae",
+								"id": "d72e3480-e28b-47d4-b911-de8439209f02",
 								"exec": [
 									"pm.test(\"Data for hash = 3 & 4 on Node3\", function () {",
 									"    var response = pm.response.json();",
@@ -6425,7 +6425,7 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "1ce66ca6-9413-4304-be03-d689e64b2709",
+								"id": "3730f782-ad3b-4a73-9f54-7481838268a6",
 								"exec": [
 									"pm.test(\"Data for hash = 3 & 4 on Node2\", function () {",
 									"    var response = pm.response.json();",
@@ -6565,7 +6565,7 @@
 						{
 							"listen": "prerequest",
 							"script": {
-								"id": "7a00b2b2-b270-49cc-be4d-031e78582578",
+								"id": "57c9f076-4b93-4684-8a0c-640cae5bcf88",
 								"exec": [
 									"pm.environment.set(\"CSV_NODE_HOST\", \"{{NODE1_HOST}}\");"
 								],
@@ -6575,7 +6575,7 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "43ac9465-0835-4138-b652-58464924f242",
+								"id": "1e89b9df-a51a-44b5-a18c-ac1321213b05",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {",
 									"    pm.response.to.have.status(200);",
@@ -6707,7 +6707,7 @@
 						{
 							"listen": "prerequest",
 							"script": {
-								"id": "a7685aa6-6914-4c26-83f8-07a0621a8aa3",
+								"id": "920bb7da-2bf0-4e57-b388-b97313e6a760",
 								"exec": [
 									" pm.environment.set(\"next_request\", null);"
 								],
@@ -6717,7 +6717,7 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "4dbaeb9b-a668-41da-b620-fc677ae7cda0",
+								"id": "1136e260-36d3-4365-bded-adabb4633364",
 								"exec": [
 									"pm.test(\"Data inserted correctly on Node1\", function () {",
 									"    var response = pm.response.json()[0];",
@@ -6844,7 +6844,7 @@
 						{
 							"listen": "prerequest",
 							"script": {
-								"id": "a7685aa6-6914-4c26-83f8-07a0621a8aa3",
+								"id": "061a4599-2d58-4124-ba76-0aae3ecaa782",
 								"exec": [
 									" pm.environment.set(\"next_request\", null);",
 									" pm.environment.set(\"job_id\", null);",
@@ -6856,7 +6856,7 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "1cf7c65f-70bd-4260-b6e9-cab2a3f037e0",
+								"id": "03bb6150-bed7-4db5-a523-39510997c832",
 								"exec": [
 									"pm.test(\"Data on Node1\", function () {",
 									"    var response = pm.response.json();",
@@ -6994,7 +6994,7 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "371274af-813c-4e72-bda6-93559cf86ccc",
+								"id": "656a7799-c2eb-4f3c-b6c9-10dc45188b16",
 								"exec": [
 									"pm.test(\"Data on Node4\", function () {",
 									"    var response = pm.response.json();",
@@ -7018,7 +7018,7 @@
 						{
 							"listen": "prerequest",
 							"script": {
-								"id": "c41f8607-73c8-440d-a008-ff05ed055b05",
+								"id": "df71d28d-c2b2-42fb-9bb4-46cd923598ff",
 								"exec": [
 									"setTimeout(()=>{}, 100);"
 								],
@@ -7141,7 +7141,7 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "8d6f79ea-9b56-4202-8d09-ff0e6a78f6ae",
+								"id": "d117ee01-b925-49e7-b25b-3bedc9f33258",
 								"exec": [
 									"//Should be testing that the other attrs have updated in the schema (once bug is fixed)",
 									"",
@@ -7277,7 +7277,7 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "8d6f79ea-9b56-4202-8d09-ff0e6a78f6ae",
+								"id": "809c33be-b03f-43fa-ac3d-965c4ff3891a",
 								"exec": [
 									"//Should be testing that the other attrs have updated in the schema (once bug is fixed)",
 									"",
@@ -7417,7 +7417,7 @@
 						{
 							"listen": "prerequest",
 							"script": {
-								"id": "27a88185-12de-4ebe-a1ea-1243346c280c",
+								"id": "fdacb4ab-ff0e-4a4f-9d65-51360dc94411",
 								"exec": [
 									"pm.environment.set(\"CSV_NODE_HOST\", \"{{NODE4_HOST}}\");"
 								],
@@ -7427,7 +7427,7 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "d684778b-f068-4fa6-9ea2-1ecb52a7d9ec",
+								"id": "4ea85045-9d1a-4f72-b8c7-b4ac659dc819",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {",
 									"    pm.response.to.have.status(200);",
@@ -7559,7 +7559,7 @@
 						{
 							"listen": "prerequest",
 							"script": {
-								"id": "a7685aa6-6914-4c26-83f8-07a0621a8aa3",
+								"id": "489756aa-ec23-4a64-8e7b-85bae43c1fbf",
 								"exec": [
 									"pm.environment.set(\"next_request\", null);"
 								],
@@ -7569,7 +7569,7 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "4dbaeb9b-a668-41da-b620-fc677ae7cda0",
+								"id": "4a9ca960-b183-4824-91bd-56a3b2e3081e",
 								"exec": [
 									"pm.test(\"Data inserted correctly on Node1\", function () {",
 									"    var response = pm.response.json()[0];",
@@ -7696,7 +7696,7 @@
 						{
 							"listen": "prerequest",
 							"script": {
-								"id": "0fe08ba3-e76e-45bf-8f63-4f5a72f45c5b",
+								"id": "122bca57-73dd-474e-a620-eef94669264c",
 								"exec": [
 									"pm.environment.set(\"job_id\", null);"
 								],
@@ -7706,7 +7706,7 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "38b054ca-0056-4c1c-a6fa-c4427a07cbd5",
+								"id": "15887efa-458b-49af-82b1-8525a1587834",
 								"exec": [
 									"pm.test(\"Data on Node4\", function () {",
 									"    var response = pm.response.json();",
@@ -7840,7 +7840,7 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "a785a41f-bd52-4c87-b3df-4cc8af128288",
+								"id": "ab361812-a262-485e-ae43-705ca45eca15",
 								"exec": [
 									"pm.test(\"Data on Node1\", function () {",
 									"    var response = pm.response.json();",
@@ -7854,6 +7854,16 @@
 									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);",
 									"    }",
 									"});"
+								],
+								"type": "text/javascript"
+							}
+						},
+						{
+							"listen": "prerequest",
+							"script": {
+								"id": "cf29881f-c183-4830-970b-5fd8d2a67b92",
+								"exec": [
+									"setTimeout(()=>{}, 500);"
 								],
 								"type": "text/javascript"
 							}
@@ -7974,7 +7984,7 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "8d6f79ea-9b56-4202-8d09-ff0e6a78f6ae",
+								"id": "33a1297c-3a22-4515-a520-9f160234ef55",
 								"exec": [
 									"//Should be testing that the other attrs have updated in the schema (once bug is fixed)",
 									"",
@@ -8110,7 +8120,7 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "8d6f79ea-9b56-4202-8d09-ff0e6a78f6ae",
+								"id": "35af1606-9451-4ace-9256-1a927286c799",
 								"exec": [
 									"//Should be testing that the other attrs have updated in the schema (once bug is fixed)",
 									"",
@@ -8250,7 +8260,7 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "b7c279e4-3826-4d87-a948-a34a328710ff",
+								"id": "e1124b33-d157-49b5-b9b6-f2b839e355e7",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {",
 									"    pm.response.to.have.status(200);",
@@ -8269,7 +8279,7 @@
 						{
 							"listen": "prerequest",
 							"script": {
-								"id": "5ce37d28-b57a-41c2-93a8-c85ac476f9e8",
+								"id": "79b98c9e-83bc-4a16-9277-375152540f15",
 								"exec": [
 									"pm.environment.set(\"CSV_NODE_HOST\", \"{{NODE4_HOST}}\");"
 								],
@@ -8392,7 +8402,7 @@
 						{
 							"listen": "prerequest",
 							"script": {
-								"id": "a7685aa6-6914-4c26-83f8-07a0621a8aa3",
+								"id": "7657115b-e285-44af-b5c7-4ba58ac01778",
 								"exec": [
 									"pm.environment.set(\"next_request\", null);",
 									"pm.environment.set(\"CSV_NODE_HOST\", null);"
@@ -8403,7 +8413,7 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "4dbaeb9b-a668-41da-b620-fc677ae7cda0",
+								"id": "91c2bc0e-04b3-4d63-9381-092d0249cb5a",
 								"exec": [
 									"pm.test(\"Data updated correctly on Node4\", function () {",
 									"    var response = pm.response.json()[0];",
@@ -8530,7 +8540,7 @@
 						{
 							"listen": "prerequest",
 							"script": {
-								"id": "a28af2f5-97f8-470d-a64c-99ca3427f7ac",
+								"id": "09ae666b-a921-4e61-8bfd-d3db2e0fccc6",
 								"exec": [
 									"pm.environment.set(\"job_id\", null);"
 								],
@@ -8540,7 +8550,7 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "3d7a5d01-c414-478b-96f8-9b782b050bfd",
+								"id": "5a09656d-0611-4041-a450-66df91e4c943",
 								"exec": [
 									"pm.test(\"Data on Node4\", function () {",
 									"    var response = pm.response.json();",
@@ -8679,7 +8689,7 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "714171ae-6a60-484a-b362-b365020be1cf",
+								"id": "cc3cabbc-d261-43db-8459-88c5a8d21eb8",
 								"exec": [
 									"pm.test(\"Data on Node1\", function () {",
 									"    var response = pm.response.json();",
@@ -8698,6 +8708,16 @@
 									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);",
 									"    }",
 									"});"
+								],
+								"type": "text/javascript"
+							}
+						},
+						{
+							"listen": "prerequest",
+							"script": {
+								"id": "f700bc1b-5ada-4cb4-b2ab-399455a04047",
+								"exec": [
+									"setTimeout(()=>{}, 500);"
 								],
 								"type": "text/javascript"
 							}
@@ -8818,7 +8838,7 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "8d6f79ea-9b56-4202-8d09-ff0e6a78f6ae",
+								"id": "6e39b933-cf8e-455a-bbcf-8ba6e75663fc",
 								"exec": [
 									"//Should be testing that the other attrs have updated in the schema (once bug is fixed)",
 									"",
@@ -8954,7 +8974,7 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "8d6f79ea-9b56-4202-8d09-ff0e6a78f6ae",
+								"id": "4d0be2dc-ea23-479b-9151-6832777ee724",
 								"exec": [
 									"//Should be testing that the other attrs have updated in the schema (once bug is fixed)",
 									"",
@@ -9096,7 +9116,7 @@
 						{
 							"listen": "prerequest",
 							"script": {
-								"id": "e17def25-a1e9-46e4-91dd-1c08c85c9654",
+								"id": "d1c3c593-0d5f-490c-aaf9-0d55ec6b076a",
 								"exec": [
 									"setTimeout(()=>{}, 200);",
 									"console.log(\"Checking Job \" + pm.environment.get(\"job_id\"));"
@@ -9107,7 +9127,7 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "28f0cf8a-73da-4c71-b137-90962cbbe3bd",
+								"id": "5ee58377-6179-48c6-a350-85c9d88f8ee5",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {",
 									"    pm.response.to.have.status(200);",
@@ -9197,7 +9217,7 @@
 				{
 					"listen": "prerequest",
 					"script": {
-						"id": "f6acfbcd-f1bb-483c-a762-d13fffa52a3d",
+						"id": "f41ee46e-a287-4a4e-9aca-a1c1b99afe87",
 						"type": "text/javascript",
 						"exec": [
 							""
@@ -9207,7 +9227,7 @@
 				{
 					"listen": "test",
 					"script": {
-						"id": "495635a9-c121-4164-bebc-d32f16e49ad5",
+						"id": "32f0b27f-25f1-484a-be39-401b0b3351ed",
 						"type": "text/javascript",
 						"exec": [
 							""
@@ -9226,7 +9246,7 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "01a8e391-700e-4115-96c9-f33d227a5579",
+								"id": "1ba824c1-8ab7-4e77-a52f-87fa7ec9e040",
 								"exec": [
 									"tests[\"Deleted one row on Node1\"] = responseBody.has(\"1 of 1 record successfully deleted\");",
 									"",
@@ -9355,7 +9375,7 @@
 						{
 							"listen": "prerequest",
 							"script": {
-								"id": "0fe08ba3-e76e-45bf-8f63-4f5a72f45c5b",
+								"id": "0548a3d7-24db-4f25-91d5-8b656cc7831f",
 								"exec": [
 									""
 								],
@@ -9365,7 +9385,7 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "38b054ca-0056-4c1c-a6fa-c4427a07cbd5",
+								"id": "7bdf5bdf-dee0-4239-9751-022ac7ad0ab0",
 								"exec": [
 									"pm.test(\"Test data deleted on Node4\", function () {",
 									"    var response = pm.response.json();",
@@ -9496,7 +9516,7 @@
 						{
 							"listen": "prerequest",
 							"script": {
-								"id": "0fe08ba3-e76e-45bf-8f63-4f5a72f45c5b",
+								"id": "ee44154e-903d-459a-b9e5-2bdee6927285",
 								"exec": [
 									""
 								],
@@ -9506,7 +9526,7 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "38b054ca-0056-4c1c-a6fa-c4427a07cbd5",
+								"id": "2aa8d4c1-45aa-4b6c-acbf-42898df5ae3b",
 								"exec": [
 									"pm.test(\"Test data NOT deleted on Node2\", function () {",
 									"    var response = pm.response.json();",
@@ -9632,7 +9652,7 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "01a8e391-700e-4115-96c9-f33d227a5579",
+								"id": "e5f244e9-5eba-4311-a464-0072855366a5",
 								"exec": [
 									"tests[\"Deleted four rows on Node2\"] = responseBody.has(\"4 of 4 records successfully deleted\");",
 									"",
@@ -9760,7 +9780,7 @@
 						{
 							"listen": "prerequest",
 							"script": {
-								"id": "0fe08ba3-e76e-45bf-8f63-4f5a72f45c5b",
+								"id": "11546652-028a-4400-b37d-5a3b746122b6",
 								"exec": [
 									""
 								],
@@ -9770,7 +9790,7 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "38b054ca-0056-4c1c-a6fa-c4427a07cbd5",
+								"id": "09c2e8be-af28-44c6-a4d6-982ae1608080",
 								"exec": [
 									"pm.test(\"Test data deleted on Node2\", function () {",
 									"    var response = pm.response.json();",
@@ -9901,7 +9921,7 @@
 						{
 							"listen": "prerequest",
 							"script": {
-								"id": "0fe08ba3-e76e-45bf-8f63-4f5a72f45c5b",
+								"id": "a31ca2fc-4872-4ae5-808f-24b1af3f8c80",
 								"exec": [
 									""
 								],
@@ -9911,7 +9931,7 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "38b054ca-0056-4c1c-a6fa-c4427a07cbd5",
+								"id": "22d911fd-b320-488a-b568-ed6a6df48442",
 								"exec": [
 									"pm.test(\"Test data NOT deleted on Node3\", function () {",
 									"    var response = pm.response.json();",
@@ -10037,7 +10057,7 @@
 						{
 							"listen": "prerequest",
 							"script": {
-								"id": "0fe08ba3-e76e-45bf-8f63-4f5a72f45c5b",
+								"id": "2a8bda41-6db9-4b21-a29d-3db146db380c",
 								"exec": [
 									""
 								],
@@ -10047,7 +10067,7 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "38b054ca-0056-4c1c-a6fa-c4427a07cbd5",
+								"id": "e0403091-a385-42a3-a4ca-a186db6d51f1",
 								"exec": [
 									"pm.test(\"Test data deleted on Node1\", function () {",
 									"    var response = pm.response.json();",
@@ -10178,7 +10198,7 @@
 						{
 							"listen": "prerequest",
 							"script": {
-								"id": "0fe08ba3-e76e-45bf-8f63-4f5a72f45c5b",
+								"id": "58616c17-6997-433f-9bb7-6293897713f5",
 								"exec": [
 									""
 								],
@@ -10188,7 +10208,7 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "38b054ca-0056-4c1c-a6fa-c4427a07cbd5",
+								"id": "e583cf6b-0f32-4d93-b459-224d2e464c9b",
 								"exec": [
 									"pm.test(\"Test data deleted on Node4\", function () {",
 									"    var response = pm.response.json();",
@@ -10319,6 +10339,390 @@
 		{
 			"name": "Test Cleanup",
 			"item": [
+				{
+					"name": "REMOVE Node2",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "68c8e59b-863b-4176-afb3-a5b8b170b520",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"Node2 removed\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.message).to.eql(\"successfully removed Node2 from manifest\");",
+									"});",
+									""
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"value": true,
+									"type": "boolean"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"remove_node\",\n\t\"name\":\"Node2\"\n}"
+						},
+						"url": {
+							"raw": "{{NODE1_HOST}}:{{SERVER_HDB_PORT}}",
+							"host": [
+								"{{NODE1_HOST}}"
+							],
+							"port": "{{SERVER_HDB_PORT}}"
+						}
+					},
+					"response": [
+						{
+							"name": "Remove Node",
+							"originalRequest": {
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk",
+										"type": "text"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\t\"operation\":\"remove_node\",\n\t\"name\":\"node2\"\n}"
+								},
+								"url": {
+									"raw": "{{HDB_ENDPOINT}}",
+									"host": [
+										"{{HDB_ENDPOINT}}"
+									]
+								}
+							},
+							"status": "OK",
+							"code": 200,
+							"_postman_previewlanguage": "json",
+							"header": [
+								{
+									"key": "Vary",
+									"value": "Origin"
+								},
+								{
+									"key": "Content-Type",
+									"value": "application/json; charset=utf-8"
+								},
+								{
+									"key": "Content-Length",
+									"value": "54"
+								},
+								{
+									"key": "ETag",
+									"value": "W/\"36-5DOQiUhBa8vd+mg6BRSMMJSnkwk\""
+								},
+								{
+									"key": "Date",
+									"value": "Fri, 18 Oct 2019 18:20:59 GMT"
+								},
+								{
+									"key": "Connection",
+									"value": "keep-alive"
+								}
+							],
+							"cookie": [],
+							"body": ""
+						}
+					]
+				},
+				{
+					"name": "REMOVE Node3",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "edda19a3-78b8-47b6-9ec5-b1801cfa0766",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"Node3 removed\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.message).to.eql(\"successfully removed Node3 from manifest\");",
+									"});",
+									""
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"value": true,
+									"type": "boolean"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"remove_node\",\n\t\"name\":\"Node3\"\n}"
+						},
+						"url": {
+							"raw": "{{NODE1_HOST}}:{{SERVER_HDB_PORT}}",
+							"host": [
+								"{{NODE1_HOST}}"
+							],
+							"port": "{{SERVER_HDB_PORT}}"
+						}
+					},
+					"response": [
+						{
+							"name": "Remove Node",
+							"originalRequest": {
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk",
+										"type": "text"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\t\"operation\":\"remove_node\",\n\t\"name\":\"node2\"\n}"
+								},
+								"url": {
+									"raw": "{{HDB_ENDPOINT}}",
+									"host": [
+										"{{HDB_ENDPOINT}}"
+									]
+								}
+							},
+							"status": "OK",
+							"code": 200,
+							"_postman_previewlanguage": "json",
+							"header": [
+								{
+									"key": "Vary",
+									"value": "Origin"
+								},
+								{
+									"key": "Content-Type",
+									"value": "application/json; charset=utf-8"
+								},
+								{
+									"key": "Content-Length",
+									"value": "54"
+								},
+								{
+									"key": "ETag",
+									"value": "W/\"36-5DOQiUhBa8vd+mg6BRSMMJSnkwk\""
+								},
+								{
+									"key": "Date",
+									"value": "Fri, 18 Oct 2019 18:20:59 GMT"
+								},
+								{
+									"key": "Connection",
+									"value": "keep-alive"
+								}
+							],
+							"cookie": [],
+							"body": ""
+						}
+					]
+				},
+				{
+					"name": "REMOVE Node4",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "8dc51021-3f3f-4847-a865-ea4a9948adc5",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"Node4 removed\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.message).to.eql(\"successfully removed Node4 from manifest\");",
+									"});",
+									""
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"value": true,
+									"type": "boolean"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"remove_node\",\n\t\"name\":\"Node4\"\n}"
+						},
+						"url": {
+							"raw": "{{NODE1_HOST}}:{{SERVER_HDB_PORT}}",
+							"host": [
+								"{{NODE1_HOST}}"
+							],
+							"port": "{{SERVER_HDB_PORT}}"
+						}
+					},
+					"response": [
+						{
+							"name": "Remove Node",
+							"originalRequest": {
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk",
+										"type": "text"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\t\"operation\":\"remove_node\",\n\t\"name\":\"node2\"\n}"
+								},
+								"url": {
+									"raw": "{{HDB_ENDPOINT}}",
+									"host": [
+										"{{HDB_ENDPOINT}}"
+									]
+								}
+							},
+							"status": "OK",
+							"code": 200,
+							"_postman_previewlanguage": "json",
+							"header": [
+								{
+									"key": "Vary",
+									"value": "Origin"
+								},
+								{
+									"key": "Content-Type",
+									"value": "application/json; charset=utf-8"
+								},
+								{
+									"key": "Content-Length",
+									"value": "54"
+								},
+								{
+									"key": "ETag",
+									"value": "W/\"36-5DOQiUhBa8vd+mg6BRSMMJSnkwk\""
+								},
+								{
+									"key": "Date",
+									"value": "Fri, 18 Oct 2019 18:20:59 GMT"
+								},
+								{
+									"key": "Connection",
+									"value": "keep-alive"
+								}
+							],
+							"cookie": [],
+							"body": ""
+						}
+					]
+				},
 				{
 					"name": "DROP SCHEMA on Node1",
 					"request": {
@@ -10762,390 +11166,6 @@
 							"body": ""
 						}
 					]
-				},
-				{
-					"name": "REMOVE Node2",
-					"event": [
-						{
-							"listen": "test",
-							"script": {
-								"id": "7e033c17-4447-4906-bf37-00f955f77b2c",
-								"exec": [
-									"pm.test(\"Status code is 200\", function () {",
-									"    pm.response.to.have.status(200);",
-									"});",
-									"",
-									"pm.test(\"Node2 removed\", function () {",
-									"    var jsonData = pm.response.json();",
-									"    pm.expect(jsonData.message).to.eql(\"successfully removed Node2 from manifest\");",
-									"});",
-									""
-								],
-								"type": "text/javascript"
-							}
-						}
-					],
-					"request": {
-						"auth": {
-							"type": "basic",
-							"basic": [
-								{
-									"key": "password",
-									"value": "{{password}}",
-									"type": "string"
-								},
-								{
-									"key": "username",
-									"value": "{{username}}",
-									"type": "string"
-								},
-								{
-									"key": "saveHelperData",
-									"value": true,
-									"type": "boolean"
-								},
-								{
-									"key": "showPassword",
-									"value": false,
-									"type": "boolean"
-								}
-							]
-						},
-						"method": "POST",
-						"header": [
-							{
-								"key": "Content-Type",
-								"value": "application/json"
-							}
-						],
-						"body": {
-							"mode": "raw",
-							"raw": "{\n\t\"operation\":\"remove_node\",\n\t\"name\":\"Node2\"\n}"
-						},
-						"url": {
-							"raw": "{{NODE1_HOST}}:{{SERVER_HDB_PORT}}",
-							"host": [
-								"{{NODE1_HOST}}"
-							],
-							"port": "{{SERVER_HDB_PORT}}"
-						}
-					},
-					"response": [
-						{
-							"name": "Remove Node",
-							"originalRequest": {
-								"method": "POST",
-								"header": [
-									{
-										"key": "Content-Type",
-										"value": "application/json"
-									},
-									{
-										"key": "Authorization",
-										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk",
-										"type": "text"
-									}
-								],
-								"body": {
-									"mode": "raw",
-									"raw": "{\n\t\"operation\":\"remove_node\",\n\t\"name\":\"node2\"\n}"
-								},
-								"url": {
-									"raw": "{{HDB_ENDPOINT}}",
-									"host": [
-										"{{HDB_ENDPOINT}}"
-									]
-								}
-							},
-							"status": "OK",
-							"code": 200,
-							"_postman_previewlanguage": "json",
-							"header": [
-								{
-									"key": "Vary",
-									"value": "Origin"
-								},
-								{
-									"key": "Content-Type",
-									"value": "application/json; charset=utf-8"
-								},
-								{
-									"key": "Content-Length",
-									"value": "54"
-								},
-								{
-									"key": "ETag",
-									"value": "W/\"36-5DOQiUhBa8vd+mg6BRSMMJSnkwk\""
-								},
-								{
-									"key": "Date",
-									"value": "Fri, 18 Oct 2019 18:20:59 GMT"
-								},
-								{
-									"key": "Connection",
-									"value": "keep-alive"
-								}
-							],
-							"cookie": [],
-							"body": ""
-						}
-					]
-				},
-				{
-					"name": "REMOVE Node3",
-					"event": [
-						{
-							"listen": "test",
-							"script": {
-								"id": "7e033c17-4447-4906-bf37-00f955f77b2c",
-								"exec": [
-									"pm.test(\"Status code is 200\", function () {",
-									"    pm.response.to.have.status(200);",
-									"});",
-									"",
-									"pm.test(\"Node3 removed\", function () {",
-									"    var jsonData = pm.response.json();",
-									"    pm.expect(jsonData.message).to.eql(\"successfully removed Node3 from manifest\");",
-									"});",
-									""
-								],
-								"type": "text/javascript"
-							}
-						}
-					],
-					"request": {
-						"auth": {
-							"type": "basic",
-							"basic": [
-								{
-									"key": "password",
-									"value": "{{password}}",
-									"type": "string"
-								},
-								{
-									"key": "username",
-									"value": "{{username}}",
-									"type": "string"
-								},
-								{
-									"key": "saveHelperData",
-									"value": true,
-									"type": "boolean"
-								},
-								{
-									"key": "showPassword",
-									"value": false,
-									"type": "boolean"
-								}
-							]
-						},
-						"method": "POST",
-						"header": [
-							{
-								"key": "Content-Type",
-								"value": "application/json"
-							}
-						],
-						"body": {
-							"mode": "raw",
-							"raw": "{\n\t\"operation\":\"remove_node\",\n\t\"name\":\"Node3\"\n}"
-						},
-						"url": {
-							"raw": "{{NODE1_HOST}}:{{SERVER_HDB_PORT}}",
-							"host": [
-								"{{NODE1_HOST}}"
-							],
-							"port": "{{SERVER_HDB_PORT}}"
-						}
-					},
-					"response": [
-						{
-							"name": "Remove Node",
-							"originalRequest": {
-								"method": "POST",
-								"header": [
-									{
-										"key": "Content-Type",
-										"value": "application/json"
-									},
-									{
-										"key": "Authorization",
-										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk",
-										"type": "text"
-									}
-								],
-								"body": {
-									"mode": "raw",
-									"raw": "{\n\t\"operation\":\"remove_node\",\n\t\"name\":\"node2\"\n}"
-								},
-								"url": {
-									"raw": "{{HDB_ENDPOINT}}",
-									"host": [
-										"{{HDB_ENDPOINT}}"
-									]
-								}
-							},
-							"status": "OK",
-							"code": 200,
-							"_postman_previewlanguage": "json",
-							"header": [
-								{
-									"key": "Vary",
-									"value": "Origin"
-								},
-								{
-									"key": "Content-Type",
-									"value": "application/json; charset=utf-8"
-								},
-								{
-									"key": "Content-Length",
-									"value": "54"
-								},
-								{
-									"key": "ETag",
-									"value": "W/\"36-5DOQiUhBa8vd+mg6BRSMMJSnkwk\""
-								},
-								{
-									"key": "Date",
-									"value": "Fri, 18 Oct 2019 18:20:59 GMT"
-								},
-								{
-									"key": "Connection",
-									"value": "keep-alive"
-								}
-							],
-							"cookie": [],
-							"body": ""
-						}
-					]
-				},
-				{
-					"name": "REMOVE Node4",
-					"event": [
-						{
-							"listen": "test",
-							"script": {
-								"id": "7e033c17-4447-4906-bf37-00f955f77b2c",
-								"exec": [
-									"pm.test(\"Status code is 200\", function () {",
-									"    pm.response.to.have.status(200);",
-									"});",
-									"",
-									"pm.test(\"Node4 removed\", function () {",
-									"    var jsonData = pm.response.json();",
-									"    pm.expect(jsonData.message).to.eql(\"successfully removed Node4 from manifest\");",
-									"});",
-									""
-								],
-								"type": "text/javascript"
-							}
-						}
-					],
-					"request": {
-						"auth": {
-							"type": "basic",
-							"basic": [
-								{
-									"key": "password",
-									"value": "{{password}}",
-									"type": "string"
-								},
-								{
-									"key": "username",
-									"value": "{{username}}",
-									"type": "string"
-								},
-								{
-									"key": "saveHelperData",
-									"value": true,
-									"type": "boolean"
-								},
-								{
-									"key": "showPassword",
-									"value": false,
-									"type": "boolean"
-								}
-							]
-						},
-						"method": "POST",
-						"header": [
-							{
-								"key": "Content-Type",
-								"value": "application/json"
-							}
-						],
-						"body": {
-							"mode": "raw",
-							"raw": "{\n\t\"operation\":\"remove_node\",\n\t\"name\":\"Node4\"\n}"
-						},
-						"url": {
-							"raw": "{{NODE1_HOST}}:{{SERVER_HDB_PORT}}",
-							"host": [
-								"{{NODE1_HOST}}"
-							],
-							"port": "{{SERVER_HDB_PORT}}"
-						}
-					},
-					"response": [
-						{
-							"name": "Remove Node",
-							"originalRequest": {
-								"method": "POST",
-								"header": [
-									{
-										"key": "Content-Type",
-										"value": "application/json"
-									},
-									{
-										"key": "Authorization",
-										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk",
-										"type": "text"
-									}
-								],
-								"body": {
-									"mode": "raw",
-									"raw": "{\n\t\"operation\":\"remove_node\",\n\t\"name\":\"node2\"\n}"
-								},
-								"url": {
-									"raw": "{{HDB_ENDPOINT}}",
-									"host": [
-										"{{HDB_ENDPOINT}}"
-									]
-								}
-							},
-							"status": "OK",
-							"code": 200,
-							"_postman_previewlanguage": "json",
-							"header": [
-								{
-									"key": "Vary",
-									"value": "Origin"
-								},
-								{
-									"key": "Content-Type",
-									"value": "application/json; charset=utf-8"
-								},
-								{
-									"key": "Content-Length",
-									"value": "54"
-								},
-								{
-									"key": "ETag",
-									"value": "W/\"36-5DOQiUhBa8vd+mg6BRSMMJSnkwk\""
-								},
-								{
-									"key": "Date",
-									"value": "Fri, 18 Oct 2019 18:20:59 GMT"
-								},
-								{
-									"key": "Connection",
-									"value": "keep-alive"
-								}
-							],
-							"cookie": [],
-							"body": ""
-						}
-					]
 				}
 			],
 			"protocolProfileBehavior": {}
@@ -11155,7 +11175,7 @@
 		{
 			"listen": "prerequest",
 			"script": {
-				"id": "99118c63-64b4-4932-b97c-874a6485f019",
+				"id": "2a51965d-7ccc-4f84-bc0d-2581560d789a",
 				"type": "text/javascript",
 				"exec": [
 					""
@@ -11165,7 +11185,7 @@
 		{
 			"listen": "test",
 			"script": {
-				"id": "a161eddb-9093-4a18-ae08-00b37ed86653",
+				"id": "c80c041a-da15-46d0-9e77-b01f783d861a",
 				"type": "text/javascript",
 				"exec": [
 					"postman.setGlobalVariable(\"function:getJobId\", (jsonData, next_req)=>{",

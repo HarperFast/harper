@@ -296,10 +296,11 @@ class SQLSearch {
         if (common_utils.isEmptyOrZeroLength(this.all_table_attributes) && common_utils.isEmptyOrZeroLength(this.statement.from) && common_utils.isEmptyOrZeroLength(this.columns.columns)) {
             return;
         }
-        let wildcard_index = -1;
+        let wildcard_indexes = [];
+        let dup_attr_count = {};
         this.statement.columns.forEach((col, index) => {
             if (col.columnid === '*') {
-                wildcard_index = index;
+                wildcard_indexes.push(index);
                 return;
             }
 
@@ -309,7 +310,18 @@ class SQLSearch {
 
             if (!col.aggregatorid && !col.funcid) {
                 col.as_orig = col.as ? col.as : col.columnid;
-                col.as = `[${col.as_orig}]`;
+                if (this.statement.joins) {
+                    if (dup_attr_count[col.as_orig] >= 0) {
+                        const attr_count = dup_attr_count[col.as_orig] + 1;
+                        col.as = `[${col.as_orig + attr_count}]`;
+                        dup_attr_count[col.as_orig] = attr_count;
+                    } else {
+                        col.as = `[${col.as_orig}]`;
+                        dup_attr_count[col.as_orig] = 0;
+                    }
+                } else {
+                    col.as = `[${col.as_orig}]`;
+                }
             }
 
             if (!col.aggregatorid && col.funcid && col.args) {
@@ -327,8 +339,8 @@ class SQLSearch {
             }
         });
 
-        if (this.statement.columns.length > 1 && wildcard_index >= 0) {
-            this.statement.columns.splice(wildcard_index, 1);
+        if (this.statement.columns.length > 1 && wildcard_indexes.length > 0) {
+            _.pullAt(this.statement.columns, wildcard_indexes);
         }
     }
 
