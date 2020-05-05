@@ -850,7 +850,15 @@ class SQLSearch {
                 //because of the alasql bug with orderby (CORE-929), we need to add the ORDER BY column to the select with the
                 // alias to ensure it's available for sorting in the first pass
                 non_aggr_order_by.forEach(ob => {
-                    select.push(ob.initial_select_column.toString());
+                    if (ob.is_func) {
+                        select.push(ob.initial_select_column.toString());
+                    } else {
+                        if (ob.initial_select_column.tableid) {
+                            select.push(`${ob.initial_select_column.tableid}.${ob.initial_select_column.columnid} AS ${ob.expression.columnid}`);
+                        } else {
+                            select.push(`${ob.initial_select_column.columnid} AS ${ob.expression.columnid}`);
+                        }
+                    }
                 });
             }
         }
