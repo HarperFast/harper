@@ -5,8 +5,10 @@
  * purpose of this module is to hold custom functions for alasql
  */
 
-const _ = require('lodash'),
-    mathjs = require('mathjs');
+const _ = require('lodash');
+const mathjs = require('mathjs');
+const jsonata = require('jsonata');
+const hdb_utils = require('../../common_utils');
 
 module.exports = {
     /***
@@ -17,10 +19,11 @@ module.exports = {
     distinct_array:  (array)=>{
         if(Array.isArray(array) && array.length > 1){
             return _.uniqWith(array, _.isEqual);
-        } else {
-            return array;
         }
+
+        return array;
     },
+    searchJSON,
     /***
      * median absolute deviation aggregate function based on http://mathjs.org/docs/reference/functions/mad.html
      */
@@ -74,4 +77,23 @@ function aggregateFunction(calculation_function, value, array, stage){
 
         return null;
     }
+}
+
+/**
+ * wrapper function that implements the JSONata library, which performs searches, transforms, etc... on JSON
+ * @param {String} jsonata_expression - the JSONata expression to execute
+ * @param {any} data - data which will be evaluated
+ * @returns {any}
+ */
+function searchJSON(jsonata_expression, data){
+    if(typeof jsonata_expression !== 'string' || jsonata_expression.length === 0){
+        throw new Error('search json expression must be a non-empty string');
+    }
+
+    let alias = '__' + jsonata_expression + '__';
+    if(hdb_utils.isEmpty(this.__ala__.res[alias])) {
+        let expression = jsonata(jsonata_expression);
+        this.__ala__.res[alias] = expression;
+    }
+    return this.__ala__.res[alias].evaluate(data);
 }

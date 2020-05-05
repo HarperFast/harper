@@ -1868,6 +1868,124 @@
 						}
 					},
 					"response": []
+				},
+				{
+					"name": "create_table dev.movie",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "9515bfe4-b164-452f-af08-52072327ed9a",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"tests[\"Create Table\"] = responseBody.has(\"successfully created.\");"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"type": "text",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"create_table\",\n\t\"schema\":\"dev\",\n\t\"table\":\"movie\",\n\t\"hash_attribute\": \"id\"\n}",
+							"options": {
+								"raw": {}
+							}
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "create_table dev.credits",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "63551851-e940-4f4b-9f8d-d04af30f908b",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"tests[\"Create Table\"] = responseBody.has(\"successfully created.\");"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"type": "text",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"create_table\",\n\t\"schema\":\"dev\",\n\t\"table\":\"credits\",\n\t\"hash_attribute\": \"movie_id\"\n}",
+							"options": {
+								"raw": {}
+							}
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
 				}
 			],
 			"protocolProfileBehavior": {}
@@ -2718,7 +2836,7 @@
 											"    var jsonData = pm.response.json();",
 											"    pm.expect(jsonData.message.indexOf('Starting job')).to.eql(0);",
 											"    ",
-											"    eval(pm.globals.get(\"function:getJobId\"))(jsonData, null);",
+											"    eval(pm.globals.get(\"function:getJobId\"))(jsonData, \"14\");",
 											"});",
 											"",
 											"pm.test(\"Status code is 200\", function () {",
@@ -2760,6 +2878,144 @@
 								"body": {
 									"mode": "raw",
 									"raw": "{\n  \"operation\":\"csv_file_load\",\n  \"action\":\"insert\",\n  \"schema\":\"dev\",\n  \"table\":\"ratings\",\n  \"file_path\":\"{{files_location}}BooksRatings.csv\"\n}",
+									"options": {
+										"raw": {}
+									}
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								},
+								"description": "Import data csv files into orders table"
+							},
+							"response": []
+						},
+						{
+							"name": "14",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "9307aefb-3674-4cb0-a4b5-fc0c4583ef69",
+										"exec": [
+											"pm.test(\"Check for job message\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData.message.indexOf('Starting job')).to.eql(0);",
+											"    ",
+											"    eval(pm.globals.get(\"function:getJobId\"))(jsonData, \"15\");",
+											"});",
+											"",
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"operation\":\"csv_file_load\",\n  \"action\":\"insert\",\n  \"schema\":\"dev\",\n  \"table\":\"movie\",\n  \"file_path\":\"{{files_location}}movies.csv\"\n}",
+									"options": {
+										"raw": {}
+									}
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								},
+								"description": "Import data csv files into orders table"
+							},
+							"response": []
+						},
+						{
+							"name": "15",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "6454e2ec-e558-465b-a1db-2e71080acd64",
+										"exec": [
+											"pm.test(\"Check for job message\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData.message.indexOf('Starting job')).to.eql(0);",
+											"    ",
+											"    eval(pm.globals.get(\"function:getJobId\"))(jsonData, null);",
+											"});",
+											"",
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"operation\":\"csv_file_load\",\n  \"action\":\"insert\",\n  \"schema\":\"dev\",\n  \"table\":\"credits\",\n  \"file_path\":\"{{files_location}}credits.csv\"\n}",
 									"options": {
 										"raw": {}
 									}
@@ -7795,6 +8051,283 @@
 								"body": {
 									"mode": "raw",
 									"raw": "{\n  \"operation\":\"sql\",\n  \"sql\": \"SELECT id, DATE(__createdtime__), DATE(__updatedtime__) as updatedtime FROM dev.time_functions WHERE id = 3 OR id = 4\"\n}",
+									"options": {
+										"raw": {}
+									}
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						}
+					],
+					"protocolProfileBehavior": {},
+					"_postman_isSubFolder": true
+				},
+				{
+					"name": "SEACRH_JSON calls",
+					"item": [
+						{
+							"name": "count movies where movie.keyword starts with super",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "80d8227c-d2c0-4e82-88fb-88c8d4b504d6",
+										"exec": [
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"SQL select verify count is 161\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData.length).to.eql(1);",
+											"    pm.expect(jsonData[0].count).to.eql(161);",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"id": "441333f1-567e-4aa1-82f6-c003f904154c",
+										"exec": [
+											"setTimeout(() => {}, 100);"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "saveHelperData",
+											"value": true,
+											"type": "boolean"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"operation\":\"sql\",\n  \"sql\": \"SELECT count(*) AS `count` from dev.movie where search_json('$[$substring(name,0, 5) = \\\"super\\\"].name', keywords) is not null\"\n}",
+									"options": {
+										"raw": {}
+									}
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "return array of just movie keywords",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "4931ea7f-82bd-48a7-84f1-8b79e81734c1",
+										"exec": [
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"SQL select verify keywords\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData.length).to.eql(2);",
+											"    jsonData.forEach(data=>{",
+											"        pm.expect(Array.isArray(data.keywords)).to.eql(true);",
+											"        pm.expect(typeof data.keywords[0] === 'string').to.eql(true);",
+											"    });",
+											"    ",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"id": "dbf567bc-2c1b-4c35-b212-6db7252b1952",
+										"exec": [
+											"setTimeout(() => {}, 100);"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "saveHelperData",
+											"value": true,
+											"type": "boolean"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"operation\":\"sql\",\n  \"sql\": \"SELECT title, search_json('name', keywords) as keywords from dev.movie where title Like '%Avengers%'\"\n}",
+									"options": {
+										"raw": {}
+									}
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "filter on credits.cast with join to movie",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "3a76933a-8e89-4eae-a27f-1352ba9b6da8",
+										"exec": [
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"SQL select verify movie titles\", function () {",
+											"    let titles = [",
+											"  \"Out of Sight\",",
+											"  \"Iron Man\",",
+											"  \"Captain America: The First Avenger\",",
+											"  \"In Good Company\",",
+											"  \"Zodiac\",",
+											"  \"The Spirit\",",
+											"  \"S.W.A.T.\",",
+											"  \"Iron Man 2\",",
+											"  \"Thor\",",
+											"  \"The Avengers\",",
+											"  \"Iron Man 3\",",
+											"  \"Thor: The Dark World\",",
+											"  \"Avengers: Age of Ultron\",",
+											"  \"Captain America: The Winter Soldier\",",
+											"  \"Captain America: Civil War\"",
+											"];",
+											"    ",
+											"    var jsonData = pm.response.json();",
+											"    jsonData.forEach(data=>{",
+											"        pm.expect(titles.indexOf(data.title)).to.be.gt(-1);",
+											"    });",
+											"    ",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"id": "e1ec3c7a-bf4a-4fd9-9115-fde7fd091283",
+										"exec": [
+											"setTimeout(() => {}, 100);"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "saveHelperData",
+											"value": true,
+											"type": "boolean"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"operation\":\"sql\",\n  \"sql\": \"SELECT m.title, m.overview, m.release_date, search_json('$[name in [\\\"Robert Downey Jr.\\\", \\\"Chris Evans\\\", \\\"Scarlett Johansson\\\", \\\"Mark Ruffalo\\\", \\\"Chris Hemsworth\\\", \\\"Jeremy Renner\\\", \\\"Clark Gregg\\\", \\\"Samuel L. Jackson\\\", \\\"Gwyneth Paltrow\\\", \\\"Don Cheadle\\\"]].{\\\"actor\\\": name, \\\"character\\\": character}', c.`cast`) as characters from dev.credits c inner join dev.movie m on c.movie_id = m.id where search_json('$count($[name in [\\\"Robert Downey Jr.\\\", \\\"Chris Evans\\\", \\\"Scarlett Johansson\\\", \\\"Mark Ruffalo\\\", \\\"Chris Hemsworth\\\", \\\"Jeremy Renner\\\", \\\"Clark Gregg\\\", \\\"Samuel L. Jackson\\\", \\\"Gwyneth Paltrow\\\", \\\"Don Cheadle\\\"]])', c.`cast`) >= 2\"\n}",
 									"options": {
 										"raw": {}
 									}
