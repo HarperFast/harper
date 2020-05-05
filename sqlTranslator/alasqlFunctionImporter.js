@@ -26,9 +26,10 @@ module.exports= (alasql)=>{
      */
     alasql.fn.distinct_array = alasql.fn.DISTINCT_ARRAY = alasql_extension.distinct_array;
     alasql.fn.search_json = alasql.fn.SEARCH_JSON = alasql_extension.searchJSON;
+    alasql.fn.__ala__ = alasql;
 
     //Date Functions...
-    alasql.fn.__ala__ = alasql;
+
     alasql.fn.current_date = alasql.fn.CURRENT_DATE = date_functions.current_date;
     alasql.fn.current_time = alasql.fn.CURRENT_TIME = date_functions.current_time;
     alasql.fn.extract = alasql.fn.EXTRACT = date_functions.extract;
