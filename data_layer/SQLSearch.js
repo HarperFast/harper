@@ -1085,19 +1085,21 @@ class SQLSearch {
         for (const schema_table in this.data) {
             this.data[schema_table].__merged_attributes.forEach((attr, index) => {
                 const table = tables_map[schema_table];
-                let find;
-                let replace;
-                if (tables.length > 1) {
-                    find = new RegExp(`${table}.\`${attr}\``, 'g');
-                    replace = `${table}.[${index}]`;
-                } else {
-                    find = new RegExp(`\`${attr}\``, 'g');
-                    replace = `[${index}]`;
-                }
+                let find = new RegExp(`${table}.\`${attr}\``, 'g');
+                let replace = `${table}.[${index}]`;
 
                 final_sql = final_sql.replace(find, replace);
             });
-        };
+        }
+
+        for (const schema_table in this.data) {
+            this.data[schema_table].__merged_attributes.forEach((attr, index) => {
+                let find = new RegExp(`\`${attr}\``, 'g');
+                let replace = `[${index}]`;
+
+                final_sql = final_sql.replace(find, replace);
+            });
+        }
         return final_sql;
     }
 
