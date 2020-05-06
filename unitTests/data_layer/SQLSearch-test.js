@@ -192,6 +192,28 @@ describe('Test FileSystem Class',function() {
             expect(sorted_results[0]).to.deep.equal(test_row);
         }));
 
+        it('test a query where the same column has the table name in front and then not, to make sure the sql generates correctly', mochaAsyncWrapper(async function() {
+            const test_row = {id:1};
+            const test_sql_statement = `SELECT dog.id FROM dev.dog WHERE id = ${test_row.id}`;
+            setupTestInstance(test_sql_statement);
+
+            const search_results = await test_instance.search();
+
+            const sorted_results = sortTestRows(search_results);
+            expect(sorted_results[0]).to.deep.equal(test_row);
+        }));
+
+        it('test a query where the same column has the table name in front and then not, to make sure the sql generates correctly #2', mochaAsyncWrapper(async function() {
+            const test_row = {id:1};
+            const test_sql_statement = `SELECT id FROM dev.dog WHERE dog.id = ${test_row.id}`;
+            setupTestInstance(test_sql_statement);
+
+            const search_results = await test_instance.search();
+
+            const sorted_results = sortTestRows(search_results);
+            expect(sorted_results[0]).to.deep.equal(test_row);
+        }));
+
         it('should return matching rows based on WHERE clause', mochaAsyncWrapper(async function() {
             const test_rows = [TEST_DATA_DOG[0], TEST_DATA_DOG[1], TEST_DATA_DOG[2]];
             const test_sql_statement = `SELECT * FROM dev.dog WHERE id <= ${TEST_DATA_DOG[2].id}`;
@@ -604,6 +626,24 @@ describe('Test FileSystem Class',function() {
 
         it('should search for ORDER BY element and replace the column alias with the expression from SELECT',function() {
             const test_sql_statement = "SELECT d.id AS id, d.name, d.breed, c.age FROM dev.dog d JOIN dev.cat c ON d.id = c.id ORDER BY id";
+            setupTestInstance(test_sql_statement);
+            test_instance.columns = {};
+            const test_AST_statememt = generateMockAST(test_sql_statement).statement;
+            test_instance.statement = test_AST_statememt;
+
+            test_instance._getColumns();
+
+            const { columns } = test_instance.columns;
+            expect(columns[0].columnid).to.equal("id");
+            expect(columns[0].tableid).to.equal("d");
+            expect(columns[0].as).to.equal("id");
+            const order_by_expression = test_instance.statement.order[0].expression;
+            expect(order_by_expression.columnid).to.equal("id");
+            expect(Object.keys(order_by_expression).length).to.equal(1);
+        });
+
+        it('test not needing table alias on attributes that are uniquely named between tables',function() {
+            const test_sql_statement = "SELECT d.id AS id, d.name, breed, c.age FROM dev.dog d JOIN dev.cat c ON d.id = c.id ORDER BY id";
             setupTestInstance(test_sql_statement);
             test_instance.columns = {};
             const test_AST_statememt = generateMockAST(test_sql_statement).statement;
