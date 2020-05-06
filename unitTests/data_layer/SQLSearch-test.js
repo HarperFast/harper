@@ -1,8 +1,9 @@
 'use strict';
 
 const test_utils = require('../test_utils');
-const sql_test_utils = require('../sqlTestUtils');
 test_utils.preTestPrep();
+
+const sql_test_utils = require('../sqlTestUtils');
 const {
     createMockFS,
     deepClone,
@@ -436,8 +437,25 @@ describe('Test FileSystem Class',function() {
             expect(sortTestRows(search_results)).to.deep.equal(sortTestRows(expected_results));
         }));
 
+        it('should return the top 10 products by ROUND(unitprice) based on limit and order by', mochaAsyncWrapper(async function() {
+            const test_limit = 5;
+            const test_data = sql_integration_data.products.data.slice();
+            let expected_results = sortDesc(test_data, 'unitprice');
+            expected_results.splice(test_limit);
+            expected_results = expected_results.map(row => {
+                return Object.assign({}, row, {u_price: Math.round(row.unitprice)});
+            });
+            const test_sql_statement = `SELECT categoryid, productname, quantityperunit, ROUND(unitprice) as u_price, * from ${TEST_SCHEMA_NORTHWND}.products ORDER BY u_price DESC LIMIT ${test_limit}`;
+            setupTestInstance(test_sql_statement);
+
+            const search_results = await test_instance.search();
+
+            expect(search_results.length).to.equal(test_limit);
+            expect(sortTestRows(search_results)).to.deep.equal(sortTestRows(expected_results));
+        }));
+
         it('should return count min max avg sum price of products', mochaAsyncWrapper(async function() {
-            const { data } = sql_integration_data.products;
+            const data = sql_integration_data.products.data.slice();
             const expected_results = data.reduce((acc, row) => {
                 const { unitprice } = row;
                 acc.allproducts += 1;
@@ -464,7 +482,7 @@ describe('Test FileSystem Class',function() {
 
         it('should return rounded unit price and group by calculated value', mochaAsyncWrapper(async function() {
             const test_alias = "Price";
-            const { data } = sql_integration_data.products;
+            const data = sql_integration_data.products.data.slice();
             const expected_result = data.reduce((acc, row) => {
                 const { unitprice } = row;
                 const rounded_val = Math.round(unitprice);
@@ -489,7 +507,7 @@ describe('Test FileSystem Class',function() {
         it('should return results based on wildcard and min value parameters', mochaAsyncWrapper(async function() {
             const test_search_string = "T";
             const test_search_min = 100;
-            const { data } = sql_integration_data.products;
+            const data = sql_integration_data.products.data.slice();
             const expected_results = data.filter(row => row.productname.startsWith(test_search_string) && row.unitprice > test_search_min);
             const test_sql_statement = `SELECT * FROM ${TEST_SCHEMA_NORTHWND}.products WHERE (productname LIKE '${test_search_string}%') AND (unitprice > ${test_search_min})`;
             setupTestInstance(test_sql_statement);

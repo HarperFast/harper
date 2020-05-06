@@ -749,7 +749,10 @@ class SQLSearch {
 
             let select_column = found_column[0];
 
+            //These values are used in later steps to help evaluate how best to treat the order by statement in our logic
+            order_by.is_func = !!select_column.funcid;
             order_by.is_aggregator = !!select_column.aggregatorid;
+
             if (select_column.as && !order_by.expression.tableid) {
                 order_by.expression.columnid = select_column.as;
                 order_by.expression.columnid_orig = select_column.as_orig;
@@ -761,7 +764,8 @@ class SQLSearch {
                 order_by.expression = alias_expression;
             }
             if (!order_by.is_aggregator) {
-                order_by.initial_select_column = Object.assign({}, select_column);
+                const target_obj = order_by.is_func ? new alasql.yy.FuncValue() : new alasql.yy.Column();
+                order_by.initial_select_column = Object.assign(target_obj, select_column);
             }
         });
     }
@@ -773,7 +777,14 @@ class SQLSearch {
      */
     _addNonAggregatorsToFetchColumns() {
         const non_aggr_order_by_cols = this.statement.order.filter(ob => !ob.is_aggregator && !ob.is_ordinal);
-        const non_aggr_columnids = non_aggr_order_by_cols.map(col => ({ columnid: col.expression.columnid_orig }));
+        const non_aggr_columnids = non_aggr_order_by_cols.map(ob => {
+            if (ob.is_func) {
+                const col_id_arg = ob.initial_select_column.args.filter(arg => !!arg.columnid_orig);
+                return { columnid: col_id_arg[0].columnid_orig };
+            } else {
+                return { columnid: ob.expression.columnid_orig };
+            }
+        });
         this._addFetchColumns(non_aggr_columnids);
     }
 
@@ -839,10 +850,14 @@ class SQLSearch {
                 //because of the alasql bug with orderby (CORE-929), we need to add the ORDER BY column to the select with the
                 // alias to ensure it's available for sorting in the first pass
                 non_aggr_order_by.forEach(ob => {
-                    if (ob.initial_select_column.tableid) {
-                        select.push(`${ob.initial_select_column.tableid}.${ob.initial_select_column.columnid} AS ${ob.expression.columnid}`);
+                    if (ob.is_func) {
+                        select.push(ob.initial_select_column.toString());
                     } else {
-                        select.push(`${ob.initial_select_column.columnid} AS ${ob.expression.columnid}`);
+                        if (ob.initial_select_column.tableid) {
+                            select.push(`${ob.initial_select_column.tableid}.${ob.initial_select_column.columnid} AS ${ob.expression.columnid}`);
+                        } else {
+                            select.push(`${ob.initial_select_column.columnid} AS ${ob.expression.columnid}`);
+                        }
                     }
                 });
             }
