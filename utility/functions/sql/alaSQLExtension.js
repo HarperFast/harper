@@ -91,6 +91,11 @@ function searchJSON(jsonata_expression, data){
     }
 
     let alias = '__' + jsonata_expression + '__';
+
+    if(hdb_utils.isEmpty(this.__ala__.res)){
+        this.__ala__.res = {};
+    }
+
     if(hdb_utils.isEmpty(this.__ala__.res[alias])) {
         let expression = jsonata(jsonata_expression);
         this.__ala__.res[alias] = expression;
