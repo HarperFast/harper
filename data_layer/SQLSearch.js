@@ -749,7 +749,7 @@ class SQLSearch {
 
             let select_column = found_column[0];
 
-            //TODO: add code comment
+            //These values are used in later steps to help evaluate how best to treat the order by statement in our logic
             order_by.is_func = !!select_column.funcid;
             order_by.is_aggregator = !!select_column.aggregatorid;
 
