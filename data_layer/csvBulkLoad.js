@@ -19,7 +19,7 @@ const CSV_NO_RECORDS_MSG = 'No records parsed from csv file.';
 const TEMP_CSV_FILE = `tempCSVURLLoad.csv`;
 const TEMP_DOWNLOAD_DIR = `${env.get('HDB_ROOT')}/tmp`;
 const NEWLINE = '\n';
-const unix_filename_regex = new RegExp(/[^-_.A-Za-z0-9]/);
+const { schema_regex } = require('../validation/common_validators');
 const ALASQL_MIDDLEWARE_PARSE_PARAMETERS = 'SELECT * FROM CSV(?, {headers:true, separator:","})';
 const HIGHWATERMARK = 1024*1024*5;
 const ACCEPTABLE_URL_CONTENT_TYPE_ENUM = {
@@ -181,7 +181,7 @@ function validateResponse(response, url) {
     if (!ACCEPTABLE_URL_CONTENT_TYPE_ENUM[response.headers['content-type']]) {
         throw new Error(`CSV Load failed from URL: ${url}, unsupported content type: ${response.headers['content-type']}`);
     }
-    
+
     if (!response.body) {
         throw new Error(`CSV Load failed from URL: ${url}, no csv found at url`);
     }
@@ -366,7 +366,8 @@ async function callBulkLoad(json_msg) {
 }
 
 /**
- * Validate all filenames of objects about to be created are valid unix filenames.  Returns true if valid, throws an exception
+ * TODO: Is this check still needed when/if FS is no longer supported?  Previously, was checking for unix filename compliance
+ * Validate all attribute names about to be created are valid.  Returns true if valid, throws an exception
  * if not.
  * @param created_record - A single instance of a record created during csv load.
  * @returns {boolean} - True if valid, throws exception if not.
@@ -374,8 +375,8 @@ async function callBulkLoad(json_msg) {
 function validateColumnNames(created_record) {
     let column_names = Object.keys(created_record);
     for(let key of column_names) {
-        if(unix_filename_regex.test(key)) {
-            throw new Error(`Invalid column name ${key}, cancelling load operation`);
+        if(!schema_regex.test(key)) {
+            throw new Error(`Invalid column name '${key}', cancelling load operation`);
         }
     }
     return true;

@@ -41,13 +41,13 @@ async function createSchemaStructure(schema_create_object) {
     }
 
     if (!hdb_util.checkSchemaExists(schema_create_object.schema)) {
-        throw `schema ${schema_create_object.schema} already exists`;
+        throw `schema '${schema_create_object.schema}' already exists`;
     }
 
     try {
         await harperBridge.createSchema(schema_create_object);
 
-        return `schema ${schema_create_object.schema} successfully created`;
+        return `schema '${schema_create_object.schema}' successfully created`;
     } catch(err) {
         throw err;
     }
@@ -79,7 +79,7 @@ async function createTableStructure(create_table_object) {
     }
 
     if (!hdb_util.checkTableExists(create_table_object.schema, create_table_object.table)) {
-        throw `table ${create_table_object.table} already exists in schema ${create_table_object.schema}`;
+        throw `table '${create_table_object.table}' already exists in schema '${create_table_object.schema}'`;
     }
 
     let table_system_data = {
@@ -101,7 +101,7 @@ async function createTableStructure(create_table_object) {
             await harperBridge.createTable(table_system_data, create_table_object);
         }
 
-        return `table ${create_table_object.schema}.${create_table_object.table} successfully created.`;
+        return `table '${create_table_object.schema}.${create_table_object.table}' successfully created.`;
     } catch(err) {
         throw err;
     }
@@ -125,7 +125,7 @@ async function dropSchema(drop_schema_object) {
 
         signalling.signalSchemaChange(drop_schema_message);
         delete global.hdb_schema[drop_schema_object.schema];
-        const SCHEMA_DELETE_MSG = `successfully deleted schema ${drop_schema_object.schema}`;
+        const SCHEMA_DELETE_MSG = `successfully deleted schema '${drop_schema_object.schema}'`;
 
         return SCHEMA_DELETE_MSG;
     } catch (err) {
@@ -149,7 +149,7 @@ async function dropTable(drop_table_object) {
         let drop_table_message = signalling.SCHEMA_CHANGE_MESSAGE;
         drop_table_message.operation = drop_table_object;
         signalling.signalSchemaChange(drop_table_message);
-        const TABLE_DELETE_MSG = `successfully deleted table ${drop_table_object.schema}.${drop_table_object.table}`;
+        const TABLE_DELETE_MSG = `successfully deleted table '${drop_table_object.schema}.${drop_table_object.table}'`;
 
         return TABLE_DELETE_MSG;
     } catch (err) {
@@ -207,11 +207,11 @@ function dropAttributeFromGlobal(drop_attribute_object) {
 
 async function createAttribute(create_attribute_object) {
     if (!global.hdb_schema[create_attribute_object.schema]) {
-        throw new Error(`schema ${create_attribute_object.schema} does not exist`);
+        throw new Error(`schema '${create_attribute_object.schema}' does not exist`);
     }
 
     if (!global.hdb_schema[create_attribute_object.schema][create_attribute_object.table]) {
-        throw new Error(`table ${create_attribute_object.table} does not exists in schema ${create_attribute_object.schema}`);
+        throw new Error(`table '${create_attribute_object.table}' does not exists in schema '${create_attribute_object.schema}'`);
     }
 
     let attribute_structure;

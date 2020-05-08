@@ -2,33 +2,22 @@ const validate = require('validate.js'),
     _ = require('lodash'),
     validator = require('./validationWrapper');
 const hdb_terms = require('../utility/common_utils');
+const { common_validators, schema_regex } = require('./common_validators');
 
 let search_by_hash_constraints = {
     schema: {
         presence: true,
-        format: {
-            pattern: "^[a-zA-Z0-9_]*$",
-            message: "schema must be alpha numeric"
-        },
-        length: {
-            maximum: 250,
-            tooLong: 'cannot exceed 250 characters'
-        }
+        format: common_validators.schema_format,
+        length: common_validators.schema_length
     },
     table: {
         presence: true,
-        format: {
-            pattern: "^[a-zA-Z0-9_]*$",
-            message: "schema must be alpha numeric"
-        },
-        length: {
-            maximum: 250,
-            tooLong: 'cannot exceed 250 characters'
-        }
+        format: common_validators.schema_format,
+        length: common_validators.schema_length
     },
     hash_attribute: {
         presence: true,
-        format: "[\\w\\-\\_]+"
+        format: schema_regex
     },
     hash_value: {
         presence: true
@@ -41,25 +30,13 @@ let search_by_hash_constraints = {
 let search_by_hashes_constraints = {
     schema: {
         presence: true,
-        format: {
-            pattern: "^[a-zA-Z0-9_]*$",
-            message: "schema must be alpha numeric"
-        },
-        length: {
-            maximum: 250,
-            tooLong: 'cannot exceed 250 characters'
-        }
+        format: common_validators.schema_format,
+        length: common_validators.schema_length
     },
     table: {
         presence: true,
-        format: {
-            pattern: "^[a-zA-Z0-9_]*$",
-            message: "schema must be alpha numeric"
-        },
-        length: {
-            maximum: 250,
-            tooLong: 'cannot exceed 250 characters'
-        }
+        format: common_validators.schema_format,
+        length: common_validators.schema_length
     },
     hash_values: {
         presence: true
@@ -72,25 +49,13 @@ let search_by_hashes_constraints = {
 let search_by_value_constraints = {
     schema: {
         presence: true,
-        format: {
-            pattern: "^[a-zA-Z0-9_]*$",
-            message: "must be alpha numeric"
-        },
-        length: {
-            maximum: 250,
-            tooLong: 'cannot exceed 250 characters'
-        }
+        format: common_validators.schema_format,
+        length: common_validators.schema_length
     },
     table: {
         presence: true,
-        format: {
-            pattern: "^[a-zA-Z0-9_]*$",
-            message: "must be alpha numeric"
-        },
-        length: {
-            maximum: 250,
-            tooLong: 'cannot exceed 250 characters'
-        }
+        format: common_validators.schema_format,
+        length: common_validators.schema_length
     },
     search_attribute: {
         presence: true
@@ -106,25 +71,13 @@ let search_by_value_constraints = {
 let search_by_conditions = {
     schema: {
         presence: true,
-        format: {
-            pattern: "^[a-zA-Z0-9_]*$",
-            message: "schema must be alpha numeric"
-        },
-        length: {
-            maximum: 250,
-            tooLong: 'cannot exceed 250 characters'
-        }
+        format: common_validators.schema_format,
+        length: common_validators.schema_length
     },
     table: {
         presence: true,
-        format: {
-            pattern: "^[a-zA-Z0-9_]*$",
-            message: "schema must be alpha numeric"
-        },
-        length: {
-            maximum: 250,
-            tooLong: 'cannot exceed 250 characters'
-        }
+        format: common_validators.schema_format,
+        length: common_validators.schema_length
     },
     conditions: {
         presence: true
