@@ -38,18 +38,18 @@ describe('Test csvLoadValidator module', () => {
         data: "id, type\n1, English Pointer\n"
     };
 
-    let obj_non_alpha_numeric_table = {
+    let obj_invalid_char_table = {
         operation: "",
         action: "insert",
         schema: "hats",
-        table: "#@fordogs",
+        table: "/fordogs",
         data: "id, type\n1, English Pointer\n"
     };
 
-    let obj_non_alpha_numeric_schema = {
+    let obj_invalid_char_schema = {
         operation: "",
         action: "insert",
-        schema: "h@ts",
+        schema: "h`a`ts",
         table: "fordogs",
         data: "id, type\n1, English Pointer\n"
     };
@@ -136,24 +136,24 @@ describe('Test csvLoadValidator module', () => {
             expect(result).to.be.instanceof(Error);
             expect(result.message).to.equal("Table can't be blank");
         });
-        
+
         it('should return must be alpha numeric error on table', () => {
             global.hdb_schema = {
                 "hats": {
                     "fordogs": {}
                 }
             };
-            let result = csv_load_validator.dataObject(obj_non_alpha_numeric_table);
+            let result = csv_load_validator.dataObject(obj_invalid_char_table);
 
             expect(result).to.be.instanceof(Error);
-            expect(result.message).to.equal('Table must be alpha numeric');
+            expect(result.message).to.equal('Table names cannot include backticks or forward slashes');
         });
 
         it('should return must be alpha numeric error on schema', () => {
-            let result = csv_load_validator.dataObject(obj_non_alpha_numeric_schema);
+            let result = csv_load_validator.dataObject(obj_invalid_char_schema);
 
             expect(result).to.be.instanceof(Error);
-            expect(result.message).to.equal('Schema must be alpha numeric');
+            expect(result.message).to.equal('Schema names cannot include backticks or forward slashes');
         });
 
         it('should return cannot exceed 250 characters error on schema', () => {

@@ -89,8 +89,8 @@ describe('test lmdbSearchByValue module', ()=>{
             await test_utils.assertErrorAsync(lmdb_search, [{schema:'dev', table:'test'}], new Error("Search attribute can't be blank,Search value can't be blank,Get attributes can't be blank"));
             await test_utils.assertErrorAsync(lmdb_search, [{schema:'dev', table:'test', search_attribute: 'city'}], new Error("Search value can't be blank,Get attributes can't be blank"));
             await test_utils.assertErrorAsync(lmdb_search, [{schema:'dev', table:'test', search_attribute: 'city', search_value: '*'}], new Error("Get attributes can't be blank"));
-            await test_utils.assertErrorAsync(lmdb_search, [{schema:'dev!sss', table:'test', search_attribute: 'city', search_value: '*', get_attributes:['*']}], new Error("Schema must be alpha numeric"));
-            await test_utils.assertErrorAsync(lmdb_search, [{schema:'dev', table:'test!er', search_attribute: 'city', search_value: '*', get_attributes:['*']}], new Error("Table must be alpha numeric"));
+            await test_utils.assertErrorAsync(lmdb_search, [{schema:'dev/sss', table:'test', search_attribute: 'city', search_value: '*', get_attributes:['*']}], new Error("Schema names cannot include backticks or forward slashes"));
+            await test_utils.assertErrorAsync(lmdb_search, [{schema:'dev', table:'test`e`r', search_attribute: 'city', search_value: '*', get_attributes:['*']}], new Error("Table names cannot include backticks or forward slashes"));
 
             await test_utils.assertErrorAsync(lmdb_search, [{schema:'dev', table:'test', search_attribute: 'city', search_value: '*', get_attributes:['*']}, '$$'], new Error("Value search comparator - $$ - is not valid"));
         });

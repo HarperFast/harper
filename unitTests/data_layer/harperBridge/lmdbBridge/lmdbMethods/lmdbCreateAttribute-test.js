@@ -163,7 +163,7 @@ describe("test lmdbCreateAttribute module", ()=>{
 
         create_attr_obj = test_utils.deepClone(CREATE_ATTR_OBJ_TEST);
         create_attr_obj.attribute = 'slash/er';
-        await test_utils.assertErrorAsync(lmdb_create_attribute, [create_attr_obj],new Error('Attribute name can only contain alpha numeric characters or underscores'));
+        await test_utils.assertErrorAsync(lmdb_create_attribute, [create_attr_obj],new Error('Attribute names cannot include backticks or forward slashes'));
     });
 
 });

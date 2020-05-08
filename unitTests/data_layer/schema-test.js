@@ -163,7 +163,7 @@ describe('Test schema module', function() {
                 error = err;
             }
 
-            expect(error).to.equal(`schema ${SCHEMA_CREATE_OBJECT_TEST.schema} already exists`);
+            expect(error).to.equal(`schema '${SCHEMA_CREATE_OBJECT_TEST.schema}' already exists`);
         });
 
         it('should call bridge and return success message', async () => {
@@ -171,7 +171,7 @@ describe('Test schema module', function() {
             let result = await schema.createSchemaStructure(SCHEMA_CREATE_OBJECT_TEST);
 
             expect(create_schema_stub).to.have.been.calledWith(SCHEMA_CREATE_OBJECT_TEST);
-            expect(result).to.equal(`schema ${SCHEMA_CREATE_OBJECT_TEST.schema} successfully created`)
+            expect(result).to.equal(`schema '${SCHEMA_CREATE_OBJECT_TEST.schema}' successfully created`)
         });
     });
 
@@ -272,7 +272,7 @@ describe('Test schema module', function() {
                 error = err;
             }
 
-            expect(error).to.equal(`table ${CREATE_TABLE_OBJECT_TEST.table} already exists in schema ${CREATE_TABLE_OBJECT_TEST.schema}`);
+            expect(error).to.equal(`table '${CREATE_TABLE_OBJECT_TEST.table}' already exists in schema '${CREATE_TABLE_OBJECT_TEST.schema}'`);
             expect(create_table_validator_stub).to.have.been.calledOnce;
             expect(residence_validator_stub).to.have.been.calledOnce;
             global.hdb_schema.dogsrule = {};
@@ -283,7 +283,7 @@ describe('Test schema module', function() {
             global.clustering_on = true;
             let result = await schema.createTableStructure(CREATE_TABLE_OBJECT_TEST);
 
-            expect(result).to.equal(`table ${CREATE_TABLE_OBJECT_TEST.schema}.${CREATE_TABLE_OBJECT_TEST.table} successfully created.`);
+            expect(result).to.equal(`table '${CREATE_TABLE_OBJECT_TEST.schema}.${CREATE_TABLE_OBJECT_TEST.table}' successfully created.`);
         });
 
         it('should throw clustering not enabled error', async function () {
@@ -304,7 +304,7 @@ describe('Test schema module', function() {
         it('should call all stubs and return success message', async function() {
             let result = await schema.createTableStructure(CREATE_TABLE_OBJECT_TEST);
 
-            expect(result).to.equal(`table ${CREATE_TABLE_OBJECT_TEST.schema}.${CREATE_TABLE_OBJECT_TEST.table} successfully created.`);
+            expect(result).to.equal(`table '${CREATE_TABLE_OBJECT_TEST.schema}.${CREATE_TABLE_OBJECT_TEST.table}' successfully created.`);
             expect(create_table_validator_stub).to.have.been.calledOnce;
             expect(residence_validator_stub).to.have.been.calledOnce;
         });
@@ -313,7 +313,7 @@ describe('Test schema module', function() {
             CREATE_TABLE_OBJECT_TEST.residence = null;
             let result = await schema.createTableStructure(CREATE_TABLE_OBJECT_TEST);
 
-            expect(result).to.equal(`table ${CREATE_TABLE_OBJECT_TEST.schema}.${CREATE_TABLE_OBJECT_TEST.table} successfully created.`);
+            expect(result).to.equal(`table '${CREATE_TABLE_OBJECT_TEST.schema}.${CREATE_TABLE_OBJECT_TEST.table}' successfully created.`);
             expect(create_table_validator_stub).to.have.been.calledOnce;
             expect(residence_validator_stub).to.have.been.calledOnce;
         });
@@ -330,7 +330,7 @@ describe('Test schema module', function() {
 
             expect(bridge_drop_schema_stub).to.have.been.calledWith(DROP_SCHEMA_OBJECT_TEST);
             expect(signal_schema_change_stub).to.have.been.calledWith({ operation: { operation: "drop_schema", schema: "dogsrule" }, type: "schema" });
-            expect(result).to.equal(`successfully deleted schema ${DROP_SCHEMA_OBJECT_TEST.schema}`);
+            expect(result).to.equal(`successfully deleted schema '${DROP_SCHEMA_OBJECT_TEST.schema}'`);
         });
 
         it('Test schema does not exist error is thrown', async () => {
@@ -386,7 +386,7 @@ describe('Test schema module', function() {
             let result = await schema.dropTable(DROP_TABLE_OBJECT_TEST);
 
             expect(bridge_drop_table_stub).to.have.been.calledWith(DROP_TABLE_OBJECT_TEST);
-            expect(result).to.equal(`successfully deleted table ${DROP_TABLE_OBJECT_TEST.schema}.${DROP_TABLE_OBJECT_TEST.table}`);
+            expect(result).to.equal(`successfully deleted table '${DROP_TABLE_OBJECT_TEST.schema}.${DROP_TABLE_OBJECT_TEST.table}'`);
         });
 
         it('Test that an error from bridge method drop table is caught and logged', async () => {
@@ -536,7 +536,7 @@ describe('Test schema module', function() {
         it('should throw schema doesnt exist error', async () => {
             let create_attr_obj = test_util.deepClone(CREATE_ATTR_OBJECT_TEST);
             create_attr_obj.schema = 'ImNotThere';
-            let test_err_result = await test_util.testError(schema.createAttribute(create_attr_obj), `schema ${create_attr_obj.schema} does not exist`);
+            let test_err_result = await test_util.testError(schema.createAttribute(create_attr_obj), `schema '${create_attr_obj.schema}' does not exist`);
 
             expect(test_err_result).to.be.true;
         });
@@ -549,7 +549,7 @@ describe('Test schema module', function() {
                     [CREATE_ATTR_OBJECT_TEST.table]: {}
                 }
             };
-            let test_err_result = await test_util.testError(schema.createAttribute(create_attr_obj), `table ${create_attr_obj.table} does not exists in schema ${create_attr_obj.schema}`);
+            let test_err_result = await test_util.testError(schema.createAttribute(create_attr_obj), `table '${create_attr_obj.table}' does not exists in schema '${create_attr_obj.schema}'`);
 
             expect(test_err_result).to.be.true;
         });

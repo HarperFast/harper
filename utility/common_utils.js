@@ -513,10 +513,10 @@ function sendTransactionToSocketCluster(channel, transaction, originator) {
  */
 function checkGlobalSchemaTable(schema_name, table_name) {
     if (!global.hdb_schema[schema_name]) {
-        return `schema ${schema_name} does not exist`;
+        return `schema '${schema_name}' does not exist`;
     }
     if (!global.hdb_schema[schema_name] || !global.hdb_schema[schema_name][table_name]) {
-        return `table ${schema_name}.${table_name} does not exist`;
+        return `table '${schema_name}.${table_name}' does not exist`;
     }
 }
 
