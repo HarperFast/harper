@@ -15094,7 +15094,7 @@
 						{
 							"listen": "test",
 							"script": {
-								"type": "text/javascript",
+								"id": "11e83d55-7b35-4f96-82e5-5788f2f03a25",
 								"exec": [
 									"pm.test(\"Status code is 500\", function () {",
 									"    pm.response.to.have.status(500);",
@@ -15102,13 +15102,13 @@
 									"",
 									"pm.test(\"verify proper error message is given\", function () {",
 									"    var jsonData = pm.response.json();",
-									"    pm.expect(jsonData.error).to.eql('unknown attribute attr1, attr3 and attr4');",
+									"    pm.expect(jsonData.error).to.eql(\"unknown attribute 'attr1, attr3 and attr4'\");",
 									"});",
 									"",
 									"",
 									""
 								],
-								"id": "11e83d55-7b35-4f96-82e5-5788f2f03a25"
+								"type": "text/javascript"
 							}
 						}
 					],
@@ -15175,7 +15175,7 @@
 									"",
 									"pm.test(\"verify proper error message is given\", function () {",
 									"    var jsonData = pm.response.json();",
-									"    pm.expect(jsonData.error).to.eql(\"schema callABC does not exist\");",
+									"    pm.expect(jsonData.error).to.eql(\"schema 'callABC' does not exist\");",
 									"});",
 									""
 								],
@@ -15246,7 +15246,7 @@
 									"",
 									"pm.test(\"verify proper error message is given\", function () {",
 									"    var jsonData = pm.response.json();",
-									"    pm.expect(jsonData.error).to.eql(\"table call.aggrABC does not exist\");",
+									"    pm.expect(jsonData.error).to.eql(\"table 'call.aggrABC' does not exist\");",
 									"});",
 									""
 								],
