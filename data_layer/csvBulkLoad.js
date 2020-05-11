@@ -366,7 +366,6 @@ async function callBulkLoad(json_msg) {
 }
 
 /**
- * TODO: Is this check still needed when/if FS is no longer supported?  Previously, was checking for unix filename compliance
  * Validate all attribute names about to be created are valid.  Returns true if valid, throws an exception
  * if not.
  * @param created_record - A single instance of a record created during csv load.
