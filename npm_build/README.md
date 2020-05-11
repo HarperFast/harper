@@ -11,7 +11,7 @@
 7. [HarperDB Studio](#harperdb-studio)
 8. [Need Help?](#need-help)
 
-**BETA Version please report your questions, comments and bugs to support@harperdb.io**
+**Please report your questions, comments and bugs to support@harperdb.io**
 ## Getting Started
 **Prerequisites**
 1. NodeJS 12.X
