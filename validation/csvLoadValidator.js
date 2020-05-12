@@ -5,6 +5,7 @@ const hdb_terms = require('../utility/hdbTerms');
 const log = require('../utility/logging/harper_logger');
 const fs = require('fs');
 
+const { common_validators } = require('./common_validators');
 // Maximum file size in bytes
 const MAX_CSV_FILE_SIZE = 1000000000;
 
@@ -12,25 +13,13 @@ const actions = ["update", "insert"];
 const constraints = {
     schema: {
         presence: true,
-        format: {
-            pattern: "^[a-zA-Z0-9_]*$",
-            message: "must be alpha numeric"
-        },
-        length: {
-            maximum: 250,
-            tooLong: 'cannot exceed 250 characters'
-        }
+        format: common_validators.schema_format,
+        length: common_validators.schema_length
     },
     table: {
         presence: true,
-        format: {
-            pattern: "^[a-zA-Z0-9_]*$",
-            message: "must be alpha numeric"
-        },
-        length: {
-            maximum: 250,
-            tooLong: 'cannot exceed 250 characters'
-        }
+        format: common_validators.schema_format,
+        length: common_validators.schema_length
     },
     action: {
         inclusion: {

@@ -97,17 +97,17 @@ describe('test lmdbGetDataByValue module', ()=>{
             await test_utils.assertErrorAsync(lmdb_search, [{schema:'dev', table:'test'}], new Error("Search attribute can't be blank,Search value can't be blank,Get attributes can't be blank"));
             await test_utils.assertErrorAsync(lmdb_search, [{schema:'dev', table:'test', search_attribute: 'city'}], new Error("Search value can't be blank,Get attributes can't be blank"));
             await test_utils.assertErrorAsync(lmdb_search, [{schema:'dev', table:'test', search_attribute: 'city', search_value: '*'}], new Error("Get attributes can't be blank"));
-            await test_utils.assertErrorAsync(lmdb_search, [{schema:'dev!sss', table:'test', search_attribute: 'city', search_value: '*', get_attributes:['*']}], new Error("Schema must be alpha numeric"));
-            await test_utils.assertErrorAsync(lmdb_search, [{schema:'dev', table:'test!er', search_attribute: 'city', search_value: '*', get_attributes:['*']}], new Error("Table must be alpha numeric"));
+            await test_utils.assertErrorAsync(lmdb_search, [{schema:'dev/sss', table:'test', search_attribute: 'city', search_value: '*', get_attributes:['*']}], new Error("Schema names cannot include backticks or forward slashes"));
+            await test_utils.assertErrorAsync(lmdb_search, [{schema:'dev', table:'test`er`', search_attribute: 'city', search_value: '*', get_attributes:['*']}], new Error("Table names cannot include backticks or forward slashes"));
 
             await test_utils.assertErrorAsync(lmdb_search, [{schema:'dev', table:'test', search_attribute: 'city', search_value: '*', get_attributes:['*']}, '$$'], new Error("Value search comparator - $$ - is not valid"));
         });
 
         it('test schema validation', async()=>{
-            await test_utils.assertErrorAsync(lmdb_search, [{schema:'dev2', table:'test', search_attribute: 'city', search_value: '*', get_attributes:['*']}], new Error("schema dev2 does not exist"));
-            await test_utils.assertErrorAsync(lmdb_search, [{schema:'dev', table:'fake', search_attribute: 'city', search_value: '*', get_attributes:['*']}], new Error("table dev.fake does not exist"));
-            await test_utils.assertErrorAsync(lmdb_search, [{schema:'dev', table:'test', search_attribute: 'fake_city', search_value: '*', get_attributes:['*']}], new Error("unknown attribute fake_city"));
-            await test_utils.assertErrorAsync(lmdb_search, [{schema:'dev', table:'test', search_attribute: 'city', search_value: '*', get_attributes:['id','fake']}], new Error("unknown attribute fake"));
+            await test_utils.assertErrorAsync(lmdb_search, [{schema:'dev2', table:'test', search_attribute: 'city', search_value: '*', get_attributes:['*']}], new Error("schema 'dev2' does not exist"));
+            await test_utils.assertErrorAsync(lmdb_search, [{schema:'dev', table:'fake', search_attribute: 'city', search_value: '*', get_attributes:['*']}], new Error("table 'dev.fake' does not exist"));
+            await test_utils.assertErrorAsync(lmdb_search, [{schema:'dev', table:'test', search_attribute: 'fake_city', search_value: '*', get_attributes:['*']}], new Error("unknown attribute 'fake_city'"));
+            await test_utils.assertErrorAsync(lmdb_search, [{schema:'dev', table:'test', search_attribute: 'city', search_value: '*', get_attributes:['id','fake']}], new Error("unknown attribute 'fake'"));
         });
 
         it('test equals on string', async()=>{

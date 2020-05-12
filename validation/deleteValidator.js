@@ -1,27 +1,16 @@
+const { common_validators } = require('./common_validators');
 const validator = require('./validationWrapper');
 
 const constraints = {
     schema: {
         presence: true,
-        format: {
-            pattern: "^[a-zA-Z0-9_]*$",
-            message: "schema must be alpha numeric"
-        },
-        length: {
-            maximum: 250,
-            tooLong: 'cannot exceed 250 characters'
-        }
+        format: common_validators.schema_format,
+        length: common_validators.schema_length
     },
     table: {
         presence: true,
-        format: {
-            pattern: "^[a-zA-Z0-9_]*$",
-            message: "schema must be alpha numeric"
-        },
-        length: {
-            maximum: 250,
-            tooLong: 'cannot exceed 250 characters'
-        }
+        format: common_validators.schema_format,
+        length: common_validators.schema_length
     },
     hash_value: {
         presence: true,

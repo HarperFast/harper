@@ -1,4 +1,4 @@
-id,food_type,popularity_in_%,price_$$
+id,food_type,popularity_`in`_%,price_/$$
 1,Burgers,95,5
 2,Salads,20,60
 3,Soups,50,4

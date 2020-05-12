@@ -100,7 +100,7 @@ describe('Tests for fsUtility function insertUpdateValidate', () => {
         expect(error.message).to.equal('invalid schema specified.');
         expect(error).to.be.instanceOf(Error);
     });
-    
+
     it('Test invalid table specified error is thrown',() => {
         let error;
         try {
@@ -115,7 +115,7 @@ describe('Tests for fsUtility function insertUpdateValidate', () => {
 
     it('Test that insert validator throws schema must be alpha numeric error',() => {
         let write_object_clone = test_utils.deepClone(WRITE_OBJECT_TEST);
-        write_object_clone.table = '#$%';
+        write_object_clone.table = '`//`';
         let error;
         try {
             insertUpdateValidate(write_object_clone);
@@ -123,7 +123,7 @@ describe('Tests for fsUtility function insertUpdateValidate', () => {
             error = err;
         }
 
-        expect(error.message).to.equal('Table schema must be alpha numeric');
+        expect(error.message).to.equal('Table names cannot include backticks or forward slashes');
         expect(error).to.be.instanceOf(Error);
     });
 
