@@ -736,7 +736,7 @@ class SQLSearch {
                 order_by.is_ordinal = false;
             }
 
-            const found_column = this.statement.columns.filter(col => {
+            let found_column = this.statement.columns.filter(col => {
                 const col_expression = col.aggregatorid ? col.expression : col;
                 const col_alias = col.aggregatorid ? col.as_orig : col_expression.as_orig;
 
@@ -747,13 +747,23 @@ class SQLSearch {
                 }
             });
 
+            if (!found_column[0]) {
+                found_column.push(this._findColumn(order_by.expression));
+            }
+
             let select_column = found_column[0];
 
             //These values are used in later steps to help evaluate how best to treat the order by statement in our logic
             order_by.is_func = !!select_column.funcid;
             order_by.is_aggregator = !!select_column.aggregatorid;
 
-            if (select_column.as && !order_by.expression.tableid) {
+            if (!select_column.as) {
+                order_by.initial_select_column = Object.assign(new alasql.yy.Column(), order_by.expression);
+                order_by.initial_select_column.as = `[${order_by.expression.columnid_orig}]`;
+                order_by.expression.columnid = order_by.initial_select_column.as;
+                return;
+            }
+            else if (select_column.as && !order_by.expression.tableid) {
                 order_by.expression.columnid = select_column.as;
                 order_by.expression.columnid_orig = select_column.as_orig;
             }
@@ -841,7 +851,8 @@ class SQLSearch {
         let where_clause = this.statement.where ? 'WHERE ' + this.statement.where : '';
 
         let order_clause = '';
-        if (this.statement.order) {
+        //the only time we need to include the order by statement in the first pass is when there is an aggregator or group by statement
+        if (this.statement.order && (!this.has_aggregator || !this.statement.group) && (this.statement.limit || this.statement.offset)) {
             //in this stage we only want to order by non-aggregates
             let non_aggr_order_by = this.statement.order.filter(ob => !ob.is_aggregator && !ob.is_ordinal && ob.initial_select_column);
 
@@ -1022,6 +1033,25 @@ class SQLSearch {
                 table_data.push(Object.values(this.data[`${join.table.databaseid_orig}_${join.table.tableid_orig}`].__merged_data));
                 join.table.databaseid = '';
                 join.table.tableid = '?';
+            });
+        }
+
+        if (this.statement.order) {
+            this.statement.order.forEach(ob => {
+                const found = this.statement.columns.filter(col => {
+                    const col_expression = col.aggregatorid ? col.expression : col;
+                    const col_alias = col.aggregatorid ? col.as_orig : col_expression.as_orig;
+
+                    if (!ob.expression.tableid) {
+                        return col_expression.columnid_orig === ob.expression.columnid_orig || ob.expression.columnid_orig === col_alias;
+                    } else {
+                        return col_expression.columnid_orig === ob.expression.columnid_orig && col_expression.tableid_orig === ob.expression.tableid_orig;
+                    }
+                });
+
+                if (found.length === 0) {
+                    ob.expression.columnid = ob.initial_select_column.columnid;
+                }
             });
         }
 
