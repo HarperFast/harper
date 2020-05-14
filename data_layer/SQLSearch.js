@@ -393,7 +393,7 @@ class SQLSearch {
     _findColumn(column) {
         //look to see if this attribute exists on one of the tables we are selecting from
         let found_columns = this.all_table_attributes.filter(attribute => {
-            if (column.columnid_orig) {
+            if (column.columnid_orig && column.tableid_orig) {
                 return (attribute.table.as === column.tableid_orig || attribute.table.tableid === column.tableid_orig) && attribute.attribute === column.columnid_orig;
             }
 
@@ -401,7 +401,8 @@ class SQLSearch {
                 return (attribute.table.as === column.tableid || attribute.table.tableid === column.tableid) && attribute.attribute === column.columnid;
             }
 
-            return attribute.attribute === column.columnid;
+            const col_name = column.columnid_orig ? column.columnid_orig : column.columnid;
+            return attribute.attribute === col_name;
         });
 
         //this is to handle aliases.  if we did not find the actual column we look at the aliases in the select columns and then return the matching column from all_table_attrs, if it exists
@@ -852,7 +853,7 @@ class SQLSearch {
 
         let order_clause = '';
         //the only time we need to include the order by statement in the first pass is when there is an aggregator or group by statement
-        if (this.statement.order && (!this.has_aggregator || !this.statement.group) && (this.statement.limit || this.statement.offset)) {
+        if (this.statement.order && (!this.has_aggregator && !this.statement.group) && this.statement.limit) {
             //in this stage we only want to order by non-aggregates
             let non_aggr_order_by = this.statement.order.filter(ob => !ob.is_aggregator && !ob.is_ordinal && ob.initial_select_column);
 
@@ -876,7 +877,7 @@ class SQLSearch {
 
         let limit = '';
         let offset = '';
-        if (!this.has_aggregator || !this.statement.group) {
+        if (!this.has_aggregator && !this.statement.group) {
             limit = this.statement.limit ? 'LIMIT ' + this.statement.limit : '';
             offset = this.statement.offset ? 'OFFSET ' + this.statement.offset : '';
         }
@@ -1056,7 +1057,7 @@ class SQLSearch {
         }
 
         //since we processed the offset in first sql pass it will force it again which will cause no records to be returned
-        if ((!this.has_aggregator || !this.statement.group) && this.statement.offset){
+        if ((!this.has_aggregator && !this.statement.group) && this.statement.offset){
             delete this.statement.offset;
         }
 
