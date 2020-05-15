@@ -2182,6 +2182,65 @@
 						}
 					},
 					"response": []
+				},
+				{
+					"name": "create_table dev.rando",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "27308a74-8d50-4283-86ba-10aafbc6c853",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"tests[\"Create Table\"] = responseBody.has(\"successfully created.\");"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"type": "text",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"create_table\",\n\t\"schema\":\"dev\",\n\t\"table\":\"rando\",\n\t\"hash_attribute\": \"id\"\n}",
+							"options": {
+								"raw": {}
+							}
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
 				}
 			],
 			"protocolProfileBehavior": {}
@@ -6714,6 +6773,137 @@
 						"body": {
 							"mode": "raw",
 							"raw": "{\n    \"operation\":\"insert\",\n    \"schema\" :  \"dev\",\n    \"table\":\"invalid_attribute\",\n    \"records\": [\n    \t{\n        \"id\" : 100,\n        \"some_attribute\" : \"some_att1\",\n        \"another_attribute\": \"another_1\"\n      },\n      {\n        \"id\" : 101,\n        \"some_attribute\" : \"some_att2\",\n        \"another_attribute\": \"another_2\"\n      }\n    ]\n}",
+							"options": {
+								"raw": {}
+							}
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						},
+						"description": "These records will be used to test updates with invalid attribute names."
+					},
+					"response": []
+				},
+				{
+					"name": "insert test records into dev.rando",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "267b904a-ab31-4feb-a5e9-4b507fbea4a3",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"inserted 4 records\", function () {",
+									"    const respMsg = pm.response.json().message;",
+									"    pm.expect(respMsg).to.contain('inserted 4');",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"type": "text",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"operation\":\"insert\",\n    \"schema\" :  \"dev\",\n    \"table\":\"rando\",\n    \"records\": [\n    \t{\n        \"id\" : 987654321,\n        \"name\" : \"Cool Dawg\"\n      },\n      {\n        \"id\" : 987654322,\n        \"name\" : \"The Coolest Dawg\"\n      },\n      {\n        \"id\" : 987654323,\n        \"name\" : \"Sup Dawg\"\n      },\n      {\n        \"id\" : 987654324,\n        \"name\" : \"Snoop Dawg\"\n      }\n    ]\n}",
+							"options": {
+								"raw": {}
+							}
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						},
+						"description": "These records will be used to test updates with invalid attribute names."
+					},
+					"response": []
+				},
+				{
+					"name": "test SQL updating with numeric hash in single quotes",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "97aa8884-9ce0-460e-bd5b-123b8976094f",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"updated 2 records\", function () {",
+									"    const respMsg = pm.response.json().message;",
+									"    pm.expect(respMsg).to.contain('updated 2');",
+									"});",
+									"",
+									"pm.test(\"update_hashes has correct hashes\", function () {",
+									"    const updated = pm.response.json().update_hashes;",
+									"    pm.expect(updated).to.have.members([987654321, 987654322]);",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"type": "text",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"operation\":\"sql\",\n    \"sql\": \"UPDATE dev.rando set active = true WHERE id IN ('987654321', '987654322')\"\n}",
 							"options": {
 								"raw": {}
 							}
@@ -26090,6 +26280,142 @@
 							],
 							"port": "{{port}}"
 						}
+					},
+					"response": []
+				},
+				{
+					"name": "test SQL deleteing with numeric hash in single quotes",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "966951d0-2dbe-48e5-b6e8-70214ca6bb62",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"deleted 2 records\", function () {",
+									"    const respMsg = pm.response.json().message;",
+									"    pm.expect(respMsg).to.contain('2 of 2 records successfully deleted');",
+									"});",
+									"",
+									"pm.test(\"update_hashes has correct hashes\", function () {",
+									"    const updated = pm.response.json().deleted_hashes;",
+									"    pm.expect(updated).to.have.members([987654321, 987654322]);",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"type": "text",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"operation\":\"sql\",\n    \"sql\": \"DELETE FROM dev.rando WHERE id IN ('987654321', '987654322')\"\n}",
+							"options": {
+								"raw": {}
+							}
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						},
+						"description": "These records will be used to test updates with invalid attribute names."
+					},
+					"response": []
+				},
+				{
+					"name": "test SQL deleteing with numeric no condition",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "6f9a379b-9542-4a27-9932-524695bd0f8b",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"deleted 2 records\", function () {",
+									"    const respMsg = pm.response.json().message;",
+									"    pm.expect(respMsg).to.contain('2 of 2 records successfully deleted');",
+									"});",
+									"",
+									"pm.test(\"update_hashes has correct hashes\", function () {",
+									"    const updated = pm.response.json().deleted_hashes;",
+									"    pm.expect(updated).to.have.members([987654323, 987654324]);",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"type": "text",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"operation\":\"sql\",\n    \"sql\": \"DELETE FROM dev.rando\"\n}",
+							"options": {
+								"raw": {}
+							}
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						},
+						"description": "These records will be used to test updates with invalid attribute names."
 					},
 					"response": []
 				}
