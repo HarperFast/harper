@@ -42,11 +42,11 @@ function update(statement, callback){
         //convert this update statement to a search capable statement
         let {table: from, where} = statement;
         let table_clone = clone(from);
-        let search_statement = new alasql.yy.Select();
-        let columns = [new alasql.yy.Column({columnid:table_info.hash_attribute, tableid: statement.table.tableid})];
-        search_statement.columns = columns;
-        search_statement.from = [from];
-        search_statement.where = where;
+
+        let where_string = hdb_utils.isEmpty(where) ? '' : ` WHERE ${where.toString()}`;
+
+        let select_string = `SELECT ${table_info.hash_attribute} FROM ${from.toString()} ${where_string}`;
+        let search_statement = alasql.parse(select_string).statements[0];
 
         async.waterfall([
             search.search.bind(null, search_statement),
