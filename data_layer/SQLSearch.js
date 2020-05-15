@@ -785,7 +785,7 @@ class SQLSearch {
 
     /**
      * This ensures that the non-aggregator columns included in the order by statement are included in the table data for the
-     * first or second pass of alasql
+     * first pass of alasql
      * @private
      */
     _addNonAggregatorsToFetchColumns() {

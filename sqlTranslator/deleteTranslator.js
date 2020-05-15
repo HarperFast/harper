@@ -6,12 +6,14 @@ const util = require('util');
 const hdb_utils = require('../utility/common_utils');
 const terms = require('../utility/hdbTerms');
 const env = require('../utility/environment/environmentManager');
+const global_schema = require('../utility/globalSchema');
 
 const RECORD = 'record';
 const SUCCESS = 'successfully deleted';
 
 const cb_convert_delete = util.callbackify(convertDelete);
 const p_search_search = util.promisify(search.search);
+const p_get_table_schema = util.promisify(global_schema.getTableSchema);
 
 module.exports = {
     convertDelete:cb_convert_delete
@@ -25,11 +27,13 @@ async function convertDelete(statement){
     //convert this update statement to a search capable statement
     //use javascript destructuring to assign variables into from & where
     let {table: from, where} = statement;
-    let search_statement = new alasql.yy.Select();
-    let columns = [new alasql.yy.Column({columnid:'*', tableid: statement.table.tableid})];
-    search_statement.columns = columns;
-    search_statement.from = [from];
-    search_statement.where = where;
+
+    let table_info = await p_get_table_schema(statement.table.databaseid, statement.table.tableid);
+
+    let where_string = hdb_utils.isEmpty(where) ? '' : ` WHERE  ${where.toString()}`;
+    let select_string = `SELECT ${table_info.hash_attribute} FROM ${from.toString()} ${where_string}`;
+    let search_statement = alasql.parse(select_string).statements[0];
+
     let delete_obj = {
         schema: from.databaseid,
         table: from.tableid,
