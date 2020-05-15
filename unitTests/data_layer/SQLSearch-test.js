@@ -372,6 +372,63 @@ describe('Test FileSystem Class',function() {
             });
         }));
 
+        it('should return orders ordered by attribute not included in select statement', mochaAsyncWrapper(async function() {
+            const select_attr = 'customerid'
+            const { data, hash } = sql_integration_data.orders;
+            const sorted_hashes = sortDesc(data, hash);
+            const test_sql_statement = `SELECT ${select_attr} from ${TEST_SCHEMA_NORTHWND}.orders ORDER BY ${hash} DESC`;
+            setupTestInstance(test_sql_statement);
+
+            const search_results = await test_instance.search();
+
+            search_results.forEach((row, i) => {
+                expect(row[select_attr]).to.equal(sorted_hashes[i][select_attr]);
+            });
+        }));
+
+        it('should return orders ordered by attribute not included in select statement - without table alias', mochaAsyncWrapper(async function() {
+            const select_attr = 'customerid'
+            const { data, hash } = sql_integration_data.orders;
+            const sorted_hashes = sortDesc(data, hash);
+            const test_sql_statement = `SELECT orders.${select_attr} from ${TEST_SCHEMA_NORTHWND}.orders AS orders ORDER BY ${hash} DESC`;
+            setupTestInstance(test_sql_statement);
+
+            const search_results = await test_instance.search();
+
+            search_results.forEach((row, i) => {
+                expect(row[select_attr]).to.equal(sorted_hashes[i][select_attr]);
+            });
+        }));
+
+        it('should return orders ordered by attribute with inconsistent table alias', mochaAsyncWrapper(async function() {
+            const select_attr = 'customerid'
+            const { data, hash } = sql_integration_data.orders;
+            const sorted_hashes = sortDesc(data, hash);
+            const test_sql_statement = `SELECT ${hash}, orders.${select_attr} from ${TEST_SCHEMA_NORTHWND}.orders AS orders ORDER BY orders.${hash} DESC`;
+            setupTestInstance(test_sql_statement);
+
+            const search_results = await test_instance.search();
+
+            search_results.forEach((row, i) => {
+                expect(row[select_attr]).to.equal(sorted_hashes[i][select_attr]);
+            });
+        }));
+
+        it('should return all orders data ordered by attribute with inconsistent table alias', mochaAsyncWrapper(async function() {
+            const select_attr = 'customerid'
+            const { data, hash } = sql_integration_data.orders;
+            const sorted_hashes = sortDesc(data, hash);
+            const test_sql_statement = `SELECT ${hash}, orders.${select_attr}, * from ${TEST_SCHEMA_NORTHWND}.orders AS orders ORDER BY orders.${hash} DESC`;
+            setupTestInstance(test_sql_statement);
+
+            const search_results = await test_instance.search();
+            const expected_row_length = Object.keys(data[0]).length;
+            search_results.forEach((row, i) => {
+                expect(Object.keys(row).length).to.equal(expected_row_length);
+                expect(row[select_attr]).to.equal(sorted_hashes[i][select_attr]);
+            });
+        }));
+
         it('should return count of records with attr value equal to null', mochaAsyncWrapper(async function() {
             const { data } = sql_integration_data.orders;
             const expected_result = data.filter(row => row.shipregion === null).length;
@@ -1547,7 +1604,7 @@ function getDirFilePaths(dir_path) {
 function getFormattedIntegrationTestCsvData() {
     const csv_dir = path.join(process.cwd(), '../test/data/integrationTestsCsvs');
     const csv_paths = getDirFilePaths(csv_dir);
-    const parsed_data = parseCsvFilesToObjArr(csv_paths);
+    const parsed_data = parseCsvFilesToObjArr(csv_paths).filter(obj => obj.name !== "InvalidAttributes");
 
     return parsed_data.map(obj => {
         obj.data.forEach(data => {
@@ -1556,7 +1613,7 @@ function getFormattedIntegrationTestCsvData() {
             }
         });
         obj.hash = integration_test_data_hash_values[obj.name];
-        obj.schema = obj.name === "InvalidAttributes" ? TEST_SCHEMA : TEST_SCHEMA_NORTHWND;
+        obj.schema = TEST_SCHEMA_NORTHWND;
         obj.name = obj.name.toLowerCase();
         delete Object.assign(obj, {["table"]: obj["name"] })["name"];
         return obj;

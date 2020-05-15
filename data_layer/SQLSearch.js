@@ -50,6 +50,7 @@ class SQLSearch {
         this.data = {};
 
         this.has_aggregator = false;
+        this.has_ordinal = false;
 
         this._getColumns();
         this._getTables();
@@ -393,7 +394,7 @@ class SQLSearch {
     _findColumn(column) {
         //look to see if this attribute exists on one of the tables we are selecting from
         let found_columns = this.all_table_attributes.filter(attribute => {
-            if (column.columnid_orig) {
+            if (column.columnid_orig && column.tableid_orig) {
                 return (attribute.table.as === column.tableid_orig || attribute.table.tableid === column.tableid_orig) && attribute.attribute === column.columnid_orig;
             }
 
@@ -401,7 +402,8 @@ class SQLSearch {
                 return (attribute.table.as === column.tableid || attribute.table.tableid === column.tableid) && attribute.attribute === column.columnid;
             }
 
-            return attribute.attribute === column.columnid;
+            const col_name = column.columnid_orig ? column.columnid_orig : column.columnid;
+            return attribute.attribute === col_name;
         });
 
         //this is to handle aliases.  if we did not find the actual column we look at the aliases in the select columns and then return the matching column from all_table_attrs, if it exists
@@ -731,12 +733,13 @@ class SQLSearch {
 
             if (order_by.expression.value) {
                 order_by.is_ordinal = true;
+                this.has_ordinal = true;
                 return;
             } else {
                 order_by.is_ordinal = false;
             }
 
-            const found_column = this.statement.columns.filter(col => {
+            let found_column = this.statement.columns.filter(col => {
                 const col_expression = col.aggregatorid ? col.expression : col;
                 const col_alias = col.aggregatorid ? col.as_orig : col_expression.as_orig;
 
@@ -747,13 +750,23 @@ class SQLSearch {
                 }
             });
 
+            if (!found_column[0]) {
+                found_column.push(this._findColumn(order_by.expression));
+            }
+
             let select_column = found_column[0];
 
             //These values are used in later steps to help evaluate how best to treat the order by statement in our logic
             order_by.is_func = !!select_column.funcid;
             order_by.is_aggregator = !!select_column.aggregatorid;
 
-            if (select_column.as && !order_by.expression.tableid) {
+            if (!select_column.as) {
+                order_by.initial_select_column = Object.assign(new alasql.yy.Column(), order_by.expression);
+                order_by.initial_select_column.as = `[${order_by.expression.columnid_orig}]`;
+                order_by.expression.columnid = order_by.initial_select_column.as;
+                return;
+            }
+            else if (select_column.as && !order_by.expression.tableid) {
                 order_by.expression.columnid = select_column.as;
                 order_by.expression.columnid_orig = select_column.as_orig;
             }
@@ -841,37 +854,33 @@ class SQLSearch {
         let where_clause = this.statement.where ? 'WHERE ' + this.statement.where : '';
 
         let order_clause = '';
-        if (this.statement.order) {
-            //in this stage we only want to order by non-aggregates
-            let non_aggr_order_by = this.statement.order.filter(ob => !ob.is_aggregator && !ob.is_ordinal && ob.initial_select_column);
-
-            if (!common_utils.isEmptyOrZeroLength(non_aggr_order_by)) {
-                order_clause = 'ORDER BY ' + non_aggr_order_by.toString();
-                //because of the alasql bug with orderby (CORE-929), we need to add the ORDER BY column to the select with the
-                // alias to ensure it's available for sorting in the first pass
-                non_aggr_order_by.forEach(ob => {
-                    if (ob.is_func) {
-                        select.push(ob.initial_select_column.toString());
+        //the only time we need to include the order by statement in the first pass is when there are no aggregators,
+        // no ordinals in order by, and/or no group by statements AND there is a LIMIT because final sorting will be done on
+        // the data that is returned from the 2nd alasql pass
+        if (this.statement.order && !this.has_ordinal && !this.has_aggregator && !this.statement.group && this.statement.limit) {
+            order_clause = 'ORDER BY ' + this.statement.order.toString();
+            //because of the alasql bug with orderby (CORE-929), we need to add the ORDER BY column to the select with the
+            // alias to ensure it's available for sorting in the first pass
+            this.statement.order.forEach(ob => {
+                if (ob.is_func) {
+                    select.push(ob.initial_select_column.toString());
+                } else {
+                    if (ob.initial_select_column.tableid) {
+                        select.push(`${ob.initial_select_column.tableid}.${ob.initial_select_column.columnid} AS ${ob.expression.columnid}`);
                     } else {
-                        if (ob.initial_select_column.tableid) {
-                            select.push(`${ob.initial_select_column.tableid}.${ob.initial_select_column.columnid} AS ${ob.expression.columnid}`);
-                        } else {
-                            select.push(`${ob.initial_select_column.columnid} AS ${ob.expression.columnid}`);
-                        }
+                        select.push(`${ob.initial_select_column.columnid} AS ${ob.expression.columnid}`);
                     }
-                });
-            }
+                }
+            });
         }
 
         let limit = '';
         let offset = '';
-        if (!this.has_aggregator || !this.statement.group) {
+        if (!this.has_aggregator && !this.statement.group && !this.has_ordinal) {
             limit = this.statement.limit ? 'LIMIT ' + this.statement.limit : '';
             offset = this.statement.offset ? 'OFFSET ' + this.statement.offset : '';
         }
 
-        //we should only select the primary key of each table then remove the rows that exist from each table
-        //see note above about selecting appropriate orderby columns as well due to bug in alasql (CORE-929)
         let joined =[];
 
         try {
@@ -1025,9 +1034,34 @@ class SQLSearch {
             });
         }
 
-        //since we processed the offset in first sql pass it will force it again which will cause no records to be returned
-        if ((!this.has_aggregator || !this.statement.group) && this.statement.offset){
-            delete this.statement.offset;
+        if (this.statement.order) {
+            this.statement.order.forEach(ob => {
+                const found = this.statement.columns.filter(col => {
+                    const col_expression = col.aggregatorid ? col.expression : col;
+                    const col_alias = col.aggregatorid ? col.as_orig : col_expression.as_orig;
+
+                    if (!ob.expression.tableid) {
+                        return col_expression.columnid_orig === ob.expression.columnid_orig || ob.expression.columnid_orig === col_alias;
+                    } else {
+                        return col_expression.columnid_orig === ob.expression.columnid_orig && col_expression.tableid_orig === ob.expression.tableid_orig;
+                    }
+                });
+
+                if (found.length === 0) {
+                    ob.expression.columnid = ob.initial_select_column.columnid;
+                }
+            });
+        }
+
+        //if we processed the offset in first sql pass it will force it again which will cause no records to be returned
+        // this deletes the offset and also the limit if they were already run in the first pass
+        if (!this.has_aggregator && !this.statement.group && !this.has_ordinal){
+            if (this.statement.limit) {
+                delete this.statement.limit;
+            }
+            if (this.statement.offset) {
+                delete this.statement.offset;
+            }
         }
 
         let final_results = undefined;
