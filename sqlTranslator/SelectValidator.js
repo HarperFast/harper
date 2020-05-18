@@ -184,9 +184,6 @@ class SelectValidator {
         let attributes = [];
         for(let {node, path} of iterator) {
             if (!common_utils.isEmpty(node)) {
-                if (!common_utils.isEmpty(node.op) && node.op === BETWEEN) {
-                    throw new Error('BETWEEN is not currently supported.  Please use >= <= for your range query.');
-                }
                 if (!common_utils.isEmpty(node.columnid) && node.columnid !== '*') {
                     if (is_order_by) {
                         this[validateOrderBy](node);
