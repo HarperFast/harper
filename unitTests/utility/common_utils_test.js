@@ -339,6 +339,22 @@ describe(`Test autoCast`, function(){
     it(`Pass in number with a in it , string back 3`, function(){
         assert.strictEqual(cu.autoCast("3a-10"), "3a-10");
     });
+
+    it(`Pass in number with E in it , string back`, function(){
+        assert.strictEqual(cu.autoCast("89E15636"), "89E15636");
+    });
+
+    it(`Pass in number with E in it , string back 2`, function(){
+        assert.strictEqual(cu.autoCast("3E+10"), "3E+10");
+    });
+
+    it(`Pass in number with E in it , string back 3`, function(){
+        assert.strictEqual(cu.autoCast("3E-10"), "3E-10");
+    });
+
+    it(`Pass in number with A in it , string back 3`, function(){
+        assert.strictEqual(cu.autoCast("3A-10"), "3A-10");
+    });
 });
 
 describe('Test escapeRawValue', function(){
