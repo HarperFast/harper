@@ -185,13 +185,17 @@ class SQLSearch {
             if(!common_utils.isEmpty(node) && node.right) {
                 if (common_utils.isNotEmptyAndHasValue(node.right.value)) {
                     const where_val = common_utils.autoCast(node.right.value);
-                    if (!isNaN(where_val) && node.right instanceof alasql.yy.StringValue) {
+                    if([true, false].indexOf(where_val) >= 0){
+                        node.right = new alasql.yy.NumValue({ value: where_val });
+                    } else if (where_val.toString().toUpperCase().includes('E') === false && !isNaN(where_val) && node.right instanceof alasql.yy.StringValue) {
                         node.right = new alasql.yy.NumValue({ value: where_val });
                     }
                 } else if (Array.isArray(node.right)) {
                     node.right.forEach((col, i) => {
                         const where_val = common_utils.autoCast(col.value);
-                        if (!isNaN(where_val) && col instanceof alasql.yy.StringValue) {
+                        if([true, false].indexOf(where_val) >= 0){
+                            node.right[i] = new alasql.yy.NumValue({ value: where_val });
+                        } else if (where_val.toString().toUpperCase().includes('E') === false && !isNaN(where_val) && col instanceof alasql.yy.StringValue) {
                             node.right[i] = new alasql.yy.NumValue({ value: where_val });
                         }
                     });
