@@ -12,6 +12,7 @@ const util = require('util');
 const cb_insert_insert = util.callbackify(insert.insert);
 const search = require('../data_layer/search').search;
 const update = require('../data_layer/update').update;
+const cb_update_update = util.callbackify(update);
 const delete_translator = require('./deleteTranslator').convertDelete;
 const alasql = require('alasql');
 const op_auth = require('../utility/operation_authorization');
@@ -129,7 +130,7 @@ function processAST(json_message, parsed_sql_object, callback) {
                 sql_function = convertInsert;
                 break;
             case 'update':
-                sql_function = update;
+                sql_function = cb_update_update;
                 break;
             case 'delete':
                 sql_function = delete_translator;
@@ -232,12 +233,10 @@ function createDataObjects(columns, values) {
                     throw "cannot use a column in insert value";
                 }
 
-                if ("funcid" in value) {
-                    const func_val = 'func_val';
-                    const final_value = alasql(`SELECT ${value.toString()} AS [${func_val}]`);
-                    record[columns[x]] = final_value[0][func_val];
-                } else {
+                if("value" in value){
                     record[columns[x]] = value.value;
+                } else{
+                    record[columns[x]] = alasql.compile(`SELECT ${value.toString()} AS [${terms.FUNC_VAL}] FROM ?`);
                 }
             });
 

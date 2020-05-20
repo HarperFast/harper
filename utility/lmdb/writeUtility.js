@@ -54,6 +54,34 @@ function insertRecords(env, hash_attribute, write_attributes , records){
             let cast_hash_value = hdb_utils.autoCast(record[hash_attribute]);
             let primary_key = record[hash_attribute].toString();
 
+            for (let x = 0; x < write_attributes.length; x++){
+                let attribute = write_attributes[x];
+
+                if(attribute === hash_attribute){
+                    continue;
+                }
+
+                let value = record[attribute];
+                if(typeof value === 'function'){
+                    let value_results = value([[{}]]);
+                    if(Array.isArray(value_results)){
+                        value = value_results[0][hdb_terms.FUNC_VAL];
+                        record[attribute] = value;
+                    }
+                }
+
+                value = common.convertKeyValueToWrite(value, env.dbis[attribute][lmdb_terms.DBI_DEFINITION_NAME].key_type);
+                if(value !== null) {
+                    //LMDB has a 511 byte limit for keys, so we return null if the byte size is larger than 511 to not index that value
+                    if(typeof value === 'string' && Buffer.byteLength(value) > MAX_BYTE_SIZE){
+                        let key = `${attribute}/${primary_key}`;
+                        txn.putString(env.dbis[lmdb_terms.BLOB_DBI_NAME], key, value);
+                    }else {
+                        txn.putString(env.dbis[attribute], value, primary_key);
+                    }
+                }
+            }
+
             // with the flag noOverwrite: true we can force lmdb to throw an error if the key already exists.
             // this allows us to auto check if the row already exists
             try {
@@ -67,22 +95,6 @@ function insertRecords(env, hash_attribute, write_attributes , records){
                 }
             }
 
-            for (let x = 0; x < write_attributes.length; x++){
-                let attribute = write_attributes[x];
-
-                if (attribute !== hash_attribute) {
-                    let value = common.convertKeyValueToWrite(record[attribute], env.dbis[attribute][lmdb_terms.DBI_DEFINITION_NAME].key_type);
-                    if(value !== null) {
-                        //LMDB has a 511 byte limit for keys, so we return null if the byte size is larger than 511 to not index that value
-                        if(typeof value === 'string' && Buffer.byteLength(value) > MAX_BYTE_SIZE){
-                            let key = `${attribute}/${primary_key}`;
-                            txn.putString(env.dbis[lmdb_terms.BLOB_DBI_NAME], key, value);
-                        }else {
-                            txn.putString(env.dbis[attribute], value, primary_key);
-                        }
-                    }
-                }
-            }
             result.written_hashes.push(cast_hash_value);
         }
 
@@ -170,6 +182,15 @@ function updateRecords(env, hash_attribute, write_attributes , records){
                     continue;
                 }
                 let existing_value = existing_record[key];
+
+                //
+                if(typeof value === 'function'){
+                    let value_results = value([[existing_record]]);
+                    if(Array.isArray(value_results)){
+                        value = value_results[0][hdb_terms.FUNC_VAL];
+                        record[key] = value;
+                    }
+                }
 
                 let str_new_value = common.convertKeyValueToWrite(value, dbi[lmdb_terms.DBI_DEFINITION_NAME].key_type);
                 let str_existing_value = common.convertKeyValueToWrite(existing_value, dbi[lmdb_terms.DBI_DEFINITION_NAME].key_type);

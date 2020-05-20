@@ -475,6 +475,8 @@ const SEARCH_WILDCARDS = ['*', '%'];
 
 const UNAUTHORIZED_PERMISSION_NAME = 'unauthorized_access';
 
+const FUNC_VAL = 'func_val';
+
 module.exports = {
     LOCAL_HARPERDB_OPERATIONS,
     HDB_SUPPORT_ADDRESS,
@@ -566,5 +568,6 @@ module.exports = {
     PermissionResponseObject,
     PermissionAttributeResponseObject,
     UNAUTHORIZED_PERMISSION_NAME,
-    SEARCH_WILDCARDS
+    SEARCH_WILDCARDS,
+    FUNC_VAL
 };
