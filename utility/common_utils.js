@@ -216,7 +216,7 @@ function autoCast(data){
 
     // Try to cast it to a number
     let to_number;
-    let contains_e = data.includes('e');
+    let contains_e = data.toUpperCase().includes('E');
     if (contains_e === false && (to_number = +data) == to_number) {
         return to_number;
     }
