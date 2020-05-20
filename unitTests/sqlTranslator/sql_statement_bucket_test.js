@@ -121,6 +121,55 @@ let TEST_SELECT_JSON = {
     }
 };
 
+let TEST_SELECT_CROSS_SCHEMA_JOIN_JSON = {
+    "columns": [
+        {
+            "columnid": "id",
+            "tableid": "d"
+        },
+        {
+            "columnid": "name",
+            "tableid": "d"
+        },
+        {
+            "columnid": "breed",
+            "tableid": "d"
+        },
+        {
+            "columnid": "owner_name",
+            "tableid": "o"
+        }
+    ],
+    "from": [
+        {
+            "databaseid": "animals",
+            "tableid": "dogs",
+            "as": "d"
+        }
+    ],
+    "joins": [
+        {
+            "joinmode": "INNER",
+            "table": {
+                "databaseid": "people",
+                "tableid": "owners"
+            },
+            "as": "o",
+            "on": {
+                "left": {
+                    "columnid": "id",
+                    "tableid": "d"
+                },
+                "op": "=",
+                "right": {
+                    "columnid": "id",
+                    "tableid": "o"
+                }
+            }
+        }
+    ]
+}
+
 //This AST includes a column in the where clause that is not in the SELECT - this is important to test!
 let TEST_COMPLEX_AST = {
     "columns": [
@@ -221,6 +270,12 @@ let TEST_SELECT = new alasql.yy.Select(TEST_SELECT_JSON);
 
 let SCHEMA_NAME = 'dev';
 let TABLE_NAME = 'dog';
+
+let TEST_CROSS_SCHEMA_SELECT = new alasql.yy.Select(TEST_SELECT_CROSS_SCHEMA_JOIN_JSON);
+let SCHEMA_NAME_1 = 'animals';
+let TABLE_NAME_1 = 'dogs';
+let SCHEMA_NAME_2 = 'people';
+let TABLE_NAME_2 = 'owners';
 
 /*
     This is a simple, naive clone implementation.  It should never, ever! be used in prod.
@@ -331,11 +386,26 @@ describe('Test sql_statement_bucket Class', () => {
             let getSelectAttributes = sql_statement_rewire.__get__('getSelectAttributes');
             let statement = new Map();
             let table_lookup = new Map();
-            getSelectAttributes(TEST_SELECT, statement, table_lookup);
+            let schema_lookup = new Map();
+            getSelectAttributes(TEST_SELECT, statement, table_lookup, schema_lookup);
             assert.equal(statement.get(SCHEMA_NAME).get(TABLE_NAME).length, 2);
             assert.equal(Array.from(statement.get(SCHEMA_NAME).keys()).length, 1);
             assert.equal(Array.from(statement.keys()).length, 1);
         });
+
+        it('Nominal, pull attributes in Select statement with cross schema join', function () {
+            let getSelectAttributes = sql_statement_rewire.__get__('getSelectAttributes');
+            let statement = new Map();
+            let table_lookup = new Map();
+            let schema_lookup = new Map();
+            getSelectAttributes(TEST_CROSS_SCHEMA_SELECT, statement, table_lookup, schema_lookup);
+            assert.equal(statement.get(SCHEMA_NAME_1).get(TABLE_NAME_1).length, 3);
+            assert.equal(Array.from(statement.get(SCHEMA_NAME_1).keys()).length, 1);
+            assert.equal(statement.get(SCHEMA_NAME_2).get(TABLE_NAME_2).length, 1);
+            assert.equal(Array.from(statement.get(SCHEMA_NAME_2).keys()).length, 1);
+            assert.equal(Array.from(statement.keys()).length, 2);
+        });
+
         it('Pull attributes from insert statement with no table clause', function () {
             let getSelectAttributes = sql_statement_rewire.__get__('getSelectAttributes');
             let copy = clone(TEST_UPDATE_JSON);
@@ -343,7 +413,8 @@ describe('Test sql_statement_bucket Class', () => {
             let temp_update = new alasql.yy.Select(copy);
             let statement = new Map();
             let table_lookup = new Map();
-            getSelectAttributes(temp_update, statement, table_lookup);
+            let schema_lookup = new Map();
+            getSelectAttributes(temp_update, statement, table_lookup, schema_lookup);
             // No table was defined, so the returned value should be empty
             assert.equal(statement.get(SCHEMA_NAME), undefined);
         });
@@ -360,7 +431,8 @@ describe('Test sql_statement_bucket Class', () => {
             let temp_select = new alasql.yy.Select(test_copy);
             let affected_attributes = new Map();
             let table_lookup = new Map();
-            getRecordAttributesAST(temp_select, affected_attributes, table_lookup);
+            let schema_lookup = new Map();
+            getRecordAttributesAST(temp_select, affected_attributes, table_lookup, schema_lookup);
             let all_tables = new Map();
             let lookups = new Map();
             let attributes = new Map();
@@ -426,6 +498,67 @@ describe('Test sql_statement_bucket Class', () => {
             });
         });
 
+        it('Nominal case, valid AST with CROSS SCHEMA JOIN ', function () {
+            let getRecordAttributesAST = sql_statement_rewire.__get__('getRecordAttributesAST');
+            let test_copy = clone(TEST_CROSS_SCHEMA_SELECT);
+            let temp_select = new alasql.yy.Select(test_copy);
+            let affected_attributes = new Map();
+            let table_lookup = new Map();
+            let schema_lookup = new Map();
+            getRecordAttributesAST(temp_select, affected_attributes, table_lookup, schema_lookup);
+            let all_tables = new Map();
+            let lookups = new Map();
+            let attributes = new Map();
+            let schemas = {
+                [test_copy.from[0].tableid]: test_copy.from[0].databaseid,
+                [test_copy.joins[0].table.tableid]: test_copy.joins[0].table.databaseid
+            }
+            test_copy.from.forEach((table)=>{
+                if(!all_tables.has(table.tableid)) {
+                    all_tables.set(table.tableid, null);
+                }
+                if(table.as) {
+                    if(!lookups.has(table.as)) {
+                        lookups.set(table.as, table.tableid);
+                    }
+                }
+            });
+            test_copy.joins.forEach((join)=>{
+                if(!all_tables.has(join.table.tableid)) {
+                    all_tables.set(join.table.tableid, null);
+                }
+                if(join.table.as) {
+                    if(!lookups.has(join.table.as)) {
+                        lookups.set(join.table.as, join.table.tableid);
+                    }
+                }
+            });
+            test_copy.columns.forEach((col) => {
+                let table_name = col.tableid;
+                if(lookups.has(col.tableid)) {
+                    table_name = lookups.get(table_name);
+                }
+                //Keeping this more simple than the function in operation_auth.  We are always dealing with the same schema
+                // in this test, so limiting this to a [table, [attributes]] map.
+                if(attributes.has(table_name)) {
+                    attributes.get(table_name).push(col.columnid);
+                } else {
+                    attributes.set(table_name, [col.columnid]);
+                }
+            });
+
+            // assert all aliases are accounted for in table lookup
+            lookups.forEach(function (value, key) {
+                assert.equal(table_lookup.has(key), true, `table_lookup does not have key ${key}`);
+            });
+            //assert all columns are accounted for
+            attributes.forEach(function (value, key, obj) {
+                // assert all tables are accounted for
+                assert.equal(affected_attributes.get(schemas[key]).has(key), true, `attributes does not contain key ${key}`);
+                assert.equal(value.length, affected_attributes.get(schemas[key]).get(key).length, `expected attribute length ${value.length}, actual: ${affected_attributes.get(schemas[key]).get(key).length}`);
+            });
+        });
+
         it('Nominal case, INVALID table in WHERE, reasonably complex AST with attributes. ', function () {
             let getRecordAttributesAST = sql_statement_rewire.__get__('getRecordAttributesAST');
             let test_copy = clone(TEST_COMPLEX_AST);
@@ -434,7 +567,8 @@ describe('Test sql_statement_bucket Class', () => {
             let temp_select = new alasql.yy.Select(test_copy);
             let affected_attributes = new Map();
             let table_lookup = new Map();
-            getRecordAttributesAST(temp_select, affected_attributes, table_lookup);
+            let schema_lookup = new Map();
+            getRecordAttributesAST(temp_select, affected_attributes, table_lookup, schema_lookup);
             assert.equal(logger_info_spy.calledOnce, true, 'invalid table was not logged');
             assert.equal(logger_info_spy.args[0], `table specified as ${invalid_table} not found.`, 'invalid table was not logged');
         })
