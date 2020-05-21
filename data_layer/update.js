@@ -12,7 +12,6 @@ const util = require('util');
 const p_get_table_schema = util.promisify(global_schema.getTableSchema);
 const p_search = util.promisify(search.search);
 
-//const cb_insert_update = util.callbackify(write.update);
 const terms = require('../utility/hdbTerms');
 const hdb_utils = require('../utility/common_utils');
 const env = require('../utility/environment/environmentManager');
