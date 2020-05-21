@@ -13,6 +13,7 @@ const env = require('../utility/environment/environmentManager');
 // Leave this unused signalling import here. Due to circular dependencies we bring it in early to load it before the bridge
 const harperBridge = require('./harperBridge/harperBridge');
 const global_schema = require('../utility/globalSchema');
+const log = require('../utility/logging/harper_logger');
 
 const p_global_schema = util.promisify(global_schema.getTableSchema);
 const p_schema_to_global = util.promisify(global_schema.setSchemaDataToGlobal);
@@ -71,7 +72,13 @@ async function validation(write_object){
     write_object.records.forEach((record)=>{
 
         if (is_update && hdb_utils.isEmptyOrZeroLength(record[hash_attribute])) {
+            log.error(`a valid hash attribute must be provided with update record: ${JSON.stringify(record)}`);
             throw new Error('a valid hash attribute must be provided with update record');
+        }
+
+        if (!hdb_utils.isEmptyOrZeroLength(record[hash_attribute]) && (record[hash_attribute] === "null" || record[hash_attribute] === "undefined")) {
+            log.error(`a valid hash value must be provided with ${write_object.operation} record: ${JSON.stringify(record)}`);
+            throw new Error(`"${record[hash_attribute]}" is not a valid hash attribute value`);
         }
 
         if (!hdb_utils.isEmpty(record[hash_attribute]) && record[hash_attribute] !== '' && dups.has(hdb_utils.autoCast(record[hash_attribute]))){

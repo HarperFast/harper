@@ -56,6 +56,11 @@ function insertUpdateValidate(write_object){
             throw new Error('a valid hash attribute must be provided with update record, check log for more info');
         }
 
+        if (!hdb_utils.isEmptyOrZeroLength(record[hash_attribute]) && (record[hash_attribute] === "null" || record[hash_attribute] === "undefined")) {
+            log.error(`a valid hash value must be provided with ${write_object.operation} record: ${JSON.stringify(record)}`);
+            throw new Error(`Invalid hash value: '${record[hash_attribute]}' is not a valid hash attribute value, check log for more info`);
+        }
+
         if (!hdb_utils.isEmpty(record[hash_attribute]) && record[hash_attribute] !== '' && dups.has(hdb_utils.autoCast(record[hash_attribute]))){
             record.skip = true;
         }
