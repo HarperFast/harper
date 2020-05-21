@@ -1,7 +1,6 @@
 "use strict";
 
 const search = require('../data_layer/search');
-const async = require('async');
 const global_schema = require('../utility/globalSchema');
 const logger = require('../utility/logging/harper_logger');
 const write = require('./insert');
@@ -9,7 +8,10 @@ const clone = require('clone');
 const alasql = require('alasql');
 const alasql_function_importer = require('../sqlTranslator/alasqlFunctionImporter');
 const util = require('util');
-const cb_insert_update = util.callbackify(write.update);
+
+const p_get_table_schema = util.promisify(global_schema.getTableSchema);
+const p_search = util.promisify(search.search);
+
 const terms = require('../utility/hdbTerms');
 const hdb_utils = require('../utility/common_utils');
 const env = require('../utility/environment/environmentManager');
@@ -30,13 +32,9 @@ const SQL_UPDATE_ERROR_MSG = 'There was a problem performing this update. Please
  * @param {} callback
  * @return
  */
-function update(statement, callback){
-    global_schema.getTableSchema(statement.table.databaseid, statement.table.tableid, (err, table_info)=>{
-        if(err){
-            callback(err);
-            return;
-        }
-
+async function update(statement){
+    try {
+        let table_info = await p_get_table_schema(statement.table.databaseid, statement.table.tableid);
         let update_record = createUpdateRecord(statement.columns);
 
         //convert this update statement to a search capable statement
@@ -48,22 +46,12 @@ function update(statement, callback){
         let select_string = `SELECT ${table_info.hash_attribute} FROM ${from.toString()} ${where_string}`;
         let search_statement = alasql.parse(select_string).statements[0];
 
-        async.waterfall([
-            search.search.bind(null, search_statement),
-            buildUpdateRecords.bind(null, update_record),
-            updateRecords.bind(null, table_clone)
-        ], (waterfall_err, results) => {
-            if (waterfall_err) {
-                if (waterfall_err.hdb_code) {
-                    return callback(null, waterfall_err.message);
-                }
-                return callback(waterfall_err);
-            }
-
-            callback(null, results);
-        });
-    });
-
+        let records = await p_search(search_statement);
+        let new_records = buildUpdateRecords(update_record, records);
+        return await updateRecords(table_clone, new_records);
+    } catch(e){
+        throw e;
+    }
 }
 
 /**
@@ -75,13 +63,10 @@ function createUpdateRecord(columns){
         let record = {};
 
         columns.forEach((column)=>{
-            if ("funcid" in column.expression) {
-                const func_val = 'func_val';
-                const func_value = alasql(`SELECT ${column.expression.toString()} AS [${func_val}]`);
-                record[column.column.columnid] = func_value[0][func_val];
-            } else {
-                //we want to check to validate that the value attribute exists on column.expression, if it doesn't we use the columnid
-                record[column.column.columnid] = "value" in column.expression ? column.expression.value : column.expression.columnid;
+            if("value" in column.expression){
+                record[column.column.columnid] = column.expression.value;
+            } else{
+                record[column.column.columnid] = alasql.compile(`SELECT ${column.expression.toString()} AS [${terms.FUNC_VAL}] FROM ?`);
             }
         });
 
@@ -97,19 +82,18 @@ function createUpdateRecord(columns){
  * @method buildUpdateRecords
  * @param {} update_record
  * @param {} records
- * @param {} callback
  * @return
  */
-function buildUpdateRecords(update_record, records, callback){
+function buildUpdateRecords(update_record, records){
     if(!records || records.length === 0){
-        return callback({hdb_code:1, message: "update statement found no records to update"});
+        throw new Error("update statement found no records to update");
     }
 
     let new_records = records.map((record)=>{
         return Object.assign(record, update_record);
     });
 
-    callback(null, new_records);
+    return new_records;
 }
 
 /**
@@ -117,10 +101,9 @@ function buildUpdateRecords(update_record, records, callback){
  * @method updateRecords
  * @param {} table
  * @param {} records
- * @param {} callback
  * @return
  */
-function updateRecords(table, records, callback){
+async function updateRecords(table, records){
     let update_object = {
         operation:'update',
         schema: table.databaseid,
@@ -128,11 +111,8 @@ function updateRecords(table, records, callback){
         records:records
     };
 
-    cb_insert_update(update_object, (err, res) => {
-        if (err) {
-            callback(err);
-            return;
-        }
+    try {
+        let res = await write.update(update_object);
 
         // With non SQL CUD actions, the `post` operation passed into OperationFunctionCaller would send the transaction to the cluster.
         // Since we don`t send Most SQL options to the cluster, we need to explicitly send it.
@@ -168,6 +148,8 @@ function updateRecords(table, records, callback){
             logger.error(`Error delete new_attributes from update response: ${delete_err}`);
         }
 
-        callback(null, res);
-    });
+        return res;
+    } catch(e){
+        throw e;
+    }
 }

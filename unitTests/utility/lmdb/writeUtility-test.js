@@ -11,6 +11,8 @@ const test_utils = require('../../test_utils');
 const fs = require('fs-extra');
 const LMDB_TEST_ERRORS = require('../../commonTestErrors').LMDB_ERRORS_ENUM;
 const sinon = require('sinon');
+const alasql = require('alasql');
+const hdb_terms = require('../../../utility/hdbTerms');
 
 const TIMESTAMP = Date.now();
 
@@ -176,7 +178,32 @@ describe("Test writeUtility module", ()=>{
             txn.close();
         });
 
-        //TODO validate records exist in all indices
+        it("test insert with alasql function", ()=>{
+            let now_func = alasql.compile(`SELECT NOW() AS [${hdb_terms.FUNC_VAL}] FROM ?`);
+            let rando_func = alasql.compile(`SELECT RANDOM() AS [${hdb_terms.FUNC_VAL}] FROM ?`);
+
+            let record = {
+                id:2000,
+                timestamp: now_func,
+                rando: rando_func
+            };
+
+            let result = test_utils.assertErrorSync(write_utility.insertRecords, [env, HASH_ATTRIBUTE_NAME, ['id', 'timestamp', 'rando'], [record]], undefined);
+
+            assert.deepStrictEqual(result, {written_hashes: [record.id], skipped_hashes: []});
+
+            let results = test_utils.assertErrorSync(search_util.iterateDBI, [env, 'timestamp'], undefined, 'timestamp iterate');
+            let time_stamp_dbi = {[record.timestamp]: [record.id.toString()]};
+            assert.deepStrictEqual(results, Object.assign(Object.create(null), time_stamp_dbi));
+
+            results = test_utils.assertErrorSync(search_util.iterateDBI, [env, 'rando'], undefined, 'rando iterate');
+            let rando_dbi = {[record.rando]: [record.id.toString()]};
+            assert.deepStrictEqual(results, Object.assign(Object.create(null), rando_dbi));
+
+            let records = test_utils.assertErrorSync(search_util.searchAll, [env, HASH_ATTRIBUTE_NAME, Object.keys(record)], undefined);
+            let expected = [record];
+            assert.deepEqual(records, expected);
+        });
     });
 
     describe("Test updateRecords function", ()=>{
@@ -352,6 +379,45 @@ describe("Test writeUtility module", ()=>{
             key = txn.cursor.goToKey(`json/${record.id}`);
             assert.deepStrictEqual(key, null);
             txn.close();
+        });
+
+        it("test update with alasql function", ()=>{
+            let now_func = alasql.compile(`SELECT NOW() AS [${hdb_terms.FUNC_VAL}] FROM ?`);
+            let rando_func = alasql.compile(`SELECT RANDOM() AS [${hdb_terms.FUNC_VAL}] FROM ?`);
+
+            let record = {
+                id:2000,
+                timestamp: now_func,
+                rando: rando_func
+            };
+
+            let result = test_utils.assertErrorSync(write_utility.insertRecords, [env, HASH_ATTRIBUTE_NAME, ['id', 'timestamp', 'rando'], [record]], undefined);
+
+            assert.deepStrictEqual(result, {written_hashes: [record.id], skipped_hashes: []});
+
+            let results = test_utils.assertErrorSync(search_util.iterateDBI, [env, 'timestamp'], undefined, 'timestamp iterate');
+            let time_stamp_dbi = {[record.timestamp]: [record.id.toString()]};
+            assert.deepStrictEqual(results, Object.assign(Object.create(null), time_stamp_dbi));
+
+            results = test_utils.assertErrorSync(search_util.iterateDBI, [env, 'rando'], undefined, 'rando iterate');
+            let rando_dbi = {[record.rando]: [record.id.toString()]};
+            assert.deepStrictEqual(results, Object.assign(Object.create(null), rando_dbi));
+
+            let records = test_utils.assertErrorSync(search_util.searchByHash, [env, HASH_ATTRIBUTE_NAME, Object.keys(record), record.id.toString()], undefined);
+            assert.deepEqual(records, record);
+
+            rando_func = alasql.compile(`SELECT rando + 1 AS [${hdb_terms.FUNC_VAL}] FROM ?`);
+
+            record.rando = rando_func;
+            result = test_utils.assertErrorSync(write_utility.updateRecords, [env, HASH_ATTRIBUTE_NAME, ['id', 'timestamp', 'rando'], [record]], undefined);
+            assert.deepStrictEqual(result, {written_hashes: [record.id], skipped_hashes: []});
+
+            results = test_utils.assertErrorSync(search_util.iterateDBI, [env, 'rando'], undefined, 'rando iterate');
+            rando_dbi = {[record.rando]: [record.id.toString()]};
+            assert.deepStrictEqual(results, Object.assign(Object.create(null), rando_dbi));
+
+            records = test_utils.assertErrorSync(search_util.searchByHash, [env, HASH_ATTRIBUTE_NAME, Object.keys(record), record.id.toString()], undefined);
+            assert.deepEqual(records, record);
         });
 
     });
