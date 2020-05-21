@@ -6,6 +6,8 @@ const insert_validator = require('../../../validation/insertValidator');
 
 module.exports = insertUpdateValidate;
 
+//IMPORTANT - This code is the same code as the async validation() function in data_layer/insert - make sure any changes
+// below are also made there.  This is to resolve a circular dependency.
 /**
  * Takes an insert/update object and validates attributes, also looks for dups and get a list of all attributes from the record set
  * @param {Object} write_object

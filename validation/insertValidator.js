@@ -22,10 +22,6 @@ const constraints = {
                     if (!attribute_name || attribute_name.length === 0 || INVALID_ATTRIBUTE_NAMES[attribute_name] !== undefined) {
                         return {format: {message: `Invalid attribute name: '${attribute_name}'`}};
                     }
-                    // if (record[attribute_name] === 'null' || record[attribute_name] === 'undefined') {
-                    //     log.error(`a valid hash value must be provided with update record: ${JSON.stringify(record)}`);
-                    //     return {format: {message: `Invalid hash value: '${record[hash_attribute]}' is not a valid hash attribute value, check log for more info`}};
-                    // }
                 }
             }
             return null;

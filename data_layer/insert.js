@@ -28,7 +28,9 @@ module.exports = {
     validation
 };
 
-// TODO: We have duplicate validation code, here and in the bridge.
+
+//IMPORTANT - This validation function is the async version of the code in harperBridge/bridgeUtility/insertUpdateValidate.js
+// make sure any changes below are also made there. This is to resolve a circular dependency.
 /**
  *  Takes an insert/update object and validates attributes, also looks for dups and get a list of all attributes from the record set
  * @param {Object} write_object
