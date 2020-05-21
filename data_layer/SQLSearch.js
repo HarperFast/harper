@@ -1040,6 +1040,9 @@ class SQLSearch {
 
         if (this.statement.order) {
             this.statement.order.forEach(ob => {
+                if (ob.is_ordinal) {
+                    return;
+                }
                 const found = this.statement.columns.filter(col => {
                     const col_expression = col.aggregatorid ? col.expression : col;
                     const col_alias = col.aggregatorid ? col.as_orig : col_expression.as_orig;
