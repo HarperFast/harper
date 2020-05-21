@@ -9466,7 +9466,7 @@
 								],
 								"body": {
 									"mode": "raw",
-									"raw": "{\n  \"operation\":\"sql\",\n  \"sql\": \"INSERT INTO dev.sql_function (id, rando, week_day) VALUES (1, RANDOM(), date_format(NOW(), 'dddd')), (2, RANDOM(), date_format(NOW(), 'dddd'))\"\n}\n",
+									"raw": "{\n  \"operation\":\"sql\",\n  \"sql\": \"INSERT INTO dev.sql_function (id, rando, week_day) VALUES (1, FLOOR(RANDOM() * (10 - 1)) + 1, date_format(NOW(), 'dddd')), (2, FLOOR(RANDOM() * (10 - 1)) + 1, date_format(NOW(), 'dddd'))\"\n}\n",
 									"options": {
 										"raw": {}
 									}
@@ -9498,12 +9498,12 @@
 											"    pm.collectionVariables.set(\"sql_function_data\", jsonData);",
 											"    pm.expect(jsonData.length).to.eql(2);",
 											"",
-											"    jsonData.forEach(record=>{",
+											"    jsonData.forEach(record => {",
 											"        pm.expect(typeof record.week_day).to.eql(\"string\");",
 											"        pm.expect(typeof record.rando).to.eql(\"number\");",
+											"        pm.expect(record.rando >= 1 && record.rando <=10).to.eql(true);",
 											"    });",
 											"",
-											"    ",
 											"});"
 										],
 										"type": "text/javascript"
@@ -9673,8 +9673,8 @@
 											"",
 											"pm.test(\"validate rando\", function () {",
 											"    let jsonData = pm.response.json();",
-											"    pm.expect(jsonData[0].rando > 1).to.eql(true);",
-											"    pm.expect(jsonData[1].rando > 1).to.eql(true);",
+											"    pm.expect(jsonData[0].rando >= 10 && jsonData[0].rando <= 100).to.eql(true);",
+											"    pm.expect(jsonData[1].rando >= 10 && jsonData[1].rando <= 100).to.eql(true);",
 											"});",
 											"",
 											"pm.test(\"validate upper_week_day\", function () {",
@@ -31747,13 +31747,13 @@
 	],
 	"variable": [
 		{
-			"id": "f59dbb14-0ec4-44b5-a675-33e7b48f0d87",
+			"id": "a64becce-cc62-4aca-a8fd-8817da7b6960",
 			"key": "insert_timestamp",
 			"value": "0",
 			"type": "string"
 		},
 		{
-			"id": "184b03da-00df-48e0-8439-0e9d08945be2",
+			"id": "be5d062b-8a83-4982-aa59-1e3c2aabf152",
 			"key": "sql_function_data",
 			"value": "",
 			"type": "string"
