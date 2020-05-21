@@ -9665,20 +9665,36 @@
 											"    pm.response.to.have.status(200);",
 											"});",
 											"",
-											"pm.test(\"validate select results\", function () {",
-											"    var jsonData = pm.response.json();",
-											"    let orig_data = pm.collectionVariables.get(\"sql_function_data\");",
+											"var jsonData = pm.response.json();",
+											"let orig_data = pm.collectionVariables.get(\"sql_function_data\");",
+											"",
+											"pm.test(\"validate select results length\", function () {",
+											"    ",
 											"    pm.expect(jsonData.length).to.eql(2);",
+											"    ",
+											"});",
 											"",
-											"    pm.expect(jsonData[0].rando === orig_data[0].rando *10).to.eql(true);",
-											"    pm.expect(jsonData[1].rando === orig_data[1].rando *10).to.eql(true);",
+											"pm.test(\"validate rando\", function () {",
+											"    var jsonData = pm.response.json();",
+											"let orig_data = pm.collectionVariables.get(\"sql_function_data\");",
+											"    pm.expect(jsonData[0].rando === orig_data[0].rando * 10).to.eql(true);",
+											"    pm.expect(jsonData[1].rando === orig_data[1].rando * 10).to.eql(true);",
+											"});",
 											"",
+											"pm.test(\"validate upper_week_day\", function () {",
+											"    var jsonData = pm.response.json();",
+											"let orig_data = pm.collectionVariables.get(\"sql_function_data\");",
 											"    pm.expect(jsonData[0].upper_week_day === orig_data[0].week_day.toUpperCase()).to.eql(true);",
 											"    pm.expect(jsonData[1].upper_week_day === orig_data[1].week_day.toUpperCase()).to.eql(true);",
+											"});",
 											"",
+											"pm.test(\"validate week_day\", function () {",
+											"    var jsonData = pm.response.json();",
+											"let orig_data = pm.collectionVariables.get(\"sql_function_data\");",
 											"    pm.expect(jsonData[0].week_day === orig_data[0].week_day).to.eql(true);",
 											"    pm.expect(jsonData[1].week_day === orig_data[1].week_day).to.eql(true);",
-											"});"
+											"});",
+											""
 										],
 										"type": "text/javascript"
 									}
@@ -9688,7 +9704,7 @@
 									"script": {
 										"id": "85a67888-5f29-4663-8e0c-9dc08c2d10dd",
 										"exec": [
-											"setTimeout(() => { }, 100);"
+											"setTimeout(() => { }, 200);"
 										],
 										"type": "text/javascript"
 									}
@@ -31742,13 +31758,13 @@
 	],
 	"variable": [
 		{
-			"id": "7e7f632f-50a7-45c7-ad7b-2aa1b9b79e4a",
+			"id": "5d31559e-64ff-4988-ba9a-7504d826f3d1",
 			"key": "insert_timestamp",
 			"value": "0",
 			"type": "string"
 		},
 		{
-			"id": "8576593d-19db-4d43-bc94-fef92cd90e83",
+			"id": "99db67b3-476c-4f3d-97a4-4ca1e5e20cb8",
 			"key": "sql_function_data",
 			"value": "",
 			"type": "string"
