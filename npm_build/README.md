@@ -23,7 +23,7 @@
 npm install -g harperdb
 harperdb install
 ```
-HarperDB will prompt you for configuration options during install. HarperDB will automatically start at the end of the install.
+HarperDB will prompt you for configuration options during install.
 
 ## Starting HarperDB
 
