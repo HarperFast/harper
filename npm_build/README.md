@@ -11,7 +11,6 @@
 7. [HarperDB Studio](#harperdb-studio)
 8. [Need Help?](#need-help)
 
-**Please report your questions, comments and bugs to support@harperdb.io**
 ## Installing HarperDB
 **Prerequisites**
 1. Node.js 12 and npm
