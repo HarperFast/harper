@@ -80,3 +80,4 @@ support@harperdb.io
 [Documentation](https://docs.harperdb.io/)
 
 **Thank You to Rajat Kumar rajat.io for allowing us to take over this package name.  Find his harperdb client at https://www.npmjs.com/package/harperdb-client**
+
