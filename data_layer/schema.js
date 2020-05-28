@@ -168,7 +168,12 @@ async function dropAttribute(drop_attribute_object) {
         throw validation_error;
     }
 
-    if(drop_attribute_object.attribute === global.hdb_schema[drop_attribute_object.schema][drop_attribute_object.table].hash_attribute) {
+    let invalid_schema_table_msg = hdb_util.checkSchemaTableExist(drop_attribute_object.schema, drop_attribute_object.table);
+    if (invalid_schema_table_msg) {
+        throw invalid_schema_table_msg;
+    }
+
+    if (drop_attribute_object.attribute === global.hdb_schema[drop_attribute_object.schema][drop_attribute_object.table].hash_attribute) {
         throw new Error('You cannot drop a hash attribute');
     }
 
