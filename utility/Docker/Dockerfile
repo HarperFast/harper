@@ -1,26 +1,26 @@
-FROM node:10.17.0-alpine
+FROM node:12.16.2-alpine
 
 #Expose harperdb Default ports
 EXPOSE 9925 1111 31283
 
 #aplpine linux default shell is sh.
 #installing bash.
-RUN apk update && apk upgrade && apk add --no-cache bash && apk add --no-cache rsync && apk add --no-cache tini
+RUN apk update && apk upgrade && apk add --no-cache bash && apk add --no-cache g++ && apk add --no-cache make && apk add --no-cache python && apk add --no-cache rsync && apk add --no-cache tini
 
 #RUN apt-get update && apt-get -y upgrade && apt-get install -y rsync
 #COPY harperdb INIT script
 COPY --chown=node:node ./hdb_docker_init.sh /usr/local/bin/
 
 #COPY npm packed source code
-COPY --chown=node:node ./harperdb-2.0.0.tgz /usr/local/bin/
+#COPY --chown=node:node ./harperdb-2.0.0.tgz /usr/local/bin/
 
 #COPY entrypoint.sh
 COPY --chown=node:node ./entrypoint.sh /usr/local/bin/
 
-RUN npm config set unsafe-perm true && cd /usr/local/bin/ && npm install -g harperdb-2.0.0.tgz && npm install -g modclean && \
+RUN npm config set unsafe-perm true && cd /usr/local/bin/ && npm install -g harperdb && npm install -g modclean && \
    cd /usr/local/lib/node_modules/harperdb && npm dedupe && modclean -r -D node_modules && \
    npm remove -g modclean && rm -rf /usr/local/lib/node_modules/harperdb/node_modules/socketcluster/sample/ && \
-   rm -rf /usr/local/lib/node_modules/harperdb/node_modules/rxjs && npm cache clean --force && \
+   npm cache clean --force && \
    mkdir -p /opt/harperdb/hdb && chown -R node:node /opt/harperdb/hdb && chown -R node:node /usr/local/lib/node_modules/harperdb
 
 USER node
