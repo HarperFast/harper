@@ -1,9 +1,7 @@
 #!/bin/bash
 
 function=$1
-#password=$2
 args_num=$#
-##Array with all default values for HarperDB installation, will update array indexes for cli provided arguments in function arguments_parsing
 install_arguments=("--TC_AGREEMENT yes" "--HDB_ROOT /opt/harperdb/hdb" "--HTTP_PORT 9925" "--HTTPS_PORT 31283" "--HDB_ADMIN_USERNAME HDB_ADMIN" "--HDB_ADMIN_PASSWORD password" "--CLUSTERING_USERNAME cluster_user" "--CLUSTERING_PASSWORD password" "--CLUSTERING_PORT 1111" "--NODE_NAME docker_node")
 arg_vals=()
 args_helper=0
@@ -33,9 +31,6 @@ function arguments_help()
 
 function arguments_parsing()
 {
-##Assign values to provided arguments.
-##shift past first argument install
-#while $#(number of passed arguments) is greater than zero, the shift command decrements this process..
 while [[ $# -gt 0 ]]; 
 do
    case "$1" in
@@ -118,11 +113,9 @@ function clean_install()
   then
 	  harperdb_run
   else
-  ## remove default installation artifacts
    rm -rf /home/node/.harperdb/
    rm -rf /home/node/hdb_tmp/*
    echo "********* Cleaned Original install **************"
-## run install with new parameters provided by command line
    cd /home/node/
    harperdb $the_command_arguments
    fi
@@ -130,7 +123,6 @@ function clean_install()
 
 function harperdb_run()
 {
-## run harperdb in foreground to prevent container from closing.
     harperdb foreground
 }
 
@@ -140,14 +132,12 @@ function harperdb_run()
 #******************************************************#
 #                  Main Function                       #
 
-#passing arguments 1 to last to be parsed by arguments_parsing
-#arguments_parsing ${@:1}
 if [ $# -eq 0 ];
 then
    echo "Starting HarperDB"
    harperdb_run
 else
-#Check what function i.e install, register, addnode, think of other functions a docker user will need.
+
 case "$function" in
 "run") echo "Starting HarperDB"
     sh /usr/local/bin/hdb_docker_init.sh
