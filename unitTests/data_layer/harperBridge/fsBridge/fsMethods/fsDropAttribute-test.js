@@ -92,7 +92,7 @@ describe('Tests for file system module fsDropAttribute', () => {
 
         it('Test error is thrown if search by value returns nothing', async () => {
             fs_search_by_value_stub.resolves([]);
-            let test_err_result = await test_utils.testError(drop_attr_from_system(DROP_ATTR_OBJ_TEST), `Attribute ${DROP_ATTR_OBJ_TEST.attribute} was not found.`);
+            let test_err_result = await test_utils.testError(drop_attr_from_system(DROP_ATTR_OBJ_TEST), `Attribute '${DROP_ATTR_OBJ_TEST.attribute}' was not found in '${DROP_ATTR_OBJ_TEST.schema}.${DROP_ATTR_OBJ_TEST.table}'`);
 
             expect(test_err_result).to.be.true;
         });
