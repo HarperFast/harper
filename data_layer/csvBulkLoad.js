@@ -427,18 +427,24 @@ async function postCSVLoadFunction(fields, orig_bulk_msg, result, orig_req) {
         return result;
     }
 
+    if(orig_bulk_msg.data.length === 0){
+        return;
+    }
+
     let unparse_results = papa_parse.unparse(orig_bulk_msg.data,
         {
             header:true,
-            skipEmptyLines: true
+            skipEmptyLines: true,
+            columns: fields
         });
-
 
     transaction_msg.transaction = {
         operation: "csv_data_load",
+        action: orig_bulk_msg.action ? orig_bulk_msg.action : 'insert',
         schema: orig_bulk_msg.schema,
         table: orig_bulk_msg.table,
-        records: orig_bulk_msg.data
+        transact_to_cluster: orig_bulk_msg.transact_to_cluster,
+        data: unparse_results
     };
     if (orig_req) {
         socket_cluster_util.concatSourceMessageHeader(transaction_msg, orig_req);
