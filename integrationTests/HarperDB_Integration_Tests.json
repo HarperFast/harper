@@ -10430,6 +10430,154 @@
 					"response": []
 				},
 				{
+					"name": "select w/ where between",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "152aa505-192b-41c2-9ece-f875e7d80e14",
+								"exec": [
+									"pm.test(\"test 3 records returned\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.length).to.eql(3);",
+									"});",
+									"",
+									"pm.test(\"test rows have correct id\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    jsonData.forEach((row, i) => {",
+									"        pm.expect(row.id).to.eql(i + 1);",
+									"    })",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"value": true,
+									"type": "boolean"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"select * from dev.books WHERE id BETWEEN 1 AND 3 ORDER BY id\"\n}",
+							"options": {
+								"raw": {}
+							}
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "select w/ where not between",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "842fcb75-882e-4d84-938a-3b69a5a5bced",
+								"exec": [
+									"pm.test(\"test 47 records returned\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.length).to.eql(47);",
+									"});",
+									"",
+									"pm.test(\"test rows have correct id\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    jsonData.forEach((row, i) => {",
+									"        pm.expect(row.id).to.be.above(3);",
+									"    })",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"value": true,
+									"type": "boolean"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"select * from dev.books WHERE id NOT BETWEEN 1 AND 3 ORDER BY id\"\n}",
+							"options": {
+								"raw": {}
+							}
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
 					"name": "select w/ where value equals \"0\"",
 					"event": [
 						{
