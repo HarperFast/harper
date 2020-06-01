@@ -86,7 +86,7 @@ async function dropAttributeFromSystem(drop_attribute_obj) {
         let table_attributes = await search_by_value(search_obj);
         let attribute = table_attributes.filter(attr => attr[hdb_terms.SYSTEM_DEFAULT_ATTRIBUTE_NAMES.ATTR_ATTRIBUTE_KEY] === drop_attribute_obj.attribute);
         if (common_utils.isEmptyOrZeroLength(attribute)) {
-            throw new Error(`Attribute ${drop_attribute_obj.attribute} was not found.`);
+            throw new Error(`Attribute '${drop_attribute_obj.attribute}' was not found in '${drop_attribute_obj.schema}.${drop_attribute_obj.table}'`);
         }
 
         let id = attribute.map(attr => attr[hdb_terms.SYSTEM_DEFAULT_ATTRIBUTE_NAMES.ATTR_ID_KEY]);

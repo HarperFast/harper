@@ -89,7 +89,7 @@ async function dropAttributeFromSystem(drop_attr_obj) {
     try {
         let attributes = await fsSearchByValue(search_obj);
         if (!attributes || attributes.length < 1) {
-            throw new Error(`Attribute ${drop_attr_obj.attribute} was not found.`);
+            throw new Error(`Attribute '${drop_attr_obj.attribute}' was not found in '${drop_attr_obj.schema}.${drop_attr_obj.table}'`);
         }
 
         let delete_table_obj = {

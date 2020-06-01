@@ -185,13 +185,17 @@ class SQLSearch {
             if(!common_utils.isEmpty(node) && node.right) {
                 if (common_utils.isNotEmptyAndHasValue(node.right.value)) {
                     const where_val = common_utils.autoCast(node.right.value);
-                    if (!isNaN(where_val) && node.right instanceof alasql.yy.StringValue) {
+                    if([true, false].indexOf(where_val) >= 0){
+                        node.right = new alasql.yy.NumValue({ value: where_val });
+                    } else if (where_val.toString().toUpperCase().includes('E') === false && !isNaN(where_val) && node.right instanceof alasql.yy.StringValue) {
                         node.right = new alasql.yy.NumValue({ value: where_val });
                     }
                 } else if (Array.isArray(node.right)) {
                     node.right.forEach((col, i) => {
                         const where_val = common_utils.autoCast(col.value);
-                        if (!isNaN(where_val) && col instanceof alasql.yy.StringValue) {
+                        if([true, false].indexOf(where_val) >= 0){
+                            node.right[i] = new alasql.yy.NumValue({ value: where_val });
+                        } else if (where_val.toString().toUpperCase().includes('E') === false && !isNaN(where_val) && col instanceof alasql.yy.StringValue) {
                             node.right[i] = new alasql.yy.NumValue({ value: where_val });
                         }
                     });
@@ -1036,6 +1040,9 @@ class SQLSearch {
 
         if (this.statement.order) {
             this.statement.order.forEach(ob => {
+                if (ob.is_ordinal) {
+                    return;
+                }
                 const found = this.statement.columns.filter(col => {
                     const col_expression = col.aggregatorid ? col.expression : col;
                     const col_alias = col.aggregatorid ? col.as_orig : col_expression.as_orig;
@@ -1143,55 +1150,43 @@ class SQLSearch {
      * @private
      */
     async _simpleSQLQuery() {
+        let alias_map = this.statement.columns.reduce((acc, col) => {
+                if (col.as_orig && col.as_orig != col.columnid_orig) {
+                    acc[col.columnid_orig] = col.as_orig;
+                } else if (!acc[col.columnid_orig]) {
+                    acc[col.columnid_orig] = col.columnid_orig;
+                }
+                return acc;
+            }, {});
+
         const fetch_attributes_objs = this.fetch_attributes.reduce((acc, attr) => {
             const schema_table = `${attr.table.databaseid}_${attr.table.tableid}`;
             if (!acc[schema_table]) {
-                const hash_name = this.data[schema_table].__hash_name;
-                acc[schema_table] = {[hash_name]: null};
+                acc[schema_table] = {};
             }
-            acc[schema_table][attr.attribute] = null;
+            acc[schema_table][alias_map[attr.attribute]] = null;
             return acc;
         }, {});
 
         for (const attribute of this.fetch_attributes) {
             const schema_table = `${attribute.table.databaseid}_${attribute.table.tableid}`;
-            let hash_name = this.data[schema_table].__hash_name;
 
             let search_object = {
                 schema: attribute.table.databaseid,
                 table: attribute.table.tableid,
                 get_attributes: [attribute.attribute]
             };
-            let is_hash = false;
-
-            //check if this attribute is the hash attribute for a table, if it is we need to read the files from the __hdh_hash
-            // folder, otherwise pull from the value index
-            if (attribute.attribute === hash_name) {
-                is_hash = true;
-            }
 
             try {
                 search_object.search_attribute = attribute.attribute;
                 search_object.search_value = '*';
                 const matching_data = await harperBridge.getDataByValue(search_object);
 
-                if (is_hash) {
-                    for (const hash_val in matching_data) {
-                        if (!this.data[schema_table].__merged_data[hash_val]) {
-                            this.data[schema_table].__merged_data[hash_val] = Object.assign({}, fetch_attributes_objs[schema_table]);
-                            this.data[schema_table].__merged_data[hash_val][hash_name] = common_utils.autoCast(hash_val);
-                        }
-                    };
-                } else {
-                    for (const hash_val in matching_data) {
-                        if (!this.data[schema_table].__merged_data[hash_val]) {
-                            this.data[schema_table].__merged_data[hash_val] = Object.assign({}, fetch_attributes_objs[schema_table]);
-                            this.data[schema_table].__merged_data[hash_val][hash_name] = common_utils.autoCast(hash_val);
-                            this.data[schema_table].__merged_data[hash_val][attribute.attribute] = matching_data[hash_val][attribute.attribute];
-                        } else {
-                            this.data[schema_table].__merged_data[hash_val][attribute.attribute] = matching_data[hash_val][attribute.attribute];
-                        }
-                    };
+                for (const hash_val in matching_data) {
+                    if (!this.data[schema_table].__merged_data[hash_val]) {
+                        this.data[schema_table].__merged_data[hash_val] = Object.assign({}, fetch_attributes_objs[schema_table]);
+                    }
+                    this.data[schema_table].__merged_data[hash_val][alias_map[attribute.attribute]] = matching_data[hash_val][attribute.attribute];
                 }
             } catch (err) {
                 log.error('There was an error when processing this SQL operation.  Check your logs');

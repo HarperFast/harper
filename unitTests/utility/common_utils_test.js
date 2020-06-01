@@ -323,6 +323,38 @@ describe(`Test autoCast`, function(){
         let assert_object = {id:1, stuff: 'here'};
         assert.deepEqual(cu.autoCast(assert_object), assert_object);
     });
+
+    it(`Pass in number with e in it , string back`, function(){
+        assert.strictEqual(cu.autoCast("89e15636"), "89e15636");
+    });
+
+    it(`Pass in number with e in it , string back 2`, function(){
+        assert.strictEqual(cu.autoCast("3e+10"), "3e+10");
+    });
+
+    it(`Pass in number with e in it , string back 3`, function(){
+        assert.strictEqual(cu.autoCast("3e-10"), "3e-10");
+    });
+
+    it(`Pass in number with a in it , string back 3`, function(){
+        assert.strictEqual(cu.autoCast("3a-10"), "3a-10");
+    });
+
+    it(`Pass in number with E in it , string back`, function(){
+        assert.strictEqual(cu.autoCast("89E15636"), "89E15636");
+    });
+
+    it(`Pass in number with E in it , string back 2`, function(){
+        assert.strictEqual(cu.autoCast("3E+10"), "3E+10");
+    });
+
+    it(`Pass in number with E in it , string back 3`, function(){
+        assert.strictEqual(cu.autoCast("3E-10"), "3E-10");
+    });
+
+    it(`Pass in number with A in it , string back 3`, function(){
+        assert.strictEqual(cu.autoCast("3A-10"), "3A-10");
+    });
 });
 
 describe('Test escapeRawValue', function(){

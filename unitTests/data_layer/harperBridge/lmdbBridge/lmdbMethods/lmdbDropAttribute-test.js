@@ -118,7 +118,7 @@ describe('test lmdbDropAttribute module', ()=>{
         it('test attribute not found', async()=>{
             let drop_object = new DropAttributeObject('dev', 'test', 'faker');
             await test_utils.assertErrorAsync(drop_attribute_from_system, [drop_object],
-                new Error(`Attribute ${drop_object.attribute} was not found.`));
+                new Error(`Attribute '${drop_object.attribute}' was not found in '${drop_object.schema}.${drop_object.table}'`));
         });
 
         it('test drop temperature_str', async()=>{
