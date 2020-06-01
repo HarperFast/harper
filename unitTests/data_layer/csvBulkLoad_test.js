@@ -20,7 +20,6 @@ const logger = require('../../utility/logging/harper_logger');
 const env = require('../../utility/environment/environmentManager');
 const papa_parse = require('papaparse');
 const fs = require('fs-extra');
-const {promise} = require('alasql');
 const {inspect} = require('util');
 
 const VALID_CSV_DATA = "id,name,section,country,image\n1,ENGLISH POINTER,British and Irish Pointers and Setters,GREAT BRITAIN,http://www.fci.be/Nomenclature/Illustrations/001g07.jpg\n2,ENGLISH SETTER,British and Irish Pointers and Setters,GREAT BRITAIN,http://www.fci.be/Nomenclature/Illustrations/002g07.jpg\n3,KERRY BLUE TERRIER,Large and medium sized Terriers,IRELAND,\n";
@@ -185,58 +184,6 @@ describe('Test csvBulkLoad.js', () => {
             });
             assert.equal(response, 'successfully loaded 1 of 1 records', 'Did not get expected response message');
             csv_rewire.__set__('bulkLoad', bulk_load_stub_orig);
-        });
-    });
-
-    describe('Test callMiddleware', function () {
-        let test_msg = undefined;
-        let sandbox = sinon.createSandbox();
-        let callMiddleware = csv_rewire.__get__('callMiddleware');
-        let alasql_promise_stub = undefined;
-
-        beforeEach(function () {
-            test_msg = test_utils.deepClone(DATA_LOAD_MESSAGE);
-            test_msg.operation = hdb_terms.OPERATIONS_ENUM.csv_data_load;
-            test_msg.data = VALID_CSV_DATA;
-
-        });
-
-        afterEach(function () {
-            // Restore the promise
-            csv_rewire.__set__('promise', promise);
-        });
-
-        it("test nominal case, valid inputs", async function() {
-            let results = await callMiddleware(MIDDLEWARE_PARSE_PARAMETERS, VALID_CSV_DATA).catch( (e) => {
-                throw e;
-            });
-            assert.equal(results.length, 3, "Expeted array of length 3 back");
-        });
-
-        it("Test invalid parameter", async function() {
-            let results = await callMiddleware(null, VALID_CSV_DATA).catch( (e) => {
-                throw e;
-            });
-            assert.equal(results.length, 0, "Expeted array of length 0 back");
-        });
-
-        it("Test invalid data parameter", async function() {
-            let results = await callMiddleware(MIDDLEWARE_PARSE_PARAMETERS, null).catch( (e) => {
-                throw e;
-            });
-            assert.equal(results.length, 0, "Expeted array of length 0 back");
-        });
-
-        it("Test alasql throwing exception", async function() {
-            alasql_promise_stub = sandbox.stub().yields(new Error("OMG ERROR"));
-            csv_rewire.__set__('promise', alasql_promise_stub);
-            let excep = undefined;
-            try {
-                await callMiddleware(MIDDLEWARE_PARSE_PARAMETERS, VALID_CSV_DATA);
-            } catch(e) {
-                excep = e;
-            };
-            assert.equal((excep instanceof Error),true, "Expeted exception");
         });
     });
 
@@ -559,6 +506,8 @@ describe('Test csvBulkLoad.js', () => {
 
         it('Test parser is paused/resumed and callBulkLoad is called', async () => {
             results_fake.data = data_array_fake;
+            results_fake.meta = {};
+            results_fake.meta.fields = ["Column 1", "Column 2"];
             await insert_chunk_rewire(json_message_fake, insert_results_fake, reject_fake, results_fake, parser_fake);
 
             expect(console_info_spy).to.have.been.calledWith('parser pause');
@@ -720,7 +669,7 @@ describe('Test csvBulkLoad.js', () => {
             msg.transact_to_cluster = true;
             let msg_with_originator = test_utils.deepClone(json_message_fake);
             msg_with_originator.__originator = {ORIGINATOR_NAME: 111};
-            let result = postCSVLoadFunction(msg, expected_result, msg_with_originator );
+            let result = postCSVLoadFunction(["blah"], msg, expected_result, msg_with_originator );
             assert.strictEqual(post_to_cluster_stub.calledOnce, true, 'expected sendTranaction to be called');
         });
         it('nominal case, see not sent to cluster', async () => {

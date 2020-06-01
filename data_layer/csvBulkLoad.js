@@ -5,7 +5,6 @@ const validator = require('../validation/csvLoadValidator');
 const request_promise = require('request-promise-native');
 const hdb_terms = require('../utility/hdbTerms');
 const hdb_utils = require('../utility/common_utils');
-const {promise} = require('alasql');
 const logger = require('../utility/logging/harper_logger');
 const papa_parse = require('papaparse');
 const fs = require('fs-extra');
@@ -18,9 +17,7 @@ const op_func_caller = require('../utility/OperationFunctionCaller');
 const CSV_NO_RECORDS_MSG = 'No records parsed from csv file.';
 const TEMP_CSV_FILE = `tempCSVURLLoad.csv`;
 const TEMP_DOWNLOAD_DIR = `${env.get('HDB_ROOT')}/tmp`;
-const NEWLINE = '\n';
 const { schema_regex } = require('../validation/common_validators');
-const ALASQL_MIDDLEWARE_PARSE_PARAMETERS = 'SELECT * FROM CSV(?, {headers:true, separator:","})';
 const HIGHWATERMARK = 1024*1024*5;
 const ACCEPTABLE_URL_CONTENT_TYPE_ENUM = {
     'text/csv': true,
@@ -60,17 +57,16 @@ async function csvDataLoad(json_message) {
             data: []
         };
 
-        if(!Array.isArray(json_message.data)) {
-            // alasql csv parsing looks for the existence of at least 1 newline.  if not found, it will try to load a file which
-            // results in a swallowed error written to the console, so we cram a newline at the end to avoid that error.
-            if (json_message.data.indexOf(NEWLINE) < 0) {
-                json_message.data = json_message.data + NEWLINE;
-            }
-            converted_msg.data = await callMiddleware(ALASQL_MIDDLEWARE_PARSE_PARAMETERS, (Array.isArray(json_message.data) ? json_message.data : [json_message.data]));
-        } else {
-            converted_msg.data = json_message.data;
-        }
-        bulk_load_result = await op_func_caller.callOperationFunctionAsAwait(callBulkLoad, converted_msg, postCSVLoadFunction);
+        let parse_results = papa_parse.parse(json_message.data,
+            {
+                header: true,
+                skipEmptyLines: true,
+                dynamicTyping: true
+            });
+
+        converted_msg.data = parse_results.data;
+
+        bulk_load_result = await op_func_caller.callOperationFunctionAsAwait(callBulkLoad, converted_msg, postCSVLoadFunction.bind(null, parse_results.meta.fields));
 
         if (bulk_load_result.message === CSV_NO_RECORDS_MSG) {
             return CSV_NO_RECORDS_MSG;
@@ -265,6 +261,8 @@ async function insertChunk(json_message, insert_results, reject, results, parser
     // parser pause and resume prevent the parser from getting ahead of insert.
     parser.pause();
 
+    let fields = results.meta.fields;
+
     results.data.forEach(record=>{
         if(!hdb_utils.isEmpty(record) && !hdb_utils.isEmpty(record['__parsed_extra'])){
             delete record['__parsed_extra'];
@@ -279,7 +277,7 @@ async function insertChunk(json_message, insert_results, reject, results, parser
             transact_to_cluster: json_message.transact_to_cluster,
             data: results.data
         };
-        let bulk_load_chunk_result = await op_func_caller.callOperationFunctionAsAwait(callBulkLoad, converted_msg, postCSVLoadFunction);
+        let bulk_load_chunk_result = await op_func_caller.callOperationFunctionAsAwait(callBulkLoad, converted_msg, postCSVLoadFunction.bind(null, fields));
         insert_results.records += bulk_load_chunk_result.records;
         insert_results.number_written += bulk_load_chunk_result.number_written;
         parser.resume();
@@ -325,30 +323,6 @@ async function callPapaParse(json_message) {
     }
 }
 
-/**
- * Genericize the call to the middleware used for parsing (currently alasql);
- * @param parameter_string - The parameters to be passed into the middleware
- * @param data - The data that needs to be parsed.
- * @returns {Promise<any>}
- */
-async function callMiddleware(parameter_string, data) {
-    if(hdb_utils.isEmptyOrZeroLength(parameter_string)) {
-        logger.warn('Invalid parameter was passed into callMiddleware()');
-        return [];
-    }
-    if(hdb_utils.isEmptyOrZeroLength(data)) {
-        logger.warn('Invalid data was passed into callMiddleware()');
-        return [];
-    }
-    let middleware_results = undefined;
-    try {
-        middleware_results = await promise(parameter_string, data);
-        return middleware_results;
-    } catch(e) {
-        throw e;
-    }
-}
-
 async function callBulkLoad(json_msg) {
     let bulk_load_result = {};
     try {
@@ -387,7 +361,7 @@ function validateColumnNames(created_record) {
  * @param schema - The schema containing the specified table
  * @param table - The table to perform the insert/update
  * @param action - Specify either insert or update the specified records
- * @returns {Promise<{message: string}>}
+ * @returns {Promise<{records: *, new_attributes: *, number_written: number}>}
  */
 async function bulkLoad(records, schema, table, action){
     if (!action) {
@@ -418,6 +392,18 @@ async function bulkLoad(records, schema, table, action){
             modified_hashes = write_response.update_hashes;
         }
 
+        if(Array.isArray(write_response.skipped_hashes) && write_response.skipped_hashes.length > 0){
+            let table_info = global.hdb_schema[schema][table];
+            let hash_attribute = table_info.hash_attribute;
+
+            let x = records.length;
+            while(x--){
+                if(write_response.skipped_hashes.indexOf(records[x][hash_attribute]) >= 0){
+                    records.splice(x, 1);
+                }
+            }
+        }
+
         let number_written = hdb_utils.isEmptyOrZeroLength(modified_hashes) ? 0 : modified_hashes.length;
         let update_status = {
             records: records.length,
@@ -431,7 +417,7 @@ async function bulkLoad(records, schema, table, action){
     }
 }
 
-async function postCSVLoadFunction(orig_bulk_msg, result, orig_req) {
+async function postCSVLoadFunction(fields, orig_bulk_msg, result, orig_req) {
     let transaction_msg = hdb_utils.getClusterMessage(hdb_terms.CLUSTERING_MESSAGE_TYPES.HDB_TRANSACTION);
     transaction_msg.__transacted = true;
 
@@ -441,11 +427,24 @@ async function postCSVLoadFunction(orig_bulk_msg, result, orig_req) {
         return result;
     }
 
+    if(orig_bulk_msg.data.length === 0){
+        return;
+    }
+
+    let unparse_results = papa_parse.unparse(orig_bulk_msg.data,
+        {
+            header:true,
+            skipEmptyLines: true,
+            columns: fields
+        });
+
     transaction_msg.transaction = {
-        operation: orig_bulk_msg.action !== undefined ? orig_bulk_msg.action : hdb_terms.OPERATIONS_ENUM.INSERT,
+        operation: "csv_data_load",
+        action: orig_bulk_msg.action ? orig_bulk_msg.action : 'insert',
         schema: orig_bulk_msg.schema,
         table: orig_bulk_msg.table,
-        records: orig_bulk_msg.data
+        transact_to_cluster: orig_bulk_msg.transact_to_cluster,
+        data: unparse_results
     };
     if (orig_req) {
         socket_cluster_util.concatSourceMessageHeader(transaction_msg, orig_req);
