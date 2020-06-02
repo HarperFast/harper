@@ -10,7 +10,7 @@ RUN apk update && apk upgrade && apk add --no-cache bash && apk add --no-cache g
 #RUN apt-get update && apt-get -y upgrade && apt-get install -y rsync
 #COPY harperdb INIT script
 COPY --chown=node:node ./hdb_docker_init.sh /usr/local/bin/
-
+ADD --chown=node:node ./docs.tar /home/node/
 #COPY npm packed source code
 #COPY --chown=node:node ./harperdb-2.0.0.tgz /usr/local/bin/
 
@@ -21,7 +21,8 @@ RUN npm config set unsafe-perm true && cd /usr/local/bin/ && npm install -g harp
    cd /usr/local/lib/node_modules/harperdb && npm dedupe && modclean -r -D node_modules && \
    npm remove -g modclean && rm -rf /usr/local/lib/node_modules/harperdb/node_modules/socketcluster/sample/ && \
    npm cache clean --force && \
-   mkdir -p /opt/harperdb/hdb && chown -R node:node /opt/harperdb/hdb && chown -R node:node /usr/local/lib/node_modules/harperdb
+   mkdir -p /opt/harperdb/hdb && chown -R node:node /opt/harperdb/hdb && chown -R node:node /usr/local/lib/node_modules/harperdb && \
+   rm -rf /usr/local/lib/node_modules/harperdb/docs && mv /home/node/docs /usr/local/lib/node_modules/harperdb/
 
 USER node
 
