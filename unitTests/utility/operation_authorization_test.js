@@ -12,6 +12,7 @@ const write = require('../../data_layer/insert');
 const user = require('../../security/user');
 const alasql = require('alasql');
 const search = require('../../data_layer/search');
+const jobs = require('../../server/jobs');
 
 let EMPTY_PERMISSION = {
     "super_user": false
@@ -256,6 +257,25 @@ describe(`Test verifyPerms`, function () {
         let result = op_auth.verifyPerms(test_copy, write.insert.name);
         assert.strictEqual(result.length, 1);
     });
+
+    it('Pass in get_job request as non-super user. expect true', function () {
+        let test_json = {
+            operation: "get_job",
+            id:"1234",
+            hdb_user: TEST_JSON.hdb_user
+        };
+        assert.deepEqual(op_auth.verifyPerms(test_json, jobs.jobHandler.name), []);
+    });
+
+    it('Pass in get_job request as super user. expect true', function () {
+        let test_json = {
+            operation: "get_job",
+            id:"1234",
+            hdb_user: TEST_JSON_SUPER_USER.hdb_user
+        };
+        assert.deepEqual(op_auth.verifyPerms(test_json, jobs.jobHandler.name), []);
+    });
+
     it('Test operation with read & insert required, but user only has insert.  False expected', function () {
         let required_permissions = op_auth_rewire.__get__('required_permissions');
         required_permissions.set('test method', ['insert', 'read']);

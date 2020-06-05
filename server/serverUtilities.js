@@ -464,12 +464,6 @@ function getOperationFunction(json){
         case terms.OPERATIONS_ENUM.GET_JOB:
             operation_function = jobs.jobHandler;
             break;
-        case terms.OPERATIONS_ENUM.DELETE_JOB:
-            operation_function = jobs.jobHandler;
-            break;
-        case terms.OPERATIONS_ENUM.UPDATE_JOB:
-            operation_function = jobs.updateJob;
-            break;
         case terms.OPERATIONS_ENUM.GET_FINGERPRINT:
             operation_function = reg.getFingerprint;
             break;
