@@ -37,7 +37,7 @@ const UPDATE_PERM = 'update';
 //The delete (or any other operation) comes through the parser as an operation separate from the delete_.delete opertaion.
 // Since we store the required permissions for each operation, we need to store required permissions for the SQL delete o
 // peration separate from the delete_.delete operation.
-const JOB_HANDLER = 'jobHandler';
+const HANDLE_GET_JOB = 'handleGetJob';
 const SQL_CREATE = "create";
 const SQL_DROP = 'drop';
 const SQL_DELETE = 'delete';
@@ -93,7 +93,8 @@ required_permissions.set(data_export.export_to_s3.name, new permission(false, [R
 required_permissions.set(data_export.export_local.name, new permission(false, [READ_PERM]));
 required_permissions.set(delete_.deleteFilesBefore.name, new permission(true, []));
 required_permissions.set(stop.restartProcesses.name, new permission(true, []));
-required_permissions.set(JOB_HANDLER, new permission(false, [READ_PERM]));
+//This function name is hardcoded b/c of a circular dependency issue
+required_permissions.set(HANDLE_GET_JOB, new permission(false, [READ_PERM]));
 
 // SQL operations are distinct from operations above, so we need to store required perms for both.
 required_permissions.set(SQL_CREATE, new permission(false, [INSERT_PERM]));

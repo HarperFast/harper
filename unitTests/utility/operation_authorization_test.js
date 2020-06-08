@@ -264,7 +264,26 @@ describe(`Test verifyPerms`, function () {
             id:"1234",
             hdb_user: TEST_JSON.hdb_user
         };
-        assert.deepEqual(op_auth.verifyPerms(test_json, jobs.jobHandler.name), []);
+        assert.deepEqual(op_auth.verifyPerms(test_json, jobs.handleGetJob.name), []);
+    });
+
+    it('Pass in search_jobs_by_start_date request as super user. expect true', function () {
+        let test_json = {
+            operation: "search_jobs_by_start_date",
+            id:"1234",
+            hdb_user: TEST_JSON_SUPER_USER.hdb_user
+        };
+        assert.deepEqual(op_auth.verifyPerms(test_json, jobs.handleGetJobsByStartDate.name), []);
+    });
+
+    it('Pass in search_jobs_by_start_date request as non-super user. expect false', function () {
+        let test_json = {
+            operation: "search_jobs_by_start_date",
+            id:"1234",
+            hdb_user: TEST_JSON.hdb_user
+        };
+        let result = op_auth.verifyPerms(test_json, jobs.handleGetJobsByStartDate.name)
+        assert.strictEqual(result.length, 1);
     });
 
     it('Pass in get_job request as super user. expect true', function () {
@@ -273,7 +292,7 @@ describe(`Test verifyPerms`, function () {
             id:"1234",
             hdb_user: TEST_JSON_SUPER_USER.hdb_user
         };
-        assert.deepEqual(op_auth.verifyPerms(test_json, jobs.jobHandler.name), []);
+        assert.deepEqual(op_auth.verifyPerms(test_json, jobs.handleGetJob.name), []);
     });
 
     it('Test operation with read & insert required, but user only has insert.  False expected', function () {
