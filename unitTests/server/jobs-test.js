@@ -28,15 +28,6 @@ const JOB_SEARCH_RESULT =
     'id': '2e358f82-523c-48b0-ab92-46ab52054419'
 };
 
-const DELETE_JOB_NOT_FOUND_RESULT = new Error("Item not found");
-
-const ADD_JOB_SUCCESS =
-{
-    "message": "Created",
-    "error": "",
-    "success": true
-};
-
 const UPDATE_RESULT = {
     "message": "updated 1 of 1 records",
     "update_hashes": [
@@ -45,11 +36,9 @@ const UPDATE_RESULT = {
     "skipped_hashes": []
 };
 
-describe('Test jobHandler', function() {
-    let addJob_stub = undefined;
+describe('Test getJob & getJobsByStartDate handlers', function() {
     let getJobsInDateRange_stub = undefined;
     let getJobById_stub = undefined;
-    let deleteJobById_stub = undefined;
 
     let sandbox = null;
     beforeEach(function() {
@@ -59,39 +48,7 @@ describe('Test jobHandler', function() {
         sandbox.restore();
     });
 
-    it('nominal case, call addJob.', async function() {
-        addJob_stub = sandbox.stub().resolves(ADD_JOB_SUCCESS);
-        jobs.__set__('addJob', addJob_stub);
-
-        let test_request = {};
-        test_request.operation = 'add_job';
-        test_request.hdb_user = 'test user';
-
-        try {
-            let result = await jobs.jobHandler(test_request);
-            assert.equal(result.success, true, 'Got an error, expected success');
-        } catch(e) {
-            throw e;
-		}
-    });
-
-    it('call addJob, throw an error to test catch.', async function() {
-        addJob_stub = sandbox.stub().rejects(new Error('Oh Noes!'));
-        jobs.__set__('addJob', addJob_stub);
-
-        let test_request = {};
-        test_request.operation = 'add_job';
-        test_request.hdb_user = 'test user';
-        let result = undefined;
-        try {
-            result = await jobs.jobHandler(test_request);
-        } catch(e) {
-            result = e;
-        }
-        assert.deepStrictEqual( (result instanceof Error), true, 'Got success, expected an error.');
-    });
-
-    it('nominal case, call getJobsInDateRange.', async function() {
+    it('nominal case, call handleGetJobsByStartDate.', async function() {
         getJobsInDateRange_stub = sandbox.stub().resolves([JOB_SEARCH_RESULT]);
         jobs.__set__('getJobsInDateRange', getJobsInDateRange_stub);
 
@@ -102,7 +59,7 @@ describe('Test jobHandler', function() {
         test_request.to_date = '2018-07-07';
         let result = undefined;
         try {
-            result = await jobs.jobHandler(test_request);
+            result = await jobs.handleGetJobsByStartDate(test_request);
             assert.equal(result.length, 1, 'Got an error, expected success');
         } catch(e) {
             result = e;
@@ -120,7 +77,7 @@ describe('Test jobHandler', function() {
         test_request.to_date = '2018-07-07';
         let result = undefined;
         try {
-            result = await jobs.jobHandler(test_request);
+            result = await jobs.handleGetJobsByStartDate(test_request);
 
         } catch(e) {
             result = e;
@@ -129,7 +86,7 @@ describe('Test jobHandler', function() {
         assert.strictEqual((result instanceof Error), true, 'Got success, expected an error.');
     });
 
-    it('nominal case, call getJobById.', async function() {
+    it('nominal case, call handleGetJob', async function() {
         getJobById_stub = sandbox.stub().resolves([JOB_SEARCH_RESULT]);
         jobs.__set__('getJobById', getJobById_stub);
 
@@ -139,14 +96,14 @@ describe('Test jobHandler', function() {
         test_request.id = null;
         let result = undefined;
         try {
-            result = await jobs.jobHandler(test_request);
+            result = await jobs.handleGetJob(test_request);
             assert.equal(result.length, 1, 'Got an error, expected success');
         } catch(e) {
             result = e;
         }
     });
 
-    it('call getJobById, throw an error to test catch.', async function() {
+    it('call handleGetJob, throw an error to test catch.', async function() {
         getJobById_stub = sandbox.stub().rejects(new Error('Oh Noes!'));
         jobs.__set__('getJobById', getJobById_stub);
 
@@ -156,44 +113,7 @@ describe('Test jobHandler', function() {
         test_request.id = null;
         let result = undefined;
         try {
-            result = await jobs.jobHandler(test_request);
-        } catch(e) {
-            result = e;
-        }
-        assert.strictEqual((result instanceof Error), true, 'Got success, expected an error.');
-    });
-
-    it('nominal case, call deleteJobById.', async function() {
-        deleteJobById_stub = sandbox.stub().resolves({message: 'Succesfully deleted records'});
-        jobs.__set__('deleteJobById', deleteJobById_stub);
-
-        let test_request = {};
-        test_request.operation = 'delete_job';
-        test_request.hdb_user = 'test user';
-        test_request.id = '2e358f82-523c-48b0-ab92-46ab52054419';
-        let result = undefined;
-        try {
-            result = await jobs.jobHandler(test_request);
-            assert.ok(result.message.length > 0, 'Got an error, expected success');
-        } catch(e) {
-            result = e;
-        }
-    });
-
-    it('call deleteJobById, throw an error to test catch.', async function() {
-        deleteJobById_stub = sandbox.stub().rejects(new Error('Oh Noes!'));
-        jobs.__set__('deleteJobById', deleteJobById_stub);
-
-        let test_request = {};
-        test_request.operation = 'delete_job';
-        test_request.hdb_user = 'test user';
-        test_request.id = '2e358f82-523c-48b0-ab92-46ab52054419';
-        let result = undefined;
-        let result2 = undefined;
-        try {
-            result = await jobs.jobHandler(test_request);
-            result2 = await jobs.jobHandler(test_request);
-
+            result = await jobs.handleGetJob(test_request);
         } catch(e) {
             result = e;
         }
@@ -372,58 +292,6 @@ describe('Test getJobById', function() {
 
         let search_result = await getJobById(test_job);
         assert.ok(search_result.message.length > 0, 'Expected error message');
-    }));
-});
-
-describe('Test deleteJobById', function() {
-    let delete_stub = undefined;
-    let sandbox = null;
-    let deleteJobById = jobs.__get__('deleteJobById');
-    beforeEach(function () {
-        sandbox = sinon.createSandbox();
-    });
-    afterEach(function () {
-        sandbox.restore();
-    });
-
-    it('nominal case, delete 1 job by ID.', test_util.mochaAsyncWrapper(async function() {
-        // we are not testing delete so stub it.
-        delete_stub = sandbox.stub().returns('records successfully deleted');
-        jobs.__set__('p_delete', delete_stub);
-
-        let test_job = {};
-        test_job.operation = 'delete_job';
-        test_job.hdb_user = 'test user';
-        test_job.id = '2e358f82-523c-48b0-ab92-46ab52054419';
-
-        let delete_result = await deleteJobById(test_job);
-        assert.ok(delete_result.message.length > 1, 'Expected 1 result back');
-    }));
-    it('Call delete with no job found', test_util.mochaAsyncWrapper(async function() {
-        // we are not testing delete so stub it.
-        delete_stub = sandbox.stub().throws(DELETE_JOB_NOT_FOUND_RESULT);
-        jobs.__set__('p_delete', delete_stub);
-
-        let test_job = {};
-        test_job.operation = 'delete_job';
-        test_job.hdb_user = 'test user';
-        test_job.id = '2e358f82-523c-48b0-ab92-46ab52054419';
-
-        let delete_result = await deleteJobById(test_job);
-        assert.ok(delete_result.message.indexOf('not found') > 1, 'Expected 1 result back');
-    }));
-    it('Call delete with error thrown', test_util.mochaAsyncWrapper(async function() {
-        // we are not testing delete so stub it.
-        delete_stub = sandbox.stub().throws(new Error('blah blah'));
-        jobs.__set__('p_delete', delete_stub);
-
-        let test_job = {};
-        test_job.operation = 'delete_job';
-        test_job.hdb_user = 'test user';
-        test_job.id = '2e358f82-523c-48b0-ab92-46ab52054419';
-
-        let delete_result = await deleteJobById(test_job);
-        assert.ok(delete_result.message.indexOf('not found') === -1, 'Expected 1 result back');
     }));
 });
 
