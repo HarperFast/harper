@@ -62,6 +62,7 @@ const HDB_FILE_PERMISSIONS = 0o700;
 const BLOB_FOLDER_NAME = 'blob';
 const HDB_TRASH_DIR = 'trash';
 const SCHEMA_DIR_NAME = 'schema';
+const TRANSACTIONS_DIR_NAME = 'transactions';
 const LIMIT_COUNT_NAME = '.count';
 const ID_ATTRIBUTE_STRING = 'id';
 
@@ -520,6 +521,7 @@ module.exports = {
     RESTART_TIMEOUT_MS,
     HDB_FILE_PERMISSIONS,
     SCHEMA_DIR_NAME,
+    TRANSACTIONS_DIR_NAME,
     LIMIT_COUNT_NAME,
     ID_ATTRIBUTE_STRING,
     INSERT_MODULE_ENUM,

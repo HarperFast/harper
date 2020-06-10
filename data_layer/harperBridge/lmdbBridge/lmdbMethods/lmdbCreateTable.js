@@ -49,6 +49,10 @@ async function lmdbCreateTable(table_system_data, table_create_obj) {
     }
 }
 
+async function createTransactionsEnvironment(){
+
+}
+
 /**
  * used to individually create the required attributes for a new table, logs a warning if any fail
  * @param {LMDBCreateAttributeObject} attribute_object

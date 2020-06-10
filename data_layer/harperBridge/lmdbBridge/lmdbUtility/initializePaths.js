@@ -10,6 +10,7 @@ if(!env.isInitialized()){
 
 let BASE_SCHEMA_PATH = undefined;
 let SYSTEM_SCHEMA_PATH = undefined;
+let TRANSACTION_STORE_PATH = undefined;
 
 
 /**
@@ -42,7 +43,19 @@ function getSystemSchemaPath(){
     }
 }
 
+function getTransactionStorePath(){
+    if(TRANSACTION_STORE_PATH !== undefined){
+        return TRANSACTION_STORE_PATH;
+    }
+
+    if(env.getHdbBasePath() !== undefined){
+        TRANSACTION_STORE_PATH = path.join(env.getHdbBasePath(), hdb_terms.TRANSACTIONS_DIR_NAME);
+        return TRANSACTION_STORE_PATH;
+    }
+}
+
 module.exports = {
     getBaseSchemaPath,
-    getSystemSchemaPath
+    getSystemSchemaPath,
+    getTransactionStorePath
 };
