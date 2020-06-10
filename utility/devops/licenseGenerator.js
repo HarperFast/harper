@@ -24,7 +24,7 @@ function generateLicense(license_object) {
         }
 
         let hash_license = password.hash(`${LICENSE_HASH_PREFIX}${license_object.fingerprint}${license_object.company}`);
-        let obj = new License(moment(license_object.exp_date).unix(), license_object.storage_type, license_object.api_call, license_object.ram_allocation, license_object.version, license_object.fingerprint);
+        let obj = new License(moment(license_object.exp_date).valueOf(), license_object.storage_type, license_object.api_call, license_object.ram_allocation, license_object.version, license_object.fingerprint);
         let encrypted = encrypt(obj, hash_license);
 
         return `${encrypted}${LICENSE_KEY_DELIMITER}${hash_license}`;
