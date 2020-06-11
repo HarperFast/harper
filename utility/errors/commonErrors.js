@@ -1,6 +1,34 @@
 "use strict";
 
-const lmdb_terms = require('./lmdb/terms');
+const lmdb_terms = require('../lmdb/terms');
+
+// A subset of HTTP error codes that we may use in code.
+const HTTP_STATUS_CODES = {
+    CONTINUE: 100,
+    OK: 200,
+    CREATED: 201,
+    BAD_REQUEST: 400,
+    UNAUTHORIZED: 401,
+    FORBIDDEN: 403,
+    NOT_FOUND: 404,
+    METHOD_NOT_ALLOWED: 405,
+    REQUEST_TIMEOUT: 408,
+    TOO_MANY_REQUESTS: 429,
+    INTERNAL_SERVER_ERROR: 500,
+    NOT_IMPLEMENTED: 501,
+    BAD_GATEWAY: 502,
+    SERVICE_UNAVAILABLE: 503,
+    GATEWAY_TIMEOUT: 504,
+    HTTP_VERSION_NOT_SUPPORTED: 505,
+    INSUFFICIENT_STORAGE: 507,
+    NETWORK_AUTHENTICATION_REQUIRED: 511
+};
+
+const DEFAULT_ERROR_MSG = 'There was an error processing your request.  Please check the logs and try again.';
+
+const COMMON_ERROR_MSGS = {
+    500: DEFAULT_ERROR_MSG
+};
 
 //NOTE: Any changes made to these errors must also be made to unitTests/commonTestErrors.js otherwise the unit tests will fail
 const LMDB_ERRORS_ENUM = {
@@ -34,5 +62,8 @@ const LMDB_ERRORS_ENUM = {
 };
 
 module.exports = {
-    LMDB_ERRORS_ENUM
+    COMMON_ERROR_MSGS,
+    DEFAULT_ERROR_MSG,
+    LMDB_ERRORS_ENUM,
+    HTTP_STATUS_CODES
 };

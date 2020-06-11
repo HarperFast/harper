@@ -24,6 +24,7 @@ const all_children_stopped_event = require('../events/AllChildrenStoppedEvent');
 const sio_server_stopped_event = require('../events/SioServerStoppedEvent');
 const signalling = require('../utility/signalling');
 const terms = require('../utility/hdbTerms');
+const hdb_errors = require('../utility/errors/commonErrors');
 const RestartEventObject = require('./RestartEventObject');
 const util = require('util');
 const promisify = util.promisify;
@@ -265,9 +266,9 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
     app.use(bodyParser.urlencoded({extended: true}));
     app.use(function (error, req, res, next) {
         if (error instanceof SyntaxError) {
-            res.status(terms.HTTP_STATUS_CODES.BAD_REQUEST).send({error: 'invalid JSON: ' + error.message.replace('\n', '')});
+            res.status(hdb_errors.HTTP_STATUS_CODES.BAD_REQUEST).send({error: 'invalid JSON: ' + error.message.replace('\n', '')});
         } else if (error) {
-            res.status(terms.HTTP_STATUS_CODES.BAD_REQUEST).send({error: error.message});
+            res.status(hdb_errors.HTTP_STATUS_CODES.BAD_REQUEST).send({error: error.message});
         } else {
             next();
         }
@@ -290,7 +291,7 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
         // Per the body-parser docs, any request which does not match the bodyParser.json middleware will be returned with
         // an empty body object.
         if(!req.body || Object.keys(req.body).length === 0) {
-            return res.status(terms.HTTP_STATUS_CODES.BAD_REQUEST).send({error: "Invalid JSON."});
+            return res.status(hdb_errors.HTTP_STATUS_CODES.BAD_REQUEST).send({error: "Invalid JSON."});
         }
 
         auth.authorize(req, res, function (err, user) {
@@ -298,9 +299,9 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
                 harper_logger.warn(err);
                 harper_logger.warn(`{"ip":"${req.connection.remoteAddress}", "error":"${err.stack}"`);
                 if (typeof err === 'string') {
-                    return res.status(terms.HTTP_STATUS_CODES.UNAUTHORIZED).send({error: err});
+                    return res.status(hdb_errors.HTTP_STATUS_CODES.UNAUTHORIZED).send({error: err});
                 }
-                return res.status(terms.HTTP_STATUS_CODES.UNAUTHORIZED).send(err);
+                return res.status(hdb_errors.HTTP_STATUS_CODES.UNAUTHORIZED).send(err);
             }
             req.body.hdb_user = user;
             req.body.hdb_auth_header = req.headers.authorization;
@@ -309,12 +310,12 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
                 if (err) {
                     harper_logger.error(err);
                     if(err.response && err.response === server_utilities.UNAUTH_RESPONSE) {
-                        return res.status(terms.HTTP_STATUS_CODES.FORBIDDEN).send(err);
+                        return res.status(hdb_errors.HTTP_STATUS_CODES.FORBIDDEN).send(err);
                     }
                     if (typeof err === 'string') {
-                        return res.status(terms.HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR).send({error: err});
+                        return res.status(hdb_errors.HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR).send({error: err});
                     }
-                    return res.status(terms.HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR).send(err);
+                    return res.status(hdb_errors.HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR).send(err);
                 }
 
                 server_utilities.processLocalTransaction(req, res, operation_function, function () {});
