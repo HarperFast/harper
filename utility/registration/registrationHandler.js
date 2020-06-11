@@ -10,6 +10,7 @@ const path = require('path');
 const hdb_utils = require('../common_utils');
 const version = require('../../bin/version');
 const env_utility = require('../environment/environmentManager');
+const moment = require('moment');
 
 //Promisified function
 let p_prompt_get = promisify(prompt.get);
@@ -183,7 +184,11 @@ async function getRegistrationInfo() {
     reg_info_obj.version = version.version();
     reg_info_obj.storage_type = env_utility.getDataStoreType();
     reg_info_obj.ram_allocation = license.ram_allocation;
-    reg_info_obj.license_expiration_date = license.enterprise ? license.exp_date : null;
-
+    if(isNaN(license.exp_date )){
+        reg_info_obj.license_expiration_date = license.enterprise ? license.exp_date : null;
+    } else {
+        let exp_date = moment.utc(license.exp_date).format('YYYY-MM-DD');
+        reg_info_obj.license_expiration_date = license.enterprise ? exp_date : null;
+    }
     return reg_info_obj;
 }
