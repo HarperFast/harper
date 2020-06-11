@@ -187,7 +187,7 @@ async function getRegistrationInfo() {
     if(isNaN(license.exp_date )){
         reg_info_obj.license_expiration_date = license.enterprise ? license.exp_date : null;
     } else {
-        let exp_date = moment(license.exp_date).format('YYYY-MM-DD');
+        let exp_date = moment.utc(license.exp_date).format('YYYY-MM-DD');
         reg_info_obj.license_expiration_date = license.enterprise ? exp_date : null;
     }
     return reg_info_obj;
