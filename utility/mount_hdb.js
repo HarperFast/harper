@@ -14,7 +14,8 @@ const system_schema = require('../json/systemSchema');
 
 module.exports = function (logger, hdb_path, callback) {
     const env_mngr = require('../utility/environment/environmentManager');
-    let system_schema_path = path.join(hdb_path, 'schema', 'system');
+    let system_schema_path = path.join(hdb_path, terms.SCHEMA_DIR_NAME, terms.SYSTEM_SCHEMA_NAME);
+    let transactions_path = path.join(hdb_path, terms.TRANSACTIONS_DIR_NAME);
 
     makeDirectory(logger, hdb_path);
     makeDirectory(logger, path.join(hdb_path, "backup"));
@@ -33,7 +34,7 @@ module.exports = function (logger, hdb_path, callback) {
         createFSTables(system_schema_path, logger);
         return callback(null, 'complete');
     } else if(env_mngr.getDataStoreType() === terms.STORAGE_TYPES_ENUM.LMDB){
-        createLMDBTables(system_schema_path, logger).then(()=>{
+        createLMDBTables(system_schema_path, transactions_path, logger).then(()=>{
             callback(null, 'complete');
         }).catch(e=>{
             callback(e);
@@ -62,10 +63,11 @@ function createFSTables(schema_path, logger){
 /**
  * creates the environments & dbis needed for lmdb  based on the systemSchema
  * @param schema_path
+ * @param transactions_path
  * @param logger
  * @returns {Promise<void>}
  */
-async function createLMDBTables(schema_path, logger){
+async function createLMDBTables(schema_path, transactions_path, logger){
     let tables = Object.keys(system_schema);
     for(let x = 0; x < tables.length; x++) {
         let table_name = tables[x];
