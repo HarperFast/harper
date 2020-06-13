@@ -133,7 +133,7 @@ describe(`Test getRegistrationInfo`,function() {
     let test_license = {
         enterprise: true,
         storage_type: 'fs',
-        exp_date: 12345,
+        exp_date: '2021-06-10',
         api_call: 1000,
         ram_allocation: 12345
     }

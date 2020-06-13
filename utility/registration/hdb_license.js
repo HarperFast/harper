@@ -140,6 +140,11 @@ function validateLicense(license_key, company) {
                 license_validation_object.version = license_obj.version;
                 license_validation_object.storage_type = license_obj.storage_type;
                 license_validation_object.exp_date = license_obj.exp_date;
+
+                if(isNaN(license_validation_object.exp_date) ){
+                    license_validation_object.exp_date = new Date(license_validation_object.exp_date).getTime();
+                }
+
                 if (license_obj.ram_allocation) {
                     license_validation_object.ram_allocation = license_obj.ram_allocation;
                 }
@@ -152,7 +157,7 @@ function validateLicense(license_key, company) {
             license_validation_object.exp_date = decrypted;
         }
 
-        if (license_validation_object.exp_date < moment().unix()) {
+        if (license_validation_object.exp_date < moment().valueOf()) {
             license_validation_object.valid_date = false;
         }
 
@@ -225,7 +230,7 @@ function licenseSearch() {
             license_values.storage_type = terms.STORAGE_TYPES_ENUM.FILE_SYSTEM;
             license_values.enterprise = false;
         }
-    };
+    }
 
     if(license_values.api_call === 0){
         license_values.api_call = terms.LICENSE_VALUES.API_CALL_DEFAULT;

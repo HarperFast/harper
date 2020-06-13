@@ -459,16 +459,10 @@ function getOperationFunction(json){
             job_operation_function = export_.export_local;
             break;
         case terms.OPERATIONS_ENUM.SEARCH_JOBS_BY_START_DATE:
-            operation_function = jobs.jobHandler;
+            operation_function = jobs.handleGetJobsByStartDate;
             break;
         case terms.OPERATIONS_ENUM.GET_JOB:
-            operation_function = jobs.jobHandler;
-            break;
-        case terms.OPERATIONS_ENUM.DELETE_JOB:
-            operation_function = jobs.jobHandler;
-            break;
-        case terms.OPERATIONS_ENUM.UPDATE_JOB:
-            operation_function = jobs.updateJob;
+            operation_function = jobs.handleGetJob;
             break;
         case terms.OPERATIONS_ENUM.GET_FINGERPRINT:
             operation_function = reg.getFingerprint;
