@@ -119,15 +119,16 @@ function validateEnvDBIName(env, dbi_name){
  * creates a new environment
  * @param base_path - base path the envirnment will reside in
  * @param env_name - name of the environment
+ * @param {Boolean} is_txn - defines if is a transactions environemnt
  * @returns {Promise<lmdb.Env>} - LMDB environment object
  */
-async function createEnvironment(base_path, env_name) {
+async function createEnvironment(base_path, env_name, is_txn = false) {
     await pathEnvNameValidation(base_path, env_name);
     env_name = env_name.toString();
     try {
         await fs.access(path.join(base_path, env_name, MDB_FILE_NAME), fs.constants.R_OK | fs.constants.F_OK);
         //if no error is thrown the environment already exists so we return the handle to that environment
-        return await openEnvironment(base_path, env_name);
+        return await openEnvironment(base_path, env_name, is_txn);
     } catch(e){
         if (e.code === 'ENOENT'){
             let environment_path = path.join(base_path, env_name);
@@ -149,7 +150,7 @@ async function createEnvironment(base_path, env_name) {
             if(global.lmdb_map === undefined) {
                 global.lmdb_map = Object.create(null);
             }
-            let full_name = getCachedEnvironmentName(base_path, env_name);
+            let full_name = getCachedEnvironmentName(base_path, env_name, is_txn);
             global.lmdb_map[full_name] = env;
 
             return env;
@@ -163,11 +164,12 @@ async function createEnvironment(base_path, env_name) {
  * @returns {lmdb.Env} - lmdb environment object
  * @param {String} base_path - the base pase under which the envrinment resides
  * @param {String} env_name -  the name of the environment
+ * @param {Boolean} is_txn - defines if is a transactions environemnt
  */
-async function openEnvironment(base_path, env_name){
+async function openEnvironment(base_path, env_name, is_txn = false){
     await pathEnvNameValidation(base_path, env_name);
     env_name = env_name.toString();
-    let full_name = getCachedEnvironmentName(base_path, env_name);
+    let full_name = getCachedEnvironmentName(base_path, env_name, is_txn);
 
     if(global.lmdb_map === undefined) {
         global.lmdb_map = Object.create(null);
@@ -200,15 +202,16 @@ async function openEnvironment(base_path, env_name){
  * deletes the environment from the file system & removes the reference from global
  * @param {String} base_path - top level path the environment folder and the data.mdb file live under
  * @param {String} env_name - name of environment
+ * @param {Boolean} is_txn - defines if is a transactions environemnt
  */
-async function deleteEnvironment(base_path, env_name) {
+async function deleteEnvironment(base_path, env_name, is_txn = false) {
     await pathEnvNameValidation(base_path, env_name);
     env_name = env_name.toString();
     await validateEnvironmentPath(base_path, env_name);
 
     await fs.remove(path.join(base_path, env_name));
     if(global.lmdb_map !== undefined) {
-        let full_name = getCachedEnvironmentName(base_path, env_name);
+        let full_name = getCachedEnvironmentName(base_path, env_name, is_txn);
         delete global.lmdb_map[full_name];
     }
 }
@@ -216,13 +219,18 @@ async function deleteEnvironment(base_path, env_name) {
 /**
  * creates a composite name for the environment based on the parent folder name & the environment name.
  * This forces uniqueness when same environment names live under different parent folders
- * @param base_path
- * @param env_name
+ * @param {String} base_path
+ * @param {String} env_name
+ * @param {Boolean} is_txn - defines if is a transactions environemnt
  * @returns {string}
  */
-function getCachedEnvironmentName(base_path, env_name){
+function getCachedEnvironmentName(base_path, env_name, is_txn = false){
     let schema_name = path.basename(base_path);
-    return `${schema_name}.${env_name}`;
+    let full_name = `${schema_name}.${env_name}`;
+    if(is_txn === true){
+        full_name = `txn.${full_name}`;
+    }
+    return full_name;
 }
 
 /***  DBI FUNCTIONS ***/

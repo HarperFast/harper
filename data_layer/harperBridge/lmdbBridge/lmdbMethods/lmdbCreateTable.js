@@ -10,6 +10,7 @@ const system_schema = require('../../../../json/systemSchema');
 const lmdb_create_attribute = require('./lmdbCreateAttribute');
 const LMDBCreateAttributeObject = require('../lmdbUtility/LMDBCreateAttributeObject');
 const log = require('../../../../utility/logging/harper_logger');
+const create_txn_environments = require('../lmdbUtility/lmdbCreateTransactionsEnvironment');
 
 const HDB_TABLE_INFO = system_schema.hdb_table;
 let hdb_table_attributes = [];
@@ -36,14 +37,19 @@ async function lmdbCreateTable(table_system_data, table_create_obj) {
         //create the new environment
         await environment_utility.createEnvironment(schema_path, table_create_obj.table);
 
-        let hdb_table_env = await environment_utility.openEnvironment(getSystemSchemaPath(), hdb_terms.SYSTEM_TABLE_NAMES.TABLE_TABLE_NAME);
-        //add the meta data to system.hdb_table
-        write_utility.insertRecords(hdb_table_env, HDB_TABLE_INFO.hash_attribute, hdb_table_attributes, [table_system_data]);
-        //create attributes for hash attribute created/updated time stamps
+        if(table_system_data !== undefined) {
+            let hdb_table_env = await environment_utility.openEnvironment(getSystemSchemaPath(), hdb_terms.SYSTEM_TABLE_NAMES.TABLE_TABLE_NAME);
 
-        await createAttribute(created_time_attr);
-        await createAttribute(updated_time_attr);
-        await createAttribute(hash_attr);
+            //add the meta data to system.hdb_table
+            write_utility.insertRecords(hdb_table_env, HDB_TABLE_INFO.hash_attribute, hdb_table_attributes, [table_system_data]);
+            //create attributes for hash attribute created/updated time stamps
+
+            await createAttribute(created_time_attr);
+            await createAttribute(updated_time_attr);
+            await createAttribute(hash_attr);
+        }
+
+        await create_txn_environments(table_create_obj);
     }catch (e) {
         throw e;
     }

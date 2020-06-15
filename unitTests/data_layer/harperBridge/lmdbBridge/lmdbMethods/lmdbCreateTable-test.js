@@ -108,6 +108,7 @@ describe("test lmdbCreateTable module", ()=>{
     it('Test creating a table under the dev schema', async ()=>{
         let expected_table = test_utils.assignObjecttoNullObject(TABLE_SYSTEM_DATA_TEST_A);
         let schema_path = path.join(BASE_SCHEMA_PATH, CREATE_TABLE_OBJ_TEST_A.schema);
+        let transactions_path = path.join(BASE_PATH, 'transactions');
         let table_path = path.join(schema_path, CREATE_TABLE_OBJ_TEST_A.table, 'data.mdb');
         let expected_attributes = ['__createdtime__', '__updatedtime__', 'id'];
         let expected_dbis = ['__blob__' , '__createdtime__', '__updatedtime__', 'id'];
@@ -134,11 +135,22 @@ describe("test lmdbCreateTable module", ()=>{
         attribute_records.forEach(record=>{
             assert(expected_attributes.indexOf(record.attribute) > -1);
         });
+
+        //validate the transactions environments
+        let transaction_path = path.join(transactions_path, CREATE_TABLE_OBJ_TEST_A.schema);
+        let table_transaction_path = path.join(transactions_path, CREATE_TABLE_OBJ_TEST_A.schema, CREATE_TABLE_OBJ_TEST_A.table, 'data.mdb');
+        let expected_txn_dbis = ['__blob__' , 'hash_value', 'timestamp', 'user_name'];
+        await test_utils.assertErrorAsync(fs.access, [table_transaction_path], undefined);
+        let txn_env = await test_utils.assertErrorAsync(environment_utility.openEnvironment, [transaction_path, CREATE_TABLE_OBJ_TEST_A.table, true], undefined);
+        let txn_dbis = test_utils.assertErrorSync(environment_utility.listDBIs, [txn_env], undefined);
+
+        assert.deepStrictEqual(txn_dbis, expected_txn_dbis);
     });
 
     it('Test creating a table under the prod schema', async ()=>{
         let expected_table = test_utils.assignObjecttoNullObject(TABLE_SYSTEM_DATA_TEST_B);
         let schema_path = path.join(BASE_SCHEMA_PATH, CREATE_TABLE_OBJ_TEST_B.schema);
+        let transactions_path = path.join(BASE_PATH, 'transactions');
         let table_path = path.join(schema_path, CREATE_TABLE_OBJ_TEST_B.table, 'data.mdb');
         let expected_attributes = ['__blob__', '__createdtime__', '__updatedtime__', 'name'];
 
@@ -164,6 +176,16 @@ describe("test lmdbCreateTable module", ()=>{
         attribute_records.forEach(record=>{
             assert(expected_attributes.indexOf(record.attribute) > -1);
         });
+
+        //validate the transactions environments
+        let transaction_path = path.join(transactions_path, CREATE_TABLE_OBJ_TEST_B.schema);
+        let table_transaction_path = path.join(transaction_path, CREATE_TABLE_OBJ_TEST_B.table, 'data.mdb');
+        let expected_txn_dbis = ['__blob__' , 'hash_value', 'timestamp', 'user_name'];
+        await test_utils.assertErrorAsync(fs.access, [table_transaction_path], undefined);
+        let txn_env = await test_utils.assertErrorAsync(environment_utility.openEnvironment, [transaction_path, CREATE_TABLE_OBJ_TEST_B.table, true], undefined);
+        let txn_dbis = test_utils.assertErrorSync(environment_utility.listDBIs, [txn_env], undefined);
+
+        assert.deepStrictEqual(txn_dbis, expected_txn_dbis);
     });
 
     it('Test that error from lmdbCreateRecords is caught', async () => {
