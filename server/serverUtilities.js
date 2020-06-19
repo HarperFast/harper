@@ -114,7 +114,7 @@ function processLocalTransaction(req, res, operation_function, callback) {
                 return callback(error);
             }
             if(typeof error !== 'object') {
-                error = {"error": error};
+                error = { message: error };
             }
 
             if (GLOBAL_SCHEMA_UPDATE_OPERATIONS_ENUM[req.body.operation]) {
@@ -125,7 +125,11 @@ function processLocalTransaction(req, res, operation_function, callback) {
                 });
             }
 
-            setResponseStatus(res, hdb_errors.HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR, {error: (error.message ? error.message : error.error)});
+            //This final response status and error msg evaluation is required while we transition to using the new error
+            // handling process with HDBError and the new properties set on the new error type
+            const http_resp_status = error.http_resp_code ? error.http_resp_code : hdb_errors.HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR;
+            const http_resp_msg = error.http_resp_msg ? error.http_resp_msg : error.message ? error.message : hdb_errors.DEFAULT_ERROR_RESP;
+            setResponseStatus(res, http_resp_status, {error: http_resp_msg});
             return callback(error);
         });
 }
