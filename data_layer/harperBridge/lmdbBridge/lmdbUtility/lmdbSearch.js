@@ -11,7 +11,7 @@ const lmdb_terms = require('../../../../utility/lmdb/terms');
 const hdb_terms = require('../../../../utility/hdbTerms');
 const {getBaseSchemaPath} = require('../lmdbUtility/initializePaths');
 const system_schema = require('../../../../json/systemSchema.json');
-const LMDB_ERRORS = require('../../../../utility/commonErrors').LMDB_ERRORS_ENUM;
+const LMDB_ERRORS = require('../../../../utility/errors/commonErrors').LMDB_ERRORS_ENUM;
 
 const WILDCARDS = hdb_terms.SEARCH_WILDCARDS;
 

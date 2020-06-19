@@ -4,7 +4,7 @@ const drop_attribute = require('../lmdbMethods/lmdbDropAttribute');
 const DropAttributeObject = require('../../../../data_layer/DropAttributeObject');
 const hdb_utils = require('../../../../utility/common_utils');
 const log = require('../../../../utility/logging/harper_logger');
-const LMDB_ERROR = require('../../../../utility/commonErrors').LMDB_ERRORS_ENUM;
+const LMDB_ERROR = require('../../../../utility/errors/commonErrors').LMDB_ERRORS_ENUM;
 
 module.exports = lmdbDropAllAttributes;
 

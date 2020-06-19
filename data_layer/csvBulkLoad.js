@@ -5,6 +5,7 @@ const validator = require('../validation/csvLoadValidator');
 const request_promise = require('request-promise-native');
 const hdb_terms = require('../utility/hdbTerms');
 const hdb_utils = require('../utility/common_utils');
+const hdb_errors = require('../utility/errors/commonErrors');
 const logger = require('../utility/logging/harper_logger');
 const papa_parse = require('papaparse');
 const fs = require('fs-extra');
@@ -170,7 +171,7 @@ async function downloadCSVFile(url) {
  * @param url
  */
 function validateResponse(response, url) {
-    if (response.statusCode !== hdb_terms.HTTP_STATUS_CODES.OK) {
+    if (response.statusCode !== hdb_errors.HTTP_STATUS_CODES.OK) {
         throw new Error(`CSV Load failed from URL: ${url}, status code: ${response.statusCode}, message: ${response.statusMessage}`);
     }
 
