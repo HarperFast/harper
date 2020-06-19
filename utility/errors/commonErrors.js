@@ -24,10 +24,14 @@ const HTTP_STATUS_CODES = {
     NETWORK_AUTHENTICATION_REQUIRED: 511
 };
 
-const DEFAULT_ERROR_MSG = 'There was an error processing your request.  Please check the logs and try again.';
+const DEFAULT_ERROR_MSGS = {
+    500: 'There was an error processing your request.  Please check the logs and try again.'
+};
+
+const DEFAULT_ERROR_RESP = DEFAULT_ERROR_MSGS[HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR];
 
 const COMMON_ERROR_MSGS = {
-    500: DEFAULT_ERROR_MSG
+    SU_CU_ROLE_NO_PERMS_ALLOWED: 'Roles with `cluster_user` or `super_user` set to true cannot have other permissions set.'
 };
 
 //NOTE: Any changes made to these errors must also be made to unitTests/commonTestErrors.js otherwise the unit tests will fail
@@ -63,7 +67,8 @@ const LMDB_ERRORS_ENUM = {
 
 module.exports = {
     COMMON_ERROR_MSGS,
-    DEFAULT_ERROR_MSG,
+    DEFAULT_ERROR_MSGS,
+    DEFAULT_ERROR_RESP,
     LMDB_ERRORS_ENUM,
     HTTP_STATUS_CODES
 };
