@@ -404,7 +404,7 @@ describe(`Test verifyPermsAst`, function () {
         let result = op_auth.verifyPermsAst(temp_select, perms_user.hdb_user, search.search.name);
         assert.equal(result.length, 0);
     });
-    it(`Test select wildcard with read attribute restriction false, expect false`, function () {
+    xit(`Test select wildcard with read attribute restriction false, expect false`, function () {
         let test_json = clone(TEST_SELECT_WILDCARD_JSON);
         let temp_select = new alasql.yy.Select(test_json);
         let perms_user = clone(TEST_JSON);

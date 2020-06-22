@@ -147,10 +147,10 @@ function customValidate(object) {
         }
     }
     if (validationErrors.length > 0) {
-        let validation_message = validationErrors.join('. ');
-        // validationErrors.forEach( (valError)=> {
-        //     validation_message += `${valError.message}. `;
-        // });
+        let validation_message = "";
+        validationErrors.forEach(valError => {
+            validation_message += `${valError.message}. `;
+        });
 
         return new Error(validation_message);
     }
@@ -162,7 +162,7 @@ function validateNoSUPerms(obj) {
     if (operation === terms.OPERATIONS_ENUM.ADD_ROLE || operation === terms.OPERATIONS_ENUM.ALTER_ROLE) {
         //Check if role type is super user or cluster user
         const is_su_cu_role = permission.super_user || permission.cluster_user;
-        const has_perms = Object.keys(permission).length > 1;
+        const has_perms = permission.attribute_restrictions && Object.keys(permission.attribute_restrictions).length > 1;
         if (is_su_cu_role && has_perms) {
             throw handleHDBError(new Error(), HTTP_STATUS_CODES.BAD_REQUEST, COMMON_ERROR_MSGS.SU_CU_ROLE_NO_PERMS_ALLOWED);
         }

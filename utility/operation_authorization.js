@@ -386,8 +386,10 @@ function checkAttributePerms(record_attributes, role_attribute_restrictions, ope
  */
 function getRecordAttributes(json) {
     let affected_attributes = new Set();
-    affected_attributes.add(json.search_attribute);
     try {
+        if (json && json.search_attribute) {
+            affected_attributes.add(json.search_attribute);
+        }
         if (!json.records || json.records.length === 0) {
             if (!json.get_attributes || !json.get_attributes.length === 0) {
                 return affected_attributes;
