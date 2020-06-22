@@ -8,9 +8,10 @@ const lmdbProcessRows = require('../lmdbUtility/lmdbProcessRows');
 const lmdb_insert_records = require('../../../../utility/lmdb/writeUtility').insertRecords;
 const environment_utility = require('../../../../utility/lmdb/environmentUtility');
 const path = require('path');
+const LMDBTransactionObject = require('../lmdbUtility/LMDBTransactionObject');
 
 const lmdb_check_new_attributes = require('../lmdbUtility/lmdbCheckForNewAttributes');
-const {getBaseSchemaPath} = require('../lmdbUtility/initializePaths');
+const {getBaseSchemaPath, getTransactionStorePath} = require('../lmdbUtility/initializePaths');
 
 module.exports = lmdbCreateRecords;
 
@@ -40,6 +41,11 @@ async function lmdbCreateRecords(insert_obj) {
         let env_base_path = path.join(getBaseSchemaPath(), insert_obj.schema.toString());
         let environment = await environment_utility.openEnvironment(env_base_path, insert_obj.table);
         let lmdb_response = lmdb_insert_records(environment, schema_table.hash_attribute, attributes, insert_obj.records);
+
+
+        let txn_env_base_path = path.join(getTransactionStorePath(), insert_obj.schema.toString());
+        let txn_environment = await environment_utility.openEnvironment(txn_env_base_path, insert_obj.table);
+        let txn_object = new LMDBTransactionObject(insert_obj.operation, insert_obj.records, undefined, insert_obj.hdb_user.username, lmdb_response.txn_time);
 
         return {
             written_hashes: lmdb_response.written_hashes,

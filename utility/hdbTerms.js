@@ -68,12 +68,6 @@ const ID_ATTRIBUTE_STRING = 'id';
 
 const CLUSTERING_PAYLOAD_FILE_NAME = '.scPayload.json';
 
-const TRANSACTIONS_DBI_NAMES_ENUM = {
-    TIMESTAMP: 'timestamp',
-    HASH_VALUE: 'hash_value',
-    USER_NAME: 'user_name'
-};
-
 const CLUSTERING_FOLDER_NAMES_ENUM = {
     CLUSTERING_FOLDER: 'clustering',
     CONNECTIONS_FOLDER: 'connections',
@@ -577,6 +571,5 @@ module.exports = {
     PermissionAttributeResponseObject,
     UNAUTHORIZED_PERMISSION_NAME,
     SEARCH_WILDCARDS,
-    FUNC_VAL,
-    TRANSACTIONS_DBI_NAMES_ENUM
+    FUNC_VAL
 };

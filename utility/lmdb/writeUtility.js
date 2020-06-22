@@ -43,11 +43,13 @@ function insertRecords(env, hash_attribute, write_attributes , records){
 
         txn = env.beginTxn();
 
+
         let result = {
             written_hashes: [],
             skipped_hashes: []
         };
-        for(let k = 0; k < records.length; k++){
+        let k = records.length;
+        while(k--){
             let record = records[k];
             setTimestamps(record, true);
 
@@ -89,6 +91,7 @@ function insertRecords(env, hash_attribute, write_attributes , records){
             } catch(e){
                 if(e.message.startsWith('MDB_KEYEXIST') === true){
                     result.skipped_hashes.push(cast_hash_value);
+                    records.splice(k, 1);
                     continue;
                 }else{
                     throw e;
@@ -98,6 +101,7 @@ function insertRecords(env, hash_attribute, write_attributes , records){
             result.written_hashes.push(cast_hash_value);
         }
 
+        result.txn_time = common.getMicroTime();
         txn.commit();
 
         return result;
@@ -151,8 +155,9 @@ function updateRecords(env, hash_attribute, write_attributes , records){
 
         //create write transaction to lock data changes rows
         txn = env.beginTxn();
-
+        let txn_time = common.getMicroTime();
         let result = {
+            txn_time: txn_time,
             written_hashes: [],
             skipped_hashes: []
         };
@@ -181,6 +186,7 @@ function updateRecords(env, hash_attribute, write_attributes , records){
                 if(dbi === undefined){
                     continue;
                 }
+                let value = record[key];
                 let existing_value = existing_record[key];
 
                 //
@@ -287,5 +293,6 @@ function validateWrite(env, hash_attribute, write_attributes , records){
 
 module.exports = {
     insertRecords,
-    updateRecords
+    updateRecords,
+    writeTransaction
 };

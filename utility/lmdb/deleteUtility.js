@@ -31,10 +31,7 @@ function deleteRecords(env, hash_attribute, ids){
         throw new Error(LMDB_ERRORS.IDS_MUST_BE_ARRAY);
     }
 
-    let deleted = {
-        deleted:[],
-        skipped:[]
-    };
+
     let txn = undefined;
     try {
 
@@ -43,6 +40,13 @@ function deleteRecords(env, hash_attribute, ids){
         environment_util.initializeDBIs(env, hash_attribute, all_dbis);
         //create write transaction, this will lock out other writes/deletes out until complete
         txn = env.beginTxn();
+        let txn_time = common.getMicroTime();
+
+        let deleted = {
+            txn_time: txn_time,
+            deleted:[],
+            skipped:[]
+        };
 
         for(let x = 0; x < ids.length; x++){
             ids[x] = ids[x].toString();
