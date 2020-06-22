@@ -31,7 +31,8 @@ const DEFAULT_ERROR_MSGS = {
 const DEFAULT_ERROR_RESP = DEFAULT_ERROR_MSGS[HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR];
 
 const COMMON_ERROR_MSGS = {
-    SU_CU_ROLE_NO_PERMS_ALLOWED: 'Roles with `cluster_user` or `super_user` set to true cannot have other permissions set.'
+    SU_CU_ROLE_NO_PERMS_ALLOWED: 'Roles with `cluster_user` or `super_user` set to true cannot have other permissions set.',
+    CU_ROLE_NO_PERMS_MIX: 'cluster_user permission cannot be mixed with other permissions'
 };
 
 //NOTE: Any changes made to these errors must also be made to unitTests/commonTestErrors.js otherwise the unit tests will fail

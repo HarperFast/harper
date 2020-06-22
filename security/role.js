@@ -78,7 +78,6 @@ async function addRole(role){
         throw err;
     });
 
-    //TODO: what is this?
     if(search_role && search_role.length > 0) {
         search_role = scrubRoleDetails(search_role);
         return search_role[0];

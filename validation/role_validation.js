@@ -57,7 +57,7 @@ function customValidate(object) {
             validationErrors.push(validate.isBoolean(object.permission.cluster_user));
 
         if(Object.keys(object.permission).length > 1){
-            validationErrors.push(new Error('cluster_user permission cannot be mixed with other permissions'));
+            validationErrors.push(new Error(COMMON_ERROR_MSGS.CU_ROLE_NO_PERMS_MIX));
         }
     }
 
@@ -66,7 +66,7 @@ function customValidate(object) {
             validationErrors.push(validate.isBoolean(object.permission.super_user));
     }
 
-    //TODO - check for permission issue here and add to validationErrors array
+    //TODO - check for permission issue here and add to validationErrors array in CORE-1047
     for (let item in object.permission) {
         if (ROLE_TYPES.indexOf(item) < 0) {
             let schema = object.permission[item];
