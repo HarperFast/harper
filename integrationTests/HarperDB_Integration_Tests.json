@@ -22229,20 +22229,22 @@
 								"id": "bf64810d-60bb-467f-b9e4-8c5ea21b23b4",
 								"type": "text/javascript",
 								"exec": [
-									"pm.test(\"Status code is 403\", function () {",
-									"    pm.response.to.have.status(403);",
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
 									"});",
 									"",
-									"pm.test(\"required_table_permissions is not empty\", function () {",
-									"    var jsonData = pm.response.json();",
-									"    pm.expect(jsonData.unauthorized_access[0].required_attribute_permissions[0].attribute_name).to.eql(\"companyname\");",
-									"});",
+									"// TODO - Sam will update these tests to confirm that a SELECT * only returns attributes that the user has permissions for to.",
+									"// pm.test(\"required_table_permissions is not empty\", function () {",
+									"//     var jsonData = pm.response.json();",
+									"//     pm.expect(jsonData.unauthorized_access[0].required_attribute_permissions[0].attribute_name).to.eql(\"companyname\");",
+									"// });",
 									"",
-									"pm.test(\"required_attribute_permissions is read\", function () {",
-									"    var jsonData = pm.response.json();",
-									"    pm.expect(jsonData.unauthorized_access[0].required_attribute_permissions[0].required_permissions[0]).to.eql(\"read\");",
-									"});"
-								]
+									"// pm.test(\"required_attribute_permissions is read\", function () {",
+									"//     var jsonData = pm.response.json();",
+									"//     pm.expect(jsonData.unauthorized_access[0].required_attribute_permissions[0].required_permissions[0]).to.eql(\"read\");",
+									"// });"
+								],
+								"type": "text/javascript"
 							}
 						}
 					],
@@ -24966,10 +24968,12 @@
 								"id": "8cb1fddb-2ec6-40fb-bb08-416146d33445",
 								"type": "text/javascript",
 								"exec": [
-									"pm.test(\"Status code is 403\", function () {",
-									"    pm.response.to.have.status(403);",
+									"// TODO - Sam will update this tests to confirm that a SELECT * only returns attributes that the user has permissions for to.",
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
 									"});"
-								]
+								],
+								"type": "text/javascript"
 							}
 						}
 					],

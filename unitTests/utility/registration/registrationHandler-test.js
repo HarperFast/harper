@@ -13,7 +13,7 @@ const reg = rewire('../../../utility/registration/registrationHandler');
 const hdb_license = require('../../../utility/registration/hdb_license');
 const version = require('../../../bin/version');
 const log = require('../../../utility/logging/harper_logger');
-const check_permissions = require('../../../utility/check_permissions');
+const install_user_permission = require('../../../utility/install_user_permission');
 
 const parse_orig = reg.__get__('parseLicense');
 
@@ -97,7 +97,7 @@ describe(`Test getFingerprint`, function () {
 
     beforeEach(() => {
         sandbox = sinon.createSandbox();
-        check_perms_stub = sandbox.stub(check_permissions, "checkPermission").returns();
+        check_perms_stub = sandbox.stub(install_user_permission, "checkPermission").returns();
     });
     afterEach(() => {
         sandbox.restore();
