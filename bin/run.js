@@ -9,7 +9,7 @@ const colors = require("colors/safe");
 const logger = require('../utility/logging/harper_logger');
 const pjson = require(`${__dirname}/../package.json`);
 const terms = require('../utility/hdbTerms');
-let checkPermissions = require('../utility/check_permissions');
+const install_user_permission = require('../utility/install_user_permission');
 const { isHarperRunning } = require('../utility/common_utils');
 const { promisify } = require('util');
 const stop = require('./stop');
@@ -304,7 +304,7 @@ function isForegroundProcess(){
 
 async function checkPermission() {
     try {
-        checkPermissions.checkPermission();
+        install_user_permission.checkPermission();
     } catch(err) {
         throw err;
     }
