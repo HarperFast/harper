@@ -1,6 +1,8 @@
 "use strict";
 const lmdb = require('node-lmdb');
 const environment_util = require('./environmentUtility');
+const InsertRecordsResponseObject = require('./InsertRecordsResponseObject');
+const UpdateRecordsResponseObject = require('./UpdateRecordsResponseObject');
 const common = require('./commonUtility');
 const search_utility = require('./searchUtility');
 const LMDB_ERRORS = require('../commonErrors').LMDB_ERRORS_ENUM;
@@ -42,12 +44,7 @@ function insertRecords(env, hash_attribute, write_attributes , records){
         environment_util.initializeDBIs(env, hash_attribute, write_attributes);
 
         txn = env.beginTxn();
-
-
-        let result = {
-            written_hashes: [],
-            skipped_hashes: []
-        };
+        let result = new InsertRecordsResponseObject();
         let k = records.length;
         while(k--){
             let record = records[k];
@@ -155,15 +152,12 @@ function updateRecords(env, hash_attribute, write_attributes , records){
 
         //create write transaction to lock data changes rows
         txn = env.beginTxn();
-        let txn_time = common.getMicroTime();
-        let result = {
-            txn_time: txn_time,
-            written_hashes: [],
-            skipped_hashes: []
-        };
+
+        let result = new UpdateRecordsResponseObject();
 
         //iterate update records
-        for(let x = 0; x < records.length; x++){
+        let x = records.length;
+        while(x--){
             let record = records[x];
             setTimestamps(record, false);
 
@@ -174,8 +168,11 @@ function updateRecords(env, hash_attribute, write_attributes , records){
 
             if(existing_record === null){
                 result.skipped_hashes.push(cast_hash_value);
+                records.splice(x, 1);
                 continue;
             }
+
+            result.original_records.push(existing_record);
 
             //iterate the entries from the record
             for (let [key, value] of Object.entries(record)) {
@@ -233,12 +230,13 @@ function updateRecords(env, hash_attribute, write_attributes , records){
 
             }
 
-            let merged_record = Object.assign(existing_record, record);
+            let merged_record = Object.assign({}, existing_record, record);
             txn.putString(env.dbis[hash_attribute], hash_value.toString(), JSON.stringify(merged_record));
             result.written_hashes.push(cast_hash_value);
         }
 
         //commit transaction
+        result.txn_time = common.getMicroTime();
         txn.commit();
 
         return result;
@@ -293,6 +291,5 @@ function validateWrite(env, hash_attribute, write_attributes , records){
 
 module.exports = {
     insertRecords,
-    updateRecords,
-    writeTransaction
+    updateRecords
 };

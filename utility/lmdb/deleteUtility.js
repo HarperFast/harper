@@ -7,6 +7,7 @@ const search_utility = require('./searchUtility');
 const lmdb_terms = require('./terms');
 const log = require('../logging/harper_logger');
 const hdb_utils = require('../common_utils');
+const DeleteRecordsResponseObject = require('./DeleteRecordsResponseObject');
 
 /**
  *  deletes rows and their entries in all indices
@@ -40,13 +41,8 @@ function deleteRecords(env, hash_attribute, ids){
         environment_util.initializeDBIs(env, hash_attribute, all_dbis);
         //create write transaction, this will lock out other writes/deletes out until complete
         txn = env.beginTxn();
-        let txn_time = common.getMicroTime();
 
-        let deleted = {
-            txn_time: txn_time,
-            deleted:[],
-            skipped:[]
-        };
+        let deleted = new DeleteRecordsResponseObject();
 
         for(let x = 0; x < ids.length; x++){
             ids[x] = ids[x].toString();
@@ -86,12 +82,14 @@ function deleteRecords(env, hash_attribute, ids){
                     }
                 }
                 deleted.deleted.push(cast_hash_value);
+                deleted.original_records.push(record);
             }catch(e){
                 log.warn(e);
                 deleted.skipped.push(cast_hash_value);
             }
         }
 
+        deleted.txn_time = common.getMicroTime();
         //commit the transaction
         txn.commit();
 

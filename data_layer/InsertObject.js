@@ -2,6 +2,11 @@
 
 /**
  * This class represents the data that is passed into the Insert functions.
+ * @param {String} operation
+ * @param {String} schema
+ * @param {String} table
+ * @param {String} hash_attribute
+ * @param {Array.<Object>} records
  */
 class InsertObject {
     /**
