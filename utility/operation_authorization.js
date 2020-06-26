@@ -26,6 +26,7 @@ const data_export = require('../data_layer/export');
 const reg = require('./registration/registrationHandler');
 const stop = require('../bin/stop');
 const terms = require('./hdbTerms');
+const permsTranslator = require('../security/permissionsTranslator');
 
 const required_permissions = new Map();
 const DELETE_PERM = 'delete';
@@ -192,6 +193,8 @@ function verifyPermsAst(ast, user_object, operation) {
  * @returns {Array} - empty array if permissions match, errors are an array of objects.
  */
 function hasPermissions(user_object, op, schema_table_map ) {
+    const full_role_perms = permsTranslator.getRolePermissions(user_object.role);
+    user_object.role.permission = full_role_perms;
     let unauthorized_table = [];
     if (common_utils.arrayHasEmptyOrZeroLengthValues([user_object,op,schema_table_map])) {
         harper_logger.info(`hasPermissions has an invalid parameter`);

@@ -449,6 +449,13 @@ class PermissionAttributeResponseObject {
     }
 }
 
+const PERMS_CRUD_ENUM = {
+    READ: 'read',
+    INSERT: 'insert',
+    UPDATE: 'update',
+    DELETE: 'delete'
+};
+
 const SEARCH_WILDCARDS = ['*', '%'];
 
 const UNAUTHORIZED_PERMISSION_NAME = 'unauthorized_access';
@@ -544,6 +551,7 @@ module.exports = {
     JAVASCRIPT_EXTENSION,
     PermissionResponseObject,
     PermissionAttributeResponseObject,
+    PERMS_CRUD_ENUM,
     UNAUTHORIZED_PERMISSION_NAME,
     SEARCH_WILDCARDS,
     FUNC_VAL
