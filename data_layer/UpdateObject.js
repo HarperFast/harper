@@ -1,21 +1,20 @@
 'use strict';
+const OPERATIONS_ENUM = require('../utility/hdbTerms').OPERATIONS_ENUM;
 
 /**
- *
- * @param {string} operation
+ * opject representing an update operation
  * @param {String} schema
  * @param {string} table
  * @param {Array.<Object>} records
  */
 class UpdateObject {
     /**
-     * @param {string} operation
      * @param {String} schema
      * @param {string} table
      * @param {Array.<Object>} records
      */
-    constructor(operation, schema, table, records) {
-        this.operation = operation;
+    constructor(schema, table, records) {
+        this.operation = OPERATIONS_ENUM.UPDATE;
         this.schema = schema;
         this.table = table;
         this.records = records;

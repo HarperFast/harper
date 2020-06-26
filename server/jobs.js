@@ -153,7 +153,7 @@ async function addJob(json_body) {
         }
     }
 
-    let insert_object = new Insert_Object('insert', hdb_terms.SYSTEM_SCHEMA_NAME, hdb_terms.SYSTEM_TABLE_NAMES.JOB_TABLE_NAME, 'id', [new_job]);
+    let insert_object = new Insert_Object(hdb_terms.SYSTEM_SCHEMA_NAME, hdb_terms.SYSTEM_TABLE_NAMES.JOB_TABLE_NAME, 'id', [new_job]);
     let insert_result = undefined;
     try {
         insert_result = await p_insert(insert_object);
@@ -238,7 +238,7 @@ async function updateJob(job_object) {
         job_object.end_datetime = moment().valueOf();
     }
 
-    let update_object = new UpdateObject(hdb_terms.OPERATIONS_ENUM.UPDATE, hdb_terms.SYSTEM_SCHEMA_NAME, hdb_terms.SYSTEM_TABLE_NAMES.JOB_TABLE_NAME, [job_object]);
+    let update_object = new UpdateObject(hdb_terms.SYSTEM_SCHEMA_NAME, hdb_terms.SYSTEM_TABLE_NAMES.JOB_TABLE_NAME, [job_object]);
     let update_result = undefined;
     try {
         update_result = await p_insert_update(update_object);

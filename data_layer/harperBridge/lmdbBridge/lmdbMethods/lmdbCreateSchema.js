@@ -20,7 +20,7 @@ async function lmdbCreateSchema(create_schema_obj) {
             createddate: '' + Date.now()
         }
     ];
-    let insert_object = new InsertObject(hdb_terms.OPERATIONS_ENUM.INSERT, hdb_terms.SYSTEM_SCHEMA_NAME, hdb_terms.SYSTEM_TABLE_NAMES.SCHEMA_TABLE_NAME, undefined, records);
+    let insert_object = new InsertObject(hdb_terms.SYSTEM_SCHEMA_NAME, hdb_terms.SYSTEM_TABLE_NAMES.SCHEMA_TABLE_NAME, undefined, records);
 
     try {
         let results = await lmdb_create_records(insert_object);
