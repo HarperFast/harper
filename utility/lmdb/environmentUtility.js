@@ -151,6 +151,7 @@ async function createEnvironment(base_path, env_name, is_txn = false) {
                 global.lmdb_map = Object.create(null);
             }
             let full_name = getCachedEnvironmentName(base_path, env_name, is_txn);
+            env[lmdb_terms.ENVIRONMENT_NAME_KEY] = full_name;
             global.lmdb_map[full_name] = env;
 
             return env;
@@ -192,7 +193,7 @@ async function openEnvironment(base_path, env_name, is_txn = false){
     for(let x = 0; x < dbis.length; x++){
         openDBI(env, dbis[x]);
     }
-
+    env[lmdb_terms.ENVIRONMENT_NAME_KEY] = full_name;
     global.lmdb_map[full_name] = env;
 
     return env;

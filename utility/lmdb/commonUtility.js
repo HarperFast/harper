@@ -4,6 +4,7 @@ const LMDB_ERRORS = require('../errors/commonErrors').LMDB_ERRORS_ENUM;
 const lmdb = require('node-lmdb');
 const lmdb_terms = require('./terms');
 const Buffer = require('buffer').Buffer;
+const microtime = require('microtime');
 
 /**
  * validates the env argument
@@ -90,9 +91,20 @@ function convertKeyValueFromSearch(raw_value, key_type){
     return value;
 }
 
+/**
+ * Gets the time in sub milliseconds & converts it to a decimal number where the milliseconds from epoch are on the left of decimal & sub-millisecond time is on the right
+ * @returns {number}
+ */
+function getMicroTime(){
+    let full_micro = microtime.now().toString();
+    let pos = full_micro.length - 3;
+    return Number(full_micro.slice(0, pos) + '.' + full_micro.slice(pos));
+}
+
 module.exports = {
     validateEnv,
     stringifyData,
     convertKeyValueToWrite,
-    convertKeyValueFromSearch
+    convertKeyValueFromSearch,
+    getMicroTime
 };
