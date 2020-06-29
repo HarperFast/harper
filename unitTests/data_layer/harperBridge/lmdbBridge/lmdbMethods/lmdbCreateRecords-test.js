@@ -219,7 +219,7 @@ describe('Test lmdbCreateRecords module', ()=>{
                     "age",
                     "height"
                 ],
-                written_hashes: [ 10, 12, 9, 8 ],
+                written_hashes: [ 8,9,12,10 ],
                 skipped_hashes: [],
                 schema_table: {
                     attributes: SCHEMA_TABLE_TEST.attributes,
@@ -253,7 +253,7 @@ describe('Test lmdbCreateRecords module', ()=>{
                     "age",
                     "height"
                 ],
-                written_hashes: [ 10, 12, 9, 8 ],
+                written_hashes: [ 8,9,12,10 ],
                 skipped_hashes: [],
                 schema_table: {
                     attributes: SCHEMA_TABLE_TEST.attributes,
@@ -339,8 +339,8 @@ describe('Test lmdbCreateRecords module', ()=>{
             insert_obj.records = new_records;
             let expected_return_result = {
                 new_attributes: [],
-                written_hashes: [ 1232, 123 ],
-                skipped_hashes: [ 9, 8 ],
+                written_hashes: [ 123, 1232 ],
+                skipped_hashes: [ 8,9 ],
                 schema_table: {
                     attributes: NO_NEW_ATTR_TEST,
                     hash_attribute: 'id',
@@ -363,7 +363,7 @@ describe('Test lmdbCreateRecords module', ()=>{
 
             let expected_result = {
                 written_hashes: [],
-                skipped_hashes: [ 10, 12, 9, 8 ],
+                skipped_hashes: [ 8,9,12,10 ],
                 schema_table:
                     { attributes: NO_NEW_ATTR_TEST,
                         hash_attribute: 'id',

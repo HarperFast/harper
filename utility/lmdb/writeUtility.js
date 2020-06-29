@@ -100,7 +100,8 @@ function insertRecords(env, hash_attribute, write_attributes , records){
 
         result.txn_time = common.getMicroTime();
         txn.commit();
-
+        result.written_hashes = result.written_hashes.reverse();
+        result.skipped_hashes = result.skipped_hashes.reverse();
         return result;
     }catch(e){
         if(txn !== undefined){
@@ -238,7 +239,8 @@ function updateRecords(env, hash_attribute, write_attributes , records){
         //commit transaction
         result.txn_time = common.getMicroTime();
         txn.commit();
-
+        result.written_hashes = result.written_hashes.reverse();
+        result.skipped_hashes = result.skipped_hashes.reverse();
         return result;
     }catch(e){
         if(txn !== undefined){
