@@ -65,8 +65,7 @@ function customValidate(object) {
         if (!validate.isBoolean(object.permission.super_user))
             validationErrors.push(validate.isBoolean(object.permission.super_user));
     }
-
-    //TODO - check for permission issue here and add to validationErrors array in CORE-1047
+    
     for (let item in object.permission) {
         if (ROLE_TYPES.indexOf(item) < 0) {
             let schema = object.permission[item];
@@ -140,6 +139,16 @@ function customValidate(object) {
                                 validationErrors.push(new Error('attribute_restriction.update must be boolean'));
                             if(!validate.isBoolean(restriction.delete))
                                 validationErrors.push(new Error('attribute_restriction.delete must be boolean'));
+                            //confirm that false table perms are not set to true for an attribute
+                            if(!table.read && restriction.read) {
+                                validationErrors.push(new Error(`Read perms for attribute: '${restriction.attribute_name}' can't be true if perm for table: '${t}' is false`));
+                            }
+                            if(!table.insert && restriction.insert) {
+                                validationErrors.push(new Error(`Insert perms for attribute: '${restriction.attribute_name}' can't be true if perm for table: '${t}' is false`));
+                            }
+                            if(!table.update && restriction.update) {
+                                validationErrors.push(new Error(`Update perms for attribute: '${restriction.attribute_name}' can't be true if perm for table: '${t}' is false`));
+                            }
                         }
                     }
                 }
@@ -152,7 +161,7 @@ function customValidate(object) {
             validation_message += `${valError.message}. `;
         });
 
-        return new Error(validation_message);
+        return handleHDBError(new Error(), HTTP_STATUS_CODES.BAD_REQUEST, validation_message);
     }
     return null;
 }

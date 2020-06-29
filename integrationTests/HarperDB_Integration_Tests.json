@@ -20782,14 +20782,14 @@
 							"script": {
 								"id": "316a2429-2645-442f-80e9-969c35d5a8cb",
 								"exec": [
-									"pm.test(\"Status code is 500\", function () {",
-									"    pm.response.to.have.status(500);",
+									"pm.test(\"Status code is 400\", function () {",
+									"    pm.response.to.have.status(400);",
 									"});",
 									"",
 									"pm.test(\"Response has error\", ()=>{",
 									"    pm.response.to.have.jsonBody('error');",
 									"    var jsonData = pm.response.json();",
-									"    pm.expect(jsonData.error).to.contain('Error: cluster_user permission cannot be mixed with other permissions.');",
+									"    pm.expect(jsonData.error).to.contain('cluster_user permission cannot be mixed with other permissions.');",
 									"});"
 								],
 								"type": "text/javascript"
@@ -29739,6 +29739,293 @@
 		{
 			"name": "9. Alter Role Tests",
 			"item": [
+				{
+					"name": "Add Role - check errors",
+					"item": [
+						{
+							"name": "Add role with mismatched table/attr READ perms - expect fail",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "0327d710-b0c1-43f1-ba75-a52c17120ecc",
+										"exec": [
+											"pm.test(\"Status code is 400\", function () {",
+											"    pm.response.to.have.status(400);",
+											"});",
+											"",
+											"pm.test(\"Perms mismatch error msg is returned\", function() {",
+											"    responseData = JSON.parse(responseBody);",
+											"    pm.expect(responseData.error).to.equal(\"Read perms for attribute: 'description' can't be true if perm for table: 'categories' is false. \")",
+											"})"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\"operation\":\"add_role\",\n\"role\":\"developer_test\",\n\"permission\":{\n  \"super_user\": false,\n  \"northnwd\":{\n   \"tables\": {\n      \"categories\": {\n         \"read\":false,\n         \"insert\":true,\n         \"update\":true,\n         \"delete\":false,\n         \"attribute_restrictions\":[\n           {\n               \"attribute_name\": \"description\",\n               \"read\":true,\n               \"insert\":true,\n               \"update\":true,\n               \"delete\":false\n            }\n           ]\n      }\n   }\n}\n  }\n\n}",
+									"options": {
+										"raw": {}
+									}
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "Add role with mismatched table/attr INSERT perms - expect fail",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "2252102f-6610-4cb5-a032-37d3da0a616f",
+										"exec": [
+											"pm.test(\"Status code is 400\", function () {",
+											"    pm.response.to.have.status(400);",
+											"});",
+											"",
+											"pm.test(\"Perms mismatch error msg is returned\", function() {",
+											"    responseData = JSON.parse(responseBody);",
+											"    pm.expect(responseData.error).to.equal(\"Insert perms for attribute: 'description' can't be true if perm for table: 'categories' is false. \")",
+											"})"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\"operation\":\"add_role\",\n\"role\":\"developer_test\",\n\"permission\":{\n  \"super_user\": false,\n  \"northnwd\":{\n   \"tables\": {\n      \"categories\": {\n         \"read\":true,\n         \"insert\":false,\n         \"update\":true,\n         \"delete\":false,\n         \"attribute_restrictions\":[\n           {\n               \"attribute_name\": \"description\",\n               \"read\":true,\n               \"insert\":true,\n               \"update\":true,\n               \"delete\":false\n            }\n           ]\n      }\n   }\n}\n  }\n\n}",
+									"options": {
+										"raw": {}
+									}
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "Add role with mismatched table/attr UPDATE perms - expect fail",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "b528353a-7de7-48db-97f8-d1e66423d324",
+										"exec": [
+											"pm.test(\"Status code is 400\", function () {",
+											"    pm.response.to.have.status(400);",
+											"});",
+											"",
+											"pm.test(\"Perms mismatch error msg is returned\", function() {",
+											"    responseData = JSON.parse(responseBody);",
+											"    pm.expect(responseData.error).to.equal(\"Update perms for attribute: 'description' can't be true if perm for table: 'categories' is false. \")",
+											"})"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\"operation\":\"add_role\",\n\"role\":\"developer_test\",\n\"permission\":{\n  \"super_user\": false,\n  \"northnwd\":{\n   \"tables\": {\n      \"categories\": {\n         \"read\":true,\n         \"insert\":true,\n         \"update\":false,\n         \"delete\":false,\n         \"attribute_restrictions\":[\n           {\n               \"attribute_name\": \"description\",\n               \"read\":true,\n               \"insert\":true,\n               \"update\":true,\n               \"delete\":false\n            }\n           ]\n      }\n   }\n}\n  }\n\n}",
+									"options": {
+										"raw": {}
+									}
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "Add role with multiple mismatched table/attr perms - expect fail",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "949f268f-a0ee-444f-a4da-2c02f1ff57f9",
+										"exec": [
+											"pm.test(\"Status code is 400\", function () {",
+											"    pm.response.to.have.status(400);",
+											"});",
+											"",
+											"pm.test(\"Perms mismatch error msg is returned\", function() {",
+											"    responseData = JSON.parse(responseBody);",
+											"    pm.expect(responseData.error).to.equal(\"Read perms for attribute: 'description' can't be true if perm for table: 'categories' is false. Update perms for attribute: 'description' can't be true if perm for table: 'categories' is false. \")",
+											"})"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\"operation\":\"add_role\",\n\"role\":\"developer_test\",\n\"permission\":{\n  \"super_user\": false,\n  \"northnwd\":{\n   \"tables\": {\n      \"categories\": {\n         \"read\":false,\n         \"insert\":true,\n         \"update\":false,\n         \"delete\":false,\n         \"attribute_restrictions\":[\n           {\n               \"attribute_name\": \"description\",\n               \"read\":true,\n               \"insert\":true,\n               \"update\":true,\n               \"delete\":false\n            }\n           ]\n      }\n   }\n}\n  }\n\n}",
+									"options": {
+										"raw": {}
+									}
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						}
+					],
+					"protocolProfileBehavior": {},
+					"_postman_isSubFolder": true
+				},
 				{
 					"name": "SQL Add non SU role Copy",
 					"event": [
