@@ -464,9 +464,22 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
 
         setUp().then(()=>{});
 
+        let keep_alive_timeout = env.get(terms.HDB_SETTINGS_NAMES.SERVER_KEEP_ALIVE_TIMEOUT_KEY);
+        let headers_timeout = env.get(terms.HDB_SETTINGS_NAMES.SERVER_HEADERS_TIMEOUT_KEY);
+
         if (props_http_secure_on &&
             (props_http_secure_on === true || props_http_secure_on.toUpperCase() === TRUE_COMPARE_VAL)) {
             secureServer = httpsecure.createServer(credentials, app);
+
+            if(keep_alive_timeout !== undefined){
+                secureServer.keepAliveTimeout = keep_alive_timeout;
+            }
+
+            if(headers_timeout !== undefined){
+                secureServer.headersTimeout = headers_timeout;
+            }
+
+            secureServer.keepAliveTimeout = 59000;
             secureServer.setTimeout(server_timeout ? server_timeout : DEFAULT_SERVER_TIMEOUT);
             secureServer.listen(env.get(PROPS_HTTP_SECURE_PORT_KEY), function () {
                 harper_logger.info(`HarperDB ${pjson.version} HTTPS Server running on ${env.get(PROPS_HTTP_SECURE_PORT_KEY)}`);
@@ -486,6 +499,15 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
                     delete server_connections[key];
                 });
             });
+
+            if(keep_alive_timeout !== undefined){
+                httpServer.keepAliveTimeout = keep_alive_timeout;
+            }
+
+            if(headers_timeout !== undefined){
+                httpServer.headersTimeout = headers_timeout;
+            }
+
             httpServer.setTimeout(server_timeout ? server_timeout : DEFAULT_SERVER_TIMEOUT);
             httpServer.listen(env.get(PROPS_HTTP_PORT_KEY), function () {
                 harper_logger.info(`HarperDB ${pjson.version} HTTP Server running on ${env.get(PROPS_HTTP_PORT_KEY)}`);
