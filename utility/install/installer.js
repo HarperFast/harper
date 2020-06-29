@@ -628,6 +628,10 @@ function createSettingsFile(mount_status, callback) {
             `${HDB_SETTINGS_NAMES.CORS_WHITELIST_KEY} =\n` +
             `   ;Length of time in milliseconds after which a request will timeout.  Defaults to 120,000 ms (2 minutes).\n` +
             `${HDB_SETTINGS_NAMES.PROPS_SERVER_TIMEOUT_KEY} = 120000\n` +
+            `   ;The number of milliseconds of inactivity a server needs to wait for additional incoming data, after it has finished writing the last response.  Defaults to 5,000 ms (5 seconds).\n` +
+            `${HDB_SETTINGS_NAMES.SERVER_KEEP_ALIVE_TIMEOUT_KEY} = 5000\n` +
+            `   ;Limit the amount of time the parser will wait to receive the complete HTTP headers..  Defaults to 60,000 ms (1 minute).\n` +
+            `${HDB_SETTINGS_NAMES.SERVER_HEADERS_TIMEOUT_KEY} = 60000\n` +
             `   ;Set to control amount of logging generated.  Accepted levels are trace, debug, warn, error, fatal.\n` +
             `${HDB_SETTINGS_NAMES.LOG_LEVEL_KEY} = warn\n` +
             `   ;Setting LOGGER to 1 uses the WINSTON logger.\n` +
