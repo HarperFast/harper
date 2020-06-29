@@ -479,7 +479,6 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
                 secureServer.headersTimeout = headers_timeout;
             }
 
-            secureServer.keepAliveTimeout = 59000;
             secureServer.setTimeout(server_timeout ? server_timeout : DEFAULT_SERVER_TIMEOUT);
             secureServer.listen(env.get(PROPS_HTTP_SECURE_PORT_KEY), function () {
                 harper_logger.info(`HarperDB ${pjson.version} HTTPS Server running on ${env.get(PROPS_HTTP_SECURE_PORT_KEY)}`);
