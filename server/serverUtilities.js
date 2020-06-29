@@ -16,6 +16,7 @@ const jobs = require('./jobs');
 const signal = require('../utility/signalling');
 const job_runner = require('./jobRunner');
 const terms = require('../utility/hdbTerms');
+const hdb_errors = require('../utility/errors/commonErrors');
 const reg = require('../utility/registration/registrationHandler');
 const stop = require('../bin/stop');
 const util = require('util');
@@ -81,7 +82,7 @@ function processLocalTransaction(req, res, operation_function, callback) {
     } catch (e) {
         harper_logger.error(e);
         callback(e);
-        setResponseStatus(res, terms.HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR, e);
+        setResponseStatus(res, hdb_errors.HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR, e);
     }
 
     let post_op_function = (terms.CLUSTER_OPERATIONS[req.body.operation] === undefined ? null : postOperationHandler);
@@ -92,7 +93,7 @@ function processLocalTransaction(req, res, operation_function, callback) {
                 data = {"message": data};
             }
             if(data instanceof Error) {
-                setResponseStatus(res, terms.HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR, {error: data.message});
+                setResponseStatus(res, hdb_errors.HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR, {error: data.message});
             }
 
             if (GLOBAL_SCHEMA_UPDATE_OPERATIONS_ENUM[req.body.operation]) {
@@ -103,17 +104,17 @@ function processLocalTransaction(req, res, operation_function, callback) {
                 });
             }
 
-            setResponseStatus(res, terms.HTTP_STATUS_CODES.OK, data);
+            setResponseStatus(res, hdb_errors.HTTP_STATUS_CODES.OK, data);
             return callback(null, data);
         })
         .catch((error) => {
             harper_logger.info(error);
             if(error === UNAUTH_RESPONSE) {
-                setResponseStatus(res, terms.HTTP_STATUS_CODES.FORBIDDEN, {error: UNAUTHORIZED_TEXT});
+                setResponseStatus(res, hdb_errors.HTTP_STATUS_CODES.FORBIDDEN, {error: UNAUTHORIZED_TEXT});
                 return callback(error);
             }
             if(typeof error !== 'object') {
-                error = {"error": error};
+                error = { message: error };
             }
 
             if (GLOBAL_SCHEMA_UPDATE_OPERATIONS_ENUM[req.body.operation]) {
@@ -124,7 +125,11 @@ function processLocalTransaction(req, res, operation_function, callback) {
                 });
             }
 
-            setResponseStatus(res, terms.HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR, {error: (error.message ? error.message : error.error)});
+            //This final response status and error msg evaluation is required while we transition to using the new error
+            // handling process with HDBError and the new properties set on the new error type
+            const http_resp_status = error.http_resp_code ? error.http_resp_code : hdb_errors.HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR;
+            const http_resp_msg = error.http_resp_msg ? error.http_resp_msg : error.message ? error.message : hdb_errors.DEFAULT_ERROR_RESP;
+            setResponseStatus(res, http_resp_status, {error: http_resp_msg});
             return callback(error);
         });
 }

@@ -2,7 +2,7 @@
 
 const environment_util = require('./environmentUtility');
 const common = require('./commonUtility');
-const LMDB_ERRORS = require('../commonErrors').LMDB_ERRORS_ENUM;
+const LMDB_ERRORS = require('../errors/commonErrors').LMDB_ERRORS_ENUM;
 const search_utility = require('./searchUtility');
 const lmdb_terms = require('./terms');
 const log = require('../logging/harper_logger');

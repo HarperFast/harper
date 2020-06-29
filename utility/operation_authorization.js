@@ -155,7 +155,8 @@ function verifyPermsAst(ast, user_object, operation) {
 
             for (let t = 0; t<tables.length; t++) {
                 let attributes = parsed_ast.getAttributesBySchemaTableName(schemas[s], tables[t]);
-                let unauthorized_attributes = checkAttributePerms(attributes, getAttributeRestrictions(user_object, schemas[s],tables[t]), operation, tables[t], schemas[s]);
+                const attribute_restrictions = getAttributeRestrictions(user_object, schemas[s],tables[t]);
+                let unauthorized_attributes = checkAttributePerms(attributes, attribute_restrictions, operation, tables[t], schemas[s]);
                 if (unauthorized_attributes && Object.keys(unauthorized_attributes).length > 0) {
                     for(let failed_perm in unauthorized_attributes) {
                         failed_permission_objects.push(unauthorized_attributes[failed_perm]);
@@ -210,7 +211,7 @@ function hasPermissions(user_object, op, schema_table_map ) {
     }
     for (let schema_table of schema_table_map.keys()) {
         //ASSUME ALL TABLES AND SCHEMAS ARE WIDE OPEN
-        // check for schema restrictions
+        // TODO - SAM - check for schema restrictions based on table restrictions
         for (let table of schema_table_map.get(schema_table)) {
             let table_restrictions = [];
             try {
@@ -223,7 +224,7 @@ function hasPermissions(user_object, op, schema_table_map ) {
                 try {
                     //Here we check all required permissions for the operation defined in the map with the values of the permissions in the role.
                     for (let i = 0; i<required_permissions.get(op).perms.length; i++) {
-                                let perms = required_permissions.get(op).perms[i];
+                        let perms = required_permissions.get(op).perms[i];
                         let user_permission = user_object.role.permission[schema_table].tables[table][perms];
                         if (user_permission === undefined || user_permission === null || user_permission === false) {
                             harper_logger.info(`Required permission not found for operation ${op} in role ${user_object.role.id}`);
@@ -284,17 +285,20 @@ function verifyPerms(request_json, operation) {
         return [];
     }
 
-    // go
+    // TODO - Sam - hasPermissions is really checking TABLE  permissions - update as part of CORE-1047
     let failed_table_permissions = hasPermissions(request_json.hdb_user, op, schema_table_map);
-    if(failed_table_permissions && failed_table_permissions.length > 0) {
+    if (failed_table_permissions && failed_table_permissions.length > 0) {
         return failed_table_permissions;
     }
-    // TODO - after testing, just return the result of the checkAttributePerms call
-    let unauthorized_attributes = checkAttributePerms(getRecordAttributes(request_json), getAttributeRestrictions(request_json.hdb_user, operation_schema, table),op, table, operation_schema);
-    if(unauthorized_attributes && unauthorized_attributes.length > 0) {
+    const record_attrs = getRecordAttributes(request_json);
+    const attr_restrictions = getAttributeRestrictions(request_json.hdb_user, operation_schema, table);
+    let unauthorized_attributes = checkAttributePerms(record_attrs, attr_restrictions, op, table, operation_schema);
+    if(!common_utils.isEmptyOrZeroLength(unauthorized_attributes)) {
         return unauthorized_attributes;
     }
-    // We assume wide open permissions unless otherwise specified.  If we get here, just let it go.
+    // If you get to this point, it means that no restricted schema items have been specifically requested/used in the operation
+    // this includes a `SELECT * ...` as long as the role has permissions for some attributes on the table - only those attributes
+    // will be returned in the final results but this is handled later.
     return [];
 }
 
@@ -322,9 +326,8 @@ function checkAttributePerms(record_attributes, role_attribute_restrictions, ope
         throw new Error(ERR_PROCESSING);
     }
 
-    //TODO: Replace with common utils empty check when it is merged
-    // leave early if the role has no attribute permissions set
-    if (!role_attribute_restrictions || role_attribute_restrictions.size === 0) {
+    //Leave early if the role has no attribute permissions set
+    if (common_utils.isEmptyOrZeroLength(role_attribute_restrictions)) {
         harper_logger.info(`No role restrictions set (this is OK).`);
         return [];
     }
@@ -332,40 +335,18 @@ function checkAttributePerms(record_attributes, role_attribute_restrictions, ope
     // Check if each specified attribute in the call (record_attributes) has a restriction specified in the role.  If there is
     // a restriction, check if the operation permission/ restriction is false.
     for (let element of record_attributes) {
-        // If there is a wildcard, we need to make sure there are no role_attribute_restrictions that have the needed_perm (READ, UPDATE, etc)
-        // set to false.
-        if (element === WILDCARD) {
-            if (needed_perm.perms) {
-                for (let perm of needed_perm.perms) {
-                    for (let restriction of role_attribute_restrictions.keys()) {
-                        if (role_attribute_restrictions.get(restriction)[perm] === false) {
-                            let failed_perm_object = new terms.PermissionResponseObject();
-                            failed_perm_object.table = perm.table;
-                            failed_perm_object.schema = schema_name;
-                            let attribute_object = new terms.PermissionAttributeResponseObject();
-                            attribute_object.attribute_name = restriction;
-                            attribute_object.required_permissions.push(perm);
-                            failed_perm_object.table = table_name;
-                            failed_perm_object.required_attribute_permissions.push(attribute_object);
-                            unauthorized_attributes_array.push(failed_perm_object);
-                        }
-                    }
-                }
-            }
-        } else {
-            let restriction = role_attribute_restrictions.get(element);
-            if (restriction && needed_perm.perms) {
-                for (let perm of needed_perm.perms) {
-                    if (restriction[perm] === false) {
-                        let failed_perm_object = new terms.PermissionResponseObject();
-                        failed_perm_object.table = table_name;
-                        failed_perm_object.schema = schema_name;
-                        let attribute_object = new terms.PermissionAttributeResponseObject();
-                        attribute_object.attribute_name = restriction.attribute_name;
-                        attribute_object.required_permissions.push(perm);
-                        failed_perm_object.required_attribute_permissions.push(attribute_object);
-                        unauthorized_attributes_array.push(failed_perm_object);
-                    }
+        let restriction = role_attribute_restrictions.get(element);
+        if (restriction && needed_perm.perms) {
+            for (let perm of needed_perm.perms) {
+                if (restriction[perm] === false) {
+                    let failed_perm_object = new terms.PermissionResponseObject();
+                    failed_perm_object.table = table_name;
+                    failed_perm_object.schema = schema_name;
+                    let attribute_object = new terms.PermissionAttributeResponseObject();
+                    attribute_object.attribute_name = restriction.attribute_name;
+                    attribute_object.required_permissions.push(perm);
+                    failed_perm_object.required_attribute_permissions.push(attribute_object);
+                    unauthorized_attributes_array.push(failed_perm_object);
                 }
             }
         }
@@ -381,6 +362,9 @@ function checkAttributePerms(record_attributes, role_attribute_restrictions, ope
 function getRecordAttributes(json) {
     let affected_attributes = new Set();
     try {
+        if (json && json.search_attribute) {
+            affected_attributes.add(json.search_attribute);
+        }
         if (!json.records || json.records.length === 0) {
             if (!json.get_attributes || !json.get_attributes.length === 0) {
                 return affected_attributes;
@@ -417,7 +401,6 @@ function getRecordAttributes(json) {
  * @returns {Map} A Map of attribute restrictions of the form [attribute_name, attribute_restriction];
  */
 function getAttributeRestrictions(json_hdb_user, operation_schema, table) {
-    //TODO: It might be worth caching these to avoid this for every call.
     let role_attribute_restrictions = new Map();
     if ( !json_hdb_user || json_hdb_user.length === 0) {
         harper_logger.info(`no hdb_user specified in getAttributeRestrictions`);
@@ -426,7 +409,7 @@ function getAttributeRestrictions(json_hdb_user, operation_schema, table) {
     if (json_hdb_user.role.permission.super_user) {
         return role_attribute_restrictions;
     }
-    // Some commands do not require a table to be specified.  If there is no table, there is likely not
+    //Some commands do not require a table to be specified.  If there is no table, there is likely not
     // anything attribute restrictions needs to check.
     if (!operation_schema || !table) {
         return role_attribute_restrictions;

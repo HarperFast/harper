@@ -8,7 +8,7 @@ const common = require('./commonUtility');
 const auto_cast = require('../common_utils').autoCast;
 const lmdb_terms = require('./terms');
 const hdb_terms = require('../hdbTerms');
-const LMDB_ERRORS = require('../commonErrors').LMDB_ERRORS_ENUM;
+const LMDB_ERRORS = require('../errors/commonErrors').LMDB_ERRORS_ENUM;
 const hdb_utils = require('../common_utils');
 const cursor_functions = require('./searchCursorFunctions');
 

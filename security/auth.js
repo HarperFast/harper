@@ -12,7 +12,7 @@ const user_functions = require('./user');
 const cb_users_set_global = util.callbackify(user_functions.setUsersToGlobal);
 const clone = require('clone');
 const systemSchema = require('../json/systemSchema');
-const terms = require('../utility/hdbTerms');
+const hdb_errors = require('../utility/errors/commonErrors');
 const log = require('../utility/logging/harper_logger');
 
 const GENERIC_AUTH_FAIL = 'Login failed';
@@ -113,7 +113,7 @@ router.post('/',
     function (req, res) {
         // If this function gets called, authentication was successful.
         // `req.user` contains the authenticated user.
-        res.status(terms.HTTP_STATUS_CODES.OK).send(req.user.username);
+        res.status(hdb_errors.HTTP_STATUS_CODES.OK).send(req.user.username);
     });
 
 function authorize(req, res, next) {
