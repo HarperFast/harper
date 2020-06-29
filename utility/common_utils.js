@@ -97,12 +97,12 @@ function isNotEmptyAndHasValue(value) {
 }
 
 /**
- * Test if the passed value is null, undefined, or zero length.
+ * Test if the passed value is null, undefined, or zero length or size.
  * @param value - the value to test
  * @returns {boolean}
  */
 function isEmptyOrZeroLength(value) {
-    return (isEmpty(value) || value.length === 0);
+    return (isEmpty(value) || value.length === 0 || value.size === 0);
 }
 
 /**

@@ -1,7 +1,7 @@
 const hdb_license = require('./hdb_license');
 const colors = require("colors/safe");
 const log = require('../logging/harper_logger');
-const check_permission = require('../check_permissions');
+const install_user_permission = require('../install_user_permission');
 const prompt = require('prompt');
 const {promisify} = require('util');
 const terms = require('../hdbTerms');
@@ -53,7 +53,7 @@ async function setLicense(json_message) {
  */
 async function getFingerprint() {
     try {
-        check_permission.checkPermission();
+        install_user_permission.checkPermission();
     } catch(err) {
         log.error(err);
         throw new Error('You do not have permission to generate a fingerprint.');
@@ -125,7 +125,7 @@ async function register() {
  */
 async function promptForRegistration() {
     try {
-        check_permission.checkPermission();
+        install_user_permission.checkPermission();
     } catch(err) {
         return console.error(err.message);
     }

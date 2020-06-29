@@ -85,8 +85,8 @@ function createUpdateRecord(columns){
  * @return
  */
 function buildUpdateRecords(update_record, records){
-    if(!records || records.length === 0){
-        throw new Error("update statement found no records to update");
+    if(hdb_utils.isEmptyOrZeroLength(records)){
+        return [];
     }
 
     let new_records = records.map((record)=>{
