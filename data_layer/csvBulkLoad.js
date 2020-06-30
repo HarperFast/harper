@@ -111,8 +111,13 @@ async function csvURLLoad(json_message) {
     try {
         let bulk_load_result = await csvFileLoad(csv_file_load_obj);
         // Remove the downloaded temporary CSV file and directory once csvFileLoad complete
-        await fs.unlink(csv_file_load_obj.file_path);
 
+        try {
+            await fs.access(csv_file_load_obj.file_path);
+            await fs.unlink(csv_file_load_obj.file_path);
+        }catch(e){
+            logger.warn(`could not delete temp csv file ${csv_file_load_obj.file_path}, file does not exist`);
+        }
         return bulk_load_result;
     } catch (err) {
         throw `Error loading downloaded CSV data into HarperDB: ${err}`;
@@ -144,8 +149,8 @@ async function downloadCSVFile(url, csv_file_name) {
     validateResponse(response, url);
 
     try {
-        fs.mkdirSync(TEMP_DOWNLOAD_DIR);
-        fs.writeFileSync(`${TEMP_DOWNLOAD_DIR}/${csv_file_name}`, response.body);
+        await fs.mkdirp(TEMP_DOWNLOAD_DIR);
+        await fs.writeFile(`${TEMP_DOWNLOAD_DIR}/${csv_file_name}`, response.body);
     } catch(err) {
         logger.error(`Error writing temporary CSV file to storage`);
         throw err;
