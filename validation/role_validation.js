@@ -65,7 +65,7 @@ function customValidate(object) {
         if (!validate.isBoolean(object.permission.super_user))
             validationErrors.push(validate.isBoolean(object.permission.super_user));
     }
-    
+
     for (let item in object.permission) {
         if (ROLE_TYPES.indexOf(item) < 0) {
             let schema = object.permission[item];
@@ -112,8 +112,13 @@ function customValidate(object) {
                         validationErrors.push(new Error(`${t}.delete must be a boolean`));
                     }
 
-                    if(table.attribute_restrictions) {
+                    if (table.attribute_restrictions) {
                         let table_attribute_names = global.hdb_schema[item][t].attributes.map(({attribute}) => attribute);
+                        const attr_perms_check = {
+                            read: false,
+                            insert: false,
+                            update: false
+                        };
                         for(let r in table.attribute_restrictions) {
                             let restriction = table.attribute_restrictions[r];
                             if(!restriction.attribute_name || !table_attribute_names.includes(restriction.attribute_name)) {
@@ -139,16 +144,23 @@ function customValidate(object) {
                                 validationErrors.push(new Error('attribute_restriction.update must be boolean'));
                             if(!validate.isBoolean(restriction.delete))
                                 validationErrors.push(new Error('attribute_restriction.delete must be boolean'));
+
                             //confirm that false table perms are not set to true for an attribute
-                            if(!table.read && restriction.read) {
-                                validationErrors.push(new Error(`Read perms for attribute: '${restriction.attribute_name}' can't be true if perm for table: '${t}' is false`));
+                            if (!attr_perms_check.read && restriction.read) {
+                                attr_perms_check.read = true;
                             }
-                            if(!table.insert && restriction.insert) {
-                                validationErrors.push(new Error(`Insert perms for attribute: '${restriction.attribute_name}' can't be true if perm for table: '${t}' is false`));
+                            if (!attr_perms_check.insert && restriction.insert) {
+                                attr_perms_check.insert = true;
                             }
-                            if(!table.update && restriction.update) {
-                                validationErrors.push(new Error(`Update perms for attribute: '${restriction.attribute_name}' can't be true if perm for table: '${t}' is false`));
+                            if (!attr_perms_check.update && restriction.update) {
+                                attr_perms_check.update = true;
                             }
+                        }
+                        if(!table.read && attr_perms_check.read ||
+                            !table.insert && attr_perms_check.insert ||
+                            !table.update && attr_perms_check.update) {
+                            const schema_name = `${item}.${t}`;
+                            validationErrors.push(new Error(COMMON_ERROR_MSGS.MISMATCHED_TABLE_ATTR_PERMS(schema_name)));
                         }
                     }
                 }

@@ -29740,7 +29740,7 @@
 			"name": "9. Alter Role Tests",
 			"item": [
 				{
-					"name": "Add Role - check errors",
+					"name": "Add Role - error checks",
 					"item": [
 						{
 							"name": "Add role with mismatched table/attr READ perms - expect fail",
@@ -29756,7 +29756,7 @@
 											"",
 											"pm.test(\"Perms mismatch error msg is returned\", function() {",
 											"    responseData = JSON.parse(responseBody);",
-											"    pm.expect(responseData.error).to.equal(\"Read perms for attribute: 'description' can't be true if perm for table: 'categories' is false. \")",
+											"    pm.expect(responseData.error).to.equal(\"You have a conflict with TABLE permissions for 'northnwd.categories' being false and ATTRIBUTE permissions being true. Please try again. \")",
 											"})"
 										],
 										"type": "text/javascript"
@@ -29826,7 +29826,7 @@
 											"",
 											"pm.test(\"Perms mismatch error msg is returned\", function() {",
 											"    responseData = JSON.parse(responseBody);",
-											"    pm.expect(responseData.error).to.equal(\"Insert perms for attribute: 'description' can't be true if perm for table: 'categories' is false. \")",
+											"    pm.expect(responseData.error).to.equal(\"You have a conflict with TABLE permissions for 'northnwd.categories' being false and ATTRIBUTE permissions being true. Please try again. \")",
 											"})"
 										],
 										"type": "text/javascript"
@@ -29896,7 +29896,7 @@
 											"",
 											"pm.test(\"Perms mismatch error msg is returned\", function() {",
 											"    responseData = JSON.parse(responseBody);",
-											"    pm.expect(responseData.error).to.equal(\"Update perms for attribute: 'description' can't be true if perm for table: 'categories' is false. \")",
+											"    pm.expect(responseData.error).to.equal(\"You have a conflict with TABLE permissions for 'northnwd.categories' being false and ATTRIBUTE permissions being true. Please try again. \")",
 											"})"
 										],
 										"type": "text/javascript"
@@ -29966,7 +29966,7 @@
 											"",
 											"pm.test(\"Perms mismatch error msg is returned\", function() {",
 											"    responseData = JSON.parse(responseBody);",
-											"    pm.expect(responseData.error).to.equal(\"Read perms for attribute: 'description' can't be true if perm for table: 'categories' is false. Update perms for attribute: 'description' can't be true if perm for table: 'categories' is false. \")",
+											"    pm.expect(responseData.error).to.equal(\"You have a conflict with TABLE permissions for 'northnwd.categories' being false and ATTRIBUTE permissions being true. Please try again. \")",
 											"})"
 										],
 										"type": "text/javascript"
@@ -30021,6 +30021,28 @@
 								}
 							},
 							"response": []
+						}
+					],
+					"event": [
+						{
+							"listen": "prerequest",
+							"script": {
+								"id": "88ec6020-6ef9-4298-8358-036c0b50293a",
+								"type": "text/javascript",
+								"exec": [
+									""
+								]
+							}
+						},
+						{
+							"listen": "test",
+							"script": {
+								"id": "597190f6-f096-45b8-ad2d-eab3b46daf34",
+								"type": "text/javascript",
+								"exec": [
+									""
+								]
+							}
 						}
 					],
 					"protocolProfileBehavior": {},

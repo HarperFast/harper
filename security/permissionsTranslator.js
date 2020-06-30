@@ -49,7 +49,6 @@ function getRolePermissions(role) {
         const perms_key = JSON.stringify([role_name, role['__updatedtime__'], non_sys_schema]);
 
         if (role_perms_map[role_name] && role_perms_map[role_name].key === perms_key) {
-            console.log('CACHED!');
             return role_perms_map[role_name].perms;
         }
 
@@ -62,7 +61,6 @@ function getRolePermissions(role) {
         const new_role_perms = translateRolePermissions(role, non_sys_schema);
 
         role_perms_map[role_name].perms = new_role_perms;
-        console.log('NOT CACHED!');
         return new_role_perms;
     } catch(e) {
         throw e;

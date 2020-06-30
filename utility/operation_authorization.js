@@ -214,7 +214,6 @@ function hasPermissions(user_object, op, schema_table_map ) {
     }
     for (let schema_table of schema_table_map.keys()) {
         //ASSUME ALL TABLES AND SCHEMAS ARE WIDE OPEN
-        // TODO - SAM - check for schema restrictions based on table restrictions
         for (let table of schema_table_map.get(schema_table)) {
             let table_restrictions = [];
             try {
