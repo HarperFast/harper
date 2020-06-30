@@ -16,7 +16,7 @@ const transact_to_clustering_utils = require('../server/transactToClusteringUtil
 const op_func_caller = require('../utility/OperationFunctionCaller');
 
 const CSV_NO_RECORDS_MSG = 'No records parsed from csv file.';
-const TEMP_CSV_FILE = `tempCSVURLLoad.csv`;
+
 const TEMP_DOWNLOAD_DIR = `${env.get('HDB_ROOT')}/tmp`;
 const { schema_regex } = require('../validation/common_validators');
 const HIGHWATERMARK = 1024*1024*5;
@@ -91,54 +91,41 @@ async function csvURLLoad(json_message) {
         throw new Error(validation_msg);
     }
 
+    let csv_file_name = `${Date.now()}.csv`;
+
     let csv_file_load_obj = {
         operation: hdb_terms.OPERATIONS_ENUM.CSV_FILE_LOAD,
         action: json_message.action,
         schema: json_message.schema,
         table: json_message.table,
         transact_to_cluster: json_message.transact_to_cluster,
-        file_path: `${TEMP_DOWNLOAD_DIR}/${TEMP_CSV_FILE}`
+        file_path: `${TEMP_DOWNLOAD_DIR}/${csv_file_name}`
     };
 
     try {
-        await downloadCSVFile(json_message.csv_url);
+        await downloadCSVFile(json_message.csv_url, csv_file_name);
     } catch (err) {
-        await cleanUpTempDL();
         throw err;
     }
 
     try {
         let bulk_load_result = await csvFileLoad(csv_file_load_obj);
         // Remove the downloaded temporary CSV file and directory once csvFileLoad complete
-        await hdb_utils.removeDir(TEMP_DOWNLOAD_DIR);
+        await fs.unlink(csv_file_load_obj.file_path);
 
         return bulk_load_result;
     } catch (err) {
-        await cleanUpTempDL();
         throw `Error loading downloaded CSV data into HarperDB: ${err}`;
-    }
-}
-
-/**
- * If an error is thrown and removeDir is skipped, cleanup the temporary downloaded data.
- * @returns {Promise<void>}
- */
-async function cleanUpTempDL() {
-    if (fs.existsSync(TEMP_DOWNLOAD_DIR)) {
-        try {
-            await hdb_utils.removeDir(TEMP_DOWNLOAD_DIR);
-        } catch (err) {
-            logger.error(`Error removing temporary CSV URL download directory: ${err}`);
-        }
     }
 }
 
 /**
  * Gets a file via URL, then creates a temporary directory in hdb root and writes file to disk.
  * @param url
+ * @param csv_file_name
  * @returns {Promise<void>}
  */
-async function downloadCSVFile(url) {
+async function downloadCSVFile(url, csv_file_name) {
     let options = {
         method: 'GET',
         uri: `${url}`,
@@ -158,7 +145,7 @@ async function downloadCSVFile(url) {
 
     try {
         fs.mkdirSync(TEMP_DOWNLOAD_DIR);
-        fs.writeFileSync(`${TEMP_DOWNLOAD_DIR}/${TEMP_CSV_FILE}`, response.body);
+        fs.writeFileSync(`${TEMP_DOWNLOAD_DIR}/${csv_file_name}`, response.body);
     } catch(err) {
         logger.error(`Error writing temporary CSV file to storage`);
         throw err;
