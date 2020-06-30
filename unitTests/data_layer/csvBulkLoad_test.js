@@ -217,24 +217,8 @@ describe('Test csvBulkLoad.js', () => {
             let result = await csv_rewire.csvURLLoad(CSV_URL_MESSAGE);
 
             expect(result).to.equal(success_msg);
-            expect(remove_dir_stub).to.have.been.calledWith(CSV_URL_TEMP_DIR);
         });
 
-        it('Test that in case of error remove dir is called to cleanup temp dir', async () => {
-            let error_msg = 'Error csv loading file';
-            let error;
-            csv_file_load_stub.throws(error_msg);
-            sandbox.stub(fs, 'existsSync').returns(true);
-
-            try {
-                await csv_rewire.csvURLLoad(CSV_URL_MESSAGE);
-            } catch(err) {
-                error = err;
-            }
-
-            expect(remove_dir_stub).to.have.been.calledWith(CSV_URL_TEMP_DIR);
-            expect(error).to.equal(`Error loading downloaded CSV data into HarperDB: ${error_msg}`);
-        });
     });
 
     describe('Test downloadCSVFile function', () => {
@@ -250,8 +234,8 @@ describe('Test csvBulkLoad.js', () => {
 
         before(() => {
             csv_rewire.__set__('validateResponse', validate_response_stub);
-            mk_dir_stub = sandbox.stub(fs, 'mkdirSync');
-            write_file_stub = sandbox.stub(fs, 'writeFileSync');
+            mk_dir_stub = sandbox.stub(fs, 'mkdirp');
+            write_file_stub = sandbox.stub(fs, 'writeFile');
         });
 
         after(() => {
@@ -270,10 +254,11 @@ describe('Test csvBulkLoad.js', () => {
 
         it('Test for nominal behaviour, stubs are called as expected', async () => {
             csv_rewire.__set__('request_promise', request_response_stub);
-            await downloadCSVFile_rw('www.csv.com');
+            let csv_file_name = `${Date.now()}.csv`;
+            await downloadCSVFile_rw('www.csv.com', csv_file_name);
 
             expect(mk_dir_stub).to.have.been.calledWith(CSV_URL_TEMP_DIR);
-            expect(write_file_stub).to.have.been.calledWith(`${CSV_URL_TEMP_DIR}/${TEMP_CSV_FILE}`, response_fake.body);
+            expect(write_file_stub).to.have.been.calledWith(`${CSV_URL_TEMP_DIR}/${csv_file_name}`, response_fake.body);
         });
 
         it('Test that error from mkdirSync is handled correctly', async () => {
