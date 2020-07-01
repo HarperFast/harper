@@ -187,7 +187,7 @@ class SQLSearch {
                     const where_val = common_utils.autoCast(node.right.value);
                     if([true, false].indexOf(where_val) >= 0){
                         node.right = new alasql.yy.NumValue({ value: where_val });
-                    } else if (where_val.toString().toUpperCase().includes('E') === false && !isNaN(where_val) && node.right instanceof alasql.yy.StringValue) {
+                    } else if (node.right instanceof alasql.yy.StringValue && common_utils.autoCasterIsNumberCheck(where_val.toString())) {
                         node.right = new alasql.yy.NumValue({ value: where_val });
                     }
                 } else if (Array.isArray(node.right)) {
@@ -195,7 +195,7 @@ class SQLSearch {
                         const where_val = common_utils.autoCast(col.value);
                         if([true, false].indexOf(where_val) >= 0){
                             node.right[i] = new alasql.yy.NumValue({ value: where_val });
-                        } else if (where_val.toString().toUpperCase().includes('E') === false && !isNaN(where_val) && col instanceof alasql.yy.StringValue) {
+                        } else if (col instanceof alasql.yy.StringValue && common_utils.autoCasterIsNumberCheck(where_val.toString())) {
                             node.right[i] = new alasql.yy.NumValue({ value: where_val });
                         }
                     });
@@ -603,7 +603,7 @@ class SQLSearch {
                                 this.data[schema_table].__merged_data[hash_val] = [...fetch_attr_row_templates[schema_table]];
                                 this._setMergedHashAttribute(schema_table, common_utils.autoCast(hash_val));
                             }
-                        };
+                        }
                     } catch (err) {
                         log.error('Error thrown from getDataByHash function in SQLSearch class method getFetchAttributeValues exact match.');
                         log.error(err);
@@ -624,7 +624,7 @@ class SQLSearch {
                                 } else {
                                     this._updateMergedAttribute(schema_table, hash_val, attribute.attribute, attribute_values[hash_val][attribute.attribute]);
                                 }
-                            };
+                            }
                         }));
                     } catch (err) {
                         log.error('Error thrown from getDataByValue function in SQLSearch class method getFetchAttributeValues exact match.');
@@ -648,7 +648,7 @@ class SQLSearch {
                                         this.data[schema_table].__merged_data[hash_val] = [...fetch_attr_row_templates[schema_table]];
                                         this._setMergedHashAttribute(schema_table, common_utils.autoCast(hash_val));
                                     }
-                                };
+                                }
                             } else {
                                 for (const hash_val in matching_data) {
                                     if (!this.data[schema_table].__merged_data[hash_val]) {
@@ -658,7 +658,7 @@ class SQLSearch {
                                     } else {
                                         this._updateMergedAttribute(schema_table, hash_val, attribute.attribute, matching_data[hash_val][attribute.attribute]);
                                     }
-                                };
+                                }
                             }
                         }
                     } catch (err) {
@@ -677,7 +677,7 @@ class SQLSearch {
                                     this.data[schema_table].__merged_data[hash_val] = [...fetch_attr_row_templates[schema_table]];
                                     this._setMergedHashAttribute(schema_table, common_utils.autoCast(hash_val));
                                 }
-                            };
+                            }
                         } else {
                             for (const hash_val in matching_data) {
                                 if (!this.data[schema_table].__merged_data[hash_val]) {
@@ -687,7 +687,7 @@ class SQLSearch {
                                 } else {
                                     this._updateMergedAttribute(schema_table, hash_val, attribute.attribute, matching_data[hash_val][attribute.attribute]);
                                 }
-                            };
+                            }
                         }
                     } catch (err) {
                         log.error('Error thrown from getDataByValue function in SQLSearch class method getFetchAttributeValues no comparator search values.');
@@ -907,7 +907,7 @@ class SQLSearch {
                         hash.keys.add(row[hash.key].toString());
                     }
                 });
-            };
+            }
 
             hash_attributes.forEach(hash => {
                 let keys = Object.keys(this.data[`${hash.schema}_${hash.table}`].__merged_data);
@@ -915,7 +915,7 @@ class SQLSearch {
                 for (let i = 0, len = delete_keys.length; i < len; i++) {
                     const key = delete_keys[i];
                     delete this.data[`${hash.schema}_${hash.table}`].__merged_data[key];
-                };
+                }
             });
         }
         let join_results = {
@@ -1003,9 +1003,9 @@ class SQLSearch {
                         const val = table.columns[j];
                         const attr_val = the_row[val] === undefined ? null : the_row[val];
                         this.data[schema_table].__merged_data[the_id].push(attr_val);
-                    };
-                };
-            };
+                    }
+                }
+            }
         } catch(e) {
             log.error('Error thrown from getDataByHash function in SQLSearch class method getData.');
             log.error(e);

@@ -265,12 +265,16 @@ describe(`Test autoCast`, function(){
         assert.equal(cu.autoCast("42"), 42);
     });
 
+    it(`Pass in string of 0, expect number 0`, function(){
+        assert.equal(cu.autoCast("0"), 0);
+    });
+
     it(`Pass in string of 42.42, expect number 42.42`, function(){
         assert.equal(cu.autoCast("42.42"), 42.42);
     });
 
-    it(`Pass in string of '0102', expect number 102`, function(){
-        assert.equal(cu.autoCast("0102"), 102);
+    it(`Pass in string of '0102', expect string '0102'`, function(){
+        assert.deepStrictEqual(cu.autoCast("0102"), "0102");
     });
 
     it(`Pass in string of sigle entry number array, expect real array`, function(){
