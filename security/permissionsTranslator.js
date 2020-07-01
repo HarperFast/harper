@@ -1,3 +1,5 @@
+"use strict";
+
 const _ = require('lodash');
 const terms = require('../utility/hdbTerms');
 
@@ -6,7 +8,6 @@ module.exports = {
 };
 
 const role_perms_map = Object.create(null);
-const role_schema_map = Object.create(null);
 const perms_template_obj = (perms_key) => ({key: perms_key, perms: {}});
 
 const schema_perms_template = () => ({
@@ -14,24 +15,27 @@ const schema_perms_template = () => ({
     tables: {}
 });
 
-const false_permissions_template = () => ({
-    [terms.PERMS_CRUD_ENUM.READ]: false,
-    [terms.PERMS_CRUD_ENUM.INSERT]: false,
-    [terms.PERMS_CRUD_ENUM.UPDATE]: false,
-    [terms.PERMS_CRUD_ENUM.DELETE]: false,
-});
+const permissions_template = (read_perm = false, insert_perm = false,
+    update_perm= false, delete_perm= false) => (
+        {
+            [terms.PERMS_CRUD_ENUM.READ]: read_perm,
+            [terms.PERMS_CRUD_ENUM.INSERT]: insert_perm,
+            [terms.PERMS_CRUD_ENUM.UPDATE]: update_perm,
+            [terms.PERMS_CRUD_ENUM.DELETE]: delete_perm
+        }
+);
 
 const table_perms_template = () => ({
-    ...false_permissions_template(),
+    ...permissions_template(),
     attribute_restrictions: []
 });
 
-const attr_perms_template = (attr_name, perms = false_permissions_template()) => ({
+const attr_perms_template = (attr_name, perms = permissions_template()) => ({
     attribute_name: attr_name,
     [READ]: perms[READ],
     [INSERT]: perms[INSERT],
     [UPDATE]: perms[UPDATE],
-    [DELETE]: perms[DELETE],
+    [DELETE]: perms[DELETE]
 });
 
 const crud_perm_keys = Object.values(terms.PERMS_CRUD_ENUM);
@@ -65,7 +69,6 @@ function getRolePermissions(role) {
     } catch(e) {
         throw e;
     }
-
 }
 
 function translateRolePermissions(role, schema) {
@@ -101,7 +104,6 @@ function translateRolePermissions(role, schema) {
         } else {
             //add false permissions for all schema tables
             Object.keys(schema[s]).forEach(t => {
-                //TODO - Are we going to also add schema permissions as well?  If so, make them all FALSE here.
                 final_permissions[s].tables[t] = table_perms_template();
             });
         }
@@ -117,7 +119,6 @@ function getTableAttrPerms(table_perms, table_schema) {
     if (has_attr_restrictions) {
         const final_table_perms = Object.assign({}, table_perms);
         final_table_perms.attribute_restrictions = [];
-        //TODO - turn into a map?
         const attr_r_map = attribute_restrictions.reduce((acc, item) => {
             const { attribute_name } = item;
             acc[attribute_name] = item;
@@ -127,6 +128,7 @@ function getTableAttrPerms(table_perms, table_schema) {
         const table_hash = table_schema[terms.SYSTEM_DEFAULT_ATTRIBUTE_NAMES.ATTR_HASH_ATTRIBUTE_KEY];
         const hash_attr_perm = !!attr_r_map[table_hash];
         let attr_perms_all_false = true;
+
         table_schema.attributes.forEach(({ attribute }) => {
             if (attr_r_map[attribute]) {
                 const attr_perm_obj = attr_r_map[attribute];
@@ -139,17 +141,18 @@ function getTableAttrPerms(table_perms, table_schema) {
                 final_table_perms.attribute_restrictions.push(attr_perms);
             }
         });
+
         if (!hash_attr_perm) {
             if (attr_perms_all_false) {
                 const hash_perms = attr_perms_template(table_hash);
                 final_table_perms.attribute_restrictions.push(hash_perms);
             } else {
-                const table_perms = {
-                    [READ]: final_table_perms[READ],
-                    [INSERT]: final_table_perms[INSERT],
-                    [UPDATE]: final_table_perms[UPDATE],
-                    [DELETE]: final_table_perms[DELETE],
-                };
+                const table_perms = permissions_template(
+                    final_table_perms[READ],
+                    final_table_perms[INSERT],
+                    final_table_perms[UPDATE],
+                    final_table_perms[DELETE]
+                );
                 const hash_perms = attr_perms_template(table_hash, table_perms);
                 final_table_perms.attribute_restrictions.push(hash_perms);
             }
@@ -163,12 +166,4 @@ function getTableAttrPerms(table_perms, table_schema) {
 
 function checkAllAttrPermsFalse(attr_perm_obj) {
     return !attr_perm_obj[READ] && !attr_perm_obj[INSERT] && !attr_perm_obj[UPDATE] && !attr_perm_obj[DELETE];
-}
-
-function translateRoleSchema(role, schema) {
-
-}
-
-function getRoleSchema(role, schema) {
-
 }

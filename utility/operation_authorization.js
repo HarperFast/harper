@@ -287,7 +287,6 @@ function verifyPerms(request_json, operation) {
         return [];
     }
 
-    // TODO - Sam - hasPermissions is really checking TABLE  permissions - update as part of CORE-1047
     let failed_table_permissions = hasPermissions(request_json.hdb_user, op, schema_table_map);
     if (failed_table_permissions && failed_table_permissions.length > 0) {
         return failed_table_permissions;
