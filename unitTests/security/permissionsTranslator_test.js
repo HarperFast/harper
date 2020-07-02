@@ -37,7 +37,7 @@ const createPermsObj = (read_perm, insert_perm, update_perm, delete_perm) => ({
 
 const getUpdatedRoleObj = () => {
     const test_role = clonedeep(TEST_NON_SU_ROLE);
-    test_role.__updatedtime__ = Date.now();
+    test_role.__updatedtime__ = Math.random() * 10000;
     return test_role;
 };
 
