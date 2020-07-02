@@ -14,7 +14,7 @@ const DeleteRecordsResponseObject = require('./DeleteRecordsResponseObject');
  * @param {lmdb.Env} env - environment object used high level to interact with all data in an environment
  * @param {String} hash_attribute - name of the hash_attribute for this environment
  * @param {Array.<String>} ids - list of ids to delete
- * @returns {{deleted: [], skipped: []}}
+ * @returns {DeleteRecordsResponseObject}
  */
 function deleteRecords(env, hash_attribute, ids){
     //validate
