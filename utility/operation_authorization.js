@@ -148,6 +148,9 @@ function verifyPermsAst(ast, user_object, operation) {
             return [];
         }
 
+        const full_role_perms = permsTranslator.getRolePermissions(user_object.role);
+        user_object.role.permission = full_role_perms;
+
         for (let s = 0; s<schemas.length; s++) { //NOSONAR
             let tables = parsed_ast.getTablesBySchemaName(schemas[s]);
             if(!tables) {
