@@ -2,6 +2,8 @@
 
 const _ = require('lodash');
 const terms = require('../utility/hdbTerms');
+const { handleHDBError, commonErrors } = require('../utility/errors/hdbError');
+const logger = require('../utility/logging/harper_logger');
 
 module.exports = {
     getRolePermissions
@@ -50,32 +52,45 @@ const { READ, INSERT, UPDATE, DELETE } = terms.PERMS_CRUD_ENUM;
  * @returns {{updated permissions object value}}
  */
 function getRolePermissions(role) {
+    let role_name;
     try {
         if (role.permission.super_user || role.permission.cluster_user) {
+            //Super users and cluster users have full CRUD access to non-system schema items so no translation is required
             return role.permission;
         }
 
+        //permissions only need to be translated for non-system schema items - system specific ops are handled outside of this process
         const non_sys_schema = Object.assign({}, global.hdb_schema);
         delete non_sys_schema[terms.SYSTEM_SCHEMA_NAME];
-        const role_name = role.role;
-        const perms_key = JSON.stringify([role_name, role['__updatedtime__'], non_sys_schema]);
+        role_name = role.role;
+        //creates the unique memoization key for the role's permission based on the role updatedtime and non-system
+        // schema - if either have changed since the last time the function was called for the role, we re-run the
+        // translation to get an updated permissions set
+        const perms_key = JSON.stringify([role['__updatedtime__'], non_sys_schema]);
 
+        //If key exists already, we can return the cached value
         if (role_perms_map[role_name] && role_perms_map[role_name].key === perms_key) {
             return role_perms_map[role_name].perms;
         }
 
+        //If the key does not exist, we need new perms
+        const new_role_perms = translateRolePermissions(role, non_sys_schema);
+
+        //If the role has not been memoized yet, we create a value in the cache for it and set the key OR just set the new key
         if (!role_perms_map[role_name]) {
             role_perms_map[role_name] = perms_template_obj(perms_key);
         } else {
             role_perms_map[role_name].key = perms_key;
         }
 
-        const new_role_perms = translateRolePermissions(role, non_sys_schema);
-
+        //Set the new perms return value into the cache
         role_perms_map[role_name].perms = new_role_perms;
+
         return new_role_perms;
     } catch(e) {
-        throw e;
+        const log_msg = `There was an error while translating role permissions for role: ${role_name}.\n ${e.stack}`;
+        logger.error(log_msg);
+        throw handleHDBError(e);
     }
 }
 
@@ -114,11 +129,12 @@ function translateRolePermissions(role, schema) {
                     }
                     final_permissions[s].tables[t] = updated_table_perms;
                 } else {
+                    //if table is not included in role permissions, table perms set to false
                     final_permissions[s].tables[t] = table_perms_template();
                 }
             });
         } else {
-            //add false permissions for all schema tables
+            //if schema is not included in role permissions, all table perms set to false
             Object.keys(schema[s]).forEach(t => {
                 final_permissions[s].tables[t] = table_perms_template();
             });
@@ -140,6 +156,8 @@ function getTableAttrPerms(table_perms, table_schema) {
     const has_attr_restrictions = attribute_restrictions.length > 0;
 
     if (has_attr_restrictions) {
+        //if table has attribute_restrictions set, we need to loop through the table's schema and set attr-level perms
+        // based on the attr perms provided OR, if no perms provided for an attr, set attr perms to false
         const final_table_perms = Object.assign({}, table_perms);
         final_table_perms.attribute_restrictions = [];
         const attr_r_map = attribute_restrictions.reduce((acc, item) => {
@@ -150,21 +168,28 @@ function getTableAttrPerms(table_perms, table_schema) {
 
         const table_hash = table_schema[terms.SYSTEM_DEFAULT_ATTRIBUTE_NAMES.ATTR_HASH_ATTRIBUTE_KEY];
         const hash_attr_perm = !!attr_r_map[table_hash];
+        //We need to check if all attribute permissions passed for a table are false because, if so, we do not need to
+        // force read permission for the table's hash value.  If they are not and the hash value is not included in the
+        // attr perms, we need to make sure the user has read permission for the hash attr
         let attr_perms_all_false = true;
 
         table_schema.attributes.forEach(({ attribute }) => {
             if (attr_r_map[attribute]) {
+                //if there is a permission set passed for current attribute, set it to the final perms object
                 const attr_perm_obj = attr_r_map[attribute];
                 final_table_perms.attribute_restrictions.push(attr_perm_obj);
+                //check if all CRUD perm values are false - if not, we can skip this step for the rest of the loop
                 if (!hash_attr_perm && attr_perms_all_false) {
                     attr_perms_all_false = checkAllAttrPermsFalse(attr_perm_obj);
                 }
             } else if (attribute !== table_hash) {
+                //if the attr isn't included in attr perms and isn't the hash, we set all perms to false
                 const attr_perms = attr_perms_template(attribute);
                 final_table_perms.attribute_restrictions.push(attr_perms);
             }
         });
 
+        //final step is to ensure we include the correct hash attribute permissions in the final permissions object
         if (!hash_attr_perm) {
             if (attr_perms_all_false) {
                 const hash_perms = attr_perms_template(table_hash);
@@ -187,6 +212,12 @@ function getTableAttrPerms(table_perms, table_schema) {
     }
 }
 
+/**
+ * Checks the a permissions object to all false values
+ *
+ * @param attr_perm_obj
+ * @returns {boolean|boolean}
+ */
 function checkAllAttrPermsFalse(attr_perm_obj) {
     return !attr_perm_obj[READ] && !attr_perm_obj[INSERT] && !attr_perm_obj[UPDATE] && !attr_perm_obj[DELETE];
 }
