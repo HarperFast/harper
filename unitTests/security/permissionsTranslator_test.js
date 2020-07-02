@@ -85,15 +85,17 @@ const validateAttrPerms = (final_perms, initial_perms) => {
     return true;
 };
 
-describe('Test permissionsTranslator module', function () {
-    const sandbox = sinon.createSandbox();
-    global.hdb_schema = TEST_SCHEMA_DOG_BREED;
-    const translateRolePerms_rw =  permissionsTranslator_rw.__get__('translateRolePermissions');
-    const translateRolePerms_spy =  sandbox.spy(translateRolePerms_rw);
-    permissionsTranslator_rw.__set__('translateRolePermissions', translateRolePerms_spy);
+const sandbox = sinon.createSandbox();
+const translateRolePerms_rw =  permissionsTranslator_rw.__get__('translateRolePermissions');
+const translateRolePerms_spy =  sandbox.spy(translateRolePerms_rw);
+permissionsTranslator_rw.__set__('translateRolePermissions', translateRolePerms_spy);
 
+describe('Test permissionsTranslator module', function () {
+    before(() => {
+        global.hdb_schema = clonedeep(TEST_SCHEMA_DOG_BREED);
+    });
     afterEach(() => {
-        sandbox.reset();
+        sandbox.resetHistory();
         permissionsTranslator_rw.__set__('translateRolePermissions', translateRolePerms_spy);
     });
     after(() => {
@@ -301,7 +303,7 @@ describe('Test permissionsTranslator module', function () {
         });
 
         it("Pass roles w/ diff '__updatedtime__' and expect new, non-cached permissions returned both times ",() => {
-            const test_role = getUpdatedRoleObj();
+            const test_role = clonedeep(TEST_NON_SU_ROLE);
             const test_result = permissionsTranslator_rw.getRolePermissions(test_role);
             expect(test_result[TEST_SCHEMA][TEST_PERMS_ENUM.READ]).to.be.true;
             expect(test_result.tables).to.deep.equal(test_role.permission.tables);
