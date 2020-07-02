@@ -41,6 +41,14 @@ const attr_perms_template = (attr_name, perms = permissions_template()) => ({
 const crud_perm_keys = Object.values(terms.PERMS_CRUD_ENUM);
 const { READ, INSERT, UPDATE, DELETE } = terms.PERMS_CRUD_ENUM;
 
+/**
+ * Takes role object and evaluates and updates stored permissions based on the more restrictive logic now in place
+ * NOTE: Values are stored in a memoization framework so they can be quickly accessed if the arguments/parameters for the
+ * function call have not changed
+ *
+ * @param role
+ * @returns {{updated permissions object value}}
+ */
 function getRolePermissions(role) {
     try {
         if (role.permission.super_user || role.permission.cluster_user) {
@@ -71,6 +79,14 @@ function getRolePermissions(role) {
     }
 }
 
+/**
+ * If a perms value is not memoized, this method takes the role and schema and translates final permissions to set for the role
+ * and memoize
+ *
+ * @param role
+ * @param schema
+ * @returns {{translated_role_perms_obj}}
+ */
 function translateRolePermissions(role, schema) {
     const final_permissions = Object.create(null);
     final_permissions.super_user = false;
@@ -112,6 +128,13 @@ function translateRolePermissions(role, schema) {
     return final_permissions;
 }
 
+/**
+ * Returns table-specific perms based on the existing permissions and schema for that table
+ *
+ * @param table_perms
+ * @param table_schema
+ * @returns {{table_specific_perms}}
+ */
 function getTableAttrPerms(table_perms, table_schema) {
     const { attribute_restrictions } = table_perms;
     const has_attr_restrictions = attribute_restrictions.length > 0;
