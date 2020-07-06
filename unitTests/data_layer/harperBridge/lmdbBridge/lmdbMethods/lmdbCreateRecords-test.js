@@ -6,7 +6,9 @@ const path = require('path');
 
 const SYSTEM_FOLDER_NAME = 'system';
 const SCHEMA_NAME = 'schema';
+const TRANSACTIONS_NAME = 'transactions';
 const BASE_PATH = test_utils.getMockFSPath();
+const BASE_TXN_PATH = path.join(BASE_PATH, TRANSACTIONS_NAME);
 const BASE_SCHEMA_PATH = path.join(BASE_PATH, SCHEMA_NAME);
 const SYSTEM_SCHEMA_PATH = path.join(BASE_SCHEMA_PATH, SYSTEM_FOLDER_NAME);
 
@@ -16,10 +18,14 @@ const lmdb_create_schema = require('../../../../../data_layer/harperBridge/lmdbB
 const lmdb_create_table = require('../../../../../data_layer/harperBridge/lmdbBridge/lmdbMethods/lmdbCreateTable');
 const environment_utility = rewire('../../../../../utility/lmdb/environmentUtility');
 const search_utility = require('../../../../../utility/lmdb/searchUtility');
+const verify_txn = require('../_verifyTxns');
+const lmdb_common = require('../../../../../utility/lmdb/commonUtility');
 const assert = require('assert');
 const fs = require('fs-extra');
 const sinon = require('sinon');
 const systemSchema = require('../../../../../json/systemSchema');
+
+const LMDBInsertTransactionObject = require('../../../../../data_layer/harperBridge/lmdbBridge/lmdbUtility/LMDBInsertTransactionObject');
 
 const TIMESTAMP = Date.now();
 const HASH_ATTRIBUTE_NAME = 'id';
@@ -146,6 +152,8 @@ const CREATE_TABLE_OBJ_TEST_A = {
     hash_attribute: 'id'
 };
 
+const TXN_SCHEMA_PATH = path.join(BASE_TXN_PATH, 'dev');
+
 const TABLE_SYSTEM_DATA_TEST_A = {
     name: CREATE_TABLE_OBJ_TEST_A.table,
     schema: CREATE_TABLE_OBJ_TEST_A.schema,
@@ -173,6 +181,8 @@ describe('Test lmdbCreateRecords module', ()=>{
     });
 
     describe('Test lmdbCreateRecords function', ()=>{
+        let m_time;
+        let m_time_stub;
         beforeEach(async ()=>{
 
             global.hdb_schema = {
@@ -203,12 +213,16 @@ describe('Test lmdbCreateRecords module', ()=>{
             await lmdb_create_schema(CREATE_SCHEMA_DEV);
 
             await lmdb_create_table(TABLE_SYSTEM_DATA_TEST_A, CREATE_TABLE_OBJ_TEST_A);
+
+            m_time = lmdb_common.getMicroTime();
+            m_time_stub = sandbox.stub(lmdb_common, 'getMicroTime').returns(m_time);
         });
 
         afterEach(async ()=>{
             await fs.remove(BASE_PATH);
             global.lmdb_map = undefined;
             delete global.hdb_schema;
+            m_time_stub.restore();
         });
 
         it('Test that rows are inserted correctly and return msg is correct ', async ()=>{
@@ -237,12 +251,27 @@ describe('Test lmdbCreateRecords module', ()=>{
 
             let insert_obj = test_utils.deepClone(INSERT_OBJECT_TEST);
 
+            //verify no transactions
+            await verify_txn(TXN_SCHEMA_PATH, INSERT_OBJECT_TEST.table);
+
             let results = await test_utils.assertErrorAsync(lmdb_create_records, [insert_obj], undefined);
             assert.deepStrictEqual(results, expected_return_result);
 
             let dog_env = await test_utils.assertErrorAsync(environment_utility.openEnvironment,[path.join(BASE_SCHEMA_PATH, INSERT_OBJECT_TEST.schema), INSERT_OBJECT_TEST.table], undefined);
             let records = test_utils.assertErrorSync(search_utility.batchSearchByHash, [dog_env, HASH_ATTRIBUTE_NAME, ALL_FETCH_ATTRIBUTES, [ '8', '9', '12', '10' ] ], undefined);
             assert.deepStrictEqual(records, expected_search);
+
+            //verify txn created
+            let insert_txn_obj = new LMDBInsertTransactionObject(insert_obj.records, undefined, m_time);
+            let expected_timestamp = test_utils.assignObjecttoNullObject({
+                [m_time]: [JSON.stringify(insert_txn_obj)]
+            });
+
+            let hashes = Object.create(null);
+            insert_obj.records.forEach(record=>{
+                hashes[record[HASH_ATTRIBUTE_NAME]] = [m_time.toString()];
+            });
+            await verify_txn(TXN_SCHEMA_PATH, INSERT_OBJECT_TEST.table, expected_timestamp, hashes);
         });
 
         it('Test inserting existing and non-existing rows', async () => {
@@ -264,8 +293,25 @@ describe('Test lmdbCreateRecords module', ()=>{
                 }
             };
 
-            let results = await test_utils.assertErrorAsync(lmdb_create_records, [INSERT_OBJECT_TEST], undefined);
+            //verify no transactions
+            await verify_txn(TXN_SCHEMA_PATH, INSERT_OBJECT_TEST.table);
+
+            let insert_obj1 = test_utils.deepClone(INSERT_OBJECT_TEST);
+
+            let results = await test_utils.assertErrorAsync(lmdb_create_records, [insert_obj1], undefined);
             assert.deepStrictEqual(results, expected_result);
+
+            //verify txn created
+            let insert_txn_obj = new LMDBInsertTransactionObject(insert_obj1.records, undefined, m_time);
+            let expected_timestamp = test_utils.assignObjecttoNullObject({
+                [m_time]: [JSON.stringify(insert_txn_obj)]
+            });
+
+            let hashes = Object.create(null);
+            insert_obj1.records.forEach(record=>{
+                hashes[record[HASH_ATTRIBUTE_NAME]] = [m_time.toString()];
+            });
+            await verify_txn(TXN_SCHEMA_PATH, INSERT_OBJECT_TEST.table, expected_timestamp, hashes);
 
             global.hdb_schema[SCHEMA_TABLE_TEST.schema][SCHEMA_TABLE_TEST.name]['attributes'] = NO_NEW_ATTR_TEST;
             let insert_obj = test_utils.deepClone(INSERT_OBJECT_TEST);
@@ -296,6 +342,11 @@ describe('Test lmdbCreateRecords module', ()=>{
                     height: 145
                 }
             ];
+
+            //change the expected microtime
+            m_time_stub.restore();
+            m_time = lmdb_common.getMicroTime();
+            m_time_stub = sandbox.stub(lmdb_common, 'getMicroTime').returns(m_time);
 
             let new_records_excpected = [
                 test_utils.assignObjecttoNullObject({
@@ -355,11 +406,35 @@ describe('Test lmdbCreateRecords module', ()=>{
             let dog_env = await test_utils.assertErrorAsync(environment_utility.openEnvironment,[path.join(BASE_SCHEMA_PATH, INSERT_OBJECT_TEST.schema), INSERT_OBJECT_TEST.table], undefined);
             let records = test_utils.assertErrorSync(search_utility.batchSearchByHash, [dog_env, HASH_ATTRIBUTE_NAME, ALL_FETCH_ATTRIBUTES, ['8', '9', '123', '1232'] ], undefined);
             assert.deepStrictEqual(records, new_records_excpected);
+
+            //verify txns
+            let insert_txn_obj2 = new LMDBInsertTransactionObject(insert_obj.records, undefined, m_time);
+            expected_timestamp[m_time] = [JSON.stringify(insert_txn_obj2)];
+
+            insert_obj.records.forEach(record=>{
+                hashes[record[HASH_ATTRIBUTE_NAME]] = [m_time.toString()];
+            });
+            await verify_txn(TXN_SCHEMA_PATH, INSERT_OBJECT_TEST.table, expected_timestamp, hashes);
         });
 
         it('Test inserting rows that already exist', async () => {
+            //verify no transactions
+            await verify_txn(TXN_SCHEMA_PATH, INSERT_OBJECT_TEST.table);
+
             let insert_obj = test_utils.deepClone(INSERT_OBJECT_TEST);
             await test_utils.assertErrorAsync(lmdb_create_records, [insert_obj], undefined);
+
+            //verify txn created
+            let insert_txn_obj = new LMDBInsertTransactionObject(insert_obj.records, undefined, m_time);
+            let expected_timestamp = test_utils.assignObjecttoNullObject({
+                [m_time]: [JSON.stringify(insert_txn_obj)]
+            });
+
+            let hashes = Object.create(null);
+            insert_obj.records.forEach(record=>{
+                hashes[record[HASH_ATTRIBUTE_NAME]] = [m_time.toString()];
+            });
+            await verify_txn(TXN_SCHEMA_PATH, INSERT_OBJECT_TEST.table, expected_timestamp, hashes);
 
             let expected_result = {
                 written_hashes: [],
@@ -376,6 +451,9 @@ describe('Test lmdbCreateRecords module', ()=>{
             let results = await test_utils.assertErrorAsync(lmdb_create_records, [insert_obj2], undefined);
             assert.deepStrictEqual(results.written_hashes, expected_result.written_hashes);
             assert.deepStrictEqual(results.skipped_hashes, expected_result.skipped_hashes);
+
+            //assert no new txns
+            await verify_txn(TXN_SCHEMA_PATH, INSERT_OBJECT_TEST.table, expected_timestamp, hashes);
         });
 
         it('Test that no hash error from processRows is thrown', async () => {

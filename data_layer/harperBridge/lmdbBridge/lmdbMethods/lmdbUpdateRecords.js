@@ -8,6 +8,8 @@ const lmdb_update_records = require('../../../../utility/lmdb/writeUtility').upd
 const environment_utility = require('../../../../utility/lmdb/environmentUtility');
 const path = require('path');
 const {getBaseSchemaPath} = require('../lmdbUtility/initializePaths');
+const write_transaction = require('../lmdbUtility/lmdbWriteTransaction');
+const logger = require('../../../../utility/logging/harper_logger');
 
 module.exports = lmdbUpdateRecords;
 
@@ -37,6 +39,12 @@ async function lmdbUpdateRecords(update_obj) {
         let env_base_path = path.join(getBaseSchemaPath(), update_obj.schema.toString());
         let environment = await environment_utility.openEnvironment(env_base_path, update_obj.table);
         let lmdb_response = lmdb_update_records(environment, schema_table.hash_attribute, attributes, update_obj.records);
+
+        try {
+            await write_transaction(update_obj, lmdb_response);
+        }catch(e){
+            logger.error(`unable to write transaction due to ${e.message}`);
+        }
 
         return {
             written_hashes: lmdb_response.written_hashes,
