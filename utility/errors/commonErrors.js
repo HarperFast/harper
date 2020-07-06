@@ -27,14 +27,15 @@ const HTTP_STATUS_CODES = {
 const DEFAULT_ERROR_MSGS = {
     500: 'There was an error processing your request.  Please check the logs and try again.'
 };
-
 const DEFAULT_ERROR_RESP = DEFAULT_ERROR_MSGS[HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR];
 
-const COMMON_ERROR_MSGS = {
-    SU_CU_ROLE_NO_PERMS_ALLOWED: 'Roles with `cluster_user` or `super_user` set to true cannot have other permissions set.',
-    CU_ROLE_NO_PERMS_MIX: 'cluster_user permission cannot be mixed with other permissions'
+const ROLE_PERMS_ERROR_MSGS = {
+    CU_ROLE_NO_PERMS_MIX: 'cluster_user permission cannot be mixed with other permissions',
+    MISMATCHED_TABLE_ATTR_PERMS: (schema_table) => `You have a conflict with TABLE permissions for '${schema_table}' being false and ATTRIBUTE permissions being true. Please try again`,
+    SU_CU_ROLE_NO_PERMS_ALLOWED: 'Roles with `cluster_user` or `super_user` set to true cannot have other permissions set.'
 };
 
+//TODO - move this enum to be exported as a part of COMMON_ERROR_MSGS
 //NOTE: Any changes made to these errors must also be made to unitTests/commonTestErrors.js otherwise the unit tests will fail
 const LMDB_ERRORS_ENUM = {
     BASE_PATH_REQUIRED: 'base_path is required',
@@ -64,6 +65,12 @@ const LMDB_ERRORS_ENUM = {
     END_VALUE_MUST_BE_GREATER_THAN_START_VALUE: 'end_value must be greater than start_value',
     UKNOWN_SEARCH_TYPE: 'unknown search type',
     CANNOT_DROP_TABLE_HASH_ATTRIBUTE: 'cannot drop a table\'s hash attribute'
+};
+
+// All error messages should be added to the COMMON_ERROR_MSGS ENUM for export - this helps to organize all error messages
+//into a single export while still allowing us to group them here in a more readable/searchable way
+const COMMON_ERROR_MSGS = {
+    ...ROLE_PERMS_ERROR_MSGS
 };
 
 module.exports = {

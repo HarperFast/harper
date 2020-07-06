@@ -94,7 +94,7 @@ describe('Test schema module', function() {
         test_util.cleanUpDirectories(TRASH_PATH_TEST);
         deleteSchemaTableStruc();
         env.setProperty('HDB_ROOT', HDB_ROOT_ORIGINAL);
-        global.schema = global_schema_original;
+        global.hdb_schema = global_schema_original;
         sandbox.restore();
     });
 

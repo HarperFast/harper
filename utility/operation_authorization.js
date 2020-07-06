@@ -26,6 +26,7 @@ const data_export = require('../data_layer/export');
 const reg = require('./registration/registrationHandler');
 const stop = require('../bin/stop');
 const terms = require('./hdbTerms');
+const permsTranslator = require('../security/permissionsTranslator');
 
 const required_permissions = new Map();
 const DELETE_PERM = 'delete';
@@ -147,6 +148,9 @@ function verifyPermsAst(ast, user_object, operation) {
             return [];
         }
 
+        const full_role_perms = permsTranslator.getRolePermissions(user_object.role);
+        user_object.role.permission = full_role_perms;
+
         for (let s = 0; s<schemas.length; s++) { //NOSONAR
             let tables = parsed_ast.getTablesBySchemaName(schemas[s]);
             if(!tables) {
@@ -192,6 +196,8 @@ function verifyPermsAst(ast, user_object, operation) {
  * @returns {Array} - empty array if permissions match, errors are an array of objects.
  */
 function hasPermissions(user_object, op, schema_table_map ) {
+    const full_role_perms = permsTranslator.getRolePermissions(user_object.role);
+    user_object.role.permission = full_role_perms;
     let unauthorized_table = [];
     if (common_utils.arrayHasEmptyOrZeroLengthValues([user_object,op,schema_table_map])) {
         harper_logger.info(`hasPermissions has an invalid parameter`);
@@ -211,7 +217,6 @@ function hasPermissions(user_object, op, schema_table_map ) {
     }
     for (let schema_table of schema_table_map.keys()) {
         //ASSUME ALL TABLES AND SCHEMAS ARE WIDE OPEN
-        // TODO - SAM - check for schema restrictions based on table restrictions
         for (let table of schema_table_map.get(schema_table)) {
             let table_restrictions = [];
             try {
@@ -285,7 +290,6 @@ function verifyPerms(request_json, operation) {
         return [];
     }
 
-    // TODO - Sam - hasPermissions is really checking TABLE  permissions - update as part of CORE-1047
     let failed_table_permissions = hasPermissions(request_json.hdb_user, op, schema_table_map);
     if (failed_table_permissions && failed_table_permissions.length > 0) {
         return failed_table_permissions;
