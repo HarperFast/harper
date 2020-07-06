@@ -46,7 +46,7 @@ function scrubRoleDetails(role) {
 async function addRole(role){
     let validation_resp = validation.addRoleValidation(role);
     if(validation_resp) {
-        throw new Error(validation_resp);
+        throw validation_resp;
     }
 
     let license_details = await license.getLicense();

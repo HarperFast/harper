@@ -17,7 +17,7 @@ module.exports = {
 };
 
 /**
- * Send a signal to the master process that HDB needs to be restarted.
+ * Send a signal to the parent process that HDB needs to be restarted.
  * @param json_message
  * @returns {Promise}
  */

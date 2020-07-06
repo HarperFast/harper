@@ -181,8 +181,8 @@ class CoreRoom extends RoomIF {
                     }
                     await Promise.all(
                         workers.map(async worker => {
-                            // If we have more than 1 process, we need to get the status from the master process which has that info stored
-                            // in global.  We subscribe to an event that master will emit once it has gathered the data.  We want to build
+                            // If we have more than 1 process, we need to get the status from the parent process which has that info stored
+                            // in global.  We subscribe to an event that parent will emit once it has gathered the data.  We want to build
                             // in a timeout in case the event never comes.
                             let timeout_promise = hdb_utils.timeoutPromise(STATUS_TIMEOUT_MS, TIMEOUT_ERR_MSG);
                             let event_promise = socket_cluster_utils.createEventPromise(socket_cluster_status_event.EVENT_NAME, socket_cluster_status_event.socketClusterEmitter, timeout_promise);

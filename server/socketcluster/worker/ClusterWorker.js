@@ -70,7 +70,7 @@ class ClusterWorker extends WorkerIF {
     run() {
         log.debug('Cluster Worker starting up.');
 
-        this.on('masterMessage', this.masterMessageHandler.bind(this));
+        this.on('masterMessage', this.parentMessageHandler.bind(this));
         this.hdb_workers = [];
         this.hdb_users = {};
 
@@ -127,8 +127,8 @@ class ClusterWorker extends WorkerIF {
         }
     }
 
-    masterMessageHandler(data, respond) {
-        log.trace('masterMessageHandler.');
+    parentMessageHandler(data, respond) {
+        log.trace('parentMessageHandler.');
         try {
             if (data.hdb_data !== undefined) {
                 this.setHDBDatatoExchange(data.hdb_data).then(() => {

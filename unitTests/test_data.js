@@ -253,9 +253,191 @@ const TEST_DATA_LONGTEXT = [
     }
 ];
 
+const TEST_SCHEMA_DOG_BREED = {
+    "dev": {
+        "breed": {
+            "__createdtime__": 1593545954944,
+            "__updatedtime__": 1593545954944,
+            "hash_attribute": "id",
+            "id": "18af086e-1cc4-4634-b985-cd4bf43c0f35",
+            "name": "breed",
+            "residence": null,
+            "schema": "dev",
+            "attributes": [
+                {
+                    "attribute": "image"
+                },
+                {
+                    "attribute": "name"
+                },
+                {
+                    "attribute": "section"
+                },
+                {
+                    "attribute": "__createdtime__"
+                },
+                {
+                    "attribute": "country"
+                },
+                {
+                    "attribute": "id"
+                },
+                {
+                    "attribute": "__updatedtime__"
+                }
+            ],
+            "record_count": 350
+        },
+        "dog": {
+            "__createdtime__": 1593545954885,
+            "__updatedtime__": 1593545954885,
+            "hash_attribute": "id",
+            "id": "5895f31d-5f45-43d7-b1f2-838f90c03909",
+            "name": "dog",
+            "residence": null,
+            "schema": "dev",
+            "attributes": [
+                {
+                    "attribute": "owner_id"
+                },
+                {
+                    "attribute": "weight_lbs"
+                },
+                {
+                    "attribute": "adorable"
+                },
+                {
+                    "attribute": "__createdtime__"
+                },
+                {
+                    "attribute": "id"
+                },
+                {
+                    "attribute": "breed_id"
+                },
+                {
+                    "attribute": "__updatedtime__"
+                },
+                {
+                    "attribute": "dog_name"
+                },
+                {
+                    "attribute": "age"
+                }
+            ],
+            "record_count": 9
+        },
+    }
+};
+
+const TEST_NON_SU_ROLE = {
+    "__createdtime__": 1593546681121,
+    "__updatedtime__": 1593546681121,
+    "id": "1408650a-04c8-4669-aa42-54d37996dd42",
+    "permission": {
+        "super_user": false,
+        "dev": {
+            "tables": {
+                "breed": {
+                    "read": false,
+                    "insert": false,
+                    "update": false,
+                    "delete": false,
+                    "attribute_restrictions": []
+                },
+                "dog": {
+                    "read": true,
+                    "insert": true,
+                    "update": true,
+                    "delete": true,
+                    "attribute_restrictions": []
+                }
+            }
+        },
+        "system": {
+            "tables": {
+                "hdb_table": {
+                    "read": false,
+                    "insert": false,
+                    "update": false,
+                    "delete": false,
+                    "attribute_restrictions": []
+                },
+                "hdb_attribute": {
+                    "read": false,
+                    "insert": false,
+                    "update": false,
+                    "delete": false,
+                    "attribute_restrictions": []
+                },
+                "hdb_schema": {
+                    "read": false,
+                    "insert": false,
+                    "update": false,
+                    "delete": false,
+                    "attribute_restrictions": []
+                },
+                "hdb_user": {
+                    "read": false,
+                    "insert": false,
+                    "update": false,
+                    "delete": false,
+                    "attribute_restrictions": []
+                },
+                "hdb_role": {
+                    "read": false,
+                    "insert": false,
+                    "update": false,
+                    "delete": false,
+                    "attribute_restrictions": []
+                },
+                "hdb_job": {
+                    "read": false,
+                    "insert": false,
+                    "update": false,
+                    "delete": false,
+                    "attribute_restrictions": []
+                },
+                "hdb_license": {
+                    "read": false,
+                    "insert": false,
+                    "update": false,
+                    "delete": false,
+                    "attribute_restrictions": []
+                },
+                "hdb_info": {
+                    "read": false,
+                    "insert": false,
+                    "update": false,
+                    "delete": false,
+                    "attribute_restrictions": []
+                },
+                "hdb_nodes": {
+                    "read": false,
+                    "insert": false,
+                    "update": false,
+                    "delete": false,
+                    "attribute_restrictions": []
+                },
+                "hdb_temp": {
+                    "read": false,
+                    "insert": false,
+                    "update": false,
+                    "delete": false,
+                    "attribute_restrictions": []
+                }
+            }
+        }
+    },
+    "role": "test_role"
+};
+
+
 module.exports = {
     TEST_DATA_AGGR,
     TEST_DATA_CAT,
     TEST_DATA_DOG,
-    TEST_DATA_LONGTEXT
+    TEST_DATA_LONGTEXT,
+    TEST_NON_SU_ROLE,
+    TEST_SCHEMA_DOG_BREED
 };

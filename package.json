@@ -53,6 +53,7 @@
     "fs-extra": "^7.0.1",
     "graceful-fs": "^4.1.15",
     "human-readable-ids": "^1.0.4",
+    "is-number": "^7.0.0",
     "jsonata": "^1.8.3",
     "lodash": "^4.17.11",
     "mathjs": "^4.4.1",

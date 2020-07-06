@@ -11,6 +11,7 @@ const papa_parse = require('papaparse');
 const cluster_messages = require('../server/socketcluster/room/RoomMessageObjects');
 const moment = require('moment');
 const {inspect} = require('util');
+const is_number = require('is-number');
 
 const async_set_timeout = require('util').promisify(setTimeout);
 const HDB_PROC_START_TIMEOUT = 100;
@@ -67,7 +68,8 @@ module.exports = {
     getStartOfTomorrowInSeconds,
     getLimitKey,
     isObject,
-    isNotEmptyAndHasValue
+    isNotEmptyAndHasValue,
+    autoCasterIsNumberCheck
 };
 
 /**
@@ -214,11 +216,8 @@ function autoCast(data){
         return AUTOCAST_COMMON_STRINGS[data];
     }
 
-    // Try to cast it to a number
-    let to_number;
-    let contains_e = data.toUpperCase().includes('E');
-    if (contains_e === false && (to_number = +data) == to_number) {
-        return to_number;
+    if (autoCasterIsNumberCheck(data) === true) {
+        return Number(data);
     }
 
     //in order to handle json and arrays we test the string to see if it seems minimally like an object or array and perform a JSON.parse on it.
@@ -231,6 +230,21 @@ function autoCast(data){
         }
     }
     return data;
+}
+
+/**
+ * function to check if a string is a number based on the rules used by our autocaster
+ * @param {string} data
+ * @returns {boolean}
+ */
+function autoCasterIsNumberCheck(data){
+    let contains_e = data.toUpperCase().includes('E');
+    let starts_with_zero = (data !== "0" && data.startsWith('0'));
+    if (starts_with_zero === false && contains_e === false && is_number(data)) {
+        return true;
+    }
+
+    return false;
 }
 
 /**
@@ -442,7 +456,7 @@ function timeoutPromise(ms, msg) {
 }
 
 /**
- * Wrapper function for process.send, will catch cases where master tries to send an IPC message.
+ * Wrapper function for process.send, will catch cases where parent tries to send an IPC message.
  * @param process_msg - The message to send.
  */
 function callProcessSend(process_msg) {
