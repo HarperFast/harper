@@ -22905,7 +22905,9 @@
 									"",
 									"pm.test(\"required_table_permissions is insert\", function () {",
 									"    var jsonData = pm.response.json();",
-									"    pm.expect(jsonData.unauthorized_access[2].required_table_permissions[0]).to.eql(\"insert\");",
+									"    pm.expect(jsonData.unauthorized_access[0].required_table_permissions[0]).to.eql(\"insert\");",
+									"    pm.expect(jsonData.unauthorized_access[1].required_attribute_permissions[0].required_permissions[0]).to.eql(\"insert\");",
+									"    pm.expect(jsonData.unauthorized_access[2].required_attribute_permissions[0].required_permissions[0]).to.eql(\"insert\");",
 									"});"
 								],
 								"type": "text/javascript"
@@ -23172,7 +23174,6 @@
 							"listen": "test",
 							"script": {
 								"id": "850eefc6-ea77-44a1-917e-07ed5f42de8e",
-								"type": "text/javascript",
 								"exec": [
 									"pm.test(\"Status code is 403\", function () {",
 									"    pm.response.to.have.status(403);",
@@ -23180,9 +23181,11 @@
 									"",
 									"pm.test(\"required_table_permissions is update\", function () {",
 									"    var jsonData = pm.response.json();",
-									"    pm.expect(jsonData.unauthorized_access[1].required_table_permissions[0]).to.eql(\"update\");",
+									"    pm.expect(jsonData.unauthorized_access[0].required_table_permissions[0]).to.eql(\"update\");",
+									"    pm.expect(jsonData.unauthorized_access[1].required_attribute_permissions[0].required_permissions[0]).to.eql(\"update\");",
 									"});"
-								]
+								],
+								"type": "text/javascript"
 							}
 						}
 					],
@@ -23382,7 +23385,8 @@
 									"",
 									"pm.test(\"required_table_permissions is delete\", function () {",
 									"    var jsonData = pm.response.json();",
-									"    pm.expect(jsonData.unauthorized_access[1].required_table_permissions[0]).to.eql(\"delete\");",
+									"    pm.expect(jsonData.unauthorized_access[0].required_table_permissions[0]).to.eql(\"delete\");",
+									"    pm.expect(jsonData.unauthorized_access[1].required_attribute_permissions[0].required_permissions[0]).to.eql(\"delete\");",
 									"});"
 								],
 								"type": "text/javascript"

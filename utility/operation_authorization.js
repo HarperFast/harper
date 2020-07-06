@@ -148,25 +148,12 @@ function verifyPermsAst(ast, user_object, operation) {
             return [];
         }
 
-        const full_role_perms = permsTranslator.getRolePermissions(user_object.role);
-        user_object.role.permission = full_role_perms;
-
         for (let s = 0; s<schemas.length; s++) { //NOSONAR
             let tables = parsed_ast.getTablesBySchemaName(schemas[s]);
             if(!tables) {
                 return [];
             }
 
-            for (let t = 0; t<tables.length; t++) {
-                let attributes = parsed_ast.getAttributesBySchemaTableName(schemas[s], tables[t]);
-                const attribute_restrictions = getAttributeRestrictions(user_object, schemas[s],tables[t]);
-                let unauthorized_attributes = checkAttributePerms(attributes, attribute_restrictions, operation, tables[t], schemas[s]);
-                if (unauthorized_attributes && Object.keys(unauthorized_attributes).length > 0) {
-                    for(let failed_perm in unauthorized_attributes) {
-                        failed_permission_objects.push(unauthorized_attributes[failed_perm]);
-                    }
-                }
-            }
             schema_table_map.set(schemas[s], tables);
             let has_permissions = hasPermissions(user_object, operation, schema_table_map); //NOSONAR;
             if(has_permissions && has_permissions.length) {
@@ -179,6 +166,17 @@ function verifyPermsAst(ast, user_object, operation) {
                     });
                     failed_permission_objects.push(failed_perm_object);
                 });
+            }
+
+            for (let t = 0; t<tables.length; t++) {
+                let attributes = parsed_ast.getAttributesBySchemaTableName(schemas[s], tables[t]);
+                const attribute_restrictions = getAttributeRestrictions(user_object, schemas[s],tables[t]);
+                let unauthorized_attributes = checkAttributePerms(attributes, attribute_restrictions, operation, tables[t], schemas[s]);
+                if (unauthorized_attributes && Object.keys(unauthorized_attributes).length > 0) {
+                    for(let failed_perm in unauthorized_attributes) {
+                        failed_permission_objects.push(unauthorized_attributes[failed_perm]);
+                    }
+                }
             }
         }
         return failed_permission_objects;
