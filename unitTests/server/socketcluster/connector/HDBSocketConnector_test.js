@@ -199,7 +199,7 @@ describe('Test compareAttributeKeys with filesystem', () => {
             result = err;
         }
 
-        // Need to force updating the global schema, otherwise we would have to wait for the signal to tell the master
+        // Need to force updating the global schema, otherwise we would have to wait for the signal to tell the parent
         // to update.
         await p_set_global();
         let found = await p_get_table(SCHEMA_1_NAME, SCHEMA_1_TABLE_1_NAME);
@@ -318,7 +318,7 @@ describe('Test compareTableKeys with filesystem', () => {
             result = err;
         }
 
-        // Need to force updating the global schema, otherwise we would have to wait for the signal to tell the master
+        // Need to force updating the global schema, otherwise we would have to wait for the signal to tell the parent
         // to update.
         await p_set_global();
         let found_table = undefined;
@@ -370,7 +370,7 @@ describe('Test compareTableKeys with filesystem', () => {
             result = err;
         }
         assert.strictEqual(result, undefined, 'Got unexpected exception');
-        // Need to force updating the global schema, otherwise we would have to wait for the signal to tell the master
+        // Need to force updating the global schema, otherwise we would have to wait for the signal to tell the parent
         // to update.
         await p_set_global();
         let found_table = undefined;
@@ -414,7 +414,7 @@ describe('Test compareTableKeys with filesystem', () => {
             result = err;
         }
         assert.strictEqual(result, undefined, 'Got unexpected exception');
-        // Need to force updating the global schema, otherwise we would have to wait for the signal to tell the master
+        // Need to force updating the global schema, otherwise we would have to wait for the signal to tell the parent
         // to update.
         await p_set_global();
         let found_table = undefined;

@@ -186,7 +186,7 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
         await user_schema.setUsersToGlobal();
 
         harper_logger.notify(`HarperDB successfully started`);
-        harper_logger.info(`Master ${process.pid} is running`);
+        harper_logger.info(`Parent ${process.pid} is running`);
         harper_logger.info(`Running with NODE_ENV set as: ${process.env.NODE_ENV}`);
         harper_logger.info(`Number of processes allowed by license is:${numCPUs}, number of cores on this machine: ${num_workers}`);
         numCPUs = (numCPUs > num_workers ? num_workers : numCPUs);

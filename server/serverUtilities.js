@@ -52,7 +52,6 @@ module.exports = {
     getOperationFunction,
     processLocalTransaction,
     postOperationHandler,
-    createLimitsTimeout,
     UNAUTH_RESPONSE,
     UNAUTHORIZED_TEXT
 };
@@ -564,16 +563,4 @@ async function signalJob(json) {
         harper_logger.error(message);
         throw new Error(message);
     }
-}
-
-function createLimitsTimeout(limiter_name_string, master_rate_limiter, timout_interval_ms) {
-    setTimeout(async (info) => {
-        try {
-            harper_logger.debug('Restoring limits');
-            let points = master_rate_limiter._rateLimiters[`apiclusterlimiter`].points;
-
-        } catch (err) {
-            harper_logger.log(err);
-        }
-    }, timout_interval_ms);
 }

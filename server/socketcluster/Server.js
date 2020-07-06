@@ -114,7 +114,7 @@ function registerHandlers() {
 
 
 /**
- * Any error from any child process or master will cause the 'fail' event to be emitted on your SocketCluster instance (assuming the propagateErrors option is not set to false).
+ * Any error from any child process or parent will cause the 'fail' event to be emitted on your SocketCluster instance (assuming the propagateErrors option is not set to false).
  * @param error
  */
 function failHandler(error){
@@ -122,7 +122,7 @@ function failHandler(error){
 }
 
 /**
- * Triggered by a warning from any child process or master.
+ * Triggered by a warning from any child process or parent.
  * @param warning
  */
 function warningHandler(warning){
@@ -150,9 +150,8 @@ function workerExitHandler(worker_info){
 }
 
 /**
- * Emitted when a worker process sends a message to this master process. T
+ * Emitted when a worker process sends a message to this parent process. T
  * he first parameter passed to the handler is the worker id, the second parameter is the data/object sent by the worker, the third parameter is the respond callback.
- * See sendToMaster() method in SCWorker API for details on how to send a message to master from inside a worker process.
  * @param worker_id
  * @param data
  * @param callback
@@ -212,9 +211,8 @@ function brokerExitHandler(broker_info){
 }
 
 /**
- * Emitted when a broker process sends a message to this master process.
+ * Emitted when a broker process sends a message to this parent process.
  * The first parameter passed to the handler is the broker id, the second parameter is the data/object sent by the broker, the third parameter is the respond callback.
- * See sendToMaster() method in Broker API for details on how to send a message to master from inside a broker process.
  * @param broker_id
  * @param data
  * @param callback
