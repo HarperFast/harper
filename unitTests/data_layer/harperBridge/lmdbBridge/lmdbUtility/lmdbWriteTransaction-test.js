@@ -1,7 +1,8 @@
 'use strict';
 
 const test_utils = require('../../../../test_utils');
-test_utils.preTestPrep();const path = require('path');
+test_utils.preTestPrep();
+const path = require('path');
 const TRANSACTIONS_NAME = 'transactions';
 const BASE_PATH = test_utils.getMockFSPath();
 const BASE_TRANSACTIONS_PATH = path.join(BASE_PATH, TRANSACTIONS_NAME);
@@ -12,6 +13,8 @@ const lmdb_create_txn_envs = require('../../../../../data_layer/harperBridge/lmd
 const lmdb_write_txn = require('../../../../../data_layer/harperBridge/lmdbBridge/lmdbUtility/lmdbWriteTransaction');
 const rw_lmdb_write_txn = rewire('../../../../../data_layer/harperBridge/lmdbBridge/lmdbUtility/lmdbWriteTransaction');
 const search_util = require('../../../../../utility/lmdb/searchUtility');
+
+const env_mngr = require('../../../../../utility/environment/environmentManager');
 
 const create_transaction_object_func = rw_lmdb_write_txn.__get__('createTransactionObject');
 
@@ -34,6 +37,9 @@ const LMDBInsertTransactionObject = require('../../../../../data_layer/harperBri
 const LMDBUpdateTransactionObject = require('../../../../../data_layer/harperBridge/lmdbBridge/lmdbUtility/LMDBUpdateTransactionObject');
 const LMDBDeleteTransactionObject = require('../../../../../data_layer/harperBridge/lmdbBridge/lmdbUtility/LMDBDeleteTransactionObject');
 
+const orig_clustering_setting = env_mngr.get('CLUSTERING');
+const orig_disable_txn_setting = env_mngr.get('DISABLE_TRANSACTION_LOG');
+
 const CREATE_TABLE_OBJ = new CreateTableObject('dev', 'test', 'id');
 
 const INSERT_RECORDS = [{id: 1, name: 'Penny'}, {id: 2, name: 'Kato', age: '6'}, {id: 3, name: 'Riley', age: '7'}, {id: 'blerrrrr', name: 'Rosco'}];
@@ -45,8 +51,6 @@ const HDB_USER = {
     username: 'kyle'
 };
 
-
-
 describe('test lmdbWriteTransaction module', ()=>{
     let rw_env_util;
 
@@ -57,6 +61,131 @@ describe('test lmdbWriteTransaction module', ()=>{
 
     after(()=>{
         rw_env_util();
+    });
+
+    describe('test getDisableTxnLogSetting function', ()=>{
+        let rw_func = undefined;
+        before(() => {
+            rw_func = rw_lmdb_write_txn.__get__('getDisableTxnLogSetting');
+            global.lmdb_map = undefined;
+        });
+
+        afterEach(()=>{
+            env_mngr.setProperty('CLUSTERING', orig_clustering_setting);
+            env_mngr.setProperty('DISABLE_TRANSACTION_LOG', orig_disable_txn_setting);
+        });
+
+        after(async () => {
+            env_mngr.setProperty('CLUSTERING', orig_clustering_setting);
+            env_mngr.setProperty('DISABLE_TRANSACTION_LOG', orig_disable_txn_setting);
+            await fs.remove(BASE_PATH);
+            global.lmdb_map = undefined;
+        });
+
+        it('test if DISABLE_TRANSACTION_LOG undefined & CLUSTERING undefined', ()=>{
+            env_mngr.setProperty('CLUSTERING', undefined);
+            env_mngr.setProperty('DISABLE_TRANSACTION_LOG', undefined);
+            let result = rw_func();
+            assert.deepStrictEqual(result, false);
+        });
+
+        it('test if DISABLE_TRANSACTION_LOG null & CLUSTERING undefined', ()=>{
+            env_mngr.setProperty('CLUSTERING', undefined);
+            env_mngr.setProperty('DISABLE_TRANSACTION_LOG', null);
+            let result = rw_func();
+            assert.deepStrictEqual(result, false);
+        });
+
+        it('test if DISABLE_TRANSACTION_LOG "" & CLUSTERING undefined', ()=>{
+            env_mngr.setProperty('CLUSTERING', undefined);
+            env_mngr.setProperty('DISABLE_TRANSACTION_LOG', "");
+            let result = rw_func();
+            assert.deepStrictEqual(result, false);
+        });
+
+        it('test if DISABLE_TRANSACTION_LOG true & CLUSTERING undefined', ()=>{
+            env_mngr.setProperty('CLUSTERING', undefined);
+            env_mngr.setProperty('DISABLE_TRANSACTION_LOG', true);
+            let result = rw_func();
+            assert.deepStrictEqual(result, true);
+        });
+
+        it('test if DISABLE_TRANSACTION_LOG false & CLUSTERING undefined', ()=>{
+            env_mngr.setProperty('CLUSTERING', undefined);
+            env_mngr.setProperty('DISABLE_TRANSACTION_LOG', false);
+            let result = rw_func();
+            assert.deepStrictEqual(result, false);
+        });
+
+        it('test if DISABLE_TRANSACTION_LOG "true" & CLUSTERING undefined', ()=>{
+            env_mngr.setProperty('CLUSTERING', undefined);
+            env_mngr.setProperty('DISABLE_TRANSACTION_LOG', "true");
+            let result = rw_func();
+            assert.deepStrictEqual(result, true);
+        });
+
+        it('test if DISABLE_TRANSACTION_LOG "TRUE" & CLUSTERING undefined', ()=>{
+            env_mngr.setProperty('CLUSTERING', undefined);
+            env_mngr.setProperty('DISABLE_TRANSACTION_LOG', "TRUE");
+            let result = rw_func();
+            assert.deepStrictEqual(result, true);
+        });
+
+        it('test if DISABLE_TRANSACTION_LOG "false" & CLUSTERING not exist', ()=>{
+            env_mngr.setProperty('CLUSTERING', undefined);
+            env_mngr.setProperty('DISABLE_TRANSACTION_LOG', "false");
+            let result = rw_func();
+            assert.deepStrictEqual(result, false);
+        });
+
+        it('test if DISABLE_TRANSACTION_LOG "FALSE" & CLUSTERING not exist', ()=>{
+            env_mngr.setProperty('CLUSTERING', undefined);
+            env_mngr.setProperty('DISABLE_TRANSACTION_LOG', "FALSE");
+            let result = rw_func();
+            assert.deepStrictEqual(result, false);
+        });
+
+        it('test if DISABLE_TRANSACTION_LOG "true" & CLUSTERING true', ()=>{
+            env_mngr.setProperty('CLUSTERING', true);
+            env_mngr.setProperty('DISABLE_TRANSACTION_LOG', "true");
+            let result = rw_func();
+            assert.deepStrictEqual(result, false);
+        });
+
+        it('test if DISABLE_TRANSACTION_LOG "TRUE" & CLUSTERING true', ()=>{
+            env_mngr.setProperty('CLUSTERING', true);
+            env_mngr.setProperty('DISABLE_TRANSACTION_LOG', "TRUE");
+            let result = rw_func();
+            assert.deepStrictEqual(result, false);
+        });
+
+        it('test if DISABLE_TRANSACTION_LOG true & CLUSTERING true', ()=>{
+            env_mngr.setProperty('CLUSTERING', true);
+            env_mngr.setProperty('DISABLE_TRANSACTION_LOG', true);
+            let result = rw_func();
+            assert.deepStrictEqual(result, false);
+        });
+
+        it('test if DISABLE_TRANSACTION_LOG "true" & CLUSTERING false', ()=>{
+            env_mngr.setProperty('CLUSTERING', false);
+            env_mngr.setProperty('DISABLE_TRANSACTION_LOG', "true");
+            let result = rw_func();
+            assert.deepStrictEqual(result, true);
+        });
+
+        it('test if DISABLE_TRANSACTION_LOG "TRUE" & CLUSTERING false', ()=>{
+            env_mngr.setProperty('CLUSTERING', false);
+            env_mngr.setProperty('DISABLE_TRANSACTION_LOG', "TRUE");
+            let result = rw_func();
+            assert.deepStrictEqual(result, true);
+        });
+
+        it('test if DISABLE_TRANSACTION_LOG true & CLUSTERING false', ()=>{
+            env_mngr.setProperty('CLUSTERING', false);
+            env_mngr.setProperty('DISABLE_TRANSACTION_LOG', true);
+            let result = rw_func();
+            assert.deepStrictEqual(result, true);
+        });
     });
 
     describe('test createTransactionObject function', ()=>{
@@ -218,6 +347,44 @@ describe('test lmdbWriteTransaction module', ()=>{
 
             results = search_util.iterateDBI(txn_env, 'user_name');
             assert.deepStrictEqual(results, Object.create(null));
+        });
+
+        it('test writing insert with DISABLE_TRANSACTION_LOG true', async()=>{
+            let disable_txn = rw_lmdb_write_txn.__set__('DISABLE_TRANSACTION_LOG', true);
+
+            let insert_obj = new InsertObject('dev', 'test', 'id', INSERT_RECORDS);
+            let insert_response = new InsertRecordsResponseObject(INSERT_HASHES, [], common.getMicroTime());
+
+            //call the write txn function
+            let error = undefined;
+            try {
+                await rw_lmdb_write_txn(insert_obj, insert_response);
+            }catch(e){
+                error = e;
+            }
+            assert.deepStrictEqual(error, undefined);
+
+            //test expected entries exist
+            let transaction_path = path.join(BASE_TRANSACTIONS_PATH, CREATE_TABLE_OBJ.schema);
+            let txn_env = undefined;
+            try {
+                txn_env = await environment_utility.openEnvironment(transaction_path, CREATE_TABLE_OBJ.table, true);
+            }catch(e){
+                error = e;
+            }
+            assert.deepStrictEqual(error, undefined);
+            assert.notStrictEqual(txn_env, undefined);
+
+            let results = search_util.iterateDBI(txn_env, 'timestamp');
+            assert.deepStrictEqual(results, Object.create(null));
+
+            results = search_util.iterateDBI(txn_env, 'hash_value');
+            assert.deepStrictEqual(results, Object.create(null));
+
+            results = search_util.iterateDBI(txn_env, 'user_name');
+            assert.deepStrictEqual(results, Object.create(null));
+
+            disable_txn();
         });
 
         it('test writing insert with user on operation', async()=>{
