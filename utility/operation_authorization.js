@@ -319,7 +319,7 @@ function verifyPerms(request_json, operation) {
         if (table_perms[terms.PERMS_CRUD_ENUM.READ]) {
             const table_attr_perms = table_perms.attribute_restrictions.filter(perm => perm[terms.PERMS_CRUD_ENUM.READ]);
             if (table_attr_perms.length === 0) {
-                final_get_attrs = global.hdb_schema[operation_schema][table].attributes;
+                final_get_attrs = global.hdb_schema[operation_schema][table].attributes.map(obj => obj.attribute);
             }  else {
                 table_attr_perms.forEach(perm => {
                     final_get_attrs.push(perm.attribute_name);

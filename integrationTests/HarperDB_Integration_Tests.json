@@ -20560,6 +20560,83 @@
 					"response": []
 				},
 				{
+					"name": "NoSQL Try to insert into insert restricted attribute in categories table as test_user",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "a147ddb5-feb4-45ec-8b1d-3e495c5d0583",
+								"exec": [
+									"pm.test(\"Status code is 403\", function () {",
+									"    pm.response.to.have.status(403);",
+									"});",
+									"",
+									"var jsonData = pm.response.json();",
+									"",
+									"pm.test(\"required_attribute_permissions includes 1 perms error\", function () {",
+									"    pm.expect(jsonData.unauthorized_access[0].required_attribute_permissions.length).to.eql(1);",
+									"});",
+									"",
+									"pm.test(\"required_attribute_permissions object has correct attribute name and perm\", function () {",
+									"    pm.expect(jsonData.unauthorized_access[0].required_attribute_permissions[0].attribute_name).to.eql(\"categoryname\");",
+									"    pm.expect(jsonData.unauthorized_access[0].required_attribute_permissions[0].required_permissions[0]).to.eql(\"insert\");",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{test_user_name}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic c2dvbGRiZXJnOnRlc3QxMjM0IQ=="
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"insert\",\n  \"schema\":\"{{schema}}\",\n  \"table\":\"{{cate_tb}}\",\n  \"records\": [\n    {\n      \"{{cate_id}}\":9,\n      \"categoryname\":\"test name\",\n      \"description\":\"test description\"\n    }\n  ]\n}",
+							"options": {
+								"raw": {}
+							}
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						},
+						"description": "Method for adding users.  Users can be assigned roles which provide granular access at a table, operation, and attirbute level.  \n\n<ul>\n<li><b>operation </b> <i>(required) </i> - must always be 'add_user'</li>\n\n<li><b>role </b><i>(required) </i>- id of the role you wish to assign to the user.  See add_role for more detail.  </li>\n\n<li><b>username </b> <i>(required)</i> - username assigned to the user.  It can not be altered after adding the user.  It serves as the hash. </li>\n\n<li><b>password </b> <i>(required) </i>- clear text for password.  HarperDB will encrypt the password upon reciept. </li>\n\n</ul>"
+					},
+					"response": []
+				},
+				{
 					"name": "NoSQL Try to insert into territories table as SU",
 					"event": [
 						{
@@ -20895,6 +20972,84 @@
 					"response": []
 				},
 				{
+					"name": "NoSQL Try to update restricted attrs in categories table as test_user",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "5fa8747e-a930-402f-94a0-d4efc7380d24",
+								"exec": [
+									"pm.test(\"Status code is 403\", function () {",
+									"    pm.response.to.have.status(403);",
+									"});",
+									"",
+									"var jsonData = pm.response.json();",
+									"",
+									"pm.test(\"required_attribute_permissions includes 2 perms error\", function () {",
+									"    pm.expect(jsonData.unauthorized_access.length).to.eql(2);",
+									"});",
+									"",
+									"pm.test(\"required_attribute_permissions objects have correct attribute name and perm\", function () {",
+									"    pm.expect(jsonData.unauthorized_access[0].required_attribute_permissions[0].attribute_name).to.eql(\"categoryname\");",
+									"    pm.expect(jsonData.unauthorized_access[0].required_attribute_permissions[0].required_permissions[0]).to.eql(\"update\");",
+									"    pm.expect(jsonData.unauthorized_access[1].required_attribute_permissions[0].attribute_name).to.eql(\"picture\");",
+									"    pm.expect(jsonData.unauthorized_access[1].required_attribute_permissions[0].required_permissions[0]).to.eql(\"update\");",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{test_user_name}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic c2dvbGRiZXJnOnRlc3QxMjM0IQ=="
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"update\",\n  \"schema\":\"{{schema}}\",\n  \"table\":\"{{cate_tb}}\",\n  \"records\": [\n    {\n      \"{{cate_id}}\": 1,\n      \"categoryname\": \"test name\",\n      \"description\":\"test description updated\",\n      \"picture\": \"test picture\"\n    }\n  ]\n}",
+							"options": {
+								"raw": {}
+							}
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
 					"name": "NoSQL Try to delete from categories table as SU",
 					"event": [
 						{
@@ -21100,6 +21255,84 @@
 						"body": {
 							"mode": "raw",
 							"raw": "{\n\"operation\":\"search_by_value\",\n\"table\":\"{{ship_tb}}\",\n\"schema\":\"{{schema}}\",\n\"hash_attribute\":\"id\",\n\"search_attribute\":\"{{ship_id}}\",\n\"search_value\":\"*\",\n\"get_attributes\":[\"companyname\"]\n}",
+							"options": {
+								"raw": {}
+							}
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						},
+						"description": "Method for adding users.  Users can be assigned roles which provide granular access at a table, operation, and attirbute level.  \n\n<ul>\n<li><b>operation </b> <i>(required) </i> - must always be 'add_user'</li>\n\n<li><b>role </b><i>(required) </i>- id of the role you wish to assign to the user.  See add_role for more detail.  </li>\n\n<li><b>username </b> <i>(required)</i> - username assigned to the user.  It can not be altered after adding the user.  It serves as the hash. </li>\n\n<li><b>password </b> <i>(required) </i>- clear text for password.  HarperDB will encrypt the password upon reciept. </li>\n\n</ul>"
+					},
+					"response": []
+				},
+				{
+					"name": "NoSQL Try to read ALL shippers table attributes as test_user",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "a5f7299b-752f-4e73-afc2-92102dd9bb63",
+								"exec": [
+									"pm.test(\"Status code is 403\", function () {",
+									"    pm.response.to.have.status(403);",
+									"});",
+									"",
+									"var jsonData = pm.response.json();",
+									"",
+									"pm.test(\"required_table_permissions is not empty - has five objects\", function () {",
+									"    pm.expect(jsonData.unauthorized_access.length).to.eql(5);",
+									"});",
+									"",
+									"pm.test(\"required_attribute_permissions is read\", function () {",
+									"    jsonData.unauthorized_access.forEach(obj => {",
+									"        pm.expect(obj.required_attribute_permissions[0].required_permissions[0]).to.eql(\"read\");",
+									"    })",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{test_user_name}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic c2dvbGRiZXJnOnRlc3QxMjM0IQ=="
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\"operation\":\"search_by_value\",\n\"table\":\"{{ship_tb}}\",\n\"schema\":\"{{schema}}\",\n\"hash_attribute\":\"id\",\n\"search_attribute\":\"{{ship_id}}\",\n\"search_value\":\"*\",\n\"get_attributes\":[\"*\"]\n}",
 							"options": {
 								"raw": {}
 							}
@@ -22623,23 +22856,28 @@
 					"response": []
 				},
 				{
-					"name": "SQL Try to read user read restricted suppliers table",
+					"name": "SQL Try to read restricted suppliers table as test_user",
 					"event": [
 						{
 							"listen": "test",
 							"script": {
 								"id": "b5e65b32-f3ea-4ba7-bd25-8693f6cf4e2b",
-								"type": "text/javascript",
 								"exec": [
 									"pm.test(\"Status code is 403\", function () {",
 									"    pm.response.to.have.status(403);",
 									"});",
 									"",
+									"var jsonData = pm.response.json();",
+									"",
+									"pm.test(\"Should return 1 unauthorized_access object\", function () {",
+									"    pm.expect(jsonData.unauthorized_access.length).to.eql(1);",
+									"});",
+									"",
 									"pm.test(\"required_table_permissions is read\", function () {",
-									"    var jsonData = pm.response.json();",
 									"    pm.expect(jsonData.unauthorized_access[0].required_table_permissions[0]).to.eql(\"read\");",
 									"});"
-								]
+								],
+								"type": "text/javascript"
 							}
 						}
 					],
@@ -22766,12 +23004,24 @@
 							"listen": "test",
 							"script": {
 								"id": "ee1df498-fd1d-478c-9c94-d7dabbf289b6",
-								"type": "text/javascript",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {",
 									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"var permitted_attrs = [\"regiondescription\", \"regionid\"];",
+									"",
+									"pm.test(\"Only permitted attributes are returned\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    jsonData.forEach(obj => {",
+									"        Object.keys(obj).forEach(attr_name => {",
+									"            pm.expect(permitted_attrs.includes(attr_name))    ",
+									"        })",
+									"    })",
+									"",
 									"});"
-								]
+								],
+								"type": "text/javascript"
 							}
 						}
 					],
@@ -23102,6 +23352,78 @@
 					"response": []
 				},
 				{
+					"name": "SQL Try to insert into territories table with allowed attributes as test_user",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "80a21ee7-002c-48ce-909b-d2a8bd120794",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"New record inserted\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.message).to.eql(\"inserted 1 of 1 records\");",
+									"    pm.expect(jsonData.inserted_hashes[0]).to.eql(165);",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{test_user_name}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic c2dvbGRiZXJnOnRlc3QxMjM0IQ=="
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"insert into northnwd.territories (territoryid, territorydescription) values ('165', 'Im a test');\"\n}",
+							"options": {
+								"raw": {}
+							}
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						},
+						"description": "Method for adding users.  Users can be assigned roles which provide granular access at a table, operation, and attirbute level.  \n\n<ul>\n<li><b>operation </b> <i>(required) </i> - must always be 'add_user'</li>\n\n<li><b>role </b><i>(required) </i>- id of the role you wish to assign to the user.  See add_role for more detail.  </li>\n\n<li><b>username </b> <i>(required)</i> - username assigned to the user.  It can not be altered after adding the user.  It serves as the hash. </li>\n\n<li><b>password </b> <i>(required) </i>- clear text for password.  HarperDB will encrypt the password upon reciept. </li>\n\n</ul>"
+					},
+					"response": []
+				},
+				{
 					"name": "SQL Try to update territories table as SU",
 					"event": [
 						{
@@ -23306,6 +23628,82 @@
 					"response": []
 				},
 				{
+					"name": "SQL Try to update restricted attr in categories table as test_user",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "4f775221-9fcf-47cf-abe1-ce4765a11d0b",
+								"exec": [
+									"pm.test(\"Status code is 403\", function () {",
+									"    pm.response.to.have.status(403);",
+									"});",
+									"",
+									"var jsonData = pm.response.json();",
+									"",
+									"pm.test(\"required_attribute_permissions is not empty - has one object\", function () {",
+									"    pm.expect(jsonData.unauthorized_access[0].required_attribute_permissions[0].attribute_name).to.eql(\"picture\");",
+									"});",
+									"",
+									"pm.test(\"required_attribute_permissions is insert\", function () {",
+									"    pm.expect(jsonData.unauthorized_access[0].required_attribute_permissions[0].required_permissions[0]).to.eql(\"update\");",
+									"});",
+									""
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{test_user_name}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic c2dvbGRiZXJnOnRlc3QxMjM0IQ=="
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"update northnwd.categories set description = 'update test', picture = 'test picture' where categoryid = 2\"\n}",
+							"options": {
+								"raw": {}
+							}
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
 					"name": "SQL Try to delete from categories table as SU",
 					"event": [
 						{
@@ -23455,13 +23853,13 @@
 									"    pm.response.to.have.status(403);",
 									"});",
 									"",
+									"var jsonData = pm.response.json();",
+									"",
 									"pm.test(\"All table attributes returned in unauthorized access array\", function () {",
-									"    var jsonData = pm.response.json();",
 									"    pm.expect(jsonData.unauthorized_access.length).to.eql(5);",
 									"});",
 									"",
 									"pm.test(\"required_attribute_permissions is read\", function () {",
-									"    var jsonData = pm.response.json();",
 									"    jsonData.unauthorized_access.forEach(val => {",
 									"        pm.expect(val.required_attribute_permissions[0].required_permissions[0]).to.eql(\"read\");",
 									"    })",
@@ -23608,15 +24006,15 @@
 									"    pm.response.to.have.status(403);",
 									"});",
 									"",
+									"var jsonData = pm.response.json();",
+									"",
 									"pm.test(\"required_attribute_permissions is not empty\", function () {",
-									"    var jsonData = pm.response.json();",
 									"    pm.expect(jsonData.unauthorized_access[0].required_attribute_permissions[0].attribute_name).to.eql(\"shipperid\");",
 									"    pm.expect(jsonData.unauthorized_access[1].required_attribute_permissions[0].attribute_name).to.eql(\"companyname\");",
 									"    pm.expect(jsonData.unauthorized_access[2].required_attribute_permissions[0].attribute_name).to.eql(\"phone\");",
 									"});",
 									"",
 									"pm.test(\"required_attribute_permissions is insert\", function () {",
-									"    var jsonData = pm.response.json();",
 									"    pm.expect(jsonData.unauthorized_access[0].required_attribute_permissions[0].required_permissions[0]).to.eql(\"insert\");",
 									"    pm.expect(jsonData.unauthorized_access[1].required_attribute_permissions[0].required_permissions[0]).to.eql(\"insert\");",
 									"    pm.expect(jsonData.unauthorized_access[2].required_attribute_permissions[0].required_permissions[0]).to.eql(\"insert\");",
