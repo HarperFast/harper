@@ -381,8 +381,8 @@ async function clusterStatus(cluster_status_json) {
         cluster_status_msg.requestor_channel = global.hdb_socket_client.socket.id;
         // Don't set originator so the message will be delivered to the worker rather than swallowed.
         hdb_utils.sendTransactionToSocketCluster(cluster_status_msg.requestor_channel, cluster_status_msg, null);
-        // If we have more than 1 process, we need to get the status from the master process which has that info stored
-        // in global.  We subscribe to an event that master will emit once it has gathered the data.  We want to build
+        // If we have more than 1 process, we need to get the status from the parent process which has that info stored
+        // in global.  We subscribe to an event that parent will emit once it has gathered the data.  We want to build
         // in a timeout in case the event never comes.
         let timeout_promise = hdb_utils.timeoutPromise(STATUS_TIMEOUT_MS, TIMEOUT_ERR_MSG);
         let event_promise = hdb_utils.createEventPromise(cluster_status_event.EVENT_NAME, cluster_status_event.clusterEmitter, timeout_promise);
@@ -472,7 +472,7 @@ function getClusterStatus() {
 }
 
 /**
- * This function describes messages the master process expects to recieve from child processes.
+ * This function describes messages the parent process expects to recieve from child processes.
  * @param msg
  */
 function clusterMessageHandler(msg) {

@@ -456,7 +456,7 @@ function timeoutPromise(ms, msg) {
 }
 
 /**
- * Wrapper function for process.send, will catch cases where master tries to send an IPC message.
+ * Wrapper function for process.send, will catch cases where parent tries to send an IPC message.
  * @param process_msg - The message to send.
  */
 function callProcessSend(process_msg) {

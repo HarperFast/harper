@@ -35,7 +35,7 @@ function signalSchemaChange(message){
         if(!global.isMaster){
             process.send(message);
         } else {
-            harper_logger.warn(`Got schema change, but process.send is undefined and I am not master. My pid is ${process.pid}.  Global.isMaster is: ${global.isMaster}`);
+            harper_logger.warn(`Got schema change, but process.send is undefined and I am not parent. My pid is ${process.pid}.  Global.isMaster is: ${global.isMaster}`);
         }
     }catch(e){
         harper_logger.error(e);
