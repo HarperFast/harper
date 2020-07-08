@@ -83,8 +83,21 @@ class sql_statement_bucket {
         return this.ast;
     }
 
-    //TODO - SAM - add code comment
-    updateAttributeWildcardsForRolePerms(role_perms, ast_wildcards) {
+    /**
+     *When a SELECT * is included in the AST for a non-SU, we need to convert the star into the specific attributes the
+     * user has READ permissions
+     *
+     * @param role_perms -
+     * @returns {*}
+     */
+    updateAttributeWildcardsForRolePerms(role_perms) {
+        const ast_wildcards = this.ast.columns.filter(col => terms.SEARCH_WILDCARDS.includes(col.columnid));
+
+        //If there are no wildcards, we can skip this step
+        if (ast_wildcards.length === 0) {
+            return this.ast;
+        }
+
         //This function will need to be updated if/when we start to do cross-schema joins - i.e. function will need
         // to handle multiple schema values instead of just the one below
         const col_schema = this.ast.from[0].databaseid;
@@ -95,34 +108,54 @@ class sql_statement_bucket {
             if (val.tableid) {
                 col_table = this.table_lookup.get(val.tableid);
             } else {
+                //If there is no table id, we can assume this is a simple `SELECT * FROM ...` w/ no JOINS
                 col_table = this.ast.from[0].tableid;
             }
 
-            const table_attr_perms = filterRestrictedTableAttrs(role_perms[col_schema].tables[col_table].attribute_restrictions);
-            let final_table_attrs;
-            if (table_attr_perms.length > 0) {
-                final_table_attrs = table_attr_perms;
-            } else {
-                final_table_attrs = global.hdb_schema[col_schema][col_table].attributes.map(attr => ({attribute_name: attr.attribute}));
-            }
+            //We only want to do this if the table that is being SELECT *'d has READ permissions - if not, we will only
+            // want to send the table permissions error response so we can skip this step.
+            if (role_perms[col_schema].tables[col_table][terms.PERMS_CRUD_ENUM.READ]) {
+                const table_attr_perms = filterReadRestrictedAttrs(role_perms[col_schema].tables[col_table].attribute_restrictions);
+                let final_table_attrs;
+                if (table_attr_perms.length > 0) {
+                    final_table_attrs = table_attr_perms;
+                } else {
+                    //If the user has READ perms for the table but no perms for the attributes in it, we add all the attrs
+                    // into the AST * affected_attributes map so that the individual attribute permissions error responses
+                    // are returned to the user
+                    final_table_attrs = global.hdb_schema[col_schema][col_table].attributes.map(attr => ({attribute_name: attr.attribute}));
+                }
 
-            const table_affected_attrs = this.affected_attributes.get(col_schema).get(col_table)
-                .filter(attr => !terms.SEARCH_WILDCARDS.includes(attr));
-            final_table_attrs.forEach(({attribute_name}) => {
-                let new_column = new alasql.yy.Column({ columnid: attribute_name });
-                if (val.tableid) {
-                    new_column.tableid = val.tableid;
-                }
-                this.ast.columns.push(new_column);
-                if (!table_affected_attrs.includes(attribute_name)) {
-                    table_affected_attrs.push(attribute_name);
-                }
-            });
-            this.affected_attributes.get(col_schema).set(col_table, table_affected_attrs);
+                //It's important to REMOVE the wildcard as we replace it with the actual attributes that will be selected
+                const table_affected_attrs = this.affected_attributes.get(col_schema).get(col_table)
+                    .filter(attr => !terms.SEARCH_WILDCARDS.includes(attr));
+                final_table_attrs.forEach(({attribute_name}) => {
+                    let new_column = new alasql.yy.Column({ columnid: attribute_name });
+                    if (val.tableid) {
+                        new_column.tableid = val.tableid;
+                    }
+                    this.ast.columns.push(new_column);
+                    if (!table_affected_attrs.includes(attribute_name)) {
+                        table_affected_attrs.push(attribute_name);
+                    }
+                });
+                this.affected_attributes.get(col_schema).set(col_table, table_affected_attrs);
+            }
         });
 
         return this.ast;
     }
+}
+
+/**
+ * Takes full table attribute permissions array and filters out attributes w/ FALSE READ perms
+ *
+ * @param attr_perms [] - attribute permissions for a table
+ * @returns [] - array of attribute permissions objects w/ READ perms === TRUE
+ */
+
+function filterReadRestrictedAttrs(attr_perms) {
+    return attr_perms.filter(perm => perm[terms.PERMS_CRUD_ENUM.READ]);
 }
 
 function interpretAST(ast, affected_attributes, table_lookup, schema_lookup) {
@@ -130,7 +163,9 @@ function interpretAST(ast, affected_attributes, table_lookup, schema_lookup) {
 }
 
 /**
- * Takes an AST definition and adds it to the schema/table affected_attributes parameter as well as adding table alias' to the table_lookup parameter.
+ * Takes an AST definition and adds it to the schema/table affected_attributes parameter as well as adding table alias'
+ * to the table_lookup parameter.
+ *
  * @param record - An AST style record
  * @param {Map} affected_attributes - A map of attributes affected in the call.  Defined as [schema, Map[table, [attributes_array]]].
  * @param {Map} table_lookup - A map that will be filled in.  This map contains alias to table definitions as [alias, table_name].
@@ -158,6 +193,7 @@ function addSchemaTableToMap(record, affected_attributes, table_lookup, schema_l
 
 /**
  * Pull the table attributes specified in the AST statement and adds them to the affected_attributes and table_lookup parameters.
+ *
  * @param ast - the syntax tree containing SQL specifications
  * @param {Map} affected_attributes - A map containing attributes affected by the statement. Defined as [schema, Map[table, [attributes_array]]].
  * @param {Map} table_lookup - A map that will be filled in.  This map contains alias to table definitions as [alias, table_name].
@@ -184,8 +220,9 @@ function getRecordAttributesAST(ast, affected_attributes, table_lookup, schema_l
 
 /**
  * Retrieve the schemas, tables, and attributes from the source Select AST.
+ *
  * @param ast - SQL command converted to an AST
- * @param affected_attributes - - A map containing attributes affected by the statement. Defined as [schema, Map[table, [attributes_array]]].
+ * @param affected_attributes - A map containing attributes affected by the statement. Defined as [schema, Map[table, [attributes_array]]].
  * @param table_lookup - A map that will be filled in.  This map contains alias to table definitions as [alias, table_name].
  */
 function getSelectAttributes(ast, affected_attributes, table_lookup, schema_lookup) {
@@ -345,10 +382,6 @@ function pushAttribute(table, schema, columnid, affected_attributes, table_looku
         table_id = table_lookup.get(table_id);
     }
     affected_attributes.get(schema).get(table_id).push(columnid);
-}
-
-function filterRestrictedTableAttrs(table_perms) {
-    return table_perms.filter(perm => perm[terms.PERMS_CRUD_ENUM.READ]);
 }
 
 module.exports = sql_statement_bucket;

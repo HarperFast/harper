@@ -144,8 +144,9 @@ function verifyPermsAst(ast, user_object, operation) {
             throw new Error(hdb_errors.DEFAULT_ERROR_RESP);
         }
         // set to true if this operation affects a system table.  Only su can read from system tables, but can't update/delete.
-        let is_su_system_operation = schemas.includes('system');
-        if (user_object.role.permission.super_user && !is_su_system_operation) {
+        const is_super_user = !!user_object.role.permission.super_user;
+        const is_su_system_operation = schemas.includes('system');
+        if (is_super_user && !is_su_system_operation) {
             //admins can do (almost) anything through the hole in sheet!
             return [];
         }
@@ -153,12 +154,10 @@ function verifyPermsAst(ast, user_object, operation) {
         const full_role_perms = permsTranslator.getRolePermissions(user_object.role);
         user_object.role.permission = full_role_perms;
 
-        //TODO - SAM - add code comment
-        if (ast instanceof alasql.yy.Select) {
-            const astWildcards = getColumnWildcards(ast);
-            if (astWildcards.length > 0) {
-                ast = parsed_ast.updateAttributeWildcardsForRolePerms(full_role_perms, astWildcards);
-            }
+        //If the AST is for a SELECT, we need to check for wildcards and, if they exist, update the AST to include the
+        // attributes that the user has READ perms for - we can skip this step for super users
+        if (!is_super_user && ast instanceof alasql.yy.Select) {
+            ast = parsed_ast.updateAttributeWildcardsForRolePerms(full_role_perms);
         }
 
         for (let s = 0; s < schemas.length; s++) { //NOSONAR
@@ -199,9 +198,9 @@ function verifyPermsAst(ast, user_object, operation) {
     }
 }
 
-function getColumnWildcards(ast) {
-    return ast.columns.filter(col => terms.SEARCH_WILDCARDS.includes(col.columnid));
-}
+// function getColumnWildcards(ast) {
+//     return ast.columns.filter(col => terms.SEARCH_WILDCARDS.includes(col.columnid));
+// }
 
 /**
  * Checks if the user's role has the required permissions for the operation specified.
@@ -295,7 +294,7 @@ function verifyPerms(request_json, operation) {
         harper_logger.error(`User ${request_json.hdb_user.username }has no role or permissions.  Please assign the user a valid role.`);
         return [{"error": `User ${request_json.hdb_user.username }has no role or permissions.  Please assign the user a valid role.`}];
     }
-    const is_super_user = request_json.hdb_user.role.permission.super_user;
+    const is_super_user = !!request_json.hdb_user.role.permission.super_user;
     // set to true if this operation affects a system table.  Only su can read from system tables, but can't update/delete.
     let is_su_system_operation = schema_table_map.has(terms.SYSTEM_SCHEMA_NAME);
     if (is_super_user && !is_su_system_operation) {
@@ -315,17 +314,19 @@ function verifyPerms(request_json, operation) {
     //we will convert the * to the specific attributes the user has READ permissions for via their role.
     if (!is_super_user && request_json.get_attributes && terms.SEARCH_WILDCARDS.includes(request_json.get_attributes[0])) {
         let final_get_attrs = [];
-        const table_attr_perms = full_role_perms[operation_schema].tables[table].attribute_restrictions;
-        if (table_attr_perms.length === 0) {
-            final_get_attrs = global.hdb_schema[operation_schema][table].attributes;
-        }  else {
-            table_attr_perms.forEach(perm => {
-                if (perm[terms.PERMS_CRUD_ENUM.READ]) {
+        const table_perms = full_role_perms[operation_schema].tables[table];
+
+        if (table_perms[terms.PERMS_CRUD_ENUM.READ]) {
+            const table_attr_perms = table_perms.attribute_restrictions.filter(perm => perm[terms.PERMS_CRUD_ENUM.READ]);
+            if (table_attr_perms.length === 0) {
+                final_get_attrs = global.hdb_schema[operation_schema][table].attributes;
+            }  else {
+                table_attr_perms.forEach(perm => {
                     final_get_attrs.push(perm.attribute_name);
-                }
-            });
+                });
+            }
+            request_json.get_attributes = final_get_attrs;
         }
-        request_json.get_attributes = final_get_attrs;
     }
 
     const record_attrs = getRecordAttributes(request_json);
