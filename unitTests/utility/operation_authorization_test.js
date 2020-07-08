@@ -253,25 +253,38 @@ describe('Test operation_authorization', function() {
         it(`Test select wildcard with proper perms, expect true`, function () {
             let test_json = clone(TEST_SELECT_WILDCARD_JSON);
             let temp_select = new alasql.yy.Select(test_json);
-            let perms_user = clone(TEST_JSON);
-            perms_user.hdb_user.role.permission.dev.tables.dog.read = true;
+            let perms_user = clone(TEST_JSON.hdb_user);
+            perms_user.role.permission.dev.tables.dog.read = true;
             let att_base = clone(ATTRIBUTE_RESTRICTION_BASE);
             att_base.attribute_restrictions[0].read = true;
-            perms_user.hdb_user.role.permission.dev.tables.dog.attribute_restrictions.push(att_base.attribute_restrictions[0]);
-            let result = op_auth_rewire.verifyPermsAst(temp_select, perms_user.hdb_user, search.search.name);
+            perms_user.role.permission.dev.tables.dog.attribute_restrictions.push(att_base.attribute_restrictions[0]);
+            let result = op_auth_rewire.verifyPermsAst(temp_select, perms_user, search.search.name);
             assert.equal(result.length, 0);
         });
 
-        it(`Test select wildcard with read attribute restriction false, expect true`, function () {
+        it(`Test select wildcard with read attribute restriction false, expect false`, function () {
             let test_json = clone(TEST_SELECT_WILDCARD_JSON);
             let temp_select = new alasql.yy.Select(test_json);
-            let perms_user = clone(TEST_JSON);
-            perms_user.hdb_user.role.permission.dev.tables.dog.read = true;
+
+            global.hdb_schema = {
+                [TEST_JSON.schema]: {
+                    [TEST_JSON.table]: {
+                        attributes: [
+                            {
+                                attribute: ATTRIBUTE_RESTRICTION_BASE.attribute_restrictions[0].attribute_name
+                            }
+                        ]
+                    }
+                }
+            };
+            let perms_user = clone(TEST_JSON.hdb_user);
+            perms_user.role.permission.dev.tables.dog.read = true;
             let att_base = clone(ATTRIBUTE_RESTRICTION_BASE);
             att_base.attribute_restrictions[0].read = false;
-            perms_user.hdb_user.role.permission.dev.tables.dog.attribute_restrictions.push(att_base.attribute_restrictions[0]);
-            let result = op_auth_rewire.verifyPermsAst(temp_select, perms_user.hdb_user, search.search.name);
-            assert.equal(result.length, 0);
+            perms_user.role.permission.dev.tables.dog.attribute_restrictions.push(att_base.attribute_restrictions[0]);
+            let result = op_auth_rewire.verifyPermsAst(temp_select, perms_user, search.search.name);
+            assert.equal(result.length, 1);
+            global.hdb_schema = undefined;
         });
     });
 

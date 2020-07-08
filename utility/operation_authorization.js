@@ -27,6 +27,8 @@ const reg = require('./registration/registrationHandler');
 const stop = require('../bin/stop');
 const terms = require('./hdbTerms');
 const permsTranslator = require('../security/permissionsTranslator');
+const { handleHDBError, hdb_errors } = require('../utility/errors/hdbError');
+const alasql = require('alasql');
 
 const required_permissions = new Map();
 const DELETE_PERM = 'delete';
@@ -47,7 +49,7 @@ const SQL_INSERT = 'insert';
 const SQL_UPDATE = 'update';
 
 const WILDCARD = '*';
-const ERR_PROCESSING = 'There was an error processing your request.  Please check the logs and try again.';
+// const ERR_PROCESSING = 'There was an error processing your request.  Please check the logs and try again.';
 
 class permission {
     constructor(requires_su, perms) {
@@ -120,15 +122,15 @@ module.exports = {
 function verifyPermsAst(ast, user_object, operation) {
     if (common_utils.isEmptyOrZeroLength(ast)) {
         harper_logger.info('verify_perms_ast has an empty user parameter');
-        throw new Error(ERR_PROCESSING);
+        throw new Error(hdb_errors.DEFAULT_ERROR_RESP);
     }
     if (common_utils.isEmptyOrZeroLength(user_object)) {
         harper_logger.info('verify_perms_ast has an empty user parameter');
-        throw new Error(ERR_PROCESSING);
+        throw new Error(hdb_errors.DEFAULT_ERROR_RESP);
     }
     if (common_utils.isEmptyOrZeroLength(operation)) {
         harper_logger.info('verify_perms_ast has a null operation parameter');
-        throw new Error(ERR_PROCESSING);
+        throw new Error(hdb_errors.DEFAULT_ERROR_RESP);
     }
     try {
         let parsed_ast = new bucket(ast);
@@ -139,7 +141,7 @@ function verifyPermsAst(ast, user_object, operation) {
         // This is defined so we can do calc selects like : SELECT ABS(-12)
         if ((!schemas || schemas.length === 0) && (parsed_ast.affected_attributes && parsed_ast.affected_attributes.size > 0)) {
             harper_logger.info(`No schemas defined in verifyPermsAst(), will not continue.`);
-            throw new Error(ERR_PROCESSING);
+            throw new Error(hdb_errors.DEFAULT_ERROR_RESP);
         }
         // set to true if this operation affects a system table.  Only su can read from system tables, but can't update/delete.
         let is_su_system_operation = schemas.includes('system');
@@ -148,7 +150,18 @@ function verifyPermsAst(ast, user_object, operation) {
             return [];
         }
 
-        for (let s = 0; s<schemas.length; s++) { //NOSONAR
+        const full_role_perms = permsTranslator.getRolePermissions(user_object.role);
+        user_object.role.permission = full_role_perms;
+
+        //TODO - SAM - add code comment
+        if (ast instanceof alasql.yy.Select) {
+            const astWildcards = getColumnWildcards(ast);
+            if (astWildcards.length > 0) {
+                ast = parsed_ast.updateAttributeWildcardsForRolePerms(full_role_perms, astWildcards);
+            }
+        }
+
+        for (let s = 0; s < schemas.length; s++) { //NOSONAR
             let tables = parsed_ast.getTablesBySchemaName(schemas[s]);
             if(!tables) {
                 return [];
@@ -182,8 +195,12 @@ function verifyPermsAst(ast, user_object, operation) {
         return failed_permission_objects;
     } catch(e) {
         harper_logger.info(e);
-        throw new Error(ERR_PROCESSING);
+        throw new Error(hdb_errors.DEFAULT_ERROR_RESP);
     }
+}
+
+function getColumnWildcards(ast) {
+    return ast.columns.filter(col => terms.SEARCH_WILDCARDS.includes(col.columnid));
 }
 
 /**
@@ -194,12 +211,10 @@ function verifyPermsAst(ast, user_object, operation) {
  * @returns {Array} - empty array if permissions match, errors are an array of objects.
  */
 function hasPermissions(user_object, op, schema_table_map ) {
-    const full_role_perms = permsTranslator.getRolePermissions(user_object.role);
-    user_object.role.permission = full_role_perms;
     let unauthorized_table = [];
     if (common_utils.arrayHasEmptyOrZeroLengthValues([user_object,op,schema_table_map])) {
         harper_logger.info(`hasPermissions has an invalid parameter`);
-        throw new Error(ERR_PROCESSING);
+        throw new Error(hdb_errors.DEFAULT_ERROR_RESP);
     }
     // set to true if this operation affects a system table.  Only su can read from system tables, but can't update/delete.
     let is_su_system_operation = schema_table_map.has('system');
@@ -214,12 +229,11 @@ function hasPermissions(user_object, op, schema_table_map ) {
         return unauthorized_table;
     }
     for (let schema_table of schema_table_map.keys()) {
-        //ASSUME ALL TABLES AND SCHEMAS ARE WIDE OPEN
         for (let table of schema_table_map.get(schema_table)) {
             let table_restrictions = [];
             try {
                 table_restrictions = user_object.role.permission[schema_table];
-            } catch (e) {
+            } catch(e) {
                 // no-op, no restrictions is OK;
             }
 
@@ -281,17 +295,39 @@ function verifyPerms(request_json, operation) {
         harper_logger.error(`User ${request_json.hdb_user.username }has no role or permissions.  Please assign the user a valid role.`);
         return [{"error": `User ${request_json.hdb_user.username }has no role or permissions.  Please assign the user a valid role.`}];
     }
+    const is_super_user = request_json.hdb_user.role.permission.super_user;
     // set to true if this operation affects a system table.  Only su can read from system tables, but can't update/delete.
     let is_su_system_operation = schema_table_map.has(terms.SYSTEM_SCHEMA_NAME);
-    if (request_json.hdb_user.role.permission.super_user && !is_su_system_operation) {
+    if (is_super_user && !is_su_system_operation) {
         //admins can do (almost) anything through the hole in sheet!
         return [];
     }
+
+    const full_role_perms = permsTranslator.getRolePermissions(request_json.hdb_user.role);
+    request_json.hdb_user.role.permission = full_role_perms;
 
     let failed_table_permissions = hasPermissions(request_json.hdb_user, op, schema_table_map);
     if (failed_table_permissions && failed_table_permissions.length > 0) {
         return failed_table_permissions;
     }
+
+    //For a NoSQL search op with `get_attributes: '*'` - as long as the role has permissions READ permissions on the table,
+    //we will convert the * to the specific attributes the user has READ permissions for via their role.
+    if (!is_super_user && request_json.get_attributes && terms.SEARCH_WILDCARDS.includes(request_json.get_attributes[0])) {
+        let final_get_attrs = [];
+        const table_attr_perms = full_role_perms[operation_schema].tables[table].attribute_restrictions;
+        if (table_attr_perms.length === 0) {
+            final_get_attrs = global.hdb_schema[operation_schema][table].attributes;
+        }  else {
+            table_attr_perms.forEach(perm => {
+                if (perm[terms.PERMS_CRUD_ENUM.READ]) {
+                    final_get_attrs.push(perm.attribute_name);
+                }
+            });
+        }
+        request_json.get_attributes = final_get_attrs;
+    }
+
     const record_attrs = getRecordAttributes(request_json);
     const attr_restrictions = getAttributeRestrictions(request_json.hdb_user, operation_schema, table);
     let unauthorized_attributes = checkAttributePerms(record_attrs, attr_restrictions, op, table, operation_schema);
@@ -299,8 +335,6 @@ function verifyPerms(request_json, operation) {
         return unauthorized_attributes;
     }
     // If you get to this point, it means that no restricted schema items have been specifically requested/used in the operation
-    // this includes a `SELECT * ...` as long as the role has permissions for some attributes on the table - only those attributes
-    // will be returned in the final results but this is handled later.
     return [];
 }
 
@@ -317,7 +351,7 @@ function verifyPerms(request_json, operation) {
 function checkAttributePerms(record_attributes, role_attribute_restrictions, operation, table_name, schema_name) {
     if (!record_attributes || !role_attribute_restrictions) {
         harper_logger.info(`no attributes specified in checkAttributePerms.`);
-        throw new Error(ERR_PROCESSING);
+        throw new Error(hdb_errors.DEFAULT_ERROR_RESP);
     }
     // check each attribute with role permissions.  Required perm should match the per in the operation
     let needed_perm = required_permissions.get(operation);
@@ -325,7 +359,7 @@ function checkAttributePerms(record_attributes, role_attribute_restrictions, ope
         // We should never get in here since all of our operations should have a perm, but just in case we should fail
         // any operation that doesn't have perms.
         harper_logger.info(`no permissions found for ${operation} in checkAttributePerms().`);
-        throw new Error(ERR_PROCESSING);
+        throw new Error(hdb_errors.DEFAULT_ERROR_RESP);
     }
 
     //Leave early if the role has no attribute permissions set

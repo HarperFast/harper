@@ -23444,29 +23444,30 @@
 					"response": []
 				},
 				{
-					"name": "SQL Try to read shippers table restricted attribute as test_user",
+					"name": "SQL Try to read shippers table w/ restricted attribute as test_user",
 					"event": [
 						{
 							"listen": "test",
 							"script": {
 								"id": "7bf4bc6f-d947-4235-89d0-d85ae5e41dfd",
-								"type": "text/javascript",
 								"exec": [
-									"pm.test(\"Status code is 200\", function () {",
-									"    pm.response.to.have.status(200);",
+									"pm.test(\"Status code is 403\", function () {",
+									"    pm.response.to.have.status(403);",
 									"});",
 									"",
-									"// TODO - Sam will update these tests to confirm that a SELECT * only returns attributes that the user has permissions for to.",
-									"// pm.test(\"required_table_permissions is not empty\", function () {",
-									"//     var jsonData = pm.response.json();",
-									"//     pm.expect(jsonData.unauthorized_access[0].required_attribute_permissions[0].attribute_name).to.eql(\"companyname\");",
-									"// });",
+									"pm.test(\"All table attributes returned in unauthorized access array\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.unauthorized_access.length).to.eql(5);",
+									"});",
 									"",
-									"// pm.test(\"required_attribute_permissions is read\", function () {",
-									"//     var jsonData = pm.response.json();",
-									"//     pm.expect(jsonData.unauthorized_access[0].required_attribute_permissions[0].required_permissions[0]).to.eql(\"read\");",
-									"// });"
-								]
+									"pm.test(\"required_attribute_permissions is read\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    jsonData.unauthorized_access.forEach(val => {",
+									"        pm.expect(val.required_attribute_permissions[0].required_permissions[0]).to.eql(\"read\");",
+									"    })",
+									"});"
+								],
+								"type": "text/javascript"
 							}
 						}
 					],
@@ -23515,8 +23516,7 @@
 								"{{host}}"
 							],
 							"port": "{{port}}"
-						},
-						"description": "Method for adding users.  Users can be assigned roles which provide granular access at a table, operation, and attirbute level.  \n\n<ul>\n<li><b>operation </b> <i>(required) </i> - must always be 'add_user'</li>\n\n<li><b>role </b><i>(required) </i>- id of the role you wish to assign to the user.  See add_role for more detail.  </li>\n\n<li><b>username </b> <i>(required)</i> - username assigned to the user.  It can not be altered after adding the user.  It serves as the hash. </li>\n\n<li><b>password </b> <i>(required) </i>- clear text for password.  HarperDB will encrypt the password upon reciept. </li>\n\n</ul>"
+						}
 					},
 					"response": []
 				},
@@ -26190,19 +26190,30 @@
 					"response": []
 				},
 				{
-					"name": "Jobs Test Export To Local using SQL as test_user",
+					"name": "Jobs Test Export To Local using SQL as test_user on restricted table",
 					"event": [
 						{
 							"listen": "test",
 							"script": {
 								"id": "f3e4fa85-1d5c-4997-a9e3-6cdb3e8bf18c",
-								"type": "text/javascript",
 								"exec": [
-									"// TODO - Sam will update this tests to confirm that a SELECT * only returns attributes that the user has permissions for to.",
-									"pm.test(\"Status code is 200\", function () {",
-									"    pm.response.to.have.status(200);",
+									"pm.test(\"Status code is 403\", function () {",
+									"    pm.response.to.have.status(403);",
+									"});",
+									"",
+									"pm.test(\"All table attributes returned in unauthorized access array\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.unauthorized_access.length).to.eql(5);",
+									"});",
+									"",
+									"pm.test(\"required_attribute_permissions is read\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    jsonData.unauthorized_access.forEach(val => {",
+									"        pm.expect(val.required_attribute_permissions[0].required_permissions[0]).to.eql(\"read\");",
+									"    })",
 									"});"
-								]
+								],
+								"type": "text/javascript"
 							}
 						}
 					],
@@ -26237,6 +26248,68 @@
 						"body": {
 							"mode": "raw",
 							"raw": "{\n\t\"operation\":\"export_local\",\n\t\"path\":\"./\",\n\t\"filename\":\"test_export.json\",\n\t\"format\":\"json\",\n\t\"search_operation\": {\n        \"operation\":\"sql\",\n        \"sql\":\"select * from {{schema}}.{{ship_tb}}\"\n    }\n}",
+							"options": {
+								"raw": {}
+							}
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						},
+						"description": "Method for adding users.  Users can be assigned roles which provide granular access at a table, operation, and attirbute level.  \n\n<ul>\n<li><b>operation </b> <i>(required) </i> - must always be 'add_user'</li>\n\n<li><b>role </b><i>(required) </i>- id of the role you wish to assign to the user.  See add_role for more detail.  </li>\n\n<li><b>username </b> <i>(required)</i> - username assigned to the user.  It can not be altered after adding the user.  It serves as the hash. </li>\n\n<li><b>password </b> <i>(required) </i>- clear text for password.  HarperDB will encrypt the password upon reciept. </li>\n\n</ul>"
+					},
+					"response": []
+				},
+				{
+					"name": "Jobs Test Export To Local using SQL as test_user on table w/ two attr perms",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "c92136bc-c229-43a6-ac50-be4eb488c75b",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{test_user_name}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"export_local\",\n\t\"path\":\"./\",\n\t\"filename\":\"test_export.json\",\n\t\"format\":\"json\",\n\t\"search_operation\": {\n        \"operation\":\"sql\",\n        \"sql\":\"select * from {{schema}}.{{regi_tb}}\"\n    }\n}",
 							"options": {
 								"raw": {}
 							}

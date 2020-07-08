@@ -8,6 +8,7 @@ const alasql = require('alasql');
 const RecursiveIterator = require('recursive-iterator');
 const harper_logger = require('../utility/logging/harper_logger');
 const hdb_utils = require('../utility/common_utils');
+const terms = require('../utility/hdbTerms');
 
 class sql_statement_bucket {
     constructor(ast) {
@@ -82,7 +83,46 @@ class sql_statement_bucket {
         return this.ast;
     }
 
+    //TODO - SAM - add code comment
+    updateAttributeWildcardsForRolePerms(role_perms, ast_wildcards) {
+        //This function will need to be updated if/when we start to do cross-schema joins - i.e. function will need
+        // to handle multiple schema values instead of just the one below
+        const col_schema = this.ast.from[0].databaseid;
+        this.ast.columns = this.ast.columns.filter(col => !terms.SEARCH_WILDCARDS.includes(col.columnid));
 
+        ast_wildcards.forEach(val => {
+            let col_table;
+            if (val.tableid) {
+                col_table = this.table_lookup.get(val.tableid);
+            } else {
+                col_table = this.ast.from[0].tableid;
+            }
+
+            const table_attr_perms = filterRestrictedTableAttrs(role_perms[col_schema].tables[col_table].attribute_restrictions);
+            let final_table_attrs;
+            if (table_attr_perms.length > 0) {
+                final_table_attrs = table_attr_perms;
+            } else {
+                final_table_attrs = global.hdb_schema[col_schema][col_table].attributes.map(attr => ({attribute_name: attr.attribute}));
+            }
+
+            const table_affected_attrs = this.affected_attributes.get(col_schema).get(col_table)
+                .filter(attr => !terms.SEARCH_WILDCARDS.includes(attr));
+            final_table_attrs.forEach(({attribute_name}) => {
+                let new_column = new alasql.yy.Column({ columnid: attribute_name });
+                if (val.tableid) {
+                    new_column.tableid = val.tableid;
+                }
+                this.ast.columns.push(new_column);
+                if (!table_affected_attrs.includes(attribute_name)) {
+                    table_affected_attrs.push(attribute_name);
+                }
+            });
+            this.affected_attributes.get(col_schema).set(col_table, table_affected_attrs);
+        });
+
+        return this.ast;
+    }
 }
 
 function interpretAST(ast, affected_attributes, table_lookup, schema_lookup) {
@@ -305,6 +345,10 @@ function pushAttribute(table, schema, columnid, affected_attributes, table_looku
         table_id = table_lookup.get(table_id);
     }
     affected_attributes.get(schema).get(table_id).push(columnid);
+}
+
+function filterRestrictedTableAttrs(table_perms) {
+    return table_perms.filter(perm => perm[terms.PERMS_CRUD_ENUM.READ]);
 }
 
 module.exports = sql_statement_bucket;
