@@ -87,8 +87,9 @@ class sql_statement_bucket {
      *When a SELECT * is included in the AST for a non-SU, we need to convert the star into the specific attributes the
      * user has READ permissions
      *
-     * @param role_perms -
-     * @returns {*}
+     * @param role_perms - role permission set to update the wildcard to the permitted attributes
+     * @returns {ast} - this function returns the updated AST that can be used for final validation and the additional
+     * steps to complete the request
      */
     updateAttributeWildcardsForRolePerms(role_perms) {
         const ast_wildcards = this.ast.columns.filter(col => terms.SEARCH_WILDCARDS.includes(col.columnid));
