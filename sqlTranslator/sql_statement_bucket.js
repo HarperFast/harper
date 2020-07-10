@@ -106,18 +106,12 @@ class sql_statement_bucket {
         this.ast.columns = this.ast.columns.filter(col => !terms.SEARCH_WILDCARDS.includes(col.columnid));
 
         ast_wildcards.forEach(val => {
-            // const wc_databaseid = val.
-            let col_table;
-            if (val.tableid) {
-                col_table = this.table_lookup.get(val.tableid);
-            } else {
-                //If there is no table id, we can assume this is a simple `SELECT * FROM ...` w/ no JOINS
-                col_table = this.ast.from[0].tableid;
-            }
+            let col_schema = this.table_to_schema_lookup.has(val.tableid) ? this.table_to_schema_lookup.get(val.tableid) : from_databaseid;
+            let col_table = this.table_lookup.has(val.tableid) ? this.table_lookup.get(val.tableid) : this.ast.from[0].tableid;
 
             //We only want to do this if the table that is being SELECT *'d has READ permissions - if not, we will only
             // want to send the table permissions error response so we can skip this step.
-            if (role_perms[from_databaseid].tables[col_table][terms.PERMS_CRUD_ENUM.READ]) {
+            if (role_perms[col_schema].tables[col_table][terms.PERMS_CRUD_ENUM.READ]) {
                 const table_attr_perms = filterReadRestrictedAttrs(role_perms[col_schema].tables[col_table].attribute_restrictions);
                 let final_table_attrs;
                 if (table_attr_perms.length > 0) {
@@ -198,9 +192,6 @@ function addSchemaTableToMap(record, affected_attributes, table_lookup, schema_l
             table_id = record.as;
         }
 
-        if (table_to_schema_lookup.has(table_id)) {
-            console.log('DOUBEL TABLE_ID - ', table_id);
-        }
         table_to_schema_lookup.set(table_id, schema_id);
     }
 }
@@ -288,12 +279,14 @@ function getSelectAttributes(ast, affected_attributes, table_lookup, schema_look
                 table_name = table_lookup.get(table_name);
             }
         }
-        if (affected_attributes.get(column_schema).get(table_name).indexOf(col.columnid) < 0) {
-            affected_attributes.get(column_schema).get(table_name).push(col.columnid);
+        const columnid_val = col.columnid ? col.columnid : col.expression.columnid;
+
+        if (affected_attributes.get(column_schema).get(table_name).indexOf(columnid_val) < 0) {
+            affected_attributes.get(column_schema).get(table_name).push(columnid_val);
         }
     });
 
-    // It's important to iterate through the WHERE clause as well in case there are other columns that are not included in
+    // It's important to iterate through the WHERE clause in case there are other columns that are not included in
     // the SELECT clause
     if (ast.where) {
         const iterator = new RecursiveIterator(ast.where);
@@ -319,7 +312,8 @@ function getSelectAttributes(ast, affected_attributes, table_lookup, schema_look
         }
     }
 
-    //TODO - SAM - add code comment
+    // It's important to also iterate through the JOIN clause in case there are other columns that are not included in
+    // the SELECT clause
     if (ast.joins) {
         const iterator = new RecursiveIterator(ast.joins);
 
