@@ -197,10 +197,6 @@ function verifyPermsAst(ast, user_object, operation) {
     }
 }
 
-// function getColumnWildcards(ast) {
-//     return ast.columns.filter(col => terms.SEARCH_WILDCARDS.includes(col.columnid));
-// }
-
 /**
  * Checks if the user's role has the required permissions for the operation specified.
  * @param user_object - the hdb_user specified in the request body
