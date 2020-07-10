@@ -34,6 +34,14 @@ module.exports = {
 
 async function describeAll(op_obj) {
     try {
+        const sys_call = hdb_utils.isEmptyOrZeroLength(op_obj);
+        let role_perms;
+        let is_su;
+        if (!sys_call) {
+            role_perms = op_obj.hdb_user.role.permission;
+            is_su = role_perms.super_user || role_perms.cluster_user;
+        }
+
         let schema_search = {};
         schema_search.schema = terms.SYSTEM_SCHEMA_NAME;
         schema_search.table = terms.SYSTEM_TABLE_NAMES.SCHEMA_TABLE_NAME;
@@ -48,7 +56,11 @@ async function describeAll(op_obj) {
 
         let schema_list = {};
         for (let s in schemas) {
-            schema_list[schemas[s].name] = true;
+            let schema_perm = true;
+            if (!sys_call && !is_su) {
+                schema_perm = role_perms[schemas[s].name].describe;
+            }
+            schema_list[schemas[s].name] = schema_perm;
         }
 
         let table_search_obj = {};
@@ -63,7 +75,13 @@ async function describeAll(op_obj) {
         let t_results = [];
         for(let table of tables){
             try {
-                let desc = await descTable({"schema": table.schema, "table": table.name});
+                let desc;
+                if (sys_call || is_su) {
+                    desc = await descTable({"schema": table.schema, "table": table.name});
+                } else if (role_perms && role_perms[table.schema].describe && role_perms[table.schema].tables[table.name].describe) {
+                    const t_attr_perms = role_perms[table.schema].tables[table.name].attribute_restrictions;
+                    desc = await descTable({"schema": table.schema, "table": table.name}, t_attr_perms );
+                }
                 if (desc) {
                     t_results.push(desc);
                 }
@@ -95,7 +113,8 @@ async function describeAll(op_obj) {
     }
 }
 
-async function descTable(describe_table_object) {
+async function descTable(describe_table_object, attr_perms) {
+    //TODO - SAM - use attr_perms to filter which perms are returned
     let table_result = {};
     let validation = validator.describe_table(describe_table_object);
     if (validation) {
@@ -144,6 +163,10 @@ async function descTable(describe_table_object) {
                 return attribute.attribute;
             });
 
+            if (attr_perms) {
+                attributes = getAttrsByPerms(attr_perms);
+            }
+
             table_result.attributes = attributes;
 
             if(env_mngr.getDataStoreType() === terms.STORAGE_TYPES_ENUM.LMDB){
@@ -164,6 +187,15 @@ async function descTable(describe_table_object) {
         }
     }
     return table_result;
+}
+
+function getAttrsByPerms(attr_perms) {
+    return attr_perms.reduce((acc, perm) => {
+        if (perm.describe) {
+            acc.push({ attribute: perm.attribute_name });
+        }
+        return acc;
+    }, []);
 }
 
 async function describeSchema(describe_schema_object) {
