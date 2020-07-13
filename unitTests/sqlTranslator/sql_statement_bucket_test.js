@@ -384,26 +384,27 @@ describe('Test sql_statement_bucket Class', () => {
     describe(`Test getSelectAttributes`, function () {
         it('Nominal, pull attributes in Select statement', function () {
             let getSelectAttributes = sql_statement_rewire.__get__('getSelectAttributes');
-            let statement = new Map();
+            let affected_attrs = new Map();
             let table_lookup = new Map();
             let schema_lookup = new Map();
-            getSelectAttributes(TEST_SELECT, statement, table_lookup, schema_lookup);
-            assert.equal(statement.get(SCHEMA_NAME).get(TABLE_NAME).length, 2);
-            assert.equal(Array.from(statement.get(SCHEMA_NAME).keys()).length, 1);
-            assert.equal(Array.from(statement.keys()).length, 1);
+            getSelectAttributes(TEST_SELECT, affected_attrs, table_lookup, schema_lookup);
+            assert.equal(affected_attrs.get(SCHEMA_NAME).get(TABLE_NAME).length, 2);
+            assert.equal(Array.from(affected_attrs.get(SCHEMA_NAME).keys()).length, 1);
+            assert.equal(Array.from(affected_attrs.keys()).length, 1);
         });
 
         it('Nominal, pull attributes in Select statement with cross schema join', function () {
             let getSelectAttributes = sql_statement_rewire.__get__('getSelectAttributes');
-            let statement = new Map();
+            let affected_attrs = new Map();
             let table_lookup = new Map();
             let schema_lookup = new Map();
-            getSelectAttributes(TEST_CROSS_SCHEMA_SELECT, statement, table_lookup, schema_lookup);
-            assert.equal(statement.get(SCHEMA_NAME_1).get(TABLE_NAME_1).length, 3);
-            assert.equal(Array.from(statement.get(SCHEMA_NAME_1).keys()).length, 1);
-            assert.equal(statement.get(SCHEMA_NAME_2).get(TABLE_NAME_2).length, 1);
-            assert.equal(Array.from(statement.get(SCHEMA_NAME_2).keys()).length, 1);
-            assert.equal(Array.from(statement.keys()).length, 2);
+            let table_to_schema_lookup = new Map();
+            getSelectAttributes(TEST_CROSS_SCHEMA_SELECT, affected_attrs, table_lookup, schema_lookup, table_to_schema_lookup);
+            assert.equal(affected_attrs.get(SCHEMA_NAME_1).get(TABLE_NAME_1).length, 3);
+            assert.equal(Array.from(affected_attrs.get(SCHEMA_NAME_1).keys()).length, 1);
+            assert.equal(affected_attrs.get(SCHEMA_NAME_2).get(TABLE_NAME_2).length, 2);
+            assert.equal(Array.from(affected_attrs.get(SCHEMA_NAME_2).keys()).length, 1);
+            assert.equal(Array.from(affected_attrs.keys()).length, 2);
         });
 
         it('Pull attributes from insert statement with no table clause', function () {
@@ -432,7 +433,8 @@ describe('Test sql_statement_bucket Class', () => {
             let affected_attributes = new Map();
             let table_lookup = new Map();
             let schema_lookup = new Map();
-            getRecordAttributesAST(temp_select, affected_attributes, table_lookup, schema_lookup);
+            let table_to_schema_lookup = new Map();
+            getRecordAttributesAST(temp_select, affected_attributes, table_lookup, schema_lookup, table_to_schema_lookup);
             let all_tables = new Map();
             let lookups = new Map();
             let attributes = new Map();
@@ -456,6 +458,19 @@ describe('Test sql_statement_bucket Class', () => {
                         lookups.set(join.table.as, join.table.tableid);
                     }
                 }
+                const l_table_name = lookups.get(join.on.left.tableid)
+                const r_table_name = lookups.get(join.on.right.tableid)
+                if (attributes.has(l_table_name)) {
+                    attributes.get(l_table_name).push(join.on.left.columnid);
+
+                } else {
+                    attributes.set(l_table_name, [join.on.left.columnid]);
+                }
+                if (attributes.has(r_table_name)) {
+                    attributes.get(r_table_name).push(join.on.right.columnid);
+                } else {
+                    attributes.set(r_table_name, [join.on.right.columnid]);
+                }
             });
             test_copy.columns.forEach((col) => {
                 let table_name = col.tableid;
@@ -465,7 +480,9 @@ describe('Test sql_statement_bucket Class', () => {
                 //Keeping this more simple than the function in operation_auth.  We are always dealing with the same schema
                 // in this test, so limiting this to a [table, [attributes]] map.
                 if(attributes.has(table_name)) {
-                    attributes.get(table_name).push(col.columnid);
+                    if (attributes.get(table_name).indexOf(col.columnid) < 0) {
+                        attributes.get(table_name).push(col.columnid);
+                    }
                 } else {
                     attributes.set(table_name, [col.columnid]);
                 }
@@ -505,7 +522,8 @@ describe('Test sql_statement_bucket Class', () => {
             let affected_attributes = new Map();
             let table_lookup = new Map();
             let schema_lookup = new Map();
-            getRecordAttributesAST(temp_select, affected_attributes, table_lookup, schema_lookup);
+            let table_to_schema_lookup = new Map();
+            getRecordAttributesAST(temp_select, affected_attributes, table_lookup, schema_lookup, table_to_schema_lookup);
             let all_tables = new Map();
             let lookups = new Map();
             let attributes = new Map();
@@ -532,6 +550,19 @@ describe('Test sql_statement_bucket Class', () => {
                         lookups.set(join.table.as, join.table.tableid);
                     }
                 }
+                const l_table_name = lookups.get(join.on.left.tableid)
+                const r_table_name = lookups.get(join.on.right.tableid)
+                if (attributes.has(l_table_name)) {
+                    attributes.get(l_table_name).push(join.on.left.columnid);
+
+                } else {
+                    attributes.set(l_table_name, [join.on.left.columnid]);
+                }
+                if (attributes.has(r_table_name)) {
+                    attributes.get(r_table_name).push(join.on.right.columnid);
+                } else {
+                    attributes.set(r_table_name, [join.on.right.columnid]);
+                }
             });
             test_copy.columns.forEach((col) => {
                 let table_name = col.tableid;
@@ -541,7 +572,9 @@ describe('Test sql_statement_bucket Class', () => {
                 //Keeping this more simple than the function in operation_auth.  We are always dealing with the same schema
                 // in this test, so limiting this to a [table, [attributes]] map.
                 if(attributes.has(table_name)) {
-                    attributes.get(table_name).push(col.columnid);
+                    if (attributes.get(table_name).indexOf(col.columnid) < 0) {
+                        attributes.get(table_name).push(col.columnid);
+                    }
                 } else {
                     attributes.set(table_name, [col.columnid]);
                 }
@@ -568,7 +601,8 @@ describe('Test sql_statement_bucket Class', () => {
             let affected_attributes = new Map();
             let table_lookup = new Map();
             let schema_lookup = new Map();
-            getRecordAttributesAST(temp_select, affected_attributes, table_lookup, schema_lookup);
+            let table_to_schema_lookup = new Map();
+            getRecordAttributesAST(temp_select, affected_attributes, table_lookup, schema_lookup, table_to_schema_lookup);
             assert.equal(logger_info_spy.calledOnce, true, 'invalid table was not logged');
             assert.equal(logger_info_spy.args[0], `table specified as ${invalid_table} not found.`, 'invalid table was not logged');
         })
