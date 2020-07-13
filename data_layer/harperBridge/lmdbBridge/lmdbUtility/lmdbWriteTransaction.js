@@ -16,6 +16,13 @@ const DeleteObject = require('../../../DeleteObject');
 const lmdb_terms = require('../../../../utility/lmdb/terms');
 const lmdb_utils = require('../../../../utility/lmdb/commonUtility');
 const hdb_util = require('../../../../utility/common_utils');
+const HDB_SETTINGS_NAMES = require('../../../../utility/hdbTerms').HDB_SETTINGS_NAMES;
+const env_mngr = require('../../../../utility/environment/environmentManager');
+if(!env_mngr.isInitialized()){
+    env_mngr.initSync();
+}
+
+const DISABLE_TRANSACTION_LOG = getDisableTxnLogSetting();
 
 const OPERATIONS_ENUM = require('../../../../utility/hdbTerms').OPERATIONS_ENUM;
 const {getTransactionStorePath} = require('./initializePaths');
@@ -29,6 +36,10 @@ module.exports = writeTransaction;
  * @returns {Promise<void>}
  */
 async function writeTransaction(hdb_operation, lmdb_response){
+    if(DISABLE_TRANSACTION_LOG === true){
+        return;
+    }
+
     let txn_env_base_path = path.join(getTransactionStorePath(), hdb_operation.schema.toString());
     let txn_env = await environment_util.openEnvironment(txn_env_base_path, hdb_operation.table, true);
 
@@ -83,4 +94,16 @@ function createTransactionObject(hdb_operation, lmdb_response){
     if(hdb_operation.operation === OPERATIONS_ENUM.DELETE) {
         return new LMDBDeleteTransactionObject(lmdb_response.deleted, lmdb_response.original_records, username, lmdb_response.txn_time);
     }
+}
+
+function getDisableTxnLogSetting(){
+    let disable_txn_setting = env_mngr.get(HDB_SETTINGS_NAMES.DISABLE_TRANSACTION_LOG_KEY);
+
+    let clustering_on = env_mngr.get(HDB_SETTINGS_NAMES.CLUSTERING_ENABLED_KEY);
+
+    let clustering_on_bool = !hdb_util.isEmptyOrZeroLength(clustering_on) &&  (clustering_on === true
+        || clustering_on.toString().toLowerCase() === 'true');
+
+    return clustering_on_bool === false && !hdb_util.isEmptyOrZeroLength(disable_txn_setting) && (disable_txn_setting === true
+        || disable_txn_setting.toString().toLowerCase() === 'true');
 }
