@@ -14,6 +14,7 @@ const lmdbDropSchema = require('./lmdbMethods/lmdbDropSchema');
 const lmdbCreateTable = require('./lmdbMethods/lmdbCreateTable');
 const lmdbUpdateRecords = require('./lmdbMethods/lmdbUpdateRecords');
 const lmdbDeleteRecordsBefore = require('./lmdbMethods/lmdbDeleteRecordsBefore');
+const lmdbDeleteTransactionLogsBefore = require('./lmdbMethods/lmdbDeleteTransactionLogsBefore');
 const lmdbDropTable = require('./lmdbMethods/lmdbDropTable');
 const lmdbDropAttribute = require('./lmdbMethods/lmdbDropAttribute');
 
@@ -139,6 +140,15 @@ class LMDBBridge extends BridgeMethods {
     async dropAttribute(drop_attr_obj) {
         try {
             return await lmdbDropAttribute(drop_attr_obj);
+        } catch(err) {
+            log.error(err);
+            throw err;
+        }
+    }
+
+    async deleteTransactionLogsBefore(delete_obj) {
+        try {
+            return await lmdbDeleteTransactionLogsBefore(delete_obj);
         } catch(err) {
             log.error(err);
             throw err;

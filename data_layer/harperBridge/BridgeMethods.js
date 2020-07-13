@@ -60,6 +60,10 @@ class BridgeMethods {
     deleteRecordsBefore() {
         throw new Error("deleteRecordsBefore bridge method is not defined");
     }
+
+    deleteTransactionLogsBefore() {
+        throw new Error("deleteTransactionLogsBefore bridge method is not defined");
+    }
 }
 
 module.exports = BridgeMethods;

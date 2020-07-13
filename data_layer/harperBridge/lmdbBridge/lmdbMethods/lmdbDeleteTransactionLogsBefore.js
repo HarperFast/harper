@@ -26,16 +26,11 @@ async function deleteTransactionLogsBefore(delete_txn_logs_obj){
         let all_dbis = environment_utility.listDBIs(env);
         environment_utility.initializeDBIs(env, lmdb_terms.TRANSACTIONS_DBI_NAMES_ENUM.TIMESTAMP, all_dbis);
 
-        let timestamp = delete_txn_logs_obj.timestamp;
-        if(isNaN(timestamp)){
-            timestamp = new Date(delete_txn_logs_obj.timestamp).valueOf();
-        }
-
         let chunk_results;
         let total_results = new DeleteTransactionsBeforeResults();
 
         do {
-                chunk_results = deleteTransactions(env, timestamp);
+                chunk_results = deleteTransactions(env, delete_txn_logs_obj.timestamp);
                 if(total_results.start_timestamp === undefined){
                         total_results.start_timestamp = chunk_results.start_timestamp;
                 }

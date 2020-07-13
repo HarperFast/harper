@@ -99,6 +99,13 @@ async function parseMessage(runner_message) {
                 log.error(e);
             }
             break;
+        case hdb_terms.JOB_TYPE_ENUM.delete_transaction_logs_before:
+            try {
+                response = await runCSVJob(runner_message, hdb_delete.deleteTransactionLogsBefore, runner_message.json);
+            } catch(e) {
+                log.error(e);
+            }
+            break;
         default:
             response.error = `Invalid operation ${runner_message.json.operation} specified`;
             break;

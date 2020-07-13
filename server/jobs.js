@@ -112,6 +112,7 @@ async function addJob(json_body) {
             validation_msg = csv_load_validator.dataObject(json_body);
             break;
         default:
+            break;
     }
     if (validation_msg) {
         throw validation_msg.message;

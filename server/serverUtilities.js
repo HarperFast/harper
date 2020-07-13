@@ -486,6 +486,10 @@ function getOperationFunction(json){
         case terms.OPERATIONS_ENUM.SYSTEM_INFORMATION:
             operation_function = system_information.getAllSystemInformation;
             break;
+        case terms.OPERATIONS_ENUM.DELETE_TRANSACTION_LOGS_BEFORE:
+            operation_function = signalJob;
+            job_operation_function = delete_.deleteTransactionLogsBefore;
+            break;
         default:
             break;
     }
