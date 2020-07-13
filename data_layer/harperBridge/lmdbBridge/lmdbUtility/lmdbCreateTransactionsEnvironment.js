@@ -13,7 +13,7 @@ module.exports = createTransactionsEnvironment;
 /**
  * Creates the environment to hold transactions
  * @param {CreateTableObject} table_create_obj
- * @returns {Promise<void>}
+ * @returns {Promise<lmdb.Env>}
  */
 async function createTransactionsEnvironment(table_create_obj){
     let env;
@@ -36,4 +36,5 @@ async function createTransactionsEnvironment(table_create_obj){
         e.message = `unable to create dbi for ${table_create_obj.schema}.${table_create_obj.table} due to: ${e.message}`;
         throw e;
     }
+    return env;
 }

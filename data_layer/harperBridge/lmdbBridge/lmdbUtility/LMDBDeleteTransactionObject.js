@@ -17,9 +17,9 @@ class LMDBDeleteTransactionObject extends LMDBTransactionObject{
      * @param {number} timestamp - timestamp of transaction
      */
     constructor(hash_values, original_records, user_name, timestamp) {
-        super(OPERATIONS_ENUM.DELETE, user_name, timestamp);
+        super(OPERATIONS_ENUM.DELETE, user_name, timestamp, hash_values);
         this.original_records = original_records;
-        this.hash_values = hash_values;
+        //this.hash_values = hash_values;
     }
 }
 
