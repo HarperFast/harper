@@ -55,12 +55,13 @@ async function describeAll(op_obj) {
         }
 
         let schema_list = {};
+        let schema_perms = {};
         for (let s in schemas) {
-            let schema_perm = true;
+            schema_list[schemas[s].name] = true;
             if (!sys_call && !is_su) {
-                schema_perm = role_perms[schemas[s].name].describe;
+                const schema_perm = role_perms[schemas[s].name].describe;
+                schema_perms[schemas[s].name] = schema_perm;
             }
-            schema_list[schemas[s].name] = schema_perm;
         }
 
         let table_search_obj = {};
@@ -92,18 +93,34 @@ async function describeAll(op_obj) {
 
         let hdb_description = {};
         for (let t in t_results) {
-            if (hdb_description[t_results[t].schema] == null) {
-                hdb_description[t_results[t].schema] = {};
+            if (sys_call || is_su) {
+                if (hdb_description[t_results[t].schema] == null) {
+                    hdb_description[t_results[t].schema] = {};
+                }
+
+                hdb_description[t_results[t].schema][t_results[t].name] = t_results[t];
+                if (schema_list[t_results[t].schema]) {
+                    delete schema_list[t_results[t].schema];
+                }
+            } else if (schema_perms[t_results[t].schema]) {
+                if (hdb_description[t_results[t].schema] == null) {
+                    hdb_description[t_results[t].schema] = {};
+                }
+
+                hdb_description[t_results[t].schema][t_results[t].name] = t_results[t];
+                if (schema_list[t_results[t].schema]) {
+                    delete schema_list[t_results[t].schema];
+                }
             }
 
-            hdb_description[t_results[t].schema][t_results[t].name] = t_results[t];
-            if (schema_list[t_results[t].schema]) {
-                delete schema_list[t_results[t].schema];
-            }
         }
 
         for (let schema in schema_list) {
-            hdb_description[schema] = {};
+            if (sys_call || is_su) {
+                hdb_description[schema] = {};
+            } else if (schema_perms[schema]) {
+                hdb_description[schema] = {};
+            }
         }
         return hdb_description;
     } catch (e) {
@@ -163,7 +180,7 @@ async function descTable(describe_table_object, attr_perms) {
                 return attribute.attribute;
             });
 
-            if (attr_perms) {
+            if (attr_perms && attr_perms.length > 0) {
                 attributes = getAttrsByPerms(attr_perms);
             }
 
