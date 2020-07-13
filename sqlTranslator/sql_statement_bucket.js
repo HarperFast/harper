@@ -258,33 +258,30 @@ function getSelectAttributes(ast, affected_attributes, table_lookup, schema_look
         });
     }
 
-    ast.columns.forEach(col => {
-        let table_name;
-        if (col.expression) {
-            table_name = col.expression.tableid;
-        } else {
-            table_name = col.tableid;
-        }
-        const column_schema = schema_lookup.has(table_name) ? schema_lookup.get(table_name) : schema;
+    const iterator = new RecursiveIterator(ast.columns);
+    for (let { node } of iterator) {
+        if (node && node.columnid) {
+            let table_name = node.tableid;
+            const column_schema = schema_lookup.has(table_name) ? schema_lookup.get(table_name) : schema;
 
-        if (!table_name) {
-            table_name = ast.from[0].tableid;
-        }
+            if (!table_name) {
+                table_name = ast.from[0].tableid;
+            }
 
-        if (!affected_attributes.get(column_schema).has(table_name)) {
-            if (!table_lookup.has(table_name)) {
-                harper_logger.info(`table specified as ${table_name} not found.`);
-                return;
-            } else {
-                table_name = table_lookup.get(table_name);
+            if (!affected_attributes.get(column_schema).has(table_name)) {
+                if (!table_lookup.has(table_name)) {
+                    harper_logger.info(`table specified as ${table_name} not found.`);
+                    return;
+                } else {
+                    table_name = table_lookup.get(table_name);
+                }
+            }
+
+            if (affected_attributes.get(column_schema).get(table_name).indexOf(node.columnid) < 0) {
+                affected_attributes.get(column_schema).get(table_name).push(node.columnid);
             }
         }
-        const columnid_val = col.columnid ? col.columnid : col.expression.columnid;
-
-        if (affected_attributes.get(column_schema).get(table_name).indexOf(columnid_val) < 0) {
-            affected_attributes.get(column_schema).get(table_name).push(columnid_val);
-        }
-    });
+    }
 
     // It's important to iterate through the WHERE clause in case there are other columns that are not included in
     // the SELECT clause
@@ -315,27 +312,29 @@ function getSelectAttributes(ast, affected_attributes, table_lookup, schema_look
     // It's important to also iterate through the JOIN clause in case there are other columns that are not included in
     // the SELECT clause
     if (ast.joins) {
-        const iterator = new RecursiveIterator(ast.joins);
+        ast.joins.forEach(join => {
+            const iterator = new RecursiveIterator(join.on);
 
-        for(let {node} of iterator) {
-            if(node && node.columnid ) {
-                let table = node.tableid;
-                let schema = table_to_schema_lookup.get(table);
+            for (let {node} of iterator) {
+                if (node && node.columnid) {
+                    let table = node.tableid;
+                    let schema = table_to_schema_lookup.get(table);
 
-                if (!affected_attributes.get(schema).has(table)) {
-                    if (!table_lookup.has(table)) {
-                        harper_logger.info(`table specified as ${table} not found.`);
-                        continue;
-                    } else {
-                        table = table_lookup.get(table);
+                    if (!affected_attributes.get(schema).has(table)) {
+                        if (!table_lookup.has(table)) {
+                            harper_logger.info(`table specified as ${table} not found.`);
+                            continue;
+                        } else {
+                            table = table_lookup.get(table);
+                        }
+                    }
+                    //We need to check to ensure this columnid wasn't already set in the Map
+                    if (affected_attributes.get(schema).get(table).indexOf(node.columnid) < 0) {
+                        affected_attributes.get(schema).get(table).push(node.columnid);
                     }
                 }
-                //We need to check to ensure this columnid wasn't already set in the Map
-                if (affected_attributes.get(schema).get(table).indexOf(node.columnid) < 0) {
-                    affected_attributes.get(schema).get(table).push(node.columnid);
-                }
             }
-        }
+        });
     }
 }
 
