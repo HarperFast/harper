@@ -131,7 +131,13 @@ async function describeAll(op_obj) {
 }
 
 async function descTable(describe_table_object, attr_perms) {
-    //TODO - SAM - use attr_perms to filter which perms are returned
+    const { schema, table } = describe_table_object;
+    let table_attr_perms = attr_perms;
+
+    if (describe_table_object.hdb_user && !describe_table_object.hdb_user.role.super_user) {
+        table_attr_perms = describe_table_object.hdb_user.role.permission[schema].tables[table].attribute_restrictions;
+    }
+
     let table_result = {};
     let validation = validator.describe_table(describe_table_object);
     if (validation) {
@@ -180,8 +186,8 @@ async function descTable(describe_table_object, attr_perms) {
                 return attribute.attribute;
             });
 
-            if (attr_perms && attr_perms.length > 0) {
-                attributes = getAttrsByPerms(attr_perms);
+            if (table_attr_perms && table_attr_perms.length > 0) {
+                attributes = getAttrsByPerms(table_attr_perms);
             }
 
             table_result.attributes = attributes;
@@ -220,6 +226,13 @@ async function describeSchema(describe_schema_object) {
     if (validation_msg) {
         throw validation_msg;
     }
+
+    let schema_perms;
+
+    if (describe_schema_object.hdb_user && !describe_schema_object.hdb_user.role.super_user) {
+        schema_perms = describe_schema_object.hdb_user.role.permission[describe_schema_object.schema];
+    }
+
     let table_search_obj = {};
     table_search_obj.schema = terms.SYSTEM_SCHEMA_NAME;
     table_search_obj.table = terms.SYSTEM_TABLE_NAMES.TABLE_TABLE_NAME;
@@ -250,9 +263,15 @@ async function describeSchema(describe_schema_object) {
         await Promise.all(
             tables.map(async (table) => {
                 try {
-                    let data = await descTable({"schema": describe_schema_object.schema, "table": table.name});
-                    if (data) {
-                        results.push(data);
+                    let table_perms;
+                    if (schema_perms && schema_perms.tables[table.name]) {
+                        table_perms = schema_perms.tables[table.name];
+                    }
+                    if (hdb_utils.isEmpty(table_perms) || table_perms.describe) {
+                        let data = await descTable({"schema": describe_schema_object.schema, "table": table.name}, table_perms.attribute_restrictions);
+                        if (data) {
+                            results.push(data);
+                        }
                     }
                 } catch (err) {
                     logger.error('Error describing table.');
