@@ -74,7 +74,7 @@ async function run() {
             }
         }
 
-        await checkTransactionLogEnvironmentsExist()
+        await checkTransactionLogEnvironmentsExist();
 
         console.log('Upgrade complete.  Starting HarperDB.');
         let is_in_use = await arePortsInUse();
