@@ -93,6 +93,7 @@ required_permissions.set(reg.setLicense.name, new permission(true, []));
 required_permissions.set(data_export.export_to_s3.name, new permission(false, [READ_PERM]));
 required_permissions.set(data_export.export_local.name, new permission(false, [READ_PERM]));
 required_permissions.set(delete_.deleteFilesBefore.name, new permission(true, []));
+required_permissions.set(delete_.deleteTransactionLogsBefore.name, new permission(true, []));
 required_permissions.set(stop.restartProcesses.name, new permission(true, []));
 //This function name is hardcoded b/c of a circular dependency issue
 required_permissions.set(HANDLE_GET_JOB, new permission(false, [READ_PERM]));

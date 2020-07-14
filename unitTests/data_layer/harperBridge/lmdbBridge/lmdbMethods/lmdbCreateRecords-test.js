@@ -63,6 +63,8 @@ const INSERT_OBJECT_TEST = {
     ]
 };
 
+const INSERT_HASHES = [8,9,12, 10];
+
 const EXPECTED_SEARCH_RECORDS = [
     {
         __createdtime__:TIMESTAMP,
@@ -262,7 +264,7 @@ describe('Test lmdbCreateRecords module', ()=>{
             assert.deepStrictEqual(records, expected_search);
 
             //verify txn created
-            let insert_txn_obj = new LMDBInsertTransactionObject(insert_obj.records, undefined, m_time);
+            let insert_txn_obj = new LMDBInsertTransactionObject(insert_obj.records, undefined, m_time, INSERT_HASHES);
             let expected_timestamp = test_utils.assignObjecttoNullObject({
                 [m_time]: [JSON.stringify(insert_txn_obj)]
             });
@@ -302,7 +304,7 @@ describe('Test lmdbCreateRecords module', ()=>{
             assert.deepStrictEqual(results, expected_result);
 
             //verify txn created
-            let insert_txn_obj = new LMDBInsertTransactionObject(insert_obj1.records, undefined, m_time);
+            let insert_txn_obj = new LMDBInsertTransactionObject(insert_obj1.records, undefined, m_time, INSERT_HASHES);
             let expected_timestamp = test_utils.assignObjecttoNullObject({
                 [m_time]: [JSON.stringify(insert_txn_obj)]
             });
@@ -408,7 +410,7 @@ describe('Test lmdbCreateRecords module', ()=>{
             assert.deepStrictEqual(records, new_records_excpected);
 
             //verify txns
-            let insert_txn_obj2 = new LMDBInsertTransactionObject(insert_obj.records, undefined, m_time);
+            let insert_txn_obj2 = new LMDBInsertTransactionObject(insert_obj.records, undefined, m_time, [ 123, 1232 ]);
             expected_timestamp[m_time] = [JSON.stringify(insert_txn_obj2)];
 
             insert_obj.records.forEach(record=>{
@@ -425,7 +427,7 @@ describe('Test lmdbCreateRecords module', ()=>{
             await test_utils.assertErrorAsync(lmdb_create_records, [insert_obj], undefined);
 
             //verify txn created
-            let insert_txn_obj = new LMDBInsertTransactionObject(insert_obj.records, undefined, m_time);
+            let insert_txn_obj = new LMDBInsertTransactionObject(insert_obj.records, undefined, m_time, INSERT_HASHES);
             let expected_timestamp = test_utils.assignObjecttoNullObject({
                 [m_time]: [JSON.stringify(insert_txn_obj)]
             });

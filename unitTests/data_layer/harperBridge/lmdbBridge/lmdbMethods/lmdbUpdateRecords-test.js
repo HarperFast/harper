@@ -69,6 +69,8 @@ const INSERT_OBJECT_TEST = {
     ]
 };
 
+let INSERT_HASHES = [8,9,12,10];
+
 const NO_NEW_ATTR_TEST = [
     {
         attribute: "name"
@@ -189,7 +191,7 @@ describe('Test lmdbUpdateRecords module', ()=>{
             let insert_obj = test_utils.deepClone(INSERT_OBJECT_TEST);
             await lmdb_create_records(insert_obj);
 
-            let insert_txn_obj = new LMDBInsertTransactionObject(insert_obj.records, undefined, m_time);
+            let insert_txn_obj = new LMDBInsertTransactionObject(insert_obj.records, undefined, m_time, INSERT_HASHES);
             expected_timestamp_txn = test_utils.assignObjecttoNullObject({
                 [m_time]: [JSON.stringify(insert_txn_obj)]
             });
@@ -277,7 +279,7 @@ describe('Test lmdbUpdateRecords module', ()=>{
                 name: "Rob"
             };
 
-            let update_txn = new LMDBUpdateTransactionObject(update_obj.records, [orig_rec], undefined, m_time);
+            let update_txn = new LMDBUpdateTransactionObject(update_obj.records, [orig_rec], undefined, m_time, [10]);
             copy_expected_timestamp_txn[m_time] = [JSON.stringify(update_txn)];
 
             copy_expected_hashes_txn[10].push(m_time.toString());

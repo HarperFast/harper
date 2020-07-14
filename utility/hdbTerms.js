@@ -210,7 +210,8 @@ const OPERATIONS_ENUM = {
     REMOVE_NODE: 'remove_node',
     RESTART: 'restart',
     CATCHUP: 'catchup',
-    SYSTEM_INFORMATION: 'system_information'
+    SYSTEM_INFORMATION: 'system_information',
+    DELETE_TRANSACTION_LOGS_BEFORE: 'delete_transaction_logs_before',
 };
 
 // Defines operations that should be propagated to the cluster.
@@ -329,7 +330,8 @@ const JOB_TYPE_ENUM = {
     csv_data_load: OPERATIONS_ENUM.CSV_DATA_LOAD,
     export_to_s3: 'export_to_s3',
     export_local: 'export_local',
-    delete_files_before: 'delete_files_before'
+    delete_files_before: 'delete_files_before',
+    delete_transaction_logs_before: 'delete_transaction_logs_before'
 };
 
 const CLUSTER_MESSAGE_TYPE_ENUM = {

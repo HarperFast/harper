@@ -70,6 +70,8 @@ const INSERT_OBJECT_TEST = {
     ]
 };
 
+const INSERT_HASHES = [8,9,12,10];
+
 const ALL_FETCH_ATTRIBUTES = ['__createdtime__', '__updatedtime__', 'age', 'breed', 'height', 'id', 'name'];
 
 const SCHEMA_TABLE_TEST = {
@@ -165,7 +167,7 @@ describe('Test lmdbDeleteRecords module', ()=>{
             let insert_obj = test_utils.deepClone(INSERT_OBJECT_TEST);
             await lmdb_create_records(insert_obj);
 
-            let insert_txn_obj = new LMDBInsertTransactionObject(insert_obj.records, undefined, m_time);
+            let insert_txn_obj = new LMDBInsertTransactionObject(insert_obj.records, undefined, m_time, INSERT_HASHES);
             expected_timestamp_txn = test_utils.assignObjecttoNullObject({
                 [m_time]: [JSON.stringify(insert_txn_obj)]
             });

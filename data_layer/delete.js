@@ -1,6 +1,5 @@
 "use strict";
 
-const env = require('../utility/environment/environmentManager');
 const bulk_delete_validator = require('../validation/bulkDeleteValidator');
 const common_utils = require('../utility/common_utils');
 const moment = require('moment');
@@ -11,6 +10,7 @@ const global_schema = require('../utility/globalSchema');
 const p_global_schema = promisify(global_schema.getTableSchema);
 const harperBridge = require('./harperBridge/harperBridge');
 const {DeleteResponseObject} = require('./DataLayerObjects');
+const {DeleteBeforeObject} = require('./DeleteBeforeObject');
 
 const SUCCESS_MESSAGE = 'records successfully deleted';
 
@@ -20,7 +20,8 @@ const cb_delete_record = callbackify(deleteRecord);
 module.exports = {
     delete: cb_delete_record,
     deleteRecord,
-    deleteFilesBefore: deleteFilesBefore
+    deleteFilesBefore: deleteFilesBefore,
+    deleteTransactionLogsBefore
 };
 
 /**
@@ -29,7 +30,6 @@ module.exports = {
  * devices that have a small amount of disk space.
  *
  * @param delete_obj - the request passed from chooseOperation.
- * @param callback
  */
 async function deleteFilesBefore(delete_obj) {
     if(common_utils.isEmptyOrZeroLength(delete_obj.date)) {
@@ -58,6 +58,45 @@ async function deleteFilesBefore(delete_obj) {
         await harperBridge.deleteRecordsBefore(delete_obj);
         await p_global_schema(delete_obj.schema, delete_obj.table);
         harper_logger.info(`Finished deleting files before ${delete_obj.date}`);
+    } catch (err) {
+        throw err;
+    }
+}
+
+/**
+ * Deletes transaction logs which are older than a specific date
+ *
+ * @param {DeleteBeforeObject} delete_obj - the request passed from chooseOperation.
+ */
+async function deleteTransactionLogsBefore(delete_obj) {
+    if(common_utils.isEmptyOrZeroLength(delete_obj.timestamp)) {
+        throw new Error("Invalid timestamp.");
+    }
+
+
+    if(isNaN(delete_obj.timestamp)) {
+        throw new Error(`Invalid timestamp: ${delete_obj.timestamp}`);
+    }
+
+    if (common_utils.isEmptyOrZeroLength(delete_obj.schema)) {
+        throw new Error('Invalid schema.');
+    }
+
+    if (common_utils.isEmptyOrZeroLength(delete_obj.table)) {
+        throw new Error('Invalid table.');
+    }
+
+    let invalid_schema_table_msg = common_utils.checkSchemaTableExist(delete_obj.schema, delete_obj.table);
+    if (invalid_schema_table_msg) {
+        throw new Error(invalid_schema_table_msg);
+    }
+
+    try {
+        let results = await harperBridge.deleteTransactionLogsBefore(delete_obj);
+        await p_global_schema(delete_obj.schema, delete_obj.table);
+        harper_logger.info(`Finished deleting transaction logs before ${delete_obj.timestamp}`);
+
+        return results;
     } catch (err) {
         throw err;
     }
