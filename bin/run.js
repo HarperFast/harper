@@ -19,6 +19,12 @@ const upgrade = require('./upgrade');
 const version = require('./version');
 const hdb_license = require('../utility/registration/hdb_license');
 
+const SYSTEM_SCHEMA = require('../json/systemSchema.json');
+const schema_describe = require('../data_layer/schemaDescribe');
+const lmdb_create_txn_environment = require('../data_layer/harperBridge/lmdbBridge/lmdbUtility/lmdbCreateTransactionsEnvironment');
+
+const CreateTableObject = require('../data_layer/CreateTableObject');
+
 // These may change to match unix return codes (i.e. 0, 1)
 const SUCCESS_CODE = 'success';
 const FAILURE_CODE = 'failed';
@@ -67,6 +73,9 @@ async function run() {
                 process.exit(1);
             }
         }
+
+        await checkTransactionLogEnvironmentsExist()
+
         console.log('Upgrade complete.  Starting HarperDB.');
         let is_in_use = await arePortsInUse();
         if(!is_in_use) {
@@ -78,6 +87,46 @@ async function run() {
         console.log(err);
         logger.info(err);
         return;
+    }
+}
+
+/**
+ * iterates the system schema & all other schemas and makes sure there is a transaction environment for the schema.table
+ * @returns {Promise<void>}
+ */
+async function checkTransactionLogEnvironmentsExist(){
+    if(env.getDataStoreType() === terms.STORAGE_TYPES_ENUM.LMDB){
+        console.info('Checking Transaction Environments exist');
+
+        for (const table_name of Object.keys(SYSTEM_SCHEMA)) {
+            await openCreateTransactionEnvironment(terms.SYSTEM_SCHEMA_NAME, table_name);
+        }
+
+        let describe_results = await schema_describe.describeAll({});
+        for (const schema_name of Object.keys(describe_results)) {
+            for (const table_name of Object.keys(describe_results[schema_name])) {
+                await openCreateTransactionEnvironment(schema_name, table_name);
+            }
+        }
+
+        console.info('Finished checking Transaction Environments exist');
+    }
+}
+
+/**
+ * runs the create environment command for the specified schema.table
+ * @param {string} schema
+ * @param {string} table_name
+ * @returns {Promise<void>}
+ */
+async function openCreateTransactionEnvironment(schema, table_name){
+    try {
+        let create_tbl_obj = new CreateTableObject(schema, table_name);
+        await lmdb_create_txn_environment(create_tbl_obj);
+    } catch(e){
+        let error_msg = `Unable to create the transaction environment for ${schema}.${table_name}, due to: ${e.message}`;
+        console.error(error_msg);
+        logger.error(error_msg);
     }
 }
 
@@ -177,7 +226,6 @@ async function arePortsInUse() {
 /**
  * Checks to see if the port specified in the settings file is in use.
  * @param port - The port to check for running processes against
- * @param callback - Callback, returns (err, true/false)
  */
 function isPortTaken(port) {
     if(!port) {
@@ -275,7 +323,6 @@ function foregroundHandler() {
 /**
  * if is_foreground we call the stop function which kills the hdb processes
  * @param options
- * @param err
  */
 async function processExitHandler(options) {
     if (options.is_foreground) {
