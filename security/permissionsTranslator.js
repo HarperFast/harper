@@ -171,16 +171,17 @@ function getTableAttrPerms(table_perms, table_schema) {
         //We need to check if all attribute permissions passed for a table are false because, if so, we do not need to
         // force read permission for the table's hash value.  If they are not and the hash value is not included in the
         // attr perms, we need to make sure the user has read permission for the hash attr
-        let attr_perms_all_false = true;
+        const final_hash_attr_perms = attr_perms_template(table_hash);
 
         table_schema.attributes.forEach(({ attribute }) => {
             if (attr_r_map[attribute]) {
                 //if there is a permission set passed for current attribute, set it to the final perms object
                 const attr_perm_obj = attr_r_map[attribute];
                 final_table_perms.attribute_restrictions.push(attr_perm_obj);
-                //check if all CRUD perm values are false - if not, we can skip this step for the rest of the loop
-                if (!hash_attr_perm && attr_perms_all_false) {
-                    attr_perms_all_false = checkAllAttrPermsFalse(attr_perm_obj);
+                //if hash attr perms are not provided, check current CRUD perms values and make sure hash_attr is provided
+                // perms for any CRUD values that are set to true for other attributes
+                if (!hash_attr_perm) {
+                    checkForHashPerms(attr_perm_obj, final_hash_attr_perms);
                 }
             } else if (attribute !== table_hash) {
                 //if the attr isn't included in attr perms and isn't the hash, we set all perms to false
@@ -189,21 +190,10 @@ function getTableAttrPerms(table_perms, table_schema) {
             }
         });
 
-        //final step is to ensure we include the correct hash attribute permissions in the final permissions object
+        //final step is to ensure we include the correct hash attribute permissions in the final permissions object - if
+        // hash attr perms are included in the initial perms set, that will be handled above and we can skip this step
         if (!hash_attr_perm) {
-            if (attr_perms_all_false) {
-                const hash_perms = attr_perms_template(table_hash);
-                final_table_perms.attribute_restrictions.push(hash_perms);
-            } else {
-                const table_perms = permissions_template(
-                    final_table_perms[READ],
-                    final_table_perms[INSERT],
-                    final_table_perms[UPDATE],
-                    final_table_perms[DELETE]
-                );
-                const hash_perms = attr_perms_template(table_hash, table_perms);
-                final_table_perms.attribute_restrictions.push(hash_perms);
-            }
+            final_table_perms.attribute_restrictions.push(final_hash_attr_perms);
         }
 
         return final_table_perms;
@@ -213,11 +203,16 @@ function getTableAttrPerms(table_perms, table_schema) {
 }
 
 /**
- * Checks the a permissions object to all false values
+ * Checks the attribute permissions object and updates the final hash attribute permissions, if necessary
  *
- * @param attr_perm_obj
- * @returns {boolean|boolean}
+ * @param attr_perm_obj - perms for attribute being evaluated
+ * @param hash_perms - final perms object to update based on attribute being evaluated
+ * @returns {hash_perms} - final permissions object that will be assigned to the hash attribute
  */
-function checkAllAttrPermsFalse(attr_perm_obj) {
-    return !attr_perm_obj[READ] && !attr_perm_obj[INSERT] && !attr_perm_obj[UPDATE] && !attr_perm_obj[DELETE];
+function checkForHashPerms(attr_perm_obj, hash_perms) {
+    crud_perm_keys.forEach(perm => {
+       if (attr_perm_obj[perm] && !hash_perms[perm]) {
+           hash_perms[perm] = true;
+       }
+    });
 }

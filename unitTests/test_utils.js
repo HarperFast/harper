@@ -5,6 +5,7 @@ const moment = require('moment');
 const sinon = require('sinon');
 const uuid = require('uuid/v4');
 const assert = require('assert');
+const COMMON_TEST_TERMS = require('./commonTestTerms');
 
 const env = require('../utility/environment/environmentManager');
 const terms = require('../utility/hdbTerms');
@@ -754,5 +755,6 @@ module.exports = {
     generateAPIMessage,
     assertErrorSync,
     assertErrorAsync,
-    assignObjecttoNullObject: assignObjectToNullObject
+    assignObjecttoNullObject: assignObjectToNullObject,
+    COMMON_TEST_TERMS
 };

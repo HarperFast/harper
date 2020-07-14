@@ -15475,7 +15475,7 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"SELECT d.id, d.dog_name, d.age, d.adorable, o.* as name FROM dev.dog AS d INNER JOIN other.owner AS o ON d.owner_id = o.id ORDER BY o.name, o.id LIMIT 5 OFFSET 1\"\n}",
+							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"SELECT d.id, d.dog_name, d.age, d.adorable, o.* FROM dev.dog AS d INNER JOIN other.owner AS o ON d.owner_id = o.id ORDER BY o.name, o.id LIMIT 5 OFFSET 1\"\n}",
 							"options": {
 								"raw": {}
 							}
@@ -20560,6 +20560,83 @@
 					"response": []
 				},
 				{
+					"name": "NoSQL Try to insert into insert restricted attribute in categories table as test_user",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "a147ddb5-feb4-45ec-8b1d-3e495c5d0583",
+								"exec": [
+									"pm.test(\"Status code is 403\", function () {",
+									"    pm.response.to.have.status(403);",
+									"});",
+									"",
+									"var jsonData = pm.response.json();",
+									"",
+									"pm.test(\"required_attribute_permissions includes 1 perms error\", function () {",
+									"    pm.expect(jsonData.unauthorized_access[0].required_attribute_permissions.length).to.eql(1);",
+									"});",
+									"",
+									"pm.test(\"required_attribute_permissions object has correct attribute name and perm\", function () {",
+									"    pm.expect(jsonData.unauthorized_access[0].required_attribute_permissions[0].attribute_name).to.eql(\"categoryname\");",
+									"    pm.expect(jsonData.unauthorized_access[0].required_attribute_permissions[0].required_permissions[0]).to.eql(\"insert\");",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{test_user_name}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic c2dvbGRiZXJnOnRlc3QxMjM0IQ=="
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"insert\",\n  \"schema\":\"{{schema}}\",\n  \"table\":\"{{cate_tb}}\",\n  \"records\": [\n    {\n      \"{{cate_id}}\":9,\n      \"categoryname\":\"test name\",\n      \"description\":\"test description\"\n    }\n  ]\n}",
+							"options": {
+								"raw": {}
+							}
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						},
+						"description": "Method for adding users.  Users can be assigned roles which provide granular access at a table, operation, and attirbute level.  \n\n<ul>\n<li><b>operation </b> <i>(required) </i> - must always be 'add_user'</li>\n\n<li><b>role </b><i>(required) </i>- id of the role you wish to assign to the user.  See add_role for more detail.  </li>\n\n<li><b>username </b> <i>(required)</i> - username assigned to the user.  It can not be altered after adding the user.  It serves as the hash. </li>\n\n<li><b>password </b> <i>(required) </i>- clear text for password.  HarperDB will encrypt the password upon reciept. </li>\n\n</ul>"
+					},
+					"response": []
+				},
+				{
 					"name": "NoSQL Try to insert into territories table as SU",
 					"event": [
 						{
@@ -20895,6 +20972,84 @@
 					"response": []
 				},
 				{
+					"name": "NoSQL Try to update restricted attrs in categories table as test_user",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "5fa8747e-a930-402f-94a0-d4efc7380d24",
+								"exec": [
+									"pm.test(\"Status code is 403\", function () {",
+									"    pm.response.to.have.status(403);",
+									"});",
+									"",
+									"var jsonData = pm.response.json();",
+									"",
+									"pm.test(\"required_attribute_permissions includes 2 perms error\", function () {",
+									"    pm.expect(jsonData.unauthorized_access.length).to.eql(2);",
+									"});",
+									"",
+									"pm.test(\"required_attribute_permissions objects have correct attribute name and perm\", function () {",
+									"    pm.expect(jsonData.unauthorized_access[0].required_attribute_permissions[0].attribute_name).to.eql(\"categoryname\");",
+									"    pm.expect(jsonData.unauthorized_access[0].required_attribute_permissions[0].required_permissions[0]).to.eql(\"update\");",
+									"    pm.expect(jsonData.unauthorized_access[1].required_attribute_permissions[0].attribute_name).to.eql(\"picture\");",
+									"    pm.expect(jsonData.unauthorized_access[1].required_attribute_permissions[0].required_permissions[0]).to.eql(\"update\");",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{test_user_name}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic c2dvbGRiZXJnOnRlc3QxMjM0IQ=="
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"update\",\n  \"schema\":\"{{schema}}\",\n  \"table\":\"{{cate_tb}}\",\n  \"records\": [\n    {\n      \"{{cate_id}}\": 1,\n      \"categoryname\": \"test name\",\n      \"description\":\"test description updated\",\n      \"picture\": \"test picture\"\n    }\n  ]\n}",
+							"options": {
+								"raw": {}
+							}
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
 					"name": "NoSQL Try to delete from categories table as SU",
 					"event": [
 						{
@@ -21100,6 +21255,84 @@
 						"body": {
 							"mode": "raw",
 							"raw": "{\n\"operation\":\"search_by_value\",\n\"table\":\"{{ship_tb}}\",\n\"schema\":\"{{schema}}\",\n\"hash_attribute\":\"id\",\n\"search_attribute\":\"{{ship_id}}\",\n\"search_value\":\"*\",\n\"get_attributes\":[\"companyname\"]\n}",
+							"options": {
+								"raw": {}
+							}
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						},
+						"description": "Method for adding users.  Users can be assigned roles which provide granular access at a table, operation, and attirbute level.  \n\n<ul>\n<li><b>operation </b> <i>(required) </i> - must always be 'add_user'</li>\n\n<li><b>role </b><i>(required) </i>- id of the role you wish to assign to the user.  See add_role for more detail.  </li>\n\n<li><b>username </b> <i>(required)</i> - username assigned to the user.  It can not be altered after adding the user.  It serves as the hash. </li>\n\n<li><b>password </b> <i>(required) </i>- clear text for password.  HarperDB will encrypt the password upon reciept. </li>\n\n</ul>"
+					},
+					"response": []
+				},
+				{
+					"name": "NoSQL Try to read ALL shippers table attributes as test_user",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "a5f7299b-752f-4e73-afc2-92102dd9bb63",
+								"exec": [
+									"pm.test(\"Status code is 403\", function () {",
+									"    pm.response.to.have.status(403);",
+									"});",
+									"",
+									"var jsonData = pm.response.json();",
+									"",
+									"pm.test(\"required_table_permissions is not empty - has five objects\", function () {",
+									"    pm.expect(jsonData.unauthorized_access.length).to.eql(5);",
+									"});",
+									"",
+									"pm.test(\"required_attribute_permissions is read\", function () {",
+									"    jsonData.unauthorized_access.forEach(obj => {",
+									"        pm.expect(obj.required_attribute_permissions[0].required_permissions[0]).to.eql(\"read\");",
+									"    })",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{test_user_name}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic c2dvbGRiZXJnOnRlc3QxMjM0IQ=="
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\"operation\":\"search_by_value\",\n\"table\":\"{{ship_tb}}\",\n\"schema\":\"{{schema}}\",\n\"hash_attribute\":\"id\",\n\"search_attribute\":\"{{ship_id}}\",\n\"search_value\":\"*\",\n\"get_attributes\":[\"*\"]\n}",
 							"options": {
 								"raw": {}
 							}
@@ -22212,7 +22445,8 @@
 									"",
 									"responseData = JSON.parse(responseBody);",
 									"postman.setEnvironmentVariable(\"role_id\", responseData.id)"
-								]
+								],
+								"type": "text/javascript"
 							}
 						}
 					],
@@ -22250,7 +22484,7 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\"operation\":\"add_role\",\n\"role\":\"developer_test_5\",\n\"permission\":{\n  \"super_user\": false,\n  \"northnwd\":{\n\n   \"tables\": {\n     \"customers\": {\n         \"read\":true,\n         \"insert\":true,\n         \"update\":true,\n         \"delete\":true,\n         \"attribute_restrictions\":[]\n      },\n      \"suppliers\": {\n         \"read\":false,\n         \"insert\":false,\n         \"update\":false,\n         \"delete\":false,\n         \"attribute_restrictions\":[]\n      },\n      \"region\": {\n         \"read\":true,\n         \"insert\":false,\n         \"update\":false,\n         \"delete\":false,\n         \"attribute_restrictions\":[{\n               \"attribute_name\": \"regiondescription\",\n               \"read\":true,\n               \"insert\":false,\n               \"update\":false,\n               \"delete\":false\n            }]\n      },\n      \"territories\": {\n         \"read\":true,\n         \"insert\":true,\n         \"update\":false,\n         \"delete\":false,\n         \"attribute_restrictions\":[\n           {\n               \"attribute_name\": \"territorydescription\",\n               \"read\":true,\n               \"insert\":true,\n               \"update\":false,\n               \"delete\":false\n            }\n           ]\n      },\n      \"categories\": {\n         \"read\":true,\n         \"insert\":true,\n         \"update\":true,\n         \"delete\":false,\n         \"attribute_restrictions\":[\n           {\n               \"attribute_name\": \"description\",\n               \"read\":true,\n               \"insert\":true,\n               \"update\":true,\n               \"delete\":false\n            }\n           ]\n      },\n      \"shippers\": {\n         \"read\":true,\n         \"insert\":true,\n         \"update\":true,\n         \"delete\":true,\n         \"attribute_restrictions\":[\n           {\n               \"attribute_name\": \"companyname\",\n               \"read\":false,\n               \"insert\":false,\n               \"update\":false,\n               \"delete\":false\n            }\n           ]\n      }\n   }\n}\n  }\n\n}",
+							"raw": "{\n   \"operation\":\"add_role\",\n   \"role\":\"developer_test_5\",\n   \"permission\":{\n   \"super_user\": false,\n   \"northnwd\":{\n\n      \"tables\": {\n      \"customers\": {\n            \"read\":true,\n            \"insert\":true,\n            \"update\":true,\n            \"delete\":true,\n            \"attribute_restrictions\":[]\n         },\n         \"suppliers\": {\n            \"read\":false,\n            \"insert\":false,\n            \"update\":false,\n            \"delete\":false,\n            \"attribute_restrictions\":[]\n         },\n         \"region\": {\n            \"read\":true,\n            \"insert\":false,\n            \"update\":false,\n            \"delete\":false,\n            \"attribute_restrictions\":[{\n                  \"attribute_name\": \"regiondescription\",\n                  \"read\":true,\n                  \"insert\":false,\n                  \"update\":false,\n                  \"delete\":false\n               }]\n         },\n         \"territories\": {\n            \"read\":true,\n            \"insert\":true,\n            \"update\":false,\n            \"delete\":false,\n            \"attribute_restrictions\":[\n            {\n                  \"attribute_name\": \"territorydescription\",\n                  \"read\":true,\n                  \"insert\":true,\n                  \"update\":false,\n                  \"delete\":false\n               }\n            ]\n         },\n         \"categories\": {\n            \"read\":true,\n            \"insert\":true,\n            \"update\":true,\n            \"delete\":false,\n            \"attribute_restrictions\":[\n            {\n                  \"attribute_name\": \"description\",\n                  \"read\":true,\n                  \"insert\":true,\n                  \"update\":true,\n                  \"delete\":false\n               }\n            ]\n         },\n         \"shippers\": {\n            \"read\":true,\n            \"insert\":true,\n            \"update\":true,\n            \"delete\":true,\n            \"attribute_restrictions\":[\n            {\n                  \"attribute_name\": \"companyname\",\n                  \"read\":false,\n                  \"insert\":false,\n                  \"update\":false,\n                  \"delete\":false\n               }\n            ]\n            }\n         }\n      },\n      \"dev\": {\n         \"tables\": {\n            \"dog\": {\n               \"read\": true,\n               \"insert\": true,\n               \"update\": true,\n               \"delete\": true,\n               \"attribute_restrictions\": []\n            }\n         }\n      },\n      \"other\": {\n         \"tables\": {\n            \"owner\": {\n               \"read\": true,\n               \"insert\": false,\n               \"update\": true,\n               \"delete\": false,\n               \"attribute_restrictions\": [\n                  {\n                     \"attribute_name\": \"name\",\n                     \"read\":false,\n                     \"insert\":false,\n                     \"update\":false,\n                     \"delete\":false\n                  }\n               ]\n            }\n         }\n      },\n      \"another\": {\n         \"tables\": {\n            \"breed\": {\n               \"read\": false,\n               \"insert\": true,\n               \"update\": true,\n               \"delete\": true,\n               \"attribute_restrictions\": [\n                  {\n                     \"attribute_name\": \"image\",\n                     \"read\":false,\n                     \"insert\":false,\n                     \"update\":false,\n                     \"delete\":false\n                  }\n               ]\n            }\n         }\n      }\n   }\n}",
 							"options": {
 								"raw": {}
 							}
@@ -22623,23 +22857,29 @@
 					"response": []
 				},
 				{
-					"name": "SQL Try to read user read restricted suppliers table",
+					"name": "SQL Try to read restricted suppliers table as test_user",
 					"event": [
 						{
 							"listen": "test",
 							"script": {
-								"id": "08415217-5010-4b97-ab65-762b0f6bfad0",
+								"id": "b5e65b32-f3ea-4ba7-bd25-8693f6cf4e2b",
 								"type": "text/javascript",
 								"exec": [
 									"pm.test(\"Status code is 403\", function () {",
 									"    pm.response.to.have.status(403);",
 									"});",
 									"",
+									"var jsonData = pm.response.json();",
+									"",
+									"pm.test(\"Should return 1 unauthorized_access object\", function () {",
+									"    pm.expect(jsonData.unauthorized_access.length).to.eql(1);",
+									"});",
+									"",
 									"pm.test(\"required_table_permissions is read\", function () {",
-									"    var jsonData = pm.response.json();",
 									"    pm.expect(jsonData.unauthorized_access[0].required_table_permissions[0]).to.eql(\"read\");",
 									"});"
-								]
+								],
+								"type": "text/javascript"
 							}
 						}
 					],
@@ -22765,13 +23005,26 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "c9ee56e3-9aad-47c3-8cbf-b4c3893f23bd",
+								"id": "ee1df498-fd1d-478c-9c94-d7dabbf289b6",
 								"type": "text/javascript",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {",
 									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"var permitted_attrs = [\"regiondescription\", \"regionid\"];",
+									"",
+									"pm.test(\"Only permitted attributes are returned\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    jsonData.forEach(obj => {",
+									"        Object.keys(obj).forEach(attr_name => {",
+									"            pm.expect(permitted_attrs.includes(attr_name))    ",
+									"        })",
+									"    })",
+									"",
 									"});"
-								]
+								],
+								"type": "text/javascript"
 							}
 						}
 					],
@@ -22905,7 +23158,9 @@
 									"",
 									"pm.test(\"required_table_permissions is insert\", function () {",
 									"    var jsonData = pm.response.json();",
-									"    pm.expect(jsonData.unauthorized_access[2].required_table_permissions[0]).to.eql(\"insert\");",
+									"    pm.expect(jsonData.unauthorized_access[0].required_table_permissions[0]).to.eql(\"insert\");",
+									"    pm.expect(jsonData.unauthorized_access[1].required_attribute_permissions[0].required_permissions[0]).to.eql(\"insert\");",
+									"    pm.expect(jsonData.unauthorized_access[2].required_attribute_permissions[0].required_permissions[0]).to.eql(\"insert\");",
 									"});"
 								],
 								"type": "text/javascript"
@@ -23100,6 +23355,78 @@
 					"response": []
 				},
 				{
+					"name": "SQL Try to insert into territories table with allowed attributes as test_user",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "80a21ee7-002c-48ce-909b-d2a8bd120794",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"New record inserted\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.message).to.eql(\"inserted 1 of 1 records\");",
+									"    pm.expect(jsonData.inserted_hashes[0]).to.eql(165);",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{test_user_name}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic c2dvbGRiZXJnOnRlc3QxMjM0IQ=="
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"insert into northnwd.territories (territoryid, territorydescription) values ('165', 'Im a test');\"\n}",
+							"options": {
+								"raw": {}
+							}
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						},
+						"description": "Method for adding users.  Users can be assigned roles which provide granular access at a table, operation, and attirbute level.  \n\n<ul>\n<li><b>operation </b> <i>(required) </i> - must always be 'add_user'</li>\n\n<li><b>role </b><i>(required) </i>- id of the role you wish to assign to the user.  See add_role for more detail.  </li>\n\n<li><b>username </b> <i>(required)</i> - username assigned to the user.  It can not be altered after adding the user.  It serves as the hash. </li>\n\n<li><b>password </b> <i>(required) </i>- clear text for password.  HarperDB will encrypt the password upon reciept. </li>\n\n</ul>"
+					},
+					"response": []
+				},
+				{
 					"name": "SQL Try to update territories table as SU",
 					"event": [
 						{
@@ -23171,7 +23498,7 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "b1e5e402-0406-4116-86a8-0631041493e3",
+								"id": "850eefc6-ea77-44a1-917e-07ed5f42de8e",
 								"type": "text/javascript",
 								"exec": [
 									"pm.test(\"Status code is 403\", function () {",
@@ -23180,9 +23507,11 @@
 									"",
 									"pm.test(\"required_table_permissions is update\", function () {",
 									"    var jsonData = pm.response.json();",
-									"    pm.expect(jsonData.unauthorized_access[1].required_table_permissions[0]).to.eql(\"update\");",
+									"    pm.expect(jsonData.unauthorized_access[0].required_table_permissions[0]).to.eql(\"update\");",
+									"    pm.expect(jsonData.unauthorized_access[1].required_attribute_permissions[0].required_permissions[0]).to.eql(\"update\");",
 									"});"
-								]
+								],
+								"type": "text/javascript"
 							}
 						}
 					],
@@ -23303,6 +23632,82 @@
 					"response": []
 				},
 				{
+					"name": "SQL Try to update restricted attr in categories table as test_user",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "4f775221-9fcf-47cf-abe1-ce4765a11d0b",
+								"exec": [
+									"pm.test(\"Status code is 403\", function () {",
+									"    pm.response.to.have.status(403);",
+									"});",
+									"",
+									"var jsonData = pm.response.json();",
+									"",
+									"pm.test(\"required_attribute_permissions is not empty - has one object\", function () {",
+									"    pm.expect(jsonData.unauthorized_access[0].required_attribute_permissions[0].attribute_name).to.eql(\"picture\");",
+									"});",
+									"",
+									"pm.test(\"required_attribute_permissions is insert\", function () {",
+									"    pm.expect(jsonData.unauthorized_access[0].required_attribute_permissions[0].required_permissions[0]).to.eql(\"update\");",
+									"});",
+									""
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{test_user_name}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic c2dvbGRiZXJnOnRlc3QxMjM0IQ=="
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"update northnwd.categories set description = 'update test', picture = 'test picture' where categoryid = 2\"\n}",
+							"options": {
+								"raw": {}
+							}
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
 					"name": "SQL Try to delete from categories table as SU",
 					"event": [
 						{
@@ -23382,7 +23787,8 @@
 									"",
 									"pm.test(\"required_table_permissions is delete\", function () {",
 									"    var jsonData = pm.response.json();",
-									"    pm.expect(jsonData.unauthorized_access[1].required_table_permissions[0]).to.eql(\"delete\");",
+									"    pm.expect(jsonData.unauthorized_access[0].required_table_permissions[0]).to.eql(\"delete\");",
+									"    pm.expect(jsonData.unauthorized_access[1].required_attribute_permissions[0].required_permissions[0]).to.eql(\"delete\");",
 									"});"
 								],
 								"type": "text/javascript"
@@ -23440,29 +23846,31 @@
 					"response": []
 				},
 				{
-					"name": "SQL Try to read shippers table restricted attribute as test_user",
+					"name": "SQL Try to read shippers table w/ restricted attribute as test_user",
 					"event": [
 						{
 							"listen": "test",
 							"script": {
-								"id": "78283c19-0b32-4c19-bdf9-a7cdf2f4eed7",
+								"id": "7bf4bc6f-d947-4235-89d0-d85ae5e41dfd",
 								"type": "text/javascript",
 								"exec": [
-									"pm.test(\"Status code is 200\", function () {",
-									"    pm.response.to.have.status(200);",
+									"pm.test(\"Status code is 403\", function () {",
+									"    pm.response.to.have.status(403);",
 									"});",
 									"",
-									"// TODO - Sam will update these tests to confirm that a SELECT * only returns attributes that the user has permissions for to.",
-									"// pm.test(\"required_table_permissions is not empty\", function () {",
-									"//     var jsonData = pm.response.json();",
-									"//     pm.expect(jsonData.unauthorized_access[0].required_attribute_permissions[0].attribute_name).to.eql(\"companyname\");",
-									"// });",
+									"var jsonData = pm.response.json();",
 									"",
-									"// pm.test(\"required_attribute_permissions is read\", function () {",
-									"//     var jsonData = pm.response.json();",
-									"//     pm.expect(jsonData.unauthorized_access[0].required_attribute_permissions[0].required_permissions[0]).to.eql(\"read\");",
-									"// });"
-								]
+									"pm.test(\"All table attributes returned in unauthorized access array\", function () {",
+									"    pm.expect(jsonData.unauthorized_access.length).to.eql(5);",
+									"});",
+									"",
+									"pm.test(\"required_attribute_permissions is read\", function () {",
+									"    jsonData.unauthorized_access.forEach(val => {",
+									"        pm.expect(val.required_attribute_permissions[0].required_permissions[0]).to.eql(\"read\");",
+									"    })",
+									"});"
+								],
+								"type": "text/javascript"
 							}
 						}
 					],
@@ -23511,8 +23919,7 @@
 								"{{host}}"
 							],
 							"port": "{{port}}"
-						},
-						"description": "Method for adding users.  Users can be assigned roles which provide granular access at a table, operation, and attirbute level.  \n\n<ul>\n<li><b>operation </b> <i>(required) </i> - must always be 'add_user'</li>\n\n<li><b>role </b><i>(required) </i>- id of the role you wish to assign to the user.  See add_role for more detail.  </li>\n\n<li><b>username </b> <i>(required)</i> - username assigned to the user.  It can not be altered after adding the user.  It serves as the hash. </li>\n\n<li><b>password </b> <i>(required) </i>- clear text for password.  HarperDB will encrypt the password upon reciept. </li>\n\n</ul>"
+						}
 					},
 					"response": []
 				},
@@ -23604,15 +24011,15 @@
 									"    pm.response.to.have.status(403);",
 									"});",
 									"",
+									"var jsonData = pm.response.json();",
+									"",
 									"pm.test(\"required_attribute_permissions is not empty\", function () {",
-									"    var jsonData = pm.response.json();",
 									"    pm.expect(jsonData.unauthorized_access[0].required_attribute_permissions[0].attribute_name).to.eql(\"shipperid\");",
 									"    pm.expect(jsonData.unauthorized_access[1].required_attribute_permissions[0].attribute_name).to.eql(\"companyname\");",
 									"    pm.expect(jsonData.unauthorized_access[2].required_attribute_permissions[0].attribute_name).to.eql(\"phone\");",
 									"});",
 									"",
 									"pm.test(\"required_attribute_permissions is insert\", function () {",
-									"    var jsonData = pm.response.json();",
 									"    pm.expect(jsonData.unauthorized_access[0].required_attribute_permissions[0].required_permissions[0]).to.eql(\"insert\");",
 									"    pm.expect(jsonData.unauthorized_access[1].required_attribute_permissions[0].required_permissions[0]).to.eql(\"insert\");",
 									"    pm.expect(jsonData.unauthorized_access[2].required_attribute_permissions[0].required_permissions[0]).to.eql(\"insert\");",
@@ -23746,18 +24153,18 @@
 									"    pm.response.to.have.status(403);",
 									"});",
 									"",
+									"var jsonData = pm.response.json();",
+									"",
 									"pm.test(\"required_table_permissions is not empty\", function () {",
-									"    var jsonData = pm.response.json();",
 									"    pm.expect(jsonData.unauthorized_access[0].required_attribute_permissions[0].attribute_name).to.eql(\"shipperid\");",
 									"    pm.expect(jsonData.unauthorized_access[1].required_attribute_permissions[0].attribute_name).to.eql(\"phone\");",
 									"    pm.expect(jsonData.unauthorized_access[2].required_attribute_permissions[0].attribute_name).to.eql(\"companyname\");",
 									"});",
 									"",
 									"pm.test(\"required_attribute_permissions is read\", function () {",
-									"    var jsonData = pm.response.json();",
-									"    pm.expect(jsonData.unauthorized_access[0].required_attribute_permissions[0].required_permissions[0]).to.eql(\"read\");",
-									"    pm.expect(jsonData.unauthorized_access[1].required_attribute_permissions[0].required_permissions[0]).to.eql(\"read\");",
-									"    pm.expect(jsonData.unauthorized_access[2].required_attribute_permissions[0].required_permissions[0]).to.eql(\"read\");",
+									"    jsonData.unauthorized_access.forEach(perm => {",
+									"        pm.expect(perm.required_attribute_permissions[0].required_permissions[0]).to.eql(\"read\");    ",
+									"    })",
 									"});"
 								],
 								"type": "text/javascript"
@@ -23812,6 +24219,754 @@
 							"path": [
 								""
 							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Select with restricted CROSS SCHEMA JOIN as test_user",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "ccb261a6-53ea-48ef-aced-e1d039dd0965",
+								"exec": [
+									"pm.test(\"Status code is 403\", function () {",
+									"    pm.response.to.have.status(403);",
+									"});",
+									"",
+									"var jsonData = pm.response.json();",
+									"",
+									"pm.test(\"Table attr restrictions returned in unauthorized access array\", function () {",
+									"    pm.expect(jsonData.unauthorized_access.length).to.eql(2);",
+									"});",
+									"",
+									"pm.test(\"required_attribute_permissions is read for both attributes\", function () {",
+									"    jsonData.unauthorized_access.forEach(perm => {",
+									"        pm.expect(perm.required_attribute_permissions[0].required_permissions[0]).to.eql(\"read\");",
+									"    })",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{test_user_name}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"value": true,
+									"type": "boolean"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"SELECT d.id, d.dog_name, d.age, d.adorable, o.id, o.name FROM dev.dog AS d INNER JOIN other.owner AS o ON d.owner_id = o.id\"\n}",
+							"options": {
+								"raw": {}
+							}
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Select * with restricted CROSS SCHEMA JOIN as test_user",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "6e2a9463-7ef2-4c4a-a2eb-157d775be00c",
+								"exec": [
+									"pm.test(\"Status code is 403\", function () {",
+									"    pm.response.to.have.status(403);",
+									"});",
+									"",
+									"var jsonData = pm.response.json();",
+									"",
+									"pm.test(\"4 table attr restriction returned in unauthorized access array\", function () {",
+									"    pm.expect(jsonData.unauthorized_access.length).to.eql(4);",
+									"});",
+									"",
+									"pm.test(\"required_attribute_permissions is read for table attributes\", function () {",
+									"    jsonData.unauthorized_access.forEach(perm => {",
+									"        pm.expect(perm.schema).to.eql(\"other\");",
+									"        pm.expect(perm.table).to.eql(\"owner\");",
+									"        pm.expect(perm.required_attribute_permissions[0].required_permissions[0]).to.eql(\"read\");",
+									"    })",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{test_user_name}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"value": true,
+									"type": "boolean"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"SELECT d.*, o.* FROM dev.dog AS d INNER JOIN other.owner AS o ON d.owner_id = o.id ORDER BY o.name, o.id LIMIT 5 OFFSET 1\"\n}",
+							"options": {
+								"raw": {}
+							}
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Select restricted attrs in CROSS 3 SCHEMA JOINS as test_user",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "0d40273b-b3c3-4985-ae21-e2c093e571c4",
+								"exec": [
+									"pm.test(\"Status code is 403\", function () {",
+									"    pm.response.to.have.status(403);",
+									"});",
+									"",
+									"var jsonData = pm.response.json().unauthorized_access;",
+									"",
+									"pm.test(\"5 table attr restriction returned in unauthorized access array\", function () {",
+									"    pm.expect(jsonData.length).to.eql(5);",
+									"});",
+									"",
+									"pm.test(\"required_attribute_permissions is read for table attributes\", function () {",
+									"    jsonData.forEach((perm, i) => {",
+									"        if (i < 2) {",
+									"            pm.expect(perm.schema).to.eql(\"other\");",
+									"            pm.expect(perm.table).to.eql(\"owner\");",
+									"            pm.expect(perm.required_attribute_permissions[0].required_permissions[0]).to.eql(\"read\");",
+									"        } else if (i === 2) {",
+									"            pm.expect(perm.schema).to.eql(\"another\");",
+									"            pm.expect(perm.table).to.eql(\"breed\");",
+									"            pm.expect(perm.required_table_permissions[0]).to.eql(\"read\");",
+									"        } else {",
+									"            pm.expect(perm.schema).to.eql(\"another\");",
+									"            pm.expect(perm.table).to.eql(\"breed\");",
+									"            pm.expect(perm.required_attribute_permissions[0].required_permissions[0]).to.eql(\"read\");",
+									"        }",
+									"    })",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{test_user_name}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"value": true,
+									"type": "boolean"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"SELECT d.id, d.dog_name, d.age, d.adorable, o.id, o.name, b.id, b.name FROM dev.dog AS d INNER JOIN other.owner AS o ON d.owner_id = o.id INNER JOIN another.breed AS b ON d.breed_id = b.id\"\n}",
+							"options": {
+								"raw": {}
+							}
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Select with complex CROSS 3 SCHEMA JOINS as test_user",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "d56a6b9c-815f-4e24-89f6-0e37a468f021",
+								"exec": [
+									"var jsonData = pm.response.json();",
+									"pm.test(\"Status code is 403\", function () {",
+									"    pm.response.to.have.status(403);",
+									"});",
+									"",
+									"var jsonData = jsonData.unauthorized_access;",
+									"pm.test(\"test 5 records returned\", function () {",
+									"    pm.expect(jsonData.length).to.eql(5);",
+									"});",
+									"",
+									"pm.test(\"required_attribute_permissions is read for table attributes\", function () {",
+									"    jsonData.forEach((perm, i) => {",
+									"        if (i < 2) {",
+									"            pm.expect(perm.schema).to.eql(\"other\");",
+									"            pm.expect(perm.table).to.eql(\"owner\");",
+									"            pm.expect(perm.required_attribute_permissions[0].required_permissions[0]).to.eql(\"read\");",
+									"        } else if (i === 2) {",
+									"            pm.expect(perm.schema).to.eql(\"another\");",
+									"            pm.expect(perm.table).to.eql(\"breed\");",
+									"            pm.expect(perm.required_table_permissions[0]).to.eql(\"read\");",
+									"        } else {",
+									"            pm.expect(perm.schema).to.eql(\"another\");",
+									"            pm.expect(perm.table).to.eql(\"breed\");",
+									"            pm.expect(perm.required_attribute_permissions[0].required_permissions[0]).to.eql(\"read\");",
+									"        }",
+									"    })",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{test_user_name}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"value": true,
+									"type": "boolean"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"SELECT d.age AS dog_age, AVG(d.weight_lbs) AS dog_weight, o.name AS owner_name, b.name FROM dev.dog AS d INNER JOIN other.owner AS o ON d.owner_id = o.id INNER JOIN another.breed AS b ON d.breed_id = b.id GROUP BY o.name, b.name, d.age ORDER BY b.name\"\n}",
+							"options": {
+								"raw": {}
+							}
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "SQL ALTER non SU role",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "27c9ae9d-47a7-4dab-a561-5972aaaac736",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n   \"operation\":\"alter_role\",\n   \"role\":\"developer_test_5\",\n   \"id\": \"{{role_id}}\",\n   \"permission\":{\n      \"super_user\": false,\n      \"northnwd\":{\n\n         \"tables\": {\n         \"customers\": {\n               \"read\":true,\n               \"insert\":true,\n               \"update\":true,\n               \"delete\":true,\n               \"attribute_restrictions\":[]\n            },\n            \"suppliers\": {\n               \"read\":false,\n               \"insert\":false,\n               \"update\":false,\n               \"delete\":false,\n               \"attribute_restrictions\":[]\n            },\n            \"region\": {\n               \"read\":true,\n               \"insert\":false,\n               \"update\":false,\n               \"delete\":false,\n               \"attribute_restrictions\":[{\n                     \"attribute_name\": \"regiondescription\",\n                     \"read\":true,\n                     \"insert\":false,\n                     \"update\":false,\n                     \"delete\":false\n                  }]\n            },\n            \"territories\": {\n               \"read\":true,\n               \"insert\":true,\n               \"update\":false,\n               \"delete\":false,\n               \"attribute_restrictions\":[\n               {\n                     \"attribute_name\": \"territorydescription\",\n                     \"read\":true,\n                     \"insert\":true,\n                     \"update\":false,\n                     \"delete\":false\n                  }\n               ]\n            },\n            \"categories\": {\n               \"read\":true,\n               \"insert\":true,\n               \"update\":true,\n               \"delete\":false,\n               \"attribute_restrictions\":[\n               {\n                     \"attribute_name\": \"description\",\n                     \"read\":true,\n                     \"insert\":true,\n                     \"update\":true,\n                     \"delete\":false\n                  }\n               ]\n            },\n            \"shippers\": {\n               \"read\":true,\n               \"insert\":true,\n               \"update\":true,\n               \"delete\":true,\n               \"attribute_restrictions\":[\n               {\n                     \"attribute_name\": \"companyname\",\n                     \"read\":false,\n                     \"insert\":false,\n                     \"update\":false,\n                     \"delete\":false\n                  }\n               ]\n               }\n            }\n         },\n         \"dev\": {\n            \"tables\": {\n               \"dog\": {\n                  \"read\": true,\n                  \"insert\": true,\n                  \"update\": true,\n                  \"delete\": true,\n                  \"attribute_restrictions\": []\n               }\n            }\n         },\n         \"other\": {\n            \"tables\": {\n               \"owner\": {\n                  \"read\": true,\n                  \"insert\": false,\n                  \"update\": true,\n                  \"delete\": false,\n                  \"attribute_restrictions\": [\n                     {\n                        \"attribute_name\": \"name\",\n                        \"read\":true,\n                        \"insert\":false,\n                        \"update\":false,\n                        \"delete\":false\n                     }\n                  ]\n               }\n            }\n         },\n         \"another\": {\n            \"tables\": {\n               \"breed\": {\n                  \"read\": true,\n                  \"insert\": true,\n                  \"update\": true,\n                  \"delete\": true,\n                  \"attribute_restrictions\": [\n                     {\n                        \"attribute_name\": \"name\",\n                        \"read\":true,\n                        \"insert\":false,\n                        \"update\":false,\n                        \"delete\":false\n                     }\n                  ]\n               }\n            }\n         }\n      }\n\n}",
+							"options": {
+								"raw": {}
+							}
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Select two table CROSS SCHEMA JOIN as test_user",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "77fe2fe0-7d89-44bc-8394-73a7f771ab87",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"var jsonData = pm.response.json();",
+									"",
+									"pm.test(\"test 8 records returned\", function () {",
+									"    pm.expect(jsonData.length).to.eql(8);",
+									"});",
+									"",
+									"var expected_attributes = [\"id\", \"dog_name\", \"age\", \"adorable\", \"id1\", \"name\"]",
+									"",
+									"//Important to test that only the id (returned as id1) and name attributes come back for 'other.owner' since user only has access to those two attributes",
+									"pm.test(\"test for all columns returned including duplicate 'id' column with name numbering\", function () {",
+									"    jsonData.forEach(row => {",
+									"        expected_attributes.forEach(attr => {",
+									"            pm.expect(row[attr]).to.exist;",
+									"        })",
+									"    })",
+									"});",
+									"",
+									"pm.test(\"test random row values\", function () {",
+									"    pm.expect(jsonData[1].name).to.eql(\"David\");",
+									"    pm.expect(jsonData[1].id1).to.eql(3);",
+									"    pm.expect(jsonData[4].id1).to.eql(2);",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{test_user_name}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"value": true,
+									"type": "boolean"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"SELECT d.id, d.dog_name, d.age, d.adorable, o.id, o.name FROM dev.dog AS d INNER JOIN other.owner AS o ON d.owner_id = o.id\"\n}",
+							"options": {
+								"raw": {}
+							}
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Select * w/ two table CROSS SCHEMA JOIN as test_user",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "a34215f8-e4b0-4ef1-be86-e856462ed1e5",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"var expected_attributes = [\"dog_name\", \"weight_lbs\", \"breed_id\", \"owner_id\", \"__updatedtime__\", \"age\", \"adorable\", \"id\", \"__createdtime__\", \"id1\", \"name\"]",
+									"",
+									"//Important to test that only the id (returned as id1) and name attributes come back for 'other.owner' since user only has access to those two attributes",
+									"pm.test(\"test for all columns returned including duplicate 'id' column with name numbering\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    jsonData.forEach(row => {",
+									"        expected_attributes.forEach(attr => {",
+									"            pm.expect(row[attr]).to.exist;",
+									"        })",
+									"    })",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{test_user_name}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"value": true,
+									"type": "boolean"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"SELECT d.*, o.* FROM dev.dog AS d INNER JOIN other.owner AS o ON d.owner_id = o.id ORDER BY o.name, o.id LIMIT 5 OFFSET 1\"\n}",
+							"options": {
+								"raw": {}
+							}
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Select w/ CROSS 3 SCHEMA JOINS as test_user",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "c3a91e76-cc45-42a9-a21e-c3aca8b30673",
+								"exec": [
+									"pm.test(\"test 7 records returned\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.length).to.eql(7);",
+									"});",
+									"",
+									"pm.test(\"test for all columns exist including duplicate column name numbering\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    jsonData.forEach(row => {",
+									"        pm.expect(row.id).to.exist;",
+									"        pm.expect(row.id1).to.exist;",
+									"        pm.expect(row.id2).to.exist;",
+									"        pm.expect(row.dog_name).to.exist;",
+									"        pm.expect(row.age).to.exist;",
+									"        pm.expect(row.name).to.exist;",
+									"        pm.expect(row.name1).to.exist;",
+									"    })",
+									"});",
+									"",
+									"pm.test(\"test random row values\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData[1].name).to.eql(\"David\");",
+									"    pm.expect(jsonData[1].id1).to.eql(3);",
+									"    pm.expect(jsonData[4].id1).to.eql(2);",
+									"    pm.expect(jsonData[6].id1).to.eql(1);",
+									"    pm.expect(jsonData[6].name1).to.eql(\"MASTIFF\");",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{test_user_name}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"value": true,
+									"type": "boolean"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"SELECT d.id, d.dog_name, d.age, d.adorable, o.id, o.name, b.id, b.name FROM dev.dog AS d INNER JOIN other.owner AS o ON d.owner_id = o.id INNER JOIN another.breed AS b ON d.breed_id = b.id\"\n}",
+							"options": {
+								"raw": {}
+							}
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Select with complex CROSS 3 SCHEMA JOINS as test_user",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "779b2438-493f-47a8-ae12-e54c92fdb676",
+								"exec": [
+									"pm.test(\"test 7 records returned\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.length).to.eql(7);",
+									"});",
+									"",
+									"pm.test(\"test for all columns exist including duplicate column name numbering\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    jsonData.forEach(row => {",
+									"        pm.expect(row.dog_age).to.exist;",
+									"        pm.expect(row.dog_weight).to.exist;",
+									"        pm.expect(row.owner_name).to.exist;",
+									"        pm.expect(row.name).to.exist;",
+									"    })",
+									"});",
+									"",
+									"pm.test(\"test first and last row values\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData[0].dog_age).to.eql(1);",
+									"    pm.expect(jsonData[0].dog_weight).to.eql(35);",
+									"    pm.expect(jsonData[0].owner_name).to.eql(\"Kaylan\");",
+									"    pm.expect(jsonData[0].name).to.eql(\"BEAGLE MIX\");",
+									"    pm.expect(jsonData[6].dog_age).to.eql(5);",
+									"    pm.expect(jsonData[6].dog_weight).to.eql(35);",
+									"    pm.expect(jsonData[6].owner_name).to.eql(\"Kyle\");",
+									"    pm.expect(jsonData[6].name).to.eql(\"WHIPPET\");",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{test_user_name}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"value": true,
+									"type": "boolean"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"SELECT d.age AS dog_age, AVG(d.weight_lbs) AS dog_weight, o.name AS owner_name, b.name FROM dev.dog AS d INNER JOIN other.owner AS o ON d.owner_id = o.id INNER JOIN another.breed AS b ON d.breed_id = b.id GROUP BY o.name, b.name, d.age ORDER BY b.name\"\n}",
+							"options": {
+								"raw": {}
+							}
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
 						}
 					},
 					"response": []
@@ -26186,19 +27341,31 @@
 					"response": []
 				},
 				{
-					"name": "Jobs Test Export To Local using SQL as test_user",
+					"name": "Jobs Test Export To Local using SQL as test_user on restricted table",
 					"event": [
 						{
 							"listen": "test",
 							"script": {
-								"id": "87559bee-b791-415a-b6c7-e6667d5eeec7",
+								"id": "f3e4fa85-1d5c-4997-a9e3-6cdb3e8bf18c",
 								"type": "text/javascript",
 								"exec": [
-									"// TODO - Sam will update this tests to confirm that a SELECT * only returns attributes that the user has permissions for to.",
-									"pm.test(\"Status code is 200\", function () {",
-									"    pm.response.to.have.status(200);",
+									"pm.test(\"Status code is 403\", function () {",
+									"    pm.response.to.have.status(403);",
+									"});",
+									"",
+									"pm.test(\"All table attributes returned in unauthorized access array\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.unauthorized_access.length).to.eql(5);",
+									"});",
+									"",
+									"pm.test(\"required_attribute_permissions is read\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    jsonData.unauthorized_access.forEach(val => {",
+									"        pm.expect(val.required_attribute_permissions[0].required_permissions[0]).to.eql(\"read\");",
+									"    })",
 									"});"
-								]
+								],
+								"type": "text/javascript"
 							}
 						}
 					],
@@ -26233,6 +27400,68 @@
 						"body": {
 							"mode": "raw",
 							"raw": "{\n\t\"operation\":\"export_local\",\n\t\"path\":\"./\",\n\t\"filename\":\"test_export.json\",\n\t\"format\":\"json\",\n\t\"search_operation\": {\n        \"operation\":\"sql\",\n        \"sql\":\"select * from {{schema}}.{{ship_tb}}\"\n    }\n}",
+							"options": {
+								"raw": {}
+							}
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						},
+						"description": "Method for adding users.  Users can be assigned roles which provide granular access at a table, operation, and attirbute level.  \n\n<ul>\n<li><b>operation </b> <i>(required) </i> - must always be 'add_user'</li>\n\n<li><b>role </b><i>(required) </i>- id of the role you wish to assign to the user.  See add_role for more detail.  </li>\n\n<li><b>username </b> <i>(required)</i> - username assigned to the user.  It can not be altered after adding the user.  It serves as the hash. </li>\n\n<li><b>password </b> <i>(required) </i>- clear text for password.  HarperDB will encrypt the password upon reciept. </li>\n\n</ul>"
+					},
+					"response": []
+				},
+				{
+					"name": "Jobs Test Export To Local using SQL as test_user on table w/ two attr perms",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "c92136bc-c229-43a6-ac50-be4eb488c75b",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{test_user_name}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"export_local\",\n\t\"path\":\"./\",\n\t\"filename\":\"test_export.json\",\n\t\"format\":\"json\",\n\t\"search_operation\": {\n        \"operation\":\"sql\",\n        \"sql\":\"select * from {{schema}}.{{regi_tb}}\"\n    }\n}",
 							"options": {
 								"raw": {}
 							}
