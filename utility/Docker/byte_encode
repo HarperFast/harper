@@ -1,0 +1,57 @@
+echo "Bytenode compile"
+mkdir ~/harperdb_dev 
+#start compiling
+bytenode --compile bin/*.js
+
+bytenode --compile data_layer/*.js
+bytenode --compile data_layer/**/*.js
+bytenode --compile data_layer/**/**/*.js
+bytenode --compile data_layer/**/**/**/*.js
+
+bytenode --compile dependencies/harperdb_helium/*.js
+
+bytenode --compile events/*.js
+
+bytenode --compile lib/**/*.js
+
+bytenode --compile security/*.js
+
+bytenode --compile server/*.js
+bytenode --compile server/**/*.js
+bytenode --compile server/**/**/*.js
+bytenode --compile server/**/**/**/*.js
+
+bytenode --compile sqlTranslator/*.js
+
+bytenode --compile upgrade/*.js
+bytenode --compile upgrade/**/*.js
+
+bytenode --compile utility/*.js
+bytenode --compile utility/environment/*.js
+bytenode --compile utility/fs/*.js
+bytenode --compile utility/functions/*.js
+bytenode --compile utility/functions/**/*.js
+bytenode --compile utility/install/*.js
+bytenode --compile utility/helium/*.js
+bytenode --compile utility/logging/*.js
+bytenode --compile utility/registration/*.js
+bytenode --compile utility/userInterface/*.js
+
+bytenode --compile validation/*.js
+bytenode --compile validation/**/*.js
+
+
+
+
+mv ./bin/harperdb_jsc.js ./bin/harperdb.js
+unlink ./bin/harperdb_jsc.jsc
+
+mv ./upgrade/scripts/postInstall_jsc.js ./upgrade/scripts/postInstall.js
+unlink ./upgrade/scripts/postInstall_jsc.jsc
+
+
+echo "******** Compile Complete *************"
+rsync --include="*.jsc" --include="harperdb.js" --include="processCSV.worker.js" --exclude="*.js" --exclude=".*" --recursive ./ ~/harperdb_dev/
+echo "*********** RSYNC COMPLETE *************"
+cd ~/harperdb_dev/
+rm -rf ./utility/devops ./test ./unitTests ./integrationTests ./bash ./upgrade_shim ./utility/Docker
