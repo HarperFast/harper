@@ -32,6 +32,7 @@ module.exports = {
     describeSchema
 };
 
+//TODO - Sam - add code comment
 async function describeAll(op_obj) {
     try {
         const sys_call = hdb_utils.isEmptyOrZeroLength(op_obj);
@@ -130,11 +131,13 @@ async function describeAll(op_obj) {
     }
 }
 
+//TODO - Sam - add code comment
 async function descTable(describe_table_object, attr_perms) {
     const { schema, table } = describe_table_object;
     let table_attr_perms = attr_perms;
 
-    if (describe_table_object.hdb_user && !describe_table_object.hdb_user.role.super_user) {
+    //TODO - Sam - add comment on what this is doing.
+    if (describe_table_object.hdb_user && !describe_table_object.hdb_user.role.permission.super_user) {
         table_attr_perms = describe_table_object.hdb_user.role.permission[schema].tables[table].attribute_restrictions;
     }
 
@@ -204,7 +207,7 @@ async function descTable(describe_table_object, attr_perms) {
             }
 
         } catch (err) {
-            logger.error('There was an error getting table attributes.');
+            logger.error(`There was an error getting attributes for table '${table.name}'`);
             logger.error(err);
 
         }
@@ -212,6 +215,7 @@ async function descTable(describe_table_object, attr_perms) {
     return table_result;
 }
 
+//TODO - Sam - add code comment
 function getAttrsByPerms(attr_perms) {
     return attr_perms.reduce((acc, perm) => {
         if (perm.describe) {
@@ -221,6 +225,7 @@ function getAttrsByPerms(attr_perms) {
     }, []);
 }
 
+//TODO - Sam - add code comment
 async function describeSchema(describe_schema_object) {
     let validation_msg = validator.schema_object(describe_schema_object);
     if (validation_msg) {
@@ -229,7 +234,7 @@ async function describeSchema(describe_schema_object) {
 
     let schema_perms;
 
-    if (describe_schema_object.hdb_user && !describe_schema_object.hdb_user.role.super_user) {
+    if (describe_schema_object.hdb_user && !describe_schema_object.hdb_user.role.permission.super_user) {
         schema_perms = describe_schema_object.hdb_user.role.permission[describe_schema_object.schema];
     }
 
@@ -254,7 +259,7 @@ async function describeSchema(describe_schema_object) {
 
         let schema = await p_search_search_by_hash(schema_search_obj);
         if (schema && schema.length < 1) {
-            throw new Error('schema not found');
+            throw new Error(`Schema '${describe_schema_object.schema}' not found`);
         } else {
             return {};
         }
@@ -268,13 +273,13 @@ async function describeSchema(describe_schema_object) {
                         table_perms = schema_perms.tables[table.name];
                     }
                     if (hdb_utils.isEmpty(table_perms) || table_perms.describe) {
-                        let data = await descTable({"schema": describe_schema_object.schema, "table": table.name}, table_perms.attribute_restrictions);
+                        let data = await descTable({"schema": describe_schema_object.schema, "table": table.name}, table_perms ? table_perms.attribute_restrictions : null);
                         if (data) {
                             results.push(data);
                         }
                     }
                 } catch (err) {
-                    logger.error('Error describing table.');
+                    logger.error(`Error describing schema table '${describe_schema_object.schema}.${table}'`);
                     logger.error(err);
                 }
             })

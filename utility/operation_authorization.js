@@ -306,16 +306,17 @@ function verifyPerms(request_json, operation) {
     const full_role_perms = permsTranslator.getRolePermissions(request_json.hdb_user.role);
     request_json.hdb_user.role.permission = full_role_perms;
 
-    // if (!user_perms.super_user && op === DESCRIBE_SCHEMA_KEY || op === DESCRIBE_TABLE_KEY) {
-    if (op === DESCRIBE_SCHEMA_KEY || op === DESCRIBE_TABLE_KEY) {
-        if (!full_role_perms[operation_schema][DESCRIBE_PERM]) {
-            return hdb_errors.COMMON_ERROR_MSGS.SCHEMA_PERM_ERROR(operation_schema);
+    if (!full_role_perms.super_user) {
+        if (op === DESCRIBE_SCHEMA_KEY || op === DESCRIBE_TABLE_KEY) {
+            if (!full_role_perms[operation_schema][DESCRIBE_PERM]) {
+                return hdb_errors.COMMON_ERROR_MSGS.SCHEMA_PERM_ERROR(operation_schema);
+            }
         }
-    }
 
-    if (op === DESCRIBE_TABLE_KEY) {
-        if (!full_role_perms[operation_schema].tables[table][DESCRIBE_PERM]) {
-            return hdb_errors.COMMON_ERROR_MSGS.SCHEMA_TABLE_PERM_ERROR(operation_schema, table);
+        if (op === DESCRIBE_TABLE_KEY) {
+            if (!full_role_perms[operation_schema].tables[table][DESCRIBE_PERM]) {
+                return hdb_errors.COMMON_ERROR_MSGS.SCHEMA_TABLE_PERM_ERROR(operation_schema, table);
+            }
         }
     }
 
