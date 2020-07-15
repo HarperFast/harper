@@ -6,6 +6,7 @@ install_script_values=""
 install_arguments=("--TC_AGREEMENT yes" "--HDB_ROOT /opt/harperdb/hdb" "--HTTP_PORT 9925" "--HTTPS_PORT 31283" "--HDB_ADMIN_USERNAME HDB_ADMIN" "--HDB_ADMIN_PASSWORD password" "--CLUSTERING_USERNAME cluster_user" "--CLUSTERING_PASSWORD password" "--CLUSTERING_PORT 1111" "--NODE_NAME docker_node")
 arg_vals=()
 args_helper=0
+
 ####### Function Definitions begin************
 
 function arguments_help()
@@ -23,7 +24,7 @@ function arguments_help()
       echo "    --INIT_CLUSTER_PASSWORD(default password; only if Clustering is Enabled)"
       echo "    --INIT_CLUSTER_PORT  (default 1111; only if Clustering is Enabled)"
       echo "    --INIT_NODE_NAME  (default docker_node; only if Clustering is Enabled)"
-      echo "************ **********  ***************"
+      echo "************************************"
       echo "Example docker run command with all command line optional arguments:"
       echo -e "\e[35mdocker run -v /tmp/hdb/:/opt/harperdb/hdb/ harperdb/hdb --INIT_HDB_USERNAME HDB_ADMIN --INIT_HDB_PASSWORD password --INIT_ENABLE_CLUSTERING --INIT_CLUSTER_USERNAME cluster_user --INIT_CLUSTER_PASSWORD password --INIT_CLUSTER_PORT 1234 --INIT_NODE_NAME docker_node\e[0m"
       echo "Environment Variable Example"
@@ -100,7 +101,6 @@ do
 done
 
 the_command_arguments=("${install_arguments[@]}")
-
 }
 
 function clean_install()
