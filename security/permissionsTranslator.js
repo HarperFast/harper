@@ -13,7 +13,7 @@ const role_perms_map = Object.create(null);
 const perms_template_obj = (perms_key) => ({key: perms_key, perms: {}});
 
 const schema_perms_template = () => ({
-    [terms.PERMS_CRUD_ENUM.READ]: false,
+    describe: false,
     tables: {}
 });
 
@@ -34,6 +34,7 @@ const table_perms_template = () => ({
 
 const attr_perms_template = (attr_name, perms = permissions_template()) => ({
     attribute_name: attr_name,
+    describe: getDescribePerm(perms),
     [READ]: perms[READ],
     [INSERT]: perms[INSERT],
     [UPDATE]: perms[UPDATE],
@@ -120,10 +121,10 @@ function translateRolePermissions(role, schema) {
                     const updated_table_perms = getTableAttrPerms(table_perms, table_schema);
                     //we need to set a read value on each schema for easy evaluation during describe ops - if any
                     // CRUD op is set to true for a table in a schema, we set the schema READ perm to true
-                    if (!final_permissions[s][terms.PERMS_CRUD_ENUM.READ]) {
+                    if (!final_permissions[s].describe) {
                         crud_perm_keys.forEach(key => {
                             if (updated_table_perms[key]) {
-                                final_permissions[s][terms.PERMS_CRUD_ENUM.READ] = true;
+                                final_permissions[s].describe = true;
                             }
                         });
                     }
@@ -176,7 +177,8 @@ function getTableAttrPerms(table_perms, table_schema) {
         table_schema.attributes.forEach(({ attribute }) => {
             if (attr_r_map[attribute]) {
                 //if there is a permission set passed for current attribute, set it to the final perms object
-                const attr_perm_obj = attr_r_map[attribute];
+                let attr_perm_obj = attr_r_map[attribute];
+                attr_perm_obj.describe = getDescribePerm(attr_perm_obj);
                 final_table_perms.attribute_restrictions.push(attr_perm_obj);
                 //if hash attr perms are not provided, check current CRUD perms values and make sure hash_attr is provided
                 // perms for any CRUD values that are set to true for other attributes
@@ -196,10 +198,23 @@ function getTableAttrPerms(table_perms, table_schema) {
             final_table_perms.attribute_restrictions.push(final_hash_attr_perms);
         }
 
+        final_table_perms.describe = getDescribePerm(final_table_perms);
         return final_table_perms;
     } else{
+        table_perms.describe = getDescribePerm(table_perms);
         return table_perms;
     }
+}
+
+/**
+ * This method takes a perm object and returns a boolean value for whether or not the schema item should be included in
+ * a describe operation for the role being evaluated
+ *
+ * @param perm_obj - the perm object to evaluate CRUD permissions for
+ * @returns {boolean} - returns TRUE if there is at least one CRUD perm set to TRUE
+ */
+function getDescribePerm(perm_obj) {
+    return crud_perm_keys.filter(perm => perm_obj[perm]).length > 0;
 }
 
 /**
@@ -213,6 +228,7 @@ function checkForHashPerms(attr_perm_obj, hash_perms) {
     crud_perm_keys.forEach(perm => {
        if (attr_perm_obj[perm] && !hash_perms[perm]) {
            hash_perms[perm] = true;
+           hash_perms.describe = true;
        }
     });
 }

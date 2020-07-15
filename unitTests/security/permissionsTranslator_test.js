@@ -113,7 +113,7 @@ describe('Test permissionsTranslator module', function () {
             test_role.permission[TEST_SCHEMA].tables.dog.attribute_restrictions.push(test_attr_perm);
 
             const test_result = permissionsTranslator_rw.getRolePermissions(test_role);
-            expect(test_result[TEST_SCHEMA][TEST_PERMS_ENUM.READ]).to.be.true;
+            expect(test_result[TEST_SCHEMA].describe).to.be.true;
             expect(test_result.super_user).to.deep.equal(test_role.permission.super_user);
             expect(test_result.system).to.deep.equal(test_role.permission.system);
             Object.keys(test_result[TEST_SCHEMA].tables).forEach(table => {
@@ -131,7 +131,7 @@ describe('Test permissionsTranslator module', function () {
             test_role.permission[TEST_SCHEMA].tables.dog.attribute_restrictions.push(test_attr_perm);
 
             const test_result = permissionsTranslator_rw.getRolePermissions(test_role);
-            expect(test_result[TEST_SCHEMA][TEST_PERMS_ENUM.READ]).to.be.true;
+            expect(test_result[TEST_SCHEMA].describe).to.be.true;
             expect(test_result.super_user).to.deep.equal(test_role.permission.super_user);
             expect(test_result.system).to.deep.equal(test_role.permission.system);
             Object.keys(test_result[TEST_SCHEMA].tables).forEach(table => {
@@ -149,7 +149,7 @@ describe('Test permissionsTranslator module', function () {
             test_role.permission[TEST_SCHEMA].tables.dog.attribute_restrictions.push(test_attr_perm);
 
             const test_result = permissionsTranslator_rw.getRolePermissions(test_role);
-            expect(test_result[TEST_SCHEMA][TEST_PERMS_ENUM.READ]).to.be.true;
+            expect(test_result[TEST_SCHEMA].describe).to.be.true;
             expect(test_result.super_user).to.deep.equal(test_role.permission.super_user);
             expect(test_result.system).to.deep.equal(test_role.permission.system);
             Object.keys(test_result[TEST_SCHEMA].tables).forEach(table => {
@@ -168,7 +168,7 @@ describe('Test permissionsTranslator module', function () {
             test_role.permission[TEST_SCHEMA].tables.dog.attribute_restrictions.push(test_attr_perm);
 
             const test_result = permissionsTranslator_rw.getRolePermissions(test_role);
-            expect(test_result[TEST_SCHEMA][TEST_PERMS_ENUM.READ]).to.be.true;
+            expect(test_result[TEST_SCHEMA].describe).to.be.true;
             expect(test_result.super_user).to.deep.equal(test_role.permission.super_user);
             expect(test_result.system).to.deep.equal(test_role.permission.system);
             Object.keys(test_result[TEST_SCHEMA].tables).forEach(table => {
@@ -186,7 +186,7 @@ describe('Test permissionsTranslator module', function () {
             test_role.permission[TEST_SCHEMA].tables.dog.attribute_restrictions.push(test_attr_perm);
 
             const test_result = permissionsTranslator_rw.getRolePermissions(test_role);
-            expect(test_result[TEST_SCHEMA][TEST_PERMS_ENUM.READ]).to.be.true;
+            expect(test_result[TEST_SCHEMA].describe).to.be.true;
             expect(test_result.super_user).to.deep.equal(test_role.permission.super_user);
             expect(test_result.system).to.deep.equal(test_role.permission.system);
             Object.keys(test_result[TEST_SCHEMA].tables).forEach(table => {
@@ -204,7 +204,7 @@ describe('Test permissionsTranslator module', function () {
             test_role.permission[TEST_SCHEMA].tables.dog.attribute_restrictions.push(test_attr_perm);
 
             const test_result = permissionsTranslator_rw.getRolePermissions(test_role);
-            expect(test_result[TEST_SCHEMA][TEST_PERMS_ENUM.READ]).to.be.true;
+            expect(test_result[TEST_SCHEMA].describe).to.be.true;
             expect(test_result.super_user).to.deep.equal(test_role.permission.super_user);
             expect(test_result.system).to.deep.equal(test_role.permission.system);
             Object.keys(test_result[TEST_SCHEMA].tables).forEach(table => {
@@ -227,7 +227,7 @@ describe('Test permissionsTranslator module', function () {
             test_role.permission[TEST_SCHEMA].tables.dog.attribute_restrictions.push(test_attr_perm3);
 
             const test_result = permissionsTranslator_rw.getRolePermissions(test_role);
-            expect(test_result[TEST_SCHEMA][TEST_PERMS_ENUM.READ]).to.be.true;
+            expect(test_result[TEST_SCHEMA].describe).to.be.true;
             expect(test_result.super_user).to.deep.equal(test_role.permission.super_user);
             expect(test_result.system).to.deep.equal(test_role.permission.system);
             Object.keys(test_result[TEST_SCHEMA].tables).forEach(table => {
@@ -246,7 +246,7 @@ describe('Test permissionsTranslator module', function () {
             test_role.permission[TEST_SCHEMA].tables.dog.attribute_restrictions.push(test_attr_perm);
 
             const test_result = permissionsTranslator_rw.getRolePermissions(test_role);
-            expect(test_result[TEST_SCHEMA][TEST_PERMS_ENUM.READ]).to.be.false
+            expect(test_result[TEST_SCHEMA].describe).to.be.false
             expect(test_result.super_user).to.deep.equal(test_role.permission.super_user);
             expect(test_result.system).to.deep.equal(test_role.permission.system);
             Object.keys(test_result[TEST_SCHEMA].tables).forEach(table => {
@@ -260,7 +260,7 @@ describe('Test permissionsTranslator module', function () {
         it('All true table perms passed with no attribute_permissions - expect same perms returned',() => {
             const test_role = getUpdatedRoleObj();
             const test_result = permissionsTranslator_rw.getRolePermissions(test_role);
-            expect(test_result[TEST_SCHEMA][TEST_PERMS_ENUM.READ]).to.be.true;
+            expect(test_result[TEST_SCHEMA].describe).to.be.true;
             expect(test_result.tables).to.deep.equal(test_role.permission.tables);
             expect(test_result.super_user).to.deep.equal(test_role.permission.super_user);
             expect(test_result.system).to.deep.equal(test_role.permission.system);
@@ -288,14 +288,14 @@ describe('Test permissionsTranslator module', function () {
         it('Pass same role twice and expect cached permission returned the 2nd time ',() => {
             const test_role = getUpdatedRoleObj();
             const test_result = permissionsTranslator_rw.getRolePermissions(test_role);
-            expect(test_result[TEST_SCHEMA][TEST_PERMS_ENUM.READ]).to.be.true;
+            expect(test_result[TEST_SCHEMA].describe).to.be.true;
             expect(test_result.tables).to.deep.equal(test_role.permission.tables);
             expect(test_result.super_user).to.deep.equal(test_role.permission.super_user);
             expect(test_result.system).to.deep.equal(test_role.permission.system);
             expect(translateRolePerms_spy.calledOnce).to.be.true;
 
             const test_result2 = permissionsTranslator_rw.getRolePermissions(test_role);
-            expect(test_result2[TEST_SCHEMA][TEST_PERMS_ENUM.READ]).to.be.true;
+            expect(test_result2[TEST_SCHEMA].describe).to.be.true;
             expect(test_result2.tables).to.deep.equal(test_role.permission.tables);
             expect(test_result2.super_user).to.deep.equal(test_role.permission.super_user);
             expect(test_result2.system).to.deep.equal(test_role.permission.system);
@@ -305,7 +305,7 @@ describe('Test permissionsTranslator module', function () {
         it("Pass roles w/ diff '__updatedtime__' and expect new, non-cached permissions returned both times ",() => {
             const test_role = clonedeep(TEST_NON_SU_ROLE);
             const test_result = permissionsTranslator_rw.getRolePermissions(test_role);
-            expect(test_result[TEST_SCHEMA][TEST_PERMS_ENUM.READ]).to.be.true;
+            expect(test_result[TEST_SCHEMA].describe).to.be.true;
             expect(test_result.tables).to.deep.equal(test_role.permission.tables);
             expect(test_result.super_user).to.deep.equal(test_role.permission.super_user);
             expect(test_result.system).to.deep.equal(test_role.permission.system);
@@ -313,7 +313,7 @@ describe('Test permissionsTranslator module', function () {
 
             const test_role2 = getUpdatedRoleObj();
             const test_result2 = permissionsTranslator_rw.getRolePermissions(test_role2);
-            expect(test_result2[TEST_SCHEMA][TEST_PERMS_ENUM.READ]).to.be.true;
+            expect(test_result2[TEST_SCHEMA].describe).to.be.true;
             expect(test_result2.tables).to.deep.equal(test_role2.permission.tables);
             expect(test_result2.super_user).to.deep.equal(test_role2.permission.super_user);
             expect(test_result2.system).to.deep.equal(test_role2.permission.system);
@@ -324,7 +324,7 @@ describe('Test permissionsTranslator module', function () {
         it("Pass same role w/ diff schema and expect different, non-cached permissions returned both times ",() => {
             const test_role = getUpdatedRoleObj();
             const test_result = permissionsTranslator_rw.getRolePermissions(test_role);
-            expect(test_result[TEST_SCHEMA][TEST_PERMS_ENUM.READ]).to.be.true;
+            expect(test_result[TEST_SCHEMA].describe).to.be.true;
             expect(test_result.tables).to.deep.equal(test_role.permission.tables);
             expect(test_result.super_user).to.deep.equal(test_role.permission.super_user);
             expect(test_result.system).to.deep.equal(test_role.permission.system);
@@ -334,7 +334,7 @@ describe('Test permissionsTranslator module', function () {
             global.hdb_schema[TEST_SCHEMA].owners = orig_global_schema[TEST_SCHEMA].dog;
 
             const test_result2 = permissionsTranslator_rw.getRolePermissions(test_role);
-            expect(test_result2[TEST_SCHEMA][TEST_PERMS_ENUM.READ]).to.be.true;
+            expect(test_result2[TEST_SCHEMA].describe).to.be.true;
             expect(test_result2.tables).to.deep.equal(test_role.permission.tables);
             expect(test_result2.super_user).to.deep.equal(test_role.permission.super_user);
             expect(test_result2.system).to.deep.equal(test_role.permission.system);

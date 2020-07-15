@@ -35,11 +35,15 @@ const DELETE_PERM = 'delete';
 const INSERT_PERM = 'insert';
 const READ_PERM = 'read';
 const UPDATE_PERM = 'update';
+const DESCRIBE_PERM = 'describe';
+
+const DESCRIBE_SCHEMA_KEY = schema_describe.describeSchema.name;
+const DESCRIBE_TABLE_KEY = schema_describe.describeTable.name;
 
 //SQL operations supported
-//The delete (or any other operation) comes through the parser as an operation separate from the delete_.delete opertaion.
-// Since we store the required permissions for each operation, we need to store required permissions for the SQL delete o
-// peration separate from the delete_.delete operation.
+//The delete (or any other operation) comes through the parser as an operation separate from the delete_.delete operation.
+// Since we store the required permissions for each operation, we need to store required permissions for the SQL delete
+// operation separate from the delete_.delete operation.
 const HANDLE_GET_JOB = 'handleGetJob';
 const SQL_CREATE = "create";
 const SQL_DROP = 'drop';
@@ -212,7 +216,8 @@ function hasPermissions(user_object, op, schema_table_map ) {
     }
     // set to true if this operation affects a system table.  Only su can read from system tables, but can't update/delete.
     let is_su_system_operation = schema_table_map.has('system');
-    if (user_object.role.permission.super_user && !is_su_system_operation) {
+    const user_perms = user_object.role.permission;
+    if (user_perms.super_user && !is_su_system_operation) {
          //admins can do (almost) anything through the hole in sheet!
         return unauthorized_table;
     }
@@ -222,11 +227,12 @@ function hasPermissions(user_object, op, schema_table_map ) {
         unauthorized_table.push({"operation":op, "requires_su": true});
         return unauthorized_table;
     }
+
     for (let schema_table of schema_table_map.keys()) {
         for (let table of schema_table_map.get(schema_table)) {
             let table_restrictions = [];
             try {
-                table_restrictions = user_object.role.permission[schema_table];
+                table_restrictions = user_perms[schema_table];
             } catch(e) {
                 // no-op, no restrictions is OK;
             }
@@ -236,7 +242,7 @@ function hasPermissions(user_object, op, schema_table_map ) {
                     //Here we check all required permissions for the operation defined in the map with the values of the permissions in the role.
                     for (let i = 0; i<required_permissions.get(op).perms.length; i++) {
                         let perms = required_permissions.get(op).perms[i];
-                        let user_permission = user_object.role.permission[schema_table].tables[table][perms];
+                        let user_permission = user_perms[schema_table].tables[table][perms];
                         if (user_permission === undefined || user_permission === null || user_permission === false) {
                             harper_logger.info(`Required permission not found for operation ${op} in role ${user_object.role.id}`);
                             let failed_table = new terms.PermissionResponseObject();
@@ -299,6 +305,20 @@ function verifyPerms(request_json, operation) {
 
     const full_role_perms = permsTranslator.getRolePermissions(request_json.hdb_user.role);
     request_json.hdb_user.role.permission = full_role_perms;
+
+    if (!full_role_perms.super_user) {
+        if (op === DESCRIBE_SCHEMA_KEY || op === DESCRIBE_TABLE_KEY) {
+            if (!full_role_perms[operation_schema][DESCRIBE_PERM]) {
+                return hdb_errors.COMMON_ERROR_MSGS.SCHEMA_PERM_ERROR(operation_schema);
+            }
+        }
+
+        if (op === DESCRIBE_TABLE_KEY) {
+            if (!full_role_perms[operation_schema].tables[table][DESCRIBE_PERM]) {
+                return hdb_errors.COMMON_ERROR_MSGS.SCHEMA_TABLE_PERM_ERROR(operation_schema, table);
+            }
+        }
+    }
 
     let failed_table_permissions = hasPermissions(request_json.hdb_user, op, schema_table_map);
     if (failed_table_permissions && failed_table_permissions.length > 0) {

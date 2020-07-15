@@ -24606,7 +24606,7 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n   \"operation\":\"alter_role\",\n   \"role\":\"developer_test_5\",\n   \"id\": \"{{role_id}}\",\n   \"permission\":{\n      \"super_user\": false,\n      \"northnwd\":{\n\n         \"tables\": {\n         \"customers\": {\n               \"read\":true,\n               \"insert\":true,\n               \"update\":true,\n               \"delete\":true,\n               \"attribute_restrictions\":[]\n            },\n            \"suppliers\": {\n               \"read\":false,\n               \"insert\":false,\n               \"update\":false,\n               \"delete\":false,\n               \"attribute_restrictions\":[]\n            },\n            \"region\": {\n               \"read\":true,\n               \"insert\":false,\n               \"update\":false,\n               \"delete\":false,\n               \"attribute_restrictions\":[{\n                     \"attribute_name\": \"regiondescription\",\n                     \"read\":true,\n                     \"insert\":false,\n                     \"update\":false,\n                     \"delete\":false\n                  }]\n            },\n            \"territories\": {\n               \"read\":true,\n               \"insert\":true,\n               \"update\":false,\n               \"delete\":false,\n               \"attribute_restrictions\":[\n               {\n                     \"attribute_name\": \"territorydescription\",\n                     \"read\":true,\n                     \"insert\":true,\n                     \"update\":false,\n                     \"delete\":false\n                  }\n               ]\n            },\n            \"categories\": {\n               \"read\":true,\n               \"insert\":true,\n               \"update\":true,\n               \"delete\":false,\n               \"attribute_restrictions\":[\n               {\n                     \"attribute_name\": \"description\",\n                     \"read\":true,\n                     \"insert\":true,\n                     \"update\":true,\n                     \"delete\":false\n                  }\n               ]\n            },\n            \"shippers\": {\n               \"read\":true,\n               \"insert\":true,\n               \"update\":true,\n               \"delete\":true,\n               \"attribute_restrictions\":[\n               {\n                     \"attribute_name\": \"companyname\",\n                     \"read\":false,\n                     \"insert\":false,\n                     \"update\":false,\n                     \"delete\":false\n                  }\n               ]\n               }\n            }\n         },\n         \"dev\": {\n            \"tables\": {\n               \"dog\": {\n                  \"read\": true,\n                  \"insert\": true,\n                  \"update\": true,\n                  \"delete\": true,\n                  \"attribute_restrictions\": []\n               }\n            }\n         },\n         \"other\": {\n            \"tables\": {\n               \"owner\": {\n                  \"read\": true,\n                  \"insert\": false,\n                  \"update\": true,\n                  \"delete\": false,\n                  \"attribute_restrictions\": [\n                     {\n                        \"attribute_name\": \"name\",\n                        \"read\":true,\n                        \"insert\":false,\n                        \"update\":false,\n                        \"delete\":false\n                     }\n                  ]\n               }\n            }\n         },\n         \"another\": {\n            \"tables\": {\n               \"breed\": {\n                  \"read\": true,\n                  \"insert\": true,\n                  \"update\": true,\n                  \"delete\": true,\n                  \"attribute_restrictions\": [\n                     {\n                        \"attribute_name\": \"name\",\n                        \"read\":true,\n                        \"insert\":false,\n                        \"update\":false,\n                        \"delete\":false\n                     }\n                  ]\n               }\n            }\n         }\n      }\n\n}",
+							"raw": "{\n   \"operation\":\"alter_role\",\n   \"role\":\"developer_test_5\",\n   \"id\": \"{{role_id}}\",\n   \"permission\":{\n      \"super_user\": false,\n      \"northnwd\":{\n         \"tables\": {\n            \"customers\": {\n               \"read\":true,\n               \"insert\":true,\n               \"update\":true,\n               \"delete\":true,\n               \"attribute_restrictions\":[]\n            },\n            \"suppliers\": {\n               \"read\":false,\n               \"insert\":false,\n               \"update\":false,\n               \"delete\":false,\n               \"attribute_restrictions\":[]\n            },\n            \"region\": {\n               \"read\":true,\n               \"insert\":false,\n               \"update\":false,\n               \"delete\":false,\n               \"attribute_restrictions\":[\n                  {\n                     \"attribute_name\": \"regiondescription\",\n                     \"read\":true,\n                     \"insert\":false,\n                     \"update\":false,\n                     \"delete\":false\n                  }\n               ]\n            },\n            \"territories\": {\n               \"read\":true,\n               \"insert\":true,\n               \"update\":false,\n               \"delete\":false,\n               \"attribute_restrictions\":[\n                  {\n                     \"attribute_name\": \"territorydescription\",\n                     \"read\":true,\n                     \"insert\":true,\n                     \"update\":false,\n                     \"delete\":false\n                  }\n               ]\n            },\n            \"categories\": {\n               \"read\":true,\n               \"insert\":true,\n               \"update\":true,\n               \"delete\":false,\n               \"attribute_restrictions\":[\n                  {\n                     \"attribute_name\": \"description\",\n                     \"read\":true,\n                     \"insert\":true,\n                     \"update\":true,\n                     \"delete\":false\n                  }\n               ]\n            },\n            \"shippers\": {\n               \"read\":true,\n               \"insert\":true,\n               \"update\":true,\n               \"delete\":true,\n               \"attribute_restrictions\":[\n                  {\n                     \"attribute_name\": \"companyname\",\n                     \"read\":false,\n                     \"insert\":false,\n                     \"update\":false,\n                     \"delete\":false\n                  }\n               ]\n            }\n         }\n      },\n      \"dev\": {\n         \"tables\": {\n            \"dog\": {\n               \"read\": true,\n               \"insert\": true,\n               \"update\": true,\n               \"delete\": true,\n               \"attribute_restrictions\": []\n            }\n         }\n      },\n      \"other\": {\n         \"tables\": {\n            \"owner\": {\n               \"read\": true,\n               \"insert\": false,\n               \"update\": true,\n               \"delete\": false,\n               \"attribute_restrictions\": [\n                  {\n                     \"attribute_name\": \"name\",\n                     \"read\":true,\n                     \"insert\":false,\n                     \"update\":false,\n                     \"delete\":false\n                  }\n               ]\n            }\n         }\n      },\n      \"another\": {\n         \"tables\": {\n            \"breed\": {\n               \"read\": true,\n               \"insert\": true,\n               \"update\": true,\n               \"delete\": true,\n               \"attribute_restrictions\": [\n                  {\n                     \"attribute_name\": \"name\",\n                     \"read\":true,\n                     \"insert\":false,\n                     \"update\":false,\n                     \"delete\":false\n                  }\n               ]\n            }\n         }\n      }\n   }\n}",
 							"options": {
 								"raw": {}
 							}
@@ -31959,8 +31959,2927 @@
 			"protocolProfileBehavior": {}
 		},
 		{
-			"name": "9. Alter Role Tests",
+			"name": "9. Other Role Tests",
 			"item": [
+				{
+					"name": "Describe ops role testing",
+					"item": [
+						{
+							"name": "super_user tests",
+							"item": [
+								{
+									"name": "Describe schema - SU on system schema",
+									"event": [
+										{
+											"listen": "test",
+											"script": {
+												"id": "6a433cae-778a-4af3-b1e2-bf8a027fc52b",
+												"exec": [
+													"pm.test(\"Status code is 500\", function () {",
+													"    pm.response.to.have.status(500);",
+													"});",
+													"",
+													"var jsonResponse = pm.response.json();",
+													"",
+													"pm.test(\"Should return schema not found error response\", function() {",
+													"    pm.expect(jsonResponse.error).to.eql(\"Schema 'system' not found\");",
+													"})"
+												],
+												"type": "text/javascript"
+											}
+										}
+									],
+									"request": {
+										"auth": {
+											"type": "basic",
+											"basic": [
+												{
+													"key": "username",
+													"value": "{{username}}",
+													"type": "string"
+												},
+												{
+													"key": "password",
+													"value": "{{password}}",
+													"type": "string"
+												}
+											]
+										},
+										"method": "POST",
+										"header": [
+											{
+												"key": "Content-Type",
+												"value": "application/json"
+											}
+										],
+										"body": {
+											"mode": "raw",
+											"raw": "{\n\t\"operation\":\"describe_schema\",\n\t\"schema\": \"system\"\n}"
+										},
+										"url": {
+											"raw": "{{host}}:{{port}}",
+											"host": [
+												"{{host}}"
+											],
+											"port": "{{port}}"
+										}
+									},
+									"response": [
+										{
+											"name": "Decribe All",
+											"originalRequest": {
+												"method": "POST",
+												"header": [
+													{
+														"key": "Content-Type",
+														"value": "application/json"
+													},
+													{
+														"key": "Authorization",
+														"type": "text",
+														"name": "Authorization",
+														"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+													}
+												],
+												"body": {
+													"mode": "raw",
+													"raw": "{\n\"operation\":\"describe_all\"\n\n}"
+												},
+												"url": {
+													"raw": "{{HDB_ENDPOINT}}",
+													"host": [
+														"{{HDB_ENDPOINT}}"
+													]
+												}
+											},
+											"status": "OK",
+											"code": 200,
+											"_postman_previewlanguage": "json",
+											"header": [
+												{
+													"key": "connection",
+													"value": "keep-alive",
+													"name": "connection",
+													"description": ""
+												},
+												{
+													"key": "content-length",
+													"value": "568",
+													"name": "content-length",
+													"description": ""
+												},
+												{
+													"key": "content-type",
+													"value": "application/json; charset=utf-8",
+													"name": "content-type",
+													"description": ""
+												},
+												{
+													"key": "date",
+													"value": "Fri, 01 Sep 2017 17:07:00 GMT",
+													"name": "date",
+													"description": ""
+												},
+												{
+													"key": "etag",
+													"value": "W/\"238-gfg0d+lv1qmocnKKFjlrSBm00dM\"",
+													"name": "etag",
+													"description": ""
+												},
+												{
+													"key": "x-powered-by",
+													"value": "HarperDB",
+													"name": "x-powered-by",
+													"description": ""
+												}
+											],
+											"cookie": [],
+											"body": ""
+										}
+									]
+								},
+								{
+									"name": "Describe Table - SU on system table",
+									"event": [
+										{
+											"listen": "test",
+											"script": {
+												"id": "412e09b9-1196-4273-b288-b1e0aeb7f352",
+												"exec": [
+													"pm.test(\"Status code is 200\", function () {",
+													"    pm.response.to.have.status(200);",
+													"});",
+													"",
+													"var jsonResponse = pm.response.json();",
+													"var expected_attributes = [\"username\", \"password\", \"role\", \"active\", \"hash\", \"__createdtime__\", \"__updatedtime__\"];",
+													"",
+													"pm.test(\"Should return metadata for table\", function() {",
+													"    pm.expect(Object.keys(jsonResponse).length).to.eql(5);",
+													"    pm.expect(jsonResponse.schema).to.eql('system');",
+													"    pm.expect(jsonResponse.name).to.eql('hdb_user');",
+													"    jsonResponse.attributes.forEach(attr => {",
+													"        pm.expect(expected_attributes.includes(attr.attribute)).to.eql(true);",
+													"    })",
+													"})"
+												],
+												"type": "text/javascript"
+											}
+										}
+									],
+									"request": {
+										"auth": {
+											"type": "basic",
+											"basic": [
+												{
+													"key": "username",
+													"value": "{{username}}",
+													"type": "string"
+												},
+												{
+													"key": "password",
+													"value": "{{password}}",
+													"type": "string"
+												}
+											]
+										},
+										"method": "POST",
+										"header": [
+											{
+												"key": "Content-Type",
+												"value": "application/json"
+											}
+										],
+										"body": {
+											"mode": "raw",
+											"raw": "{\n\t\"operation\":\"describe_table\",\n\t\"schema\": \"system\",\n\t\"table\": \"hdb_user\"\n}"
+										},
+										"url": {
+											"raw": "{{host}}:{{port}}",
+											"host": [
+												"{{host}}"
+											],
+											"port": "{{port}}"
+										}
+									},
+									"response": [
+										{
+											"name": "Decribe All",
+											"originalRequest": {
+												"method": "POST",
+												"header": [
+													{
+														"key": "Content-Type",
+														"value": "application/json"
+													},
+													{
+														"key": "Authorization",
+														"type": "text",
+														"name": "Authorization",
+														"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+													}
+												],
+												"body": {
+													"mode": "raw",
+													"raw": "{\n\"operation\":\"describe_all\"\n\n}"
+												},
+												"url": {
+													"raw": "{{HDB_ENDPOINT}}",
+													"host": [
+														"{{HDB_ENDPOINT}}"
+													]
+												}
+											},
+											"status": "OK",
+											"code": 200,
+											"_postman_previewlanguage": "json",
+											"header": [
+												{
+													"key": "connection",
+													"value": "keep-alive",
+													"name": "connection",
+													"description": ""
+												},
+												{
+													"key": "content-length",
+													"value": "568",
+													"name": "content-length",
+													"description": ""
+												},
+												{
+													"key": "content-type",
+													"value": "application/json; charset=utf-8",
+													"name": "content-type",
+													"description": ""
+												},
+												{
+													"key": "date",
+													"value": "Fri, 01 Sep 2017 17:07:00 GMT",
+													"name": "date",
+													"description": ""
+												},
+												{
+													"key": "etag",
+													"value": "W/\"238-gfg0d+lv1qmocnKKFjlrSBm00dM\"",
+													"name": "etag",
+													"description": ""
+												},
+												{
+													"key": "x-powered-by",
+													"value": "HarperDB",
+													"name": "x-powered-by",
+													"description": ""
+												}
+											],
+											"cookie": [],
+											"body": ""
+										}
+									]
+								}
+							],
+							"protocolProfileBehavior": {},
+							"_postman_isSubFolder": true
+						},
+						{
+							"name": "[NOMINAL] Non-SU test_user",
+							"item": [
+								{
+									"name": "Add non-SU role",
+									"event": [
+										{
+											"listen": "test",
+											"script": {
+												"id": "c6ce1696-73fd-4ad1-8977-d3d50b0480ee",
+												"exec": [
+													"pm.test(\"Status code is 200\", function () {",
+													"    pm.response.to.have.status(200);",
+													"});",
+													"",
+													"responseData = JSON.parse(responseBody);",
+													"postman.setEnvironmentVariable(\"role_id\", responseData.id)"
+												],
+												"type": "text/javascript"
+											}
+										}
+									],
+									"request": {
+										"auth": {
+											"type": "basic",
+											"basic": [
+												{
+													"key": "username",
+													"value": "{{username}}",
+													"type": "string"
+												},
+												{
+													"key": "password",
+													"value": "{{password}}",
+													"type": "string"
+												},
+												{
+													"key": "showPassword",
+													"value": false,
+													"type": "boolean"
+												}
+											]
+										},
+										"method": "POST",
+										"header": [
+											{
+												"key": "Content-Type",
+												"value": "application/json"
+											},
+											{
+												"key": "Authorization",
+												"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+											}
+										],
+										"body": {
+											"mode": "raw",
+											"raw": "{\n   \"operation\":\"add_role\",\n   \"role\":\"test_dev_role\",\n   \"permission\":{\n   \"super_user\": false,\n   \"northnwd\":{\n         \"tables\": {\n            \"region\": {\n               \"read\":true,\n               \"insert\":true,\n               \"update\":false,\n               \"delete\":false,\n               \"attribute_restrictions\":[{\n                     \"attribute_name\": \"regiondescription\",\n                     \"read\":true,\n                     \"insert\":true,\n                     \"update\":false,\n                     \"delete\":false\n                  }]\n            },\n            \"territories\": {\n               \"read\":true,\n               \"insert\":false,\n               \"update\":false,\n               \"delete\":false,\n               \"attribute_restrictions\":[]\n            },\n            \"categories\": {\n               \"read\":false,\n               \"insert\":true,\n               \"update\":true,\n               \"delete\":false,\n               \"attribute_restrictions\":[\n                  {\n                     \"attribute_name\": \"description\",\n                     \"read\":false,\n                     \"insert\":false,\n                     \"update\":false,\n                     \"delete\":false\n                  }\n               ]\n            },\n            \"products\": {\n               \"read\":false,\n               \"insert\":false,\n               \"update\":false,\n               \"delete\":false,\n               \"attribute_restrictions\":[\n                  {\n                     \"attribute_name\": \"discontinued\",\n                     \"read\":false,\n                     \"insert\":false,\n                     \"update\":false,\n                     \"delete\":false\n                  }\n               ]\n            }\n         }\n      },\n       \"other\": {\n         \"tables\": {\n            \"owner\": {\n               \"read\": true,\n               \"insert\": false,\n               \"update\": true,\n               \"delete\": false,\n               \"attribute_restrictions\": [\n                  {\n                     \"attribute_name\": \"name\",\n                     \"read\":false,\n                     \"insert\":false,\n                     \"update\":true,\n                     \"delete\":false\n                  }\n               ]\n            }\n         }\n      },\n      \"another\": {\n         \"tables\": {\n            \"breed\": {\n               \"read\": true,\n               \"insert\": true,\n               \"update\": true,\n               \"delete\": true,\n               \"attribute_restrictions\": [\n                  {\n                     \"attribute_name\": \"name\",\n                     \"read\":false,\n                     \"insert\":false,\n                     \"update\":false,\n                     \"delete\":false\n                  }\n               ]\n            }\n         }\n      }\n   }\n}",
+											"options": {
+												"raw": {}
+											}
+										},
+										"url": {
+											"raw": "{{host}}:{{port}}",
+											"host": [
+												"{{host}}"
+											],
+											"port": "{{port}}"
+										}
+									},
+									"response": []
+								},
+								{
+									"name": "Add User with non-SU role",
+									"event": [
+										{
+											"listen": "test",
+											"script": {
+												"id": "fced1d33-5505-40d8-9896-5d30d27b278b",
+												"type": "text/javascript",
+												"exec": [
+													"pm.test(\"Status code is 200\", function () {",
+													"    pm.response.to.have.status(200);",
+													"});"
+												]
+											}
+										}
+									],
+									"request": {
+										"auth": {
+											"type": "basic",
+											"basic": [
+												{
+													"key": "password",
+													"value": "{{password}}",
+													"type": "string"
+												},
+												{
+													"key": "username",
+													"value": "{{username}}",
+													"type": "string"
+												},
+												{
+													"key": "showPassword",
+													"value": false,
+													"type": "boolean"
+												}
+											]
+										},
+										"method": "POST",
+										"header": [
+											{
+												"key": "Content-Type",
+												"value": "application/json"
+											},
+											{
+												"key": "Authorization",
+												"value": "Basic c2dvbGRiZXJnOnRlc3QxMjM0IQ=="
+											}
+										],
+										"body": {
+											"mode": "raw",
+											"raw": "{\n\"operation\":\"add_user\",\n\"role\":\"{{role_id}}\",\n\"username\":\"test_user\",\n\"password\":\"{{password}}\", \n\"active\":true\n\n}",
+											"options": {
+												"raw": {}
+											}
+										},
+										"url": {
+											"raw": "{{host}}:{{port}}",
+											"host": [
+												"{{host}}"
+											],
+											"port": "{{port}}"
+										}
+									},
+									"response": []
+								},
+								{
+									"name": "Describe All - non-SU test_user",
+									"event": [
+										{
+											"listen": "test",
+											"script": {
+												"id": "1318a82e-4cb5-4ce1-890d-7227139eac7b",
+												"exec": [
+													"pm.test(\"Status code is 200\", function () {",
+													"    pm.response.to.have.status(200);",
+													"});",
+													"",
+													"var jsonResponse = pm.response.json();",
+													"",
+													"var expected_schema = {",
+													"    //NOTE - `northnwd.products` should NOT be returned in results since all table-level perms are false",
+													"    northnwd: {",
+													"        region: [\"regiondescription\", \"regionid\"],",
+													"        territories: [\"__createdtime__\", \"regionid\", \"territoryid\", \"__updatedtime__\", \"territorydescription\"],",
+													"        categories: []",
+													"    },",
+													"    another: {",
+													"        breed: []",
+													"    },",
+													"    other: {",
+													"        owner: [\"id\", \"name\"]",
+													"    }",
+													"}",
+													"",
+													"pm.test(\"Should return all schemas/tables user has permissions for\", function() {",
+													"    pm.expect(Object.keys(jsonResponse).length).to.eql(3);",
+													"    Object.keys(expected_schema).forEach(s => {",
+													"        Object.keys(expected_schema[s]).forEach(t => {",
+													"            var returned_attrs = jsonResponse[s][t].attributes;",
+													"            pm.expect(returned_attrs.length).to.eql(expected_schema[s][t].length);",
+													"            returned_attrs.forEach(attr => {",
+													"                pm.expect(expected_schema[s][t].includes(attr.attribute)).to.eql(true);",
+													"            })",
+													"        })",
+													"    })",
+													"})"
+												],
+												"type": "text/javascript"
+											}
+										}
+									],
+									"request": {
+										"auth": {
+											"type": "basic",
+											"basic": [
+												{
+													"key": "username",
+													"value": "{{test_user_name}}",
+													"type": "string"
+												},
+												{
+													"key": "password",
+													"value": "{{password}}",
+													"type": "string"
+												}
+											]
+										},
+										"method": "POST",
+										"header": [
+											{
+												"key": "Content-Type",
+												"value": "application/json"
+											}
+										],
+										"body": {
+											"mode": "raw",
+											"raw": "{\n\t\"operation\":\"describe_all\"\n}"
+										},
+										"url": {
+											"raw": "{{host}}:{{port}}",
+											"host": [
+												"{{host}}"
+											],
+											"port": "{{port}}"
+										}
+									},
+									"response": [
+										{
+											"name": "Decribe All",
+											"originalRequest": {
+												"method": "POST",
+												"header": [
+													{
+														"key": "Content-Type",
+														"value": "application/json"
+													},
+													{
+														"key": "Authorization",
+														"type": "text",
+														"name": "Authorization",
+														"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+													}
+												],
+												"body": {
+													"mode": "raw",
+													"raw": "{\n\"operation\":\"describe_all\"\n\n}"
+												},
+												"url": {
+													"raw": "{{HDB_ENDPOINT}}",
+													"host": [
+														"{{HDB_ENDPOINT}}"
+													]
+												}
+											},
+											"status": "OK",
+											"code": 200,
+											"_postman_previewlanguage": "json",
+											"header": [
+												{
+													"key": "connection",
+													"value": "keep-alive",
+													"name": "connection",
+													"description": ""
+												},
+												{
+													"key": "content-length",
+													"value": "568",
+													"name": "content-length",
+													"description": ""
+												},
+												{
+													"key": "content-type",
+													"value": "application/json; charset=utf-8",
+													"name": "content-type",
+													"description": ""
+												},
+												{
+													"key": "date",
+													"value": "Fri, 01 Sep 2017 17:07:00 GMT",
+													"name": "date",
+													"description": ""
+												},
+												{
+													"key": "etag",
+													"value": "W/\"238-gfg0d+lv1qmocnKKFjlrSBm00dM\"",
+													"name": "etag",
+													"description": ""
+												},
+												{
+													"key": "x-powered-by",
+													"value": "HarperDB",
+													"name": "x-powered-by",
+													"description": ""
+												}
+											],
+											"cookie": [],
+											"body": ""
+										}
+									]
+								},
+								{
+									"name": "Describe Schema - restricted perms - non-SU test_user",
+									"event": [
+										{
+											"listen": "test",
+											"script": {
+												"id": "0a44b175-8054-4d19-a7ed-a3c35f0ae358",
+												"exec": [
+													"pm.test(\"Status code is 403\", function () {",
+													"    pm.response.to.have.status(403);",
+													"});",
+													"",
+													"pm.test(\"Should return restricted schema error response\", function() {",
+													"    var jsonResponse = pm.response.json();",
+													"    pm.expect(jsonResponse.response).to.eql(403);",
+													"    pm.expect(jsonResponse.error).to.eql(\"You are not authorized to perform the operation specified\");",
+													"    pm.expect(jsonResponse.unauthorized_access).to.eql(\"Your role does not have permission to view schema metadata for 'dev'\");",
+													"})"
+												],
+												"type": "text/javascript"
+											}
+										}
+									],
+									"request": {
+										"auth": {
+											"type": "basic",
+											"basic": [
+												{
+													"key": "username",
+													"value": "{{test_user_name}}",
+													"type": "string"
+												},
+												{
+													"key": "password",
+													"value": "{{password}}",
+													"type": "string"
+												}
+											]
+										},
+										"method": "POST",
+										"header": [
+											{
+												"key": "Content-Type",
+												"value": "application/json"
+											}
+										],
+										"body": {
+											"mode": "raw",
+											"raw": "{\n\t\"operation\":\"describe_schema\",\n\t\"schema\": \"dev\"\n}"
+										},
+										"url": {
+											"raw": "{{host}}:{{port}}",
+											"host": [
+												"{{host}}"
+											],
+											"port": "{{port}}"
+										}
+									},
+									"response": [
+										{
+											"name": "Decribe All",
+											"originalRequest": {
+												"method": "POST",
+												"header": [
+													{
+														"key": "Content-Type",
+														"value": "application/json"
+													},
+													{
+														"key": "Authorization",
+														"type": "text",
+														"name": "Authorization",
+														"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+													}
+												],
+												"body": {
+													"mode": "raw",
+													"raw": "{\n\"operation\":\"describe_all\"\n\n}"
+												},
+												"url": {
+													"raw": "{{HDB_ENDPOINT}}",
+													"host": [
+														"{{HDB_ENDPOINT}}"
+													]
+												}
+											},
+											"status": "OK",
+											"code": 200,
+											"_postman_previewlanguage": "json",
+											"header": [
+												{
+													"key": "connection",
+													"value": "keep-alive",
+													"name": "connection",
+													"description": ""
+												},
+												{
+													"key": "content-length",
+													"value": "568",
+													"name": "content-length",
+													"description": ""
+												},
+												{
+													"key": "content-type",
+													"value": "application/json; charset=utf-8",
+													"name": "content-type",
+													"description": ""
+												},
+												{
+													"key": "date",
+													"value": "Fri, 01 Sep 2017 17:07:00 GMT",
+													"name": "date",
+													"description": ""
+												},
+												{
+													"key": "etag",
+													"value": "W/\"238-gfg0d+lv1qmocnKKFjlrSBm00dM\"",
+													"name": "etag",
+													"description": ""
+												},
+												{
+													"key": "x-powered-by",
+													"value": "HarperDB",
+													"name": "x-powered-by",
+													"description": ""
+												}
+											],
+											"cookie": [],
+											"body": ""
+										}
+									]
+								},
+								{
+									"name": "Describe Schema - non-SU test_user",
+									"event": [
+										{
+											"listen": "test",
+											"script": {
+												"id": "4951ecb4-4abb-4bcd-adef-d73a612a62ec",
+												"exec": [
+													"pm.test(\"Status code is 200\", function () {",
+													"    pm.response.to.have.status(200);",
+													"});",
+													"",
+													"var jsonResponse = pm.response.json();",
+													"",
+													"var expected_schema = {",
+													"    northnwd: {",
+													"        region: [\"regiondescription\", \"regionid\"],",
+													"        territories: [\"__createdtime__\", \"regionid\", \"territoryid\", \"__updatedtime__\", \"territorydescription\"],",
+													"        categories: []",
+													"    }",
+													"}",
+													"",
+													"pm.test(\"Should return all table metadata user has permissions for\", function() {",
+													"    pm.expect(jsonResponse.length).to.eql(3);",
+													"    jsonResponse.forEach(table_data => {",
+													"        const { name, schema, attributes } = table_data;",
+													"        attributes.forEach(attr => {",
+													"            pm.expect(expected_schema[schema][name].includes(attr.attribute)).to.eql(true);",
+													"        })",
+													"    })",
+													"})"
+												],
+												"type": "text/javascript"
+											}
+										}
+									],
+									"request": {
+										"auth": {
+											"type": "basic",
+											"basic": [
+												{
+													"key": "username",
+													"value": "{{test_user_name}}",
+													"type": "string"
+												},
+												{
+													"key": "password",
+													"value": "{{password}}",
+													"type": "string"
+												}
+											]
+										},
+										"method": "POST",
+										"header": [
+											{
+												"key": "Content-Type",
+												"value": "application/json"
+											}
+										],
+										"body": {
+											"mode": "raw",
+											"raw": "{\n\t\"operation\":\"describe_schema\",\n\t\"schema\": \"northnwd\"\n}"
+										},
+										"url": {
+											"raw": "{{host}}:{{port}}",
+											"host": [
+												"{{host}}"
+											],
+											"port": "{{port}}"
+										}
+									},
+									"response": [
+										{
+											"name": "Decribe All",
+											"originalRequest": {
+												"method": "POST",
+												"header": [
+													{
+														"key": "Content-Type",
+														"value": "application/json"
+													},
+													{
+														"key": "Authorization",
+														"type": "text",
+														"name": "Authorization",
+														"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+													}
+												],
+												"body": {
+													"mode": "raw",
+													"raw": "{\n\"operation\":\"describe_all\"\n\n}"
+												},
+												"url": {
+													"raw": "{{HDB_ENDPOINT}}",
+													"host": [
+														"{{HDB_ENDPOINT}}"
+													]
+												}
+											},
+											"status": "OK",
+											"code": 200,
+											"_postman_previewlanguage": "json",
+											"header": [
+												{
+													"key": "connection",
+													"value": "keep-alive",
+													"name": "connection",
+													"description": ""
+												},
+												{
+													"key": "content-length",
+													"value": "568",
+													"name": "content-length",
+													"description": ""
+												},
+												{
+													"key": "content-type",
+													"value": "application/json; charset=utf-8",
+													"name": "content-type",
+													"description": ""
+												},
+												{
+													"key": "date",
+													"value": "Fri, 01 Sep 2017 17:07:00 GMT",
+													"name": "date",
+													"description": ""
+												},
+												{
+													"key": "etag",
+													"value": "W/\"238-gfg0d+lv1qmocnKKFjlrSBm00dM\"",
+													"name": "etag",
+													"description": ""
+												},
+												{
+													"key": "x-powered-by",
+													"value": "HarperDB",
+													"name": "x-powered-by",
+													"description": ""
+												}
+											],
+											"cookie": [],
+											"body": ""
+										}
+									]
+								},
+								{
+									"name": "Describe Table - restricted perms - non-SU test_user",
+									"event": [
+										{
+											"listen": "test",
+											"script": {
+												"id": "9e243df0-546e-4f26-bf5a-f8e9963107ce",
+												"exec": [
+													"pm.test(\"Status code is 403\", function () {",
+													"    pm.response.to.have.status(403);",
+													"});",
+													"",
+													"pm.test(\"Should return restricted schema table error response\", function() {",
+													"    var jsonResponse = pm.response.json();",
+													"    pm.expect(jsonResponse.response).to.eql(403);",
+													"    pm.expect(jsonResponse.error).to.eql(\"You are not authorized to perform the operation specified\");",
+													"    pm.expect(jsonResponse.unauthorized_access).to.eql(\"Your role does not have permission to view schema.table metadata for 'northnwd.shippers'\");",
+													"})"
+												],
+												"type": "text/javascript"
+											}
+										}
+									],
+									"request": {
+										"auth": {
+											"type": "basic",
+											"basic": [
+												{
+													"key": "username",
+													"value": "{{test_user_name}}",
+													"type": "string"
+												},
+												{
+													"key": "password",
+													"value": "{{password}}",
+													"type": "string"
+												}
+											]
+										},
+										"method": "POST",
+										"header": [
+											{
+												"key": "Content-Type",
+												"value": "application/json"
+											}
+										],
+										"body": {
+											"mode": "raw",
+											"raw": "{\n\t\"operation\":\"describe_table\",\n\t\"schema\": \"northnwd\",\n\t\"table\": \"shippers\"\n}"
+										},
+										"url": {
+											"raw": "{{host}}:{{port}}",
+											"host": [
+												"{{host}}"
+											],
+											"port": "{{port}}"
+										}
+									},
+									"response": [
+										{
+											"name": "Decribe All",
+											"originalRequest": {
+												"method": "POST",
+												"header": [
+													{
+														"key": "Content-Type",
+														"value": "application/json"
+													},
+													{
+														"key": "Authorization",
+														"type": "text",
+														"name": "Authorization",
+														"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+													}
+												],
+												"body": {
+													"mode": "raw",
+													"raw": "{\n\"operation\":\"describe_all\"\n\n}"
+												},
+												"url": {
+													"raw": "{{HDB_ENDPOINT}}",
+													"host": [
+														"{{HDB_ENDPOINT}}"
+													]
+												}
+											},
+											"status": "OK",
+											"code": 200,
+											"_postman_previewlanguage": "json",
+											"header": [
+												{
+													"key": "connection",
+													"value": "keep-alive",
+													"name": "connection",
+													"description": ""
+												},
+												{
+													"key": "content-length",
+													"value": "568",
+													"name": "content-length",
+													"description": ""
+												},
+												{
+													"key": "content-type",
+													"value": "application/json; charset=utf-8",
+													"name": "content-type",
+													"description": ""
+												},
+												{
+													"key": "date",
+													"value": "Fri, 01 Sep 2017 17:07:00 GMT",
+													"name": "date",
+													"description": ""
+												},
+												{
+													"key": "etag",
+													"value": "W/\"238-gfg0d+lv1qmocnKKFjlrSBm00dM\"",
+													"name": "etag",
+													"description": ""
+												},
+												{
+													"key": "x-powered-by",
+													"value": "HarperDB",
+													"name": "x-powered-by",
+													"description": ""
+												}
+											],
+											"cookie": [],
+											"body": ""
+										}
+									]
+								},
+								{
+									"name": "Describe Table - non-SU test_user",
+									"event": [
+										{
+											"listen": "test",
+											"script": {
+												"id": "cb3ebd83-a800-462a-bab6-88d5c228077a",
+												"exec": [
+													"pm.test(\"Status code is 200\", function () {",
+													"    pm.response.to.have.status(200);",
+													"});",
+													"",
+													"var jsonResponse = pm.response.json();",
+													"var expected_attributes = [\"regiondescription\", \"regionid\"];",
+													"",
+													"pm.test(\"Should return metadata for table\", function() {",
+													"    pm.expect(Object.keys(jsonResponse).length).to.eql(9);",
+													"    pm.expect(jsonResponse.schema).to.eql('northnwd');",
+													"    pm.expect(jsonResponse.name).to.eql('region');",
+													"    jsonResponse.attributes.forEach(attr => {",
+													"        pm.expect(expected_attributes.includes(attr.attribute)).to.eql(true);",
+													"    })",
+													"})"
+												],
+												"type": "text/javascript"
+											}
+										}
+									],
+									"request": {
+										"auth": {
+											"type": "basic",
+											"basic": [
+												{
+													"key": "username",
+													"value": "{{test_user_name}}",
+													"type": "string"
+												},
+												{
+													"key": "password",
+													"value": "{{password}}",
+													"type": "string"
+												}
+											]
+										},
+										"method": "POST",
+										"header": [
+											{
+												"key": "Content-Type",
+												"value": "application/json"
+											}
+										],
+										"body": {
+											"mode": "raw",
+											"raw": "{\n\t\"operation\":\"describe_table\",\n\t\"schema\": \"northnwd\",\n\t\"table\": \"region\"\n}"
+										},
+										"url": {
+											"raw": "{{host}}:{{port}}",
+											"host": [
+												"{{host}}"
+											],
+											"port": "{{port}}"
+										}
+									},
+									"response": [
+										{
+											"name": "Decribe All",
+											"originalRequest": {
+												"method": "POST",
+												"header": [
+													{
+														"key": "Content-Type",
+														"value": "application/json"
+													},
+													{
+														"key": "Authorization",
+														"type": "text",
+														"name": "Authorization",
+														"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+													}
+												],
+												"body": {
+													"mode": "raw",
+													"raw": "{\n\"operation\":\"describe_all\"\n\n}"
+												},
+												"url": {
+													"raw": "{{HDB_ENDPOINT}}",
+													"host": [
+														"{{HDB_ENDPOINT}}"
+													]
+												}
+											},
+											"status": "OK",
+											"code": 200,
+											"_postman_previewlanguage": "json",
+											"header": [
+												{
+													"key": "connection",
+													"value": "keep-alive",
+													"name": "connection",
+													"description": ""
+												},
+												{
+													"key": "content-length",
+													"value": "568",
+													"name": "content-length",
+													"description": ""
+												},
+												{
+													"key": "content-type",
+													"value": "application/json; charset=utf-8",
+													"name": "content-type",
+													"description": ""
+												},
+												{
+													"key": "date",
+													"value": "Fri, 01 Sep 2017 17:07:00 GMT",
+													"name": "date",
+													"description": ""
+												},
+												{
+													"key": "etag",
+													"value": "W/\"238-gfg0d+lv1qmocnKKFjlrSBm00dM\"",
+													"name": "etag",
+													"description": ""
+												},
+												{
+													"key": "x-powered-by",
+													"value": "HarperDB",
+													"name": "x-powered-by",
+													"description": ""
+												}
+											],
+											"cookie": [],
+											"body": ""
+										}
+									]
+								},
+								{
+									"name": "Drop test_user",
+									"event": [
+										{
+											"listen": "test",
+											"script": {
+												"id": "182e06ba-0f1a-4e58-bd5f-78ded6757020",
+												"exec": [
+													"pm.test(\"Status code is 200\", function () {",
+													"    pm.response.to.have.status(200);",
+													"});",
+													"",
+													"pm.test(\"Body includes correct message\", function () {",
+													"    const respMsg = pm.response.json().message;",
+													"    pm.expect(respMsg).to.equal(",
+													"        \"test_user successfully deleted\"",
+													"    );",
+													"});"
+												],
+												"type": "text/javascript"
+											}
+										}
+									],
+									"request": {
+										"auth": {
+											"type": "basic",
+											"basic": [
+												{
+													"key": "password",
+													"value": "{{password}}",
+													"type": "string"
+												},
+												{
+													"key": "username",
+													"value": "{{username}}",
+													"type": "string"
+												},
+												{
+													"key": "showPassword",
+													"value": false,
+													"type": "boolean"
+												}
+											]
+										},
+										"method": "POST",
+										"header": [
+											{
+												"key": "Content-Type",
+												"value": "application/json"
+											},
+											{
+												"key": "Authorization",
+												"value": "Basic YWRtaW46cGFzc3dvcmQ="
+											}
+										],
+										"body": {
+											"mode": "raw",
+											"raw": "{\n  \"operation\":\"drop_user\",\n  \"username\":\"test_user\"\n}",
+											"options": {
+												"raw": {}
+											}
+										},
+										"url": {
+											"raw": "{{host}}:{{port}}",
+											"host": [
+												"{{host}}"
+											],
+											"port": "{{port}}"
+										}
+									},
+									"response": []
+								},
+								{
+									"name": "Drop_role - non-SU role",
+									"event": [
+										{
+											"listen": "test",
+											"script": {
+												"id": "74b73325-6063-458b-8ad6-88af5643d571",
+												"exec": [
+													"pm.test(\"Status code is 200\", function () {",
+													"    pm.response.to.have.status(200);",
+													"});",
+													"",
+													"pm.test(\"Body includes correct message\", function () {",
+													"    const respMsg = pm.response.json().message;",
+													"    pm.expect(respMsg).to.equal(",
+													"        \"test_dev_role successfully deleted\"",
+													"    );",
+													"});"
+												],
+												"type": "text/javascript"
+											}
+										}
+									],
+									"request": {
+										"auth": {
+											"type": "basic",
+											"basic": [
+												{
+													"key": "password",
+													"value": "{{password}}",
+													"type": "string"
+												},
+												{
+													"key": "username",
+													"value": "{{username}}",
+													"type": "string"
+												},
+												{
+													"key": "showPassword",
+													"value": false,
+													"type": "boolean"
+												}
+											]
+										},
+										"method": "POST",
+										"header": [
+											{
+												"key": "Content-Type",
+												"value": "application/json"
+											},
+											{
+												"key": "Authorization",
+												"value": "Basic YWRtaW46cGFzc3dvcmQ="
+											}
+										],
+										"body": {
+											"mode": "raw",
+											"raw": "{\n\"operation\":\"drop_role\",\n\"id\":\"{{role_id}}\"\n\n}",
+											"options": {
+												"raw": {}
+											}
+										},
+										"url": {
+											"raw": "{{host}}:{{port}}",
+											"host": [
+												"{{host}}"
+											],
+											"port": "{{port}}"
+										}
+									},
+									"response": []
+								}
+							],
+							"protocolProfileBehavior": {},
+							"_postman_isSubFolder": true
+						},
+						{
+							"name": "Non-SU role w/ NO PERMS",
+							"item": [
+								{
+									"name": "Add non-SU role with NO PERMS",
+									"event": [
+										{
+											"listen": "test",
+											"script": {
+												"id": "dc6b1aa7-058a-4726-9aa0-0e9a16b32ccd",
+												"exec": [
+													"pm.test(\"Status code is 200\", function () {",
+													"    pm.response.to.have.status(200);",
+													"});",
+													"",
+													"responseData = JSON.parse(responseBody);",
+													"postman.setEnvironmentVariable(\"role_id\", responseData.id)"
+												],
+												"type": "text/javascript"
+											}
+										}
+									],
+									"request": {
+										"auth": {
+											"type": "basic",
+											"basic": [
+												{
+													"key": "username",
+													"value": "{{username}}",
+													"type": "string"
+												},
+												{
+													"key": "password",
+													"value": "{{password}}",
+													"type": "string"
+												},
+												{
+													"key": "showPassword",
+													"value": false,
+													"type": "boolean"
+												}
+											]
+										},
+										"method": "POST",
+										"header": [
+											{
+												"key": "Content-Type",
+												"value": "application/json"
+											},
+											{
+												"key": "Authorization",
+												"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+											}
+										],
+										"body": {
+											"mode": "raw",
+											"raw": "{\n   \"operation\":\"add_role\",\n   \"role\":\"developer_test_no_perms\",\n   \"permission\":{\n      \"super_user\": false\n   }\n}",
+											"options": {
+												"raw": {}
+											}
+										},
+										"url": {
+											"raw": "{{host}}:{{port}}",
+											"host": [
+												"{{host}}"
+											],
+											"port": "{{port}}"
+										}
+									},
+									"response": []
+								},
+								{
+									"name": "Add User with new NO PERMS Role",
+									"event": [
+										{
+											"listen": "test",
+											"script": {
+												"id": "f4b7f005-3263-4194-a4ec-bbbaf97c584e",
+												"exec": [
+													"pm.test(\"Status code is 200\", function () {",
+													"    pm.response.to.have.status(200);",
+													"});"
+												],
+												"type": "text/javascript"
+											}
+										}
+									],
+									"request": {
+										"auth": {
+											"type": "basic",
+											"basic": [
+												{
+													"key": "password",
+													"value": "{{password}}",
+													"type": "string"
+												},
+												{
+													"key": "username",
+													"value": "{{username}}",
+													"type": "string"
+												},
+												{
+													"key": "showPassword",
+													"value": false,
+													"type": "boolean"
+												}
+											]
+										},
+										"method": "POST",
+										"header": [
+											{
+												"key": "Content-Type",
+												"value": "application/json"
+											},
+											{
+												"key": "Authorization",
+												"value": "Basic c2dvbGRiZXJnOnRlc3QxMjM0IQ=="
+											}
+										],
+										"body": {
+											"mode": "raw",
+											"raw": "{\n\"operation\":\"add_user\",\n\"role\":\"{{role_id}}\",\n\"username\":\"no_perms_user\",\n\"password\":\"{{password}}\", \n\"active\":true\n\n}",
+											"options": {
+												"raw": {}
+											}
+										},
+										"url": {
+											"raw": "{{host}}:{{port}}",
+											"host": [
+												"{{host}}"
+											],
+											"port": "{{port}}"
+										}
+									},
+									"response": []
+								},
+								{
+									"name": "Describe All - test user NO PERMS",
+									"event": [
+										{
+											"listen": "test",
+											"script": {
+												"id": "7fa444f7-51a0-4767-89e8-68bb3514b9e4",
+												"exec": [
+													"pm.test(\"Status code is 200\", function () {",
+													"    pm.response.to.have.status(200);",
+													"});",
+													"",
+													"var jsonResponse = pm.response.json();",
+													"",
+													"pm.test(\"Should return empty object\", function() {",
+													"    pm.expect(jsonResponse).to.eql({});",
+													"})"
+												],
+												"type": "text/javascript"
+											}
+										}
+									],
+									"request": {
+										"auth": {
+											"type": "basic",
+											"basic": [
+												{
+													"key": "username",
+													"value": "no_perms_user",
+													"type": "string"
+												},
+												{
+													"key": "password",
+													"value": "{{password}}",
+													"type": "string"
+												}
+											]
+										},
+										"method": "POST",
+										"header": [
+											{
+												"key": "Content-Type",
+												"value": "application/json"
+											}
+										],
+										"body": {
+											"mode": "raw",
+											"raw": "{\n\t\"operation\":\"describe_all\"\n}"
+										},
+										"url": {
+											"raw": "{{host}}:{{port}}",
+											"host": [
+												"{{host}}"
+											],
+											"port": "{{port}}"
+										}
+									},
+									"response": [
+										{
+											"name": "Decribe All",
+											"originalRequest": {
+												"method": "POST",
+												"header": [
+													{
+														"key": "Content-Type",
+														"value": "application/json"
+													},
+													{
+														"key": "Authorization",
+														"type": "text",
+														"name": "Authorization",
+														"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+													}
+												],
+												"body": {
+													"mode": "raw",
+													"raw": "{\n\"operation\":\"describe_all\"\n\n}"
+												},
+												"url": {
+													"raw": "{{HDB_ENDPOINT}}",
+													"host": [
+														"{{HDB_ENDPOINT}}"
+													]
+												}
+											},
+											"status": "OK",
+											"code": 200,
+											"_postman_previewlanguage": "json",
+											"header": [
+												{
+													"key": "connection",
+													"value": "keep-alive",
+													"name": "connection",
+													"description": ""
+												},
+												{
+													"key": "content-length",
+													"value": "568",
+													"name": "content-length",
+													"description": ""
+												},
+												{
+													"key": "content-type",
+													"value": "application/json; charset=utf-8",
+													"name": "content-type",
+													"description": ""
+												},
+												{
+													"key": "date",
+													"value": "Fri, 01 Sep 2017 17:07:00 GMT",
+													"name": "date",
+													"description": ""
+												},
+												{
+													"key": "etag",
+													"value": "W/\"238-gfg0d+lv1qmocnKKFjlrSBm00dM\"",
+													"name": "etag",
+													"description": ""
+												},
+												{
+													"key": "x-powered-by",
+													"value": "HarperDB",
+													"name": "x-powered-by",
+													"description": ""
+												}
+											],
+											"cookie": [],
+											"body": ""
+										}
+									]
+								},
+								{
+									"name": "Describe Schema - test user NO PERMS",
+									"event": [
+										{
+											"listen": "test",
+											"script": {
+												"id": "c3160284-2e68-455c-9caa-75724f665236",
+												"exec": [
+													"pm.test(\"Status code is 403\", function () {",
+													"    pm.response.to.have.status(403);",
+													"});",
+													"",
+													"var jsonResponse = pm.response.json();",
+													"",
+													"pm.test(\"Should return restricted schema error response\", function() {",
+													"    var jsonResponse = pm.response.json();",
+													"    pm.expect(jsonResponse.response).to.eql(403);",
+													"    pm.expect(jsonResponse.error).to.eql(\"You are not authorized to perform the operation specified\");",
+													"    pm.expect(jsonResponse.unauthorized_access).to.eql(\"Your role does not have permission to view schema metadata for 'northnwd'\");",
+													"})"
+												],
+												"type": "text/javascript"
+											}
+										}
+									],
+									"request": {
+										"auth": {
+											"type": "basic",
+											"basic": [
+												{
+													"key": "username",
+													"value": "no_perms_user",
+													"type": "string"
+												},
+												{
+													"key": "password",
+													"value": "{{password}}",
+													"type": "string"
+												}
+											]
+										},
+										"method": "POST",
+										"header": [
+											{
+												"key": "Content-Type",
+												"value": "application/json"
+											}
+										],
+										"body": {
+											"mode": "raw",
+											"raw": "{\n\t\"operation\":\"describe_schema\",\n\t\"schema\":\"northnwd\"\n}"
+										},
+										"url": {
+											"raw": "{{host}}:{{port}}",
+											"host": [
+												"{{host}}"
+											],
+											"port": "{{port}}"
+										}
+									},
+									"response": [
+										{
+											"name": "Decribe All",
+											"originalRequest": {
+												"method": "POST",
+												"header": [
+													{
+														"key": "Content-Type",
+														"value": "application/json"
+													},
+													{
+														"key": "Authorization",
+														"type": "text",
+														"name": "Authorization",
+														"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+													}
+												],
+												"body": {
+													"mode": "raw",
+													"raw": "{\n\"operation\":\"describe_all\"\n\n}"
+												},
+												"url": {
+													"raw": "{{HDB_ENDPOINT}}",
+													"host": [
+														"{{HDB_ENDPOINT}}"
+													]
+												}
+											},
+											"status": "OK",
+											"code": 200,
+											"_postman_previewlanguage": "json",
+											"header": [
+												{
+													"key": "connection",
+													"value": "keep-alive",
+													"name": "connection",
+													"description": ""
+												},
+												{
+													"key": "content-length",
+													"value": "568",
+													"name": "content-length",
+													"description": ""
+												},
+												{
+													"key": "content-type",
+													"value": "application/json; charset=utf-8",
+													"name": "content-type",
+													"description": ""
+												},
+												{
+													"key": "date",
+													"value": "Fri, 01 Sep 2017 17:07:00 GMT",
+													"name": "date",
+													"description": ""
+												},
+												{
+													"key": "etag",
+													"value": "W/\"238-gfg0d+lv1qmocnKKFjlrSBm00dM\"",
+													"name": "etag",
+													"description": ""
+												},
+												{
+													"key": "x-powered-by",
+													"value": "HarperDB",
+													"name": "x-powered-by",
+													"description": ""
+												}
+											],
+											"cookie": [],
+											"body": ""
+										}
+									]
+								},
+								{
+									"name": "Describe Table - test user NO PERMS",
+									"event": [
+										{
+											"listen": "test",
+											"script": {
+												"id": "a9b87278-4557-425f-a1c8-71fd384a11ea",
+												"exec": [
+													"pm.test(\"Status code is 403\", function () {",
+													"    pm.response.to.have.status(403);",
+													"});",
+													"",
+													"var jsonResponse = pm.response.json();",
+													"",
+													"pm.test(\"Should return restricted schema error response\", function() {",
+													"    var jsonResponse = pm.response.json();",
+													"    pm.expect(jsonResponse.response).to.eql(403);",
+													"    pm.expect(jsonResponse.error).to.eql(\"You are not authorized to perform the operation specified\");",
+													"    pm.expect(jsonResponse.unauthorized_access).to.eql(\"Your role does not have permission to view schema metadata for 'northnwd'\");",
+													"})"
+												],
+												"type": "text/javascript"
+											}
+										}
+									],
+									"request": {
+										"auth": {
+											"type": "basic",
+											"basic": [
+												{
+													"key": "username",
+													"value": "no_perms_user",
+													"type": "string"
+												},
+												{
+													"key": "password",
+													"value": "{{password}}",
+													"type": "string"
+												}
+											]
+										},
+										"method": "POST",
+										"header": [
+											{
+												"key": "Content-Type",
+												"value": "application/json"
+											}
+										],
+										"body": {
+											"mode": "raw",
+											"raw": "{\n\t\"operation\":\"describe_table\",\n\t\"schema\":\"northnwd\",\n\t\"table\": \"region\"\n}"
+										},
+										"url": {
+											"raw": "{{host}}:{{port}}",
+											"host": [
+												"{{host}}"
+											],
+											"port": "{{port}}"
+										}
+									},
+									"response": [
+										{
+											"name": "Decribe All",
+											"originalRequest": {
+												"method": "POST",
+												"header": [
+													{
+														"key": "Content-Type",
+														"value": "application/json"
+													},
+													{
+														"key": "Authorization",
+														"type": "text",
+														"name": "Authorization",
+														"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+													}
+												],
+												"body": {
+													"mode": "raw",
+													"raw": "{\n\"operation\":\"describe_all\"\n\n}"
+												},
+												"url": {
+													"raw": "{{HDB_ENDPOINT}}",
+													"host": [
+														"{{HDB_ENDPOINT}}"
+													]
+												}
+											},
+											"status": "OK",
+											"code": 200,
+											"_postman_previewlanguage": "json",
+											"header": [
+												{
+													"key": "connection",
+													"value": "keep-alive",
+													"name": "connection",
+													"description": ""
+												},
+												{
+													"key": "content-length",
+													"value": "568",
+													"name": "content-length",
+													"description": ""
+												},
+												{
+													"key": "content-type",
+													"value": "application/json; charset=utf-8",
+													"name": "content-type",
+													"description": ""
+												},
+												{
+													"key": "date",
+													"value": "Fri, 01 Sep 2017 17:07:00 GMT",
+													"name": "date",
+													"description": ""
+												},
+												{
+													"key": "etag",
+													"value": "W/\"238-gfg0d+lv1qmocnKKFjlrSBm00dM\"",
+													"name": "etag",
+													"description": ""
+												},
+												{
+													"key": "x-powered-by",
+													"value": "HarperDB",
+													"name": "x-powered-by",
+													"description": ""
+												}
+											],
+											"cookie": [],
+											"body": ""
+										}
+									]
+								},
+								{
+									"name": "Drop no_perms_user",
+									"event": [
+										{
+											"listen": "test",
+											"script": {
+												"id": "765f2db1-bd79-472f-9b6d-17ac9a8a3517",
+												"exec": [
+													"pm.test(\"Status code is 200\", function () {",
+													"    pm.response.to.have.status(200);",
+													"});",
+													"",
+													"pm.test(\"Body includes correct message\", function () {",
+													"    const respMsg = pm.response.json().message;",
+													"    pm.expect(respMsg).to.equal(",
+													"        \"no_perms_user successfully deleted\"",
+													"    );",
+													"});"
+												],
+												"type": "text/javascript"
+											}
+										}
+									],
+									"request": {
+										"auth": {
+											"type": "basic",
+											"basic": [
+												{
+													"key": "password",
+													"value": "{{password}}",
+													"type": "string"
+												},
+												{
+													"key": "username",
+													"value": "{{username}}",
+													"type": "string"
+												},
+												{
+													"key": "showPassword",
+													"value": false,
+													"type": "boolean"
+												}
+											]
+										},
+										"method": "POST",
+										"header": [
+											{
+												"key": "Content-Type",
+												"value": "application/json"
+											},
+											{
+												"key": "Authorization",
+												"value": "Basic YWRtaW46cGFzc3dvcmQ="
+											}
+										],
+										"body": {
+											"mode": "raw",
+											"raw": "{\n  \"operation\":\"drop_user\",\n  \"username\":\"no_perms_user\"\n}",
+											"options": {
+												"raw": {}
+											}
+										},
+										"url": {
+											"raw": "{{host}}:{{port}}",
+											"host": [
+												"{{host}}"
+											],
+											"port": "{{port}}"
+										}
+									},
+									"response": []
+								},
+								{
+									"name": "Drop_role - NO PERMS role",
+									"event": [
+										{
+											"listen": "test",
+											"script": {
+												"id": "741f3e9b-b6f0-4991-bbab-2c3d6b4d385a",
+												"exec": [
+													"pm.test(\"Status code is 200\", function () {",
+													"    pm.response.to.have.status(200);",
+													"});",
+													"",
+													"pm.test(\"Body includes correct message\", function () {",
+													"    const respMsg = pm.response.json().message;",
+													"    pm.expect(respMsg).to.equal(",
+													"        \"developer_test_no_perms successfully deleted\"",
+													"    );",
+													"});"
+												],
+												"type": "text/javascript"
+											}
+										}
+									],
+									"request": {
+										"auth": {
+											"type": "basic",
+											"basic": [
+												{
+													"key": "password",
+													"value": "{{password}}",
+													"type": "string"
+												},
+												{
+													"key": "username",
+													"value": "{{username}}",
+													"type": "string"
+												},
+												{
+													"key": "showPassword",
+													"value": false,
+													"type": "boolean"
+												}
+											]
+										},
+										"method": "POST",
+										"header": [
+											{
+												"key": "Content-Type",
+												"value": "application/json"
+											},
+											{
+												"key": "Authorization",
+												"value": "Basic YWRtaW46cGFzc3dvcmQ="
+											}
+										],
+										"body": {
+											"mode": "raw",
+											"raw": "{\n    \"operation\":\"drop_role\",\n    \"id\":\"{{role_id}}\"\n}",
+											"options": {
+												"raw": {}
+											}
+										},
+										"url": {
+											"raw": "{{host}}:{{port}}",
+											"host": [
+												"{{host}}"
+											],
+											"port": "{{port}}"
+										}
+									},
+									"response": []
+								}
+							],
+							"protocolProfileBehavior": {},
+							"_postman_isSubFolder": true
+						},
+						{
+							"name": "Non-SU role w/ ONE TABLE PERM",
+							"item": [
+								{
+									"name": "Add non-SU role with perm for ONE table",
+									"event": [
+										{
+											"listen": "test",
+											"script": {
+												"id": "bda86e7e-78ac-4ae5-b18f-7efd8c2ff704",
+												"exec": [
+													"pm.test(\"Status code is 200\", function () {",
+													"    pm.response.to.have.status(200);",
+													"});",
+													"",
+													"responseData = JSON.parse(responseBody);",
+													"postman.setEnvironmentVariable(\"role_id\", responseData.id)"
+												],
+												"type": "text/javascript"
+											}
+										}
+									],
+									"request": {
+										"auth": {
+											"type": "basic",
+											"basic": [
+												{
+													"key": "username",
+													"value": "{{username}}",
+													"type": "string"
+												},
+												{
+													"key": "password",
+													"value": "{{password}}",
+													"type": "string"
+												},
+												{
+													"key": "showPassword",
+													"value": false,
+													"type": "boolean"
+												}
+											]
+										},
+										"method": "POST",
+										"header": [
+											{
+												"key": "Content-Type",
+												"value": "application/json"
+											},
+											{
+												"key": "Authorization",
+												"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+											}
+										],
+										"body": {
+											"mode": "raw",
+											"raw": "{\n   \"operation\":\"add_role\",\n   \"role\":\"developer_test_one_perm\",\n   \"permission\":{\n      \"super_user\": false,\n      \"northnwd\":{\n         \"tables\": {\n            \"employees\": {\n               \"read\":true,\n               \"insert\":true,\n               \"update\":false,\n               \"delete\":false,\n               \"attribute_restrictions\":[\n                  {\n                     \"attribute_name\": \"city\",\n                     \"read\":false,\n                     \"insert\":true,\n                     \"update\":false,\n                     \"delete\":false\n                  },\n                  {\n                     \"attribute_name\": \"firstname\",\n                     \"read\":true,\n                     \"insert\":true,\n                     \"update\":false,\n                     \"delete\":false\n                  },\n                  {\n                     \"attribute_name\": \"lastname\",\n                     \"read\":true,\n                     \"insert\":true,\n                     \"update\":false,\n                     \"delete\":false\n                  },\n                  {\n                     \"attribute_name\": \"region\",\n                     \"read\":false,\n                     \"insert\":false,\n                     \"update\":false,\n                     \"delete\":false\n                  }\n               ]\n            }\n         }\n      }\n   }\n}",
+											"options": {
+												"raw": {}
+											}
+										},
+										"url": {
+											"raw": "{{host}}:{{port}}",
+											"host": [
+												"{{host}}"
+											],
+											"port": "{{port}}"
+										}
+									},
+									"response": []
+								},
+								{
+									"name": "Add User with new ONE PERM Role",
+									"event": [
+										{
+											"listen": "test",
+											"script": {
+												"id": "1793d472-47c7-427d-985b-3b8295e6071c",
+												"exec": [
+													"pm.test(\"Status code is 200\", function () {",
+													"    pm.response.to.have.status(200);",
+													"});"
+												],
+												"type": "text/javascript"
+											}
+										}
+									],
+									"request": {
+										"auth": {
+											"type": "basic",
+											"basic": [
+												{
+													"key": "username",
+													"value": "{{username}}",
+													"type": "string"
+												},
+												{
+													"key": "password",
+													"value": "{{password}}",
+													"type": "string"
+												},
+												{
+													"key": "showPassword",
+													"value": false,
+													"type": "boolean"
+												}
+											]
+										},
+										"method": "POST",
+										"header": [
+											{
+												"key": "Content-Type",
+												"value": "application/json"
+											},
+											{
+												"key": "Authorization",
+												"value": "Basic c2dvbGRiZXJnOnRlc3QxMjM0IQ=="
+											}
+										],
+										"body": {
+											"mode": "raw",
+											"raw": "{\n\"operation\":\"add_user\",\n\"role\":\"{{role_id}}\",\n\"username\":\"one_perm_user\",\n\"password\":\"{{password}}\", \n\"active\":true\n\n}",
+											"options": {
+												"raw": {}
+											}
+										},
+										"url": {
+											"raw": "{{host}}:{{port}}",
+											"host": [
+												"{{host}}"
+											],
+											"port": "{{port}}"
+										},
+										"description": "Method for adding users.  Users can be assigned roles which provide granular access at a table, operation, and attirbute level.  \n\n<ul>\n<li><b>operation </b> <i>(required) </i> - must always be 'add_user'</li>\n\n<li><b>role </b><i>(required) </i>- id of the role you wish to assign to the user.  See add_role for more detail.  </li>\n\n<li><b>username </b> <i>(required)</i> - username assigned to the user.  It can not be altered after adding the user.  It serves as the hash. </li>\n\n<li><b>password </b> <i>(required) </i>- clear text for password.  HarperDB will encrypt the password upon reciept. </li>\n\n</ul>"
+									},
+									"response": []
+								},
+								{
+									"name": "Describe All - test user ONE TABLE PERM",
+									"event": [
+										{
+											"listen": "test",
+											"script": {
+												"id": "895e842b-dc4f-453f-aba1-243f2a9a3b8d",
+												"exec": [
+													"pm.test(\"Status code is 200\", function () {",
+													"    pm.response.to.have.status(200);",
+													"});",
+													"",
+													"var jsonResponse = pm.response.json();",
+													"",
+													"pm.test(\"Should return the ONE schema w/ ONE table user has permissions for\", function() {",
+													"    pm.expect(Object.keys(jsonResponse).length).to.eql(1);",
+													"    pm.expect(Object.keys(jsonResponse.northnwd).length).to.eql(1);",
+													"});",
+													"",
+													"var expected_attrs = [\"employeeid\", \"city\", \"firstname\", \"lastname\"];",
+													"pm.test(\"Should return the FOUR attributes the user has permissions for\", function() {",
+													"    pm.expect(jsonResponse.northnwd.employees.attributes.length).to.eql(4);",
+													"    jsonResponse.northnwd.employees.attributes.forEach(attr => {",
+													"        pm.expect(expected_attrs.includes(attr.attribute)).to.eql(true);",
+													"    })",
+													"});"
+												],
+												"type": "text/javascript"
+											}
+										}
+									],
+									"request": {
+										"auth": {
+											"type": "basic",
+											"basic": [
+												{
+													"key": "username",
+													"value": "one_perm_user",
+													"type": "string"
+												},
+												{
+													"key": "password",
+													"value": "{{password}}",
+													"type": "string"
+												}
+											]
+										},
+										"method": "POST",
+										"header": [
+											{
+												"key": "Content-Type",
+												"value": "application/json"
+											}
+										],
+										"body": {
+											"mode": "raw",
+											"raw": "{\n\t\"operation\":\"describe_all\"\n}"
+										},
+										"url": {
+											"raw": "{{host}}:{{port}}",
+											"host": [
+												"{{host}}"
+											],
+											"port": "{{port}}"
+										}
+									},
+									"response": [
+										{
+											"name": "Decribe All",
+											"originalRequest": {
+												"method": "POST",
+												"header": [
+													{
+														"key": "Content-Type",
+														"value": "application/json"
+													},
+													{
+														"key": "Authorization",
+														"type": "text",
+														"name": "Authorization",
+														"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+													}
+												],
+												"body": {
+													"mode": "raw",
+													"raw": "{\n\"operation\":\"describe_all\"\n\n}"
+												},
+												"url": {
+													"raw": "{{HDB_ENDPOINT}}",
+													"host": [
+														"{{HDB_ENDPOINT}}"
+													]
+												}
+											},
+											"status": "OK",
+											"code": 200,
+											"_postman_previewlanguage": "json",
+											"header": [
+												{
+													"key": "connection",
+													"value": "keep-alive",
+													"name": "connection",
+													"description": ""
+												},
+												{
+													"key": "content-length",
+													"value": "568",
+													"name": "content-length",
+													"description": ""
+												},
+												{
+													"key": "content-type",
+													"value": "application/json; charset=utf-8",
+													"name": "content-type",
+													"description": ""
+												},
+												{
+													"key": "date",
+													"value": "Fri, 01 Sep 2017 17:07:00 GMT",
+													"name": "date",
+													"description": ""
+												},
+												{
+													"key": "etag",
+													"value": "W/\"238-gfg0d+lv1qmocnKKFjlrSBm00dM\"",
+													"name": "etag",
+													"description": ""
+												},
+												{
+													"key": "x-powered-by",
+													"value": "HarperDB",
+													"name": "x-powered-by",
+													"description": ""
+												}
+											],
+											"cookie": [],
+											"body": ""
+										}
+									]
+								},
+								{
+									"name": "Describe Schema - restricted schema - non-SU test_user",
+									"event": [
+										{
+											"listen": "test",
+											"script": {
+												"id": "9c67d31f-ba13-47b6-9e59-f83928a900be",
+												"exec": [
+													"pm.test(\"Status code is 403\", function () {",
+													"    pm.response.to.have.status(403);",
+													"});",
+													"",
+													"pm.test(\"Should return restricted schema error response\", function() {",
+													"    var jsonResponse = pm.response.json();",
+													"    pm.expect(jsonResponse.response).to.eql(403);",
+													"    pm.expect(jsonResponse.error).to.eql(\"You are not authorized to perform the operation specified\");",
+													"    pm.expect(jsonResponse.unauthorized_access).to.eql(\"Your role does not have permission to view schema metadata for 'dev'\");",
+													"})"
+												],
+												"type": "text/javascript"
+											}
+										}
+									],
+									"request": {
+										"auth": {
+											"type": "basic",
+											"basic": [
+												{
+													"key": "username",
+													"value": "one_perm_user",
+													"type": "string"
+												},
+												{
+													"key": "password",
+													"value": "{{password}}",
+													"type": "string"
+												}
+											]
+										},
+										"method": "POST",
+										"header": [
+											{
+												"key": "Content-Type",
+												"value": "application/json"
+											}
+										],
+										"body": {
+											"mode": "raw",
+											"raw": "{\n\t\"operation\":\"describe_schema\",\n\t\"schema\": \"dev\"\n}"
+										},
+										"url": {
+											"raw": "{{host}}:{{port}}",
+											"host": [
+												"{{host}}"
+											],
+											"port": "{{port}}"
+										}
+									},
+									"response": [
+										{
+											"name": "Decribe All",
+											"originalRequest": {
+												"method": "POST",
+												"header": [
+													{
+														"key": "Content-Type",
+														"value": "application/json"
+													},
+													{
+														"key": "Authorization",
+														"type": "text",
+														"name": "Authorization",
+														"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+													}
+												],
+												"body": {
+													"mode": "raw",
+													"raw": "{\n\"operation\":\"describe_all\"\n\n}"
+												},
+												"url": {
+													"raw": "{{HDB_ENDPOINT}}",
+													"host": [
+														"{{HDB_ENDPOINT}}"
+													]
+												}
+											},
+											"status": "OK",
+											"code": 200,
+											"_postman_previewlanguage": "json",
+											"header": [
+												{
+													"key": "connection",
+													"value": "keep-alive",
+													"name": "connection",
+													"description": ""
+												},
+												{
+													"key": "content-length",
+													"value": "568",
+													"name": "content-length",
+													"description": ""
+												},
+												{
+													"key": "content-type",
+													"value": "application/json; charset=utf-8",
+													"name": "content-type",
+													"description": ""
+												},
+												{
+													"key": "date",
+													"value": "Fri, 01 Sep 2017 17:07:00 GMT",
+													"name": "date",
+													"description": ""
+												},
+												{
+													"key": "etag",
+													"value": "W/\"238-gfg0d+lv1qmocnKKFjlrSBm00dM\"",
+													"name": "etag",
+													"description": ""
+												},
+												{
+													"key": "x-powered-by",
+													"value": "HarperDB",
+													"name": "x-powered-by",
+													"description": ""
+												}
+											],
+											"cookie": [],
+											"body": ""
+										}
+									]
+								},
+								{
+									"name": "Describe Schema - non-SU test_user",
+									"event": [
+										{
+											"listen": "test",
+											"script": {
+												"id": "e1bd77ab-9a06-460c-a639-42395e9a2efe",
+												"exec": [
+													"pm.test(\"Status code is 200\", function () {",
+													"    pm.response.to.have.status(200);",
+													"});",
+													"",
+													"var jsonResponse = pm.response.json();",
+													"",
+													"var expected_schema = {",
+													"    northnwd: {",
+													"        employees: [\"employeeid\", \"city\", \"firstname\", \"lastname\"]",
+													"    }",
+													"}",
+													"",
+													"pm.test(\"Should return all table metadata user has permissions for\", function() {",
+													"    pm.expect(jsonResponse.length).to.eql(1);",
+													"    jsonResponse.forEach(table_data => {",
+													"        const { name, schema, attributes } = table_data;",
+													"        attributes.forEach(attr => {",
+													"            pm.expect(expected_schema[schema][name].includes(attr.attribute)).to.eql(true);",
+													"        })",
+													"    })",
+													"})"
+												],
+												"type": "text/javascript"
+											}
+										}
+									],
+									"request": {
+										"auth": {
+											"type": "basic",
+											"basic": [
+												{
+													"key": "username",
+													"value": "one_perm_user",
+													"type": "string"
+												},
+												{
+													"key": "password",
+													"value": "{{password}}",
+													"type": "string"
+												}
+											]
+										},
+										"method": "POST",
+										"header": [
+											{
+												"key": "Content-Type",
+												"value": "application/json"
+											}
+										],
+										"body": {
+											"mode": "raw",
+											"raw": "{\n\t\"operation\":\"describe_schema\",\n\t\"schema\": \"northnwd\"\n}"
+										},
+										"url": {
+											"raw": "{{host}}:{{port}}",
+											"host": [
+												"{{host}}"
+											],
+											"port": "{{port}}"
+										}
+									},
+									"response": [
+										{
+											"name": "Decribe All",
+											"originalRequest": {
+												"method": "POST",
+												"header": [
+													{
+														"key": "Content-Type",
+														"value": "application/json"
+													},
+													{
+														"key": "Authorization",
+														"type": "text",
+														"name": "Authorization",
+														"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+													}
+												],
+												"body": {
+													"mode": "raw",
+													"raw": "{\n\"operation\":\"describe_all\"\n\n}"
+												},
+												"url": {
+													"raw": "{{HDB_ENDPOINT}}",
+													"host": [
+														"{{HDB_ENDPOINT}}"
+													]
+												}
+											},
+											"status": "OK",
+											"code": 200,
+											"_postman_previewlanguage": "json",
+											"header": [
+												{
+													"key": "connection",
+													"value": "keep-alive",
+													"name": "connection",
+													"description": ""
+												},
+												{
+													"key": "content-length",
+													"value": "568",
+													"name": "content-length",
+													"description": ""
+												},
+												{
+													"key": "content-type",
+													"value": "application/json; charset=utf-8",
+													"name": "content-type",
+													"description": ""
+												},
+												{
+													"key": "date",
+													"value": "Fri, 01 Sep 2017 17:07:00 GMT",
+													"name": "date",
+													"description": ""
+												},
+												{
+													"key": "etag",
+													"value": "W/\"238-gfg0d+lv1qmocnKKFjlrSBm00dM\"",
+													"name": "etag",
+													"description": ""
+												},
+												{
+													"key": "x-powered-by",
+													"value": "HarperDB",
+													"name": "x-powered-by",
+													"description": ""
+												}
+											],
+											"cookie": [],
+											"body": ""
+										}
+									]
+								},
+								{
+									"name": "Describe Table - restricted table - non-SU test_user",
+									"event": [
+										{
+											"listen": "test",
+											"script": {
+												"id": "4aea27a0-9134-491a-a26f-63ca0958888d",
+												"exec": [
+													"pm.test(\"Status code is 403\", function () {",
+													"    pm.response.to.have.status(403);",
+													"});",
+													"",
+													"pm.test(\"Should return restricted schema table error response\", function() {",
+													"    var jsonResponse = pm.response.json();",
+													"    pm.expect(jsonResponse.response).to.eql(403);",
+													"    pm.expect(jsonResponse.error).to.eql(\"You are not authorized to perform the operation specified\");",
+													"    pm.expect(jsonResponse.unauthorized_access).to.eql(\"Your role does not have permission to view schema.table metadata for 'northnwd.shippers'\");",
+													"})"
+												],
+												"type": "text/javascript"
+											}
+										}
+									],
+									"request": {
+										"auth": {
+											"type": "basic",
+											"basic": [
+												{
+													"key": "username",
+													"value": "one_perm_user",
+													"type": "string"
+												},
+												{
+													"key": "password",
+													"value": "{{password}}",
+													"type": "string"
+												}
+											]
+										},
+										"method": "POST",
+										"header": [
+											{
+												"key": "Content-Type",
+												"value": "application/json"
+											}
+										],
+										"body": {
+											"mode": "raw",
+											"raw": "{\n\t\"operation\":\"describe_table\",\n\t\"schema\": \"northnwd\",\n\t\"table\": \"shippers\"\n}"
+										},
+										"url": {
+											"raw": "{{host}}:{{port}}",
+											"host": [
+												"{{host}}"
+											],
+											"port": "{{port}}"
+										}
+									},
+									"response": [
+										{
+											"name": "Decribe All",
+											"originalRequest": {
+												"method": "POST",
+												"header": [
+													{
+														"key": "Content-Type",
+														"value": "application/json"
+													},
+													{
+														"key": "Authorization",
+														"type": "text",
+														"name": "Authorization",
+														"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+													}
+												],
+												"body": {
+													"mode": "raw",
+													"raw": "{\n\"operation\":\"describe_all\"\n\n}"
+												},
+												"url": {
+													"raw": "{{HDB_ENDPOINT}}",
+													"host": [
+														"{{HDB_ENDPOINT}}"
+													]
+												}
+											},
+											"status": "OK",
+											"code": 200,
+											"_postman_previewlanguage": "json",
+											"header": [
+												{
+													"key": "connection",
+													"value": "keep-alive",
+													"name": "connection",
+													"description": ""
+												},
+												{
+													"key": "content-length",
+													"value": "568",
+													"name": "content-length",
+													"description": ""
+												},
+												{
+													"key": "content-type",
+													"value": "application/json; charset=utf-8",
+													"name": "content-type",
+													"description": ""
+												},
+												{
+													"key": "date",
+													"value": "Fri, 01 Sep 2017 17:07:00 GMT",
+													"name": "date",
+													"description": ""
+												},
+												{
+													"key": "etag",
+													"value": "W/\"238-gfg0d+lv1qmocnKKFjlrSBm00dM\"",
+													"name": "etag",
+													"description": ""
+												},
+												{
+													"key": "x-powered-by",
+													"value": "HarperDB",
+													"name": "x-powered-by",
+													"description": ""
+												}
+											],
+											"cookie": [],
+											"body": ""
+										}
+									]
+								},
+								{
+									"name": "Describe Table - non-SU test_user",
+									"event": [
+										{
+											"listen": "test",
+											"script": {
+												"id": "3990691d-d5d9-411a-bdd8-58a6636b95d3",
+												"exec": [
+													"pm.test(\"Status code is 200\", function () {",
+													"    pm.response.to.have.status(200);",
+													"});",
+													"",
+													"var jsonResponse = pm.response.json();",
+													"var expected_attributes = [\"employeeid\", \"city\", \"firstname\", \"lastname\"];",
+													"",
+													"pm.test(\"Should return metadata for table\", function() {",
+													"    pm.expect(Object.keys(jsonResponse).length).to.eql(9);",
+													"    pm.expect(jsonResponse.schema).to.eql('northnwd');",
+													"    pm.expect(jsonResponse.name).to.eql('employees');",
+													"    jsonResponse.attributes.forEach(attr => {",
+													"        pm.expect(expected_attributes.includes(attr.attribute)).to.eql(true);",
+													"    })",
+													"})"
+												],
+												"type": "text/javascript"
+											}
+										}
+									],
+									"request": {
+										"auth": {
+											"type": "basic",
+											"basic": [
+												{
+													"key": "username",
+													"value": "one_perm_user",
+													"type": "string"
+												},
+												{
+													"key": "password",
+													"value": "{{password}}",
+													"type": "string"
+												}
+											]
+										},
+										"method": "POST",
+										"header": [
+											{
+												"key": "Content-Type",
+												"value": "application/json"
+											}
+										],
+										"body": {
+											"mode": "raw",
+											"raw": "{\n\t\"operation\":\"describe_table\",\n\t\"schema\": \"northnwd\",\n\t\"table\": \"employees\"\n}"
+										},
+										"url": {
+											"raw": "{{host}}:{{port}}",
+											"host": [
+												"{{host}}"
+											],
+											"port": "{{port}}"
+										}
+									},
+									"response": [
+										{
+											"name": "Decribe All",
+											"originalRequest": {
+												"method": "POST",
+												"header": [
+													{
+														"key": "Content-Type",
+														"value": "application/json"
+													},
+													{
+														"key": "Authorization",
+														"type": "text",
+														"name": "Authorization",
+														"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+													}
+												],
+												"body": {
+													"mode": "raw",
+													"raw": "{\n\"operation\":\"describe_all\"\n\n}"
+												},
+												"url": {
+													"raw": "{{HDB_ENDPOINT}}",
+													"host": [
+														"{{HDB_ENDPOINT}}"
+													]
+												}
+											},
+											"status": "OK",
+											"code": 200,
+											"_postman_previewlanguage": "json",
+											"header": [
+												{
+													"key": "connection",
+													"value": "keep-alive",
+													"name": "connection",
+													"description": ""
+												},
+												{
+													"key": "content-length",
+													"value": "568",
+													"name": "content-length",
+													"description": ""
+												},
+												{
+													"key": "content-type",
+													"value": "application/json; charset=utf-8",
+													"name": "content-type",
+													"description": ""
+												},
+												{
+													"key": "date",
+													"value": "Fri, 01 Sep 2017 17:07:00 GMT",
+													"name": "date",
+													"description": ""
+												},
+												{
+													"key": "etag",
+													"value": "W/\"238-gfg0d+lv1qmocnKKFjlrSBm00dM\"",
+													"name": "etag",
+													"description": ""
+												},
+												{
+													"key": "x-powered-by",
+													"value": "HarperDB",
+													"name": "x-powered-by",
+													"description": ""
+												}
+											],
+											"cookie": [],
+											"body": ""
+										}
+									]
+								},
+								{
+									"name": "Drop one_perm_user",
+									"event": [
+										{
+											"listen": "test",
+											"script": {
+												"id": "12ae6aa3-0633-4674-9491-d1d3839204c1",
+												"exec": [
+													"pm.test(\"Status code is 200\", function () {",
+													"    pm.response.to.have.status(200);",
+													"});",
+													"",
+													"pm.test(\"Body includes correct message\", function () {",
+													"    const respMsg = pm.response.json().message;",
+													"    pm.expect(respMsg).to.equal(",
+													"        \"one_perm_user successfully deleted\"",
+													"    );",
+													"});"
+												],
+												"type": "text/javascript"
+											}
+										}
+									],
+									"request": {
+										"auth": {
+											"type": "basic",
+											"basic": [
+												{
+													"key": "password",
+													"value": "{{password}}",
+													"type": "string"
+												},
+												{
+													"key": "username",
+													"value": "{{username}}",
+													"type": "string"
+												},
+												{
+													"key": "showPassword",
+													"value": false,
+													"type": "boolean"
+												}
+											]
+										},
+										"method": "POST",
+										"header": [
+											{
+												"key": "Content-Type",
+												"value": "application/json"
+											},
+											{
+												"key": "Authorization",
+												"value": "Basic YWRtaW46cGFzc3dvcmQ="
+											}
+										],
+										"body": {
+											"mode": "raw",
+											"raw": "{\n  \"operation\":\"drop_user\",\n  \"username\":\"one_perm_user\"\n}",
+											"options": {
+												"raw": {}
+											}
+										},
+										"url": {
+											"raw": "{{host}}:{{port}}",
+											"host": [
+												"{{host}}"
+											],
+											"port": "{{port}}"
+										}
+									},
+									"response": []
+								},
+								{
+									"name": "Drop_role - ONE TABLE PERMS role",
+									"event": [
+										{
+											"listen": "test",
+											"script": {
+												"id": "6b9a4291-cb0a-4ee5-ad0f-ac500a4d4550",
+												"exec": [
+													"pm.test(\"Status code is 200\", function () {",
+													"    pm.response.to.have.status(200);",
+													"});",
+													"",
+													"pm.test(\"Body includes correct message\", function () {",
+													"    const respMsg = pm.response.json().message;",
+													"    pm.expect(respMsg).to.equal(",
+													"        \"developer_test_one_perm successfully deleted\"",
+													"    );",
+													"});"
+												],
+												"type": "text/javascript"
+											}
+										}
+									],
+									"request": {
+										"auth": {
+											"type": "basic",
+											"basic": [
+												{
+													"key": "password",
+													"value": "{{password}}",
+													"type": "string"
+												},
+												{
+													"key": "username",
+													"value": "{{username}}",
+													"type": "string"
+												},
+												{
+													"key": "showPassword",
+													"value": false,
+													"type": "boolean"
+												}
+											]
+										},
+										"method": "POST",
+										"header": [
+											{
+												"key": "Content-Type",
+												"value": "application/json"
+											},
+											{
+												"key": "Authorization",
+												"value": "Basic YWRtaW46cGFzc3dvcmQ="
+											}
+										],
+										"body": {
+											"mode": "raw",
+											"raw": "{\n    \"operation\":\"drop_role\",\n    \"id\":\"{{role_id}}\"\n}",
+											"options": {
+												"raw": {}
+											}
+										},
+										"url": {
+											"raw": "{{host}}:{{port}}",
+											"host": [
+												"{{host}}"
+											],
+											"port": "{{port}}"
+										}
+									},
+									"response": []
+								}
+							],
+							"protocolProfileBehavior": {},
+							"_postman_isSubFolder": true
+						}
+					],
+					"protocolProfileBehavior": {},
+					"_postman_isSubFolder": true
+				},
 				{
 					"name": "Add Role - error checks",
 					"item": [
@@ -32271,13 +35190,12 @@
 					"_postman_isSubFolder": true
 				},
 				{
-					"name": "SQL Add non SU role Copy",
+					"name": "Add non-SU role",
 					"event": [
 						{
 							"listen": "test",
 							"script": {
-								"id": "c6ce1696-73fd-4ad1-8977-d3d50b0480ee",
-								"type": "text/javascript",
+								"id": "6881a7ca-9b61-4a92-b61c-5b53ffe2c84b",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {",
 									"    pm.response.to.have.status(200);",
@@ -32285,7 +35203,8 @@
 									"",
 									"responseData = JSON.parse(responseBody);",
 									"postman.setEnvironmentVariable(\"role_id\", responseData.id)"
-								]
+								],
+								"type": "text/javascript"
 							}
 						}
 					],
@@ -32323,7 +35242,7 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\"operation\":\"add_role\",\n\"role\":\"developer_test_5\",\n\"permission\":{\n  \"super_user\": false,\n  \"northnwd\":{\n\n   \"tables\": {\n     \"customers\": {\n         \"read\":true,\n         \"insert\":true,\n         \"update\":true,\n         \"delete\":true,\n         \"attribute_restrictions\":[]\n      },\n      \"suppliers\": {\n         \"read\":false,\n         \"insert\":false,\n         \"update\":false,\n         \"delete\":false,\n         \"attribute_restrictions\":[]\n      },\n      \"region\": {\n         \"read\":true,\n         \"insert\":false,\n         \"update\":false,\n         \"delete\":false,\n         \"attribute_restrictions\":[{\n               \"attribute_name\": \"regiondescription\",\n               \"read\":true,\n               \"insert\":false,\n               \"update\":false,\n               \"delete\":false\n            }]\n      },\n      \"territories\": {\n         \"read\":true,\n         \"insert\":true,\n         \"update\":false,\n         \"delete\":false,\n         \"attribute_restrictions\":[\n           {\n               \"attribute_name\": \"territorydescription\",\n               \"read\":true,\n               \"insert\":true,\n               \"update\":false,\n               \"delete\":false\n            }\n           ]\n      },\n      \"categories\": {\n         \"read\":true,\n         \"insert\":true,\n         \"update\":true,\n         \"delete\":false,\n         \"attribute_restrictions\":[\n           {\n               \"attribute_name\": \"description\",\n               \"read\":true,\n               \"insert\":true,\n               \"update\":true,\n               \"delete\":false\n            }\n           ]\n      },\n      \"shippers\": {\n         \"read\":true,\n         \"insert\":true,\n         \"update\":true,\n         \"delete\":true,\n         \"attribute_restrictions\":[\n           {\n               \"attribute_name\": \"companyname\",\n               \"read\":false,\n               \"insert\":false,\n               \"update\":false,\n               \"delete\":false\n            }\n           ]\n      }\n   }\n}\n  }\n\n}",
+							"raw": "{\n\"operation\":\"add_role\",\n\"role\":\"test_dev_role\",\n\"permission\":{\n  \"super_user\": false,\n  \"northnwd\":{\n\n   \"tables\": {\n     \"customers\": {\n         \"read\":true,\n         \"insert\":true,\n         \"update\":true,\n         \"delete\":true,\n         \"attribute_restrictions\":[]\n      },\n      \"suppliers\": {\n         \"read\":false,\n         \"insert\":false,\n         \"update\":false,\n         \"delete\":false,\n         \"attribute_restrictions\":[]\n      },\n      \"region\": {\n         \"read\":true,\n         \"insert\":false,\n         \"update\":false,\n         \"delete\":false,\n         \"attribute_restrictions\":[{\n               \"attribute_name\": \"regiondescription\",\n               \"read\":true,\n               \"insert\":false,\n               \"update\":false,\n               \"delete\":false\n            }]\n      },\n      \"territories\": {\n         \"read\":true,\n         \"insert\":true,\n         \"update\":false,\n         \"delete\":false,\n         \"attribute_restrictions\":[\n           {\n               \"attribute_name\": \"territorydescription\",\n               \"read\":true,\n               \"insert\":true,\n               \"update\":false,\n               \"delete\":false\n            }\n           ]\n      },\n      \"categories\": {\n         \"read\":true,\n         \"insert\":true,\n         \"update\":true,\n         \"delete\":false,\n         \"attribute_restrictions\":[\n           {\n               \"attribute_name\": \"description\",\n               \"read\":true,\n               \"insert\":true,\n               \"update\":true,\n               \"delete\":false\n            }\n           ]\n      },\n      \"shippers\": {\n         \"read\":true,\n         \"insert\":true,\n         \"update\":true,\n         \"delete\":true,\n         \"attribute_restrictions\":[\n           {\n               \"attribute_name\": \"companyname\",\n               \"read\":false,\n               \"insert\":false,\n               \"update\":false,\n               \"delete\":false\n            }\n           ]\n      }\n   }\n}\n  }\n\n}",
 							"options": {
 								"raw": {}
 							}
@@ -32634,7 +35553,7 @@
 					"response": []
 				},
 				{
-					"name": "SQL drop_role",
+					"name": "Drop_role for non-SU role",
 					"event": [
 						{
 							"listen": "test",
@@ -35663,15 +38582,15 @@
 						{
 							"listen": "test",
 							"script": {
-								"type": "text/javascript",
+								"id": "645eb9b3-2382-46b0-a070-84f2fe4361b8",
 								"exec": [
 									"pm.test(\"Validation Check Schema Not found\", function () {",
 									"    var jsonData = pm.response.json();",
-									"    pm.expect(jsonData.error).to.eql(\"schema not found\");",
+									"    pm.expect(jsonData.error).to.eql(\"Schema 'northnwd' not found\");",
 									"});",
 									""
 								],
-								"id": "645eb9b3-2382-46b0-a070-84f2fe4361b8"
+								"type": "text/javascript"
 							}
 						}
 					],
