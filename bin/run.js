@@ -103,6 +103,7 @@ async function checkTransactionLogEnvironmentsExist(){
         }
 
         let describe_results = await schema_describe.describeAll();
+
         for (const schema_name of Object.keys(describe_results)) {
             for (const table_name of Object.keys(describe_results[schema_name])) {
                 await openCreateTransactionEnvironment(schema_name, table_name);
