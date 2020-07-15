@@ -32,7 +32,8 @@ module.exports = {
     describeSchema
 };
 
-//TODO - Sam - add code comment
+//This method is exposed to the API and internally for system operations.  If the op is being made internally, the `op_obj`
+// argument is not passed and, therefore, no permissions are used to filter the final schema metadata results.
 async function describeAll(op_obj) {
     try {
         const sys_call = hdb_utils.isEmptyOrZeroLength(op_obj);
@@ -131,12 +132,22 @@ async function describeAll(op_obj) {
     }
 }
 
-//TODO - Sam - add code comment
+/**
+ * This method will return the metadata for a table - if `attr_perms` are passed as an argument (or included in the `describe_table_object` arg),
+ * the final results w/ be filtered based on those permissions
+ *
+ * @param describe_table_object
+ * @param attr_perms - optional - permissions for the role requesting metadata for the table used when chained to other
+ * internal operations.  If this method is hit via the API, perms will be grabbed from the describe_table_object which
+ * includes the users role and permissions.
+ * @returns {Promise<{}|*>}
+ */
 async function descTable(describe_table_object, attr_perms) {
     const { schema, table } = describe_table_object;
     let table_attr_perms = attr_perms;
 
-    //TODO - Sam - add comment on what this is doing.
+    //If the describe_table_object includes a `hdb_user` value, it is being called from the API and we can grab the user's
+    // role permissions from there
     if (describe_table_object.hdb_user && !describe_table_object.hdb_user.role.permission.super_user) {
         table_attr_perms = describe_table_object.hdb_user.role.permission[schema].tables[table].attribute_restrictions;
     }
@@ -215,7 +226,12 @@ async function descTable(describe_table_object, attr_perms) {
     return table_result;
 }
 
-//TODO - Sam - add code comment
+/**
+ * Takes permissions for the table and returns the attributes that that have describe === true
+ *
+ * @param attr_perms - table attribute permissions for the role calling the describe op
+ * @returns {*} -  a filtered object of attributes that can be returned in the describe operation
+ */
 function getAttrsByPerms(attr_perms) {
     return attr_perms.reduce((acc, perm) => {
         if (perm.describe) {
@@ -225,7 +241,12 @@ function getAttrsByPerms(attr_perms) {
     }, []);
 }
 
-//TODO - Sam - add code comment
+/**
+ * Returns the schema metadata filtered based on permissions for the user role making the request
+ *
+ * @param describe_schema_object
+ * @returns {Promise<{}|[]>}
+ */
 async function describeSchema(describe_schema_object) {
     let validation_msg = validator.schema_object(describe_schema_object);
     if (validation_msg) {

@@ -206,7 +206,13 @@ function getTableAttrPerms(table_perms, table_schema) {
     }
 }
 
-//TODO - SAM - ADD COMMENT
+/**
+ * This method takes a perm object and returns a boolean value for whether or not the schema item should be included in
+ * a describe operation for the role being evaluated
+ *
+ * @param perm_obj - the perm object to evaluate CRUD permissions for
+ * @returns {boolean} - returns TRUE if there is at least one CRUD perm set to TRUE
+ */
 function getDescribePerm(perm_obj) {
     return crud_perm_keys.filter(perm => perm_obj[perm]).length > 0;
 }
