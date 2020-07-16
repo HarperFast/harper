@@ -343,14 +343,14 @@ const TEST_NON_SU_ROLE = {
                     "insert": false,
                     "update": false,
                     "delete": false,
-                    "attribute_restrictions": []
+                    "attribute_permissions": []
                 },
                 "dog": {
                     "read": true,
                     "insert": true,
                     "update": true,
                     "delete": true,
-                    "attribute_restrictions": []
+                    "attribute_permissions": []
                 }
             }
         },
@@ -361,70 +361,70 @@ const TEST_NON_SU_ROLE = {
                     "insert": false,
                     "update": false,
                     "delete": false,
-                    "attribute_restrictions": []
+                    "attribute_permissions": []
                 },
                 "hdb_attribute": {
                     "read": false,
                     "insert": false,
                     "update": false,
                     "delete": false,
-                    "attribute_restrictions": []
+                    "attribute_permissions": []
                 },
                 "hdb_schema": {
                     "read": false,
                     "insert": false,
                     "update": false,
                     "delete": false,
-                    "attribute_restrictions": []
+                    "attribute_permissions": []
                 },
                 "hdb_user": {
                     "read": false,
                     "insert": false,
                     "update": false,
                     "delete": false,
-                    "attribute_restrictions": []
+                    "attribute_permissions": []
                 },
                 "hdb_role": {
                     "read": false,
                     "insert": false,
                     "update": false,
                     "delete": false,
-                    "attribute_restrictions": []
+                    "attribute_permissions": []
                 },
                 "hdb_job": {
                     "read": false,
                     "insert": false,
                     "update": false,
                     "delete": false,
-                    "attribute_restrictions": []
+                    "attribute_permissions": []
                 },
                 "hdb_license": {
                     "read": false,
                     "insert": false,
                     "update": false,
                     "delete": false,
-                    "attribute_restrictions": []
+                    "attribute_permissions": []
                 },
                 "hdb_info": {
                     "read": false,
                     "insert": false,
                     "update": false,
                     "delete": false,
-                    "attribute_restrictions": []
+                    "attribute_permissions": []
                 },
                 "hdb_nodes": {
                     "read": false,
                     "insert": false,
                     "update": false,
                     "delete": false,
-                    "attribute_restrictions": []
+                    "attribute_permissions": []
                 },
                 "hdb_temp": {
                     "read": false,
                     "insert": false,
                     "update": false,
                     "delete": false,
-                    "attribute_restrictions": []
+                    "attribute_permissions": []
                 }
             }
         }

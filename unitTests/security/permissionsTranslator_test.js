@@ -20,7 +20,7 @@ const TEST_PERMS_ENUM = {
 
 const createTablePermsObj = (read_perm = true, insert_perm = true, update_perm = true, delete_perm = true) => ({
     ...createPermsObj(read_perm, insert_perm, update_perm, delete_perm),
-    attribute_restrictions: []
+    attribute_permissions: []
 });
 
 const createAttrPermission = (attr_name, perms = {read: true, insert: true, update: true, delete: true }) => ({
@@ -59,18 +59,18 @@ const validateTablePerms = (final_perms, initial_perms) => {
 };
 
 const validateAttrPerms = (final_perms, initial_perms) => {
-    if (!initial_perms || initial_perms.attribute_restrictions.length === 0) {
+    if (!initial_perms || initial_perms.attribute_permissions.length === 0) {
         if (final_perms.length !== 0) {
             return false;
         };
     } else {
-        const initial_perms_map = initial_perms.attribute_restrictions.reduce((acc, perm_obj) => {
+        const initial_perms_map = initial_perms.attribute_permissions.reduce((acc, perm_obj) => {
             acc[perm_obj.attribute_name] = perm_obj;
             return acc;
         }, {});
         final_perms.forEach(final_perm => {
-            if (!!initial_perms_map[final_perm.attribute_restrictions]) {
-                if (initial_perms_map[final_perm.attribute_restrictions] !== final_perm) {
+            if (!!initial_perms_map[final_perm.attribute_permissions]) {
+                if (initial_perms_map[final_perm.attribute_permissions] !== final_perm) {
                     return false
                 }
             }  else {
@@ -110,7 +110,7 @@ describe('Test permissionsTranslator module', function () {
 
             const test_attr = 'owner_id';
             const test_attr_perm = createAttrPermission(test_attr, createPermsObj(true, false, false, true));
-            test_role.permission[TEST_SCHEMA].tables.dog.attribute_restrictions.push(test_attr_perm);
+            test_role.permission[TEST_SCHEMA].tables.dog.attribute_permissions.push(test_attr_perm);
 
             const test_result = permissionsTranslator_rw.getRolePermissions(test_role);
             expect(test_result[TEST_SCHEMA].describe).to.be.true;
@@ -118,7 +118,7 @@ describe('Test permissionsTranslator module', function () {
             expect(test_result.system).to.deep.equal(test_role.permission.system);
             Object.keys(test_result[TEST_SCHEMA].tables).forEach(table => {
                 expect(validateTablePerms(test_result[TEST_SCHEMA].tables[table], test_role.permission[TEST_SCHEMA].tables[table])).to.be.true;
-                expect(validateAttrPerms(test_result[TEST_SCHEMA].tables[table].attribute_restrictions, test_role.permission[TEST_SCHEMA].tables[table])).to.be.true;
+                expect(validateAttrPerms(test_result[TEST_SCHEMA].tables[table].attribute_permissions, test_role.permission[TEST_SCHEMA].tables[table])).to.be.true;
             })
         });
 
@@ -128,7 +128,7 @@ describe('Test permissionsTranslator module', function () {
 
             const test_attr = 'owner_id';
             const test_attr_perm = createAttrPermission(test_attr)
-            test_role.permission[TEST_SCHEMA].tables.dog.attribute_restrictions.push(test_attr_perm);
+            test_role.permission[TEST_SCHEMA].tables.dog.attribute_permissions.push(test_attr_perm);
 
             const test_result = permissionsTranslator_rw.getRolePermissions(test_role);
             expect(test_result[TEST_SCHEMA].describe).to.be.true;
@@ -136,7 +136,7 @@ describe('Test permissionsTranslator module', function () {
             expect(test_result.system).to.deep.equal(test_role.permission.system);
             Object.keys(test_result[TEST_SCHEMA].tables).forEach(table => {
                 expect(validateTablePerms(table, test_role.permission[TEST_SCHEMA].tables[table])).to.be.true;
-                expect(validateAttrPerms(test_result[TEST_SCHEMA].tables[table].attribute_restrictions, test_role.permission[TEST_SCHEMA].tables[table])).to.be.true;
+                expect(validateAttrPerms(test_result[TEST_SCHEMA].tables[table].attribute_permissions, test_role.permission[TEST_SCHEMA].tables[table])).to.be.true;
             })
         });
 
@@ -146,7 +146,7 @@ describe('Test permissionsTranslator module', function () {
 
             const test_attr = 'owner_id';
             const test_attr_perm = createAttrPermission(test_attr, createPermsObj(false, false, false, false))
-            test_role.permission[TEST_SCHEMA].tables.dog.attribute_restrictions.push(test_attr_perm);
+            test_role.permission[TEST_SCHEMA].tables.dog.attribute_permissions.push(test_attr_perm);
 
             const test_result = permissionsTranslator_rw.getRolePermissions(test_role);
             expect(test_result[TEST_SCHEMA].describe).to.be.true;
@@ -154,7 +154,7 @@ describe('Test permissionsTranslator module', function () {
             expect(test_result.system).to.deep.equal(test_role.permission.system);
             Object.keys(test_result[TEST_SCHEMA].tables).forEach(table => {
                 expect(validateTablePerms(table, test_role.permission[TEST_SCHEMA].tables[table])).to.be.true;
-                expect(validateAttrPerms(test_result[TEST_SCHEMA].tables[table].attribute_restrictions, test_role.permission[TEST_SCHEMA].tables[table])).to.be.true;
+                expect(validateAttrPerms(test_result[TEST_SCHEMA].tables[table].attribute_permissions, test_role.permission[TEST_SCHEMA].tables[table])).to.be.true;
             })
         });
 
@@ -165,7 +165,7 @@ describe('Test permissionsTranslator module', function () {
 
             const test_attr = 'owner_id';
             const test_attr_perm = createAttrPermission(test_attr, createPermsObj(false, false, false, false))
-            test_role.permission[TEST_SCHEMA].tables.dog.attribute_restrictions.push(test_attr_perm);
+            test_role.permission[TEST_SCHEMA].tables.dog.attribute_permissions.push(test_attr_perm);
 
             const test_result = permissionsTranslator_rw.getRolePermissions(test_role);
             expect(test_result[TEST_SCHEMA].describe).to.be.true;
@@ -173,7 +173,7 @@ describe('Test permissionsTranslator module', function () {
             expect(test_result.system).to.deep.equal(test_role.permission.system);
             Object.keys(test_result[TEST_SCHEMA].tables).forEach(table => {
                 expect(validateTablePerms(table, test_role.permission[TEST_SCHEMA].tables[table])).to.be.true;
-                expect(validateAttrPerms(test_result[TEST_SCHEMA].tables[table].attribute_restrictions, test_role.permission[TEST_SCHEMA].tables[table])).to.be.true;
+                expect(validateAttrPerms(test_result[TEST_SCHEMA].tables[table].attribute_permissions, test_role.permission[TEST_SCHEMA].tables[table])).to.be.true;
             })
         });
 
@@ -183,7 +183,7 @@ describe('Test permissionsTranslator module', function () {
 
             const test_attr = 'owner_id';
             const test_attr_perm = createAttrPermission(test_attr, createPermsObj(true, true, true, true))
-            test_role.permission[TEST_SCHEMA].tables.dog.attribute_restrictions.push(test_attr_perm);
+            test_role.permission[TEST_SCHEMA].tables.dog.attribute_permissions.push(test_attr_perm);
 
             const test_result = permissionsTranslator_rw.getRolePermissions(test_role);
             expect(test_result[TEST_SCHEMA].describe).to.be.true;
@@ -191,7 +191,7 @@ describe('Test permissionsTranslator module', function () {
             expect(test_result.system).to.deep.equal(test_role.permission.system);
             Object.keys(test_result[TEST_SCHEMA].tables).forEach(table => {
                 expect(validateTablePerms(table, test_role.permission[TEST_SCHEMA].tables[table])).to.be.true;
-                expect(validateAttrPerms(test_result[TEST_SCHEMA].tables[table].attribute_restrictions, test_role.permission[TEST_SCHEMA].tables[table])).to.be.true;
+                expect(validateAttrPerms(test_result[TEST_SCHEMA].tables[table].attribute_permissions, test_role.permission[TEST_SCHEMA].tables[table])).to.be.true;
             })
         });
 
@@ -201,7 +201,7 @@ describe('Test permissionsTranslator module', function () {
 
             const test_attr = 'owner_id';
             const test_attr_perm = createAttrPermission(test_attr, createPermsObj(true, false, true, false))
-            test_role.permission[TEST_SCHEMA].tables.dog.attribute_restrictions.push(test_attr_perm);
+            test_role.permission[TEST_SCHEMA].tables.dog.attribute_permissions.push(test_attr_perm);
 
             const test_result = permissionsTranslator_rw.getRolePermissions(test_role);
             expect(test_result[TEST_SCHEMA].describe).to.be.true;
@@ -209,7 +209,7 @@ describe('Test permissionsTranslator module', function () {
             expect(test_result.system).to.deep.equal(test_role.permission.system);
             Object.keys(test_result[TEST_SCHEMA].tables).forEach(table => {
                 expect(validateTablePerms(table, test_role.permission[TEST_SCHEMA].tables[table])).to.be.true;
-                expect(validateAttrPerms(test_result[TEST_SCHEMA].tables[table].attribute_restrictions, test_role.permission[TEST_SCHEMA].tables[table])).to.be.true;
+                expect(validateAttrPerms(test_result[TEST_SCHEMA].tables[table].attribute_permissions, test_role.permission[TEST_SCHEMA].tables[table])).to.be.true;
             })
         });
 
@@ -219,12 +219,12 @@ describe('Test permissionsTranslator module', function () {
             const test_attr2 = 'id';
             const test_attr_perm = createAttrPermission(test_attr, createPermsObj(true, true, true, true))
             const test_attr_perm2 = createAttrPermission(test_attr2, createPermsObj(true, false, false, true))
-            test_role.permission[TEST_SCHEMA].tables.breed.attribute_restrictions.push(test_attr_perm);
-            test_role.permission[TEST_SCHEMA].tables.breed.attribute_restrictions.push(test_attr_perm2);
+            test_role.permission[TEST_SCHEMA].tables.breed.attribute_permissions.push(test_attr_perm);
+            test_role.permission[TEST_SCHEMA].tables.breed.attribute_permissions.push(test_attr_perm2);
 
             const test_attr3 = 'owner_id';
             const test_attr_perm3 = createAttrPermission(test_attr3, createPermsObj(true, false, true, false))
-            test_role.permission[TEST_SCHEMA].tables.dog.attribute_restrictions.push(test_attr_perm3);
+            test_role.permission[TEST_SCHEMA].tables.dog.attribute_permissions.push(test_attr_perm3);
 
             const test_result = permissionsTranslator_rw.getRolePermissions(test_role);
             expect(test_result[TEST_SCHEMA].describe).to.be.true;
@@ -232,7 +232,7 @@ describe('Test permissionsTranslator module', function () {
             expect(test_result.system).to.deep.equal(test_role.permission.system);
             Object.keys(test_result[TEST_SCHEMA].tables).forEach(table => {
                 expect(validateTablePerms(table, test_role.permission[TEST_SCHEMA].tables[table])).to.be.true;
-                expect(validateAttrPerms(test_result[TEST_SCHEMA].tables[table].attribute_restrictions, test_role.permission[TEST_SCHEMA].tables[table])).to.be.true;
+                expect(validateAttrPerms(test_result[TEST_SCHEMA].tables[table].attribute_permissions, test_role.permission[TEST_SCHEMA].tables[table])).to.be.true;
             })
         });
 
@@ -243,7 +243,7 @@ describe('Test permissionsTranslator module', function () {
 
             const test_attr = 'owner_id';
             const test_attr_perm = createAttrPermission(test_attr, createPermsObj(false, false, false, false))
-            test_role.permission[TEST_SCHEMA].tables.dog.attribute_restrictions.push(test_attr_perm);
+            test_role.permission[TEST_SCHEMA].tables.dog.attribute_permissions.push(test_attr_perm);
 
             const test_result = permissionsTranslator_rw.getRolePermissions(test_role);
             expect(test_result[TEST_SCHEMA].describe).to.be.false
@@ -251,7 +251,7 @@ describe('Test permissionsTranslator module', function () {
             expect(test_result.system).to.deep.equal(test_role.permission.system);
             Object.keys(test_result[TEST_SCHEMA].tables).forEach(table => {
                 expect(validateTablePerms(table, test_role.permission[TEST_SCHEMA].tables[table])).to.be.true;
-                expect(validateAttrPerms(test_result[TEST_SCHEMA].tables[table].attribute_restrictions, test_role.permission[TEST_SCHEMA].tables[table])).to.be.true;
+                expect(validateAttrPerms(test_result[TEST_SCHEMA].tables[table].attribute_permissions, test_role.permission[TEST_SCHEMA].tables[table])).to.be.true;
             })
         });
     })
