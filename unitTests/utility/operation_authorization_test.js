@@ -197,6 +197,7 @@ let ATTRIBUTE_PERMISSION_BASE = (attrs, crud_key, crud_value) => {
         const attr_perms = generateAttrPerms(crud_key, crud_value);
         final_attribute_permissions.push({
             attribute_name: attr,
+            describe: Object.values(attr_perms).map(attr => attr).length > 0,
             ...attr_perms
         })
     })
@@ -206,7 +207,7 @@ let ATTRIBUTE_PERMISSION_BASE = (attrs, crud_key, crud_value) => {
 const DEFAULT_ATTRIBUTE_PERMISSION_BASE = () => ATTRIBUTE_PERMISSION_BASE([ROLE_PERMISSION_KEY]);
 
 let ROLE_ATTRIBUTE_RESTRICTIONS = new Map();
-ROLE_ATTRIBUTE_RESTRICTIONS.set(ROLE_PERMISSION_KEY, DEFAULT_ATTRIBUTE_PERMISSION_BASE);
+ROLE_ATTRIBUTE_RESTRICTIONS.set(ROLE_PERMISSION_KEY, DEFAULT_ATTRIBUTE_PERMISSION_BASE());
 
 const test_attrs = [];
 AFFECTED_ATTRIBUTES_SET.forEach(attr => test_attrs.push({ attribute: attr }));
@@ -247,7 +248,7 @@ describe('Test operation_authorization', function() {
             let temp_insert = new alasql.yy.Insert(test_json);
             let req_json = getRequestJson(TEST_JSON);
             req_json.hdb_user.role.permission.dev.tables.dog.insert = true;
-            let att_base = DEFAULT_ATTRIBUTE_PERMISSION_BASE;
+            let att_base = DEFAULT_ATTRIBUTE_PERMISSION_BASE();
             req_json.hdb_user.role.permission.dev.tables.dog.attribute_permissions = att_base;
             let result = op_auth_rewire.verifyPermsAst(temp_insert, req_json.hdb_user, write.insert.name);
             assert.equal(result.length, 0);
@@ -322,7 +323,7 @@ describe('Test operation_authorization', function() {
             let temp_select = new alasql.yy.Select(test_json);
             let req_json = getRequestJson(TEST_JSON);
             req_json.hdb_user.role.permission.dev.tables.dog.read = true;
-            let att_base = DEFAULT_ATTRIBUTE_PERMISSION_BASE([ROLE_PERMISSION_KEY], crud_keys.READ, true);
+            let att_base = ATTRIBUTE_PERMISSION_BASE([ROLE_PERMISSION_KEY], crud_keys.READ, true);
             req_json.hdb_user.role.permission.dev.tables.dog.attribute_permissions = att_base;
             let result = op_auth_rewire.verifyPermsAst(temp_select, req_json.hdb_user, search.search.name);
             assert.equal(result.length, 0);
@@ -558,28 +559,28 @@ describe('Test operation_authorization', function() {
         });
     });
 
-    describe(`Test getAttributeRestrictions`, function () {
+    describe(`Test getAttributePermissions`, function () {
         it('Nominal case, valid JSON with attributes in the role.', function () {
-            let getAttributeRestrictions = op_auth_rewire.__get__('getAttributeRestrictions');
+            let getAttributePermissions = op_auth_rewire.__get__('getAttributePermissions');
             let req_json = getRequestJson(TEST_JSON);
             let perms = clone(PERMISSION_BASE);
             perms.dev.tables.dog.insert = true;
             let att_base = ATTRIBUTE_PERMISSION_BASE([ROLE_PERMISSION_KEY], crud_keys.INSERT, false);
             perms.dev.tables.dog.attribute_permissions = att_base;
             req_json.hdb_user.role.permission = perms;
-            let result = getAttributeRestrictions(req_json.hdb_user, 'dev', 'dog');
+            let result = getAttributePermissions(req_json.hdb_user, 'dev', 'dog');
             assert.equal(result.size, 1);
             assert.equal(result.get('name').attribute_name, 'name');
         });
 
         it('invalid JSON, Expect zero length Map returned ', function () {
-            let getAttributeRestrictions = op_auth_rewire.__get__('getAttributeRestrictions');
-            let result = getAttributeRestrictions(null);
+            let getAttributePermissions = op_auth_rewire.__get__('getAttributePermissions');
+            let result = getAttributePermissions(null);
             assert.equal(result.size, 0);
         });
 
         it('JSON with no restrictions in the role. Expect false ', function () {
-            let getAttributeRestrictions = op_auth_rewire.__get__('getAttributeRestrictions');
+            let getAttributePermissions = op_auth_rewire.__get__('getAttributePermissions');
             let req_json = getRequestJson(TEST_JSON);
             // Leaving this manual definition of the JSON to omit attribute_permissions
             let perms = {
@@ -596,12 +597,12 @@ describe('Test operation_authorization', function() {
                 },
             };
             req_json.hdb_user.role.permission = perms;
-            let result = getAttributeRestrictions(req_json.hdb_user);
+            let result = getAttributePermissions(req_json.hdb_user);
             assert.equal(result.size, 0);
         });
 
         it('JSON with super user. Expect zero length back ', function () {
-            let getAttributeRestrictions = op_auth_rewire.__get__('getAttributeRestrictions');
+            let getAttributePermissions = op_auth_rewire.__get__('getAttributePermissions');
             let req_json = getRequestJson(TEST_JSON);
             // Leaving this manual definition of the JSON to omit attribute_permissions
             let perms = {
@@ -618,7 +619,7 @@ describe('Test operation_authorization', function() {
                 },
             };
             req_json.hdb_user.role.permission = perms;
-            let result = getAttributeRestrictions(req_json.hdb_user);
+            let result = getAttributePermissions(req_json.hdb_user);
             assert.equal(result.size, 0);
         });
     });

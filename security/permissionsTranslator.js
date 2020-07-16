@@ -35,7 +35,7 @@ const table_perms_template = () => ({
 
 const attr_perms_template = (attr_name, perms = permissions_template()) => ({
     attribute_name: attr_name,
-    describe: getDescribePerm(perms),
+    describe: getAttributeDescribePerm(perms),
     [READ]: perms[READ],
     [INSERT]: perms[INSERT],
     [UPDATE]: perms[UPDATE]
@@ -181,7 +181,7 @@ function getTableAttrPerms(table_perms, table_schema) {
             if (attr_r_map[attribute]) {
                 //if there is a permission set passed for current attribute, set it to the final perms object
                 let attr_perm_obj = attr_r_map[attribute];
-                attr_perm_obj.describe = getDescribePerm(attr_perm_obj);
+                attr_perm_obj.describe = getAttributeDescribePerm(attr_perm_obj);
                 final_table_perms.attribute_permissions.push(attr_perm_obj);
                 //if hash attr perms are not provided, check current CRUD perms values and make sure hash_attr is provided
                 // perms for any CRUD values that are set to true for other attributes
@@ -201,10 +201,10 @@ function getTableAttrPerms(table_perms, table_schema) {
             final_table_perms.attribute_permissions.push(final_hash_attr_perms);
         }
 
-        final_table_perms.describe = getDescribePerm(final_table_perms);
+        final_table_perms.describe = getSchemaTableDescribePerm(final_table_perms);
         return final_table_perms;
     } else{
-        table_perms.describe = getDescribePerm(table_perms);
+        table_perms.describe = getSchemaTableDescribePerm(table_perms);
         return table_perms;
     }
 }
@@ -216,8 +216,12 @@ function getTableAttrPerms(table_perms, table_schema) {
  * @param perm_obj - the perm object to evaluate CRUD permissions for
  * @returns {boolean} - returns TRUE if there is at least one CRUD perm set to TRUE
  */
-function getDescribePerm(perm_obj) {
+function getSchemaTableDescribePerm(perm_obj) {
     return crud_perm_keys.filter(perm => perm_obj[perm]).length > 0;
+}
+
+function getAttributeDescribePerm(perm_obj) {
+    return attr_crud_perm_keys.filter(perm => perm_obj[perm]).length > 0;
 }
 
 /**
