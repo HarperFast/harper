@@ -355,7 +355,6 @@ function verifyPerms(request_json, operation) {
     return [];
 }
 
-//TODO - SAM - update naming
 /**
  * Compare the attributes specified in the call with the user's role.  If there are permissions in the role,
  * ensure that the permission required for the operation matches the permission in the role.

@@ -41,7 +41,6 @@ const attr_perms_template = (attr_name, perms = permissions_template()) => ({
     [UPDATE]: perms[UPDATE]
 });
 
-//TODO - SAM - need to review how/where we are iterating through crud keys - is a DELETE key messing something up?
 const { READ, INSERT, UPDATE } = terms.PERMS_CRUD_ENUM;
 const crud_perm_keys = Object.values(terms.PERMS_CRUD_ENUM);
 //we do not need/track DELETE permissions on the attribute level
