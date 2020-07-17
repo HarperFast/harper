@@ -82,7 +82,7 @@ async function describeAll(op_obj) {
                 if (sys_call || is_su) {
                     desc = await descTable({"schema": table.schema, "table": table.name});
                 } else if (role_perms && role_perms[table.schema].describe && role_perms[table.schema].tables[table.name].describe) {
-                    const t_attr_perms = role_perms[table.schema].tables[table.name].attribute_restrictions;
+                    const t_attr_perms = role_perms[table.schema].tables[table.name].attribute_permissions;
                     desc = await descTable({"schema": table.schema, "table": table.name}, t_attr_perms );
                 }
                 if (desc) {
@@ -149,7 +149,7 @@ async function descTable(describe_table_object, attr_perms) {
     //If the describe_table_object includes a `hdb_user` value, it is being called from the API and we can grab the user's
     // role permissions from there
     if (describe_table_object.hdb_user && !describe_table_object.hdb_user.role.permission.super_user) {
-        table_attr_perms = describe_table_object.hdb_user.role.permission[schema].tables[table].attribute_restrictions;
+        table_attr_perms = describe_table_object.hdb_user.role.permission[schema].tables[table].attribute_permissions;
     }
 
     let table_result = {};
@@ -294,7 +294,7 @@ async function describeSchema(describe_schema_object) {
                         table_perms = schema_perms.tables[table.name];
                     }
                     if (hdb_utils.isEmpty(table_perms) || table_perms.describe) {
-                        let data = await descTable({"schema": describe_schema_object.schema, "table": table.name}, table_perms ? table_perms.attribute_restrictions : null);
+                        let data = await descTable({"schema": describe_schema_object.schema, "table": table.name}, table_perms ? table_perms.attribute_permissions : null);
                         if (data) {
                             results.push(data);
                         }
