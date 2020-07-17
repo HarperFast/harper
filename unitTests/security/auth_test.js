@@ -84,7 +84,7 @@ let invalid_other_user = {
 
 describe('Test authorize function', function () {
     it('Cannot complete request Basic authorization: User not found ', function (done) {
-        auth.authorize(invalid_basic_user, null, function (err, user) {            
+        auth.authorize(invalid_basic_user, null, function (err, user) {
             assert.equal(err, "Login failed", "Cannot complete request: User 'nonook' not found");
             done();
         });
@@ -118,7 +118,7 @@ describe('Test authorize function', function () {
 
     //other authorization
     it('Cannot complete request Other authorization: User not found ', function (done) {
-        auth.authorize(invalid_other_user, null, function (err, user) {            
+        auth.authorize(invalid_other_user, null, function (err, user) {
             assert.equal(err, "Login failed", "Cannot complete request: User 'nouser' not found");
             done();
         });
@@ -204,7 +204,7 @@ let missing_attribute_user = {
                     dog: {
                         insert: true,
                         read: true,
-                        attribute_restrictions: [
+                        attribute_permissions: [
                         ]
                     }
                 }
@@ -222,7 +222,7 @@ let attribute_read_all_false_user = {
                     dog: {
                         insert: true,
                         read: true,
-                        attribute_restrictions: [
+                        attribute_permissions: [
                             {
                                 attribute_name: "name",
                                 read: false
@@ -248,7 +248,7 @@ let attribute_read_some_false_user = {
                     dog: {
                         insert: true,
                         read: true,
-                        attribute_restrictions: [
+                        attribute_permissions: [
                             {
                                 attribute_name: "name",
                                 insert: true
@@ -274,7 +274,7 @@ let user = {
                     dog: {
                         insert: true,
                         read: true,
-                        attribute_restrictions: [
+                        attribute_permissions: [
                             {
                                 attribute_name: "name",
                                 "insert": true,
@@ -299,7 +299,7 @@ let no_restrict_attribute_user = {
                 tables: {
                     dog: {
                         insert: true,
-                        read: true                        
+                        read: true
                     }
                 }
             }
@@ -393,7 +393,7 @@ describe('Test checkPermissions function', function () {
         });
     });
 
-    it('super_user permission can authorized', function (done) {        
+    it('super_user permission can authorized', function (done) {
         check_super_user_permission_object.user = super_user;
         auth.checkPermissions(check_super_user_permission_object, function (err, result) {
             assert.equal(err, null, 'no error');
@@ -422,7 +422,7 @@ describe('Test checkPermissions function', function () {
 
     it('Not authorized to insert table when tables no attribute', function (done) {
         check_permission_object.user = no_insert_permission_user;
-        auth.checkPermissions(check_permission_object, function (err, result) {            
+        auth.checkPermissions(check_permission_object, function (err, result) {
             assert.equal(err, null, 'no error');
             assert.equal(result.authorized, false, "Not authorized to insert table");
             done();
@@ -467,7 +467,7 @@ describe('Test checkPermissions function', function () {
 
     it('can authorized with not have restrict attribute', function (done) {
         check_permission_object.user = no_restrict_attribute_user;
-        auth.checkPermissions(check_permission_object, function (err, result) {            
+        auth.checkPermissions(check_permission_object, function (err, result) {
             assert.equal(err, null, 'no error');
             assert.equal(result.authorized, true, "authorized with not have restrict attribute");
             done();

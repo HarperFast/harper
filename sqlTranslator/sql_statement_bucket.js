@@ -112,7 +112,7 @@ class sql_statement_bucket {
             //We only want to do this if the table that is being SELECT *'d has READ permissions - if not, we will only
             // want to send the table permissions error response so we can skip this step.
             if (role_perms[col_schema].tables[col_table][terms.PERMS_CRUD_ENUM.READ]) {
-                const table_attr_perms = filterReadRestrictedAttrs(role_perms[col_schema].tables[col_table].attribute_restrictions);
+                const table_attr_perms = filterReadRestrictedAttrs(role_perms[col_schema].tables[col_table].attribute_permissions);
                 let final_table_attrs;
                 if (table_attr_perms.length > 0) {
                     final_table_attrs = table_attr_perms;
