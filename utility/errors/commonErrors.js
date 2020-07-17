@@ -37,6 +37,10 @@ const ROLE_PERMS_ERROR_MSGS = {
     SU_CU_ROLE_NO_PERMS_ALLOWED: 'Roles with `cluster_user` or `super_user` set to true cannot have other permissions set.'
 };
 
+const SQL_ERROR_MSGS = {
+    OUTER_JOIN_TRANSLATION_ERROR: "There was an error translating the final SQL outer join data."
+}
+
 //TODO - move this enum to be exported as a part of COMMON_ERROR_MSGS
 //NOTE: Any changes made to these errors must also be made to unitTests/commonTestErrors.js otherwise the unit tests will fail
 const LMDB_ERRORS_ENUM = {
@@ -72,7 +76,8 @@ const LMDB_ERRORS_ENUM = {
 // All error messages should be added to the COMMON_ERROR_MSGS ENUM for export - this helps to organize all error messages
 //into a single export while still allowing us to group them here in a more readable/searchable way
 const COMMON_ERROR_MSGS = {
-    ...ROLE_PERMS_ERROR_MSGS
+    ...ROLE_PERMS_ERROR_MSGS,
+    ...SQL_ERROR_MSGS
 };
 
 module.exports = {

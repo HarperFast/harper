@@ -8,6 +8,7 @@
 
 const _ = require('lodash');
 const alasql = require('alasql');
+alasql.options.cache = false;
 const alasql_function_importer = require('../sqlTranslator/alasqlFunctionImporter');
 const clone = require('clone');
 const RecursiveIterator = require('recursive-iterator');
@@ -15,6 +16,7 @@ const log = require('../utility/logging/harper_logger');
 const common_utils = require('../utility/common_utils');
 const harperBridge = require('./harperBridge/harperBridge');
 const hdbTerms = require('../utility/hdbTerms');
+const { hdb_errors } = require('../utility/errors/hdbError');
 
 const WHERE_CLAUSE_IS_NULL = 'IS NULL';
 const SEARCH_ERROR_MSG = 'There was a problem performing this search. Please check the logs and try again.';
@@ -1081,10 +1083,7 @@ class SQLSearch {
             log.trace(`Final SQL: ${sql}`);
             final_results = await alasql.promise(sql, table_data);
             if (this.has_outer_join) {
-                const start = Date.now();
                 final_results = this._translateUndefinedValues(final_results);
-                const end = Date.now();
-                console.log("Time: ", end-start);
             }
             log.trace(`Final AlaSQL results data included ${final_results.length} rows`);
         } catch(err) {
@@ -1097,19 +1096,25 @@ class SQLSearch {
     }
 
     _translateUndefinedValues(data)  {
-        let final_data = [];
-        for (const row of data) {
-            let final_row = {}
-            Object.keys(row).forEach(key => {
-                if (row[key] === undefined) {
-                    final_row[key] = null;
-                } else {
-                    final_row[key] = row[key];
-                }
-            })
-            final_data.push(final_row);
+        try {
+            let final_data = [];
+            for (const row of data) {
+                let final_row = Object.create(null);
+                Object.keys(row).forEach(key => {
+                    if (row[key] === undefined) {
+                        final_row[key] = null;
+                    } else {
+                        final_row[key] = row[key];
+                    }
+                });
+                final_data.push(final_row);
+            }
+            return final_data;
+        } catch(e) {
+            log.error(hdb_errors.COMMON_ERROR_MSGS.OUTER_JOIN_TRANSLATION_ERROR);
+            log.trace(e.stack);
+            return data
         }
-        return final_data;
     }
 
     /**
