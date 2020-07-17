@@ -39,7 +39,7 @@ const ROLE_PERMS_ERROR_MSGS = {
 
 const SQL_ERROR_MSGS = {
     OUTER_JOIN_TRANSLATION_ERROR: "There was an error translating the final SQL outer join data."
-}
+};
 
 //TODO - move this enum to be exported as a part of COMMON_ERROR_MSGS
 //NOTE: Any changes made to these errors must also be made to unitTests/commonTestErrors.js otherwise the unit tests will fail

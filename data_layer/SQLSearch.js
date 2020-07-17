@@ -1113,7 +1113,7 @@ class SQLSearch {
         } catch(e) {
             log.error(hdb_errors.COMMON_ERROR_MSGS.OUTER_JOIN_TRANSLATION_ERROR);
             log.trace(e.stack);
-            return data
+            return data;
         }
     }
 
