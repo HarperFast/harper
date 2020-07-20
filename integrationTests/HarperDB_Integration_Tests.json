@@ -24567,7 +24567,6 @@
 									"        if (i > 0) {",
 									"            pm.expect(perm.schema).to.eql(\"another\");",
 									"            pm.expect(perm.table).to.eql(\"breed\");",
-									"            pm.expect(perm.required_table_permissions[0]).to.eql(\"read\");",
 									"            perm.required_attribute_permissions.forEach(attr_perm => {",
 									"                pm.expect(attr_perm.required_permissions[0]).to.eql(\"read\");",
 									"                pm.expect(expected_attrs.includes(attr_perm.attribute_name)).to.eql(true);",
@@ -24661,7 +24660,6 @@
 									"        if (i > 0) {",
 									"            pm.expect(perm.schema).to.eql(\"another\");",
 									"            pm.expect(perm.table).to.eql(\"breed\");",
-									"            pm.expect(perm.required_table_permissions[0]).to.eql(\"read\");",
 									"            perm.required_attribute_permissions.forEach(attr_perm => {",
 									"                pm.expect(attr_perm.required_permissions[0]).to.eql(\"read\");",
 									"                pm.expect(expected_attrs.includes(attr_perm.attribute_name)).to.eql(true);",
@@ -25127,6 +25125,169 @@
 						"body": {
 							"mode": "raw",
 							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"SELECT d.age AS dog_age, AVG(d.weight_lbs) AS dog_weight, o.name AS owner_name, b.name FROM dev.dog AS d INNER JOIN other.owner AS o ON d.owner_id = o.id INNER JOIN another.breed AS b ON d.breed_id = b.id GROUP BY o.name, b.name, d.age ORDER BY b.name\"\n}",
+							"options": {
+								"raw": {}
+							}
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "SQL ALTER non SU role with multi table join restrictions",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "c08c0b25-822c-4672-bb1f-3743f157a8da",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n   \"operation\":\"alter_role\",\n   \"role\":\"developer_test_5\",\n   \"id\": \"{{role_id}}\",\n   \"permission\":{\n      \"super_user\": false,\n      \"dev\": {\n         \"tables\": {\n            \"dog\": {\n               \"read\": false,\n               \"insert\": true,\n               \"update\": true,\n               \"delete\": false,\n               \"attribute_permissions\": []\n            }\n         }\n      },\n      \"other\": {\n         \"tables\": {\n            \"owner\": {\n               \"read\": true,\n               \"insert\": false,\n               \"update\": true,\n               \"delete\": false,\n               \"attribute_permissions\": [\n                  {\n                     \"attribute_name\": \"name\",\n                     \"read\":false,\n                     \"insert\":false,\n                     \"update\":false\n                  }\n               ]\n            }\n         }\n      },\n      \"another\": {\n         \"tables\": {\n            \"breed\": {\n               \"read\": true,\n               \"insert\": false,\n               \"update\": false,\n               \"delete\": false,\n               \"attribute_permissions\": [\n                  {\n                     \"attribute_name\": \"name\",\n                     \"read\":true,\n                     \"insert\":false,\n                     \"update\":false\n                  }\n               ]\n            }\n         }\n      }\n   }\n}",
+							"options": {
+								"raw": {}
+							}
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Select with ALL RESTRICTED complex CROSS 3 SCHEMA JOINS as test_user",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "cfe1e545-d7a8-4095-9c99-008b44f0ccd2",
+								"exec": [
+									"var jsonData = pm.response.json();",
+									"pm.test(\"Status code is 403\", function () {",
+									"    pm.response.to.have.status(403);",
+									"});",
+									"",
+									"var jsonData = jsonData.unauthorized_access;",
+									"pm.test(\"3 schema_table perm objects returned in unauthorized access array\", function () {",
+									"    pm.expect(jsonData.length).to.eql(3);",
+									"});",
+									"",
+									"",
+									"pm.test(\"correct table and attribute-level permissions errors are returned\", function () {",
+									"    jsonData.forEach((perm, i) => {",
+									"        if (i === 0) {",
+									"            pm.expect(perm.schema).to.eql(\"dev\");",
+									"            pm.expect(perm.table).to.eql(\"dog\");",
+									"            pm.expect(perm.required_table_permissions[0]).to.eql(\"read\");",
+									"        } else if (i === 1) {",
+									"            var expected_attrs = [\"id\", \"name\"];",
+									"            pm.expect(perm.schema).to.eql(\"other\");",
+									"            pm.expect(perm.table).to.eql(\"owner\");",
+									"            perm.required_attribute_permissions.forEach(attr_perm => {",
+									"                pm.expect(attr_perm.required_permissions[0]).to.eql(\"read\");",
+									"                pm.expect(expected_attrs.includes(attr_perm.attribute_name)).to.eql(true);",
+									"            });",
+									"        } else {",
+									"            pm.expect(perm.schema).to.eql(\"another\");",
+									"            pm.expect(perm.table).to.eql(\"breed\");",
+									"            perm.required_attribute_permissions.forEach(attr_perm => {",
+									"                pm.expect(attr_perm.required_permissions[0]).to.eql(\"read\");",
+									"                pm.expect(attr_perm.attribute_name).to.eql(\"country\");",
+									"            });",
+									"        }",
+									"    })",
+									"})"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{test_user_name}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"value": true,
+									"type": "boolean"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"SELECT d.age AS dog_age, AVG(d.weight_lbs) AS dog_weight, o.name AS owner_name, b.name, b.country FROM dev.dog AS d INNER JOIN other.owner AS o ON d.owner_id = o.id INNER JOIN another.breed AS b ON d.breed_id = b.id GROUP BY o.name, b.name, d.age ORDER BY b.name\"\n}",
 							"options": {
 								"raw": {}
 							}

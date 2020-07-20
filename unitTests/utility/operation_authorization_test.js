@@ -448,17 +448,6 @@ describe('Test operation_authorization', function() {
             assert.deepEqual(op_auth_rewire.verifyPerms(test_json, jobs.handleGetJob.name), []);
         });
 
-        it('Test operation with read & insert required, but user only has insert.  False expected', function () {
-            let required_permissions = op_auth_rewire.__get__('required_permissions');
-            required_permissions.set('test method', new Permission_rw(false, ['insert', 'read']));
-            op_auth_rewire.__set__('required_permissions', required_permissions);
-            let req_json = getRequestJson(TEST_JSON);
-            let perms = clone(PERMISSION_BASE);
-            req_json.hdb_user.role.permission = perms;
-            let result = op_auth_rewire.verifyPerms(req_json, 'test method');
-            assert.strictEqual(result.length, 1);
-        });
-
         it('Test bad method.  False expected', function () {
             let req_json = getRequestJson(TEST_JSON);
             let perms = clone(PERMISSION_BASE);

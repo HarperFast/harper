@@ -165,28 +165,29 @@ function verifyPermsAst(ast, user_object, operation) {
 
         for (let s = 0; s < schemas.length; s++) { //NOSONAR
             let tables = parsed_ast.getTablesBySchemaName(schemas[s]);
-            if(!tables) {
-                return [];
+            if (tables) {
+                schema_table_map.set(schemas[s], tables);
             }
+        }
 
-            schema_table_map.set(schemas[s], tables);
-            let table_perm_restriction = hasPermissions(user_object, operation, schema_table_map); //NOSONAR;
-            if(table_perm_restriction && table_perm_restriction.length) {
-                table_perm_restriction.forEach((restriction)=> {
-                    let failed_perm_object = new terms.PermissionResponseObject();
-                    failed_perm_object.schema = schemas[s];
-                    failed_perm_object.table = restriction.table;
-                    restriction.required_table_permissions.forEach((perm) => {
-                        failed_perm_object.required_table_permissions.push(perm);
-                    });
-                    failed_permission_objects.push(failed_perm_object);
+        let table_perm_restriction = hasPermissions(user_object, operation, schema_table_map); //NOSONAR;
+        if (table_perm_restriction && table_perm_restriction.length) {
+            table_perm_restriction.forEach((restriction)=> {
+                let failed_perm_object = new terms.PermissionResponseObject();
+                failed_perm_object.schema = restriction.schema;
+                failed_perm_object.table = restriction.table;
+                restriction.required_table_permissions.forEach((perm) => {
+                    failed_perm_object.required_table_permissions.push(perm);
                 });
-            }
+                failed_permission_objects.push(failed_perm_object);
+            });
+        }
 
-            for (let t = 0; t<tables.length; t++) {
-                let attributes = parsed_ast.getAttributesBySchemaTableName(schemas[s], tables[t]);
-                const attribute_permissions = getAttributePermissions(user_object, schemas[s],tables[t]);
-                let unauthorized_attributes = checkAttributePerms(attributes, attribute_permissions, operation, tables[t], schemas[s]);
+        schema_table_map.forEach((tables, schema_key) => {
+            for (let t = 0; t < tables.length; t++) {
+                let attributes = parsed_ast.getAttributesBySchemaTableName(schema_key, tables[t]);
+                const attribute_permissions = getAttributePermissions(user_object, schema_key, tables[t]);
+                let unauthorized_attributes = checkAttributePerms(attributes, attribute_permissions, operation, tables[t], schema_key);
                 if (unauthorized_attributes && Object.keys(unauthorized_attributes).length > 0) {
                     if (failed_permission_objects.length > 0) {
                         consolidatePermsRestrictions(unauthorized_attributes, failed_permission_objects);
@@ -195,7 +196,7 @@ function verifyPermsAst(ast, user_object, operation) {
                     }
                 }
             }
-        }
+        });
         return failed_permission_objects;
     } catch(e) {
         harper_logger.info(e);
@@ -270,9 +271,9 @@ function hasPermissions(user_object, op, schema_table_map ) {
                             failed_table.table = table;
                             failed_table.required_table_permissions.push(perms);
                             unauthorized_table.push(failed_table);
-                            return unauthorized_table;
                         }
                     }
+                    return unauthorized_table;
                 } catch(e) {
                     harper_logger.info(e);
                     // If we are here, either there are not any permissions specified for the operation, or the schema/table was not found
