@@ -26,7 +26,6 @@ class HdbError extends Error {
         this.http_resp_code = http_code ? http_code : hdb_errors.HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR;
         this.http_resp_msg = http_msg ? http_msg : hdb_errors.DEFAULT_ERROR_MSGS[http_code] ? hdb_errors.DEFAULT_ERROR_MSGS[http_code] : hdb_errors.DEFAULT_ERROR_MSGS[hdb_errors.HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR];
         this.message = err_orig.message ? err_orig.message : this.http_resp_msg;
-        this.name = err_orig.name;
         this.type = err_orig.name;
 
         //This line ensures the original stack trace is captured and does not include the 'handle' or 'constructor' methods
@@ -59,6 +58,7 @@ function handleHDBError(e, http_code, http_msg, log_level = logger.ERR, log_msg 
 
 module.exports =  {
     handleHDBError,
+    HdbError,
     //Including common hdb_errors here so that they can be brought into modules on the same line where the handler method is brought in
     hdb_errors
 };

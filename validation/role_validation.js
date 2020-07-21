@@ -112,47 +112,43 @@ function customValidate(object) {
                         validationErrors.push(new Error(`${t}.delete must be a boolean`));
                     }
 
-                    if (table.attribute_restrictions) {
+                    if (table.attribute_permissions) {
                         let table_attribute_names = global.hdb_schema[item][t].attributes.map(({attribute}) => attribute);
                         const attr_perms_check = {
                             read: false,
                             insert: false,
                             update: false
                         };
-                        for(let r in table.attribute_restrictions) {
-                            let restriction = table.attribute_restrictions[r];
-                            if(!restriction.attribute_name || !table_attribute_names.includes(restriction.attribute_name)) {
-                                validationErrors.push(new Error(`Invalid attribute ${restriction.attribute_name}`));
+                        for(let r in table.attribute_permissions) {
+                            let permission = table.attribute_permissions[r];
+                            if(!permission.attribute_name || !table_attribute_names.includes(permission.attribute_name)) {
+                                validationErrors.push(new Error(`Invalid attribute ${permission.attribute_name}`));
                                 continue;
                             }
 
-                            if(!validate.isDefined(restriction.attribute_name))
-                                validationErrors.push(new Error(`attribute_restriction must have an attribute_name`));
-                            if(!validate.isDefined(restriction.read))
-                                validationErrors.push(new Error(`attribute_restriction missing read permission`));
-                            if(!validate.isDefined(restriction.insert))
-                                validationErrors.push(new Error(`attribute_restriction missing insert permission`));
-                            if(!validate.isDefined(restriction.update))
-                                validationErrors.push(new Error(`attribute_restriction missing update permission`));
-                            if(!validate.isDefined(restriction.delete))
-                                validationErrors.push(new Error(`attribute_restriction missing delete permission`));
-                            if(!validate.isBoolean(restriction.read))
-                                validationErrors.push(new Error('attribute_restriction.read must be boolean'));
-                            if(!validate.isBoolean(restriction.insert))
-                                validationErrors.push(new Error('attribute_restriction.insert must be boolean'));
-                            if(!validate.isBoolean(restriction.update))
-                                validationErrors.push(new Error('attribute_restriction.update must be boolean'));
-                            if(!validate.isBoolean(restriction.delete))
-                                validationErrors.push(new Error('attribute_restriction.delete must be boolean'));
+                            if(!validate.isDefined(permission.attribute_name))
+                                validationErrors.push(new Error(`attribute_permission must have an attribute_name`));
+                            if(!validate.isDefined(permission.read))
+                                validationErrors.push(new Error(`attribute_permission missing read permission`));
+                            if(!validate.isDefined(permission.insert))
+                                validationErrors.push(new Error(`attribute_permission missing insert permission`));
+                            if(!validate.isDefined(permission.update))
+                                validationErrors.push(new Error(`attribute_permission missing update permission`));
+                            if(!validate.isBoolean(permission.read))
+                                validationErrors.push(new Error('attribute_permission.read must be boolean'));
+                            if(!validate.isBoolean(permission.insert))
+                                validationErrors.push(new Error('attribute_permission.insert must be boolean'));
+                            if(!validate.isBoolean(permission.update))
+                                validationErrors.push(new Error('attribute_permission.update must be boolean'));
 
                             //confirm that false table perms are not set to true for an attribute
-                            if (!attr_perms_check.read && restriction.read) {
+                            if (!attr_perms_check.read && permission.read) {
                                 attr_perms_check.read = true;
                             }
-                            if (!attr_perms_check.insert && restriction.insert) {
+                            if (!attr_perms_check.insert && permission.insert) {
                                 attr_perms_check.insert = true;
                             }
-                            if (!attr_perms_check.update && restriction.update) {
+                            if (!attr_perms_check.update && permission.update) {
                                 attr_perms_check.update = true;
                             }
                         }
@@ -183,7 +179,7 @@ function validateNoSUPerms(obj) {
     if (operation === terms.OPERATIONS_ENUM.ADD_ROLE || operation === terms.OPERATIONS_ENUM.ALTER_ROLE) {
         //Check if role type is super user or cluster user
         const is_su_cu_role = permission.super_user || permission.cluster_user;
-        const has_perms = permission.attribute_restrictions && Object.keys(permission.attribute_restrictions).length > 1;
+        const has_perms = permission.attribute_permissions && Object.keys(permission.attribute_permissions).length > 1;
         if (is_su_cu_role && has_perms) {
             throw handleHDBError(new Error(), HTTP_STATUS_CODES.BAD_REQUEST, COMMON_ERROR_MSGS.SU_CU_ROLE_NO_PERMS_ALLOWED);
         }

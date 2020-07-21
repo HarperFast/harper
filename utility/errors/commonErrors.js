@@ -30,9 +30,15 @@ const DEFAULT_ERROR_MSGS = {
 const DEFAULT_ERROR_RESP = DEFAULT_ERROR_MSGS[HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR];
 
 const ROLE_PERMS_ERROR_MSGS = {
+    SCHEMA_PERM_ERROR: (schema_name) => `Your role does not have permission to view schema metadata for '${schema_name}'`,
+    SCHEMA_TABLE_PERM_ERROR: (schema_name, table_name) => `Your role does not have permission to view schema.table metadata for '${schema_name}.${table_name}'`,
     CU_ROLE_NO_PERMS_MIX: 'cluster_user permission cannot be mixed with other permissions',
     MISMATCHED_TABLE_ATTR_PERMS: (schema_table) => `You have a conflict with TABLE permissions for '${schema_table}' being false and ATTRIBUTE permissions being true. Please try again`,
     SU_CU_ROLE_NO_PERMS_ALLOWED: 'Roles with `cluster_user` or `super_user` set to true cannot have other permissions set.'
+};
+
+const SQL_ERROR_MSGS = {
+    OUTER_JOIN_TRANSLATION_ERROR: "There was an error translating the final SQL outer join data."
 };
 
 //TODO - move this enum to be exported as a part of COMMON_ERROR_MSGS
@@ -70,7 +76,8 @@ const LMDB_ERRORS_ENUM = {
 // All error messages should be added to the COMMON_ERROR_MSGS ENUM for export - this helps to organize all error messages
 //into a single export while still allowing us to group them here in a more readable/searchable way
 const COMMON_ERROR_MSGS = {
-    ...ROLE_PERMS_ERROR_MSGS
+    ...ROLE_PERMS_ERROR_MSGS,
+    ...SQL_ERROR_MSGS
 };
 
 module.exports = {
