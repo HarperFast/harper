@@ -272,10 +272,10 @@ describe('Test operation_authorization', function() {
             att_base[0].insert = false;
             req_json.hdb_user.role.permission.dev.tables.dog.attribute_permissions = att_base;
             let result = op_auth_rewire.verifyPermsAst(temp_insert, req_json.hdb_user, write.insert.name);
-            assert.equal(result.length, 2);
-            result.forEach(perms_obj => {
-                assert.equal(RESTRICTED_ATTRIBUTES_2.includes(perms_obj.required_attribute_permissions[0].attribute_name), true);
-                assert.equal(perms_obj.required_attribute_permissions[0].required_permissions[0], test_terms.TEST_CRUD_PERM_KEYS.INSERT);
+            assert.equal(result.length, 1);
+            result[0].required_attribute_permissions.forEach(perm => {
+                assert.equal(RESTRICTED_ATTRIBUTES_2.includes(perm.attribute_name), true);
+                assert.equal(perm.required_permissions[0], test_terms.TEST_CRUD_PERM_KEYS.INSERT);
             })
         });
 
@@ -311,10 +311,10 @@ describe('Test operation_authorization', function() {
             let att_base = DEFAULT_ATTRIBUTE_PERMISSION_BASE();
             req_json.hdb_user.role.permission.dev.tables.dog.attribute_permissions = att_base;
             let result = op_auth_rewire.verifyPermsAst(temp_select, req_json.hdb_user, search.search.name);
-            assert.equal(result.length, 4);
-            result.forEach(perms_obj => {
-                assert.equal(TEST_ATTRIBUTES.includes(perms_obj.required_attribute_permissions[0].attribute_name), true);
-                assert.equal(perms_obj.required_attribute_permissions[0].required_permissions[0], test_terms.TEST_CRUD_PERM_KEYS.READ);
+            assert.equal(result.length, 1);
+            result[0].required_attribute_permissions.forEach(perm => {
+                assert.equal(TEST_ATTRIBUTES.includes(perm.attribute_name), true);
+                assert.equal(perm.required_permissions[0], test_terms.TEST_CRUD_PERM_KEYS.READ);
             })
         });
 
@@ -404,7 +404,11 @@ describe('Test operation_authorization', function() {
             perms.dev.tables.dog.attribute_permissions = att_base;
             req_json.hdb_user.role.permission = perms;
             let result = op_auth_rewire.verifyPerms(req_json, write.insert.name);
-            assert.equal(result.length, 2);
+            assert.equal(result.length, 1);
+            result[0].required_attribute_permissions.forEach(perm => {
+                assert.equal(RESTRICTED_ATTRIBUTES.includes(perm.attribute_name), true);
+                assert.equal(perm.required_permissions[0], test_terms.TEST_CRUD_PERM_KEYS.INSERT);
+            })
         });
 
         it('Pass in get_job request as non-super user. expect true', function () {
