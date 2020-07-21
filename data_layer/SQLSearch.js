@@ -8,6 +8,7 @@
 
 const _ = require('lodash');
 const alasql = require('alasql');
+alasql.options.cache = false;
 const alasql_function_importer = require('../sqlTranslator/alasqlFunctionImporter');
 const clone = require('clone');
 const RecursiveIterator = require('recursive-iterator');
@@ -15,6 +16,7 @@ const log = require('../utility/logging/harper_logger');
 const common_utils = require('../utility/common_utils');
 const harperBridge = require('./harperBridge/harperBridge');
 const hdbTerms = require('../utility/hdbTerms');
+const { hdb_errors } = require('../utility/errors/hdbError');
 
 const WHERE_CLAUSE_IS_NULL = 'IS NULL';
 const SEARCH_ERROR_MSG = 'There was a problem performing this search. Please check the logs and try again.';
@@ -51,6 +53,7 @@ class SQLSearch {
 
         this.has_aggregator = false;
         this.has_ordinal = false;
+        this.has_outer_join = false;
 
         this._getColumns();
         this._getTables();
@@ -826,6 +829,9 @@ class SQLSearch {
 
         if (this.statement.joins) {
             this.statement.joins.forEach(join => {
+                if (join.joinmode && join.joinmode !== "INNER") {
+                    this.has_outer_join = true;
+                }
                 tables.push(join.table);
                 let from = join.joinmode + ' JOIN ? AS ' + (join.as ? join.as : join.table.tableid);
 
@@ -1076,6 +1082,9 @@ class SQLSearch {
             let sql = this._buildSQL();
             log.trace(`Final SQL: ${sql}`);
             final_results = await alasql.promise(sql, table_data);
+            if (this.has_outer_join) {
+                final_results = this._translateUndefinedValues(final_results);
+            }
             log.trace(`Final AlaSQL results data included ${final_results.length} rows`);
         } catch(err) {
             log.error('Error thrown from AlaSQL in SQLSearch class method finalSQL.');
@@ -1084,6 +1093,28 @@ class SQLSearch {
         }
 
         return final_results;
+    }
+
+    _translateUndefinedValues(data)  {
+        try {
+            let final_data = [];
+            for (const row of data) {
+                let final_row = Object.create(null);
+                Object.keys(row).forEach(key => {
+                    if (row[key] === undefined) {
+                        final_row[key] = null;
+                    } else {
+                        final_row[key] = row[key];
+                    }
+                });
+                final_data.push(final_row);
+            }
+            return final_data;
+        } catch(e) {
+            log.error(hdb_errors.COMMON_ERROR_MSGS.OUTER_JOIN_TRANSLATION_ERROR);
+            log.trace(e.stack);
+            return data;
+        }
     }
 
     /**
@@ -1193,7 +1224,6 @@ class SQLSearch {
                 log.error(err);
             }
         }
-
         return Object.values(Object.values(this.data)[0].__merged_data);
     }
 }

@@ -39,7 +39,7 @@ function appendSystemTablesToRole(user_role) {
             new_prop["insert"] = false;
             new_prop["update"] = false;
             new_prop["delete"] = false;
-            new_prop["attribute_restrictions"] = [];
+            new_prop["attribute_permissions"] = [];
             user_role.permission.system.tables[table] = new_prop;
         }
     } catch(err) {
@@ -206,18 +206,18 @@ function checkPermissions(check_permission_obj, callback) {
     }
 
 
-    if (permission[check_permission_obj.schema].tables[check_permission_obj.table].attribute_restrictions
+    if (permission[check_permission_obj.schema].tables[check_permission_obj.table].attribute_permissions
         && !check_permission_obj.attributes) {
 
         authoriziation_obj.authorized = false;
-        authoriziation_obj.messages.push(`${check_permission_obj.schema}.${check_permission_obj.table} has attribute restrictions. Missing attributes to validate`);
+        authoriziation_obj.messages.push(`${check_permission_obj.schema}.${check_permission_obj.table} has attribute permissions. Missing attributes to validate`);
         return callback(null, authoriziation_obj);
     }
 
-    if (permission[check_permission_obj.schema].tables[check_permission_obj.table].attribute_restrictions
+    if (permission[check_permission_obj.schema].tables[check_permission_obj.table].attribute_permissions
         && check_permission_obj.attributes) {
 
-        let restricted_attrs = permission[check_permission_obj.schema].tables[check_permission_obj.table].attribute_restrictions;
+        let restricted_attrs = permission[check_permission_obj.schema].tables[check_permission_obj.table].attribute_permissions;
         for (let r_attr in restricted_attrs) {
             if (check_permission_obj.attributes.indexOf(restricted_attrs[r_attr].attribute_name) > -1 && !restricted_attrs[r_attr][check_permission_obj.operation]) {
                 authoriziation_obj.authorized = false;

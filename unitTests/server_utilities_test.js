@@ -55,7 +55,7 @@ let TEST_JSON = {
                             "insert": true,
                             "update": true,
                             "delete": true,
-                            "attribute_restrictions": []
+                            "attribute_permissions": []
                         }
                     }
                 }
@@ -97,7 +97,7 @@ let TEST_JSON_SUPER_USER = {
                             "insert": true,
                             "update": true,
                             "delete": true,
-                            "attribute_restrictions": []
+                            "attribute_permissions": []
                         }
                     }
                 }
