@@ -261,17 +261,21 @@ function hasPermissions(user_object, op, schema_table_map ) {
             if (table_permissions && table) {
                 try {
                     //Here we check all required permissions for the operation defined in the map with the values of the permissions in the role.
+                    const required_table_perms = [];
                     for (let i = 0; i<required_permissions.get(op).perms.length; i++) {
                         let perms = required_permissions.get(op).perms[i];
                         let user_permission = user_perms[schema_table].tables[table][perms];
                         if (user_permission === undefined || user_permission === null || user_permission === false) {
                             harper_logger.info(`Required permission not found for operation ${op} in role ${user_object.role.id}`);
-                            let failed_table = new terms.PermissionResponseObject();
-                            failed_table.schema = schema_table;
-                            failed_table.table = table;
-                            failed_table.required_table_permissions.push(perms);
-                            unauthorized_table.push(failed_table);
+                            required_table_perms.push(perms);
                         }
+                    }
+                    if (required_table_perms.length > 0) {
+                        let failed_table = new terms.PermissionResponseObject();
+                        failed_table.schema = schema_table;
+                        failed_table.table = table;
+                        failed_table.required_table_permissions = required_table_perms;
+                        unauthorized_table.push(failed_table);
                     }
                     return unauthorized_table;
                 } catch(e) {
