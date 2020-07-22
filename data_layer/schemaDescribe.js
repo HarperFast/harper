@@ -130,7 +130,7 @@ async function describeAll(op_obj) {
     } catch (e) {
         logger.error('Got an error in describeAll');
         logger.error(e);
-        return handleHDBError(new Error());
+        return handleHDBError(new Error(), COMMON_ERROR_MSGS.DESCRIBE_ALL_ERR);
     }
 }
 

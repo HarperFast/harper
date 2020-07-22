@@ -29,9 +29,6 @@ const DEFAULT_ERROR_MSGS = {
 };
 const DEFAULT_ERROR_RESP = DEFAULT_ERROR_MSGS[HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR];
 
-//TODO - SAM - Adds comment here about adding additional error messages and how to organize - including
-// note to add comments above each ENUM describing where to use.
-
 const SCHEMA_OP_ERROR_MSGS = {
     DESCRIBE_ALL_ERR: "There was an error during describeAll.  Please check the logs and try again.",
     SCHEMA_NOT_FOUND: (schema) => `Schema '${schema}' not found`,

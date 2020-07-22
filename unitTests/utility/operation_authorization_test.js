@@ -190,7 +190,6 @@ function generateAttrPerms(crud_key, crud_value) {
     return attr_perms
 }
 
-//TODO - Sam - update naming
 let ATTRIBUTE_PERMISSION_BASE = (attrs, crud_key, crud_value) => {
     const final_attribute_permissions = [];
     attrs.forEach(attr => {
