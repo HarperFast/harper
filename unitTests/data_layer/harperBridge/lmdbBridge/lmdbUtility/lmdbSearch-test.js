@@ -150,7 +150,7 @@ describe('test lmdbSearch module', ()=>{
 
         it('test for unknown search_type', ()=>{
             let search_object = new SearchObject('dev', 'dog', 'name', 'Ky*le', 'id', ['id', 'name']);
-            let search_type =test_utils.assertErrorSync(create_search_type_function, [search_object, 'id'], LMDB_ERRORS.UKNOWN_SEARCH_TYPE);
+            let search_type =test_utils.assertErrorSync(create_search_type_function, [search_object, 'id'], LMDB_ERRORS.UNKNOWN_SEARCH_TYPE);
             assert.deepStrictEqual(search_type, undefined);
         });
 

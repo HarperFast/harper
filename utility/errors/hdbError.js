@@ -10,15 +10,15 @@ const logger = require('../logging/harper_logger');
 class HdbError extends Error {
     /**
      * @param {Error} err_orig -  Error to be translated into HdbError. If manually throwing an error, pass `new Error()` to ensure stack trace is maintained
-     * @param {Number} [http_code] - optional -  response status code that will be returned via the API
      * @param {String} [http_msg] - optional -  response message that will be returned via the API
+     * @param {Number} [http_code] - optional -  response status code that will be returned via the API
      * @param {String} [log_level] - optional -  log level that will be used IF a `log_msg` is provided.  If not, nothing will be logged
      * @param {String} [log_msg] - optional - log message that, if provided, will be logged at the `log_level` above
      */
     constructor(
         err_orig,
-        http_code,
         http_msg,
+        http_code,
         log_level,
         log_msg
     ) {
@@ -49,11 +49,11 @@ class HdbError extends Error {
  * @param log_msg
  * @returns {HdbError}
  */
-function handleHDBError(e, http_code, http_msg, log_level = logger.ERR, log_msg = false) {
+function handleHDBError(e, http_msg, http_code, log_level = logger.ERR, log_msg = false) {
     if (e instanceof HdbError) {
         return e;
     }
-    return (new HdbError(e, http_code, http_msg, log_level, log_msg));
+    return (new HdbError(e, http_msg, http_code, log_level, log_msg));
 }
 
 module.exports =  {

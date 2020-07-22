@@ -29,6 +29,13 @@ const DEFAULT_ERROR_MSGS = {
 };
 const DEFAULT_ERROR_RESP = DEFAULT_ERROR_MSGS[HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR];
 
+const SCHEMA_OP_ERROR_MSGS = {
+    DESCRIBE_ALL_ERR: "There was an error during describeAll.  Please check the logs and try again.",
+    SCHEMA_NOT_FOUND: (schema) => `Schema '${schema}' not found`,
+    TABLE_NOT_FOUND: (schema, table) => `Table '${schema}.${table}' not found`,
+    INVALID_TABLE_ERR: (table_result) => `Invalid table ${JSON.stringify(table_result)}`
+};
+
 const ROLE_PERMS_ERROR_MSGS = {
     SCHEMA_PERM_ERROR: (schema_name) => `Your role does not have permission to view schema metadata for '${schema_name}'`,
     SCHEMA_TABLE_PERM_ERROR: (schema_name, table_name) => `Your role does not have permission to view schema.table metadata for '${schema_name}.${table_name}'`,
@@ -69,8 +76,8 @@ const LMDB_ERRORS_ENUM = {
     END_VALUE_REQUIRED: 'end_value is required',
     CANNOT_COMPARE_STRING_TO_NUMERIC_KEYS: 'cannot compare a string to numeric keys',
     END_VALUE_MUST_BE_GREATER_THAN_START_VALUE: 'end_value must be greater than start_value',
-    UKNOWN_SEARCH_TYPE: 'unknown search type',
-    CANNOT_DROP_TABLE_HASH_ATTRIBUTE: 'cannot drop a table\'s hash attribute',
+    UNKNOWN_SEARCH_TYPE: 'unknown search type',
+    CANNOT_DROP_TABLE_HASH_ATTRIBUTE: 'cannot drop a table\'s hash attribute'
 };
 
 // All error messages should be added to the COMMON_ERROR_MSGS ENUM for export - this helps to organize all error messages
@@ -78,6 +85,7 @@ const LMDB_ERRORS_ENUM = {
 const COMMON_ERROR_MSGS = {
     ...ROLE_PERMS_ERROR_MSGS,
     ...SQL_ERROR_MSGS,
+    ...SCHEMA_OP_ERROR_MSGS,
     SCHEMA_REQUIRED: 'schema is required',
     TABLE_REQUIRED: 'table is required'
 };
@@ -86,6 +94,6 @@ module.exports = {
     COMMON_ERROR_MSGS,
     DEFAULT_ERROR_MSGS,
     DEFAULT_ERROR_RESP,
-    LMDB_ERRORS_ENUM,
     HTTP_STATUS_CODES,
+    LMDB_ERRORS_ENUM
 };

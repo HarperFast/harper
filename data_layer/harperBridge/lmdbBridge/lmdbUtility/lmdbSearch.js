@@ -210,7 +210,7 @@ function createSearchTypeFromSearchObject(search_object, hash_attribute, return_
             return lmdb_terms.SEARCH_TYPES.STARTS_WITH;
         }
 
-        throw new Error(LMDB_ERRORS.UKNOWN_SEARCH_TYPE);
+        throw new Error(LMDB_ERRORS.UNKNOWN_SEARCH_TYPE);
     } else{
         switch (comparator) {
             case hdb_terms.VALUE_SEARCH_COMPARATORS.BETWEEN:
@@ -224,7 +224,7 @@ function createSearchTypeFromSearchObject(search_object, hash_attribute, return_
             case hdb_terms.VALUE_SEARCH_COMPARATORS.LESS_OR_EQ:
                 return lmdb_terms.SEARCH_TYPES.LESS_THAN_EQUAL;
             default:
-                throw new Error(LMDB_ERRORS.UKNOWN_SEARCH_TYPE);
+                throw new Error(LMDB_ERRORS.UNKNOWN_SEARCH_TYPE);
         }
     }
 }
