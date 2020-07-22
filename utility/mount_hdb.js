@@ -14,7 +14,8 @@ const system_schema = require('../json/systemSchema');
 
 module.exports = function (logger, hdb_path, callback) {
     const env_mngr = require('../utility/environment/environmentManager');
-    let system_schema_path = path.join(hdb_path, 'schema', 'system');
+    let system_schema_path = path.join(hdb_path, terms.SCHEMA_DIR_NAME, terms.SYSTEM_SCHEMA_NAME);
+    let transactions_path = path.join(hdb_path, terms.TRANSACTIONS_DIR_NAME);
 
     makeDirectory(logger, hdb_path);
     makeDirectory(logger, path.join(hdb_path, "backup"));
@@ -25,15 +26,17 @@ module.exports = function (logger, hdb_path, callback) {
     makeDirectory(logger, path.join(hdb_path, 'doc'));
     makeDirectory(logger, path.join(hdb_path, 'schema'));
     makeDirectory(logger, system_schema_path);
+    makeDirectory(logger, path.join(hdb_path, terms.TRANSACTIONS_DIR_NAME));
     makeDirectory(logger, path.join(hdb_path, 'clustering'));
     makeDirectory(logger, path.join(hdb_path, 'clustering', 'transaction_log'));
     makeDirectory(logger, path.join(hdb_path, 'clustering', 'connections'));
 
+    env_mngr.setProperty(terms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY, hdb_path);
     if(env_mngr.getDataStoreType() === terms.STORAGE_TYPES_ENUM.FILE_SYSTEM){
         createFSTables(system_schema_path, logger);
         return callback(null, 'complete');
     } else if(env_mngr.getDataStoreType() === terms.STORAGE_TYPES_ENUM.LMDB){
-        createLMDBTables(system_schema_path, logger).then(()=>{
+        createLMDBTables(system_schema_path, transactions_path, logger).then(()=>{
             callback(null, 'complete');
         }).catch(e=>{
             callback(e);
@@ -62,21 +65,30 @@ function createFSTables(schema_path, logger){
 /**
  * creates the environments & dbis needed for lmdb  based on the systemSchema
  * @param schema_path
+ * @param transactions_path
  * @param logger
  * @returns {Promise<void>}
  */
-async function createLMDBTables(schema_path, logger){
+async function createLMDBTables(schema_path, transactions_path, logger){
+    // eslint-disable-next-line global-require
+    const lmdb_create_table = require('../data_layer/harperBridge/lmdbBridge/lmdbMethods/lmdbCreateTable');
+    // eslint-disable-next-line global-require
+    const CreateTableObject = require('../data_layer/CreateTableObject');
+
     let tables = Object.keys(system_schema);
+
     for(let x = 0; x < tables.length; x++) {
         let table_name = tables[x];
         let table_env;
-        try {
-            table_env = await lmdb_environment_utility.createEnvironment(schema_path, table_name);
-        } catch(e){
+        let hash_attribute = system_schema[table_name].hash_attribute;
+        try{
+            let create_table = new CreateTableObject(terms.SYSTEM_SCHEMA_NAME, table_name, hash_attribute);
+            await lmdb_create_table(undefined, create_table);
+            table_env = await lmdb_environment_utility.openEnvironment(schema_path, table_name);
+        }catch(e){
             logger.error(`issue creating environment for ${terms.SYSTEM_SCHEMA_NAME}.${table_name}: ${e}`);
             throw e;
         }
-        let hash_attribute = system_schema[table_name].hash_attribute;
 
         //create all dbis
         let attributes = system_schema[table_name].attributes;

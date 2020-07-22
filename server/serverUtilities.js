@@ -6,6 +6,7 @@ const csv = require('../data_layer/csvBulkLoad');
 const schema = require('../data_layer/schema');
 const schema_describe = require('../data_layer/schemaDescribe');
 const delete_ = require('../data_layer/delete');
+const read_transaction_log = require('../data_layer/readTransactionLog');
 const user = require('../security/user');
 const role = require('../security/role');
 const cluster_utilities = require('./clustering/clusterUtilities');
@@ -485,6 +486,13 @@ function getOperationFunction(json){
             break;
         case terms.OPERATIONS_ENUM.SYSTEM_INFORMATION:
             operation_function = system_information.getAllSystemInformation;
+            break;
+        case terms.OPERATIONS_ENUM.DELETE_TRANSACTION_LOGS_BEFORE:
+            operation_function = signalJob;
+            job_operation_function = delete_.deleteTransactionLogsBefore;
+            break;
+        case terms.OPERATIONS_ENUM.READ_TRANSACTION_LOG:
+            operation_function = read_transaction_log;
             break;
         default:
             break;

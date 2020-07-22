@@ -1,6 +1,8 @@
 "use strict";
 const lmdb = require('node-lmdb');
 const environment_util = require('./environmentUtility');
+const InsertRecordsResponseObject = require('./InsertRecordsResponseObject');
+const UpdateRecordsResponseObject = require('./UpdateRecordsResponseObject');
 const common = require('./commonUtility');
 const search_utility = require('./searchUtility');
 const LMDB_ERRORS = require('../errors/commonErrors').LMDB_ERRORS_ENUM;
@@ -42,12 +44,9 @@ function insertRecords(env, hash_attribute, write_attributes , records){
         environment_util.initializeDBIs(env, hash_attribute, write_attributes);
 
         txn = env.beginTxn();
-
-        let result = {
-            written_hashes: [],
-            skipped_hashes: []
-        };
-        for(let k = 0; k < records.length; k++){
+        let result = new InsertRecordsResponseObject();
+        let k = records.length;
+        while(k--){
             let record = records[k];
             setTimestamps(record, true);
 
@@ -72,7 +71,7 @@ function insertRecords(env, hash_attribute, write_attributes , records){
 
                 value = common.convertKeyValueToWrite(value, env.dbis[attribute][lmdb_terms.DBI_DEFINITION_NAME].key_type);
                 if(value !== null) {
-                    //LMDB has a 511 byte limit for keys, so we return null if the byte size is larger than 511 to not index that value
+                    //LMDB has a 254 byte limit for keys, so we return null if the byte size is larger than 254 to not index that value
                     if(typeof value === 'string' && Buffer.byteLength(value) > MAX_BYTE_SIZE){
                         let key = `${attribute}/${primary_key}`;
                         txn.putString(env.dbis[lmdb_terms.BLOB_DBI_NAME], key, value);
@@ -89,6 +88,7 @@ function insertRecords(env, hash_attribute, write_attributes , records){
             } catch(e){
                 if(e.message.startsWith('MDB_KEYEXIST') === true){
                     result.skipped_hashes.push(cast_hash_value);
+                    records.splice(k, 1);
                     continue;
                 }else{
                     throw e;
@@ -98,8 +98,10 @@ function insertRecords(env, hash_attribute, write_attributes , records){
             result.written_hashes.push(cast_hash_value);
         }
 
+        result.txn_time = common.getMicroTime();
         txn.commit();
-
+        result.written_hashes = result.written_hashes.reverse();
+        result.skipped_hashes = result.skipped_hashes.reverse();
         return result;
     }catch(e){
         if(txn !== undefined){
@@ -152,13 +154,11 @@ function updateRecords(env, hash_attribute, write_attributes , records){
         //create write transaction to lock data changes rows
         txn = env.beginTxn();
 
-        let result = {
-            written_hashes: [],
-            skipped_hashes: []
-        };
+        let result = new UpdateRecordsResponseObject();
 
         //iterate update records
-        for(let x = 0; x < records.length; x++){
+        let x = records.length;
+        while(x--){
             let record = records[x];
             setTimestamps(record, false);
 
@@ -169,8 +169,11 @@ function updateRecords(env, hash_attribute, write_attributes , records){
 
             if(existing_record === null){
                 result.skipped_hashes.push(cast_hash_value);
+                records.splice(x, 1);
                 continue;
             }
+
+            result.original_records.push(existing_record);
 
             //iterate the entries from the record
             for (let [key, value] of Object.entries(record)) {
@@ -181,6 +184,7 @@ function updateRecords(env, hash_attribute, write_attributes , records){
                 if(dbi === undefined){
                     continue;
                 }
+                let value = record[key];
                 let existing_value = existing_record[key];
 
                 //
@@ -216,7 +220,7 @@ function updateRecords(env, hash_attribute, write_attributes , records){
                 }
 
                 if (str_new_value !== null) {
-                    //LMDB has a 511 byte limit for keys, so we return null if the byte size is larger than 511 to not index that value
+                    //LMDB has a 254 byte limit for keys, so we return null if the byte size is larger than 254 to not index that value
                     if(typeof str_new_value === 'string' && Buffer.byteLength(str_new_value) > MAX_BYTE_SIZE){
                         let key_value = `${key}/${hash_value}`;
                         txn.putString(env.dbis[lmdb_terms.BLOB_DBI_NAME], key_value, str_new_value);
@@ -227,14 +231,16 @@ function updateRecords(env, hash_attribute, write_attributes , records){
 
             }
 
-            let merged_record = Object.assign(existing_record, record);
+            let merged_record = Object.assign({}, existing_record, record);
             txn.putString(env.dbis[hash_attribute], hash_value.toString(), JSON.stringify(merged_record));
             result.written_hashes.push(cast_hash_value);
         }
 
         //commit transaction
+        result.txn_time = common.getMicroTime();
         txn.commit();
-
+        result.written_hashes = result.written_hashes.reverse();
+        result.skipped_hashes = result.skipped_hashes.reverse();
         return result;
     }catch(e){
         if(txn !== undefined){

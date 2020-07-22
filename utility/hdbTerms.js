@@ -62,6 +62,7 @@ const HDB_FILE_PERMISSIONS = 0o700;
 const BLOB_FOLDER_NAME = 'blob';
 const HDB_TRASH_DIR = 'trash';
 const SCHEMA_DIR_NAME = 'schema';
+const TRANSACTIONS_DIR_NAME = 'transactions';
 const LIMIT_COUNT_NAME = '.count';
 const ID_ATTRIBUTE_STRING = 'id';
 
@@ -209,7 +210,9 @@ const OPERATIONS_ENUM = {
     REMOVE_NODE: 'remove_node',
     RESTART: 'restart',
     CATCHUP: 'catchup',
-    SYSTEM_INFORMATION: 'system_information'
+    SYSTEM_INFORMATION: 'system_information',
+    DELETE_TRANSACTION_LOGS_BEFORE: 'delete_transaction_logs_before',
+    READ_TRANSACTION_LOG: 'read_transaction_log'
 };
 
 // Defines operations that should be propagated to the cluster.
@@ -289,7 +292,8 @@ const HDB_SETTINGS_NAMES = {
     INSTALL_USER: 'install_user',
     CLUSTERING_USER_KEY: 'CLUSTERING_USER',
     SERVER_KEEP_ALIVE_TIMEOUT_KEY: 'SERVER_KEEP_ALIVE_TIMEOUT',
-    SERVER_HEADERS_TIMEOUT_KEY: 'SERVER_HEADERS_TIMEOUT'
+    SERVER_HEADERS_TIMEOUT_KEY: 'SERVER_HEADERS_TIMEOUT',
+    DISABLE_TRANSACTION_LOG_KEY: 'DISABLE_TRANSACTION_LOG'
 };
 
 /**
@@ -315,7 +319,8 @@ const HDB_SETTINGS_DEFAULT_VALUES = {
     NODE_ENV: 'production',
     CLUSTERING_PORT: '5545',
     CLUSTERING: 'false',
-    MAX_HDB_PROCESSES: 4
+    MAX_HDB_PROCESSES: 4,
+    DISABLE_TRANSACTION_LOG: false
 };
 
 // Describes all available job types
@@ -326,7 +331,8 @@ const JOB_TYPE_ENUM = {
     csv_data_load: OPERATIONS_ENUM.CSV_DATA_LOAD,
     export_to_s3: 'export_to_s3',
     export_local: 'export_local',
-    delete_files_before: 'delete_files_before'
+    delete_files_before: 'delete_files_before',
+    delete_transaction_logs_before: 'delete_transaction_logs_before'
 };
 
 const CLUSTER_MESSAGE_TYPE_ENUM = {
@@ -464,6 +470,12 @@ const UNAUTHORIZED_PERMISSION_NAME = 'unauthorized_access';
 
 const FUNC_VAL = 'func_val';
 
+const READ_TRANSACTION_LOG_SEARCH_TYPES_ENUM = {
+    HASH_VALUE: 'hash_value',
+    TIMESTAMP: 'timestamp',
+    USERNAME: 'username'
+};
+
 module.exports = {
     LOCAL_HARPERDB_OPERATIONS,
     HDB_SUPPORT_ADDRESS,
@@ -506,6 +518,7 @@ module.exports = {
     RESTART_TIMEOUT_MS,
     HDB_FILE_PERMISSIONS,
     SCHEMA_DIR_NAME,
+    TRANSACTIONS_DIR_NAME,
     LIMIT_COUNT_NAME,
     ID_ATTRIBUTE_STRING,
     INSERT_MODULE_ENUM,
@@ -556,5 +569,6 @@ module.exports = {
     PERMS_CRUD_ENUM,
     UNAUTHORIZED_PERMISSION_NAME,
     SEARCH_WILDCARDS,
-    FUNC_VAL
+    FUNC_VAL,
+    READ_TRANSACTION_LOG_SEARCH_TYPES_ENUM
 };

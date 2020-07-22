@@ -70,14 +70,16 @@ const LMDB_ERRORS_ENUM = {
     CANNOT_COMPARE_STRING_TO_NUMERIC_KEYS: 'cannot compare a string to numeric keys',
     END_VALUE_MUST_BE_GREATER_THAN_START_VALUE: 'end_value must be greater than start_value',
     UKNOWN_SEARCH_TYPE: 'unknown search type',
-    CANNOT_DROP_TABLE_HASH_ATTRIBUTE: 'cannot drop a table\'s hash attribute'
+    CANNOT_DROP_TABLE_HASH_ATTRIBUTE: 'cannot drop a table\'s hash attribute',
 };
 
 // All error messages should be added to the COMMON_ERROR_MSGS ENUM for export - this helps to organize all error messages
 //into a single export while still allowing us to group them here in a more readable/searchable way
 const COMMON_ERROR_MSGS = {
     ...ROLE_PERMS_ERROR_MSGS,
-    ...SQL_ERROR_MSGS
+    ...SQL_ERROR_MSGS,
+    SCHEMA_REQUIRED: 'schema is required',
+    TABLE_REQUIRED: 'table is required'
 };
 
 module.exports = {
@@ -85,5 +87,5 @@ module.exports = {
     DEFAULT_ERROR_MSGS,
     DEFAULT_ERROR_RESP,
     LMDB_ERRORS_ENUM,
-    HTTP_STATUS_CODES
+    HTTP_STATUS_CODES,
 };

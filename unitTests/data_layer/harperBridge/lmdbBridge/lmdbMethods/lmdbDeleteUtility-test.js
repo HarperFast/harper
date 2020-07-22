@@ -9,6 +9,9 @@ const SCHEMA_NAME = 'schema';
 const BASE_PATH = test_utils.getMockFSPath();
 const BASE_SCHEMA_PATH = path.join(BASE_PATH, SCHEMA_NAME);
 const SYSTEM_SCHEMA_PATH = path.join(BASE_SCHEMA_PATH, SYSTEM_FOLDER_NAME);
+const TRANSACTIONS_NAME = 'transactions';
+const BASE_TXN_PATH = path.join(BASE_PATH, TRANSACTIONS_NAME);
+const TXN_SCHEMA_PATH = path.join(BASE_TXN_PATH, 'dev');
 
 const rewire = require('rewire');
 const lmdb_create_records = rewire('../../../../../data_layer/harperBridge/lmdbBridge/lmdbMethods/lmdbCreateRecords');
@@ -17,10 +20,15 @@ const lmdb_create_schema = require('../../../../../data_layer/harperBridge/lmdbB
 const lmdb_create_table = require('../../../../../data_layer/harperBridge/lmdbBridge/lmdbMethods/lmdbCreateTable');
 const environment_utility = rewire('../../../../../utility/lmdb/environmentUtility');
 const search_utility = require('../../../../../utility/lmdb/searchUtility');
+const lmdb_common = require('../../../../../utility/lmdb/commonUtility');
 const assert = require('assert');
 const fs = require('fs-extra');
 const sinon = require('sinon');
 const systemSchema = require('../../../../../json/systemSchema');
+const verify_txn = require('../_verifyTxns');
+
+const LMDBInsertTransactionObject = require('../../../../../data_layer/harperBridge/lmdbBridge/lmdbUtility/LMDBInsertTransactionObject');
+const LMDBDeleteTransactionObject = require('../../../../../data_layer/harperBridge/lmdbBridge/lmdbUtility/LMDBDeleteTransactionObject');
 
 let insert_date = new Date();
 insert_date.setMinutes(insert_date.getMinutes() - 10);
@@ -61,6 +69,8 @@ const INSERT_OBJECT_TEST = {
         }
     ]
 };
+
+const INSERT_HASHES = [8,9,12,10];
 
 const ALL_FETCH_ATTRIBUTES = ['__createdtime__', '__updatedtime__', 'age', 'breed', 'height', 'id', 'name'];
 
@@ -112,6 +122,11 @@ describe('Test lmdbDeleteRecords module', ()=>{
     });
 
     describe('Test lmdbDeleteRecords function', ()=>{
+        let m_time;
+        let insert_m_time;
+        let m_time_stub;
+        let expected_timestamp_txn;
+        let expected_hashes_txn;
 
         beforeEach(async ()=>{
             date_stub.restore();
@@ -145,13 +160,33 @@ describe('Test lmdbDeleteRecords module', ()=>{
 
             await lmdb_create_table(TABLE_SYSTEM_DATA_TEST_A, CREATE_TABLE_OBJ_TEST_A);
 
+            m_time = lmdb_common.getMicroTime();
+            insert_m_time = m_time;
+            m_time_stub = sandbox.stub(lmdb_common, 'getMicroTime').returns(m_time);
+
             let insert_obj = test_utils.deepClone(INSERT_OBJECT_TEST);
             await lmdb_create_records(insert_obj);
+
+            let insert_txn_obj = new LMDBInsertTransactionObject(insert_obj.records, undefined, m_time, INSERT_HASHES);
+            expected_timestamp_txn = test_utils.assignObjecttoNullObject({
+                [m_time]: [JSON.stringify(insert_txn_obj)]
+            });
+
+            expected_hashes_txn = Object.create(null);
+            insert_obj.records.forEach(record=>{
+                expected_hashes_txn[record[HASH_ATTRIBUTE_NAME]] = [m_time.toString()];
+            });
+
             date_stub.restore();
             date_stub = sandbox.stub(Date, 'now').returns(TIMESTAMP);
+
+            m_time_stub.restore();
+            m_time = lmdb_common.getMicroTime();
+            m_time_stub = sandbox.stub(lmdb_common, 'getMicroTime').returns(m_time);
         });
 
         afterEach(async ()=>{
+            m_time_stub.restore();
             await fs.remove(BASE_PATH);
             global.lmdb_map = undefined;
             delete global.hdb_schema;
@@ -170,6 +205,11 @@ describe('Test lmdbDeleteRecords module', ()=>{
                 skipped_hashes: []
             };
 
+            //verify inserted txn
+            let copy_expected_timestamp_txn = test_utils.assignObjecttoNullObject(test_utils.deepClone(expected_timestamp_txn));
+            let copy_expected_hashes_txn = test_utils.assignObjecttoNullObject(test_utils.deepClone(expected_hashes_txn));
+            await verify_txn(TXN_SCHEMA_PATH, INSERT_OBJECT_TEST.table, copy_expected_timestamp_txn, copy_expected_hashes_txn);
+
             let results = await test_utils.assertErrorAsync(lmdb_delete_records, [delete_obj], undefined);
             assert.deepStrictEqual(results, expected_result);
 
@@ -186,6 +226,23 @@ describe('Test lmdbDeleteRecords module', ()=>{
                 }
             });
 
+            //verify txns with delete
+            let orig_rec ={
+                __blob__: null,
+                __createdtime__:INSERT_TIMESTAMP,
+                __updatedtime__: INSERT_TIMESTAMP,
+                age: 5,
+                breed: "Mutt",
+                height:null,
+                id: 8,
+                name: "Harper"
+            };
+
+            let delete_txn = new LMDBDeleteTransactionObject([8], [orig_rec], undefined, m_time);
+            copy_expected_timestamp_txn[m_time] = [JSON.stringify(delete_txn)];
+
+            copy_expected_hashes_txn[8].push(m_time.toString());
+            await verify_txn(TXN_SCHEMA_PATH, INSERT_OBJECT_TEST.table, copy_expected_timestamp_txn, copy_expected_hashes_txn);
         });
 
         it('Test deleting two values from table, one that does not exist', async () => {
@@ -201,6 +258,11 @@ describe('Test lmdbDeleteRecords module', ()=>{
                 skipped_hashes: [ 9999]
             };
 
+            //verify inserted txn
+            let copy_expected_timestamp_txn = test_utils.assignObjecttoNullObject(test_utils.deepClone(expected_timestamp_txn));
+            let copy_expected_hashes_txn = test_utils.assignObjecttoNullObject(test_utils.deepClone(expected_hashes_txn));
+            await verify_txn(TXN_SCHEMA_PATH, INSERT_OBJECT_TEST.table, copy_expected_timestamp_txn, copy_expected_hashes_txn);
+
             let results = await test_utils.assertErrorAsync(lmdb_delete_records, [delete_obj], undefined);
             assert.deepStrictEqual(results, expected_result);
 
@@ -216,6 +278,24 @@ describe('Test lmdbDeleteRecords module', ()=>{
                     });
                 }
             });
+
+            //verify txns with delete
+            let orig_rec ={
+                __blob__: null,
+                __createdtime__:INSERT_TIMESTAMP,
+                __updatedtime__: INSERT_TIMESTAMP,
+                age: 5,
+                breed: "Mutt",
+                height:null,
+                id: 8,
+                name: "Harper"
+            };
+
+            let delete_txn = new LMDBDeleteTransactionObject([8], [orig_rec], undefined, m_time);
+            copy_expected_timestamp_txn[m_time] = [JSON.stringify(delete_txn)];
+
+            copy_expected_hashes_txn[8].push(m_time.toString());
+            await verify_txn(TXN_SCHEMA_PATH, INSERT_OBJECT_TEST.table, copy_expected_timestamp_txn, copy_expected_hashes_txn);
         });
 
         it('Test deleting two values from table that do not exist', async () => {
@@ -231,8 +311,16 @@ describe('Test lmdbDeleteRecords module', ()=>{
                 skipped_hashes: [ 8888, 9999]
             };
 
+            //verify inserted txn
+            let copy_expected_timestamp_txn = test_utils.assignObjecttoNullObject(test_utils.deepClone(expected_timestamp_txn));
+            let copy_expected_hashes_txn = test_utils.assignObjecttoNullObject(test_utils.deepClone(expected_hashes_txn));
+            await verify_txn(TXN_SCHEMA_PATH, INSERT_OBJECT_TEST.table, copy_expected_timestamp_txn, copy_expected_hashes_txn);
+
             let results = await test_utils.assertErrorAsync(lmdb_delete_records, [delete_obj], undefined);
             assert.deepStrictEqual(results, expected_result);
+
+            //verify inserted txn
+            await verify_txn(TXN_SCHEMA_PATH, INSERT_OBJECT_TEST.table, copy_expected_timestamp_txn, copy_expected_hashes_txn);
         });
 
         it('Test deleting multiple values from table', async () => {
@@ -247,6 +335,12 @@ describe('Test lmdbDeleteRecords module', ()=>{
                 deleted_hashes: [ 10,12 ],
                 skipped_hashes: [ ]
             };
+
+            //verify inserted txn
+            let copy_expected_timestamp_txn = test_utils.assignObjecttoNullObject(test_utils.deepClone(expected_timestamp_txn));
+            let copy_expected_hashes_txn = test_utils.assignObjecttoNullObject(test_utils.deepClone(expected_hashes_txn));
+            await verify_txn(TXN_SCHEMA_PATH, INSERT_OBJECT_TEST.table, copy_expected_timestamp_txn, copy_expected_hashes_txn);
+
             let results = await test_utils.assertErrorAsync(lmdb_delete_records, [delete_obj], undefined);
             assert.deepStrictEqual(results, expected_result);
 
@@ -262,6 +356,35 @@ describe('Test lmdbDeleteRecords module', ()=>{
                     });
                 }
             });
+
+            //verify txns with delete
+            let orig_recs = [{
+                __blob__: null,
+                __createdtime__:INSERT_TIMESTAMP,
+                __updatedtime__:INSERT_TIMESTAMP,
+                age: 5,
+                breed: "Mutt",
+                height: 145,
+                id: 10,
+                name: "Rob"
+            },
+            {
+                __blob__: null,
+                __createdtime__:INSERT_TIMESTAMP,
+                __updatedtime__:INSERT_TIMESTAMP,
+                age: null,
+                breed: "Mutt",
+                height: null,
+                id: 12,
+                name: "David"
+            }];
+
+            let delete_txn = new LMDBDeleteTransactionObject([10,12], orig_recs, undefined, m_time);
+            copy_expected_timestamp_txn[m_time] = [JSON.stringify(delete_txn)];
+
+            copy_expected_hashes_txn[10].push(m_time.toString());
+            copy_expected_hashes_txn[12].push(m_time.toString());
+            await verify_txn(TXN_SCHEMA_PATH, INSERT_OBJECT_TEST.table, copy_expected_timestamp_txn, copy_expected_hashes_txn);
         });
 
         it('Test that error from  deleteRows is caught and thrown',async () => {
@@ -312,9 +435,32 @@ describe('Test lmdbDeleteRecords module', ()=>{
                 skipped_hashes: [ ]
             };
 
+            //verify inserted txn
+            let copy_expected_timestamp_txn = test_utils.assignObjecttoNullObject(test_utils.deepClone(expected_timestamp_txn));
+            let copy_expected_hashes_txn = test_utils.assignObjecttoNullObject(test_utils.deepClone(expected_hashes_txn));
+            await verify_txn(TXN_SCHEMA_PATH, INSERT_OBJECT_TEST.table, copy_expected_timestamp_txn, copy_expected_hashes_txn);
+
             let results = await test_utils.assertErrorAsync(lmdb_delete_records, [delete_obj], undefined);
 
             assert.deepStrictEqual(results, expected_result);
+
+            //verify txns with delete
+            let orig_recs = [{
+                __blob__: null,
+                __createdtime__:INSERT_TIMESTAMP,
+                __updatedtime__:INSERT_TIMESTAMP,
+                age: 5,
+                breed: "Mutt",
+                height: 145,
+                id: 10,
+                name: "Rob"
+            }];
+
+            let delete_txn = new LMDBDeleteTransactionObject([10], orig_recs, undefined, m_time);
+            copy_expected_timestamp_txn[m_time] = [JSON.stringify(delete_txn)];
+
+            copy_expected_hashes_txn[10].push(m_time.toString());
+            await verify_txn(TXN_SCHEMA_PATH, INSERT_OBJECT_TEST.table, copy_expected_timestamp_txn, copy_expected_hashes_txn);
         });
 
         it('Test passing records instead of hash_values where record hash no hash value', async () => {

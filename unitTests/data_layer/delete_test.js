@@ -21,6 +21,13 @@ const DELETE_BEFORE_OBJ = {
     table: 'thatFly'
 };
 
+const DELETE_TXN_BEFORE_OBJ = {
+    operation: 'delete_transaction_logs_before',
+    timestamp: Date.now(),
+    schema: 'fish',
+    table: 'thatFly'
+};
+
 const DELETE_OBJ_TEST = {
     operation: 'delete',
     table: 'dogs',
@@ -101,6 +108,75 @@ describe('Tests for delete.js', () => {
 
             expect(bridge_delete_before_stub).to.have.been.calledWith(DELETE_BEFORE_OBJ);
             expect(log_info_spy).to.have.been.calledWith(`Finished deleting files before ${DELETE_BEFORE_OBJ.date}`);
+        });
+    });
+
+    context('test deleteTransactionLogsBefore function', ()=>{
+        it('Test that Invalid date error returned', async () => {
+            let delete_obj = test_utils.deepClone(DELETE_TXN_BEFORE_OBJ);
+            delete_obj.timestamp = '';
+            let test_err_result = await test_utils.testError(_delete.deleteTransactionLogsBefore(delete_obj), 'Invalid timestamp.');
+
+            expect(test_err_result).to.be.true;
+        });
+
+        it('Test that date string is invalid', async () => {
+            let delete_obj = test_utils.deepClone(DELETE_TXN_BEFORE_OBJ);
+            delete_obj.timestamp = '03-09-2023';
+            let test_err_result = await test_utils.testError(_delete.deleteTransactionLogsBefore(delete_obj), `Invalid timestamp: ${delete_obj.timestamp}`);
+
+            expect(test_err_result).to.be.true;
+        });
+
+        it('Test that epoch value is valid', async () => {
+            let delete_obj = test_utils.deepClone(DELETE_TXN_BEFORE_OBJ);
+            delete_obj.timestamp = Date.now();
+            let test_err_result = await test_utils.testError(_delete.deleteTransactionLogsBefore(delete_obj), 'Invalid timestamp.');
+
+            expect(test_err_result).to.be.false;
+        });
+
+        it('Test that Invalid schema returned', async () => {
+            let delete_obj = test_utils.deepClone(DELETE_TXN_BEFORE_OBJ);
+            delete_obj.schema = '';
+            let test_err_result = await test_utils.testError(_delete.deleteTransactionLogsBefore(delete_obj), 'Invalid schema.');
+
+            expect(test_err_result).to.be.true;
+        });
+
+        it('Test that Invalid table error returned', async () => {
+            let delete_obj = test_utils.deepClone(DELETE_TXN_BEFORE_OBJ);
+            delete_obj.table = '';
+            let test_err_result = await test_utils.testError(_delete.deleteTransactionLogsBefore(delete_obj), 'Invalid table.');
+
+            expect(test_err_result).to.be.true;
+        });
+
+        it('Test error for FIle system', async () => {
+            global.hdb_schema = {
+                [DELETE_BEFORE_OBJ.schema]: {
+                    [DELETE_BEFORE_OBJ.table]: {}
+                }
+            };
+            let delete_obj = test_utils.deepClone(DELETE_TXN_BEFORE_OBJ);
+            let test_err_result = await test_utils.testError(_delete.deleteTransactionLogsBefore(delete_obj), 'delete_transaction_logs_before is not available for this instance because it uses the File System data store.');
+
+            expect(test_err_result).to.be.true;
+        });
+
+        it('Test ok with stub', async () => {
+            let bridge_delete_txns_stub = sandbox.stub(harperBridge, 'deleteTransactionLogsBefore');
+
+            global.hdb_schema = {
+                [DELETE_BEFORE_OBJ.schema]: {
+                    [DELETE_BEFORE_OBJ.table]: {}
+                }
+            };
+            let delete_obj = test_utils.deepClone(DELETE_TXN_BEFORE_OBJ);
+            await _delete.deleteTransactionLogsBefore(delete_obj);
+
+            expect(bridge_delete_txns_stub).to.have.been.calledWith(DELETE_TXN_BEFORE_OBJ);
+            expect(log_info_spy).to.have.been.calledWith(`Finished deleting transaction logs before ${DELETE_TXN_BEFORE_OBJ.timestamp}`);
         });
     });
 

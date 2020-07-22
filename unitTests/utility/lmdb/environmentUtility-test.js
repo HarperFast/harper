@@ -141,6 +141,7 @@ describe("Test LMDB environmentUtility module", ()=>{
 
             //test to make sure the internal dbi exists
             await test_utils.assertErrorAsync(lmdb_env_util.openDBI, [env, lmdb_terms.INTERNAL_DBIS_NAME], undefined);
+            assert.deepStrictEqual(env[lmdb_terms.ENVIRONMENT_NAME_KEY], 'lmdbTest.test');
 
         });
 
@@ -153,6 +154,7 @@ describe("Test LMDB environmentUtility module", ()=>{
 
             assert.notDeepStrictEqual(global.lmdb_map, undefined);
             assert.notDeepStrictEqual(global.lmdb_map[CACHED_ENV_NAME], undefined);
+            assert.deepStrictEqual(env[lmdb_terms.ENVIRONMENT_NAME_KEY], 'lmdbTest.test');
 
             //test to make sure the internal dbi exists
             await test_utils.assertErrorAsync(lmdb_env_util.openDBI, [env, lmdb_terms.INTERNAL_DBIS_NAME], undefined);
@@ -195,6 +197,7 @@ describe("Test LMDB environmentUtility module", ()=>{
             assert.notDeepStrictEqual(env, undefined);
             assert.notDeepStrictEqual(global.lmdb_map[CACHED_ENV_NAME], undefined);
             assert.deepStrictEqual(env, global.lmdb_map[CACHED_ENV_NAME]);
+            assert.deepStrictEqual(env[lmdb_terms.ENVIRONMENT_NAME_KEY], 'lmdbTest.test');
 
             //test to make sure the internal dbi exists
             await test_utils.assertErrorAsync(lmdb_env_util.openDBI, [env, lmdb_terms.INTERNAL_DBIS_NAME], undefined);

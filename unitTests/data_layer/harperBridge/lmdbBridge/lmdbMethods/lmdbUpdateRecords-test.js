@@ -5,7 +5,9 @@ test_utils.preTestPrep();
 const path = require('path');
 const SYSTEM_FOLDER_NAME = 'system';
 const SCHEMA_NAME = 'schema';
+const TRANSACTIONS_NAME = 'transactions';
 const BASE_PATH = test_utils.getMockFSPath();
+const BASE_TXN_PATH = path.join(BASE_PATH, TRANSACTIONS_NAME);
 const BASE_SCHEMA_PATH = path.join(BASE_PATH, SCHEMA_NAME);
 const SYSTEM_SCHEMA_PATH = path.join(BASE_SCHEMA_PATH, SYSTEM_FOLDER_NAME);
 
@@ -15,16 +17,21 @@ const lmdb_create_records = rewire('../../../../../data_layer/harperBridge/lmdbB
 const lmdb_update_records = rewire('../../../../../data_layer/harperBridge/lmdbBridge/lmdbMethods/lmdbUpdateRecords');
 const lmdb_create_schema = require('../../../../../data_layer/harperBridge/lmdbBridge/lmdbMethods/lmdbCreateSchema');
 const lmdb_create_table = require('../../../../../data_layer/harperBridge/lmdbBridge/lmdbMethods/lmdbCreateTable');
+const lmdb_common = require('../../../../../utility/lmdb/commonUtility');
 const environment_utility = rewire('../../../../../utility/lmdb/environmentUtility');
 const search_utility = require('../../../../../utility/lmdb/searchUtility');
 const assert = require('assert');
 const fs = require('fs-extra');
 const sinon = require('sinon');
 const systemSchema = require('../../../../../json/systemSchema');
+const verify_txn = require('../_verifyTxns');
 
 let insert_date = new Date();
 insert_date.setMinutes(insert_date.getMinutes() - 10);
 const INSERT_TIMESTAMP = insert_date.getTime();
+
+const LMDBInsertTransactionObject = require('../../../../../data_layer/harperBridge/lmdbBridge/lmdbUtility/LMDBInsertTransactionObject');
+const LMDBUpdateTransactionObject = require('../../../../../data_layer/harperBridge/lmdbBridge/lmdbUtility/LMDBUpdateTransactionObject');
 
 const TIMESTAMP = Date.now();
 const HASH_ATTRIBUTE_NAME = 'id';
@@ -61,6 +68,8 @@ const INSERT_OBJECT_TEST = {
         }
     ]
 };
+
+let INSERT_HASHES = [8,9,12,10];
 
 const NO_NEW_ATTR_TEST = [
     {
@@ -101,6 +110,8 @@ const CREATE_SCHEMA_DEV = {
     schema: 'dev'
 };
 
+const TXN_SCHEMA_PATH = path.join(BASE_TXN_PATH, 'dev');
+
 const CREATE_TABLE_OBJ_TEST_A = {
     operation: 'create_table',
     schema: 'dev',
@@ -135,6 +146,11 @@ describe('Test lmdbUpdateRecords module', ()=>{
     });
 
     describe('Test lmdbUpdateRecords function', ()=>{
+        let m_time;
+        let insert_m_time;
+        let m_time_stub;
+        let expected_timestamp_txn;
+        let expected_hashes_txn;
 
         beforeEach(async ()=>{
             date_stub.restore();
@@ -168,13 +184,33 @@ describe('Test lmdbUpdateRecords module', ()=>{
 
             await lmdb_create_table(TABLE_SYSTEM_DATA_TEST_A, CREATE_TABLE_OBJ_TEST_A);
 
+            m_time = lmdb_common.getMicroTime();
+            insert_m_time = m_time;
+            m_time_stub = sandbox.stub(lmdb_common, 'getMicroTime').returns(m_time);
+
             let insert_obj = test_utils.deepClone(INSERT_OBJECT_TEST);
             await lmdb_create_records(insert_obj);
+
+            let insert_txn_obj = new LMDBInsertTransactionObject(insert_obj.records, undefined, m_time, INSERT_HASHES);
+            expected_timestamp_txn = test_utils.assignObjecttoNullObject({
+                [m_time]: [JSON.stringify(insert_txn_obj)]
+            });
+
+            expected_hashes_txn = Object.create(null);
+            insert_obj.records.forEach(record=>{
+                expected_hashes_txn[record[HASH_ATTRIBUTE_NAME]] = [m_time.toString()];
+            });
+
             date_stub.restore();
             date_stub = sandbox.stub(Date, 'now').returns(TIMESTAMP);
+
+            m_time_stub.restore();
+            m_time = lmdb_common.getMicroTime();
+            m_time_stub = sandbox.stub(lmdb_common, 'getMicroTime').returns(m_time);
         });
 
         afterEach(async ()=>{
+            m_time_stub.restore();
             await fs.remove(BASE_PATH);
             global.lmdb_map = undefined;
             delete global.hdb_schema;
@@ -209,11 +245,15 @@ describe('Test lmdbUpdateRecords module', ()=>{
                 }
             };
 
+            //verify inserted txn
+            let copy_expected_timestamp_txn = test_utils.assignObjecttoNullObject(test_utils.deepClone(expected_timestamp_txn));
+            let copy_expected_hashes_txn = test_utils.assignObjecttoNullObject(test_utils.deepClone(expected_hashes_txn));
+            await verify_txn(TXN_SCHEMA_PATH, INSERT_OBJECT_TEST.table, copy_expected_timestamp_txn, copy_expected_hashes_txn);
+
             let expected_search = test_utils.assignObjecttoNullObject(update_obj.records[0]);
             expected_search.__createdtime__=INSERT_TIMESTAMP;
             expected_search.__updatedtime__=TIMESTAMP;
             expected_search.height = null;
-
 
             let results = await test_utils.assertErrorAsync(lmdb_update_records, [update_obj], undefined);
             assert.deepStrictEqual(results, expected_return_result);
@@ -228,6 +268,22 @@ describe('Test lmdbUpdateRecords module', ()=>{
                 assert(result.indexOf(10) < 0);
             });
 
+            //verify txns with update
+            let orig_rec = {
+                __createdtime__:INSERT_TIMESTAMP,
+                __updatedtime__: INSERT_TIMESTAMP,
+                age: 5,
+                breed: "Mutt",
+                height: 145,
+                id: 10,
+                name: "Rob"
+            };
+
+            let update_txn = new LMDBUpdateTransactionObject(update_obj.records, [orig_rec], undefined, m_time, [10]);
+            copy_expected_timestamp_txn[m_time] = [JSON.stringify(update_txn)];
+
+            copy_expected_hashes_txn[10].push(m_time.toString());
+            await verify_txn(TXN_SCHEMA_PATH, INSERT_OBJECT_TEST.table, copy_expected_timestamp_txn, copy_expected_hashes_txn);
         });
 
         it('Test update record with no hash attribute', async () => {
@@ -247,6 +303,11 @@ describe('Test lmdbUpdateRecords module', ()=>{
 
             let no_hash_error = new Error('a valid hash attribute must be provided with update record, check log for more info');
 
+            //verify inserted txn
+            let copy_expected_timestamp_txn = test_utils.assignObjecttoNullObject(test_utils.deepClone(expected_timestamp_txn));
+            let copy_expected_hashes_txn = test_utils.assignObjecttoNullObject(test_utils.deepClone(expected_hashes_txn));
+            await verify_txn(TXN_SCHEMA_PATH, INSERT_OBJECT_TEST.table, copy_expected_timestamp_txn, copy_expected_hashes_txn);
+
             let update1 = test_utils.deepClone(update_obj);
             await test_utils.assertErrorAsync(lmdb_update_records, [update1], no_hash_error);
 
@@ -261,6 +322,9 @@ describe('Test lmdbUpdateRecords module', ()=>{
             let update4 = test_utils.deepClone(update_obj);
             update4.id = '';
             await test_utils.assertErrorAsync(lmdb_update_records, [update4], no_hash_error);
+
+            //verify inserted txn
+            await verify_txn(TXN_SCHEMA_PATH, INSERT_OBJECT_TEST.table, copy_expected_timestamp_txn, copy_expected_hashes_txn);
         });
 
         it('Test updating a row that does not exist', async () => {
@@ -289,6 +353,11 @@ describe('Test lmdbUpdateRecords module', ()=>{
                         schema: update_obj.schema,
                         name: update_obj.table }
             };
+
+            //verify inserted txn
+            let copy_expected_timestamp_txn = test_utils.assignObjecttoNullObject(test_utils.deepClone(expected_timestamp_txn));
+            let copy_expected_hashes_txn = test_utils.assignObjecttoNullObject(test_utils.deepClone(expected_hashes_txn));
+            await verify_txn(TXN_SCHEMA_PATH, INSERT_OBJECT_TEST.table, copy_expected_timestamp_txn, copy_expected_hashes_txn);
 
             let results = await test_utils.assertErrorAsync(lmdb_update_records, [update_obj], undefined);
             assert.deepStrictEqual(results.written_hashes, expected_result.written_hashes);
