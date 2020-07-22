@@ -212,6 +212,7 @@ const OPERATIONS_ENUM = {
     CATCHUP: 'catchup',
     SYSTEM_INFORMATION: 'system_information',
     DELETE_TRANSACTION_LOGS_BEFORE: 'delete_transaction_logs_before',
+    READ_TRANSACTION_LOG: 'read_transaction_log'
 };
 
 // Defines operations that should be propagated to the cluster.
@@ -469,6 +470,12 @@ const UNAUTHORIZED_PERMISSION_NAME = 'unauthorized_access';
 
 const FUNC_VAL = 'func_val';
 
+const READ_TRANSACTION_LOG_SEARCH_TYPES_ENUM = {
+    HASH_VALUE: 'hash_value',
+    TIMESTAMP: 'timestamp',
+    USERNAME: 'username'
+};
+
 module.exports = {
     LOCAL_HARPERDB_OPERATIONS,
     HDB_SUPPORT_ADDRESS,
@@ -562,5 +569,6 @@ module.exports = {
     PERMS_CRUD_ENUM,
     UNAUTHORIZED_PERMISSION_NAME,
     SEARCH_WILDCARDS,
-    FUNC_VAL
+    FUNC_VAL,
+    READ_TRANSACTION_LOG_SEARCH_TYPES_ENUM
 };

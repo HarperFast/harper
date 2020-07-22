@@ -285,7 +285,7 @@ async function describeSchema(describe_schema_object) {
             return {};
         }
     } else {
-        let results = [];
+        let results = {};
         await Promise.all(
             tables.map(async (table) => {
                 try {
@@ -296,7 +296,7 @@ async function describeSchema(describe_schema_object) {
                     if (hdb_utils.isEmpty(table_perms) || table_perms.describe) {
                         let data = await descTable({"schema": describe_schema_object.schema, "table": table.name}, table_perms ? table_perms.attribute_permissions : null);
                         if (data) {
-                            results.push(data);
+                            results[data.name] = data;
                         }
                     }
                 } catch (err) {
