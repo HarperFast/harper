@@ -169,7 +169,7 @@ function customValidate(object) {
             validation_message += `${valError.message}. `;
         });
 
-        return handleHDBError(new Error(), HTTP_STATUS_CODES.BAD_REQUEST, validation_message);
+        return handleHDBError(new Error(), validation_message, HTTP_STATUS_CODES.BAD_REQUEST, );
     }
     return null;
 }
@@ -181,7 +181,7 @@ function validateNoSUPerms(obj) {
         const is_su_cu_role = permission.super_user || permission.cluster_user;
         const has_perms = permission.attribute_permissions && Object.keys(permission.attribute_permissions).length > 1;
         if (is_su_cu_role && has_perms) {
-            throw handleHDBError(new Error(), HTTP_STATUS_CODES.BAD_REQUEST, COMMON_ERROR_MSGS.SU_CU_ROLE_NO_PERMS_ALLOWED);
+            throw handleHDBError(new Error(), COMMON_ERROR_MSGS.SU_CU_ROLE_NO_PERMS_ALLOWED, HTTP_STATUS_CODES.BAD_REQUEST, );
         }
     }
 }

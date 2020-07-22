@@ -9,6 +9,8 @@ const path = require('path');
 const hdb_utils = require('../utility/common_utils');
 const {promisify} = require('util');
 const terms = require('../utility/hdbTerms');
+const { handleHDBError, hdb_errors } = require('../utility/errors/hdbError');
+const { COMMON_ERROR_MSGS, HTTP_STATUS_CODES } = hdb_errors;
 const env_mngr = require('../utility/environment/environmentManager');
 if(!env_mngr.isInitialized()){
     env_mngr.initSync();
@@ -128,7 +130,7 @@ async function describeAll(op_obj) {
     } catch (e) {
         logger.error('Got an error in describeAll');
         logger.error(e);
-        return new Error("There was an error during describeAll.  Please check the logs and try again.");
+        return handleHDBError(new Error());
     }
 }
 
@@ -173,7 +175,8 @@ async function descTable(describe_table_object, attr_perms) {
     let tables = await p_search_search_by_value(table_search_obj);
 
     if (!tables || tables.length === 0) {
-        throw new Error("Invalid table");
+        throw handleHDBError(new Error(), COMMON_ERROR_MSGS.TABLE_NOT_FOUND(describe_table_object.schema,
+            describe_table_object.table), HTTP_STATUS_CODES.NOT_FOUND);
     }
 
     for await (let table of tables) {
@@ -184,7 +187,7 @@ async function descTable(describe_table_object, attr_perms) {
             table_result = table;
 
             if (!table_result.hash_attribute) {
-                throw new Error(`Invalid table ${JSON.stringify(table_result)}`);
+                throw handleHDBError(new Error(), COMMON_ERROR_MSGS.INVALID_TABLE_ERR(table_result));
             }
 
             let attribute_search_obj = {};
@@ -220,7 +223,6 @@ async function descTable(describe_table_object, attr_perms) {
         } catch (err) {
             logger.error(`There was an error getting attributes for table '${table.name}'`);
             logger.error(err);
-
         }
     }
     return table_result;
@@ -280,7 +282,8 @@ async function describeSchema(describe_schema_object) {
 
         let schema = await p_search_search_by_hash(schema_search_obj);
         if (schema && schema.length < 1) {
-            throw new Error(`Schema '${describe_schema_object.schema}' not found`);
+            throw handleHDBError(new Error(), COMMON_ERROR_MSGS.SCHEMA_NOT_FOUND(describe_schema_object.schema),
+                HTTP_STATUS_CODES.NOT_FOUND);
         } else {
             return {};
         }

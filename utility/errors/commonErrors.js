@@ -29,6 +29,16 @@ const DEFAULT_ERROR_MSGS = {
 };
 const DEFAULT_ERROR_RESP = DEFAULT_ERROR_MSGS[HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR];
 
+//TODO - SAM - Adds comment here about adding additional error messages and how to organize - including
+// note to add comments above each ENUM describing where to use.
+
+const SCHEMA_OP_ERROR_MSGS = {
+    DESCRIBE_ALL_ERR: "There was an error during describeAll.  Please check the logs and try again.",
+    SCHEMA_NOT_FOUND: (schema) => `Schema '${schema}' not found`,
+    TABLE_NOT_FOUND: (schema, table) => `Table '${schema}.${table}' not found`,
+    INVALID_TABLE_ERR: (table_result) => `Invalid table ${JSON.stringify(table_result)}`
+};
+
 const ROLE_PERMS_ERROR_MSGS = {
     SCHEMA_PERM_ERROR: (schema_name) => `Your role does not have permission to view schema metadata for '${schema_name}'`,
     SCHEMA_TABLE_PERM_ERROR: (schema_name, table_name) => `Your role does not have permission to view schema.table metadata for '${schema_name}.${table_name}'`,
@@ -41,7 +51,7 @@ const SQL_ERROR_MSGS = {
     OUTER_JOIN_TRANSLATION_ERROR: "There was an error translating the final SQL outer join data."
 };
 
-//TODO - move this enum to be exported as a part of COMMON_ERROR_MSGS
+//TODO - move this enum to be exported (and imported where it's used) as a part of COMMON_ERROR_MSGS
 //NOTE: Any changes made to these errors must also be made to unitTests/commonTestErrors.js otherwise the unit tests will fail
 const LMDB_ERRORS_ENUM = {
     BASE_PATH_REQUIRED: 'base_path is required',
@@ -69,7 +79,7 @@ const LMDB_ERRORS_ENUM = {
     END_VALUE_REQUIRED: 'end_value is required',
     CANNOT_COMPARE_STRING_TO_NUMERIC_KEYS: 'cannot compare a string to numeric keys',
     END_VALUE_MUST_BE_GREATER_THAN_START_VALUE: 'end_value must be greater than start_value',
-    UKNOWN_SEARCH_TYPE: 'unknown search type',
+    UNKNOWN_SEARCH_TYPE: 'unknown search type',
     CANNOT_DROP_TABLE_HASH_ATTRIBUTE: 'cannot drop a table\'s hash attribute'
 };
 
@@ -77,6 +87,7 @@ const LMDB_ERRORS_ENUM = {
 //into a single export while still allowing us to group them here in a more readable/searchable way
 const COMMON_ERROR_MSGS = {
     ...ROLE_PERMS_ERROR_MSGS,
+    ...SCHEMA_OP_ERROR_MSGS,
     ...SQL_ERROR_MSGS
 };
 
@@ -84,6 +95,6 @@ module.exports = {
     COMMON_ERROR_MSGS,
     DEFAULT_ERROR_MSGS,
     DEFAULT_ERROR_RESP,
-    LMDB_ERRORS_ENUM,
-    HTTP_STATUS_CODES
+    HTTP_STATUS_CODES,
+    LMDB_ERRORS_ENUM
 };
