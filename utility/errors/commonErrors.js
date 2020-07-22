@@ -48,7 +48,7 @@ const SQL_ERROR_MSGS = {
     OUTER_JOIN_TRANSLATION_ERROR: "There was an error translating the final SQL outer join data."
 };
 
-//TODO - move this enum to be exported (and imported where it's used) as a part of COMMON_ERROR_MSGS
+//TODO - move this enum to be exported as a part of COMMON_ERROR_MSGS
 //NOTE: Any changes made to these errors must also be made to unitTests/commonTestErrors.js otherwise the unit tests will fail
 const LMDB_ERRORS_ENUM = {
     BASE_PATH_REQUIRED: 'base_path is required',
@@ -84,8 +84,10 @@ const LMDB_ERRORS_ENUM = {
 //into a single export while still allowing us to group them here in a more readable/searchable way
 const COMMON_ERROR_MSGS = {
     ...ROLE_PERMS_ERROR_MSGS,
+    ...SQL_ERROR_MSGS,
     ...SCHEMA_OP_ERROR_MSGS,
-    ...SQL_ERROR_MSGS
+    SCHEMA_REQUIRED: 'schema is required',
+    TABLE_REQUIRED: 'table is required'
 };
 
 module.exports = {

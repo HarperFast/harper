@@ -145,7 +145,7 @@ describe('test mount_hdb module', ()=>{
                 error = e;
             }
 
-            let expected_folders = ['backup', 'trash', 'keys', 'log', 'config', 'doc', 'schema', 'clustering'];
+            let expected_folders = ['backup', 'trash', 'keys', 'log', 'config', 'doc', 'schema', 'transactions', 'clustering'];
             assert.deepStrictEqual(error, undefined);
             assert.notDeepStrictEqual(top_folders, undefined);
             assert.deepStrictEqual(top_folders.sort(), expected_folders.sort());

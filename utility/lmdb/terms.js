@@ -1,6 +1,7 @@
 'use strict';
 
 const INTERNAL_DBIS_NAME = '__dbis__';
+const ENVIRONMENT_NAME_KEY = '__environment_name__';
 const BLOB_DBI_NAME = '__blob__';
 const DBI_DEFINITION_NAME = '__dbi_defintion__';
 const MAX_BYTE_SIZE = 254;
@@ -28,6 +29,14 @@ const DBI_KEY_TYPES = {
     NUMBER: 'number'
 };
 
+const TRANSACTIONS_DBI_NAMES_ENUM = {
+  TIMESTAMP: 'timestamp',
+  HASH_VALUE: 'hash_value',
+  USER_NAME: 'user_name'
+};
+
+const TRANSACTIONS_DBIS = Object.values(TRANSACTIONS_DBI_NAMES_ENUM);
+
 module.exports = {
   INTERNAL_DBIS_NAME,
   DBI_DEFINITION_NAME,
@@ -35,5 +44,8 @@ module.exports = {
   DBI_KEY_TYPES,
   TIMESTAMP_NAMES,
   BLOB_DBI_NAME,
-  MAX_BYTE_SIZE
+  MAX_BYTE_SIZE,
+  ENVIRONMENT_NAME_KEY,
+  TRANSACTIONS_DBI_NAMES_ENUM,
+  TRANSACTIONS_DBIS
 };

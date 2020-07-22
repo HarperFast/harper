@@ -5,6 +5,8 @@ const delete_utility = require('../../../../utility/lmdb/deleteUtility');
 const environment_utility = require('../../../../utility/lmdb/environmentUtility');
 const path = require('path');
 const {getBaseSchemaPath} = require('../lmdbUtility/initializePaths');
+const write_transaction = require('../lmdbUtility/lmdbWriteTransaction');
+const logger = require('../../../../utility/logging/harper_logger');
 
 module.exports = lmdbDeleteRecords;
 
@@ -52,6 +54,12 @@ async function lmdbDeleteRecords(delete_obj) {
         let environment = await environment_utility.openEnvironment(env_base_path, delete_obj.table);
 
         let response = delete_utility.deleteRecords(environment, hash_attribute, delete_obj.hash_values);
+
+        try {
+            await write_transaction(delete_obj, response);
+        }catch(e){
+            logger.error(`unable to write transaction due to ${e.message}`);
+        }
 
         return createDeleteResponse(response.deleted, response.skipped);
     } catch(err) {

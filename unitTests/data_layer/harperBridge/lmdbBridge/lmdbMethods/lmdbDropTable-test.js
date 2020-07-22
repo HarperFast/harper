@@ -262,6 +262,17 @@ describe('test lmdbDropTable module', ()=>{
 
             await test_utils.assertErrorAsync(fs.access, [path.join(DEV_SCHEMA_PATH, 'test')], undefined);
 
+            //validate the transactions environments
+            let transaction_path = path.join(BASE_PATH, 'transactions', 'dev');
+            let table_transaction_path = path.join(transaction_path, 'test', 'data.mdb');
+            let expected_txn_dbis = ['__blob__' , 'hash_value', 'timestamp', 'user_name'];
+            await test_utils.assertErrorAsync(fs.access, [table_transaction_path], undefined);
+            let txn_env = await test_utils.assertErrorAsync(environment_utility.openEnvironment, [transaction_path, 'test', true], undefined);
+            let txn_dbis = test_utils.assertErrorSync(environment_utility.listDBIs, [txn_env], undefined);
+
+            assert.deepStrictEqual(txn_dbis, expected_txn_dbis);
+
+
             let drop_object = new DropAttributeObject('dev', 'test');
             await test_utils.assertErrorAsync(lmdb_drop_table, [drop_object], undefined);
 
@@ -287,6 +298,18 @@ describe('test lmdbDropTable module', ()=>{
             let error = undefined;
             try{
                 await fs.access(path.join(DEV_SCHEMA_PATH, 'test')).catch(e=>{
+                    error = e;
+                });
+            } catch (e) {
+                error = e;
+            }
+
+            assert(error.message.startsWith("ENOENT: no such file or directory"));
+
+            //verify transaction environment is deleted
+            error = undefined;
+            try{
+                await fs.access(table_transaction_path).catch(e=>{
                     error = e;
                 });
             } catch (e) {

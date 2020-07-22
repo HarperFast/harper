@@ -23037,8 +23037,7 @@
 									"pm.test(\"required_table_permissions is read\", function () {",
 									"    pm.expect(jsonData.unauthorized_access[0].required_table_permissions[0]).to.eql(\"read\");",
 									"});"
-								],
-								"type": "text/javascript"
+								]
 							}
 						}
 					],
@@ -23181,8 +23180,7 @@
 									"    })",
 									"",
 									"});"
-								],
-								"type": "text/javascript"
+								]
 							}
 						}
 					],
@@ -23672,8 +23670,7 @@
 									"    pm.expect(jsonData.unauthorized_access[0].required_attribute_permissions[0].attribute_name).to.eql(\"territorydescription\");",
 									"    pm.expect(jsonData.unauthorized_access[0].required_attribute_permissions[0].required_permissions[0]).to.eql(\"update\");",
 									"});"
-								],
-								"type": "text/javascript"
+								]
 							}
 						}
 					],
@@ -24030,8 +24027,7 @@
 									"        pm.expect(val.required_permissions[0]).to.eql(\"read\");",
 									"    })",
 									"});"
-								],
-								"type": "text/javascript"
+								]
 							}
 						}
 					],
@@ -27698,8 +27694,7 @@
 									"        pm.expect(expected_attrs.includes(val.attribute_name)).to.eql(true);",
 									"    })",
 									"});"
-								],
-								"type": "text/javascript"
+								]
 							}
 						}
 					],
@@ -28706,6 +28701,471 @@
 							"listen": "prerequest",
 							"script": {
 								"id": "c7e2f98e-50d8-43f8-9bfd-ec14652e4c8a",
+								"type": "text/javascript",
+								"exec": [
+									""
+								]
+							}
+						},
+						{
+							"listen": "test",
+							"script": {
+								"id": "338969c2-5eea-412e-b2d3-937e2d1c1ae1",
+								"type": "text/javascript",
+								"exec": [
+									"postman.setGlobalVariable(\"function:getJobIdDelete\", (jsonData, next_req)=>{",
+									"    let id_index = jsonData.message.indexOf('id ');",
+									"    let parsedId = jsonData.message.substr(id_index + 3, jsonData.message.length);",
+									"    pm.environment.set(\"job_id\", parsedId);",
+									"    pm.environment.set(\"next_request\", next_req);",
+									"    postman.setNextRequest(\"Check Delete Job Completed\");",
+									"});"
+								]
+							}
+						}
+					],
+					"protocolProfileBehavior": {},
+					"_postman_isSubFolder": true
+				},
+				{
+					"name": "Delete Transaction Logs Before Tests",
+					"item": [
+						{
+							"name": "create test table",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "d70dd1bd-fcab-4375-b2e8-dfc2c8dad33e",
+										"exec": [
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"tests[\"Create Table\"] = responseBody.has(\"successfully created.\");",
+											"",
+											"setTimeout(()=>{}, 500);"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "saveHelperData",
+											"value": true,
+											"type": "boolean"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"operation\":\"create_table\",\n  \"schema\":\"test_delete_before\",\n  \"table\":\"testerama\",\n  \"hash_attribute\": \"id\"\n}",
+									"options": {
+										"raw": {}
+									}
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "Insert new records",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "eca9f137-c6c4-4914-ac69-235af03841cd",
+										"exec": [
+											"pm.test(\"Check inserted_hashed array length\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData.inserted_hashes.length).to.eql(6);",
+											"});",
+											"",
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"setTimeout(()=>{}, 1000);"
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"id": "b3311282-1cc7-456e-bb4c-1ca44c8dad2b",
+										"exec": [
+											""
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\"operation\":\"insert\",\n\"schema\":\"test_delete_before\",\n\"table\":\"testerama\",\n\"records\": [\n  {\n    \"id\": 1,\n    \"address\": \"24 South st\"\n  },\n  {\n    \"id\": 2,\n    \"address\": \"6 Truck Lane\"\n  },\n  {\n    \"id\": 3,\n    \"address\": \"19 Broadway\"\n  },\n  {\n    \"id\": 4,\n    \"address\": \"34A Mountain View\"\n  },\n  {\n    \"id\": 5,\n    \"address\": \"234 Curtis St\"\n  },\n  {\n    \"id\": 6,\n    \"address\": \"115 Way Rd\"\n  }\n]\n\n}",
+									"options": {
+										"raw": {}
+									}
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "Insert additional new records",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "3a297ca5-15ae-4da0-9f43-78fea09c59a6",
+										"exec": [
+											"pm.test(\"Check inserted_hashed array length\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData.inserted_hashes.length).to.eql(3);",
+											"});",
+											"",
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"id": "bb1cca69-76d7-4d00-855e-5e4db4e46a1d",
+										"exec": [
+											"pm.environment.set(\"insert_timestamp\", Date.now());",
+											""
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\"operation\":\"insert\",\n\"schema\":\"test_delete_before\",\n\"table\":\"testerama\",\n\"records\": [\n  {\n    \"id\": 11,\n    \"address\": \"24 South st\"\n  },\n  {\n    \"id\": 12,\n    \"address\": \"6 Truck Lane\"\n  },\n  {\n    \"id\": 13,\n    \"address\": \"19 Broadway\"\n  }\n]\n\n}",
+									"options": {
+										"raw": {}
+									}
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "Delete records before",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "bbeba083-00bf-47a3-a8a0-d417f383dcc2",
+										"exec": [
+											"pm.test(\"Check for job message\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData.message.indexOf('Starting job')).to.eql(0);",
+											"    ",
+											"    eval(pm.globals.get(\"function:getJobIdDelete\"))(jsonData, null);",
+											"});",
+											"",
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"id": "d7b16afa-4938-4da2-a55b-2891662fa5a6",
+										"exec": [
+											""
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\t\"operation\":\"delete_transaction_logs_before\",\n\t\"timestamp\":\"{{insert_timestamp}}\",\n\t\"schema\":\"test_delete_before\",\n\t\"table\":\"testerama\"\n}\n",
+									"options": {
+										"raw": {}
+									}
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "Check Delete Job Completed",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "c7fd223a-0fdb-4ad1-b460-ba35fbdba4b6",
+										"exec": [
+											"",
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"test Job Found\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData.length).to.eql(1);",
+											"    ",
+											"    pm.expect(jsonData[0]).to.have.property('status');",
+											"    ",
+											"    let status = jsonData[0].status;",
+											"    ",
+											"    switch(status){",
+											"        case 'ERROR':",
+											"            console.log(jsonData[0]);",
+											"            if(pm.environment.get(\"next_request\")){",
+											"                postman.setNextRequest(pm.environment.get(\"next_request\"));",
+											"            }",
+											"            pm.expect(status).to.not.eql('ERROR');",
+											"            break;",
+											"        case 'COMPLETE':",
+											"            console.log(jsonData[0]);",
+											"            if(pm.environment.get(\"next_request\")){",
+											"                postman.setNextRequest(pm.environment.get(\"next_request\"));",
+											"            }",
+											"            pm.expect(status).to.be.oneOf(['COMPLETE', 'ERROR']);",
+											"            break;",
+											"        case '0':",
+											"        case 0:",
+											"        case 'IN_PROGRESS':",
+											"            console.log('in progress, checking again');",
+											"            postman.setNextRequest('Check Delete Job Completed');",
+											"            pm.expect(status).to.be.oneOf(['IN_PROGRESS', 0, '0']);",
+											"            break;",
+											"        default:",
+											"            postman.setNextRequest('Check Delete Job Completed');",
+											"            pm.expect(status).to.be.oneOf(['IN_PROGRESS', 0, '0', 'ERROR', 'COMPLETE']);",
+											"            break;",
+											"    }",
+											"});",
+											""
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"id": "53e32091-5454-4861-b357-28d2dc630484",
+										"exec": [
+											"setTimeout(()=>{}, 200);",
+											"console.log(\"Checking Job \" + pm.environment.get(\"job_id\"));"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "saveHelperData",
+											"type": "any"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\t\"operation\":\"get_job\",\n\t\"id\": \"{{job_id}}\"\n}",
+									"options": {
+										"raw": {}
+									}
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						}
+					],
+					"event": [
+						{
+							"listen": "prerequest",
+							"script": {
+								"id": "d1497091-a43b-4e84-a728-9552376f802f",
 								"type": "text/javascript",
 								"exec": [
 									""
@@ -32299,7 +32759,1539 @@
 			"protocolProfileBehavior": {}
 		},
 		{
-			"name": "9. Other Role Tests",
+			"name": "9. Transactions",
+			"item": [
+				{
+					"name": "Delete Transaction Logs Before Tests",
+					"item": [
+						{
+							"name": "create test table",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "7ba790ad-f070-4957-a73a-75e1b1274b28",
+										"exec": [
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"tests[\"Create Table\"] = responseBody.has(\"successfully created.\");",
+											"",
+											"setTimeout(()=>{}, 500);"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "saveHelperData",
+											"value": true,
+											"type": "boolean"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"operation\":\"create_table\",\n  \"schema\":\"test_delete_before\",\n  \"table\":\"testerama\",\n  \"hash_attribute\": \"id\"\n}",
+									"options": {
+										"raw": {}
+									}
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "Insert new records",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "355c6920-c241-473f-bc07-cd0b093cbfa4",
+										"exec": [
+											"pm.test(\"Check inserted_hashed array length\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData.inserted_hashes.length).to.eql(6);",
+											"});",
+											"",
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"setTimeout(()=>{}, 1000);"
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"id": "0ef9670b-bdea-4a4a-b49c-f0f319d9fb50",
+										"exec": [
+											""
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\"operation\":\"insert\",\n\"schema\":\"test_delete_before\",\n\"table\":\"testerama\",\n\"records\": [\n  {\n    \"id\": 1,\n    \"address\": \"24 South st\"\n  },\n  {\n    \"id\": 2,\n    \"address\": \"6 Truck Lane\"\n  },\n  {\n    \"id\": 3,\n    \"address\": \"19 Broadway\"\n  },\n  {\n    \"id\": 4,\n    \"address\": \"34A Mountain View\"\n  },\n  {\n    \"id\": 5,\n    \"address\": \"234 Curtis St\"\n  },\n  {\n    \"id\": 6,\n    \"address\": \"115 Way Rd\"\n  }\n]\n\n}",
+									"options": {
+										"raw": {}
+									}
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "Insert additional new records",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "f7caa6f8-c8d4-430c-ba6c-e27d9a41058e",
+										"exec": [
+											"pm.test(\"Check inserted_hashed array length\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData.inserted_hashes.length).to.eql(3);",
+											"});",
+											"",
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"id": "d45fb2c2-b2a1-4756-a4fb-a7bed15d818d",
+										"exec": [
+											"pm.environment.set(\"insert_timestamp\", Date.now());",
+											""
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\"operation\":\"insert\",\n\"schema\":\"test_delete_before\",\n\"table\":\"testerama\",\n\"records\": [\n  {\n    \"id\": 11,\n    \"address\": \"24 South st\"\n  },\n  {\n    \"id\": 12,\n    \"address\": \"6 Truck Lane\"\n  },\n  {\n    \"id\": 13,\n    \"address\": \"19 Broadway\"\n  }\n]\n\n}",
+									"options": {
+										"raw": {}
+									}
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "Delete records before",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "7e05a226-7a31-4b14-bed7-985e96f7f9a4",
+										"exec": [
+											"pm.test(\"Check for job message\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData.message.indexOf('Starting job')).to.eql(0);",
+											"    ",
+											"    eval(pm.globals.get(\"function:getJobIdDelete\"))(jsonData, null);",
+											"});",
+											"",
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"id": "30be7ecb-73ad-4478-84c8-8f954563dc08",
+										"exec": [
+											""
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\t\"operation\":\"delete_transaction_logs_before\",\n\t\"timestamp\":\"{{insert_timestamp}}\",\n\t\"schema\":\"test_delete_before\",\n\t\"table\":\"testerama\"\n}\n",
+									"options": {
+										"raw": {}
+									}
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "Check Delete Job Completed",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "82503904-781d-4e00-948a-92732f695b5d",
+										"exec": [
+											"",
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"test Job Found\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData.length).to.eql(1);",
+											"    ",
+											"    pm.expect(jsonData[0]).to.have.property('status');",
+											"    ",
+											"    let status = jsonData[0].status;",
+											"    ",
+											"    switch(status){",
+											"        case 'ERROR':",
+											"            console.log(jsonData[0]);",
+											"            if(pm.environment.get(\"next_request\")){",
+											"                postman.setNextRequest(pm.environment.get(\"next_request\"));",
+											"            }",
+											"            pm.expect(status).to.not.eql('ERROR');",
+											"            break;",
+											"        case 'COMPLETE':",
+											"            console.log(jsonData[0]);",
+											"            if(pm.environment.get(\"next_request\")){",
+											"                postman.setNextRequest(pm.environment.get(\"next_request\"));",
+											"            }",
+											"            pm.expect(status).to.be.oneOf(['COMPLETE', 'ERROR']);",
+											"            break;",
+											"        case '0':",
+											"        case 0:",
+											"        case 'IN_PROGRESS':",
+											"            console.log('in progress, checking again');",
+											"            postman.setNextRequest('Check Delete Job Completed');",
+											"            pm.expect(status).to.be.oneOf(['IN_PROGRESS', 0, '0']);",
+											"            break;",
+											"        default:",
+											"            postman.setNextRequest('Check Delete Job Completed');",
+											"            pm.expect(status).to.be.oneOf(['IN_PROGRESS', 0, '0', 'ERROR', 'COMPLETE']);",
+											"            break;",
+											"    }",
+											"});",
+											""
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"id": "9f892743-260a-43d7-90d8-c26a7621f507",
+										"exec": [
+											"setTimeout(()=>{}, 200);",
+											"console.log(\"Checking Job \" + pm.environment.get(\"job_id\"));"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "saveHelperData",
+											"type": "any"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\t\"operation\":\"get_job\",\n\t\"id\": \"{{job_id}}\"\n}",
+									"options": {
+										"raw": {}
+									}
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						}
+					],
+					"event": [
+						{
+							"listen": "prerequest",
+							"script": {
+								"id": "e360fb34-da61-4f2d-95ea-a7a341953d2d",
+								"type": "text/javascript",
+								"exec": [
+									""
+								]
+							}
+						},
+						{
+							"listen": "test",
+							"script": {
+								"id": "3fd2b8e4-d23d-4d5f-834e-900cf5688843",
+								"type": "text/javascript",
+								"exec": [
+									"postman.setGlobalVariable(\"function:getJobIdDelete\", (jsonData, next_req)=>{",
+									"    let id_index = jsonData.message.indexOf('id ');",
+									"    let parsedId = jsonData.message.substr(id_index + 3, jsonData.message.length);",
+									"    pm.environment.set(\"job_id\", parsedId);",
+									"    pm.environment.set(\"next_request\", next_req);",
+									"    postman.setNextRequest(\"Check Delete Job Completed\");",
+									"});"
+								]
+							}
+						}
+					],
+					"protocolProfileBehavior": {},
+					"_postman_isSubFolder": true
+				},
+				{
+					"name": "Read Transaction Logs",
+					"item": [
+						{
+							"name": "create test table",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "8121702d-12fb-4100-accf-bb88e388d332",
+										"exec": [
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"tests[\"Create Table\"] = responseBody.has(\"successfully created.\");",
+											"",
+											"setTimeout(()=>{}, 500);"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "saveHelperData",
+											"value": true,
+											"type": "boolean"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"operation\":\"create_table\",\n  \"schema\":\"test_delete_before\",\n  \"table\":\"test_read\",\n  \"hash_attribute\": \"id\"\n}",
+									"options": {
+										"raw": {}
+									}
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "Insert new records",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "984bd7c5-fc13-4427-af0f-552059bde901",
+										"exec": [
+											"pm.test(\"Check inserted_hashed array length\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData.inserted_hashes.length).to.eql(2);",
+											"});",
+											"",
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"setTimeout(()=>{}, 100);"
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"id": "a560118b-8c34-4d70-8327-13bdb2c301b2",
+										"exec": [
+											""
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\"operation\":\"insert\",\n\"schema\":\"test_delete_before\",\n\"table\":\"test_read\",\n\"records\": [{\"id\": 1, \"name\": \"Penny\"}, {\"id\": 2, \"name\": \"Kato\", \"age\": 6}]\n}",
+									"options": {
+										"raw": {}
+									}
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "Insert more records",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "21fb26fe-9ebe-4e1c-9728-a07cdab2430b",
+										"exec": [
+											"pm.test(\"Check inserted_hashed array length\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData.inserted_hashes.length).to.eql(1);",
+											"});",
+											"",
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"setTimeout(()=>{}, 100);"
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"id": "a31d346b-2021-4aab-b1aa-30816c2cbb2a",
+										"exec": [
+											""
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\"operation\":\"insert\",\n\"schema\":\"test_delete_before\",\n\"table\":\"test_read\",\n\"records\": [{\"id\": 3, \"name\": \"Riley\", \"age\": 7}]\n}",
+									"options": {
+										"raw": {}
+									}
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "Update records",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "78563eed-5891-4562-956d-691fd235bee0",
+										"exec": [
+											"pm.test(\"Check inserted_hashed array length\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData.update_hashes.length).to.eql(2);",
+											"});",
+											"",
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"setTimeout(()=>{}, 100);"
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"id": "235d3a16-3019-44d1-9608-620d45f82773",
+										"exec": [
+											""
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\"operation\":\"update\",\n\"schema\":\"test_delete_before\",\n\"table\":\"test_read\",\n\"records\": [{\"id\": 1, \"name\": \"Penny B\", \"age\": 8}, {\"id\": 2, \"name\": \"Kato B\"}]\n}",
+									"options": {
+										"raw": {}
+									}
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "Insert another record",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "45191f1e-a88c-49b1-b66e-223b734ba762",
+										"exec": [
+											"pm.test(\"Check inserted_hashed array length\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData.inserted_hashes.length).to.eql(1);",
+											"});",
+											"",
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"setTimeout(()=>{}, 100);"
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"id": "a88895bb-b626-40cd-bba1-8c074bcb07db",
+										"exec": [
+											""
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\"operation\":\"insert\",\n\"schema\":\"test_delete_before\",\n\"table\":\"test_read\",\n\"records\": [{\"id\": \"blerrrrr\", \"name\": \"Rosco\"}]\n}",
+									"options": {
+										"raw": {}
+									}
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "Update a record",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "1b722f30-cdc5-456e-90d0-a7776a2342dd",
+										"exec": [
+											"pm.test(\"Check update_hashes array length\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData.update_hashes.length).to.eql(1);",
+											"});",
+											"",
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"setTimeout(()=>{}, 100);"
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"id": "b2c03831-348c-4406-ab2b-a373a88eb2d8",
+										"exec": [
+											""
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\"operation\":\"update\",\n\"schema\":\"test_delete_before\",\n\"table\":\"test_read\",\n\"records\": [{\"id\": \"blerrrrr\", \"breed\": \"Mutt\"}]\n}",
+									"options": {
+										"raw": {}
+									}
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "Delete some records",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "f87a79ce-0e34-484a-ad6f-f2769c4321f8",
+										"exec": [
+											"pm.test(\"Check deleted_hashes array length\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData.deleted_hashes.length).to.eql(2);",
+											"});",
+											"",
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"setTimeout(()=>{}, 100);"
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"id": "cd783ef8-e55d-4763-bf75-0c7c6d75c35a",
+										"exec": [
+											""
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\"operation\":\"delete\",\n\"schema\":\"test_delete_before\",\n\"table\":\"test_read\",\n\"hash_values\": [3,1]\n}",
+									"options": {
+										"raw": {}
+									}
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "Insert another record",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "c4271bff-8bae-456e-8eae-762a42ded2cf",
+										"exec": [
+											"pm.test(\"Check inserted_hashed array length\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData.inserted_hashes.length).to.eql(1);",
+											"});",
+											"",
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"setTimeout(()=>{}, 100);"
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"id": "7ebdc8f7-2ad7-4e9e-b069-e445e66e0ab5",
+										"exec": [
+											""
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\"operation\":\"insert\",\n\"schema\":\"test_delete_before\",\n\"table\":\"test_read\",\n\"records\": [{\"id\": 4, \"name\": \"Griff\"}]\n}",
+									"options": {
+										"raw": {}
+									}
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "Fetch all Transactions",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "ea93cf86-5433-4f48-8a6e-e7beab7ceda4",
+										"exec": [
+											"pm.test(\"Check array length\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData.length).to.eql(7);",
+											"});",
+											"",
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"setTimeout(()=>{}, 100);"
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"id": "a187aebe-69d6-4fa1-a81d-5d80bf33606e",
+										"exec": [
+											""
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\"operation\":\"read_transaction_log\",\n\"schema\":\"test_delete_before\",\n\"table\":\"test_read\"\n}",
+									"options": {
+										"raw": {}
+									}
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "Fetch timestamp Transactions",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "fbb961c7-b748-41c9-b6b1-6c2c131b5782",
+										"exec": [
+											"pm.test(\"Check array length\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    let user = pm.environment.get(\"username\");",
+											"    pm.expect(jsonData.length).to.eql(7);",
+											"",
+											"});",
+											"",
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"setTimeout(()=>{}, 100);"
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"id": "eef6e3db-8a86-4378-8eb4-4bdb3ef82557",
+										"exec": [
+											""
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\"operation\":\"read_transaction_log\",\n\"schema\":\"test_delete_before\",\n\"table\":\"test_read\",\n\"search_type\": \"timestamp\",\n\"search_values\":[]\n}",
+									"options": {
+										"raw": {}
+									}
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "Fetch user transactions",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "ccdc2de0-bc6d-4a16-ba69-a7c20bc56a25",
+										"exec": [
+											"pm.test(\"Check array length\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    let user = pm.environment.get(\"username\");",
+											"    pm.expect(jsonData[user].length).to.eql(7);",
+											"",
+											"});",
+											"",
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"setTimeout(()=>{}, 100);"
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"id": "7d58a9a9-0c41-4068-8d80-1af5a9a18b7d",
+										"exec": [
+											""
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\"operation\":\"read_transaction_log\",\n\"schema\":\"test_delete_before\",\n\"table\":\"test_read\",\n\"search_type\": \"username\",\n\"search_values\":[\"{{username}}\"]\n}",
+									"options": {
+										"raw": {}
+									}
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "Fetch hash transactions",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "2771d4b7-e6f0-47d3-8c29-9b5d31819ac6",
+										"exec": [
+											"pm.test(\"Check array length\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData[\"1\"].length).to.eql(3);",
+											"    pm.expect(jsonData[\"blerrrrr\"].length).to.eql(2);",
+											"});",
+											"",
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"setTimeout(()=>{}, 100);"
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"id": "a30903ba-8f6e-4366-bab8-cb748aa84a91",
+										"exec": [
+											""
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\"operation\":\"read_transaction_log\",\n\"schema\":\"test_delete_before\",\n\"table\":\"test_read\",\n\"search_type\": \"hash_value\",\n\"search_values\":[1, \"blerrrrr\"]\n}",
+									"options": {
+										"raw": {}
+									}
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "drop test_read table",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "d4a8de13-5fb3-455f-8ce8-73af75eb132f",
+										"exec": [
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"",
+											"setTimeout(()=>{}, 500);"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "saveHelperData",
+											"value": true,
+											"type": "boolean"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"operation\":\"drop_table\",\n  \"schema\":\"test_delete_before\",\n  \"table\":\"test_read\"\n}",
+									"options": {
+										"raw": {}
+									}
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						}
+					],
+					"protocolProfileBehavior": {},
+					"_postman_isSubFolder": true
+				}
+			],
+			"protocolProfileBehavior": {}
+		},
+		{
+			"name": "10. Other Role Tests",
 			"item": [
 				{
 					"name": "Describe ops role testing",
@@ -36354,7 +38346,7 @@
 			"protocolProfileBehavior": {}
 		},
 		{
-			"name": "10. Alter User Tests",
+			"name": "11. Alter User Tests",
 			"item": [
 				{
 					"name": "SQL Add non SU role",
@@ -36844,7 +38836,7 @@
 			"protocolProfileBehavior": {}
 		},
 		{
-			"name": "11. Configuration",
+			"name": "12. Configuration",
 			"item": [
 				{
 					"name": "Describe table DropAttributeTest",
@@ -38679,7 +40671,7 @@
 			"protocolProfileBehavior": {}
 		},
 		{
-			"name": "12. System Information",
+			"name": "13. System Information",
 			"item": [
 				{
 					"name": "Get all System Information",
@@ -39017,7 +41009,7 @@
 			"protocolProfileBehavior": {}
 		},
 		{
-			"name": "13. Environment Clean Up",
+			"name": "14. Environment Clean Up",
 			"item": [
 				{
 					"name": "drop schema northnwd",

@@ -659,7 +659,9 @@ function createSettingsFile(mount_status, callback) {
             `   ;The name of this node in your HarperDB cluster topology.  This must be a value unique from the rest of your cluster node names.\n` +
             `${HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY}=${node_name}\n` +
             `   ;The user used to connect to other instances of HarperDB, this user must have a role of cluster_user. \n` +
-            `${HDB_SETTINGS_NAMES.CLUSTERING_USER_KEY}=${clustering_username}\n`
+            `${HDB_SETTINGS_NAMES.CLUSTERING_USER_KEY}=${clustering_username}\n` +
+            `   ;Defines if this instance does not record transactions. Note, if Clustering is enabled this setting is ignored.  \n` +
+            `${HDB_SETTINGS_NAMES.DISABLE_TRANSACTION_LOG_KEY} = false\n`
         ;
 
         winston.info('info', `hdb_props_value ${JSON.stringify(hdb_props_value)}`);

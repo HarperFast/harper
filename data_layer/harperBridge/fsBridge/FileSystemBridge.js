@@ -136,6 +136,14 @@ class FileSystemBridge extends BridgeMethods {
         }
     }
 
+    async deleteTransactionLogsBefore(delete_obj) {
+        throw new Error('delete_transaction_logs_before is not available for this instance because it uses the File System data store.');
+    }
+
+    async readTransactionLog(read_transaction_log_obj) {
+        throw new Error('read_transaction_log is not available for this instance because it uses the File System data store.');
+    }
+
     async dropAttribute(drop_attr_obj) {
         try {
             return await fsDropAttribute(drop_attr_obj);

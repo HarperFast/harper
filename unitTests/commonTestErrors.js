@@ -35,6 +35,12 @@ const LMDB_ERRORS_ENUM = {
     CANNOT_DROP_TABLE_HASH_ATTRIBUTE: new Error('cannot drop a table\'s hash attribute')
 };
 
+const COMMON_ERROR_MSGS = {
+    SCHEMA_REQUIRED: 'schema is required',
+    TABLE_REQUIRED: 'table is required'
+};
+
 module.exports = {
-    LMDB_ERRORS_ENUM
+    LMDB_ERRORS_ENUM,
+    COMMON_ERROR_MSGS
 };

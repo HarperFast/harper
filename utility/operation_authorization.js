@@ -16,6 +16,7 @@ const csv = require('../data_layer/csvBulkLoad');
 const schema = require('../data_layer/schema');
 const schema_describe = require('../data_layer/schemaDescribe');
 const delete_ = require('../data_layer/delete');
+const read_transaction_log = require('../data_layer/readTransactionLog');
 const user = require('../security/user');
 const role = require('../security/role');
 const harper_logger = require('../utility/logging/harper_logger');
@@ -98,7 +99,9 @@ required_permissions.set(reg.setLicense.name, new permission(true, []));
 required_permissions.set(data_export.export_to_s3.name, new permission(false, [READ_PERM]));
 required_permissions.set(data_export.export_local.name, new permission(false, [READ_PERM]));
 required_permissions.set(delete_.deleteFilesBefore.name, new permission(true, []));
+required_permissions.set(delete_.deleteTransactionLogsBefore.name, new permission(true, []));
 required_permissions.set(stop.restartProcesses.name, new permission(true, []));
+required_permissions.set(read_transaction_log.name, new permission(true, []));
 //This function name is hardcoded b/c of a circular dependency issue
 required_permissions.set(HANDLE_GET_JOB, new permission(false, [READ_PERM]));
 
