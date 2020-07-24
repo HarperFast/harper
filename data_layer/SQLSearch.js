@@ -190,7 +190,7 @@ class SQLSearch {
                     const where_val = common_utils.autoCast(node.right.value);
                     if([true, false].indexOf(where_val) >= 0){
                         node.right = new alasql.yy.NumValue({ value: where_val });
-                    } else if (node.right instanceof alasql.yy.StringValue && common_utils.autoCasterIsNumberCheck(where_val.toString())) {
+                    } else if (node.right instanceof alasql.yy.StringValue && !common_utils.isEmpty(where_val) && common_utils.autoCasterIsNumberCheck(where_val.toString())) {
                         node.right = new alasql.yy.NumValue({ value: where_val });
                     }
                 } else if (Array.isArray(node.right)) {
@@ -861,7 +861,7 @@ class SQLSearch {
         });
 
         //TODO there is an error with between statements being converted back to string.  need to handle
-        let where_clause = this.statement.where ? 'WHERE ' + this.statement.where : '';
+        let where_clause = this.statement.where ? "WHERE " + this.statement.where : "";
 
         let order_clause = '';
         //the only time we need to include the order by statement in the first pass is when there are no aggregators,
