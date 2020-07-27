@@ -9,7 +9,6 @@
 const insert_validator = require('../validation/insertValidator');
 const hdb_utils = require('../utility/common_utils');
 const util = require('util');
-const env = require('../utility/environment/environmentManager');
 // Leave this unused signalling import here. Due to circular dependencies we bring it in early to load it before the bridge
 const harperBridge = require('./harperBridge/harperBridge');
 const global_schema = require('../utility/globalSchema');
@@ -171,7 +170,7 @@ async function updateData(update_object) {
  */
 function returnObject(action, written_hashes, object, skipped, new_attributes) {
     let return_object = {
-        message: `${action} ${written_hashes.length} of ${object.records.length} records`,
+        message: `${action} ${written_hashes.length} of ${written_hashes.length + skipped.length} records`,
         skipped_hashes: skipped,
         new_attributes
     };

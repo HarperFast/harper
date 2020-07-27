@@ -20046,6 +20046,302 @@
 						}
 					},
 					"response": []
+				},
+				{
+					"name": "Insert into products 1 new record & one that exists",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "f31d8e63-5845-4f04-bab6-09adcce6e1d6",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"Insert validate\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.inserted_hashes.length).to.eql(1);",
+									"    pm.expect(jsonData.inserted_hashes).to.eql([100]);",
+									"    pm.expect(jsonData.skipped_hashes.length).to.eql(1);",
+									"    pm.expect(jsonData.skipped_hashes).to.eql([1]);",
+									"    pm.expect(jsonData.message).to.eql(\"inserted 1 of 2 records\");",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"insert\",\n\t\"schema\":\"{{schema}}\",\n\t\"table\":\"{{prod_tb}}\",\n\t\"records\": [\n\t  {\n        \"categoryid\": 1,\n        \"unitsnnorder\": 0,\n        \"unitsinstock\": 39,\n        \"supplierid\": 1,\n        \"productid\": 1,\n        \"discontinued\": \"False\",\n        \"reorderlevel\": 10,\n        \"productname\": \"Chai\",\n        \"quantityperunit\": \"10 boxes x 20 bags\",\n        \"unitprice\": 18\n    },\n\t{\n        \"categoryid\": 1,\n        \"unitsnnorder\": 0,\n        \"unitsinstock\": 39,\n        \"supplierid\": 1,\n        \"productid\": 100,\n        \"discontinued\": \"False\",\n        \"reorderlevel\": 10,\n        \"productname\": \"Chai\",\n        \"quantityperunit\": \"10 boxes x 20 bags\",\n        \"unitprice\": 18\n    }\n\t]\n}",
+							"options": {
+								"raw": {}
+							}
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Remove added record from products",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "16211cef-5df4-4842-8427-6353ac6cf45f",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"Delete validate\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.deleted_hashes.length).to.eql(1);",
+									"    pm.expect(jsonData.deleted_hashes).to.eql([100]);",
+									"    pm.expect(jsonData.skipped_hashes.length).to.eql(0);",
+									"    pm.expect(jsonData.skipped_hashes).to.eql([]);",
+									"    pm.expect(jsonData.message).to.eql(\"1 of 1 record successfully deleted\");",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"delete\",\n\t\"schema\":\"{{schema}}\",\n\t\"table\":\"{{prod_tb}}\",\n\t\"hash_values\": [100]\n}",
+							"options": {
+								"raw": {}
+							}
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Update products 1 existing record & one that does not exist",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "c07b3041-f537-441e-aae8-36450278d633",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"Update validate\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.update_hashes.length).to.eql(1);",
+									"    pm.expect(jsonData.update_hashes).to.eql([1]);",
+									"    pm.expect(jsonData.skipped_hashes.length).to.eql(1);",
+									"    pm.expect(jsonData.skipped_hashes).to.eql([100]);",
+									"    pm.expect(jsonData.message).to.eql(\"updated 1 of 2 records\");",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"update\",\n\t\"schema\":\"{{schema}}\",\n\t\"table\":\"{{prod_tb}}\",\n\t\"records\": [\n\t  {\n        \"productid\": 1,\n        \"discontinued\": true\n    },\n\t{\n        \"categoryid\": 1,\n        \"unitsnnorder\": 0,\n        \"unitsinstock\": 39,\n        \"supplierid\": 1,\n        \"productid\": 100,\n        \"discontinued\": \"False\",\n        \"reorderlevel\": 10,\n        \"productname\": \"Chai\",\n        \"quantityperunit\": \"10 boxes x 20 bags\",\n        \"unitprice\": 18\n    }\n\t]\n}",
+							"options": {
+								"raw": {}
+							}
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Restore Product record",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "801e2c57-b3e8-4916-9912-e5290f33f96a",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"Update validate\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.update_hashes.length).to.eql(1);",
+									"    pm.expect(jsonData.update_hashes).to.eql([1]);",
+									"    pm.expect(jsonData.skipped_hashes.length).to.eql(0);",
+									"    pm.expect(jsonData.skipped_hashes).to.eql([]);",
+									"    pm.expect(jsonData.message).to.eql(\"updated 1 of 1 records\");",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"update\",\n\t\"schema\":\"{{schema}}\",\n\t\"table\":\"{{prod_tb}}\",\n\t\"records\": [\n\t  {\n        \"productid\": 1,\n        \"discontinued\": \"False\"\n    }\n\t]\n}",
+							"options": {
+								"raw": {}
+							}
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
 				}
 			],
 			"protocolProfileBehavior": {}
