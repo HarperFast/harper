@@ -70,11 +70,12 @@ required_permissions.set(search.search.name, new permission(false, [READ_PERM]))
 required_permissions.set(csv.csvDataLoad.name, new permission(false, [INSERT_PERM]));
 required_permissions.set(csv.csvFileLoad.name, new permission(false, [INSERT_PERM]));
 required_permissions.set(csv.csvURLLoad.name, new permission(false, [INSERT_PERM]));
-required_permissions.set(schema.createSchema.name, new permission(false, [INSERT_PERM]));
-required_permissions.set(schema.createTable.name, new permission(false, [INSERT_PERM]));
+required_permissions.set(schema.createSchema.name, new permission(true, []));
+required_permissions.set(schema.createTable.name, new permission(true, []));
 required_permissions.set(schema.createAttribute.name, new permission(false, [INSERT_PERM]));
-required_permissions.set(schema.dropSchema.name, new permission(false, [DELETE_PERM]));
-required_permissions.set(schema.dropTable.name, new permission(false, [DELETE_PERM]));
+required_permissions.set(schema.dropSchema.name, new permission(true, []));
+required_permissions.set(schema.dropTable.name, new permission(true, []));
+required_permissions.set(schema.dropAttribute.name, new permission(true, []));
 required_permissions.set(schema_describe.describeSchema.name, new permission(false, [READ_PERM]));
 required_permissions.set(schema_describe.describeTable.name, new permission(false, [READ_PERM]));
 required_permissions.set(schema_describe.describeAll.name, new permission(false, [READ_PERM]));
@@ -106,12 +107,13 @@ required_permissions.set(read_transaction_log.name, new permission(true, []));
 required_permissions.set(HANDLE_GET_JOB, new permission(false, [READ_PERM]));
 
 // SQL operations are distinct from operations above, so we need to store required perms for both.
-required_permissions.set(SQL_CREATE, new permission(false, [INSERT_PERM]));
-required_permissions.set(SQL_DROP, new permission(false, [DELETE_PERM]));
 required_permissions.set(SQL_DELETE, new permission(false, [DELETE_PERM]));
 required_permissions.set(SQL_SELECT, new permission(false, [READ_PERM]));
 required_permissions.set(SQL_INSERT, new permission(false, [INSERT_PERM]));
 required_permissions.set(SQL_UPDATE, new permission(false, [UPDATE_PERM]));
+// We do not currently support DDL operations (i.e. create or drop) but leaving these here just in case we ever do
+required_permissions.set(SQL_CREATE, new permission(true, []));
+required_permissions.set(SQL_DROP, new permission(true, []));
 
 module.exports = {
     verifyPerms,
