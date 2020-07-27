@@ -1,23 +1,21 @@
 "use strict";
 
-const fs = require('fs-extra');
 const hdb_terms = require('../../../utility/hdbTerms');
 const log = require('../../../utility/logging/harper_logger');
 const {inspect} = require('util');
-const CatchUp = require('../handlers/CatchUp');
 const env = require('../../../utility/environment/environmentManager');
 env.initSync();
-const HDB_QUEUE_PATH = env.getHdbBasePath() + '/clustering/transaction_log/';
 const utils = require('../../../utility/common_utils');
 const get_cluster_user = require('../../../utility/common_utils').getClusterUser;
 const password_utility = require('../../../utility/password');
 const types = require('../types');
 const global_schema = require('../../../utility/globalSchema');
+const read_transaction_log = require('../../../data_layer/readTransactionLog');
+const ReadTransactionLogObject = require('../../../data_layer/ReadTransactionLogObject');
 const {promisify} = require('util');
 const url = require('url');
 
 const SC_TOKEN_EXPIRATION = '1d';
-const CATCHUP_OFFSET_MS = 100;
 
 const p_set_schema_to_global = promisify(global_schema.setSchemaDataToGlobal);
 
@@ -142,12 +140,15 @@ async function schemaCatchupHandler() {
  * @param channel
  * @param start_timestamp
  * @param end_timestamp
- * @param socket
  * @returns {Promise<void>}
  */
 async function catchupHandler(channel, start_timestamp, end_timestamp){
-    if(!channel){
+    if(utils.isEmpty(channel)){
         throw new Error('channel is required');
+    }
+    let channel_split = channel.split(':');
+    if(channel_split.length !== 2){
+        throw new Error('invalid channel name');
     }
 
     if(utils.isEmpty(end_timestamp)){
@@ -162,37 +163,9 @@ async function catchupHandler(channel, start_timestamp, end_timestamp){
         throw new Error('end_timestamp must be greater than start_timestamp');
     }
 
-    let channel_log_path = utils.buildFolderPath(HDB_QUEUE_PATH, channel);
-    let channel_audit_path = utils.buildFolderPath(channel_log_path, types.ROTATING_TRANSACTION_LOG_ENUM.AUDIT_LOG_NAME);
-
-    //check if the channel transaction log path & channel audit file exists
     try {
-        await fs.access(channel_log_path, fs.constants.R_OK | fs.constants.F_OK);
-        await fs.access(channel_audit_path, fs.constants.R_OK | fs.constants.F_OK);
-    } catch(e){
-        log.info(`transaction log path for channel ${channel} does not exist`);
-        //doesn't exist so we exit
-        return;
-    }
-
-    try {
-        let audit_string = await fs.readFile(channel_audit_path);
-        let channel_log_audit = JSON.parse(audit_string.toString());
-
-        let results = [];
-
-        //get files to read for catchup, iterate the files list, the list is oldest to newest.
-        for (let x = 0; x < channel_log_audit.files.length; x++) {
-            let log_metadata = channel_log_audit.files[x];
-            //we add an offset to account for the date on the log being off by a few milliseconds from the transaction time, because the transaction passes from hdb -> sc server before being written
-            if ((log_metadata.date + CATCHUP_OFFSET_MS) >= start_timestamp && (log_metadata.date + CATCHUP_OFFSET_MS) <= end_timestamp) {
-                let reader = new CatchUp(log_metadata.name, start_timestamp, end_timestamp);
-                await reader.run();
-                if (Array.isArray(reader.results) && reader.results.length > 0) {
-                    results = results.concat(reader.results);
-                }
-            }
-        }
+        let read_txn_log_obj = new ReadTransactionLogObject(channel_split[0], channel_split[1], hdb_terms.READ_TRANSACTION_LOG_SEARCH_TYPES_ENUM.TIMESTAMP, [start_timestamp, end_timestamp]);
+        let results = await read_transaction_log(read_txn_log_obj);
 
         if (Array.isArray(results) && results.length > 0) {
             let catchup_response = {
