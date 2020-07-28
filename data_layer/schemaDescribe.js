@@ -15,6 +15,7 @@ const env_mngr = require('../utility/environment/environmentManager');
 if(!env_mngr.isInitialized()){
     env_mngr.initSync();
 }
+const lmdb_terms = require('../utility/lmdb/terms');
 const lmdb_environment_utility = require('../utility/lmdb/environmentUtility');
 const lmdb_init_paths = require('../data_layer/harperBridge/lmdbBridge/lmdbUtility/initializePaths');
 
@@ -179,12 +180,12 @@ async function descTable(describe_table_object, attr_perms) {
             describe_table_object.table), HTTP_STATUS_CODES.NOT_FOUND);
     }
 
-    for await (let table of tables) {
+    for await (let table1 of tables) {
         try {
-            if (table.schema !== describe_table_object.schema) {
+            if (table1.schema !== describe_table_object.schema) {
                 continue;
             }
-            table_result = table;
+            table_result = table1;
 
             if (!table_result.hash_attribute) {
                 throw handleHDBError(new Error(), COMMON_ERROR_MSGS.INVALID_TABLE_ERR(table_result));
@@ -199,9 +200,7 @@ async function descTable(describe_table_object, attr_perms) {
             attribute_search_obj.get_attributes = [ATTRIBUTE_NAME_STRING];
 
             let attributes = await p_search_search_by_value(attribute_search_obj);
-            attributes = _.uniqBy(attributes, (attribute) => {
-                return attribute.attribute;
-            });
+            attributes = _.uniqBy(attributes, (attribute) => attribute.attribute);
 
             if (table_attr_perms && table_attr_perms.length > 0) {
                 attributes = getAttrsByPerms(table_attr_perms);
@@ -210,22 +209,40 @@ async function descTable(describe_table_object, attr_perms) {
             table_result.attributes = attributes;
 
             if(env_mngr.getDataStoreType() === terms.STORAGE_TYPES_ENUM.LMDB){
-                try {
-                    let schema_path = path.join(lmdb_init_paths.getBaseSchemaPath(), table_result.schema);
-                    let env = await lmdb_environment_utility.openEnvironment(schema_path, table_result.name);
-                    let dbi_stat = lmdb_environment_utility.statDBI(env, table_result.hash_attribute);
-                    table_result.record_count = dbi_stat.entryCount;
-                }catch(e){
-                    logger.warn(`unable to stat table dbi due to ${e}`);
-                }
+                await getLMDBStats(table_result);
             }
 
         } catch (err) {
-            logger.error(`There was an error getting attributes for table '${table.name}'`);
+            logger.error(`There was an error getting attributes for table '${table1.name}'`);
             logger.error(err);
         }
     }
     return table_result;
+}
+
+async function getLMDBStats(table_result){
+    try {
+        //get the table record count
+        let schema_path = path.join(lmdb_init_paths.getBaseSchemaPath(), table_result.schema);
+        let env = await lmdb_environment_utility.openEnvironment(schema_path, table_result.name);
+        let dbi_stat = lmdb_environment_utility.statDBI(env, table_result.hash_attribute);
+
+        //get the txn log record count
+        let txn_path = path.join(lmdb_init_paths.getTransactionStorePath(), table_result.schema);
+        let txn_env = await lmdb_environment_utility.openEnvironment(txn_path, table_result.name, true);
+        let txn_dbi_stat = lmdb_environment_utility.statDBI(txn_env, lmdb_terms.TRANSACTIONS_DBI_NAMES_ENUM.TIMESTAMP);
+
+        //get table data size in bytes
+        let table_bytes = await lmdb_environment_utility.environmentDataSize(schema_path, table_result.name);
+        let txn_bytes = await lmdb_environment_utility.environmentDataSize(txn_path, table_result.name);
+
+        table_result.table_size = table_bytes;
+        table_result.record_count = dbi_stat.entryCount;
+        table_result.transaction_log_size = txn_bytes;
+        table_result.transaction_log_record_count = txn_dbi_stat.entryCount;
+    }catch(e){
+        logger.warn(`unable to stat table dbi due to ${e}`);
+    }
 }
 
 /**

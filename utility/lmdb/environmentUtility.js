@@ -11,6 +11,7 @@ const OpenDBIObject = require('./OpenDBIObject');
 const OpenEnvironmentObject = require('./OpenEnvironmentObject');
 const lmdb_terms = require('./terms');
 //allow an environment to grow up to 1 TB
+// eslint-disable-next-line no-magic-numbers
 const MAP_SIZE = 100 * 1024 * 1024 * 1024;
 //allow up to 10,000 named data bases in an environment
 const MAX_DBS = 10000;
@@ -340,6 +341,7 @@ function getDBIDefinition(env, dbi_name){
  * @param {String} dbi_name - name of the dbi (KV store)
  * @param {Boolean} [dup_sort] - optional, determines if the dbi allows duplicate keys or not
  * @param {lmdb_terms.DBI_KEY_TYPES} [key_type] - optional, dictates what data format the of the key, default is string
+ * @param {Boolean} is_hash_attribute - defines if the dbi being created is the hash_attribute fro the environment / table
  * @returns {*} - reference to the dbi
  */
 function createDBI(env, dbi_name, dup_sort, key_type, is_hash_attribute= false){
@@ -426,6 +428,22 @@ function statDBI(env, dbi_name){
 }
 
 /**
+ * gets the byte size of an environment file
+ * @param {String} environment_base_path
+ * @param {String} table_name
+ * @returns {Promise<number>}
+ */
+async function environmentDataSize(environment_base_path, table_name){
+    try {
+        let environment_path = path.join(environment_base_path, table_name, MDB_FILE_NAME);
+        let stat_result = await fs.stat(environment_path);
+        return stat_result["size"];
+    }catch(e){
+        throw new Error(LMDB_ERRORS.INVALID_ENVIRONMENT);
+    }
+}
+
+/**
  * removes a named database from an environment
  * @param {lmdb.Env} env - environment object used thigh level to interact with all data in an environment
  * @param {String} dbi_name - name of the dbi (KV store)
@@ -489,5 +507,6 @@ module.exports = {
     statDBI,
     deleteEnvironment,
     initializeDBIs,
-    TransactionCursor
+    TransactionCursor,
+    environmentDataSize
 };

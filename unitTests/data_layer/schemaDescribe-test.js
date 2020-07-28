@@ -1,8 +1,10 @@
 'use strict';
 const test_util = require('../test_utils');
 test_util.preTestPrep();
-const env = require('../../utility/environment/environmentManager');
+const env_util = require('../../utility/lmdb/environmentUtility');
 const sinon = require('sinon');
+const path = require('path');
+const fs = require('fs-extra');
 const rewire = require('rewire');
 const assert = require('assert');
 // need to rewire in order to override p_search_search_by_value
@@ -76,7 +78,6 @@ const DESCRIBE_TABLE_MESSAGE = {
 describe('Test describeAll', function() {
     let search_orig = undefined;
     let desc_table_orig = undefined;
-    let desc_table_stub = undefined;
     let sandbox = undefined;
     before(async function() {
         await test_util.createMockFS(HASH_ATTRIBUTE, TEST_SCHEMA, TEST_TABLE_DOG, test_data);
@@ -118,7 +119,6 @@ describe('Test describeAll', function() {
 describe('Test describeSchema', function() {
     let search_orig = undefined;
     let desc_table_orig = undefined;
-    let desc_table_stub = undefined;
     let sandbox = undefined;
     before(async function() {
         await test_util.createMockFS(HASH_ATTRIBUTE, TEST_SCHEMA, TEST_TABLE_DOG, test_data);
@@ -218,5 +218,49 @@ describe('Test describeTable', function() {
         schema_describe.__set__('p_search_search_by_value', search_stub_throw);
         let desc_table = await schema_describe.describeTable(DESCRIBE_TABLE_MESSAGE);
         assert.deepStrictEqual(desc_table.name, TEST_TABLE_DOG, 'expected empty results');
+    });
+});
+
+describe('Test getLMDBStats function', function() {
+    let get_lmdb_stats = undefined;
+    let env = undefined;
+    const LMDB_TEST_FOLDER_NAME = 'lmdbTest';
+    const BASE_TEST_PATH = path.join(test_util.getMockFSPath(), 'schema', LMDB_TEST_FOLDER_NAME);
+    const BASE_TXN_PATH = path.join(test_util.getMockFSPath(), 'transactions', LMDB_TEST_FOLDER_NAME);
+    const TEST_ENVIRONMENT_NAME = 'test';
+    const ID_DBI_NAME = 'id';
+    const TABLE_RESULT = {
+        schema:LMDB_TEST_FOLDER_NAME,
+        name: TEST_ENVIRONMENT_NAME,
+        hash_attribute: ID_DBI_NAME
+    };
+
+    before(async function() {
+        global.lmdb_map = undefined;
+        await fs.remove(test_util.getMockFSPath());
+        await fs.mkdirp(BASE_TEST_PATH);
+        await fs.mkdirp(BASE_TXN_PATH);
+
+        env = await env_util.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
+        await env_util.createDBI(env, ID_DBI_NAME);
+
+        let txn_env = await env_util.createEnvironment(BASE_TXN_PATH, TEST_ENVIRONMENT_NAME, true);
+        await env_util.createDBI(txn_env, 'timestamp');
+
+        get_lmdb_stats = schema_describe.__get__('getLMDBStats');
+    });
+
+    after(async function() {
+        await fs.remove(test_util.getMockFSPath());
+        global.lmdb_map = undefined;
+    });
+
+    it('getLMDBStats, test nominal case', async function () {
+        let table = test_util.deepClone(TABLE_RESULT);
+        await get_lmdb_stats(table);
+        assert(table.table_size !== undefined);
+        assert(table.record_count === 0);
+        assert(table.transaction_log_size !== undefined);
+        assert(table.transaction_log_record_count === 0);
     });
 });
