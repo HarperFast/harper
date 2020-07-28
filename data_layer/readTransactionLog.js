@@ -1,6 +1,7 @@
 'use strict';
 
 const harperBridge = require('./harperBridge/harperBridge');
+// eslint-disable-next-line no-unused-vars
 const ReadTransactionLogObject = require('./ReadTransactionLogObject');
 const hdb_utils = require('../utility/common_utils');
 const hdb_terms = require('../utility/hdbTerms');
