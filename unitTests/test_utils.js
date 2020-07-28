@@ -70,13 +70,11 @@ function deepClone(a) {
  * @param fn
  * @returns {function(*=)}
  */
-let mochaAsyncWrapper = (fn) => {
-    return (done) => {
+let mochaAsyncWrapper = (fn) => (done) => {
         fn.call().then(done, (err) => {
             done(err);
         });
     };
-};
 
 /**
  * Call this function near the top of any unit test to assign the unhandledReject event handler (this is due to a bug in Node).
