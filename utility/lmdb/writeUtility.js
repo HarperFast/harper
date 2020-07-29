@@ -1,5 +1,5 @@
 "use strict";
-const lmdb = require('node-lmdb');
+
 const environment_util = require('./environmentUtility');
 const InsertRecordsResponseObject = require('./InsertRecordsResponseObject');
 const UpdateRecordsResponseObject = require('./UpdateRecordsResponseObject');
@@ -121,6 +121,8 @@ function setTimestamps(record, is_insert){
     record[UPDATED_TIME_ATTRIBUTE_NAME] = timestamp;
     if(is_insert === true) {
         record[CREATED_TIME_ATTRIBUTE_NAME] = timestamp;
+    } else {
+        delete record[CREATED_TIME_ATTRIBUTE_NAME];
     }
 }
 
@@ -184,7 +186,7 @@ function updateRecords(env, hash_attribute, write_attributes , records){
                 if(dbi === undefined){
                     continue;
                 }
-                let value = record[key];
+
                 let existing_value = existing_record[key];
 
                 //
