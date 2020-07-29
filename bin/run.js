@@ -86,7 +86,6 @@ async function run() {
     } catch(err) {
         console.log(err);
         logger.info(err);
-        return;
     }
 }
 
@@ -95,7 +94,7 @@ async function run() {
  * @returns {Promise<void>}
  */
 async function checkTransactionLogEnvironmentsExist(){
-    if(env.getDataStoreType() === terms.STORAGE_TYPES_ENUM.LMDB){
+    if(env.getHdbBasePath() !== undefined && env.getDataStoreType() === terms.STORAGE_TYPES_ENUM.LMDB){
         console.info('Checking Transaction Environments exist');
 
         for (const table_name of Object.keys(SYSTEM_SCHEMA)) {
@@ -234,7 +233,7 @@ function isPortTaken(port) {
     }
 
     const tester = net.createServer();
-    let event_response = new Promise(function(resolve, reject) {
+    let event_response = new Promise(function(resolve) {
         tester.once('error', function (err) {
             if (err.code !== 'EADDRINUSE') {
                 resolve(true);
@@ -255,12 +254,10 @@ function isPortTaken(port) {
  * Helper function to start HarperDB.  If the hdb_boot properties file is not found, an install is started.
  */
 async function startHarper() {
-    let boot_props_stats = undefined;
-    let settings_stats = undefined;
     let start_install = false;
     try {
-        boot_props_stats = await fs.stat(env.BOOT_PROPS_FILE_PATH);
-        settings_stats = await fs.stat(env.get(terms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY));
+        await fs.stat(env.BOOT_PROPS_FILE_PATH);
+        await fs.stat(env.get(terms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY));
     } catch(err) {
         if(err.errno === ENOENT_ERR_CODE) {
             // boot props not found, don't return and kick off install

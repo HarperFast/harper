@@ -1,8 +1,7 @@
 'use strict';
 
 const test_utils = require('../../../../test_utils');
-test_utils.preTestPrep();const path = require('path');
-const TRANSACTIONS_NAME = 'transactions';
+test_utils.preTestPrep();
 const BASE_PATH = test_utils.getMockFSPath();
 
 const rewire = require('rewire');

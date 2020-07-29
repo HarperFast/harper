@@ -13,12 +13,6 @@ const p_settimeout = promisify(setTimeout);
 const CATCHUP_INTERVAL = 10000;
 const WORKER_RESPONSE_HANDLER = 1000;
 
-const ENTITY_TYPE_ENUM = {
-    SCHEMA: `schema`,
-    TABLE: `table`,
-    ATTRIBUTE: `attribute`
-};
-
 class InterNodeSocketConnector extends SocketConnector{
     /**
      * @param socket_client
@@ -63,7 +57,7 @@ class InterNodeSocketConnector extends SocketConnector{
 
             if (this.additional_info && this.connected_timestamp) {
                 //check subscriptions so we can locally fetch catchup and ask for remote catchup
-                this.additional_info.subscriptions.forEach(async (subscription) => {
+                for (const subscription of this.additional_info.subscriptions) {
                     if (subscription.publish === true) {
                         try {
                             let catch_up_msg = await sc_util.catchupHandler(subscription.channel, this.connected_timestamp, null);
@@ -81,7 +75,7 @@ class InterNodeSocketConnector extends SocketConnector{
                             milis_since_connected: Date.now() - this.connected_timestamp
                         }, this.catchupResponseHandler.bind(this));
                     }
-                });
+                }
             }
 
             this.interval_id = setInterval(this.recordConnectionTimestamp.bind(this), CATCHUP_INTERVAL);

@@ -1,6 +1,6 @@
 "use strict";
 
-//this is to avoid a circular dependency with insert.  insert needs the describe all function but so does the main schema module.  as such the functions have been broken out into a seperate module.
+//this is to avoid a circular dependency with insert.  insert needs the describe all function but so does the main schema module.  as such the functions have been broken out into a separate module.
 const search = require('./search');
 const logger = require('../utility/logging/harper_logger');
 const validator = require('../validation/schema_validator');
@@ -34,8 +34,12 @@ module.exports = {
     describeSchema
 };
 
-//This method is exposed to the API and internally for system operations.  If the op is being made internally, the `op_obj`
-// argument is not passed and, therefore, no permissions are used to filter the final schema metadata results.
+/**
+ * This method is exposed to the API and internally for system operations.  If the op is being made internally, the `op_obj`
+ * argument is not passed and, therefore, no permissions are used to filter the final schema metadata results.
+ * @param op_obj
+ * @returns {Promise<{}|HdbError>}
+ */
 async function describeAll(op_obj) {
     try {
         const sys_call = hdb_utils.isEmptyOrZeroLength(op_obj);
@@ -63,8 +67,7 @@ async function describeAll(op_obj) {
         for (let s in schemas) {
             schema_list[schemas[s].name] = true;
             if (!sys_call && !is_su) {
-                const schema_perm = role_perms[schemas[s].name].describe;
-                schema_perms[schemas[s].name] = schema_perm;
+                schema_perms[schemas[s].name] = role_perms[schemas[s].name].describe;
             }
         }
 
@@ -179,12 +182,12 @@ async function descTable(describe_table_object, attr_perms) {
             describe_table_object.table), HTTP_STATUS_CODES.NOT_FOUND);
     }
 
-    for await (let table of tables) {
+    for await (let table1 of tables) {
         try {
-            if (table.schema !== describe_table_object.schema) {
+            if (table1.schema !== describe_table_object.schema) {
                 continue;
             }
-            table_result = table;
+            table_result = table1;
 
             if (!table_result.hash_attribute) {
                 throw handleHDBError(new Error(), COMMON_ERROR_MSGS.INVALID_TABLE_ERR(table_result));
@@ -199,9 +202,7 @@ async function descTable(describe_table_object, attr_perms) {
             attribute_search_obj.get_attributes = [ATTRIBUTE_NAME_STRING];
 
             let attributes = await p_search_search_by_value(attribute_search_obj);
-            attributes = _.uniqBy(attributes, (attribute) => {
-                return attribute.attribute;
-            });
+            attributes = _.uniqBy(attributes, (attribute) => attribute.attribute);
 
             if (table_attr_perms && table_attr_perms.length > 0) {
                 attributes = getAttrsByPerms(table_attr_perms);
@@ -221,7 +222,7 @@ async function descTable(describe_table_object, attr_perms) {
             }
 
         } catch (err) {
-            logger.error(`There was an error getting attributes for table '${table.name}'`);
+            logger.error(`There was an error getting attributes for table '${table1.name}'`);
             logger.error(err);
         }
     }

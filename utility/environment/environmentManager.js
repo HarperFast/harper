@@ -314,7 +314,7 @@ function writeSettingsFileSync(create_backup_bool) {
 }
 
 /**
- * evaluates what data store type HDB is using, defualt is LMDB.  first will check the system.user directory, chosen because it will always hold data post install.  if it has a file named data.mdb we are lmdb, otherwise fs.
+ * evaluates what data store type HDB is using, default is LMDB.  first will check the system.user directory, chosen because it will always hold data post install.  if it has a file named data.mdb we are lmdb, otherwise fs.
  * if there is no user folder then we check if there is a data_store argument from the command line, used for install.
  */
 function getDataStoreType(){
@@ -345,6 +345,7 @@ function getDataStoreType(){
         }
     }catch(e){
         //if there is no user folder we check if the command line is stating file system
+        // eslint-disable-next-line no-magic-numbers
         const ARGS = minimist(process.argv.slice(2));
         if(ARGS['data_store'] === hdb_terms.STORAGE_TYPES_ENUM.FILE_SYSTEM){
             data_store_type = hdb_terms.STORAGE_TYPES_ENUM.FILE_SYSTEM;

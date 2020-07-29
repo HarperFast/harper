@@ -18,13 +18,9 @@ const types = require('../types');
 const hdb_terms = require('../../../utility/hdbTerms');
 const middleware_factory = require('../middleware/MiddlewareFactory');
 const CoreDecisionMatrix = require('../decisionMatrix/CoreDecisionMatrix');
-const log = require('../../../utility/logging/harper_logger');
-const {inspect} = require('util');
 
 //Rules
 const AssignToHdbChildWorkerRule = require('../decisionMatrix/rules/AssignToHdbChildWorkerRule');
-const WriteToTransactionLogRule = require('../decisionMatrix/rules/WriteToTransactionLogRule');
-const CallRoomMsgHandlerRule = require('../decisionMatrix/rules/CallRoomMsgHandlerRule');
 const StripHdbHeaderRule = require('../decisionMatrix/rules/StripHdbHeaderRule');
 const CleanDataObjectRule = require('../decisionMatrix/rules/CleanDataObjectRule');
 
@@ -232,10 +228,6 @@ function configureStandardRoom(created_room) {
 
     new_decision_matrix.addRule(new AssignToHdbChildWorkerRule(), types.CONNECTOR_TYPE_ENUM.CLUSTER, types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_IN);
     new_decision_matrix.addRule(new AssignToHdbChildWorkerRule(), types.CONNECTOR_TYPE_ENUM.CORE, types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_IN);
-
-    let write_transaction_rule = new WriteToTransactionLogRule();
-    new_decision_matrix.addRule(write_transaction_rule, types.CONNECTOR_TYPE_ENUM.CLUSTER, types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_IN);
-    new_decision_matrix.addRule(write_transaction_rule, types.CONNECTOR_TYPE_ENUM.CORE, types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_IN);
 
     let clean_data_object_rule = new CleanDataObjectRule();
     new_decision_matrix.addRule(clean_data_object_rule, types.CONNECTOR_TYPE_ENUM.CLUSTER, types.MIDDLEWARE_TYPE.MIDDLEWARE_PUBLISH_IN);

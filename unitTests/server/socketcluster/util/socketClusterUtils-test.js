@@ -2,52 +2,45 @@
 
 const test_util = require('../../../test_utils');
 test_util.preTestPrep();
+const BASE_PATH = test_util.getMockFSPath();
 
 const rewire = require('rewire');
-const path = require('path');
+const LMDBBridge = require('../../../../data_layer/harperBridge/lmdbBridge/LMDBBridge');
+const rw_read_txn_log = rewire('../../../../data_layer/readTransactionLog');
+const rw_bridge = rw_read_txn_log.__set__('harperBridge', new LMDBBridge());
 const assert = require('assert');
 const fs = require('fs-extra');
 const sc_utils = rewire('../../../../server/socketcluster/util/socketClusterUtils');
-const MOCKFS_PATH = test_util.getMockFSPath();
+const rw_sc = sc_utils.__set__('read_transaction_log', rw_read_txn_log);
 
-const TRANSACTION_LOG_PATH = path.join(MOCKFS_PATH, 'clustering', 'transaction_log', );
+
+const CreateTableObject = require('../../../../data_layer/CreateTableObject');
+const InsertObject = require("../../../../data_layer/InsertObject");
+const InsertRecordsResponseObject = require("../../../../utility/lmdb/InsertRecordsResponseObject");
+const LMDBInsertTransactionObject = require("../../../../data_layer/harperBridge/lmdbBridge/lmdbUtility/LMDBInsertTransactionObject");
+const lmdb_write_txn = require('../../../../data_layer/harperBridge/lmdbBridge/lmdbUtility/lmdbWriteTransaction');
+const lmdb_create_txn_envs = require('../../../../data_layer/harperBridge/lmdbBridge/lmdbUtility/lmdbCreateTransactionsEnvironment');
+
 const CHANNEL_NAME_DEV_DOG = 'dev:dog';
 const CHANNEL_NAME_DEV_BREED = 'dev:breed';
 const CHANNEL_NAME_DEV_BAD = 'dev:bad';
 
-const CHANNEL_LOG_PATH_DEV_DOG = path.join(TRANSACTION_LOG_PATH, CHANNEL_NAME_DEV_DOG);
-const CHANNEL_LOG_PATH_DEV_BREED = path.join(TRANSACTION_LOG_PATH, CHANNEL_NAME_DEV_BREED);
-const CHANNEL_AUDIT_FILE_PATH = path.join(CHANNEL_LOG_PATH_DEV_DOG, 'audit.json');
-const CHANNEL_AUDIT_FILE_DATA = {
-    "keep": {
-        "days": false,
-        "amount": 10
-    },
-    "auditLog": path.join(CHANNEL_LOG_PATH_DEV_DOG, "audit.json"),
-    "files": [
-        {
-            "date": 1566493358738,
-            "name": path.join(CHANNEL_LOG_PATH_DEV_DOG, "dev:dog.201908221102"),
-            "hash": "94902fe17b9e8a33a7f89b894d64ce13"
-        },
-        {
-            "date": 1566493702105,
-            "name": path.join(CHANNEL_LOG_PATH_DEV_DOG,"dev:dog.201908221108"),
-            "hash": "30c2eb3e6defd43aee9bf338c46423a1"
-        },
-        {
-            "date": 1566497336658,
-            "name": path.join(CHANNEL_LOG_PATH_DEV_DOG,"dev:dog.201908221208"),
-            "hash": "5583258643e03e8fc70e079e657ffd27"
-        }
-    ]
+const CREATE_TABLE_OBJ = new CreateTableObject('dev', 'dog', 'id');
+const INSERT_RECORDS_1 = [{id: 1, name: 'Penny'}, {id: 2, name: 'Kato', age: '6'}];
+let INSERT_HASHES_1 = [1,2];
+const INSERT_TIMESTAMP_1 = 1566493358734.539;
+
+const INSERT_RECORDS_2 = [{id: 3, name: 'Riley', age: '7'}];
+let INSERT_HASHES_2 = [3];
+const INSERT_TIMESTAMP_2 = 1566493702103.245;
+
+const INSERT_RECORDS_3 = [{id: 'blerrrrr', name: 'Rosco'}];
+let INSERT_HASHES_3 = ['blerrrrr'];
+const INSERT_TIMESTAMP_3 = 1566497336655.821;
+
+const HDB_USER_1 = {
+    username: 'kyle'
 };
-const CHANNEL_LOG_FILE1_PATH = path.join(CHANNEL_LOG_PATH_DEV_DOG, 'dev:dog.201908221102');
-const CHANNEL_LOG_FILE1_DATA = '1566493358734,insert,%5B%7B%22name%22%3A%22Harper%22%2C%22breed%22%3A%22Mutt%22%2C%22id%22%3A%22887888%22%2C%22age%22%3A5%7D%2C%7B%22name%22%3A%22Penny%22%2C%22breed%22%3A%22Mutt%22%2C%22id%22%3A%22998%22%2C%22age%22%3A5%7D%5D\r\n';
-const CHANNEL_LOG_FILE2_PATH = path.join(CHANNEL_LOG_PATH_DEV_DOG, 'dev:dog.201908221108');
-const CHANNEL_LOG_FILE2_DATA = '1566493702103,insert,%5B%7B%22name%22%3A%22%5CtHarper%5C%22%22%2C%22breed%22%3A%22Mutt%5Cn%22%2C%22id%22%3A%228871888%22%2C%22age%22%3A5%7D%2C%7B%22name%22%3A%22Penny%22%2C%22breed%22%3A%22Mutt%22%2C%22id%22%3A%229198%22%2C%22age%22%3A5%7D%5D\r\n';
-const CHANNEL_LOG_FILE3_PATH = path.join(CHANNEL_LOG_PATH_DEV_DOG, 'dev:dog.201908221208');
-const CHANNEL_LOG_FILE3_DATA = '1566497336655,insert,%5B%7B%22name%22%3A%22%5CtHarper%5C%22%22%2C%22breed%22%3A%22Mutt%5Cn%22%2C%22id%22%3A%2288715888%22%2C%22age%22%3A5%7D%2C%7B%22name%22%3A%22Penny%22%2C%22breed%22%3A%22Mutt%22%2C%22id%22%3A%2291598%22%2C%22age%22%3A5%7D%5D\r\n';
 
 const TIMESTAMP_8_20_2019 = 1566259200000;
 const TIMESTAMP_8_25_2019 = 1566691200000;
@@ -58,21 +51,43 @@ const TIMESTAMP_1566497336650 = 1566497336650;
 describe('Test socketClusterUtils', ()=> {
 
     describe('Test catchupHandler', ()=>{
-        let HDB_QUEUE_PATH_revert;
         before(async ()=>{
-            HDB_QUEUE_PATH_revert = sc_utils.__set__('HDB_QUEUE_PATH', TRANSACTION_LOG_PATH);
+            await fs.remove(BASE_PATH);
+            await fs.mkdirp(BASE_PATH);
+            global.lmdb_map = undefined;
+            global.hdb_schema = {
+                dev: {
+                    dog: {
+                        hash_attribute: 'id'
+                    }
+                }
+            };
+            await lmdb_create_txn_envs(CREATE_TABLE_OBJ);
+            let insert_obj_1 = new InsertObject('dev', 'dog', 'id', INSERT_RECORDS_1);
+            insert_obj_1.hdb_user = HDB_USER_1;
+            let insert_response_1 = new InsertRecordsResponseObject(INSERT_HASHES_1, [], INSERT_TIMESTAMP_1);
+            new LMDBInsertTransactionObject(insert_obj_1.records, insert_obj_1.hdb_user.username, insert_response_1.txn_time, insert_response_1.written_hashes);
+            await lmdb_write_txn(insert_obj_1, insert_response_1);
 
-            await fs.mkdirp(CHANNEL_LOG_PATH_DEV_DOG);
-            await fs.mkdirp(CHANNEL_LOG_PATH_DEV_BREED);
-            await fs.writeFile(CHANNEL_AUDIT_FILE_PATH, JSON.stringify(CHANNEL_AUDIT_FILE_DATA));
-            await fs.writeFile(CHANNEL_LOG_FILE1_PATH, CHANNEL_LOG_FILE1_DATA);
-            await fs.writeFile(CHANNEL_LOG_FILE2_PATH, CHANNEL_LOG_FILE2_DATA);
-            await fs.writeFile(CHANNEL_LOG_FILE3_PATH, CHANNEL_LOG_FILE3_DATA);
+            let insert_obj_2 = new InsertObject('dev', 'dog', 'id', INSERT_RECORDS_2);
+            insert_obj_2.hdb_user = HDB_USER_1;
+            let insert_response_2 = new InsertRecordsResponseObject(INSERT_HASHES_2, [], INSERT_TIMESTAMP_2);
+            new LMDBInsertTransactionObject(insert_obj_2.records, insert_obj_2.hdb_user.username, insert_response_2.txn_time, insert_response_2.written_hashes);
+            await lmdb_write_txn(insert_obj_2, insert_response_2);
+
+            let insert_obj_3 = new InsertObject('dev', 'dog', 'id', INSERT_RECORDS_3);
+            insert_obj_3.hdb_user = HDB_USER_1;
+            let insert_response_3 = new InsertRecordsResponseObject(INSERT_HASHES_3, [], INSERT_TIMESTAMP_3);
+            new LMDBInsertTransactionObject(insert_obj_3.records, insert_obj_3.hdb_user.username, insert_response_3.txn_time, insert_response_3.written_hashes);
+            await lmdb_write_txn(insert_obj_3, insert_response_3);
         });
 
-        after(()=>{
-            HDB_QUEUE_PATH_revert();
-            test_util.tearDownMockFS();
+        after(async ()=>{
+            global.lmdb_map = undefined;
+            global.hdb_schema = undefined;
+            await fs.remove(BASE_PATH);
+            rw_bridge();
+            rw_sc();
         });
 
         it('pass no attributes', ()=>{
