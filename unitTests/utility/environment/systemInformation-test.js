@@ -6,6 +6,8 @@ const system_information = require('../../../utility/environment/systemInformati
 const rw_system_information = rewire('../../../utility/environment/systemInformation');
 const SystemInformationOperation = require('../../../utility/environment/SystemInformationOperation');
 
+const TableSizeObject = require('../../../data_layer/harperBridge/lmdbBridge/lmdbUtility/TableSizeObject');
+
 let rw_getHDBProcessInfo;
 
 const PROCESS_INFO = {
@@ -175,16 +177,19 @@ const EXPECTED_PROPERTIES = {
     harperdb_processes: ["core", "clustering"],
         harperdb_processes_core: ["pid", "parentPid", "name", "pcpu", "pcpuu", "pcpus", "pmem", "priority", "mem_vsz", "mem_rss", "nice", "started", "state",
             "tty", "user", "command", "params", "path"],
-    all: ['system', 'time', 'cpu', 'memory', 'disk', 'network', 'harperdb_processes']
+    all: ['system', 'time', 'cpu', 'memory', 'disk', 'network', 'harperdb_processes', 'table_size']
 };
 
 describe('test systemInformation module', ()=>{
+    let rw_getTableSize;
     before(()=>{
         rw_getHDBProcessInfo = rw_system_information.__set__('getHDBProcessInfo',async ()=>{ return PROCESS_INFO;});
+        rw_getTableSize = rw_system_information.__set__('getTableSize',async ()=>{ return [];});
     });
 
     after(()=>{
         rw_getHDBProcessInfo();
+        rw_getTableSize();
     });
 
     it('test getSystemInformation function', async()=>{
@@ -396,4 +401,75 @@ describe('test systemInformation module', ()=>{
         assert(results.network === undefined);
         assert(results.harperdb_processes === undefined);
     });
+
+    it('test getAllSystemInformation function fetch all of the attributes', async ()=>{
+        let expected_attributes = EXPECTED_PROPERTIES.all;
+
+        let op = new SystemInformationOperation(expected_attributes);
+        let results = await rw_system_information.getAllSystemInformation(op);
+
+        EXPECTED_PROPERTIES.all.forEach(property=>{
+            assert(results.hasOwnProperty(property) && results[property] !== undefined);
+        });
+    });
+});
+
+describe('test getTableSize function', ()=>{
+    const RETURN_SCHEMA = {
+        dev: {
+            dog: {
+                schema: 'dev',
+                name: 'dog',
+                hash_attribute: 'id'
+            },
+            breed: {
+                schema: 'dev',
+                name: 'breed',
+                hash_attribute: 'breed_id'
+            }
+        },
+        prod:{
+            customers:{
+                schema: 'prod',
+                name: 'customers',
+                hash_attribute: 'customer_id'
+            }
+        },
+        test: {}
+    };
+    let rw_schema_describe;
+    let rw_data_store_type;
+    let rw_lmdb_get_table_size;
+    before(()=>{
+        rw_schema_describe = rw_system_information.__set__('schema_describe', {
+            describeAll: async ()=>RETURN_SCHEMA
+        });
+
+        rw_data_store_type = rw_system_information.__set__('env', {
+            getDataStoreType: ()=>'lmdb'
+        });
+
+        rw_lmdb_get_table_size = rw_system_information.__set__('lmdb_get_table_size', async (table_object)=>{
+            return new TableSizeObject(table_object.schema, table_object.name, 4096, 0, 0, 4096);
+        });
+    });
+
+    after(()=>{
+        rw_schema_describe();
+        rw_data_store_type();
+        rw_lmdb_get_table_size();
+    });
+
+    it('test function', async()=>{
+        let expected = [
+            new TableSizeObject('dev', 'dog', 4096, 0, 0, 4096),
+            new TableSizeObject('dev', 'breed', 4096, 0, 0, 4096),
+            new TableSizeObject('prod', 'customers', 4096, 0, 0, 4096),
+        ];
+
+        let results = await rw_system_information.getTableSize();
+        assert.deepStrictEqual(results, expected);
+
+    });
+
 });

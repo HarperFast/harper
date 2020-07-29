@@ -3,6 +3,13 @@
 const si = require('systeminformation');
 const log = require('../logging/harper_logger');
 const terms = require('../hdbTerms');
+const lmdb_get_table_size = require('../../data_layer/harperBridge/lmdbBridge/lmdbUtility/lmdbGetTableSize');
+const schema_describe = require('../../data_layer/schemaDescribe');
+const env = require('./environmentManager');
+if(!env.isInitialized()){
+    env.initSync();
+}
+// eslint-disable-next-line no-unused-vars
 const SystemInformationOperation = require('./SystemInformationOperation');
 const SystemInformationObject = require('./SystemInformationObject');
 
@@ -17,7 +24,8 @@ module.exports = {
     getCPUInfo,
     getTimeInfo,
     getSystemInformation,
-    systemInformation
+    systemInformation,
+    getTableSize
 };
 
 /**
@@ -33,7 +41,7 @@ function getTimeInfo(){
  * @returns {Promise<{}|Pick<Systeminformation.CpuData, "manufacturer" | "brand" | "vendor" | "speed" | "cores" | "physicalCores" | "processors">>}
  */
 async function getCPUInfo(){
-    let cpu_info = {};
+
     try {
         // eslint-disable-next-line no-unused-vars
         let {family, model, stepping, revision, voltage, speedmin, speedmax, governor, socket, cache, ...cpu_info} = await si.cpu();
@@ -54,7 +62,7 @@ async function getCPUInfo(){
         return cpu_info;
     }catch(e){
         log.error(`error in getCPUInfo: ${e}`);
-        return cpu_info;
+        return {};
     }
 }
 
@@ -63,14 +71,13 @@ async function getCPUInfo(){
  * @returns {Promise<{}|Pick<Systeminformation.MemData, "total" | "free" | "used" | "active" | "available" | "swaptotal" | "swapused" | "swapfree">>}
  */
 async function getMemoryInfo(){
-    let memory_info = {};
     try {
         // eslint-disable-next-line no-unused-vars
-        let {buffers, cached, slab, buffcache, ...memory_info} = await si.mem();
-        return memory_info;
+        let {buffers, cached, slab, buffcache, ...mem_info} = await si.mem();
+        return mem_info;
     }catch(e){
         log.error(`error in getMemoryInfo: ${e}`);
-        return memory_info;
+        return {};
     }
 }
 
@@ -116,6 +123,7 @@ async function getDiskInfo(){
         disk.read_write = fs_stats;
 
         disk.size = await si.fsSize();
+
         return disk;
     }catch(e){
         log.error(`error in getDiskInfo: ${e}`);
@@ -175,8 +183,8 @@ async function getSystemInformation(){
     let system_info = {};
     try {
         // eslint-disable-next-line no-unused-vars
-        let {codepage, logofile, serial, build, servicepack, uefi, ...system_info} = await si.osInfo();
-
+        let {codepage, logofile, serial, build, servicepack, uefi, ...sys_info} = await si.osInfo();
+        system_info = sys_info;
         let versions = await si.versions('node, npm');
         system_info.node_version = versions.node;
         system_info.npm_version = versions.npm;
@@ -187,6 +195,21 @@ async function getSystemInformation(){
         log.error(`error in getSystemInformation: ${e}`);
         return system_info;
     }
+}
+
+async function getTableSize(){
+    //get details for all tables
+    let table_sizes = [];
+    if(env.getDataStoreType() === terms.STORAGE_TYPES_ENUM.LMDB) {
+        let all_schemas = await schema_describe.describeAll();
+        for (const tables of Object.values(all_schemas)) {
+            for (const table_data of Object.values(tables)) {
+                table_sizes.push(await lmdb_get_table_size(table_data));
+            }
+        }
+    }
+
+    return table_sizes;
 }
 
 /**
@@ -204,6 +227,7 @@ async function systemInformation(system_info_op){
         response.disk = await getDiskInfo();
         response.network = await getNetworkInfo();
         response.harperdb_processes = await getHDBProcessInfo();
+        response.table_size = await getTableSize();
 
         return response;
     }
@@ -217,7 +241,7 @@ async function systemInformation(system_info_op){
                 response.time = getTimeInfo();
                 break;
             case 'cpu':
-                response.cpu =  await getCPUInfo();
+                response.cpu = await getCPUInfo();
                 break;
             case 'memory':
                 response.memory = await getMemoryInfo();
@@ -230,6 +254,9 @@ async function systemInformation(system_info_op){
                 break;
             case 'harperdb_processes':
                 response.harperdb_processes = await getHDBProcessInfo();
+                break;
+            case 'table_size':
+                response.table_size = await getTableSize();
                 break;
             default:
                 break;

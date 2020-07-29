@@ -1,8 +1,9 @@
 'use strict';
 const test_util = require('../test_utils');
 test_util.preTestPrep();
-const env = require('../../utility/environment/environmentManager');
+
 const sinon = require('sinon');
+
 const rewire = require('rewire');
 const assert = require('assert');
 // need to rewire in order to override p_search_search_by_value
@@ -76,7 +77,6 @@ const DESCRIBE_TABLE_MESSAGE = {
 describe('Test describeAll', function() {
     let search_orig = undefined;
     let desc_table_orig = undefined;
-    let desc_table_stub = undefined;
     let sandbox = undefined;
     before(async function() {
         await test_util.createMockFS(HASH_ATTRIBUTE, TEST_SCHEMA, TEST_TABLE_DOG, test_data);
@@ -118,7 +118,6 @@ describe('Test describeAll', function() {
 describe('Test describeSchema', function() {
     let search_orig = undefined;
     let desc_table_orig = undefined;
-    let desc_table_stub = undefined;
     let sandbox = undefined;
     before(async function() {
         await test_util.createMockFS(HASH_ATTRIBUTE, TEST_SCHEMA, TEST_TABLE_DOG, test_data);
@@ -187,7 +186,7 @@ describe('Test describeTable', function() {
 
     before(async function() {
         await test_util.createMockFS(HASH_ATTRIBUTE, TEST_SCHEMA, TEST_TABLE_DOG, test_data);
-        search_orig = schema_describe.__get__('p_search_search_by_value');
+        schema_describe.__get__('p_search_search_by_value');
         desc_table_orig = schema_describe.describeTable;
         sandbox = sinon.createSandbox();
     });
