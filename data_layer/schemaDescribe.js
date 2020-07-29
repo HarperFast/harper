@@ -1,6 +1,6 @@
 "use strict";
 
-//this is to avoid a circular dependency with insert.  insert needs the describe all function but so does the main schema module.  as such the functions have been broken out into a seperate module.
+//this is to avoid a circular dependency with insert.  insert needs the describe all function but so does the main schema module.  as such the functions have been broken out into a separate module.
 const search = require('./search');
 const logger = require('../utility/logging/harper_logger');
 const validator = require('../validation/schema_validator');
@@ -15,7 +15,6 @@ const env_mngr = require('../utility/environment/environmentManager');
 if(!env_mngr.isInitialized()){
     env_mngr.initSync();
 }
-const lmdb_terms = require('../utility/lmdb/terms');
 const lmdb_environment_utility = require('../utility/lmdb/environmentUtility');
 const lmdb_init_paths = require('../data_layer/harperBridge/lmdbBridge/lmdbUtility/initializePaths');
 
@@ -35,8 +34,12 @@ module.exports = {
     describeSchema
 };
 
-//This method is exposed to the API and internally for system operations.  If the op is being made internally, the `op_obj`
-// argument is not passed and, therefore, no permissions are used to filter the final schema metadata results.
+/**
+ * This method is exposed to the API and internally for system operations.  If the op is being made internally, the `op_obj`
+ * argument is not passed and, therefore, no permissions are used to filter the final schema metadata results.
+ * @param op_obj
+ * @returns {Promise<{}|HdbError>}
+ */
 async function describeAll(op_obj) {
     try {
         const sys_call = hdb_utils.isEmptyOrZeroLength(op_obj);
@@ -64,8 +67,7 @@ async function describeAll(op_obj) {
         for (let s in schemas) {
             schema_list[schemas[s].name] = true;
             if (!sys_call && !is_su) {
-                const schema_perm = role_perms[schemas[s].name].describe;
-                schema_perms[schemas[s].name] = schema_perm;
+                schema_perms[schemas[s].name] = role_perms[schemas[s].name].describe;
             }
         }
 
@@ -209,7 +211,14 @@ async function descTable(describe_table_object, attr_perms) {
             table_result.attributes = attributes;
 
             if(env_mngr.getDataStoreType() === terms.STORAGE_TYPES_ENUM.LMDB){
-                await getLMDBStats(table_result);
+                try {
+                    let schema_path = path.join(lmdb_init_paths.getBaseSchemaPath(), table_result.schema);
+                    let env = await lmdb_environment_utility.openEnvironment(schema_path, table_result.name);
+                    let dbi_stat = lmdb_environment_utility.statDBI(env, table_result.hash_attribute);
+                    table_result.record_count = dbi_stat.entryCount;
+                }catch(e){
+                    logger.warn(`unable to stat table dbi due to ${e}`);
+                }
             }
 
         } catch (err) {
@@ -218,31 +227,6 @@ async function descTable(describe_table_object, attr_perms) {
         }
     }
     return table_result;
-}
-
-async function getLMDBStats(table_result){
-    try {
-        //get the table record count
-        let schema_path = path.join(lmdb_init_paths.getBaseSchemaPath(), table_result.schema);
-        let env = await lmdb_environment_utility.openEnvironment(schema_path, table_result.name);
-        let dbi_stat = lmdb_environment_utility.statDBI(env, table_result.hash_attribute);
-
-        //get the txn log record count
-        let txn_path = path.join(lmdb_init_paths.getTransactionStorePath(), table_result.schema);
-        let txn_env = await lmdb_environment_utility.openEnvironment(txn_path, table_result.name, true);
-        let txn_dbi_stat = lmdb_environment_utility.statDBI(txn_env, lmdb_terms.TRANSACTIONS_DBI_NAMES_ENUM.TIMESTAMP);
-
-        //get table data size in bytes
-        let table_bytes = await lmdb_environment_utility.environmentDataSize(schema_path, table_result.name);
-        let txn_bytes = await lmdb_environment_utility.environmentDataSize(txn_path, table_result.name);
-
-        table_result.table_size = table_bytes;
-        table_result.record_count = dbi_stat.entryCount;
-        table_result.transaction_log_size = txn_bytes;
-        table_result.transaction_log_record_count = txn_dbi_stat.entryCount;
-    }catch(e){
-        logger.warn(`unable to stat table dbi due to ${e}`);
-    }
 }
 
 /**

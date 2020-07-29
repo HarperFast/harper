@@ -18,7 +18,7 @@
   "scripts": {
     "build": "eslint -c ./.eslintbuild bin/ data_layer/ events/ lib/ security/ server/ sqlTranslator/ upgrade/ utility/ validation/",
     "postinstall": "node ./upgrade/scripts/postInstall.js",
-    "test": "npm run build && node utility/devops/register.js --reset_license --storage_type=fs && cd bin/ && ../node_modules/mocha/bin/_mocha '../unitTests/**/*.js' --config '../unitTests/.mocharc.json'",
+    "test": "npm run build && node utility/devops/register.js --reset_license --storage_type=fs && cd bin/ && nyc --reporter=lcov ../node_modules/mocha/bin/_mocha '../unitTests/**/*.js' --config '../unitTests/.mocharc.json'&& node ../utility/devops/register.js --reset_license --storage_type=fs",
     "hdb-check": "./utility/devops/hdb-check.sh",
     "prepublish": "npm run build",
     "prebuild": "date",
