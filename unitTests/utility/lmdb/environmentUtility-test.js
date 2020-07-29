@@ -562,6 +562,35 @@ describe("Test LMDB environmentUtility module", ()=>{
             });
         });
 
+    describe("Test environmentDataSize function", ()=> {
+        let env;
+
+        before(async () => {
+            global.lmdb_map = undefined;
+            await fs.mkdirp(BASE_TEST_PATH);
+
+            env = await lmdb_env_util.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
+            await lmdb_env_util.createDBI(env, ID_DBI_NAME);
+        });
+
+        after(async () => {
+            await fs.remove(BASE_TEST_PATH);
+            test_utils.tearDownMockFS();
+            global.lmdb_map = undefined;
+        });
+
+        it('call function no args', async ()=>{
+            await test_utils.assertErrorAsync(lmdb_env_util.environmentDataSize, [], LMDB_TEST_ERRORS.INVALID_ENVIRONMENT);
+        });
+
+        it('call function happy path no data', async ()=>{
+            let data_size = fs.statSync(path.join(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME, 'data.mdb'));
+            let stat = await test_utils.assertErrorAsync(lmdb_env_util.environmentDataSize, [BASE_TEST_PATH, TEST_ENVIRONMENT_NAME], undefined);
+            assert.notDeepStrictEqual(stat, undefined);
+            assert.deepStrictEqual(stat, data_size["size"]);
+        });
+    });
+
         describe("Test dropDBI function", ()=> {
             let env;
             before(async () => {
