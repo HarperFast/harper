@@ -378,20 +378,20 @@ describe('test systemInformation module', ()=>{
         });
     });
 
-    it('test getAllSystemInformation function fetch all attributes', async ()=>{
+    it('test systemInformation function fetch all attributes', async ()=>{
         let op = new SystemInformationOperation();
-        let results = await rw_system_information.getAllSystemInformation(op);
+        let results = await rw_system_information.systemInformation(op);
 
         EXPECTED_PROPERTIES.all.forEach(property=>{
             assert(results.hasOwnProperty(property) && results[property] !== undefined);
         });
     });
 
-    it('test getAllSystemInformation function fetch some attributes', async ()=>{
+    it('test systemInformation function fetch some attributes', async ()=>{
         let expected_attributes = ['time', 'memory'];
 
         let op = new SystemInformationOperation(expected_attributes);
-        let results = await rw_system_information.getAllSystemInformation(op);
+        let results = await rw_system_information.systemInformation(op);
 
         assert(results.time !== undefined);
         assert(results.memory !== undefined);
@@ -402,11 +402,11 @@ describe('test systemInformation module', ()=>{
         assert(results.harperdb_processes === undefined);
     });
 
-    it('test getAllSystemInformation function fetch all of the attributes', async ()=>{
+    it('test systemInformation function fetch all of the attributes', async ()=>{
         let expected_attributes = EXPECTED_PROPERTIES.all;
 
         let op = new SystemInformationOperation(expected_attributes);
-        let results = await rw_system_information.getAllSystemInformation(op);
+        let results = await rw_system_information.systemInformation(op);
 
         EXPECTED_PROPERTIES.all.forEach(property=>{
             assert(results.hasOwnProperty(property) && results[property] !== undefined);
