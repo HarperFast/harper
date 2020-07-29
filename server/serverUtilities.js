@@ -485,7 +485,7 @@ function getOperationFunction(json){
             operation_function = catchup;
             break;
         case terms.OPERATIONS_ENUM.SYSTEM_INFORMATION:
-            operation_function = system_information.getAllSystemInformation;
+            operation_function = system_information.systemInformation;
             break;
         case terms.OPERATIONS_ENUM.DELETE_TRANSACTION_LOGS_BEFORE:
             operation_function = signalJob;

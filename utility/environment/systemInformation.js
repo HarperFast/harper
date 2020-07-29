@@ -17,7 +17,7 @@ module.exports = {
     getCPUInfo,
     getTimeInfo,
     getSystemInformation,
-    getAllSystemInformation
+    systemInformation
 };
 
 /**
@@ -194,7 +194,7 @@ async function getSystemInformation(){
  * @param {SystemInformationOperation} system_info_op
  * @returns {Promise<SystemInformationObject>}
  */
-async function getAllSystemInformation(system_info_op){
+async function systemInformation(system_info_op){
     let response = new SystemInformationObject();
     if(!Array.isArray(system_info_op.attributes) || system_info_op.attributes.length === 0){
         response.system = await getSystemInformation();
