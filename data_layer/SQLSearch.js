@@ -171,6 +171,8 @@ class SQLSearch {
      * @private
      */
     _conditionsToFetchAttributeValues() {
+        //TODO - CORE-1095 - update how WHERE clause value that include escaped characters is used to do initial
+        // searchByValue query - this value is set to this.exact_search_values in this method
         if (common_utils.isEmpty(this.statement.where)) {
             log.trace('AST "where" statement is empty.');
             return;
@@ -861,7 +863,8 @@ class SQLSearch {
         });
 
         //TODO there is an error with between statements being converted back to string.  need to handle
-        let where_clause = this.statement.where ? "WHERE " + this.statement.where : "";
+        //TODO - CORE-1095 - update how WHERE clause is translated back to SQL query for where expression values include escaped characters
+        let where_clause = this.statement.where ? 'WHERE ' + this.statement.where : '';
 
         let order_clause = '';
         //the only time we need to include the order by statement in the first pass is when there are no aggregators,
