@@ -294,7 +294,7 @@ describe('Test getTableSchema function', function () {
     it('Error should be shown when trying to get the table that doesn\'t have in system and dev', function (done) {
         let getTableSchema = global_schema.__get__('getTableSchema');
         getTableSchema('dev', 'notable', function (err) {
-            assert.equal(err.message, "Table 'dev.notable' not found");
+            assert.equal(err.message, "Table 'dev.notable' does not exist");
             done();
         });
     });
@@ -314,7 +314,7 @@ describe('Test if no table object', function () {
     it('Should show error when get not have table on dev schema', function (done) {
         let setTableDataToGlobal = global_schema.__get__('setTableDataToGlobal');
         setTableDataToGlobal('dev', 'dogs', (err, results) => {
-            assert.equal(err.message, "Table 'dev.dogs' not found");
+            assert.equal(err.message, "Table 'dev.dogs' does not exist");
             done();
         });
     });

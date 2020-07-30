@@ -536,7 +536,7 @@ describe('Test schema module', function() {
         it('should throw schema doesnt exist error', async () => {
             let create_attr_obj = test_util.deepClone(CREATE_ATTR_OBJECT_TEST);
             create_attr_obj.schema = 'ImNotThere';
-            let test_err_result = await test_util.testError(schema.createAttribute(create_attr_obj), `schema '${create_attr_obj.schema}' does not exist`);
+            let test_err_result = await test_util.testError(schema.createAttribute(create_attr_obj), `Schema '${create_attr_obj.schema}' does not exist`);
 
             expect(test_err_result).to.be.true;
         });
@@ -549,7 +549,7 @@ describe('Test schema module', function() {
                     [CREATE_ATTR_OBJECT_TEST.table]: {}
                 }
             };
-            let test_err_result = await test_util.testError(schema.createAttribute(create_attr_obj), `table '${create_attr_obj.table}' does not exists in schema '${create_attr_obj.schema}'`);
+            let test_err_result = await test_util.testError(schema.createAttribute(create_attr_obj), `Table '${create_attr_obj.schema}.${create_attr_obj.table}' does not exist`);
 
             expect(test_err_result).to.be.true;
         });

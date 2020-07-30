@@ -31,8 +31,8 @@ const DEFAULT_ERROR_RESP = DEFAULT_ERROR_MSGS[HTTP_STATUS_CODES.INTERNAL_SERVER_
 
 const SCHEMA_OP_ERROR_MSGS = {
     DESCRIBE_ALL_ERR: "There was an error during describeAll.  Please check the logs and try again.",
-    SCHEMA_NOT_FOUND: (schema) => `Schema '${schema}' not found`,
-    TABLE_NOT_FOUND: (schema, table) => `Table '${schema}.${table}' not found`,
+    SCHEMA_NOT_FOUND: (schema) => `Schema '${schema}' does not exist`,
+    TABLE_NOT_FOUND: (schema, table) => `Table '${schema}.${table}' does not exist`,
     INVALID_TABLE_ERR: (table_result) => `Invalid table ${JSON.stringify(table_result)}`
 };
 

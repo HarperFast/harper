@@ -70,14 +70,14 @@ function customValidate(object) {
         if (ROLE_TYPES.indexOf(item) < 0) {
             let schema = object.permission[item];
             if(!item || !global.hdb_schema[item]) {
-                validationErrors.push(new Error(`Invalid schema ${item}`));
+                validationErrors.push(new Error(COMMON_ERROR_MSGS.SCHEMA_NOT_FOUND(item)));
                 continue;
             }
             if(schema.tables) {
                 for(let t in schema.tables) {
                     let table = schema.tables[t];
                     if(!t || !global.hdb_schema[item][t]) {
-                        validationErrors.push(new Error(`Invalid table ${t}`));
+                        validationErrors.push(new Error(COMMON_ERROR_MSGS.TABLE_NOT_FOUND(item, t)));
                         continue;
                     }
                     if(!validate.isDefined(table.read)) {
