@@ -287,6 +287,7 @@ describe("Test writeUtility module", ()=>{
             let expected_update_response = new UpdateRecordsResponseObject([1], [], TXN_TIMESTAMP, orig_records);
 
             let update_records = test_utils.deepClone(UPDATE_ONE_RECORD_ARRAY);
+            update_records[0]['__createdtime__'] = 'bad value';
             let results = test_utils.assertErrorSync(write_utility.updateRecords, [env, HASH_ATTRIBUTE_NAME, all_attributes_for_update, update_records], undefined);
             assert.deepStrictEqual(results, expected_update_response);
 

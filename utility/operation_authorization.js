@@ -28,6 +28,7 @@ const reg = require('./registration/registrationHandler');
 const stop = require('../bin/stop');
 const terms = require('./hdbTerms');
 const permsTranslator = require('../security/permissionsTranslator');
+const system_information = require('../utility/environment/systemInformation');
 const { handleHDBError, hdb_errors } = require('../utility/errors/hdbError');
 const alasql = require('alasql');
 
@@ -103,8 +104,12 @@ required_permissions.set(delete_.deleteFilesBefore.name, new permission(true, []
 required_permissions.set(delete_.deleteTransactionLogsBefore.name, new permission(true, []));
 required_permissions.set(stop.restartProcesses.name, new permission(true, []));
 required_permissions.set(read_transaction_log.name, new permission(true, []));
+required_permissions.set(system_information.systemInformation.name, new permission(true, []));
 //This function name is hardcoded b/c of a circular dependency issue
 required_permissions.set(HANDLE_GET_JOB, new permission(false, [READ_PERM]));
+
+//NOTE: 'registration_info' and 'user_info' operations are intentionally left off here since both should be accessible
+// for all roles/users no matter what their permissions are
 
 // SQL operations are distinct from operations above, so we need to store required perms for both.
 required_permissions.set(SQL_DELETE, new permission(false, [DELETE_PERM]));
