@@ -13,12 +13,11 @@ const {promisify} = require(`util`);
  * @returns {Promise<void>}
  */
 async function callOperationFunctionAsCallback(operation_function_as_callback, function_input, followup_async_func) {
-    if(!operation_function_as_callback || !(typeof operation_function_as_callback === 'function')) {
+    if(!operation_function_as_callback || typeof operation_function_as_callback !== 'function') {
         throw new Error('Invalid function parameter');
     }
     let op = promisify(operation_function_as_callback);
-    let result = await callOperationFunctionAsAwait(op, function_input, followup_async_func);
-    return result;
+    return await callOperationFunctionAsAwait(op, function_input, followup_async_func);
 }
 
 /**
@@ -31,7 +30,7 @@ async function callOperationFunctionAsCallback(operation_function_as_callback, f
  * @returns {Promise<void>}
  */
 async function callOperationFunctionAsAwait(promisified_function, function_input, followup_async_func, orig_req) {
-    if(!promisified_function || !(typeof promisified_function === 'function')) {
+    if(!promisified_function || typeof promisified_function !== 'function') {
         throw new Error('Invalid function parameter');
     }
     let result = undefined;
@@ -44,11 +43,12 @@ async function callOperationFunctionAsAwait(promisified_function, function_input
             await followup_async_func(function_input, result, orig_req);
         }
 
-        // The result from insert or update contains a property new_attributes. It is used by postOperationHandler to propagate
+        // The result from insert or update contains a properties new_attributes/txn_time. It is used by postOperationHandler to propagate
         // attribute metadata across the cluster. After the property has been used we no longer need it and do not want the API returning it,
         // therefore we delete it from the result.
         if (function_input.operation === terms.OPERATIONS_ENUM.INSERT || function_input.operation === terms.OPERATIONS_ENUM.UPDATE) {
             delete result.new_attributes;
+            delete result.txn_time;
         }
 
         return result;

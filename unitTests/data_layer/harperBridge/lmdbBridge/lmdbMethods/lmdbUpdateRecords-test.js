@@ -242,7 +242,8 @@ describe('Test lmdbUpdateRecords module', ()=>{
                     residence: undefined,
                     schema: INSERT_OBJECT_TEST.schema,
                     name: INSERT_OBJECT_TEST.table
-                }
+                },
+                txn_time:m_time
             };
 
             //verify inserted txn

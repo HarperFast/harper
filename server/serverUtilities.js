@@ -14,8 +14,6 @@ const harper_logger = require('../utility/logging/harper_logger');
 const export_ = require('../data_layer/export');
 const op_auth = require('../utility/operation_authorization');
 const jobs = require('./jobs');
-const signal = require('../utility/signalling');
-const job_runner = require('./jobRunner');
 const terms = require('../utility/hdbTerms');
 const hdb_errors = require('../utility/errors/commonErrors');
 const reg = require('../utility/registration/registrationHandler');
@@ -25,6 +23,10 @@ const insert = require('../data_layer/insert');
 const global_schema = require('../utility/globalSchema');
 const system_information = require('../utility/environment/systemInformation');
 const transact_to_clustering_utils = require('./transactToClusteringUtilities');
+const job_runner = require('./jobRunner');
+const signal = require('../utility/signalling');
+
+const ClusteringOriginObject = require('./ClusteringOriginObject');
 
 const operation_function_caller = require(`../utility/OperationFunctionCaller`);
 const common_utils = require(`../utility/common_utils`);
@@ -47,6 +49,10 @@ const GLOBAL_SCHEMA_UPDATE_OPERATIONS_ENUM = {
     [terms.OPERATIONS_ENUM.DROP_TABLE]: true,
     [terms.OPERATIONS_ENUM.DROP_SCHEMA]: true
 };
+
+const OperationFunctionObject = require('./OperationFunctionObject');
+
+const OPERATION_FUNCTION_MAP = initializeOperationFunctionMap();
 
 module.exports = {
     chooseOperation,
@@ -81,8 +87,9 @@ function processLocalTransaction(req, res, operation_function, callback) {
         }
     } catch (e) {
         harper_logger.error(e);
-        callback(e);
+
         setResponseStatus(res, hdb_errors.HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR, e);
+        return callback(e);
     }
 
     let post_op_function = (terms.CLUSTER_OPERATIONS[req.body.operation] === undefined ? null : postOperationHandler);
@@ -134,11 +141,16 @@ function processLocalTransaction(req, res, operation_function, callback) {
         });
 }
 
-function sendOperationTransaction(transaction_msg, request_body, hashes_to_send, orig_req) {
+function sendOperationTransaction(transaction_msg, request_body, hashes_to_send, orig_req, txn_timestamp) {
     if(request_body.schema === terms.SYSTEM_SCHEMA_NAME) {
         return;
     }
-    transaction_msg = convertCRUDOperationToTransaction(request_body, hashes_to_send, global.hdb_schema[request_body.schema][request_body.table].hash_attribute);
+
+    if (global.hdb_socket_client === undefined){
+        return;
+    }
+
+    transaction_msg = convertCRUDOperationToTransaction(request_body, hashes_to_send, txn_timestamp);
     if(transaction_msg) {
         if(orig_req) {
             transact_to_clustering_utils.concatSourceMessageHeader(transaction_msg, orig_req);
@@ -221,6 +233,7 @@ function postOperationHandler(request_body, result, orig_req) {
             break;
         case terms.OPERATIONS_ENUM.CSV_DATA_LOAD:
             try {
+                //TODO this seems wrong, need to investigate
                 transaction_msg.transaction = {
                     operation: terms.OPERATIONS_ENUM.CSV_DATA_LOAD,
                     schema: request_body.schema,
@@ -241,36 +254,33 @@ function postOperationHandler(request_body, result, orig_req) {
 
 /**
  * Converts a core CRUD operation to a cluster read message.
- * @param source_json - The source message body
- * @param affected_hashes - Affected (successful) CRUD hashes
- * @param hash_attribute - hash attribute of the target table.
+ * @param {{}}source_json - The source message body
+ * @param {[string|number]} affected_hashes - Affected (successful) CRUD hashes
+ * @param {number} txn_timestamp - timestamp the transaction committed
  * @returns {*}
  */
-function convertCRUDOperationToTransaction(source_json, affected_hashes, hash_attribute) {
-    if (global.hdb_socket_client === undefined || Array.isArray(affected_hashes) && affected_hashes.length === 0) {
+function convertCRUDOperationToTransaction(source_json, affected_hashes, txn_timestamp) {
+    if (global.hdb_socket_client === undefined || common_utils.isEmptyOrZeroLength(affected_hashes)) {
         return null;
     }
+
+    let username = undefined;
+    if(source_json.hdb_user && source_json.hdb_user.username){
+        username = source_json.hdb_user.username;
+    }
+
     let transaction = {
         operation: source_json.operation,
         schema: source_json.schema,
-        table: source_json.table
+        table: source_json.table,
+        __origin: new ClusteringOriginObject(txn_timestamp, username, env.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY))
     };
 
     if(source_json.operation === terms.OPERATIONS_ENUM.DELETE) {
-        transaction.hash_values = [];
+        transaction.hash_values = affected_hashes;
     } else{
-        transaction.records = [];
+        transaction.records = source_json.records;
     }
-
-    source_json.records.forEach(record => {
-        if (affected_hashes.indexOf(common_utils.autoCast(record[hash_attribute])) >= 0) {
-            if(source_json.operation === terms.OPERATIONS_ENUM.DELETE) {
-                transaction.hash_values.push(record[hash_attribute]);
-            } else {
-                transaction.records.push(record);
-            }
-        }
-    });
 
     let transaction_msg = common_utils.getClusterMessage(terms.CLUSTERING_MESSAGE_TYPES.HDB_TRANSACTION);
     transaction_msg.transaction = transaction;
@@ -342,166 +352,12 @@ function chooseOperation(json, callback) {
 
 function getOperationFunction(json){
     harper_logger.trace(`getOperationFunction with operation: ${json.operation}`);
-    let operation_function = nullOperationAwait;
-    let job_operation_function = undefined;
 
-    switch (json.operation) {
-        case terms.OPERATIONS_ENUM.INSERT:
-            operation_function = insert.insert;
-            break;
-        case terms.OPERATIONS_ENUM.UPDATE:
-            operation_function = insert.update;
-            break;
-        case terms.OPERATIONS_ENUM.SEARCH_BY_HASH:
-            operation_function = p_search_search_by_hash;
-            break;
-        case terms.OPERATIONS_ENUM.SEARCH_BY_VALUE:
-            operation_function = p_search_search_by_value;
-            break;
-        case terms.OPERATIONS_ENUM.SEARCH:
-            operation_function = p_search_search;
-            break;
-        case terms.OPERATIONS_ENUM.SQL:
-            operation_function = p_sql_evaluate_sql;
-            break;
-        case terms.OPERATIONS_ENUM.CSV_DATA_LOAD:
-            operation_function = signalJob;
-            job_operation_function = csv.csvDataLoad;
-            break;
-        case terms.OPERATIONS_ENUM.CSV_FILE_LOAD:
-            operation_function = signalJob;
-            job_operation_function = csv.csvFileLoad;
-            break;
-        case terms.OPERATIONS_ENUM.CSV_URL_LOAD:
-            operation_function = signalJob;
-            job_operation_function = csv.csvURLLoad;
-            break;
-        case terms.OPERATIONS_ENUM.CREATE_SCHEMA:
-            operation_function = schema.createSchema;
-            break;
-        case terms.OPERATIONS_ENUM.CREATE_TABLE:
-            operation_function = schema.createTable;
-            break;
-        case terms.OPERATIONS_ENUM.CREATE_ATTRIBUTE:
-            operation_function = schema.createAttribute;
-            break;
-        case terms.OPERATIONS_ENUM.DROP_SCHEMA:
-            operation_function = schema.dropSchema;
-            break;
-        case terms.OPERATIONS_ENUM.DROP_TABLE:
-            operation_function = schema.dropTable;
-            break;
-        case terms.OPERATIONS_ENUM.DROP_ATTRIBUTE:
-            operation_function = schema.dropAttribute;
-            break;
-        case terms.OPERATIONS_ENUM.DESCRIBE_SCHEMA:
-            operation_function = schema_describe.describeSchema;
-            break;
-        case terms.OPERATIONS_ENUM.DESCRIBE_TABLE:
-            operation_function = schema_describe.describeTable;
-            break;
-        case terms.OPERATIONS_ENUM.DESCRIBE_ALL:
-            operation_function = schema_describe.describeAll;
-            break;
-        case terms.OPERATIONS_ENUM.DELETE:
-            operation_function = p_delete;
-            break;
-        case terms.OPERATIONS_ENUM.ADD_USER:
-            operation_function = user.addUser;
-            break;
-        case terms.OPERATIONS_ENUM.ALTER_USER:
-            operation_function = user.alterUser;
-            break;
-        case terms.OPERATIONS_ENUM.DROP_USER:
-            operation_function = user.dropUser;
-            break;
-        case terms.OPERATIONS_ENUM.LIST_USERS:
-            operation_function = user.listUsersExternal;
-            break;
-        case terms.OPERATIONS_ENUM.LIST_ROLES:
-            operation_function = role.listRoles;
-            break;
-        case terms.OPERATIONS_ENUM.ADD_ROLE:
-            operation_function = role.addRole;
-            break;
-        case terms.OPERATIONS_ENUM.ALTER_ROLE:
-            operation_function = role.alterRole;
-            break;
-        case terms.OPERATIONS_ENUM.DROP_ROLE:
-            operation_function = role.dropRole;
-            break;
-        case terms.OPERATIONS_ENUM.USER_INFO:
-            operation_function = user.userInfo;
-            break;
-        case terms.OPERATIONS_ENUM.READ_LOG:
-            operation_function = harper_logger.readLog;
-            break;
-        case terms.OPERATIONS_ENUM.ADD_NODE:
-            operation_function = cluster_utilities.addNode;
-            break;
-        case terms.OPERATIONS_ENUM.UPDATE_NODE:
-            operation_function = cluster_utilities.updateNode;
-            break;
-        case terms.OPERATIONS_ENUM.REMOVE_NODE:
-            operation_function = cluster_utilities.removeNode;
-            break;
-        case terms.OPERATIONS_ENUM.CONFIGURE_CLUSTER:
-            operation_function = cluster_utilities.configureCluster;
-            break;
-        case terms.OPERATIONS_ENUM.CLUSTER_STATUS:
-            operation_function = cluster_utilities.clusterStatus;
-            break;
-        case terms.OPERATIONS_ENUM.EXPORT_TO_S3:
-            operation_function = signalJob;
-            job_operation_function = export_.export_to_s3;
-            break;
-        case terms.OPERATIONS_ENUM.DELETE_FILES_BEFORE:
-            operation_function = signalJob;
-            job_operation_function = delete_.deleteFilesBefore;
-            break;
-        case terms.OPERATIONS_ENUM.EXPORT_LOCAL:
-            operation_function = signalJob;
-            job_operation_function = export_.export_local;
-            break;
-        case terms.OPERATIONS_ENUM.SEARCH_JOBS_BY_START_DATE:
-            operation_function = jobs.handleGetJobsByStartDate;
-            break;
-        case terms.OPERATIONS_ENUM.GET_JOB:
-            operation_function = jobs.handleGetJob;
-            break;
-        case terms.OPERATIONS_ENUM.GET_FINGERPRINT:
-            operation_function = reg.getFingerprint;
-            break;
-        case terms.OPERATIONS_ENUM.SET_LICENSE:
-            operation_function = reg.setLicense;
-            break;
-        case terms.OPERATIONS_ENUM.GET_REGISTRATION_INFO:
-            operation_function = reg.getRegistrationInfo;
-            break;
-        case terms.OPERATIONS_ENUM.RESTART:
-            operation_function = stop.restartProcesses;
-            break;
-        case terms.OPERATIONS_ENUM.CATCHUP:
-            operation_function = catchup;
-            break;
-        case terms.OPERATIONS_ENUM.SYSTEM_INFORMATION:
-            operation_function = system_information.systemInformation;
-            break;
-        case terms.OPERATIONS_ENUM.DELETE_TRANSACTION_LOGS_BEFORE:
-            operation_function = signalJob;
-            job_operation_function = delete_.deleteTransactionLogsBefore;
-            break;
-        case terms.OPERATIONS_ENUM.READ_TRANSACTION_LOG:
-            operation_function = read_transaction_log;
-            break;
-        default:
-            break;
+    if(OPERATION_FUNCTION_MAP.has(json.operation)){
+        return OPERATION_FUNCTION_MAP.get(json.operation);
     }
 
-    return {
-        operation_function: operation_function,
-        job_operation_function: job_operation_function
-    };
+    return new OperationFunctionObject(nullOperationAwait);
 }
 
 async function catchup(req) {
@@ -509,11 +365,11 @@ async function catchup(req) {
     let catchup_object = req.transaction;
     let split_channel = catchup_object.channel.split(':');
 
-    let schema = split_channel[0];
+    let _schema = split_channel[0];
     let table = split_channel[1];
     for (let transaction of catchup_object.transactions) {
         try {
-            transaction.schema = schema;
+            transaction.schema = _schema;
             transaction.table = table;
             let result;
             switch (transaction.operation) {
@@ -571,4 +427,58 @@ async function signalJob(json) {
         harper_logger.error(message);
         throw new Error(message);
     }
+}
+
+function initializeOperationFunctionMap(){
+    let op_func_map = new Map();
+
+    op_func_map.set(terms.OPERATIONS_ENUM.INSERT, new OperationFunctionObject(insert.insert));
+    op_func_map.set(terms.OPERATIONS_ENUM.UPDATE, new OperationFunctionObject(insert.update));
+    op_func_map.set(terms.OPERATIONS_ENUM.SEARCH_BY_HASH, new OperationFunctionObject(p_search_search_by_hash));
+    op_func_map.set(terms.OPERATIONS_ENUM.SEARCH_BY_VALUE, new OperationFunctionObject(p_search_search_by_value));
+    op_func_map.set(terms.OPERATIONS_ENUM.SEARCH, new OperationFunctionObject(p_search_search));
+    op_func_map.set(terms.OPERATIONS_ENUM.SQL, new OperationFunctionObject(p_sql_evaluate_sql));
+    op_func_map.set(terms.OPERATIONS_ENUM.CSV_DATA_LOAD, new OperationFunctionObject(signalJob, csv.csvDataLoad));
+    op_func_map.set(terms.OPERATIONS_ENUM.CSV_FILE_LOAD, new OperationFunctionObject(signalJob, csv.csvFileLoad));
+    op_func_map.set(terms.OPERATIONS_ENUM.CSV_URL_LOAD, new OperationFunctionObject(signalJob, csv.csvURLLoad));
+    op_func_map.set(terms.OPERATIONS_ENUM.CREATE_SCHEMA, new OperationFunctionObject(schema.createSchema));
+    op_func_map.set(terms.OPERATIONS_ENUM.CREATE_TABLE, new OperationFunctionObject(schema.createTable));
+    op_func_map.set(terms.OPERATIONS_ENUM.CREATE_ATTRIBUTE, new OperationFunctionObject(schema.createAttribute));
+    op_func_map.set(terms.OPERATIONS_ENUM.DROP_SCHEMA, new OperationFunctionObject(schema.dropSchema));
+    op_func_map.set(terms.OPERATIONS_ENUM.DROP_TABLE, new OperationFunctionObject(schema.dropTable));
+    op_func_map.set(terms.OPERATIONS_ENUM.DROP_ATTRIBUTE, new OperationFunctionObject(schema.dropAttribute));
+    op_func_map.set(terms.OPERATIONS_ENUM.DESCRIBE_SCHEMA, new OperationFunctionObject(schema_describe.describeSchema));
+    op_func_map.set(terms.OPERATIONS_ENUM.DESCRIBE_TABLE, new OperationFunctionObject(schema_describe.describeTable));
+    op_func_map.set(terms.OPERATIONS_ENUM.DESCRIBE_ALL, new OperationFunctionObject(schema_describe.describeAll));
+    op_func_map.set(terms.OPERATIONS_ENUM.DELETE, new OperationFunctionObject(p_delete));
+    op_func_map.set(terms.OPERATIONS_ENUM.ADD_USER, new OperationFunctionObject(user.addUser));
+    op_func_map.set(terms.OPERATIONS_ENUM.ALTER_USER, new OperationFunctionObject(user.alterUser));
+    op_func_map.set(terms.OPERATIONS_ENUM.DROP_USER, new OperationFunctionObject(user.dropUser));
+    op_func_map.set(terms.OPERATIONS_ENUM.LIST_USERS, new OperationFunctionObject(user.listUsersExternal));
+    op_func_map.set(terms.OPERATIONS_ENUM.LIST_ROLES, new OperationFunctionObject(role.listRoles));
+    op_func_map.set(terms.OPERATIONS_ENUM.ADD_ROLE, new OperationFunctionObject(role.addRole));
+    op_func_map.set(terms.OPERATIONS_ENUM.ALTER_ROLE, new OperationFunctionObject(role.alterRole));
+    op_func_map.set(terms.OPERATIONS_ENUM.DROP_ROLE, new OperationFunctionObject(role.dropRole));
+    op_func_map.set(terms.OPERATIONS_ENUM.USER_INFO, new OperationFunctionObject(user.userInfo));
+    op_func_map.set(terms.OPERATIONS_ENUM.READ_LOG, new OperationFunctionObject(harper_logger.readLog));
+    op_func_map.set(terms.OPERATIONS_ENUM.ADD_NODE, new OperationFunctionObject(cluster_utilities.addNode));
+    op_func_map.set(terms.OPERATIONS_ENUM.UPDATE_NODE, new OperationFunctionObject(cluster_utilities.updateNode));
+    op_func_map.set(terms.OPERATIONS_ENUM.REMOVE_NODE, new OperationFunctionObject(cluster_utilities.removeNode));
+    op_func_map.set(terms.OPERATIONS_ENUM.CONFIGURE_CLUSTER, new OperationFunctionObject(cluster_utilities.configureCluster));
+    op_func_map.set(terms.OPERATIONS_ENUM.CLUSTER_STATUS, new OperationFunctionObject(cluster_utilities.clusterStatus));
+    op_func_map.set(terms.OPERATIONS_ENUM.EXPORT_TO_S3, new OperationFunctionObject(signalJob, export_.export_to_s3));
+    op_func_map.set(terms.OPERATIONS_ENUM.DELETE_FILES_BEFORE, new OperationFunctionObject(signalJob, delete_.deleteFilesBefore));
+    op_func_map.set(terms.OPERATIONS_ENUM.EXPORT_LOCAL, new OperationFunctionObject(signalJob, export_.export_local));
+    op_func_map.set(terms.OPERATIONS_ENUM.SEARCH_JOBS_BY_START_DATE, new OperationFunctionObject(jobs.handleGetJobsByStartDate));
+    op_func_map.set(terms.OPERATIONS_ENUM.GET_JOB, new OperationFunctionObject(jobs.handleGetJob));
+    op_func_map.set(terms.OPERATIONS_ENUM.GET_FINGERPRINT, new OperationFunctionObject(reg.getFingerprint));
+    op_func_map.set(terms.OPERATIONS_ENUM.SET_LICENSE, new OperationFunctionObject(reg.setLicense));
+    op_func_map.set(terms.OPERATIONS_ENUM.GET_REGISTRATION_INFO, new OperationFunctionObject(reg.getRegistrationInfo));
+    op_func_map.set(terms.OPERATIONS_ENUM.RESTART, new OperationFunctionObject(stop.restartProcesses));
+    op_func_map.set(terms.OPERATIONS_ENUM.CATCHUP, new OperationFunctionObject(catchup));
+    op_func_map.set(terms.OPERATIONS_ENUM.SYSTEM_INFORMATION, new OperationFunctionObject(system_information.systemInformation));
+    op_func_map.set(terms.OPERATIONS_ENUM.DELETE_TRANSACTION_LOGS_BEFORE, new OperationFunctionObject(signalJob, delete_.deleteTransactionLogsBefore));
+    op_func_map.set(terms.OPERATIONS_ENUM.READ_TRANSACTION_LOG, new OperationFunctionObject(read_transaction_log));
+
+    return op_func_map;
 }

@@ -127,7 +127,7 @@ async function insertData(insert_object){
         let bridge_insert_result = await harperBridge.createRecords(insert_object);
         await p_schema_to_global();
 
-        return returnObject(INSERT_ACTION, bridge_insert_result.written_hashes, insert_object, bridge_insert_result.skipped_hashes, bridge_insert_result.new_attributes);
+        return returnObject(INSERT_ACTION, bridge_insert_result.written_hashes, insert_object, bridge_insert_result.skipped_hashes, bridge_insert_result.new_attributes, bridge_insert_result.txn_time);
     } catch (e) {
         throw (e);
     }
@@ -150,10 +150,10 @@ async function updateData(update_object) {
     try {
         let bridge_update_result = await harperBridge.updateRecords(update_object);
         if (!hdb_utils.isEmpty(bridge_update_result.existing_rows)) {
-            return returnObject(bridge_update_result.update_action, [], update_object, bridge_update_result.hashes);
+            return returnObject(bridge_update_result.update_action, [], update_object, bridge_update_result.hashes, undefined, bridge_update_result.txn_time);
         }
 
-        return returnObject(UPDATE_ACTION, bridge_update_result.written_hashes, update_object, bridge_update_result.skipped_hashes, bridge_update_result.new_attributes);
+        return returnObject(UPDATE_ACTION, bridge_update_result.written_hashes, update_object, bridge_update_result.skipped_hashes, bridge_update_result.new_attributes, bridge_update_result.txn_time);
     } catch (e) {
         throw (e);
     }
@@ -166,13 +166,15 @@ async function updateData(update_object) {
  * @param object
  * @param skipped
  * @param new_attributes
+ * @param txn_time
  * @returns {{skipped_hashes: *, message: string}}
  */
-function returnObject(action, written_hashes, object, skipped, new_attributes) {
+function returnObject(action, written_hashes, object, skipped, new_attributes, txn_time) {
     let return_object = {
         message: `${action} ${written_hashes.length} of ${written_hashes.length + skipped.length} records`,
         skipped_hashes: skipped,
-        new_attributes
+        new_attributes,
+        txn_time
     };
 
     if (action === INSERT_ACTION) {

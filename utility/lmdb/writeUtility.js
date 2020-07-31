@@ -1,5 +1,5 @@
 "use strict";
-const lmdb = require('node-lmdb');
+
 const environment_util = require('./environmentUtility');
 const InsertRecordsResponseObject = require('./InsertRecordsResponseObject');
 const UpdateRecordsResponseObject = require('./UpdateRecordsResponseObject');
@@ -20,7 +20,7 @@ const MAX_BYTE_SIZE = lmdb_terms.MAX_BYTE_SIZE;
  * @param {String} hash_attribute - name of the table's hash attribute
  * @param {Array.<String>} write_attributes - list of all attributes to write to the database
  * @param  {Array.<Object>} records - object array records to insert
- * @returns {{written_hashes: [], skipped_hashes: []}}
+ * @returns {InsertRecordsResponseObject}
  */
 function insertRecords(env, hash_attribute, write_attributes , records){
     validateWrite(env, hash_attribute, write_attributes , records);
@@ -130,7 +130,7 @@ function setTimestamps(record, is_insert){
  * @param {String} hash_attribute - name of the table's hash attribute
  * @param {Array.<String>} write_attributes - list of all attributes to write to the database
  * @param  {Array.<Object>} records - object array records to insert
- * @returns {{written_hashes: [], skipped_hashes: []}}
+ * @returns {UpdateRecordsResponseObject}
  */
 function updateRecords(env, hash_attribute, write_attributes , records){
     //validate

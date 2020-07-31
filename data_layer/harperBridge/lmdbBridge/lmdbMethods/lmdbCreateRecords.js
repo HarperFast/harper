@@ -53,7 +53,8 @@ async function lmdbCreateRecords(insert_obj) {
             written_hashes: lmdb_response.written_hashes,
             skipped_hashes: lmdb_response.skipped_hashes,
             schema_table,
-            new_attributes
+            new_attributes,
+            txn_time: lmdb_response.txn_time
         };
     } catch(err) {
         throw err;

@@ -397,7 +397,7 @@ function initTestEnvironment() {
         setProperty(hdb_terms.HDB_SETTINGS_NAMES.LOG_DAILY_ROTATE_KEY, false);
         setProperty(hdb_terms.HDB_SETTINGS_NAMES.PROJECT_DIR_KEY, `${props_path}`);
         setProperty(hdb_terms.HDB_SETTINGS_NAMES.CLUSTERING_ENABLED_KEY, 'TRUE');
-        setProperty(hdb_terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY, 'test_node');
+        setProperty(hdb_terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY, '1231412de213');
         setProperty(hdb_terms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY, `${props_path}/envDir/`);
         data_store_type = hdb_terms.STORAGE_TYPES_ENUM.FILE_SYSTEM;
     } catch(err) {

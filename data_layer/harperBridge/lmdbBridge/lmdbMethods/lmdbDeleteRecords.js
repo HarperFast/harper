@@ -61,7 +61,7 @@ async function lmdbDeleteRecords(delete_obj) {
             logger.error(`unable to write transaction due to ${e.message}`);
         }
 
-        return createDeleteResponse(response.deleted, response.skipped);
+        return createDeleteResponse(response.deleted, response.skipped, response.txn_time);
     } catch(err) {
         throw err;
     }
@@ -71,15 +71,17 @@ async function lmdbDeleteRecords(delete_obj) {
  * creates the response object for deletes based on the deleted & skipped hashes
  * @param {[]} deleted - list of hash values successfully deleted
  * @param {[]} skipped - list  of hash values which did not get deleted
+ * @param {number} txn_time - the transaction timestamp
  * @returns {{skipped_hashes: [], deleted_hashes: [], message: string}}
  */
-function createDeleteResponse(deleted, skipped){
+function createDeleteResponse(deleted, skipped, txn_time){
     let total = deleted.length + skipped.length;
     let plural = (total === 1) ? 'record' : 'records';
 
     return {
         message: `${deleted.length} of ${total} ${plural} successfully deleted`,
         deleted_hashes: deleted,
-        skipped_hashes: skipped
+        skipped_hashes: skipped,
+        txn_time: txn_time
     };
 }

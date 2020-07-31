@@ -22,6 +22,10 @@ module.exports = {
  * @param original_req
  */
 function sendAttributeTransaction(result, request_body, transaction_msg, original_req) {
+    if (global.hdb_socket_client === undefined){
+        return;
+    }
+
     if (!common_utils.isEmptyOrZeroLength(result.new_attributes) && request_body.schema !== terms.SYSTEM_SCHEMA_NAME) {
         result.new_attributes.forEach((attribute) => {
             transaction_msg.transaction = {
