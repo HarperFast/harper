@@ -191,7 +191,7 @@ class SQLSearch {
                 if (common_utils.isNotEmptyAndHasValue(node.right.value)) {
                     const where_val = common_utils.autoCast(node.right.value);
                     if([true, false].indexOf(where_val) >= 0){
-                        node.right = new alasql.yy.NumValue({ value: where_val });
+                        node.right = new alasql.yy.LogicValue({ value: where_val });
                     } else if (node.right instanceof alasql.yy.StringValue && !common_utils.isEmpty(where_val) && common_utils.autoCasterIsNumberCheck(where_val.toString())) {
                         node.right = new alasql.yy.NumValue({ value: where_val });
                     }
