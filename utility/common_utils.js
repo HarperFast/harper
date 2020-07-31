@@ -12,6 +12,7 @@ const cluster_messages = require('../server/socketcluster/room/RoomMessageObject
 const moment = require('moment');
 const {inspect} = require('util');
 const is_number = require('is-number');
+const { hdb_errors } = require('./errors/hdbError');
 
 const async_set_timeout = require('util').promisify(setTimeout);
 const HDB_PROC_START_TIMEOUT = 100;
@@ -528,10 +529,10 @@ function sendTransactionToSocketCluster(channel, transaction, originator) {
  */
 function checkGlobalSchemaTable(schema_name, table_name) {
     if (!global.hdb_schema[schema_name]) {
-        return `schema '${schema_name}' does not exist`;
+        return hdb_errors.COMMON_ERROR_MSGS.SCHEMA_NOT_FOUND(schema_name);
     }
     if (!global.hdb_schema[schema_name] || !global.hdb_schema[schema_name][table_name]) {
-        return `table '${schema_name}.${table_name}' does not exist`;
+        return hdb_errors.COMMON_ERROR_MSGS.TABLE_NOT_FOUND(schema_name, table_name);
     }
 }
 
@@ -668,6 +669,7 @@ async function checkProcessRunning(proc_name){
     }
 }
 
+//TODO - update this method to throw an error via handleHDBError method w/ a 404 status code
 /**
  * Checks the global schema to see if a Schema or Table exist.
  * @param schema

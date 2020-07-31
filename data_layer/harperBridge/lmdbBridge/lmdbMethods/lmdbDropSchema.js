@@ -11,6 +11,8 @@ const search_data_by_value = require('./lmdbSearchByValue');
 const hdb_terms = require('../../../../utility/hdbTerms');
 const path = require('path');
 const {getBaseSchemaPath} = require('../lmdbUtility/initializePaths');
+const { handleHDBError, hdb_errors } = require('../../../../utility/errors/hdbError');
+const { COMMON_ERROR_MSGS, HTTP_STATUS_CODES } = hdb_errors;
 
 module.exports = lmdbDropSchema;
 
@@ -79,7 +81,7 @@ async function validateDropSchema(drop_schema) {
     }
 
     if (!delete_schema) {
-        throw new Error(`schema '${drop_schema}' does not exist`);
+        throw handleHDBError(new Error(), COMMON_ERROR_MSGS.SCHEMA_NOT_FOUND(drop_schema), HTTP_STATUS_CODES.NOT_FOUND);
     }
 
     return delete_schema;

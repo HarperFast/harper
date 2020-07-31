@@ -4,6 +4,8 @@ const RecursiveIterator = require('recursive-iterator');
 const alasql = require('alasql');
 const clone = require('clone');
 const common_utils = require('../utility/common_utils');
+const { handleHDBError, hdb_errors } = require('../utility/errors/hdbError');
+const { COMMON_ERROR_MSGS, HTTP_STATUS_CODES } = hdb_errors;
 
 //exclusion list for validation on group bys
 const custom_aggregators = ['DISTINCT_ARRAY'];
@@ -95,8 +97,14 @@ class SelectValidator {
             throw `schema not defined for table ${table.tableid}`;
         }
 
-        if (!global.hdb_schema[table.databaseid] || !global.hdb_schema[table.databaseid][table.tableid]) {
-            throw `invalid table ${table.databaseid}.${table.tableid}`;
+        if (!global.hdb_schema[table.databaseid]) {
+            throw handleHDBError(new Error(), COMMON_ERROR_MSGS.SCHEMA_NOT_FOUND(table.databaseid), HTTP_STATUS_CODES.NOT_FOUND);
+
+        }
+
+        if (!global.hdb_schema[table.databaseid][table.tableid]) {
+            throw handleHDBError(new Error(), COMMON_ERROR_MSGS.TABLE_NOT_FOUND(table.databaseid, table.tableid), HTTP_STATUS_CODES.NOT_FOUND);
+
         }
 
         //let the_table = clone(table);

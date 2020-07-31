@@ -6,6 +6,8 @@ const deleteAttrStructure = require('../fsUtility/deleteAttrStructure');
 const env = require('../../../../utility/environment/environmentManager');
 const terms = require('../../../../utility/hdbTerms');
 const log = require('../../../../utility/logging/harper_logger');
+const { handleHDBError, hdb_errors } = require('../../../../utility/errors/hdbError');
+const { COMMON_ERROR_MSGS, HTTP_STATUS_CODES } = hdb_errors;
 
 const DATE_SUBSTR_LENGTH = 19;
 let current_date = new Date().toISOString().substr(0, DATE_SUBSTR_LENGTH);
@@ -30,7 +32,7 @@ async function fsDropSchema(drop_schema_obj) {
 
         let delete_response = await fsDeleteRecords(delete_schema_obj);
         if(delete_response.deleted_hashes.length === 0){
-            throw new Error(`schema '${drop_schema_obj.schema}' does not exist`);
+            throw handleHDBError(new Error(), COMMON_ERROR_MSGS.SCHEMA_NOT_FOUND(drop_schema_obj.schema), HTTP_STATUS_CODES.NOT_FOUND);
         }
         await moveSchemaToTrash(drop_schema_obj, table_ids);
         await deleteAttrStructure(drop_schema_obj);
