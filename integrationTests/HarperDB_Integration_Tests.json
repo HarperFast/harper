@@ -10321,6 +10321,172 @@
 					"response": []
 				},
 				{
+					"name": "attempt to update __createdtime__ in table",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "2683b6f9-867e-427f-a0e1-acce40608907",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"SQL update successful reponse\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.message).to.eql(\"updated 1 of 1 records\");",
+									"    pm.expect(jsonData.update_hashes[0]).to.eql(\"TEST3\");",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						},
+						{
+							"listen": "prerequest",
+							"script": {
+								"id": "020c0544-94e5-4e30-bee3-48d6c2cd022d",
+								"exec": [
+									"setTimeout(() => {}, 100);"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"value": true,
+									"type": "boolean"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\": \"UPDATE northnwd.customers SET __createdtime__ = 'bad value' WHERE customerid = 'TEST3'\"\n}\n",
+							"options": {
+								"raw": {}
+							}
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						},
+						"description": "Update a value in a table and test for success message"
+					},
+					"response": []
+				},
+				{
+					"name": "Confirm __createdtime__ did not get changed",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "baf697a5-a7ab-4eb7-87a9-1fed96245737",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"SQL insert value exists\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData[0].__createdtime__).to.not.eql(\"bad value\");",
+									"});",
+									""
+								],
+								"type": "text/javascript"
+							}
+						},
+						{
+							"listen": "prerequest",
+							"script": {
+								"id": "e4de9337-7f6c-4db2-9ad6-77983a0fa139",
+								"exec": [
+									"setTimeout(() => {}, 100);"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"value": true,
+									"type": "boolean"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\": \"SELECT __createdtime__ FROM northnwd.customers WHERE customerid = 'TEST3'\"\n}\n",
+							"options": {
+								"raw": {}
+							}
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						},
+						"description": "Confirm updated value exists in table."
+					},
+					"response": []
+				},
+				{
 					"name": "delete value from table",
 					"event": [
 						{
@@ -20340,6 +20506,148 @@
 							],
 							"port": "{{port}}"
 						}
+					},
+					"response": []
+				},
+				{
+					"name": "attempt to update __createdtime__",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "9cec9f63-14b5-4768-b6a7-12792ff7b424",
+								"exec": [
+									"pm.test(\"Update employee id 1 address\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.update_hashes[0]).to.eql(1);",
+									"});",
+									"",
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\"operation\":\"update\",\n\"schema\":\"{{schema}}\",\n\"table\":\"{{emps_tb}}\",\n\"records\": [\n  {\n    \"{{emps_id}}\": 1,\n    \"__createdtime__\": \"bad value\"\n  }\n]\n\n}",
+							"options": {
+								"raw": {}
+							}
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "confirm __createdtime__ did not change",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "3399cc6f-a1f0-48f6-98f0-bee536e2a871",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"value from previous test update\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData[0].employeeid).to.eql(1);",
+									"    pm.expect(jsonData[0].__createdtime__).to.not.eql(\"bad value\");",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"search_by_hash\",\n\t\"schema\":\"{{schema}}\",\n\t\"table\":\"{{emps_tb}}\",\n\t\"hash_attribute\": \"{{emps_id}}\",\n\t\"hash_values\":[1],\n\t\"get_attributes\": [\"{{emps_id}}\", \"__createdtime__\"]\n}",
+							"options": {
+								"raw": {}
+							}
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						},
+						"description": "Confirm employee table has been updated with specific value."
 					},
 					"response": []
 				}
