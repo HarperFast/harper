@@ -171,6 +171,8 @@ class SQLSearch {
      * @private
      */
     _conditionsToFetchAttributeValues() {
+        //TODO - CORE-1095 - update how WHERE clause value that include escaped characters is used to do initial
+        // searchByValue query - this value is set to this.exact_search_values in this method
         if (common_utils.isEmpty(this.statement.where)) {
             log.trace('AST "where" statement is empty.');
             return;
@@ -189,8 +191,8 @@ class SQLSearch {
                 if (common_utils.isNotEmptyAndHasValue(node.right.value)) {
                     const where_val = common_utils.autoCast(node.right.value);
                     if([true, false].indexOf(where_val) >= 0){
-                        node.right = new alasql.yy.NumValue({ value: where_val });
-                    } else if (node.right instanceof alasql.yy.StringValue && common_utils.autoCasterIsNumberCheck(where_val.toString())) {
+                        node.right = new alasql.yy.LogicValue({ value: where_val });
+                    } else if (node.right instanceof alasql.yy.StringValue && !common_utils.isEmpty(where_val) && common_utils.autoCasterIsNumberCheck(where_val.toString())) {
                         node.right = new alasql.yy.NumValue({ value: where_val });
                     }
                 } else if (Array.isArray(node.right)) {
@@ -861,6 +863,7 @@ class SQLSearch {
         });
 
         //TODO there is an error with between statements being converted back to string.  need to handle
+        //TODO - CORE-1095 - update how WHERE clause is translated back to SQL query for where expression values include escaped characters
         let where_clause = this.statement.where ? 'WHERE ' + this.statement.where : '';
 
         let order_clause = '';

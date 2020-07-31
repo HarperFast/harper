@@ -3,6 +3,7 @@
 const test_utils = require('../../../../test_utils');
 test_utils.preTestPrep();
 const path = require('path');
+const { COMMON_ERROR_MSGS, HTTP_STATUS_CODES } = require('../../../../../utility/errors/commonErrors');
 
 const SYSTEM_FOLDER_NAME = 'system';
 const SCHEMA_NAME = 'schema';
@@ -181,8 +182,16 @@ describe('test validateDropSchema module', ()=>{
         });
 
         it('test validate invalid schema', async()=>{
-            await test_utils.assertErrorAsync(validate_drop_schema, ['faker'],
-                new Error(`schema 'faker' does not exist`));
+            let test_error;
+
+            try {
+                await validate_drop_schema('faker');
+            } catch(e) {
+                test_error = e;
+            }
+            assert.equal(test_error.http_resp_code, HTTP_STATUS_CODES.NOT_FOUND)
+            assert.equal(test_error.http_resp_msg, COMMON_ERROR_MSGS.SCHEMA_NOT_FOUND('faker'));
+            assert.equal(test_error.message, COMMON_ERROR_MSGS.SCHEMA_NOT_FOUND('faker'));
         });
 
         it('test validate happy path', async()=>{

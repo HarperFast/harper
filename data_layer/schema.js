@@ -9,6 +9,9 @@ const hdb_util = require('../utility/common_utils');
 const hdb_terms = require('../utility/hdbTerms');
 const util = require('util');
 const harperBridge = require('./harperBridge/harperBridge');
+const { handleHDBError, hdb_errors } = require('../utility/errors/hdbError');
+const { COMMON_ERROR_MSGS, HTTP_STATUS_CODES } = hdb_errors;
+
 
 module.exports = {
     createSchema: createSchema,
@@ -212,11 +215,11 @@ function dropAttributeFromGlobal(drop_attribute_object) {
 
 async function createAttribute(create_attribute_object) {
     if (!global.hdb_schema[create_attribute_object.schema]) {
-        throw new Error(`schema '${create_attribute_object.schema}' does not exist`);
+        throw handleHDBError(new Error(), COMMON_ERROR_MSGS.SCHEMA_NOT_FOUND(create_attribute_object.schema), HTTP_STATUS_CODES.NOT_FOUND);
     }
 
     if (!global.hdb_schema[create_attribute_object.schema][create_attribute_object.table]) {
-        throw new Error(`table '${create_attribute_object.table}' does not exists in schema '${create_attribute_object.schema}'`);
+        throw handleHDBError(new Error(), COMMON_ERROR_MSGS.TABLE_NOT_FOUND(create_attribute_object.schema, create_attribute_object.table), HTTP_STATUS_CODES.NOT_FOUND);
     }
 
     let attribute_structure;

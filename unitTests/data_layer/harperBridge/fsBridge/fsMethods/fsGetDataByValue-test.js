@@ -70,8 +70,8 @@ describe('fsGetDataByValue', () => {
     });
 
     it('test schema validation', async()=>{
-        await test_utils.assertErrorAsync(fsGetDataByValue_rw, [{schema:'dev2', table:'dog', search_attribute: 'city', search_value: '*', get_attributes:['*']}], new Error("schema 'dev2' does not exist"));
-        await test_utils.assertErrorAsync(fsGetDataByValue_rw, [{schema:'dev', table:'fake', search_attribute: 'city', search_value: '*', get_attributes:['*']}], new Error("table 'dev.fake' does not exist"));
+        await test_utils.assertErrorAsync(fsGetDataByValue_rw, [{schema:'dev2', table:'dog', search_attribute: 'city', search_value: '*', get_attributes:['*']}], new Error("Schema 'dev2' does not exist"));
+        await test_utils.assertErrorAsync(fsGetDataByValue_rw, [{schema:'dev', table:'fake', search_attribute: 'city', search_value: '*', get_attributes:['*']}], new Error("Table 'dev.fake' does not exist"));
         await test_utils.assertErrorAsync(fsGetDataByValue_rw, [{schema:'dev', table:'dog', search_attribute: 'fake_city', search_value: '*', get_attributes:['*']}], new Error("unknown attribute 'fake_city'"));
         await test_utils.assertErrorAsync(fsGetDataByValue_rw, [{schema:'dev', table:'dog', search_attribute: 'id', search_value: '*', get_attributes:['id','fake']}], new Error("unknown attribute 'fake'"));
     });

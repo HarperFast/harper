@@ -328,7 +328,7 @@ describe('Test compareTableKeys with filesystem', () => {
             found_table = err;
         }
         // get table returns an error string rather than an error :(
-        assert.equal(found_table.message, "Table 'schema_1.new_table' not found", 'Expected exception');
+        assert.equal(found_table.message, "Table 'schema_1.new_table' does not exist", 'Expected exception');
         assert.equal(global.hdb_schema[SCHEMA_1_NAME][SCHEMA_1_NEW_TABLE_NAME], undefined, 'Expected no new tables.');
     });
 
