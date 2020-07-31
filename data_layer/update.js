@@ -28,8 +28,7 @@ const SQL_UPDATE_ERROR_MSG = 'There was a problem performing this update. Please
 /**
  * Description
  * @method update
- * @param {} statement
- * @param {} callback
+ * @param statement
  * @return
  */
 async function update(statement){
@@ -80,8 +79,8 @@ function createUpdateRecord(columns){
 /**
  * Description
  * @method buildUpdateRecords
- * @param {} update_record
- * @param {} records
+ * @param {{}} update_record
+ * @param {[]} records
  * @return
  */
 function buildUpdateRecords(update_record, records){
@@ -89,18 +88,14 @@ function buildUpdateRecords(update_record, records){
         return [];
     }
 
-    let new_records = records.map((record)=>{
-        return Object.assign(record, update_record);
-    });
-
-    return new_records;
+    return records.map((record)=>Object.assign(record, update_record));
 }
 
 /**
  * Description
  * @method updateRecords
- * @param {} table
- * @param {} records
+ * @param  table
+ * @param {[{}]} records
  * @return
  */
 async function updateRecords(table, records){
@@ -144,6 +139,7 @@ async function updateRecords(table, records){
         try {
             // We do not want the API returning the new attributes property.
             delete res.new_attributes;
+            delete res.txn_time;
         } catch (delete_err) {
             logger.error(`Error delete new_attributes from update response: ${delete_err}`);
         }

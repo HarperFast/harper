@@ -49,6 +49,8 @@ async function callOperationFunctionAsAwait(promisified_function, function_input
         if (function_input.operation === terms.OPERATIONS_ENUM.INSERT || function_input.operation === terms.OPERATIONS_ENUM.UPDATE) {
             delete result.new_attributes;
             delete result.txn_time;
+        } else if (function_input.operation === terms.OPERATIONS_ENUM.DELETE){
+            delete result.txn_time;
         }
 
         return result;

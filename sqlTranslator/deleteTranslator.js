@@ -56,6 +56,7 @@ async function convertDelete(statement){
         }
 
         if(hdb_utils.isEmptyOrZeroLength(result.message)) {
+            delete result.txn_time;
             result.message = generateReturnMessage(result);
         }
         return result;

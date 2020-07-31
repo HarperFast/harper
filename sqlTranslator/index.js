@@ -165,9 +165,7 @@ function convertInsert(statement, callback) {
         operation:'insert'
     };
 
-    let columns = statement.columns.map((column) => {
-        return column.columnid;
-    });
+    let columns = statement.columns.map((column) => column.columnid);
 
     try {
         insert_object.records = createDataObjects(columns, statement.values);
@@ -211,6 +209,7 @@ function convertInsert(statement, callback) {
         try {
             // We do not want the API returning the new attributes property.
             delete res.new_attributes;
+            delete res.txn_time;
         } catch (delete_err) {
             logger.error(`Error delete new_attributes from insert response: ${delete_err}`);
         }
