@@ -166,7 +166,7 @@ function postOperationHandler(request_body, result, orig_req) {
     switch(request_body.operation) {
         case terms.OPERATIONS_ENUM.INSERT:
             try {
-                sendOperationTransaction(transaction_msg, request_body, result.inserted_hashes, orig_req);
+                sendOperationTransaction(transaction_msg, request_body, result.inserted_hashes, orig_req, result.txn_time);
                 transact_to_clustering_utils.sendAttributeTransaction(result, request_body, transaction_msg, orig_req);
             } catch(err) {
                 harper_logger.error('There was an error calling insert followup function.');
@@ -175,7 +175,7 @@ function postOperationHandler(request_body, result, orig_req) {
             break;
         case terms.OPERATIONS_ENUM.DELETE:
             try {
-                sendOperationTransaction(transaction_msg, request_body, result.deleted_hashes, orig_req);
+                sendOperationTransaction(transaction_msg, request_body, result.deleted_hashes, orig_req, result.txn_time);
             } catch(err) {
                 harper_logger.error('There was an error calling delete followup function.');
                 harper_logger.error(err);
@@ -183,7 +183,7 @@ function postOperationHandler(request_body, result, orig_req) {
             break;
         case terms.OPERATIONS_ENUM.UPDATE:
             try {
-                sendOperationTransaction(transaction_msg, request_body, result.update_hashes, orig_req);
+                sendOperationTransaction(transaction_msg, request_body, result.update_hashes, orig_req, result.txn_time);
                 transact_to_clustering_utils.sendAttributeTransaction(result, request_body, transaction_msg, orig_req);
             } catch(err) {
                 harper_logger.error('There was an error calling delete followup function.');
