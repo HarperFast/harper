@@ -16,6 +16,8 @@ const terms = require('../utility/hdbTerms');
 const hdb_utils = require('../utility/common_utils');
 const env = require('../utility/environment/environmentManager');
 
+const server_utilities = require('../server/serverUtilities');
+
 //here we call to define and import custom functions to alasql
 alasql_function_importer(alasql);
 
@@ -31,7 +33,7 @@ const SQL_UPDATE_ERROR_MSG = 'There was a problem performing this update. Please
  * @param statement
  * @return
  */
-async function update(statement){
+async function update(statement, hdb_user){
     try {
         let table_info = await p_get_table_schema(statement.table.databaseid, statement.table.tableid);
         let update_record = createUpdateRecord(statement.columns);
@@ -47,7 +49,7 @@ async function update(statement){
 
         let records = await p_search(search_statement);
         let new_records = buildUpdateRecords(update_record, records);
-        return await updateRecords(table_clone, new_records);
+        return await updateRecords(table_clone, new_records, hdb_user);
     } catch(e){
         throw e;
     }
@@ -98,12 +100,13 @@ function buildUpdateRecords(update_record, records){
  * @param {[{}]} records
  * @return
  */
-async function updateRecords(table, records){
+async function updateRecords(table, records, hdb_user){
     let update_object = {
         operation:'update',
         schema: table.databaseid,
         table: table.tableid,
-        records:records
+        records:records,
+        hdb_user
     };
 
     try {
@@ -111,7 +114,8 @@ async function updateRecords(table, records){
 
         // With non SQL CUD actions, the `post` operation passed into OperationFunctionCaller would send the transaction to the cluster.
         // Since we don`t send Most SQL options to the cluster, we need to explicitly send it.
-        if (update_object.schema !== terms.SYSTEM_SCHEMA_NAME) {
+        server_utilities.postOperationHandler(update_object, res);
+        /*if (update_object.schema !== terms.SYSTEM_SCHEMA_NAME) {
             let update_msg = hdb_utils.getClusterMessage(terms.CLUSTERING_MESSAGE_TYPES.HDB_TRANSACTION);
 
             if (res.update_hashes.length > 0) {
@@ -135,7 +139,7 @@ async function updateRecords(table, records){
                     hdb_utils.sendTransactionToSocketCluster(terms.INTERNAL_SC_CHANNELS.CREATE_ATTRIBUTE, update_msg, env.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY));
                 });
             }
-        }
+        }*/
         try {
             // We do not want the API returning the new attributes property.
             delete res.new_attributes;

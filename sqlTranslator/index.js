@@ -20,7 +20,7 @@ const logger = require('../utility/logging/harper_logger');
 const alasql_function_importer = require('./alasqlFunctionImporter');
 const hdb_utils = require('../utility/common_utils');
 const terms = require('../utility/hdbTerms');
-const env = require('../utility/environment/environmentManager');
+const server_utilities = require('../server/serverUtilities');
 
 //here we call to define and import custom functions to alasql
 alasql_function_importer(alasql);
@@ -139,13 +139,15 @@ function processAST(json_message, parsed_sql_object, callback) {
                 throw new Error(`unsupported SQL type ${parsed_sql_object.variant} in SQL: ${json_message}`);
         }
 
+
+
         sql_function(parsed_sql_object.ast.statements[0], (err, data) => {
             if (err) {
                 callback(err);
                 return;
             }
             callback(null, data);
-        });
+        };
     } catch(e){
         return callback(e);
     }
@@ -162,7 +164,8 @@ function convertInsert(statement, callback) {
     let insert_object = {
         schema : schema_table.databaseid,
         table : schema_table.tableid,
-        operation:'insert'
+        operation:'insert',
+        hdb_user: statement.hdb_user
     };
 
     let columns = statement.columns.map((column) => column.columnid);
@@ -180,7 +183,9 @@ function convertInsert(statement, callback) {
 
         // With non SQL CUD actions, the `post` operation passed into OperationFunctionCaller would send the transaction to the cluster.
         // Since we don`t send Most SQL options to the cluster, we need to explicitly send it.
-        if (insert_object.schema !== terms.SYSTEM_SCHEMA_NAME) {
+        server_utilities.postOperationHandler(insert_object, res);
+        /*if (insert_object.schema !== terms.SYSTEM_SCHEMA_NAME) {
+
             let insert_msg = hdb_utils.getClusterMessage(terms.CLUSTERING_MESSAGE_TYPES.HDB_TRANSACTION);
 
             if (res.inserted_hashes.length > 0) {
@@ -204,7 +209,7 @@ function convertInsert(statement, callback) {
                     hdb_utils.sendTransactionToSocketCluster(terms.INTERNAL_SC_CHANNELS.CREATE_ATTRIBUTE, insert_msg, env.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY));
                 });
             }
-        }
+        }*/
 
         try {
             // We do not want the API returning the new attributes property.
