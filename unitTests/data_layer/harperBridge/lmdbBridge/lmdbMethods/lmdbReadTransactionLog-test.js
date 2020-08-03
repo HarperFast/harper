@@ -19,6 +19,8 @@ const UpdateObject = require('../../../../../data_layer/UpdateObject');
 const DeleteObject = require('../../../../../data_layer/DeleteObject');
 const ReadTransactionLogObject = require('../../../../../data_layer/ReadTransactionLogObject');
 
+
+const ClusteringOriginObject = require('../../../../../server/ClusteringOriginObject');
 const InsertRecordsResponseObject = require('../../../../../utility/lmdb/InsertRecordsResponseObject');
 const UpdateRecordsResponseObject = require('../../../../../utility/lmdb/UpdateRecordsResponseObject');
 const DeleteRecordsResponseObject = require('../../../../../utility/lmdb/DeleteRecordsResponseObject');
@@ -315,6 +317,7 @@ describe('Test lmdbReadTransactionLog module', ()=>{
             assert.deepEqual(results, Object.fromEntries(expected));
         });
     });
+
 });
 
 async function createTransactions(){
@@ -336,10 +339,12 @@ async function createTransactions(){
     let txn_obj_3 = new LMDBUpdateTransactionObject(update_obj_1.records, update_response_1.original_records, update_obj_1.hdb_user.username, update_response_1.txn_time, update_response_1.written_hashes);
     await lmdb_write_txn(update_obj_1, update_response_1);
 
-    let insert_obj_3 = new InsertObject('dev', 'test', 'id', INSERT_RECORDS_3);
+    let m_time = common.getMicroTime();
+    let origin = new ClusteringOriginObject(m_time, 'phil', 'node1');
+    let insert_obj_3 = new InsertObject('dev', 'test', 'id', INSERT_RECORDS_3, origin);
     insert_obj_3.hdb_user = HDB_USER_1;
-    let insert_response_3 = new InsertRecordsResponseObject(INSERT_HASHES_3, [], common.getMicroTime());
-    let txn_obj_4 = new LMDBInsertTransactionObject(insert_obj_3.records, insert_obj_3.hdb_user.username, insert_response_3.txn_time, insert_response_3.written_hashes);
+    let insert_response_3 = new InsertRecordsResponseObject(INSERT_HASHES_3, [], m_time);
+    let txn_obj_4 = new LMDBInsertTransactionObject(insert_obj_3.records, insert_obj_3.hdb_user.username, insert_response_3.txn_time, insert_response_3.written_hashes, origin);
     await lmdb_write_txn(insert_obj_3, insert_response_3);
 
     let update_obj_2 = new UpdateObject('dev', 'test', UPDATE_RECORDS_2);

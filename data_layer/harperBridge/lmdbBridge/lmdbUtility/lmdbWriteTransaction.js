@@ -6,13 +6,6 @@ const LMDBInsertTransactionObject = require('./LMDBInsertTransactionObject');
 const LMDBUpdateTransactionObject = require('./LMDBUpdateTransactionObject');
 const LMDBDeleteTransactionObject = require('./LMDBDeleteTransactionObject');
 
-const InsertRecordsResponseObject = require('../../../../utility/lmdb/InsertRecordsResponseObject');
-const UpdateRecordsResponseObject = require('../../../../utility/lmdb/UpdateRecordsResponseObject');
-const DeleteRecordsResponseObject = require('../../../../utility/lmdb/DeleteRecordsResponseObject');
-
-const InsertObject = require('../../../InsertObject');
-const UpdateObject = require('../../../UpdateObject');
-const DeleteObject = require('../../../DeleteObject');
 const lmdb_terms = require('../../../../utility/lmdb/terms');
 const lmdb_utils = require('../../../../utility/lmdb/commonUtility');
 const hdb_util = require('../../../../utility/common_utils');
@@ -84,15 +77,15 @@ async function writeTransaction(hdb_operation, lmdb_response){
 function createTransactionObject(hdb_operation, lmdb_response){
     let username = !hdb_util.isEmpty(hdb_operation.hdb_user) ? hdb_operation.hdb_user.username : undefined;
     if(hdb_operation.operation === OPERATIONS_ENUM.INSERT) {
-        return new LMDBInsertTransactionObject(hdb_operation.records, username, lmdb_response.txn_time, lmdb_response.written_hashes);
+        return new LMDBInsertTransactionObject(hdb_operation.records, username, lmdb_response.txn_time, lmdb_response.written_hashes, hdb_operation.__origin);
     }
 
     if(hdb_operation.operation === OPERATIONS_ENUM.UPDATE) {
-        return new LMDBUpdateTransactionObject(hdb_operation.records, lmdb_response.original_records, username, lmdb_response.txn_time, lmdb_response.written_hashes);
+        return new LMDBUpdateTransactionObject(hdb_operation.records, lmdb_response.original_records, username, lmdb_response.txn_time, lmdb_response.written_hashes, hdb_operation.__origin);
     }
 
     if(hdb_operation.operation === OPERATIONS_ENUM.DELETE) {
-        return new LMDBDeleteTransactionObject(lmdb_response.deleted, lmdb_response.original_records, username, lmdb_response.txn_time);
+        return new LMDBDeleteTransactionObject(lmdb_response.deleted, lmdb_response.original_records, username, lmdb_response.txn_time, hdb_operation.__origin);
     }
 }
 
@@ -101,7 +94,7 @@ function getDisableTxnLogSetting(){
 
     let clustering_on = env_mngr.get(HDB_SETTINGS_NAMES.CLUSTERING_ENABLED_KEY);
 
-    let clustering_on_bool = !hdb_util.isEmptyOrZeroLength(clustering_on) &&  (clustering_on === true
+    let clustering_on_bool = !hdb_util.isEmptyOrZeroLength(clustering_on) && (clustering_on === true
         || clustering_on.toString().toLowerCase() === 'true');
 
     return clustering_on_bool === false && !hdb_util.isEmptyOrZeroLength(disable_txn_setting) && (disable_txn_setting === true

@@ -4,7 +4,6 @@ const test_util = require('../../../../test_utils');
 test_util.preTestPrep();
 
 const sinon = require('sinon');
-const rewire = require('rewire');
 const assert = require('assert');
 const AssignToHdbChildWorkerRule = require('../../../../../server/socketcluster/decisionMatrix/rules/AssignToHdbChildWorkerRule');
 const types = require('../../../../../server/socketcluster/types');
@@ -17,7 +16,7 @@ class WorkerStub {
         };
         this.hdb_workers = [];
     }
-};
+}
 
 const ROOM_NAME = 'dev.tester';
 const WORKER_NAME = 'asdfesd';
@@ -25,8 +24,15 @@ const INTERNAL_ROOM_NAME = `internal:${WORKER_NAME}`;
 
 const TEST_REQUEST = {
     channel: ROOM_NAME,
-    data: {},
-    hdb_header: {}
+    data: {
+        transaction: {}
+    },
+    hdb_header: {},
+    socket: {
+        authToken:{
+            username: 'CLUSTER_USER'
+        }
+    }
 };
 TEST_REQUEST.hdb_header[types.REQUEST_HEADER_ATTRIBUTE_NAMES.DATA_SOURCE] = types.CONNECTOR_TYPE_ENUM.CLUSTER;
 

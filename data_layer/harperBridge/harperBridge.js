@@ -11,6 +11,10 @@ if(!env_mngr.isInitialized()){
 
 let harper_bridge = undefined;
 
+/**
+ *
+ * @returns {FileSystemBridge|LMDBBridge|*|BridgeMethods}
+ */
 function getBridge() {
     if (harper_bridge instanceof BridgeMethods) {
         return harper_bridge;
