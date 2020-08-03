@@ -5,7 +5,6 @@ const harperBridge = require('../data_layer/harperBridge/harperBridge');
 const util = require('util');
 const hdb_utils = require('../utility/common_utils');
 const terms = require('../utility/hdbTerms');
-const env = require('../utility/environment/environmentManager');
 const global_schema = require('../utility/globalSchema');
 
 const server_utilities = require('../server/serverUtilities');
@@ -37,6 +36,7 @@ async function convertDelete({statement, hdb_user}){
     let search_statement = alasql.parse(select_string).statements[0];
 
     let delete_obj = {
+        operation: terms.OPERATIONS_ENUM.DELETE,
         schema: from.databaseid,
         table: from.tableid,
         hdb_user: hdb_user
