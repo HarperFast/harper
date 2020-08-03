@@ -7,7 +7,7 @@ const hdb_utils = require('../utility/common_utils');
 const terms = require('../utility/hdbTerms');
 const global_schema = require('../utility/globalSchema');
 
-const server_utilities = require('../server/serverUtilities');
+const transact_to_clustering_utilities = require('../server/transactToClusteringUtilities');
 
 const RECORD = 'record';
 const SUCCESS = 'successfully deleted';
@@ -49,7 +49,7 @@ async function convertDelete({statement, hdb_user}){
         // With non SQL CUD actions, the `post` operation passed into OperationFunctionCaller would send the transaction to the cluster.
         // Since we don`t send Most SQL options to the cluster, we need to explicitly send it.
         if(result.deleted_hashes.length > 0) {
-            server_utilities.postOperationHandler(delete_obj, result);
+            transact_to_clustering_utilities.postOperationHandler(delete_obj, result);
         }
 
         if(hdb_utils.isEmptyOrZeroLength(result.message)) {

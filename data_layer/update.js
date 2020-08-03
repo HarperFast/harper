@@ -15,7 +15,7 @@ const p_search = util.promisify(search.search);
 const terms = require('../utility/hdbTerms');
 const hdb_utils = require('../utility/common_utils');
 
-const server_utilities = require('../server/serverUtilities');
+const transact_to_clustering_utilities = require('../server/transactToClusteringUtilities');
 
 //here we call to define and import custom functions to alasql
 alasql_function_importer(alasql);
@@ -115,7 +115,7 @@ async function updateRecords(table, records, hdb_user){
 
         // With non SQL CUD actions, the `post` operation passed into OperationFunctionCaller would send the transaction to the cluster.
         // Since we don`t send Most SQL options to the cluster, we need to explicitly send it.
-        server_utilities.postOperationHandler(update_object, res);
+        transact_to_clustering_utilities.postOperationHandler(update_object, res);
         try {
             // We do not want the API returning the new attributes property.
             delete res.new_attributes;

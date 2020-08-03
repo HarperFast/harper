@@ -26,11 +26,7 @@ const transact_to_clustering_utils = require('./transactToClusteringUtilities');
 const job_runner = require('./jobRunner');
 const signal = require('../utility/signalling');
 
-const ClusteringOriginObject = require('./ClusteringOriginObject');
-
 const operation_function_caller = require(`../utility/OperationFunctionCaller`);
-const common_utils = require(`../utility/common_utils`);
-const env = require(`../utility/environment/environmentManager`);
 
 const UNAUTH_RESPONSE = 403;
 const UNAUTHORIZED_TEXT = 'You are not authorized to perform the operation specified';
@@ -58,7 +54,6 @@ module.exports = {
     chooseOperation,
     getOperationFunction,
     processLocalTransaction,
-    postOperationHandler,
     UNAUTH_RESPONSE,
     UNAUTHORIZED_TEXT
 };
@@ -92,7 +87,7 @@ function processLocalTransaction(req, res, operation_function, callback) {
         return callback(e);
     }
 
-    let post_op_function = (terms.CLUSTER_OPERATIONS[req.body.operation] === undefined ? null : postOperationHandler);
+    let post_op_function = (terms.CLUSTER_OPERATIONS[req.body.operation] === undefined ? null : transact_to_clustering_utils.postOperationHandler);
 
     operation_function_caller.callOperationFunctionAsAwait(operation_function, req.body, post_op_function)
         .then((data) => {
@@ -139,152 +134,6 @@ function processLocalTransaction(req, res, operation_function, callback) {
             setResponseStatus(res, http_resp_status, {error: http_resp_msg});
             return callback(error);
         });
-}
-
-function sendOperationTransaction(transaction_msg, request_body, hashes_to_send, orig_req, txn_timestamp) {
-    if(request_body.schema === terms.SYSTEM_SCHEMA_NAME) {
-        return;
-    }
-
-    if (global.hdb_socket_client === undefined){
-        return;
-    }
-
-    transaction_msg = convertCRUDOperationToTransaction(request_body, hashes_to_send, txn_timestamp);
-    if(transaction_msg) {
-        if(orig_req) {
-            transact_to_clustering_utils.concatSourceMessageHeader(transaction_msg, orig_req);
-        }
-        common_utils.sendTransactionToSocketCluster(`${request_body.schema}:${request_body.table}`, transaction_msg, env.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY));
-    }
-}
-
-function postOperationHandler(request_body, result, orig_req) {
-    let transaction_msg = common_utils.getClusterMessage(terms.CLUSTERING_MESSAGE_TYPES.HDB_TRANSACTION);
-    transaction_msg.__transacted = true;
-
-    switch(request_body.operation) {
-        case terms.OPERATIONS_ENUM.INSERT:
-            try {
-                sendOperationTransaction(transaction_msg, request_body, result.inserted_hashes, orig_req, result.txn_time);
-                transact_to_clustering_utils.sendAttributeTransaction(result, request_body, transaction_msg, orig_req);
-            } catch(err) {
-                harper_logger.error('There was an error calling insert followup function.');
-                harper_logger.error(err);
-            }
-            break;
-        case terms.OPERATIONS_ENUM.DELETE:
-            try {
-                sendOperationTransaction(transaction_msg, request_body, result.deleted_hashes, orig_req, result.txn_time);
-            } catch(err) {
-                harper_logger.error('There was an error calling delete followup function.');
-                harper_logger.error(err);
-            }
-            break;
-        case terms.OPERATIONS_ENUM.UPDATE:
-            try {
-                sendOperationTransaction(transaction_msg, request_body, result.update_hashes, orig_req, result.txn_time);
-                transact_to_clustering_utils.sendAttributeTransaction(result, request_body, transaction_msg, orig_req);
-            } catch(err) {
-                harper_logger.error('There was an error calling delete followup function.');
-                harper_logger.error(err);
-            }
-            break;
-        case terms.OPERATIONS_ENUM.CREATE_SCHEMA:
-            try {
-
-                transaction_msg.transaction = {
-                    operation: terms.OPERATIONS_ENUM.CREATE_SCHEMA,
-                    schema: request_body.schema,
-                };
-                transact_to_clustering_utils.sendSchemaTransaction(transaction_msg, terms.INTERNAL_SC_CHANNELS.CREATE_SCHEMA, request_body, orig_req);
-            } catch(err) {
-                harper_logger.error('There was a problem sending the create_schema transaction to the cluster.');
-            }
-            break;
-        case terms.OPERATIONS_ENUM.CREATE_TABLE:
-            try {
-                transaction_msg.transaction = {
-                    operation: terms.OPERATIONS_ENUM.CREATE_TABLE,
-                    schema: request_body.schema,
-                    table: request_body.table,
-                    hash_attribute: request_body.hash_attribute
-                };
-                transact_to_clustering_utils.sendSchemaTransaction(transaction_msg, terms.INTERNAL_SC_CHANNELS.CREATE_TABLE, request_body, orig_req);
-            } catch(err) {
-                harper_logger.error('There was a problem sending the create_schema transaction to the cluster.');
-            }
-            break;
-        case terms.OPERATIONS_ENUM.CREATE_ATTRIBUTE:
-            try {
-                transaction_msg.transaction = {
-                    operation: terms.OPERATIONS_ENUM.CREATE_ATTRIBUTE,
-                    schema: request_body.schema,
-                    table: request_body.table,
-                    attribute: request_body.attribute
-                };
-                if(orig_req) {
-                    transact_to_clustering_utils.concatSourceMessageHeader(transaction_msg, orig_req);
-                }
-                common_utils.sendTransactionToSocketCluster(terms.INTERNAL_SC_CHANNELS.CREATE_ATTRIBUTE, transaction_msg, env.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY));
-            } catch(err) {
-                harper_logger.error('There was a problem sending the create_schema transaction to the cluster.');
-            }
-            break;
-        case terms.OPERATIONS_ENUM.CSV_DATA_LOAD:
-            try {
-                //TODO this seems wrong, need to investigate
-                transaction_msg.transaction = {
-                    operation: terms.OPERATIONS_ENUM.CSV_DATA_LOAD,
-                    schema: request_body.schema,
-                    table: request_body.table,
-                    attribute: request_body.attribute
-                };
-                transact_to_clustering_utils.sendSchemaTransaction(transaction_msg, terms.OPERATIONS_ENUM.CREATE_ATTRIBUTE, request_body, orig_req);
-            } catch(err) {
-                harper_logger.error('There was a problem sending the create_schema transaction to the cluster.');
-            }
-            break;
-        default:
-            //do nothing
-            break;
-    }
-    return result;
-}
-
-/**
- * Converts a core CRUD operation to a cluster read message.
- * @param {{}}source_json - The source message body
- * @param {[string|number]} affected_hashes - Affected (successful) CRUD hashes
- * @param {number} txn_timestamp - timestamp the transaction committed
- * @returns {*}
- */
-function convertCRUDOperationToTransaction(source_json, affected_hashes, txn_timestamp) {
-    if (global.hdb_socket_client === undefined || common_utils.isEmptyOrZeroLength(affected_hashes)) {
-        return null;
-    }
-
-    let username = undefined;
-    if(source_json.hdb_user && source_json.hdb_user.username){
-        username = source_json.hdb_user.username;
-    }
-
-    let transaction = {
-        operation: source_json.operation,
-        schema: source_json.schema,
-        table: source_json.table,
-        __origin: new ClusteringOriginObject(txn_timestamp, username, env.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY))
-    };
-
-    if(source_json.operation === terms.OPERATIONS_ENUM.DELETE) {
-        transaction.hash_values = affected_hashes;
-    } else{
-        transaction.records = source_json.records;
-    }
-
-    let transaction_msg = common_utils.getClusterMessage(terms.CLUSTERING_MESSAGE_TYPES.HDB_TRANSACTION);
-    transaction_msg.transaction = transaction;
-    return transaction_msg;
 }
 
 /**
@@ -387,7 +236,7 @@ async function catchup(req) {
                     break;
             }
 
-            postOperationHandler(transaction, result, req);
+            transact_to_clustering_utils.postOperationHandler(transaction, result, req);
         } catch(e) {
             harper_logger.info('Invalid operation in transaction');
             harper_logger.error(e);

@@ -1,14 +1,12 @@
 const SocketConnector = require('./SocketConnector');
 const server_utilities = require('../../serverUtilities');
+const transact_to_cluster_utilities = require('../../transactToClusteringUtilities');
 const log = require('../../../utility/logging/harper_logger');
 const terms = require('../../../utility/hdbTerms');
 const ClusterStatusEmitter = require('../../../events/ClusterStatusEmitter');
 const {promisify, inspect} = require('util');
 const global_schema = require('../../../utility/globalSchema');
 const operation_function_caller = require('../../../utility/OperationFunctionCaller');
-const common_utils = require(`../../../utility/common_utils`);
-const env = require('../../../utility/environment/environmentManager');
-const sc_utils = require('../util/socketClusterUtils');
 
 const p_set_schema_to_global = promisify(global_schema.setSchemaDataToGlobal);
 
@@ -61,11 +59,13 @@ class HDBSocketConnector extends SocketConnector{
                             try {
                                 // csv loading and other jobs need to use a different postOp handler
                                 if(found_operation.job_operation_function) {
-                                    let result = operation_function(req.transaction);
+                                    let result = await operation_function(req.transaction);
+                                    log.debug(result);
                                 } else if(found_operation.operation_function.name === 'catchup'){
                                     let result = await operation_function(req);
+                                    log.debug(result);
                                 }else {
-                                    let result = await operation_function_caller.callOperationFunctionAsAwait(operation_function, req.transaction, server_utilities.postOperationHandler, req);
+                                    let result = await operation_function_caller.callOperationFunctionAsAwait(operation_function, req.transaction, transact_to_cluster_utilities.postOperationHandler, req);
                                     log.debug(result);
                                 }
                             } catch(err) {
@@ -127,7 +127,7 @@ class HDBSocketConnector extends SocketConnector{
                     let result = await operation_function_caller.callOperationFunctionAsAwait(operation_function, msg, null);
                     // need to wait for the schema to be added to global.hdb_schema, or compareTableKeys will fail.
                     await p_set_schema_to_global();
-                    await server_utilities.postOperationHandler(msg, result, null);
+                    await transact_to_cluster_utilities.postOperationHandler(msg, result, null);
                 }
                 // no point in doing system schema.
                 if(curr_schema_name !== terms.SYSTEM_SCHEMA_NAME) {
@@ -158,7 +158,7 @@ class HDBSocketConnector extends SocketConnector{
                     let result = await operation_function_caller.callOperationFunctionAsAwait(operation_function, msg, null);
                     // need to wait for the table to be added to global.hdb_schema, or compareAttributeKeys will fail.
                     await p_set_schema_to_global();
-                    await server_utilities.postOperationHandler(msg, result, null);
+                    await transact_to_cluster_utilities.postOperationHandler(msg, result, null);
                 }
                 await this.compareAttributeKeys(schema_object[curr_table_name], schema_name, curr_table_name);
             }
@@ -198,15 +198,15 @@ class HDBSocketConnector extends SocketConnector{
                     }
                     log.trace(`Calling create Attribute on attribute: ${msg.attribute}`);
                     let result = await operation_function_caller.callOperationFunctionAsAwait(operation_function, msg, null);
-                    await server_utilities.postOperationHandler(msg, result, null);
+                    await transact_to_cluster_utilities.postOperationHandler(msg, result, null);
                 } else {
                     let create_attribute = true;
                     if(!global.hdb_schema[schema_name][table_name].attributes) {
                         // should never get here, but log an error if we do
                         throw new Error(`attributes for schema: ${schema_name} and table: ${table_name} do not exist in compareAttributeKeys.`);
                     }
-                    for(let i=0; i<global.hdb_schema[schema_name][table_name].attributes.length; i++) {
-                        if(global.hdb_schema[schema_name][table_name].attributes[i].attribute === curr_attribute_name) {
+                    for(let b=0; b<global.hdb_schema[schema_name][table_name].attributes.length; b++) {
+                        if(global.hdb_schema[schema_name][table_name].attributes[b].attribute === curr_attribute_name) {
                             // this attribute already exists, break out of the loop and move onto the next attribute.
                             create_attribute = false;
                             break;
@@ -218,7 +218,7 @@ class HDBSocketConnector extends SocketConnector{
                         let {operation_function} = server_utilities.getOperationFunction(msg);
                         try {
                             let result = await operation_function_caller.callOperationFunctionAsAwait(operation_function, msg, null);
-                            await server_utilities.postOperationHandler(msg, result, null);
+                            await transact_to_cluster_utilities.postOperationHandler(msg, result, null);
                         } catch(err) {
                             log.info(`There was a problem creating attribute ${msg.attribute}.  It probably already exists.`);
                             // no-op, some attributes may already exist so do nothing

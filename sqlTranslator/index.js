@@ -20,7 +20,7 @@ const logger = require('../utility/logging/harper_logger');
 const alasql_function_importer = require('./alasqlFunctionImporter');
 const hdb_utils = require('../utility/common_utils');
 const terms = require('../utility/hdbTerms');
-const server_utilities = require('../server/serverUtilities');
+const transact_to_clustering_utilities = require('../server/transactToClusteringUtilities');
 
 //here we call to define and import custom functions to alasql
 alasql_function_importer(alasql);
@@ -190,7 +190,7 @@ function convertInsert({statement, hdb_user}, callback) {
 
         // With non SQL CUD actions, the `post` operation passed into OperationFunctionCaller would send the transaction to the cluster.
         // Since we don`t send Most SQL options to the cluster, we need to explicitly send it.
-        server_utilities.postOperationHandler(insert_object, res);
+        transact_to_clustering_utilities.postOperationHandler(insert_object, res);
 
         try {
             // We do not want the API returning the new attributes property.
