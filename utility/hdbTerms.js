@@ -369,7 +369,7 @@ const LICENSE_VALUES = {
 // The maximum ram allocation in MB per HDB child process
 const RAM_ALLOCATION_ENUM = {
     DEVELOPMENT: 8192, //8GB
-    DEFAULT: 1024 //1GB
+    DEFAULT: 512 //1GB
 };
 
 const CLUSTER_EVENTS_DEFS_ENUM = {
