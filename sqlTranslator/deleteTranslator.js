@@ -49,15 +49,7 @@ async function convertDelete({statement, hdb_user}){
         // With non SQL CUD actions, the `post` operation passed into OperationFunctionCaller would send the transaction to the cluster.
         // Since we don`t send Most SQL options to the cluster, we need to explicitly send it.
         if(result.deleted_hashes.length > 0) {
-            server_utilities.postOperationHandler(delete_obj, result);/*
-
-            if (delete_obj.schema !== terms.SYSTEM_SCHEMA_NAME) {
-                let delete_msg = hdb_utils.getClusterMessage(terms.CLUSTERING_MESSAGE_TYPES.HDB_TRANSACTION);
-                delete_msg.transaction = delete_obj;
-                delete_msg.transaction.operation = terms.OPERATIONS_ENUM.DELETE;
-                delete_msg.transaction.hash_values = result.deleted_hashes;
-                hdb_utils.sendTransactionToSocketCluster(`${delete_obj.schema}:${delete_obj.table}`, delete_msg, env.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY));
-            }*/
+            server_utilities.postOperationHandler(delete_obj, result);
         }
 
         if(hdb_utils.isEmptyOrZeroLength(result.message)) {
