@@ -25,7 +25,7 @@ function generateReturnMessage(delete_results_object) {
     return `${delete_results_object.deleted_hashes.length} ${RECORD}${delete_results_object.deleted_hashes.length === 1 ? `` : `s`} ${SUCCESS}`;
 }
 
-async function convertDelete(statement, hdb_user){
+async function convertDelete({statement, hdb_user}){
     //convert this update statement to a search capable statement
     //use javascript destructuring to assign variables into from & where
     let {table: from, where} = statement;
@@ -39,7 +39,7 @@ async function convertDelete(statement, hdb_user){
     let delete_obj = {
         schema: from.databaseid,
         table: from.tableid,
-        hdb_user
+        hdb_user: hdb_user
     };
 
     try{

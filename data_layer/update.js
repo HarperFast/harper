@@ -31,9 +31,10 @@ const SQL_UPDATE_ERROR_MSG = 'There was a problem performing this update. Please
  * Description
  * @method update
  * @param statement
+ * @param hdb_user
  * @return
  */
-async function update(statement, hdb_user){
+async function update({statement, hdb_user}){
     try {
         let table_info = await p_get_table_schema(statement.table.databaseid, statement.table.tableid);
         let update_record = createUpdateRecord(statement.columns);

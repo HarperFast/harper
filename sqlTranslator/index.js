@@ -121,9 +121,16 @@ function processAST(json_message, parsed_sql_object, callback) {
                 return callback(UNAUTHORIZED_RESPONSE, permissions_check);
             }
         }
+
+        let statement = {
+            statement: parsed_sql_object.ast.statements[0],
+            hdb_user: json_message.hdb_user
+        };
+
         switch (parsed_sql_object.variant) {
             case 'select':
                 sql_function = search;
+                statement = parsed_sql_object.ast.statements[0];
                 break;
             case 'insert':
                 //TODO add validator for insert, need to make sure columns are specified
@@ -141,13 +148,13 @@ function processAST(json_message, parsed_sql_object, callback) {
 
 
 
-        sql_function(parsed_sql_object.ast.statements[0], (err, data) => {
+        sql_function(statement, (err, data) => {
             if (err) {
                 callback(err);
                 return;
             }
             callback(null, data);
-        };
+        });
     } catch(e){
         return callback(e);
     }
@@ -159,13 +166,14 @@ function nullFunction(sql, callback) {
 }
 
 
-function convertInsert(statement, callback) {
+function convertInsert({statement, hdb_user}, callback) {
+
     let schema_table = statement.into;
     let insert_object = {
         schema : schema_table.databaseid,
         table : schema_table.tableid,
         operation:'insert',
-        hdb_user: statement.hdb_user
+        hdb_user: hdb_user
     };
 
     let columns = statement.columns.map((column) => column.columnid);
