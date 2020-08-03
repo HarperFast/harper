@@ -52,9 +52,7 @@ let node_env_value = env.get(PROPS_ENV_KEY);
 let running_from_repo = false;
 
 // If NODE_ENV is empty, it will show up here as '0' rather than '' or length of 0.
-if (node_env_value === undefined || node_env_value === null || node_env_value === 0) {
-    node_env_value = ENV_PROD_VAL;
-} else if (node_env_value !== ENV_PROD_VAL || node_env_value !== ENV_DEV_VAL) {
+if (node_env_value === undefined || node_env_value === null || node_env_value === 0 || node_env_value !== ENV_PROD_VAL || node_env_value !== ENV_DEV_VAL) {
     node_env_value = ENV_PROD_VAL;
 }
 
@@ -62,7 +60,7 @@ if (node_env_value === undefined || node_env_value === null || node_env_value ==
 process.argv.forEach((arg) => {
     if(arg.endsWith(REPO_RUNNING_PROCESS_NAME)) {
         running_from_repo = true;
-        global.running_from_repo = true;
+        global.running_from_repo = running_from_repo;
     }
 });
 
@@ -129,7 +127,6 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
     global.isMaster = cluster.isMaster;
 
     process.on('uncaughtException', async function (err) {
-        let os = require('os');
         let message = `Found an uncaught exception with message: os.EOL ${err.message}.  Stack: ${err.stack} ${os.EOL} Terminating HDB.`;
         console.error(message);
         harper_logger.fatal(message);
@@ -237,7 +234,6 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
 
     const app = express();
 
-    const SC_WORKER_NAME_PREFIX = 'worker_';
     global.clustering_on = false;
 
 
@@ -306,16 +302,16 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
             req.body.hdb_user = user;
             req.body.hdb_auth_header = req.headers.authorization;
 
-            server_utilities.chooseOperation(req.body, (err, operation_function) => {
-                if (err) {
-                    harper_logger.error(err);
-                    if(err.response && err.response === server_utilities.UNAUTH_RESPONSE) {
-                        return res.status(hdb_errors.HTTP_STATUS_CODES.FORBIDDEN).send(err);
+            server_utilities.chooseOperation(req.body, (error, operation_function) => {
+                if (error) {
+                    harper_logger.error(error);
+                    if(error.response && error.response === server_utilities.UNAUTH_RESPONSE) {
+                        return res.status(hdb_errors.HTTP_STATUS_CODES.FORBIDDEN).send(error);
                     }
-                    if (typeof err === 'string') {
-                        return res.status(hdb_errors.HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR).send({error: err});
+                    if (typeof error === 'string') {
+                        return res.status(hdb_errors.HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR).send({error: error});
                     }
-                    return res.status(hdb_errors.HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR).send(err);
+                    return res.status(hdb_errors.HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR).send(error);
                 }
 
                 server_utilities.processLocalTransaction(req, res, operation_function, function () {});
@@ -336,13 +332,15 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
                     case 'drop_schema':
                         for(let x = 0; x < keys.length; x ++){
                             let key = keys[x];
-                            if(key.startsWith(`${msg.operation.schema}.`)){
+                            if(key.startsWith(`${msg.operation.schema}.`) || key.startsWith(`txn.${msg.operation.schema}.`)){
                                 delete global.lmdb_map[key];
+                                delete global.lmdb_map[`txn.${key}`];
                             }
                         }
                         break;
                     case 'drop_table':
                         delete global.lmdb_map[`${msg.operation.schema}.${msg.operation.table}`];
+                        delete global.lmdb_map[`txn.${msg.operation.schema}.${msg.operation.table}`];
                         break;
                     case 'drop_attribute':
                         cached_environment = global.lmdb_map[`${msg.operation.schema}.${msg.operation.table}`];
@@ -399,7 +397,6 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
     });
 
     process.on('uncaughtException', function (err) {
-        let os = require('os');
         let message = `Found an uncaught exception with message: os.EOL ${err.message}.  Stack: ${err.stack} ${os.EOL} Terminating HDB.`;
         console.error(message);
         harper_logger.fatal(message);
@@ -420,7 +417,7 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
             await p_schema_to_global();
             await user_schema.setUsersToGlobal();
             spawn_cluster_connection(true);
-            let license = await hdb_license.getLicense();
+            await hdb_license.getLicense();
         } catch(e) {
             harper_logger.error(e);
         }
