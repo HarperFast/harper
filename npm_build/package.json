@@ -25,9 +25,6 @@
     "name": "HarperDB",
     "email": "support@harperdb.io"
   },
-  "scripts": {
-    "postinstall": "./node_modules/bytenode/cli.js ./upgrade/scripts/postInstall.jsc"
-  },
   "license": "See License in ./license/Community+Edition+and+Evaluation+End+User+License+Agreement.pdf",
   "dependencies": {
     "@turf/area": "^6.0.1",
