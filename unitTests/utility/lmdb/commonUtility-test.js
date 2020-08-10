@@ -28,7 +28,7 @@ describe("Test commonUtility module", ()=>{
             assert.deepStrictEqual(response, null);
             assert.deepStrictEqual(response1, null);
             assert.deepStrictEqual(response2, null);
-            assert.deepStrictEqual(response3, null);
+            assert.deepStrictEqual(response3, '');
         });
 
         it("pass booleans", ()=>{

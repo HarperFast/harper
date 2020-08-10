@@ -92,10 +92,10 @@ describe('test lmdbGetDataByValue module', ()=>{
         });
 
         it('test validation', async()=>{
-            await test_utils.assertErrorAsync(lmdb_search, [{}], new Error("Schema can't be blank,Table can't be blank,Search attribute can't be blank,Search value can't be blank,Get attributes can't be blank"));
-            await test_utils.assertErrorAsync(lmdb_search, [{schema:'dev'}], new Error("Table can't be blank,Search attribute can't be blank,Search value can't be blank,Get attributes can't be blank"));
-            await test_utils.assertErrorAsync(lmdb_search, [{schema:'dev', table:'test'}], new Error("Search attribute can't be blank,Search value can't be blank,Get attributes can't be blank"));
-            await test_utils.assertErrorAsync(lmdb_search, [{schema:'dev', table:'test', search_attribute: 'city'}], new Error("Search value can't be blank,Get attributes can't be blank"));
+            await test_utils.assertErrorAsync(lmdb_search, [{}], new Error("Schema can't be blank,Table can't be blank,Search attribute can't be blank,Get attributes can't be blank"));
+            await test_utils.assertErrorAsync(lmdb_search, [{schema:'dev'}], new Error("Table can't be blank,Search attribute can't be blank,Get attributes can't be blank"));
+            await test_utils.assertErrorAsync(lmdb_search, [{schema:'dev', table:'test'}], new Error("Search attribute can't be blank,Get attributes can't be blank"));
+            await test_utils.assertErrorAsync(lmdb_search, [{schema:'dev', table:'test', search_attribute: 'city'}], new Error("Get attributes can't be blank"));
             await test_utils.assertErrorAsync(lmdb_search, [{schema:'dev', table:'test', search_attribute: 'city', search_value: '*'}], new Error("Get attributes can't be blank"));
             await test_utils.assertErrorAsync(lmdb_search, [{schema:'dev/sss', table:'test', search_attribute: 'city', search_value: '*', get_attributes:['*']}], new Error("Schema names cannot include backticks or forward slashes"));
             await test_utils.assertErrorAsync(lmdb_search, [{schema:'dev', table:'test`er`', search_attribute: 'city', search_value: '*', get_attributes:['*']}], new Error("Table names cannot include backticks or forward slashes"));

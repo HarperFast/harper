@@ -27,7 +27,7 @@ function validateEnv(env){
  * @returns {Number|String|null}
  */
 function stringifyData(raw_value){
-    if(raw_value === null || raw_value === undefined || raw_value === ''){
+    if(raw_value === null || raw_value === undefined){
         return null;
     }
 

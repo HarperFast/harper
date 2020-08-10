@@ -1,5 +1,4 @@
-const validate = require('validate.js'),
-    _ = require('lodash'),
+const _ = require('lodash'),
     validator = require('./validationWrapper');
 const hdb_terms = require('../utility/common_utils');
 const { common_validators, schema_regex } = require('./common_validators');
@@ -58,9 +57,6 @@ let search_by_value_constraints = {
         length: common_validators.schema_length
     },
     search_attribute: {
-        presence: true
-    },
-    search_value: {
         presence: true
     },
     get_attributes: {
@@ -128,12 +124,10 @@ module.exports = function (search_object, type) {
                 check_attributes.push(search_object.search_attribute);
             }
 
-            let unknown_attributes = _.filter(check_attributes, (attribute) => {
-                return attribute !== '*' && attribute.attribute !== '*' && // skip check for asterik attribute
-                    !_.some(all_table_attributes, (table_attribute) => { // attribute should match one of the attribute in global
-                        return table_attribute === attribute || table_attribute.attribute === attribute || table_attribute.attribute === attribute.attribute;
-                    });
-            });
+            let unknown_attributes = _.filter(check_attributes, (attribute) => attribute !== '*' && attribute.attribute !== '*' && // skip check for asterik attribute
+                    !_.some(all_table_attributes, (table_attribute) => // attribute should match one of the attribute in global
+                         table_attribute === attribute || table_attribute.attribute === attribute || table_attribute.attribute === attribute.attribute
+                    ));
 
             // if any unknown attributes present in the search request then list all indicated as unknown attribute to error message at once split in well format
             // for instance "unknown attribute a, b and c" or "unknown attribute a"

@@ -123,7 +123,7 @@ describe('fsGetDataByValue', () => {
             err = e;
         }
 
-        expect(err.message).to.equal("Schema can't be blank,Table can't be blank,Search attribute can't be blank,Search value can't be blank,Get attributes can't be blank");
+        expect(err.message).to.equal("Schema can't be blank,Table can't be blank,Search attribute can't be blank,Get attributes can't be blank");
     }));
 
     it('Should return error if empty string is passed in for schema', mochaAsyncWrapper(async () => {
@@ -182,7 +182,7 @@ describe('fsGetDataByValue', () => {
         expect(err.message).to.equal(ERR_MSGS.S_ATTR);
     }));
 
-    it('Should return error if empty string is passed in for search value', mochaAsyncWrapper(async () => {
+    it('Should NOT return error if empty string is passed in for search value', mochaAsyncWrapper(async () => {
         const TEMP_SEARCH_OBJECT = deepClone(TEST_SEARCH_OBJ);
         TEMP_SEARCH_OBJECT.search_value = '';
         let err;
@@ -193,7 +193,7 @@ describe('fsGetDataByValue', () => {
             err = e;
         }
 
-        expect(err.message).to.equal(ERR_MSGS.S_VAL);
+        expect(err).to.equal(undefined);
     }));
 
     it('Should return error if empty array is passed in for search value', mochaAsyncWrapper(async () => {
@@ -207,7 +207,7 @@ describe('fsGetDataByValue', () => {
             err = e;
         }
 
-        expect(err.message).to.equal(ERR_MSGS.S_VAL);
+        expect(err).to.equal(undefined);
     }));
 
     it('Should return error if empty string is passed in for get_attributes', mochaAsyncWrapper(async () => {
