@@ -198,7 +198,6 @@ function createMockFS(hash_attribute, schema, table, test_data) {
         makeTheDir(schema_path);
 
         //create table
-        const table_id = uuid();
         const table_path = path.join(schema_path, table);
         makeTheDir(table_path);
         let table_hash_dir_path = path.join(table_path, terms.HASH_FOLDER_NAME);
@@ -253,7 +252,7 @@ function createMockFS(hash_attribute, schema, table, test_data) {
         });
 
         //set hdb_global
-        setGlobalSchema(hash_attribute, schema, table, table_id, attribute_names);
+        setGlobalSchema(hash_attribute, schema, table, attribute_names);
 
         //set system > schema structure
         createMockSystemSchema(hash_attribute, schema, table, attribute_names);
@@ -520,9 +519,9 @@ function createMockSystemSchema(hash_attribute, schema, table, attributes_keys) 
 /**
  * This method is used in `createMockFS()` to update global.hdb_schema based on the mocked FS structure created.
  */
-function setGlobalSchema(hash_attribute, schema, table, table_id, attributes_keys) {
+function setGlobalSchema(hash_attribute, schema, table, attributes_keys) {
     const attributes = attributes_keys.map(attr_key => ({ "attribute": attr_key }));
-
+    const table_id = uuid();
     if (global.hdb_schema === undefined) {
         global.hdb_schema = {
             [schema]: {

@@ -35,6 +35,24 @@ const LMDB_ERRORS_ENUM = {
     CANNOT_DROP_TABLE_HASH_ATTRIBUTE: new Error('cannot drop a table\'s hash attribute')
 };
 
+const TEST_ROLE_PERMS_ERROR = {
+    ATTR_PERM_MISSING: (perm, attr_name) => `${perm.toUpperCase()} attribute permission missing for ${attr_name} in 'attribute_permission'`,
+    ATTR_PERM_MISSING_NAME: "Permission object in 'attribute_permission' missing an 'attribute_name'",
+    ATTR_PERM_NOT_BOOLEAN: (perm, attr_name) => `${perm.toUpperCase()} attribute permission for ${attr_name} in 'attribute_permission' must be a boolean`,
+    ATTR_PERMS_ARRAY_MISSING: "Missing 'attribute_permissions' array",
+    ATTR_PERMS_NOT_ARRAY: "Value for 'attribute_permissions' must be an array",
+    INVALID_ATTRIBUTE_IN_PERMS: (attr_name) => `Invalid attribute ${attr_name} in 'attribute_permissions'`,
+    INVALID_PERM_KEY: (table_key) => `Invalid table permission key value '${table_key}'`,
+    MISMATCHED_TABLE_ATTR_PERMS: (schema_table) => `You have a conflict with TABLE permissions for '${schema_table}' being false and ATTRIBUTE permissions being true. Please try again`,
+    ROLE_PERMS_ERROR: 'Errors in the role permissions JSON provided',
+    SCHEMA_PERM_ERROR: (schema_name) => `Your role does not have permission to view schema metadata for '${schema_name}'`,
+    SCHEMA_TABLE_PERM_ERROR: (schema_name, table_name) => `Your role does not have permission to view schema.table metadata for '${schema_name}.${table_name}'`,
+    SU_CU_ROLE_BOOLEAN_ERROR: (role_type) => `Value for '${role_type}' permission must be a boolean`,
+    SU_CU_ROLE_NO_PERMS_ALLOWED: 'Roles with `cluster_user` or `super_user` set to true cannot have other permissions set.',
+    TABLE_PERM_MISSING: (perm) => `Missing table ${perm.toUpperCase()} permission`,
+    TABLE_PERM_NOT_BOOLEAN: (perm) => `Table ${perm.toUpperCase()} permission must be a boolean`
+};
+
 const COMMON_ERROR_MSGS = {
     SCHEMA_REQUIRED: 'schema is required',
     TABLE_REQUIRED: 'table is required'
@@ -42,5 +60,6 @@ const COMMON_ERROR_MSGS = {
 
 module.exports = {
     LMDB_ERRORS_ENUM,
-    COMMON_ERROR_MSGS
+    COMMON_ERROR_MSGS,
+    TEST_ROLE_PERMS_ERROR
 };
