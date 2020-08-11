@@ -10,6 +10,7 @@ const sinon = require('sinon');
 const rewire = require('rewire');
 const role_validation_rw = rewire('../../validation/role_validation');
 let customValidate_rw = role_validation_rw.__get__('customValidate');
+const { TEST_ROLE_PERMS_ERROR } = require('../commonTestErrors');
 
 let sandbox;
 let customValidate_stub;
@@ -287,7 +288,7 @@ describe('Test role_validation module ', () => {
 
             const test_result = customValidate_rw(test_role, getAddRoleConstraints());
 
-            expect(test_result.http_resp_msg.main_permissions[0]).to.equal("Roles with 'super_user' set to true cannot have other permissions set.");
+            expect(test_result.http_resp_msg.main_permissions[0]).to.equal(TEST_ROLE_PERMS_ERROR.SU_CU_ROLE_NO_PERMS_ALLOWED('super_user'));
             expect(test_result.http_resp_code).to.equal(400);
         })
 
@@ -298,7 +299,7 @@ describe('Test role_validation module ', () => {
 
             const test_result = customValidate_rw(test_role, getAddRoleConstraints());
 
-            expect(test_result.http_resp_msg.main_permissions[0]).to.equal("Roles with 'cluster_user' set to true cannot have other permissions set.");
+            expect(test_result.http_resp_msg.main_permissions[0]).to.equal(TEST_ROLE_PERMS_ERROR.SU_CU_ROLE_NO_PERMS_ALLOWED('cluster_user'));
             expect(test_result.http_resp_code).to.equal(400);
         })
 
@@ -321,7 +322,7 @@ describe('Test role_validation module ', () => {
             expect(test_result.http_resp_code).to.equal(400);
             expect(test_result.http_resp_msg.main_permissions.length).to.equal(0);
             expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY].length).to.equal(1);
-            expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY]).to.include("Missing table READ permission");
+            expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY]).to.include(TEST_ROLE_PERMS_ERROR.TABLE_PERM_MISSING('read'));
         })
 
         it('Role_obj passed with missing table INSERT perm - expect error returned',() => {
@@ -333,7 +334,7 @@ describe('Test role_validation module ', () => {
             expect(test_result.http_resp_code).to.equal(400);
             expect(test_result.http_resp_msg.main_permissions.length).to.equal(0);
             expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY].length).to.equal(1);
-            expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY]).to.include("Missing table INSERT permission");
+            expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY]).to.include(TEST_ROLE_PERMS_ERROR.TABLE_PERM_MISSING('insert'));
         })
 
         it('Role_obj passed with missing table UPDATE perm - expect error returned',() => {
@@ -345,7 +346,7 @@ describe('Test role_validation module ', () => {
             expect(test_result.http_resp_code).to.equal(400);
             expect(test_result.http_resp_msg.main_permissions.length).to.equal(0);
             expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY].length).to.equal(1);
-            expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY]).to.include("Missing table UPDATE permission");
+            expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY]).to.include(TEST_ROLE_PERMS_ERROR.TABLE_PERM_MISSING('update'));
         })
 
         it('Role_obj passed with missing table DELETE perm - expect error returned',() => {
@@ -357,7 +358,7 @@ describe('Test role_validation module ', () => {
             expect(test_result.http_resp_code).to.equal(400);
             expect(test_result.http_resp_msg.main_permissions.length).to.equal(0);
             expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY].length).to.equal(1);
-            expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY]).to.include("Missing table DELETE permission");
+            expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY]).to.include(TEST_ROLE_PERMS_ERROR.TABLE_PERM_MISSING('delete'));
         })
 
         it('Role_obj passed with missing table CRUD perms - expect error returned',() => {
@@ -372,10 +373,10 @@ describe('Test role_validation module ', () => {
             expect(test_result.http_resp_code).to.equal(400);
             expect(test_result.http_resp_msg.main_permissions.length).to.equal(0);
             expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY].length).to.equal(4);
-            expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY]).to.include("Missing table READ permission");
-            expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY]).to.include("Missing table INSERT permission");
-            expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY]).to.include("Missing table UPDATE permission");
-            expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY]).to.include("Missing table DELETE permission");
+            expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY]).to.include(TEST_ROLE_PERMS_ERROR.TABLE_PERM_MISSING('read'));
+            expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY]).to.include(TEST_ROLE_PERMS_ERROR.TABLE_PERM_MISSING('insert'));
+            expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY]).to.include(TEST_ROLE_PERMS_ERROR.TABLE_PERM_MISSING('update'));
+            expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY]).to.include(TEST_ROLE_PERMS_ERROR.TABLE_PERM_MISSING('delete'));
         })
 
         it('Role_obj passed with missing table READ & INSERT perms - expect error returned',() => {
@@ -388,8 +389,8 @@ describe('Test role_validation module ', () => {
             expect(test_result.http_resp_code).to.equal(400);
             expect(test_result.http_resp_msg.main_permissions.length).to.equal(0);
             expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY].length).to.equal(2);
-            expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY]).to.include("Missing table READ permission");
-            expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY]).to.include("Missing table INSERT permission");
+            expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY]).to.include(TEST_ROLE_PERMS_ERROR.TABLE_PERM_MISSING('read'));
+            expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY]).to.include(TEST_ROLE_PERMS_ERROR.TABLE_PERM_MISSING('insert'));
         })
 
         //Test multiple table error response
@@ -404,10 +405,10 @@ describe('Test role_validation module ', () => {
             expect(test_result.http_resp_code).to.equal(400);
             expect(test_result.http_resp_msg.main_permissions.length).to.equal(0);
             expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY].length).to.equal(2);
-            expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY]).to.include("Missing table READ permission");
-            expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY]).to.include("Missing table INSERT permission");
+            expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY]).to.include(TEST_ROLE_PERMS_ERROR.TABLE_PERM_MISSING('read'));
+            expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY]).to.include(TEST_ROLE_PERMS_ERROR.TABLE_PERM_MISSING('insert'));
             expect(test_result.http_resp_msg.schema_permissions[CAT_TABLE_KEY].length).to.equal(1);
-            expect(test_result.http_resp_msg.schema_permissions[CAT_TABLE_KEY]).to.include("Missing table UPDATE permission");
+            expect(test_result.http_resp_msg.schema_permissions[CAT_TABLE_KEY]).to.include(TEST_ROLE_PERMS_ERROR.TABLE_PERM_MISSING('update'));
         })
 
         //Test missing values for a attribute
@@ -420,7 +421,7 @@ describe('Test role_validation module ', () => {
             expect(test_result.http_resp_code).to.equal(400);
             expect(test_result.http_resp_msg.main_permissions.length).to.equal(0);
             expect(test_result.http_resp_msg.schema_permissions[OWNER_TABLE_KEY].length).to.equal(1);
-            expect(test_result.http_resp_msg.schema_permissions[OWNER_TABLE_KEY][0]).to.equal("READ attribute permission missing for 'age'");
+            expect(test_result.http_resp_msg.schema_permissions[OWNER_TABLE_KEY][0]).to.equal(TEST_ROLE_PERMS_ERROR.ATTR_PERM_MISSING('read', 'age'));
         })
 
         it('Role_obj passed with missing table attribute INSERT perm - expect error returned',() => {
@@ -432,7 +433,7 @@ describe('Test role_validation module ', () => {
             expect(test_result.http_resp_code).to.equal(400);
             expect(test_result.http_resp_msg.main_permissions.length).to.equal(0);
             expect(test_result.http_resp_msg.schema_permissions[OWNER_TABLE_KEY].length).to.equal(1);
-            expect(test_result.http_resp_msg.schema_permissions[OWNER_TABLE_KEY][0]).to.equal("INSERT attribute permission missing for 'age'");
+            expect(test_result.http_resp_msg.schema_permissions[OWNER_TABLE_KEY][0]).to.equal(TEST_ROLE_PERMS_ERROR.ATTR_PERM_MISSING('insert', 'age'));
         })
 
         it('Role_obj passed with missing table attribute UPDATE perm - expect error returned',() => {
@@ -444,7 +445,7 @@ describe('Test role_validation module ', () => {
             expect(test_result.http_resp_code).to.equal(400);
             expect(test_result.http_resp_msg.main_permissions.length).to.equal(0);
             expect(test_result.http_resp_msg.schema_permissions[OWNER_TABLE_KEY].length).to.equal(1);
-            expect(test_result.http_resp_msg.schema_permissions[OWNER_TABLE_KEY][0]).to.equal("UPDATE attribute permission missing for 'age'");
+            expect(test_result.http_resp_msg.schema_permissions[OWNER_TABLE_KEY][0]).to.equal(TEST_ROLE_PERMS_ERROR.ATTR_PERM_MISSING('update', 'age'));
         })
 
         it('Role_obj passed with missing table attribute name key/value - expect error returned',() => {
@@ -456,7 +457,7 @@ describe('Test role_validation module ', () => {
             expect(test_result.http_resp_code).to.equal(400);
             expect(test_result.http_resp_msg.main_permissions.length).to.equal(0);
             expect(test_result.http_resp_msg.schema_permissions[OWNER_TABLE_KEY].length).to.equal(1);
-            expect(test_result.http_resp_msg.schema_permissions[OWNER_TABLE_KEY][0]).to.equal("Permission object in 'attribute_permission' missing an 'attribute_name'");
+            expect(test_result.http_resp_msg.schema_permissions[OWNER_TABLE_KEY][0]).to.equal(TEST_ROLE_PERMS_ERROR.ATTR_PERM_MISSING_NAME);
         })
 
         //Test perm value data type validation
@@ -469,7 +470,7 @@ describe('Test role_validation module ', () => {
             expect(test_result.http_resp_code).to.equal(400);
             expect(test_result.http_resp_msg.main_permissions.length).to.equal(0);
             expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY].length).to.equal(1);
-            expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY][0]).to.equal("Table READ permission must be a boolean");
+            expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY][0]).to.equal(TEST_ROLE_PERMS_ERROR.TABLE_PERM_NOT_BOOLEAN('read'));
         })
 
         it('Role_obj passed with invalid table INSERT perm - expect error returned',() => {
@@ -481,7 +482,7 @@ describe('Test role_validation module ', () => {
             expect(test_result.http_resp_code).to.equal(400);
             expect(test_result.http_resp_msg.main_permissions.length).to.equal(0);
             expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY].length).to.equal(1);
-            expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY][0]).to.equal("Table INSERT permission must be a boolean");
+            expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY][0]).to.equal(TEST_ROLE_PERMS_ERROR.TABLE_PERM_NOT_BOOLEAN('insert'));
         })
 
         it('Role_obj passed with invalid table UPDATE perm - expect error returned',() => {
@@ -493,7 +494,7 @@ describe('Test role_validation module ', () => {
             expect(test_result.http_resp_code).to.equal(400);
             expect(test_result.http_resp_msg.main_permissions.length).to.equal(0);
             expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY].length).to.equal(1);
-            expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY][0]).to.equal("Table UPDATE permission must be a boolean");
+            expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY][0]).to.equal(TEST_ROLE_PERMS_ERROR.TABLE_PERM_NOT_BOOLEAN('update'));
         })
 
         it('Role_obj passed with invalid table DELETE perm - expect error returned',() => {
@@ -505,7 +506,7 @@ describe('Test role_validation module ', () => {
             expect(test_result.http_resp_code).to.equal(400);
             expect(test_result.http_resp_msg.main_permissions.length).to.equal(0);
             expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY].length).to.equal(1);
-            expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY][0]).to.include("Table DELETE permission must be a boolean");
+            expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY][0]).to.include(TEST_ROLE_PERMS_ERROR.TABLE_PERM_NOT_BOOLEAN('delete'));
         })
 
         it('Role_obj passed with invalid table CRUD perms - expect error returned',() => {
@@ -520,10 +521,10 @@ describe('Test role_validation module ', () => {
             expect(test_result.http_resp_code).to.equal(400);
             expect(test_result.http_resp_msg.main_permissions.length).to.equal(0);
             expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY].length).to.equal(4);
-            expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY]).to.include("Table READ permission must be a boolean");
-            expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY]).to.include("Table INSERT permission must be a boolean");
-            expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY]).to.include("Table UPDATE permission must be a boolean");
-            expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY]).to.include("Table DELETE permission must be a boolean");
+            expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY]).to.include(TEST_ROLE_PERMS_ERROR.TABLE_PERM_NOT_BOOLEAN('read'));
+            expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY]).to.include(TEST_ROLE_PERMS_ERROR.TABLE_PERM_NOT_BOOLEAN('insert'));
+            expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY]).to.include(TEST_ROLE_PERMS_ERROR.TABLE_PERM_NOT_BOOLEAN('update'));
+            expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY]).to.include(TEST_ROLE_PERMS_ERROR.TABLE_PERM_NOT_BOOLEAN('delete'));
         })
 
         it('Role_obj passed with invalid table READ & INSERT perms - expect error returned',() => {
@@ -536,8 +537,8 @@ describe('Test role_validation module ', () => {
             expect(test_result.http_resp_code).to.equal(400);
             expect(test_result.http_resp_msg.main_permissions.length).to.equal(0);
             expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY].length).to.equal(2);
-            expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY]).to.include("Table READ permission must be a boolean");
-            expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY]).to.include("Table INSERT permission must be a boolean");
+            expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY]).to.include(TEST_ROLE_PERMS_ERROR.TABLE_PERM_NOT_BOOLEAN('read'));
+            expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY]).to.include(TEST_ROLE_PERMS_ERROR.TABLE_PERM_NOT_BOOLEAN('insert'));
         })
 
         //Test multiple table error response
@@ -552,10 +553,10 @@ describe('Test role_validation module ', () => {
             expect(test_result.http_resp_code).to.equal(400);
             expect(test_result.http_resp_msg.main_permissions.length).to.equal(0);
             expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY].length).to.equal(2);
-            expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY]).to.include("Table READ permission must be a boolean");
-            expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY]).to.include("Table INSERT permission must be a boolean");
+            expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY]).to.include(TEST_ROLE_PERMS_ERROR.TABLE_PERM_NOT_BOOLEAN('read'));
+            expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY]).to.include(TEST_ROLE_PERMS_ERROR.TABLE_PERM_NOT_BOOLEAN('insert'));
             expect(test_result.http_resp_msg.schema_permissions[CAT_TABLE_KEY].length).to.equal(1);
-            expect(test_result.http_resp_msg.schema_permissions[CAT_TABLE_KEY]).to.include("Table UPDATE permission must be a boolean");
+            expect(test_result.http_resp_msg.schema_permissions[CAT_TABLE_KEY]).to.include(TEST_ROLE_PERMS_ERROR.TABLE_PERM_NOT_BOOLEAN('update'));
         })
 
         //Test missing values for a attribute
@@ -568,7 +569,7 @@ describe('Test role_validation module ', () => {
             expect(test_result.http_resp_code).to.equal(400);
             expect(test_result.http_resp_msg.main_permissions.length).to.equal(0);
             expect(test_result.http_resp_msg.schema_permissions[OWNER_TABLE_KEY].length).to.equal(1);
-            expect(test_result.http_resp_msg.schema_permissions[OWNER_TABLE_KEY][0]).to.equal("READ attribute permission for 'age' must be a boolean");
+            expect(test_result.http_resp_msg.schema_permissions[OWNER_TABLE_KEY][0]).to.equal(TEST_ROLE_PERMS_ERROR.ATTR_PERM_NOT_BOOLEAN('read', 'age'));
         })
 
         it('Role_obj passed with invalid table attribute INSERT perm - expect error returned',() => {
@@ -580,7 +581,7 @@ describe('Test role_validation module ', () => {
             expect(test_result.http_resp_code).to.equal(400);
             expect(test_result.http_resp_msg.main_permissions.length).to.equal(0);
             expect(test_result.http_resp_msg.schema_permissions[OWNER_TABLE_KEY].length).to.equal(1);
-            expect(test_result.http_resp_msg.schema_permissions[OWNER_TABLE_KEY][0]).to.equal("INSERT attribute permission for 'age' must be a boolean");
+            expect(test_result.http_resp_msg.schema_permissions[OWNER_TABLE_KEY][0]).to.equal(TEST_ROLE_PERMS_ERROR.ATTR_PERM_NOT_BOOLEAN('insert', 'age'));
         })
 
         it('Role_obj passed with invalid table attribute UPDATE perm - expect error returned',() => {
@@ -592,7 +593,7 @@ describe('Test role_validation module ', () => {
             expect(test_result.http_resp_code).to.equal(400);
             expect(test_result.http_resp_msg.main_permissions.length).to.equal(0);
             expect(test_result.http_resp_msg.schema_permissions[OWNER_TABLE_KEY].length).to.equal(1);
-            expect(test_result.http_resp_msg.schema_permissions[OWNER_TABLE_KEY][0]).to.equal("UPDATE attribute permission for 'age' must be a boolean");
+            expect(test_result.http_resp_msg.schema_permissions[OWNER_TABLE_KEY][0]).to.equal(TEST_ROLE_PERMS_ERROR.ATTR_PERM_NOT_BOOLEAN('update', 'age'));
         })
 
         it('Role_obj passed with invalid table attribute name key/value - expect error returned',() => {
@@ -604,7 +605,7 @@ describe('Test role_validation module ', () => {
             expect(test_result.http_resp_code).to.equal(400);
             expect(test_result.http_resp_msg.main_permissions.length).to.equal(0);
             expect(test_result.http_resp_msg.schema_permissions[OWNER_TABLE_KEY].length).to.equal(1);
-            expect(test_result.http_resp_msg.schema_permissions[OWNER_TABLE_KEY][0]).to.equal("Invalid attribute 12345 in 'attribute_permissions'");
+            expect(test_result.http_resp_msg.schema_permissions[OWNER_TABLE_KEY][0]).to.equal(TEST_ROLE_PERMS_ERROR.INVALID_ATTRIBUTE_IN_PERMS(12345));
         })
 
         //Mismatched table/attr CRUD values
@@ -617,7 +618,7 @@ describe('Test role_validation module ', () => {
             expect(test_result.http_resp_code).to.equal(400);
             expect(test_result.http_resp_msg.main_permissions.length).to.equal(0);
             expect(test_result.http_resp_msg.schema_permissions[OWNER_TABLE_KEY].length).to.equal(1);
-            expect(test_result.http_resp_msg.schema_permissions[OWNER_TABLE_KEY][0]).to.equal("You have a conflict with TABLE permissions for 'dev.owners' being false and ATTRIBUTE permissions being true");
+            expect(test_result.http_resp_msg.schema_permissions[OWNER_TABLE_KEY][0]).to.equal(TEST_ROLE_PERMS_ERROR.MISMATCHED_TABLE_ATTR_PERMS('dev.owners'));
         })
 
         it('Role_obj passed with mutliple mismatched table/table attribute CRUD perms - expect error returned',() => {
@@ -630,14 +631,10 @@ describe('Test role_validation module ', () => {
             expect(test_result.http_resp_code).to.equal(400);
             expect(test_result.http_resp_msg.main_permissions.length).to.equal(0);
             expect(test_result.http_resp_msg.schema_permissions[OWNER_TABLE_KEY].length).to.equal(1);
-            expect(test_result.http_resp_msg.schema_permissions[OWNER_TABLE_KEY][0]).to.equal("You have a conflict with TABLE permissions for 'dev.owners' being false and ATTRIBUTE permissions being true");
+            expect(test_result.http_resp_msg.schema_permissions[OWNER_TABLE_KEY][0]).to.equal(TEST_ROLE_PERMS_ERROR.MISMATCHED_TABLE_ATTR_PERMS('dev.owners'));
             expect(test_result.http_resp_msg.schema_permissions[CAT_TABLE_KEY].length).to.equal(1);
-            expect(test_result.http_resp_msg.schema_permissions[CAT_TABLE_KEY][0]).to.equal("You have a conflict with TABLE permissions for 'dev.cats' being false and ATTRIBUTE permissions being true");
+            expect(test_result.http_resp_msg.schema_permissions[CAT_TABLE_KEY][0]).to.equal(TEST_ROLE_PERMS_ERROR.MISMATCHED_TABLE_ATTR_PERMS('dev.cats'));
         })
-    })
-
-    describe('validateNoSUPerms() ',() => {
-
     })
 })
 

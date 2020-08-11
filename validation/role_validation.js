@@ -1,8 +1,7 @@
 const validate = require('validate.js'),
     validator = require('./validationWrapper'),
     terms = require('../utility/hdbTerms'),
-    { handleHDBError, hdb_errors } = require('../utility/errors/hdbError'),
-    _ = require('lodash');
+    { handleHDBError, hdb_errors } = require('../utility/errors/hdbError');
 
 const { COMMON_ERROR_MSGS, HTTP_STATUS_CODES } = hdb_errors;
 
@@ -26,8 +25,6 @@ const ROLE_TYPES_ENUM = {
 };
 const ROLE_TYPES = Object.values(ROLE_TYPES_ENUM);
 const ATTR_PERMS_KEY = "attribute_permissions";
-const ATTR_NAME_KEY = "attribute_name";
-const ROLE_PERM_KEYS = ["operation", "role", "permission"];
 const { PERMS_CRUD_ENUM } = terms;
 const TABLE_PERM_KEYS = [ATTR_PERMS_KEY, ...Object.values(PERMS_CRUD_ENUM)];
 const ATTR_PERMS_KEYS = [PERMS_CRUD_ENUM.READ, PERMS_CRUD_ENUM.INSERT, PERMS_CRUD_ENUM.UPDATE];
@@ -69,11 +66,14 @@ function customValidate(object, constraints) {
         });
     }
 
+    //need this check to avoid unexpected errors if someone doesn't have permissions key included in request
     if (object.permission) {
+        //check if role is SU or CU and has perms included
         const su_perms_error = validateNoSUPerms(object);
         if (su_perms_error) {
             addPermError(su_perms_error, validationErrors);
         }
+        //check if cu or su values, if included, are booleans
         ROLE_TYPES.forEach(role => {
             if (object.permission[role]) {
                 if (!validate.isBoolean(object.permission[role])) {
@@ -86,6 +86,7 @@ function customValidate(object, constraints) {
     for (let item in object.permission) {
         if (ROLE_TYPES.indexOf(item) < 0) {
             let schema = object.permission[item];
+            //validate that schema exists
             if(!item || !global.hdb_schema[item]) {
                 addPermError(COMMON_ERROR_MSGS.SCHEMA_NOT_FOUND(item), validationErrors);
                 continue;
@@ -93,6 +94,7 @@ function customValidate(object, constraints) {
             if(schema.tables) {
                 for(let t in schema.tables) {
                     let table = schema.tables[t];
+                    //validate that table exists in schema
                     if(!t || !global.hdb_schema[item][t]) {
                         addPermError(COMMON_ERROR_MSGS.TABLE_NOT_FOUND(item, t), validationErrors);
                         continue;
@@ -123,6 +125,7 @@ function customValidate(object, constraints) {
                         continue;
                     }
 
+                    //need this check here to ensure no unexpected errors is key is missing in table perms
                     if (table.attribute_permissions) {
                         let table_attribute_names = global.hdb_schema[item][t].attributes.map(({attribute}) => attribute);
                         const attr_perms_check = {
@@ -167,6 +170,7 @@ function customValidate(object, constraints) {
                                 attr_perms_check.update = true;
                             }
                         }
+                        //validate that there is no mismatching perms between table and attrs
                         if(table.read === false && attr_perms_check.read === true ||
                             table.insert === false && attr_perms_check.insert === true ||
                             table.update === false && attr_perms_check.update === true) {
@@ -189,6 +193,11 @@ module.exports = {
 
 };
 
+/**
+ * Validates that permissions object for CU or SU roles do not also include permissions
+ * @param obj
+ * @returns {string|null}
+ */
 function validateNoSUPerms(obj) {
     const { operation, permission } = obj;
     if (operation === terms.OPERATIONS_ENUM.ADD_ROLE || operation === terms.OPERATIONS_ENUM.ALTER_ROLE) {
@@ -208,6 +217,12 @@ function validateNoSUPerms(obj) {
     return null;
 }
 
+/**
+ * Builds final permissions object error response to return if validation fails
+ *
+ * @param validationErrors
+ * @returns {null|HdbError}
+ */
 function generateRolePermResponse(validationErrors) {
     const { main_permissions, schema_permissions } = validationErrors;
     if (main_permissions.length > 0 || Object.keys(schema_permissions).length > 0) {
@@ -223,6 +238,13 @@ function generateRolePermResponse(validationErrors) {
 
 }
 
+/**
+ * Adds perm validation error to the correct category for the final validation error response
+ * @param err
+ * @param invalid_perms_obj
+ * @param schema
+ * @param table
+ */
 function addPermError(err, invalid_perms_obj, schema, table) {
     if (!schema) {
         invalid_perms_obj.main_permissions.push(err);
