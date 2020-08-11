@@ -1,7 +1,7 @@
 "use strict";
 
 const types = require('../types');
-const uuid = require('uuid/v4');
+const uuid = require('uuid');
 
 /**
  * This collection of classes defines how messages should look when being passed around the various rooms.
@@ -12,7 +12,7 @@ const uuid = require('uuid/v4');
  */
 class HdbCoreBaseMessageIF {
     constructor(core_room_msg_type_enum) {
-        this.id = uuid();
+        this.id = uuid.v4();
         this.type = core_room_msg_type_enum;
         this.hdb_header = {};
         this.transaction = undefined;
@@ -38,7 +38,7 @@ class WorkerStatusMessage {
  */
 class WatchHdbWorkersMessage {
     constructor() {
-        this.id = uuid();
+        this.id = uuid.v4();
         this.type = types.CORE_ROOM_MSG_TYPE_ENUM.HDB_WORKERS;
         this.workers = [];
     }
@@ -49,7 +49,7 @@ class WatchHdbWorkersMessage {
  */
 class SyncHdbUsersMessage {
     constructor() {
-        this.id = uuid();
+        this.id = uuid.v4();
         this.type = types.CORE_ROOM_MSG_TYPE_ENUM.HDB_USERS_MSG;
         this.users = {};
     }
@@ -61,7 +61,7 @@ class SyncHdbUsersMessage {
 class GetClusterStatusMessage {
     constructor() {
         this.type = types.WORKER_ROOM_MSG_TYPE_ENUM.WORKER_ROOM_GET_STATUS;
-        this.request_id = uuid();
+        this.request_id = uuid.v4();
         this.requestor_channel = undefined;
         this.worker_request_owner_id = undefined;
         this.originator_msg_id = undefined;

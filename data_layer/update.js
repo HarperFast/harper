@@ -14,7 +14,8 @@ const p_search = util.promisify(search.search);
 
 const terms = require('../utility/hdbTerms');
 const hdb_utils = require('../utility/common_utils');
-const env = require('../utility/environment/environmentManager');
+
+const transact_to_clustering_utilities = require('../server/transactToClusteringUtilities');
 
 //here we call to define and import custom functions to alasql
 alasql_function_importer(alasql);
@@ -28,11 +29,11 @@ const SQL_UPDATE_ERROR_MSG = 'There was a problem performing this update. Please
 /**
  * Description
  * @method update
- * @param {} statement
- * @param {} callback
+ * @param statement
+ * @param hdb_user
  * @return
  */
-async function update(statement){
+async function update({statement, hdb_user}){
     try {
         let table_info = await p_get_table_schema(statement.table.databaseid, statement.table.tableid);
         let update_record = createUpdateRecord(statement.columns);
@@ -48,7 +49,7 @@ async function update(statement){
 
         let records = await p_search(search_statement);
         let new_records = buildUpdateRecords(update_record, records);
-        return await updateRecords(table_clone, new_records);
+        return await updateRecords(table_clone, new_records, hdb_user);
     } catch(e){
         throw e;
     }
@@ -80,8 +81,8 @@ function createUpdateRecord(columns){
 /**
  * Description
  * @method buildUpdateRecords
- * @param {} update_record
- * @param {} records
+ * @param {{}} update_record
+ * @param {[]} records
  * @return
  */
 function buildUpdateRecords(update_record, records){
@@ -89,26 +90,24 @@ function buildUpdateRecords(update_record, records){
         return [];
     }
 
-    let new_records = records.map((record)=>{
-        return Object.assign(record, update_record);
-    });
-
-    return new_records;
+    return records.map((record)=>Object.assign(record, update_record));
 }
 
 /**
  * Description
  * @method updateRecords
- * @param {} table
- * @param {} records
+ * @param  table
+ * @param {[{}]} records
+ * @param {{}} hdb_user
  * @return
  */
-async function updateRecords(table, records){
+async function updateRecords(table, records, hdb_user){
     let update_object = {
         operation:'update',
         schema: table.databaseid,
         table: table.tableid,
-        records:records
+        records:records,
+        hdb_user
     };
 
     try {
@@ -116,34 +115,11 @@ async function updateRecords(table, records){
 
         // With non SQL CUD actions, the `post` operation passed into OperationFunctionCaller would send the transaction to the cluster.
         // Since we don`t send Most SQL options to the cluster, we need to explicitly send it.
-        if (update_object.schema !== terms.SYSTEM_SCHEMA_NAME) {
-            let update_msg = hdb_utils.getClusterMessage(terms.CLUSTERING_MESSAGE_TYPES.HDB_TRANSACTION);
-
-            if (res.update_hashes.length > 0) {
-                update_msg.transaction = update_object;
-                update_msg.transaction.operation = terms.OPERATIONS_ENUM.UPDATE;
-                hdb_utils.sendTransactionToSocketCluster(`${update_object.schema}:${update_object.table}`, update_msg, env.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY));
-            }
-
-            // If any new attributes are created we need to propagate them across the entire cluster.
-            if (!hdb_utils.isEmptyOrZeroLength(res.new_attributes)) {
-                update_msg.__transacted = true;
-
-                res.new_attributes.forEach((attribute) => {
-                    update_msg.transaction = {
-                        operation: terms.OPERATIONS_ENUM.CREATE_ATTRIBUTE,
-                        schema: update_object.schema,
-                        table: update_object.table,
-                        attribute: attribute
-                    };
-
-                    hdb_utils.sendTransactionToSocketCluster(terms.INTERNAL_SC_CHANNELS.CREATE_ATTRIBUTE, update_msg, env.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY));
-                });
-            }
-        }
+        transact_to_clustering_utilities.postOperationHandler(update_object, res);
         try {
             // We do not want the API returning the new attributes property.
             delete res.new_attributes;
+            delete res.txn_time;
         } catch (delete_err) {
             logger.error(`Error delete new_attributes from update response: ${delete_err}`);
         }

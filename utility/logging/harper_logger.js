@@ -85,7 +85,7 @@ try {
     hdb_properties.append(hdb_properties.get('settings_path'));
 
     // read environment settings to get log settings
-    daily_rotate = `${hdb_properties.get('LOG_DAILY_ROTATE')}`.toLowerCase() === 'true' ? true : false;
+    daily_rotate = `${hdb_properties.get('LOG_DAILY_ROTATE')}`.toLowerCase() === 'true';
     const daily_max = hdb_properties.get('LOG_MAX_DAILY_FILES');
     max_daily_files = daily_max ? daily_max + 'd' : null;
     log_level = hdb_properties.get('LOG_LEVEL');
@@ -124,6 +124,7 @@ module.exports = {
     setLogType:setLogType,
     write_log:write_log,
     readLog:readLog,
+    log_level,
     NOTIFY,
     FATAL,
     ERR,
@@ -206,7 +207,7 @@ function initPinoLogger() {
 /**
  * This helper function will take the log level and message as parameters, and write to the log using
  * the logger configured in the settings file.
- * @param {string} level - The log level this message should be written to
+ * @param {string|number|null} level - The log level this message should be written to
  * @param {String} message - The message to be written to the log
  */
 function write_log(level, message) {
@@ -379,7 +380,7 @@ function setLogType(type) {
 
 /**
  * Set a location for the log file to be written.  Will stop writing to any existing logs and start writing to the new location.
- * @param log_path file path for logging
+ * @param log_location_setting
  */
 function setLogLocation(log_location_setting) {
     const default_log_directory = hdb_properties.get('HDB_ROOT') + '/log/';
@@ -574,10 +575,10 @@ function getPropsFilePath() {
         home_dir = '~/';
     }
 
-    let boot_props_file_path = path.join(home_dir, terms.HDB_HOME_DIR_NAME, terms.BOOT_PROPS_FILE_NAME);
+    let _boot_props_file_path = path.join(home_dir, terms.HDB_HOME_DIR_NAME, terms.BOOT_PROPS_FILE_NAME);
     // this checks how we used to store the boot props file for older installations.
-    if(!fs.existsSync(boot_props_file_path)) {
-        boot_props_file_path = path.join(__dirname, '../', 'hdb_boot_properties.file');
+    if(!fs.existsSync(_boot_props_file_path)) {
+        _boot_props_file_path = path.join(__dirname, '../', 'hdb_boot_properties.file');
     }
-    return boot_props_file_path;
+    return _boot_props_file_path;
 }

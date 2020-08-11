@@ -1,6 +1,5 @@
 'use strict';
 
-const ReadTransactionLogObject = require('../../../ReadTransactionLogObject');
 const environment_utility = require('../../../../utility/lmdb/environmentUtility');
 const lmdb_terms = require('../../../../utility/lmdb/terms');
 const lmdb_utils = require('../../../../utility/lmdb/commonUtility');
@@ -16,7 +15,7 @@ const log = require('../../../../utility/logging/harper_logger');
 module.exports = readTransactionLog;
 
 /**
- *
+ * function execute the read_transaction_log operation
  * @param {ReadTransactionLogObject} read_txn_log_obj
  * @returns {Promise<void>}
  */
@@ -72,7 +71,7 @@ function searchTransactionsByTimestamp(env, timestamps = [0, lmdb_utils.getMicro
             if(key_value > timestamps[1]){
                 break;
             }
-            let txn_record = JSON.parse(txn.cursor.getCurrentString());
+            let txn_record = Object.assign(new LMDBTransactionObject(), JSON.parse(txn.cursor.getCurrentString()));
             results.push(txn_record);
         }
 
@@ -187,6 +186,12 @@ function loopRecords(transaction, records_attribute, hash_attribute, hashes, res
     }
 }
 
+/**
+ *
+ * @param env
+ * @param ids
+ * @returns {[LMDBTransactionObject]}
+ */
 function batchSearchTransactions(env, ids){
     let txn = undefined;
     let results = [];
@@ -202,7 +207,7 @@ function batchSearchTransactions(env, ids){
 
                 let binary_key = txn.cursor.goToKey(binary_id);
                 if(!hdb_utils.isEmpty(binary_key)){
-                    let txn_record = JSON.parse(txn.cursor.getCurrentString());
+                    let txn_record = Object.assign(new LMDBTransactionObject(), JSON.parse(txn.cursor.getCurrentString()));
                     results.push(txn_record);
                 }
             }catch(e){

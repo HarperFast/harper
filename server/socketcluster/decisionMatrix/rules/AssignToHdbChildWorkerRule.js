@@ -3,7 +3,6 @@ const RuleIF = require('./RulesIF');
 const log = require('../../../../utility/logging/harper_logger');
 const types = require('../../types');
 const terms = require('../../../../utility/hdbTerms');
-const env = require('../../../../utility/environment/environmentManager');
 /**
  * This worker rule sends a request via socketcluster to an HDBChild for processing in core.
  */
@@ -43,6 +42,12 @@ class AssignToHdbChildWorkerRule extends RuleIF {
                 // Dont send this to core, it has already been processed.  We can't swallow it as it needs to go out to the cluster.
                 return true;
             }
+
+            //we need to pass the CLUSTERING user name on the transaction for the transaction log
+            if(req.socket && req.socket.authToken && req.data.transaction){
+                req.data.transaction.hdb_user = {username: req.socket.authToken.username};
+            }
+
             let rand = Math.floor(Math.random() * worker.hdb_workers.length);
             let random_worker = worker.hdb_workers[rand];
             log.trace(`Assigning message to worker: ${random_worker}`);

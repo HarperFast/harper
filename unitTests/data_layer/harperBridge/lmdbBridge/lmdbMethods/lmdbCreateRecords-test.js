@@ -237,6 +237,7 @@ describe('Test lmdbCreateRecords module', ()=>{
                 ],
                 written_hashes: [ 8,9,12,10 ],
                 skipped_hashes: [],
+                txn_time: m_time,
                 schema_table: {
                     attributes: SCHEMA_TABLE_TEST.attributes,
                     hash_attribute: HASH_ATTRIBUTE_NAME,
@@ -292,7 +293,8 @@ describe('Test lmdbCreateRecords module', ()=>{
                     residence: undefined,
                     schema: INSERT_OBJECT_TEST.schema,
                     name: INSERT_OBJECT_TEST.table
-                }
+                },
+                txn_time: m_time
             };
 
             //verify no transactions
@@ -400,7 +402,8 @@ describe('Test lmdbCreateRecords module', ()=>{
                     residence: undefined,
                     schema: insert_obj.schema,
                     name: insert_obj.table
-                }
+                },
+                txn_time: m_time
             };
 
             let result = await test_utils.assertErrorAsync(lmdb_create_records, [insert_obj], undefined);

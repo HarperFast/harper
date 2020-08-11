@@ -20,7 +20,7 @@ const logger = require('../utility/logging/harper_logger');
 const alasql_function_importer = require('./alasqlFunctionImporter');
 const hdb_utils = require('../utility/common_utils');
 const terms = require('../utility/hdbTerms');
-const env = require('../utility/environment/environmentManager');
+const transact_to_clustering_utilities = require('../server/transactToClusteringUtilities');
 
 //here we call to define and import custom functions to alasql
 alasql_function_importer(alasql);
@@ -71,7 +71,7 @@ function evaluateSQL(json_message, callback) {
  * Provides a direct path to checking permissions for a given AST.  Returns false if permissions check fails.
  * @param json_message - The JSON inbound message.
  * @param parsed_sql_object - The Parsed SQL statement specified in the inbound json message, of type ParsedSQLObject.
- * @returns {boolean} - False if permissions check denys the statement.
+ * @returns {Array} - False if permissions check denys the statement.
  */
 function checkASTPermissions(json_message, parsed_sql_object) {
     let verify_result = undefined;
@@ -121,9 +121,16 @@ function processAST(json_message, parsed_sql_object, callback) {
                 return callback(UNAUTHORIZED_RESPONSE, permissions_check);
             }
         }
+
+        let statement = {
+            statement: parsed_sql_object.ast.statements[0],
+            hdb_user: json_message.hdb_user
+        };
+
         switch (parsed_sql_object.variant) {
             case 'select':
                 sql_function = search;
+                statement = parsed_sql_object.ast.statements[0];
                 break;
             case 'insert':
                 //TODO add validator for insert, need to make sure columns are specified
@@ -139,7 +146,8 @@ function processAST(json_message, parsed_sql_object, callback) {
                 throw new Error(`unsupported SQL type ${parsed_sql_object.variant} in SQL: ${json_message}`);
         }
 
-        sql_function(parsed_sql_object.ast.statements[0], (err, data) => {
+
+        sql_function(statement, (err, data) => {
             if (err) {
                 callback(err);
                 return;
@@ -157,17 +165,17 @@ function nullFunction(sql, callback) {
 }
 
 
-function convertInsert(statement, callback) {
+function convertInsert({statement, hdb_user}, callback) {
+
     let schema_table = statement.into;
     let insert_object = {
         schema : schema_table.databaseid,
         table : schema_table.tableid,
-        operation:'insert'
+        operation:'insert',
+        hdb_user: hdb_user
     };
 
-    let columns = statement.columns.map((column) => {
-        return column.columnid;
-    });
+    let columns = statement.columns.map((column) => column.columnid);
 
     try {
         insert_object.records = createDataObjects(columns, statement.values);
@@ -182,35 +190,12 @@ function convertInsert(statement, callback) {
 
         // With non SQL CUD actions, the `post` operation passed into OperationFunctionCaller would send the transaction to the cluster.
         // Since we don`t send Most SQL options to the cluster, we need to explicitly send it.
-        if (insert_object.schema !== terms.SYSTEM_SCHEMA_NAME) {
-            let insert_msg = hdb_utils.getClusterMessage(terms.CLUSTERING_MESSAGE_TYPES.HDB_TRANSACTION);
-
-            if (res.inserted_hashes.length > 0) {
-                insert_msg.transaction = insert_object;
-                insert_msg.transaction.operation = terms.OPERATIONS_ENUM.INSERT;
-                hdb_utils.sendTransactionToSocketCluster(`${insert_object.schema}:${insert_object.table}`, insert_msg, env.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY));
-            }
-
-            // If any new attributes are created we need to propagate them across the entire cluster.
-            if (!hdb_utils.isEmptyOrZeroLength(res.new_attributes)) {
-                insert_msg.__transacted = true;
-
-                res.new_attributes.forEach((attribute) => {
-                    insert_msg.transaction = {
-                        operation: terms.OPERATIONS_ENUM.CREATE_ATTRIBUTE,
-                        schema: insert_object.schema,
-                        table: insert_object.table,
-                        attribute: attribute
-                    };
-
-                    hdb_utils.sendTransactionToSocketCluster(terms.INTERNAL_SC_CHANNELS.CREATE_ATTRIBUTE, insert_msg, env.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY));
-                });
-            }
-        }
+        transact_to_clustering_utilities.postOperationHandler(insert_object, res);
 
         try {
             // We do not want the API returning the new attributes property.
             delete res.new_attributes;
+            delete res.txn_time;
         } catch (delete_err) {
             logger.error(`Error delete new_attributes from insert response: ${delete_err}`);
         }
