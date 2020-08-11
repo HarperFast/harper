@@ -69,27 +69,32 @@ function customValidate(object, constraints) {
         })
     }
 
-    ROLE_TYPES.forEach(role => {
-        if (object.permission && object.permission[role]) {
-            validateNoSUPerms(object);
-            if (!validate.isBoolean(object.permission[role])) {
-                addPermError(COMMON_ERROR_MSGS.SU_CU_ROLE_BOOLEAN_ERROR(role), validationErrors);
-            }
+    if (object.permission) {
+        const su_perms_error = validateNoSUPerms(object);
+        if (su_perms_error) {
+            addPermError(su_perms_error, validationErrors);
         }
-    })
+        ROLE_TYPES.forEach(role => {
+            if (object.permission[role]) {
+                if (!validate.isBoolean(object.permission[role])) {
+                    addPermError(COMMON_ERROR_MSGS.SU_CU_ROLE_BOOLEAN_ERROR(role), validationErrors);
+                }
+            }
+        })
+    }
 
     for (let item in object.permission) {
         if (ROLE_TYPES.indexOf(item) < 0) {
             let schema = object.permission[item];
             if(!item || !global.hdb_schema[item]) {
-                addPermError(COMMON_ERROR_MSGS.SCHEMA_NOT_FOUND(item), validationErrors, schema);
+                addPermError(COMMON_ERROR_MSGS.SCHEMA_NOT_FOUND(item), validationErrors);
                 continue;
             }
             if(schema.tables) {
                 for(let t in schema.tables) {
                     let table = schema.tables[t];
                     if(!t || !global.hdb_schema[item][t]) {
-                        addPermError(COMMON_ERROR_MSGS.TABLE_NOT_FOUND(item, t), validationErrors, item, t);
+                        addPermError(COMMON_ERROR_MSGS.TABLE_NOT_FOUND(item, t), validationErrors);
                         continue;
                     }
 
@@ -188,13 +193,19 @@ function validateNoSUPerms(obj) {
     const { operation, permission } = obj;
     if (operation === terms.OPERATIONS_ENUM.ADD_ROLE || operation === terms.OPERATIONS_ENUM.ALTER_ROLE) {
         //Check if role type is super user or cluster user
-        const is_su_cu_role = permission.super_user === true || permission.cluster_user === true;
+        const is_su_role = permission.super_user === true;
+        const is_cu_role = permission.cluster_user === true;
         const has_perms = Object.keys(permission).length > 1;
-        if (is_su_cu_role && has_perms) {
-            const role_type = permission.super_user ? ROLE_TYPES_ENUM.SUPER_USER : ROLE_TYPES_ENUM.CLUSTER_USER
-            throw handleHDBError(new Error(), COMMON_ERROR_MSGS.SU_CU_ROLE_NO_PERMS_ALLOWED(role_type), HTTP_STATUS_CODES.BAD_REQUEST, );
+        if (is_su_role || is_cu_role && has_perms) {
+            if (is_cu_role && is_su_role) {
+                return COMMON_ERROR_MSGS.SU_CU_ROLE_COMBINED_ERROR;
+            } else {
+                const role_type = permission.super_user ? ROLE_TYPES_ENUM.SUPER_USER : ROLE_TYPES_ENUM.CLUSTER_USER;
+                return COMMON_ERROR_MSGS.SU_CU_ROLE_NO_PERMS_ALLOWED(role_type);
+            }
         }
     }
+    return null;
 }
 
 function generateRolePermResponse(validationErrors) {
