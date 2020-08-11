@@ -284,15 +284,10 @@ describe('Test role_validation module ', () => {
         it('SU permission true w/ permissions - expect error thrown',() => {
             const test_role = TEST_ADD_ROLE_OBJECT();
             test_role.permission.super_user = true;
-            let test_result;
 
-            try {
-                customValidate_rw(test_role, getAddRoleConstraints());
-            } catch(err) {
-                test_result = err;
-            }
+            const test_result = customValidate_rw(test_role, getAddRoleConstraints());
 
-            expect(test_result.message).to.equal("Roles with 'super_user' set to true cannot have other permissions set.");
+            expect(test_result.http_resp_msg.main_permissions[0]).to.equal("Roles with 'super_user' set to true cannot have other permissions set.");
             expect(test_result.http_resp_code).to.equal(400);
         })
 
@@ -300,15 +295,10 @@ describe('Test role_validation module ', () => {
             const test_role = TEST_ADD_ROLE_OBJECT();
             delete test_role.permission.super_user;
             test_role.permission.cluster_user = true;
-            let test_result;
 
-            try {
-                customValidate_rw(test_role, getAddRoleConstraints());
-            } catch(err) {
-                test_result = err;
-            }
+            const test_result = customValidate_rw(test_role, getAddRoleConstraints());
 
-            expect(test_result.message).to.equal("Roles with 'cluster_user' set to true cannot have other permissions set.");
+            expect(test_result.http_resp_msg.main_permissions[0]).to.equal("Roles with 'cluster_user' set to true cannot have other permissions set.");
             expect(test_result.http_resp_code).to.equal(400);
         })
 

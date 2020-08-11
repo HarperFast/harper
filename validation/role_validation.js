@@ -66,7 +66,7 @@ function customValidate(object, constraints) {
     if (validate_result) {
         validate_result.message.split(',').forEach(validation_err => {
             addPermError(validation_err, validationErrors);
-        })
+        });
     }
 
     if (object.permission) {
@@ -80,7 +80,7 @@ function customValidate(object, constraints) {
                     addPermError(COMMON_ERROR_MSGS.SU_CU_ROLE_BOOLEAN_ERROR(role), validationErrors);
                 }
             }
-        })
+        });
     }
 
     for (let item in object.permission) {
