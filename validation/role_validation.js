@@ -5,7 +5,7 @@ const validate = require('validate.js'),
 
 const { COMMON_ERROR_MSGS, HTTP_STATUS_CODES } = hdb_errors;
 
-const constraints_template = () => ({
+const constraintsTemplate = () => ({
     role: {
         presence: true,
         format: "[\\w\\-\\_]+"
@@ -30,7 +30,7 @@ const TABLE_PERM_KEYS = [ATTR_PERMS_KEY, ...Object.values(PERMS_CRUD_ENUM)];
 const ATTR_PERMS_KEYS = [PERMS_CRUD_ENUM.READ, PERMS_CRUD_ENUM.INSERT, PERMS_CRUD_ENUM.UPDATE];
 
 function addRoleValidation(object) {
-    const constraints = constraints_template();
+    const constraints = constraintsTemplate();
     constraints.role.presence = true;
     constraints.id.presence = false;
     constraints.permission.presence = true;
@@ -38,7 +38,7 @@ function addRoleValidation(object) {
 }
 
 function alterRoleValidation(object) {
-    const constraints = constraints_template();
+    const constraints = constraintsTemplate();
     constraints.role.presence = false;
     constraints.id.presence = true;
     constraints.permission.presence = true;
@@ -46,7 +46,7 @@ function alterRoleValidation(object) {
 }
 
 function dropRoleValidation(object) {
-    const constraints = constraints_template();
+    const constraints = constraintsTemplate();
     constraints.role.presence = false;
     constraints.id.presence = true;
     constraints.permission.presence = false;
