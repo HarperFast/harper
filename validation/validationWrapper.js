@@ -27,7 +27,7 @@ function validateObject(object, file_constraints) {
 }
 
 /**
- * Use this function for callees that support async/await
+ * Use this function for calls that support async/await
  * @param object - the json object being validated
  * @param file_constraints - validation rules for the json object
  * @returns {Promise<Error|null>}

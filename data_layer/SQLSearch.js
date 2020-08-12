@@ -199,7 +199,7 @@ class SQLSearch {
                     node.right.forEach((col, i) => {
                         const where_val = common_utils.autoCast(col.value);
                         if([true, false].indexOf(where_val) >= 0){
-                            node.right[i] = new alasql.yy.NumValue({ value: where_val });
+                            node.right[i] = new alasql.yy.LogicValue({ value: where_val });
                         } else if (col instanceof alasql.yy.StringValue && common_utils.autoCasterIsNumberCheck(where_val.toString())) {
                             node.right[i] = new alasql.yy.NumValue({ value: where_val });
                         }

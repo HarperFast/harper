@@ -131,7 +131,8 @@ function processLocalTransaction(req, res, operation_function, callback) {
             // handling process with HDBError and the new properties set on the new error type
             const http_resp_status = error.http_resp_code ? error.http_resp_code : hdb_errors.HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR;
             const http_resp_msg = error.http_resp_msg ? error.http_resp_msg : error.message ? error.message : hdb_errors.DEFAULT_ERROR_RESP;
-            setResponseStatus(res, http_resp_status, {error: http_resp_msg});
+            const error_msg = http_resp_msg.error ? http_resp_msg : { error: http_resp_msg};
+            setResponseStatus(res, http_resp_status, error_msg);
             return callback(error);
         });
 }
