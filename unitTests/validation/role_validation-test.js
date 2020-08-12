@@ -559,7 +559,7 @@ describe('Test role_validation module ', () => {
             expect(test_result.http_resp_msg.schema_permissions[CAT_TABLE_KEY]).to.include(TEST_ROLE_PERMS_ERROR.TABLE_PERM_NOT_BOOLEAN('update'));
         })
 
-        //Test missing values for a attribute
+        //Test missing values for an attribute
         it('Role_obj passed with invalid table attribute READ perm - expect error returned',() => {
             const test_role = TEST_ADD_ROLE_OBJECT();
             test_role.permission[TEST_SCHEMA].tables.owners.attribute_permissions[0].read = "Not a good value";
@@ -635,6 +635,35 @@ describe('Test role_validation module ', () => {
             expect(test_result.http_resp_msg.schema_permissions[CAT_TABLE_KEY].length).to.equal(1);
             expect(test_result.http_resp_msg.schema_permissions[CAT_TABLE_KEY][0]).to.equal(TEST_ROLE_PERMS_ERROR.MISMATCHED_TABLE_ATTR_PERMS('dev.cats'));
         })
+
+        //Incorrect/random keys in permissions object
+        it('Role_obj passed with random key value in table permission - expect error returned',() => {
+            const invalid_key = 'random_key';
+            const test_role = TEST_ADD_ROLE_OBJECT();
+            test_role.permission[TEST_SCHEMA].tables.owners[invalid_key] = 'oooops';
+
+            const test_result = customValidate_rw(test_role, getAddRoleConstraints());
+
+            expect(test_result.http_resp_code).to.equal(400);
+            expect(test_result.http_resp_msg.main_permissions.length).to.equal(0);
+            expect(test_result.http_resp_msg.schema_permissions[OWNER_TABLE_KEY].length).to.equal(1);
+            expect(test_result.http_resp_msg.schema_permissions[OWNER_TABLE_KEY][0]).to.equal(TEST_ROLE_PERMS_ERROR.INVALID_PERM_KEY(invalid_key));
+        })
+
+    it('Role_obj passed with random key value in table attr permission - expect error returned',() => {
+            const invalid_key = 'random_key';
+            const test_role = TEST_ADD_ROLE_OBJECT();
+            test_role.permission[TEST_SCHEMA].tables.owners.attribute_permissions[0][invalid_key] = 'oooops';
+
+            const test_result = customValidate_rw(test_role, getAddRoleConstraints());
+
+            expect(test_result.http_resp_code).to.equal(400);
+            expect(test_result.http_resp_msg.main_permissions.length).to.equal(0);
+            expect(test_result.http_resp_msg.schema_permissions[OWNER_TABLE_KEY].length).to.equal(1);
+            expect(test_result.http_resp_msg.schema_permissions[OWNER_TABLE_KEY][0]).to.equal(TEST_ROLE_PERMS_ERROR.INVALID_ATTR_PERM_KEY(invalid_key));
+        })
+
+
     })
 })
 

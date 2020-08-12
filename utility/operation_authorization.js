@@ -54,8 +54,6 @@ const SQL_SELECT = 'select';
 const SQL_INSERT = 'insert';
 const SQL_UPDATE = 'update';
 
-const WILDCARD = '*';
-
 class permission {
     constructor(requires_su, perms) {
         this.requires_su = requires_su;
@@ -229,7 +227,7 @@ function consolidatePermsRestrictions(unauthorized_attrs, failed_perms_obj) {
         } else {
             failed_perms_obj.push(failed_perm);
         }
-    })        ;
+    });
 }
 
 /**
