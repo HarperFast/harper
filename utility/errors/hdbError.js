@@ -49,7 +49,7 @@ class HdbError extends Error {
  * @param log_msg
  * @returns {HdbError}
  */
-function handleHDBError(e, http_msg, http_code, log_level = logger.ERR, log_msg = false) {
+function handleHDBError(e, http_msg, http_code, log_level = logger.ERR, log_msg = null) {
     if (e instanceof HdbError) {
         return e;
     }

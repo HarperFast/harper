@@ -15,7 +15,7 @@ const export_ = require('../data_layer/export');
 const op_auth = require('../utility/operation_authorization');
 const jobs = require('./jobs');
 const terms = require('../utility/hdbTerms');
-const hdb_errors = require('../utility/errors/commonErrors');
+const { hdb_errors, handleHDBError } = require('../utility/errors/hdbError');
 const reg = require('../utility/registration/registrationHandler');
 const stop = require('../bin/stop');
 const util = require('util');
@@ -160,7 +160,15 @@ function chooseOperation(json, callback) {
         return nullOperation(json, callback);
     }
 
-    let {operation_function, job_operation_function} = getOperationFunction(json);
+    let getOpResult;
+    try {
+        getOpResult = getOperationFunction(json);
+    } catch(err) {
+        return callback(err, null);
+    }
+
+    const { operation_function, job_operation_function } = getOpResult;
+
     // Here there is a SQL statement in either the operation or the search_operation (from jobs like export_local).  Need to check the perms
     // on all affected tables/attributes.
     try {
@@ -169,13 +177,9 @@ function chooseOperation(json, callback) {
             let parsed_sql_object = sql.convertSQLToAST(sql_statement);
             json.parsed_sql_object = parsed_sql_object;
             let ast_perm_check = sql.checkASTPermissions(json, parsed_sql_object);
-            if (ast_perm_check && ast_perm_check.length > 0) {
+            if (ast_perm_check) {
                 harper_logger.error(`${UNAUTH_RESPONSE} from operation ${json.search_operation}`);
-                let error_response = {};
-                error_response[terms.UNAUTHORIZED_PERMISSION_NAME] = ast_perm_check;
-                error_response.response = UNAUTH_RESPONSE;
-                error_response.error = UNAUTHORIZED_TEXT;
-                return callback(error_response, null);
+                return callback(ast_perm_check, null);
             }
         } else {
             let function_to_check = (job_operation_function === undefined ? operation_function : job_operation_function);
@@ -183,14 +187,12 @@ function chooseOperation(json, callback) {
             if (!operation_json.hdb_user) {
                 operation_json.hdb_user = json.hdb_user;
             }
+
             let verify_perms_result = op_auth.verifyPerms(operation_json, function_to_check);
-            if (verify_perms_result && Object.keys(verify_perms_result).length > 0) {
+
+            if (verify_perms_result) {
                 harper_logger.error(`${UNAUTH_RESPONSE} from operation ${json.operation}`);
-                let response = {};
-                response.response = UNAUTH_RESPONSE;
-                response.error = UNAUTHORIZED_TEXT;
-                response[terms.UNAUTHORIZED_PERMISSION_NAME] = verify_perms_result;
-                return callback(response);
+                return callback(verify_perms_result, null);
             }
         }
     } catch (e) {
@@ -203,11 +205,12 @@ function chooseOperation(json, callback) {
 function getOperationFunction(json){
     harper_logger.trace(`getOperationFunction with operation: ${json.operation}`);
 
-    if(OPERATION_FUNCTION_MAP.has(json.operation)){
+    if (OPERATION_FUNCTION_MAP.has(json.operation)){
         return OPERATION_FUNCTION_MAP.get(json.operation);
     }
 
-    return new OperationFunctionObject(nullOperationAwait);
+    throw handleHDBError(new Error(), hdb_errors.COMMON_ERROR_MSGS.OP_NOT_FOUND(json.operation), hdb_errors.HTTP_STATUS_CODES.BAD_REQUEST);
+    // return new OperationFunctionObject(nullOperationAwait);
 }
 
 async function catchup(req) {

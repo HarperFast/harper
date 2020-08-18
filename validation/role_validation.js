@@ -241,7 +241,7 @@ function generateRolePermResponse(validationErrors) {
             ...validationErrors
         };
 
-        return handleHDBError(new Error(), validation_message, HTTP_STATUS_CODES.BAD_REQUEST, );
+        return handleHDBError(new Error(), validation_message, HTTP_STATUS_CODES.BAD_REQUEST);
     } else {
         return null;
     }

@@ -513,6 +513,11 @@ class SQLSearch {
      * @private
      */
     async _getFetchAttributeValues() {
+        //If there are no columns in the AST at this point, it means that this query was a select * on a table that the
+        // user had read access to but has no access to read any of the attributes so we just return empty results.
+        if (common_utils.isEmptyOrZeroLength(Object.keys(this.columns))) {
+            return [];
+        }
         //get all unique attributes
         this._addFetchColumns(this.columns.joins);
 

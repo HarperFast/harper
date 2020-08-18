@@ -225,7 +225,7 @@ function getRequestJson(req_obj) {
     return final_req_obj;
 }
 
-describe('Test operation_authorization', function() {
+xdescribe('Test operation_authorization', function() {
     before(() => {
         global.hdb_schema = {
             [TEST_JSON.schema]: {

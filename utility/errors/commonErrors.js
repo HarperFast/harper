@@ -24,15 +24,28 @@ const HTTP_STATUS_CODES = {
     NETWORK_AUTHENTICATION_REQUIRED: 511
 };
 
+const CHECK_LOGS_WRAPPER = (err) => `${err} Check logs and try again.`;
+
 const DEFAULT_ERROR_MSGS = {
-    500: 'There was an error processing your request.  Please check the logs and try again.'
+    500: CHECK_LOGS_WRAPPER("There was an error processing your request."),
+    400: "Invalid request"
 };
 const DEFAULT_ERROR_RESP = DEFAULT_ERROR_MSGS[HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR];
+
+const OPERATION_AUTH_ERROR_MSGS = {
+    DEFAULT_INVALID_REQUEST: "Invalid request",
+    OP_AUTH_PERMS_ERROR: "This operation is not authorized due to role restrictions and/or invalid schema items",
+    OP_IS_SU_ONLY: (op) => `Operation '${op}' is restricted to 'super_user' roles`,
+    OP_NOT_FOUND: (op) => `Operation '${op}' not found`,
+    UNKNOWN_OP_AUTH_ERROR: (op, schema, table) => `There was an error authorizing ${op} op on table '${schema}.${table}'`,
+    USER_HAS_NO_PERMS: (user) => `User ${user} has no role or permissions.  Please assign the user a valid role.`
+};
 
 const SCHEMA_OP_ERROR_MSGS = {
     DESCRIBE_ALL_ERR: "There was an error during describeAll.  Please check the logs and try again.",
     SCHEMA_NOT_FOUND: (schema) => `Schema '${schema}' does not exist`,
     TABLE_NOT_FOUND: (schema, table) => `Table '${schema}.${table}' does not exist`,
+    ATTR_NOT_FOUND: (schema, table, attr) => `Attribute '${attr}' does not exist on '${schema}.${table}'`,
     INVALID_TABLE_ERR: (table_result) => `Invalid table ${JSON.stringify(table_result)}`
 };
 
@@ -96,6 +109,8 @@ const LMDB_ERRORS_ENUM = {
 // All error messages should be added to the COMMON_ERROR_MSGS ENUM for export - this helps to organize all error messages
 //into a single export while still allowing us to group them here in a more readable/searchable way
 const COMMON_ERROR_MSGS = {
+    CHECK_LOGS_WRAPPER,
+    ...OPERATION_AUTH_ERROR_MSGS,
     ...ROLE_PERMS_ERROR_MSGS,
     ...SQL_ERROR_MSGS,
     ...SCHEMA_OP_ERROR_MSGS,

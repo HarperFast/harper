@@ -133,7 +133,8 @@ describe(`Test chooseOperation`, function () {
         let test_copy = clone(TEST_JSON);
         test_copy.operation = 'blah';
         chooseOperation(test_copy, function(err, found) {
-            assert.ok(err.response === 403);
+            assert.ok(err.http_resp_code === 400);
+            assert.ok(err.http_resp_msg === "Operation 'blah' not found");
             done();
         });
     });

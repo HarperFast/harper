@@ -426,7 +426,7 @@ describe('Test sql_statement_bucket Class', () => {
             sandbox.resetHistory();
         });
 
-        it('Nominal case, valid, reasonably complex AST with attributes. ', function () {
+        xit('Nominal case, valid, reasonably complex AST with attributes. ', function () {
             let getRecordAttributesAST = sql_statement_rewire.__get__('getRecordAttributesAST');
             let test_copy = clone(TEST_COMPLEX_AST);
             let temp_select = new alasql.yy.Select(test_copy);
