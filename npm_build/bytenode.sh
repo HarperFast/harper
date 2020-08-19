@@ -12,6 +12,7 @@ bytenode --compile events/*.js
 bytenode --compile lib/**/*.js
 
 bytenode --compile security/*.js
+bytenode --compile security/data_model/*.js
 
 bytenode --compile server/*.js
 bytenode --compile server/**/*.js
