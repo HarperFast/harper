@@ -339,8 +339,8 @@ function getSelectAttributes(ast, affected_attributes, table_lookup, schema_look
     // It's important to iterate through the ORDER clause in case there are other columns that are not included in
     // the SELECT clause with wildcard
     if (ast.order) {
-        const iterator = new RecursiveIterator(ast.order);
-        for (let { node } of iterator) {
+        const order_iterator = new RecursiveIterator(ast.order);
+        for (let { node } of order_iterator) {
             if (node && node.columnid) {
                 let table_name = node.tableid;
                 const order_schema = schema_lookup.has(table_name) ? schema_lookup.get(table_name) : schema;

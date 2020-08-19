@@ -81,7 +81,7 @@ async function addRole(role){
         search_role = await p_search_search_by_value(search_obj);
     } catch(err) {
         throw handleHDBError(err);
-    };
+    }
 
     if(search_role && search_role.length > 0) {
         throw handleHDBError(new Error(), COMMON_ERROR_MSGS.ROLE_ALREADY_EXISTS(role.role), HTTP_STATUS_CODES.CONFLICT);

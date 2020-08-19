@@ -336,7 +336,6 @@ function hasPermissions(user_object, op, schema_table_map, permsResponse) {
 
     // still here after the su check above but this operation require su, so fail.
     if (!required_permissions.get(op)) {
-        const err_msg =
         harper_logger.info(`operation ${op} not found.`);
         //This is here to catch if an operation has not been added to the permissions map above
         throw handleHDBError(new Error(), COMMON_ERROR_MSGS.OP_NOT_FOUND(op), HTTP_STATUS_CODES.BAD_REQUEST);
