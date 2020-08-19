@@ -112,10 +112,9 @@ class sql_statement_bucket {
             //We only want to do this if the table that is being SELECT *'d has READ permissions - if not, we will only
             // want to send the table permissions error response so we can skip this step.
             if (role_perms[col_schema] && role_perms[col_schema].tables[col_table] && role_perms[col_schema].tables[col_table][terms.PERMS_CRUD_ENUM.READ]) {
-                const table_attr_perms = filterReadRestrictedAttrs(role_perms[col_schema].tables[col_table].attribute_permissions);
                 let final_table_attrs;
-                if (table_attr_perms.length > 0) {
-                    final_table_attrs = table_attr_perms;
+                if (role_perms[col_schema].tables[col_table].attribute_permissions.length > 0) {
+                    final_table_attrs = filterReadRestrictedAttrs(role_perms[col_schema].tables[col_table].attribute_permissions);
                 } else {
                     //If the user has READ perms for the table but no perms for the attributes in it, we add all the attrs
                     // into the AST * affected_attributes map so that the individual attribute permissions error responses
@@ -335,6 +334,35 @@ function getSelectAttributes(ast, affected_attributes, table_lookup, schema_look
                 }
             }
         });
+    }
+
+    // It's important to iterate through the ORDER clause in case there are other columns that are not included in
+    // the SELECT clause with wildcard
+    if (ast.order) {
+        const order_iterator = new RecursiveIterator(ast.order);
+        for (let { node } of order_iterator) {
+            if (node && node.columnid) {
+                let table_name = node.tableid;
+                const order_schema = schema_lookup.has(table_name) ? schema_lookup.get(table_name) : schema;
+
+                if (!table_name) {
+                    table_name = ast.from[0].tableid;
+                }
+
+                if (!affected_attributes.get(order_schema).has(table_name)) {
+                    if (!table_lookup.has(table_name)) {
+                        harper_logger.info(`table specified as ${table_name} not found.`);
+                        return;
+                    } else {
+                        table_name = table_lookup.get(table_name);
+                    }
+                }
+
+                if (affected_attributes.get(order_schema).get(table_name).indexOf(node.columnid) < 0) {
+                    affected_attributes.get(order_schema).get(table_name).push(node.columnid);
+                }
+            }
+        }
     }
 }
 

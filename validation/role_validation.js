@@ -25,9 +25,11 @@ const ROLE_TYPES_ENUM = {
 };
 const ROLE_TYPES = Object.values(ROLE_TYPES_ENUM);
 const ATTR_PERMS_KEY = "attribute_permissions";
+const ATTR_NAME_KEY = "attribute_name";
 const { PERMS_CRUD_ENUM } = terms;
 const TABLE_PERM_KEYS = [ATTR_PERMS_KEY, ...Object.values(PERMS_CRUD_ENUM)];
-const ATTR_PERMS_KEYS = [PERMS_CRUD_ENUM.READ, PERMS_CRUD_ENUM.INSERT, PERMS_CRUD_ENUM.UPDATE];
+const ATTR_CRU_KEYS = [PERMS_CRUD_ENUM.READ, PERMS_CRUD_ENUM.INSERT, PERMS_CRUD_ENUM.UPDATE];
+const ATTR_PERMS_KEYS = [ATTR_NAME_KEY, ...ATTR_CRU_KEYS];
 
 function addRoleValidation(object) {
     const constraints = constraintsTemplate();
@@ -125,7 +127,7 @@ function customValidate(object, constraints) {
                         continue;
                     }
 
-                    //need this check here to ensure no unexpected errors is key is missing in table perms
+                    //need this check here to ensure no unexpected errors if key is missing in table perms obj
                     if (table.attribute_permissions) {
                         let table_attribute_names = global.hdb_schema[item][t].attributes.map(({attribute}) => attribute);
                         const attr_perms_check = {
@@ -136,6 +138,14 @@ function customValidate(object, constraints) {
 
                         for (let r in table.attribute_permissions) {
                             let permission = table.attribute_permissions[r];
+
+                            Object.keys(permission).forEach(key => {
+                                //Leaving this second check for "DELETE" in for now since we've decided to silently
+                                // allow it to remain in the attr permission object even though we do not use it
+                                if (!ATTR_PERMS_KEYS.includes(key) && key !== PERMS_CRUD_ENUM.DELETE) {
+                                    addPermError(COMMON_ERROR_MSGS.INVALID_ATTR_PERM_KEY(key), validationErrors, item, t);
+                                }
+                            });
 
                             //validate that attribute_name is included
                             if(!validate.isDefined(permission.attribute_name)) {
@@ -151,7 +161,7 @@ function customValidate(object, constraints) {
                             }
 
                             //validate table attribute CRU perms
-                            ATTR_PERMS_KEYS.forEach(perm_key => {
+                            ATTR_CRU_KEYS.forEach(perm_key => {
                                 if(!validate.isDefined(permission[perm_key])) {
                                     addPermError(COMMON_ERROR_MSGS.ATTR_PERM_MISSING(perm_key, attr_name), validationErrors, item, t);
                                 } else if (!validate.isBoolean(permission[perm_key])) {
@@ -231,7 +241,7 @@ function generateRolePermResponse(validationErrors) {
             ...validationErrors
         };
 
-        return handleHDBError(new Error(), validation_message, HTTP_STATUS_CODES.BAD_REQUEST, );
+        return handleHDBError(new Error(), validation_message, HTTP_STATUS_CODES.BAD_REQUEST);
     } else {
         return null;
     }

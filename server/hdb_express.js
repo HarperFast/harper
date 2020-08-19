@@ -29,6 +29,7 @@ const RestartEventObject = require('./RestartEventObject');
 const util = require('util');
 const promisify = util.promisify;
 const hdb_license = require('../utility/registration/hdb_license');
+const PermissionResponseObject = require('../security/data_model/PermissionResponseObject');
 
 const p_schema_to_global = promisify(global_schema.setSchemaDataToGlobal);
 
@@ -305,8 +306,15 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
             server_utilities.chooseOperation(req.body, (error, operation_function) => {
                 if (error) {
                     harper_logger.error(error);
-                    if(error.response && error.response === server_utilities.UNAUTH_RESPONSE) {
+                    if (error instanceof PermissionResponseObject ) {
                         return res.status(hdb_errors.HTTP_STATUS_CODES.FORBIDDEN).send(error);
+                    }
+                    if (error.http_resp_code) {
+                        if (typeof error.http_resp_msg === 'string') {
+                            return res.status(error.http_resp_code).send({error: error.http_resp_msg});
+                        } else {
+                            return res.status(error.http_resp_code).send(error.http_resp_msg);
+                        }
                     }
                     if (typeof error === 'string') {
                         return res.status(hdb_errors.HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR).send({error: error});

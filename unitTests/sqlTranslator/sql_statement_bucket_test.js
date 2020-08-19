@@ -503,6 +503,16 @@ describe('Test sql_statement_bucket Class', () => {
                 }
             });
 
+            test_copy.order.forEach(ob_obj => {
+                let col = ob_obj.expression;
+                let table_name = col.tableid
+                if(lookups.has(table_name)) {
+                    table_name = lookups.get(table_name);
+                }
+
+                attributes.get(table_name).push(col.columnid);
+            })
+
             // assert all aliases are accounted for in table lookup
             lookups.forEach(function (value, key) {
                 assert.equal(table_lookup.has(key), true, `table_lookup does not have key ${key}`);

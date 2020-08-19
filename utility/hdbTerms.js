@@ -437,26 +437,6 @@ const CLUSTERING_MESSAGE_TYPES = cluster_types.CORE_ROOM_MSG_TYPE_ENUM;
 const ORIGINATOR_SET_VALUE = cluster_types.ORIGINATOR_SET_VALUE;
 const NEW_LINE = '\r\n';
 
-/**
- * This object organizes permission checks into a cohesive response object that will be returned to
- * the user in the case of a failed permissions check.
- */
-class PermissionResponseObject {
-    constructor() {
-        this.schema = undefined;
-        this.table = undefined;
-        this.required_table_permissions = [];
-        this.required_attribute_permissions = [];
-    }
-}
-
-class PermissionAttributeResponseObject {
-    constructor() {
-        this.attribute_name = undefined;
-        this.required_permissions = [];
-    }
-}
-
 const PERMS_CRUD_ENUM = {
     READ: 'read',
     INSERT: 'insert',
@@ -564,8 +544,6 @@ module.exports = {
     WILDCARD_SEARCH_VALUE,
     NODE_ERROR_CODES,
     JAVASCRIPT_EXTENSION,
-    PermissionResponseObject,
-    PermissionAttributeResponseObject,
     PERMS_CRUD_ENUM,
     UNAUTHORIZED_PERMISSION_NAME,
     SEARCH_WILDCARDS,

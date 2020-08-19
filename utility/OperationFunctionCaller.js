@@ -57,8 +57,14 @@ async function callOperationFunctionAsAwait(promisified_function, function_input
     } catch(err) {
         // This specific check was added to avoid an error message in the log which could make the error look worse than it
         // seems when scanning a log.  In reality a schema already existing isn't really an error, just a failure.
-        if(err.message && typeof err.message === "string" && err.message.includes('already exists')) {
+        if (err.message && typeof err.message === "string" && err.message.includes('already exists')) {
             log.info(err.message);
+            throw err;
+        }
+        // This check is here to make sure a new HdbError is logged correctly
+        if (err.http_resp_msg) {
+            log.error(`Error calling operation: ${promisified_function.name}`);
+            log.error(err.http_resp_msg);
             throw err;
         }
         log.error(`Error calling operation: ${promisified_function.name}`);

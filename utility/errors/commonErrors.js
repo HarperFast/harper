@@ -13,6 +13,7 @@ const HTTP_STATUS_CODES = {
     NOT_FOUND: 404,
     METHOD_NOT_ALLOWED: 405,
     REQUEST_TIMEOUT: 408,
+    CONFLICT: 409,
     TOO_MANY_REQUESTS: 429,
     INTERNAL_SERVER_ERROR: 500,
     NOT_IMPLEMENTED: 501,
@@ -24,15 +25,30 @@ const HTTP_STATUS_CODES = {
     NETWORK_AUTHENTICATION_REQUIRED: 511
 };
 
+//Use this method to wrap an error you are sending back to API when also logging that error message - allows us to create
+// one error message to send to the API (with this wrapper) and log without having to define log message separately
+const CHECK_LOGS_WRAPPER = (err) => `${err} Check logs and try again.`;
+
 const DEFAULT_ERROR_MSGS = {
-    500: 'There was an error processing your request.  Please check the logs and try again.'
+    500: CHECK_LOGS_WRAPPER("There was an error processing your request."),
+    400: "Invalid request"
 };
 const DEFAULT_ERROR_RESP = DEFAULT_ERROR_MSGS[HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR];
+
+const OPERATION_AUTH_ERROR_MSGS = {
+    DEFAULT_INVALID_REQUEST: "Invalid request",
+    OP_AUTH_PERMS_ERROR: "This operation is not authorized due to role restrictions and/or invalid schema items",
+    OP_IS_SU_ONLY: (op) => `Operation '${op}' is restricted to 'super_user' roles`,
+    OP_NOT_FOUND: (op) => `Operation '${op}' not found`,
+    UNKNOWN_OP_AUTH_ERROR: (op, schema, table) => `There was an error authorizing ${op} op on table '${schema}.${table}'`,
+    USER_HAS_NO_PERMS: (user) => `User ${user} has no role or permissions.  Please assign the user a valid role.`
+};
 
 const SCHEMA_OP_ERROR_MSGS = {
     DESCRIBE_ALL_ERR: "There was an error during describeAll.  Please check the logs and try again.",
     SCHEMA_NOT_FOUND: (schema) => `Schema '${schema}' does not exist`,
     TABLE_NOT_FOUND: (schema, table) => `Table '${schema}.${table}' does not exist`,
+    ATTR_NOT_FOUND: (schema, table, attr) => `Attribute '${attr}' does not exist on '${schema}.${table}'`,
     INVALID_TABLE_ERR: (table_result) => `Invalid table ${JSON.stringify(table_result)}`
 };
 
@@ -42,9 +58,12 @@ const ROLE_PERMS_ERROR_MSGS = {
     ATTR_PERM_NOT_BOOLEAN: (perm, attr_name) => `${perm.toUpperCase()} attribute permission for '${attr_name}' must be a boolean`,
     ATTR_PERMS_ARRAY_MISSING: "Missing 'attribute_permissions' array",
     ATTR_PERMS_NOT_ARRAY: "Value for 'attribute_permissions' must be an array",
-    INVALID_ATTRIBUTE_IN_PERMS: (attr_name) => `Invalid attribute ${attr_name} in 'attribute_permissions'`,
+    INVALID_ATTRIBUTE_IN_PERMS: (attr_name) => `Invalid attribute '${attr_name}' in 'attribute_permissions'`,
     INVALID_PERM_KEY: (table_key) => `Invalid table permission key value '${table_key}'`,
+    INVALID_ATTR_PERM_KEY: (attr_perm_key) => `Invalid attribute permission key value '${attr_perm_key}'`,
     MISMATCHED_TABLE_ATTR_PERMS: (schema_table) => `You have a conflict with TABLE permissions for '${schema_table}' being false and ATTRIBUTE permissions being true`,
+    ROLE_ALREADY_EXISTS: (role_name) => `A role with name '${role_name}' already exists`,
+    ROLE_NOT_FOUND: "Role not found",
     ROLE_PERMS_ERROR: 'Errors in the role permissions JSON provided',
     SCHEMA_PERM_ERROR: (schema_name) => `Your role does not have permission to view schema metadata for '${schema_name}'`,
     SCHEMA_TABLE_PERM_ERROR: (schema_name, table_name) => `Your role does not have permission to view schema.table metadata for '${schema_name}.${table_name}'`,
@@ -95,6 +114,8 @@ const LMDB_ERRORS_ENUM = {
 // All error messages should be added to the COMMON_ERROR_MSGS ENUM for export - this helps to organize all error messages
 //into a single export while still allowing us to group them here in a more readable/searchable way
 const COMMON_ERROR_MSGS = {
+    CHECK_LOGS_WRAPPER,
+    ...OPERATION_AUTH_ERROR_MSGS,
     ...ROLE_PERMS_ERROR_MSGS,
     ...SQL_ERROR_MSGS,
     ...SCHEMA_OP_ERROR_MSGS,

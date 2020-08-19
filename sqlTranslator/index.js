@@ -81,11 +81,10 @@ function checkASTPermissions(json_message, parsed_sql_object) {
     } catch(e) {
         throw e;
     }
-    if (verify_result && verify_result.length > 0) {
-        parsed_sql_object.permissions_checked = true;
+    if (verify_result) {
         return verify_result;
     }
-    return [];
+    return null;
 }
 
 function convertSQLToAST(sql) {

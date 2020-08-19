@@ -35,14 +35,32 @@ const LMDB_ERRORS_ENUM = {
     CANNOT_DROP_TABLE_HASH_ATTRIBUTE: new Error('cannot drop a table\'s hash attribute')
 };
 
+const TEST_OPERATION_AUTH_ERROR = {
+    DEFAULT_INVALID_REQUEST: "Invalid request",
+    OP_AUTH_PERMS_ERROR: "This operation is not authorized due to role restrictions and/or invalid schema items",
+    OP_IS_SU_ONLY: (op) => `Operation '${op}' is restricted to 'super_user' roles`,
+    OP_NOT_FOUND: (op) => `Operation '${op}' not found`,
+    UNKNOWN_OP_AUTH_ERROR: (op, schema, table) => `There was an error authorizing ${op} op on table '${schema}.${table}'`,
+    USER_HAS_NO_PERMS: (user) => `User ${user} has no role or permissions.  Please assign the user a valid role.`
+};
+
+const TEST_SCHEMA_OP_ERROR = {
+    DESCRIBE_ALL_ERR: "There was an error during describeAll.  Please check the logs and try again.",
+    SCHEMA_NOT_FOUND: (schema) => `Schema '${schema}' does not exist`,
+    TABLE_NOT_FOUND: (schema, table) => `Table '${schema}.${table}' does not exist`,
+    ATTR_NOT_FOUND: (schema, table, attr) => `Attribute '${attr}' does not exist on '${schema}.${table}'`,
+    INVALID_TABLE_ERR: (table_result) => `Invalid table ${JSON.stringify(table_result)}`
+};
+
 const TEST_ROLE_PERMS_ERROR = {
     ATTR_PERM_MISSING: (perm, attr_name) => `${perm.toUpperCase()} attribute permission missing for '${attr_name}'`,
     ATTR_PERM_MISSING_NAME: "Permission object in 'attribute_permission' missing an 'attribute_name'",
     ATTR_PERM_NOT_BOOLEAN: (perm, attr_name) => `${perm.toUpperCase()} attribute permission for '${attr_name}' must be a boolean`,
     ATTR_PERMS_ARRAY_MISSING: "Missing 'attribute_permissions' array",
     ATTR_PERMS_NOT_ARRAY: "Value for 'attribute_permissions' must be an array",
-    INVALID_ATTRIBUTE_IN_PERMS: (attr_name) => `Invalid attribute ${attr_name} in 'attribute_permissions'`,
+    INVALID_ATTRIBUTE_IN_PERMS: (attr_name) => `Invalid attribute '${attr_name}' in 'attribute_permissions'`,
     INVALID_PERM_KEY: (table_key) => `Invalid table permission key value '${table_key}'`,
+    INVALID_ATTR_PERM_KEY: (attr_perm_key) => `Invalid attribute permission key value '${attr_perm_key}'`,
     MISMATCHED_TABLE_ATTR_PERMS: (schema_table) => `You have a conflict with TABLE permissions for '${schema_table}' being false and ATTRIBUTE permissions being true`,
     ROLE_PERMS_ERROR: 'Errors in the role permissions JSON provided',
     SCHEMA_PERM_ERROR: (schema_name) => `Your role does not have permission to view schema metadata for '${schema_name}'`,
@@ -63,5 +81,7 @@ const COMMON_ERROR_MSGS = {
 module.exports = {
     LMDB_ERRORS_ENUM,
     COMMON_ERROR_MSGS,
-    TEST_ROLE_PERMS_ERROR
+    TEST_ROLE_PERMS_ERROR,
+    TEST_OPERATION_AUTH_ERROR,
+    TEST_SCHEMA_OP_ERROR
 };
