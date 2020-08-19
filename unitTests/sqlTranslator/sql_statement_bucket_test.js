@@ -426,7 +426,7 @@ describe('Test sql_statement_bucket Class', () => {
             sandbox.resetHistory();
         });
 
-        xit('Nominal case, valid, reasonably complex AST with attributes. ', function () {
+        it('Nominal case, valid, reasonably complex AST with attributes. ', function () {
             let getRecordAttributesAST = sql_statement_rewire.__get__('getRecordAttributesAST');
             let test_copy = clone(TEST_COMPLEX_AST);
             let temp_select = new alasql.yy.Select(test_copy);
@@ -502,6 +502,16 @@ describe('Test sql_statement_bucket Class', () => {
                     attributes.get(table_name).push(col.columnid);
                 }
             });
+
+            test_copy.order.forEach(ob_obj => {
+                let col = ob_obj.expression;
+                let table_name = col.tableid
+                if(lookups.has(table_name)) {
+                    table_name = lookups.get(table_name);
+                }
+
+                attributes.get(table_name).push(col.columnid);
+            })
 
             // assert all aliases are accounted for in table lookup
             lookups.forEach(function (value, key) {

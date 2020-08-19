@@ -14,6 +14,10 @@ const user = require('../../security/user');
 const alasql = require('alasql');
 const search = require('../../data_layer/search');
 const jobs = require('../../server/jobs');
+const PermissionResponseObject = require('../../security/data_model/PermissionResponseObject');
+const PermissionTableResponseObject = require('../../security/data_model/PermissionTableResponseObject');
+const PermissionAttributeResponseObject = require('../../security/data_model/PermissionAttributeResponseObject');
+const { TEST_SCHEMA_OP_ERROR, TEST_ROLE_PERMS_ERROR, TEST_OPERATION_AUTH_ERROR } = require('../commonTestErrors');
 
 const test_terms = test_utils.COMMON_TEST_TERMS
 const crud_keys = test_terms.TEST_CRUD_PERM_KEYS;
@@ -159,8 +163,10 @@ let TEST_JSON_SUPER_USER = {
 let PERMISSION_BASE = {
     "super_user": false,
     "dev": {
+        "describe": false,
         "tables": {
             "dog": {
+                "describe": false,
                 "read": false,
                 "insert": false,
                 "update": false,
@@ -171,6 +177,8 @@ let PERMISSION_BASE = {
     },
 };
 
+const TEST_SCHEMA = "dev";
+const TEST_TABLE = "dog";
 let TEST_ATTRIBUTES = ['name', 'breed', 'id', 'age'];
 let RESTRICTED_ATTRIBUTES = ['breed', 'age'];
 let RESTRICTED_ATTRIBUTES_2 = ['name', 'id'];
@@ -206,7 +214,7 @@ let ATTRIBUTE_PERMISSION_BASE = (attrs, crud_key, crud_value) => {
 const DEFAULT_ATTRIBUTE_PERMISSION_BASE = () => ATTRIBUTE_PERMISSION_BASE([ROLE_PERMISSION_KEY]);
 
 let ROLE_ATTRIBUTE_RESTRICTIONS = new Map();
-ROLE_ATTRIBUTE_RESTRICTIONS.set(ROLE_PERMISSION_KEY, DEFAULT_ATTRIBUTE_PERMISSION_BASE());
+ROLE_ATTRIBUTE_RESTRICTIONS.set(ROLE_PERMISSION_KEY, DEFAULT_ATTRIBUTE_PERMISSION_BASE()[0]);
 
 const test_attrs = [];
 AFFECTED_ATTRIBUTES_SET.forEach(attr => test_attrs.push({ attribute: attr }));
@@ -225,7 +233,7 @@ function getRequestJson(req_obj) {
     return final_req_obj;
 }
 
-xdescribe('Test operation_authorization', function() {
+describe('Test operation_authorization', function() {
     before(() => {
         global.hdb_schema = {
             [TEST_JSON.schema]: {
@@ -250,19 +258,21 @@ xdescribe('Test operation_authorization', function() {
             let att_base = DEFAULT_ATTRIBUTE_PERMISSION_BASE();
             req_json.hdb_user.role.permission.dev.tables.dog.attribute_permissions = att_base;
             let result = op_auth_rewire.verifyPermsAst(temp_insert, req_json.hdb_user, write.insert.name);
-            assert.equal(result.length, 0);
+            assert.equal(result, null);
         });
 
-        it('Test verify AST with no insert perm, expect false', function () {
+        it('Test verify AST with table insert perm false, expect false', function () {
             let test_json = clone(TEST_INSERT_JSON);
             let temp_insert = new alasql.yy.Insert(test_json);
             let req_json = getRequestJson(TEST_JSON);
             req_json.hdb_user.role.permission.dev.tables.dog.insert = false;
             let result = op_auth_rewire.verifyPermsAst(temp_insert, req_json.hdb_user, write.insert.name);
-            assert.equal(result.length, 1);
+            assert.equal(result.unauthorized_access.length, 1);
+            assert.equal(result instanceof PermissionResponseObject, true);
+            assert.equal(result.unauthorized_access[0] instanceof PermissionTableResponseObject, true);
         });
 
-        it('Test verify AST with role insert perm false, expect false', function () {
+        it('Test verify AST with table perm true but all attr perms false, expect false', function () {
             let test_json = clone(TEST_INSERT_JSON);
             let temp_insert = new alasql.yy.Insert(test_json);
             let req_json = getRequestJson(TEST_JSON);
@@ -271,11 +281,9 @@ xdescribe('Test operation_authorization', function() {
             att_base[0].insert = false;
             req_json.hdb_user.role.permission.dev.tables.dog.attribute_permissions = att_base;
             let result = op_auth_rewire.verifyPermsAst(temp_insert, req_json.hdb_user, write.insert.name);
-            assert.equal(result.length, 1);
-            result[0].required_attribute_permissions.forEach(perm => {
-                assert.equal(RESTRICTED_ATTRIBUTES_2.includes(perm.attribute_name), true);
-                assert.equal(perm.required_permissions[0], test_terms.TEST_CRUD_PERM_KEYS.INSERT);
-            })
+            assert.equal(result.invalid_schema_items.length, 2);
+            assert.equal(result instanceof PermissionResponseObject, true);
+            assert.equal(result.unauthorized_access.length, 0);
         });
 
         it('Test with bad operations, expect false', function () {
@@ -285,9 +293,14 @@ xdescribe('Test operation_authorization', function() {
             req_json.hdb_user.role.permission.dev.tables.dog.insert = true;
             let att_base = ATTRIBUTE_PERMISSION_BASE([]);
             req_json.hdb_user.role.permission.dev.tables.dog.attribute_permissions = att_base;
-            assert.throws(function () {
+            let test_err;
+            try {
                 op_auth_rewire.verifyPermsAst(temp_insert, req_json.hdb_user, 'fart');
-            }, Error);
+            } catch(e) {
+                test_err = e;
+            }
+            assert.equal(test_err.http_resp_code, 400);
+            assert.equal(test_err.http_resp_msg, "Operation 'fart' not found");
         });
 
         it(`Test select wildcard with proper perms, expect true`, function () {
@@ -299,7 +312,7 @@ xdescribe('Test operation_authorization', function() {
             att_base[0].read = true;
             req_json.hdb_user.role.permission.dev.tables.dog.attribute_permissions = att_base;
             let result = op_auth_rewire.verifyPermsAst(temp_select, req_json.hdb_user, search.search.name);
-            assert.equal(result.length, 0);
+            assert.equal(result, null);
         });
 
         it(`Test select wildcard with read attribute restriction false, expect false`, function () {
@@ -310,11 +323,10 @@ xdescribe('Test operation_authorization', function() {
             let att_base = DEFAULT_ATTRIBUTE_PERMISSION_BASE();
             req_json.hdb_user.role.permission.dev.tables.dog.attribute_permissions = att_base;
             let result = op_auth_rewire.verifyPermsAst(temp_select, req_json.hdb_user, search.search.name);
-            assert.equal(result.length, 1);
-            result[0].required_attribute_permissions.forEach(perm => {
-                assert.equal(TEST_ATTRIBUTES.includes(perm.attribute_name), true);
-                assert.equal(perm.required_permissions[0], test_terms.TEST_CRUD_PERM_KEYS.READ);
-            })
+            assert.equal(result.unauthorized_access.length, 1);
+            assert.equal(result.invalid_schema_items.length, 0);
+            assert.equal(result instanceof PermissionResponseObject, true);
+            assert.equal(result.unauthorized_access[0] instanceof PermissionTableResponseObject, true);
         });
 
         it('Test select wildcard with one attribute permission true, expect true', () => {
@@ -325,38 +337,47 @@ xdescribe('Test operation_authorization', function() {
             let att_base = ATTRIBUTE_PERMISSION_BASE([ROLE_PERMISSION_KEY], crud_keys.READ, true);
             req_json.hdb_user.role.permission.dev.tables.dog.attribute_permissions = att_base;
             let result = op_auth_rewire.verifyPermsAst(temp_select, req_json.hdb_user, search.search.name);
-            assert.equal(result.length, 0);
+            assert.equal(result, null);
         })
     });
 
     describe(`Test verifyPerms`, function () {
         it('Pass in bad values, expect false', function () {
-            let result = op_auth.verifyPerms(null, null);
-            assert.equal(result.length, 1);
+            let test_err;
+            try {
+                op_auth.verifyPerms(null, null);
+            } catch(e) {
+                test_err = e
+            }
+
+            assert.equal(test_err.http_resp_msg, 'Invalid request');
+            assert.equal(test_err.http_resp_code, 400);
         });
 
         it('Check return if user has su.  Expect true', function () {
             let result = op_auth.verifyPerms(TEST_JSON_SUPER_USER, write.insert.name);
-            assert.equal(result.length, 0);
+            assert.equal(result, null);
         });
 
         it('Pass function instead of function name.  Expect empty array (no errors)', function () {
             let result = op_auth.verifyPerms(TEST_JSON, write.insert);
-            assert.deepEqual(result, []);
+            assert.equal(result, null);
         });
 
         it('Pass function name instead of function.  Expect empty array (no errors)', function () {
-            assert.deepEqual(op_auth.verifyPerms(TEST_JSON, write.insert.name), []);
+            assert.equal(op_auth.verifyPerms(TEST_JSON, write.insert.name), null);
         });
 
-        it('Pass in JSON with no schemas restrictions defined, expect table permissions error', function () {
+        it('Pass in JSON with no schemas restrictions defined, expect invalid schema error', function () {
             let req_json = getRequestJson(TEST_JSON);
             req_json.hdb_user.role.permission = EMPTY_PERMISSION;
-            const restrictions = op_auth.verifyPerms(req_json, write.insert.name);
-            assert.equal(restrictions.length, 1);
+            const result = op_auth.verifyPerms(req_json, write.insert.name);
+            assert.equal(result instanceof PermissionResponseObject, true);
+            assert.equal(result.invalid_schema_items.length, 1);
+            assert.equal(result.unauthorized_access.length, 0);
         });
 
-        it('Pass in JSON with schemas but no tables defined, expect perms errors', function () {
+        it('Pass in JSON with schemas but no table perms defined, expect perms errors', function () {
             let req_json = getRequestJson(TEST_JSON);
             let perms = {
                 "super_user": false,
@@ -368,19 +389,20 @@ xdescribe('Test operation_authorization', function() {
                 }
             };
             req_json.hdb_user.role.permission = perms;
-            const restrictions = op_auth.verifyPerms(req_json, write.insert.name)
-            assert.equal(restrictions.length,1);
-            assert.equal(restrictions[0].required_table_permissions[0], test_terms.TEST_CRUD_PERM_KEYS.INSERT)
+            const result = op_auth.verifyPerms(req_json, write.insert.name)
+            assert.equal(result.invalid_schema_items.length,1);
+            assert.equal(result.unauthorized_access.length,0);
         });
 
-        it('Pass in JSON with schemas and table dog defined, insert not allowed, expect table restriction result', function () {
+        it('Pass in JSON with schemas and table dog defined but describe false for all, expect invalid schema result', function () {
             let req_json = getRequestJson(TEST_JSON);
             let perms = clone(PERMISSION_BASE);
             perms["dev"].tables["dog"].insert = false;
             req_json.hdb_user.role.permission = perms;
-            let restrictions = op_auth_rewire.verifyPerms(req_json, write.insert.name);
-            assert.equal(restrictions.length, 1);
-            assert.equal(restrictions[0].required_table_permissions[0], test_terms.TEST_CRUD_PERM_KEYS.INSERT);
+            let result = op_auth_rewire.verifyPerms(req_json, write.insert.name);
+            assert.equal(result instanceof PermissionResponseObject, true);
+            assert.equal(result.invalid_schema_items.length, 1);
+            assert.equal(result.unauthorized_access.length, 0);
         });
 
         it('(NOMINAL) - Pass in JSON with schemas and table dog defined, insert allowed, expect true', function () {
@@ -390,8 +412,8 @@ xdescribe('Test operation_authorization', function() {
             let att_base = ATTRIBUTE_PERMISSION_BASE(TEST_ATTRIBUTES, crud_keys.INSERT, true);
             perms.dev.tables.dog.attribute_permissions = att_base;
             req_json.hdb_user.role.permission = perms;
-            let restrictions = op_auth_rewire.verifyPerms(req_json, write.insert.name);
-            assert.deepEqual(restrictions, []);
+            let result = op_auth_rewire.verifyPerms(req_json, write.insert.name);
+            assert.equal(result, null);
         });
 
         it('Pass in JSON with schemas and table dog defined, insert allowed, attr insert restriction false. expect false', function () {
@@ -403,11 +425,9 @@ xdescribe('Test operation_authorization', function() {
             perms.dev.tables.dog.attribute_permissions = att_base;
             req_json.hdb_user.role.permission = perms;
             let result = op_auth_rewire.verifyPerms(req_json, write.insert.name);
-            assert.equal(result.length, 1);
-            result[0].required_attribute_permissions.forEach(perm => {
-                assert.equal(RESTRICTED_ATTRIBUTES.includes(perm.attribute_name), true);
-                assert.equal(perm.required_permissions[0], test_terms.TEST_CRUD_PERM_KEYS.INSERT);
-            })
+            assert.equal(result instanceof PermissionResponseObject, true);
+            assert.equal(result.invalid_schema_items.length, 2);
+            assert.equal(result.unauthorized_access.length, 0);
         });
 
         it('Pass in get_job request as non-super user. expect true', function () {
@@ -416,7 +436,7 @@ xdescribe('Test operation_authorization', function() {
                 id: "1234",
                 hdb_user: getRequestJson(TEST_JSON).hdb_user
             };
-            assert.deepEqual(op_auth.verifyPerms(test_json, jobs.handleGetJob.name), []);
+            assert.equal(op_auth.verifyPerms(test_json, jobs.handleGetJob.name), null);
         });
 
         it('Pass in search_jobs_by_start_date request as super user. expect true', function () {
@@ -425,7 +445,7 @@ xdescribe('Test operation_authorization', function() {
                 id: "1234",
                 hdb_user: getRequestJson(TEST_JSON_SUPER_USER).hdb_user
             };
-            assert.deepEqual(op_auth_rewire.verifyPerms(test_json, jobs.handleGetJobsByStartDate.name), []);
+            assert.equal(op_auth_rewire.verifyPerms(test_json, jobs.handleGetJobsByStartDate.name), null);
         });
 
         it('Pass in search_jobs_by_start_date request as non-super user. expect false', function () {
@@ -435,7 +455,8 @@ xdescribe('Test operation_authorization', function() {
                 hdb_user: getRequestJson(TEST_JSON).hdb_user
             };
             let result = op_auth_rewire.verifyPerms(test_json, jobs.handleGetJobsByStartDate.name)
-            assert.strictEqual(result.length, 1);
+            assert.equal(result.unauthorized_access.length, 1);
+            assert.equal(result.unauthorized_access[0], TEST_OPERATION_AUTH_ERROR.OP_IS_SU_ONLY(jobs.handleGetJobsByStartDate.name));
         });
 
         it('Pass in get_job request as super user. expect true', function () {
@@ -444,7 +465,7 @@ xdescribe('Test operation_authorization', function() {
                 id: "1234",
                 hdb_user: getRequestJson(TEST_JSON_SUPER_USER).hdb_user
             };
-            assert.deepEqual(op_auth_rewire.verifyPerms(test_json, jobs.handleGetJob.name), []);
+            assert.equal(op_auth_rewire.verifyPerms(test_json, jobs.handleGetJob.name), null);
         });
 
         it('Test operation with read & insert required, but user only has insert.  False expected', function () {
@@ -453,40 +474,31 @@ xdescribe('Test operation_authorization', function() {
             op_auth_rewire.__set__('required_permissions', required_permissions);
             let req_json = getRequestJson(TEST_JSON);
             let perms = clone(PERMISSION_BASE);
+            perms[TEST_SCHEMA].describe = true;
+            perms[TEST_SCHEMA].tables[TEST_TABLE].insert = true;
             req_json.hdb_user.role.permission = perms;
             let result = op_auth_rewire.verifyPerms(req_json, 'test method');
-            assert.strictEqual(result.length, 1);
+            assert.equal(result.invalid_schema_items.length, 0);
+            assert.equal(result.unauthorized_access.length, 1);
+            assert.equal(result.unauthorized_access[0] instanceof PermissionTableResponseObject, 1);
+            assert.equal(result.unauthorized_access[0].schema, TEST_SCHEMA);
+            assert.equal(result.unauthorized_access[0].table, TEST_TABLE);
+            assert.equal(result.unauthorized_access[0].required_table_permissions[0], "read");
         });
 
         it('Test bad method.  False expected', function () {
+            const bad_method = 'bad method';
             let req_json = getRequestJson(TEST_JSON);
             let perms = clone(PERMISSION_BASE);
             perms.dev.tables.dog.insert = true;
             req_json.hdb_user.role.permission = perms;
-            let result = op_auth_rewire.verifyPerms(req_json, 'bad method');
-            assert.equal(result.length, 1);
-        });
-
-        it('Test bad permission name.  False expected', function () {
-            let req_json = getRequestJson(TEST_JSON);
-            // Leaving the manual perms definition due to the bad permission name below.
-            let perms = {
-                "super_user": false,
-                "dev": {
-                    "tables": {
-                        "dog": {
-                            "read": false,
-                            "fart": true,
-                            "update": false,
-                            "delete": false,
-                            "attribute_permissions": []
-                        }
-                    }
-                },
-            };
-            req_json.hdb_user.role.permission = perms;
-            let result = op_auth_rewire.verifyPerms(req_json, write.insert.name);
-            assert.strictEqual(result.length, 1);
+            let test_err;
+            try {
+                op_auth_rewire.verifyPerms(req_json, bad_method);
+            } catch(e) {
+                test_err = e;
+            }
+            assert.equal(test_err.http_resp_msg, TEST_OPERATION_AUTH_ERROR.OP_NOT_FOUND(bad_method));
         });
 
         it('NOMINAL - Pass in JSON with su, function that requires su.  Expect true.', function () {
@@ -496,16 +508,18 @@ xdescribe('Test operation_authorization', function() {
             perms.dev.tables.dog.insert = true;
             req_json.hdb_user.role.permission = perms;
             let result = op_auth_rewire.verifyPerms(req_json, user.addUser);
-            assert.strictEqual(result.length, 0);
+            assert.equal(result, null);
         });
 
         it('Pass in JSON with no su, function that requires su.  Expect false.', function () {
             let req_json = getRequestJson(TEST_JSON);
             let perms = clone(PERMISSION_BASE);
+            perms.dev.tables.dog.describe = true;
             perms.dev.tables.dog.insert = true;
             req_json.hdb_user.role.permission = perms;
             let result = op_auth_rewire.verifyPerms(req_json, user.addUser);
-            assert.strictEqual(result.length, 1);
+            assert.equal(result.unauthorized_access.length, 1);
+            assert.equal(result.unauthorized_access[0], TEST_OPERATION_AUTH_ERROR.OP_IS_SU_ONLY(user.addUser.name));
         });
     });
 
@@ -513,15 +527,29 @@ xdescribe('Test operation_authorization', function() {
         it('Nominal path - Pass in JSON with insert attribute required.  Expect true.', function () {
             let checkAttributePerms = op_auth_rewire.__get__('checkAttributePerms');
             let result = checkAttributePerms(AFFECTED_ATTRIBUTES_SET, ROLE_ATTRIBUTE_RESTRICTIONS, write.insert.name);
-            assert.equal(result.length, 0);
+            assert.equal(result, null);
         });
 
         it('Pass in JSON with insert attribute required, but role does not have insert perm.  Expect false.', function () {
             let checkAttributePerms = op_auth_rewire.__get__('checkAttributePerms');
             let role_att = new Map(ROLE_ATTRIBUTE_RESTRICTIONS);
             role_att.get(ROLE_PERMISSION_KEY).insert = false;
-            let result = checkAttributePerms(AFFECTED_ATTRIBUTES_SET, role_att, write.insert.name);
-            assert.equal(result.length, 1);
+            const testPermsResponse = new PermissionResponseObject();
+            checkAttributePerms(AFFECTED_ATTRIBUTES_SET, role_att, write.insert.name, TEST_TABLE, TEST_SCHEMA, testPermsResponse);
+            let result = testPermsResponse.getPermsResponse();
+            assert.equal(result.unauthorized_access.length, 1);
+
+            const unauthed_table = result.unauthorized_access[0];
+            assert.equal(unauthed_table instanceof PermissionTableResponseObject, true);
+            assert.equal(unauthed_table.schema, TEST_SCHEMA);
+            assert.equal(unauthed_table.table, TEST_TABLE);
+            assert.equal(unauthed_table.required_attribute_permissions.length, 1);
+
+            const required_attr_perm = unauthed_table.required_attribute_permissions[0];
+            assert.equal(required_attr_perm instanceof PermissionAttributeResponseObject, true);
+            assert.equal(required_attr_perm.attribute_name, ROLE_PERMISSION_KEY);
+            assert.equal(required_attr_perm.attribute_name, ROLE_PERMISSION_KEY);
+            assert.equal(required_attr_perm.required_permissions[0], 'insert');
         });
 
         it('Pass invalid operation.  Expect false.', function () {
@@ -656,19 +684,22 @@ xdescribe('Test operation_authorization', function() {
                 },
             };
             req_json.hdb_user.role.permission = perms;
-            let result = hasPermissions(req_json.hdb_user, write.insert.name, test_map);
-            assert.equal(result.length, 0);
+            const testPermsResponse = new PermissionResponseObject();
+            let result = hasPermissions(req_json.hdb_user, write.insert.name, test_map, testPermsResponse);
+            assert.equal(result, null);
         });
 
-        it('Test insert required but missing from perms.  Expect false.', function () {
+        it('Test insert required but missing from table perms.  Expect false.', function () {
             let hasPermissions = op_auth_rewire.__get__('hasPermissions');
             let req_json = getRequestJson(TEST_JSON);
             let perms = {
                 "super_user": false,
                 "dev": {
+                    "describe": true,
                     "tables": {
                         "dog": {
-                            "read": false,
+                            "describe": true,
+                            "read": true,
                             "insert": false,
                             "update": false,
                             "delete": false,
@@ -678,8 +709,15 @@ xdescribe('Test operation_authorization', function() {
                 },
             };
             req_json.hdb_user.role.permission = perms;
-            let result = hasPermissions(req_json.hdb_user, write.insert.name, test_map);
-            assert.equal(result.length, 1);
+            const testPermsResponse = new PermissionResponseObject();
+            let result = hasPermissions(req_json.hdb_user, write.insert.name, test_map, testPermsResponse);
+            assert.equal(result.unauthorized_access.length, 1);
+
+            const unauthed_table = result.unauthorized_access[0];
+            assert.equal(unauthed_table instanceof PermissionTableResponseObject, true);
+            assert.equal(unauthed_table.schema, TEST_SCHEMA);
+            assert.equal(unauthed_table.table, TEST_TABLE);
+            assert.equal(unauthed_table.required_attribute_permissions.length, 0);
         });
     });
 });

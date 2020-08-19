@@ -61,6 +61,12 @@ async function callOperationFunctionAsAwait(promisified_function, function_input
             log.info(err.message);
             throw err;
         }
+        // This check is here to make sure a new HdbError is logged correctly
+        if(err.message && err.http_resp_msg) {
+            log.error(`Error calling operation: ${promisified_function.name}`);
+            log.error(err.message);
+            throw err;
+        }
         log.error(`Error calling operation: ${promisified_function.name}`);
         log.error(err);
         throw err;

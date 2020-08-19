@@ -42177,6 +42177,76 @@
 					"response": []
 				},
 				{
+					"name": "Add non-SU role w/ same name",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "8377ad1c-da86-45e6-94f1-d71aff5b5637",
+								"exec": [
+									"pm.test(\"Status code is 409\", function () {",
+									"    pm.response.to.have.status(409);",
+									"});",
+									"",
+									"pm.test(\"Role already exists error msg returned\", function() {",
+									"    var jsonResponse = pm.response.json();",
+									"    pm.expect(jsonResponse.error).to.eql(\"A role with name 'test_dev_role' already exists\");",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n   \"operation\":\"add_role\",\n   \"role\":\"test_dev_role\",\n   \"permission\":{\n      \"super_user\": false\n   }\n}",
+							"options": {
+								"raw": {}
+							}
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
 					"name": "Query HDB as bad user",
 					"event": [
 						{
@@ -42253,17 +42323,27 @@
 							"listen": "test",
 							"script": {
 								"id": "473242eb-af0a-459e-afa3-a654d13c50d6",
-								"type": "text/javascript",
 								"exec": [
-									"pm.test(\"Status code is 500\", function () {",
-									"    pm.response.to.have.status(500);",
+									"pm.test(\"Status code is 400\", function () {",
+									"    pm.response.to.have.status(400);",
 									"});",
 									"",
-									"pm.test(\"Response text shows invalid schema, table, attribute\", function () {",
-									"    pm.response.error === \"Invalid schema crapschema. Invalid table craptable. Invalid attribute crapattribute. \";",
+									"var jsonResponse = pm.response.json();",
+									"",
+									"pm.test(\"Response includes main permission issues for invalid schema and table\", function () {",
+									"    pm.expect(jsonResponse.main_permissions.length).to.eql(2);",
+									"    pm.expect(jsonResponse.main_permissions.includes(\"Schema 'crapschema' does not exist\")).to.eql(true);",
+									"    pm.expect(jsonResponse.main_permissions.includes(\"Table 'dev.craptable' does not exist\")).to.eql(true);",
+									"});",
+									"",
+									"pm.test(\"Response includes schema permission issues for invalid attributes\", function () {",
+									"    pm.expect(jsonResponse.schema_permissions.dev_dog.length).to.eql(2);",
+									"    pm.expect(jsonResponse.schema_permissions.dev_dog.includes(\"Invalid attribute 'name' in 'attribute_permissions'\")).to.eql(true);",
+									"    pm.expect(jsonResponse.schema_permissions.dev_dog.includes(\"Invalid attribute 'crapattribute' in 'attribute_permissions'\")).to.eql(true);",
 									"});",
 									""
-								]
+								],
+								"type": "text/javascript"
 							}
 						}
 					],
@@ -42405,6 +42485,42 @@
 				},
 				{
 					"name": "alter_role good data",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "110cfebc-9efd-4919-82a2-e95216904b89",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"var jsonResponse = pm.response.json();",
+									"",
+									"pm.test(\"Response includes role information that was added\", function () {",
+									"    pm.expect(jsonResponse.role).to.eql(\"user_role_update\");",
+									"    pm.expect(jsonResponse.id).to.eql(pm.variables.get(\"role_id\"));",
+									"    pm.expect(jsonResponse.permission.super_user).to.eql(false);",
+									"    pm.expect(jsonResponse.permission.northnwd.tables.customers).to.deep.eql({",
+									"                    \"read\": false,",
+									"                    \"insert\": false,",
+									"                    \"update\": false,",
+									"                    \"delete\": false,",
+									"                    \"attribute_permissions\": [",
+									"                        {",
+									"                            \"attribute_name\": \"fax\",",
+									"                            \"read\": false,",
+									"                            \"insert\": false,",
+									"                            \"update\": false",
+									"                        }",
+									"                    ]",
+									"                });",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
 					"request": {
 						"auth": {
 							"type": "basic",
@@ -42542,6 +42658,77 @@
 					"response": []
 				},
 				{
+					"name": "Drop_role nonexistent role",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "592c732e-6828-477a-9c1c-9e82323b0995",
+								"exec": [
+									"pm.test(\"Status code is 404\", function () {",
+									"    pm.response.to.have.status(404);",
+									"});",
+									"",
+									"pm.test(\"Role not found error msg returned\", function() {",
+									"    var jsonResponse = pm.response.json();",
+									"    pm.expect(jsonResponse.error).to.eql(\"Role not found\");",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic YWRtaW46cGFzc3dvcmQ="
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\"operation\":\"drop_role\",\n\"id\":\"12345\"\n\n}",
+							"options": {
+								"raw": {}
+							}
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						},
+						"description": "This method is used for dropping a role.  \n\n<i>You cannot drop a role with associated users.  </i>\n\n<ul>\n<li><b>operation </b><i>(required)</i> - this must always be drop_role </li>\n<li><b>id </b><i>(required) </i> - this is the id of the role you are dropping\n</ul>"
+					},
+					"response": []
+				},
+				{
 					"name": "Drop_role for non-SU role",
 					"event": [
 						{
@@ -42614,7 +42801,7 @@
 			"name": "11. Alter User Tests",
 			"item": [
 				{
-					"name": "SQL Add non SU role",
+					"name": "Add non-SU role",
 					"event": [
 						{
 							"listen": "test",
@@ -42682,7 +42869,7 @@
 					"response": []
 				},
 				{
-					"name": "NoSQL Add User with new Role",
+					"name": "Add User with new Role",
 					"event": [
 						{
 							"listen": "test",
@@ -42966,7 +43153,7 @@
 					"response": []
 				},
 				{
-					"name": "NoSQL drop test user",
+					"name": "Drop test user",
 					"event": [
 						{
 							"listen": "test",
@@ -43032,7 +43219,7 @@
 					"response": []
 				},
 				{
-					"name": "SQL drop_role",
+					"name": "Drop test non-SU role",
 					"event": [
 						{
 							"listen": "test",

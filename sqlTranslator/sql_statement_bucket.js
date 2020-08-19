@@ -308,6 +308,34 @@ function getSelectAttributes(ast, affected_attributes, table_lookup, schema_look
         }
     }
 
+    // It's important to also iterate through the JOIN clause in case there are other columns that are not included in
+    // the SELECT clause
+    if (ast.joins) {
+        ast.joins.forEach(join => {
+            const iterator = new RecursiveIterator(join.on);
+
+            for (let {node} of iterator) {
+                if (node && node.columnid) {
+                    let table = node.tableid;
+                    let schema = table_to_schema_lookup.get(table);
+
+                    if (!affected_attributes.get(schema).has(table)) {
+                        if (!table_lookup.has(table)) {
+                            harper_logger.info(`table specified as ${table} not found.`);
+                            continue;
+                        } else {
+                            table = table_lookup.get(table);
+                        }
+                    }
+                    //We need to check to ensure this columnid wasn't already set in the Map
+                    if (affected_attributes.get(schema).get(table).indexOf(node.columnid) < 0) {
+                        affected_attributes.get(schema).get(table).push(node.columnid);
+                    }
+                }
+            }
+        });
+    }
+
     // It's important to iterate through the ORDER clause in case there are other columns that are not included in
     // the SELECT clause with wildcard
     if (ast.order) {
@@ -335,34 +363,6 @@ function getSelectAttributes(ast, affected_attributes, table_lookup, schema_look
                 }
             }
         }
-    }
-
-    // It's important to also iterate through the JOIN clause in case there are other columns that are not included in
-    // the SELECT clause
-    if (ast.joins) {
-        ast.joins.forEach(join => {
-            const iterator = new RecursiveIterator(join.on);
-
-            for (let {node} of iterator) {
-                if (node && node.columnid) {
-                    let table = node.tableid;
-                    let schema = table_to_schema_lookup.get(table);
-
-                    if (!affected_attributes.get(schema).has(table)) {
-                        if (!table_lookup.has(table)) {
-                            harper_logger.info(`table specified as ${table} not found.`);
-                            continue;
-                        } else {
-                            table = table_lookup.get(table);
-                        }
-                    }
-                    //We need to check to ensure this columnid wasn't already set in the Map
-                    if (affected_attributes.get(schema).get(table).indexOf(node.columnid) < 0) {
-                        affected_attributes.get(schema).get(table).push(node.columnid);
-                    }
-                }
-            }
-        });
     }
 }
 

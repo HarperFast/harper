@@ -15,6 +15,8 @@ const p_search_search_by_hash = util.promisify(search.searchByHash);
 const p_delete_delete = util.promisify(delete_.delete);
 const SearchObject = require('../data_layer/SearchObject');
 const SearchByHashObject = require('../data_layer/SearchByHashObject');
+const { hdb_errors, handleHDBError } = require('../utility/errors/hdbError');
+const { COMMON_ERROR_MSGS, HTTP_STATUS_CODES } = hdb_errors;
 
 module.exports = {
     addRole: addRole,
@@ -74,13 +76,15 @@ async function addRole(role){
         get_attributes: ['*']
     };
 
-    let search_role = await p_search_search_by_value(search_obj).catch((err) => {
-        throw err;
-    });
+    let search_role;
+    try {
+        search_role = await p_search_search_by_value(search_obj);
+    } catch(err) {
+        throw handleHDBError(err);
+    };
 
     if(search_role && search_role.length > 0) {
-        search_role = scrubRoleDetails(search_role);
-        return search_role[0];
+        throw handleHDBError(new Error(), COMMON_ERROR_MSGS.ROLE_ALREADY_EXISTS(role.role), HTTP_STATUS_CODES.CONFLICT);
     }
 
     if(!role.id)
@@ -120,7 +124,7 @@ function checkClusterUserRole(add_role, roles){
 async function alterRole(role){
     let validation_resp = validation.alterRoleValidation(role);
     if(validation_resp){
-        throw new Error(validation_resp);
+        throw validation_resp;
     }
 
     role = scrubRoleDetails(role);
@@ -133,17 +137,20 @@ async function alterRole(role){
         records: [role]
     };
 
-    let success = await insert.update(update_object).catch((err) => {
-       throw err;
-    });
+    try {
+        await insert.update(update_object);
+    } catch(err) {
+        throw handleHDBError(err);
+    }
+
     signalling.signalUserChange({type: 'user'});
-    return success;
+    return role;
 }
 
 async function dropRole(role){
     let validation_resp = validation.dropRoleValidation(role);
-    if(validation_resp){
-        throw new Error(validation_resp);
+    if (validation_resp){
+        throw handleHDBError(new Error(), validation_resp, HTTP_STATUS_CODES.BAD_REQUEST);
     }
 
     let role_id_search = new SearchByHashObject(terms.SYSTEM_SCHEMA_NAME, terms.SYSTEM_TABLE_NAMES.ROLE_TABLE_NAME, [role.id], ['role']);
@@ -152,7 +159,7 @@ async function dropRole(role){
     });
 
     if(role_name.length === 0) {
-        throw new Error(`Role not found`);
+        throw handleHDBError(new Error(), COMMON_ERROR_MSGS.ROLE_NOT_FOUND, HTTP_STATUS_CODES.NOT_FOUND);
     }
 
     let search_user_by_roleid = new SearchObject(terms.SYSTEM_SCHEMA_NAME, terms.SYSTEM_TABLE_NAMES.USER_TABLE_NAME, 'role', role.id, undefined, ['username', 'active']);
