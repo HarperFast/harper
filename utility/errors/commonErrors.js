@@ -25,6 +25,8 @@ const HTTP_STATUS_CODES = {
     NETWORK_AUTHENTICATION_REQUIRED: 511
 };
 
+//Use this method to wrap an error you are sending back to API when also logging that error message - allows us to create
+// one error message to send to the API (with this wrapper) and log without having to define log message separately
 const CHECK_LOGS_WRAPPER = (err) => `${err} Check logs and try again.`;
 
 const DEFAULT_ERROR_MSGS = {

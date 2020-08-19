@@ -42,7 +42,6 @@ const READ_PERM = 'read';
 const UPDATE_PERM = 'update';
 const DESCRIBE_PERM = 'describe';
 
-const DESCRIBE_ALL_KEY = schema_describe.describeAll.name;
 const DESCRIBE_SCHEMA_KEY = schema_describe.describeSchema.name;
 const DESCRIBE_TABLE_KEY = schema_describe.describeTable.name;
 
@@ -135,7 +134,7 @@ module.exports = {
  * @param ast - The SQL statement in Syntax Tree form.
  * @param user_object - The user and role specification
  * @param operation - The operation specified in the call.
- * @returns {null | PermissionResponseObject} - empty array if permissions match, errors are an array of objects.
+ * @returns {null | PermissionResponseObject} - null if permissions match, errors returned in the PermissionResponseObject
  */
 function verifyPermsAst(ast, user_object, operation) {
     //TODO - update these validation checks to use validate.js
@@ -202,8 +201,6 @@ function verifyPermsAst(ast, user_object, operation) {
 
         return permsResponse.getPermsResponse();
     } catch(e) {
-        //TODO - SAM - log error?
-        harper_logger.info(e);
         throw handleHDBError(e);
     }
 }
@@ -399,8 +396,9 @@ function hasPermissions(user_object, op, schema_table_map, permsResponse) {
             }
         }
     }
-    //TODO - Sam - update this comment
-    //This method will return an object with perms issues OR null if no issues have been found
+
+    //We need to check if there are multiple schemas in this operation (i.e. SQL cross schema select) and, if so,
+    // we continue to check specific attribute perms b/c there may be a mix of perms issues across schema
     if (schema_table_map.size < 2) {
         return permsResponse.getPermsResponse();
     }
@@ -416,7 +414,7 @@ function hasPermissions(user_object, op, schema_table_map, permsResponse) {
  * @param table_name - name of the table being checked
  * @param schema_name - name of schema being checked
  * @param permsResponse - PermissionResponseObject instance being used to track permissions issues to return in response, if necessary
- * @returns {} - this function does not return a value.
+ * @returns {} - this function does not return a value - it updates the permsResponse which is checked later
  */
 function checkAttributePerms(record_attributes, role_attribute_permissions, operation, table_name, schema_name, permsResponse) {
     if (!record_attributes || !role_attribute_permissions) {
@@ -502,8 +500,8 @@ function getRecordAttributes(json) {
                 }
             }
         }
-    } catch (ex) {
-        harper_logger.info(ex);
+    } catch (err) {
+        harper_logger.info(err);
     }
     return affected_attributes;
 }

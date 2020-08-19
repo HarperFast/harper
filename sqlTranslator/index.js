@@ -82,7 +82,6 @@ function checkASTPermissions(json_message, parsed_sql_object) {
         throw e;
     }
     if (verify_result) {
-        // parsed_sql_object.permissions_checked = true;
         return verify_result;
     }
     return null;

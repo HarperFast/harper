@@ -15,6 +15,39 @@ class PermissionResponseObject {
         this.invalid_schema_items = [];
     }
 
+    /**
+     * This method sets the passed error message to the unauthorized_access array and returns the perms response object
+     * to be returned to the API - i.e. operation requires SU role so response is sent back immediately with that error message
+     * @param err_msg
+     * @returns { PermissionResponseObject }
+     */
+    handleUnauthorizedItem(err_msg) {
+        this.invalid_schema_items = [];
+        this.unauthorized_access = [err_msg];
+        return this;
+    }
+
+    /**
+     * This method sets the passed error message to the invalid_schema_items array and returns the perms response object
+     * to be returned to the API - i.e. operation on schema that user does not have access to or doesn't exist so response
+     * is sent back immediately with that error message
+     * @param err_msg
+     * @returns { PermissionResponseObject }
+     */
+    handleInvalidItem(err_msg) {
+        this.invalid_schema_items = [err_msg];
+        this.unauthorized_access = [];
+        return this;
+    }
+
+    /**
+     * This method is used to add an invalid schema item message to the invalid_schema_items array if there is not an
+     * unauthorized_access value already tracked for the table - this ensures that we are not providing schema meta-data
+     * to the user that they should not have
+     * @param item - error string to add to array
+     * @param schema - schema that the item is a part of
+     * @param table - table that the item is a part of
+     */
     addInvalidItem(item, schema, table) {
         if (schema && table) {
             const schema_table = `${schema}_${table}`;
@@ -25,33 +58,31 @@ class PermissionResponseObject {
         this.invalid_schema_items.push(item);
     }
 
-    handleUnauthorizedItem(err_msg) {
-        this.unauthorized_access = [err_msg];
-        return this;
-    }
-
-    handleInvalidItem(err_msg) {
-        this.invalid_schema_items = [err_msg];
-        this.unauthorized_access = [];
-        return this;
-    }
-
-    addUnauthorizedTable(schema, table, required_perms) {
-        const failed_table = new PermissionTableResponseObject();
-        failed_table.schema = schema;
-        failed_table.table = table;
-        failed_table.required_table_permissions = required_perms;
+    /**
+     * This method is used to add an unauthorized table object to the unauthorized_access array
+     * @param schema - schema that table is under
+     * @param table - table name that user does not have correct perms on
+     * @param required_perms - permission/s that user does not have on the table to complete the operation
+     */
+    addUnauthorizedTable(schema, table, required_table_perms) {
+        const failed_table = new PermissionTableResponseObject(schema, table, required_table_perms);
 
         const schema_table = `${schema}_${table}`;
         this.unauthorized_access[schema_table] = failed_table;
     }
 
+    /**
+     * This method is used to add unauthorized table attribute objects to a new or, if already tracked, an existing table
+     * object tracked in the unauthorized_access array
+     * @param attr_keys - attribute names that are restricted
+     * @param schema - schema of table where attr restrictions exist
+     * @param table - table where attr restrictions exist
+     * @param restricted_attrs - the perms restrictions for each attr
+     */
     addUnauthorizedAttributes(attr_keys, schema, table, restricted_attrs) {
         const unauthorized_table_attributes = [];
         attr_keys.forEach(attr => {
-            const attribute_object = new PermissionAttributeResponseObject();
-            attribute_object.attribute_name = attr;
-            attribute_object.required_permissions =  restricted_attrs[attr];
+            const attribute_object = new PermissionAttributeResponseObject(attr, restricted_attrs[attr]);
             unauthorized_table_attributes.push(attribute_object);
         });
 
@@ -60,32 +91,17 @@ class PermissionResponseObject {
         if (this.unauthorized_access[schema_table]) {
             this.unauthorized_access[schema_table].required_attribute_permissions = unauthorized_table_attributes;
         } else {
-            const failed_perm_object = new PermissionTableResponseObject();
-            failed_perm_object.table = table;
-            failed_perm_object.schema = schema;
-            failed_perm_object.required_attribute_permissions = unauthorized_table_attributes;
+            const failed_perm_object = new PermissionTableResponseObject(schema, table, null, unauthorized_table_attributes);
             this.unauthorized_access[schema_table] = failed_perm_object;
         }
     }
 
-    consolidatePermsRestrictions(unauthorized_attrs, failed_perms_obj) {
-        const table_index_map = failed_perms_obj.reduce((acc, perm_obj, i) => {
-            acc[`${perm_obj.schema}_${perm_obj.table}`] = i;
-            return acc;
-        }, {});
-        unauthorized_attrs.forEach(failed_perm => {
-            const table_key = `${failed_perm.schema}_${failed_perm.table}`;
-            if (table_index_map[table_key] >= 0) {
-                const perm_idx = table_index_map[table_key];
-                const perm_obj = failed_perms_obj[perm_idx];
-                perm_obj.required_attribute_permissions = failed_perm.required_attribute_permissions;
-                failed_perms_obj.splice(perm_idx, 1, perm_obj);
-            } else {
-                failed_perms_obj.push(failed_perm);
-            }
-        });
-    }
-
+    /**
+     * This method is used to evaluate whether or not there are permissions issues tracked and, if so, returns the response
+     * object and, if not, returns a null value meaning the validation step has passed
+     *
+     * @returns { null| PermissionResponseObject }
+     */
     getPermsResponse() {
         const unauthorized_access_arr = Object.values(this.unauthorized_access);
         if (unauthorized_access_arr.length > 0 || this.invalid_schema_items.length > 0) {
