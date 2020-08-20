@@ -127,24 +127,23 @@ function processAST(json_message, parsed_sql_object, callback) {
         };
 
         switch (parsed_sql_object.variant) {
-            case 'select':
+            case terms.VALID_SQL_OPS_ENUM.SELECT:
                 sql_function = search;
                 statement = parsed_sql_object.ast.statements[0];
                 break;
-            case 'insert':
+            case terms.VALID_SQL_OPS_ENUM.INSERT:
                 //TODO add validator for insert, need to make sure columns are specified
                 sql_function = convertInsert;
                 break;
-            case 'update':
+            case terms.VALID_SQL_OPS_ENUM.UPDATE:
                 sql_function = cb_update_update;
                 break;
-            case 'delete':
+            case terms.VALID_SQL_OPS_ENUM.DELETE:
                 sql_function = delete_translator;
                 break;
             default:
                 throw new Error(`unsupported SQL type ${parsed_sql_object.variant} in SQL: ${json_message}`);
         }
-
 
         sql_function(statement, (err, data) => {
             if (err) {

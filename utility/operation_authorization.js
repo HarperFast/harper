@@ -45,19 +45,9 @@ const DESCRIBE_PERM = 'describe';
 const DESCRIBE_SCHEMA_KEY = schema_describe.describeSchema.name;
 const DESCRIBE_TABLE_KEY = schema_describe.describeTable.name;
 
+const CATCHUP = 'catchup';
 const HANDLE_GET_JOB = 'handleGetJob';
 const HANDLE_GET_JOB_BY_START_DATE = 'handleGetJobsByStartDate';
-
-//SQL operations supported
-//The delete (or any other operation) comes through the parser as an operation separate from the delete_.delete operation.
-// Since we store the required permissions for each operation, we need to store required permissions for the SQL delete
-// operation separate from the delete_.delete operation.
-const SQL_CREATE = "create";
-const SQL_DROP = 'drop';
-const SQL_DELETE = 'delete';
-const SQL_SELECT = 'select';
-const SQL_INSERT = 'insert';
-const SQL_UPDATE = 'update';
 
 class permission {
     constructor(requires_su, perms) {
@@ -82,7 +72,6 @@ required_permissions.set(schema.dropTable.name, new permission(true, []));
 required_permissions.set(schema.dropAttribute.name, new permission(true, []));
 required_permissions.set(schema_describe.describeSchema.name, new permission(false, [READ_PERM]));
 required_permissions.set(schema_describe.describeTable.name, new permission(false, [READ_PERM]));
-required_permissions.set(schema_describe.describeAll.name, new permission(false, []));
 required_permissions.set(delete_.delete.name, new permission(false, [DELETE_PERM]));
 required_permissions.set(user.addUser.name, new permission(true, []));
 required_permissions.set(user.alterUser.name, new permission(true, []));
@@ -92,7 +81,6 @@ required_permissions.set(role.listRoles.name, new permission(true, []));
 required_permissions.set(role.addRole.name, new permission(true, []));
 required_permissions.set(role.alterRole.name, new permission(true, []));
 required_permissions.set(role.dropRole.name, new permission(true, []));
-required_permissions.set(user.userInfo.name, new permission(false, []));
 required_permissions.set(harper_logger.readLog.name, new permission(true, []));
 required_permissions.set(cluster_utilities.addNode.name, new permission(true, []));
 required_permissions.set(cluster_utilities.updateNode.name, new permission(true, []));
@@ -108,21 +96,26 @@ required_permissions.set(delete_.deleteTransactionLogsBefore.name, new permissio
 required_permissions.set(stop.restartProcesses.name, new permission(true, []));
 required_permissions.set(read_transaction_log.name, new permission(true, []));
 required_permissions.set(system_information.systemInformation.name, new permission(true, []));
+
+//Below are functions that are currently open to all roles
+required_permissions.set(reg.getRegistrationInfo.name, new permission(false, []));
+required_permissions.set(user.userInfo.name, new permission(false, []));
+//Describe_all will only return the schema values a user has permissions for
+required_permissions.set(schema_describe.describeAll.name, new permission(false, []));
+
 //Below function names are hardcoded b/c of circular dependency issues
 required_permissions.set(HANDLE_GET_JOB, new permission(false, []));
 required_permissions.set(HANDLE_GET_JOB_BY_START_DATE, new permission(true, []));
+required_permissions.set(CATCHUP, new permission(true, []));
 
 //NOTE: 'registration_info' and 'user_info' operations are intentionally left off here since both should be accessible
 // for all roles/users no matter what their permissions are
 
 // SQL operations are distinct from operations above, so we need to store required perms for both.
-required_permissions.set(SQL_DELETE, new permission(false, [DELETE_PERM]));
-required_permissions.set(SQL_SELECT, new permission(false, [READ_PERM]));
-required_permissions.set(SQL_INSERT, new permission(false, [INSERT_PERM]));
-required_permissions.set(SQL_UPDATE, new permission(false, [UPDATE_PERM]));
-// We do not currently support DDL operations (i.e. create or drop) but leaving these here just in case we ever do
-required_permissions.set(SQL_CREATE, new permission(true, []));
-required_permissions.set(SQL_DROP, new permission(true, []));
+required_permissions.set(terms.VALID_SQL_OPS_ENUM.DELETE, new permission(false, [DELETE_PERM]));
+required_permissions.set(terms.VALID_SQL_OPS_ENUM.SELECT, new permission(false, [READ_PERM]));
+required_permissions.set(terms.VALID_SQL_OPS_ENUM.INSERT, new permission(false, [INSERT_PERM]));
+required_permissions.set(terms.VALID_SQL_OPS_ENUM.UPDATE, new permission(false, [UPDATE_PERM]));
 
 module.exports = {
     verifyPerms,

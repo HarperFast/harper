@@ -9,6 +9,7 @@ const clonedeep = require('lodash.clonedeep');
 const permissionsTranslator_rw = rewire('../../security/permissionsTranslator');
 const { TEST_NON_SU_ROLE, TEST_SCHEMA_DOG_BREED } = require('../test_data');
 const terms = require('../../utility/hdbTerms');
+const { TEST_ROLE_PERMS_ERROR, HTTP_STATUS_CODES } = require('../commonTestErrors');
 
 const TEST_SCHEMA = 'dev';
 const TEST_PERMS_ENUM = {
@@ -356,6 +357,27 @@ describe('Test permissionsTranslator module', function () {
             expect(test_result[TEST_SCHEMA]).to.not.deep.equal(test_result2[TEST_SCHEMA])
 
             global.hdb_schema = orig_global_schema;
+        });
+    })
+
+    describe('Test translateRolePermissions method', () => {
+        it('Should return old perms error if attribute_restrictions key is found in perms',() => {
+            const test_role = getUpdatedRoleObj();
+
+            delete test_role.permission.dev.tables.breed.attribute_permissions;
+            delete test_role.permission.dev.tables.dog.attribute_permissions;
+            test_role.permission.dev.tables.breed.attribute_restrictions = []
+            test_role.permission.dev.tables.dog.attribute_restrictions = []
+
+            let test_result;
+            try {
+                permissionsTranslator_rw.getRolePermissions(test_role);
+            } catch(err) {
+                test_result = err;
+            }
+
+            expect(test_result.http_resp_msg).to.eql(TEST_ROLE_PERMS_ERROR.OUTDATED_PERMS_TRANSLATION_ERROR);
+            expect(test_result.http_resp_code).to.eql(HTTP_STATUS_CODES.BAD_REQUEST);
         });
     })
 });

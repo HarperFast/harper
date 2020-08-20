@@ -215,6 +215,16 @@ const OPERATIONS_ENUM = {
     READ_TRANSACTION_LOG: 'read_transaction_log'
 };
 
+// Defines valid SQL operations to be used in the processAST method - this ensure we have appropriate unit test coverage
+// for all SQL operations that are dynamically set after the chooseOperation method which behaves differently for the
+// evaluateSQL operation.
+const VALID_SQL_OPS_ENUM = {
+    SELECT: 'select',
+    INSERT: 'insert',
+    UPDATE: 'update',
+    DELETE: 'delete'
+};
+
 // Defines operations that should be propagated to the cluster.
 let CLUSTER_OPERATIONS = {};
 CLUSTER_OPERATIONS[OPERATIONS_ENUM.CREATE_SCHEMA] = OPERATIONS_ENUM.CREATE_SCHEMA;
@@ -478,6 +488,7 @@ module.exports = {
     SYSTEM_TABLE_NAMES,
     SYSTEM_TABLE_HASH_ATTRIBUTES,
     OPERATIONS_ENUM,
+    VALID_SQL_OPS_ENUM,
     GEO_CONVERSION_ENUM,
     HDB_SETTINGS_NAMES,
     HDB_SETTINGS_NAMES_REVERSE_LOOKUP,

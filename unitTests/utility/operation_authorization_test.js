@@ -14,10 +14,16 @@ const user = require('../../security/user');
 const alasql = require('alasql');
 const search = require('../../data_layer/search');
 const jobs = require('../../server/jobs');
+const terms = require('../../utility/hdbTerms');
 const PermissionResponseObject = require('../../security/data_model/PermissionResponseObject');
 const PermissionTableResponseObject = require('../../security/data_model/PermissionTableResponseObject');
 const PermissionAttributeResponseObject = require('../../security/data_model/PermissionAttributeResponseObject');
-const { TEST_SCHEMA_OP_ERROR, TEST_ROLE_PERMS_ERROR, TEST_OPERATION_AUTH_ERROR } = require('../commonTestErrors');
+const { TEST_OPERATION_AUTH_ERROR } = require('../commonTestErrors');
+
+const serverUtilities_rw = rewire('../../server/serverUtilities');
+const initializeOperationFunctionMap_rw = serverUtilities_rw.__get__('initializeOperationFunctionMap');
+const OPERATION_MAP = initializeOperationFunctionMap_rw();
+rewire('../../server/serverUtilities');
 
 const test_terms = test_utils.COMMON_TEST_TERMS
 const crud_keys = test_terms.TEST_CRUD_PERM_KEYS;
@@ -249,8 +255,39 @@ describe('Test operation_authorization', function() {
         global.hdb_schema = undefined;
     });
 
-    describe(`Test verifyPermsAst`, function () {
-        it('NOMINAL, test verify with proper syntax, expect true', function () {
+    const JOB_OP_FUNC_KEYS = ["signalJob"];
+    function getOperationFuncName(op) {
+        const { operation_function, job_operation_function } = op;
+        let finalOp = operation_function.name;
+        if (JOB_OP_FUNC_KEYS.includes(finalOp)) {
+            finalOp = job_operation_function.name;
+        }
+        return finalOp
+    }
+
+    it('required_permissions should include settings for all API operations',function() {
+        const require_perms_rw = op_auth_rewire.__get__('required_permissions');
+        const missing_ops = [];
+        OPERATION_MAP.forEach((required_op, key, map) => {
+            const test_op = getOperationFuncName(required_op);
+            //evaluateSQL op breaks down to a specific SQL query type operation that is used in perms check so we need
+            // to test those values instead of evaluateSQL.  All of those values
+            if (test_op === 'evaluateSQL') {
+                Object.values(terms.VALID_SQL_OPS_ENUM).forEach(op => {
+                    if (!require_perms_rw.has(op)) {
+                        missing_ops.push(test_op);
+                    }
+                })
+            } else if (!require_perms_rw.has(test_op)) {
+                missing_ops.push(test_op);
+            }
+        })
+
+        assert.deepEqual(missing_ops,[]);
+    })
+
+    describe(`Test verifyPermsAst`,function() {
+        it('NOMINAL, test verify with proper syntax, expect true',function() {
             let test_json = clone(TEST_INSERT_JSON);
             let temp_insert = new alasql.yy.Insert(test_json);
             let req_json = getRequestJson(TEST_JSON);
@@ -272,7 +309,7 @@ describe('Test operation_authorization', function() {
             assert.equal(result.unauthorized_access[0] instanceof PermissionTableResponseObject, true);
         });
 
-        it('Test verify AST with table perm true but all attr perms false, expect false', function () {
+        it('Test verify AST with table perm true but all attr perms false, expect false',function() {
             let test_json = clone(TEST_INSERT_JSON);
             let temp_insert = new alasql.yy.Insert(test_json);
             let req_json = getRequestJson(TEST_JSON);
@@ -286,7 +323,7 @@ describe('Test operation_authorization', function() {
             assert.equal(result.unauthorized_access.length, 0);
         });
 
-        it('Test with bad operations, expect false', function () {
+        it('Test with bad operations, expect false',function() {
             let test_json = clone(TEST_INSERT_JSON);
             let temp_insert = new alasql.yy.Insert(test_json);
             let req_json = getRequestJson(TEST_JSON);
@@ -303,7 +340,7 @@ describe('Test operation_authorization', function() {
             assert.equal(test_err.http_resp_msg, "Operation 'fart' not found");
         });
 
-        it(`Test select wildcard with proper perms, expect true`, function () {
+        it(`Test select wildcard with proper perms, expect true`,function() {
             let test_json = clone(TEST_SELECT_WILDCARD_JSON);
             let temp_select = new alasql.yy.Select(test_json);
             let req_json = getRequestJson(TEST_JSON);
@@ -315,7 +352,7 @@ describe('Test operation_authorization', function() {
             assert.equal(result, null);
         });
 
-        it(`Test select wildcard with read attribute restriction false, expect false`, function () {
+        it(`Test select wildcard with read attribute restriction false, expect false`,function() {
             let test_json = clone(TEST_SELECT_WILDCARD_JSON);
             let temp_select = new alasql.yy.Select(test_json);
             let req_json = getRequestJson(TEST_JSON);
@@ -329,7 +366,7 @@ describe('Test operation_authorization', function() {
             assert.equal(result.unauthorized_access[0] instanceof PermissionTableResponseObject, true);
         });
 
-        it('Test select wildcard with one attribute permission true, expect true', () => {
+        it('Test select wildcard with one attribute permission true, expect true',function() {
             let test_json = clone(TEST_SELECT_WILDCARD_JSON);
             let temp_select = new alasql.yy.Select(test_json);
             let req_json = getRequestJson(TEST_JSON);
@@ -341,7 +378,7 @@ describe('Test operation_authorization', function() {
         })
     });
 
-    describe(`Test verifyPerms`, function () {
+    describe(`Test verifyPerms`,function() {
         it('Pass in bad values, expect false', function () {
             let test_err;
             try {
@@ -354,21 +391,21 @@ describe('Test operation_authorization', function() {
             assert.equal(test_err.http_resp_code, 400);
         });
 
-        it('Check return if user has su.  Expect true', function () {
+        it('Check return if user has su.  Expect true',function() {
             let result = op_auth.verifyPerms(TEST_JSON_SUPER_USER, write.insert.name);
             assert.equal(result, null);
         });
 
-        it('Pass function instead of function name.  Expect empty array (no errors)', function () {
+        it('Pass function instead of function name.  Expect empty array (no errors)',function() {
             let result = op_auth.verifyPerms(TEST_JSON, write.insert);
             assert.equal(result, null);
         });
 
-        it('Pass function name instead of function.  Expect empty array (no errors)', function () {
+        it('Pass function name instead of function.  Expect empty array (no errors)',function() {
             assert.equal(op_auth.verifyPerms(TEST_JSON, write.insert.name), null);
         });
 
-        it('Pass in JSON with no schemas restrictions defined, expect invalid schema error', function () {
+        it('Pass in JSON with no schemas restrictions defined, expect invalid schema error',function() {
             let req_json = getRequestJson(TEST_JSON);
             req_json.hdb_user.role.permission = EMPTY_PERMISSION;
             const result = op_auth.verifyPerms(req_json, write.insert.name);
@@ -377,7 +414,7 @@ describe('Test operation_authorization', function() {
             assert.equal(result.unauthorized_access.length, 0);
         });
 
-        it('Pass in JSON with schemas but no table perms defined, expect perms errors', function () {
+        it('Pass in JSON with schemas but no table perms defined, expect perms errors',function() {
             let req_json = getRequestJson(TEST_JSON);
             let perms = {
                 "super_user": false,
@@ -394,7 +431,7 @@ describe('Test operation_authorization', function() {
             assert.equal(result.unauthorized_access.length,0);
         });
 
-        it('Pass in JSON with schemas and table dog defined but describe false for all, expect invalid schema result', function () {
+        it('Pass in JSON with schemas and table dog defined but describe false for all, expect invalid schema result',function() {
             let req_json = getRequestJson(TEST_JSON);
             let perms = clone(PERMISSION_BASE);
             perms["dev"].tables["dog"].insert = false;
@@ -405,7 +442,7 @@ describe('Test operation_authorization', function() {
             assert.equal(result.unauthorized_access.length, 0);
         });
 
-        it('(NOMINAL) - Pass in JSON with schemas and table dog defined, insert allowed, expect true', function () {
+        it('(NOMINAL) - Pass in JSON with schemas and table dog defined, insert allowed, expect true',function() {
             let req_json = getRequestJson(TEST_JSON);
             let perms = clone(PERMISSION_BASE);
             perms.dev.tables.dog.insert = true;
@@ -416,7 +453,7 @@ describe('Test operation_authorization', function() {
             assert.equal(result, null);
         });
 
-        it('Pass in JSON with schemas and table dog defined, insert allowed, attr insert restriction false. expect false', function () {
+        it('Pass in JSON with schemas and table dog defined, insert allowed, attr insert restriction false. expect false',function() {
             let req_json = getRequestJson(TEST_JSON);
             let perms = clone(PERMISSION_BASE);
             perms.dev.tables.dog.insert = true;
@@ -430,7 +467,7 @@ describe('Test operation_authorization', function() {
             assert.equal(result.unauthorized_access.length, 0);
         });
 
-        it('Pass in get_job request as non-super user. expect true', function () {
+        it('Pass in get_job request as non-super user. expect true',function() {
             let test_json = {
                 operation: "get_job",
                 id: "1234",
@@ -439,7 +476,7 @@ describe('Test operation_authorization', function() {
             assert.equal(op_auth.verifyPerms(test_json, jobs.handleGetJob.name), null);
         });
 
-        it('Pass in search_jobs_by_start_date request as super user. expect true', function () {
+        it('Pass in search_jobs_by_start_date request as super user. expect true',function() {
             let test_json = {
                 operation: "search_jobs_by_start_date",
                 id: "1234",
@@ -448,7 +485,7 @@ describe('Test operation_authorization', function() {
             assert.equal(op_auth_rewire.verifyPerms(test_json, jobs.handleGetJobsByStartDate.name), null);
         });
 
-        it('Pass in search_jobs_by_start_date request as non-super user. expect false', function () {
+        it('Pass in search_jobs_by_start_date request as non-super user. expect false',function() {
             let test_json = {
                 operation: "search_jobs_by_start_date",
                 id: "1234",
@@ -459,7 +496,7 @@ describe('Test operation_authorization', function() {
             assert.equal(result.unauthorized_access[0], TEST_OPERATION_AUTH_ERROR.OP_IS_SU_ONLY(jobs.handleGetJobsByStartDate.name));
         });
 
-        it('Pass in get_job request as super user. expect true', function () {
+        it('Pass in get_job request as super user. expect true',function() {
             let test_json = {
                 operation: "get_job",
                 id: "1234",
@@ -468,7 +505,7 @@ describe('Test operation_authorization', function() {
             assert.equal(op_auth_rewire.verifyPerms(test_json, jobs.handleGetJob.name), null);
         });
 
-        it('Test operation with read & insert required, but user only has insert.  False expected', function () {
+        it('Test operation with read & insert required, but user only has insert.  False expected',function() {
             let required_permissions = op_auth_rewire.__get__('required_permissions');
             required_permissions.set('test method', new Permission_rw(false, ['insert', 'read']));
             op_auth_rewire.__set__('required_permissions', required_permissions);
@@ -486,7 +523,7 @@ describe('Test operation_authorization', function() {
             assert.equal(result.unauthorized_access[0].required_table_permissions[0], "read");
         });
 
-        it('Test bad method.  False expected', function () {
+        it('Test bad method.  False expected',function() {
             const bad_method = 'bad method';
             let req_json = getRequestJson(TEST_JSON);
             let perms = clone(PERMISSION_BASE);
@@ -501,7 +538,7 @@ describe('Test operation_authorization', function() {
             assert.equal(test_err.http_resp_msg, TEST_OPERATION_AUTH_ERROR.OP_NOT_FOUND(bad_method));
         });
 
-        it('NOMINAL - Pass in JSON with su, function that requires su.  Expect true.', function () {
+        it('NOMINAL - Pass in JSON with su, function that requires su.  Expect true.',function() {
             let req_json = getRequestJson(TEST_JSON);
             let perms = clone(PERMISSION_BASE);
             perms.super_user = true;
@@ -511,7 +548,7 @@ describe('Test operation_authorization', function() {
             assert.equal(result, null);
         });
 
-        it('Pass in JSON with no su, function that requires su.  Expect false.', function () {
+        it('Pass in JSON with no su, function that requires su.  Expect false.',function() {
             let req_json = getRequestJson(TEST_JSON);
             let perms = clone(PERMISSION_BASE);
             perms.dev.tables.dog.describe = true;
@@ -523,14 +560,14 @@ describe('Test operation_authorization', function() {
         });
     });
 
-    describe(`Test checkAttributePerms`, function () {
-        it('Nominal path - Pass in JSON with insert attribute required.  Expect true.', function () {
+    describe(`Test checkAttributePerms`,function() {
+        it('Nominal path - Pass in JSON with insert attribute required.  Expect true.',function() {
             let checkAttributePerms = op_auth_rewire.__get__('checkAttributePerms');
             let result = checkAttributePerms(AFFECTED_ATTRIBUTES_SET, ROLE_ATTRIBUTE_RESTRICTIONS, write.insert.name);
             assert.equal(result, null);
         });
 
-        it('Pass in JSON with insert attribute required, but role does not have insert perm.  Expect false.', function () {
+        it('Pass in JSON with insert attribute required, but role does not have insert perm.  Expect false.',function() {
             let checkAttributePerms = op_auth_rewire.__get__('checkAttributePerms');
             let role_att = new Map(ROLE_ATTRIBUTE_RESTRICTIONS);
             role_att.get(ROLE_PERMISSION_KEY).insert = false;
@@ -552,14 +589,14 @@ describe('Test operation_authorization', function() {
             assert.equal(required_attr_perm.required_permissions[0], 'insert');
         });
 
-        it('Pass invalid operation.  Expect false.', function () {
+        it('Pass invalid operation.  Expect false.',function() {
             let checkAttributePerms = op_auth_rewire.__get__('checkAttributePerms');
             assert.throws(function () {
                 checkAttributePerms(AFFECTED_ATTRIBUTES_SET, ROLE_ATTRIBUTE_RESTRICTIONS, 'derp');
             }, Error);
         });
 
-        it('Pass invalid json.  Expect false.', function () {
+        it('Pass invalid json.  Expect false.',function() {
             let checkAttributePerms = op_auth_rewire.__get__('checkAttributePerms');
             assert.throws(function () {
                 checkAttributePerms(null, null, write.insert.name);
@@ -567,21 +604,21 @@ describe('Test operation_authorization', function() {
         });
     });
 
-    describe(`Test getRecordAttributes`, function () {
-        it('Nominal case, valid JSON with attributes.  Expect set with size of 4', function () {
+    describe(`Test getRecordAttributes`,function() {
+        it('Nominal case, valid JSON with attributes.  Expect set with size of 4',function() {
             let getRecordAttributes = op_auth_rewire.__get__('getRecordAttributes');
             let req_json = getRequestJson(TEST_JSON);
             let result = getRecordAttributes(req_json);
             assert.equal(result.size, 4);
         });
 
-        it('pass invalid JSON with attributes.  Expect empty set.', function () {
+        it('pass invalid JSON with attributes.  Expect empty set.',function() {
             let getRecordAttributes = op_auth_rewire.__get__('getRecordAttributes');
             let result = getRecordAttributes(null);
             assert.equal(result.size, 0);
         });
 
-        it('Nominal case pass JSON with no records.  Expect empty set.', function () {
+        it('Nominal case pass JSON with no records.  Expect empty set.',function() {
             let getRecordAttributes = op_auth_rewire.__get__('getRecordAttributes');
             let req_json = getRequestJson(TEST_JSON);
             req_json.records = null;
@@ -590,8 +627,8 @@ describe('Test operation_authorization', function() {
         });
     });
 
-    describe(`Test getAttributePermissions`, function () {
-        it('Nominal case, valid JSON with attributes in the role.', function () {
+    describe(`Test getAttributePermissions`,function() {
+        it('Nominal case, valid JSON with attributes in the role.',function() {
             let getAttributePermissions = op_auth_rewire.__get__('getAttributePermissions');
             let req_json = getRequestJson(TEST_JSON);
             let perms = clone(PERMISSION_BASE);
@@ -604,13 +641,13 @@ describe('Test operation_authorization', function() {
             assert.equal(result.get('name').attribute_name, 'name');
         });
 
-        it('invalid JSON, Expect zero length Map returned ', function () {
+        it('invalid JSON, Expect zero length Map returned ',function() {
             let getAttributePermissions = op_auth_rewire.__get__('getAttributePermissions');
             let result = getAttributePermissions(null);
             assert.equal(result.size, 0);
         });
 
-        it('JSON with no restrictions in the role. Expect false ', function () {
+        it('JSON with no restrictions in the role. Expect false ',function() {
             let getAttributePermissions = op_auth_rewire.__get__('getAttributePermissions');
             let req_json = getRequestJson(TEST_JSON);
             // Leaving this manual definition of the JSON to omit attribute_permissions
@@ -632,7 +669,7 @@ describe('Test operation_authorization', function() {
             assert.equal(result.size, 0);
         });
 
-        it('JSON with super user. Expect zero length back ', function () {
+        it('JSON with super user. Expect zero length back ',function() {
             let getAttributePermissions = op_auth_rewire.__get__('getAttributePermissions');
             let req_json = getRequestJson(TEST_JSON);
             // Leaving this manual definition of the JSON to omit attribute_permissions
@@ -655,18 +692,18 @@ describe('Test operation_authorization', function() {
         });
     });
 
-    describe(`Test hasPermissions`, function () {
+    describe(`Test hasPermissions`,function() {
         let test_map = new Map();
         test_map.set('dev', ['dog']);
 
-        it('Test invalid parameter', function () {
+        it('Test invalid parameter',function() {
             let hasPermissions = op_auth_rewire.__get__('hasPermissions');
             assert.throws(function () {
                 hasPermissions(null, write.insert.name, new Map());
             }, Error);
         });
 
-        it('Test nominal path, insert required.  Expect true', function () {
+        it('Test nominal path, insert required.  Expect true',function() {
             let hasPermissions = op_auth_rewire.__get__('hasPermissions');
             let req_json = getRequestJson(TEST_JSON);
             let perms = {
@@ -689,7 +726,7 @@ describe('Test operation_authorization', function() {
             assert.equal(result, null);
         });
 
-        it('Test insert required but missing from table perms.  Expect false.', function () {
+        it('Test insert required but missing from table perms.  Expect false.',function() {
             let hasPermissions = op_auth_rewire.__get__('hasPermissions');
             let req_json = getRequestJson(TEST_JSON);
             let perms = {
