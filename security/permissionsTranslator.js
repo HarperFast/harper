@@ -2,7 +2,8 @@
 
 const _ = require('lodash');
 const terms = require('../utility/hdbTerms');
-const { handleHDBError, commonErrors } = require('../utility/errors/hdbError');
+const { handleHDBError, hdb_errors } = require('../utility/errors/hdbError');
+const { COMMON_ERROR_MSGS, HTTP_STATUS_CODES } = hdb_errors;
 const logger = require('../utility/logging/harper_logger');
 
 module.exports = {
@@ -120,6 +121,9 @@ function translateRolePermissions(role, schema) {
                     //need to evaluate individual table perms AND attr perms
                     const table_perms = perms[s].tables[t];
                     const table_schema = schema[s][t];
+                    if (table_perms.attribute_restrictions) {
+                        throw handleHDBError(new Error(), COMMON_ERROR_MSGS.OUTDATED_PERMS_TRANSLATION_ERROR, HTTP_STATUS_CODES.BAD_REQUEST);
+                    }
                     const updated_table_perms = getTableAttrPerms(table_perms, table_schema);
                     //we need to set a read value on each schema for easy evaluation during describe ops - if any
                     // CRUD op is set to true for a table in a schema, we set the schema READ perm to true
