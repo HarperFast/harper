@@ -1,6 +1,7 @@
 "use strict";
 
 const lmdb_terms = require('../utility/lmdb/terms');
+const { HTTP_STATUS_CODES } = require('../utility/errors/commonErrors');
 /**
  * the purpose of this is to hold the expected errors to check from our functions being tested
  */
@@ -62,6 +63,7 @@ const TEST_ROLE_PERMS_ERROR = {
     INVALID_PERM_KEY: (table_key) => `Invalid table permission key value '${table_key}'`,
     INVALID_ATTR_PERM_KEY: (attr_perm_key) => `Invalid attribute permission key value '${attr_perm_key}'`,
     MISMATCHED_TABLE_ATTR_PERMS: (schema_table) => `You have a conflict with TABLE permissions for '${schema_table}' being false and ATTRIBUTE permissions being true`,
+    OUTDATED_PERMS_TRANSLATION_ERROR: "This instance was recently upgraded and uses our new role permissions structure. Please login to this instance in HarperDB Studio, go to 'Roles', and click 'Update Role Permission' for all standard roles to migrate them to the new structure.",
     ROLE_PERMS_ERROR: 'Errors in the role permissions JSON provided',
     SCHEMA_PERM_ERROR: (schema_name) => `Your role does not have permission to view schema metadata for '${schema_name}'`,
     SCHEMA_TABLE_PERM_ERROR: (schema_name, table_name) => `Your role does not have permission to view schema.table metadata for '${schema_name}.${table_name}'`,
@@ -83,5 +85,6 @@ module.exports = {
     COMMON_ERROR_MSGS,
     TEST_ROLE_PERMS_ERROR,
     TEST_OPERATION_AUTH_ERROR,
-    TEST_SCHEMA_OP_ERROR
+    TEST_SCHEMA_OP_ERROR,
+    HTTP_STATUS_CODES
 };
