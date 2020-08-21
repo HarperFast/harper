@@ -196,7 +196,10 @@ function chooseOperation(json, callback) {
             }
         }
     } catch (e) {
-        // This should catch all non auth related processing errors and return the message
+        // The below scenarios should catch all non auth related processing errors and return the message
+        if (e.http_resp_code) {
+            return callback(e, null);
+        }
         return callback(e.message, null);
     }
     return callback(null, operation_function);

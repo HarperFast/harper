@@ -92,9 +92,16 @@ function getRolePermissions(role) {
 
         return new_role_perms;
     } catch(e) {
-        const log_msg = `There was an error while translating role permissions for role: ${role_name}.\n ${e.stack}`;
-        logger.error(log_msg);
-        throw handleHDBError(e);
+        if (!role[terms.TIME_STAMP_NAMES_ENUM.UPDATED_TIME] || role[terms.TIME_STAMP_NAMES_ENUM.UPDATED_TIME] < terms.PERMS_UPDATE_RELEASE_TIMESTAMP) {
+            const log_msg = `Role permissions for role '${role_name}' must be updated to align with new structure from the 2.2.0 release.`;
+            logger.error(log_msg);
+            logger.debug(e);
+            throw handleHDBError(new Error(), COMMON_ERROR_MSGS.OUTDATED_PERMS_TRANSLATION_ERROR, HTTP_STATUS_CODES.BAD_REQUEST);
+        } else {
+            const log_msg = `There was an error while translating role permissions for role: ${role_name}.\n ${e.stack}`;
+            logger.error(log_msg);
+            throw handleHDBError(new Error());
+        }
     }
 }
 
@@ -121,9 +128,7 @@ function translateRolePermissions(role, schema) {
                     //need to evaluate individual table perms AND attr perms
                     const table_perms = perms[s].tables[t];
                     const table_schema = schema[s][t];
-                    if (table_perms.attribute_restrictions) {
-                        throw handleHDBError(new Error(), COMMON_ERROR_MSGS.OUTDATED_PERMS_TRANSLATION_ERROR, HTTP_STATUS_CODES.BAD_REQUEST);
-                    }
+
                     const updated_table_perms = getTableAttrPerms(table_perms, table_schema);
                     //we need to set a read value on each schema for easy evaluation during describe ops - if any
                     // CRUD op is set to true for a table in a schema, we set the schema READ perm to true

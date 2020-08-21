@@ -306,7 +306,7 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
             server_utilities.chooseOperation(req.body, (error, operation_function) => {
                 if (error) {
                     harper_logger.error(error);
-                    if (error instanceof PermissionResponseObject ) {
+                    if (error instanceof PermissionResponseObject) {
                         return res.status(hdb_errors.HTTP_STATUS_CODES.FORBIDDEN).send(error);
                     }
                     if (error.http_resp_code) {

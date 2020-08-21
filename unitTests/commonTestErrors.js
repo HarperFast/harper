@@ -80,9 +80,18 @@ const COMMON_ERROR_MSGS = {
     TABLE_REQUIRED: 'table is required'
 };
 
+const CHECK_LOGS_WRAPPER = (err) => `${err} Check logs and try again.`;
+const TEST_DEFAULT_ERROR_MSGS = {
+    500: CHECK_LOGS_WRAPPER("There was an error processing your request."),
+    400: "Invalid request"
+};
+
+const TEST_DEFAULT_ERROR_RESP = TEST_DEFAULT_ERROR_MSGS[HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR];
+
 module.exports = {
     LMDB_ERRORS_ENUM,
     COMMON_ERROR_MSGS,
+    TEST_DEFAULT_ERROR_RESP,
     TEST_ROLE_PERMS_ERROR,
     TEST_OPERATION_AUTH_ERROR,
     TEST_SCHEMA_OP_ERROR,
