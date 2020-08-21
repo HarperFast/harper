@@ -9,7 +9,7 @@ const clonedeep = require('lodash.clonedeep');
 const permissionsTranslator_rw = rewire('../../security/permissionsTranslator');
 const { TEST_NON_SU_ROLE, TEST_SCHEMA_DOG_BREED } = require('../test_data');
 const terms = require('../../utility/hdbTerms');
-const { TEST_ROLE_PERMS_ERROR, HTTP_STATUS_CODES } = require('../commonTestErrors');
+const { TEST_ROLE_PERMS_ERROR, HTTP_STATUS_CODES, TEST_DEFAULT_ERROR_RESP } = require('../commonTestErrors');
 
 const TEST_SCHEMA = 'dev';
 const TEST_PERMS_ENUM = {
@@ -42,7 +42,8 @@ const createAttrPermsObj = (read_perm, insert_perm, update_perm) => ({
 
 const getUpdatedRoleObj = () => {
     const test_role = clonedeep(TEST_NON_SU_ROLE);
-    test_role.__updatedtime__ = Math.random() * 10000;
+    test_role.__createdtime__ = terms.PERMS_UPDATE_RELEASE_TIMESTAMP;
+    test_role.__updatedtime__ = terms.PERMS_UPDATE_RELEASE_TIMESTAMP + Math.round(Math.random() * 100);
     return test_role;
 };
 
@@ -360,9 +361,10 @@ describe('Test permissionsTranslator module', function () {
         });
     })
 
-    describe('Test translateRolePermissions method', () => {
+    describe('Test old perms error handling', () => {
         it('Should return old perms error if attribute_restrictions key is found in perms',() => {
             const test_role = getUpdatedRoleObj();
+            test_role.__updatedtime__ = terms.PERMS_UPDATE_RELEASE_TIMESTAMP - Math.round(Math.random() * 1000000);
 
             delete test_role.permission.dev.tables.breed.attribute_permissions;
             delete test_role.permission.dev.tables.dog.attribute_permissions;
@@ -378,6 +380,59 @@ describe('Test permissionsTranslator module', function () {
 
             expect(test_result.http_resp_msg).to.eql(TEST_ROLE_PERMS_ERROR.OUTDATED_PERMS_TRANSLATION_ERROR);
             expect(test_result.http_resp_code).to.eql(HTTP_STATUS_CODES.BAD_REQUEST);
+        });
+
+        it("Should return correct error message if missing attribute_permissions/restrictions",() => {
+            const test_role = getUpdatedRoleObj();
+            test_role.__updatedtime__ = terms.PERMS_UPDATE_RELEASE_TIMESTAMP - Math.round(Math.random() * 1000000);
+
+            delete test_role.permission.dev.tables.breed.attribute_permissions;
+            delete test_role.permission.dev.tables.dog.attribute_permissions;
+
+            let test_result;
+            try {
+                permissionsTranslator_rw.getRolePermissions(test_role);
+            } catch(err) {
+                test_result = err;
+            }
+
+            expect(test_result.http_resp_msg).to.eql(TEST_ROLE_PERMS_ERROR.OUTDATED_PERMS_TRANSLATION_ERROR);
+            expect(test_result.http_resp_code).to.eql(HTTP_STATUS_CODES.BAD_REQUEST);
+        });
+
+        it("Should return correct error message if error is thrown and updatedtime key does not exist on role.perms",() => {
+            const test_role = getUpdatedRoleObj();
+            delete test_role.__updatedtime__;
+
+            delete test_role.permission.dev.tables.breed.attribute_permissions;
+            delete test_role.permission.dev.tables.dog.attribute_permissions;
+
+            let test_result;
+            try {
+                permissionsTranslator_rw.getRolePermissions(test_role);
+            } catch(err) {
+                test_result = err;
+            }
+
+            expect(test_result.http_resp_msg).to.eql(TEST_ROLE_PERMS_ERROR.OUTDATED_PERMS_TRANSLATION_ERROR);
+            expect(test_result.http_resp_code).to.eql(HTTP_STATUS_CODES.BAD_REQUEST);
+        });
+
+        it("Should return generic error if updatedtime is after release date",() => {
+            const test_role = getUpdatedRoleObj();
+
+            delete test_role.permission.dev.tables.breed.attribute_permissions;
+            delete test_role.permission.dev.tables.dog.attribute_permissions;
+
+            let test_result;
+            try {
+                permissionsTranslator_rw.getRolePermissions(test_role);
+            } catch(err) {
+                test_result = err;
+            }
+
+            expect(test_result.http_resp_msg).to.eql(TEST_DEFAULT_ERROR_RESP);
+            expect(test_result.http_resp_code).to.eql(HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR);
         });
     })
 });

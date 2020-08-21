@@ -434,6 +434,10 @@ const TIME_STAMP_NAMES_ENUM = {
 
 const TIME_STAMP_NAMES = Object.values(TIME_STAMP_NAMES_ENUM);
 
+//This value is used to help evaluate whether or not a permissions translation error is related to old permissions values
+// or if it could be another code-related bug/error.
+const PERMS_UPDATE_RELEASE_TIMESTAMP = 1598486400000;
+
 const VALUE_SEARCH_COMPARATORS = {
     LESS: "<",
     LESS_OR_EQ: "<=",
@@ -533,6 +537,7 @@ module.exports = {
     STORAGE_TYPES_ENUM,
     TIME_STAMP_NAMES_ENUM,
     TIME_STAMP_NAMES,
+    PERMS_UPDATE_RELEASE_TIMESTAMP,
     SEARCH_NOT_FOUND_MESSAGE,
     SEARCH_ATTRIBUTE_NOT_FOUND,
     LICENSE_ROLE_DENIED_RESPONSE,
