@@ -57,7 +57,7 @@ async function parseMessage(runner_message) {
     switch(runner_message.json.operation) {
         case hdb_terms.JOB_TYPE_ENUM.csv_file_load:
             try {
-                response = await runCSVJob(runner_message, bulk_load.fileLoad, runner_message.json);
+                response = await runCSVJob(runner_message, bulk_load.csvFileLoad, runner_message.json);
             } catch(e) {
                 log.error(e);
             }

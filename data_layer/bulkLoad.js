@@ -32,7 +32,7 @@ const ACCEPTABLE_URL_CONTENT_TYPE_ENUM = {
 module.exports = {
     csvDataLoad,
     csvURLLoad,
-    fileLoad,
+    csvFileLoad,
     importFromS3
 };
 
@@ -125,6 +125,21 @@ async function csvURLLoad(json_message) {
         return bulk_load_result;
     } catch (err) {
         throw `Error loading downloaded CSV data into HarperDB: ${err}`;
+    }
+}
+
+async function csvFileLoad(json_message) {
+    let validation_msg = validator.fileObject(json_message);
+    if (validation_msg) {
+        throw new Error(validation_msg);
+    }
+
+    try {
+        let bulk_load_result = await fileLoad(json_message);
+
+        return bulk_load_result;
+    } catch (err) {
+        throw `Error loading CSV data into HarperDB: ${err}`;
     }
 }
 
@@ -259,13 +274,10 @@ function validateResponse(response, url) {
  *
  */
 async function fileLoad(json_message) {
-    if (!('file_type' in json_message)) {
-        json_message.file_type = path.extname(json_message.file_path);
-    }
-    let validation_msg = validator.fileObject(json_message);
-    if (validation_msg) {
-        throw new Error(validation_msg);
-    }
+    // let validation_msg = validator.fileObject(json_message);
+    // if (validation_msg) {
+    //     throw new Error(validation_msg);
+    // }
 
     try {
         let bulk_load_result;

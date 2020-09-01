@@ -63,7 +63,7 @@ required_permissions.set(search.searchByValue.name, new permission(false, [READ_
 required_permissions.set(search.search.name, new permission(false, [READ_PERM]));
 required_permissions.set(bulkLoad.csvDataLoad.name, new permission(false, [INSERT_PERM]));
 required_permissions.set(bulkLoad.csvURLLoad.name, new permission(false, [INSERT_PERM]));
-required_permissions.set(bulkLoad.fileLoad.name, new permission(false, [INSERT_PERM]));
+required_permissions.set(bulkLoad.csvFileLoad.name, new permission(false, [INSERT_PERM]));
 required_permissions.set(bulkLoad.importFromS3.name, new permission(false, [INSERT_PERM]));
 required_permissions.set(schema.createSchema.name, new permission(true, []));
 required_permissions.set(schema.createTable.name, new permission(true, []));
