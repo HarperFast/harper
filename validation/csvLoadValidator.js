@@ -28,6 +28,7 @@ const constraints = {
         }
     },
     file_path: {},
+    file_type: {},
     csv_url: {
         url: {
             allowLocal: true
@@ -43,6 +44,9 @@ data_constraints.data.presence = {
 
 const file_constraints = clone(constraints);
 file_constraints.file_path.presence = {
+    message: " is required",
+};
+file_constraints.file_type.presence = {
     message: " is required",
 };
 

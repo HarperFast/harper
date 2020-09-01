@@ -138,7 +138,7 @@ async function importFromS3(json_message) {
     let s3_file_name = `${Date.now()}${s3_file_type}`;
 
     let s3_file_load_obj = {
-        operation: hdb_terms.OPERATIONS_ENUM.CSV_FILE_LOAD,
+        operation: hdb_terms.OPERATIONS_ENUM.IMPORT_FROM_S3,
         action: json_message.action,
         schema: json_message.schema,
         table: json_message.table,
@@ -147,14 +147,9 @@ async function importFromS3(json_message) {
         file_type: s3_file_type
     };
 
-    let response = await AWSConnector.getFileFromS3(json_message);
-
-    //TODO - update validation step to cover all loads
-    //validateResponse(response, url);
-
-    await writeFileToTempFolder(s3_file_name, response.Body);
-
     try {
+        await downloadFileFromS3(TEMP_DOWNLOAD_DIR, s3_file_name, json_message);
+
         let bulk_load_result = await fileLoad(s3_file_load_obj);
 
         // Remove the downloaded temporary CSV file and directory once fileLoad complete
@@ -197,6 +192,44 @@ async function downloadCSVFile(url, csv_file_name) {
     await writeFileToTempFolder(csv_file_name, response.body);
 }
 
+async function downloadFileFromS3(TEMP_DOWNLOAD_DIR, s3_file_name, json_message) {
+    try {
+        await fs.mkdirp(TEMP_DOWNLOAD_DIR);
+        await fs.writeFile(`${TEMP_DOWNLOAD_DIR}/${s3_file_name}`, "", { flag: 'a+' });
+        let tempFileStream = await fs.createWriteStream(`${TEMP_DOWNLOAD_DIR}/${s3_file_name}`);
+        let s3Stream = AWSConnector.getFileStreamFromS3(json_message);
+
+        s3Stream.on('error', function(err) {
+            throw err;
+        });
+
+        await new Promise((resolve, reject) => {
+            s3Stream.pipe(tempFileStream).on('error', function(err) {
+                console.error('File Stream:', err);
+                reject(err);
+            }).on('close', function() {
+                //TODO - remove
+                console.log('Done.');
+                resolve();
+            });
+        });
+    } catch(err) {
+        //TODO - update error handling
+        console.log(err);
+        handleHDBError(err);
+    }
+}
+
+async function writeFileToTempFolder(file_name, response_body) {
+    try {
+        await fs.mkdirp(TEMP_DOWNLOAD_DIR);
+        await fs.writeFile(`${TEMP_DOWNLOAD_DIR}/${file_name}`, response_body);
+    } catch(err) {
+        logger.error(`Error writing temporary CSV file to storage`);
+        throw err;
+    }
+}
+
 /**
  * Runs multiple validations on response from HTTP client.
  * @param response
@@ -216,18 +249,8 @@ function validateResponse(response, url) {
     }
 }
 
-async function writeFileToTempFolder(file_name, response_body) {
-    try {
-        await fs.mkdirp(TEMP_DOWNLOAD_DIR);
-        await fs.writeFile(`${TEMP_DOWNLOAD_DIR}/${file_name}`, response_body);
-    } catch(err) {
-        logger.error(`Error writing temporary CSV file to storage`);
-        throw err;
-    }
-}
-
 /**
- * Parse and load CSV values.
+ * Parse and load CSV or JSON values.
  *
  * @param json_message - An object representing the CSV file.
  * @returns validation_msg - Contains any validation errors found
@@ -236,6 +259,9 @@ async function writeFileToTempFolder(file_name, response_body) {
  *
  */
 async function fileLoad(json_message) {
+    if (!('file_type' in json_message)) {
+        json_message.file_type = path.extname(json_message.file_path);
+    }
     let validation_msg = validator.fileObject(json_message);
     if (validation_msg) {
         throw new Error(validation_msg);
