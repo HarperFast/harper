@@ -12,7 +12,7 @@
  * */
 const write = require('../data_layer/insert');
 const search = require('../data_layer/search');
-const csv = require('../data_layer/csvBulkLoad');
+const bulkLoad = require('../data_layer/bulkLoad');
 const schema = require('../data_layer/schema');
 const schema_describe = require('../data_layer/schemaDescribe');
 const delete_ = require('../data_layer/delete');
@@ -61,9 +61,10 @@ required_permissions.set(write.update.name, new permission(false, [UPDATE_PERM])
 required_permissions.set(search.searchByHash.name, new permission(false, [READ_PERM]));
 required_permissions.set(search.searchByValue.name, new permission(false, [READ_PERM]));
 required_permissions.set(search.search.name, new permission(false, [READ_PERM]));
-required_permissions.set(csv.csvDataLoad.name, new permission(false, [INSERT_PERM]));
-required_permissions.set(csv.csvFileLoad.name, new permission(false, [INSERT_PERM]));
-required_permissions.set(csv.csvURLLoad.name, new permission(false, [INSERT_PERM]));
+required_permissions.set(bulkLoad.csvDataLoad.name, new permission(false, [INSERT_PERM]));
+required_permissions.set(bulkLoad.csvURLLoad.name, new permission(false, [INSERT_PERM]));
+required_permissions.set(bulkLoad.fileLoad.name, new permission(false, [INSERT_PERM]));
+required_permissions.set(bulkLoad.importFromS3.name, new permission(false, [INSERT_PERM]));
 required_permissions.set(schema.createSchema.name, new permission(true, []));
 required_permissions.set(schema.createTable.name, new permission(true, []));
 required_permissions.set(schema.createAttribute.name, new permission(false, [INSERT_PERM]));

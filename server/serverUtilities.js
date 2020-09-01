@@ -2,7 +2,7 @@
 
 const search = require('../data_layer/search');
 const sql = require('../sqlTranslator/index');
-const csv = require('../data_layer/csvBulkLoad');
+const bulkLoad = require('../data_layer/bulkLoad');
 const schema = require('../data_layer/schema');
 const schema_describe = require('../data_layer/schemaDescribe');
 const delete_ = require('../data_layer/delete');
@@ -293,9 +293,10 @@ function initializeOperationFunctionMap(){
     op_func_map.set(terms.OPERATIONS_ENUM.SEARCH_BY_VALUE, new OperationFunctionObject(p_search_search_by_value));
     op_func_map.set(terms.OPERATIONS_ENUM.SEARCH, new OperationFunctionObject(p_search_search));
     op_func_map.set(terms.OPERATIONS_ENUM.SQL, new OperationFunctionObject(p_sql_evaluate_sql));
-    op_func_map.set(terms.OPERATIONS_ENUM.CSV_DATA_LOAD, new OperationFunctionObject(signalJob, csv.csvDataLoad));
-    op_func_map.set(terms.OPERATIONS_ENUM.CSV_FILE_LOAD, new OperationFunctionObject(signalJob, csv.csvFileLoad));
-    op_func_map.set(terms.OPERATIONS_ENUM.CSV_URL_LOAD, new OperationFunctionObject(signalJob, csv.csvURLLoad));
+    op_func_map.set(terms.OPERATIONS_ENUM.CSV_DATA_LOAD, new OperationFunctionObject(signalJob, bulkLoad.csvDataLoad));
+    op_func_map.set(terms.OPERATIONS_ENUM.CSV_FILE_LOAD, new OperationFunctionObject(signalJob, bulkLoad.csvFileLoad));
+    op_func_map.set(terms.OPERATIONS_ENUM.CSV_URL_LOAD, new OperationFunctionObject(signalJob, bulkLoad.csvURLLoad));
+    op_func_map.set(terms.OPERATIONS_ENUM.IMPORT_FROM_S3, new OperationFunctionObject(signalJob, bulkLoad.importFromS3));
     op_func_map.set(terms.OPERATIONS_ENUM.CREATE_SCHEMA, new OperationFunctionObject(schema.createSchema));
     op_func_map.set(terms.OPERATIONS_ENUM.CREATE_TABLE, new OperationFunctionObject(schema.createTable));
     op_func_map.set(terms.OPERATIONS_ENUM.CREATE_ATTRIBUTE, new OperationFunctionObject(schema.createAttribute));

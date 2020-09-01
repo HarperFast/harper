@@ -195,6 +195,7 @@ const OPERATIONS_ENUM = {
     ADD_NODE: 'add_node',
     UPDATE_NODE: 'update_node',
     EXPORT_TO_S3: 'export_to_s3',
+    IMPORT_FROM_S3: 'import_from_s3',
     DELETE_FILES_BEFORE: 'delete_files_before',
     EXPORT_LOCAL: 'export_local',
     SEARCH_JOBS_BY_START_DATE: 'search_jobs_by_start_date',
@@ -213,6 +214,12 @@ const OPERATIONS_ENUM = {
     SYSTEM_INFORMATION: 'system_information',
     DELETE_TRANSACTION_LOGS_BEFORE: 'delete_transaction_logs_before',
     READ_TRANSACTION_LOG: 'read_transaction_log'
+};
+
+// Defines valid file types that we are able to handle in 'import_from_s3' ops
+const VALID_S3_FILE_TYPES = {
+    CSV: ".csv",
+    JSON: ".json"
 };
 
 // Defines valid SQL operations to be used in the processAST method - this ensure we have appropriate unit test coverage
@@ -336,12 +343,13 @@ const HDB_SETTINGS_DEFAULT_VALUES = {
 // Describes all available job types
 const JOB_TYPE_ENUM = {
     csv_file_load: 'csv_file_load',
-    empty_trash: 'empty_trash',
-    csv_url_load: OPERATIONS_ENUM.CSV_URL_LOAD,
     csv_data_load: OPERATIONS_ENUM.CSV_DATA_LOAD,
-    export_to_s3: 'export_to_s3',
-    export_local: 'export_local',
+    csv_url_load: OPERATIONS_ENUM.CSV_URL_LOAD,
     delete_files_before: 'delete_files_before',
+    empty_trash: 'empty_trash',
+    export_local: 'export_local',
+    export_to_s3: 'export_to_s3',
+    import_from_s3: 'import_from_s3',
     delete_transaction_logs_before: 'delete_transaction_logs_before'
 };
 
@@ -373,7 +381,7 @@ const STORAGE_TYPES_ENUM = {
 
 const LICENSE_VALUES = {
     API_CALL_DEFAULT: 10000,
-    VERSION_DEFAULT: '2.0.0'
+    VERSION_DEFAULT: '2.2.0'
 };
 
 // The maximum ram allocation in MB per HDB child process
@@ -492,6 +500,7 @@ module.exports = {
     SYSTEM_TABLE_NAMES,
     SYSTEM_TABLE_HASH_ATTRIBUTES,
     OPERATIONS_ENUM,
+    VALID_S3_FILE_TYPES,
     VALID_SQL_OPS_ENUM,
     GEO_CONVERSION_ENUM,
     HDB_SETTINGS_NAMES,

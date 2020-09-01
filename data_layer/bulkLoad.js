@@ -5,15 +5,17 @@ const validator = require('../validation/csvLoadValidator');
 const request_promise = require('request-promise-native');
 const hdb_terms = require('../utility/hdbTerms');
 const hdb_utils = require('../utility/common_utils');
-const hdb_errors = require('../utility/errors/commonErrors');
+const { handleHDBError, hdb_errors } = require('../utility/errors/hdbError');
 const logger = require('../utility/logging/harper_logger');
 const papa_parse = require('papaparse');
 const fs = require('fs-extra');
+const path = require('path');
 hdb_utils.promisifyPapaParse();
 const env = require('../utility/environment/environmentManager');
 const socket_cluster_util = require('../server/socketcluster/util/socketClusterUtils');
 const transact_to_clustering_utils = require('../server/transactToClusteringUtilities');
 const op_func_caller = require('../utility/OperationFunctionCaller');
+const AWSConnector = require('../utility/AWS/AWSConnector');
 
 const CSV_NO_RECORDS_MSG = 'No records parsed from csv file.';
 
@@ -30,7 +32,8 @@ const ACCEPTABLE_URL_CONTENT_TYPE_ENUM = {
 module.exports = {
     csvDataLoad,
     csvURLLoad,
-    csvFileLoad
+    fileLoad,
+    importFromS3
 };
 
 /**
@@ -80,7 +83,7 @@ async function csvDataLoad(json_message) {
 }
 
 /**
- * Orchestrates a CSV data load via a file URL. First downloads the file to a temporary folder/file, then calls csvFileLoad on the
+ * Orchestrates a CSV data load via a file URL. First downloads the file to a temporary folder/file, then calls fileLoad on the
  * downloaded file. Finally deletes temporary folder and file.
  * @param json_message
  * @returns {Promise<void>}
@@ -99,7 +102,8 @@ async function csvURLLoad(json_message) {
         schema: json_message.schema,
         table: json_message.table,
         transact_to_cluster: json_message.transact_to_cluster,
-        file_path: `${TEMP_DOWNLOAD_DIR}/${csv_file_name}`
+        file_path: `${TEMP_DOWNLOAD_DIR}/${csv_file_name}`,
+        file_type: '.csv'
     };
 
     try {
@@ -109,14 +113,56 @@ async function csvURLLoad(json_message) {
     }
 
     try {
-        let bulk_load_result = await csvFileLoad(csv_file_load_obj);
-        // Remove the downloaded temporary CSV file and directory once csvFileLoad complete
+        let bulk_load_result = await fileLoad(csv_file_load_obj);
+        // Remove the downloaded temporary CSV file and directory once fileLoad complete
 
         try {
             await fs.access(csv_file_load_obj.file_path);
             await fs.unlink(csv_file_load_obj.file_path);
         }catch(e){
             logger.warn(`could not delete temp csv file ${csv_file_load_obj.file_path}, file does not exist`);
+        }
+        return bulk_load_result;
+    } catch (err) {
+        throw `Error loading downloaded CSV data into HarperDB: ${err}`;
+    }
+}
+
+async function importFromS3(json_message) {
+    // let validation_msg = validator.urlObject(json_message);
+    // if (validation_msg) {
+    //     throw new Error(validation_msg);
+    // }
+
+    let s3_file_type = path.extname(json_message.s3.key);
+    let s3_file_name = `${Date.now()}${s3_file_type}`;
+
+    let s3_file_load_obj = {
+        operation: hdb_terms.OPERATIONS_ENUM.CSV_FILE_LOAD,
+        action: json_message.action,
+        schema: json_message.schema,
+        table: json_message.table,
+        transact_to_cluster: json_message.transact_to_cluster,
+        file_path: `${TEMP_DOWNLOAD_DIR}/${s3_file_name}`,
+        file_type: s3_file_type
+    };
+
+    let response = await AWSConnector.getFileFromS3(json_message);
+
+    //TODO - update validation step to cover all loads
+    //validateResponse(response, url);
+
+    await writeFileToTempFolder(s3_file_name, response.Body);
+
+    try {
+        let bulk_load_result = await fileLoad(s3_file_load_obj);
+
+        // Remove the downloaded temporary CSV file and directory once fileLoad complete
+        try {
+            await fs.access(s3_file_load_obj.file_path);
+            await fs.unlink(s3_file_load_obj.file_path);
+        }catch(e){
+            logger.warn(`could not delete temp csv file ${s3_file_load_obj.file_path}, file does not exist`);
         }
         return bulk_load_result;
     } catch (err) {
@@ -148,13 +194,7 @@ async function downloadCSVFile(url, csv_file_name) {
 
     validateResponse(response, url);
 
-    try {
-        await fs.mkdirp(TEMP_DOWNLOAD_DIR);
-        await fs.writeFile(`${TEMP_DOWNLOAD_DIR}/${csv_file_name}`, response.body);
-    } catch(err) {
-        logger.error(`Error writing temporary CSV file to storage`);
-        throw err;
-    }
+    await writeFileToTempFolder(csv_file_name, response.body);
 }
 
 /**
@@ -176,6 +216,16 @@ function validateResponse(response, url) {
     }
 }
 
+async function writeFileToTempFolder(file_name, response_body) {
+    try {
+        await fs.mkdirp(TEMP_DOWNLOAD_DIR);
+        await fs.writeFile(`${TEMP_DOWNLOAD_DIR}/${file_name}`, response_body);
+    } catch(err) {
+        logger.error(`Error writing temporary CSV file to storage`);
+        throw err;
+    }
+}
+
 /**
  * Parse and load CSV values.
  *
@@ -185,14 +235,26 @@ function validateResponse(response, url) {
  * @return err - any errors found during the bulk load
  *
  */
-async function csvFileLoad(json_message) {
+async function fileLoad(json_message) {
     let validation_msg = validator.fileObject(json_message);
     if (validation_msg) {
         throw new Error(validation_msg);
     }
 
     try {
-        let bulk_load_result = await callPapaParse(json_message);
+        let bulk_load_result;
+
+        switch (json_message.file_type) {
+            case hdb_terms.VALID_S3_FILE_TYPES.CSV:
+                bulk_load_result = await callPapaParse(json_message);
+                break;
+            case hdb_terms.VALID_S3_FILE_TYPES.JSON:
+                bulk_load_result = await insertJson(json_message);
+                break;
+            default:
+                //TODO - add error handling here? We should never get here
+                break;
+        }
 
         return buildCSVResponseMsg(bulk_load_result.records, bulk_load_result.number_written);
     } catch(err) {
@@ -211,23 +273,27 @@ async function csvFileLoad(json_message) {
  * @returns if validation error found returns Promise<error>, if no error nothing is returned.
  */
 async function validateChunk(json_message, reject, results, parser) {
-    if (results.data.length === 0) {
+    const results_data = results.data ? results.data : results;
+    if (results_data.length === 0) {
         return;
     }
 
     // parser pause and resume prevent the parser from getting ahead of validation.
-    parser.pause();
-
+    if (parser) {
+        parser.pause();
+    }
     let write_object = {
         operation: json_message.operation,
         schema: json_message.schema,
         table: json_message.table,
-        records: results.data
+        records: results_data
     };
 
     try {
         await insert.validation(write_object);
-        parser.resume();
+        if (parser) {
+            parser.resume();
+        }
     } catch(err) {
         logger.error(err);
         // reject is a promise object bound to chunk function through hdb_utils.promisifyPapaParse(). In the case of an error
@@ -247,20 +313,31 @@ async function validateChunk(json_message, reject, results, parser) {
  * @returns if validation error found returns Promise<error>, if no error nothing is returned.
  */
 async function insertChunk(json_message, insert_results, reject, results, parser) {
-    if (results.data.length === 0) {
+    const results_data = results.data ? results.data : results;
+    if (results_data === 0) {
         return;
     }
 
     // parser pause and resume prevent the parser from getting ahead of insert.
-    parser.pause();
+    if (parser) {
+        parser.pause();
+    }
 
-    let fields = results.meta.fields;
+    let fields = results.meta ? results.meta.fields : null;
 
-    results.data.forEach(record=>{
-        if(!hdb_utils.isEmpty(record) && !hdb_utils.isEmpty(record['__parsed_extra'])){
-            delete record['__parsed_extra'];
-        }
-    });
+    if (fields) {
+        results_data.forEach(record=>{
+            if(!hdb_utils.isEmpty(record) && !hdb_utils.isEmpty(record['__parsed_extra'])){
+                delete record['__parsed_extra'];
+            }
+        });
+    } else {
+        const fields_set = new Set();
+        results_data.forEach(record => {
+            Object.keys(record).forEach(key => fields_set.add(key));
+        });
+        fields = [...fields_set];
+    }
 
     try {
         let converted_msg = {
@@ -268,12 +345,14 @@ async function insertChunk(json_message, insert_results, reject, results, parser
             table: json_message.table,
             action: json_message.action,
             transact_to_cluster: json_message.transact_to_cluster,
-            data: results.data
+            data: results_data
         };
         let bulk_load_chunk_result = await op_func_caller.callOperationFunctionAsAwait(callBulkLoad, converted_msg, postCSVLoadFunction.bind(null, fields));
         insert_results.records += bulk_load_chunk_result.records;
         insert_results.number_written += bulk_load_chunk_result.number_written;
-        parser.resume();
+        if (parser) {
+            parser.resume();
+        }
     } catch(err) {
         logger.error(err);
         // reject is a promise object bound to chunk function through hdb_utils.promisifyPapaParse(). In the case of an error
@@ -307,6 +386,44 @@ async function callPapaParse(json_message) {
         stream = fs.createReadStream(json_message.file_path, {highWaterMark:HIGHWATERMARK});
         stream.setEncoding('utf8');
         await papa_parse.parsePromise(stream, insertChunk.bind(null, json_message, insert_results));
+        stream.destroy();
+
+        return insert_results;
+    } catch(err) {
+        logger.error(err);
+        throw err;
+    }
+}
+
+async function insertJson(json_message) {
+    // passing insert_results object by reference to insertChunk function where it accumulate values from bulk load results.
+    let insert_results = {
+        records: 0,
+        number_written: 0
+    };
+
+    try {
+        let stream = fs.createReadStream(json_message.file_path, {highWaterMark:HIGHWATERMARK});
+        stream.setEncoding('utf8');
+        await new Promise((resolve, reject) => {
+            stream.on('data', async (chunk) => {
+                await validateChunk(json_message, reject, JSON.parse(chunk), stream);
+            });
+            stream.on('end',  () => {
+                resolve();
+            });
+        });
+
+        stream = fs.createReadStream(json_message.file_path, {highWaterMark:HIGHWATERMARK});
+        stream.setEncoding('utf8');
+        await new Promise((resolve, reject) => {
+            stream.on('data', async (chunk) => {
+                await insertChunk(json_message, insert_results, reject, JSON.parse(chunk), stream);
+            });
+            stream.on('end',  () => {
+                resolve();
+            });
+        });
         stream.destroy();
 
         return insert_results;

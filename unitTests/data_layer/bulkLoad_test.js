@@ -10,7 +10,7 @@ const sinon = require('sinon');
 const sinon_chai = require('sinon-chai');
 chai.use(sinon_chai);
 const rewire = require('rewire');
-let csv_rewire = rewire('../../data_layer/csvBulkLoad');
+let bulkLoad_rewire = rewire('../../data_layer/bulkLoad');
 const hdb_terms = require('../../utility/hdbTerms');
 const hdb_utils = require('../../utility/common_utils');
 const sc_utils = require('../../server/socketcluster/util/socketClusterUtils');
@@ -59,11 +59,11 @@ function  postCSVLoadFunction_stub(orig_bulk_msg, result, orig_req) {
     return result;
 }
 
-describe('Test csvBulkLoad.js', () => {
+describe('Test bulkLoad.js', () => {
     let call_papaparse_stub;
     let call_papaparse_rewire;
     let json_message_fake = {
-        "operation": "csv_file_load",
+        "operation": "file_load",
         "action": "insert",
         "schema": "golden",
         "table": "retriever",
@@ -113,9 +113,9 @@ describe('Test csvBulkLoad.js', () => {
         let bulk_load_stub_orig = undefined;
 
         before(() => {
-            bulk_load_stub_orig = csv_rewire.__get__('bulkLoad');
+            bulk_load_stub_orig = bulkLoad_rewire.__get__('bulkLoad');
             bulk_load_stub = sandbox.stub().returns(BULK_LOAD_RESPONSE);
-            bulk_load_rewire = csv_rewire.__set__('bulkLoad', bulk_load_stub);
+            bulk_load_rewire = bulkLoad_rewire.__set__('bulkLoad', bulk_load_stub);
         });
 
         beforeEach(function () {
@@ -127,7 +127,7 @@ describe('Test csvBulkLoad.js', () => {
 
         afterEach(function () {
             sandbox.restore();
-            bulk_load_rewire = csv_rewire.__set__('bulkLoad', bulk_load_stub_orig);
+            bulk_load_rewire = bulkLoad_rewire.__set__('bulkLoad', bulk_load_stub_orig);
         });
 
         after(() => {
@@ -136,7 +136,7 @@ describe('Test csvBulkLoad.js', () => {
 
         it('Test csvDataLoad nominal case with valid file and valid column names/data', async function() {
             try {
-                let result = await csv_rewire.csvDataLoad(test_msg);
+                let result = await bulkLoad_rewire.csvDataLoad(test_msg);
                 assert.equal(result, BULK_LOAD_RESPONSE.message, 'Got incorrect response');
             } catch(e) {
                 throw e;
@@ -146,7 +146,7 @@ describe('Test csvBulkLoad.js', () => {
         it('Test csvDataLoad invalid column names, expect exception', async function() {
             test_msg.data = INVALID_CSV_ID_COLUMN_NAME;
             let response = undefined;
-            await csv_rewire.csvDataLoad(test_msg).catch( (e) => {
+            await bulkLoad_rewire.csvDataLoad(test_msg).catch( (e) => {
                 response = e;
             });
             assert.ok((response instanceof Error) === true, 'Did not get expected exception');
@@ -155,7 +155,7 @@ describe('Test csvBulkLoad.js', () => {
         it('Test csvDataLoad missing data, expect exception', async function() {
             test_msg.data = null;
             let response = undefined;
-            await csv_rewire.csvDataLoad(test_msg).catch( (e) => {
+            await bulkLoad_rewire.csvDataLoad(test_msg).catch( (e) => {
                 response = e;
             });
             assert.ok((response instanceof Error) === true, 'Did not get expected exception');
@@ -164,7 +164,7 @@ describe('Test csvBulkLoad.js', () => {
         it('Test csvDataLoad bad csv data, expect nothing loaded message' , async function() {
             test_msg.data = 'a, a a a';
             let response = undefined;
-            response = await csv_rewire.csvDataLoad(test_msg).catch( (e) => {
+            response = await bulkLoad_rewire.csvDataLoad(test_msg).catch( (e) => {
                 response = e;
             });
             assert.equal(response, 'No records parsed from csv file.', 'Did not get expected response message');
@@ -177,13 +177,13 @@ describe('Test csvBulkLoad.js', () => {
                 number_written: '1',
                 records: '1'
             });
-            csv_rewire.__set__('bulkLoad', bulk_load_stub);
+            bulkLoad_rewire.__set__('bulkLoad', bulk_load_stub);
             let response = undefined;
-            response = await csv_rewire.csvDataLoad(test_msg).catch((e) => {
+            response = await bulkLoad_rewire.csvDataLoad(test_msg).catch((e) => {
                 response = e;
             });
             assert.equal(response, 'successfully loaded 1 of 1 records', 'Did not get expected response message');
-            csv_rewire.__set__('bulkLoad', bulk_load_stub_orig);
+            bulkLoad_rewire.__set__('bulkLoad', bulk_load_stub_orig);
         });
     });
 
@@ -192,11 +192,11 @@ describe('Test csvBulkLoad.js', () => {
         let download_csv_stub = sandbox.stub();
         let remove_dir_stub;
         let success_msg = 'Successfully loaded 77 of 77 records';
-        let csv_file_load_stub = sandbox.stub().resolves(success_msg);
+        let file_load_stub = sandbox.stub().resolves(success_msg);
 
         before(() => {
-            csv_rewire.__set__('downloadCSVFile', download_csv_stub);
-            csv_rewire.__set__('csvFileLoad', csv_file_load_stub);
+            bulkLoad_rewire.__set__('downloadCSVFile', download_csv_stub);
+            bulkLoad_rewire.__set__('fileLoad', file_load_stub);
             remove_dir_stub = sandbox.stub(hdb_utils, 'removeDir');
         });
 
@@ -206,7 +206,7 @@ describe('Test csvBulkLoad.js', () => {
 
         it('Test bad URL throws validation error', async () => {
             CSV_URL_MESSAGE.csv_url = "breeds.csv";
-            let test_err_result = await test_utils.testError(csv_rewire.csvURLLoad(CSV_URL_MESSAGE), 'Error: Csv url is not a valid url');
+            let test_err_result = await test_utils.testError(bulkLoad_rewire.csvURLLoad(CSV_URL_MESSAGE), 'Error: Csv url is not a valid url');
 
             expect(test_err_result).to.be.true;
         });
@@ -214,7 +214,7 @@ describe('Test csvBulkLoad.js', () => {
         it('Test for nominal behaviour and success message is returned', async () => {
             CSV_URL_MESSAGE.csv_url = 'http://data.neo4j.com/northwind/products.csv';
             sandbox.stub(validator, 'urlObject').returns(null);
-            let result = await csv_rewire.csvURLLoad(CSV_URL_MESSAGE);
+            let result = await bulkLoad_rewire.csvURLLoad(CSV_URL_MESSAGE);
 
             expect(result).to.equal(success_msg);
         });
@@ -225,7 +225,7 @@ describe('Test csvBulkLoad.js', () => {
         let response_fake = {
             body: 'id, name \n 1, harper\n'
         };
-        let downloadCSVFile_rw = csv_rewire.__get__('downloadCSVFile');
+        let downloadCSVFile_rw = bulkLoad_rewire.__get__('downloadCSVFile');
         let sandbox = sinon.createSandbox();
         let request_response_stub = sandbox.stub().resolves(response_fake);
         let validate_response_stub = sandbox.stub();
@@ -233,7 +233,7 @@ describe('Test csvBulkLoad.js', () => {
         let write_file_stub;
 
         before(() => {
-            csv_rewire.__set__('validateResponse', validate_response_stub);
+            bulkLoad_rewire.__set__('validateResponse', validate_response_stub);
             mk_dir_stub = sandbox.stub(fs, 'mkdirp');
             write_file_stub = sandbox.stub(fs, 'writeFile');
         });
@@ -253,7 +253,7 @@ describe('Test csvBulkLoad.js', () => {
         });
 
         it('Test for nominal behaviour, stubs are called as expected', async () => {
-            csv_rewire.__set__('request_promise', request_response_stub);
+            bulkLoad_rewire.__set__('request_promise', request_response_stub);
             let csv_file_name = `${Date.now()}.csv`;
             await downloadCSVFile_rw('www.csv.com', csv_file_name);
 
@@ -271,7 +271,7 @@ describe('Test csvBulkLoad.js', () => {
     });
 
     describe('Test validateResponse function', () => {
-        let validateResponse_rw = csv_rewire.__get__('validateResponse');
+        let validateResponse_rw = bulkLoad_rewire.__get__('validateResponse');
         let url_fake = 'www.csv.com';
 
         it('Test that bad error code is handled', () => {
@@ -327,7 +327,7 @@ describe('Test csvBulkLoad.js', () => {
         });
     });
 
-    describe('Test csvFileLoad function', () => {
+    describe('Test fileLoad function', () => {
         let validation_msg_stub;
         let fs_access_stub;
         let logger_error_spy;
@@ -339,7 +339,7 @@ describe('Test csvBulkLoad.js', () => {
 
         before(() => {
             call_papaparse_stub = sandbox.stub().resolves(bulk_load_result_fake);
-            call_papaparse_rewire = csv_rewire.__set__('callPapaParse', call_papaparse_stub);
+            call_papaparse_rewire = bulkLoad_rewire.__set__('callPapaParse', call_papaparse_stub);
         });
 
         beforeEach(() => {
@@ -361,7 +361,7 @@ describe('Test csvBulkLoad.js', () => {
             let error;
 
             try {
-                await csv_rewire.csvFileLoad(json_message_fake);
+                await bulkLoad_rewire.fileLoad(json_message_fake);
             } catch(err) {
                 error = err;
             }
@@ -372,7 +372,7 @@ describe('Test csvBulkLoad.js', () => {
         });
 
         it('Test success message is returned', async () => {
-            let result = await csv_rewire.csvFileLoad(json_message_fake);
+            let result = await bulkLoad_rewire.fileLoad(json_message_fake);
 
             expect(result).to.equal(`successfully loaded ${bulk_load_result_fake.number_written} of ${bulk_load_result_fake.records} records`);
             expect(call_papaparse_stub).to.have.been.calledOnce;
@@ -383,7 +383,7 @@ describe('Test csvBulkLoad.js', () => {
             let error;
 
             try {
-                await csv_rewire.csvFileLoad(json_message_fake);
+                await bulkLoad_rewire.fileLoad(json_message_fake);
             } catch(err) {
                 error = err;
             }
@@ -410,7 +410,7 @@ describe('Test csvBulkLoad.js', () => {
 
         before(() => {
             sandbox.restore();
-            validate_chunk_rewire = csv_rewire.__get__('validateChunk');
+            validate_chunk_rewire = bulkLoad_rewire.__get__('validateChunk');
             insert_validation_stub = sandbox.stub(insert, 'validation').resolves();
             console_info_spy = sandbox.spy(console, 'info');
             logger_error_spy = sandbox.spy(logger, 'error');
@@ -469,9 +469,9 @@ describe('Test csvBulkLoad.js', () => {
 
         beforeEach(() => {
             call_bulk_load_stub = sandbox.stub().resolves(bulk_load_result_fake);
-            call_bulk_load_orig_stub = csv_rewire.__get__('callBulkLoad');
-            insert_chunk_rewire = csv_rewire.__get__('insertChunk');
-            call_bulk_load_rewire = csv_rewire.__set__('callBulkLoad', call_bulk_load_stub);
+            call_bulk_load_orig_stub = bulkLoad_rewire.__get__('callBulkLoad');
+            insert_chunk_rewire = bulkLoad_rewire.__get__('insertChunk');
+            call_bulk_load_rewire = bulkLoad_rewire.__set__('callBulkLoad', call_bulk_load_stub);
             console_info_spy = sandbox.spy(console, 'info');
             logger_error_spy = sandbox.spy(logger, 'error');
         });
@@ -479,7 +479,7 @@ describe('Test csvBulkLoad.js', () => {
         afterEach(() => {
             sandbox.restore();
             call_bulk_load_rewire();
-            csv_rewire.__set__('callBulkLoad', call_bulk_load_orig_stub);
+            bulkLoad_rewire.__set__('callBulkLoad', call_bulk_load_orig_stub);
         });
 
         it('Test validation function returns if no data', async () => {
@@ -536,7 +536,7 @@ describe('Test csvBulkLoad.js', () => {
             fs_create_read_stream_stub = sandbox.stub(fs, 'createReadStream').returns(stream_fake);
             papaparse_parse_stub = sandbox.stub(papa_parse, 'parsePromise');
             logger_error_stub = sandbox.stub(logger, 'error');
-            call_papaparse_rewire = csv_rewire.__get__('callPapaParse');
+            call_papaparse_rewire = bulkLoad_rewire.__get__('callPapaParse');
         });
 
         after(() => {
@@ -584,7 +584,7 @@ describe('Test csvBulkLoad.js', () => {
         before(() => {
             insert_insert_stub = sandbox.stub(insert, 'insert').resolves(insert_response_fake);
             insert_update_stub = sandbox.stub(insert, 'update').resolves(update_response_fake);
-            bulk_load_rewire = csv_rewire.__get__('bulkLoad');
+            bulk_load_rewire = bulkLoad_rewire.__get__('bulkLoad');
         });
 
         after(() => {
@@ -641,7 +641,7 @@ describe('Test csvBulkLoad.js', () => {
             number_written: 3
         };
         let ORIGINATOR_NAME = 'somemachine';
-        let postCSVLoadFunction = csv_rewire.__get__('postCSVLoadFunction');
+        let postCSVLoadFunction = bulkLoad_rewire.__get__('postCSVLoadFunction');
         beforeEach(() => {
             post_to_cluster_stub = sandbox.stub(hdb_utils, `sendTransactionToSocketCluster`).returns();
             //concat_message_stub = sandbox.stub(hdb_utils, 'concatSourceMessageHeader').returns();

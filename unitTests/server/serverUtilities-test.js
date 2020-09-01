@@ -57,11 +57,11 @@ describe('test getOperationFunction', ()=>{
         assert.deepStrictEqual(result.job_operation_function.name, 'csvDataLoad');
     });
 
-    it('test CSV_FILE_LOAD', ()=>{
-        let result = server_utilities.getOperationFunction({operation: 'csv_file_load'});
+    it('test FILE_LOAD', ()=>{
+        let result = server_utilities.getOperationFunction({operation: 'file_load'});
 
         assert.deepStrictEqual(result.operation_function.name, 'signalJob');
-        assert.deepStrictEqual(result.job_operation_function.name, 'csvFileLoad');
+        assert.deepStrictEqual(result.job_operation_function.name, 'fileLoad');
     });
 
     it('test CSV_URL_LOAD', ()=>{
