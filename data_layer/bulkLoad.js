@@ -134,6 +134,8 @@ async function csvFileLoad(json_message) {
         throw new Error(validation_msg);
     }
 
+    json_message.file_type = ".csv";
+
     try {
         let bulk_load_result = await fileLoad(json_message);
 
@@ -144,7 +146,7 @@ async function csvFileLoad(json_message) {
 }
 
 async function importFromS3(json_message) {
-    // let validation_msg = validator.urlObject(json_message);
+    // let validation_msg = validator.s3FileObject(json_message);
     // if (validation_msg) {
     //     throw new Error(validation_msg);
     // }
@@ -274,11 +276,6 @@ function validateResponse(response, url) {
  *
  */
 async function fileLoad(json_message) {
-    // let validation_msg = validator.fileObject(json_message);
-    // if (validation_msg) {
-    //     throw new Error(validation_msg);
-    // }
-
     try {
         let bulk_load_result;
 
@@ -352,7 +349,7 @@ async function validateChunk(json_message, reject, results, parser) {
  */
 async function insertChunk(json_message, insert_results, reject, results, parser) {
     const results_data = results.data ? results.data : results;
-    if (results_data === 0) {
+    if (results_data.length === 0) {
         return;
     }
 
