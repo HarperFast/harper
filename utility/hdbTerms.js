@@ -222,6 +222,14 @@ const VALID_S3_FILE_TYPES = {
     JSON: ".json"
 };
 
+// Defines the keys required in a request body for accessing a S3 bucket
+const S3_BUCKET_AUTH_KEYS = {
+    AWS_ACCESS_KEY: "aws_access_key_id",
+    AWS_SECRET: "aws_secret_access_key",
+    AWS_BUCKET: "bucket",
+    AWS_FILE_KEY: "key"
+};
+
 // Defines valid SQL operations to be used in the processAST method - this ensure we have appropriate unit test coverage
 // for all SQL operations that are dynamically set after the chooseOperation method which behaves differently for the
 // evaluateSQL operation.
@@ -501,6 +509,7 @@ module.exports = {
     SYSTEM_TABLE_HASH_ATTRIBUTES,
     OPERATIONS_ENUM,
     VALID_S3_FILE_TYPES,
+    S3_BUCKET_AUTH_KEYS,
     VALID_SQL_OPS_ENUM,
     GEO_CONVERSION_ENUM,
     HDB_SETTINGS_NAMES,

@@ -7,7 +7,7 @@ const fs = require('fs');
 
 const { common_validators } = require('./common_validators');
 // Maximum file size in bytes
-const MAX_CSV_FILE_SIZE = 1000000000;
+const MAX_FILE_SIZE = 1000000000;
 
 const actions = ["update", "insert"];
 const constraints = {
@@ -36,6 +36,30 @@ const constraints = {
     data: {}
 };
 
+const { AWS_ACCESS_KEY, AWS_SECRET, AWS_BUCKET, AWS_FILE_KEY } = hdb_terms.S3_BUCKET_AUTH_KEYS;
+
+const s3_constraints = {
+    s3: {
+        presence: true
+    },
+    [`s3.${AWS_ACCESS_KEY}`]: {
+        presence: true,
+        type: "String"
+    },
+    [`s3.${AWS_SECRET}`]: {
+        presence: true,
+        type: "String"
+    },
+    [`s3.${AWS_BUCKET}`]: {
+        presence: true,
+        type: "String"
+    },
+    [`s3.${AWS_FILE_KEY}`]: {
+        presence: true,
+        type: "String"
+    }
+};
+
 const data_constraints = clone(constraints);
 data_constraints.data.presence = {
     message: " is required"
@@ -45,6 +69,8 @@ const file_constraints = clone(constraints);
 file_constraints.file_path.presence = {
     message: " is required",
 };
+
+const s3_file_constraints = Object.assign(clone(constraints), s3_constraints);
 
 const url_constraints = clone(constraints);
 url_constraints.csv_url.presence = {
@@ -63,6 +89,11 @@ function urlObject(object) {
 
 function fileObject(object) {
     let validate_res = validator.validateObject(object, file_constraints);
+    return postValidateChecks(object, validate_res);
+}
+
+function s3FileObject(object) {
+    let validate_res = validator.validateObject(object, s3_file_constraints);
     return postValidateChecks(object, validate_res);
 }
 
@@ -93,8 +124,8 @@ function postValidateChecks(object, validate_res) {
 
             try {
                 let file_size = fs.statSync(object.file_path).size;
-                if (file_size > MAX_CSV_FILE_SIZE) {
-                    return new Error(`File size is ${file_size} bytes, which exceeded the maximum size allowed of: ${MAX_CSV_FILE_SIZE} bytes`);
+                if (file_size > MAX_FILE_SIZE) {
+                    return new Error(`File size is ${file_size} bytes, which exceeded the maximum size allowed of: ${MAX_FILE_SIZE} bytes`);
                 }
             } catch(err) {
                 log.error(err);
@@ -108,5 +139,6 @@ function postValidateChecks(object, validate_res) {
 module.exports = {
     dataObject,
     urlObject,
-    fileObject
+    fileObject,
+    s3FileObject
 };

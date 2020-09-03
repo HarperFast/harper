@@ -1,7 +1,7 @@
 "use strict";
 
 const insert = require('./insert');
-const validator = require('../validation/csvLoadValidator');
+const validator = require('../validation/fileLoadValidator');
 const request_promise = require('request-promise-native');
 const hdb_terms = require('../utility/hdbTerms');
 const hdb_utils = require('../utility/common_utils');
@@ -146,10 +146,10 @@ async function csvFileLoad(json_message) {
 }
 
 async function importFromS3(json_message) {
-    // let validation_msg = validator.s3FileObject(json_message);
-    // if (validation_msg) {
-    //     throw new Error(validation_msg);
-    // }
+    let validation_msg = validator.s3FileObject(json_message);
+    if (validation_msg) {
+        throw new Error(validation_msg);
+    }
 
     let s3_file_type = path.extname(json_message.s3.key);
     let s3_file_name = `${Date.now()}${s3_file_type}`;

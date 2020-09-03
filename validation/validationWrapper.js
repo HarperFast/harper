@@ -11,6 +11,39 @@
 
 const validate = require('validate.js');
 
+//This validator is added here b/c we are still on version 0.11.1 that does not include this build in functionality.  When
+// we do update, we can remove.  The reason we have not is related to a breaking change on the "presence" validator rule
+// that will require a lot of fixes on our.  More here - https://validatejs.org/#changelog-0-12-0
+validate.validators.type = function(value, options, key, attributes) {
+    // allow empty values by default (needs to be checked by "presence" check)
+    if(value === null || typeof value === 'undefined') {
+        return null;
+    }
+
+    // allow defining object of any type using their constructor. --> options = {clazz: ClassName}
+    if(typeof options  === 'object' && options.clazz) {
+        return value instanceof options.clazz ? null : ' is not of type "' + options.clazz.name + '"';
+    }
+
+    if(!validate.validators.type.checks[options]) {
+        throw new Error("Could not find validator for type " + options);
+    }
+    return validate.validators.type.checks[options](value) ? null : ' must be a ' + `'${options}' value`;
+};
+validate.validators.type.checks = {
+    Object: function(value) {
+        return validate.isObject(value) && !validate.isArray(value);
+    },
+    Array: validate.isArray,
+    Integer: validate.isInteger,
+    Number: validate.isNumber,
+    String: validate.isString,
+    Date: validate.isDate,
+    Boolean: function(value) {
+        return typeof value === 'boolean';
+    }
+};
+
 module.exports = {
     validateObject,
     validateObjectAsync

@@ -19,7 +19,7 @@ const hdb_util = require('../utility/common_utils');
 const {promisify} = require('util');
 const moment = require('moment');
 const hdb_sql = require('../sqlTranslator/index');
-const csv_load_validator = require('../validation/csvLoadValidator');
+const file_load_validator = require('../validation/fileLoadValidator');
 
 //Promisified functions
 const p_search_by_value = promisify(search.searchByValue);
@@ -103,13 +103,16 @@ async function addJob(json_body) {
     let validation_msg;
     switch (operation) {
         case hdb_terms.OPERATIONS_ENUM.CSV_FILE_LOAD:
-            validation_msg = csv_load_validator.fileObject(json_body);
+            validation_msg = file_load_validator.fileObject(json_body);
             break;
         case hdb_terms.OPERATIONS_ENUM.CSV_URL_LOAD:
-            validation_msg = csv_load_validator.urlObject(json_body);
+            validation_msg = file_load_validator.urlObject(json_body);
             break;
         case hdb_terms.OPERATIONS_ENUM.CSV_DATA_LOAD:
-            validation_msg = csv_load_validator.dataObject(json_body);
+            validation_msg = file_load_validator.dataObject(json_body);
+            break;
+        case hdb_terms.OPERATIONS_ENUM.IMPORT_FROM_S3:
+            validation_msg = file_load_validator.s3FileObject(json_body);
             break;
         default:
             break;

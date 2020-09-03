@@ -9,7 +9,7 @@ const jobs = rewire('../../server/jobs');
 const sinon = require('sinon');
 const hdb_term = require('../../utility/hdbTerms');
 const JobObject = require('../../server/JobObject');
-const csv_load_validator = require('../../validation/csvLoadValidator');
+const csv_load_validator = require('../../validation/fileLoadValidator');
 
 const INSERT_RESULT = {
     'message': 'inserted 1 of 1 records',
