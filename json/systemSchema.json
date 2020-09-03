@@ -99,6 +99,9 @@
         "attribute": "hash"
       },
       {
+        "attribute": "auth_token"
+      },
+      {
         "attribute":"__createdtime__"
       },
       {
