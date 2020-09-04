@@ -58,7 +58,7 @@ describe('test getOperationFunction', ()=>{
     });
 
     it('test CSV_FILE_LOAD', ()=>{
-        let result = server_utilities.getOperationFunction({operation: 'file_load'});
+        let result = server_utilities.getOperationFunction({operation: 'csv_file_load'});
 
         assert.deepStrictEqual(result.operation_function.name, 'signalJob');
         assert.deepStrictEqual(result.job_operation_function.name, 'csvFileLoad');

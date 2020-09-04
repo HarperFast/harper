@@ -20,7 +20,6 @@ const logger = require('../../utility/logging/harper_logger');
 const env = require('../../utility/environment/environmentManager');
 const papa_parse = require('papaparse');
 const fs = require('fs-extra');
-const {inspect} = require('util');
 
 const VALID_CSV_DATA = "id,name,section,country,image\n1,ENGLISH POINTER,British and Irish Pointers and Setters,GREAT BRITAIN,http://www.fci.be/Nomenclature/Illustrations/001g07.jpg\n2,ENGLISH SETTER,British and Irish Pointers and Setters,GREAT BRITAIN,http://www.fci.be/Nomenclature/Illustrations/002g07.jpg\n3,KERRY BLUE TERRIER,Large and medium sized Terriers,IRELAND,\n";
 const INVALID_CSV_ID_COLUMN_NAME = "id/,name,section,country,image\n1,ENGLISH POINTER,British and Irish Pointers and Setters,GREAT BRITAIN,http://www.fci.be/Nomenclature/Illustrations/001g07.jpg\n2,ENGLISH SETTER,British and Irish Pointers and Setters,GREAT BRITAIN,http://www.fci.be/Nomenclature/Illustrations/002g07.jpg\n3,KERRY BLUE TERRIER,Large and medium sized Terriers,IRELAND,\n";
@@ -193,6 +192,7 @@ describe('Test bulkLoad.js', () => {
         let remove_dir_stub;
         let success_msg = 'Successfully loaded 77 of 77 records';
         let file_load_stub = sandbox.stub().resolves(success_msg);
+        let file_load_orig = bulkLoad_rewire.__get__('fileLoad');
 
         before(() => {
             bulkLoad_rewire.__set__('downloadCSVFile', download_csv_stub);
@@ -201,12 +201,13 @@ describe('Test bulkLoad.js', () => {
         });
 
         after(() => {
+            bulkLoad_rewire.__set__('fileLoad', file_load_orig);
             sandbox.restore();
         });
 
         it('Test bad URL throws validation error', async () => {
             CSV_URL_MESSAGE.csv_url = "breeds.csv";
-            let test_err_result = await test_utils.testError(bulkLoad_rewire.csvURLLoad(CSV_URL_MESSAGE), 'Error: Csv url is not a valid url');
+            let test_err_result = await test_utils.testHDBError(bulkLoad_rewire.csvURLLoad(CSV_URL_MESSAGE), 'Error: Csv url is not a valid url');
 
             expect(test_err_result).to.be.true;
         });
@@ -327,7 +328,7 @@ describe('Test bulkLoad.js', () => {
         });
     });
 
-    describe('Test fileLoad function', () => {
+    describe('Test csvFileLoad function', () => {
         let validation_msg_stub;
         let fs_access_stub;
         let logger_error_spy;
@@ -346,6 +347,7 @@ describe('Test bulkLoad.js', () => {
             validation_msg_stub = sandbox.stub(validator, 'fileObject').returns('');
             fs_access_stub = sandbox.stub(fs, 'access');
             logger_error_spy = sandbox.spy(logger, 'error');
+            // file_load_rw = bulkLoad_rewire.__get__('fileLoad');
         });
 
         afterEach(() => {
@@ -357,11 +359,11 @@ describe('Test bulkLoad.js', () => {
         });
 
         it('Test validation throws error', async () => {
-            validation_msg_stub.returns('Validation error');
+            validation_msg_stub.returns({ message: 'Validation error' });
             let error;
 
             try {
-                await bulkLoad_rewire.fileLoad(json_message_fake);
+                await bulkLoad_rewire.csvFileLoad(json_message_fake);
             } catch(err) {
                 error = err;
             }
@@ -372,7 +374,7 @@ describe('Test bulkLoad.js', () => {
         });
 
         it('Test success message is returned', async () => {
-            let result = await bulkLoad_rewire.fileLoad(json_message_fake);
+            let result = await bulkLoad_rewire.csvFileLoad(json_message_fake);
 
             expect(result).to.equal(`successfully loaded ${bulk_load_result_fake.number_written} of ${bulk_load_result_fake.records} records`);
             expect(call_papaparse_stub).to.have.been.calledOnce;
@@ -383,7 +385,7 @@ describe('Test bulkLoad.js', () => {
             let error;
 
             try {
-                await bulkLoad_rewire.fileLoad(json_message_fake);
+                await bulkLoad_rewire.csvFileLoad(json_message_fake);
             } catch(err) {
                 error = err;
             }
@@ -450,7 +452,7 @@ describe('Test bulkLoad.js', () => {
 
             expect(error).to.be.instanceof(Error);
             expect(error.message).to.equal('Insert error');
-            expect(logger_error_spy).to.have.been.calledOnce;
+            expect(logger_error_spy).to.have.not.been.called;
         });
     });
 
@@ -563,7 +565,7 @@ describe('Test bulkLoad.js', () => {
 
             expect(error.message).to.equal('Argh im broken');
             expect(error).to.be.instanceof(Error);
-            expect(logger_error_stub).to.have.been.calledOnce;
+            expect(logger_error_stub).to.not.have.been.called;
         });
     });
 
@@ -599,7 +601,6 @@ describe('Test bulkLoad.js', () => {
             };
 
             let result = await bulk_load_rewire(data_array_fake, schema_fake, table_fake, '');
-            console.log(inspect(result));
             expect(result).to.eql(expected_result);
             expect(insert_insert_stub).to.have.been.calledOnce;
         });

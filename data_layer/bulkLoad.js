@@ -5,7 +5,8 @@ const validator = require('../validation/fileLoadValidator');
 const request_promise = require('request-promise-native');
 const hdb_terms = require('../utility/hdbTerms');
 const hdb_utils = require('../utility/common_utils');
-const { handleHDBError, hdb_errors } = require('../utility/errors/hdbError');
+const { handleHDBError, handleValidationError, hdb_errors } = require('../utility/errors/hdbError');
+const { HTTP_STATUS_CODES, COMMON_ERROR_MSGS, CHECK_LOGS_WRAPPER, VALIDATION_ERR_WRAPPER } = hdb_errors;
 const logger = require('../utility/logging/harper_logger');
 const papa_parse = require('papaparse');
 const fs = require('fs-extra');
@@ -48,7 +49,7 @@ module.exports = {
 async function csvDataLoad(json_message) {
     let validation_msg = validator.dataObject(json_message);
     if (validation_msg) {
-        throw new Error(validation_msg);
+        throw handleValidationError(validation_msg, validation_msg.message);
     }
 
     let bulk_load_result = {};
@@ -77,8 +78,8 @@ async function csvDataLoad(json_message) {
         }
 
         return buildCSVResponseMsg(bulk_load_result.records, bulk_load_result.number_written);
-    } catch(e) {
-        throw e;
+    } catch(err) {
+        throw buildTopLevelErrMsg(err);
     }
 }
 
@@ -91,7 +92,7 @@ async function csvDataLoad(json_message) {
 async function csvURLLoad(json_message) {
     let validation_msg = validator.urlObject(json_message);
     if (validation_msg) {
-        throw new Error(validation_msg);
+        throw handleValidationError(validation_msg, validation_msg.message);
     }
 
     let csv_file_name = `${Date.now()}.csv`;
@@ -124,14 +125,14 @@ async function csvURLLoad(json_message) {
         }
         return bulk_load_result;
     } catch (err) {
-        throw `Error loading downloaded CSV data into HarperDB: ${err}`;
+        throw buildTopLevelErrMsg(err);
     }
 }
 
 async function csvFileLoad(json_message) {
     let validation_msg = validator.fileObject(json_message);
     if (validation_msg) {
-        throw new Error(validation_msg);
+        throw handleValidationError(validation_msg, validation_msg.message);
     }
 
     json_message.file_type = ".csv";
@@ -141,30 +142,30 @@ async function csvFileLoad(json_message) {
 
         return bulk_load_result;
     } catch (err) {
-        throw `Error loading CSV data into HarperDB: ${err}`;
+        throw buildTopLevelErrMsg(err);
     }
 }
 
 async function importFromS3(json_message) {
     let validation_msg = validator.s3FileObject(json_message);
     if (validation_msg) {
-        throw new Error(validation_msg);
+        throw handleValidationError(validation_msg, validation_msg.message);
     }
 
-    let s3_file_type = path.extname(json_message.s3.key);
-    let s3_file_name = `${Date.now()}${s3_file_type}`;
-
-    let s3_file_load_obj = {
-        operation: hdb_terms.OPERATIONS_ENUM.IMPORT_FROM_S3,
-        action: json_message.action,
-        schema: json_message.schema,
-        table: json_message.table,
-        transact_to_cluster: json_message.transact_to_cluster,
-        file_path: `${TEMP_DOWNLOAD_DIR}/${s3_file_name}`,
-        file_type: s3_file_type
-    };
-
     try {
+        let s3_file_type = path.extname(json_message.s3.key);
+        let s3_file_name = `${Date.now()}${s3_file_type}`;
+
+        let s3_file_load_obj = {
+            operation: hdb_terms.OPERATIONS_ENUM.IMPORT_FROM_S3,
+            action: json_message.action,
+            schema: json_message.schema,
+            table: json_message.table,
+            transact_to_cluster: json_message.transact_to_cluster,
+            file_path: `${TEMP_DOWNLOAD_DIR}/${s3_file_name}`,
+            file_type: s3_file_type
+        };
+
         await downloadFileFromS3(TEMP_DOWNLOAD_DIR, s3_file_name, json_message);
 
         let bulk_load_result = await fileLoad(s3_file_load_obj);
@@ -178,7 +179,7 @@ async function importFromS3(json_message) {
         }
         return bulk_load_result;
     } catch (err) {
-        throw `Error loading downloaded CSV data into HarperDB: ${err}`;
+        throw buildTopLevelErrMsg(err);
     }
 }
 
@@ -200,7 +201,8 @@ async function downloadCSVFile(url, csv_file_name) {
     try {
         response = await request_promise(options);
     } catch(err) {
-        logger.error(err);
+        //TODO - update below to handleHdbError including logging
+        // logger.error(err);
         throw `Error downloading CSV file from ${url}, status code: ${err.statusCode}. Check the log for more information.`;
     }
 
@@ -211,28 +213,26 @@ async function downloadCSVFile(url, csv_file_name) {
 
 async function downloadFileFromS3(TEMP_DOWNLOAD_DIR, s3_file_name, json_message) {
     try {
+        const tempDownloadLocation = `${TEMP_DOWNLOAD_DIR}/${s3_file_name}`;
         await fs.mkdirp(TEMP_DOWNLOAD_DIR);
         await fs.writeFile(`${TEMP_DOWNLOAD_DIR}/${s3_file_name}`, "", { flag: 'a+' });
-        let tempFileStream = await fs.createWriteStream(`${TEMP_DOWNLOAD_DIR}/${s3_file_name}`);
+        let tempFileStream = await fs.createWriteStream(tempDownloadLocation);
         let s3Stream = AWSConnector.getFileStreamFromS3(json_message);
 
         s3Stream.on('error', function(err) {
-            throw err;
+            throw handleHDBError(err, );
         });
 
         await new Promise((resolve, reject) => {
             s3Stream.pipe(tempFileStream).on('error', function(err) {
-                console.error('File Stream:', err);
                 reject(err);
             }).on('close', function() {
-                //TODO - remove
-                console.log('Done.');
+                logger.info(`${json_message.s3.key} successfully downloaded to ${tempDownloadLocation}`);
                 resolve();
             });
         });
     } catch(err) {
         //TODO - update error handling
-        console.log(err);
         handleHDBError(err);
     }
 }
@@ -242,7 +242,8 @@ async function writeFileToTempFolder(file_name, response_body) {
         await fs.mkdirp(TEMP_DOWNLOAD_DIR);
         await fs.writeFile(`${TEMP_DOWNLOAD_DIR}/${file_name}`, response_body);
     } catch(err) {
-        logger.error(`Error writing temporary CSV file to storage`);
+        //TODO - update below to handleHdbError including logging
+        // logger.error(`Error writing temporary CSV file to storage`);
         throw err;
     }
 }
@@ -293,7 +294,8 @@ async function fileLoad(json_message) {
 
         return buildCSVResponseMsg(bulk_load_result.records, bulk_load_result.number_written);
     } catch(err) {
-        logger.error(err);
+        //TODO - update below to handleHdbError including logging
+        // logger.error(err);
         throw err;
     }
 }
@@ -330,7 +332,9 @@ async function validateChunk(json_message, reject, results, parser) {
             parser.resume();
         }
     } catch(err) {
-        logger.error(err);
+        //TODO - update below to handleHdbError including logging
+        // logger.error(err);
+
         // reject is a promise object bound to chunk function through hdb_utils.promisifyPapaParse(). In the case of an error
         // reject will bubble up to hdb_utils.promisifyPapaParse() and return a reject promise object with given error.
         reject(err);
@@ -389,7 +393,9 @@ async function insertChunk(json_message, insert_results, reject, results, parser
             parser.resume();
         }
     } catch(err) {
-        logger.error(err);
+        //TODO - update below to handleHdbError including logging
+        // logger.error(err);
+
         // reject is a promise object bound to chunk function through hdb_utils.promisifyPapaParse(). In the case of an error
         // reject will bubble up to hdb_utils.promisifyPapaParse() and return a reject promise object with given error.
         reject(err);
@@ -425,7 +431,6 @@ async function callPapaParse(json_message) {
 
         return insert_results;
     } catch(err) {
-        logger.error(err);
         throw err;
     }
 }
@@ -463,7 +468,6 @@ async function insertJson(json_message) {
 
         return insert_results;
     } catch(err) {
-        logger.error(err);
         throw err;
     }
 }
@@ -478,7 +482,8 @@ async function callBulkLoad(json_msg) {
             logger.info(bulk_load_result.message);
         }
     } catch(err) {
-        logger.error(err);
+        //TODO - update below to handleHdbError including logging
+        // logger.error(err);
         throw err;
     }
     return bulk_load_result;
@@ -607,4 +612,14 @@ async function postCSVLoadFunction(fields, orig_bulk_msg, result, orig_req) {
  */
 function buildCSVResponseMsg(total_records, number_written) {
     return `successfully loaded ${number_written} of ${total_records} records`;
+}
+
+function buildTopLevelErrMsg(err) {
+    return handleHDBError(
+        err,
+        CHECK_LOGS_WRAPPER(COMMON_ERROR_MSGS.DEFAULT_BULK_LOAD_ERR),
+        HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR,
+        logger.ERR,
+        err
+    );
 }

@@ -384,7 +384,7 @@ function hasPermissions(user_object, op, schema_table_map, permsResponse) {
                     const err_msg = COMMON_ERROR_MSGS.UNKNOWN_OP_AUTH_ERROR(op, schema_table, table);
                     harper_logger.error(err_msg);
                     harper_logger.error(e);
-                    throw handleHDBError(COMMON_ERROR_MSGS.CHECK_LOGS_WRAPPER(err_msg));
+                    throw handleHDBError(hdb_errors.CHECK_LOGS_WRAPPER(err_msg));
                 }
             }
         }

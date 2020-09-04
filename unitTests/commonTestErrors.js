@@ -46,11 +46,13 @@ const TEST_OPERATION_AUTH_ERROR = {
 };
 
 const TEST_SCHEMA_OP_ERROR = {
-    DESCRIBE_ALL_ERR: "There was an error during describeAll.  Please check the logs and try again.",
-    SCHEMA_NOT_FOUND: (schema) => `Schema '${schema}' does not exist`,
-    TABLE_NOT_FOUND: (schema, table) => `Table '${schema}.${table}' does not exist`,
     ATTR_NOT_FOUND: (schema, table, attr) => `Attribute '${attr}' does not exist on '${schema}.${table}'`,
-    INVALID_TABLE_ERR: (table_result) => `Invalid table ${JSON.stringify(table_result)}`
+    DESCRIBE_ALL_ERR: "There was an error during describeAll.  Please check the logs and try again.",
+    INVALID_TABLE_ERR: (table_result) => `Invalid table ${JSON.stringify(table_result)}`,
+    SCHEMA_NOT_FOUND: (schema) => `Schema '${schema}' does not exist`,
+    SCHEMA_REQUIRED_ERR: "schema is required",
+    TABLE_NOT_FOUND: (schema, table) => `Table '${schema}.${table}' does not exist`,
+    TABLE_REQUIRED_ERR: "table is required"
 };
 
 const TEST_ROLE_PERMS_ERROR = {
@@ -75,11 +77,6 @@ const TEST_ROLE_PERMS_ERROR = {
     TABLE_PERM_NOT_BOOLEAN: (perm) => `Table ${perm.toUpperCase()} permission must be a boolean`
 };
 
-const COMMON_ERROR_MSGS = {
-    SCHEMA_REQUIRED: 'schema is required',
-    TABLE_REQUIRED: 'table is required'
-};
-
 const CHECK_LOGS_WRAPPER = (err) => `${err} Check logs and try again.`;
 const TEST_DEFAULT_ERROR_MSGS = {
     500: CHECK_LOGS_WRAPPER("There was an error processing your request."),
@@ -90,7 +87,6 @@ const TEST_DEFAULT_ERROR_RESP = TEST_DEFAULT_ERROR_MSGS[HTTP_STATUS_CODES.INTERN
 
 module.exports = {
     LMDB_ERRORS_ENUM,
-    COMMON_ERROR_MSGS,
     TEST_DEFAULT_ERROR_RESP,
     TEST_ROLE_PERMS_ERROR,
     TEST_OPERATION_AUTH_ERROR,

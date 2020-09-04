@@ -10,7 +10,7 @@ chai.use(sinon_chai);
 const fs = require('fs');
 const rewire = require('rewire');
 const validator = require('../../validation/validationWrapper');
-let csv_load_validator = rewire('../../validation/csvLoadValidator');
+let file_load_validator = rewire('../../validation/fileLoadValidator');
 const common_utils = require('../../utility/common_utils');
 const log = require('../../utility/logging/harper_logger');
 
@@ -20,9 +20,9 @@ const LONG_STRING = "TheresolvedtechnologydisappearsThesynthesisperfectsanincomp
     "concedesthestrayThestandardsectcautionstheeaterThefootballfreezesbehindareceipt";
 
 /**
- *  Unit tests for validation/csvLoadValidator.js
+ *  Unit tests for validation/fileLoadValidator.js
  */
-describe('Test csvLoadValidator module', () => {
+describe('Test fileLoadValidator module', () => {
 
     let obj_no_schema = {
         operation: "csv_data_load",
@@ -110,7 +110,7 @@ describe('Test csvLoadValidator module', () => {
 
     after(() => {
         delete global.hdb_schema['hats'];
-        csv_load_validator = rewire('../../validation/csvLoadValidator');
+        file_load_validator = rewire('../../validation/fileLoadValidator');
         sinon.restore();
     });
 
@@ -124,14 +124,14 @@ describe('Test csvLoadValidator module', () => {
     context('Test validate module', () => {
 
         it('should return schema cant be blank error from dataObject', () => {
-            let result = csv_load_validator.dataObject(obj_no_schema);
+            let result = file_load_validator.dataObject(obj_no_schema);
 
             expect(result).to.be.instanceof(Error);
             expect(result.message).to.equal("Schema can't be blank");
         });
 
         it('should return table cant be blank error from dataObject',() => {
-            let result = csv_load_validator.dataObject(obj_no_table);
+            let result = file_load_validator.dataObject(obj_no_table);
 
             expect(result).to.be.instanceof(Error);
             expect(result.message).to.equal("Table can't be blank");
@@ -143,35 +143,35 @@ describe('Test csvLoadValidator module', () => {
                     "fordogs": {}
                 }
             };
-            let result = csv_load_validator.dataObject(obj_invalid_char_table);
+            let result = file_load_validator.dataObject(obj_invalid_char_table);
 
             expect(result).to.be.instanceof(Error);
             expect(result.message).to.equal('Table names cannot include backticks or forward slashes');
         });
 
         it('should return must be alpha numeric error on schema', () => {
-            let result = csv_load_validator.dataObject(obj_invalid_char_schema);
+            let result = file_load_validator.dataObject(obj_invalid_char_schema);
 
             expect(result).to.be.instanceof(Error);
             expect(result.message).to.equal('Schema names cannot include backticks or forward slashes');
         });
 
         it('should return cannot exceed 250 characters error on schema', () => {
-            let result = csv_load_validator.dataObject(obj_over_length_schema);
+            let result = file_load_validator.dataObject(obj_over_length_schema);
 
             expect(result).to.be.instanceof(Error);
             expect(result.message).to.equal('Schema cannot exceed 250 characters');
         });
 
         it('should return cannot exceed 250 characters error on table', () => {
-            let result = csv_load_validator.dataObject(obj_over_length_table);
+            let result = file_load_validator.dataObject(obj_over_length_table);
 
             expect(result).to.be.instanceof(Error);
             expect(result.message).to.equal('Table cannot exceed 250 characters');
         });
 
         it('should return action is required to be be either insert or update', () => {
-            let result = csv_load_validator.dataObject(obj_wrong_action);
+            let result = file_load_validator.dataObject(obj_wrong_action);
 
             expect(result).to.be.instanceof(Error);
             expect(result.message).to.equal('Action is required and must be either insert or update');
@@ -193,9 +193,9 @@ describe('Test csvLoadValidator module', () => {
         before(() => {
             logger_stub = sinon.stub(log, 'error');
             file_size_stub = sinon.stub(fs, 'statSync');
-            max_csv_file_size_rewire = csv_load_validator.__get__('MAX_CSV_FILE_SIZE');
+            max_csv_file_size_rewire = file_load_validator.__get__('MAX_FILE_SIZE');
             check_glob_schema_stub = sinon.stub(common_utils, 'checkGlobalSchemaTable');
-            post_validate_checks = csv_load_validator.__get__('postValidateChecks');
+            post_validate_checks = file_load_validator.__get__('postValidateChecks');
         });
 
         it('should return an error from common_utils.checkGlobalSchemaTable',() => {
@@ -255,7 +255,7 @@ describe('Test csvLoadValidator module', () => {
 
         before(() => {
             validator_stub = sinon.stub(validator, 'validateObject').returns(validate_res_fake);
-            post_validate_rewire = csv_load_validator.__set__('postValidateChecks', post_validate_stub);
+            post_validate_rewire = file_load_validator.__set__('postValidateChecks', post_validate_stub);
         });
 
         after(() => {
@@ -264,24 +264,24 @@ describe('Test csvLoadValidator module', () => {
         });
 
         it('should call validateObject and postValidateChecks with dataObject', () => {
-            let data_constraints = csv_load_validator.__get__('data_constraints');
-            csv_load_validator.dataObject(data_object);
+            let data_constraints = file_load_validator.__get__('data_constraints');
+            file_load_validator.dataObject(data_object);
 
             expect(validator_stub).to.have.been.calledWith(data_object, data_constraints);
             expect(post_validate_stub).to.have.been.calledWith(data_object, validate_res_fake);
         });
 
         it('should call validateObject and postValidateChecks with urlObject', () => {
-            let url_constraints = csv_load_validator.__get__('url_constraints');
-            csv_load_validator.urlObject(url_object);
+            let url_constraints = file_load_validator.__get__('url_constraints');
+            file_load_validator.urlObject(url_object);
 
             expect(validator_stub).to.have.been.calledWith(url_object, url_constraints);
             expect(post_validate_stub).to.have.been.calledWith(url_object, validate_res_fake);
         });
 
         it('should call validateObject and postValidateChecks with fileObject', () => {
-            let file_constraints = csv_load_validator.__get__('file_constraints');
-            csv_load_validator.fileObject(file_object);
+            let file_constraints = file_load_validator.__get__('file_constraints');
+            file_load_validator.fileObject(file_object);
 
             expect(validator_stub).to.have.been.calledWith(file_object, file_constraints);
             expect(post_validate_stub).to.have.been.calledWith(file_object, validate_res_fake);

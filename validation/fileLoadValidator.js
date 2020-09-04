@@ -4,6 +4,8 @@ const common_utils = require('../utility/common_utils');
 const hdb_terms = require('../utility/hdbTerms');
 const log = require('../utility/logging/harper_logger');
 const fs = require('fs');
+const { hdb_errors, handleHDBError } = require('../utility/errors/hdbError');
+const { COMMON_ERROR_MSGS, HTTP_STATUS_CODES } = hdb_errors;
 
 const { common_validators } = require('./common_validators');
 // Maximum file size in bytes
@@ -125,7 +127,7 @@ function postValidateChecks(object, validate_res) {
             try {
                 let file_size = fs.statSync(object.file_path).size;
                 if (file_size > MAX_FILE_SIZE) {
-                    return new Error(`File size is ${file_size} bytes, which exceeded the maximum size allowed of: ${MAX_FILE_SIZE} bytes`);
+                    return handleHDBError(new Error(), COMMON_ERROR_MSGS.MAX_FILE_SIZE_ERR(file_size, MAX_FILE_SIZE), HTTP_STATUS_CODES.BAD_REQUEST);
                 }
             } catch(err) {
                 log.error(err);

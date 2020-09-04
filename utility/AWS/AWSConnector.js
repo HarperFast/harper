@@ -4,7 +4,8 @@ const AWS = require("aws-sdk");
 const { handleHDBError, hdb_errors } = require('../errors/hdbError');
 
 module.exports = {
-    getFileStreamFromS3
+    getFileStreamFromS3,
+    getS3AuthObj
 };
 
 function getFileStreamFromS3(json_message) {

@@ -6,6 +6,7 @@ const sinon = require('sinon');
 const uuid = require('uuid/v4');
 const assert = require('assert');
 const COMMON_TEST_TERMS = require('./commonTestTerms');
+const { HdbError } = require('../utility/errors/hdbError');
 
 const env = require('../utility/environment/environmentManager');
 const terms = require('../utility/hdbTerms');
@@ -693,7 +694,24 @@ async function testError(test_func, error_msg) {
         error = err;
     }
 
-    return error instanceof Error && error.message === error_msg;
+    return error instanceof Error && (error.message === error_msg);
+}
+
+/**
+ * Helper function that tests for correct HdbError instance and the http_resp_msg.
+ * @param test_func
+ * @param error_msg
+ * @returns {Promise<boolean>}
+ */
+async function testHDBError(test_func, error_msg) {
+    let error;
+    try {
+        console.log(await test_func);
+    } catch(err) {
+        error = err;
+    }
+
+    return error.__proto__.constructor.name === HdbError.name && error.http_resp_msg === error_msg;
 }
 
 async function assertErrorAsync(test_func, args, error_object, message){
@@ -749,6 +767,7 @@ module.exports = {
     sortDesc,
     sortAttrKeyMap,
     testError,
+    testHDBError,
     generateAPIMessage,
     assertErrorSync,
     assertErrorAsync,
