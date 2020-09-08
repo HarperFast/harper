@@ -30,6 +30,7 @@ validate.validators.type = function(value, options, key, attributes) {
     }
     return validate.validators.type.checks[options](value) ? null : ' must be a ' + `'${options}' value`;
 };
+
 validate.validators.type.checks = {
     Object: function(value) {
         return validate.isObject(value) && !validate.isArray(value);
@@ -42,6 +43,15 @@ validate.validators.type.checks = {
     Boolean: function(value) {
         return typeof value === 'boolean';
     }
+};
+
+validate.validators.hasValidFileExt = function(value, options) {
+    // allow non-string values by default (needs to be checked by "presence" and "type" checks)
+    if(!validate.isString(value)) {
+        return null;
+    }
+
+    return options.filter(ext => value.endsWith(ext)).length > 0 ? null : `must include one of the following valid file extensions - '${options.join("', '")}'`;
 };
 
 module.exports = {

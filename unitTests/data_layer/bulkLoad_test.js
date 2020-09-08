@@ -250,7 +250,7 @@ describe('Test bulkLoad.js', () => {
             } catch (err) {
                 error = err;
             }
-            expect(error).to.be.equal('Error downloading CSV file from wwwwww.badurl.com, status code: undefined. Check the log for more information.');
+            expect(error.http_resp_msg).to.be.equal('Error downloading CSV file from wwwwww.badurl.com, status code: undefined. Check the log for more information.');
         });
 
         it('Test for nominal behaviour, stubs are called as expected', async () => {
@@ -564,8 +564,10 @@ describe('Test bulkLoad.js', () => {
             }
 
             expect(error.message).to.equal('Argh im broken');
-            expect(error).to.be.instanceof(Error);
-            expect(logger_error_stub).to.not.have.been.called;
+            expect(error.http_resp_msg).to.equal('There was an error parsing the downloaded CSV data. Check logs and try again.');
+            expect(error.http_resp_code).to.equal(500);
+            expect(error.__proto__.constructor.name).to.equal('HdbError');
+            expect(logger_error_stub).to.have.been.calledOnce;
         });
     });
 

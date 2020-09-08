@@ -58,7 +58,8 @@ const s3_constraints = {
     },
     [`s3.${AWS_FILE_KEY}`]: {
         presence: true,
-        type: "String"
+        type: "String",
+        hasValidFileExt: [".csv", ".json"]
     }
 };
 
@@ -107,7 +108,7 @@ function postValidateChecks(object, validate_res) {
     if (!validate_res) {
         let msg = common_utils.checkGlobalSchemaTable(object.schema, object.table);
         if (msg) {
-            return new Error(msg);
+            return handleHDBError(new Error(), msg, HTTP_STATUS_CODES.BAD_REQUEST);
         }
 
         if (object.operation === hdb_terms.OPERATIONS_ENUM.CSV_FILE_LOAD) {
@@ -115,13 +116,13 @@ function postValidateChecks(object, validate_res) {
                 fs.accessSync(object.file_path,fs.constants.R_OK | fs.constants.F_OK);
             } catch(err) {
                 if (err.code === hdb_terms.NODE_ERROR_CODES.ENOENT) {
-                    return new Error(`No such file or directory ${err.path}`);
+                    return handleHDBError(err,`No such file or directory ${err.path}`, HTTP_STATUS_CODES.BAD_REQUEST);
                 }
 
                 if (err.code === hdb_terms.NODE_ERROR_CODES.EACCES) {
-                    return new Error(`Permission denied ${err.path}`);
+                    return handleHDBError(err,`Permission denied ${err.path}`, HTTP_STATUS_CODES.BAD_REQUEST);
                 }
-                return err;
+                return handleHDBError(err);
             }
 
             try {

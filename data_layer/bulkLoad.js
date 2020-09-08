@@ -6,7 +6,7 @@ const request_promise = require('request-promise-native');
 const hdb_terms = require('../utility/hdbTerms');
 const hdb_utils = require('../utility/common_utils');
 const { handleHDBError, handleValidationError, hdb_errors } = require('../utility/errors/hdbError');
-const { HTTP_STATUS_CODES, COMMON_ERROR_MSGS, CHECK_LOGS_WRAPPER, VALIDATION_ERR_WRAPPER } = hdb_errors;
+const { HTTP_STATUS_CODES, COMMON_ERROR_MSGS, CHECK_LOGS_WRAPPER } = hdb_errors;
 const logger = require('../utility/logging/harper_logger');
 const papa_parse = require('papaparse');
 const fs = require('fs-extra');
@@ -201,9 +201,8 @@ async function downloadCSVFile(url, csv_file_name) {
     try {
         response = await request_promise(options);
     } catch(err) {
-        //TODO - update below to handleHdbError including logging
-        // logger.error(err);
-        throw `Error downloading CSV file from ${url}, status code: ${err.statusCode}. Check the log for more information.`;
+        const err_msg = `Error downloading CSV file from ${url}, status code: ${err.statusCode}. Check the log for more information.`;
+        throw handleHDBError(err, err_msg, err.statusCode, logger.ERR, "Error downloading CSV file - " + err);
     }
 
     validateResponse(response, url);
@@ -232,8 +231,7 @@ async function downloadFileFromS3(TEMP_DOWNLOAD_DIR, s3_file_name, json_message)
             });
         });
     } catch(err) {
-        //TODO - update error handling
-        throw handleHDBError(err);
+        throw handleHDBError(err, COMMON_ERROR_MSGS.S3_DOWNLOAD_ERR);
     }
 }
 
@@ -242,9 +240,8 @@ async function writeFileToTempFolder(file_name, response_body) {
         await fs.mkdirp(TEMP_DOWNLOAD_DIR);
         await fs.writeFile(`${TEMP_DOWNLOAD_DIR}/${file_name}`, response_body);
     } catch(err) {
-        //TODO - update below to handleHdbError including logging
-        // logger.error(`Error writing temporary CSV file to storage`);
-        throw err;
+        logger.error(COMMON_ERROR_MSGS.WRITE_TEMP_FILE_ERR);
+        throw handleHDBError(err, CHECK_LOGS_WRAPPER(COMMON_ERROR_MSGS.DEFAULT_BULK_LOAD_ERR));
     }
 }
 
@@ -255,15 +252,15 @@ async function writeFileToTempFolder(file_name, response_body) {
  */
 function validateResponse(response, url) {
     if (response.statusCode !== hdb_errors.HTTP_STATUS_CODES.OK) {
-        throw new Error(`CSV Load failed from URL: ${url}, status code: ${response.statusCode}, message: ${response.statusMessage}`);
+        throw handleHDBError(new Error(),`CSV Load failed from URL: ${url}, status code: ${response.statusCode}, message: ${response.statusMessage}`, HTTP_STATUS_CODES.BAD_REQUEST);
     }
 
     if (!ACCEPTABLE_URL_CONTENT_TYPE_ENUM[response.headers['content-type']]) {
-        throw new Error(`CSV Load failed from URL: ${url}, unsupported content type: ${response.headers['content-type']}`);
+        throw handleHDBError(new Error(),`CSV Load failed from URL: ${url}, unsupported content type: ${response.headers['content-type']}`, HTTP_STATUS_CODES.BAD_REQUEST);
     }
 
     if (!response.body) {
-        throw new Error(`CSV Load failed from URL: ${url}, no csv found at url`);
+        throw handleHDBError(new Error(),`CSV Load failed from URL: ${url}, no csv found at url`, HTTP_STATUS_CODES.BAD_REQUEST);
     }
 }
 
@@ -288,15 +285,19 @@ async function fileLoad(json_message) {
                 bulk_load_result = await insertJson(json_message);
                 break;
             default:
-                //TODO - add error handling here? We should never get here
-                break;
+                //we should never get here but here just incase something changes is validation and slips through
+                throw handleHDBError(
+                    new Error(),
+                    COMMON_ERROR_MSGS.DEFAULT_BULK_LOAD_ERR,
+                    HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR,
+                    logger.ERR,
+                    'Error selecting correct parser - valid file type not found in json - ' + json_message
+                );
         }
 
         return buildCSVResponseMsg(bulk_load_result.records, bulk_load_result.number_written);
     } catch(err) {
-        //TODO - update below to handleHdbError including logging
-        // logger.error(err);
-        throw err;
+        throw buildTopLevelErrMsg(err);
     }
 }
 
@@ -332,12 +333,10 @@ async function validateChunk(json_message, reject, results, parser) {
             parser.resume();
         }
     } catch(err) {
-        //TODO - update below to handleHdbError including logging
-        // logger.error(err);
-
         // reject is a promise object bound to chunk function through hdb_utils.promisifyPapaParse(). In the case of an error
         // reject will bubble up to hdb_utils.promisifyPapaParse() and return a reject promise object with given error.
-        reject(err);
+        const err_resp = handleValidationError(err, err);
+        reject(err_resp);
     }
 }
 
@@ -386,19 +385,19 @@ async function insertChunk(json_message, insert_results, reject, results, parser
             transact_to_cluster: json_message.transact_to_cluster,
             data: results_data
         };
-        let bulk_load_chunk_result = await op_func_caller.callOperationFunctionAsAwait(callBulkLoad, converted_msg, postCSVLoadFunction.bind(null, fields));
+        let bulk_load_chunk_result = await op_func_caller.callOperationFunctionAsAwait(callBulkLoad, converted_msg,
+            postCSVLoadFunction.bind(null, fields));
         insert_results.records += bulk_load_chunk_result.records;
         insert_results.number_written += bulk_load_chunk_result.number_written;
         if (parser) {
             parser.resume();
         }
     } catch(err) {
-        //TODO - update below to handleHdbError including logging
-        // logger.error(err);
-
         // reject is a promise object bound to chunk function through hdb_utils.promisifyPapaParse(). In the case of an error
         // reject will bubble up to hdb_utils.promisifyPapaParse() and return a reject promise object with given error.
-        reject(err);
+        const err_resp = handleHDBError(err, CHECK_LOGS_WRAPPER(COMMON_ERROR_MSGS.INSERT_CSV_ERR),
+            HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR, logger.ERR, COMMON_ERROR_MSGS.INSERT_CSV_ERR + ' - ' + err);
+        reject(err_resp);
     }
 }
 
@@ -431,7 +430,7 @@ async function callPapaParse(json_message) {
 
         return insert_results;
     } catch(err) {
-        throw err;
+        throw handleHDBError(err, CHECK_LOGS_WRAPPER(COMMON_ERROR_MSGS.PAPA_PARSE_ERR), HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR, logger.ERR, COMMON_ERROR_MSGS.PAPA_PARSE_ERR + err);
     }
 }
 
@@ -446,6 +445,9 @@ async function insertJson(json_message) {
         let stream = fs.createReadStream(json_message.file_path, {highWaterMark:HIGHWATERMARK});
         stream.setEncoding('utf8');
         await new Promise((resolve, reject) => {
+            stream.on('error', function(err) {
+                reject(err);
+            });
             stream.on('data', async (chunk) => {
                 await validateChunk(json_message, reject, JSON.parse(chunk), stream);
             });
@@ -457,6 +459,9 @@ async function insertJson(json_message) {
         stream = fs.createReadStream(json_message.file_path, {highWaterMark:HIGHWATERMARK});
         stream.setEncoding('utf8');
         await new Promise((resolve, reject) => {
+            stream.on('error', function(err) {
+                reject(err);
+            });
             stream.on('data', async (chunk) => {
                 await insertChunk(json_message, insert_results, reject, JSON.parse(chunk), stream);
             });
@@ -468,7 +473,7 @@ async function insertJson(json_message) {
 
         return insert_results;
     } catch(err) {
-        throw err;
+        throw handleHDBError(err, CHECK_LOGS_WRAPPER(COMMON_ERROR_MSGS.INSERT_JSON_ERR), HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR, logger.ERR, COMMON_ERROR_MSGS.INSERT_JSON_ERR + err);
     }
 }
 
@@ -482,9 +487,7 @@ async function callBulkLoad(json_msg) {
             logger.info(bulk_load_result.message);
         }
     } catch(err) {
-        //TODO - update below to handleHdbError including logging
-        // logger.error(err);
-        throw err;
+        throw buildTopLevelErrMsg(err);
     }
     return bulk_load_result;
 }
@@ -563,7 +566,7 @@ async function bulkLoad(records, schema, table, action){
 
         return update_status;
     } catch(err) {
-        throw err;
+        throw buildTopLevelErrMsg(err);
     }
 }
 
@@ -620,6 +623,6 @@ function buildTopLevelErrMsg(err) {
         CHECK_LOGS_WRAPPER(COMMON_ERROR_MSGS.DEFAULT_BULK_LOAD_ERR),
         HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR,
         logger.ERR,
-        err
+        COMMON_ERROR_MSGS.DEFAULT_BULK_LOAD_ERR + ' - ' + err
     );
 }

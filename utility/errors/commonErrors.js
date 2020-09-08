@@ -37,9 +37,13 @@ const DEFAULT_ERROR_MSGS = {
 const DEFAULT_ERROR_RESP = DEFAULT_ERROR_MSGS[HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR];
 
 const BULK_LOAD_ERROR_MSGS = {
-    DEFAULT_BULK_LOAD_ERR: 'Error loading downloaded CSV data into HarperDB.',
+    DEFAULT_BULK_LOAD_ERR: 'There was an error during your bulk load into HarperDB.',
+    INSERT_JSON_ERR: 'There was an error inserting the downloaded JSON data.',
+    INSERT_CSV_ERR: 'There was an error inserting the downloaded CSV data.',
     MAX_FILE_SIZE_ERR: (file_size, max_size) => `File size is ${file_size} bytes, which exceeded the maximum size allowed of: ${max_size} bytes`,
-    S3_DOWNLOAD_ERR: (file_name) =>`There was an error downloading '${file_name}' from AWS.`
+    PAPA_PARSE_ERR: 'There was an error parsing the downloaded CSV data.',
+    S3_DOWNLOAD_ERR: (file_name) =>`There was an error downloading '${file_name}' from AWS.`,
+    WRITE_TEMP_FILE_ERR: `Error writing temporary file to storage`
 };
 
 //TODO - move this enum to be exported as a part of COMMON_ERROR_MSGS

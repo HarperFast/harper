@@ -278,9 +278,9 @@ async function signalJob(json) {
         }
         return `Starting job with id ${new_job_object.id}`;
     } catch (err) {
-        let message = `There was an error adding a job: ${err}`;
+        let message = `There was an error adding a job: ${err.http_resp_msg ? err.http_resp_msg : err}`;
         harper_logger.error(message);
-        throw new Error(message);
+        throw handleHDBError(err, message);
     }
 }
 

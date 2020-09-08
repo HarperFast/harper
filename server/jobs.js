@@ -20,6 +20,8 @@ const {promisify} = require('util');
 const moment = require('moment');
 const hdb_sql = require('../sqlTranslator/index');
 const file_load_validator = require('../validation/fileLoadValidator');
+const { handleHDBError, hdb_errors } = require('../utility/errors/hdbError');
+const { HTTP_STATUS_CODES } = hdb_errors;
 
 //Promisified functions
 const p_search_by_value = promisify(search.searchByValue);
@@ -118,7 +120,7 @@ async function addJob(json_body) {
             break;
     }
     if (validation_msg) {
-        throw validation_msg.message;
+        throw handleHDBError(validation_msg, validation_msg.message, HTTP_STATUS_CODES.BAD_REQUEST);
     }
 
     let new_job = new JobObject();

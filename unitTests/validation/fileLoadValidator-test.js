@@ -204,7 +204,7 @@ describe('Test fileLoadValidator module', () => {
             let result = post_validate_checks(data_object, validate_result);
 
             expect(result).to.be.instanceOf(Error);
-            expect(result.message).to.be.equal(check_glob_schema_err);
+            expect(result.http_resp_msg).to.be.equal(check_glob_schema_err);
             expect(check_glob_schema_stub).to.have.been.calledOnce;
         });
 
@@ -212,7 +212,7 @@ describe('Test fileLoadValidator module', () => {
             check_glob_schema_stub.returns('');
             let result = post_validate_checks(file_object, validate_result);
 
-            expect(result.message).to.equal(`No such file or directory ${FAKE_FILE_PATH}`);
+            expect(result.http_resp_msg).to.equal(`No such file or directory ${FAKE_FILE_PATH}`);
             expect(result).to.be.instanceOf(Error);
             expect(check_glob_schema_stub).to.have.been.calledOnce;
         });
@@ -223,7 +223,7 @@ describe('Test fileLoadValidator module', () => {
             file_size_stub.returns({size: fake_file_size});
             let result = post_validate_checks(file_object, validate_result);
 
-            expect(result.message).to.equal(`File size is ${fake_file_size} bytes, which exceeded the maximum size allowed of: ${max_csv_file_size_rewire} bytes`);
+            expect(result.http_resp_msg).to.equal(`File size is ${fake_file_size} bytes, which exceeded the maximum size allowed of: ${max_csv_file_size_rewire} bytes`);
             expect(result).to.be.instanceOf(Error);
             expect(check_glob_schema_stub).to.have.been.calledOnce;
             expect(fs_access_stub).to.have.been.calledOnce;
