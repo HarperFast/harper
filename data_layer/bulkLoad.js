@@ -174,7 +174,7 @@ async function importFromS3(json_message) {
         try {
             await fs.access(s3_file_load_obj.file_path);
             await fs.unlink(s3_file_load_obj.file_path);
-        }catch(e){
+        } catch(e){
             logger.warn(`could not delete temp csv file ${s3_file_load_obj.file_path}, file does not exist`);
         }
         return bulk_load_result;
@@ -219,13 +219,13 @@ async function downloadFileFromS3(TEMP_DOWNLOAD_DIR, s3_file_name, json_message)
         let tempFileStream = await fs.createWriteStream(tempDownloadLocation);
         let s3Stream = AWSConnector.getFileStreamFromS3(json_message);
 
-        s3Stream.on('error', function(err) {
-            throw handleHDBError(err, );
-        });
-
         await new Promise((resolve, reject) => {
+            s3Stream.on('error', function(err) {
+                reject(handleHDBError(err));
+            });
+
             s3Stream.pipe(tempFileStream).on('error', function(err) {
-                reject(err);
+                reject(handleHDBError(err));
             }).on('close', function() {
                 logger.info(`${json_message.s3.key} successfully downloaded to ${tempDownloadLocation}`);
                 resolve();
@@ -233,7 +233,7 @@ async function downloadFileFromS3(TEMP_DOWNLOAD_DIR, s3_file_name, json_message)
         });
     } catch(err) {
         //TODO - update error handling
-        handleHDBError(err);
+        throw handleHDBError(err);
     }
 }
 
