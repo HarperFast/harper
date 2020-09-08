@@ -110,7 +110,8 @@ async function csvURLLoad(json_message) {
     try {
         await downloadCSVFile(json_message.csv_url, csv_file_name);
     } catch (err) {
-        throw err;
+        logger.error(COMMON_ERROR_MSGS.DOWNLOAD_FILE_ERR(csv_file_name) + ' - ' + err);
+        throw handleHDBError(err, CHECK_LOGS_WRAPPER(COMMON_ERROR_MSGS.DOWNLOAD_FILE_ERR(csv_file_name)));
     }
 
     try {
@@ -166,7 +167,7 @@ async function importFromS3(json_message) {
             file_type: s3_file_type
         };
 
-        await downloadFileFromS3(TEMP_DOWNLOAD_DIR, s3_file_name, json_message);
+        await downloadFileFromS3(s3_file_name, json_message);
 
         let bulk_load_result = await fileLoad(s3_file_load_obj);
 
@@ -210,7 +211,7 @@ async function downloadCSVFile(url, csv_file_name) {
     await writeFileToTempFolder(csv_file_name, response.body);
 }
 
-async function downloadFileFromS3(TEMP_DOWNLOAD_DIR, s3_file_name, json_message) {
+async function downloadFileFromS3(s3_file_name, json_message) {
     try {
         const tempDownloadLocation = `${TEMP_DOWNLOAD_DIR}/${s3_file_name}`;
         await fs.mkdirp(TEMP_DOWNLOAD_DIR);

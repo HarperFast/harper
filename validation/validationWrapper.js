@@ -47,7 +47,7 @@ validate.validators.type.checks = {
 
 validate.validators.hasValidFileExt = function(value, options) {
     // allow non-string values by default (needs to be checked by "presence" and "type" checks)
-    if(!validate.isString(value)) {
+    if(!validate.isString(value) || value === "") {
         return null;
     }
 

@@ -102,6 +102,19 @@ describe('Test fileLoadValidator module', () => {
         csv_url: 'google.com'
     };
 
+    let s3_object = {
+        operation: "import_from_s3",
+        action: "insert",
+        schema: "hats",
+        table: "fordogs",
+        s3: {
+            aws_access_key_id: '12345key',
+            aws_secret_access_key: '54321key',
+            bucket: 'test_bucket',
+            key: 'test_file.csv'
+        }
+    };
+
     before(() => {
         global.hdb_schema = {
             "hats": {}
@@ -176,8 +189,57 @@ describe('Test fileLoadValidator module', () => {
             expect(result).to.be.instanceof(Error);
             expect(result.message).to.equal('Action is required and must be either insert or update');
         });
-    });
 
+        it('should return s3 cant be blank error from s3FileObject',() => {
+            const test_obj = test_util.deepClone(s3_object);
+            delete test_obj.s3
+            let result = file_load_validator.s3FileObject(test_obj);
+
+            expect(result).to.be.instanceof(Error);
+            expect(result.message).to.equal("S3 can't be blank,S3 aws access key id can't be blank,S3 aws secret access key can't be blank,S3 bucket can't be blank,S3 key can't be blank");
+        });
+
+        it('should return s3.aws_access_key_id must be a string error from s3FileObject',() => {
+            const test_obj = test_util.deepClone(s3_object);
+            test_obj.s3.aws_access_key_id = 123456;
+            let result = file_load_validator.s3FileObject(test_obj);
+
+            expect(result).to.be.instanceof(Error);
+            expect(result.message).to.equal("S3 aws access key id  must be a 'String' value");
+        });
+
+        it('should return s3.key cant be blank error from s3FileObject',() => {
+            const test_obj = test_util.deepClone(s3_object);
+            test_obj.s3.key = "";
+            let result = file_load_validator.s3FileObject(test_obj);
+
+            expect(result).to.be.instanceof(Error);
+            expect(result.message).to.equal("S3 key can't be blank");
+        });
+
+        it('should return s3.key must have valid ext error from s3FileObject',() => {
+            const test_obj = test_util.deepClone(s3_object);
+            test_obj.s3.key = "test_file";
+            let result = file_load_validator.s3FileObject(test_obj);
+
+            expect(result).to.be.instanceof(Error);
+            expect(result.message).to.equal("S3 key must include one of the following valid file extensions - '.csv', '.json'");
+        });
+
+        it('should return null w/ valid s3FileObject',() => {
+            global.hdb_schema = {
+                "hats": {
+                    "fordogs": {}
+                }
+            };
+            const test_obj = test_util.deepClone(s3_object);
+            let result = file_load_validator.s3FileObject(test_obj);
+
+            expect(result).to.be.null;
+        });
+
+
+    });
     /**
      * Unit tests for postValidateChecks function
      */

@@ -38,11 +38,12 @@ const DEFAULT_ERROR_RESP = DEFAULT_ERROR_MSGS[HTTP_STATUS_CODES.INTERNAL_SERVER_
 
 const BULK_LOAD_ERROR_MSGS = {
     DEFAULT_BULK_LOAD_ERR: 'There was an error during your bulk load into HarperDB.',
+    DOWNLOAD_FILE_ERR: (file_name) => `There was an error downloading '${file_name}'.`,
     INSERT_JSON_ERR: 'There was an error inserting the downloaded JSON data.',
     INSERT_CSV_ERR: 'There was an error inserting the downloaded CSV data.',
     MAX_FILE_SIZE_ERR: (file_size, max_size) => `File size is ${file_size} bytes, which exceeded the maximum size allowed of: ${max_size} bytes`,
     PAPA_PARSE_ERR: 'There was an error parsing the downloaded CSV data.',
-    S3_DOWNLOAD_ERR: (file_name) =>`There was an error downloading '${file_name}' from AWS.`,
+    S3_DOWNLOAD_ERR: (file_name) => `There was an error downloading '${file_name}' from AWS.`,
     WRITE_TEMP_FILE_ERR: `Error writing temporary file to storage`
 };
 
