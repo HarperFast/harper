@@ -20,14 +20,6 @@ validate.validators.type = function(value, options, key, attributes) {
         return null;
     }
 
-    // allow defining object of any type using their constructor. --> options = {clazz: ClassName}
-    if(typeof options  === 'object' && options.clazz) {
-        return value instanceof options.clazz ? null : ' is not of type "' + options.clazz.name + '"';
-    }
-
-    if(!validate.validators.type.checks[options]) {
-        throw new Error("Could not find validator for type " + options);
-    }
     return validate.validators.type.checks[options](value) ? null : ' must be a ' + `'${options}' value`;
 };
 

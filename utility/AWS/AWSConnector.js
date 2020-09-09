@@ -16,11 +16,9 @@ function getFileStreamFromS3(json_message) {
     };
     const authenticatedS3 = getS3AuthObj(s3.aws_access_key_id, s3.aws_secret_access_key);
     try {
-        // return await authenticatedS3.getObject(params).promise();
         return authenticatedS3.getObject(params).createReadStream();
     } catch(err) {
-        //TODO - update this error handling to be more specific!
-        throw handleHDBError(err);
+        throw err;
     }
 }
 

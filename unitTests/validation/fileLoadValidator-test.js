@@ -238,7 +238,19 @@ describe('Test fileLoadValidator module', () => {
             expect(result).to.be.null;
         });
 
+        it('should return validate `presence` error but NOT `type` error if both issues are caught',() => {
+            global.hdb_schema = {
+                "hats": {
+                    "fordogs": {}
+                }
+            };
+            const test_obj = test_util.deepClone(s3_object);
+            delete test_obj.s3.aws_access_key_id;
+            let result = file_load_validator.s3FileObject(test_obj);
 
+            expect(result).to.be.instanceof(Error);
+            expect(result.message).to.equal("S3 aws access key id can't be blank");
+        });
     });
     /**
      * Unit tests for postValidateChecks function
