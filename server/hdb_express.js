@@ -30,6 +30,7 @@ const util = require('util');
 const promisify = util.promisify;
 const hdb_license = require('../utility/registration/hdb_license');
 const PermissionResponseObject = require('../security/data_model/PermissionResponseObject');
+const check_jwt_tokens = require('../utility/install/checkJWTTokensExist');
 
 const p_schema_to_global = promisify(global_schema.setSchemaDataToGlobal);
 
@@ -125,6 +126,7 @@ cluster.on('exit', (dead_worker, code, signal) => {
 });
 
 if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
+    check_jwt_tokens();
     global.isMaster = cluster.isMaster;
 
     process.on('uncaughtException', async function (err) {
