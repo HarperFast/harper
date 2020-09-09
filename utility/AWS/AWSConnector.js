@@ -1,7 +1,6 @@
 "use strict";
 
 const AWS = require("aws-sdk");
-const { handleHDBError, hdb_errors } = require('../errors/hdbError');
 
 module.exports = {
     getFileStreamFromS3,
@@ -15,11 +14,7 @@ function getFileStreamFromS3(json_message) {
         Key: s3.key
     };
     const authenticatedS3 = getS3AuthObj(s3.aws_access_key_id, s3.aws_secret_access_key);
-    try {
-        return authenticatedS3.getObject(params).createReadStream();
-    } catch(err) {
-        throw err;
-    }
+    return authenticatedS3.getObject(params).createReadStream();
 }
 
 function getS3AuthObj(access_key_id, secret_key) {

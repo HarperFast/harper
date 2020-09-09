@@ -77,7 +77,7 @@ async function csvDataLoad(json_message) {
             return CSV_NO_RECORDS_MSG;
         }
 
-        return buildCSVResponseMsg(bulk_load_result.records, bulk_load_result.number_written);
+        return buildResponseMsg(bulk_load_result.records, bulk_load_result.number_written);
     } catch(err) {
         throw buildTopLevelErrMsg(err);
     }
@@ -87,7 +87,7 @@ async function csvDataLoad(json_message) {
  * Orchestrates a CSV data load via a file URL. First downloads the file to a temporary folder/file, then calls fileLoad on the
  * downloaded file. Finally deletes temporary folder and file.
  * @param json_message
- * @returns {Promise<void>}
+ * @returns {Promise<string>}
  */
 async function csvURLLoad(json_message) {
     let validation_msg = validator.urlObject(json_message);
@@ -116,8 +116,8 @@ async function csvURLLoad(json_message) {
 
     try {
         let bulk_load_result = await fileLoad(csv_file_load_obj);
-        // Remove the downloaded temporary CSV file and directory once fileLoad complete
 
+        // Remove the downloaded temporary CSV file and directory once fileLoad complete
         try {
             await fs.access(csv_file_load_obj.file_path);
             await fs.unlink(csv_file_load_obj.file_path);
@@ -130,6 +130,7 @@ async function csvURLLoad(json_message) {
     }
 }
 
+//TODO Code comment
 async function csvFileLoad(json_message) {
     let validation_msg = validator.fileObject(json_message);
     if (validation_msg) {
@@ -147,6 +148,7 @@ async function csvFileLoad(json_message) {
     }
 }
 
+//TODO Code comment
 async function importFromS3(json_message) {
     let validation_msg = validator.s3FileObject(json_message);
     if (validation_msg) {
@@ -206,11 +208,12 @@ async function downloadCSVFile(url, csv_file_name) {
         throw handleHDBError(err, err_msg, err.statusCode, logger.ERR, "Error downloading CSV file - " + err);
     }
 
-    validateResponse(response, url);
+    validateURLResponse(response, url);
 
     await writeFileToTempFolder(csv_file_name, response.body);
 }
 
+//TODO Code comment
 async function downloadFileFromS3(s3_file_name, json_message) {
     try {
         const tempDownloadLocation = `${TEMP_DOWNLOAD_DIR}/${s3_file_name}`;
@@ -221,18 +224,19 @@ async function downloadFileFromS3(s3_file_name, json_message) {
 
         await new Promise((resolve, reject) => {
             s3Stream.on('error', function(err) {
-                reject(handleHDBError(err));
+                reject(err);
             });
 
             s3Stream.pipe(tempFileStream).on('error', function(err) {
-                reject(handleHDBError(err));
+                reject(err);
             }).on('close', function() {
                 logger.info(`${json_message.s3.key} successfully downloaded to ${tempDownloadLocation}`);
                 resolve();
             });
         });
     } catch(err) {
-        throw handleHDBError(err, COMMON_ERROR_MSGS.S3_DOWNLOAD_ERR);
+        logger.error(COMMON_ERROR_MSGS.S3_DOWNLOAD_ERR + " - " + err);
+        throw handleHDBError(err, CHECK_LOGS_WRAPPER(COMMON_ERROR_MSGS.S3_DOWNLOAD_ERR));
     }
 }
 
@@ -251,7 +255,7 @@ async function writeFileToTempFolder(file_name, response_body) {
  * @param response
  * @param url
  */
-function validateResponse(response, url) {
+function validateURLResponse(response, url) {
     if (response.statusCode !== hdb_errors.HTTP_STATUS_CODES.OK) {
         throw handleHDBError(new Error(),`CSV Load failed from URL: ${url}, status code: ${response.statusCode}, message: ${response.statusMessage}`, HTTP_STATUS_CODES.BAD_REQUEST);
     }
@@ -290,13 +294,13 @@ async function fileLoad(json_message) {
                 throw handleHDBError(
                     new Error(),
                     COMMON_ERROR_MSGS.DEFAULT_BULK_LOAD_ERR,
-                    HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR,
+                    HTTP_STATUS_CODES.BAD_REQUEST,
                     logger.ERR,
-                    'Error selecting correct parser - valid file type not found in json - ' + json_message
+                    COMMON_ERROR_MSGS.INVALID_FILE_EXT_ERR(json_message)
                 );
         }
 
-        return buildCSVResponseMsg(bulk_load_result.records, bulk_load_result.number_written);
+        return buildResponseMsg(bulk_load_result.records, bulk_load_result.number_written);
     } catch(err) {
         throw buildTopLevelErrMsg(err);
     }
@@ -610,11 +614,11 @@ async function postCSVLoadFunction(fields, orig_bulk_msg, result, orig_req) {
 }
 
 /**
- * Builds the response message returned by CSV operations.
+ * Builds the response message returned by bulk load operations.
  * @param total_records
  * @param number_written
  */
-function buildCSVResponseMsg(total_records, number_written) {
+function buildResponseMsg(total_records, number_written) {
     return `successfully loaded ${number_written} of ${total_records} records`;
 }
 

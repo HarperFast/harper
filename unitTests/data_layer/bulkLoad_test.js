@@ -20,6 +20,7 @@ const logger = require('../../utility/logging/harper_logger');
 const env = require('../../utility/environment/environmentManager');
 const papa_parse = require('papaparse');
 const fs = require('fs-extra');
+const { CHECK_LOGS_WRAPPER, TEST_BULK_LOAD_ERROR_MSGS, HTTP_STATUS_CODES } = require('../commonTestErrors');
 
 const VALID_CSV_DATA = "id,name,section,country,image\n1,ENGLISH POINTER,British and Irish Pointers and Setters,GREAT BRITAIN,http://www.fci.be/Nomenclature/Illustrations/001g07.jpg\n2,ENGLISH SETTER,British and Irish Pointers and Setters,GREAT BRITAIN,http://www.fci.be/Nomenclature/Illustrations/002g07.jpg\n3,KERRY BLUE TERRIER,Large and medium sized Terriers,IRELAND,\n";
 const INVALID_CSV_ID_COLUMN_NAME = "id/,name,section,country,image\n1,ENGLISH POINTER,British and Irish Pointers and Setters,GREAT BRITAIN,http://www.fci.be/Nomenclature/Illustrations/001g07.jpg\n2,ENGLISH SETTER,British and Irish Pointers and Setters,GREAT BRITAIN,http://www.fci.be/Nomenclature/Illustrations/002g07.jpg\n3,KERRY BLUE TERRIER,Large and medium sized Terriers,IRELAND,\n";
@@ -71,6 +72,19 @@ describe('Test bulkLoad.js', () => {
         "data": "[{\"blah\":\"blah\"}]"
     };
 
+    let s3_message_fake = {
+        operation: "import_from_s3",
+        action: "insert",
+        schema: "golden",
+        table: "retriever",
+        s3: {
+            aws_access_key_id: '12345key',
+            aws_secret_access_key: '54321key',
+            bucket: 'test_bucket',
+            key: 'test_file.csv'
+        }
+    }
+
     let results_fake = {
         data: []
     };
@@ -99,6 +113,8 @@ describe('Test bulkLoad.js', () => {
         records: 10,
         number_written: 10
     };
+
+    let expected_insert_results_resp = "successfully loaded 10 of 10 records";
 
     let reject_fake = (err) => {
         throw err;
@@ -234,7 +250,7 @@ describe('Test bulkLoad.js', () => {
         let write_file_stub;
 
         before(() => {
-            bulkLoad_rewire.__set__('validateResponse', validate_response_stub);
+            bulkLoad_rewire.__set__('validateURLResponse', validate_response_stub);
             mk_dir_stub = sandbox.stub(fs, 'mkdirp');
             write_file_stub = sandbox.stub(fs, 'writeFile');
         });
@@ -271,8 +287,8 @@ describe('Test bulkLoad.js', () => {
         });
     });
 
-    describe('Test validateResponse function', () => {
-        let validateResponse_rw = bulkLoad_rewire.__get__('validateResponse');
+    describe('Test validateURLResponse function', () => {
+        let validateURLResponse_rw = bulkLoad_rewire.__get__('validateURLResponse');
         let url_fake = 'www.csv.com';
 
         it('Test that bad error code is handled', () => {
@@ -283,7 +299,7 @@ describe('Test bulkLoad.js', () => {
             let error;
 
             try {
-                validateResponse_rw(response, url_fake);
+                validateURLResponse_rw(response, url_fake);
             } catch(err) {
                 error = err;
             }
@@ -301,7 +317,7 @@ describe('Test bulkLoad.js', () => {
             let error;
 
             try {
-                validateResponse_rw(response, url_fake);
+                validateURLResponse_rw(response, url_fake);
             } catch(err) {
                 error = err;
             }
@@ -319,7 +335,7 @@ describe('Test bulkLoad.js', () => {
             let error;
 
             try {
-                validateResponse_rw(response, url_fake);
+                validateURLResponse_rw(response, url_fake);
             } catch(err) {
                 error = err;
             }
@@ -332,6 +348,7 @@ describe('Test bulkLoad.js', () => {
         let validation_msg_stub;
         let fs_access_stub;
         let logger_error_spy;
+        let file_load_rw;
         let sandbox = sinon.createSandbox();
         let bulk_load_result_fake = {
             records: 10,
@@ -347,7 +364,7 @@ describe('Test bulkLoad.js', () => {
             validation_msg_stub = sandbox.stub(validator, 'fileObject').returns('');
             fs_access_stub = sandbox.stub(fs, 'access');
             logger_error_spy = sandbox.spy(logger, 'error');
-            // file_load_rw = bulkLoad_rewire.__get__('fileLoad');
+            file_load_rw = bulkLoad_rewire.__get__('fileLoad');
         });
 
         afterEach(() => {
@@ -393,6 +410,214 @@ describe('Test bulkLoad.js', () => {
             expect(error).to.be.instanceof(Error);
             expect(error.message).to.equal('Papa parse error');
             expect(logger_error_spy).to.have.been.calledOnce;
+        });
+    });
+
+    describe('Test importFromS3 function', () => {
+        let sandbox = sinon.createSandbox();
+        let validator_stub;
+        let handleValidationErr_spy;
+        let downloadFileFromS3_stub;
+        let fileLoad_stub;
+        let fs_stub;
+        let buildTopLevelErrMsg_spy;
+        let logger_error_spy;
+
+        let importFromS3_rw;
+
+        let test_S3_message_json;
+
+        before(() => {
+            validator_stub = sandbox.stub(validator, 's3FileObject').callThrough();
+            bulkLoad_rewire.__set__('validator', {s3FileObject: validator_stub});
+
+            const handleValidationErr_orig = bulkLoad_rewire.__get__('handleValidationError');
+            handleValidationErr_spy = sandbox.spy(handleValidationErr_orig);
+            bulkLoad_rewire.__set__('handleValidationError', handleValidationErr_spy);
+
+            downloadFileFromS3_stub = sandbox.stub().resolves();
+            bulkLoad_rewire.__set__('downloadFileFromS3', downloadFileFromS3_stub);
+
+            fileLoad_stub  = sandbox.stub().resolves(expected_insert_results_resp);
+            bulkLoad_rewire.__set__('fileLoad', fileLoad_stub);
+
+            const resolve_stub = sandbox.stub().resolves();
+            fs_stub = {access: resolve_stub, unlink: resolve_stub}
+            bulkLoad_rewire.__set__('fs', fs_stub)
+
+            const buildErrMsg_orig = bulkLoad_rewire.__get__('buildTopLevelErrMsg');
+            buildTopLevelErrMsg_spy = sandbox.spy(buildErrMsg_orig);
+            bulkLoad_rewire.__set__('buildTopLevelErrMsg', buildTopLevelErrMsg_spy);
+
+            logger_error_spy = sandbox.spy(logger, 'error');
+            importFromS3_rw = bulkLoad_rewire.__get__('importFromS3');
+
+            global.hdb_schema = {
+                "golden": {
+                    "retriever": {}
+                }
+            };
+        });
+
+        beforeEach(() => {
+            test_S3_message_json = test_utils.deepClone(s3_message_fake);
+        })
+
+        afterEach(() => {
+            sandbox.resetHistory()
+        })
+
+        after(() => {
+            sandbox.restore();
+            bulkLoad_rewire = rewire('../../data_layer/bulkLoad');
+            global.hdb_schema = undefined;
+        });
+
+        it('NOMINAL - Should call through and return results', async () => {
+            const results = await importFromS3_rw(test_S3_message_json);
+
+            expect(results).to.equal(expected_insert_results_resp)
+            expect(logger_error_spy).to.have.not.been.called;
+            expect(buildTopLevelErrMsg_spy).to.have.not.been.called;
+        });
+
+        it('NOMINAL - Should add `file_type` and `file_path` variables to the json message - csv', async () => {
+            await importFromS3_rw(test_S3_message_json);
+
+            expect(fileLoad_stub.args[0][0].file_type).to.equal(".csv");
+            expect(typeof fileLoad_stub.args[0][0].file_path === "string").to.be.true;
+            expect(fileLoad_stub.args[0][0].file_path.endsWith(".csv")).to.be.true;
+        });
+
+        it('NOMINAL - Should add `file_type` and `file_path` variables to the json message - json', async () => {
+            test_S3_message_json.s3.key = "test_file.json";
+            await importFromS3_rw(test_S3_message_json);
+
+            expect(fileLoad_stub.args[0][0].file_type).to.equal(".json");
+            expect(typeof fileLoad_stub.args[0][0].file_path === "string").to.be.true;
+            expect(fileLoad_stub.args[0][0].file_path.endsWith(".json")).to.be.true;
+        });
+
+        it('Should use handleValidationError to handle any validation issues', async () => {
+            delete test_S3_message_json.schema;
+            let result;
+            try {
+                await importFromS3_rw(test_S3_message_json);
+            } catch(err) {
+                result = err
+            }
+
+            expect(result).to.be.instanceof(Error);
+            expect(result.http_resp_msg).to.equal("Error: Schema can't be blank");
+            expect(result.http_resp_code).to.equal(HTTP_STATUS_CODES.BAD_REQUEST);
+            expect(handleValidationErr_spy).to.have.been.calledOnce;
+            expect(downloadFileFromS3_stub).to.have.not.been.called;
+        });
+
+        it('Should use buildTopLevelErrMsg to handle any error thrown', async () => {
+            const test_err_msg = "Download error";
+            downloadFileFromS3_stub.throws(new Error(test_err_msg));
+
+            let result;
+            try {
+                await importFromS3_rw(test_S3_message_json);
+            } catch(err) {
+                result = err
+            }
+
+            expect(result).to.be.instanceof(Error);
+            expect(result.http_resp_msg).to.equal(CHECK_LOGS_WRAPPER(TEST_BULK_LOAD_ERROR_MSGS.DEFAULT_BULK_LOAD_ERR));
+            expect(result.http_resp_code).to.equal(HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR);
+            expect(buildTopLevelErrMsg_spy.args[0][0].message).to.equal(test_err_msg);
+            expect(logger_error_spy).to.have.been.calledOnce;
+            expect(fileLoad_stub).to.not.have.been.called;
+        });
+    });
+
+    describe('Test fileLoad function', () => {
+        let sandbox = sinon.createSandbox();
+        let callPapaParse_stub;
+        let insertJson_stub;
+        let logger_error_spy;
+        let buildResponseMsg_spy;
+        let buildTopLevelErrMsg_spy;
+
+        let fileLoad_rw;
+
+        let csv_msg_fake = {
+            file_type: '.csv'
+        };
+
+        let json_msg_fake = {
+            file_type: '.json'
+        };
+
+        let invalid_msg_fake = {
+            file_type: '.xlsx'
+        };
+
+        before(() => {
+            callPapaParse_stub = sandbox.stub().resolves(insert_results_fake);
+            insertJson_stub = sandbox.stub().resolves(insert_results_fake);
+            bulkLoad_rewire.__set__('callPapaParse', callPapaParse_stub);
+            bulkLoad_rewire.__set__('insertJson', insertJson_stub);
+
+            const buildRespMsg_orig = bulkLoad_rewire.__get__('buildResponseMsg');
+            buildResponseMsg_spy = sandbox.spy(buildRespMsg_orig);
+            bulkLoad_rewire.__set__('buildResponseMsg', buildResponseMsg_spy);
+
+            const buildErrMsg_orig = bulkLoad_rewire.__get__('buildTopLevelErrMsg');
+            buildTopLevelErrMsg_spy = sandbox.spy(buildErrMsg_orig);
+            bulkLoad_rewire.__set__('buildTopLevelErrMsg', buildTopLevelErrMsg_spy);
+
+            logger_error_spy = sandbox.spy(logger, 'error');
+            fileLoad_rw = bulkLoad_rewire.__get__('fileLoad');
+        });
+
+        afterEach(() => {
+            sandbox.resetHistory()
+        })
+
+        after(() => {
+            sandbox.restore();
+            bulkLoad_rewire = rewire('../../data_layer/bulkLoad');
+        });
+
+        it('Should call papaParse if file is CSV', async () => {
+            const results = await fileLoad_rw(csv_msg_fake);
+
+            expect(results).to.equal(expected_insert_results_resp)
+            expect(logger_error_spy).to.have.not.been.called;
+            expect(callPapaParse_stub).to.have.been.calledOnce;
+            expect(buildResponseMsg_spy).to.have.been.calledOnce;
+        });
+
+        it('Should call insertJson if file is JSON', async () => {
+            const results = await fileLoad_rw(json_msg_fake);
+
+            expect(results).to.equal(expected_insert_results_resp)
+            expect(logger_error_spy).to.have.not.been.called;
+            expect(insertJson_stub).to.have.been.calledOnce;
+            expect(buildResponseMsg_spy).to.have.been.calledOnce;
+        });
+
+        it('Should throw an error if file_type is not supported', async () => {
+            let results;
+            try {
+                await fileLoad_rw(invalid_msg_fake);
+            }catch(err) {
+                results = err;
+            }
+
+            expect(results).to.be.instanceof(Error);
+            expect(results.http_resp_msg).to.equal(TEST_BULK_LOAD_ERROR_MSGS.DEFAULT_BULK_LOAD_ERR);
+            expect(results.http_resp_code).to.equal(HTTP_STATUS_CODES.BAD_REQUEST);
+            expect(logger_error_spy).to.have.been.calledOnce;
+            expect(logger_error_spy).to.have.been.calledWith(TEST_BULK_LOAD_ERROR_MSGS.INVALID_FILE_EXT_ERR(invalid_msg_fake));
+            expect(insertJson_stub).to.not.have.been.called;
+            expect(callPapaParse_stub).to.not.have.been.called;
+            expect(buildResponseMsg_spy).to.not.have.been.called;
+            expect(buildTopLevelErrMsg_spy).to.have.been.calledOnce;
         });
     });
 
@@ -545,7 +770,7 @@ describe('Test bulkLoad.js', () => {
             sandbox.restore();
         });
 
-        it('Test readstream and papaparse are called and insert resutls are returned', async () => {
+        it('Test readstream and papaparse are called and insert results are returned', async () => {
             let results = await call_papaparse_rewire(json_message_fake);
 
             expect(fs_create_read_stream_stub).to.have.been.calledTwice;
@@ -569,6 +794,10 @@ describe('Test bulkLoad.js', () => {
             expect(error.__proto__.constructor.name).to.equal('HdbError');
             expect(logger_error_stub).to.have.been.calledOnce;
         });
+    });
+
+    describe('Test insertJson function', () => {
+
     });
 
     describe('Test bulkLoad function', async () => {
@@ -685,4 +914,57 @@ describe('Test bulkLoad.js', () => {
             assert.strictEqual(post_to_cluster_stub.calledOnce, false, 'expected sendTranaction to NOT be called');
         });
     });
+
+    describe('test downloadFileFromS3', async () => {
+        // let sandbox = sinon.createSandbox();
+        // let post_to_cluster_stub = undefined;
+        // let concat_message_stub = undefined;
+        // let expected_result = {
+        //     records: 2,
+        //     number_written: 3
+        // };
+        // let ORIGINATOR_NAME = 'somemachine';
+        // let postCSVLoadFunction = bulkLoad_rewire.__get__('postCSVLoadFunction');
+        // beforeEach(() => {
+        //     post_to_cluster_stub = sandbox.stub(hdb_utils, `sendTransactionToSocketCluster`).returns();
+        //     //concat_message_stub = sandbox.stub(hdb_utils, 'concatSourceMessageHeader').returns();
+        // });
+        // afterEach(() => {
+        //     sandbox.restore();
+        // });
+        // it('nominal case, see sent to cluster', async () => {
+        //     let msg = test_utils.deepClone(json_message_fake);
+        //     msg.transact_to_cluster = true;
+        //     let msg_with_originator = test_utils.deepClone(json_message_fake);
+        //     msg_with_originator.__originator = {ORIGINATOR_NAME: 111};
+        //     let result = postCSVLoadFunction(["blah"], msg, expected_result, msg_with_originator );
+        //     assert.strictEqual(post_to_cluster_stub.calledOnce, true, 'expected sendTranaction to be called');
+        // });
+        // it('nominal case, see not sent to cluster', async () => {
+        //     let msg = test_utils.deepClone(json_message_fake);
+        //     msg.transact_to_cluster = false;
+        //     let msg_with_originator = test_utils.deepClone(json_message_fake);
+        //     msg_with_originator.__originator = {ORIGINATOR_NAME: 111};
+        //     let result = postCSVLoadFunction(msg, expected_result, msg_with_originator );
+        //     assert.strictEqual(post_to_cluster_stub.calledOnce, false, 'expected sendTranaction to NOT be called');
+        // });
+        // it('Undefined transact flag, see not sent to cluster', async () => {
+        //     let msg = test_utils.deepClone(json_message_fake);
+        //     msg.transact_to_cluster = undefined;
+        //     let msg_with_originator = test_utils.deepClone(json_message_fake);
+        //     msg_with_originator.__originator = {ORIGINATOR_NAME: 111};
+        //     let result = postCSVLoadFunction(msg, expected_result, msg_with_originator );
+        //     assert.strictEqual(post_to_cluster_stub.calledOnce, false, 'expected sendTranaction to NOT be called');
+        // });
+        // it('Completely missing transact flag, see not sent to cluster', async () => {
+        //     let msg = test_utils.deepClone(json_message_fake);
+        //     delete msg.transact_to_cluster;
+        //     let msg_with_originator = test_utils.deepClone(json_message_fake);
+        //     msg_with_originator.__originator = {ORIGINATOR_NAME: 111};
+        //     let result = postCSVLoadFunction(msg, expected_result, msg_with_originator );
+        //     assert.strictEqual(post_to_cluster_stub.calledOnce, false, 'expected sendTranaction to NOT be called');
+        // });
+    });
+
+
 });

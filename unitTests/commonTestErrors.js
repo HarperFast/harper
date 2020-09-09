@@ -36,6 +36,18 @@ const LMDB_ERRORS_ENUM = {
     CANNOT_DROP_TABLE_HASH_ATTRIBUTE: new Error('cannot drop a table\'s hash attribute')
 };
 
+const TEST_BULK_LOAD_ERROR_MSGS = {
+    DEFAULT_BULK_LOAD_ERR: 'There was an error during your bulk load into HarperDB.',
+    DOWNLOAD_FILE_ERR: (file_name) => `There was an error downloading '${file_name}'.`,
+    INSERT_JSON_ERR: 'There was an error inserting the downloaded JSON data.',
+    INSERT_CSV_ERR: 'There was an error inserting the downloaded CSV data.',
+    INVALID_FILE_EXT_ERR: (json) => `Error selecting correct parser - valid file type not found in json - ${json}`,
+    MAX_FILE_SIZE_ERR: (file_size, max_size) => `File size is ${file_size} bytes, which exceeded the maximum size allowed of: ${max_size} bytes`,
+    PAPA_PARSE_ERR: 'There was an error parsing the downloaded CSV data.',
+    S3_DOWNLOAD_ERR: (file_name) => `There was an error downloading '${file_name}' from AWS.`,
+    WRITE_TEMP_FILE_ERR: `Error writing temporary file to storage`
+};
+
 const TEST_OPERATION_AUTH_ERROR = {
     DEFAULT_INVALID_REQUEST: "Invalid request",
     OP_AUTH_PERMS_ERROR: "This operation is not authorized due to role restrictions and/or invalid schema items",
@@ -86,7 +98,9 @@ const TEST_DEFAULT_ERROR_MSGS = {
 const TEST_DEFAULT_ERROR_RESP = TEST_DEFAULT_ERROR_MSGS[HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR];
 
 module.exports = {
+    CHECK_LOGS_WRAPPER,
     LMDB_ERRORS_ENUM,
+    TEST_BULK_LOAD_ERROR_MSGS,
     TEST_DEFAULT_ERROR_RESP,
     TEST_ROLE_PERMS_ERROR,
     TEST_OPERATION_AUTH_ERROR,
