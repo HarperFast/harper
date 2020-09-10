@@ -26,6 +26,7 @@ const hdbInfoController = require('../../data_layer/hdbInfoController');
 const version = require('../../bin/version');
 const LOG_LOCATION = ('../install_log.log');
 const minimist = require('minimist');
+const check_jwt_tokens = require('./checkJWTTokensExist');
 
 module.exports = {
     install: run_install
@@ -82,6 +83,8 @@ function run_install(callback) {
                 generateKeys,
                 updateHdbInfo,
                 () => {
+                    check_jwt_tokens();
+
                     console.log('HarperDB Installation was successful');
                     winston.info('Installation Successful');
                     process.exit(0);
