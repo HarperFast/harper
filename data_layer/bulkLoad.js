@@ -98,7 +98,6 @@ async function csvURLLoad(json_message) {
     let csv_file_name = `${Date.now()}.csv`;
 
     let csv_file_load_obj = {
-        operation: hdb_terms.OPERATIONS_ENUM.CSV_FILE_LOAD,
         action: json_message.action,
         schema: json_message.schema,
         table: json_message.table,
@@ -171,7 +170,6 @@ async function importFromS3(json_message) {
         let s3_file_name = `${Date.now()}${s3_file_type}`;
 
         let s3_file_load_obj = {
-            operation: hdb_terms.OPERATIONS_ENUM.IMPORT_FROM_S3,
             action: json_message.action,
             schema: json_message.schema,
             table: json_message.table,

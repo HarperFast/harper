@@ -1,6 +1,6 @@
 "use strict";
 
-const AWS = require("aws-sdk");
+const S3 = require('aws-sdk/clients/s3');
 
 module.exports = {
     getFileStreamFromS3,
@@ -18,10 +18,8 @@ function getFileStreamFromS3(json_message) {
 }
 
 function getS3AuthObj(access_key_id, secret_key) {
-    AWS.config.update({
+    return new S3({
         accessKeyId: access_key_id,
         secretAccessKey: secret_key
     });
-
-    return new AWS.S3();
 }

@@ -6,7 +6,6 @@ const sinon = require('sinon');
 const uuid = require('uuid/v4');
 const assert = require('assert');
 const COMMON_TEST_TERMS = require('./commonTestTerms');
-const { HdbError } = require('../utility/errors/hdbError');
 
 const env = require('../utility/environment/environmentManager');
 const terms = require('../utility/hdbTerms');
@@ -711,7 +710,7 @@ async function testHDBError(test_func, error_msg) {
         error = err;
     }
 
-    return error.__proto__.constructor.name === HdbError.name && error.http_resp_msg === error_msg;
+    return error.__proto__.constructor.name === 'HdbError' && error.http_resp_msg === error_msg;
 }
 
 async function assertErrorAsync(test_func, args, error_object, message){
