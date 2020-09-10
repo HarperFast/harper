@@ -71,7 +71,7 @@ async function csvDataLoad(json_message) {
 
         converted_msg.data = parse_results.data;
 
-        bulk_load_result = await op_func_caller.callOperationFunctionAsAwait(callBulkLoad, converted_msg, postCSVLoadFunction.bind(null, parse_results.meta.fields));
+        bulk_load_result = await op_func_caller.callOperationFunctionAsAwait(callBulkFileLoad, converted_msg, postCSVLoadFunction.bind(null, parse_results.meta.fields));
 
         if (bulk_load_result.message === CSV_NO_RECORDS_MSG) {
             return CSV_NO_RECORDS_MSG;
@@ -227,12 +227,14 @@ async function downloadFileFromS3(s3_file_name, json_message) {
                 reject(err);
             });
 
-            s3Stream.pipe(tempFileStream).on('error', function(err) {
-                reject(err);
-            }).on('close', function() {
-                logger.info(`${json_message.s3.key} successfully downloaded to ${tempDownloadLocation}`);
-                resolve();
-            });
+            s3Stream.pipe(tempFileStream)
+                .on('error', function(err) {
+                    reject(err);
+                })
+                .on('close', function() {
+                    logger.info(`${json_message.s3.key} successfully downloaded to ${tempDownloadLocation}`);
+                    resolve();
+                });
         });
     } catch(err) {
         logger.error(COMMON_ERROR_MSGS.S3_DOWNLOAD_ERR + " - " + err);
@@ -390,7 +392,7 @@ async function insertChunk(json_message, insert_results, reject, results, parser
             transact_to_cluster: json_message.transact_to_cluster,
             data: results_data
         };
-        let bulk_load_chunk_result = await op_func_caller.callOperationFunctionAsAwait(callBulkLoad, converted_msg,
+        let bulk_load_chunk_result = await op_func_caller.callOperationFunctionAsAwait(callBulkFileLoad, converted_msg,
             postCSVLoadFunction.bind(null, fields));
         insert_results.records += bulk_load_chunk_result.records;
         insert_results.number_written += bulk_load_chunk_result.number_written;
@@ -482,11 +484,11 @@ async function insertJson(json_message) {
     }
 }
 
-async function callBulkLoad(json_msg) {
+async function callBulkFileLoad(json_msg) {
     let bulk_load_result = {};
     try {
         if (json_msg.data && json_msg.data.length > 0 && validateColumnNames(json_msg.data[0])) {
-            bulk_load_result = await bulkLoad(json_msg.data, json_msg.schema, json_msg.table, json_msg.action);
+            bulk_load_result = await bulkFileLoad(json_msg.data, json_msg.schema, json_msg.table, json_msg.action);
         } else {
             bulk_load_result.message = 'No records parsed from csv file.';
             logger.info(bulk_load_result.message);
@@ -521,7 +523,7 @@ function validateColumnNames(created_record) {
  * @param action - Specify either insert or update the specified records
  * @returns {Promise<{records: *, new_attributes: *, number_written: number}>}
  */
-async function bulkLoad(records, schema, table, action){
+async function bulkFileLoad(records, schema, table, action){
     if (!action) {
         action = 'insert';
     }
