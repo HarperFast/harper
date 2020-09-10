@@ -52,6 +52,7 @@
     "human-readable-ids": "^1.0.4",
     "is-number": "^7.0.0",
     "jsonata": "^1.8.3",
+    "jsonwebtoken": "^8.5.1",
     "lodash": "^4.17.19",
     "mathjs": "^4.4.1",
     "microtime": "^3.0.0",
