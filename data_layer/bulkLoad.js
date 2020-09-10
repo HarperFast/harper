@@ -85,7 +85,7 @@ async function csvDataLoad(json_message) {
 
 /**
  * Orchestrates a CSV data load via a file URL. First downloads the file to a temporary folder/file, then calls fileLoad on the
- * downloaded file. Finally deletes temporary folder and file.
+ * downloaded file. Finally deletes temporary file.
  * @param json_message
  * @returns {Promise<string>}
  */
@@ -130,7 +130,12 @@ async function csvURLLoad(json_message) {
     }
 }
 
-//TODO Code comment
+/**
+ * This is the top-level API method to handle the local csv file load operation.
+ *
+ * @param json_message
+ * @returns {Promise<string>}
+ */
 async function csvFileLoad(json_message) {
     let validation_msg = validator.fileObject(json_message);
     if (validation_msg) {
@@ -148,7 +153,13 @@ async function csvFileLoad(json_message) {
     }
 }
 
-//TODO Code comment
+/**
+ * This is the top-level API method that handles CSV and JSON file imports from private S3 buckets.  First downloads
+ * the file to a temporary folder/file, then calls fileLoad on the downloaded file. Finally deletes temporary file.
+ *
+ * @param json_message
+ * @returns {Promise<string>}
+ */
 async function importFromS3(json_message) {
     let validation_msg = validator.s3FileObject(json_message);
     if (validation_msg) {
@@ -202,6 +213,8 @@ async function downloadCSVFile(url, csv_file_name) {
 
     let response;
     try {
+        //TODO - 'request_promise' has been deprecated.  We should consider updating this library if we ever need to use
+        // this functionality in other areas in CORE.  See CORE-1127
         response = await request_promise(options);
     } catch(err) {
         const err_msg = `Error downloading CSV file from ${url}, status code: ${err.statusCode}. Check the log for more information.`;
@@ -213,7 +226,12 @@ async function downloadCSVFile(url, csv_file_name) {
     await writeFileToTempFolder(csv_file_name, response.body);
 }
 
-//TODO Code comment
+/**
+ * Used to create the read stream from the S3 bucket to pipe into a local write stream.
+ * @param s3_file_name - file name used to save the downloaded file locally in the tmp file
+ * @param json_message
+ * @returns {Promise<void>}
+ */
 async function downloadFileFromS3(s3_file_name, json_message) {
     try {
         const tempDownloadLocation = `${TEMP_DOWNLOAD_DIR}/${s3_file_name}`;
@@ -242,6 +260,13 @@ async function downloadFileFromS3(s3_file_name, json_message) {
     }
 }
 
+/**
+ * Used to write the CSV data in the body.data from an http request to the local tmp file for processing
+ *
+ * @param file_name - file name used to save the downloaded file locally in the tmp file
+ * @param response_body - body.data value in response from http request
+ * @returns {Promise<void>}
+ */
 async function writeFileToTempFolder(file_name, response_body) {
     try {
         await fs.mkdirp(TEMP_DOWNLOAD_DIR);
@@ -624,6 +649,14 @@ function buildResponseMsg(total_records, number_written) {
     return `successfully loaded ${number_written} of ${total_records} records`;
 }
 
+/**
+ * Uses handleHDBError here to ensure the specific error that has already been created when thrown lower down
+ * the stack is used OR, if it hasn't been handled yet, will create and return the generic error message for bulk load
+ * and log the error
+ *
+ * @param err - error caught to be turned into a HDBError (if not already) or passed through via HDBError
+ * @returns {HdbError}
+ */
 function buildTopLevelErrMsg(err) {
     return handleHDBError(
         err,

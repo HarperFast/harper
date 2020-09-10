@@ -354,11 +354,11 @@ const JOB_TYPE_ENUM = {
     csv_data_load: OPERATIONS_ENUM.CSV_DATA_LOAD,
     csv_url_load: OPERATIONS_ENUM.CSV_URL_LOAD,
     delete_files_before: 'delete_files_before',
+    delete_transaction_logs_before: 'delete_transaction_logs_before',
     empty_trash: 'empty_trash',
     export_local: 'export_local',
     export_to_s3: 'export_to_s3',
-    import_from_s3: 'import_from_s3',
-    delete_transaction_logs_before: 'delete_transaction_logs_before'
+    import_from_s3: 'import_from_s3'
 };
 
 const CLUSTER_MESSAGE_TYPE_ENUM = {

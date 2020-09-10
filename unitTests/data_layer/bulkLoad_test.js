@@ -862,6 +862,8 @@ describe('Test bulkLoad.js', () => {
             expect(logger_error_spy).to.have.not.been.called;
         });
 
+        //TODO: This test needs to be revisited at some point to evaluate how best to test specific event scenarios within
+        // the readStream.  This provides some coverage but feels hacky.
         it('ERROR - Should return a HDB error if the readStream emits an error', async () => {
             const streamEventEmitter = new EventEmitter();
             streamEventEmitter.setEncoding = sandbox.stub().returns();
@@ -994,57 +996,4 @@ describe('Test bulkLoad.js', () => {
             assert.strictEqual(post_to_cluster_stub.calledOnce, false, 'expected sendTranaction to NOT be called');
         });
     });
-
-    describe('test downloadFileFromS3', async () => {
-        // let sandbox = sinon.createSandbox();
-        // let post_to_cluster_stub = undefined;
-        // let concat_message_stub = undefined;
-        // let expected_result = {
-        //     records: 2,
-        //     number_written: 3
-        // };
-        // let ORIGINATOR_NAME = 'somemachine';
-        // let postCSVLoadFunction = bulkLoad_rewire.__get__('postCSVLoadFunction');
-        // beforeEach(() => {
-        //     post_to_cluster_stub = sandbox.stub(hdb_utils, `sendTransactionToSocketCluster`).returns();
-        //     //concat_message_stub = sandbox.stub(hdb_utils, 'concatSourceMessageHeader').returns();
-        // });
-        // afterEach(() => {
-        //     sandbox.restore();
-        // });
-        // it('nominal case, see sent to cluster', async () => {
-        //     let msg = test_utils.deepClone(json_message_fake);
-        //     msg.transact_to_cluster = true;
-        //     let msg_with_originator = test_utils.deepClone(json_message_fake);
-        //     msg_with_originator.__originator = {ORIGINATOR_NAME: 111};
-        //     let result = postCSVLoadFunction(["blah"], msg, expected_result, msg_with_originator );
-        //     assert.strictEqual(post_to_cluster_stub.calledOnce, true, 'expected sendTranaction to be called');
-        // });
-        // it('nominal case, see not sent to cluster', async () => {
-        //     let msg = test_utils.deepClone(json_message_fake);
-        //     msg.transact_to_cluster = false;
-        //     let msg_with_originator = test_utils.deepClone(json_message_fake);
-        //     msg_with_originator.__originator = {ORIGINATOR_NAME: 111};
-        //     let result = postCSVLoadFunction(msg, expected_result, msg_with_originator );
-        //     assert.strictEqual(post_to_cluster_stub.calledOnce, false, 'expected sendTranaction to NOT be called');
-        // });
-        // it('Undefined transact flag, see not sent to cluster', async () => {
-        //     let msg = test_utils.deepClone(json_message_fake);
-        //     msg.transact_to_cluster = undefined;
-        //     let msg_with_originator = test_utils.deepClone(json_message_fake);
-        //     msg_with_originator.__originator = {ORIGINATOR_NAME: 111};
-        //     let result = postCSVLoadFunction(msg, expected_result, msg_with_originator );
-        //     assert.strictEqual(post_to_cluster_stub.calledOnce, false, 'expected sendTranaction to NOT be called');
-        // });
-        // it('Completely missing transact flag, see not sent to cluster', async () => {
-        //     let msg = test_utils.deepClone(json_message_fake);
-        //     delete msg.transact_to_cluster;
-        //     let msg_with_originator = test_utils.deepClone(json_message_fake);
-        //     msg_with_originator.__originator = {ORIGINATOR_NAME: 111};
-        //     let result = postCSVLoadFunction(msg, expected_result, msg_with_originator );
-        //     assert.strictEqual(post_to_cluster_stub.calledOnce, false, 'expected sendTranaction to NOT be called');
-        // });
-    });
-
-
 });
