@@ -862,17 +862,15 @@ describe('Test bulkLoad.js', () => {
             expect(logger_error_spy).to.have.not.been.called;
         });
 
-        //TODO: This test needs to be revisited at some point to evaluate how best to test specific event scenarios within
-        // the readStream.  This provides some coverage but feels hacky.
         it('ERROR - Should return a HDB error if the readStream emits an error', async () => {
             const streamEventEmitter = new EventEmitter();
-            streamEventEmitter.setEncoding = sandbox.stub().returns();
+            streamEventEmitter.resume = () => {};
             fs_create_read_stream_stub = sandbox.stub(fs, 'createReadStream').returns(streamEventEmitter);
             let results;
 
             try {
-                setTimeout(() => streamEventEmitter.emit('error', "blaaah"), 20)
                 await insertJson_rw(test_json_file_msg);
+                streamEventEmitter.emit('error', "blaaah");
             } catch(err) {
                 results = err;
             }

@@ -28182,6 +28182,71 @@
 							"response": []
 						},
 						{
+							"name": "Create sensor table for S3 test",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "b8374e2a-c089-4acf-bbe4-94597e2dcaae",
+										"exec": [
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"value": "Basic c2dvbGRiZXJnOnRlc3QxMjM0IQ=="
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"operation\":\"create_table\",\n  \"schema\":\"S3_DATA\",\n  \"table\":\"sensor\",\n  \"hash_attribute\": \"id\"\n}",
+									"options": {
+										"raw": {}
+									}
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
 							"name": "Import dogs.xlsx from S3 - expect error",
 							"event": [
 								{
@@ -29213,7 +29278,7 @@
 											"    var jsonData = pm.response.json();",
 											"    pm.expect(jsonData.message.indexOf('Starting job')).to.eql(0);",
 											"    ",
-											"    eval(pm.globals.get(\"function:getJobId\"))(jsonData, \"Import does_not_exist_UPDATE.csv from S3 - expect fail\");",
+											"    eval(pm.globals.get(\"function:getJobId\"))(jsonData, \"Import large sensor_data.json from S3\");",
 											"});",
 											"",
 											"pm.test(\"Status code is 200\", function () {",
@@ -29334,6 +29399,196 @@
 									"listen": "prerequest",
 									"script": {
 										"id": "9a520a52-4b65-4c50-976b-b16058342f56",
+										"exec": [
+											"setTimeout(()=>{}, 200);",
+											"console.log(\"Checking Job CSV URL load\" + pm.environment.get(\"job_id\"));"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "saveHelperData",
+											"type": "any"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\t\"operation\":\"get_job\",\n\t\"id\": \"{{job_id}}\"\n}",
+									"options": {
+										"raw": {}
+									}
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "Import large sensor_data.json from S3",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "5a8a6e9c-54bf-4706-b8a6-1bd8617b5321",
+										"exec": [
+											"pm.test(\"Check for job message\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData.message.indexOf('Starting job')).to.eql(0);",
+											"    ",
+											"    eval(pm.globals.get(\"function:getJobId\"))(jsonData, \"Import does_not_exist_UPDATE.csv from S3 - expect fail\");",
+											"});",
+											"",
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"value": "Basic c2dvbGRiZXJnOnRlc3QxMjM0IQ=="
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\t\"operation\":\"import_from_s3\",\n\t\"action\": \"insert\",\n\t\"schema\":\"S3_DATA\",\n\t\"table\":\"sensor\",\n\t\"s3\":{\n\t\t\"aws_access_key_id\":\"{{s3_key}}\",\n\t\t\"aws_secret_access_key\":\"{{s3_secret}}\",\n\t\t\"bucket\":\"harperdb-integration-test-data/non_public_folder\",\n\t\t\"key\":\"sensor_data.json\"\n\t}\n}",
+									"options": {
+										"raw": {}
+									}
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "Check S3 large sensor_data loaded",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "a21b654e-c96a-4035-8cf5-0b65422fe4ad",
+										"exec": [
+											"",
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"test Job Found\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData.length).to.eql(1);",
+											"    ",
+											"    pm.expect(jsonData[0]).to.have.property('status');",
+											"    ",
+											"    let status = jsonData[0].status;",
+											"    ",
+											"    switch(status){",
+											"        case 'ERROR':",
+											"            console.log(jsonData[0]);",
+											"            console.log(\"Error checking S3 import job.\")",
+											"            if(pm.environment.get(\"next_request\")){",
+											"                postman.setNextRequest(pm.environment.get(\"next_request\"));",
+											"            }",
+											"            pm.expect(status).to.not.eql('ERROR');",
+											"            break;",
+											"        case 'COMPLETE':",
+											"            console.log(jsonData[0]);",
+											"            if(pm.environment.get(\"next_request\")){",
+											"                postman.setNextRequest(pm.environment.get(\"next_request\"));",
+											"            }",
+											"           ",
+											"            pm.expect(jsonData[0].message).to.eql(\"successfully loaded 20020 of 20020 records\");",
+											"            pm.expect(status).to.be.oneOf(['COMPLETE', 'ERROR']);",
+											"            break;",
+											"        case '0':",
+											"        case 0:",
+											"        case 'IN_PROGRESS':",
+											"            console.log('in progress, checking again');",
+											"            postman.setNextRequest('Check S3 large sensor_data loaded');",
+											"            pm.expect(status).to.be.oneOf(['IN_PROGRESS', 0, '0']);",
+											"            break;",
+											"        default:",
+											"            postman.setNextRequest('Check S3 large sensor_data loaded');",
+											"            pm.expect(status).to.be.oneOf(['IN_PROGRESS', 0, '0', 'ERROR', 'COMPLETE']);",
+											"            break;",
+											"    }",
+											"});",
+											""
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"id": "34363476-9ba4-4384-886e-934f4379620f",
 										"exec": [
 											"setTimeout(()=>{}, 200);",
 											"console.log(\"Checking Job CSV URL load\" + pm.environment.get(\"job_id\"));"

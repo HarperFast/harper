@@ -9,9 +9,14 @@ const { handleHDBError, handleValidationError, hdb_errors } = require('../utilit
 const { HTTP_STATUS_CODES, COMMON_ERROR_MSGS, CHECK_LOGS_WRAPPER } = hdb_errors;
 const logger = require('../utility/logging/harper_logger');
 const papa_parse = require('papaparse');
+hdb_utils.promisifyPapaParse();
 const fs = require('fs-extra');
 const path = require('path');
-hdb_utils.promisifyPapaParse();
+const { chain } = require('stream-chain');
+const StreamArray = require('stream-json/streamers/StreamArray');
+const Batch = require('stream-json/utils/Batch');
+const comp = require('stream-chain/utils/comp');
+const { finished } = require('stream');
 const env = require('../utility/environment/environmentManager');
 const socket_cluster_util = require('../server/socketcluster/util/socketClusterUtils');
 const transact_to_clustering_utils = require('../server/transactToClusteringUtilities');
@@ -23,6 +28,7 @@ const CSV_NO_RECORDS_MSG = 'No records parsed from csv file.';
 const TEMP_DOWNLOAD_DIR = `${env.get('HDB_ROOT')}/tmp`;
 const { schema_regex } = require('../validation/common_validators');
 const HIGHWATERMARK = 1024*1024*5;
+const MAX_JSON_ARRAY_SIZE = 5000;
 const ACCEPTABLE_URL_CONTENT_TYPE_ENUM = {
     'text/csv': true,
     'application/octet-stream': true,
@@ -117,12 +123,8 @@ async function csvURLLoad(json_message) {
         let bulk_load_result = await fileLoad(csv_file_load_obj);
 
         // Remove the downloaded temporary CSV file and directory once fileLoad complete
-        try {
-            await fs.access(csv_file_load_obj.file_path);
-            await fs.unlink(csv_file_load_obj.file_path);
-        }catch(e){
-            logger.warn(`could not delete temp csv file ${csv_file_load_obj.file_path}, file does not exist`);
-        }
+        await deleteTempFile(csv_file_load_obj.file_path);
+
         return bulk_load_result;
     } catch (err) {
         throw buildTopLevelErrMsg(err);
@@ -182,13 +184,9 @@ async function importFromS3(json_message) {
 
         let bulk_load_result = await fileLoad(s3_file_load_obj);
 
-        // Remove the downloaded temporary CSV file and directory once fileLoad complete
-        try {
-            await fs.access(s3_file_load_obj.file_path);
-            await fs.unlink(s3_file_load_obj.file_path);
-        } catch(e){
-            logger.warn(`could not delete temp csv file ${s3_file_load_obj.file_path}, file does not exist`);
-        }
+        // Remove the downloaded temporary file once fileLoad complete
+        await deleteTempFile(s3_file_load_obj.file_path);
+
         return bulk_load_result;
     } catch (err) {
         throw buildTopLevelErrMsg(err);
@@ -272,6 +270,21 @@ async function writeFileToTempFolder(file_name, response_body) {
     } catch(err) {
         logger.error(COMMON_ERROR_MSGS.WRITE_TEMP_FILE_ERR);
         throw handleHDBError(err, CHECK_LOGS_WRAPPER(COMMON_ERROR_MSGS.DEFAULT_BULK_LOAD_ERR));
+    }
+}
+
+/**
+ * Deletes temp file downloaded to the tmp dir
+ *
+ * @param file_path
+ * @returns {Promise<void>}
+ */
+async function deleteTempFile(file_path) {
+    try {
+        await fs.access(file_path);
+        await fs.unlink(file_path);
+    } catch(e) {
+        logger.warn(`could not delete temp csv file at ${file_path}, file does not exist`);
     }
 }
 
@@ -460,6 +473,7 @@ async function callPapaParse(json_message) {
 
         return insert_results;
     } catch(err) {
+        await deleteTempFile(json_message.file_path);
         throw handleHDBError(err, CHECK_LOGS_WRAPPER(COMMON_ERROR_MSGS.PAPA_PARSE_ERR), HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR, logger.ERR, COMMON_ERROR_MSGS.PAPA_PARSE_ERR + err);
     }
 }
@@ -471,38 +485,56 @@ async function insertJson(json_message) {
         number_written: 0
     };
 
-    try {
-        let stream = fs.createReadStream(json_message.file_path, {highWaterMark:HIGHWATERMARK});
-        stream.setEncoding('utf8');
+    const throwErr = (e) => {
+        throw e;
+    };
+
+    try{
+        let jsonStreamer = chain([
+            fs.createReadStream(json_message.file_path, { encoding: 'utf-8'}),
+            StreamArray.withParser(),
+            data => data.value,
+            new Batch({ batchSize: MAX_JSON_ARRAY_SIZE }),
+            comp(async (chunk) => {
+                await validateChunk(json_message, throwErr, chunk);
+            })
+        ]);
+
         await new Promise((resolve, reject) => {
-            stream.on('error', function(err) {
-                reject(err);
+            finished(jsonStreamer, (err) => {
+                if (err) {
+                    reject(err);
+                } else {
+                    resolve();
+                }
             });
-            stream.on('data', async (chunk) => {
-                await validateChunk(json_message, reject, JSON.parse(chunk), stream);
-            });
-            stream.on('end',  () => {
-                resolve();
-            });
+            jsonStreamer.resume();
         });
 
-        stream = fs.createReadStream(json_message.file_path, {highWaterMark:HIGHWATERMARK});
-        stream.setEncoding('utf8');
+        let jsonStreamerInsert = chain([
+            fs.createReadStream(json_message.file_path, { encoding: 'utf-8'}),
+            StreamArray.withParser(),
+            data => data.value,
+            new Batch({batchSize: MAX_JSON_ARRAY_SIZE}),
+            comp(async (chunk) => {
+                await insertChunk(json_message, insert_results, throwErr, chunk);
+            })
+        ]);
+
         await new Promise((resolve, reject) => {
-            stream.on('error', function(err) {
-                reject(err);
+            finished(jsonStreamerInsert, (err) => {
+                if (err) {
+                    reject(err);
+                } else {
+                    resolve();
+                }
             });
-            stream.on('data', async (chunk) => {
-                await insertChunk(json_message, insert_results, reject, JSON.parse(chunk), stream);
-            });
-            stream.on('end',  () => {
-                resolve();
-            });
+            jsonStreamerInsert.resume();
         });
-        stream.destroy();
 
         return insert_results;
     } catch(err) {
+        await deleteTempFile(json_message.file_path);
         throw handleHDBError(err, CHECK_LOGS_WRAPPER(COMMON_ERROR_MSGS.INSERT_JSON_ERR), HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR, logger.ERR, COMMON_ERROR_MSGS.INSERT_JSON_ERR + err);
     }
 }
