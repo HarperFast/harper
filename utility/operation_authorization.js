@@ -31,7 +31,7 @@ const permsTranslator = require('../security/permissionsTranslator');
 const system_information = require('../utility/environment/systemInformation');
 const alasql = require('alasql');
 
-const PermissionResponseObject = require('../security/data_model/PermissionResponseObject');
+const PermissionResponseObject = require('../security/data_objects/PermissionResponseObject');
 const { handleHDBError, hdb_errors  } = require('../utility/errors/hdbError');
 const { COMMON_ERROR_MSGS, HTTP_STATUS_CODES } = hdb_errors;
 

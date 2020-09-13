@@ -22,6 +22,7 @@ const socket_cluster_util = require('../server/socketcluster/util/socketClusterU
 const transact_to_clustering_utils = require('../server/transactToClusteringUtilities');
 const op_func_caller = require('../utility/OperationFunctionCaller');
 const AWSConnector = require('../utility/AWS/AWSConnector');
+const { BulkLoadFileObject, BulkLoadDataObject } = require('./data_objects/BulkLoadObjects');
 
 const CSV_NO_RECORDS_MSG = 'No records parsed from csv file.';
 
@@ -60,14 +61,6 @@ async function csvDataLoad(json_message) {
 
     let bulk_load_result = {};
     try {
-        let converted_msg = {
-            schema: json_message.schema,
-            table: json_message.table,
-            action: json_message.action,
-            transact_to_cluster: json_message.transact_to_cluster,
-            data: []
-        };
-
         let parse_results = papa_parse.parse(json_message.data,
             {
                 header: true,
@@ -75,9 +68,11 @@ async function csvDataLoad(json_message) {
                 dynamicTyping: true
             });
 
-        converted_msg.data = parse_results.data;
+        let converted_msg = new BulkLoadDataObject(json_message.action, json_message.schema,
+            json_message.table, parse_results.data, json_message.transact_to_cluster);
 
-        bulk_load_result = await op_func_caller.callOperationFunctionAsAwait(callBulkFileLoad, converted_msg, postCSVLoadFunction.bind(null, parse_results.meta.fields));
+        bulk_load_result = await op_func_caller.callOperationFunctionAsAwait(callBulkFileLoad, converted_msg,
+            postCSVLoadFunction.bind(null, parse_results.meta.fields));
 
         if (bulk_load_result.message === CSV_NO_RECORDS_MSG) {
             return CSV_NO_RECORDS_MSG;
@@ -102,15 +97,7 @@ async function csvURLLoad(json_message) {
     }
 
     let csv_file_name = `${Date.now()}.csv`;
-
-    let csv_file_load_obj = {
-        action: json_message.action,
-        schema: json_message.schema,
-        table: json_message.table,
-        transact_to_cluster: json_message.transact_to_cluster,
-        file_path: `${TEMP_DOWNLOAD_DIR}/${csv_file_name}`,
-        file_type: '.csv'
-    };
+    const temp_file_path = `${TEMP_DOWNLOAD_DIR}/${csv_file_name}`;
 
     try {
         await downloadCSVFile(json_message.csv_url, csv_file_name);
@@ -120,13 +107,17 @@ async function csvURLLoad(json_message) {
     }
 
     try {
+        let csv_file_load_obj = new BulkLoadFileObject(json_message.action, json_message.schema, json_message.table,
+            temp_file_path, hdb_terms.VALID_S3_FILE_TYPES.CSV, json_message.transact_to_cluster);
+
         let bulk_load_result = await fileLoad(csv_file_load_obj);
 
         // Remove the downloaded temporary CSV file and directory once fileLoad complete
-        await deleteTempFile(csv_file_load_obj.file_path);
+        await deleteTempFile(temp_file_path);
 
         return bulk_load_result;
     } catch (err) {
+        await deleteTempFile(temp_file_path);
         throw buildTopLevelErrMsg(err);
     }
 }
@@ -143,10 +134,11 @@ async function csvFileLoad(json_message) {
         throw handleValidationError(validation_msg, validation_msg.message);
     }
 
-    json_message.file_type = ".csv";
+    let csv_file_load_obj = new BulkLoadFileObject(json_message.action, json_message.schema, json_message.table,
+        json_message.file_path, hdb_terms.VALID_S3_FILE_TYPES.CSV, json_message.transact_to_cluster);
 
     try {
-        let bulk_load_result = await fileLoad(json_message);
+        let bulk_load_result = await fileLoad(csv_file_load_obj);
 
         return bulk_load_result;
     } catch (err) {
@@ -167,28 +159,25 @@ async function importFromS3(json_message) {
         throw handleValidationError(validation_msg, validation_msg.message);
     }
 
+    let temp_file_path;
     try {
         let s3_file_type = path.extname(json_message.s3.key);
         let s3_file_name = `${Date.now()}${s3_file_type}`;
+        temp_file_path = `${TEMP_DOWNLOAD_DIR}/${s3_file_name}`;
 
-        let s3_file_load_obj = {
-            action: json_message.action,
-            schema: json_message.schema,
-            table: json_message.table,
-            transact_to_cluster: json_message.transact_to_cluster,
-            file_path: `${TEMP_DOWNLOAD_DIR}/${s3_file_name}`,
-            file_type: s3_file_type
-        };
+        let s3_file_load_obj = new BulkLoadFileObject(json_message.action, json_message.schema, json_message.table,
+            temp_file_path, s3_file_type, json_message.transact_to_cluster);
 
         await downloadFileFromS3(s3_file_name, json_message);
 
         let bulk_load_result = await fileLoad(s3_file_load_obj);
 
         // Remove the downloaded temporary file once fileLoad complete
-        await deleteTempFile(s3_file_load_obj.file_path);
+        await deleteTempFile(temp_file_path);
 
         return bulk_load_result;
     } catch (err) {
+        await deleteTempFile(temp_file_path);
         throw buildTopLevelErrMsg(err);
     }
 }
@@ -280,11 +269,13 @@ async function writeFileToTempFolder(file_name, response_body) {
  * @returns {Promise<void>}
  */
 async function deleteTempFile(file_path) {
-    try {
-        await fs.access(file_path);
-        await fs.unlink(file_path);
-    } catch(e) {
-        logger.warn(`could not delete temp csv file at ${file_path}, file does not exist`);
+    if (file_path) {
+        try {
+            await fs.access(file_path);
+            await fs.unlink(file_path);
+        } catch(e) {
+            logger.warn(`could not delete temp csv file at ${file_path}, file does not exist`);
+        }
     }
 }
 
@@ -473,7 +464,6 @@ async function callPapaParse(json_message) {
 
         return insert_results;
     } catch(err) {
-        await deleteTempFile(json_message.file_path);
         throw handleHDBError(err, CHECK_LOGS_WRAPPER(COMMON_ERROR_MSGS.PAPA_PARSE_ERR), HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR, logger.ERR, COMMON_ERROR_MSGS.PAPA_PARSE_ERR + err);
     }
 }
@@ -534,7 +524,6 @@ async function insertJson(json_message) {
 
         return insert_results;
     } catch(err) {
-        await deleteTempFile(json_message.file_path);
         throw handleHDBError(err, CHECK_LOGS_WRAPPER(COMMON_ERROR_MSGS.INSERT_JSON_ERR), HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR, logger.ERR, COMMON_ERROR_MSGS.INSERT_JSON_ERR + err);
     }
 }
