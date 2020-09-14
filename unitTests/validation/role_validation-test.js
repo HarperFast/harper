@@ -210,6 +210,29 @@ describe('Test role_validation module ', () => {
             expect(test_result).to.equal(null);
         })
 
+        it('Invalid key in role_obj - expect error returned',() => {
+            const test_role = TEST_ADD_ROLE_OBJECT();
+            test_role.super_admin = 'REJECT!';
+
+            const test_result = customValidate_rw(test_role, getAddRoleConstraints());
+
+            expect(test_result.http_resp_code).to.equal(400);
+            expect(test_result.http_resp_msg.main_permissions.length).to.equal(1);
+            expect(test_result.http_resp_msg.main_permissions).to.include(TEST_ROLE_PERMS_ERROR.INVALID_ROLE_JSON_KEYS(['super_admin']));
+        })
+
+        it('Invalid keys in role_obj - expect error returned',() => {
+            const test_role = TEST_ADD_ROLE_OBJECT();
+            test_role.super_admin = 'REJECT!';
+            test_role.invalid_key = true;
+
+            const test_result = customValidate_rw(test_role, getAddRoleConstraints());
+
+            expect(test_result.http_resp_code).to.equal(400);
+            expect(test_result.http_resp_msg.main_permissions.length).to.equal(1);
+            expect(test_result.http_resp_msg.main_permissions).to.include(TEST_ROLE_PERMS_ERROR.INVALID_ROLE_JSON_KEYS(['super_admin', 'invalid_key']));
+        })
+
         it('Role key missing from role_obj - expect error returned',() => {
             const test_role = TEST_ADD_ROLE_OBJECT();
             delete test_role.role;
