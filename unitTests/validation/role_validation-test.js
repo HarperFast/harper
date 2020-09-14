@@ -199,14 +199,29 @@ describe('Test role_validation module ', () => {
 
     describe('customValidate() ',() => {
 
-        it('NOMINAL - should return null for valid add_role object',() => {
+        it('NOMINAL - should return null for valid ADD_ROLE object',() => {
             const test_result = customValidate_rw(TEST_ADD_ROLE_OBJECT(), getAddRoleConstraints());
+
+            expect(test_result).to.equal(null);
+        })
+
+        it('NOMINAL - should return null for valid SU ADD_ROLE object',() => {
+            const test_role_json = TEST_ADD_ROLE_OBJECT();
+            test_role_json.permission = { super_user: true };
+            const test_result = customValidate_rw(test_role_json, getAddRoleConstraints());
 
             expect(test_result).to.equal(null);
         })
 
         it('NOMINAL - should return null for valid ALTER_ROLE object',() => {
             const test_result = customValidate_rw(TEST_ALTER_ROLE_OBJECT(), getAlterRoleConstraints());
+            expect(test_result).to.equal(null);
+        })
+
+        it('NOMINAL - should return null for valid SU ALTER_ROLE object',() => {
+            const test_role_json = TEST_ALTER_ROLE_OBJECT();
+            test_role_json.permission = { super_user: true };
+            const test_result = customValidate_rw(test_role_json, getAlterRoleConstraints());
             expect(test_result).to.equal(null);
         })
 
@@ -323,6 +338,19 @@ describe('Test role_validation module ', () => {
             const test_result = customValidate_rw(test_role, getAddRoleConstraints());
 
             expect(test_result.http_resp_msg.main_permissions[0]).to.equal(TEST_ROLE_PERMS_ERROR.SU_CU_ROLE_NO_PERMS_ALLOWED('cluster_user'));
+            expect(test_result.http_resp_code).to.equal(400);
+        })
+
+        it('CU and SU permission true - expect error thrown',() => {
+            const test_role = TEST_ADD_ROLE_OBJECT();
+            test_role.permission = {
+                cluster_user: true,
+                super_user: true
+            };
+
+            const test_result = customValidate_rw(test_role, getAddRoleConstraints());
+
+            expect(test_result.http_resp_msg.main_permissions[0]).to.equal(TEST_ROLE_PERMS_ERROR.SU_CU_ROLE_COMBINED_ERROR);
             expect(test_result.http_resp_code).to.equal(400);
         })
 
