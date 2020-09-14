@@ -13,11 +13,13 @@ const fs = require('fs-extra');
 const LMDB_TEST_ERRORS = require('../../commonTestErrors').LMDB_ERRORS_ENUM;
 const sinon = require('sinon');
 const alasql = require('alasql');
+const uuid = require('uuid');
 const hdb_terms = require('../../../utility/hdbTerms');
 const InsertRecordsResponseObject = require('../../../utility/lmdb/InsertRecordsResponseObject');
 const UpdateRecordsResponseObject = require('../../../utility/lmdb/UpdateRecordsResponseObject');
 
 const TIMESTAMP = Date.now();
+const UUID_VALUE='aaa-111-bbb-222';
 
 const BASE_TEST_PATH = path.join(test_utils.getMockFSPath(), 'lmdbTest');
 const TEST_ENVIRONMENT_NAME = 'test';
@@ -517,9 +519,11 @@ describe("Test writeUtility module", ()=>{
     describe("Test upsertRecords function", ()=>{
         let env;
         let get_micro_time_stub;
+        let uuid_stub;
         before(()=>{
             date_stub.restore();
             get_micro_time_stub = sandbox.stub(common, 'getMicroTime').returns(TXN_TIMESTAMP);
+            uuid_stub = sandbox.stub(uuid, 'v4').returns(UUID_VALUE);
         });
 
         after(()=>{
@@ -572,6 +576,23 @@ describe("Test writeUtility module", ()=>{
             assert.deepStrictEqual(result, expected_result);
 
             record = test_utils.assertErrorSync(search_util.searchByHash, [env, HASH_ATTRIBUTE_NAME, ALL_ATTRIBUTES, '999'], undefined);
+            let expected_record = test_utils.assignObjecttoNullObject(insert_records[0]);
+            expected_record.__blob__ = null;
+            assert.deepStrictEqual(record, expected_record);
+        });
+
+        it("test upsert one row doesn't exist with no hash attribute value", ()=>{
+            //test no records
+            let record = test_utils.assertErrorSync(search_util.searchByHash, [env, HASH_ATTRIBUTE_NAME, ALL_ATTRIBUTES, UUID_VALUE], undefined);
+            assert.deepStrictEqual(record, null);
+            let insert_records = [{name:'Cool Dude', age:'?'}];
+            let result = test_utils.assertErrorSync(write_utility.upsertRecords, [env, HASH_ATTRIBUTE_NAME, ALL_ATTRIBUTES, insert_records], undefined,
+                "pass valid env hash_attribute all_attributes records");
+
+            let expected_result = new UpdateRecordsResponseObject([UUID_VALUE], [], TXN_TIMESTAMP);
+            assert.deepStrictEqual(result, expected_result);
+
+            record = test_utils.assertErrorSync(search_util.searchByHash, [env, HASH_ATTRIBUTE_NAME, ALL_ATTRIBUTES, UUID_VALUE], undefined);
             let expected_record = test_utils.assignObjecttoNullObject(insert_records[0]);
             expected_record.__blob__ = null;
             assert.deepStrictEqual(record, expected_record);

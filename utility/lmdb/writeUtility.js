@@ -34,7 +34,8 @@ function insertRecords(env, hash_attribute, write_attributes , records){
         let result = new InsertRecordsResponseObject();
 
         let remove_indices = [];
-        records.forEach((record, index)=>{
+        for(let index = 0; index < records.length; index++){
+            let record = records[index];
             setTimestamps(record, true);
 
             let cast_hash_value = hdb_utils.autoCast(record[hash_attribute]);
@@ -59,7 +60,7 @@ function insertRecords(env, hash_attribute, write_attributes , records){
                 value = common.convertKeyValueToWrite(value, env.dbis[attribute][lmdb_terms.DBI_DEFINITION_NAME].key_type);
                 if(value !== null) {
                     //LMDB has a 254 byte limit for keys, so we return null if the byte size is larger than 254 to not index that value
-                    if(typeof value === 'string' && Buffer.byteLength(value) > MAX_BYTE_SIZE){
+                    if(checkIsBlob(value)){
                         let key = `${attribute}/${primary_key}`;
                         txn.putString(env.dbis[lmdb_terms.BLOB_DBI_NAME], key, value);
                     }else {
@@ -76,14 +77,14 @@ function insertRecords(env, hash_attribute, write_attributes , records){
                 if(e.message.startsWith('MDB_KEYEXIST') === true){
                     result.skipped_hashes.push(cast_hash_value);
                     remove_indices.push(index);
-                    return;
+                    continue;
                 }
 
                 throw e;
             }
 
             result.written_hashes.push(cast_hash_value);
-        });
+        }
 
         result.txn_time = common.getMicroTime();
         txn.commit();
@@ -106,11 +107,12 @@ function insertRecords(env, hash_attribute, write_attributes , records){
 function removeSkippedRecords(records, remove_indices = []){
     //remove the skipped entries from the records array
     let offset = 0;
-    remove_indices.forEach(index=>{
+    for(let x = 0; x < remove_indices.length; x++){
+        let index = remove_indices[x];
         records.splice(index - offset, 1);
         //the offset needs to increase for every index we remove
         offset++;
-    });
+    }
 }
 
 /**
@@ -174,7 +176,8 @@ function updateRecords(env, hash_attribute, write_attributes , records){
 
         //iterate update records
         let remove_indices = [];
-        records.forEach((record, index)=>{
+        for(let index = 0; index < records.length; index++){
+            let record = records[index];
             setTimestamps(record, false);
 
             let cast_hash_value = hdb_utils.autoCast(record[hash_attribute]);
@@ -185,13 +188,13 @@ function updateRecords(env, hash_attribute, write_attributes , records){
             if(existing_record === null){
                 result.skipped_hashes.push(cast_hash_value);
                 remove_indices.push(index);
-                return;
+                continue;
             }
 
             result.original_records.push(existing_record);
 
             updateUpsertRecord(env, txn, hash_attribute, record, existing_record, hash_value, cast_hash_value, result);
-        });
+        }
 
         //commit transaction
         result.txn_time = common.getMicroTime();
@@ -225,29 +228,33 @@ function upsertRecords(env, hash_attribute, write_attributes , records){
         let result = new UpdateRecordsResponseObject();
 
         //iterate upsert records
-        records.forEach((record)=>{
+        for(let index = 0; index < records.length; index++){
+            let record = records[index];
             let is_insert = false;
+            let hash_value = undefined;
+            let existing_record = undefined;
             if(hdb_utils.isEmpty(record[hash_attribute]) ){
-                record[hash_attribute] = uuid.v4();
+                hash_value = uuid.v4();
+                record[hash_attribute] = hash_value;
                 is_insert = true;
+            } else {
+                hash_value = record[hash_attribute].toString();
+                //grab existing record
+                existing_record = search_utility.searchByHash(env, hash_attribute, ['*'], hash_value);
             }
 
-            let cast_hash_value = hdb_utils.autoCast(record[hash_attribute]);
-            let hash_value = record[hash_attribute].toString();
-            //grab existing record
-            let existing_record = search_utility.searchByHash(env, hash_attribute, ['*'], hash_value);
             //if the existing record doesn't exist we initialize it as an empty object & flag the record as an insert
-            if(hdb_utils.isEmpty(existing_record)){
+            if (hdb_utils.isEmpty(existing_record)) {
                 existing_record = {};
                 is_insert = true;
             } else {
                 result.original_records.push(existing_record);
             }
-
+            let cast_hash_value = hdb_utils.autoCast(record[hash_attribute]);
             setTimestamps(record, is_insert);
 
             updateUpsertRecord(env, txn, hash_attribute, record, existing_record, hash_value, cast_hash_value, result);
-        });
+        }
 
         //commit transaction
         result.txn_time = common.getMicroTime();
@@ -262,15 +269,15 @@ function upsertRecords(env, hash_attribute, write_attributes , records){
 }
 
 /**
- *
- * @param env
- * @param txn
- * @param hash_attribute
- * @param record
- * @param existing_record
- * @param hash_value
- * @param cast_hash_value
- * @param result
+ * central function used by updateRecords & upsertRecords to write a row to lmdb
+ * @param {lmdb.Env} env
+ * @param txn - lmdb transaction object
+ * @param {String} hash_attribute - name of the table's hash attribute
+ * @param {{}} record - the record to process
+ * @param {{}} existing_record - the original record that is potentially being updated
+ * @param {string} hash_value - the hash attribute value for the row
+ * @param {string|number} cast_hash_value - the hash attribute value cast to it's data type
+ * @param {UpdateRecordsResponseObject} result
  */
 function updateUpsertRecord(env, txn, hash_attribute, record, existing_record, hash_value, cast_hash_value, result){
     //iterate the entries from the record
@@ -303,7 +310,7 @@ function updateUpsertRecord(env, txn, hash_attribute, record, existing_record, h
         //if the update cleared out the attribute value we need to delete it from the index
         if (str_existing_value !== null) {
             try {
-                if(typeof str_existing_value === 'string' && Buffer.byteLength(str_existing_value) > MAX_BYTE_SIZE){
+                if(checkIsBlob(str_existing_value)){
                     let key_value = `${key}/${hash_value}`;
                     txn.del(env.dbis[lmdb_terms.BLOB_DBI_NAME], key_value, str_existing_value);
                 }else {
@@ -319,7 +326,7 @@ function updateUpsertRecord(env, txn, hash_attribute, record, existing_record, h
 
         if (str_new_value !== null) {
             //LMDB has a 254 byte limit for keys, so we return null if the byte size is larger than 254 to not index that value
-            if(typeof str_new_value === 'string' && Buffer.byteLength(str_new_value) > MAX_BYTE_SIZE){
+            if(checkIsBlob(str_new_value)){
                 let key_value = `${key}/${hash_value}`;
                 txn.putString(env.dbis[lmdb_terms.BLOB_DBI_NAME], key_value, str_new_value);
             }else {
@@ -332,6 +339,19 @@ function updateUpsertRecord(env, txn, hash_attribute, record, existing_record, h
     let merged_record = Object.assign({}, existing_record, record);
     txn.putString(env.dbis[hash_attribute], hash_value.toString(), JSON.stringify(merged_record));
     result.written_hashes.push(cast_hash_value);
+}
+
+/**
+ * checks if a value is a 'blob', meaning a string over 254 bytes
+ * @param {any} value
+ * @returns {boolean}
+ */
+function checkIsBlob(value){
+    if(typeof value === 'string' && Buffer.byteLength(value) > MAX_BYTE_SIZE){
+        return true;
+    }
+
+    return false;
 }
 
 /**
