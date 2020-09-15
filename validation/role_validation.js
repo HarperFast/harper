@@ -237,7 +237,7 @@ function validateNoSUPerms(obj) {
         const is_su_role = permission.super_user === true;
         const is_cu_role = permission.cluster_user === true;
         const has_perms = Object.keys(permission).length > 1;
-        if (is_su_role || is_cu_role && has_perms) {
+        if (has_perms && (is_su_role || is_cu_role)) {
             if (is_cu_role && is_su_role) {
                 return COMMON_ERROR_MSGS.SU_CU_ROLE_COMBINED_ERROR;
             } else {
