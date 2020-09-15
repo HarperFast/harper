@@ -8,7 +8,7 @@ const ReadTransactionLogObject = require('../../data_layer/ReadTransactionLogObj
 const sinon = require('sinon');
 const sandbox = sinon.createSandbox();
 const assert = require('assert');
-const COMMON_ERROR_MSGS = require('../commonTestErrors').COMMON_ERROR_MSGS;
+const TEST_ERROR_MSGS = require('../commonTestErrors');
 
 describe('test readTransactionLog module', ()=>{
     before(()=>{
@@ -35,7 +35,7 @@ describe('test readTransactionLog module', ()=>{
             error = e;
         }
 
-        assert.deepStrictEqual(error, new Error(COMMON_ERROR_MSGS.SCHEMA_REQUIRED));
+        assert.deepStrictEqual(error, new Error(TEST_ERROR_MSGS.TEST_SCHEMA_OP_ERROR.SCHEMA_REQUIRED_ERR));
     });
 
     it('test no table', async()=>{
@@ -48,7 +48,7 @@ describe('test readTransactionLog module', ()=>{
             error = e;
         }
 
-        assert.deepStrictEqual(error, new Error(COMMON_ERROR_MSGS.TABLE_REQUIRED));
+        assert.deepStrictEqual(error, new Error(TEST_ERROR_MSGS.TEST_SCHEMA_OP_ERROR.TABLE_REQUIRED_ERR));
     });
 
     it('test invalid schema', async()=>{

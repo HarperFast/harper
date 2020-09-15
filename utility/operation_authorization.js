@@ -12,7 +12,7 @@
  * */
 const write = require('../data_layer/insert');
 const search = require('../data_layer/search');
-const csv = require('../data_layer/csvBulkLoad');
+const bulkLoad = require('../data_layer/bulkLoad');
 const schema = require('../data_layer/schema');
 const schema_describe = require('../data_layer/schemaDescribe');
 const delete_ = require('../data_layer/delete');
@@ -31,7 +31,7 @@ const permsTranslator = require('../security/permissionsTranslator');
 const system_information = require('../utility/environment/systemInformation');
 const alasql = require('alasql');
 
-const PermissionResponseObject = require('../security/data_model/PermissionResponseObject');
+const PermissionResponseObject = require('../security/data_objects/PermissionResponseObject');
 const { handleHDBError, hdb_errors  } = require('../utility/errors/hdbError');
 const { COMMON_ERROR_MSGS, HTTP_STATUS_CODES } = hdb_errors;
 
@@ -61,9 +61,10 @@ required_permissions.set(write.update.name, new permission(false, [UPDATE_PERM])
 required_permissions.set(search.searchByHash.name, new permission(false, [READ_PERM]));
 required_permissions.set(search.searchByValue.name, new permission(false, [READ_PERM]));
 required_permissions.set(search.search.name, new permission(false, [READ_PERM]));
-required_permissions.set(csv.csvDataLoad.name, new permission(false, [INSERT_PERM, UPDATE_PERM]));
-required_permissions.set(csv.csvFileLoad.name, new permission(false, [INSERT_PERM, UPDATE_PERM]));
-required_permissions.set(csv.csvURLLoad.name, new permission(false, [INSERT_PERM, UPDATE_PERM]));
+required_permissions.set(bulkLoad.csvDataLoad.name, new permission(false, [INSERT_PERM, UPDATE_PERM]));
+required_permissions.set(bulkLoad.csvURLLoad.name, new permission(false, [INSERT_PERM, UPDATE_PERM]));
+required_permissions.set(bulkLoad.csvFileLoad.name, new permission(false, [INSERT_PERM, UPDATE_PERM]));
+required_permissions.set(bulkLoad.importFromS3.name, new permission(false, [INSERT_PERM, UPDATE_PERM]));
 required_permissions.set(schema.createSchema.name, new permission(true, []));
 required_permissions.set(schema.createTable.name, new permission(true, []));
 required_permissions.set(schema.createAttribute.name, new permission(false, [INSERT_PERM]));
@@ -393,7 +394,7 @@ function hasPermissions(user_object, op, schema_table_map, permsResponse, action
                     const err_msg = COMMON_ERROR_MSGS.UNKNOWN_OP_AUTH_ERROR(op, schema_table, table);
                     harper_logger.error(err_msg);
                     harper_logger.error(e);
-                    throw handleHDBError(COMMON_ERROR_MSGS.CHECK_LOGS_WRAPPER(err_msg));
+                    throw handleHDBError(hdb_errors.CHECK_LOGS_WRAPPER(err_msg));
                 }
             }
         }

@@ -11,6 +11,41 @@
 
 const validate = require('validate.js');
 
+//This validator is added here b/c we are still on version 0.11.1 that does not include this build in functionality.  When
+// we do update, we can remove.  The reason we have not is related to a breaking change on the "presence" validator rule
+// that will require a lot of fixes on our.  More here - https://validatejs.org/#changelog-0-12-0
+validate.validators.type = function(value, options, key, attributes) {
+    // allow empty values by default (needs to be checked by "presence" check)
+    if(value === null || typeof value === 'undefined') {
+        return null;
+    }
+
+    return validate.validators.type.checks[options](value) ? null : ' must be a ' + `'${options}' value`;
+};
+
+validate.validators.type.checks = {
+    Object: function(value) {
+        return validate.isObject(value) && !validate.isArray(value);
+    },
+    Array: validate.isArray,
+    Integer: validate.isInteger,
+    Number: validate.isNumber,
+    String: validate.isString,
+    Date: validate.isDate,
+    Boolean: function(value) {
+        return typeof value === 'boolean';
+    }
+};
+
+validate.validators.hasValidFileExt = function(value, options) {
+    // allow non-string values by default (needs to be checked by "presence" and "type" checks)
+    if(!validate.isString(value) || value === "") {
+        return null;
+    }
+
+    return options.filter(ext => value.endsWith(ext)).length > 0 ? null : `must include one of the following valid file extensions - '${options.join("', '")}'`;
+};
+
 module.exports = {
     validateObject,
     validateObjectAsync

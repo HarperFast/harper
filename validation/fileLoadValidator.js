@@ -4,10 +4,12 @@ const common_utils = require('../utility/common_utils');
 const hdb_terms = require('../utility/hdbTerms');
 const log = require('../utility/logging/harper_logger');
 const fs = require('fs');
+const { hdb_errors, handleHDBError } = require('../utility/errors/hdbError');
+const { COMMON_ERROR_MSGS, HTTP_STATUS_CODES } = hdb_errors;
 
 const { common_validators } = require('./common_validators');
 // Maximum file size in bytes
-const MAX_CSV_FILE_SIZE = 1000000000;
+const MAX_FILE_SIZE = 1000000000;
 
 const actions = ["update", "insert"];
 const constraints = {
@@ -36,6 +38,31 @@ const constraints = {
     data: {}
 };
 
+const { AWS_ACCESS_KEY, AWS_SECRET, AWS_BUCKET, AWS_FILE_KEY } = hdb_terms.S3_BUCKET_AUTH_KEYS;
+
+const s3_constraints = {
+    s3: {
+        presence: true
+    },
+    [`s3.${AWS_ACCESS_KEY}`]: {
+        presence: true,
+        type: "String"
+    },
+    [`s3.${AWS_SECRET}`]: {
+        presence: true,
+        type: "String"
+    },
+    [`s3.${AWS_BUCKET}`]: {
+        presence: true,
+        type: "String"
+    },
+    [`s3.${AWS_FILE_KEY}`]: {
+        presence: true,
+        type: "String",
+        hasValidFileExt: [".csv", ".json"]
+    }
+};
+
 const data_constraints = clone(constraints);
 data_constraints.data.presence = {
     message: " is required"
@@ -45,6 +72,8 @@ const file_constraints = clone(constraints);
 file_constraints.file_path.presence = {
     message: " is required",
 };
+
+const s3_file_constraints = Object.assign(clone(constraints), s3_constraints);
 
 const url_constraints = clone(constraints);
 url_constraints.csv_url.presence = {
@@ -66,6 +95,11 @@ function fileObject(object) {
     return postValidateChecks(object, validate_res);
 }
 
+function s3FileObject(object) {
+    let validate_res = validator.validateObject(object, s3_file_constraints);
+    return postValidateChecks(object, validate_res);
+}
+
 /**
  * Post validate module checks, confirms schema and table exist.
  * If file upload - checks that it exists, permissions and size.
@@ -74,7 +108,7 @@ function postValidateChecks(object, validate_res) {
     if (!validate_res) {
         let msg = common_utils.checkGlobalSchemaTable(object.schema, object.table);
         if (msg) {
-            return new Error(msg);
+            return handleHDBError(new Error(), msg, HTTP_STATUS_CODES.BAD_REQUEST);
         }
 
         if (object.operation === hdb_terms.OPERATIONS_ENUM.CSV_FILE_LOAD) {
@@ -82,19 +116,23 @@ function postValidateChecks(object, validate_res) {
                 fs.accessSync(object.file_path,fs.constants.R_OK | fs.constants.F_OK);
             } catch(err) {
                 if (err.code === hdb_terms.NODE_ERROR_CODES.ENOENT) {
-                    return new Error(`No such file or directory ${err.path}`);
+                    return handleHDBError(err,`No such file or directory ${err.path}`, HTTP_STATUS_CODES.BAD_REQUEST);
                 }
 
                 if (err.code === hdb_terms.NODE_ERROR_CODES.EACCES) {
-                    return new Error(`Permission denied ${err.path}`);
+                    return handleHDBError(err,`Permission denied ${err.path}`, HTTP_STATUS_CODES.BAD_REQUEST);
                 }
-                return err;
+                return handleHDBError(err);
             }
 
             try {
                 let file_size = fs.statSync(object.file_path).size;
-                if (file_size > MAX_CSV_FILE_SIZE) {
-                    return new Error(`File size is ${file_size} bytes, which exceeded the maximum size allowed of: ${MAX_CSV_FILE_SIZE} bytes`);
+                if (file_size > MAX_FILE_SIZE) {
+                    return handleHDBError(
+                        new Error(),
+                        COMMON_ERROR_MSGS.MAX_FILE_SIZE_ERR(file_size, MAX_FILE_SIZE),
+                        HTTP_STATUS_CODES.BAD_REQUEST
+                    );
                 }
             } catch(err) {
                 log.error(err);
@@ -108,5 +146,6 @@ function postValidateChecks(object, validate_res) {
 module.exports = {
     dataObject,
     urlObject,
-    fileObject
+    fileObject,
+    s3FileObject
 };
