@@ -383,7 +383,7 @@ function hasPermissions(user_object, op, schema_table_map, permsResponse, action
                             //need to check if any perm on table OR should return table not found
                             harper_logger.info(`Required ${perm} permission not found for ${op} ${action ? `${action} ` : ''}operation in role ${user_object.role.id}`);
                             required_table_perms.push(perm);
-                        };
+                        }
                     }
 
                     if (required_table_perms.length > 0) {
