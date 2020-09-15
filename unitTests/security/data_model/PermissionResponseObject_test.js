@@ -3,7 +3,7 @@
 const chai = require('chai');
 const { expect } = chai;
 
-const PermissionResponseObject = require('../../../security/data_model/PermissionResponseObject');
+const PermissionResponseObject = require('../../../security/data_objects/PermissionResponseObject');
 const commonTestErrors = require('../../commonTestErrors');
 
 const TEST_SCHEMA = 'dev',

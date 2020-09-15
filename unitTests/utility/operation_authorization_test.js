@@ -15,9 +15,9 @@ const alasql = require('alasql');
 const search = require('../../data_layer/search');
 const jobs = require('../../server/jobs');
 const terms = require('../../utility/hdbTerms');
-const PermissionResponseObject = require('../../security/data_model/PermissionResponseObject');
-const PermissionTableResponseObject = require('../../security/data_model/PermissionTableResponseObject');
-const PermissionAttributeResponseObject = require('../../security/data_model/PermissionAttributeResponseObject');
+const PermissionResponseObject = require('../../security/data_objects/PermissionResponseObject');
+const PermissionTableResponseObject = require('../../security/data_objects/PermissionTableResponseObject');
+const PermissionAttributeResponseObject = require('../../security/data_objects/PermissionAttributeResponseObject');
 const { TEST_OPERATION_AUTH_ERROR } = require('../commonTestErrors');
 
 const serverUtilities_rw = rewire('../../server/serverUtilities');
