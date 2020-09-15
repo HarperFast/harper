@@ -55,11 +55,33 @@ function dropRoleValidation(object) {
     return validator.validateObject(object, constraints);
 }
 
+const ALLOWED_JSON_KEYS = [
+    "operation",
+    "role",
+    "id",
+    "permission",
+    "hdb_user",
+    "hdb_auth_header"
+];
+
 function customValidate(object, constraints) {
     let validationErrors = {
         main_permissions: [],
         schema_permissions: {}
     };
+
+    const json_msg_keys = Object.keys(object);
+
+    //Check to confirm that keys in JSON body are valid
+    const invalid_keys = [];
+    for (let i = 0, arr_length = json_msg_keys.length; i < arr_length; i++) {
+        if (!ALLOWED_JSON_KEYS.includes(json_msg_keys[i])) {
+            invalid_keys.push(json_msg_keys[i]);
+        }
+    }
+    if (invalid_keys.length > 0) {
+        addPermError(COMMON_ERROR_MSGS.INVALID_ROLE_JSON_KEYS(invalid_keys), validationErrors);
+    }
 
     let validate_result = validator.validateObject(object, constraints);
     if (validate_result) {
