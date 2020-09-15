@@ -36,6 +36,18 @@ const LMDB_ERRORS_ENUM = {
     CANNOT_DROP_TABLE_HASH_ATTRIBUTE: new Error('cannot drop a table\'s hash attribute')
 };
 
+const TEST_BULK_LOAD_ERROR_MSGS = {
+    DEFAULT_BULK_LOAD_ERR: 'There was an error during your bulk load into HarperDB.',
+    DOWNLOAD_FILE_ERR: (file_name) => `There was an error downloading '${file_name}'.`,
+    INSERT_JSON_ERR: 'There was an error inserting the downloaded JSON data.',
+    INSERT_CSV_ERR: 'There was an error inserting the downloaded CSV data.',
+    INVALID_FILE_EXT_ERR: (json) => `Error selecting correct parser - valid file type not found in json - ${json}`,
+    MAX_FILE_SIZE_ERR: (file_size, max_size) => `File size is ${file_size} bytes, which exceeded the maximum size allowed of: ${max_size} bytes`,
+    PAPA_PARSE_ERR: 'There was an error parsing the downloaded CSV data.',
+    S3_DOWNLOAD_ERR: (file_name) => `There was an error downloading '${file_name}' from AWS.`,
+    WRITE_TEMP_FILE_ERR: `Error writing temporary file to storage`
+};
+
 const TEST_OPERATION_AUTH_ERROR = {
     DEFAULT_INVALID_REQUEST: "Invalid request",
     OP_AUTH_PERMS_ERROR: "This operation is not authorized due to role restrictions and/or invalid schema items",
@@ -46,11 +58,13 @@ const TEST_OPERATION_AUTH_ERROR = {
 };
 
 const TEST_SCHEMA_OP_ERROR = {
-    DESCRIBE_ALL_ERR: "There was an error during describeAll.  Please check the logs and try again.",
-    SCHEMA_NOT_FOUND: (schema) => `Schema '${schema}' does not exist`,
-    TABLE_NOT_FOUND: (schema, table) => `Table '${schema}.${table}' does not exist`,
     ATTR_NOT_FOUND: (schema, table, attr) => `Attribute '${attr}' does not exist on '${schema}.${table}'`,
-    INVALID_TABLE_ERR: (table_result) => `Invalid table ${JSON.stringify(table_result)}`
+    DESCRIBE_ALL_ERR: "There was an error during describeAll.  Please check the logs and try again.",
+    INVALID_TABLE_ERR: (table_result) => `Invalid table ${JSON.stringify(table_result)}`,
+    SCHEMA_NOT_FOUND: (schema) => `Schema '${schema}' does not exist`,
+    SCHEMA_REQUIRED_ERR: "schema is required",
+    TABLE_NOT_FOUND: (schema, table) => `Table '${schema}.${table}' does not exist`,
+    TABLE_REQUIRED_ERR: "table is required"
 };
 
 const TEST_ROLE_PERMS_ERROR = {
@@ -78,11 +92,6 @@ const TEST_ROLE_PERMS_ERROR = {
     TABLE_PERM_NOT_BOOLEAN: (perm) => `Table ${perm.toUpperCase()} permission must be a boolean`
 };
 
-const COMMON_ERROR_MSGS = {
-    SCHEMA_REQUIRED: 'schema is required',
-    TABLE_REQUIRED: 'table is required'
-};
-
 const CHECK_LOGS_WRAPPER = (err) => `${err} Check logs and try again.`;
 const TEST_DEFAULT_ERROR_MSGS = {
     500: CHECK_LOGS_WRAPPER("There was an error processing your request."),
@@ -92,8 +101,9 @@ const TEST_DEFAULT_ERROR_MSGS = {
 const TEST_DEFAULT_ERROR_RESP = TEST_DEFAULT_ERROR_MSGS[HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR];
 
 module.exports = {
+    CHECK_LOGS_WRAPPER,
     LMDB_ERRORS_ENUM,
-    COMMON_ERROR_MSGS,
+    TEST_BULK_LOAD_ERROR_MSGS,
     TEST_DEFAULT_ERROR_RESP,
     TEST_ROLE_PERMS_ERROR,
     TEST_OPERATION_AUTH_ERROR,
