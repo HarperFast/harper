@@ -18,7 +18,7 @@ const terms = require('../../utility/hdbTerms');
 const PermissionResponseObject = require('../../security/data_objects/PermissionResponseObject');
 const PermissionTableResponseObject = require('../../security/data_objects/PermissionTableResponseObject');
 const PermissionAttributeResponseObject = require('../../security/data_objects/PermissionAttributeResponseObject');
-const { TEST_OPERATION_AUTH_ERROR } = require('../commonTestErrors');
+const { TEST_SCHEMA_OP_ERROR, TEST_OPERATION_AUTH_ERROR } = require('../commonTestErrors');
 
 const serverUtilities_rw = rewire('../../server/serverUtilities');
 const initializeOperationFunctionMap_rw = serverUtilities_rw.__get__('initializeOperationFunctionMap');
@@ -120,7 +120,37 @@ let TEST_JSON = {
             },
             "role": "no_perms"
         },
-        "username": "bad_user_2"
+        "username": "user_1"
+    }
+};
+
+let TEST_ACTION_JSON = {
+    "operation": "csvDataLoad",
+    "action": "insert",
+    "schema": "dev",
+    "table": "dog",
+    "data": "name,breed,id,age\nHarper,Mutt,111,5\nPenny,Mutt,333,5\n",
+    "hdb_user": {
+        "active": true,
+        "role": {
+            "id": "9c9aae33-4d1d-40b5-a52e-bbbc1b2e2ba6",
+            "permission": {
+                "super_user": false,
+                "dev": {
+                    "tables": {
+                        "dog": {
+                            "read": true,
+                            "insert": true,
+                            "update": true,
+                            "delete": true,
+                            "attribute_permissions": []
+                        }
+                    }
+                }
+            },
+            "role": "no_perms"
+        },
+        "username": "user_2"
     }
 };
 
@@ -162,7 +192,7 @@ let TEST_JSON_SUPER_USER = {
             },
             "role": "no_perms"
         },
-        "username": "bad_user_2"
+        "username": "super_user_1"
     }
 };
 
@@ -523,6 +553,45 @@ describe('Test operation_authorization', function() {
             assert.equal(result.unauthorized_access[0].required_table_permissions[0], "read");
         });
 
+        it('(NOMINAL) - Pass in JSON with action = insert, insert allowed, expect true',function() {
+            let req_json = getRequestJson(TEST_ACTION_JSON);
+            let perms = clone(PERMISSION_BASE);
+            perms.dev.tables.dog.insert = true;
+            let att_base = ATTRIBUTE_PERMISSION_BASE(TEST_ATTRIBUTES, crud_keys.INSERT, true);
+            perms.dev.tables.dog.attribute_permissions = att_base;
+            req_json.hdb_user.role.permission = perms;
+            let result = op_auth_rewire.verifyPerms(req_json, req_json.operation);
+            assert.equal(result, null);
+        });
+
+        it('Pass in JSON with action = update, TABLE fully restricted, expect error',function() {
+            let req_json = getRequestJson(TEST_ACTION_JSON);
+            req_json.action = 'update';
+            let perms = clone(PERMISSION_BASE);
+            req_json.hdb_user.role.permission = perms;
+            let result = op_auth_rewire.verifyPerms(req_json, req_json.operation);
+            assert.equal(result.error, TEST_OPERATION_AUTH_ERROR.OP_AUTH_PERMS_ERROR);
+            assert.equal(result.invalid_schema_items[0], TEST_SCHEMA_OP_ERROR.SCHEMA_NOT_FOUND(TEST_SCHEMA));
+        });
+
+        it('Pass in JSON with action = update, TABLE update restricted, expect error',function() {
+            let req_json = getRequestJson(TEST_ACTION_JSON);
+            req_json.action = 'update';
+            let perms = clone(PERMISSION_BASE);
+            perms.dev.describe = true;
+            perms.dev.tables.dog.describe = true;
+            perms.dev.tables.dog.read = true;
+            req_json.hdb_user.role.permission = perms;
+            let result = op_auth_rewire.verifyPerms(req_json, req_json.operation);
+            assert.equal(result.error, TEST_OPERATION_AUTH_ERROR.OP_AUTH_PERMS_ERROR);
+            assert.equal(result.unauthorized_access.length, 1);
+            assert.equal(result.unauthorized_access[0].schema, TEST_SCHEMA);
+            assert.equal(result.unauthorized_access[0].table, TEST_TABLE);
+            assert.equal(result.unauthorized_access[0].required_table_permissions[0], 'update');
+            assert.equal(result.unauthorized_access[0].required_table_permissions.length, 1);
+            assert.equal(result.unauthorized_access[0].required_attribute_permissions.length, 0);
+        });
+
         it('Test bad method.  False expected',function() {
             const bad_method = 'bad method';
             let req_json = getRequestJson(TEST_JSON);
@@ -563,7 +632,9 @@ describe('Test operation_authorization', function() {
     describe(`Test checkAttributePerms`,function() {
         it('Nominal path - Pass in JSON with insert attribute required.  Expect true.',function() {
             let checkAttributePerms = op_auth_rewire.__get__('checkAttributePerms');
-            let result = checkAttributePerms(AFFECTED_ATTRIBUTES_SET, ROLE_ATTRIBUTE_RESTRICTIONS, write.insert.name);
+            const testPermsResponse = new PermissionResponseObject();
+            checkAttributePerms(AFFECTED_ATTRIBUTES_SET, ROLE_ATTRIBUTE_RESTRICTIONS, write.insert.name, TEST_TABLE, TEST_SCHEMA, testPermsResponse);
+            let result = testPermsResponse.getPermsResponse();
             assert.equal(result, null);
         });
 
@@ -587,6 +658,28 @@ describe('Test operation_authorization', function() {
             assert.equal(required_attr_perm.attribute_name, ROLE_PERMISSION_KEY);
             assert.equal(required_attr_perm.attribute_name, ROLE_PERMISSION_KEY);
             assert.equal(required_attr_perm.required_permissions[0], 'insert');
+        });
+
+        it('Pass in JSON with action = update, attrs on table have update restricted, expect error',function() {
+            let checkAttributePerms = op_auth_rewire.__get__('checkAttributePerms');
+            let role_att = new Map(ROLE_ATTRIBUTE_RESTRICTIONS);
+            role_att.get(ROLE_PERMISSION_KEY).insert = true;
+            const testPermsResponse = new PermissionResponseObject();
+            checkAttributePerms(AFFECTED_ATTRIBUTES_SET, role_att, 'csvFileLoad', TEST_TABLE, TEST_SCHEMA, testPermsResponse, 'update');
+            let result = testPermsResponse.getPermsResponse();
+            assert.equal(result.unauthorized_access.length, 1);
+
+            const unauthed_table = result.unauthorized_access[0];
+            assert.equal(unauthed_table instanceof PermissionTableResponseObject, true);
+            assert.equal(unauthed_table.schema, TEST_SCHEMA);
+            assert.equal(unauthed_table.table, TEST_TABLE);
+            assert.equal(unauthed_table.required_attribute_permissions.length, 1);
+
+            const required_attr_perm = unauthed_table.required_attribute_permissions[0];
+            assert.equal(required_attr_perm instanceof PermissionAttributeResponseObject, true);
+            assert.equal(required_attr_perm.attribute_name, ROLE_PERMISSION_KEY);
+            assert.equal(required_attr_perm.attribute_name, ROLE_PERMISSION_KEY);
+            assert.equal(required_attr_perm.required_permissions[0], 'update');
         });
 
         it('Pass invalid operation.  Expect false.',function() {
