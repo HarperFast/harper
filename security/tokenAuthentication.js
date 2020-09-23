@@ -19,22 +19,26 @@ const {JWTPayload, JWTTokens, JWTRSAKeys, TOKEN_TYPE_ENUM, JWTOptions} = require
 
 let rsa_keys = undefined;
 
-module.exports = createAuthToken;
+module.exports = {createTokens};
 
-async function createAuthToken(auth_object){
+async function createTokens(auth_object){
     //validate auth_object
+    if(hdb_utils.isEmpty(auth_object) || typeof auth_object !== 'object'){
+        throw handleHDBError(new Error(), 'invalid auth_object', HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR);
+    }
+
     if(hdb_utils.isEmpty(auth_object.username)){
-        handleHDBError(new Error(), 'username is required', HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR);
+        throw handleHDBError(new Error(), 'username is required', HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR);
     }
 
     if(hdb_utils.isEmpty(auth_object.password)){
-        handleHDBError(new Error(), 'password is required', HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR);
+        throw handleHDBError(new Error(), 'password is required', HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR);
     }
 
     //query for user/pw
     let user = await p_find_validate_user(auth_object.username, auth_object.password);
     if(!user){
-        handleHDBError(new Error(), 'invalid credentials', HTTP_STATUS_CODES.UNAUTHORIZED);
+        throw handleHDBError(new Error(), 'invalid credentials', HTTP_STATUS_CODES.UNAUTHORIZED);
     }
 
     //get rsa key
@@ -42,7 +46,7 @@ async function createAuthToken(auth_object){
     try {
         rsa_keys = await getJWTRSAKeys();
     }catch(e){
-        handleHDBError(new Error(), 'unable to generate JWT as there are no encryption keys.  please contact your administrator', HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR);
+        throw handleHDBError(new Error(), 'unable to generate JWT as there are no encryption keys.  please contact your administrator', HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR);
     }
 
     //sign & return tokens
@@ -60,8 +64,8 @@ async function getJWTRSAKeys(){
         let private_key_path = path.join(env.getHdbBasePath(), terms.LICENSE_KEY_DIR_NAME, terms.JWT_PRIVATE_KEY_NAME);
         let public_key_path = path.join(env.getHdbBasePath(), terms.LICENSE_KEY_DIR_NAME, terms.JWT_PUBLIC_KEY_NAME);
 
-        let private_key = await fs.readFile(private_key_path).toString();
-        let public_key = await fs.readFile(public_key_path).toString();
+        let private_key = (await fs.readFile(private_key_path)).toString();
+        let public_key = (await fs.readFile(public_key_path)).toString();
 
         rsa_keys = new JWTRSAKeys(public_key, private_key);
     }
