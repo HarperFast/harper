@@ -15,7 +15,7 @@ if(!env.isInitialized()){
 }
 
 const path = require('path');
-const {JWTPayload, JWTTokens, JWTRSAKeys, TOKEN_TYPE_ENUM, JWTOptions} = require('./JWTObjects');
+const {JWTTokens, JWTRSAKeys, TOKEN_TYPE_ENUM} = require('./JWTObjects');
 
 let rsa_keys = undefined;
 
@@ -36,8 +36,12 @@ async function createTokens(auth_object){
     }
 
     //query for user/pw
-    let user = await p_find_validate_user(auth_object.username, auth_object.password);
-    if(!user){
+    try {
+        let user = await p_find_validate_user(auth_object.username, auth_object.password);
+        if (!user) {
+            throw handleHDBError(new Error(), 'invalid credentials', HTTP_STATUS_CODES.UNAUTHORIZED);
+        }
+    }catch(e){
         throw handleHDBError(new Error(), 'invalid credentials', HTTP_STATUS_CODES.UNAUTHORIZED);
     }
 
@@ -50,8 +54,8 @@ async function createTokens(auth_object){
     }
 
     //sign & return tokens
-    let operation_token = await jwt.sign(new JWTPayload(auth_object.username, TOKEN_TYPE_ENUM.OPERATION), rsa_keys.private_key, new JWTOptions('30m'));
-    let refresh_token = await jwt.sign(new JWTPayload(auth_object.username, TOKEN_TYPE_ENUM.REFRESH), rsa_keys.private_key, new JWTOptions('30d'));
+    let operation_token = await jwt.sign({username: auth_object.username, token_type: TOKEN_TYPE_ENUM.OPERATION}, rsa_keys.private_key, {expiresIn: '30m', algorithm: 'RS256'});
+    let refresh_token = await jwt.sign({username: auth_object.username, token_type: TOKEN_TYPE_ENUM.REFRESH}, rsa_keys.private_key, {expiresIn: '30d', algorithm: 'RS256'});
     return new JWTTokens(operation_token, refresh_token);
 }
 

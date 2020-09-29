@@ -6,7 +6,9 @@ const fs = require('fs-extra');
 const path = require('path');
 const terms = require('../../utility/hdbTerms');
 const crypto = require('crypto');
-const uuid = require('uuid/v4');
+const hdb_utils = require('../../utility/common_utils');
+
+const FINGERPRINT_PATH = path.join(hdb_utils.getHomeDir(), terms.HDB_HOME_DIR_NAME, terms.LICENSE_KEY_DIR_NAME, terms.REG_KEY_FILE_NAME);
 
 module.exports = checkJWTTokenExist;
 /**
@@ -34,8 +36,7 @@ function checkJWTTokenExist(){
                     privateKeyEncoding: {
                         type: 'pkcs8',
                         format: 'pem',
-                        cipher: 'aes-256-cbc',
-                        passphrase: uuid()
+                        cipher: 'aes-256-cbc'
                     }
                 });
 
