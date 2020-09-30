@@ -24,7 +24,9 @@ class HdbError extends Error {
     ) {
         super();
         this.http_resp_code = http_code ? http_code : hdb_errors.HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR;
-        this.http_resp_msg = http_msg ? http_msg : hdb_errors.DEFAULT_ERROR_MSGS[http_code] ? hdb_errors.DEFAULT_ERROR_MSGS[http_code] : hdb_errors.DEFAULT_ERROR_MSGS[hdb_errors.HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR];
+        this.http_resp_msg = http_msg ?
+            http_msg : hdb_errors.DEFAULT_ERROR_MSGS[http_code] ?
+            hdb_errors.DEFAULT_ERROR_MSGS[http_code] : hdb_errors.DEFAULT_ERROR_MSGS[hdb_errors.HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR];
         this.message = err_orig.message ? err_orig.message : this.http_resp_msg;
         this.type = err_orig.name;
 
@@ -50,15 +52,27 @@ class HdbError extends Error {
  * @returns {HdbError}
  */
 function handleHDBError(e, http_msg, http_code, log_level = logger.ERR, log_msg = null) {
-    if (e instanceof HdbError) {
+    if (isHDBError(e)) {
         return e;
     }
     return (new HdbError(e, http_msg, http_code, log_level, log_msg));
 }
 
+function handleValidationError(e, validation_msg) {
+    if (isHDBError(e)) {
+        return e;
+    }
+    return (new HdbError(e, `Error: ${validation_msg}`, hdb_errors.HTTP_STATUS_CODES.BAD_REQUEST));
+}
+
+function isHDBError(e) {
+    return e.__proto__.constructor.name === HdbError.name;
+}
+
 module.exports =  {
+    isHDBError,
     handleHDBError,
-    HdbError,
+    handleValidationError,
     //Including common hdb_errors here so that they can be brought into modules on the same line where the handler method is brought in
     hdb_errors
 };

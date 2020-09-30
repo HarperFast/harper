@@ -10,7 +10,7 @@ chai.use(sinon_chai);
 const fs = require('fs');
 const rewire = require('rewire');
 const validator = require('../../validation/validationWrapper');
-let csv_load_validator = rewire('../../validation/csvLoadValidator');
+let file_load_validator = rewire('../../validation/fileLoadValidator');
 const common_utils = require('../../utility/common_utils');
 const log = require('../../utility/logging/harper_logger');
 
@@ -20,9 +20,9 @@ const LONG_STRING = "TheresolvedtechnologydisappearsThesynthesisperfectsanincomp
     "concedesthestrayThestandardsectcautionstheeaterThefootballfreezesbehindareceipt";
 
 /**
- *  Unit tests for validation/csvLoadValidator.js
+ *  Unit tests for validation/fileLoadValidator.js
  */
-describe('Test csvLoadValidator module', () => {
+describe('Test fileLoadValidator module', () => {
 
     let obj_no_schema = {
         operation: "csv_data_load",
@@ -102,6 +102,19 @@ describe('Test csvLoadValidator module', () => {
         csv_url: 'google.com'
     };
 
+    let s3_object = {
+        operation: "import_from_s3",
+        action: "insert",
+        schema: "hats",
+        table: "fordogs",
+        s3: {
+            aws_access_key_id: '12345key',
+            aws_secret_access_key: '54321key',
+            bucket: 'test_bucket',
+            key: 'test_file.csv'
+        }
+    };
+
     before(() => {
         global.hdb_schema = {
             "hats": {}
@@ -110,7 +123,7 @@ describe('Test csvLoadValidator module', () => {
 
     after(() => {
         delete global.hdb_schema['hats'];
-        csv_load_validator = rewire('../../validation/csvLoadValidator');
+        file_load_validator = rewire('../../validation/fileLoadValidator');
         sinon.restore();
     });
 
@@ -124,14 +137,14 @@ describe('Test csvLoadValidator module', () => {
     context('Test validate module', () => {
 
         it('should return schema cant be blank error from dataObject', () => {
-            let result = csv_load_validator.dataObject(obj_no_schema);
+            let result = file_load_validator.dataObject(obj_no_schema);
 
             expect(result).to.be.instanceof(Error);
             expect(result.message).to.equal("Schema can't be blank");
         });
 
         it('should return table cant be blank error from dataObject',() => {
-            let result = csv_load_validator.dataObject(obj_no_table);
+            let result = file_load_validator.dataObject(obj_no_table);
 
             expect(result).to.be.instanceof(Error);
             expect(result.message).to.equal("Table can't be blank");
@@ -143,41 +156,102 @@ describe('Test csvLoadValidator module', () => {
                     "fordogs": {}
                 }
             };
-            let result = csv_load_validator.dataObject(obj_invalid_char_table);
+            let result = file_load_validator.dataObject(obj_invalid_char_table);
 
             expect(result).to.be.instanceof(Error);
             expect(result.message).to.equal('Table names cannot include backticks or forward slashes');
         });
 
         it('should return must be alpha numeric error on schema', () => {
-            let result = csv_load_validator.dataObject(obj_invalid_char_schema);
+            let result = file_load_validator.dataObject(obj_invalid_char_schema);
 
             expect(result).to.be.instanceof(Error);
             expect(result.message).to.equal('Schema names cannot include backticks or forward slashes');
         });
 
         it('should return cannot exceed 250 characters error on schema', () => {
-            let result = csv_load_validator.dataObject(obj_over_length_schema);
+            let result = file_load_validator.dataObject(obj_over_length_schema);
 
             expect(result).to.be.instanceof(Error);
             expect(result.message).to.equal('Schema cannot exceed 250 characters');
         });
 
         it('should return cannot exceed 250 characters error on table', () => {
-            let result = csv_load_validator.dataObject(obj_over_length_table);
+            let result = file_load_validator.dataObject(obj_over_length_table);
 
             expect(result).to.be.instanceof(Error);
             expect(result.message).to.equal('Table cannot exceed 250 characters');
         });
 
         it('should return action is required to be be either insert or update', () => {
-            let result = csv_load_validator.dataObject(obj_wrong_action);
+            let result = file_load_validator.dataObject(obj_wrong_action);
 
             expect(result).to.be.instanceof(Error);
             expect(result.message).to.equal('Action is required and must be either insert or update');
         });
-    });
 
+        it('should return s3 cant be blank error from s3FileObject',() => {
+            const test_obj = test_util.deepClone(s3_object);
+            delete test_obj.s3
+            let result = file_load_validator.s3FileObject(test_obj);
+
+            expect(result).to.be.instanceof(Error);
+            expect(result.message).to.equal("S3 can't be blank,S3 aws access key id can't be blank,S3 aws secret access key can't be blank,S3 bucket can't be blank,S3 key can't be blank");
+        });
+
+        it('should return s3.aws_access_key_id must be a string error from s3FileObject',() => {
+            const test_obj = test_util.deepClone(s3_object);
+            test_obj.s3.aws_access_key_id = 123456;
+            let result = file_load_validator.s3FileObject(test_obj);
+
+            expect(result).to.be.instanceof(Error);
+            expect(result.message).to.equal("S3 aws access key id  must be a 'String' value");
+        });
+
+        it('should return s3.key cant be blank error from s3FileObject',() => {
+            const test_obj = test_util.deepClone(s3_object);
+            test_obj.s3.key = "";
+            let result = file_load_validator.s3FileObject(test_obj);
+
+            expect(result).to.be.instanceof(Error);
+            expect(result.message).to.equal("S3 key can't be blank");
+        });
+
+        it('should return s3.key must have valid ext error from s3FileObject',() => {
+            const test_obj = test_util.deepClone(s3_object);
+            test_obj.s3.key = "test_file";
+            let result = file_load_validator.s3FileObject(test_obj);
+
+            expect(result).to.be.instanceof(Error);
+            expect(result.message).to.equal("S3 key must include one of the following valid file extensions - '.csv', '.json'");
+        });
+
+        it('should return null w/ valid s3FileObject',() => {
+            global.hdb_schema = {
+                "hats": {
+                    "fordogs": {}
+                }
+            };
+            const test_obj = test_util.deepClone(s3_object);
+            let result = file_load_validator.s3FileObject(test_obj);
+
+            expect(result).to.be.null;
+        });
+
+        it('should return validate `presence` error but NOT `type` error if both issues are caught',() => {
+            global.hdb_schema = {
+                "hats": {
+                    "fordogs": {}
+                }
+            };
+            const test_obj = test_util.deepClone(s3_object);
+            delete test_obj.s3.aws_access_key_id;
+            let result = file_load_validator.s3FileObject(test_obj);
+
+            expect(result).to.be.instanceof(Error);
+            expect(result.message).to.equal("S3 aws access key id can't be blank");
+        });
+    });
     /**
      * Unit tests for postValidateChecks function
      */
@@ -193,9 +267,9 @@ describe('Test csvLoadValidator module', () => {
         before(() => {
             logger_stub = sinon.stub(log, 'error');
             file_size_stub = sinon.stub(fs, 'statSync');
-            max_csv_file_size_rewire = csv_load_validator.__get__('MAX_CSV_FILE_SIZE');
+            max_csv_file_size_rewire = file_load_validator.__get__('MAX_FILE_SIZE');
             check_glob_schema_stub = sinon.stub(common_utils, 'checkGlobalSchemaTable');
-            post_validate_checks = csv_load_validator.__get__('postValidateChecks');
+            post_validate_checks = file_load_validator.__get__('postValidateChecks');
         });
 
         it('should return an error from common_utils.checkGlobalSchemaTable',() => {
@@ -204,7 +278,7 @@ describe('Test csvLoadValidator module', () => {
             let result = post_validate_checks(data_object, validate_result);
 
             expect(result).to.be.instanceOf(Error);
-            expect(result.message).to.be.equal(check_glob_schema_err);
+            expect(result.http_resp_msg).to.be.equal(check_glob_schema_err);
             expect(check_glob_schema_stub).to.have.been.calledOnce;
         });
 
@@ -212,7 +286,7 @@ describe('Test csvLoadValidator module', () => {
             check_glob_schema_stub.returns('');
             let result = post_validate_checks(file_object, validate_result);
 
-            expect(result.message).to.equal(`No such file or directory ${FAKE_FILE_PATH}`);
+            expect(result.http_resp_msg).to.equal(`No such file or directory ${FAKE_FILE_PATH}`);
             expect(result).to.be.instanceOf(Error);
             expect(check_glob_schema_stub).to.have.been.calledOnce;
         });
@@ -223,7 +297,7 @@ describe('Test csvLoadValidator module', () => {
             file_size_stub.returns({size: fake_file_size});
             let result = post_validate_checks(file_object, validate_result);
 
-            expect(result.message).to.equal(`File size is ${fake_file_size} bytes, which exceeded the maximum size allowed of: ${max_csv_file_size_rewire} bytes`);
+            expect(result.http_resp_msg).to.equal(`File size is ${fake_file_size} bytes, which exceeded the maximum size allowed of: ${max_csv_file_size_rewire} bytes`);
             expect(result).to.be.instanceOf(Error);
             expect(check_glob_schema_stub).to.have.been.calledOnce;
             expect(fs_access_stub).to.have.been.calledOnce;
@@ -255,7 +329,7 @@ describe('Test csvLoadValidator module', () => {
 
         before(() => {
             validator_stub = sinon.stub(validator, 'validateObject').returns(validate_res_fake);
-            post_validate_rewire = csv_load_validator.__set__('postValidateChecks', post_validate_stub);
+            post_validate_rewire = file_load_validator.__set__('postValidateChecks', post_validate_stub);
         });
 
         after(() => {
@@ -264,24 +338,24 @@ describe('Test csvLoadValidator module', () => {
         });
 
         it('should call validateObject and postValidateChecks with dataObject', () => {
-            let data_constraints = csv_load_validator.__get__('data_constraints');
-            csv_load_validator.dataObject(data_object);
+            let data_constraints = file_load_validator.__get__('data_constraints');
+            file_load_validator.dataObject(data_object);
 
             expect(validator_stub).to.have.been.calledWith(data_object, data_constraints);
             expect(post_validate_stub).to.have.been.calledWith(data_object, validate_res_fake);
         });
 
         it('should call validateObject and postValidateChecks with urlObject', () => {
-            let url_constraints = csv_load_validator.__get__('url_constraints');
-            csv_load_validator.urlObject(url_object);
+            let url_constraints = file_load_validator.__get__('url_constraints');
+            file_load_validator.urlObject(url_object);
 
             expect(validator_stub).to.have.been.calledWith(url_object, url_constraints);
             expect(post_validate_stub).to.have.been.calledWith(url_object, validate_res_fake);
         });
 
         it('should call validateObject and postValidateChecks with fileObject', () => {
-            let file_constraints = csv_load_validator.__get__('file_constraints');
-            csv_load_validator.fileObject(file_object);
+            let file_constraints = file_load_validator.__get__('file_constraints');
+            file_load_validator.fileObject(file_object);
 
             expect(validator_stub).to.have.been.calledWith(file_object, file_constraints);
             expect(post_validate_stub).to.have.been.calledWith(file_object, validate_res_fake);

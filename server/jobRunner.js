@@ -3,7 +3,7 @@
 const hdb_util = require('../utility/common_utils');
 const hdb_terms = require('../utility/hdbTerms');
 const moment = require('moment');
-const csv_bulk_load = require('../data_layer/csvBulkLoad');
+const bulk_load = require('../data_layer/bulkLoad');
 const log = require('../utility/logging/harper_logger');
 const jobs = require('./jobs');
 const hdb_export = require('../data_layer/export');
@@ -57,21 +57,28 @@ async function parseMessage(runner_message) {
     switch(runner_message.json.operation) {
         case hdb_terms.JOB_TYPE_ENUM.csv_file_load:
             try {
-                response = await runCSVJob(runner_message, csv_bulk_load.csvFileLoad, runner_message.json);
+                response = await runCSVJob(runner_message, bulk_load.csvFileLoad, runner_message.json);
             } catch(e) {
                 log.error(e);
             }
             break;
         case hdb_terms.JOB_TYPE_ENUM.csv_url_load:
             try {
-                response = await runCSVJob(runner_message, csv_bulk_load.csvURLLoad, runner_message.json);
+                response = await runCSVJob(runner_message, bulk_load.csvURLLoad, runner_message.json);
             } catch(e) {
                 log.error(e);
             }
             break;
         case hdb_terms.JOB_TYPE_ENUM.csv_data_load:
             try {
-                response = await runCSVJob(runner_message, csv_bulk_load.csvDataLoad, runner_message.json);
+                response = await runCSVJob(runner_message, bulk_load.csvDataLoad, runner_message.json);
+            } catch(e) {
+                log.error(e);
+            }
+            break;
+        case hdb_terms.JOB_TYPE_ENUM.import_from_s3:
+            try {
+                response = await runCSVJob(runner_message, bulk_load.importFromS3, runner_message.json);
             } catch(e) {
                 log.error(e);
             }

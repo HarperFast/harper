@@ -9,7 +9,7 @@ const jobs_runner = rewire('../../server/jobRunner');
 const jobs = require('../../server/jobs');
 const sinon = require('sinon');
 const hdb_term = require('../../utility/hdbTerms');
-const csv_bulk_load = require('../../data_layer/csvBulkLoad');
+const bulk_load = require('../../data_layer/bulkLoad');
 const JobObject = require('../../server/JobObject');
 
 const DATA_LOAD_MESSAGE = {
@@ -156,7 +156,7 @@ describe('Test runCSVJob', function() {
         update_stub = sandbox.stub(jobs, "updateJob").returns(UPDATE_RESULT);
         let thread_exec = jobs_runner.__set__("threadExecute", async(arg)=>{return BULK_LOAD_RESPONSE});
 
-        let result = await runCSVJob(runner_message, csv_bulk_load.csvDataLoad, runner_message.json);
+        let result = await runCSVJob(runner_message, bulk_load.csvDataLoad, runner_message.json);
         assert.equal(result.success, true, 'expected success');
         assert.ok(runner_message.job.end_datetime !== undefined, 'Expected end date time to be set');
         assert.equal(runner_message.job.status, hdb_term.JOB_STATUS_ENUM.COMPLETE, 'Expected job status to be complete.');
@@ -170,10 +170,10 @@ describe('Test runCSVJob', function() {
         runner_message.job = job_object;
 
         update_stub = sandbox.stub(jobs, "updateJob").onFirstCall().throws(new Error("BAD UPDATE")).onSecondCall().returns(UPDATE_RESULT);
-        bulk_load_stub = sandbox.stub(csv_bulk_load, "csvDataLoad").returns(BULK_LOAD_RESPONSE);
+        bulk_load_stub = sandbox.stub(bulk_load, "csvDataLoad").returns(BULK_LOAD_RESPONSE);
 
         try {
-            await runCSVJob(runner_message, csv_bulk_load.csvDataLoad, runner_message.json);
+            await runCSVJob(runner_message, bulk_load.csvDataLoad, runner_message.json);
         } catch(e) {
             assert.ok(e.message.length > 0, 'expected exception');
             assert.ok(runner_message.job.end_datetime !== undefined, 'Expected end date time to be set');
@@ -190,7 +190,7 @@ describe('Test runCSVJob', function() {
         runner_message.job = job_object;
 
         try {
-            await runCSVJob(runner_message, csv_bulk_load.csvDataLoad, runner_message.json);
+            await runCSVJob(runner_message, bulk_load.csvDataLoad, runner_message.json);
         } catch(e) {
             assert.ok(e.message.length > 0, 'expected exception');
         }
@@ -203,7 +203,7 @@ describe('Test runCSVJob', function() {
         runner_message.job = job_object;
 
         try {
-            await runCSVJob(runner_message, csv_bulk_load.csvDataLoad, runner_message.json);
+            await runCSVJob(runner_message, bulk_load.csvDataLoad, runner_message.json);
         } catch(e) {
             assert.ok(e.message.length > 0, 'expected exception');
         }
@@ -214,7 +214,7 @@ describe('Test runCSVJob', function() {
         runner_message.job = undefined;
 
         try {
-            await runCSVJob(runner_message, csv_bulk_load.csvDataLoad, runner_message.json);
+            await runCSVJob(runner_message, bulk_load.csvDataLoad, runner_message.json);
         } catch(e) {
             assert.ok(e.message.length > 0, 'expected exception');
         }
@@ -226,7 +226,7 @@ describe('Test runCSVJob', function() {
         runner_message.job = job_object;
 
         try {
-            await runCSVJob(runner_message, csv_bulk_load.csvDataLoad, runner_message.json);
+            await runCSVJob(runner_message, bulk_load.csvDataLoad, runner_message.json);
         } catch(e) {
             assert.ok(e.message.length > 0, 'expected exception');
         }
@@ -234,7 +234,7 @@ describe('Test runCSVJob', function() {
     it('Invalid runner message', async function() {
         let runner_message = {};
         try {
-            await runCSVJob(runner_message, csv_bulk_load.csvDataLoad, runner_message.json);
+            await runCSVJob(runner_message, bulk_load.csvDataLoad, runner_message.json);
         } catch(e) {
             assert.ok(e.message.length > 0, 'expected exception');
         }
@@ -246,10 +246,10 @@ describe('Test runCSVJob', function() {
         runner_message.job = job_object;
 
         update_stub = sandbox.stub(jobs, "updateJob").returns(UPDATE_RESULT);
-        bulk_load_stub = sandbox.stub(csv_bulk_load, "csvDataLoad").throws(new Error('bad csv load oh noes!'));
+        bulk_load_stub = sandbox.stub(bulk_load, "csvDataLoad").throws(new Error('bad csv load oh noes!'));
 
         try {
-            await runCSVJob(runner_message, csv_bulk_load.csvDataLoad, runner_message.json);
+            await runCSVJob(runner_message, bulk_load.csvDataLoad, runner_message.json);
         } catch(e) {
             assert.ok(e.message.length > 0, 'expected exception');
             assert.ok(runner_message.job.end_datetime !== undefined, 'Expected end date time to be set');
