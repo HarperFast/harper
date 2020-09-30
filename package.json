@@ -72,6 +72,8 @@
     "request-promise-native": "^1.0.5",
     "socketcluster": "^14.4.2",
     "socketcluster-client": "^14.2.2",
+    "stream-chain": "^2.2.3",
+    "stream-json": "^1.7.1",
     "systeminformation": "^4.23.3",
     "tar-fs": "^1.16.3",
     "truncate-utf8-bytes": "^1.0.2",

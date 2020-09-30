@@ -12,7 +12,7 @@
  * */
 const write = require('../data_layer/insert');
 const search = require('../data_layer/search');
-const csv = require('../data_layer/csvBulkLoad');
+const bulkLoad = require('../data_layer/bulkLoad');
 const schema = require('../data_layer/schema');
 const schema_describe = require('../data_layer/schemaDescribe');
 const delete_ = require('../data_layer/delete');
@@ -31,7 +31,7 @@ const permsTranslator = require('../security/permissionsTranslator');
 const system_information = require('../utility/environment/systemInformation');
 const alasql = require('alasql');
 
-const PermissionResponseObject = require('../security/data_model/PermissionResponseObject');
+const PermissionResponseObject = require('../security/data_objects/PermissionResponseObject');
 const { handleHDBError, hdb_errors  } = require('../utility/errors/hdbError');
 const { COMMON_ERROR_MSGS, HTTP_STATUS_CODES } = hdb_errors;
 
@@ -61,9 +61,10 @@ required_permissions.set(write.update.name, new permission(false, [UPDATE_PERM])
 required_permissions.set(search.searchByHash.name, new permission(false, [READ_PERM]));
 required_permissions.set(search.searchByValue.name, new permission(false, [READ_PERM]));
 required_permissions.set(search.search.name, new permission(false, [READ_PERM]));
-required_permissions.set(csv.csvDataLoad.name, new permission(false, [INSERT_PERM]));
-required_permissions.set(csv.csvFileLoad.name, new permission(false, [INSERT_PERM]));
-required_permissions.set(csv.csvURLLoad.name, new permission(false, [INSERT_PERM]));
+required_permissions.set(bulkLoad.csvDataLoad.name, new permission(false, [INSERT_PERM, UPDATE_PERM]));
+required_permissions.set(bulkLoad.csvURLLoad.name, new permission(false, [INSERT_PERM, UPDATE_PERM]));
+required_permissions.set(bulkLoad.csvFileLoad.name, new permission(false, [INSERT_PERM, UPDATE_PERM]));
+required_permissions.set(bulkLoad.importFromS3.name, new permission(false, [INSERT_PERM, UPDATE_PERM]));
 required_permissions.set(schema.createSchema.name, new permission(true, []));
 required_permissions.set(schema.createTable.name, new permission(true, []));
 required_permissions.set(schema.createAttribute.name, new permission(false, [INSERT_PERM]));
@@ -218,6 +219,8 @@ function verifyPerms(request_json, operation) {
     } else {
         op = operation;
     }
+    //we need to use the action value, if present, to ensure the correct permission is checked below
+    let action = request_json.action;
 
     let operation_schema = request_json.schema;
     let table = request_json.table;
@@ -269,7 +272,7 @@ function verifyPerms(request_json, operation) {
         }
     }
 
-    let failed_permissions = hasPermissions(request_json.hdb_user, op, schema_table_map, permsResponse);
+    let failed_permissions = hasPermissions(request_json.hdb_user, op, schema_table_map, permsResponse, action);
     //check if failed_table_perms are back and return them B/C it will be an op-level permission issue
     if (failed_permissions) {
         return failed_permissions;
@@ -301,7 +304,7 @@ function verifyPerms(request_json, operation) {
 
     const record_attrs = getRecordAttributes(request_json);
     const attr_permissions = getAttributePermissions(request_json.hdb_user, operation_schema, table);
-    checkAttributePerms(record_attrs, attr_permissions, op, table, operation_schema, permsResponse);
+    checkAttributePerms(record_attrs, attr_permissions, op, table, operation_schema, permsResponse, action);
 
     //This result value will be null if no perms issues were found in checkAttributePerms
     return permsResponse.getPermsResponse();
@@ -314,7 +317,7 @@ function verifyPerms(request_json, operation) {
  * @param schema_table_map - A map in the format [schema_key, [tables]].
  * @returns {PermissionResponseObject | null} - null value if permissions match, PermissionResponseObject if not.
  */
-function hasPermissions(user_object, op, schema_table_map, permsResponse) {
+function hasPermissions(user_object, op, schema_table_map, permsResponse, action) {
     if (common_utils.arrayHasEmptyValues([user_object,op,schema_table_map])) {
         harper_logger.info(`hasPermissions has an invalid parameter`);
         throw handleHDBError(new Error());
@@ -366,15 +369,23 @@ function hasPermissions(user_object, op, schema_table_map, permsResponse) {
                     }
                     //Here we check all required permissions for the operation defined in the map with the values of the permissions in the role.
                     const required_table_perms = [];
-                    for (let i = 0; i<required_permissions.get(op).perms.length; i++) {
-                        let perms = required_permissions.get(op).perms[i];
-                        let user_permission = table_permissions[perms];
+                    let required_perms = required_permissions.get(op).perms;
+
+                    //If an 'action' is included in the operation json, we want to only check permissions for that action
+                    if (!common_utils.isEmpty(action)) {
+                        required_perms = [action];
+                    }
+
+                    for (let i = 0; i < required_perms.length; i++) {
+                        let perm = required_perms[i];
+                        let user_permission = table_permissions[perm];
                         if (user_permission === undefined || user_permission === null || user_permission === false) {
                             //need to check if any perm on table OR should return table not found
-                            harper_logger.info(`Required permission not found for operation ${op} in role ${user_object.role.id}`);
-                            required_table_perms.push(perms);
+                            harper_logger.info(`Required ${perm} permission not found for ${op} ${action ? `${action} ` : ''}operation in role ${user_object.role.id}`);
+                            required_table_perms.push(perm);
                         }
                     }
+
                     if (required_table_perms.length > 0) {
                         permsResponse.addUnauthorizedTable(schema_table, table, required_table_perms);
                     }
@@ -383,7 +394,7 @@ function hasPermissions(user_object, op, schema_table_map, permsResponse) {
                     const err_msg = COMMON_ERROR_MSGS.UNKNOWN_OP_AUTH_ERROR(op, schema_table, table);
                     harper_logger.error(err_msg);
                     harper_logger.error(e);
-                    throw handleHDBError(COMMON_ERROR_MSGS.CHECK_LOGS_WRAPPER(err_msg));
+                    throw handleHDBError(hdb_errors.CHECK_LOGS_WRAPPER(err_msg));
                 }
             }
         }
@@ -408,14 +419,16 @@ function hasPermissions(user_object, op, schema_table_map, permsResponse) {
  * @param permsResponse - PermissionResponseObject instance being used to track permissions issues to return in response, if necessary
  * @returns {} - this function does not return a value - it updates the permsResponse which is checked later
  */
-function checkAttributePerms(record_attributes, role_attribute_permissions, operation, table_name, schema_name, permsResponse) {
+function checkAttributePerms(record_attributes, role_attribute_permissions, operation, table_name, schema_name, permsResponse, action) {
     if (!record_attributes || !role_attribute_permissions) {
         harper_logger.info(`no attributes specified in checkAttributePerms.`);
         throw handleHDBError(new Error());
     }
+
     // check each attribute with role permissions.  Required perm should match the per in the operation
-    let needed_perm = required_permissions.get(operation);
-    if (!needed_perm || needed_perm === '') {
+    let needed_perms = required_permissions.get(operation);
+
+    if (!needed_perms || needed_perms === '') {
         // We should never get in here since all of our operations should have a perm, but just in case we should fail
         // any operation that doesn't have perms.
         harper_logger.info(`no permissions found for ${operation} in checkAttributePerms().`);
@@ -427,6 +440,12 @@ function checkAttributePerms(record_attributes, role_attribute_permissions, oper
         harper_logger.info(`No role permissions set (this is OK).`);
         return null;
     }
+
+    //If an 'action' is included in the operation json, we want to only check permissions for that action
+    if (action && needed_perms.perms.includes(action)) {
+        needed_perms.perms = [action];
+    }
+
     let required_attr_perms = {};
     // Check if each specified attribute in the call (record_attributes) has a permission specified in the role.  If there is
     // a permission, check if the operation permission is false.
@@ -438,8 +457,8 @@ function checkAttributePerms(record_attributes, role_attribute_permissions, oper
                 continue;
             }
 
-            if (needed_perm.perms) {
-                for (let perm of needed_perm.perms) {
+            if (needed_perms.perms) {
+                for (let perm of needed_perms.perms) {
                     if (permission[perm] === false) {
                         if (!required_attr_perms[permission.attribute_name]) {
                             required_attr_perms[permission.attribute_name] = [perm];

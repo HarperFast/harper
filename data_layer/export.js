@@ -2,7 +2,7 @@
 
 const search = require('./search');
 const sql = require('../sqlTranslator/index');
-const AWS = require('aws-sdk');
+const AWSConnector = require('../utility/AWS/AWSConnector');
 const alasql = require('alasql');
 const hdb_utils = require('../utility/common_utils');
 const fs = require('fs-extra');
@@ -160,11 +160,6 @@ async function export_to_s3(export_object) {
         throw err;
     });
 
-    AWS.config.update({
-        accessKeyId: export_object.s3.aws_access_key_id,
-        secretAccessKey: export_object.s3.aws_secret_access_key
-    });
-
     let s3_data;
     let s3_name;
     if(export_object.format === CSV){
@@ -177,7 +172,7 @@ async function export_to_s3(export_object) {
         throw new Error("an unexpected exception has occurred, please check your request and try again.");
     }
 
-    let s3 = new AWS.S3();
+    let s3 = AWSConnector.getS3AuthObj(export_object.s3.aws_access_key_id, export_object.s3.aws_secret_access_key);
     let params = {Bucket: export_object.s3.bucket, Key: s3_name, Body: s3_data};
     let put_results = undefined;
     try {

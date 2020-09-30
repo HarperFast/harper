@@ -20,7 +20,7 @@ const LICENSES = [
             exp_date: moment().add(1, 'year').unix(),
             storage_type: 'fs',
             api_call: 10000,
-            version: '2.0.0',
+            version: '2.2.0',
             ram_allocation: hdb_terms.RAM_ALLOCATION_ENUM.DEFAULT,
             enterprise: true,
             fingerprint: undefined
@@ -31,7 +31,7 @@ const LICENSES = [
             exp_date: moment().add(2, 'year').unix(),
             storage_type: 'fs',
             api_call: 10000,
-            version: '2.0.0',
+            version: '2.2.0',
             ram_allocation: 2500,
             enterprise: true,
             fingerprint: undefined
