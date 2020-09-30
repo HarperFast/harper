@@ -54,8 +54,10 @@ async function createTokens(auth_object){
     }
 
     //sign & return tokens
-    let operation_token = await jwt.sign({username: auth_object.username, token_type: TOKEN_TYPE_ENUM.OPERATION}, rsa_keys.private_key, {expiresIn: '30m', algorithm: 'RS256'});
-    let refresh_token = await jwt.sign({username: auth_object.username, token_type: TOKEN_TYPE_ENUM.REFRESH}, rsa_keys.private_key, {expiresIn: '30d', algorithm: 'RS256'});
+    let operation_token = await jwt.sign({username: auth_object.username, token_type: TOKEN_TYPE_ENUM.OPERATION},
+        {key: rsa_keys.private_key, passphrase: rsa_keys.passphrase}, {expiresIn: '30m', algorithm: 'RS256'});
+    let refresh_token = await jwt.sign({username: auth_object.username, token_type: TOKEN_TYPE_ENUM.REFRESH},
+        {key: rsa_keys.private_key, passphrase: rsa_keys.passphrase}, {expiresIn: '30d', algorithm: 'RS256'});
     return new JWTTokens(operation_token, refresh_token);
 }
 
@@ -65,13 +67,15 @@ async function createTokens(auth_object){
  */
 async function getJWTRSAKeys(){
     if(rsa_keys === undefined){
+        let passphrase_path = path.join(env.getHdbBasePath(), terms.LICENSE_KEY_DIR_NAME, terms.JWT_PASSPHRASE_NAME);
         let private_key_path = path.join(env.getHdbBasePath(), terms.LICENSE_KEY_DIR_NAME, terms.JWT_PRIVATE_KEY_NAME);
         let public_key_path = path.join(env.getHdbBasePath(), terms.LICENSE_KEY_DIR_NAME, terms.JWT_PUBLIC_KEY_NAME);
 
+        let passphrase = (await fs.readFile(passphrase_path)).toString();
         let private_key = (await fs.readFile(private_key_path)).toString();
         let public_key = (await fs.readFile(public_key_path)).toString();
 
-        rsa_keys = new JWTRSAKeys(public_key, private_key);
+        rsa_keys = new JWTRSAKeys(public_key, private_key, passphrase);
     }
 
     return rsa_keys;

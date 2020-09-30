@@ -14,75 +14,77 @@ const get_jwt_keys_func = token_auth.__get__('getJWTRSAKeys');
 const hdb_error = require('../../utility/errors/hdbError').handleHDBError;
 
 const KEYS_PATH = path.join(test_util.getMockFSPath(), 'keys');
+const PASSPHRASE_PATH = path.join(KEYS_PATH, '.jwtPass');
 const PRIVATE_KEY_PATH = path.join(KEYS_PATH, '.jwtPrivate.key');
 const PUBLIC_KEY_PATH = path.join(KEYS_PATH, '.jwtPublic.key');
+const PASSPHRASE_VALUE = '6340b357-55b2-4fc8-b359-cae7d90c8c01';
 const PRIVATE_KEY_VALUE = '-----BEGIN ENCRYPTED PRIVATE KEY-----\n' +
-    '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
+    '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\n' +
     '-----END ENCRYPTED PRIVATE KEY-----';
 const PUBLIC_KEY_VALUE = '-----BEGIN PUBLIC KEY-----\n' +
-    'MIICIjANBgkqhkiG9w0BAQEFAAOCAg8AMIICCgKCAgEAzET+m3dPmNEpOARAC3p+\n' +
-    'iNILc9drGPaInEOHaOCd50Kt4muJbFip+MK4iB78wtKpO4q2c3rky4rxhYJl4dUr\n' +
-    'Wa9Q80JVYQmkIyeiz7iPbeE0Y5hWnkDRrCs0k05ZQnFcHepASXiwSpu+aWHgsLrM\n' +
-    'qA3Tj7UoVBAYwIB5JMH47+8kyBjnpFQRDnmqA9ZWpaXHgm7bcoOlorCn+zVJvfut\n' +
-    'ZDsAEYF4lfCHCdTAWn83Nuv9VQaV8yhLH3RCHcMwIWVv0n1TVwkFS3KmkuUWilZD\n' +
-    'celG4vfz/gc6XIFnZAVIStcpSmKSJbAP93t6noh2KWD/jQSzIrg+7jUITcYOCTsq\n' +
-    'qpG2/2ixpS8kNlAiEgs0J+H2s+HexibWmA/JTrHfI3XBdW4B3XL66aGkVJH8RH8o\n' +
-    'A3Kz4dtszhnHR/oVQ3reG3GmwBTrmqK8WYrJjzp/5qO8bJN6AGCSnIjiVZNkZ3s9\n' +
-    '6Wm8mhR3hCyJu+eWO9exri1Z4y0mYLPfMsI+E5gNH7QZfvN5nK/RY1KabLUBrUur\n' +
-    'eUIyGPtuOSjIPjQEimeApFrrnGYPv4EymrAjlk4rgT0hdSfH4Gl3iGN2+PeEwH7b\n' +
-    'eZJM2rBg1YjEDwOd/huZVPyb0j/xIzoI+oDeSUJf9aLBcCJATjqT5bFVr0/A4dRm\n' +
-    'c+fzWN6dcgYtVvVYk2jJ0h8CAwEAAQ==\n' +
+    'MIICIjANBgkqhkiG9w0BAQEFAAOCAg8AMIICCgKCAgEAyt3aWGKRiAY0gmCjPDTo\n' +
+    '5Q2x6+IuHj7PQrNwGiAA/cgve9v2UCRGN/PSwLtT2mJPdW3jdEX2AgZcVEhA4N16\n' +
+    'cJm/Bm6NdPSUr+4nn4bYpApbUIc5aCEk67swzWC+MMcK47MOAc0CqrN/50ZwsaB2\n' +
+    'ij+JaW7foDS8fNX+i1ytvHFTNj1zNsAicqdKRGRt4EtXRfU/A5AUjIJ95LxOGSmg\n' +
+    'ri+rmBZRh1olw+EWoHX/QWFFxKSEmCgmD2RYID0jedQnf7ABSrmXPBm2t2+08CrP\n' +
+    'SHc+0lK7TC2KDUggGs3t+932HwXCBJ1ZxvX6kZ9TMhXenxU67lFXLOQlxnH7uDOH\n' +
+    'xUPkOKHxJq+Bpgpmw30HyhCMPdHhjbNND94TTzrBy+V6OYKgI9wYXwAL4viXuSyN\n' +
+    'oAn67PXvC3OhA08cmZlN6q7UWK5+WkKy7Adw++iTqH/ERRfXrx6XQ09b97cMN28d\n' +
+    'SUbT4WgurLkfCDeUXKI3buIFzNvlmnrYI1PP5/K5NK8qbBQkE0ejVWg4igvdD4mf\n' +
+    'oNjL5EflpeS3+wDywCyuhfPimygitufTI5ttUF+NkHmQNGOK4vCp89L8NUGaWL12\n' +
+    'Xbe/Q0MHiGt7hvhB51+C08m+qxIDk2l8Icg77mS4WuxBbWBxN/FF18ttp4GfHJWw\n' +
+    'brlmQxVf0PFY+0tM8fCkpccCAwEAAQ==\n' +
     '-----END PUBLIC KEY-----';
 
 
@@ -98,6 +100,7 @@ describe('test getJWTRSAKeys function', ()=>{
 
     beforeEach(()=>{
         fs.mkdirpSync(KEYS_PATH);
+        fs.writeFileSync(PASSPHRASE_PATH, PASSPHRASE_VALUE);
         fs.writeFileSync(PRIVATE_KEY_PATH, PRIVATE_KEY_VALUE);
         fs.writeFileSync(PUBLIC_KEY_PATH, PUBLIC_KEY_VALUE);
     });
@@ -116,21 +119,45 @@ describe('test getJWTRSAKeys function', ()=>{
         let rw_rsa_keys = token_auth.__set__('rsa_keys', undefined);
 
         let results = await get_jwt_keys_func();
-        assert.deepStrictEqual(results, new JWTObjects.JWTRSAKeys(PUBLIC_KEY_VALUE, PRIVATE_KEY_VALUE));
+        assert.deepStrictEqual(results, new JWTObjects.JWTRSAKeys(PUBLIC_KEY_VALUE, PRIVATE_KEY_VALUE, PASSPHRASE_VALUE));
 
-        assert(path_join_spy.callCount === 2);
-        assert(fs_readfile_spy.callCount === 2);
+        assert(path_join_spy.callCount === 3);
+        assert(fs_readfile_spy.callCount === 3);
 
         assert(fs_readfile_spy.threw() === false);
         assert(path_join_spy.threw() === false);
 
         let first_path_call = path_join_spy.getCall(0);
-        assert(first_path_call.args = [test_util.getMockFSPath(), 'keys', '.jwtPrivate.key']);
-        assert(first_path_call.returned(PRIVATE_KEY_PATH) === true);
+        assert(first_path_call.args = [test_util.getMockFSPath(), 'keys', '.jwtPass']);
+        assert(first_path_call.returned(PASSPHRASE_PATH) === true);
 
         let second_path_call = path_join_spy.getCall(1);
-        assert(second_path_call.args = [test_util.getMockFSPath(), 'keys', '.jwtPublic.key']);
-        assert(second_path_call.returned(PUBLIC_KEY_PATH) === true);
+        assert(second_path_call.args = [test_util.getMockFSPath(), 'keys', '.jwtPrivate.key']);
+        assert(second_path_call.returned(PRIVATE_KEY_PATH) === true);
+
+        let third_path_call = path_join_spy.getCall(2);
+        assert(third_path_call.args = [test_util.getMockFSPath(), 'keys', '.jwtPublic.key']);
+        assert(third_path_call.returned(PUBLIC_KEY_PATH) === true);
+
+        rw_rsa_keys();
+    });
+
+    it('test rsa_keys is undefined, passphrase file does not exist', async ()=>{
+        let rw_rsa_keys = token_auth.__set__('rsa_keys', undefined);
+        fs.unlinkSync(PASSPHRASE_PATH);
+
+        let results = undefined;
+        let error = undefined;
+        try {
+            results = await get_jwt_keys_func();
+        }catch(e){
+            error = e;
+        }
+        assert.deepStrictEqual(results, undefined);
+        assert.deepStrictEqual(error.code, 'ENOENT');
+
+        assert(path_join_spy.callCount === 3);
+        assert(fs_readfile_spy.callCount === 1);
 
         rw_rsa_keys();
     });
@@ -149,8 +176,8 @@ describe('test getJWTRSAKeys function', ()=>{
         assert.deepStrictEqual(results, undefined);
         assert.deepStrictEqual(error.code, 'ENOENT');
 
-        assert(path_join_spy.callCount === 2);
-        assert(fs_readfile_spy.callCount === 1);
+        assert(path_join_spy.callCount === 3);
+        assert(fs_readfile_spy.callCount === 2);
 
         rw_rsa_keys();
     });
@@ -169,18 +196,18 @@ describe('test getJWTRSAKeys function', ()=>{
         assert.deepStrictEqual(results, undefined);
         assert.deepStrictEqual(error.code, 'ENOENT');
 
-        assert(path_join_spy.callCount === 2);
-        assert(fs_readfile_spy.callCount === 2);
+        assert(path_join_spy.callCount === 3);
+        assert(fs_readfile_spy.callCount === 3);
 
         rw_rsa_keys();
     });
 
     it('test rsa_keys is defined', async ()=>{
-        let rw_rsa_keys = token_auth.__set__('rsa_keys', new JWTObjects.JWTRSAKeys(PUBLIC_KEY_VALUE, PRIVATE_KEY_VALUE));
+        let rw_rsa_keys = token_auth.__set__('rsa_keys', new JWTObjects.JWTRSAKeys(PUBLIC_KEY_VALUE, PRIVATE_KEY_VALUE, PASSPHRASE_VALUE));
 
         let results = await get_jwt_keys_func();
 
-        assert.deepStrictEqual(results, new JWTObjects.JWTRSAKeys(PUBLIC_KEY_VALUE, PRIVATE_KEY_VALUE));
+        assert.deepStrictEqual(results, new JWTObjects.JWTRSAKeys(PUBLIC_KEY_VALUE, PRIVATE_KEY_VALUE, PASSPHRASE_VALUE));
 
         assert(path_join_spy.callCount === 0);
         assert(fs_readfile_spy.callCount === 0);
@@ -265,10 +292,12 @@ describe('test createTokens', ()=>{
     });
 
     it('test happy path', async()=>{
-        let rw_get_tokens = token_auth.__set__('getJWTRSAKeys', async ()=>new JWTObjects.JWTRSAKeys(PUBLIC_KEY_VALUE, PRIVATE_KEY_VALUE));
+        let rw_get_tokens = token_auth.__set__('getJWTRSAKeys', async ()=>new JWTObjects.JWTRSAKeys(PUBLIC_KEY_VALUE, PRIVATE_KEY_VALUE, PASSPHRASE_VALUE));
         let result = await token_auth.createTokens({username:'HDB_USER', password: 'pass'});
 
-        assert.deepStrictEqual(result, undefined);
+        assert.notDeepStrictEqual(result, undefined);
+        assert.notDeepStrictEqual(result.operation_token, undefined);
+        assert.notDeepStrictEqual(result.refresh_token, undefined);
 
         rw_get_tokens();
     });

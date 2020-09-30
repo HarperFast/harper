@@ -6,9 +6,7 @@ const fs = require('fs-extra');
 const path = require('path');
 const terms = require('../../utility/hdbTerms');
 const crypto = require('crypto');
-const hdb_utils = require('../../utility/common_utils');
-
-const FINGERPRINT_PATH = path.join(hdb_utils.getHomeDir(), terms.HDB_HOME_DIR_NAME, terms.LICENSE_KEY_DIR_NAME, terms.REG_KEY_FILE_NAME);
+const uuid = require('uuid/v4');
 
 module.exports = checkJWTTokenExist;
 /**
@@ -19,13 +17,17 @@ function checkJWTTokenExist(){
         //check that key files exist
         let private_key_path = path.join(env.getHdbBasePath(), terms.LICENSE_KEY_DIR_NAME, terms.JWT_PRIVATE_KEY_NAME);
         let public_key_path = path.join(env.getHdbBasePath(), terms.LICENSE_KEY_DIR_NAME, terms.JWT_PUBLIC_KEY_NAME);
-
+        let passphrase_path = path.join(env.getHdbBasePath(), terms.LICENSE_KEY_DIR_NAME, terms.JWT_PASSPHRASE_NAME);
         try {
+            fs.accessSync(passphrase_path);
             fs.accessSync(private_key_path);
             fs.accessSync(public_key_path);
         }catch(e){
-            //if either one of the files does not exist we need regenerate both
+            //if any of the files does not exist we need regenerate all
             if(e.code === 'ENOENT'){
+                //create unique passphrase
+                let pass_phrase = uuid();
+
                 //based on https://nodejs.org/docs/latest-v12.x/api/crypto.html#crypto_crypto_generatekeypairsync_type_options
                 let key_pair = crypto.generateKeyPairSync('rsa', {
                     modulusLength: 4096,
@@ -36,10 +38,12 @@ function checkJWTTokenExist(){
                     privateKeyEncoding: {
                         type: 'pkcs8',
                         format: 'pem',
-                        cipher: 'aes-256-cbc'
+                        cipher: 'aes-256-cbc',
+                        passphrase: pass_phrase
                     }
                 });
 
+                fs.writeFileSync(passphrase_path, pass_phrase);
                 fs.writeFileSync(private_key_path, key_pair.privateKey);
                 fs.writeFileSync(public_key_path, key_pair.publicKey);
             }else {

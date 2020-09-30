@@ -55,6 +55,7 @@ const HDB_FILE_SUFFIX = '.hdb';
 const LICENSE_KEY_DIR_NAME = 'keys';
 const JWT_PRIVATE_KEY_NAME = '.jwtPrivate.key';
 const JWT_PUBLIC_KEY_NAME = '.jwtPublic.key';
+const JWT_PASSPHRASE_NAME = '.jwtPass';
 const BOOT_PROPS_FILE_NAME = 'hdb_boot_properties.file';
 const UPDATE_FILE_NAME = '.updateConfig.json';
 const RESTART_CODE = 'SIGTSTP';
@@ -568,5 +569,6 @@ module.exports = {
     FUNC_VAL,
     READ_TRANSACTION_LOG_SEARCH_TYPES_ENUM,
     JWT_PRIVATE_KEY_NAME,
-    JWT_PUBLIC_KEY_NAME
+    JWT_PUBLIC_KEY_NAME,
+    JWT_PASSPHRASE_NAME
 };

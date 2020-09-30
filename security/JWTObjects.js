@@ -55,10 +55,12 @@ class JWTRSAKeys{
     /**
      * @param {string} public_key
      * @param {string} private_key
+     * @param {string} passphrase
      */
-    constructor(public_key, private_key) {
+    constructor(public_key, private_key, passphrase) {
         this.public_key = public_key;
         this.private_key = private_key;
+        this.passphrase = passphrase;
     }
 }
 
