@@ -10,7 +10,7 @@ const hdb_utils = require('../utility/common_utils');
 const {promisify} = require('util');
 const terms = require('../utility/hdbTerms');
 const { handleHDBError, hdb_errors } = require('../utility/errors/hdbError');
-const { COMMON_ERROR_MSGS, HTTP_STATUS_CODES } = hdb_errors;
+const { HDB_ERROR_MSGS, HTTP_STATUS_CODES } = hdb_errors;
 const env_mngr = require('../utility/environment/environmentManager');
 if(!env_mngr.isInitialized()){
     env_mngr.initSync();
@@ -133,7 +133,7 @@ async function describeAll(op_obj) {
     } catch (e) {
         logger.error('Got an error in describeAll');
         logger.error(e);
-        return handleHDBError(new Error(), COMMON_ERROR_MSGS.DESCRIBE_ALL_ERR);
+        return handleHDBError(new Error(), HDB_ERROR_MSGS.DESCRIBE_ALL_ERR);
     }
 }
 
@@ -178,7 +178,7 @@ async function descTable(describe_table_object, attr_perms) {
     let tables = await p_search_search_by_value(table_search_obj);
 
     if (!tables || tables.length === 0) {
-        throw handleHDBError(new Error(), COMMON_ERROR_MSGS.TABLE_NOT_FOUND(describe_table_object.schema,
+        throw handleHDBError(new Error(), HDB_ERROR_MSGS.TABLE_NOT_FOUND(describe_table_object.schema,
             describe_table_object.table), HTTP_STATUS_CODES.NOT_FOUND);
     }
 
@@ -190,7 +190,7 @@ async function descTable(describe_table_object, attr_perms) {
             table_result = table1;
 
             if (!table_result.hash_attribute) {
-                throw handleHDBError(new Error(), COMMON_ERROR_MSGS.INVALID_TABLE_ERR(table_result));
+                throw handleHDBError(new Error(), HDB_ERROR_MSGS.INVALID_TABLE_ERR(table_result));
             }
 
             let attribute_search_obj = {};
@@ -283,7 +283,7 @@ async function describeSchema(describe_schema_object) {
 
         let schema = await p_search_search_by_hash(schema_search_obj);
         if (schema && schema.length < 1) {
-            throw handleHDBError(new Error(), COMMON_ERROR_MSGS.SCHEMA_NOT_FOUND(describe_schema_object.schema),
+            throw handleHDBError(new Error(), HDB_ERROR_MSGS.SCHEMA_NOT_FOUND(describe_schema_object.schema),
                 HTTP_STATUS_CODES.NOT_FOUND);
         } else {
             return {};

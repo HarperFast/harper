@@ -3,7 +3,7 @@ const validate = require('validate.js'),
     terms = require('../utility/hdbTerms'),
     { handleHDBError, hdb_errors } = require('../utility/errors/hdbError');
 
-const { COMMON_ERROR_MSGS, HTTP_STATUS_CODES } = hdb_errors;
+const { HDB_ERROR_MSGS, HTTP_STATUS_CODES } = hdb_errors;
 
 const constraintsTemplate = () => ({
     role: {
@@ -80,7 +80,7 @@ function customValidate(object, constraints) {
         }
     }
     if (invalid_keys.length > 0) {
-        addPermError(COMMON_ERROR_MSGS.INVALID_ROLE_JSON_KEYS(invalid_keys), validationErrors);
+        addPermError(HDB_ERROR_MSGS.INVALID_ROLE_JSON_KEYS(invalid_keys), validationErrors);
     }
 
     let validate_result = validator.validateObject(object, constraints);
@@ -101,7 +101,7 @@ function customValidate(object, constraints) {
         ROLE_TYPES.forEach(role => {
             if (object.permission[role]) {
                 if (!validate.isBoolean(object.permission[role])) {
-                    addPermError(COMMON_ERROR_MSGS.SU_CU_ROLE_BOOLEAN_ERROR(role), validationErrors);
+                    addPermError(HDB_ERROR_MSGS.SU_CU_ROLE_BOOLEAN_ERROR(role), validationErrors);
                 }
             }
         });
@@ -112,7 +112,7 @@ function customValidate(object, constraints) {
             let schema = object.permission[item];
             //validate that schema exists
             if(!item || !global.hdb_schema[item]) {
-                addPermError(COMMON_ERROR_MSGS.SCHEMA_NOT_FOUND(item), validationErrors);
+                addPermError(HDB_ERROR_MSGS.SCHEMA_NOT_FOUND(item), validationErrors);
                 continue;
             }
             if(schema.tables) {
@@ -120,32 +120,32 @@ function customValidate(object, constraints) {
                     let table = schema.tables[t];
                     //validate that table exists in schema
                     if(!t || !global.hdb_schema[item][t]) {
-                        addPermError(COMMON_ERROR_MSGS.TABLE_NOT_FOUND(item, t), validationErrors);
+                        addPermError(HDB_ERROR_MSGS.TABLE_NOT_FOUND(item, t), validationErrors);
                         continue;
                     }
 
                     //validate all table perm keys are valid
                     Object.keys(table).forEach(table_key => {
                         if (!TABLE_PERM_KEYS.includes(table_key)) {
-                            addPermError(COMMON_ERROR_MSGS.INVALID_PERM_KEY(table_key), validationErrors, item, t);
+                            addPermError(HDB_ERROR_MSGS.INVALID_PERM_KEY(table_key), validationErrors, item, t);
                         }
                     });
 
                     //validate table CRUD perms
                     Object.values(PERMS_CRUD_ENUM).forEach(perm_key => {
                         if(!validate.isDefined(table[perm_key])) {
-                            addPermError(COMMON_ERROR_MSGS.TABLE_PERM_MISSING(perm_key), validationErrors, item, t);
+                            addPermError(HDB_ERROR_MSGS.TABLE_PERM_MISSING(perm_key), validationErrors, item, t);
                         } else if (!validate.isBoolean(table[perm_key])) {
-                            addPermError(COMMON_ERROR_MSGS.TABLE_PERM_NOT_BOOLEAN(perm_key), validationErrors, item, t);
+                            addPermError(HDB_ERROR_MSGS.TABLE_PERM_NOT_BOOLEAN(perm_key), validationErrors, item, t);
                         }
                     });
 
                     //validate table ATTRIBUTE_PERMISSIONS perm
                     if(!validate.isDefined(table.attribute_permissions)) {
-                        addPermError(COMMON_ERROR_MSGS.ATTR_PERMS_ARRAY_MISSING, validationErrors, item, t);
+                        addPermError(HDB_ERROR_MSGS.ATTR_PERMS_ARRAY_MISSING, validationErrors, item, t);
                         continue;
                     } else if (!validate.isArray(table.attribute_permissions)) {
-                        addPermError(COMMON_ERROR_MSGS.ATTR_PERMS_NOT_ARRAY, validationErrors, item, t);
+                        addPermError(HDB_ERROR_MSGS.ATTR_PERMS_NOT_ARRAY, validationErrors, item, t);
                         continue;
                     }
 
@@ -165,29 +165,29 @@ function customValidate(object, constraints) {
                                 //Leaving this second check for "DELETE" in for now since we've decided to silently
                                 // allow it to remain in the attr permission object even though we do not use it
                                 if (!ATTR_PERMS_KEYS.includes(key) && key !== PERMS_CRUD_ENUM.DELETE) {
-                                    addPermError(COMMON_ERROR_MSGS.INVALID_ATTR_PERM_KEY(key), validationErrors, item, t);
+                                    addPermError(HDB_ERROR_MSGS.INVALID_ATTR_PERM_KEY(key), validationErrors, item, t);
                                 }
                             });
 
                             //validate that attribute_name is included
                             if(!validate.isDefined(permission.attribute_name)) {
-                                addPermError(COMMON_ERROR_MSGS.ATTR_PERM_MISSING_NAME, validationErrors, item, t);
+                                addPermError(HDB_ERROR_MSGS.ATTR_PERM_MISSING_NAME, validationErrors, item, t);
                                 continue;
                             }
 
                             const attr_name = permission.attribute_name;
                             //validate that attr exists in schema for table
                             if(!table_attribute_names.includes(attr_name)) {
-                                addPermError(COMMON_ERROR_MSGS.INVALID_ATTRIBUTE_IN_PERMS(attr_name), validationErrors, item, t);
+                                addPermError(HDB_ERROR_MSGS.INVALID_ATTRIBUTE_IN_PERMS(attr_name), validationErrors, item, t);
                                 continue;
                             }
 
                             //validate table attribute CRU perms
                             ATTR_CRU_KEYS.forEach(perm_key => {
                                 if(!validate.isDefined(permission[perm_key])) {
-                                    addPermError(COMMON_ERROR_MSGS.ATTR_PERM_MISSING(perm_key, attr_name), validationErrors, item, t);
+                                    addPermError(HDB_ERROR_MSGS.ATTR_PERM_MISSING(perm_key, attr_name), validationErrors, item, t);
                                 } else if (!validate.isBoolean(permission[perm_key])) {
-                                    addPermError(COMMON_ERROR_MSGS.ATTR_PERM_NOT_BOOLEAN(perm_key, attr_name), validationErrors, item, t);
+                                    addPermError(HDB_ERROR_MSGS.ATTR_PERM_NOT_BOOLEAN(perm_key, attr_name), validationErrors, item, t);
                                 }
                             });
 
@@ -207,7 +207,7 @@ function customValidate(object, constraints) {
                             table.insert === false && attr_perms_check.insert === true ||
                             table.update === false && attr_perms_check.update === true) {
                             const schema_name = `${item}.${t}`;
-                            addPermError(COMMON_ERROR_MSGS.MISMATCHED_TABLE_ATTR_PERMS(schema_name), validationErrors, item, t);
+                            addPermError(HDB_ERROR_MSGS.MISMATCHED_TABLE_ATTR_PERMS(schema_name), validationErrors, item, t);
                         }
                     }
                 }
@@ -239,10 +239,10 @@ function validateNoSUPerms(obj) {
         const has_perms = Object.keys(permission).length > 1;
         if (has_perms && (is_su_role || is_cu_role)) {
             if (is_cu_role && is_su_role) {
-                return COMMON_ERROR_MSGS.SU_CU_ROLE_COMBINED_ERROR;
+                return HDB_ERROR_MSGS.SU_CU_ROLE_COMBINED_ERROR;
             } else {
                 const role_type = permission.super_user ? ROLE_TYPES_ENUM.SUPER_USER : ROLE_TYPES_ENUM.CLUSTER_USER;
-                return COMMON_ERROR_MSGS.SU_CU_ROLE_NO_PERMS_ALLOWED(role_type);
+                return HDB_ERROR_MSGS.SU_CU_ROLE_NO_PERMS_ALLOWED(role_type);
             }
         }
     }
@@ -259,7 +259,7 @@ function generateRolePermResponse(validationErrors) {
     const { main_permissions, schema_permissions } = validationErrors;
     if (main_permissions.length > 0 || Object.keys(schema_permissions).length > 0) {
         let validation_message = {
-            error: COMMON_ERROR_MSGS.ROLE_PERMS_ERROR,
+            error: HDB_ERROR_MSGS.ROLE_PERMS_ERROR,
             ...validationErrors
         };
 

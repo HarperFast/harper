@@ -16,7 +16,7 @@ const p_delete_delete = util.promisify(delete_.delete);
 const SearchObject = require('../data_layer/SearchObject');
 const SearchByHashObject = require('../data_layer/SearchByHashObject');
 const { hdb_errors, handleHDBError } = require('../utility/errors/hdbError');
-const { COMMON_ERROR_MSGS, HTTP_STATUS_CODES } = hdb_errors;
+const { HDB_ERROR_MSGS, HTTP_STATUS_CODES } = hdb_errors;
 
 module.exports = {
     addRole: addRole,
@@ -84,7 +84,7 @@ async function addRole(role){
     }
 
     if(search_role && search_role.length > 0) {
-        throw handleHDBError(new Error(), COMMON_ERROR_MSGS.ROLE_ALREADY_EXISTS(role.role), HTTP_STATUS_CODES.CONFLICT);
+        throw handleHDBError(new Error(), HDB_ERROR_MSGS.ROLE_ALREADY_EXISTS(role.role), HTTP_STATUS_CODES.CONFLICT);
     }
 
     if(!role.id)
@@ -159,7 +159,7 @@ async function dropRole(role){
     });
 
     if(role_name.length === 0) {
-        throw handleHDBError(new Error(), COMMON_ERROR_MSGS.ROLE_NOT_FOUND, HTTP_STATUS_CODES.NOT_FOUND);
+        throw handleHDBError(new Error(), HDB_ERROR_MSGS.ROLE_NOT_FOUND, HTTP_STATUS_CODES.NOT_FOUND);
     }
 
     let search_user_by_roleid = new SearchObject(terms.SYSTEM_SCHEMA_NAME, terms.SYSTEM_TABLE_NAMES.USER_TABLE_NAME, 'role', role.id, undefined, ['username', 'active']);
