@@ -3,7 +3,7 @@
 const test_utils = require('../../../../test_utils');
 test_utils.preTestPrep();
 const path = require('path');
-const { COMMON_ERROR_MSGS, HTTP_STATUS_CODES } = require('../../../../../utility/errors/commonErrors');
+const { HDB_ERROR_MSGS, HTTP_STATUS_CODES } = require('../../../../../utility/errors/commonErrors');
 
 const SYSTEM_FOLDER_NAME = 'system';
 const SCHEMA_NAME = 'schema';
@@ -190,8 +190,8 @@ describe('test validateDropSchema module', ()=>{
                 test_error = e;
             }
             assert.equal(test_error.http_resp_code, HTTP_STATUS_CODES.NOT_FOUND)
-            assert.equal(test_error.http_resp_msg, COMMON_ERROR_MSGS.SCHEMA_NOT_FOUND('faker'));
-            assert.equal(test_error.message, COMMON_ERROR_MSGS.SCHEMA_NOT_FOUND('faker'));
+            assert.equal(test_error.http_resp_msg, HDB_ERROR_MSGS.SCHEMA_NOT_FOUND('faker'));
+            assert.equal(test_error.message, HDB_ERROR_MSGS.SCHEMA_NOT_FOUND('faker'));
         });
 
         it('test validate happy path', async()=>{

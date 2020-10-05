@@ -29,12 +29,14 @@ const HTTP_STATUS_CODES = {
 // one error message to send to the API (with this wrapper) and log without having to define log message separately
 const CHECK_LOGS_WRAPPER = (err) => `${err} Check logs and try again.`;
 
-
 const DEFAULT_ERROR_MSGS = {
     500: CHECK_LOGS_WRAPPER("There was an error processing your request."),
     400: "Invalid request"
 };
 const DEFAULT_ERROR_RESP = DEFAULT_ERROR_MSGS[HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR];
+
+//Add all error messages that are generic and can be used across modules here
+const COMMON_ERROR_MSGS = {};
 
 const BULK_LOAD_ERROR_MSGS = {
     DEFAULT_BULK_LOAD_ERR: 'There was an error during your bulk load into HarperDB.',
@@ -48,7 +50,7 @@ const BULK_LOAD_ERROR_MSGS = {
     WRITE_TEMP_FILE_ERR: `Error writing temporary file to storage`
 };
 
-//TODO - move this enum to be exported as a part of COMMON_ERROR_MSGS
+//TODO - move this enum to be exported as a part of HDB_ERROR_MSGS
 //NOTE: Any changes made to these errors must also be made to unitTests/commonTestErrors.js otherwise the unit tests will fail
 const LMDB_ERRORS_ENUM = {
     BASE_PATH_REQUIRED: 'base_path is required',
@@ -128,9 +130,10 @@ const SQL_ERROR_MSGS = {
     OUTER_JOIN_TRANSLATION_ERROR: "There was an error translating the final SQL outer join data."
 };
 
-// All error messages should be added to the COMMON_ERROR_MSGS ENUM for export - this helps to organize all error messages
+// All error messages should be added to the HDB_ERROR_MSGS ENUM for export - this helps to organize all error messages
 //into a single export while still allowing us to group them here in a more readable/searchable way
-const COMMON_ERROR_MSGS = {
+const HDB_ERROR_MSGS = {
+    ...COMMON_ERROR_MSGS,
     ...BULK_LOAD_ERROR_MSGS,
     ...OPERATION_AUTH_ERROR_MSGS,
     ...ROLE_PERMS_ERROR_MSGS,
@@ -140,7 +143,7 @@ const COMMON_ERROR_MSGS = {
 
 module.exports = {
     CHECK_LOGS_WRAPPER,
-    COMMON_ERROR_MSGS,
+    HDB_ERROR_MSGS,
     DEFAULT_ERROR_MSGS,
     DEFAULT_ERROR_RESP,
     HTTP_STATUS_CODES,

@@ -3,7 +3,7 @@
 const _ = require('lodash');
 const terms = require('../utility/hdbTerms');
 const { handleHDBError, hdb_errors } = require('../utility/errors/hdbError');
-const { COMMON_ERROR_MSGS, HTTP_STATUS_CODES } = hdb_errors;
+const { HDB_ERROR_MSGS, HTTP_STATUS_CODES } = hdb_errors;
 const logger = require('../utility/logging/harper_logger');
 
 module.exports = {
@@ -96,7 +96,7 @@ function getRolePermissions(role) {
             const log_msg = `Role permissions for role '${role_name}' must be updated to align with new structure from the 2.2.0 release.`;
             logger.error(log_msg);
             logger.debug(e);
-            throw handleHDBError(new Error(), COMMON_ERROR_MSGS.OUTDATED_PERMS_TRANSLATION_ERROR, HTTP_STATUS_CODES.BAD_REQUEST);
+            throw handleHDBError(new Error(), HDB_ERROR_MSGS.OUTDATED_PERMS_TRANSLATION_ERROR, HTTP_STATUS_CODES.BAD_REQUEST);
         } else {
             const log_msg = `There was an error while translating role permissions for role: ${role_name}.\n ${e.stack}`;
             logger.error(log_msg);
