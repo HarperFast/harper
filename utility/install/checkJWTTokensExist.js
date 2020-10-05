@@ -15,9 +15,9 @@ module.exports = checkJWTTokenExist;
 function checkJWTTokenExist(){
     if(env.getHdbBasePath() !== undefined){
         //check that key files exist
-        let private_key_path = path.join(env.getHdbBasePath(), terms.LICENSE_KEY_DIR_NAME, terms.JWT_PRIVATE_KEY_NAME);
-        let public_key_path = path.join(env.getHdbBasePath(), terms.LICENSE_KEY_DIR_NAME, terms.JWT_PUBLIC_KEY_NAME);
-        let passphrase_path = path.join(env.getHdbBasePath(), terms.LICENSE_KEY_DIR_NAME, terms.JWT_PASSPHRASE_NAME);
+        let private_key_path = path.join(env.getHdbBasePath(), terms.LICENSE_KEY_DIR_NAME, terms.JWT_ENUM.JWT_PRIVATE_KEY_NAME);
+        let public_key_path = path.join(env.getHdbBasePath(), terms.LICENSE_KEY_DIR_NAME, terms.JWT_ENUM.JWT_PUBLIC_KEY_NAME);
+        let passphrase_path = path.join(env.getHdbBasePath(), terms.LICENSE_KEY_DIR_NAME, terms.JWT_ENUM.JWT_PASSPHRASE_NAME);
         try {
             fs.accessSync(passphrase_path);
             fs.accessSync(private_key_path);

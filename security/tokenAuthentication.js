@@ -9,6 +9,7 @@ const hdb_utils = require('../utility/common_utils');
 const terms = require('../utility/hdbTerms');
 const {handleHDBError, hdb_errors} = require('../utility/errors/hdbError');
 const { HTTP_STATUS_CODES } = hdb_errors;
+const logger = require('../utility/logging/harper_logger');
 const env = require('../utility/environment/environmentManager');
 if(!env.isInitialized()){
     env.initSync();
@@ -16,6 +17,10 @@ if(!env.isInitialized()){
 
 const path = require('path');
 const {JWTTokens, JWTRSAKeys, TOKEN_TYPE_ENUM} = require('./JWTObjects');
+
+const THIRTY_MINUTE_EXPIRY = '30m';
+const THIRTY_DAY_EXPIRY = '30d';
+const RSA_ALGORITHM = 'RS256';
 
 let rsa_keys = undefined;
 
@@ -42,6 +47,7 @@ async function createTokens(auth_object){
             throw handleHDBError(new Error(), 'invalid credentials', HTTP_STATUS_CODES.UNAUTHORIZED);
         }
     }catch(e){
+        logger.error(e);
         throw handleHDBError(new Error(), 'invalid credentials', HTTP_STATUS_CODES.UNAUTHORIZED);
     }
 
@@ -50,14 +56,15 @@ async function createTokens(auth_object){
     try {
         rsa_keys = await getJWTRSAKeys();
     }catch(e){
+        logger.error(e);
         throw handleHDBError(new Error(), 'unable to generate JWT as there are no encryption keys.  please contact your administrator', HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR);
     }
 
     //sign & return tokens
     let operation_token = await jwt.sign({username: auth_object.username, token_type: TOKEN_TYPE_ENUM.OPERATION},
-        {key: rsa_keys.private_key, passphrase: rsa_keys.passphrase}, {expiresIn: '30m', algorithm: 'RS256'});
+        {key: rsa_keys.private_key, passphrase: rsa_keys.passphrase}, {expiresIn: THIRTY_DAY_EXPIRY, algorithm: RSA_ALGORITHM});
     let refresh_token = await jwt.sign({username: auth_object.username, token_type: TOKEN_TYPE_ENUM.REFRESH},
-        {key: rsa_keys.private_key, passphrase: rsa_keys.passphrase}, {expiresIn: '30d', algorithm: 'RS256'});
+        {key: rsa_keys.private_key, passphrase: rsa_keys.passphrase}, {expiresIn: THIRTY_MINUTE_EXPIRY, algorithm: RSA_ALGORITHM});
     return new JWTTokens(operation_token, refresh_token);
 }
 
@@ -67,9 +74,9 @@ async function createTokens(auth_object){
  */
 async function getJWTRSAKeys(){
     if(rsa_keys === undefined){
-        let passphrase_path = path.join(env.getHdbBasePath(), terms.LICENSE_KEY_DIR_NAME, terms.JWT_PASSPHRASE_NAME);
-        let private_key_path = path.join(env.getHdbBasePath(), terms.LICENSE_KEY_DIR_NAME, terms.JWT_PRIVATE_KEY_NAME);
-        let public_key_path = path.join(env.getHdbBasePath(), terms.LICENSE_KEY_DIR_NAME, terms.JWT_PUBLIC_KEY_NAME);
+        let passphrase_path = path.join(env.getHdbBasePath(), terms.LICENSE_KEY_DIR_NAME, terms.JWT_ENUM.JWT_PASSPHRASE_NAME);
+        let private_key_path = path.join(env.getHdbBasePath(), terms.LICENSE_KEY_DIR_NAME, terms.JWT_ENUM.JWT_PRIVATE_KEY_NAME);
+        let public_key_path = path.join(env.getHdbBasePath(), terms.LICENSE_KEY_DIR_NAME, terms.JWT_ENUM.JWT_PUBLIC_KEY_NAME);
 
         let passphrase = (await fs.readFile(passphrase_path)).toString();
         let private_key = (await fs.readFile(private_key_path)).toString();

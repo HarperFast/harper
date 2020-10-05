@@ -53,9 +53,6 @@ const CLUSTERING_VERSION_HEADER_NAME = 'hdb_version';
 const HDB_HOME_DIR_NAME = '.harperdb';
 const HDB_FILE_SUFFIX = '.hdb';
 const LICENSE_KEY_DIR_NAME = 'keys';
-const JWT_PRIVATE_KEY_NAME = '.jwtPrivate.key';
-const JWT_PUBLIC_KEY_NAME = '.jwtPublic.key';
-const JWT_PASSPHRASE_NAME = '.jwtPass';
 const BOOT_PROPS_FILE_NAME = 'hdb_boot_properties.file';
 const UPDATE_FILE_NAME = '.updateConfig.json';
 const RESTART_CODE = 'SIGTSTP';
@@ -489,6 +486,12 @@ const READ_TRANSACTION_LOG_SEARCH_TYPES_ENUM = {
     USERNAME: 'username'
 };
 
+const JWT_ENUM = {
+    JWT_PRIVATE_KEY_NAME: '.jwtPrivate.key',
+    JWT_PUBLIC_KEY_NAME: '.jwtPublic.key',
+    JWT_PASSPHRASE_NAME: '.jwtPass'
+};
+
 module.exports = {
     LOCAL_HARPERDB_OPERATIONS,
     HDB_SUPPORT_ADDRESS,
@@ -586,7 +589,5 @@ module.exports = {
     SEARCH_WILDCARDS,
     FUNC_VAL,
     READ_TRANSACTION_LOG_SEARCH_TYPES_ENUM,
-    JWT_PRIVATE_KEY_NAME,
-    JWT_PUBLIC_KEY_NAME,
-    JWT_PASSPHRASE_NAME
+    JWT_ENUM
 };
