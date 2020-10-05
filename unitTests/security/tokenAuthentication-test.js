@@ -1,0 +1,304 @@
+'use strict';
+
+const test_util = require('../test_utils');
+test_util.preTestPrep();
+const fs = require('fs-extra');
+const path = require('path');
+const assert = require('assert');
+const sinon = require('sinon');
+const sandbox = sinon.createSandbox();
+const rewire = require('rewire');
+const token_auth = rewire('../../security/tokenAuthentication');
+const JWTObjects = require('../../security/JWTObjects');
+const get_jwt_keys_func = token_auth.__get__('getJWTRSAKeys');
+const hdb_error = require('../../utility/errors/hdbError').handleHDBError;
+
+const KEYS_PATH = path.join(test_util.getMockFSPath(), 'keys');
+const PASSPHRASE_PATH = path.join(KEYS_PATH, '.jwtPass');
+const PRIVATE_KEY_PATH = path.join(KEYS_PATH, '.jwtPrivate.key');
+const PUBLIC_KEY_PATH = path.join(KEYS_PATH, '.jwtPublic.key');
+const PASSPHRASE_VALUE = '6340b357-55b2-4fc8-b359-cae7d90c8c01';
+const PRIVATE_KEY_VALUE = '-----BEGIN ENCRYPTED PRIVATE KEY-----\n' +
+    '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\n' +
+    '-----END ENCRYPTED PRIVATE KEY-----';
+const PUBLIC_KEY_VALUE = '-----BEGIN PUBLIC KEY-----\n' +
+    'MIICIjANBgkqhkiG9w0BAQEFAAOCAg8AMIICCgKCAgEAyt3aWGKRiAY0gmCjPDTo\n' +
+    '5Q2x6+IuHj7PQrNwGiAA/cgve9v2UCRGN/PSwLtT2mJPdW3jdEX2AgZcVEhA4N16\n' +
+    'cJm/Bm6NdPSUr+4nn4bYpApbUIc5aCEk67swzWC+MMcK47MOAc0CqrN/50ZwsaB2\n' +
+    'ij+JaW7foDS8fNX+i1ytvHFTNj1zNsAicqdKRGRt4EtXRfU/A5AUjIJ95LxOGSmg\n' +
+    'ri+rmBZRh1olw+EWoHX/QWFFxKSEmCgmD2RYID0jedQnf7ABSrmXPBm2t2+08CrP\n' +
+    'SHc+0lK7TC2KDUggGs3t+932HwXCBJ1ZxvX6kZ9TMhXenxU67lFXLOQlxnH7uDOH\n' +
+    'xUPkOKHxJq+Bpgpmw30HyhCMPdHhjbNND94TTzrBy+V6OYKgI9wYXwAL4viXuSyN\n' +
+    'oAn67PXvC3OhA08cmZlN6q7UWK5+WkKy7Adw++iTqH/ERRfXrx6XQ09b97cMN28d\n' +
+    'SUbT4WgurLkfCDeUXKI3buIFzNvlmnrYI1PP5/K5NK8qbBQkE0ejVWg4igvdD4mf\n' +
+    'oNjL5EflpeS3+wDywCyuhfPimygitufTI5ttUF+NkHmQNGOK4vCp89L8NUGaWL12\n' +
+    'Xbe/Q0MHiGt7hvhB51+C08m+qxIDk2l8Icg77mS4WuxBbWBxN/FF18ttp4GfHJWw\n' +
+    'brlmQxVf0PFY+0tM8fCkpccCAwEAAQ==\n' +
+    '-----END PUBLIC KEY-----';
+
+
+describe('test getJWTRSAKeys function', ()=>{
+    //let get_hdb_base_path_stub;
+    let path_join_spy;
+    let fs_readfile_spy;
+
+    before(()=>{
+        fs_readfile_spy = sandbox.spy(fs, 'readFile');
+        path_join_spy = sandbox.spy(path, 'join');
+    });
+
+    beforeEach(()=>{
+        fs.mkdirpSync(KEYS_PATH);
+        fs.writeFileSync(PASSPHRASE_PATH, PASSPHRASE_VALUE);
+        fs.writeFileSync(PRIVATE_KEY_PATH, PRIVATE_KEY_VALUE);
+        fs.writeFileSync(PUBLIC_KEY_PATH, PUBLIC_KEY_VALUE);
+    });
+
+    afterEach(()=> {
+        fs.removeSync(test_util.getMockFSPath());
+        path_join_spy.resetHistory();
+        fs_readfile_spy.resetHistory();
+    });
+
+    after(()=>{
+        sandbox.restore();
+    });
+
+    it('test rsa_keys is undefined, happy path', async ()=>{
+        let rw_rsa_keys = token_auth.__set__('rsa_keys', undefined);
+
+        let results = await get_jwt_keys_func();
+        assert.deepStrictEqual(results, new JWTObjects.JWTRSAKeys(PUBLIC_KEY_VALUE, PRIVATE_KEY_VALUE, PASSPHRASE_VALUE));
+
+        assert(path_join_spy.callCount === 3);
+        assert(fs_readfile_spy.callCount === 3);
+
+        assert(fs_readfile_spy.threw() === false);
+        assert(path_join_spy.threw() === false);
+
+        let first_path_call = path_join_spy.getCall(0);
+        assert(first_path_call.args = [test_util.getMockFSPath(), 'keys', '.jwtPass']);
+        assert(first_path_call.returned(PASSPHRASE_PATH) === true);
+
+        let second_path_call = path_join_spy.getCall(1);
+        assert(second_path_call.args = [test_util.getMockFSPath(), 'keys', '.jwtPrivate.key']);
+        assert(second_path_call.returned(PRIVATE_KEY_PATH) === true);
+
+        let third_path_call = path_join_spy.getCall(2);
+        assert(third_path_call.args = [test_util.getMockFSPath(), 'keys', '.jwtPublic.key']);
+        assert(third_path_call.returned(PUBLIC_KEY_PATH) === true);
+
+        rw_rsa_keys();
+    });
+
+    it('test rsa_keys is undefined, passphrase file does not exist', async ()=>{
+        let rw_rsa_keys = token_auth.__set__('rsa_keys', undefined);
+        fs.unlinkSync(PASSPHRASE_PATH);
+
+        let results = undefined;
+        let error = undefined;
+        try {
+            results = await get_jwt_keys_func();
+        }catch(e){
+            error = e;
+        }
+        assert.deepStrictEqual(results, undefined);
+        assert.deepStrictEqual(error.code, 'ENOENT');
+
+        assert(path_join_spy.callCount === 3);
+        assert(fs_readfile_spy.callCount === 1);
+
+        rw_rsa_keys();
+    });
+
+    it('test rsa_keys is undefined, private key file does not exist', async ()=>{
+        let rw_rsa_keys = token_auth.__set__('rsa_keys', undefined);
+        fs.unlinkSync(PRIVATE_KEY_PATH);
+
+        let results = undefined;
+        let error = undefined;
+        try {
+            results = await get_jwt_keys_func();
+        }catch(e){
+            error = e;
+        }
+        assert.deepStrictEqual(results, undefined);
+        assert.deepStrictEqual(error.code, 'ENOENT');
+
+        assert(path_join_spy.callCount === 3);
+        assert(fs_readfile_spy.callCount === 2);
+
+        rw_rsa_keys();
+    });
+
+    it('test rsa_keys is undefined, public key file does not exist', async ()=>{
+        let rw_rsa_keys = token_auth.__set__('rsa_keys', undefined);
+        fs.unlinkSync(PUBLIC_KEY_PATH);
+
+        let results = undefined;
+        let error = undefined;
+        try {
+            results = await get_jwt_keys_func();
+        }catch(e){
+            error = e;
+        }
+        assert.deepStrictEqual(results, undefined);
+        assert.deepStrictEqual(error.code, 'ENOENT');
+
+        assert(path_join_spy.callCount === 3);
+        assert(fs_readfile_spy.callCount === 3);
+
+        rw_rsa_keys();
+    });
+
+    it('test rsa_keys is defined', async ()=>{
+        let rw_rsa_keys = token_auth.__set__('rsa_keys', new JWTObjects.JWTRSAKeys(PUBLIC_KEY_VALUE, PRIVATE_KEY_VALUE, PASSPHRASE_VALUE));
+
+        let results = await get_jwt_keys_func();
+
+        assert.deepStrictEqual(results, new JWTObjects.JWTRSAKeys(PUBLIC_KEY_VALUE, PRIVATE_KEY_VALUE, PASSPHRASE_VALUE));
+
+        assert(path_join_spy.callCount === 0);
+        assert(fs_readfile_spy.callCount === 0);
+
+        rw_rsa_keys();
+    });
+});
+
+describe('test createTokens', ()=>{
+    let rw_validate_user;
+    beforeEach(()=>{
+        rw_validate_user = token_auth.__set__('p_find_validate_user',
+            (u, pw)=>({username: u}));
+    });
+
+    afterEach(()=>{
+        rw_validate_user();
+    });
+
+    it('test validation', async()=>{
+        let error;
+        let result;
+        //test null
+        try {
+            result = await token_auth.createTokens();
+        }catch(e){
+            error = e;
+        }
+        assert.deepStrictEqual(result, undefined);
+        assert.deepStrictEqual(error, hdb_error(new Error(), 'invalid auth_object', 500));
+
+        //test not object arg
+        try {
+            result = await token_auth.createTokens('bad');
+        }catch(e){
+            error = e;
+        }
+        assert.deepStrictEqual(result, undefined);
+        assert.deepStrictEqual(error, hdb_error(new Error(), 'invalid auth_object', 500));
+
+        //test no username
+        try {
+            result = await token_auth.createTokens({});
+        }catch(e){
+            error = e;
+        }
+        assert.deepStrictEqual(result, undefined);
+        assert.deepStrictEqual(error, hdb_error(new Error(), 'username is required', 500));
+
+        //test no password
+        try {
+            result = await token_auth.createTokens({username:'HDB_ADMIN'});
+        }catch(e){
+            error = e;
+        }
+        assert.deepStrictEqual(result, undefined);
+        assert.deepStrictEqual(error, hdb_error(new Error(), 'password is required', 500));
+
+        //test bad credentials
+        rw_validate_user();
+        rw_validate_user = token_auth.__set__('p_find_validate_user',
+            (u, pw)=>{throw new Error("bad credentials");});
+        try {
+            result = await token_auth.createTokens({username:'BAD_USER', password: 'blerrrrg'});
+        }catch(e){
+            error = e;
+        }
+        assert.deepStrictEqual(result, undefined);
+        assert.deepStrictEqual(error, hdb_error(new Error(), 'invalid credentials', 401));
+
+        //test good credentials, no RSA keys
+        rw_validate_user();
+        rw_validate_user = token_auth.__set__('p_find_validate_user',
+            (u, pw)=>({username:u}));
+        try {
+            result = await token_auth.createTokens({username:'HDB_USER', password: 'pass'});
+        }catch(e){
+            error = e;
+        }
+        assert.deepStrictEqual(result, undefined);
+        assert.deepStrictEqual(error, hdb_error(new Error(), 'unable to generate JWT as there are no encryption keys.  please contact your administrator', 500));
+    });
+
+    it('test happy path', async()=>{
+        let rw_get_tokens = token_auth.__set__('getJWTRSAKeys', async ()=>new JWTObjects.JWTRSAKeys(PUBLIC_KEY_VALUE, PRIVATE_KEY_VALUE, PASSPHRASE_VALUE));
+        let result = await token_auth.createTokens({username:'HDB_USER', password: 'pass'});
+
+        assert.notDeepStrictEqual(result, undefined);
+        assert.notDeepStrictEqual(result.operation_token, undefined);
+        assert.notDeepStrictEqual(result.refresh_token, undefined);
+
+        rw_get_tokens();
+    });
+});

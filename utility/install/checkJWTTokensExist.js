@@ -15,15 +15,19 @@ module.exports = checkJWTTokenExist;
 function checkJWTTokenExist(){
     if(env.getHdbBasePath() !== undefined){
         //check that key files exist
-        let private_key_path = path.join(env.getHdbBasePath(), terms.LICENSE_KEY_DIR_NAME, terms.JWT_PRIVATE_KEY_NAME);
-        let public_key_path = path.join(env.getHdbBasePath(), terms.LICENSE_KEY_DIR_NAME, terms.JWT_PUBLIC_KEY_NAME);
-
+        let private_key_path = path.join(env.getHdbBasePath(), terms.LICENSE_KEY_DIR_NAME, terms.JWT_ENUM.JWT_PRIVATE_KEY_NAME);
+        let public_key_path = path.join(env.getHdbBasePath(), terms.LICENSE_KEY_DIR_NAME, terms.JWT_ENUM.JWT_PUBLIC_KEY_NAME);
+        let passphrase_path = path.join(env.getHdbBasePath(), terms.LICENSE_KEY_DIR_NAME, terms.JWT_ENUM.JWT_PASSPHRASE_NAME);
         try {
+            fs.accessSync(passphrase_path);
             fs.accessSync(private_key_path);
             fs.accessSync(public_key_path);
         }catch(e){
-            //if either one of the files does not exist we need regenerate both
+            //if any of the files does not exist we need regenerate all
             if(e.code === 'ENOENT'){
+                //create unique passphrase
+                let pass_phrase = uuid();
+
                 //based on https://nodejs.org/docs/latest-v12.x/api/crypto.html#crypto_crypto_generatekeypairsync_type_options
                 let key_pair = crypto.generateKeyPairSync('rsa', {
                     modulusLength: 4096,
@@ -35,10 +39,11 @@ function checkJWTTokenExist(){
                         type: 'pkcs8',
                         format: 'pem',
                         cipher: 'aes-256-cbc',
-                        passphrase: uuid()
+                        passphrase: pass_phrase
                     }
                 });
 
+                fs.writeFileSync(passphrase_path, pass_phrase);
                 fs.writeFileSync(private_key_path, key_pair.privateKey);
                 fs.writeFileSync(public_key_path, key_pair.publicKey);
             }else {

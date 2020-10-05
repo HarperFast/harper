@@ -233,5 +233,6 @@ function checkPermissions(check_permission_obj, callback) {
 
 module.exports = {
     authorize: authorize,
-    checkPermissions: checkPermissions
+    checkPermissions: checkPermissions,
+    findAndValidateUser
 };

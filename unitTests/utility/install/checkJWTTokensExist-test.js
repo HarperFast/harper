@@ -50,24 +50,29 @@ describe('test checkJWTTokenExist function', ()=>{
 
         assert(fs_access_spy.callCount === 1);
         assert(fs_access_spy.threw() === true);
-        assert(fs_access_spy.firstCall.args[0] === path.join(KEYS_PATH, '.jwtPrivate.key'));
+        assert(fs_access_spy.firstCall.args[0] === path.join(KEYS_PATH, '.jwtPass'));
         assert(fs_access_spy.firstCall.exception.code === 'ENOENT');
 
-        assert(fs_writefile_spy.callCount === 2);
+        assert(fs_writefile_spy.callCount === 3);
         assert(fs_writefile_spy.threw() === false);
-        assert(fs_writefile_spy.firstCall.args[0] === path.join(KEYS_PATH, '.jwtPrivate.key'));
+        assert(fs_writefile_spy.firstCall.args[0] === path.join(KEYS_PATH, '.jwtPass'));
         assert(fs_writefile_spy.firstCall.exception === undefined);
-        assert(fs_writefile_spy.secondCall.args[0] === path.join(KEYS_PATH, '.jwtPublic.key'));
+        assert(fs_writefile_spy.secondCall.args[0] === path.join(KEYS_PATH, '.jwtPrivate.key'));
         assert(fs_writefile_spy.secondCall.exception === undefined);
+        assert(fs_writefile_spy.thirdCall.args[0] === path.join(KEYS_PATH, '.jwtPublic.key'));
+        assert(fs_writefile_spy.thirdCall.exception === undefined);
 
+        let passphrase = fs.readFileSync(path.join(KEYS_PATH, '.jwtPass'));
         let private_key = fs.readFileSync(path.join(KEYS_PATH, '.jwtPrivate.key'));
         let public_key = fs.readFileSync(path.join(KEYS_PATH, '.jwtPublic.key'));
 
+        assert(passphrase !== undefined);
         assert(private_key.toString().startsWith('-----BEGIN ENCRYPTED PRIVATE KEY-----'));
         assert(public_key.toString().startsWith('-----BEGIN PUBLIC KEY-----'));
     });
 
     it('test keys exist', ()=>{
+        fs.writeFileSync(path.join(KEYS_PATH, '.jwtPass'));
         fs.writeFileSync(path.join(KEYS_PATH, '.jwtPrivate.key'));
         fs.writeFileSync(path.join(KEYS_PATH, '.jwtPublic.key'));
 
@@ -75,10 +80,11 @@ describe('test checkJWTTokenExist function', ()=>{
         check_jwt_token_exist();
 
         assert(logger_error_spy.callCount === 0);
-        assert(fs_access_spy.callCount === 2);
+        assert(fs_access_spy.callCount === 3);
         assert(fs_access_spy.threw() === false);
-        assert(fs_access_spy.firstCall.args[0] === path.join(KEYS_PATH, '.jwtPrivate.key'));
-        assert(fs_access_spy.secondCall.args[0] === path.join(KEYS_PATH, '.jwtPublic.key'));
+        assert(fs_access_spy.firstCall.args[0] === path.join(KEYS_PATH, '.jwtPass'));
+        assert(fs_access_spy.secondCall.args[0] === path.join(KEYS_PATH, '.jwtPrivate.key'));
+        assert(fs_access_spy.thirdCall.args[0] === path.join(KEYS_PATH, '.jwtPublic.key'));
 
         assert(fs_writefile_spy.callCount === 0);
     });
