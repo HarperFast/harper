@@ -29,6 +29,7 @@ const stop = require('../bin/stop');
 const terms = require('./hdbTerms');
 const permsTranslator = require('../security/permissionsTranslator');
 const system_information = require('../utility/environment/systemInformation');
+const token_authentication = require('../security/tokenAuthentication');
 const alasql = require('alasql');
 
 const PermissionResponseObject = require('../security/data_objects/PermissionResponseObject');
@@ -97,6 +98,9 @@ required_permissions.set(delete_.deleteTransactionLogsBefore.name, new permissio
 required_permissions.set(stop.restartProcesses.name, new permission(true, []));
 required_permissions.set(read_transaction_log.name, new permission(true, []));
 required_permissions.set(system_information.systemInformation.name, new permission(true, []));
+
+//this operation must be available to all users so they can create authentication tokens
+required_permissions.set(token_authentication.createTokens.name, new permission(false, []));
 
 //Below are functions that are currently open to all roles
 required_permissions.set(reg.getRegistrationInfo.name, new permission(false, []));
