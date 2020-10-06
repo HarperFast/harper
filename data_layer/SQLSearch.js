@@ -856,13 +856,14 @@ class SQLSearch {
         let existing_attributes = {};
         tables.forEach(table => {
             let hash = this.data[`${table.databaseid_orig}_${table.tableid_orig}`].__hash_name;
+            const table_key = table.as ? table.as_orig : table.tableid_orig;
             hash_attributes.push({
-                key:`'${table.tableid_orig}.${hash}'`,
+                key:`'${table_key}.${hash}'`,
                 schema:table.databaseid_orig,
                 table:table.tableid_orig,
                 keys: new Set()
             });
-            select.push(`${(table.as ? table.as : table.tableid)}.\`${hash}\` AS "${table.tableid_orig}.${hash}"`);
+            select.push(`${(table.as ? table.as : table.tableid)}.\`${hash}\` AS "${table_key}.${hash}"`);
 
             existing_attributes[table.tableid_orig] = this.data[`${table.databaseid_orig}_${table.tableid_orig}`].__merged_attributes;
         });
