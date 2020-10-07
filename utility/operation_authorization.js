@@ -458,7 +458,6 @@ function checkAttributePerms(record_attributes, role_attribute_permissions, oper
             }
             if (needed_perms.perms) {
                 for (let perm of needed_perms.perms) {
-                    //TODO - add check for insert/update op on timestamp value and return error message, if so
                     if (terms.TIME_STAMP_NAMES.includes(permission.attribute_name) && perm !== READ_PERM) {
                         throw handleHDBError(new Error(), HDB_ERROR_MSGS.SYSTEM_TIMESTAMP_PERMS_ERR, HTTP_STATUS_CODES.FORBIDDEN);
                     }
