@@ -52,7 +52,7 @@ function validateAttribute(attribute) {
  */
 function validateHash(record, hash_attribute, operation) {
     if (!record.hasOwnProperty(hash_attribute) || hdb_utils.isEmptyOrZeroLength(record[hash_attribute])) {
-        if (operation === hdb_terms.OPERATIONS_ENUM.INSERT) {
+        if (operation === hdb_terms.OPERATIONS_ENUM.INSERT || operation === hdb_terms.OPERATIONS_ENUM.UPSERT) {
             record[hash_attribute] = uuid.v4();
             //return here since the rest of the validations do not apply
             return;

@@ -166,6 +166,7 @@ const JOB_STATUS_ENUM = {
 const OPERATIONS_ENUM = {
     INSERT: 'insert',
     UPDATE: 'update',
+    UPSERT: 'upsert',
     SEARCH_BY_HASH: 'search_by_hash',
     SEARCH_BY_VALUE: 'search_by_value',
     SEARCH: 'search',
