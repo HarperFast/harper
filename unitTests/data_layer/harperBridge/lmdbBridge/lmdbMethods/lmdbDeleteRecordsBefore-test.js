@@ -21,10 +21,12 @@ const search_by_value = require('../../../../../data_layer/harperBridge/lmdbBrid
 const lmdb_create_schema = require('../../../../../data_layer/harperBridge/lmdbBridge/lmdbMethods/lmdbCreateSchema');
 const lmdb_create_table = require('../../../../../data_layer/harperBridge/lmdbBridge/lmdbMethods/lmdbCreateTable');
 const lmdb_create_records = require('../../../../../data_layer/harperBridge/lmdbBridge/lmdbMethods/lmdbCreateRecords');
+const lmdb_read_txn_log = require('../../../../../data_layer/harperBridge/lmdbBridge/lmdbMethods/lmdbReadTransactionLog');
 const hdb_terms = require('../../../../../utility/hdbTerms');
 const assert = require('assert');
 const fs = require('fs-extra');
 const systemSchema = require('../../../../../json/systemSchema');
+const ReadTransactionLogObject = require("../../../../../data_layer/ReadTransactionLogObject");
 const {promisify} = require('util');
 const sleep = promisify(setTimeout);
 
@@ -202,6 +204,12 @@ describe('test validateDropSchema module', ()=>{
             search_obj = new SearchObject('dev', 'test', '__createdtime__', timestamps[2], undefined, ['id']);
             search_result = await search_by_value(search_obj, hdb_terms.VALUE_SEARCH_COMPARATORS.LESS);
             assert.deepStrictEqual(search_result.length, 200);
+
+            //test no delete entry in txn log
+            let txn_results = await lmdb_read_txn_log(new ReadTransactionLogObject('dev', 'test'));
+            for(let x = 0, length = txn_results.length; x < length; x++){
+                assert(txn_results[x].operation !== 'delete');
+            }
         });
 
     });
