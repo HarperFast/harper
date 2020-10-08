@@ -87,6 +87,7 @@ const OPERATION_AUTH_ERROR_MSGS = {
     OP_AUTH_PERMS_ERROR: "This operation is not authorized due to role restrictions and/or invalid schema items",
     OP_IS_SU_ONLY: (op) => `Operation '${op}' is restricted to 'super_user' roles`,
     OP_NOT_FOUND: (op) => `Operation '${op}' not found`,
+    SYSTEM_TIMESTAMP_PERMS_ERR: "Internal timestamp attributes - '__createdtime_' and '__updatedtime__' - cannot be inserted to or updated by HDB users.",
     UNKNOWN_OP_AUTH_ERROR: (op, schema, table) => `There was an error authorizing ${op} op on table '${schema}.${table}'`,
     USER_HAS_NO_PERMS: (user) => `User ${user} has no role or permissions.  Please assign the user a valid role.`
 };

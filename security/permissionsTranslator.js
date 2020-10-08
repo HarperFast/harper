@@ -42,6 +42,12 @@ const attr_perms_template = (attr_name, perms = permissions_template()) => ({
     [UPDATE]: perms[UPDATE]
 });
 
+const timestamp_attr_perms_template = (attr_name, read_perm = false) => ({
+    attribute_name: attr_name,
+    describe: read_perm,
+    [READ]: read_perm
+});
+
 const { READ, INSERT, UPDATE } = terms.PERMS_CRUD_ENUM;
 const crud_perm_keys = Object.values(terms.PERMS_CRUD_ENUM);
 //we do not need/track DELETE permissions on the attribute level
@@ -174,7 +180,12 @@ function getTableAttrPerms(table_perms, table_schema) {
         final_table_perms.attribute_permissions = [];
         const attr_r_map = attribute_permissions.reduce((acc, item) => {
             const { attribute_name } = item;
-            acc[attribute_name] = item;
+            let attr_perms = item;
+            //if an system timestamp attr is included, we only set perms for READ and silently ignore/remove others
+            if (terms.TIME_STAMP_NAMES.includes(attribute_name)) {
+                attr_perms = timestamp_attr_perms_template(attribute_name, item[READ]);
+            }
+            acc[attribute_name] = attr_perms;
             return acc;
         }, {});
 
@@ -198,7 +209,12 @@ function getTableAttrPerms(table_perms, table_schema) {
                 }
             } else if (attribute !== table_hash) {
                 //if the attr isn't included in attr perms and isn't the hash, we set all perms to false
-                const attr_perms = attr_perms_template(attribute);
+                let attr_perms;
+                if (terms.TIME_STAMP_NAMES.includes(attribute)) {
+                    attr_perms = timestamp_attr_perms_template(attribute);
+                } else {
+                    attr_perms = attr_perms_template(attribute);
+                }
                 final_table_perms.attribute_permissions.push(attr_perms);
             }
         });
