@@ -82,28 +82,24 @@ describe('test lmdbWriteTransaction module', ()=>{
         });
 
         it('test if DISABLE_TRANSACTION_LOG undefined & CLUSTERING undefined', ()=>{
-            env_mngr.setProperty('CLUSTERING', undefined);
             env_mngr.setProperty('DISABLE_TRANSACTION_LOG', undefined);
             let result = rw_func();
             assert.deepStrictEqual(result, false);
         });
 
         it('test if DISABLE_TRANSACTION_LOG null & CLUSTERING undefined', ()=>{
-            env_mngr.setProperty('CLUSTERING', undefined);
             env_mngr.setProperty('DISABLE_TRANSACTION_LOG', null);
             let result = rw_func();
             assert.deepStrictEqual(result, false);
         });
 
         it('test if DISABLE_TRANSACTION_LOG "" & CLUSTERING undefined', ()=>{
-            env_mngr.setProperty('CLUSTERING', undefined);
             env_mngr.setProperty('DISABLE_TRANSACTION_LOG', "");
             let result = rw_func();
             assert.deepStrictEqual(result, false);
         });
 
         it('test if DISABLE_TRANSACTION_LOG true & CLUSTERING undefined', ()=>{
-            env_mngr.setProperty('CLUSTERING', undefined);
             env_mngr.setProperty('DISABLE_TRANSACTION_LOG', true);
             let result = rw_func();
             assert.deepStrictEqual(result, true);
@@ -117,70 +113,42 @@ describe('test lmdbWriteTransaction module', ()=>{
         });
 
         it('test if DISABLE_TRANSACTION_LOG "true" & CLUSTERING undefined', ()=>{
-            env_mngr.setProperty('CLUSTERING', undefined);
             env_mngr.setProperty('DISABLE_TRANSACTION_LOG', "true");
             let result = rw_func();
             assert.deepStrictEqual(result, true);
         });
 
         it('test if DISABLE_TRANSACTION_LOG "TRUE" & CLUSTERING undefined', ()=>{
-            env_mngr.setProperty('CLUSTERING', undefined);
             env_mngr.setProperty('DISABLE_TRANSACTION_LOG', "TRUE");
             let result = rw_func();
             assert.deepStrictEqual(result, true);
         });
 
         it('test if DISABLE_TRANSACTION_LOG "false" & CLUSTERING not exist', ()=>{
-            env_mngr.setProperty('CLUSTERING', undefined);
             env_mngr.setProperty('DISABLE_TRANSACTION_LOG', "false");
             let result = rw_func();
             assert.deepStrictEqual(result, false);
         });
 
         it('test if DISABLE_TRANSACTION_LOG "FALSE" & CLUSTERING not exist', ()=>{
-            env_mngr.setProperty('CLUSTERING', undefined);
             env_mngr.setProperty('DISABLE_TRANSACTION_LOG', "FALSE");
             let result = rw_func();
             assert.deepStrictEqual(result, false);
         });
 
-        it('test if DISABLE_TRANSACTION_LOG "true" & CLUSTERING true', ()=>{
-            env_mngr.setProperty('CLUSTERING', true);
-            env_mngr.setProperty('DISABLE_TRANSACTION_LOG', "true");
-            let result = rw_func();
-            assert.deepStrictEqual(result, false);
-        });
-
-        it('test if DISABLE_TRANSACTION_LOG "TRUE" & CLUSTERING true', ()=>{
-            env_mngr.setProperty('CLUSTERING', true);
-            env_mngr.setProperty('DISABLE_TRANSACTION_LOG', "TRUE");
-            let result = rw_func();
-            assert.deepStrictEqual(result, false);
-        });
-
-        it('test if DISABLE_TRANSACTION_LOG true & CLUSTERING true', ()=>{
-            env_mngr.setProperty('CLUSTERING', true);
-            env_mngr.setProperty('DISABLE_TRANSACTION_LOG', true);
-            let result = rw_func();
-            assert.deepStrictEqual(result, false);
-        });
-
         it('test if DISABLE_TRANSACTION_LOG "true" & CLUSTERING false', ()=>{
-            env_mngr.setProperty('CLUSTERING', false);
             env_mngr.setProperty('DISABLE_TRANSACTION_LOG', "true");
             let result = rw_func();
             assert.deepStrictEqual(result, true);
         });
 
         it('test if DISABLE_TRANSACTION_LOG "TRUE" & CLUSTERING false', ()=>{
-            env_mngr.setProperty('CLUSTERING', false);
             env_mngr.setProperty('DISABLE_TRANSACTION_LOG', "TRUE");
             let result = rw_func();
             assert.deepStrictEqual(result, true);
         });
 
         it('test if DISABLE_TRANSACTION_LOG true & CLUSTERING false', ()=>{
-            env_mngr.setProperty('CLUSTERING', false);
             env_mngr.setProperty('DISABLE_TRANSACTION_LOG', true);
             let result = rw_func();
             assert.deepStrictEqual(result, true);
