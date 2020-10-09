@@ -2,7 +2,7 @@
 const OPERATIONS_ENUM = require('../../utility/hdbTerms').OPERATIONS_ENUM;
 
 /**
- * opject representing an update operation
+ * object representing an UPSERT operation
  */
 class UpsertObject {
     /**
