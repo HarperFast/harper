@@ -36,7 +36,9 @@ const DEFAULT_ERROR_MSGS = {
 const DEFAULT_ERROR_RESP = DEFAULT_ERROR_MSGS[HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR];
 
 //Add all error messages that are generic and can be used across modules here
-const COMMON_ERROR_MSGS = {};
+const COMMON_ERROR_MSGS = {
+    OP_NOT_SUPPORTED_FOR_FS: (op) => `${op} is not available for this instance because it uses the File System data store.`
+};
 
 const BULK_LOAD_ERROR_MSGS = {
     DEFAULT_BULK_LOAD_ERR: 'There was an error during your bulk load into HarperDB.',
