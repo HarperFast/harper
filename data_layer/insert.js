@@ -20,10 +20,12 @@ const p_schema_to_global = util.promisify(global_schema.setSchemaDataToGlobal);
 //for release 2.0 we need to turn off threading.  this variable will control the enable/disable
 const UPDATE_ACTION = 'updated';
 const INSERT_ACTION = 'inserted';
+const UPSERT_ACTION = 'upserted';
 
 module.exports = {
     insert: insertData,
     update: updateData,
+    upsert: upsertData,
     validation
 };
 
@@ -160,6 +162,29 @@ async function updateData(update_object) {
 }
 
 /**
+ * Upsert the data in the upsert_object parameter.
+ * @param upsert_object - The data that will be updated in the database
+ */
+async function upsertData(upsert_object) {
+    if (upsert_object.operation !== 'upsert') {
+        throw new Error('invalid operation, must be upsert');
+    }
+
+    let invalid_schema_table_msg = hdb_utils.checkSchemaTableExist(upsert_object.schema, upsert_object.table);
+    if (invalid_schema_table_msg) {
+        throw new Error(invalid_schema_table_msg);
+    }
+
+    try {
+        let bridge_upsert_result = await harperBridge.upsertRecords(upsert_object);
+
+        return returnObject(UPSERT_ACTION, bridge_upsert_result.written_hashes, upsert_object, bridge_upsert_result.skipped_hashes, bridge_upsert_result.new_attributes, bridge_upsert_result.txn_time);
+    } catch (e) {
+        throw (e);
+    }
+}
+
+/**
  * constructs return object for insert and update.
  * @param action
  * @param written_hashes
@@ -179,6 +204,11 @@ function returnObject(action, written_hashes, object, skipped, new_attributes, t
 
     if (action === INSERT_ACTION) {
         return_object.inserted_hashes = written_hashes;
+        return return_object;
+    }
+
+    if (action === UPSERT_ACTION) {
+        return_object.upserted_hashes = written_hashes;
         return return_object;
     }
 
