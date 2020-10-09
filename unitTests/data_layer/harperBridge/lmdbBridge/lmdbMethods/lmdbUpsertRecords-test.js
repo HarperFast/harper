@@ -111,18 +111,21 @@ describe('Test lmdbUpsertRecords module',() => {
     let hdb_table_env;
     let hdb_attribute_env;
     let rw_env_util;
-    let uuid_v4_stub;
+    const uuid_v4_stub = { v4: () => NEW_HASH_VALUE };
+    let rw_process_rows;
+    let rw_upsert_records;
 
     before(()=>{
         rw_env_util = environment_utility.__set__('MAP_SIZE', 10*1024*1024*1024);
         date_stub = sandbox.stub(Date, 'now').returns(TIMESTAMP);
-        uuid_v4_stub = { v4: () => NEW_HASH_VALUE };
-        lmdb_process_rows.__set__('uuid', uuid_v4_stub);
-        lmdb_upsert_records.__set__('lmdb_process_rows', lmdb_process_rows);
+        rw_process_rows = lmdb_process_rows.__set__('uuid', uuid_v4_stub);
+        rw_upsert_records = lmdb_upsert_records.__set__('lmdb_process_rows', lmdb_process_rows);
     });
 
     after(() => {
         rw_env_util();
+        rw_process_rows();
+        rw_upsert_records();
         date_stub.restore();
     });
 
@@ -337,6 +340,107 @@ describe('Test lmdbUpsertRecords module',() => {
             assert.deepStrictEqual(record, expected_search);
         });
 
+        it('Test upsert w/ inserts and update', async ()=>{
+            const upsert_obj = {
+                operation: "upsert",
+                schema: "dev",
+                table: "dog",
+                records: [
+                    {
+                        name: "Beethoven",
+                        breed: "St. Bernard",
+                        id: 110,
+                        height:undefined,
+                        age: 10
+                    },
+                    {
+                        id: 1,
+                        name: "Mozart",
+                        breed: "Chihuahua",
+                        height: 179,
+                        age: 0
+                    },
+                    {
+                        id: NEW_HASH_VALUE,
+                        name: "Brahms",
+                        breed: "English Pointer",
+                        height: 95,
+                        age: 91
+                    }
+
+                ]
+            };
+
+            let expected_return_result = {
+                new_attributes: [],
+                written_hashes: [110, 1, NEW_HASH_VALUE],
+                skipped_hashes: [],
+                schema_table: {
+                    attributes: NO_NEW_ATTR_TEST,
+                    hash_attribute: HASH_ATTRIBUTE_NAME,
+                    residence: undefined,
+                    schema: INSERT_OBJECT_TEST.schema,
+                    name: INSERT_OBJECT_TEST.table
+                },
+                txn_time: m_time
+            };
+
+            let expected_search1 = test_utils.assignObjecttoNullObject(upsert_obj.records[0]);
+            expected_search1.__createdtime__ = INSERT_TIMESTAMP;
+            expected_search1.__updatedtime__ = TIMESTAMP;
+            expected_search1.height = null;
+
+            let expected_search2 = test_utils.assignObjecttoNullObject(upsert_obj.records[1]);
+            expected_search2.__createdtime__ = TIMESTAMP;
+            expected_search2.__updatedtime__ = TIMESTAMP;
+
+            let expected_search3 = test_utils.assignObjecttoNullObject(upsert_obj.records[2]);
+            expected_search3.__createdtime__ = TIMESTAMP;
+            expected_search3.__updatedtime__ = TIMESTAMP;
+
+            let results = await test_utils.assertErrorAsync(lmdb_upsert_records, [upsert_obj], undefined);
+            assert.deepStrictEqual(results, expected_return_result);
+
+            let dog_env = await test_utils.assertErrorAsync(environment_utility.openEnvironment,
+                [path.join(BASE_SCHEMA_PATH, INSERT_OBJECT_TEST.schema), INSERT_OBJECT_TEST.table], undefined);
+            let record1 = test_utils.assertErrorSync(search_utility.searchByHash,
+                [dog_env, HASH_ATTRIBUTE_NAME, ALL_FETCH_ATTRIBUTES, '110'], undefined);
+            assert.deepStrictEqual(record1, expected_search1);
+
+            let record2 = test_utils.assertErrorSync(search_utility.searchByHash,
+                [dog_env, HASH_ATTRIBUTE_NAME, ALL_FETCH_ATTRIBUTES, '1'], undefined);
+            assert.deepStrictEqual(record2, expected_search2);
+
+            let record3 = test_utils.assertErrorSync(search_utility.searchByHash,
+                [dog_env, HASH_ATTRIBUTE_NAME, ALL_FETCH_ATTRIBUTES, `${NEW_HASH_VALUE}`], undefined);
+            assert.deepStrictEqual(record3, expected_search3);
+
+            //make sure the height index does not have an entry for id 10
+            let height_results = test_utils.assertErrorSync(search_utility.iterateDBI, [dog_env, "height"], undefined);
+            Object.keys(height_results).forEach(result=>{
+                assert(result.indexOf(110) < 0);
+            });
+        });
+
+        it('Test upsert with new record (invalid hash value) - expect error',async () => {
+            const upsert_obj = {
+                operation: "upsert",
+                schema: "dev",
+                table: "dog",
+                records: [
+                    {
+                        id: '1/2',
+                        name: "Mozart",
+                        breed: "Chihuahua",
+                        height: undefined,
+                        age: 0
+                    }
+                ]
+            };
+
+            let invalid_hash_error = new Error('transaction aborted due to record(s) with a hash value that contains a forward slash, check log for more info');
+            await test_utils.assertErrorAsync(lmdb_upsert_records, [upsert_obj], invalid_hash_error);
+        });
     });
 
 });
