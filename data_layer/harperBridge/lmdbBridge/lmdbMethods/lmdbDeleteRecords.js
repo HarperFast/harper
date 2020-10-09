@@ -13,8 +13,9 @@ module.exports = lmdbDeleteRecords;
 /**
  * Deletes a full table row at a certain hash.
  * @param delete_obj
+ * @param write_to_txn_log {boolean}
  */
-async function lmdbDeleteRecords(delete_obj) {
+async function lmdbDeleteRecords(delete_obj, write_to_txn_log = true) {
     let schema_table = global.hdb_schema[delete_obj.schema][delete_obj.table];
     let hash_attribute = schema_table.hash_attribute;
     if (hdb_utils.isEmpty(hash_attribute)) {
@@ -56,7 +57,9 @@ async function lmdbDeleteRecords(delete_obj) {
         let response = delete_utility.deleteRecords(environment, hash_attribute, delete_obj.hash_values);
 
         try {
-            await write_transaction(delete_obj, response);
+            if(write_to_txn_log === true) {
+                await write_transaction(delete_obj, response);
+            }
         }catch(e){
             logger.error(`unable to write transaction due to ${e.message}`);
         }

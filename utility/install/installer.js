@@ -660,7 +660,7 @@ function createSettingsFile(mount_status, callback) {
             `${HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY}=${node_name}\n` +
             `   ;The user used to connect to other instances of HarperDB, this user must have a role of cluster_user. \n` +
             `${HDB_SETTINGS_NAMES.CLUSTERING_USER_KEY}=${clustering_username}\n` +
-            `   ;Defines if this instance does not record transactions. Note, if Clustering is enabled this setting is ignored.  \n` +
+            `   ;Defines if this instance does not record transactions. Note, if Clustering is enabled and Transaction Log is disabled your nodes will not catch up.  \n` +
             `${HDB_SETTINGS_NAMES.DISABLE_TRANSACTION_LOG_KEY} = false\n`
         ;
 
