@@ -15,10 +15,10 @@ const logger = require('../../../../utility/logging/harper_logger');
 module.exports = lmdbUpsertRecords;
 
 /**
- * Orchestrates the upsert of data in LMDB and the creation of new attributes/dbis
+ * Orchestrates the UPSERT of data in LMDB and the creation of new attributes/dbis
  * if they do not already exist.
  * @param {UpsertObject} update_obj
- * @returns {{skipped_hashes: *, written_hashes: *, schema_table: *}}
+ * @returns {{ skipped_hashes: *, written_hashes: *, schema_table: *, new_attributes: *, txn_time: * }}
  */
 async function lmdbUpsertRecords(upsert_obj) {
     try {

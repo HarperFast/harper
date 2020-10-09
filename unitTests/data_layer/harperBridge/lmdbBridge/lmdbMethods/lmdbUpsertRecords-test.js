@@ -403,6 +403,7 @@ describe('Test lmdbUpsertRecords module',() => {
 
             let dog_env = await test_utils.assertErrorAsync(environment_utility.openEnvironment,
                 [path.join(BASE_SCHEMA_PATH, INSERT_OBJECT_TEST.schema), INSERT_OBJECT_TEST.table], undefined);
+
             let record1 = test_utils.assertErrorSync(search_utility.searchByHash,
                 [dog_env, HASH_ATTRIBUTE_NAME, ALL_FETCH_ATTRIBUTES, '110'], undefined);
             assert.deepStrictEqual(record1, expected_search1);
@@ -442,5 +443,4 @@ describe('Test lmdbUpsertRecords module',() => {
             await test_utils.assertErrorAsync(lmdb_upsert_records, [upsert_obj], invalid_hash_error);
         });
     });
-
 });
