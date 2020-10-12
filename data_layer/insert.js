@@ -13,6 +13,8 @@ const util = require('util');
 const harperBridge = require('./harperBridge/harperBridge');
 const global_schema = require('../utility/globalSchema');
 const log = require('../utility/logging/harper_logger');
+const { handleHDBError, hdb_errors } = require('../utility/errors/hdbError');
+const { HTTP_STATUS_CODES } = hdb_errors;
 
 const p_global_schema = util.promisify(global_schema.getTableSchema);
 const p_schema_to_global = util.promisify(global_schema.setSchemaDataToGlobal);
@@ -167,18 +169,18 @@ async function updateData(update_object) {
  */
 async function upsertData(upsert_object) {
     if (upsert_object.operation !== 'upsert') {
-        throw new Error('invalid operation, must be upsert');
+        throw handleHDBError(new Error(), 'invalid operation, must be upsert', HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR);
     }
 
     let invalid_schema_table_msg = hdb_utils.checkSchemaTableExist(upsert_object.schema, upsert_object.table);
     if (invalid_schema_table_msg) {
-        throw new Error(invalid_schema_table_msg);
+        throw handleHDBError(new Error(), invalid_schema_table_msg, HTTP_STATUS_CODES.BAD_REQUEST);
     }
 
     try {
         let bridge_upsert_result = await harperBridge.upsertRecords(upsert_object);
 
-        return returnObject(UPSERT_ACTION, bridge_upsert_result.written_hashes, upsert_object, null, bridge_upsert_result.new_attributes, bridge_upsert_result.txn_time);
+        return returnObject(UPSERT_ACTION, bridge_upsert_result.written_hashes, upsert_object, [], bridge_upsert_result.new_attributes, bridge_upsert_result.txn_time);
     } catch (e) {
         throw (e);
     }
@@ -189,7 +191,7 @@ async function upsertData(upsert_object) {
  * @param action
  * @param written_hashes
  * @param object
- * @param skipped
+ * @param skipped - not included for upsert ops
  * @param new_attributes
  * @param txn_time
  * @returns {{skipped_hashes: *, message: string}}
