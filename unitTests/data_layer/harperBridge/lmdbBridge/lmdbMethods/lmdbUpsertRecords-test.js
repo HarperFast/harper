@@ -23,6 +23,7 @@ const assert = require('assert');
 const fs = require('fs-extra');
 const sinon = require('sinon');
 const systemSchema = require('../../../../../json/systemSchema');
+const { TEST_INSERT_OPS_ERROR_MSGS } = require('../../../../commonTestErrors');
 
 let insert_date = new Date();
 insert_date.setMinutes(insert_date.getMinutes() - 10);
@@ -35,6 +36,9 @@ const TIMESTAMP = Date.now();
 const HASH_ATTRIBUTE_NAME = 'id';
 
 const NEW_HASH_VALUE = 1001;
+const LONG_CHAR_TEST = "z2xFuWBiQgjAAAzgAK80e35FCuFzNHpicBWzsWZW055mFHwBxdU5yE5KlTQRzcZ04UlBTdhzDrVn1k1fuQCN9" +
+    "faotQUlygf8Hv3E89f2v3KRzAX5FylEKwv4GJpSoZbXpgJ1mhmOjGUCAh3sipI5rVV0yvz6dbkXOw7xE5XlCHBRnc3T6BVyHIlUmFdlBowy" +
+    "vAy7MT49mg6wn5yCqPEPFkcva2FNRYSNxljmu1XxN65mTKiTw2lvM0Yl2o0";
 
 const INSERT_OBJECT_TEST = {
     operation: "insert",
@@ -435,22 +439,49 @@ describe('Test lmdbUpsertRecords module',() => {
                 ]
             };
 
-            let expected_err_values = {
-                http_resp_code: 400,
-                http_resp_msg: "transaction aborted due to record(s) with a hash value that contains a forward slash, check log for more info",
-                message: "transaction aborted due to record(s) with a hash value that contains a forward slash, check log for more info",
-                type: "Error"
-            };
-            let test_result;
-            try {
-                await lmdb_upsert_records(upsert_obj);
-            } catch (err) {
-                test_result = err;
-            }
+            const expected_err_values = test_utils.generateHDBError(TEST_INSERT_OPS_ERROR_MSGS.INVALID_FORWARD_SLASH_IN_HASH_ERR, 400)
+            await test_utils.assertErrorAsync(lmdb_upsert_records, [upsert_obj], expected_err_values);
+        });
 
-            Object.keys(test_result).forEach(key => {
-                assert.equal(test_result[key], expected_err_values[key])
-            })
+        it('Test upsert with new record (invalid long hash value) - expect error',async () => {
+            const upsert_obj = {
+                operation: "upsert",
+                schema: "dev",
+                table: "dog",
+                records: [
+                    {
+                        id: LONG_CHAR_TEST,
+                        name: "Mozart",
+                        breed: "Chihuahua",
+                        height: undefined,
+                        age: 0
+                    }
+                ]
+            };
+
+            const expected_err_values = test_utils.generateHDBError(TEST_INSERT_OPS_ERROR_MSGS.HASH_VAL_LENGTH_ERR, 400)
+            await test_utils.assertErrorAsync(lmdb_upsert_records, [upsert_obj], expected_err_values);
+        });
+
+        it('Test upsert with new record (invalid long attr name) - expect error',async () => {
+            const upsert_obj = {
+                operation: "upsert",
+                schema: "dev",
+                table: "dog",
+                records: [
+                    {
+                        id: "1",
+                        name: "Mozart",
+                        breed: "Chihuahua",
+                        height: undefined,
+                        [LONG_CHAR_TEST]: true,
+                        age: 0
+                    }
+                ]
+            };
+
+            const expected_err_values = test_utils.generateHDBError(TEST_INSERT_OPS_ERROR_MSGS.ATTR_NAME_LENGTH_ERR(LONG_CHAR_TEST), 400)
+            await test_utils.assertErrorAsync(lmdb_upsert_records, [upsert_obj], expected_err_values);
         });
     });
 });
