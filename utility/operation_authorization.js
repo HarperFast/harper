@@ -33,7 +33,7 @@ const alasql = require('alasql');
 
 const PermissionResponseObject = require('../security/data_objects/PermissionResponseObject');
 const { handleHDBError, hdb_errors  } = require('../utility/errors/hdbError');
-const { COMMON_ERROR_MSGS, HTTP_STATUS_CODES } = hdb_errors;
+const { HDB_ERROR_MSGS, HTTP_STATUS_CODES } = hdb_errors;
 
 const required_permissions = new Map();
 const DELETE_PERM = 'delete';
@@ -209,7 +209,7 @@ function verifyPermsAst(ast, user_object, operation) {
 function verifyPerms(request_json, operation) {
     if (request_json === null || operation === null || request_json.hdb_user === undefined || request_json.hdb_user === null) {
         harper_logger.info(`null required parameter in verifyPerms`);
-        throw handleHDBError(new Error(), COMMON_ERROR_MSGS.DEFAULT_INVALID_REQUEST, HTTP_STATUS_CODES.BAD_REQUEST);
+        throw handleHDBError(new Error(), HDB_ERROR_MSGS.DEFAULT_INVALID_REQUEST, HTTP_STATUS_CODES.BAD_REQUEST);
     }
 
     //passing in the function rather than the function name is an easy mistake to make, so taking care of that case here.
@@ -234,7 +234,7 @@ function verifyPerms(request_json, operation) {
 
     if (common_utils.isEmptyOrZeroLength(request_json.hdb_user.role) || common_utils.isEmptyOrZeroLength(request_json.hdb_user.role.permission)) {
         harper_logger.info(`User ${request_json.hdb_user.username} has no role or permissions.  Please assign the user a valid role.`);
-        const no_perms_err = permsResponse.handleUnauthorizedItem(COMMON_ERROR_MSGS.USER_HAS_NO_PERMS(request_json.hdb_user.username));
+        const no_perms_err = permsResponse.handleUnauthorizedItem(HDB_ERROR_MSGS.USER_HAS_NO_PERMS(request_json.hdb_user.username));
         return no_perms_err;
     }
 
@@ -251,21 +251,21 @@ function verifyPerms(request_json, operation) {
 
     if (op === DESCRIBE_SCHEMA_KEY || op === DESCRIBE_TABLE_KEY) {
         if (operation_schema === terms.SYSTEM_SCHEMA_NAME) {
-            const system_schema_err = permsResponse.handleUnauthorizedItem(COMMON_ERROR_MSGS.SCHEMA_PERM_ERROR(operation_schema));
+            const system_schema_err = permsResponse.handleUnauthorizedItem(HDB_ERROR_MSGS.SCHEMA_PERM_ERROR(operation_schema));
             return system_schema_err;
         }
 
         if (!full_role_perms.super_user) {
             if (op === DESCRIBE_SCHEMA_KEY) {
                 if (!full_role_perms[operation_schema] || !full_role_perms[operation_schema][DESCRIBE_PERM]) {
-                    const desc_schema_err = permsResponse.handleInvalidItem(COMMON_ERROR_MSGS.SCHEMA_NOT_FOUND(operation_schema));
+                    const desc_schema_err = permsResponse.handleInvalidItem(HDB_ERROR_MSGS.SCHEMA_NOT_FOUND(operation_schema));
                     return desc_schema_err;
                 }
             }
 
             if (op === DESCRIBE_TABLE_KEY) {
                 if (!full_role_perms[operation_schema] || !full_role_perms[operation_schema].tables[table] || !full_role_perms[operation_schema].tables[table][DESCRIBE_PERM]) {
-                    const desc_table_err = permsResponse.handleInvalidItem(COMMON_ERROR_MSGS.TABLE_NOT_FOUND(operation_schema, table));
+                    const desc_table_err = permsResponse.handleInvalidItem(HDB_ERROR_MSGS.TABLE_NOT_FOUND(operation_schema, table));
                     return desc_table_err;
                 }
             }
@@ -334,13 +334,13 @@ function hasPermissions(user_object, op, schema_table_map, permsResponse, action
     if (!required_permissions.get(op)) {
         harper_logger.info(`operation ${op} not found.`);
         //This is here to catch if an operation has not been added to the permissions map above
-        throw handleHDBError(new Error(), COMMON_ERROR_MSGS.OP_NOT_FOUND(op), HTTP_STATUS_CODES.BAD_REQUEST);
+        throw handleHDBError(new Error(), HDB_ERROR_MSGS.OP_NOT_FOUND(op), HTTP_STATUS_CODES.BAD_REQUEST);
     }
 
     if (required_permissions.get(op) && required_permissions.get(op).requires_su) {
 
         harper_logger.info(`operation ${op} requires SU permissions.`);
-        const no_perms_err = permsResponse.handleUnauthorizedItem(COMMON_ERROR_MSGS.OP_IS_SU_ONLY(op));
+        const no_perms_err = permsResponse.handleUnauthorizedItem(HDB_ERROR_MSGS.OP_IS_SU_ONLY(op));
         return no_perms_err;
     }
 
@@ -348,7 +348,7 @@ function hasPermissions(user_object, op, schema_table_map, permsResponse, action
         //check if schema has DESCRIBE perms
         if (schema_table && user_perms[schema_table][DESCRIBE_PERM] === false) {
             //add schema does not exist error message
-            permsResponse.addInvalidItem(COMMON_ERROR_MSGS.SCHEMA_NOT_FOUND(schema_table));
+            permsResponse.addInvalidItem(HDB_ERROR_MSGS.SCHEMA_NOT_FOUND(schema_table));
             continue;
         }
         for (let table of schema_table_map.get(schema_table)) {
@@ -357,14 +357,14 @@ function hasPermissions(user_object, op, schema_table_map, permsResponse, action
                 table_permissions = user_perms[schema_table].tables[table];
             } catch(e) {
                 //we should never get here b/c perms are always set against global schema but, if we do, assume table is restricted
-                permsResponse.addInvalidItem(COMMON_ERROR_MSGS.TABLE_NOT_FOUND(schema_table, table));
+                permsResponse.addInvalidItem(HDB_ERROR_MSGS.TABLE_NOT_FOUND(schema_table, table));
                 continue;
             }
 
             if (table_permissions && table) {
                 try {
                     if (table_permissions[DESCRIBE_PERM] === false) {
-                        permsResponse.addInvalidItem(COMMON_ERROR_MSGS.TABLE_NOT_FOUND(schema_table, table));
+                        permsResponse.addInvalidItem(HDB_ERROR_MSGS.TABLE_NOT_FOUND(schema_table, table));
                         continue;
                     }
                     //Here we check all required permissions for the operation defined in the map with the values of the permissions in the role.
@@ -391,7 +391,7 @@ function hasPermissions(user_object, op, schema_table_map, permsResponse, action
                     }
                 } catch(e) {
                     //if we hit an error here, we need to block operation and return error
-                    const err_msg = COMMON_ERROR_MSGS.UNKNOWN_OP_AUTH_ERROR(op, schema_table, table);
+                    const err_msg = HDB_ERROR_MSGS.UNKNOWN_OP_AUTH_ERROR(op, schema_table, table);
                     harper_logger.error(err_msg);
                     harper_logger.error(e);
                     throw handleHDBError(hdb_errors.CHECK_LOGS_WRAPPER(err_msg));
@@ -453,12 +453,14 @@ function checkAttributePerms(record_attributes, role_attribute_permissions, oper
         const permission = role_attribute_permissions.get(element);
         if (permission) {
             if (permission[DESCRIBE_PERM] === false) {
-                permsResponse.addInvalidItem(COMMON_ERROR_MSGS.ATTR_NOT_FOUND(schema_name, table_name, element), schema_name, table_name);
+                permsResponse.addInvalidItem(HDB_ERROR_MSGS.ATTR_NOT_FOUND(schema_name, table_name, element), schema_name, table_name);
                 continue;
             }
-
             if (needed_perms.perms) {
                 for (let perm of needed_perms.perms) {
+                    if (terms.TIME_STAMP_NAMES.includes(permission.attribute_name) && perm !== READ_PERM) {
+                        throw handleHDBError(new Error(), HDB_ERROR_MSGS.SYSTEM_TIMESTAMP_PERMS_ERR, HTTP_STATUS_CODES.FORBIDDEN);
+                    }
                     if (permission[perm] === false) {
                         if (!required_attr_perms[permission.attribute_name]) {
                             required_attr_perms[permission.attribute_name] = [perm];

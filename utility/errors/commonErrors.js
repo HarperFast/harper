@@ -29,12 +29,14 @@ const HTTP_STATUS_CODES = {
 // one error message to send to the API (with this wrapper) and log without having to define log message separately
 const CHECK_LOGS_WRAPPER = (err) => `${err} Check logs and try again.`;
 
-
 const DEFAULT_ERROR_MSGS = {
     500: CHECK_LOGS_WRAPPER("There was an error processing your request."),
     400: "Invalid request"
 };
 const DEFAULT_ERROR_RESP = DEFAULT_ERROR_MSGS[HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR];
+
+//Add all error messages that are generic and can be used across modules here
+const COMMON_ERROR_MSGS = {};
 
 const BULK_LOAD_ERROR_MSGS = {
     DEFAULT_BULK_LOAD_ERR: 'There was an error during your bulk load into HarperDB.',
@@ -48,7 +50,7 @@ const BULK_LOAD_ERROR_MSGS = {
     WRITE_TEMP_FILE_ERR: `Error writing temporary file to storage`
 };
 
-//TODO - move this enum to be exported as a part of COMMON_ERROR_MSGS
+//TODO - move this enum to be exported as a part of HDB_ERROR_MSGS
 //NOTE: Any changes made to these errors must also be made to unitTests/commonTestErrors.js otherwise the unit tests will fail
 const LMDB_ERRORS_ENUM = {
     BASE_PATH_REQUIRED: 'base_path is required',
@@ -85,6 +87,7 @@ const OPERATION_AUTH_ERROR_MSGS = {
     OP_AUTH_PERMS_ERROR: "This operation is not authorized due to role restrictions and/or invalid schema items",
     OP_IS_SU_ONLY: (op) => `Operation '${op}' is restricted to 'super_user' roles`,
     OP_NOT_FOUND: (op) => `Operation '${op}' not found`,
+    SYSTEM_TIMESTAMP_PERMS_ERR: "Internal timestamp attributes - '__createdtime_' and '__updatedtime__' - cannot be inserted to or updated by HDB users.",
     UNKNOWN_OP_AUTH_ERROR: (op, schema, table) => `There was an error authorizing ${op} op on table '${schema}.${table}'`,
     USER_HAS_NO_PERMS: (user) => `User ${user} has no role or permissions.  Please assign the user a valid role.`
 };
@@ -128,9 +131,10 @@ const SQL_ERROR_MSGS = {
     OUTER_JOIN_TRANSLATION_ERROR: "There was an error translating the final SQL outer join data."
 };
 
-// All error messages should be added to the COMMON_ERROR_MSGS ENUM for export - this helps to organize all error messages
+// All error messages should be added to the HDB_ERROR_MSGS ENUM for export - this helps to organize all error messages
 //into a single export while still allowing us to group them here in a more readable/searchable way
-const COMMON_ERROR_MSGS = {
+const HDB_ERROR_MSGS = {
+    ...COMMON_ERROR_MSGS,
     ...BULK_LOAD_ERROR_MSGS,
     ...OPERATION_AUTH_ERROR_MSGS,
     ...ROLE_PERMS_ERROR_MSGS,
@@ -140,7 +144,7 @@ const COMMON_ERROR_MSGS = {
 
 module.exports = {
     CHECK_LOGS_WRAPPER,
-    COMMON_ERROR_MSGS,
+    HDB_ERROR_MSGS,
     DEFAULT_ERROR_MSGS,
     DEFAULT_ERROR_RESP,
     HTTP_STATUS_CODES,

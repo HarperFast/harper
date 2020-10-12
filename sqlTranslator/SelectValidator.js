@@ -5,7 +5,7 @@ const alasql = require('alasql');
 const clone = require('clone');
 const common_utils = require('../utility/common_utils');
 const { handleHDBError, hdb_errors } = require('../utility/errors/hdbError');
-const { COMMON_ERROR_MSGS, HTTP_STATUS_CODES } = hdb_errors;
+const { HDB_ERROR_MSGS, HTTP_STATUS_CODES } = hdb_errors;
 
 //exclusion list for validation on group bys
 const custom_aggregators = ['DISTINCT_ARRAY'];
@@ -98,12 +98,12 @@ class SelectValidator {
         }
 
         if (!global.hdb_schema[table.databaseid]) {
-            throw handleHDBError(new Error(), COMMON_ERROR_MSGS.SCHEMA_NOT_FOUND(table.databaseid), HTTP_STATUS_CODES.NOT_FOUND);
+            throw handleHDBError(new Error(), HDB_ERROR_MSGS.SCHEMA_NOT_FOUND(table.databaseid), HTTP_STATUS_CODES.NOT_FOUND);
 
         }
 
         if (!global.hdb_schema[table.databaseid][table.tableid]) {
-            throw handleHDBError(new Error(), COMMON_ERROR_MSGS.TABLE_NOT_FOUND(table.databaseid, table.tableid), HTTP_STATUS_CODES.NOT_FOUND);
+            throw handleHDBError(new Error(), HDB_ERROR_MSGS.TABLE_NOT_FOUND(table.databaseid, table.tableid), HTTP_STATUS_CODES.NOT_FOUND);
 
         }
 

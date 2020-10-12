@@ -252,7 +252,7 @@ const DEFAULT_ATTRIBUTE_PERMISSION_BASE = () => ATTRIBUTE_PERMISSION_BASE([ROLE_
 let ROLE_ATTRIBUTE_RESTRICTIONS = new Map();
 ROLE_ATTRIBUTE_RESTRICTIONS.set(ROLE_PERMISSION_KEY, DEFAULT_ATTRIBUTE_PERMISSION_BASE()[0]);
 
-const test_attrs = [];
+const test_attrs = [{ attribute: "__createdtime__" }, { attribute: "__updatedtime__" }];
 AFFECTED_ATTRIBUTES_SET.forEach(attr => test_attrs.push({ attribute: attr }));
 
 /*
@@ -551,6 +551,46 @@ describe('Test operation_authorization', function() {
             assert.equal(result.unauthorized_access[0].schema, TEST_SCHEMA);
             assert.equal(result.unauthorized_access[0].table, TEST_TABLE);
             assert.equal(result.unauthorized_access[0].required_table_permissions[0], "read");
+        });
+
+        it('Pass in JSON with operation = update and with fully restricted timestamp attr, expect false',function() {
+            let req_json = getRequestJson(TEST_JSON);
+            req_json.operation = 'update';
+            req_json.records[0].__createdtime__ = "Noooo!";
+            let perms = clone(PERMISSION_BASE);
+            perms.dev.describe = true;
+            perms.dev.tables.dog.describe = true;
+            perms.dev.tables.dog.update = true;
+            let att_base = ATTRIBUTE_PERMISSION_BASE(TEST_ATTRIBUTES, crud_keys.UPDATE, true);
+            perms.dev.tables.dog.attribute_permissions = att_base;
+            req_json.hdb_user.role.permission = perms;
+            let result = op_auth_rewire.verifyPerms(req_json, req_json.operation);
+            assert.equal(result.error, "This operation is not authorized due to role restrictions and/or invalid schema items");
+            assert.equal(result.invalid_schema_items.length, 1);
+            assert.equal(result.invalid_schema_items[0], "Attribute '__createdtime__' does not exist on 'dev.dog'");
+        });
+
+        it('Pass in JSON with operation = update and with non-restricted timestamp value, expect error',function() {
+            let req_json = getRequestJson(TEST_JSON);
+            req_json.operation = 'update';
+            req_json.records[0].__createdtime__ = "Noooo!";
+            let perms = clone(PERMISSION_BASE);
+            perms.dev.describe = true;
+            perms.dev.tables.dog.describe = true;
+            perms.dev.tables.dog.update = true;
+            let att_base = ATTRIBUTE_PERMISSION_BASE(TEST_ATTRIBUTES, crud_keys.UPDATE, true);
+            att_base.push({ "attribute_name": "__createdtime__", "read": true });
+            perms.dev.tables.dog.attribute_permissions = att_base;
+            req_json.hdb_user.role.permission = perms;
+            let result;
+            try {
+                op_auth_rewire.verifyPerms(req_json, req_json.operation);
+            } catch(e) {
+                result = e;
+            }
+            assert.equal(result instanceof Error, true);
+            assert.equal(result.http_resp_code, 403);
+            assert.equal(result.http_resp_msg, "Internal timestamp attributes - '__createdtime_' and '__updatedtime__' - cannot be inserted to or updated by HDB users.");
         });
 
         it('(NOMINAL) - Pass in JSON with action = insert, insert allowed, expect true',function() {

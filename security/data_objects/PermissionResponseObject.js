@@ -2,7 +2,7 @@
 
 const PermissionTableResponseObject = require('./PermissionTableResponseObject');
 const PermissionAttributeResponseObject = require('./PermissionAttributeResponseObject');
-const { COMMON_ERROR_MSGS } = require('../../utility/errors/commonErrors');
+const { HDB_ERROR_MSGS } = require('../../utility/errors/commonErrors');
 
 /**
  * This object organizes permission checks into a cohesive response object that will be returned to
@@ -10,7 +10,7 @@ const { COMMON_ERROR_MSGS } = require('../../utility/errors/commonErrors');
  */
 class PermissionResponseObject {
     constructor() {
-        this.error = COMMON_ERROR_MSGS.OP_AUTH_PERMS_ERROR;
+        this.error = HDB_ERROR_MSGS.OP_AUTH_PERMS_ERROR;
         this.unauthorized_access = {};
         this.invalid_schema_items = [];
     }

@@ -55,7 +55,7 @@ async function lmdbDeleteRecordsBefore(delete_obj) {
     let delete_object = new DeleteObject(delete_obj.schema, delete_obj.table, hashes_to_delete);
 
     try {
-        return await delete_records(delete_object);
+        return await delete_records(delete_object, false);
     } catch(err) {
         throw err;
     }

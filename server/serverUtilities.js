@@ -212,7 +212,7 @@ function getOperationFunction(json){
         return OPERATION_FUNCTION_MAP.get(json.operation);
     }
 
-    throw handleHDBError(new Error(), hdb_errors.COMMON_ERROR_MSGS.OP_NOT_FOUND(json.operation), hdb_errors.HTTP_STATUS_CODES.BAD_REQUEST);
+    throw handleHDBError(new Error(), hdb_errors.HDB_ERROR_MSGS.OP_NOT_FOUND(json.operation), hdb_errors.HTTP_STATUS_CODES.BAD_REQUEST);
 }
 
 async function catchup(req) {

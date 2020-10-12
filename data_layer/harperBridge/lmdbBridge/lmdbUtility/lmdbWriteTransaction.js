@@ -92,11 +92,6 @@ function createTransactionObject(hdb_operation, lmdb_response){
 function getDisableTxnLogSetting(){
     let disable_txn_setting = env_mngr.get(HDB_SETTINGS_NAMES.DISABLE_TRANSACTION_LOG_KEY);
 
-    let clustering_on = env_mngr.get(HDB_SETTINGS_NAMES.CLUSTERING_ENABLED_KEY);
-
-    let clustering_on_bool = !hdb_util.isEmptyOrZeroLength(clustering_on) && (clustering_on === true
-        || clustering_on.toString().toLowerCase() === 'true');
-
-    return clustering_on_bool === false && !hdb_util.isEmptyOrZeroLength(disable_txn_setting) && (disable_txn_setting === true
+    return !hdb_util.isEmptyOrZeroLength(disable_txn_setting) && (disable_txn_setting === true
         || disable_txn_setting.toString().toLowerCase() === 'true');
 }

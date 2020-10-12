@@ -70,43 +70,210 @@ const validateTablePerms = (final_perms, initial_perms) => {
     return table_has_crud_perm === final_perms.describe;
 };
 
-const validateAttrPerms = (final_perms, initial_perms) => {
+const isSystemTimestampAttr = (attr_name) => {
+    return terms.TIME_STAMP_NAMES.includes(attr_name);
+}
+
+const validateAttrPerms = (final_perms, initial_perms, hash_key = 'id') => {
+    let is_valid = true;
     if (!initial_perms || initial_perms.attribute_permissions.length === 0) {
         if (final_perms.length !== 0) {
             return false;
         };
     } else {
+        let expected_hash_perms = createAttrPermission(hash_key, createAttrPermsObj(false, false, false));
+        let has_hash_perms = false;
         const initial_perms_map = initial_perms.attribute_permissions.reduce((acc, perm_obj) => {
-            acc[perm_obj.attribute_name] = perm_obj;
+            const attr_name = perm_obj.attribute_name;
+            acc[attr_name] = perm_obj;
+            if (!has_hash_perms) {
+                if (attr_name === hash_key) {
+                    expected_hash_perms = perm_obj;
+                    has_hash_perms = true;
+                } else {
+                    if (isSystemTimestampAttr(attr_name)) {
+                        if (perm_obj[TEST_PERMS_ENUM.READ] === true) {
+                            expected_hash_perms[TEST_PERMS_ENUM.READ] = true;
+                        }
+                    } else {
+                        test_attr_perm_keys.forEach(perm_key => {
+                            if (perm_obj[perm_key] === true) {
+                                expected_hash_perms[perm_key] = true;
+                            }
+                        });
+                    }
+                }
+            }
             return acc;
         }, {});
+        initial_perms_map[hash_key] = expected_hash_perms
         final_perms.forEach(final_perm => {
             if (!!initial_perms_map[final_perm.attribute_name]) {
                 let attr_describe_value = false;
-                Object.keys(initial_perms_map[final_perm.attribute_name]).forEach(obj_key => {
-                    if (initial_perms_map[final_perm.attribute_name][obj_key] !== final_perm[obj_key]) {
-                        return false;
+                if (isSystemTimestampAttr(final_perm.attribute_name)) {
+                    if (initial_perms_map[final_perm.attribute_name][TEST_PERMS_ENUM.READ] !== final_perm[TEST_PERMS_ENUM.READ]) {
+                        is_valid = false;
                     }
-                    if (final_perm[obj_key] === true) {
+                    if (Object.keys(final_perm).length !== 3) {
+                        is_valid = false;
+                    }
+                    if (final_perm[TEST_PERMS_ENUM.READ] === true) {
                         attr_describe_value = true;
                     }
-                })
-                if (attr_describe_value !== final_perm.describe) {
-                    return false;
+                } else {
+                    Object.keys(initial_perms_map[final_perm.attribute_name]).forEach(obj_key => {
+                        if (initial_perms_map[final_perm.attribute_name][obj_key] !== final_perm[obj_key]) {
+                            is_valid = false;
+                        }
+                        if (final_perm[obj_key] === true) {
+                            attr_describe_value = true;
+                        }
+                    })
                 }
-            }  else {
-                test_attr_perm_keys.forEach(key => {
-                    if (final_perm[key]) {
-                        return false;
+                if (attr_describe_value !== final_perm.describe) {
+                    is_valid = false;
+                }
+            } else {
+                if (final_perm.attribute_name === hash_key) {
+                    let attr_describe_value = false;
+                    const expected_hash_perms = initial_perms_map[hash_key];
+                    Object.keys(expected_hash_perms).forEach(obj_key => {
+                        if (expected_hash_perms[obj_key] !== final_perm[obj_key]) {
+                            is_valid = false;
+                        }
+                        if (final_perm[obj_key] === true) {
+                            attr_describe_value = true;
+                        }
+                    })
+                    if (attr_describe_value !== final_perm.describe) {
+                        is_valid = false;
                     }
-                })
+                } else if (isSystemTimestampAttr(final_perm.attribute_name)) {
+                    if (final_perm[TEST_PERMS_ENUM.READ] || final_perm.describe) {
+                        is_valid = false;
+                    }
+                    if (Object.keys(final_perm).length !== 3) {
+                        is_valid = false;
+                    }
+                } else {
+                    test_attr_perm_keys.forEach(key => {
+                        if (final_perm[key]) {
+                            is_valid = false;
+                        }
+                    })
+                }
+
                 if (final_perm.describe) {
-                    return false;
+                    is_valid = false;
                 }
             }
         })
     }
-    return true;
+    return is_valid;
+};
+
+const test_table_perms = {
+    breed: {
+        "read": true,
+        "insert": true,
+        "update": true,
+        "delete": false,
+        "attribute_permissions": [
+            {
+                "attribute_name": "__createdtime__",
+                "read": false,
+                "insert": true,
+                "update": true,
+                "delete": true
+            }
+        ]
+    },
+    dog: {
+        "read": true,
+        "insert": true,
+        "update": true,
+        "delete": true,
+        "attribute_permissions": [
+            {
+                "attribute_name": "id",
+                "read": true,
+                "insert": true,
+                "update": true
+            },
+            {
+                "attribute_name": "name",
+                "read": true,
+                "insert": true,
+                "update": true
+            },
+            {
+                "attribute_name": "__createdtime__",
+                "read": true,
+                "insert": true,
+                "update": false,
+                "delete": false
+            },
+            {
+                "attribute_name": "__updatedtime__",
+                "read": true,
+                "insert": true,
+                "update": true
+            }
+        ]
+    }
+};
+const test_table_schema = {
+    breed: {
+        "hash_attribute": "id",
+        "name": "breed",
+        "schema": "dev",
+        "attributes": [
+            {
+                "attribute": "__updatedtime__"
+            },
+            {
+                "attribute": "__createdtime__"
+            },
+            {
+                "attribute": "id"
+            },
+            {
+                "attribute": "name"
+            },
+            {
+                "attribute": "image"
+            }
+        ],
+        "record_count": 350
+    },
+    dog: {
+        "hash_attribute": "id",
+        "name": "dog",
+        "schema": "dev",
+        "attributes": [
+            {
+                "attribute": "dog_name"
+            },
+            {
+                "attribute": "id"
+            },
+            {
+                "attribute": "weight_lbs"
+            },
+            {
+                "attribute": "__createdtime__"
+            },
+            {
+                "attribute": "name"
+            },
+            {
+                "attribute": "__updatedtime__"
+            },
+            {
+                "attribute": "breed_id"
+            }
+        ]
+    }
 };
 
 const sandbox = sinon.createSandbox();
@@ -435,4 +602,27 @@ describe('Test permissionsTranslator module', function () {
             expect(test_result.http_resp_code).to.eql(HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR);
         });
     })
+
+    describe('Test getTableAttrPerms function', function () {
+        let getTableAttrPerms_rw;
+
+        before(()=> {
+            getTableAttrPerms_rw = permissionsTranslator_rw.__get__('getTableAttrPerms');
+        });
+
+        it('NOMINAL - should return table perms with correct system time and other perms values', ()=> {
+            const test_result = getTableAttrPerms_rw(test_table_perms.dog, test_table_schema.dog)
+
+            expect(test_result.describe).to.be.true;
+            expect(validateAttrPerms(test_result.attribute_permissions, test_table_perms.dog)).to.be.true;
+        });
+
+        it('Should ignore non-READ perms for system time when setting describe perm value', ()=> {
+            const test_result = getTableAttrPerms_rw(test_table_perms.breed, test_table_schema.breed)
+
+            expect(test_result.describe).to.be.true;
+            expect(validateAttrPerms(test_result.attribute_permissions, test_table_perms.breed)).to.be.true;
+        });
+    });
+
 });

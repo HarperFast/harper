@@ -69,7 +69,6 @@ process.argv.forEach((arg) => {
 process.env['NODE_ENV'] = node_env_value;
 
 let num_hdb_processes = undefined;
-let numCPUs = 4;
 let num_workers = undefined;
 let os_cpus = undefined;
 
@@ -92,7 +91,7 @@ try {
 }
 
 if(DEBUG){
-    numCPUs = 1;
+    num_workers  = 1;
 }
 
 global.isMaster = cluster.isMaster;
@@ -125,7 +124,7 @@ cluster.on('exit', (dead_worker, code, signal) => {
     }
 });
 
-if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
+if (cluster.isMaster &&( num_workers >= 1 || DEBUG )) {
     check_jwt_tokens();
     global.isMaster = cluster.isMaster;
 
@@ -188,13 +187,12 @@ if (cluster.isMaster &&( numCPUs >= 1 || DEBUG )) {
         harper_logger.notify(`HarperDB successfully started`);
         harper_logger.info(`Parent ${process.pid} is running`);
         harper_logger.info(`Running with NODE_ENV set as: ${process.env.NODE_ENV}`);
-        harper_logger.info(`Number of processes allowed by license is:${numCPUs}, number of cores on this machine: ${num_workers}`);
-        numCPUs = (numCPUs > num_workers ? num_workers : numCPUs);
-        harper_logger.info(`Kicking off ${numCPUs} HDB processes.`);
+
+        harper_logger.info(`Kicking off ${num_workers} HDB processes.`);
 
         // Fork workers.
         let forks = [];
-        for (let i = 0; i < numCPUs; i++) {
+        for (let i = 0; i < num_workers; i++) {
             try {
                 let forked = cluster.fork({hdb_license: JSON.stringify(license_values)});
                 // assign handler for messages expected from child processes.

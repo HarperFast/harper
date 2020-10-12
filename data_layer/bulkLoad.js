@@ -6,7 +6,7 @@ const request_promise = require('request-promise-native');
 const hdb_terms = require('../utility/hdbTerms');
 const hdb_utils = require('../utility/common_utils');
 const { handleHDBError, handleValidationError, hdb_errors } = require('../utility/errors/hdbError');
-const { HTTP_STATUS_CODES, COMMON_ERROR_MSGS, CHECK_LOGS_WRAPPER } = hdb_errors;
+const { HTTP_STATUS_CODES, HDB_ERROR_MSGS, CHECK_LOGS_WRAPPER } = hdb_errors;
 const logger = require('../utility/logging/harper_logger');
 const papa_parse = require('papaparse');
 hdb_utils.promisifyPapaParse();
@@ -102,8 +102,8 @@ async function csvURLLoad(json_message) {
     try {
         await downloadCSVFile(json_message.csv_url, csv_file_name);
     } catch (err) {
-        logger.error(COMMON_ERROR_MSGS.DOWNLOAD_FILE_ERR(csv_file_name) + ' - ' + err);
-        throw handleHDBError(err, CHECK_LOGS_WRAPPER(COMMON_ERROR_MSGS.DOWNLOAD_FILE_ERR(csv_file_name)));
+        logger.error(HDB_ERROR_MSGS.DOWNLOAD_FILE_ERR(csv_file_name) + ' - ' + err);
+        throw handleHDBError(err, CHECK_LOGS_WRAPPER(HDB_ERROR_MSGS.DOWNLOAD_FILE_ERR(csv_file_name)));
     }
 
     try {
@@ -240,8 +240,8 @@ async function downloadFileFromS3(s3_file_name, json_message) {
                 });
         });
     } catch(err) {
-        logger.error(COMMON_ERROR_MSGS.S3_DOWNLOAD_ERR + " - " + err);
-        throw handleHDBError(err, CHECK_LOGS_WRAPPER(COMMON_ERROR_MSGS.S3_DOWNLOAD_ERR));
+        logger.error(HDB_ERROR_MSGS.S3_DOWNLOAD_ERR + " - " + err);
+        throw handleHDBError(err, CHECK_LOGS_WRAPPER(HDB_ERROR_MSGS.S3_DOWNLOAD_ERR));
     }
 }
 
@@ -257,8 +257,8 @@ async function writeFileToTempFolder(file_name, response_body) {
         await fs.mkdirp(TEMP_DOWNLOAD_DIR);
         await fs.writeFile(`${TEMP_DOWNLOAD_DIR}/${file_name}`, response_body);
     } catch(err) {
-        logger.error(COMMON_ERROR_MSGS.WRITE_TEMP_FILE_ERR);
-        throw handleHDBError(err, CHECK_LOGS_WRAPPER(COMMON_ERROR_MSGS.DEFAULT_BULK_LOAD_ERR));
+        logger.error(HDB_ERROR_MSGS.WRITE_TEMP_FILE_ERR);
+        throw handleHDBError(err, CHECK_LOGS_WRAPPER(HDB_ERROR_MSGS.DEFAULT_BULK_LOAD_ERR));
     }
 }
 
@@ -322,10 +322,10 @@ async function fileLoad(json_message) {
                 //we should never get here but here just incase something changes is validation and slips through
                 throw handleHDBError(
                     new Error(),
-                    COMMON_ERROR_MSGS.DEFAULT_BULK_LOAD_ERR,
+                    HDB_ERROR_MSGS.DEFAULT_BULK_LOAD_ERR,
                     HTTP_STATUS_CODES.BAD_REQUEST,
                     logger.ERR,
-                    COMMON_ERROR_MSGS.INVALID_FILE_EXT_ERR(json_message)
+                    HDB_ERROR_MSGS.INVALID_FILE_EXT_ERR(json_message)
                 );
         }
 
@@ -429,8 +429,8 @@ async function insertChunk(json_message, insert_results, reject, results, parser
     } catch(err) {
         // reject is a promise object bound to chunk function through hdb_utils.promisifyPapaParse(). In the case of an error
         // reject will bubble up to hdb_utils.promisifyPapaParse() and return a reject promise object with given error.
-        const err_resp = handleHDBError(err, CHECK_LOGS_WRAPPER(COMMON_ERROR_MSGS.INSERT_CSV_ERR),
-            HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR, logger.ERR, COMMON_ERROR_MSGS.INSERT_CSV_ERR + ' - ' + err);
+        const err_resp = handleHDBError(err, CHECK_LOGS_WRAPPER(HDB_ERROR_MSGS.INSERT_CSV_ERR),
+            HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR, logger.ERR, HDB_ERROR_MSGS.INSERT_CSV_ERR + ' - ' + err);
         reject(err_resp);
     }
 }
@@ -464,7 +464,7 @@ async function callPapaParse(json_message) {
 
         return insert_results;
     } catch(err) {
-        throw handleHDBError(err, CHECK_LOGS_WRAPPER(COMMON_ERROR_MSGS.PAPA_PARSE_ERR), HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR, logger.ERR, COMMON_ERROR_MSGS.PAPA_PARSE_ERR + err);
+        throw handleHDBError(err, CHECK_LOGS_WRAPPER(HDB_ERROR_MSGS.PAPA_PARSE_ERR), HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR, logger.ERR, HDB_ERROR_MSGS.PAPA_PARSE_ERR + err);
     }
 }
 
@@ -524,7 +524,7 @@ async function insertJson(json_message) {
 
         return insert_results;
     } catch(err) {
-        throw handleHDBError(err, CHECK_LOGS_WRAPPER(COMMON_ERROR_MSGS.INSERT_JSON_ERR), HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR, logger.ERR, COMMON_ERROR_MSGS.INSERT_JSON_ERR + err);
+        throw handleHDBError(err, CHECK_LOGS_WRAPPER(HDB_ERROR_MSGS.INSERT_JSON_ERR), HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR, logger.ERR, HDB_ERROR_MSGS.INSERT_JSON_ERR + err);
     }
 }
 
@@ -679,9 +679,9 @@ function buildResponseMsg(total_records, number_written) {
 function buildTopLevelErrMsg(err) {
     return handleHDBError(
         err,
-        CHECK_LOGS_WRAPPER(COMMON_ERROR_MSGS.DEFAULT_BULK_LOAD_ERR),
+        CHECK_LOGS_WRAPPER(HDB_ERROR_MSGS.DEFAULT_BULK_LOAD_ERR),
         HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR,
         logger.ERR,
-        COMMON_ERROR_MSGS.DEFAULT_BULK_LOAD_ERR + ' - ' + err
+        HDB_ERROR_MSGS.DEFAULT_BULK_LOAD_ERR + ' - ' + err
     );
 }

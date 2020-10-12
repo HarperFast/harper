@@ -5,7 +5,7 @@ const harperBridge = require('./harperBridge/harperBridge');
 const ReadTransactionLogObject = require('./ReadTransactionLogObject');
 const hdb_utils = require('../utility/common_utils');
 const hdb_terms = require('../utility/hdbTerms');
-const { COMMON_ERROR_MSGS } = require('../utility/errors/commonErrors');
+const { HDB_ERROR_MSGS } = require('../utility/errors/commonErrors');
 
 const SEARCH_TYPES = Object.values(hdb_terms.READ_TRANSACTION_LOG_SEARCH_TYPES_ENUM);
 
@@ -18,11 +18,11 @@ module.exports = readTransactionLog;
  */
 async function readTransactionLog(read_transaction_log_object){
     if(hdb_utils.isEmpty(read_transaction_log_object.schema)){
-        throw new Error(COMMON_ERROR_MSGS.SCHEMA_REQUIRED_ERR);
+        throw new Error(HDB_ERROR_MSGS.SCHEMA_REQUIRED_ERR);
     }
 
     if(hdb_utils.isEmpty(read_transaction_log_object.table)){
-        throw new Error(COMMON_ERROR_MSGS.TABLE_REQUIRED_ERR);
+        throw new Error(HDB_ERROR_MSGS.TABLE_REQUIRED_ERR);
     }
 
     //make sure schema/table exist

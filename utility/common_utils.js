@@ -529,10 +529,10 @@ function sendTransactionToSocketCluster(channel, transaction, originator) {
  */
 function checkGlobalSchemaTable(schema_name, table_name) {
     if (!global.hdb_schema[schema_name]) {
-        return hdb_errors.COMMON_ERROR_MSGS.SCHEMA_NOT_FOUND(schema_name);
+        return hdb_errors.HDB_ERROR_MSGS.SCHEMA_NOT_FOUND(schema_name);
     }
     if (!global.hdb_schema[schema_name] || !global.hdb_schema[schema_name][table_name]) {
-        return hdb_errors.COMMON_ERROR_MSGS.TABLE_NOT_FOUND(schema_name, table_name);
+        return hdb_errors.HDB_ERROR_MSGS.TABLE_NOT_FOUND(schema_name, table_name);
     }
 }
 
