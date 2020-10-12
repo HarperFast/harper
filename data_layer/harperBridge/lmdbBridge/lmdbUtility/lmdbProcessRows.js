@@ -6,6 +6,8 @@ const hdb_terms = require('../../../../utility/hdbTerms');
 const hdb_utils = require('../../../../utility/common_utils');
 const log = require('../../../../utility/logging/harper_logger');
 const uuid = require('uuid');
+const { handleHDBError, hdb_errors } = require('../../../../utility/errors/hdbError');
+const { HDB_ERROR_MSGS, HTTP_STATUS_CODES } = hdb_errors;
 
 module.exports = processRows;
 
@@ -35,11 +37,11 @@ function processRows(insert_obj, attributes, hash_attribute) {
  */
 function validateAttribute(attribute) {
     if (Buffer.byteLength(String(attribute)) > hdb_terms.INSERT_MODULE_ENUM.MAX_CHARACTER_SIZE) {
-        throw new Error(`transaction aborted due to attribute name ${attribute} being too long. Attribute names cannot be longer than ${hdb_terms.INSERT_MODULE_ENUM.MAX_CHARACTER_SIZE} bytes.`);
+        throw handleHDBError(new Error(), HDB_ERROR_MSGS.ATTR_NAME_LENGTH_ERR(attribute), HTTP_STATUS_CODES.BAD_REQUEST);
     }
 
     if (hdb_utils.isEmptyOrZeroLength(attribute) || hdb_utils.isEmpty(attribute.trim())) {
-        throw new Error('transaction aborted due to record(s) with an attribute name that is null, undefined or empty string');
+        throw handleHDBError(new Error(), HDB_ERROR_MSGS.ATTR_NAME_NULLISH_ERR, HTTP_STATUS_CODES.BAD_REQUEST);
     }
 }
 
@@ -59,18 +61,18 @@ function validateHash(record, hash_attribute, operation) {
         }
 
         log.error(`Update transaction aborted due to record with no hash value: ${JSON.stringify(record)}`);
-        throw new Error('transaction aborted due to record(s) with no hash value, check log for more info');
+        throw handleHDBError(new Error(), HDB_ERROR_MSGS.RECORD_MISSING_HASH_ERR, HTTP_STATUS_CODES.BAD_REQUEST);
 
     }
 
     if (Buffer.byteLength(String(record[hash_attribute])) > hdb_terms.INSERT_MODULE_ENUM.MAX_CHARACTER_SIZE) {
         log.error(record);
-        throw new Error(`transaction aborted due to record(s) with a hash value that exceeds ${hdb_terms.INSERT_MODULE_ENUM.MAX_CHARACTER_SIZE} bytes, check log for more info`);
+        throw handleHDBError(new Error(), HDB_ERROR_MSGS.HASH_VAL_LENGTH_ERR, HTTP_STATUS_CODES.BAD_REQUEST);
     }
 
     //keep this validation as we cannot allow forward slashes for hdb fs
     if (isNaN(record[hash_attribute]) && record[hash_attribute].includes('/')) {
         log.error(record);
-        throw new Error('transaction aborted due to record(s) with a hash value that contains a forward slash, check log for more info');
+        throw handleHDBError(new Error(), HDB_ERROR_MSGS.INVALID_FORWARD_SLASH_IN_HASH_ERR, HTTP_STATUS_CODES.BAD_REQUEST);
     }
 }

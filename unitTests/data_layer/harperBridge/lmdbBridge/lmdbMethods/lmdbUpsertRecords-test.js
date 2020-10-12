@@ -219,7 +219,6 @@ describe('Test lmdbUpsertRecords module',() => {
             let expected_return_result = {
                 new_attributes: [],
                 written_hashes: [110],
-                skipped_hashes: [],
                 schema_table: {
                     attributes: NO_NEW_ATTR_TEST,
                     hash_attribute: HASH_ATTRIBUTE_NAME,
@@ -270,7 +269,6 @@ describe('Test lmdbUpsertRecords module',() => {
             let expected_return_result = {
                 new_attributes: [],
                 written_hashes: [1],
-                skipped_hashes: [],
                 schema_table: {
                     attributes: NO_NEW_ATTR_TEST,
                     hash_attribute: HASH_ATTRIBUTE_NAME,
@@ -314,7 +312,6 @@ describe('Test lmdbUpsertRecords module',() => {
             let expected_return_result = {
                 new_attributes: [],
                 written_hashes: [NEW_HASH_VALUE],
-                skipped_hashes: [],
                 schema_table: {
                     attributes: NO_NEW_ATTR_TEST,
                     hash_attribute: HASH_ATTRIBUTE_NAME,
@@ -374,7 +371,6 @@ describe('Test lmdbUpsertRecords module',() => {
             let expected_return_result = {
                 new_attributes: [],
                 written_hashes: [110, 1, NEW_HASH_VALUE],
-                skipped_hashes: [],
                 schema_table: {
                     attributes: NO_NEW_ATTR_TEST,
                     hash_attribute: HASH_ATTRIBUTE_NAME,
@@ -439,8 +435,22 @@ describe('Test lmdbUpsertRecords module',() => {
                 ]
             };
 
-            let invalid_hash_error = new Error('transaction aborted due to record(s) with a hash value that contains a forward slash, check log for more info');
-            await test_utils.assertErrorAsync(lmdb_upsert_records, [upsert_obj], invalid_hash_error);
+            let expected_err_values = {
+                http_resp_code: 400,
+                http_resp_msg: "transaction aborted due to record(s) with a hash value that contains a forward slash, check log for more info",
+                message: "transaction aborted due to record(s) with a hash value that contains a forward slash, check log for more info",
+                type: "Error"
+            };
+            let test_result;
+            try {
+                await lmdb_upsert_records(upsert_obj);
+            } catch (err) {
+                test_result = err;
+            }
+
+            Object.keys(test_result).forEach(key => {
+                assert.equal(test_result[key], expected_err_values[key])
+            })
         });
     });
 });

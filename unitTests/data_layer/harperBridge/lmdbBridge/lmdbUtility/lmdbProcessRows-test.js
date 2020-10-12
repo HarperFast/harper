@@ -8,10 +8,11 @@ const process_rows_function = lmdb_process_rows.__get__('processRows');
 const hdb_terms = require('../../../../../utility/hdbTerms');
 const uuid = require('uuid');
 const sinon = require('sinon');
-
 const MOCK_UUID_VALUE = 'cool-uuid-value';
+
 const sandbox = sinon.createSandbox();
 
+const { TEST_INSERT_OPS_ERROR_MSGS } = require('../../../../commonTestErrors');
 const test_utils = require('../../../../test_utils');
 const assert = require('assert');
 
@@ -63,8 +64,8 @@ const ATTRIBUTES_TEST = [
     "height"
 ];
 
-const NO_HASH_VALUE_ERROR = new Error('transaction aborted due to record(s) with no hash value, check log for more info');
-const EMPTY_ATTRIBUTE_NAME_ERROR = new Error('transaction aborted due to record(s) with an attribute name that is null, undefined or empty string');
+const NO_HASH_VALUE_ERROR = test_utils.generateHDBError(TEST_INSERT_OPS_ERROR_MSGS.RECORD_MISSING_HASH_ERR, 400);
+const EMPTY_ATTRIBUTE_NAME_ERROR = test_utils.generateHDBError(TEST_INSERT_OPS_ERROR_MSGS.ATTR_NAME_NULLISH_ERR, 400);
 
 const LONG_CHAR_TEST = "z2xFuWBiQgjAAAzgAK80e35FCuFzNHpicBWzsWZW055mFHwBxdU5yE5KlTQRzcZ04UlBTdhzDrVn1k1fuQCN9" +
     "faotQUlygf8Hv3E89f2v3KRzAX5FylEKwv4GJpSoZbXpgJ1mhmOjGUCAh3sipI5rVV0yvz6dbkXOw7xE5XlCHBRnc3T6BVyHIlUmFdlBowy" +
@@ -142,7 +143,7 @@ describe('Test lmdbProcessRows module', ()=>{
             test_record[HASH_ATTRIBUTE_NAME] = LONG_CHAR_TEST;
 
             test_utils.assertErrorSync(validate_hash_function, [test_record, HASH_ATTRIBUTE_NAME, hdb_terms.OPERATIONS_ENUM.INSERT],
-                new Error(`transaction aborted due to record(s) with a hash value that exceeds ${hdb_terms.INSERT_MODULE_ENUM.MAX_CHARACTER_SIZE} bytes, check log for more info`),
+                test_utils.generateHDBError(TEST_INSERT_OPS_ERROR_MSGS.HASH_VAL_LENGTH_ERR, 400),
                 'test id value too long');
         });
 
@@ -151,7 +152,8 @@ describe('Test lmdbProcessRows module', ()=>{
             test_record[HASH_ATTRIBUTE_NAME] = "slash/er";
 
             test_utils.assertErrorSync(validate_hash_function, [test_record, HASH_ATTRIBUTE_NAME, hdb_terms.OPERATIONS_ENUM.INSERT],
-                new Error('transaction aborted due to record(s) with a hash value that contains a forward slash, check log for more info'), 'test id value with slash "/"');
+                test_utils.generateHDBError(TEST_INSERT_OPS_ERROR_MSGS.INVALID_FORWARD_SLASH_IN_HASH_ERR, 400),
+                'test id value with slash "/"');
         });
 
         it('Test happy path', () => {
@@ -170,7 +172,7 @@ describe('Test lmdbProcessRows module', ()=>{
     describe("test validateAttribute function", ()=>{
         it("test attribute name too long", ()=>{
             test_utils.assertErrorSync(validate_attribute_function, [LONG_CHAR_TEST],
-                new Error(`transaction aborted due to attribute name ${LONG_CHAR_TEST} being too long. Attribute names cannot be longer than ${hdb_terms.INSERT_MODULE_ENUM.MAX_CHARACTER_SIZE} bytes.`),
+                test_utils.generateHDBError(TEST_INSERT_OPS_ERROR_MSGS.ATTR_NAME_LENGTH_ERR(LONG_CHAR_TEST), 400),
                 'attribute name too long');
         });
 

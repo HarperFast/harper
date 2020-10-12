@@ -126,7 +126,8 @@ class LMDBBridge extends BridgeMethods {
         try {
             return await lmdbUpsertRecords(upsert_obj);
         } catch(err) {
-            throw handleHDBError(err, null, null, log.ERR, err);
+            log.error(err);
+            throw err;
         }
     }
 

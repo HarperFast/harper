@@ -178,7 +178,7 @@ async function upsertData(upsert_object) {
     try {
         let bridge_upsert_result = await harperBridge.upsertRecords(upsert_object);
 
-        return returnObject(UPSERT_ACTION, bridge_upsert_result.written_hashes, upsert_object, bridge_upsert_result.skipped_hashes, bridge_upsert_result.new_attributes, bridge_upsert_result.txn_time);
+        return returnObject(UPSERT_ACTION, bridge_upsert_result.written_hashes, upsert_object, null, bridge_upsert_result.new_attributes, bridge_upsert_result.txn_time);
     } catch (e) {
         throw (e);
     }
@@ -209,6 +209,7 @@ function returnObject(action, written_hashes, object, skipped, new_attributes, t
 
     if (action === UPSERT_ACTION) {
         return_object.upserted_hashes = written_hashes;
+        delete return_object.skipped_hashes;
         return return_object;
     }
 

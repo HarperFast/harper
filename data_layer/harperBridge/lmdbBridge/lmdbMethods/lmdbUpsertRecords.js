@@ -49,7 +49,6 @@ async function lmdbUpsertRecords(upsert_obj) {
 
     return {
         written_hashes: lmdb_response.written_hashes,
-        skipped_hashes: lmdb_response.skipped_hashes,
         schema_table,
         new_attributes,
         txn_time: lmdb_response.txn_time

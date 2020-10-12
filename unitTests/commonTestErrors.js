@@ -36,6 +36,14 @@ const LMDB_ERRORS_ENUM = {
     CANNOT_DROP_TABLE_HASH_ATTRIBUTE: new Error('cannot drop a table\'s hash attribute')
 };
 
+const TEST_INSERT_OPS_ERROR_MSGS = {
+    ATTR_NAME_LENGTH_ERR: (attr_name) => `transaction aborted due to attribute name ${attr_name} being too long. Attribute names cannot be longer than 250 bytes.`,
+    ATTR_NAME_NULLISH_ERR: 'transaction aborted due to record(s) with an attribute name that is null, undefined or empty string',
+    HASH_VAL_LENGTH_ERR: 'transaction aborted due to record(s) with a hash value that exceeds 250 bytes, check log for more info',
+    INVALID_FORWARD_SLASH_IN_HASH_ERR: 'transaction aborted due to record(s) with a hash value that contains a forward slash, check log for more info',
+    RECORD_MISSING_HASH_ERR: 'transaction aborted due to record(s) with no hash value, check log for more info'
+};
+
 const TEST_BULK_LOAD_ERROR_MSGS = {
     DEFAULT_BULK_LOAD_ERR: 'There was an error during your bulk load into HarperDB.',
     DOWNLOAD_FILE_ERR: (file_name) => `There was an error downloading '${file_name}'.`,
@@ -103,6 +111,7 @@ const TEST_DEFAULT_ERROR_RESP = TEST_DEFAULT_ERROR_MSGS[HTTP_STATUS_CODES.INTERN
 module.exports = {
     CHECK_LOGS_WRAPPER,
     LMDB_ERRORS_ENUM,
+    TEST_INSERT_OPS_ERROR_MSGS,
     TEST_BULK_LOAD_ERROR_MSGS,
     TEST_DEFAULT_ERROR_RESP,
     TEST_ROLE_PERMS_ERROR,
