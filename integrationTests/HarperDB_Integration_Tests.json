@@ -17296,6 +17296,70 @@
 							"response": []
 						},
 						{
+							"name": "upsert multiple rows with invalid attribute key",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "017ee3da-604b-458b-b066-c14b8ed02fbc",
+										"exec": [
+											"pm.test(\"Status code is 500\", function () {",
+											"    pm.response.to.have.status(500);",
+											"});",
+											"",
+											"pm.test(\"Receives invalid attribute name error msg\", function () {",
+											"    const errorMsg = pm.response.json().error;",
+											"    pm.expect(errorMsg).to.equal(",
+											"        \"Attribute names cannot include backticks or forward slashes\"",
+											"    );",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"type": "text",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n    \"operation\": \"upsert\",\n    \"schema\": \"dev\",\n    \"table\": \"invalid_attribute\",\n    \"records\": [\n        {\n            \"id\": 100,\n            \"some/attribute\": \"some_attribute\"\n        },\n        {\n            \"id\": 101,\n            \"some-`attribute`\": \"some_attribute\"\n        }\n    ]\n}",
+									"options": {
+										"raw": {}
+									}
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
 							"name": "insert some invalid attribute names - multiple rows",
 							"event": [
 								{
@@ -17852,7 +17916,7 @@
 						{
 							"listen": "test",
 							"script": {
-								"type": "text/javascript",
+								"id": "9b12c9c6-cd11-402e-840e-274c85056d22",
 								"exec": [
 									"pm.test(\"Update employee id 1 address\", function () {",
 									"    var jsonData = pm.response.json();",
@@ -17863,7 +17927,7 @@
 									"    pm.response.to.have.status(200);",
 									"});"
 								],
-								"id": "9b12c9c6-cd11-402e-840e-274c85056d22"
+								"type": "text/javascript"
 							}
 						}
 					],
@@ -17901,7 +17965,7 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\"operation\":\"update\",\n\"schema\":\"{{schema}}\",\n\"table\":\"{{emps_tb}}\",\n\"records\": [\n  {\n    \"{{emps_id}}\": 1,\n    \"address\": \"def1234\"\n  }\n]\n\n}",
+							"raw": "{\n    \"operation\": \"update\",\n    \"schema\": \"{{schema}}\",\n    \"table\": \"{{emps_tb}}\",\n    \"records\": [\n        {\n            \"{{emps_id}}\": 1,\n            \"address\": \"def1234\"\n        }\n    ]\n}",
 							"options": {
 								"raw": {}
 							}
@@ -20641,7 +20705,7 @@
 					"response": []
 				},
 				{
-					"name": "Insert into products 1 new record & one that exists",
+					"name": "Upsert into products 1 new record & 2 that exist",
 					"event": [
 						{
 							"listen": "test",
@@ -20654,11 +20718,10 @@
 									"",
 									"pm.test(\"Insert validate\", function () {",
 									"    var jsonData = pm.response.json();",
-									"    pm.expect(jsonData.inserted_hashes.length).to.eql(1);",
-									"    pm.expect(jsonData.inserted_hashes).to.eql([100]);",
-									"    pm.expect(jsonData.skipped_hashes.length).to.eql(1);",
-									"    pm.expect(jsonData.skipped_hashes).to.eql([1]);",
-									"    pm.expect(jsonData.message).to.eql(\"inserted 1 of 2 records\");",
+									"    pm.expect(jsonData.upserted_hashes.length).to.eql(3);",
+									"    pm.expect(jsonData.upserted_hashes).to.eql([1, 100, 101]);",
+									"    pm.expect(jsonData.skipped_hashes).to.eql(undefined);",
+									"    pm.expect(jsonData.message).to.eql(\"upserted 3 of 3 records\");",
 									"});"
 								],
 								"type": "text/javascript"
@@ -20699,7 +20762,153 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\t\"operation\":\"insert\",\n\t\"schema\":\"{{schema}}\",\n\t\"table\":\"{{prod_tb}}\",\n\t\"records\": [\n\t  {\n        \"categoryid\": 1,\n        \"unitsnnorder\": 0,\n        \"unitsinstock\": 39,\n        \"supplierid\": 1,\n        \"productid\": 1,\n        \"discontinued\": \"False\",\n        \"reorderlevel\": 10,\n        \"productname\": \"Chai\",\n        \"quantityperunit\": \"10 boxes x 20 bags\",\n        \"unitprice\": 18\n    },\n\t{\n        \"categoryid\": 1,\n        \"unitsnnorder\": 0,\n        \"unitsinstock\": 39,\n        \"supplierid\": 1,\n        \"productid\": 100,\n        \"discontinued\": \"False\",\n        \"reorderlevel\": 10,\n        \"productname\": \"Chai\",\n        \"quantityperunit\": \"10 boxes x 20 bags\",\n        \"unitprice\": 18\n    }\n\t]\n}",
+							"raw": "{\n    \"operation\": \"upsert\",\n    \"schema\": \"{{schema}}\",\n    \"table\": \"{{prod_tb}}\",\n    \"records\": [\n        {\n            \"categoryid\": 1,\n            \"unitsnnorder\": 0,\n            \"unitsinstock\": 39,\n            \"supplierid\": 1,\n            \"productid\": 1,\n            \"discontinued\": true,\n            \"reorderlevel\": 10,\n            \"productname\": \"Chai\",\n            \"quantityperunit\": \"10 boxes x 20 bags\",\n            \"unitprice\": 18\n        },\n        {\n            \"productid\": 100,\n            \"categoryid\": 1,\n            \"unitsnnorder\": 0,\n            \"unitsinstock\": 39,\n            \"supplierid\": 1,\n            \"discontinued\": true,\n            \"reorderlevel\": 10,\n            \"productname\": \"Chai\",\n            \"quantityperunit\": \"10 boxes x 20 bags\",\n            \"unitprice\": 18\n        },\n        {\n            \"productid\": 101,\n            \"categoryid\": 1,\n            \"unitsnnorder\": 0,\n            \"unitsinstock\": 39,\n            \"supplierid\": 1,\n            \"discontinued\": true,\n            \"reorderlevel\": 10,\n            \"productname\": \"Chai\",\n            \"quantityperunit\": \"10 boxes x 20 bags\",\n            \"unitprice\": 18\n        }\n    ]\n}",
+							"options": {
+								"raw": {}
+							}
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Confirm upserted records exist and are updated",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "9235421a-c624-4b27-85eb-ab44466aab9a",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"Results include correct 3 records\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    const expectedHashes = [1, 100, 101];",
+									"    jsonData.forEach(row => {",
+									"        pm.expect(expectedHashes.includes(row.productid)).to.be.true;",
+									"        pm.expect(row.discontinued).to.be.true;    ",
+									"    });",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"operation\": \"search_by_value\",\n    \"schema\": \"{{schema}}\",\n    \"table\": \"{{prod_tb}}\",\n    \"search_attribute\": \"discontinued\",\n    \"search_value\": true,\n    \"get_attributes\": [\n        \"*\"\n    ]\n}",
+							"options": {
+								"raw": {}
+							}
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Upsert into products 3 new records w/o hash vals",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "8b7adbfe-d0ff-4c58-b310-60ba6d94ea7f",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"Insert validate\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.upserted_hashes.length).to.eql(3);",
+									"    pm.expect(jsonData.skipped_hashes).to.eql(undefined);",
+									"    pm.expect(jsonData.message).to.eql(\"upserted 3 of 3 records\");",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"operation\": \"upsert\",\n    \"schema\": \"{{schema}}\",\n    \"table\": \"{{prod_tb}}\",\n    \"records\": [\n        {\n            \"categoryid\": 1,\n            \"unitsnnorder\": 0,\n            \"unitsinstock\": 39,\n            \"supplierid\": 1,\n            \"discontinued\": \"True\",\n            \"reorderlevel\": 10,\n            \"productname\": \"Chai\",\n            \"quantityperunit\": \"10 boxes x 20 bags\",\n            \"unitprice\": 18\n        },\n        {\n            \"categoryid\": 1,\n            \"unitsnnorder\": 0,\n            \"unitsinstock\": 39,\n            \"supplierid\": 1,\n            \"discontinued\": \"True\",\n            \"reorderlevel\": 10,\n            \"productname\": \"Chai\",\n            \"quantityperunit\": \"10 boxes x 20 bags\",\n            \"unitprice\": 18\n        },\n        {\n            \"categoryid\": 1,\n            \"unitsnnorder\": 0,\n            \"unitsinstock\": 39,\n            \"supplierid\": 1,\n            \"discontinued\": \"True\",\n            \"reorderlevel\": 10,\n            \"productname\": \"Chai\",\n            \"quantityperunit\": \"10 boxes x 20 bags\",\n            \"unitprice\": 18\n        }\n    ]\n}",
 							"options": {
 								"raw": {}
 							}
@@ -46279,6 +46488,16 @@
 									"    pm.expect(jsonData.error === \"attribute 'created_attribute' already exists in dev.AttributeDropTest\");",
 									"});",
 									""
+								],
+								"type": "text/javascript"
+							}
+						},
+						{
+							"listen": "prerequest",
+							"script": {
+								"id": "6424190f-c3c3-421f-96d5-88dae798b474",
+								"exec": [
+									"setTimeout(() => {}, 200);"
 								],
 								"type": "text/javascript"
 							}
