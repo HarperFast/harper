@@ -12,7 +12,7 @@ const MOCK_UUID_VALUE = 'cool-uuid-value';
 
 const sandbox = sinon.createSandbox();
 
-const { TEST_INSERT_OPS_ERROR_MSGS } = require('../../../../commonTestErrors');
+const { TEST_WRITE_OPS_ERROR_MSGS } = require('../../../../commonTestErrors');
 const test_utils = require('../../../../test_utils');
 const assert = require('assert');
 
@@ -64,8 +64,8 @@ const ATTRIBUTES_TEST = [
     "height"
 ];
 
-const NO_HASH_VALUE_ERROR = test_utils.generateHDBError(TEST_INSERT_OPS_ERROR_MSGS.RECORD_MISSING_HASH_ERR, 400);
-const EMPTY_ATTRIBUTE_NAME_ERROR = test_utils.generateHDBError(TEST_INSERT_OPS_ERROR_MSGS.ATTR_NAME_NULLISH_ERR, 400);
+const NO_HASH_VALUE_ERROR = test_utils.generateHDBError(TEST_WRITE_OPS_ERROR_MSGS.RECORD_MISSING_HASH_ERR, 400);
+const EMPTY_ATTRIBUTE_NAME_ERROR = test_utils.generateHDBError(TEST_WRITE_OPS_ERROR_MSGS.ATTR_NAME_NULLISH_ERR, 400);
 
 const LONG_CHAR_TEST = "z2xFuWBiQgjAAAzgAK80e35FCuFzNHpicBWzsWZW055mFHwBxdU5yE5KlTQRzcZ04UlBTdhzDrVn1k1fuQCN9" +
     "faotQUlygf8Hv3E89f2v3KRzAX5FylEKwv4GJpSoZbXpgJ1mhmOjGUCAh3sipI5rVV0yvz6dbkXOw7xE5XlCHBRnc3T6BVyHIlUmFdlBowy" +
@@ -143,7 +143,7 @@ describe('Test lmdbProcessRows module', ()=>{
             test_record[HASH_ATTRIBUTE_NAME] = LONG_CHAR_TEST;
 
             test_utils.assertErrorSync(validate_hash_function, [test_record, HASH_ATTRIBUTE_NAME, hdb_terms.OPERATIONS_ENUM.INSERT],
-                test_utils.generateHDBError(TEST_INSERT_OPS_ERROR_MSGS.HASH_VAL_LENGTH_ERR, 400),
+                test_utils.generateHDBError(TEST_WRITE_OPS_ERROR_MSGS.HASH_VAL_LENGTH_ERR, 400),
                 'test id value too long');
         });
 
@@ -152,7 +152,7 @@ describe('Test lmdbProcessRows module', ()=>{
             test_record[HASH_ATTRIBUTE_NAME] = "slash/er";
 
             test_utils.assertErrorSync(validate_hash_function, [test_record, HASH_ATTRIBUTE_NAME, hdb_terms.OPERATIONS_ENUM.INSERT],
-                test_utils.generateHDBError(TEST_INSERT_OPS_ERROR_MSGS.INVALID_FORWARD_SLASH_IN_HASH_ERR, 400),
+                test_utils.generateHDBError(TEST_WRITE_OPS_ERROR_MSGS.INVALID_FORWARD_SLASH_IN_HASH_ERR, 400),
                 'test id value with slash "/"');
         });
 
@@ -172,7 +172,7 @@ describe('Test lmdbProcessRows module', ()=>{
     describe("test validateAttribute function", ()=>{
         it("test attribute name too long", ()=>{
             test_utils.assertErrorSync(validate_attribute_function, [LONG_CHAR_TEST],
-                test_utils.generateHDBError(TEST_INSERT_OPS_ERROR_MSGS.ATTR_NAME_LENGTH_ERR(LONG_CHAR_TEST), 400),
+                test_utils.generateHDBError(TEST_WRITE_OPS_ERROR_MSGS.ATTR_NAME_LENGTH_ERR(LONG_CHAR_TEST), 400),
                 'attribute name too long');
         });
 

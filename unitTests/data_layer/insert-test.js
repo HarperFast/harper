@@ -7,10 +7,6 @@ const insert_rw = rewire('../../data_layer/insert');
 const assert = require('assert');
 const sinon = require('sinon');
 
-const { TEST_INSERT_OPS_ERROR_MSGS } = require('../commonTestErrors');
-
-const HASH_ATTRIBUTE_NAME = 'id';
-
 const UPSERT_OBJECT_TEST = {
     operation: "upsert",
     schema: 'dev',

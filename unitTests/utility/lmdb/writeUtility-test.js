@@ -48,6 +48,10 @@ const UPDATE_ONE_FAKE_RECORD_EXPECTED = {__blob__: null, __createdtime__: TIMEST
 
 const TXN_TIMESTAMP = common.getMicroTime();
 
+const generateValidationErr = (msg) => {
+    return test_utils.generateHDBError(msg, 400);
+}
+
 describe("Test writeUtility module", ()=>{
     let date_stub;
     let rw_env_util;
@@ -549,16 +553,16 @@ describe("Test writeUtility module", ()=>{
         });
 
         it("test validation", ()=>{
-            test_utils.assertErrorSync(write_utility.upsertRecords, [], LMDB_TEST_ERRORS.ENV_REQUIRED, "pass no args");
-            test_utils.assertErrorSync(write_utility.upsertRecords, ['test'], LMDB_TEST_ERRORS.INVALID_ENVIRONMENT, "pass invalid env");
-            test_utils.assertErrorSync(write_utility.upsertRecords, [env], LMDB_TEST_ERRORS.HASH_ATTRIBUTE_REQUIRED, "pass valid env, no other args");
-            test_utils.assertErrorSync(write_utility.upsertRecords, [env, HASH_ATTRIBUTE_NAME], LMDB_TEST_ERRORS.WRITE_ATTRIBUTES_REQUIRED, "pass valid env hash_attribute");
-            test_utils.assertErrorSync(write_utility.upsertRecords, [env, HASH_ATTRIBUTE_NAME, HASH_ATTRIBUTE_NAME], LMDB_TEST_ERRORS.WRITE_ATTRIBUTES_MUST_BE_ARRAY,
+            test_utils.assertErrorSync(write_utility.upsertRecords, [], generateValidationErr(LMDB_TEST_ERRORS.ENV_REQUIRED.message), "pass no args");
+            test_utils.assertErrorSync(write_utility.upsertRecords, ['test'], generateValidationErr(LMDB_TEST_ERRORS.INVALID_ENVIRONMENT.message), "pass invalid env");
+            test_utils.assertErrorSync(write_utility.upsertRecords, [env], generateValidationErr(LMDB_TEST_ERRORS.HASH_ATTRIBUTE_REQUIRED.message), "pass valid env, no other args");
+            test_utils.assertErrorSync(write_utility.upsertRecords, [env, HASH_ATTRIBUTE_NAME], generateValidationErr(LMDB_TEST_ERRORS.WRITE_ATTRIBUTES_REQUIRED.message), "pass valid env hash_attribute");
+            test_utils.assertErrorSync(write_utility.upsertRecords, [env, HASH_ATTRIBUTE_NAME, HASH_ATTRIBUTE_NAME], generateValidationErr(LMDB_TEST_ERRORS.WRITE_ATTRIBUTES_MUST_BE_ARRAY.message),
                 "pass valid env hash_attribute, invalid all_attributes");
-            test_utils.assertErrorSync(write_utility.upsertRecords, [env, HASH_ATTRIBUTE_NAME, ALL_ATTRIBUTES], LMDB_TEST_ERRORS.RECORDS_REQUIRED,
+            test_utils.assertErrorSync(write_utility.upsertRecords, [env, HASH_ATTRIBUTE_NAME, ALL_ATTRIBUTES], generateValidationErr(LMDB_TEST_ERRORS.RECORDS_REQUIRED.message),
                 "pass valid env hash_attribute all_attributes");
             let record = test_utils.deepClone(ONE_RECORD_ARRAY[0]);
-            test_utils.assertErrorSync(write_utility.upsertRecords, [env, HASH_ATTRIBUTE_NAME, ALL_ATTRIBUTES, record], LMDB_TEST_ERRORS.RECORDS_MUST_BE_ARRAY,
+            test_utils.assertErrorSync(write_utility.upsertRecords, [env, HASH_ATTRIBUTE_NAME, ALL_ATTRIBUTES, record], generateValidationErr(LMDB_TEST_ERRORS.RECORDS_MUST_BE_ARRAY.message),
                 "pass valid env hash_attribute all_attributes, invalid records");
             test_utils.assertErrorSync(write_utility.upsertRecords, [env, HASH_ATTRIBUTE_NAME, ALL_ATTRIBUTES, []], undefined,
                 "pass valid env hash_attribute all_attributes records");

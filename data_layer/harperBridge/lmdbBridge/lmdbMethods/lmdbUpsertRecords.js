@@ -9,8 +9,7 @@ const lmdb_upsert_records = require('../../../../utility/lmdb/writeUtility').ups
 const environment_utility = require('../../../../utility/lmdb/environmentUtility');
 const path = require('path');
 const {getBaseSchemaPath} = require('../lmdbUtility/initializePaths');
-const write_transaction = require('../lmdbUtility/lmdbWriteTransaction');
-const logger = require('../../../../utility/logging/harper_logger');
+const { handleValidationError } = require('../../../../utility/errors/hdbError');
 
 module.exports = lmdbUpsertRecords;
 
@@ -21,7 +20,14 @@ module.exports = lmdbUpsertRecords;
  * @returns {{ skipped_hashes: *, written_hashes: *, schema_table: *, new_attributes: *, txn_time: * }}
  */
 async function lmdbUpsertRecords(upsert_obj) {
-    let { schema_table, attributes } = insert_update_validate(upsert_obj);
+    let validation_result;
+    try {
+        validation_result = insert_update_validate(upsert_obj);
+    } catch(err) {
+        throw handleValidationError(err, err.message);
+    }
+
+    let { schema_table, attributes} = validation_result;
 
     lmdb_process_rows(upsert_obj, attributes, schema_table.hash_attribute);
 

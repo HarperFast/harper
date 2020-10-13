@@ -23,7 +23,7 @@ const assert = require('assert');
 const fs = require('fs-extra');
 const sinon = require('sinon');
 const systemSchema = require('../../../../../json/systemSchema');
-const { TEST_INSERT_OPS_ERROR_MSGS } = require('../../../../commonTestErrors');
+const { TEST_WRITE_OPS_ERROR_MSGS } = require('../../../../commonTestErrors');
 
 let insert_date = new Date();
 insert_date.setMinutes(insert_date.getMinutes() - 10);
@@ -439,7 +439,7 @@ describe('Test lmdbUpsertRecords module',() => {
                 ]
             };
 
-            const expected_err_values = test_utils.generateHDBError(TEST_INSERT_OPS_ERROR_MSGS.INVALID_FORWARD_SLASH_IN_HASH_ERR, 400)
+            const expected_err_values = test_utils.generateHDBError(TEST_WRITE_OPS_ERROR_MSGS.INVALID_FORWARD_SLASH_IN_HASH_ERR, 400)
             await test_utils.assertErrorAsync(lmdb_upsert_records, [upsert_obj], expected_err_values);
         });
 
@@ -459,7 +459,7 @@ describe('Test lmdbUpsertRecords module',() => {
                 ]
             };
 
-            const expected_err_values = test_utils.generateHDBError(TEST_INSERT_OPS_ERROR_MSGS.HASH_VAL_LENGTH_ERR, 400)
+            const expected_err_values = test_utils.generateHDBError(TEST_WRITE_OPS_ERROR_MSGS.HASH_VAL_LENGTH_ERR, 400)
             await test_utils.assertErrorAsync(lmdb_upsert_records, [upsert_obj], expected_err_values);
         });
 
@@ -480,7 +480,7 @@ describe('Test lmdbUpsertRecords module',() => {
                 ]
             };
 
-            const expected_err_values = test_utils.generateHDBError(TEST_INSERT_OPS_ERROR_MSGS.ATTR_NAME_LENGTH_ERR(LONG_CHAR_TEST), 400)
+            const expected_err_values = test_utils.generateHDBError(TEST_WRITE_OPS_ERROR_MSGS.ATTR_NAME_LENGTH_ERR(LONG_CHAR_TEST), 400)
             await test_utils.assertErrorAsync(lmdb_upsert_records, [upsert_obj], expected_err_values);
         });
     });

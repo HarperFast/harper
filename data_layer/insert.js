@@ -165,7 +165,7 @@ async function updateData(update_object) {
 
 /**
  * Upsert the data in the upsert_object parameter.
- * @param upsert_object - The data that will be updated in the database
+ * @param upsert_object - Represents the data that will be upserted in the database
  */
 async function upsertData(upsert_object) {
     if (upsert_object.operation !== 'upsert') {
@@ -181,40 +181,42 @@ async function upsertData(upsert_object) {
         let bridge_upsert_result = await harperBridge.upsertRecords(upsert_object);
 
         return returnObject(UPSERT_ACTION, bridge_upsert_result.written_hashes, upsert_object, [], bridge_upsert_result.new_attributes, bridge_upsert_result.txn_time);
-    } catch (e) {
-        throw (e);
+    } catch(err) {
+        const log_msg = `There was an error during an upsert op: ${err}`;
+        throw handleHDBError(err, null, null, log.ERR, log_msg);
     }
 }
 
 /**
- * constructs return object for insert and update.
+ * Constructs return object for insert, update, and upsert.
  * @param action
  * @param written_hashes
  * @param object
  * @param skipped - not included for upsert ops
  * @param new_attributes
  * @param txn_time
- * @returns {{skipped_hashes: *, message: string}}
+ * @returns {{ message: string, new_attributes: *, txn_time: * }}
  */
+
 function returnObject(action, written_hashes, object, skipped, new_attributes, txn_time) {
     let return_object = {
         message: `${action} ${written_hashes.length} of ${written_hashes.length + skipped.length} records`,
-        skipped_hashes: skipped,
         new_attributes,
         txn_time
     };
 
     if (action === INSERT_ACTION) {
         return_object.inserted_hashes = written_hashes;
+        return_object.skipped_hashes = skipped;
         return return_object;
     }
 
     if (action === UPSERT_ACTION) {
         return_object.upserted_hashes = written_hashes;
-        delete return_object.skipped_hashes;
         return return_object;
     }
 
     return_object.update_hashes = written_hashes;
+    return_object.skipped_hashes = skipped;
     return return_object;
 }

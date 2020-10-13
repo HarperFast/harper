@@ -1,7 +1,7 @@
 "use strict";
 
 const log = require('../../../utility/logging/harper_logger');
-const { handleHDBError, hdb_errors } = require('../../../utility/errors/hdbError');
+const { handleHDBError,hdb_errors  } = require('../../../utility/errors/hdbError');
 const BridgeMethods = require("../BridgeMethods");
 const lmdbCreateAttribute = require('./lmdbMethods/lmdbCreateAttribute');
 const lmdbCreateRecords = require('./lmdbMethods/lmdbCreateRecords');
@@ -126,8 +126,10 @@ class LMDBBridge extends BridgeMethods {
         try {
             return await lmdbUpsertRecords(upsert_obj);
         } catch(err) {
-            log.error(err);
-            throw err;
+            //NOTE: this method call will either return the HdbError generated below this OR create a new HdbError w/ the
+            // default system error msg and 500 code AND log the error caught here (the error log will only happen if the
+            // error has not already been handled (i.e. translated and passed as a HdbError)
+            throw handleHDBError(err, null, null, log.ERR, err);
         }
     }
 

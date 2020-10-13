@@ -7505,8 +7505,8 @@
 									"script": {
 										"id": "b3e787e1-a3db-406f-bbec-05475e2391cd",
 										"exec": [
-											"pm.test(\"Status code is 500\", function () {",
-											"    pm.response.to.have.status(500);",
+											"pm.test(\"Status code is 400\", function () {",
+											"    pm.response.to.have.status(400);",
 											"});",
 											"",
 											"pm.test(\"Receives invalid SQL error msg\", function () {",
@@ -7569,8 +7569,8 @@
 									"script": {
 										"id": "8381ba25-55c0-4ae4-be08-0ad56bfe26b3",
 										"exec": [
-											"pm.test(\"Status code is 500\", function () {",
-											"    pm.response.to.have.status(500);",
+											"pm.test(\"Status code is 400\", function () {",
+											"    pm.response.to.have.status(400);",
 											"});",
 											"",
 											"pm.test(\"Receives invalid SQL error msg\", function () {",
@@ -7633,8 +7633,8 @@
 									"script": {
 										"id": "2d7f56c9-018e-4222-a683-4e02a5e7a5a8",
 										"exec": [
-											"pm.test(\"Status code is 500\", function () {",
-											"    pm.response.to.have.status(500);",
+											"pm.test(\"Status code is 400\", function () {",
+											"    pm.response.to.have.status(400);",
 											"});",
 											"",
 											"pm.test(\"Receives invalid SQL error msg\", function () {",
@@ -7697,8 +7697,8 @@
 									"script": {
 										"id": "24ef8c7c-80c6-43ea-92fc-c35514263100",
 										"exec": [
-											"pm.test(\"Status code is 500\", function () {",
-											"    pm.response.to.have.status(500);",
+											"pm.test(\"Status code is 400\", function () {",
+											"    pm.response.to.have.status(400);",
 											"});",
 											"",
 											"pm.test(\"Receives invalid SQL error msg\", function () {",
@@ -7761,8 +7761,8 @@
 									"script": {
 										"id": "06e12174-d29c-48a2-ad80-b39f18600314",
 										"exec": [
-											"pm.test(\"Status code is 500\", function () {",
-											"    pm.response.to.have.status(500);",
+											"pm.test(\"Status code is 400\", function () {",
+											"    pm.response.to.have.status(400);",
 											"});",
 											"",
 											"pm.test(\"Receives invalid SQL error msg\", function () {",
@@ -17047,8 +17047,8 @@
 									"script": {
 										"id": "d85b2304-4c18-48ca-874c-edf4664e1776",
 										"exec": [
-											"pm.test(\"Status code is 500\", function () {",
-											"    pm.response.to.have.status(500);",
+											"pm.test(\"Status code is 400\", function () {",
+											"    pm.response.to.have.status(400);",
 											"});",
 											"",
 											"pm.test(\"Receives invalid attribute name error msg\", function () {",
@@ -17111,8 +17111,8 @@
 									"script": {
 										"id": "8b9d8f4f-fd00-4249-a900-06fd1632ad42",
 										"exec": [
-											"pm.test(\"Status code is 500\", function () {",
-											"    pm.response.to.have.status(500);",
+											"pm.test(\"Status code is 400\", function () {",
+											"    pm.response.to.have.status(400);",
 											"});",
 											"",
 											"pm.test(\"Receives invalid attribute name error msg\", function () {",
@@ -17175,8 +17175,8 @@
 									"script": {
 										"id": "e99d1bd0-e602-45cd-9462-ea351da1a2f6",
 										"exec": [
-											"pm.test(\"Status code is 500\", function () {",
-											"    pm.response.to.have.status(500);",
+											"pm.test(\"Status code is 400\", function () {",
+											"    pm.response.to.have.status(400);",
 											"});",
 											"",
 											"pm.test(\"Receives invalid attribute name error msg\", function () {",
@@ -17239,8 +17239,8 @@
 									"script": {
 										"id": "93dda379-9965-485e-a484-a0fff71b699a",
 										"exec": [
-											"pm.test(\"Status code is 500\", function () {",
-											"    pm.response.to.have.status(500);",
+											"pm.test(\"Status code is 400\", function () {",
+											"    pm.response.to.have.status(400);",
 											"});",
 											"",
 											"pm.test(\"Receives invalid attribute name error msg\", function () {",
@@ -17303,8 +17303,8 @@
 									"script": {
 										"id": "017ee3da-604b-458b-b066-c14b8ed02fbc",
 										"exec": [
-											"pm.test(\"Status code is 500\", function () {",
-											"    pm.response.to.have.status(500);",
+											"pm.test(\"Status code is 400\", function () {",
+											"    pm.response.to.have.status(400);",
 											"});",
 											"",
 											"pm.test(\"Receives invalid attribute name error msg\", function () {",
@@ -17367,8 +17367,8 @@
 									"script": {
 										"id": "f85416f2-1ca6-4b04-8306-55eb0e6777f2",
 										"exec": [
-											"pm.test(\"Status code is 500\", function () {",
-											"    pm.response.to.have.status(500);",
+											"pm.test(\"Status code is 400\", function () {",
+											"    pm.response.to.have.status(400);",
 											"});",
 											"",
 											"pm.test(\"Receives invalid attribute name error msg\", function () {",
