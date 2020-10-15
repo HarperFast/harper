@@ -213,7 +213,8 @@ const OPERATIONS_ENUM = {
     CATCHUP: 'catchup',
     SYSTEM_INFORMATION: 'system_information',
     DELETE_TRANSACTION_LOGS_BEFORE: 'delete_transaction_logs_before',
-    READ_TRANSACTION_LOG: 'read_transaction_log'
+    READ_TRANSACTION_LOG: 'read_transaction_log',
+    CREATE_AUTHENTICATION_TOKENS: 'create_authentication_tokens'
 };
 
 // Defines valid file types that we are able to handle in 'import_from_s3' ops

@@ -226,9 +226,12 @@ if (cluster.isMaster &&( num_workers >= 1 || DEBUG )) {
     const express = require('express');
     const bodyParser = require('body-parser');
     const auth = require('../security/auth');
+    const p_authorize = promisify(auth.authorize);
+
     const passport = require('passport');
     const pjson = require(`${__dirname}/../package.json`);
     const server_utilities = require('./serverUtilities');
+    const p_choose_operation = promisify(server_utilities.chooseOperation);
     const cors = require('cors');
     const compression = require('compression');
     const spawn_cluster_connection = require('./socketcluster/connector/spawnSCConnection');
@@ -284,47 +287,50 @@ if (cluster.isMaster &&( num_workers >= 1 || DEBUG )) {
     app.disable('x-powered-by');
     app.set('etag', false); // turn off
 
-    app.post('/', function (req, res) {
+    app.post('/', async function (req, res) {
         // Per the body-parser docs, any request which does not match the bodyParser.json middleware will be returned with
         // an empty body object.
         if(!req.body || Object.keys(req.body).length === 0) {
             return res.status(hdb_errors.HTTP_STATUS_CODES.BAD_REQUEST).send({error: "Invalid JSON."});
         }
 
-        auth.authorize(req, res, function (err, user) {
-            if (err) {
-                harper_logger.warn(err);
-                harper_logger.warn(`{"ip":"${req.connection.remoteAddress}", "error":"${err.stack}"`);
-                if (typeof err === 'string') {
-                    return res.status(hdb_errors.HTTP_STATUS_CODES.UNAUTHORIZED).send({error: err});
-                }
-                return res.status(hdb_errors.HTTP_STATUS_CODES.UNAUTHORIZED).send(err);
+        let user;
+        try {
+            if(!req.body.operation || (req.body.operation && req.body.operation !== terms.OPERATIONS_ENUM.CREATE_AUTHENTICATION_TOKENS)) {
+                user = await p_authorize(req, res);
             }
-            req.body.hdb_user = user;
-            req.body.hdb_auth_header = req.headers.authorization;
+        } catch(err){
+            harper_logger.warn(err);
+            harper_logger.warn(`{"ip":"${req.connection.remoteAddress}", "error":"${err.stack}"`);
+            if (typeof err === 'string') {
+                return res.status(hdb_errors.HTTP_STATUS_CODES.UNAUTHORIZED).send({error: err});
+            }
+            return res.status(hdb_errors.HTTP_STATUS_CODES.UNAUTHORIZED).send(err);
+        }
 
-            server_utilities.chooseOperation(req.body, (error, operation_function) => {
-                if (error) {
-                    harper_logger.error(error);
-                    if (error instanceof PermissionResponseObject) {
-                        return res.status(hdb_errors.HTTP_STATUS_CODES.FORBIDDEN).send(error);
-                    }
-                    if (error.http_resp_code) {
-                        if (typeof error.http_resp_msg === 'string') {
-                            return res.status(error.http_resp_code).send({error: error.http_resp_msg});
-                        } else {
-                            return res.status(error.http_resp_code).send(error.http_resp_msg);
-                        }
-                    }
-                    if (typeof error === 'string') {
-                        return res.status(hdb_errors.HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR).send({error: error});
-                    }
-                    return res.status(hdb_errors.HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR).send(error);
+        req.body.hdb_user = user;
+        req.body.hdb_auth_header = req.headers.authorization;
+
+        let operation_function;
+        try {
+            operation_function = await p_choose_operation(req.body);
+        }catch (error){
+            harper_logger.error(error);
+            if (error instanceof PermissionResponseObject) {
+                return res.status(hdb_errors.HTTP_STATUS_CODES.FORBIDDEN).send(error);
+            }
+            if (error.http_resp_code) {
+                if (typeof error.http_resp_msg === 'string') {
+                    return res.status(error.http_resp_code).send({error: error.http_resp_msg});
                 }
-
-                server_utilities.processLocalTransaction(req, res, operation_function, function () {});
-            });
-        });
+                return res.status(error.http_resp_code).send(error.http_resp_msg);
+            }
+            if (typeof error === 'string') {
+                return res.status(hdb_errors.HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR).send({error: error});
+            }
+            return res.status(hdb_errors.HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR).send(error);
+        }
+        server_utilities.processLocalTransaction(req, res, operation_function, function () {});
     });
 
     /**

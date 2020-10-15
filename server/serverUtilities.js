@@ -25,6 +25,7 @@ const system_information = require('../utility/environment/systemInformation');
 const transact_to_clustering_utils = require('./transactToClusteringUtilities');
 const job_runner = require('./jobRunner');
 const signal = require('../utility/signalling');
+const token_authentication = require('../security/tokenAuthentication');
 
 const operation_function_caller = require(`../utility/OperationFunctionCaller`);
 
@@ -335,6 +336,7 @@ function initializeOperationFunctionMap(){
     op_func_map.set(terms.OPERATIONS_ENUM.SYSTEM_INFORMATION, new OperationFunctionObject(system_information.systemInformation));
     op_func_map.set(terms.OPERATIONS_ENUM.DELETE_TRANSACTION_LOGS_BEFORE, new OperationFunctionObject(signalJob, delete_.deleteTransactionLogsBefore));
     op_func_map.set(terms.OPERATIONS_ENUM.READ_TRANSACTION_LOG, new OperationFunctionObject(read_transaction_log));
+    op_func_map.set(terms.OPERATIONS_ENUM.CREATE_AUTHENTICATION_TOKENS, new OperationFunctionObject(token_authentication.createTokens));
 
     return op_func_map;
 }
