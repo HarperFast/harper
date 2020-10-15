@@ -19,7 +19,6 @@ const { HTTP_STATUS_CODES } = hdb_errors;
 const p_global_schema = util.promisify(global_schema.getTableSchema);
 const p_schema_to_global = util.promisify(global_schema.setSchemaDataToGlobal);
 
-//for release 2.0 we need to turn off threading.  this variable will control the enable/disable
 const UPDATE_ACTION = 'updated';
 const INSERT_ACTION = 'inserted';
 const UPSERT_ACTION = 'upserted';
