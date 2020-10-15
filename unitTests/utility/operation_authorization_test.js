@@ -5,6 +5,7 @@
 const test_utils = require('../test_utils');
 test_utils.preTestPrep();
 const assert = require('assert');
+const _ = require('lodash');
 const rewire = require('rewire');
 const op_auth = require('../../utility/operation_authorization');
 const op_auth_rewire = rewire('../../utility/operation_authorization');
@@ -221,6 +222,7 @@ let RESTRICTED_ATTRIBUTES_2 = ['name', 'id'];
 let AFFECTED_ATTRIBUTES_SET = new Set(TEST_ATTRIBUTES);
 
 let ROLE_PERMISSION_KEY = 'name';
+let HASH_ATTR_KEY = 'id';
 
 function generateAttrPerms(crud_key, crud_value) {
     const attr_perms = {
@@ -250,7 +252,10 @@ let ATTRIBUTE_PERMISSION_BASE = (attrs, crud_key, crud_value) => {
 const DEFAULT_ATTRIBUTE_PERMISSION_BASE = () => ATTRIBUTE_PERMISSION_BASE([ROLE_PERMISSION_KEY]);
 
 let ROLE_ATTRIBUTE_RESTRICTIONS = new Map();
-ROLE_ATTRIBUTE_RESTRICTIONS.set(ROLE_PERMISSION_KEY, DEFAULT_ATTRIBUTE_PERMISSION_BASE()[0]);
+TEST_ATTRIBUTES.forEach(attr => {
+    ROLE_ATTRIBUTE_RESTRICTIONS.set(attr, ATTRIBUTE_PERMISSION_BASE([attr])[0]);
+})
+// ROLE_ATTRIBUTE_RESTRICTIONS.set(ROLE_PERMISSION_KEY, DEFAULT_ATTRIBUTE_PERMISSION_BASE()[0]);
 
 const test_attrs = [{ attribute: "__createdtime__" }, { attribute: "__updatedtime__" }];
 AFFECTED_ATTRIBUTES_SET.forEach(attr => test_attrs.push({ attribute: attr }));
@@ -670,6 +675,13 @@ describe('Test operation_authorization', function() {
     });
 
     describe(`Test checkAttributePerms`,function() {
+        let ROLE_ATTRIBUTE_RESTRICTIONS_UPSERT = _.cloneDeepWith(ROLE_ATTRIBUTE_RESTRICTIONS);
+        ROLE_ATTRIBUTE_RESTRICTIONS_UPSERT.get(ROLE_PERMISSION_KEY).update = true;
+        ROLE_ATTRIBUTE_RESTRICTIONS_UPSERT.get(HASH_ATTR_KEY).update = true;
+        const TEST_ATTRIBUTES_UPSERT = [ROLE_PERMISSION_KEY, HASH_ATTR_KEY];
+        const RESTRICTED_ATTRIBUTES_UPSERT = TEST_ATTRIBUTES.filter(attr => !TEST_ATTRIBUTES_UPSERT.includes(attr));
+        const AFFECTED_ATTRS_SET_UPSERT = new Set(TEST_ATTRIBUTES_UPSERT);
+
         it('Nominal path - Pass in JSON with insert attribute required.  Expect true.',function() {
             let checkAttributePerms = op_auth_rewire.__get__('checkAttributePerms');
             const testPermsResponse = new PermissionResponseObject();
@@ -702,8 +714,7 @@ describe('Test operation_authorization', function() {
 
         it('Pass in JSON with action = update, attrs on table have update restricted, expect error',function() {
             let checkAttributePerms = op_auth_rewire.__get__('checkAttributePerms');
-            let role_att = new Map(ROLE_ATTRIBUTE_RESTRICTIONS);
-            role_att.get(ROLE_PERMISSION_KEY).insert = true;
+            let role_att = _.cloneDeep(ROLE_ATTRIBUTE_RESTRICTIONS);
             const testPermsResponse = new PermissionResponseObject();
             checkAttributePerms(AFFECTED_ATTRIBUTES_SET, role_att, 'csvFileLoad', TEST_TABLE, TEST_SCHEMA, testPermsResponse, 'update');
             let result = testPermsResponse.getPermsResponse();
@@ -713,13 +724,57 @@ describe('Test operation_authorization', function() {
             assert.equal(unauthed_table instanceof PermissionTableResponseObject, true);
             assert.equal(unauthed_table.schema, TEST_SCHEMA);
             assert.equal(unauthed_table.table, TEST_TABLE);
-            assert.equal(unauthed_table.required_attribute_permissions.length, 1);
+            assert.equal(unauthed_table.required_attribute_permissions.length, 4);
 
-            const required_attr_perm = unauthed_table.required_attribute_permissions[0];
-            assert.equal(required_attr_perm instanceof PermissionAttributeResponseObject, true);
-            assert.equal(required_attr_perm.attribute_name, ROLE_PERMISSION_KEY);
-            assert.equal(required_attr_perm.attribute_name, ROLE_PERMISSION_KEY);
-            assert.equal(required_attr_perm.required_permissions[0], 'update');
+            unauthed_table.required_attribute_permissions.forEach(attr_obj => {
+                assert.equal(attr_obj instanceof PermissionAttributeResponseObject, true);
+                assert.equal(TEST_ATTRIBUTES.includes(attr_obj.attribute_name), true);
+                assert.equal(attr_obj.required_permissions[0], 'update');
+            })
+        });
+
+        it('NOMINAL - Pass in JSON with op = upsert, attrs on table have insert/update perms',function() {
+            let checkAttributePerms = op_auth_rewire.__get__('checkAttributePerms');
+            let role_att = _.cloneDeep(ROLE_ATTRIBUTE_RESTRICTIONS_UPSERT);
+            const testPermsResponse = new PermissionResponseObject();
+            checkAttributePerms(AFFECTED_ATTRS_SET_UPSERT, role_att, write.upsert.name, TEST_TABLE, TEST_SCHEMA, testPermsResponse);
+            let result = testPermsResponse.getPermsResponse();
+            assert.equal(result, null);
+        });
+
+        it('Pass in JSON with op = upsert, attrs on table have update restricted, expect error',function() {
+            let checkAttributePerms = op_auth_rewire.__get__('checkAttributePerms');
+            let role_att = _.cloneDeep(ROLE_ATTRIBUTE_RESTRICTIONS_UPSERT);
+            const testPermsResponse = new PermissionResponseObject();
+            checkAttributePerms(AFFECTED_ATTRIBUTES_SET, role_att, write.upsert.name, TEST_TABLE, TEST_SCHEMA, testPermsResponse);
+            let result = testPermsResponse.getPermsResponse();
+            assert.equal(result.unauthorized_access.length, 1);
+
+            const unauthed_table = result.unauthorized_access[0];
+            assert.equal(unauthed_table instanceof PermissionTableResponseObject, true);
+            assert.equal(unauthed_table.schema, TEST_SCHEMA);
+            assert.equal(unauthed_table.table, TEST_TABLE);
+            assert.equal(unauthed_table.required_attribute_permissions.length, 2);
+
+            unauthed_table.required_attribute_permissions.forEach(attr_obj => {
+                assert.equal(attr_obj instanceof PermissionAttributeResponseObject, true);
+                assert.equal(RESTRICTED_ATTRIBUTES_UPSERT.includes(attr_obj.attribute_name), true);
+                assert.equal(attr_obj.required_permissions[0], 'update');
+            })
+        });
+
+        it('Pass in JSON with op = upsert, new attrs for table w/ attr restricted, expect error',function() {
+            let checkAttributePerms = op_auth_rewire.__get__('checkAttributePerms');
+            let role_att = _.cloneDeep(ROLE_ATTRIBUTE_RESTRICTIONS_UPSERT);
+            const testPermsResponse = new PermissionResponseObject();
+            const test_affected_attrs = _.cloneDeep(AFFECTED_ATTRS_SET_UPSERT);
+            const TEST_NEW_ATTR = "BOOGIE";
+            test_affected_attrs.add(TEST_NEW_ATTR);
+            checkAttributePerms(test_affected_attrs, role_att, write.upsert.name, TEST_TABLE, TEST_SCHEMA, testPermsResponse);
+            let result = testPermsResponse.getPermsResponse();
+            assert.equal(result.unauthorized_access.length, 0);
+            assert.equal(result.invalid_schema_items.length, 1);
+            assert.equal(result.invalid_schema_items[0], TEST_SCHEMA_OP_ERROR.ATTR_NOT_FOUND(TEST_SCHEMA, TEST_TABLE, TEST_NEW_ATTR));
         });
 
         it('Pass invalid operation.  Expect false.',function() {
@@ -886,6 +941,137 @@ describe('Test operation_authorization', function() {
             const unauthed_table = result.unauthorized_access[0];
             assert.equal(unauthed_table instanceof PermissionTableResponseObject, true);
             assert.equal(unauthed_table.schema, TEST_SCHEMA);
+            assert.equal(unauthed_table.table, TEST_TABLE);
+            assert.equal(unauthed_table.required_attribute_permissions.length, 0);
+        });
+
+        it('NOMINAL - Test upsert op with insert/update perms TRUE',function() {
+            let hasPermissions = op_auth_rewire.__get__('hasPermissions');
+            let req_json = getRequestJson(TEST_JSON);
+            req_json.operation = 'upsert';
+            let perms = {
+                "super_user": false,
+                "dev": {
+                    "describe": true,
+                    "tables": {
+                        "dog": {
+                            "describe": true,
+                            "read": false,
+                            "insert": true,
+                            "update": true,
+                            "delete": false,
+                            "attribute_permissions": []
+                        }
+                    }
+                },
+            };
+            req_json.hdb_user.role.permission = perms;
+            const testPermsResponse = new PermissionResponseObject();
+            let result = hasPermissions(req_json.hdb_user, write.upsert.name, test_map, testPermsResponse);
+            assert.equal(result, null);
+
+            // const unauthed_table = result.unauthorized_access[0];
+            // assert.equal(unauthed_table instanceof PermissionTableResponseObject, true);
+            // assert.equal(unauthed_table.schema, TEST_SCHEMA);
+            // assert.equal(unauthed_table.table, TEST_TABLE);
+            // assert.equal(unauthed_table.required_attribute_permissions.length, 0);
+        });
+
+        it('Test upsert op with insert perms false - expect error',function() {
+            let hasPermissions = op_auth_rewire.__get__('hasPermissions');
+            let req_json = getRequestJson(TEST_JSON);
+            req_json.operation = 'upsert';
+            let perms = {
+                "super_user": false,
+                "dev": {
+                    "describe": true,
+                    "tables": {
+                        "dog": {
+                            "describe": true,
+                            "read": false,
+                            "insert": false,
+                            "update": true,
+                            "delete": false,
+                            "attribute_permissions": []
+                        }
+                    }
+                },
+            };
+            req_json.hdb_user.role.permission = perms;
+            const testPermsResponse = new PermissionResponseObject();
+            let result = hasPermissions(req_json.hdb_user, write.upsert.name, test_map, testPermsResponse);
+            assert.equal(result.unauthorized_access.length, 1);
+
+            const unauthed_table = result.unauthorized_access[0];
+            assert.equal(unauthed_table instanceof PermissionTableResponseObject, true);
+            assert.equal(unauthed_table.schema, TEST_SCHEMA);
+            assert.equal(unauthed_table.required_table_permissions[0], 'insert');
+            assert.equal(unauthed_table.table, TEST_TABLE);
+            assert.equal(unauthed_table.required_attribute_permissions.length, 0);
+        });
+
+        it('Test upsert op with update perms false - expect error',function() {
+            let hasPermissions = op_auth_rewire.__get__('hasPermissions');
+            let req_json = getRequestJson(TEST_JSON);
+            req_json.operation = 'upsert';
+            let perms = {
+                "super_user": false,
+                "dev": {
+                    "describe": true,
+                    "tables": {
+                        "dog": {
+                            "describe": true,
+                            "read": false,
+                            "insert": true,
+                            "update": false,
+                            "delete": false,
+                            "attribute_permissions": []
+                        }
+                    }
+                },
+            };
+            req_json.hdb_user.role.permission = perms;
+            const testPermsResponse = new PermissionResponseObject();
+            let result = hasPermissions(req_json.hdb_user, write.upsert.name, test_map, testPermsResponse);
+            assert.equal(result.unauthorized_access.length, 1);
+
+            const unauthed_table = result.unauthorized_access[0];
+            assert.equal(unauthed_table instanceof PermissionTableResponseObject, true);
+            assert.equal(unauthed_table.schema, TEST_SCHEMA);
+            assert.equal(unauthed_table.required_table_permissions[0], 'update');
+            assert.equal(unauthed_table.table, TEST_TABLE);
+            assert.equal(unauthed_table.required_attribute_permissions.length, 0);
+        });
+
+        it('Test upsert op with insert/update perms false - expect error',function() {
+            let hasPermissions = op_auth_rewire.__get__('hasPermissions');
+            let req_json = getRequestJson(TEST_JSON);
+            req_json.operation = 'upsert';
+            let perms = {
+                "super_user": false,
+                "dev": {
+                    "describe": true,
+                    "tables": {
+                        "dog": {
+                            "describe": true,
+                            "read": true,
+                            "insert": false,
+                            "update": false,
+                            "delete": false,
+                            "attribute_permissions": []
+                        }
+                    }
+                },
+            };
+            req_json.hdb_user.role.permission = perms;
+            const testPermsResponse = new PermissionResponseObject();
+            let result = hasPermissions(req_json.hdb_user, write.upsert.name, test_map, testPermsResponse);
+            assert.equal(result.unauthorized_access.length, 1);
+
+            const unauthed_table = result.unauthorized_access[0];
+            assert.equal(unauthed_table instanceof PermissionTableResponseObject, true);
+            assert.equal(unauthed_table.schema, TEST_SCHEMA);
+            assert.deepEqual(unauthed_table.required_table_permissions, ['insert', 'update']);
             assert.equal(unauthed_table.table, TEST_TABLE);
             assert.equal(unauthed_table.required_attribute_permissions.length, 0);
         });
