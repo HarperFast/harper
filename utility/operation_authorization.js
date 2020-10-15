@@ -382,8 +382,9 @@ function hasPermissions(user_object, op, schema_table_map, permsResponse, action
 
                     for (let i = 0; i < required_perms.length; i++) {
                         let perm = required_perms[i];
+                        //if the perm value is an array, it means the operation requires multiple perm values to be TRUE -
+                        // e.g. upsert ops require insert and update perms to be true
                         if (Array.isArray(perm)) {
-                            const failing_perms = [];
                             perm.forEach(required_perm => {
                                 let user_permission = table_permissions[required_perm];
                                 if (user_permission === undefined || user_permission === null || user_permission === false) {
@@ -391,7 +392,7 @@ function hasPermissions(user_object, op, schema_table_map, permsResponse, action
                                     harper_logger.info(`Required ${perm} permission not found for ${op} ${action ? `${action} ` : ''}operation in role ${user_object.role.id}`);
                                     required_table_perms.push(perm);
                                 }
-                            })
+                            });
                         } else {
                             let user_permission = table_permissions[perm];
                             if (user_permission === undefined || user_permission === null || user_permission === false) {
@@ -477,6 +478,8 @@ function checkAttributePerms(record_attributes, role_attribute_permissions, oper
                     if (terms.TIME_STAMP_NAMES.includes(permission.attribute_name) && perm !== READ_PERM) {
                         throw handleHDBError(new Error(), HDB_ERROR_MSGS.SYSTEM_TIMESTAMP_PERMS_ERR, HTTP_STATUS_CODES.FORBIDDEN);
                     }
+                    //if the perm value is an array, it means the operation requires multiple perm values to be TRUE -
+                    // e.g. upsert ops require insert and update perms to be true
                     if (Array.isArray(perm)) {
                         perm.forEach(required_perm => {
                             if (permission[required_perm] === false) {
@@ -486,7 +489,7 @@ function checkAttributePerms(record_attributes, role_attribute_permissions, oper
                                     required_attr_perms[permission.attribute_name].push(required_perm);
                                 }
                             }
-                        })
+                        });
                     } else if (permission[perm] === false) {
                         if (!required_attr_perms[permission.attribute_name]) {
                             required_attr_perms[permission.attribute_name] = [perm];
