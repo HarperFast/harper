@@ -1,7 +1,7 @@
 "use strict";
 
 const log = require('../../../utility/logging/harper_logger');
-const { handleHDBError,hdb_errors  } = require('../../../utility/errors/hdbError');
+const { handleHDBError } = require('../../../utility/errors/hdbError');
 const BridgeMethods = require("../BridgeMethods");
 const lmdbCreateAttribute = require('./lmdbMethods/lmdbCreateAttribute');
 const lmdbCreateRecords = require('./lmdbMethods/lmdbCreateRecords');

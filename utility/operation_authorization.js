@@ -58,7 +58,7 @@ class permission {
 
 required_permissions.set(write.insert.name, new permission(false, [INSERT_PERM]));
 required_permissions.set(write.update.name, new permission(false, [UPDATE_PERM]));
-required_permissions.set(write.upsert.name, new permission(false, [INSERT_PERM, UPDATE_PERM]));
+required_permissions.set(write.upsert.name, new permission(false, [[INSERT_PERM, UPDATE_PERM]]));
 required_permissions.set(search.searchByHash.name, new permission(false, [READ_PERM]));
 required_permissions.set(search.searchByValue.name, new permission(false, [READ_PERM]));
 required_permissions.set(search.search.name, new permission(false, [READ_PERM]));
@@ -345,14 +345,17 @@ function hasPermissions(user_object, op, schema_table_map, permsResponse, action
         return no_perms_err;
     }
 
-    for (let schema_table of schema_table_map.keys()) {
+    const schema_table_keys = schema_table_map.keys();
+    for (let schema_table of schema_table_keys) {
         //check if schema has DESCRIBE perms
         if (schema_table && user_perms[schema_table][DESCRIBE_PERM] === false) {
             //add schema does not exist error message
             permsResponse.addInvalidItem(HDB_ERROR_MSGS.SCHEMA_NOT_FOUND(schema_table));
             continue;
         }
-        for (let table of schema_table_map.get(schema_table)) {
+
+        const schema_table_data = schema_table_map.get(schema_table);
+        for (let table of schema_table_data) {
             let table_permissions = [];
             try {
                 table_permissions = user_perms[schema_table].tables[table];
@@ -379,11 +382,23 @@ function hasPermissions(user_object, op, schema_table_map, permsResponse, action
 
                     for (let i = 0; i < required_perms.length; i++) {
                         let perm = required_perms[i];
-                        let user_permission = table_permissions[perm];
-                        if (user_permission === undefined || user_permission === null || user_permission === false) {
-                            //need to check if any perm on table OR should return table not found
-                            harper_logger.info(`Required ${perm} permission not found for ${op} ${action ? `${action} ` : ''}operation in role ${user_object.role.id}`);
-                            required_table_perms.push(perm);
+                        if (Array.isArray(perm)) {
+                            const failing_perms = [];
+                            perm.forEach(required_perm => {
+                                let user_permission = table_permissions[required_perm];
+                                if (user_permission === undefined || user_permission === null || user_permission === false) {
+                                    //need to check if any perm on table OR should return table not found
+                                    harper_logger.info(`Required ${perm} permission not found for ${op} ${action ? `${action} ` : ''}operation in role ${user_object.role.id}`);
+                                    required_table_perms.push(perm);
+                                }
+                            })
+                        } else {
+                            let user_permission = table_permissions[perm];
+                            if (user_permission === undefined || user_permission === null || user_permission === false) {
+                                //need to check if any perm on table OR should return table not found
+                                harper_logger.info(`Required ${perm} permission not found for ${op} ${action ? `${action} ` : ''}operation in role ${user_object.role.id}`);
+                                required_table_perms.push(perm);
+                            }
                         }
                     }
 
@@ -462,7 +477,17 @@ function checkAttributePerms(record_attributes, role_attribute_permissions, oper
                     if (terms.TIME_STAMP_NAMES.includes(permission.attribute_name) && perm !== READ_PERM) {
                         throw handleHDBError(new Error(), HDB_ERROR_MSGS.SYSTEM_TIMESTAMP_PERMS_ERR, HTTP_STATUS_CODES.FORBIDDEN);
                     }
-                    if (permission[perm] === false) {
+                    if (Array.isArray(perm)) {
+                        perm.forEach(required_perm => {
+                            if (permission[required_perm] === false) {
+                                if (!required_attr_perms[permission.attribute_name]) {
+                                    required_attr_perms[permission.attribute_name] = [required_perm];
+                                } else {
+                                    required_attr_perms[permission.attribute_name].push(required_perm);
+                                }
+                            }
+                        })
+                    } else if (permission[perm] === false) {
                         if (!required_attr_perms[permission.attribute_name]) {
                             required_attr_perms[permission.attribute_name] = [perm];
                         } else {

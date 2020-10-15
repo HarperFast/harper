@@ -91,7 +91,7 @@ class PermissionResponseObject {
         if (this.unauthorized_access[schema_table]) {
             this.unauthorized_access[schema_table].required_attribute_permissions = unauthorized_table_attributes;
         } else {
-            const failed_perm_object = new PermissionTableResponseObject(schema, table, null, unauthorized_table_attributes);
+            const failed_perm_object = new PermissionTableResponseObject(schema, table, [], unauthorized_table_attributes);
             this.unauthorized_access[schema_table] = failed_perm_object;
         }
     }
