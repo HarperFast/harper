@@ -27101,7 +27101,7 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"insert into northnwd.categories (categoriesid, description) values ('9', 'Other food stuff');\"\n}",
+							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"insert into northnwd.categories (categoryid, description) values ('9', 'Other food stuff');\"\n}",
 							"options": {
 								"raw": {}
 							}
