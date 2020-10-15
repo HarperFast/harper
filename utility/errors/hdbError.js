@@ -62,7 +62,7 @@ function handleValidationError(e, validation_msg) {
     if (isHDBError(e)) {
         return e;
     }
-    return (new HdbError(e, `Error: ${validation_msg}`, hdb_errors.HTTP_STATUS_CODES.BAD_REQUEST));
+    return (new HdbError(e, validation_msg, hdb_errors.HTTP_STATUS_CODES.BAD_REQUEST));
 }
 
 function isHDBError(e) {

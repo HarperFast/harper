@@ -241,7 +241,7 @@ describe('Test bulkLoad.js', () => {
 
         it('Test bad URL throws validation error', async () => {
             CSV_URL_MESSAGE.csv_url = "breeds.csv";
-            let test_err_result = await test_utils.testHDBError(bulkLoad_rewire.csvURLLoad(CSV_URL_MESSAGE), 'Error: Csv url is not a valid url');
+            let test_err_result = await test_utils.testHDBError(bulkLoad_rewire.csvURLLoad(CSV_URL_MESSAGE), 'Csv url is not a valid url');
 
             expect(test_err_result).to.be.true;
         });
@@ -526,7 +526,7 @@ describe('Test bulkLoad.js', () => {
             }
 
             expect(result).to.be.instanceof(Error);
-            expect(result.http_resp_msg).to.equal("Error: Schema can't be blank");
+            expect(result.http_resp_msg).to.equal("Schema can't be blank");
             expect(result.http_resp_code).to.equal(HTTP_STATUS_CODES.BAD_REQUEST);
             expect(handleValidationErr_spy).to.have.been.calledOnce;
             expect(downloadFileFromS3_stub).to.have.not.been.called;

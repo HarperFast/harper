@@ -1,5 +1,6 @@
 "use strict";
 
+const hdb_terms = require('../hdbTerms');
 const lmdb_terms = require('../lmdb/terms');
 
 // A subset of HTTP error codes that we may use in code.
@@ -84,6 +85,15 @@ const LMDB_ERRORS_ENUM = {
     CANNOT_DROP_TABLE_HASH_ATTRIBUTE: 'cannot drop a table\'s hash attribute'
 };
 
+//This ENUM includes error messages for INSERT, UPDATE, and UPSERT related ops
+const WRITE_OPS_ERROR_MSGS = {
+    ATTR_NAME_LENGTH_ERR: (attr_name) => `transaction aborted due to attribute name ${attr_name} being too long. Attribute names cannot be longer than ${hdb_terms.INSERT_MODULE_ENUM.MAX_CHARACTER_SIZE} bytes.`,
+    ATTR_NAME_NULLISH_ERR: 'transaction aborted due to record(s) with an attribute name that is null, undefined or empty string',
+    HASH_VAL_LENGTH_ERR: `transaction aborted due to record(s) with a hash value that exceeds ${hdb_terms.INSERT_MODULE_ENUM.MAX_CHARACTER_SIZE} bytes, check log for more info`,
+    INVALID_FORWARD_SLASH_IN_HASH_ERR: 'transaction aborted due to record(s) with a hash value that contains a forward slash, check log for more info',
+    RECORD_MISSING_HASH_ERR: 'transaction aborted due to record(s) with no hash value, check log for more info'
+};
+
 const OPERATION_AUTH_ERROR_MSGS = {
     DEFAULT_INVALID_REQUEST: "Invalid request",
     OP_AUTH_PERMS_ERROR: "This operation is not authorized due to role restrictions and/or invalid schema items",
@@ -138,6 +148,7 @@ const SQL_ERROR_MSGS = {
 const HDB_ERROR_MSGS = {
     ...COMMON_ERROR_MSGS,
     ...BULK_LOAD_ERROR_MSGS,
+    ...WRITE_OPS_ERROR_MSGS,
     ...OPERATION_AUTH_ERROR_MSGS,
     ...ROLE_PERMS_ERROR_MSGS,
     ...SQL_ERROR_MSGS,
