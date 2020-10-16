@@ -21767,7 +21767,7 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n    \"operation\": \"add_role\",\n    \"role\": \"developer_test_5\",\n    \"permission\": {\n        \"super_user\": false,\n        \"northnwd\": {\n            \"tables\": {\n                \"customers\": {\n                    \"read\": true,\n                    \"insert\": true,\n                    \"update\": true,\n                    \"delete\": true,\n                    \"attribute_permissions\": []\n                },\n                \"suppliers\": {\n                    \"read\": false,\n                    \"insert\": false,\n                    \"update\": false,\n                    \"delete\": false,\n                    \"attribute_permissions\": []\n                },\n                \"region\": {\n                    \"read\": true,\n                    \"insert\": false,\n                    \"update\": false,\n                    \"delete\": false,\n                    \"attribute_permissions\": [\n                        {\n                            \"attribute_name\": \"regiondescription\",\n                            \"read\": true,\n                            \"insert\": false,\n                            \"update\": false,\n                            \"delete\": false\n                        }\n                    ]\n                },\n                \"territories\": {\n                    \"read\": true,\n                    \"insert\": true,\n                    \"update\": false,\n                    \"delete\": false,\n                    \"attribute_permissions\": [\n                        {\n                            \"attribute_name\": \"territorydescription\",\n                            \"read\": true,\n                            \"insert\": true,\n                            \"update\": false,\n                            \"delete\": false\n                        }\n                    ]\n                },\n                \"categories\": {\n                    \"read\": true,\n                    \"insert\": true,\n                    \"update\": true,\n                    \"delete\": false,\n                    \"attribute_permissions\": [\n                        {\n                            \"attribute_name\": \"description\",\n                            \"read\": true,\n                            \"insert\": true,\n                            \"update\": true,\n                            \"delete\": false\n                        }\n                    ]\n                },\n                \"shippers\": {\n                    \"read\": true,\n                    \"insert\": true,\n                    \"update\": true,\n                    \"delete\": true,\n                    \"attribute_permissions\": [\n                        {\n                            \"attribute_name\": \"companyname\",\n                            \"read\": false,\n                            \"insert\": false,\n                            \"update\": false,\n                            \"delete\": false\n                        }\n                    ]\n                }\n            }\n        },\n        \"dev\": {\n            \"tables\": {\n                \"dog\": {\n                    \"read\": true,\n                    \"insert\": true,\n                    \"update\": true,\n                    \"delete\": true,\n                    \"attribute_permissions\": [\n                        {\n                            \"attribute_name\": \"__createdtime__\",\n                            \"read\": true,\n                            \"insert\": true,\n                            \"update\": true\n                        },\n                        {\n                            \"attribute_name\": \"__updatedtime__\",\n                            \"read\": true,\n                            \"insert\": true,\n                            \"update\": true\n                        }\n                    ]\n                },\n                \"breed\": {\n                    \"read\": true,\n                    \"insert\": true,\n                    \"update\": true,\n                    \"delete\": true,\n                    \"attribute_permissions\": [\n                        {\n                            \"attribute_name\": \"__createdtime__\",\n                            \"read\": false,\n                            \"insert\": false,\n                            \"update\": true\n                        },\n                        {\n                            \"attribute_name\": \"__updatedtime__\",\n                            \"read\": false,\n                            \"insert\": true,\n                            \"update\": true\n                        }\n                    ]\n                }\n            }\n        }\n    }\n}",
+							"raw": "{\n    \"operation\": \"add_role\",\n    \"role\": \"developer_test_5\",\n    \"permission\": {\n        \"super_user\": false,\n        \"northnwd\": {\n            \"tables\": {\n                \"customers\": {\n                    \"read\": true,\n                    \"insert\": true,\n                    \"update\": true,\n                    \"delete\": true,\n                    \"attribute_permissions\": []\n                },\n                \"suppliers\": {\n                    \"read\": false,\n                    \"insert\": false,\n                    \"update\": false,\n                    \"delete\": false,\n                    \"attribute_permissions\": []\n                },\n                \"region\": {\n                    \"read\": true,\n                    \"insert\": false,\n                    \"update\": false,\n                    \"delete\": false,\n                    \"attribute_permissions\": [\n                        {\n                            \"attribute_name\": \"regiondescription\",\n                            \"read\": true,\n                            \"insert\": false,\n                            \"update\": false,\n                            \"delete\": false\n                        }\n                    ]\n                },\n                \"territories\": {\n                    \"read\": true,\n                    \"insert\": true,\n                    \"update\": false,\n                    \"delete\": false,\n                    \"attribute_permissions\": [\n                        {\n                            \"attribute_name\": \"territorydescription\",\n                            \"read\": true,\n                            \"insert\": true,\n                            \"update\": false,\n                            \"delete\": false\n                        }\n                    ]\n                },\n                \"categories\": {\n                    \"read\": true,\n                    \"insert\": true,\n                    \"update\": true,\n                    \"delete\": false,\n                    \"attribute_permissions\": [\n                        {\n                            \"attribute_name\": \"description\",\n                            \"read\": true,\n                            \"insert\": true,\n                            \"update\": true,\n                            \"delete\": false\n                        }\n                    ]\n                },\n                \"shippers\": {\n                    \"read\": true,\n                    \"insert\": true,\n                    \"update\": true,\n                    \"delete\": true,\n                    \"attribute_permissions\": [\n                        {\n                            \"attribute_name\": \"companyname\",\n                            \"read\": false,\n                            \"insert\": false,\n                            \"update\": false,\n                            \"delete\": false\n                        }\n                    ]\n                }\n            }\n        },\n        \"dev\": {\n            \"tables\": {\n                \"dog\": {\n                    \"read\": true,\n                    \"insert\": true,\n                    \"update\": true,\n                    \"delete\": true,\n                    \"attribute_permissions\": [\n                        {\n                            \"attribute_name\": \"__createdtime__\",\n                            \"read\": true,\n                            \"insert\": true,\n                            \"update\": true\n                        },\n                        {\n                            \"attribute_name\": \"__updatedtime__\",\n                            \"read\": true,\n                            \"insert\": true,\n                            \"update\": true\n                        },\n                        {\n                            \"attribute_name\": \"age\",\n                            \"read\": true,\n                            \"insert\": true,\n                            \"update\": false\n                        },\n                        {\n                            \"attribute_name\": \"dog_name\",\n                            \"read\": true,\n                            \"insert\": false,\n                            \"update\": true\n                        },\n                        {\n                            \"attribute_name\": \"adorable\",\n                            \"read\": true,\n                            \"insert\": true,\n                            \"update\": true\n                        },\n                        {\n                            \"attribute_name\": \"owner_id\",\n                            \"read\": false,\n                            \"insert\": true,\n                            \"update\": true\n                        }\n                    ]\n                },\n                \"breed\": {\n                    \"read\": true,\n                    \"insert\": true,\n                    \"update\": true,\n                    \"delete\": true,\n                    \"attribute_permissions\": [\n                        {\n                            \"attribute_name\": \"__createdtime__\",\n                            \"read\": false,\n                            \"insert\": false,\n                            \"update\": true\n                        },\n                        {\n                            \"attribute_name\": \"__updatedtime__\",\n                            \"read\": false,\n                            \"insert\": true,\n                            \"update\": true\n                        }\n                    ]\n                }\n            }\n        }\n    }\n}",
 							"options": {
 								"raw": {}
 							}
@@ -22778,6 +22778,80 @@
 						"body": {
 							"mode": "raw",
 							"raw": "{\n  \"operation\":\"update\",\n  \"schema\":\"{{schema}}\",\n  \"table\":\"{{cate_tb}}\",\n  \"records\": [\n    {\n      \"{{cate_id}}\":1,\n      \"description\":\"test description updated\"\n    }\n  ]\n}",
+							"options": {
+								"raw": {}
+							}
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						},
+						"description": "Method for adding users.  Users can be assigned roles which provide granular access at a table, operation, and attirbute level.  \n\n<ul>\n<li><b>operation </b> <i>(required) </i> - must always be 'add_user'</li>\n\n<li><b>role </b><i>(required) </i>- id of the role you wish to assign to the user.  See add_role for more detail.  </li>\n\n<li><b>username </b> <i>(required)</i> - username assigned to the user.  It can not be altered after adding the user.  It serves as the hash. </li>\n\n<li><b>password </b> <i>(required) </i>- clear text for password.  HarperDB will encrypt the password upon reciept. </li>\n\n</ul>"
+					},
+					"response": []
+				},
+				{
+					"name": "NoSQL Try to update categories table with new attr as test_user - expect error",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "ab91399f-1554-4665-b954-51c68669cfcc",
+								"exec": [
+									"pm.test(\"Status code is 403\", function () {",
+									"    pm.response.to.have.status(403);",
+									"});",
+									"",
+									"pm.test(\"Update validation error response\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.error).to.eql(\"This operation is not authorized due to role restrictions and/or invalid schema items\");",
+									"    pm.expect(jsonData.unauthorized_access.length).to.eql(0);",
+									"    pm.expect(jsonData.invalid_schema_items.length).to.eql(1);",
+									"    pm.expect(jsonData.invalid_schema_items[0]).to.eql(\"Attribute 'active' does not exist on 'northnwd.categories'\");",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{test_user_name}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic c2dvbGRiZXJnOnRlc3QxMjM0IQ=="
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"update\",\n  \"schema\":\"{{schema}}\",\n  \"table\":\"{{cate_tb}}\",\n  \"records\": [\n    {\n      \"{{cate_id}}\":1,\n      \"description\":\"test description updated\",\n      \"active\": true\n    }\n  ]\n}",
 							"options": {
 								"raw": {}
 							}
@@ -24699,6 +24773,669 @@
 							"port": "{{port}}"
 						},
 						"description": "Method for adding users.  Users can be assigned roles which provide granular access at a table, operation, and attirbute level.  \n\n<ul>\n<li><b>operation </b> <i>(required) </i> - must always be 'add_user'</li>\n\n<li><b>role </b><i>(required) </i>- id of the role you wish to assign to the user.  See add_role for more detail.  </li>\n\n<li><b>username </b> <i>(required)</i> - username assigned to the user.  It can not be altered after adding the user.  It serves as the hash. </li>\n\n<li><b>password </b> <i>(required) </i>- clear text for password.  HarperDB will encrypt the password upon reciept. </li>\n\n</ul>"
+					},
+					"response": []
+				},
+				{
+					"name": "NoSQL - Upsert - table perms true/no attribute perms set - expect success",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "65c6dce0-9050-4ffa-8f29-156ef0ff8802",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"Upsert validate\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.upserted_hashes.length).to.eql(2);",
+									"    pm.expect(jsonData.upserted_hashes.includes('FURIB')).to.be.true;",
+									"    pm.expect(jsonData.skipped_hashes).to.eql(undefined);",
+									"    pm.expect(jsonData.message).to.eql(\"upserted 2 of 2 records\");",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{test_user_name}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"upsert\",\n  \"schema\":\"{{schema}}\",\n  \"table\":\"{{cust_tb}}\",\n  \"records\": [\n    {\n      \"{{cust_id}}\": \"FURIB\",\n      \"region\":\"Durkastan\",\n      \"contactmame\": \"Hans Blix\"\n    },\n    {\n      \"region\":\"Durkastan\",\n      \"contactmame\": \"Hans Blix\"\n    }\n  ]\n}",
+							"options": {
+								"raw": {}
+							}
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "NoSQL - Upsert - table perms true/attr perms true - expect success",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "a8f8b50a-02ae-4e7c-89c9-a217d88f6b8e",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"Upsert validate\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.upserted_hashes.length).to.eql(2);",
+									"    pm.expect(jsonData.upserted_hashes.includes(8)).to.be.true;",
+									"    pm.expect(jsonData.skipped_hashes).to.eql(undefined);",
+									"    pm.expect(jsonData.message).to.eql(\"upserted 2 of 2 records\");",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{test_user_name}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"upsert\",\n  \"schema\":\"{{schema}}\",\n  \"table\":\"{{cate_tb}}\",\n  \"records\": [\n    {\n      \"{{cate_id}}\": 8,\n      \"description\":\"Seaweed and fishies\"\n    },\n    {\n      \"description\":\"Junk food\"\n    }\n  ]\n}",
+							"options": {
+								"raw": {}
+							}
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "NoSQL - Upsert - table perms true/no attr perms and new attribute included - expect success",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "bc218f88-de4b-4267-96e5-5faabd50fdcf",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"Upsert validate\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.upserted_hashes.length).to.eql(2);",
+									"    pm.expect(jsonData.upserted_hashes.includes('FURIB')).to.be.true;",
+									"    pm.expect(jsonData.skipped_hashes).to.eql(undefined);",
+									"    pm.expect(jsonData.message).to.eql(\"upserted 2 of 2 records\");",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{test_user_name}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"upsert\",\n  \"schema\":\"{{schema}}\",\n  \"table\":\"{{cust_tb}}\",\n  \"records\": [\n    {\n      \"{{cust_id}}\": \"FURIB\",\n      \"region\":\"Durkastan\",\n      \"contactmame\": \"Hans Blix\",\n      \"active\": false\n    },\n    {\n      \"region\":\"Durkastan\",\n      \"contactmame\": \"Sam Johnson\",\n      \"active\": true\n    }\n  ]\n}",
+							"options": {
+								"raw": {}
+							}
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "NoSQL - Upsert - table perms true/false  - expect error",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "f5b76d5a-8973-414d-b784-804c2bff914b",
+								"exec": [
+									"pm.test(\"Status code is 403\", function () {",
+									"    pm.response.to.have.status(403);",
+									"});",
+									"",
+									"pm.test(\"Validate - upsert error response\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.error).to.eql(\"This operation is not authorized due to role restrictions and/or invalid schema items\");",
+									"    pm.expect(jsonData.invalid_schema_items.length).to.eql(0);",
+									"    pm.expect(jsonData.unauthorized_access.length).to.eql(1);",
+									"    pm.expect(jsonData.unauthorized_access[0].schema).to.eql(\"northnwd\");",
+									"    pm.expect(jsonData.unauthorized_access[0].table).to.eql(\"territories\");",
+									"    pm.expect(jsonData.unauthorized_access[0].required_table_permissions.length).to.eql(1);",
+									"    pm.expect(jsonData.unauthorized_access[0].required_table_permissions[0]).to.eql(\"update\");",
+									"    pm.expect(jsonData.unauthorized_access[0].required_attribute_permissions.length).to.eql(0);",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{test_user_name}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"operation\": \"upsert\",\n    \"schema\": \"{{schema}}\",\n    \"table\": \"{{terr_tb}}\",\n    \"records\": [\n        {\n            \"regionid\": 1,\n            \"territorydescription\": \"Westboro\",\n            \"territoryid\": 1581\n        },\n        {\n            \"regionid\": 55,\n            \"territorydescription\": \"Denver Metro\"\n        }\n    ]\n}",
+							"options": {
+								"raw": {}
+							}
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "NoSQL - Upsert - table perms true/attr perms true but new attribute included - expect error",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "e441acd5-6bb5-4280-9a63-25bb27a0bfe8",
+								"exec": [
+									"pm.test(\"Status code is 403\", function () {",
+									"    pm.response.to.have.status(403);",
+									"});",
+									"",
+									"pm.test(\"Validate - upsert error response\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.unauthorized_access.length).to.eql(0);",
+									"    pm.expect(jsonData.invalid_schema_items.length).to.eql(1);",
+									"    pm.expect(jsonData.invalid_schema_items[0]).to.eql(\"Attribute 'active' does not exist on 'northnwd.categories'\");",
+									"    pm.expect(jsonData.error).to.eql(\"This operation is not authorized due to role restrictions and/or invalid schema items\");",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{test_user_name}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"upsert\",\n  \"schema\":\"{{schema}}\",\n  \"table\":\"{{cate_tb}}\",\n  \"records\": [\n    {\n      \"{{cate_id}}\": 8,\n      \"description\":\"Seaweed and fishies\",\n      \"active\": true\n    },\n    {\n      \"description\":\"Junk food\",\n      \"active\": false\n    }\n  ]\n}",
+							"options": {
+								"raw": {}
+							}
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "NoSQL - Upsert - table perms true/some attr perms false - expect error",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "b67c5896-7612-480a-9566-7f478967c495",
+								"exec": [
+									"pm.test(\"Status code is 403\", function () {",
+									"    pm.response.to.have.status(403);",
+									"});",
+									"",
+									"pm.test(\"Validate - upsert error response\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.error).to.eql(\"This operation is not authorized due to role restrictions and/or invalid schema items\");",
+									"    ",
+									"    const expected_attr_perm_errs = {",
+									"        dog_name: \"insert\",",
+									"        age: \"update\"",
+									"    }",
+									"    pm.expect(jsonData.unauthorized_access.length).to.eql(1);",
+									"    pm.expect(jsonData.unauthorized_access[0].schema).to.eql(\"dev\");",
+									"    pm.expect(jsonData.unauthorized_access[0].table).to.eql(\"dog\");",
+									"    pm.expect(jsonData.unauthorized_access[0].required_table_permissions.length).to.eql(0);",
+									"    pm.expect(jsonData.unauthorized_access[0].required_attribute_permissions.length).to.eql(2);",
+									"    jsonData.unauthorized_access[0].required_attribute_permissions.forEach(attr_perm_err => {",
+									"        pm.expect(attr_perm_err.required_permissions[0]).to.eql(expected_attr_perm_errs[attr_perm_err.attribute_name]);    ",
+									"    })",
+									"    ",
+									"    pm.expect(jsonData.invalid_schema_items.length).to.eql(1);",
+									"    pm.expect(jsonData.invalid_schema_items[0]).to.eql(\"Attribute 'birthday' does not exist on 'dev.dog'\");",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{test_user_name}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"operation\": \"upsert\",\n    \"schema\": \"dev\",\n    \"table\": \"dog\",\n    \"records\": [\n        {\n            \"adorable\": true,\n            \"dog_name\": \"Penny\",\n            \"owner_id\": 2,\n            \"age\": 5,\n            \"id\": 10\n        },\n        {\n            \"adorable\": true,\n            \"dog_name\": \"Penny\",\n            \"owner_id\": 2,\n            \"age\": 5,\n            \"id\": 2\n        },\n        {\n            \"adorable\": true,\n            \"dog_name\": \"Penny\",\n            \"owner_id\": 2,\n            \"age\": 5,\n            \"id\": 10,\n            \"birthday\": \"10/11/19\"\n        }\n    ]\n}",
+							"options": {
+								"raw": {}
+							}
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "NoSQL - Upsert - w/ null value as hash- expect error",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "a55668a1-e440-40ac-831f-3101cccd4d46",
+								"exec": [
+									"pm.test(\"Status code is 400\", function () {",
+									"    pm.response.to.have.status(400);",
+									"});",
+									"pm.test(\"Validate - upsert error response\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.error).to.eql(\"Invalid hash value: 'null' is not a valid hash attribute value, check log for more info\");",
+									"",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{test_user_name}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"upsert\",\n  \"schema\":\"{{schema}}\",\n  \"table\":\"{{cust_tb}}\",\n  \"records\": [\n    {\n      \"{{cust_id}}\": \"null\",\n      \"region\":\"Durkastan\",\n      \"contactmame\": \"Hans Blix\",\n      \"active\": false\n    },\n    {\n      \"region\":\"Durkastan\",\n      \"contactmame\": \"Sam Johnson\",\n      \"active\": true\n    }\n  ]\n}",
+							"options": {
+								"raw": {}
+							}
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "NoSQL - Upsert - w/ invalid attr name - expect error",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "5fea0f48-e6fb-45bc-963d-6f62ada45c80",
+								"exec": [
+									"pm.test(\"Status code is 400\", function () {",
+									"    pm.response.to.have.status(400);",
+									"});",
+									"pm.test(\"Validate - upsert error response\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.error).to.eql(\"Attribute names cannot include backticks or forward slashes\");",
+									"",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{test_user_name}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"upsert\",\n  \"schema\":\"{{schema}}\",\n  \"table\":\"{{cust_tb}}\",\n  \"records\": [\n    {\n      \"{{cust_id}}\": \"FURIB\",\n      \"region\":\"Durkastan\",\n      \"contactmame\": \"Hans Blix\",\n      \"active/not active\": false\n    },\n    {\n      \"region\":\"Durkastan\",\n      \"contactmame\": \"Sam Johnson\",\n      \"active/not active\": false\n    }\n  ]\n}",
+							"options": {
+								"raw": {}
+							}
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "NoSQL Alter non-SU role",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"id": "06b633b0-2bc2-4203-8062-59718617202d",
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"responseData = JSON.parse(responseBody);",
+									"postman.setEnvironmentVariable(\"role_id\", responseData.id)"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"operation\": \"alter_role\",\n    \"id\": \"{{role_id}}\",\n    \"role\": \"developer_test_5\",\n    \"permission\": {\n        \"super_user\": false,\n        \"northnwd\": {\n            \"tables\": {\n                \"customers\": {\n                    \"read\": true,\n                    \"insert\": true,\n                    \"update\": true,\n                    \"delete\": true,\n                    \"attribute_permissions\": []\n                },\n                \"suppliers\": {\n                    \"read\": false,\n                    \"insert\": false,\n                    \"update\": false,\n                    \"delete\": false,\n                    \"attribute_permissions\": []\n                },\n                \"region\": {\n                    \"read\": true,\n                    \"insert\": false,\n                    \"update\": false,\n                    \"delete\": false,\n                    \"attribute_permissions\": [\n                        {\n                            \"attribute_name\": \"regiondescription\",\n                            \"read\": true,\n                            \"insert\": false,\n                            \"update\": false,\n                            \"delete\": false\n                        }\n                    ]\n                },\n                \"territories\": {\n                    \"read\": true,\n                    \"insert\": true,\n                    \"update\": false,\n                    \"delete\": false,\n                    \"attribute_permissions\": [\n                        {\n                            \"attribute_name\": \"territorydescription\",\n                            \"read\": true,\n                            \"insert\": true,\n                            \"update\": false,\n                            \"delete\": false\n                        }\n                    ]\n                },\n                \"categories\": {\n                    \"read\": true,\n                    \"insert\": true,\n                    \"update\": true,\n                    \"delete\": false,\n                    \"attribute_permissions\": [\n                        {\n                            \"attribute_name\": \"description\",\n                            \"read\": true,\n                            \"insert\": true,\n                            \"update\": true,\n                            \"delete\": false\n                        }\n                    ]\n                },\n                \"shippers\": {\n                    \"read\": true,\n                    \"insert\": true,\n                    \"update\": true,\n                    \"delete\": true,\n                    \"attribute_permissions\": [\n                        {\n                            \"attribute_name\": \"companyname\",\n                            \"read\": false,\n                            \"insert\": false,\n                            \"update\": false,\n                            \"delete\": false\n                        }\n                    ]\n                }\n            }\n        },\n        \"dev\": {\n            \"tables\": {\n                \"dog\": {\n                    \"read\": true,\n                    \"insert\": true,\n                    \"update\": true,\n                    \"delete\": true,\n                    \"attribute_permissions\": [\n                        {\n                            \"attribute_name\": \"__createdtime__\",\n                            \"read\": true,\n                            \"insert\": true,\n                            \"update\": true\n                        },\n                        {\n                            \"attribute_name\": \"__updatedtime__\",\n                            \"read\": true,\n                            \"insert\": true,\n                            \"update\": true\n                        }\n                    ]\n                },\n                \"breed\": {\n                    \"read\": true,\n                    \"insert\": true,\n                    \"update\": true,\n                    \"delete\": true,\n                    \"attribute_permissions\": [\n                        {\n                            \"attribute_name\": \"__createdtime__\",\n                            \"read\": false,\n                            \"insert\": false,\n                            \"update\": true\n                        },\n                        {\n                            \"attribute_name\": \"__updatedtime__\",\n                            \"read\": false,\n                            \"insert\": true,\n                            \"update\": true\n                        }\n                    ]\n                }\n            }\n        }\n    }\n}",
+							"options": {
+								"raw": {}
+							}
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
 					},
 					"response": []
 				},
