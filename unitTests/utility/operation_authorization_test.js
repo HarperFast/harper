@@ -969,12 +969,6 @@ describe('Test operation_authorization', function() {
             const testPermsResponse = new PermissionResponseObject();
             let result = hasPermissions(req_json.hdb_user, write.upsert.name, test_map, testPermsResponse);
             assert.equal(result, null);
-
-            // const unauthed_table = result.unauthorized_access[0];
-            // assert.equal(unauthed_table instanceof PermissionTableResponseObject, true);
-            // assert.equal(unauthed_table.schema, TEST_SCHEMA);
-            // assert.equal(unauthed_table.table, TEST_TABLE);
-            // assert.equal(unauthed_table.required_attribute_permissions.length, 0);
         });
 
         it('Test upsert op with insert perms false - expect error',function() {
