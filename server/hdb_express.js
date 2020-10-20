@@ -91,7 +91,7 @@ try {
 }
 
 if(DEBUG){
-    num_workers  = 1;
+    num_workers = 1;
 }
 
 global.isMaster = cluster.isMaster;
@@ -295,7 +295,9 @@ if (cluster.isMaster &&( num_workers >= 1 || DEBUG )) {
         }
 
         let user;
+        let operation_function;
         try {
+            //create_authorization_tokens needs to not authorize
             if(!req.body.operation || (req.body.operation && req.body.operation !== terms.OPERATIONS_ENUM.CREATE_AUTHENTICATION_TOKENS)) {
                 user = await p_authorize(req, res);
             }
@@ -311,7 +313,7 @@ if (cluster.isMaster &&( num_workers >= 1 || DEBUG )) {
         req.body.hdb_user = user;
         req.body.hdb_auth_header = req.headers.authorization;
 
-        let operation_function;
+
         try {
             operation_function = await p_choose_operation(req.body);
         }catch (error){
