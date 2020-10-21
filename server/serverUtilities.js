@@ -182,7 +182,8 @@ function chooseOperation(json, callback) {
                 harper_logger.error(`${UNAUTH_RESPONSE} from operation ${json.search_operation}`);
                 return callback(ast_perm_check, null);
             }
-        } else {
+        //we need to bypass permission checks to allow the create_authorization_tokens
+        } else if(json.operation !== terms.OPERATIONS_ENUM.CREATE_AUTHENTICATION_TOKENS){
             let function_to_check = (job_operation_function === undefined ? operation_function : job_operation_function);
             let operation_json = ((json.search_operation) ? json.search_operation : json);
             if (!operation_json.hdb_user) {
