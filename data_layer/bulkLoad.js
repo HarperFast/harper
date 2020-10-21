@@ -5,7 +5,7 @@ const validator = require('../validation/fileLoadValidator');
 const request_promise = require('request-promise-native');
 const hdb_terms = require('../utility/hdbTerms');
 const hdb_utils = require('../utility/common_utils');
-const { handleHDBError, handleValidationError, hdb_errors } = require('../utility/errors/hdbError');
+const { handleHDBError, hdb_errors } = require('../utility/errors/hdbError');
 const { HTTP_STATUS_CODES, HDB_ERROR_MSGS, CHECK_LOGS_WRAPPER } = hdb_errors;
 const logger = require('../utility/logging/harper_logger');
 const papa_parse = require('papaparse');
@@ -58,7 +58,7 @@ module.exports = {
 async function csvDataLoad(json_message) {
     let validation_msg = validator.dataObject(json_message);
     if (validation_msg) {
-        throw handleValidationError(validation_msg, validation_msg.message);
+        throw handleHDBError(validation_msg, validation_msg.message, HTTP_STATUS_CODES.BAD_REQUEST);
     }
 
     let bulk_load_result = {};
@@ -95,7 +95,7 @@ async function csvDataLoad(json_message) {
 async function csvURLLoad(json_message) {
     let validation_msg = validator.urlObject(json_message);
     if (validation_msg) {
-        throw handleValidationError(validation_msg, validation_msg.message);
+        throw handleHDBError(validation_msg, validation_msg.message, HTTP_STATUS_CODES.BAD_REQUEST);
     }
 
     let csv_file_name = `${Date.now()}.csv`;
@@ -133,7 +133,7 @@ async function csvURLLoad(json_message) {
 async function csvFileLoad(json_message) {
     let validation_msg = validator.fileObject(json_message);
     if (validation_msg) {
-        throw handleValidationError(validation_msg, validation_msg.message);
+        throw handleHDBError(validation_msg, validation_msg.message, HTTP_STATUS_CODES.BAD_REQUEST);
     }
 
     let csv_file_load_obj = new BulkLoadFileObject(json_message.action, json_message.schema, json_message.table, json_message.file_path,
@@ -158,7 +158,7 @@ async function csvFileLoad(json_message) {
 async function importFromS3(json_message) {
     let validation_msg = validator.s3FileObject(json_message);
     if (validation_msg) {
-        throw handleValidationError(validation_msg, validation_msg.message);
+        throw handleHDBError(validation_msg, validation_msg.message, HTTP_STATUS_CODES.BAD_REQUEST);
     }
 
     let temp_file_path;
@@ -366,7 +366,7 @@ async function validateChunk(json_message, perms_validation_resp = null, reject,
     try {
         const { attributes } = await insert.validation(write_object);
         if (json_message.role_perms && json_message.role_perms.super_user !== true) {
-            verifyBulkLoadAttributePerms(json_message.role_perms, json_message.operation, json_message.schema,
+            verifyBulkLoadAttributePerms(json_message.role_perms, json_message.action, json_message.schema,
                 json_message.table, attributes, perms_validation_resp);
         }
 
@@ -376,7 +376,7 @@ async function validateChunk(json_message, perms_validation_resp = null, reject,
     } catch(err) {
         // reject is a promise object bound to chunk function through hdb_utils.promisifyPapaParse(). In the case of an error
         // reject will bubble up to hdb_utils.promisifyPapaParse() and return a reject promise object with given error.
-        const err_resp = handleValidationError(err, err);
+        const err_resp = handleHDBError(err);
         reject(err_resp);
     }
 }
@@ -467,7 +467,7 @@ async function callPapaParse(json_message) {
 
         const attr_perms_errors = attrsPermsErrors.getPermsResponse();
         if (attr_perms_errors) {
-            throw handleValidationError(new Error(), attr_perms_errors);
+            throw handleHDBError(new Error(), attr_perms_errors, HTTP_STATUS_CODES.BAD_REQUEST);
         }
 
         stream = fs.createReadStream(json_message.file_path, {highWaterMark:HIGHWATERMARK});
@@ -517,7 +517,7 @@ async function insertJson(json_message) {
 
         const attr_perms_errors = attrsPermsErrors.getPermsResponse();
         if (attr_perms_errors) {
-            throw handleValidationError(new Error(), attr_perms_errors);
+            throw handleHDBError(new Error(), attr_perms_errors, HTTP_STATUS_CODES.BAD_REQUEST);
         }
 
         let jsonStreamerInsert = chain([

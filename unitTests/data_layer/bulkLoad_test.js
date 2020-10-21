@@ -449,9 +449,9 @@ describe('Test bulkLoad.js', () => {
             validator_stub = sandbox.stub(validator, 's3FileObject').callThrough();
             bulkLoad_rewire.__set__('validator', {s3FileObject: validator_stub});
 
-            const handleValidationErr_orig = bulkLoad_rewire.__get__('handleValidationError');
+            const handleValidationErr_orig = bulkLoad_rewire.__get__('handleHDBError');
             handleValidationErr_spy = sandbox.spy(handleValidationErr_orig);
-            bulkLoad_rewire.__set__('handleValidationError', handleValidationErr_spy);
+            bulkLoad_rewire.__set__('handleHDBError', handleValidationErr_spy);
 
             downloadFileFromS3_stub = sandbox.stub().resolves();
             bulkLoad_rewire.__set__('downloadFileFromS3', downloadFileFromS3_stub);
@@ -516,7 +516,7 @@ describe('Test bulkLoad.js', () => {
             expect(fileLoad_stub.args[0][0].file_path.endsWith(".json")).to.be.true;
         });
 
-        it('Should use handleValidationError to handle any validation issues', async () => {
+        it('Should use handleHDBError to handle any validation issues', async () => {
             delete test_S3_message_json.schema;
             let result;
             try {

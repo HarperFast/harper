@@ -10,7 +10,7 @@ const lmdb_terms = require('./terms');
 const hdb_terms = require('../hdbTerms');
 const hdb_utils = require('../common_utils');
 const uuid = require('uuid');
-const { handleValidationError } = require('../errors/hdbError');
+const { handleHDBError, hdb_errors } = require('../errors/hdbError');
 
 const CREATED_TIME_ATTRIBUTE_NAME = hdb_terms.TIME_STAMP_NAMES_ENUM.CREATED_TIME;
 const UPDATED_TIME_ATTRIBUTE_NAME = hdb_terms.TIME_STAMP_NAMES_ENUM.UPDATED_TIME;
@@ -223,7 +223,7 @@ function upsertRecords(env, hash_attribute, write_attributes , records){
     try {
         validateWrite(env, hash_attribute, write_attributes , records);
     } catch(err) {
-        throw handleValidationError(err, err.message);
+        throw handleHDBError(err, err.message, hdb_errors.HTTP_STATUS_CODES.BAD_REQUEST);
     }
 
 

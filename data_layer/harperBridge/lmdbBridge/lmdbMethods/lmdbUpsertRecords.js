@@ -9,7 +9,7 @@ const lmdb_upsert_records = require('../../../../utility/lmdb/writeUtility').ups
 const environment_utility = require('../../../../utility/lmdb/environmentUtility');
 const path = require('path');
 const {getBaseSchemaPath} = require('../lmdbUtility/initializePaths');
-const { handleValidationError } = require('../../../../utility/errors/hdbError');
+const { handleHDBError, hdb_errors } = require('../../../../utility/errors/hdbError');
 
 module.exports = lmdbUpsertRecords;
 
@@ -24,7 +24,7 @@ async function lmdbUpsertRecords(upsert_obj) {
     try {
         validation_result = insert_update_validate(upsert_obj);
     } catch(err) {
-        throw handleValidationError(err, err.message);
+        throw handleHDBError(err, err.message, hdb_errors.HTTP_STATUS_CODES.BAD_REQUEST);
     }
 
     let { schema_table, attributes} = validation_result;
