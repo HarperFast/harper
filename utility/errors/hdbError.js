@@ -27,13 +27,17 @@ class HdbError extends Error {
         //This line ensures the original stack trace is captured and does not include the 'handle' or 'constructor' methods
         Error.captureStackTrace(this, handleHDBError);
 
-        this.stack = this.stack;
         this.http_resp_code = http_code ? http_code : hdb_errors.HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR;
         this.http_resp_msg = http_msg ?
             http_msg : hdb_errors.DEFAULT_ERROR_MSGS[http_code] ?
             hdb_errors.DEFAULT_ERROR_MSGS[http_code] : hdb_errors.DEFAULT_ERROR_MSGS[hdb_errors.HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR];
         this.message = err_orig.message ? err_orig.message : this.http_resp_msg;
         this.type = err_orig.name;
+
+        //This ensures that the error stack does not include [object Object] if the error message is not a string
+        if (typeof this.message !== 'string') {
+            this.stack = err_orig.stack;
+        }
 
         if (log_msg) {
             logger[log_level](log_msg);
