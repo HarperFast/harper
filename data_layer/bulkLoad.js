@@ -70,8 +70,20 @@ async function csvDataLoad(json_message) {
                 dynamicTyping: true
             });
 
+        const attrsPermsErrors = new PermissionResponseObject();
+
+        if (json_message.hdb_user.role.permission && json_message.hdb_user.role.permission.super_user !== true) {
+            verifyBulkLoadAttributePerms(json_message.hdb_user.role.permission, this.job_operation_function.name, json_message.action, json_message.schema,
+                json_message.table, parse_results.meta.fields, attrsPermsErrors);
+        }
+
+        const attr_perms_errors = attrsPermsErrors.getPermsResponse();
+        if (attr_perms_errors) {
+            throw handleHDBError(new Error(), attr_perms_errors, HTTP_STATUS_CODES.BAD_REQUEST);
+        }
+
         let converted_msg = new BulkLoadDataObject(json_message.action, json_message.schema, json_message.table,
-            parse_results.data, json_message.hdb_user.role.permission, json_message.transact_to_cluster);
+            parse_results.data, json_message.transact_to_cluster);
 
         bulk_load_result = await op_func_caller.callOperationFunctionAsAwait(callBulkFileLoad, converted_msg,
             postCSVLoadFunction.bind(null, parse_results.meta.fields));
@@ -109,7 +121,7 @@ async function csvURLLoad(json_message) {
     }
 
     try {
-        let csv_file_load_obj = new BulkLoadFileObject(json_message.action, json_message.schema, json_message.table, temp_file_path,
+        let csv_file_load_obj = new BulkLoadFileObject(this.job_operation_function.name, json_message.action, json_message.schema, json_message.table, temp_file_path,
             hdb_terms.VALID_S3_FILE_TYPES.CSV, json_message.hdb_user.role.permission, json_message.transact_to_cluster);
 
         let bulk_load_result = await fileLoad(csv_file_load_obj);
@@ -136,7 +148,7 @@ async function csvFileLoad(json_message) {
         throw handleHDBError(validation_msg, validation_msg.message, HTTP_STATUS_CODES.BAD_REQUEST);
     }
 
-    let csv_file_load_obj = new BulkLoadFileObject(json_message.action, json_message.schema, json_message.table, json_message.file_path,
+    let csv_file_load_obj = new BulkLoadFileObject(this.job_operation_function.name, json_message.action, json_message.schema, json_message.table, json_message.file_path,
         hdb_terms.VALID_S3_FILE_TYPES.CSV, json_message.hdb_user.role.permission, json_message.transact_to_cluster);
 
     try {
@@ -167,7 +179,7 @@ async function importFromS3(json_message) {
         let s3_file_name = `${Date.now()}${s3_file_type}`;
         temp_file_path = `${TEMP_DOWNLOAD_DIR}/${s3_file_name}`;
 
-        let s3_file_load_obj = new BulkLoadFileObject(json_message.action, json_message.schema, json_message.table, temp_file_path,
+        let s3_file_load_obj = new BulkLoadFileObject(this.job_operation_function.name, json_message.action, json_message.schema, json_message.table, temp_file_path,
             s3_file_type, json_message.hdb_user.role.permission, json_message.transact_to_cluster);
 
         await downloadFileFromS3(s3_file_name, json_message);
@@ -366,7 +378,7 @@ async function validateChunk(json_message, perms_validation_resp = null, reject,
     try {
         const { attributes } = await insert.validation(write_object);
         if (json_message.role_perms && json_message.role_perms.super_user !== true) {
-            verifyBulkLoadAttributePerms(json_message.role_perms, json_message.action, json_message.schema,
+            verifyBulkLoadAttributePerms(json_message.role_perms, json_message.op, json_message.action, json_message.schema,
                 json_message.table, attributes, perms_validation_resp);
         }
 

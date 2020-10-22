@@ -11,6 +11,7 @@ const sinon_chai = require('sinon-chai');
 chai.use(sinon_chai);
 const rewire = require('rewire');
 let bulkLoad_rewire = rewire('../../data_layer/bulkLoad');
+const PermissionResponseObject = require('../../security/data_objects/PermissionResponseObject');
 const hdb_terms = require('../../utility/hdbTerms');
 const hdb_utils = require('../../utility/common_utils');
 const sc_utils = require('../../server/socketcluster/util/socketClusterUtils');
@@ -19,7 +20,7 @@ const insert = require('../../data_layer/insert');
 const logger = require('../../utility/logging/harper_logger');
 const env = require('../../utility/environment/environmentManager');
 const path = require('path');
-const  { EventEmitter } = require('events');
+const { EventEmitter } = require('events');
 const papa_parse = require('papaparse');
 const fs = require('fs-extra');
 const { CHECK_LOGS_WRAPPER, TEST_BULK_LOAD_ERROR_MSGS, HTTP_STATUS_CODES } = require('../commonTestErrors');
@@ -41,7 +42,16 @@ const BULK_LOAD_RESPONSE = {
     records: '3'
 };
 
+const TEST_SUPER_USER = {
+    role: {
+        permission: {
+            super_user: true
+        }
+    }
+}
+
 const DATA_LOAD_MESSAGE = {
+    "hdb_user": TEST_SUPER_USER,
     "operation":"",
     "schema":"dev",
     "table":"breed",
@@ -50,6 +60,7 @@ const DATA_LOAD_MESSAGE = {
 };
 
 const CSV_URL_MESSAGE = {
+    "hdb_user": TEST_SUPER_USER,
     "operation": "csv_url_load",
     "action": "insert",
     "schema": "test",
@@ -62,10 +73,21 @@ function  postCSVLoadFunction_stub(orig_bulk_msg, result, orig_req) {
     return result;
 }
 
+async function stubHOC(func, args) {
+    const stub_obj = { job_operation_function: func };
+    return await callStubFunc(stub_obj, args)
+
+}
+
+async function callStubFunc(obj, args) {
+    return await obj.job_operation_function(args);
+}
+
 describe('Test bulkLoad.js', () => {
     let call_papaparse_stub;
     let call_papaparse_rewire;
     let json_message_fake = {
+        "hdb_user": TEST_SUPER_USER,
         "operation": "file_load",
         "action": "insert",
         "schema": "golden",
@@ -76,6 +98,7 @@ describe('Test bulkLoad.js', () => {
     };
 
     let s3_message_fake = {
+        hdb_user: TEST_SUPER_USER,
         operation: "import_from_s3",
         action: "insert",
         schema: "golden",
@@ -89,6 +112,7 @@ describe('Test bulkLoad.js', () => {
     }
 
     let json_file_msg_fake = {
+        hdb_user: TEST_SUPER_USER,
         operation: "import_from_s3",
         action: "update",
         schema: "golden",
@@ -249,7 +273,7 @@ describe('Test bulkLoad.js', () => {
         it('Test for nominal behaviour and success message is returned', async () => {
             CSV_URL_MESSAGE.csv_url = 'http://data.neo4j.com/northwind/products.csv';
             sandbox.stub(validator, 'urlObject').returns(null);
-            let result = await bulkLoad_rewire.csvURLLoad(CSV_URL_MESSAGE);
+            let result = await stubHOC(bulkLoad_rewire.csvURLLoad, CSV_URL_MESSAGE);
 
             expect(result).to.equal(success_msg);
         });
@@ -409,7 +433,7 @@ describe('Test bulkLoad.js', () => {
         });
 
         it('Test success message is returned', async () => {
-            let result = await bulkLoad_rewire.csvFileLoad(json_message_fake);
+            let result = await stubHOC(bulkLoad_rewire.csvFileLoad,json_message_fake);
 
             expect(result).to.equal(`successfully loaded ${bulk_file_load_result_fake.number_written} of ${bulk_file_load_result_fake.records} records`);
             expect(call_papaparse_stub).to.have.been.calledOnce;
@@ -420,7 +444,7 @@ describe('Test bulkLoad.js', () => {
             let error;
 
             try {
-                await bulkLoad_rewire.csvFileLoad(json_message_fake);
+                await stubHOC(bulkLoad_rewire.csvFileLoad, json_message_fake);
             } catch(err) {
                 error = err;
             }
@@ -492,7 +516,7 @@ describe('Test bulkLoad.js', () => {
         });
 
         it('NOMINAL - Should call through and return results', async () => {
-            const results = await importFromS3_rw(test_S3_message_json);
+            const results = await stubHOC(importFromS3_rw, test_S3_message_json);
 
             expect(results).to.equal(expected_insert_results_resp)
             expect(logger_error_spy).to.have.not.been.called;
@@ -500,7 +524,7 @@ describe('Test bulkLoad.js', () => {
         });
 
         it('NOMINAL - Should add `file_type` and `file_path` variables to the json message - csv', async () => {
-            await importFromS3_rw(test_S3_message_json);
+            await stubHOC(importFromS3_rw, test_S3_message_json);
 
             expect(fileLoad_stub.args[0][0].file_type).to.equal(".csv");
             expect(typeof fileLoad_stub.args[0][0].file_path === "string").to.be.true;
@@ -509,7 +533,7 @@ describe('Test bulkLoad.js', () => {
 
         it('NOMINAL - Should add `file_type` and `file_path` variables to the json message - json', async () => {
             test_S3_message_json.s3.key = "test_file.json";
-            await importFromS3_rw(test_S3_message_json);
+            await stubHOC(importFromS3_rw, test_S3_message_json);
 
             expect(fileLoad_stub.args[0][0].file_type).to.equal(".json");
             expect(typeof fileLoad_stub.args[0][0].file_path === "string").to.be.true;
@@ -538,7 +562,7 @@ describe('Test bulkLoad.js', () => {
 
             let result;
             try {
-                await importFromS3_rw(test_S3_message_json);
+                await stubHOC(importFromS3_rw, test_S3_message_json);
             } catch(err) {
                 result = err
             }
@@ -647,19 +671,24 @@ describe('Test bulkLoad.js', () => {
         let validate_chunk_rewire;
 
         let write_object_fake = {
-            operation: json_message_fake.operation,
+            operation: json_message_fake.action,
             schema: json_message_fake.schema,
             table: json_message_fake.table,
             records: data_array_fake
         };
+        let permsResponse;
 
         before(() => {
             sandbox.restore();
             validate_chunk_rewire = bulkLoad_rewire.__get__('validateChunk');
-            insert_validation_stub = sandbox.stub(insert, 'validation').resolves();
+            insert_validation_stub = sandbox.stub(insert, 'validation').resolves({ attributes: ["Column 1", "Column 2"]});
             console_info_spy = sandbox.spy(console, 'info');
             logger_error_spy = sandbox.spy(logger, 'error');
         });
+
+        beforeEach(() => {
+            permsResponse = new PermissionResponseObject();
+        })
 
         after(() => {
             sandbox.restore();
@@ -667,7 +696,7 @@ describe('Test bulkLoad.js', () => {
         });
 
         it('Test validation function returns if no data', async () => {
-            await validate_chunk_rewire(json_message_fake, reject_fake, results_fake, parser_fake);
+            await validate_chunk_rewire(json_message_fake, permsResponse, reject_fake, results_fake, parser_fake);
 
             expect(console_info_spy).to.have.not.been.calledWith('parser pause');
             expect(insert_validation_stub).to.not.have.been.calledWith(write_object_fake);
@@ -676,7 +705,7 @@ describe('Test bulkLoad.js', () => {
         it('Test parser is paused/resumed and validation called', async () => {
             results_fake.data = data_array_fake;
 
-            await validate_chunk_rewire(json_message_fake, reject_fake, results_fake, parser_fake);
+            await validate_chunk_rewire(json_message_fake, permsResponse, reject_fake, results_fake, parser_fake);
 
             expect(console_info_spy).to.have.been.calledWith('parser pause');
             expect(console_info_spy).to.have.been.calledWith('parser resume');
@@ -688,7 +717,7 @@ describe('Test bulkLoad.js', () => {
             let error;
 
             try {
-                await validate_chunk_rewire(json_message_fake, reject_fake, results_fake, parser_fake);
+                await validate_chunk_rewire(json_message_fake, permsResponse, reject_fake, results_fake, parser_fake);
             } catch(err) {
                 error = err;
             }

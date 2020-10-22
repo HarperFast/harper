@@ -40,6 +40,8 @@ const READ_PERM = 'read';
 const UPDATE_PERM = 'update';
 const DESCRIBE_PERM = 'describe';
 
+const UPSERT_OP = 'upsert';
+
 const DESCRIBE_SCHEMA_KEY = schema_describe.describeSchema.name;
 const DESCRIBE_TABLE_KEY = schema_describe.describeTable.name;
 
@@ -386,7 +388,7 @@ function hasPermissions(user_object, op, schema_table_map, permsResponse, action
                     let required_perms = required_permissions.get(op).perms;
 
                     //If an 'action' is included in the operation json, we want to only check permissions for that action
-                    if (!common_utils.isEmpty(action)) {
+                    if (!common_utils.isEmpty(action) && required_perms.includes(action)) {
                         required_perms = [action];
                     }
 
@@ -440,7 +442,7 @@ function checkAttributePerms(record_attributes, role_attribute_permissions, oper
     }
 
     // check each attribute with role permissions.  Required perm should match the per in the operation
-    let needed_perms = required_permissions.get(operation);
+    let needed_perms = required_permissions.get(operation).perms;
 
     if (!needed_perms || needed_perms === '') {
         // We should never get in here since all of our operations should have a perm, but just in case we should fail
@@ -456,8 +458,8 @@ function checkAttributePerms(record_attributes, role_attribute_permissions, oper
     }
 
     //If an 'action' is included in the operation json, we want to only check permissions for that action
-    if (action && needed_perms.perms.includes(action)) {
-        needed_perms.perms = [action];
+    if (action && needed_perms.includes(action)) {
+        needed_perms = [action];
     }
 
     let required_attr_perms = {};
@@ -470,8 +472,8 @@ function checkAttributePerms(record_attributes, role_attribute_permissions, oper
                 permsResponse.addInvalidItem(HDB_ERROR_MSGS.ATTR_NOT_FOUND(schema_name, table_name, element), schema_name, table_name);
                 continue;
             }
-            if (needed_perms.perms) {
-                for (let perm of needed_perms.perms) {
+            if (needed_perms) {
+                for (let perm of needed_perms) {
                     if (terms.TIME_STAMP_NAMES.includes(permission.attribute_name) && perm !== READ_PERM) {
                         throw handleHDBError(new Error(), HDB_ERROR_MSGS.SYSTEM_TIMESTAMP_PERMS_ERR, HTTP_STATUS_CODES.FORBIDDEN);
                     }
@@ -575,8 +577,8 @@ function getAttributePermissions(role_perms, operation_schema, table) {
     return role_attribute_permissions;
 }
 
-function verifyBulkLoadAttributePerms(role_perms, op, operation_schema, operation_table, attributes, permsResponse) {
+function verifyBulkLoadAttributePerms(role_perms, op, action, operation_schema, operation_table, attributes, permsResponse) {
     const record_attrs = new Set(attributes);
     const attr_permissions = getAttributePermissions(role_perms, operation_schema, operation_table);
-    checkAttributePerms(record_attrs, attr_permissions, op, operation_table, operation_schema, permsResponse);
+    checkAttributePerms(record_attrs, attr_permissions, op, operation_table, operation_schema, permsResponse, action);
 }

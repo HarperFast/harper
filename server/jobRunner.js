@@ -161,7 +161,7 @@ async function runCSVJob(runner_message, operation, argument) {
         } else {
             //This ensures that the op/job id error is logged if the error message is passed as a non-string which will
             // be logged right after this below.  If the message is a string, everything will be logged below as the err_message
-            log.error(`There was an error running ${operation.name} job with id ${runner_message.job.id}`)
+            log.error(`There was an error running ${operation.name} job with id ${runner_message.job.id}`);
         }
         log.error(err_message);
         runner_message.job.message = err_message;
