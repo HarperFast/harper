@@ -21579,7 +21579,7 @@
 			"name": "5. NoSQL Role Testing",
 			"item": [
 				{
-					"name": "REAL Bulk Load Perms Tests",
+					"name": "Bulk Load Perms Tests",
 					"item": [
 						{
 							"name": "Add non-SU bulk_load_role",
@@ -21634,7 +21634,7 @@
 								],
 								"body": {
 									"mode": "raw",
-									"raw": "{\n    \"operation\": \"add_role\",\n    \"role\": \"bulk_load_role\",\n    \"permission\": {\n        \"super_user\": false,\n        \"{{schema}}\": {\n            \"tables\": {\n                \"{{supp_tb}}\": {\n                    \"read\": true,\n                    \"insert\": true,\n                    \"update\": true,\n                    \"delete\": true,\n                    \"attribute_permissions\": [\n                        {\n                            \"attribute_name\": \"companyname\",\n                            \"read\": true,\n                            \"insert\": true,\n                            \"update\": true\n                        }\n                    ]\n                },\n                \"{{csv_tb}}\": {\n                    \"read\": true,\n                    \"insert\": true,\n                    \"update\": true,\n                    \"delete\": false,\n                    \"attribute_permissions\": [\n                        {\n                            \"attribute_name\": \"name\",\n                            \"read\": false,\n                            \"insert\": true,\n                            \"update\": false\n                        },\n                        {\n                            \"attribute_name\": \"section\",\n                            \"read\": true,\n                            \"insert\": false,\n                            \"update\": true\n                        },\n                        {\n                            \"attribute_name\": \"image\",\n                            \"read\": true,\n                            \"insert\": true,\n                            \"update\": true\n                        }\n                    ]\n                }\n            }\n        },\n         \"dev\": {\n            \"tables\": {\n                \"books\": {\n                    \"read\": true,\n                    \"insert\": true,\n                    \"update\": true,\n                    \"delete\": true,\n                    \"attribute_permissions\": [\n                        {\n                            \"attribute_name\": \"books_count\",\n                            \"read\": true,\n                            \"insert\": false,\n                            \"update\": true\n                        }\n                    ]\n                },\n                \"dog\": {\n                    \"read\": true,\n                    \"insert\": true,\n                    \"update\": true,\n                    \"delete\": false,\n                    \"attribute_permissions\": [\n                        {\n                            \"attribute_name\": \"dog_name\",\n                            \"read\": false,\n                            \"insert\": true,\n                            \"update\": true\n                        },\n                        {\n                            \"attribute_name\": \"age\",\n                            \"read\": true,\n                            \"insert\": false,\n                            \"update\": true\n                        },\n                        {\n                            \"attribute_name\": \"adorable\",\n                            \"read\": true,\n                            \"insert\": true,\n                            \"update\": false\n                        },\n                        {\n                            \"attribute_name\": \"owner_id\",\n                            \"read\": true,\n                            \"insert\": false,\n                            \"update\": false\n                        }\n                    ]\n                }\n            }\n        }\n    }\n}",
+									"raw": "{\n    \"operation\": \"add_role\",\n    \"role\": \"bulk_load_role\",\n    \"permission\": {\n        \"super_user\": false,\n        \"{{schema}}\": {\n            \"tables\": {\n                \"{{supp_tb}}\": {\n                    \"read\": true,\n                    \"insert\": true,\n                    \"update\": true,\n                    \"delete\": true,\n                    \"attribute_permissions\": [\n                        {\n                            \"attribute_name\": \"companyname\",\n                            \"read\": true,\n                            \"insert\": true,\n                            \"update\": true\n                        }\n                    ]\n                },\n                \"{{csv_tb}}\": {\n                    \"read\": true,\n                    \"insert\": true,\n                    \"update\": true,\n                    \"delete\": false,\n                    \"attribute_permissions\": [\n                        {\n                            \"attribute_name\": \"name\",\n                            \"read\": false,\n                            \"insert\": true,\n                            \"update\": false\n                        },\n                        {\n                            \"attribute_name\": \"section\",\n                            \"read\": true,\n                            \"insert\": false,\n                            \"update\": true\n                        },\n                        {\n                            \"attribute_name\": \"image\",\n                            \"read\": true,\n                            \"insert\": true,\n                            \"update\": true\n                        }\n                    ]\n                }\n            }\n        },\n        \"dev\": {\n            \"tables\": {\n                \"books\": {\n                    \"read\": true,\n                    \"insert\": true,\n                    \"update\": true,\n                    \"delete\": true,\n                    \"attribute_permissions\": [\n                        {\n                            \"attribute_name\": \"books_count\",\n                            \"read\": true,\n                            \"insert\": false,\n                            \"update\": true\n                        }\n                    ]\n                },\n                \"dog\": {\n                    \"read\": true,\n                    \"insert\": true,\n                    \"update\": true,\n                    \"delete\": false,\n                    \"attribute_permissions\": [\n                        {\n                            \"attribute_name\": \"dog_name\",\n                            \"read\": false,\n                            \"insert\": true,\n                            \"update\": true\n                        },\n                        {\n                            \"attribute_name\": \"age\",\n                            \"read\": true,\n                            \"insert\": false,\n                            \"update\": true\n                        },\n                        {\n                            \"attribute_name\": \"adorable\",\n                            \"read\": true,\n                            \"insert\": true,\n                            \"update\": false\n                        },\n                        {\n                            \"attribute_name\": \"owner_id\",\n                            \"read\": true,\n                            \"insert\": false,\n                            \"update\": false\n                        }\n                    ]\n                },\n                \"owner\": {\n                    \"read\": true,\n                    \"insert\": true,\n                    \"update\": true,\n                    \"delete\": false,\n                    \"attribute_permissions\": [\n                        {\n                            \"attribute_name\": \"name\",\n                            \"read\": true,\n                            \"insert\": false,\n                            \"update\": true\n                        }\n                    ]\n                }\n            }\n        }\n    }\n}",
 									"options": {
 										"raw": {}
 									}
@@ -21716,7 +21716,7 @@
 							"response": []
 						},
 						{
-							"name": "CSV Data Load  update to table w/ new attr & restricted attrs - expect fail",
+							"name": "CSV Data Load  update to table w/ new attr & restricted attrs",
 							"event": [
 								{
 									"listen": "test",
@@ -21771,7 +21771,7 @@
 								],
 								"body": {
 									"mode": "raw",
-									"raw": "{\n  \"operation\":\"csv_data_load\",\n  \"action\": \"upsert\",\n  \"schema\":\"{{schema}}\",\n  \"table\":\"{{supp_tb}}\",\n  \"data\":\"supplierid,companyname, rando\\n19,The Chum Bucket, Another attr value\\n\"\n}\n",
+									"raw": "{\n  \"operation\":\"csv_data_load\",\n  \"action\": \"update\",\n  \"schema\":\"{{schema}}\",\n  \"table\":\"{{supp_tb}}\",\n  \"data\":\"supplierid,companyname, rando\\n19,The Chum Bucket, Another attr value\\n\"\n}\n",
 									"options": {
 										"raw": {}
 									}
@@ -21899,7 +21899,7 @@
 							"response": []
 						},
 						{
-							"name": "CSV Data Load - upsert - to table w/ some restricted attrs & new attr- expect fail",
+							"name": "CSV Data Load - upsert - to table w/ some restricted attrs & new attr",
 							"event": [
 								{
 									"listen": "test",
@@ -22584,7 +22584,7 @@
 							"response": []
 						},
 						{
-							"name": "CSV File Load to table w/ restricted attrs - expect fail",
+							"name": "CSV File Load to table w/ restricted attrs",
 							"event": [
 								{
 									"listen": "test",
@@ -22766,7 +22766,7 @@
 							"response": []
 						},
 						{
-							"name": "Import CSV from S3 to table w/ restricted attrs - expect fail",
+							"name": "Import CSV from S3 to table w/ restricted attrs",
 							"event": [
 								{
 									"listen": "test",
@@ -22937,6 +22937,981 @@
 								"body": {
 									"mode": "raw",
 									"raw": "{\n\t\"operation\":\"get_job\",\n\t\"id\": \"{{job_id}}\"\n}",
+									"options": {
+										"raw": {}
+									}
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "Import JSON from S3 - upsert - to table w/ restricted attrs",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "6dbe0313-c3c3-404c-8c82-5fa1b66a3331",
+										"exec": [
+											"var jsonData = pm.response.json();",
+											"",
+											"pm.test(\"Check for job message\", function () {",
+											"    pm.expect(jsonData.message.indexOf('Starting job')).to.eql(0);",
+											"});",
+											"",
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"let id_index = jsonData.message.indexOf('id ');",
+											"let parsedId = jsonData.message.substr(id_index + 3, jsonData.message.length);",
+											"pm.environment.set(\"job_id\", parsedId);"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "bulk_load_user",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"value": "Basic c2dvbGRiZXJnOnRlc3QxMjM0IQ=="
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\t\"operation\":\"import_from_s3\",\n\t\"action\": \"upsert\",\n\t\"schema\":\"dev\",\n\t\"table\":\"owner\",\n\t\"s3\":{\n\t\t\"aws_access_key_id\":\"{{s3_key}}\",\n\t\t\"aws_secret_access_key\":\"{{s3_secret}}\",\n\t\t\"bucket\":\"harperdb-integration-test-data/non_public_folder\",\n\t\t\"key\":\"owners_update.json\"\n\t}\n}",
+									"options": {
+										"raw": {}
+									}
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "Check S3 JSON upsert perms error",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "17e25793-1a23-4b37-a800-f692b31c9005",
+										"exec": [
+											"",
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"test Job Found\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData.length).to.eql(1);",
+											"    ",
+											"    pm.expect(jsonData[0]).to.have.property('status');",
+											"    ",
+											"    let status = jsonData[0].status;",
+											"    ",
+											"    switch(status){",
+											"        case 'ERROR':",
+											"            console.log(jsonData[0]);",
+											"            ",
+											"            let msg_contains = jsonData[0].message.error.includes(\"This operation is not authorized due to role restrictions and/or invalid schema items\");",
+											"            pm.expect(msg_contains).to.eql(true);",
+											"            pm.expect(status).to.eql('ERROR');",
+											"            break;",
+											"        case 'COMPLETE':",
+											"            console.log(jsonData[0]);",
+											"            pm.expect(status).to.not.eql('COMPLETE');",
+											"            break;",
+											"        case '0':",
+											"        case 0:",
+											"        case 'IN_PROGRESS':",
+											"            console.log('in progress, checking again');",
+											"            postman.setNextRequest('Check S3 JSON upsert perms error');",
+											"            pm.expect(status).to.be.oneOf(['IN_PROGRESS', 0, '0']);",
+											"            break;",
+											"        default:",
+											"            postman.setNextRequest('Check S3 JSON upsert perms error');",
+											"            pm.expect(status).to.be.oneOf(['IN_PROGRESS', 0, '0', 'ERROR', 'COMPLETE']);",
+											"            break;",
+											"    }",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"id": "6debb8f5-ff7c-41c8-975e-1d0ad9d44e23",
+										"exec": [
+											"setTimeout(()=>{}, 200);"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "saveHelperData",
+											"type": "any"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\t\"operation\":\"get_job\",\n\t\"id\": \"{{job_id}}\"\n}",
+									"options": {
+										"raw": {}
+									}
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "Import JSON from S3 - insert - to table w/ restricted attrs",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "f94aa77c-7d11-443b-98a6-2e1a8d65a3ba",
+										"exec": [
+											"var jsonData = pm.response.json();",
+											"",
+											"pm.test(\"Check for job message\", function () {",
+											"    pm.expect(jsonData.message.indexOf('Starting job')).to.eql(0);",
+											"});",
+											"",
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"let id_index = jsonData.message.indexOf('id ');",
+											"let parsedId = jsonData.message.substr(id_index + 3, jsonData.message.length);",
+											"pm.environment.set(\"job_id\", parsedId);"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "bulk_load_user",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"value": "Basic c2dvbGRiZXJnOnRlc3QxMjM0IQ=="
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\t\"operation\":\"import_from_s3\",\n\t\"action\": \"insert\",\n\t\"schema\":\"dev\",\n\t\"table\":\"owner\",\n\t\"s3\":{\n\t\t\"aws_access_key_id\":\"{{s3_key}}\",\n\t\t\"aws_secret_access_key\":\"{{s3_secret}}\",\n\t\t\"bucket\":\"harperdb-integration-test-data/non_public_folder\",\n\t\t\"key\":\"owners_update.json\"\n\t}\n}",
+									"options": {
+										"raw": {}
+									}
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "Check S3 JSON insert perms error",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "f571c1f9-7ac2-4c8f-a363-fdbb50b3d074",
+										"exec": [
+											"",
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"test Job Found\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData.length).to.eql(1);",
+											"    ",
+											"    pm.expect(jsonData[0]).to.have.property('status');",
+											"    ",
+											"    let status = jsonData[0].status;",
+											"    ",
+											"    switch(status){",
+											"        case 'ERROR':",
+											"            console.log(jsonData[0]);",
+											"            ",
+											"            let msg_contains = jsonData[0].message.error.includes(\"This operation is not authorized due to role restrictions and/or invalid schema items\");",
+											"            pm.expect(msg_contains).to.eql(true);",
+											"            pm.expect(status).to.eql('ERROR');",
+											"            break;",
+											"        case 'COMPLETE':",
+											"            console.log(jsonData[0]);",
+											"            pm.expect(status).to.not.eql('COMPLETE');",
+											"            break;",
+											"        case '0':",
+											"        case 0:",
+											"        case 'IN_PROGRESS':",
+											"            console.log('in progress, checking again');",
+											"            postman.setNextRequest('Check S3 JSON insert perms error');",
+											"            pm.expect(status).to.be.oneOf(['IN_PROGRESS', 0, '0']);",
+											"            break;",
+											"        default:",
+											"            postman.setNextRequest('Check S3 JSON insert perms error');",
+											"            pm.expect(status).to.be.oneOf(['IN_PROGRESS', 0, '0', 'ERROR', 'COMPLETE']);",
+											"            break;",
+											"    }",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"id": "f7ebebb2-74e4-47cb-a52c-b90cc1c65def",
+										"exec": [
+											"setTimeout(()=>{}, 200);"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "saveHelperData",
+											"type": "any"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\t\"operation\":\"get_job\",\n\t\"id\": \"{{job_id}}\"\n}",
+									"options": {
+										"raw": {}
+									}
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "Alter non-SU bulk_load_role",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "d98f204d-0249-41bf-82a6-87a71ba671d2",
+										"exec": [
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n    \"operation\": \"alter_role\",\n    \"id\": \"{{role_id}}\",\n    \"role\": \"bulk_load_role\",\n    \"permission\": {\n        \"super_user\": false,\n        \"{{schema}}\": {\n            \"tables\": {\n                \"{{supp_tb}}\": {\n                    \"read\": true,\n                    \"insert\": true,\n                    \"update\": true,\n                    \"delete\": true,\n                    \"attribute_permissions\": []\n                }\n            }\n        },\n        \"dev\": {\n            \"tables\": {\n                \"dog\": {\n                    \"read\": true,\n                    \"insert\": true,\n                    \"update\": true,\n                    \"delete\": false,\n                    \"attribute_permissions\": [\n                        {\n                            \"attribute_name\": \"dog_name\",\n                            \"read\": false,\n                            \"insert\": true,\n                            \"update\": true\n                        },\n                        {\n                            \"attribute_name\": \"age\",\n                            \"read\": true,\n                            \"insert\": true,\n                            \"update\": true\n                        },\n                        {\n                            \"attribute_name\": \"adorable\",\n                            \"read\": true,\n                            \"insert\": true,\n                            \"update\": true\n                        },\n                        {\n                            \"attribute_name\": \"owner_id\",\n                            \"read\": true,\n                            \"insert\": true,\n                            \"update\": true\n                        },\n                        {\n                            \"attribute_name\": \"weight_lbs\",\n                            \"read\": true,\n                            \"insert\": true,\n                            \"update\": true\n                        },\n                        {\n                            \"attribute_name\": \"breed_id\",\n                            \"read\": true,\n                            \"insert\": true,\n                            \"update\": true\n                        },\n                        {\n                            \"attribute_name\": \"__updatedtime__\",\n                            \"read\": true,\n                            \"insert\": true,\n                            \"update\": false\n                        }\n                    ]\n                }\n            }\n        }\n    }\n}",
+									"options": {
+										"raw": {}
+									}
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "CSV Data Load  upsert to table w/ full perms",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "0a233d84-c680-4ef9-92a1-89900856e70d",
+										"exec": [
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"const responseData = JSON.parse(responseBody);",
+											"",
+											"let id_index = responseData.message.indexOf('id ');",
+											"let parsedId = responseData.message.substr(id_index + 3, responseData.message.length);",
+											"pm.environment.set(\"job_id\", parsedId);"
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"id": "75bd4db8-0909-473c-8271-88969517fa9e",
+										"exec": [
+											"setTimeout(()=>{}, 400);"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "bulk_load_user",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"operation\":\"csv_data_load\",\n  \"action\": \"upsert\",\n  \"schema\":\"{{schema}}\",\n  \"table\":\"{{supp_tb}}\",\n  \"data\":\"companyname, new_attr\\nThe Chum Bucket, Another attr value\\n\"\n}\n",
+									"options": {
+										"raw": {}
+									}
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								},
+								"description": "update a table with csv data uplaod"
+							},
+							"response": []
+						},
+						{
+							"name": "Check Data CSV upsert job completed",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "49ddfc45-dd93-412a-832f-5a137c59ab97",
+										"exec": [
+											"",
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"test Job Found\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData.length).to.eql(1);",
+											"    ",
+											"    pm.expect(jsonData[0]).to.have.property('status');",
+											"    ",
+											"    let status = jsonData[0].status;",
+											"    ",
+											"    switch(status){",
+											"        case 'ERROR':",
+											"            console.log(jsonData[0]);",
+											"",
+											"            pm.expect(status).to.not.eql('ERROR');",
+											"            break;",
+											"        case 'COMPLETE':",
+											"            console.log(jsonData[0]);",
+											"",
+											"            pm.expect(jsonData[0].message).to.contain(\"successfully loaded 1 of 1 records\");",
+											"            pm.expect(status).to.eql('COMPLETE');",
+											"            break;",
+											"        case '0':",
+											"        case 0:",
+											"        case 'IN_PROGRESS':",
+											"            console.log('in progress, checking again');",
+											"            postman.setNextRequest('Check Data CSV upsert job completed');",
+											"            pm.expect(status).to.be.oneOf(['IN_PROGRESS', 0, '0']);",
+											"            break;",
+											"        default:",
+											"            postman.setNextRequest('Check Data CSV upsert job completed');",
+											"            pm.expect(status).to.be.oneOf(['IN_PROGRESS', 0, '0', 'ERROR', 'COMPLETE']);",
+											"            break;",
+											"    }",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"id": "16142dc0-4e72-4b38-9195-42e54cee2453",
+										"exec": [
+											"setTimeout(()=>{}, 200);"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "saveHelperData",
+											"type": "any"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\t\"operation\":\"get_job\",\n\t\"id\": \"{{job_id}}\"\n}",
+									"options": {
+										"raw": {}
+									}
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "Check row from Data CSV job was upserted",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "a2859d8e-2464-477d-8f5c-f557f39a201d",
+										"exec": [
+											"",
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"test correct new row count on table\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData[0].row_count).to.eql(30);",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"id": "ad0452f9-c49e-48ce-abd7-c7e937b43853",
+										"exec": [
+											"setTimeout(()=>{}, 200);"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "saveHelperData",
+											"type": "any"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\t\"operation\":\"sql\",\n\t\"sql\": \"SELECT count(*) AS row_count FROM {{schema}}.{{supp_tb}}\"\n}",
+									"options": {
+										"raw": {}
+									}
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "Import CSV from S3 to table w/ full attr perms - update",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "c510ef2f-1f07-46df-b6aa-41cb9b6e5621",
+										"exec": [
+											"var jsonData = pm.response.json();",
+											"",
+											"pm.test(\"Check for job message\", function () {",
+											"    pm.expect(jsonData.message.indexOf('Starting job')).to.eql(0);",
+											"});",
+											"",
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"let id_index = jsonData.message.indexOf('id ');",
+											"let parsedId = jsonData.message.substr(id_index + 3, jsonData.message.length);",
+											"pm.environment.set(\"job_id\", parsedId);"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "bulk_load_user",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"value": "Basic c2dvbGRiZXJnOnRlc3QxMjM0IQ=="
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\t\"operation\":\"import_from_s3\",\n\t\"action\": \"update\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog\",\n\t\"s3\":{\n\t\t\"aws_access_key_id\":\"{{s3_key}}\",\n\t\t\"aws_secret_access_key\":\"{{s3_secret}}\",\n\t\t\"bucket\":\"harperdb-integration-test-data/non_public_folder\",\n\t\t\"key\":\"dogs.csv\"\n\t}\n}",
+									"options": {
+										"raw": {}
+									}
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "Check S3 CSV update job completed",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "ab83e0e4-0040-49ac-b493-55dd6d5b03dc",
+										"exec": [
+											"",
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"test Job Found\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData.length).to.eql(1);",
+											"    ",
+											"    pm.expect(jsonData[0]).to.have.property('status');",
+											"    ",
+											"    let status = jsonData[0].status;",
+											"    ",
+											"    switch(status){",
+											"        case 'ERROR':",
+											"            console.log(jsonData[0]);",
+											"            pm.expect(status).to.not.eql('ERROR');",
+											"            break;",
+											"        case 'COMPLETE':",
+											"            console.log(jsonData[0]);",
+											"            pm.expect(jsonData[0].message).to.contain(\"successfully loaded 9 of 9 records\");",
+											"            pm.expect(status).to.eql('COMPLETE');",
+											"            break;",
+											"        case '0':",
+											"        case 0:",
+											"        case 'IN_PROGRESS':",
+											"            console.log('in progress, checking again');",
+											"            postman.setNextRequest('Check S3 CSV update job completed');",
+											"            pm.expect(status).to.be.oneOf(['IN_PROGRESS', 0, '0']);",
+											"            break;",
+											"        default:",
+											"            postman.setNextRequest('Check S3 CSV update job completed');",
+											"            pm.expect(status).to.be.oneOf(['IN_PROGRESS', 0, '0', 'ERROR', 'COMPLETE']);",
+											"            break;",
+											"    }",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"id": "975dda59-03ce-4f08-bb77-8ca923be34b6",
+										"exec": [
+											"setTimeout(()=>{}, 200);",
+											""
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "saveHelperData",
+											"type": "any"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\t\"operation\":\"get_job\",\n\t\"id\": \"{{job_id}}\"\n}",
+									"options": {
+										"raw": {}
+									}
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "Check rows from S3 update were updated",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "e9a4a093-6dd6-4f47-a77b-b0e10bd82999",
+										"exec": [
+											"",
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"test all rows on table have new __updatedtime__ value\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    jsonData.forEach(row => {",
+											"        pm.expect(row.__updatedtime__).to.be.greaterThan(row.__createdtime__);",
+											"    })",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"id": "73a36964-be2c-436a-b87f-14471145b673",
+										"exec": [
+											"setTimeout(()=>{}, 200);"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "saveHelperData",
+											"type": "any"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\t\"operation\":\"sql\",\n\t\"sql\": \"SELECT * FROM dev.dog\"\n}",
 									"options": {
 										"raw": {}
 									}
@@ -29961,8 +30936,8 @@
 									"",
 									"var jsonData = pm.response.json();",
 									"",
-									"pm.test(\"test 8 records returned\", function () {",
-									"    pm.expect(jsonData.length).to.eql(8);",
+									"pm.test(\"test 9 records returned\", function () {",
+									"    pm.expect(jsonData.length).to.eql(9);",
 									"});",
 									"",
 									"var expected_attributes = [\"id\", \"dog_name\", \"age\", \"adorable\", \"id1\", \"name\"]",
@@ -29977,8 +30952,8 @@
 									"});",
 									"",
 									"pm.test(\"test random row values\", function () {",
-									"    pm.expect(jsonData[1].name).to.eql(\"David\");",
-									"    pm.expect(jsonData[1].id1).to.eql(3);",
+									"    pm.expect(jsonData[1].name).to.eql(\"Kyle\");",
+									"    pm.expect(jsonData[3].id1).to.eql(1);",
 									"    pm.expect(jsonData[4].id1).to.eql(2);",
 									"});"
 								],
@@ -30049,7 +31024,7 @@
 									"});",
 									"",
 									"var jsonData = pm.response.json();",
-									"var expected_names = [\"David\", \"Kaylan\", \"Kaylan\", \"Kyle\", \"Kyle\"];",
+									"var expected_names = [\"David\", \"Kaylan\", \"Kyle\", \"Kyle\", \"Kyle\"];",
 									"var expected_attrs = [\"__createdtime__\", \"age\", \"dog_name\", \"adorable\", \"owner_id\", \"__updatedtime__\", \"id\", \"weight_lbs\", \"breed_id\", \"name\", \"id1\"]",
 									"",
 									"pm.test(\"Returns merged table data in correct order\", function () {",
@@ -30124,9 +31099,9 @@
 							"script": {
 								"id": "b3de6401-bed2-44ce-afde-f1bcad402b6f",
 								"exec": [
-									"pm.test(\"test 7 records returned\", function () {",
+									"pm.test(\"test 9 records returned\", function () {",
 									"    var jsonData = pm.response.json();",
-									"    pm.expect(jsonData.length).to.eql(7);",
+									"    pm.expect(jsonData.length).to.eql(9);",
 									"});",
 									"",
 									"pm.test(\"test for all columns exist including duplicate column name numbering\", function () {",
@@ -30144,11 +31119,11 @@
 									"",
 									"pm.test(\"test random row values\", function () {",
 									"    var jsonData = pm.response.json();",
-									"    pm.expect(jsonData[1].name).to.eql(\"David\");",
-									"    pm.expect(jsonData[1].id1).to.eql(3);",
+									"    pm.expect(jsonData[1].name).to.eql(\"Kyle\");",
+									"    pm.expect(jsonData[1].id1).to.eql(2);",
 									"    pm.expect(jsonData[4].id1).to.eql(2);",
-									"    pm.expect(jsonData[6].id1).to.eql(1);",
-									"    pm.expect(jsonData[6].name1).to.eql(\"MASTIFF\");",
+									"    pm.expect(jsonData[6].id1).to.eql(4);",
+									"    pm.expect(jsonData[6].name1).to.eql(\"BEAGLE MIX\");",
 									"});"
 								],
 								"type": "text/javascript"
@@ -30213,9 +31188,9 @@
 							"script": {
 								"id": "0cd21577-74d3-4990-abeb-083a11b856f2",
 								"exec": [
-									"pm.test(\"test 7 records returned\", function () {",
+									"pm.test(\"test 9 records returned\", function () {",
 									"    var jsonData = pm.response.json();",
-									"    pm.expect(jsonData.length).to.eql(7);",
+									"    pm.expect(jsonData.length).to.eql(9);",
 									"});",
 									"",
 									"pm.test(\"test for all columns exist including duplicate column name numbering\", function () {",
@@ -30230,14 +31205,14 @@
 									"",
 									"pm.test(\"test first and last row values\", function () {",
 									"    var jsonData = pm.response.json();",
-									"    pm.expect(jsonData[0].dog_age).to.eql(1);",
+									"    pm.expect(jsonData[0].dog_age).to.eql(3);",
 									"    pm.expect(jsonData[0].dog_weight).to.eql(35);",
 									"    pm.expect(jsonData[0].owner_name).to.eql(\"Kaylan\");",
 									"    pm.expect(jsonData[0].name).to.eql(\"BEAGLE MIX\");",
-									"    pm.expect(jsonData[6].dog_age).to.eql(5);",
-									"    pm.expect(jsonData[6].dog_weight).to.eql(35);",
+									"    pm.expect(jsonData[6].dog_age).to.eql(8);",
+									"    pm.expect(jsonData[6].dog_weight).to.eql(15);",
 									"    pm.expect(jsonData[6].owner_name).to.eql(\"Kyle\");",
-									"    pm.expect(jsonData[6].name).to.eql(\"WHIPPET\");",
+									"    pm.expect(jsonData[6].name).to.eql(\"TERRIER MIX\");",
 									"});"
 								],
 								"type": "text/javascript"
