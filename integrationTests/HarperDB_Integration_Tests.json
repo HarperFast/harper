@@ -33184,9 +33184,9 @@
 											"",
 											"    if (jsonData.message) {",
 											"        pm.expect(jsonData.message.indexOf('Starting job')).to.eql(0);",
-											"        eval(pm.globals.get(\"function:getJobId\"))(jsonData, \"Import does_not_exist_UPDATE.csv from S3 - expect fail\");",
+											"        eval(pm.globals.get(\"function:getJobId\"))(jsonData, \"Import large sensor_data.json for UPSERT from S3\");",
 											"    } else {",
-											"        postman.setNextRequest(\"Import does_not_exist_UPDATE.csv from S3 - expect fail\");",
+											"        postman.setNextRequest(\"Import large sensor_data.json for UPSERT from S3\");",
 											"        pm.expect(jsonData).to.have.message;",
 											"    }",
 											"});"
@@ -33348,6 +33348,284 @@
 								"body": {
 									"mode": "raw",
 									"raw": "{\n\t\"operation\":\"get_job\",\n\t\"id\": \"{{job_id}}\"\n}",
+									"options": {
+										"raw": {}
+									}
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "Import large sensor_data.json for UPSERT from S3",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "71af842c-00e2-476c-8205-21ad1e4b0269",
+										"exec": [
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"Check for job message\", function () {",
+											"    var jsonData = pm.response.json();",
+											"",
+											"    if (jsonData.message) {",
+											"        pm.expect(jsonData.message.indexOf('Starting job')).to.eql(0);",
+											"        eval(pm.globals.get(\"function:getJobId\"))(jsonData, \"Import does_not_exist_UPDATE.csv from S3 - expect fail\");",
+											"    } else {",
+											"        postman.setNextRequest(\"Import does_not_exist_UPDATE.csv from S3 - expect fail\");",
+											"        pm.expect(jsonData).to.have.message;",
+											"    }",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"value": "Basic c2dvbGRiZXJnOnRlc3QxMjM0IQ=="
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\t\"operation\":\"import_from_s3\",\n\t\"action\": \"upsert\",\n\t\"schema\":\"S3_DATA\",\n\t\"table\":\"sensor\",\n\t\"s3\":{\n\t\t\"aws_access_key_id\":\"{{s3_key}}\",\n\t\t\"aws_secret_access_key\":\"{{s3_secret}}\",\n\t\t\"bucket\":\"harperdb-integration-test-data/non_public_folder\",\n\t\t\"key\":\"sensor_data.json\"\n\t}\n}",
+									"options": {
+										"raw": {}
+									}
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "Check S3 large sensor_data upserted",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "eedc42aa-cc38-449b-984d-da1858c19c05",
+										"exec": [
+											"",
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"test Job Found\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData.length).to.eql(1);",
+											"    ",
+											"    pm.expect(jsonData[0]).to.have.property('status');",
+											"    ",
+											"    let status = jsonData[0].status;",
+											"    ",
+											"    switch(status){",
+											"        case 'ERROR':",
+											"            console.log(jsonData[0]);",
+											"            console.log(\"Error checking S3 import job.\")",
+											"            if(pm.environment.get(\"next_request\")){",
+											"                postman.setNextRequest(pm.environment.get(\"next_request\"));",
+											"            }",
+											"            pm.expect(status).to.not.eql('ERROR');",
+											"            break;",
+											"        case 'COMPLETE':",
+											"            console.log(jsonData[0]);",
+											"            if(pm.environment.get(\"next_request\")){",
+											"                postman.setNextRequest(pm.environment.get(\"next_request\"));",
+											"            }",
+											"           ",
+											"            pm.expect(jsonData[0].message).to.eql(\"successfully loaded 20020 of 20020 records\");",
+											"            pm.expect(status).to.be.oneOf(['COMPLETE', 'ERROR']);",
+											"            break;",
+											"        case '0':",
+											"        case 0:",
+											"        case 'IN_PROGRESS':",
+											"            console.log('in progress, checking again');",
+											"            postman.setNextRequest('Check S3 large sensor_data upserted');",
+											"            pm.expect(status).to.be.oneOf(['IN_PROGRESS', 0, '0']);",
+											"            break;",
+											"        default:",
+											"            postman.setNextRequest('Check S3 large sensor_data upserted');",
+											"            pm.expect(status).to.be.oneOf(['IN_PROGRESS', 0, '0', 'ERROR', 'COMPLETE']);",
+											"            break;",
+											"    }",
+											"});",
+											""
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"id": "92611995-fffd-485d-88cd-6c36058562bb",
+										"exec": [
+											"setTimeout(()=>{}, 200);",
+											"console.log(\"Checking Job CSV URL load\" + pm.environment.get(\"job_id\"));"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "saveHelperData",
+											"type": "any"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\t\"operation\":\"get_job\",\n\t\"id\": \"{{job_id}}\"\n}",
+									"options": {
+										"raw": {}
+									}
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "Check rows from S3 upsert were updated",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"id": "0383ff87-2a58-4608-b14c-e448a4e3fa45",
+										"exec": [
+											"",
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"test all rows on table have new __updatedtime__ value\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    jsonData.forEach(row => {",
+											"        pm.expect(row.__updatedtime__).to.be.greaterThan(row.__createdtime__);",
+											"    })",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"id": "a84b46d2-e872-4ea8-970f-9ae575ccd220",
+										"exec": [
+											"setTimeout(()=>{}, 200);"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "saveHelperData",
+											"type": "any"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\t\"operation\":\"sql\",\n\t\"sql\": \"SELECT * FROM S3_DATA.sensor\"\n}",
 									"options": {
 										"raw": {}
 									}
