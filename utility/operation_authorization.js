@@ -566,9 +566,9 @@ function getAttributePermissions(role_perms, operation_schema, table) {
         return role_attribute_permissions;
     }
     try {
-        role_perms[operation_schema].tables[table].attribute_permissions.forEach(function (permission) {
-            if (!role_attribute_permissions.has(permission.attribute_name)) {
-                role_attribute_permissions.set(permission.attribute_name, permission);
+        role_perms[operation_schema].tables[table].attribute_permissions.forEach(perm => {
+            if (!role_attribute_permissions.has(perm.attribute_name)) {
+                role_attribute_permissions.set(perm.attribute_name, perm);
             }
         });
     } catch (e) {
