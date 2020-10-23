@@ -255,7 +255,6 @@ let ROLE_ATTRIBUTE_RESTRICTIONS = new Map();
 TEST_ATTRIBUTES.forEach(attr => {
     ROLE_ATTRIBUTE_RESTRICTIONS.set(attr, ATTRIBUTE_PERMISSION_BASE([attr])[0]);
 })
-// ROLE_ATTRIBUTE_RESTRICTIONS.set(ROLE_PERMISSION_KEY, DEFAULT_ATTRIBUTE_PERMISSION_BASE()[0]);
 
 const test_attrs = [{ attribute: "__createdtime__" }, { attribute: "__updatedtime__" }];
 AFFECTED_ATTRIBUTES_SET.forEach(attr => test_attrs.push({ attribute: attr }));
@@ -818,12 +817,10 @@ describe('Test operation_authorization', function() {
     describe(`Test getAttributePermissions`,function() {
         it('Nominal case, valid JSON with attributes in the role.',function() {
             let getAttributePermissions = op_auth_rewire.__get__('getAttributePermissions');
-            // let req_json = getRequestJson(TEST_JSON);
             let perms = clone(PERMISSION_BASE);
             perms.dev.tables.dog.insert = true;
             let att_base = ATTRIBUTE_PERMISSION_BASE([ROLE_PERMISSION_KEY], crud_keys.INSERT, false);
             perms.dev.tables.dog.attribute_permissions = att_base;
-            // req_json.hdb_user.role.permission = perms;
             let result = getAttributePermissions(perms, 'dev', 'dog');
             assert.equal(result.size, 1);
             assert.equal(result.get('name').attribute_name, 'name');
@@ -837,7 +834,6 @@ describe('Test operation_authorization', function() {
 
         it('JSON with no restrictions in the role. Expect false ',function() {
             let getAttributePermissions = op_auth_rewire.__get__('getAttributePermissions');
-            // let req_json = getRequestJson(TEST_JSON);
             // Leaving this manual definition of the JSON to omit attribute_permissions
             let perms = {
                 "super_user": false,
@@ -852,14 +848,12 @@ describe('Test operation_authorization', function() {
                     }
                 },
             };
-            // req_json.hdb_user.role.permission = perms;
             let result = getAttributePermissions(perms);
             assert.equal(result.size, 0);
         });
 
         it('JSON with super user. Expect zero length back ',function() {
             let getAttributePermissions = op_auth_rewire.__get__('getAttributePermissions');
-            // let req_json = getRequestJson(TEST_JSON);
             // Leaving this manual definition of the JSON to omit attribute_permissions
             let perms = {
                 "super_user": true,
@@ -874,7 +868,6 @@ describe('Test operation_authorization', function() {
                     }
                 },
             };
-            // req_json.hdb_user.role.permission = perms;
             let result = getAttributePermissions(perms);
             assert.equal(result.size, 0);
         });
