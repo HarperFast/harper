@@ -61,10 +61,12 @@ async function createTokens(auth_object){
     }
 
     //sign & return tokens
-    let operation_token = await jwt.sign({username: auth_object.username, token_type: TOKEN_TYPE_ENUM.OPERATION},
-        {key: rsa_keys.private_key, passphrase: rsa_keys.passphrase}, {expiresIn: THIRTY_DAY_EXPIRY, algorithm: RSA_ALGORITHM});
-    let refresh_token = await jwt.sign({username: auth_object.username, token_type: TOKEN_TYPE_ENUM.REFRESH},
-        {key: rsa_keys.private_key, passphrase: rsa_keys.passphrase}, {expiresIn: THIRTY_MINUTE_EXPIRY, algorithm: RSA_ALGORITHM});
+    let operation_token = await jwt.sign({username: auth_object.username},
+        {key: rsa_keys.private_key, passphrase: rsa_keys.passphrase},
+        {expiresIn: THIRTY_DAY_EXPIRY, algorithm: RSA_ALGORITHM, subject: TOKEN_TYPE_ENUM.OPERATION});
+    let refresh_token = await jwt.sign({username: auth_object.username},
+        {key: rsa_keys.private_key, passphrase: rsa_keys.passphrase},
+        {expiresIn: THIRTY_MINUTE_EXPIRY, algorithm: RSA_ALGORITHM, subject: TOKEN_TYPE_ENUM.REFRESH});
     return new JWTTokens(operation_token, refresh_token);
 }
 
@@ -87,3 +89,18 @@ async function getJWTRSAKeys(){
 
     return rsa_keys;
 }
+
+async function validateOperationToken(token){
+    let rsa_keys = await getJWTRSAKeys();
+    let token_verified = await jwt.verify(token, rsa_keys.public_key, {algorithms: RSA_ALGORITHM, subject: TOKEN_TYPE_ENUM.OPERATION});
+    console.log(token_verified);
+}
+
+async function validateRefreshToken(token){
+    let rsa_keys = await getJWTRSAKeys();
+    let token_verified = await jwt.verify(token, rsa_keys.public_key, {algorithms: RSA_ALGORITHM, subject: TOKEN_TYPE_ENUM.REFRESH});
+    console.log(token_verified);
+}
+
+validateRefreshToken('eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VybmFtZSI6IkhEQl9BRE1JTiIsImlhdCI6MTYwMzQxOTQ5NCwiZXhwIjoxNjAzNDIxMjk0LCJzdWIiOiJyZWZyZXNoIn0.B7BDhD2R12jthsEymXnqvQvMCuqfgQMR24XNY18RgCOMv1Z26Jqv2OGwKiHIXSnuR-4cRasWl3vNkSR-xS1OuUrQ05pROfB-dHwaJsPWHixj2eJrVSyzDJBHfhHohOrG6tIoOd0KCpIuO3-1uki0HBnlZoqEIk39GOJHYrQyeK3j4S9QExVc1LktWk8KIAKUUW5YYjvuUIvLu2O3t2Cja69_AOG6CF8QgIlzZDDOGTyGwJuKNTdiSjdxE2b_XbHZztOyeHou5334t_ZF_Um0HErdTFXjO3TZpWjebzwYqpOcXsdc84eqLU7pvFqiY2MNY3VR--nHsDrI-TMZtfmzAE_tvifRPSkFOcmLzETXzSKnS-XDAa22pENZo6ayJdwYuMQFpi6AbuMtCKdXghAcV3XhA2nxtilSpA0-1tWzD_Lgf6qC9fr-LsOmVjlaln2hmIQYaAmggt6lYcYzw9CMgL-01zubItNEkqxAFA6StajL9QQh_oNMRzqAGUp3UP_8zfRfhxr5KCdDCKN8tCz4-2-ECW2uRhzN3FJ5iI9VbjPNa-ce_i-AkF1vhcQPoEYxDV-Vt2QWCe73vlwmt45xPvwxcpDzJJUXTy7x0xxog93Shx0r5BV8mOiwCnkma5QfVeqKlfBh7_pjZebP5wQYWrtgi12_8oiWyGpHhJgPqo8')
+    .then(()=>{});

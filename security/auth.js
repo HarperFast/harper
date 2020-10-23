@@ -150,6 +150,8 @@ function authorize(req, res, next) {
                 handleResponse(err, user, info);
             })(req, res, next);
             break;
+        case 'Bearer':
+            break;
         default:
             passport.authenticate('local', function (err, user, info) {
                 handleResponse(err, user, info);
