@@ -46,6 +46,7 @@ const BULK_LOAD_ERROR_MSGS = {
     DOWNLOAD_FILE_ERR: (file_name) => `There was an error downloading '${file_name}'.`,
     INSERT_JSON_ERR: 'There was an error inserting the downloaded JSON data.',
     INSERT_CSV_ERR: 'There was an error inserting the downloaded CSV data.',
+    INVALID_ACTION_PARAM_ERR: (action) => `Bulk load operation failed - ${action} is not a valid 'action' parameter`,
     INVALID_FILE_EXT_ERR: (json) => `Error selecting correct parser - valid file type not found in json - ${json}`,
     MAX_FILE_SIZE_ERR: (file_size, max_size) => `File size is ${file_size} bytes, which exceeded the maximum size allowed of: ${max_size} bytes`,
     PAPA_PARSE_ERR: 'There was an error parsing the downloaded CSV data.',

@@ -358,7 +358,7 @@ async function fileLoad(json_message) {
  * @param parser - An  object returned by papaparse contains abort, pause and resume.
  * @returns if validation error found returns Promise<error>, if no error nothing is returned.
  */
-async function validateChunk(json_message, perms_validation_resp = null, reject, results, parser) {
+async function validateChunk(json_message, perms_validation_resp, reject, results, parser) {
     const results_data = results.data ? results.data : results;
     if (results_data.length === 0) {
         return;
@@ -622,15 +622,9 @@ async function bulkFileLoad(records, schema, table, action){
             write_function = insert.upsert;
             break;
         default:
-            //TODO - update handling here to add HDBError w/ logging
-            logger.error("Bulk load operation failed - request did include an 'action' parameter");
-            break;
+            throw handleHDBError(new Error(), HDB_ERROR_MSGS.INVALID_ACTION_PARAM_ERR(action), HTTP_STATUS_CODES.BAD_REQUEST,
+                logger.ERR, HDB_ERROR_MSGS.INVALID_ACTION_PARAM_ERR(action));
     }
-    // if (action === 'insert'){
-    //     write_function = insert.insert;
-    // } else {
-    //     write_function = insert.update;
-    // }
 
     try {
         let write_response = await write_function(target_object);
@@ -647,14 +641,9 @@ async function bulkFileLoad(records, schema, table, action){
                 modified_hashes = write_response.upserted_hashes;
                 break;
             default:
-                //TODO - update handling here to add HDBError w/ logging
+                //We should never get here based on the error thrown in the switch above
                 break;
         }
-        // if (action === 'insert'){
-        //     modified_hashes = write_response.inserted_hashes;
-        // } else {
-        //     modified_hashes = write_response.update_hashes;
-        // }
 
         if(Array.isArray(write_response.skipped_hashes) && write_response.skipped_hashes.length > 0){
             let table_info = global.hdb_schema[schema][table];

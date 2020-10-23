@@ -482,6 +482,13 @@ describe('Test lmdbUpsertRecords module',() => {
 
             const expected_err_values = test_utils.generateHDBError(TEST_WRITE_OPS_ERROR_MSGS.ATTR_NAME_LENGTH_ERR(LONG_CHAR_TEST), 400)
             await test_utils.assertErrorAsync(lmdb_upsert_records, [upsert_obj], expected_err_values);
+        })
+
+        it('Test upsert with null write object - expect error',async () => {
+            const upsert_obj = null;
+
+            const expected_err_values = test_utils.generateHDBError('invalid update parameters defined.', 400)
+            await test_utils.assertErrorAsync(lmdb_upsert_records, [upsert_obj], expected_err_values);
         });
     });
 });

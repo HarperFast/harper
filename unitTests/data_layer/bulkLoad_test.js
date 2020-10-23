@@ -23,7 +23,7 @@ const path = require('path');
 const { EventEmitter } = require('events');
 const papa_parse = require('papaparse');
 const fs = require('fs-extra');
-const { CHECK_LOGS_WRAPPER, TEST_BULK_LOAD_ERROR_MSGS, HTTP_STATUS_CODES } = require('../commonTestErrors');
+const { CHECK_LOGS_WRAPPER, TEST_BULK_LOAD_ERROR_MSGS, HTTP_STATUS_CODES, isHDBError } = require('../commonTestErrors');
 
 const VALID_CSV_DATA = "id,name,section,country,image\n1,ENGLISH POINTER,British and Irish Pointers and Setters,GREAT BRITAIN,http://www.fci.be/Nomenclature/Illustrations/001g07.jpg\n2,ENGLISH SETTER,British and Irish Pointers and Setters,GREAT BRITAIN,http://www.fci.be/Nomenclature/Illustrations/002g07.jpg\n3,KERRY BLUE TERRIER,Large and medium sized Terriers,IRELAND,\n";
 const INVALID_CSV_ID_COLUMN_NAME = "id/,name,section,country,image\n1,ENGLISH POINTER,British and Irish Pointers and Setters,GREAT BRITAIN,http://www.fci.be/Nomenclature/Illustrations/001g07.jpg\n2,ENGLISH SETTER,British and Irish Pointers and Setters,GREAT BRITAIN,http://www.fci.be/Nomenclature/Illustrations/002g07.jpg\n3,KERRY BLUE TERRIER,Large and medium sized Terriers,IRELAND,\n";
@@ -46,6 +46,14 @@ const TEST_SUPER_USER = {
     role: {
         permission: {
             super_user: true
+        }
+    }
+}
+
+const TEST_USER = {
+    role: {
+        permission: {
+            super_user: false
         }
     }
 }
@@ -86,6 +94,17 @@ async function callStubFunc(obj, args) {
 describe('Test bulkLoad.js', () => {
     let call_papaparse_stub;
     let call_papaparse_rewire;
+    let test_bulk_load_file_obj = {
+        "role_perms": TEST_USER.role.permission,
+        "op": "file_load",
+        "action": "insert",
+        "schema": "golden",
+        "table": "retriever",
+        "transact_to_cluster_to_cluster": "false",
+        "file_path": "fake/file/path.csv",
+        "data": "[{\"blah\":\"blah\"}]"
+    };
+
     let json_message_fake = {
         "hdb_user": TEST_SUPER_USER,
         "operation": "file_load",
@@ -163,16 +182,25 @@ describe('Test bulkLoad.js', () => {
     };
 
     describe('Test csvDataLoad', function () {
-        let test_msg = undefined;
         let sandbox = sinon.createSandbox();
-        let bulk_file_load_stub = undefined;
+
+        let test_msg;
+        let bulk_file_load_stub;
         let bulk_file_load_rewire;
-        let bulk_file_load_stub_orig = undefined;
+        let bulk_file_load_stub_orig;
+        let verify_attr_perms_stub = sandbox.stub().returns();
+        let verify_attr_perms_rw;
+
+        let PermissionResponseObject_rw = bulkLoad_rewire.__get__('PermissionResponseObject');
+        const getPerms_orig = PermissionResponseObject_rw.prototype.getPermsResponse;
+        const perms_err_msg = 'Perms error msg';
+        let get_perms_resp_stub = sandbox.stub().returns(perms_err_msg);
 
         before(() => {
             bulk_file_load_stub_orig = bulkLoad_rewire.__get__('bulkFileLoad');
             bulk_file_load_stub = sandbox.stub().returns(BULK_LOAD_RESPONSE);
             bulk_file_load_rewire = bulkLoad_rewire.__set__('bulkFileLoad', bulk_file_load_stub);
+
         });
 
         beforeEach(function () {
@@ -198,6 +226,33 @@ describe('Test bulkLoad.js', () => {
             } catch(e) {
                 throw e;
             }
+        });
+
+        it('Test csvDataLoad with non-SU role evaluates attr-level perms' , async function() {
+            verify_attr_perms_rw = bulkLoad_rewire.__set__('verifyBulkLoadAttributePerms', verify_attr_perms_stub);
+            bulk_file_load_rewire = bulkLoad_rewire.__set__('bulkFileLoad', bulk_file_load_stub);
+
+            test_msg.hdb_user = TEST_USER;
+            await stubHOC(bulkLoad_rewire.csvDataLoad, test_msg);
+            assert.equal(verify_attr_perms_stub.calledOnce, true, 'Attr perms were not checked');
+            verify_attr_perms_rw();
+        });
+
+        it('Test csvDataLoad with attr-level perms issues - returns errors' , async function() {
+            PermissionResponseObject_rw.prototype.getPermsResponse = () => get_perms_resp_stub();
+            const getPermsError_rw = bulkLoad_rewire.__set__('PermissionResponseObject', PermissionResponseObject_rw);
+            let result;
+
+            try {
+                await bulkLoad_rewire.csvDataLoad(test_msg);
+            } catch(err) {
+                result = err;
+            }
+
+            assert.equal(isHDBError(result), true, 'HDB perms error was not thrown');
+            assert.equal(result.message, "Perms error msg", 'Perms error message was not thrown');
+            getPermsError_rw();
+            PermissionResponseObject_rw.prototype.getPermsResponse = getPerms_orig;
         });
 
         it('Test csvDataLoad invalid column names, expect exception', async function() {
@@ -669,6 +724,8 @@ describe('Test bulkLoad.js', () => {
         let logger_error_spy;
         let console_info_spy;
         let validate_chunk_rewire;
+        let verify_attr_perms_stub = sandbox.stub().returns();
+        let verify_attr_perms_rw;
 
         let write_object_fake = {
             operation: json_message_fake.action,
@@ -700,6 +757,16 @@ describe('Test bulkLoad.js', () => {
 
             expect(console_info_spy).to.have.not.been.calledWith('parser pause');
             expect(insert_validation_stub).to.not.have.been.calledWith(write_object_fake);
+        });
+
+        it('Test verifyBulkLoadAttributePerms method is called when user is non-SU', async () => {
+            verify_attr_perms_rw = bulkLoad_rewire.__set__('verifyBulkLoadAttributePerms', verify_attr_perms_stub);
+            results_fake.data = data_array_fake;
+
+            await validate_chunk_rewire(test_bulk_load_file_obj, permsResponse, reject_fake, results_fake, parser_fake);
+
+            assert.equal(verify_attr_perms_stub.callCount, 1, 'Attr perms were not checked');
+            verify_attr_perms_rw();
         });
 
         it('Test parser is paused/resumed and validation called', async () => {
@@ -958,6 +1025,21 @@ describe('Test bulkLoad.js', () => {
 
             expect(result).to.eql(expected_result);
             expect(insert_update_stub).to.have.been.calledOnce;
+        });
+
+        it('Test error is thrown if invalid action is passed', async () => {
+            const invalid_action = "blaaaah";
+            const expected_error = test_utils.generateHDBError(TEST_BULK_LOAD_ERROR_MSGS.INVALID_ACTION_PARAM_ERR(invalid_action),400);
+
+            let result;
+            try {
+                await bulk_file_load_rewire(data_array_fake, schema_fake, table_fake, invalid_action);
+            } catch(e) {
+                result = e;
+            }
+
+            expect(result.message).to.eql(expected_error.message);
+            expect(isHDBError(result)).to.be.true;
         });
 
         it('Test insert error caught and thrown', async () => {
