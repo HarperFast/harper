@@ -29,8 +29,7 @@ let insert_date = new Date();
 insert_date.setMinutes(insert_date.getMinutes() - 10);
 const INSERT_TIMESTAMP = insert_date.getTime();
 
-const LMDBInsertTransactionObject = require('../../../../../data_layer/harperBridge/lmdbBridge/lmdbUtility/LMDBInsertTransactionObject');
-const LMDBUpdateTransactionObject = require('../../../../../data_layer/harperBridge/lmdbBridge/lmdbUtility/LMDBUpdateTransactionObject');
+const LMDBUpsertTransactionObject = require('../../../../../data_layer/harperBridge/lmdbBridge/lmdbUtility/LMDBUpsertTransactionObject');
 
 const TIMESTAMP = Date.now();
 const HASH_ATTRIBUTE_NAME = 'id';
@@ -179,7 +178,7 @@ describe('Test lmdbUpsertRecords module',() => {
             let insert_obj = test_utils.deepClone(INSERT_OBJECT_TEST);
             await lmdb_create_records(insert_obj);
 
-            let insert_txn_obj = new LMDBInsertTransactionObject(insert_obj.records, undefined, m_time, INSERT_HASHES);
+            let insert_txn_obj = new LMDBUpsertTransactionObject(insert_obj.records, m_time, INSERT_HASHES);
             expected_timestamp_txn = test_utils.assignObjecttoNullObject({
                 [m_time]: [JSON.stringify(insert_txn_obj)]
             });
