@@ -9,6 +9,9 @@ const lmdb_upsert_records = require('../../../../utility/lmdb/writeUtility').ups
 const environment_utility = require('../../../../utility/lmdb/environmentUtility');
 const path = require('path');
 const {getBaseSchemaPath} = require('../lmdbUtility/initializePaths');
+const write_transaction = require('../lmdbUtility/lmdbWriteTransaction');
+
+const logger = require('../../../../utility/logging/harper_logger');
 const { handleHDBError, hdb_errors } = require('../../../../utility/errors/hdbError');
 
 module.exports = lmdbUpsertRecords;
@@ -46,12 +49,11 @@ async function lmdbUpsertRecords(upsert_obj) {
     let environment = await environment_utility.openEnvironment(env_base_path, upsert_obj.table);
     let lmdb_response = lmdb_upsert_records(environment, schema_table.hash_attribute, attributes, upsert_obj.records);
 
-    //TODO - will be wired in as part of CORE-1142
-    //try {
-    //     await write_transaction(upsert_obj, lmdb_response);
-    // }catch(e){
-    //     logger.error(`unable to write transaction due to ${e.message}`);
-    // }
+    try {
+        await write_transaction(upsert_obj, lmdb_response);
+    }catch(e){
+        logger.error(`unable to write transaction due to ${e.message}`);
+    }
 
     return {
         written_hashes: lmdb_response.written_hashes,

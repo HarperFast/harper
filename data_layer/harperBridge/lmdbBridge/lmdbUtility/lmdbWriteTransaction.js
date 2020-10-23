@@ -4,6 +4,7 @@ const path = require('path');
 const environment_util = require('../../../../utility/lmdb/environmentUtility');
 const LMDBInsertTransactionObject = require('./LMDBInsertTransactionObject');
 const LMDBUpdateTransactionObject = require('./LMDBUpdateTransactionObject');
+const LMDBUpsertTransactionObject = require('./LMDBUpsertTransactionObject');
 const LMDBDeleteTransactionObject = require('./LMDBDeleteTransactionObject');
 
 const lmdb_terms = require('../../../../utility/lmdb/terms');
@@ -24,8 +25,8 @@ module.exports = writeTransaction;
 
 /**
  *
- * @param {InsertObject|UpdateObject|DeleteObject} hdb_operation
- * @param {InsertRecordsResponseObject | UpdateRecordsResponseObject | DeleteRecordsResponseObject} lmdb_response
+ * @param {InsertObject|UpdateObject|DeleteObject|UpsertObject} hdb_operation
+ * @param {InsertRecordsResponseObject | UpdateRecordsResponseObject | UpdateRecordsResponseObject | DeleteRecordsResponseObject} lmdb_response
  * @returns {Promise<void>}
  */
 async function writeTransaction(hdb_operation, lmdb_response){
@@ -82,6 +83,10 @@ function createTransactionObject(hdb_operation, lmdb_response){
 
     if(hdb_operation.operation === OPERATIONS_ENUM.UPDATE) {
         return new LMDBUpdateTransactionObject(hdb_operation.records, lmdb_response.original_records, username, lmdb_response.txn_time, lmdb_response.written_hashes, hdb_operation.__origin);
+    }
+
+    if(hdb_operation.operation === OPERATIONS_ENUM.UPSERT) {
+        return new LMDBUpsertTransactionObject(hdb_operation.records, lmdb_response.original_records, username, lmdb_response.txn_time, lmdb_response.written_hashes, hdb_operation.__origin);
     }
 
     if(hdb_operation.operation === OPERATIONS_ENUM.DELETE) {
