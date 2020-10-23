@@ -17,6 +17,7 @@ const uuid = require('uuid');
 const hdb_terms = require('../../../utility/hdbTerms');
 const InsertRecordsResponseObject = require('../../../utility/lmdb/InsertRecordsResponseObject');
 const UpdateRecordsResponseObject = require('../../../utility/lmdb/UpdateRecordsResponseObject');
+const UpsertRecordsResponseObject = require('../../../utility/lmdb/UpsertRecordsResponseObject');
 
 const TIMESTAMP = Date.now();
 const UUID_VALUE='aaa-111-bbb-222';
@@ -576,7 +577,7 @@ describe("Test writeUtility module", ()=>{
             let result = test_utils.assertErrorSync(write_utility.upsertRecords, [env, HASH_ATTRIBUTE_NAME, ALL_ATTRIBUTES, insert_records], undefined,
                 "pass valid env hash_attribute all_attributes records");
 
-            let expected_result = new UpdateRecordsResponseObject([999], [], TXN_TIMESTAMP);
+            let expected_result = new UpsertRecordsResponseObject([999],TXN_TIMESTAMP);
             assert.deepStrictEqual(result, expected_result);
 
             record = test_utils.assertErrorSync(search_util.searchByHash, [env, HASH_ATTRIBUTE_NAME, ALL_ATTRIBUTES, '999'], undefined);
@@ -593,7 +594,7 @@ describe("Test writeUtility module", ()=>{
             let result = test_utils.assertErrorSync(write_utility.upsertRecords, [env, HASH_ATTRIBUTE_NAME, ALL_ATTRIBUTES, insert_records], undefined,
                 "pass valid env hash_attribute all_attributes records");
 
-            let expected_result = new UpdateRecordsResponseObject([UUID_VALUE], [], TXN_TIMESTAMP);
+            let expected_result = new UpsertRecordsResponseObject([UUID_VALUE], TXN_TIMESTAMP);
             assert.deepStrictEqual(result, expected_result);
 
             record = test_utils.assertErrorSync(search_util.searchByHash, [env, HASH_ATTRIBUTE_NAME, ALL_ATTRIBUTES, UUID_VALUE], undefined);
@@ -616,7 +617,7 @@ describe("Test writeUtility module", ()=>{
                 delete  record.__blob__;
                 orig_records.push(record);
             });
-            let expected_update_response = new UpdateRecordsResponseObject([1], [], TXN_TIMESTAMP, orig_records);
+            let expected_update_response = new UpsertRecordsResponseObject([1],TXN_TIMESTAMP, orig_records);
 
             let update_records = test_utils.deepClone(UPDATE_ONE_RECORD_ARRAY);
             update_records[0]['__createdtime__'] = 'bad value';
@@ -647,7 +648,7 @@ describe("Test writeUtility module", ()=>{
                 delete record.__blob__;
                 orig_records.push(record);
             });
-            let expected_update_response = new UpdateRecordsResponseObject([1, 111], [], TXN_TIMESTAMP, orig_records);
+            let expected_update_response = new UpsertRecordsResponseObject([1, 111],TXN_TIMESTAMP, orig_records);
 
             let expected_update_records = test_utils.deepClone(UPDATE_ONE_RECORD_ARRAY.concat(UPDATE_ONE_FAKE_RECORD));
             expected_update_records[0].__updatedtime__ = TIMESTAMP;
@@ -678,7 +679,7 @@ describe("Test writeUtility module", ()=>{
                 delete  record.__blob__;
                 orig_records.push(record);
             });
-            let expected_update_response = new UpdateRecordsResponseObject([1], [], TXN_TIMESTAMP, orig_records);
+            let expected_update_response = new UpsertRecordsResponseObject([1],TXN_TIMESTAMP, orig_records);
 
             let results = test_utils.assertErrorSync(write_utility.upsertRecords, [env, HASH_ATTRIBUTE_NAME, all_attributes_for_update, [{id:1, city:'Denver'}]], undefined);
             assert.deepStrictEqual(results, expected_update_response);
@@ -706,7 +707,7 @@ describe("Test writeUtility module", ()=>{
                 delete  record.__blob__;
                 orig_records.push(record);
             });
-            let expected_update_response = new UpdateRecordsResponseObject([1], [], TXN_TIMESTAMP, orig_records);
+            let expected_update_response = new UpsertRecordsResponseObject([1], TXN_TIMESTAMP, orig_records);
 
             let results = test_utils.assertErrorSync(write_utility.upsertRecords, [env, HASH_ATTRIBUTE_NAME, all_attributes_for_update, [record]], undefined);
             assert.deepStrictEqual(results, expected_update_response);
@@ -730,7 +731,7 @@ describe("Test writeUtility module", ()=>{
                 delete  record.__blob__;
                 orig_records.push(record);
             });
-            expected_update_response = new UpdateRecordsResponseObject([1], [], TXN_TIMESTAMP, orig_records);
+            expected_update_response = new UpsertRecordsResponseObject([1], TXN_TIMESTAMP, orig_records);
 
             results = test_utils.assertErrorSync(write_utility.upsertRecords, [env, HASH_ATTRIBUTE_NAME, all_attributes_for_update, [{id:1, text:undefined}]], undefined);
             assert.deepStrictEqual(results, expected_update_response);
@@ -762,7 +763,7 @@ describe("Test writeUtility module", ()=>{
                 delete  record.__blob__;
                 orig_records.push(record);
             });
-            let expected_update_response = new UpdateRecordsResponseObject([1], [], TXN_TIMESTAMP, orig_records);
+            let expected_update_response = new UpsertRecordsResponseObject([1], TXN_TIMESTAMP, orig_records);
 
             let results = test_utils.assertErrorSync(write_utility.upsertRecords, [env, HASH_ATTRIBUTE_NAME, all_attributes_for_update, [record]], undefined);
             assert.deepStrictEqual(results, expected_update_response);
@@ -783,7 +784,7 @@ describe("Test writeUtility module", ()=>{
             orig_records = [];
             orig_records.push(test_utils.assignObjecttoNullObject(records[0]));
             delete orig_records[0].__blob__;
-            expected_update_response = new UpdateRecordsResponseObject([1], [], TXN_TIMESTAMP, orig_records);
+            expected_update_response = new UpsertRecordsResponseObject([1], TXN_TIMESTAMP, orig_records);
 
             results = test_utils.assertErrorSync(write_utility.upsertRecords, [env, HASH_ATTRIBUTE_NAME, all_attributes_for_update, [{id:1, json:undefined}]], undefined);
             assert.deepStrictEqual(results, expected_update_response);
@@ -809,7 +810,7 @@ describe("Test writeUtility module", ()=>{
 
             let result = test_utils.assertErrorSync(write_utility.upsertRecords, [env, HASH_ATTRIBUTE_NAME, ['id', 'timestamp', 'rando'], [record]], undefined);
 
-            assert.deepStrictEqual(result, new UpdateRecordsResponseObject([record.id], [], TXN_TIMESTAMP));
+            assert.deepStrictEqual(result, new UpsertRecordsResponseObject([record.id], TXN_TIMESTAMP));
 
             let results = test_utils.assertErrorSync(search_util.iterateDBI, [env, 'timestamp'], undefined, 'timestamp iterate');
             let time_stamp_dbi = {[record.timestamp]: [record.id.toString()]};
@@ -826,7 +827,7 @@ describe("Test writeUtility module", ()=>{
             orig_records[0].age = null;
             orig_records[0].name = null;
             delete orig_records[0].__blob__;
-            let expected_update_response = new UpdateRecordsResponseObject([record.id], [], TXN_TIMESTAMP, orig_records);
+            let expected_update_response = new UpsertRecordsResponseObject([record.id], TXN_TIMESTAMP, orig_records);
 
             rando_func = alasql.compile(`SELECT rando + 1 AS [${hdb_terms.FUNC_VAL}] FROM ?`);
 

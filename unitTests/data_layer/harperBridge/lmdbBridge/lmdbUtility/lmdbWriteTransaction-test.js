@@ -26,14 +26,17 @@ const common = require('../../../../../utility/lmdb/commonUtility');
 
 const InsertObject = require('../../../../../data_layer/InsertObject');
 const UpdateObject = require('../../../../../data_layer/UpdateObject');
+const UpsertObject = require('../../../../../data_layer/UpsertObject');
 const DeleteObject = require('../../../../../data_layer/DeleteObject');
 
 const InsertRecordsResponseObject = require('../../../../../utility/lmdb/InsertRecordsResponseObject');
 const UpdateRecordsResponseObject = require('../../../../../utility/lmdb/UpdateRecordsResponseObject');
+const UpsertRecordsResponseObject = require('../../../../../utility/lmdb/UpsertRecordsResponseObject');
 const DeleteRecordsResponseObject = require('../../../../../utility/lmdb/DeleteRecordsResponseObject');
 
 const LMDBInsertTransactionObject = require('../../../../../data_layer/harperBridge/lmdbBridge/lmdbUtility/LMDBInsertTransactionObject');
 const LMDBUpdateTransactionObject = require('../../../../../data_layer/harperBridge/lmdbBridge/lmdbUtility/LMDBUpdateTransactionObject');
+const LMDBUpsertTransactionObject = require('../../../../../data_layer/harperBridge/lmdbBridge/lmdbUtility/LMDBUpsertTransactionObject');
 const LMDBDeleteTransactionObject = require('../../../../../data_layer/harperBridge/lmdbBridge/lmdbUtility/LMDBDeleteTransactionObject');
 
 const orig_clustering_setting = env_mngr.get('CLUSTERING');
@@ -44,6 +47,8 @@ const CREATE_TABLE_OBJ = new CreateTableObject('dev', 'test', 'id');
 const INSERT_RECORDS = [{id: 1, name: 'Penny'}, {id: 2, name: 'Kato', age: '6'}, {id: 3, name: 'Riley', age: '7'}, {id: 'blerrrrr', name: 'Rosco'}];
 
 const UPDATE_RECORDS = [{id: 1, name: 'Penny B'}, {id: 2, name: 'Kato B', age: '6'}, {id: 3, name: 'Riley S', age: '7'}, {id: 'blerrrrr', name: 'Rosco ?'}];
+
+const UPSERT_RECORDS = [{id: 1, name: 'Penny B', age: '10'}, {id: 2, name: 'Kato B', age: '7'}, {id: 3, name: 'Riley S', age: '8'}, {id: 'blerrrrr', name: 'Rosco ?'}];
 
 let INSERT_HASHES = [1,2,3, 'blerrrrr'];
 const HDB_USER = {
@@ -218,6 +223,25 @@ describe('test lmdbWriteTransaction module', ()=>{
             assert.deepStrictEqual(error, undefined);
 
             assert.deepStrictEqual(response, update_txn_obj);
+        });
+
+        it('test for upsert operation', async()=>{
+            let upsert_obj = new UpsertObject('dev', 'test', UPSERT_RECORDS);
+            upsert_obj.hdb_user = HDB_USER;
+            let upsert_response = new UpsertRecordsResponseObject(INSERT_HASHES, common.getMicroTime(), INSERT_RECORDS);
+
+            let upsert_txn_obj = new LMDBUpsertTransactionObject(UPSERT_RECORDS, INSERT_RECORDS, HDB_USER.username, upsert_response.txn_time, INSERT_HASHES);
+
+            let error = undefined;
+            let response = undefined;
+            try {
+                response = create_transaction_object_func(upsert_obj, upsert_response);
+            }catch(e){
+                error = e;
+            }
+            assert.deepStrictEqual(error, undefined);
+
+            assert.deepStrictEqual(response, upsert_txn_obj);
         });
 
         it('test for delete operation', async()=>{
@@ -433,6 +457,51 @@ describe('test lmdbWriteTransaction module', ()=>{
 
             let expected_username_results = Object.create(null);
             expected_username_results[HDB_USER.username] = [update_response.txn_time.toString()];
+
+            results = search_util.iterateDBI(txn_env, 'user_name');
+            assert.deepStrictEqual(results, expected_username_results);
+        });
+
+        it('test writing upsert with user on operation', async()=>{
+            let upsert_obj = new UpsertObject('dev', 'test', UPSERT_RECORDS);
+            upsert_obj.hdb_user = HDB_USER;
+            let upsert_response = new UpsertRecordsResponseObject(INSERT_HASHES, common.getMicroTime(), UPDATE_RECORDS);
+
+            //call the write txn function
+            let error = undefined;
+            try {
+                await lmdb_write_txn(upsert_obj, upsert_response);
+            }catch(e){
+                error = e;
+            }
+            assert.deepStrictEqual(error, undefined);
+
+            //test expected entries exist
+            let transaction_path = path.join(BASE_TRANSACTIONS_PATH, CREATE_TABLE_OBJ.schema);
+            let txn_env = undefined;
+            try {
+                txn_env = await environment_utility.openEnvironment(transaction_path, CREATE_TABLE_OBJ.table, true);
+            }catch(e){
+                error = e;
+            }
+            assert.deepStrictEqual(error, undefined);
+            assert.notStrictEqual(txn_env, undefined);
+
+            let upsert_txn_obj = new LMDBUpsertTransactionObject(UPSERT_RECORDS, UPDATE_RECORDS, HDB_USER.username, upsert_response.txn_time, INSERT_HASHES);
+            let expected_timestamp_results = test_utils.assignObjecttoNullObject({[upsert_response.txn_time]: [JSON.stringify(upsert_txn_obj)]});
+
+            let results = search_util.iterateDBI(txn_env, 'timestamp');
+            assert.deepStrictEqual(results, expected_timestamp_results);
+
+            let expected_hash_value_results = Object.create(null);
+            INSERT_HASHES.forEach(hash=>{
+                expected_hash_value_results[hash] = [upsert_response.txn_time.toString()];
+            });
+            results = search_util.iterateDBI(txn_env, 'hash_value');
+            assert.deepStrictEqual(results, expected_hash_value_results);
+
+            let expected_username_results = Object.create(null);
+            expected_username_results[HDB_USER.username] = [upsert_response.txn_time.toString()];
 
             results = search_util.iterateDBI(txn_env, 'user_name');
             assert.deepStrictEqual(results, expected_username_results);
