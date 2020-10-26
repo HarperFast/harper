@@ -183,11 +183,11 @@ describe('Test fileLoadValidator module', () => {
             expect(result.message).to.equal('Table cannot exceed 250 characters');
         });
 
-        it('should return action is required to be be either insert or update', () => {
+        it('should return action is required to be be either insert, update or upsert', () => {
             let result = file_load_validator.dataObject(obj_wrong_action);
 
             expect(result).to.be.instanceof(Error);
-            expect(result.message).to.equal('Action is required and must be either insert or update');
+            expect(result.message).to.equal('Action is required and must be either insert, update, or upsert');
         });
 
         it('should return s3 cant be blank error from s3FileObject',() => {

@@ -5,7 +5,7 @@ const validator = require('../validation/fileLoadValidator');
 const request_promise = require('request-promise-native');
 const hdb_terms = require('../utility/hdbTerms');
 const hdb_utils = require('../utility/common_utils');
-const { handleHDBError, handleValidationError, hdb_errors } = require('../utility/errors/hdbError');
+const { handleHDBError, hdb_errors } = require('../utility/errors/hdbError');
 const { HTTP_STATUS_CODES, HDB_ERROR_MSGS, CHECK_LOGS_WRAPPER } = hdb_errors;
 const logger = require('../utility/logging/harper_logger');
 const papa_parse = require('papaparse');
@@ -23,13 +23,15 @@ const transact_to_clustering_utils = require('../server/transactToClusteringUtil
 const op_func_caller = require('../utility/OperationFunctionCaller');
 const AWSConnector = require('../utility/AWS/AWSConnector');
 const { BulkLoadFileObject, BulkLoadDataObject } = require('./data_objects/BulkLoadObjects');
+const PermissionResponseObject = require('../security/data_objects/PermissionResponseObject');
+const { verifyBulkLoadAttributePerms } = require('../utility/operation_authorization');
 
 const CSV_NO_RECORDS_MSG = 'No records parsed from csv file.';
-
 const TEMP_DOWNLOAD_DIR = `${env.get('HDB_ROOT')}/tmp`;
 const { schema_regex } = require('../validation/common_validators');
 const HIGHWATERMARK = 1024*1024*5;
 const MAX_JSON_ARRAY_SIZE = 5000;
+
 const ACCEPTABLE_URL_CONTENT_TYPE_ENUM = {
     'text/csv': true,
     'application/octet-stream': true,
@@ -56,7 +58,7 @@ module.exports = {
 async function csvDataLoad(json_message) {
     let validation_msg = validator.dataObject(json_message);
     if (validation_msg) {
-        throw handleValidationError(validation_msg, validation_msg.message);
+        throw handleHDBError(validation_msg, validation_msg.message, HTTP_STATUS_CODES.BAD_REQUEST);
     }
 
     let bulk_load_result = {};
@@ -68,8 +70,20 @@ async function csvDataLoad(json_message) {
                 dynamicTyping: true
             });
 
-        let converted_msg = new BulkLoadDataObject(json_message.action, json_message.schema,
-            json_message.table, parse_results.data, json_message.transact_to_cluster);
+        const attrsPermsErrors = new PermissionResponseObject();
+
+        if (json_message.hdb_user.role.permission && json_message.hdb_user.role.permission.super_user !== true) {
+            verifyBulkLoadAttributePerms(json_message.hdb_user.role.permission, this.job_operation_function.name, json_message.action, json_message.schema,
+                json_message.table, parse_results.meta.fields, attrsPermsErrors);
+        }
+
+        const attr_perms_errors = attrsPermsErrors.getPermsResponse();
+        if (attr_perms_errors) {
+            throw handleHDBError(new Error(), attr_perms_errors, HTTP_STATUS_CODES.BAD_REQUEST);
+        }
+
+        let converted_msg = new BulkLoadDataObject(json_message.action, json_message.schema, json_message.table,
+            parse_results.data, json_message.transact_to_cluster);
 
         bulk_load_result = await op_func_caller.callOperationFunctionAsAwait(callBulkFileLoad, converted_msg,
             postCSVLoadFunction.bind(null, parse_results.meta.fields));
@@ -93,7 +107,7 @@ async function csvDataLoad(json_message) {
 async function csvURLLoad(json_message) {
     let validation_msg = validator.urlObject(json_message);
     if (validation_msg) {
-        throw handleValidationError(validation_msg, validation_msg.message);
+        throw handleHDBError(validation_msg, validation_msg.message, HTTP_STATUS_CODES.BAD_REQUEST);
     }
 
     let csv_file_name = `${Date.now()}.csv`;
@@ -107,8 +121,8 @@ async function csvURLLoad(json_message) {
     }
 
     try {
-        let csv_file_load_obj = new BulkLoadFileObject(json_message.action, json_message.schema, json_message.table,
-            temp_file_path, hdb_terms.VALID_S3_FILE_TYPES.CSV, json_message.transact_to_cluster);
+        let csv_file_load_obj = new BulkLoadFileObject(this.job_operation_function.name, json_message.action, json_message.schema, json_message.table, temp_file_path,
+            hdb_terms.VALID_S3_FILE_TYPES.CSV, json_message.hdb_user.role.permission, json_message.transact_to_cluster);
 
         let bulk_load_result = await fileLoad(csv_file_load_obj);
 
@@ -131,11 +145,11 @@ async function csvURLLoad(json_message) {
 async function csvFileLoad(json_message) {
     let validation_msg = validator.fileObject(json_message);
     if (validation_msg) {
-        throw handleValidationError(validation_msg, validation_msg.message);
+        throw handleHDBError(validation_msg, validation_msg.message, HTTP_STATUS_CODES.BAD_REQUEST);
     }
 
-    let csv_file_load_obj = new BulkLoadFileObject(json_message.action, json_message.schema, json_message.table,
-        json_message.file_path, hdb_terms.VALID_S3_FILE_TYPES.CSV, json_message.transact_to_cluster);
+    let csv_file_load_obj = new BulkLoadFileObject(this.job_operation_function.name, json_message.action, json_message.schema, json_message.table, json_message.file_path,
+        hdb_terms.VALID_S3_FILE_TYPES.CSV, json_message.hdb_user.role.permission, json_message.transact_to_cluster);
 
     try {
         let bulk_load_result = await fileLoad(csv_file_load_obj);
@@ -156,7 +170,7 @@ async function csvFileLoad(json_message) {
 async function importFromS3(json_message) {
     let validation_msg = validator.s3FileObject(json_message);
     if (validation_msg) {
-        throw handleValidationError(validation_msg, validation_msg.message);
+        throw handleHDBError(validation_msg, validation_msg.message, HTTP_STATUS_CODES.BAD_REQUEST);
     }
 
     let temp_file_path;
@@ -165,8 +179,8 @@ async function importFromS3(json_message) {
         let s3_file_name = `${Date.now()}${s3_file_type}`;
         temp_file_path = `${TEMP_DOWNLOAD_DIR}/${s3_file_name}`;
 
-        let s3_file_load_obj = new BulkLoadFileObject(json_message.action, json_message.schema, json_message.table,
-            temp_file_path, s3_file_type, json_message.transact_to_cluster);
+        let s3_file_load_obj = new BulkLoadFileObject(this.job_operation_function.name, json_message.action, json_message.schema, json_message.table, temp_file_path,
+            s3_file_type, json_message.hdb_user.role.permission, json_message.transact_to_cluster);
 
         await downloadFileFromS3(s3_file_name, json_message);
 
@@ -344,7 +358,7 @@ async function fileLoad(json_message) {
  * @param parser - An  object returned by papaparse contains abort, pause and resume.
  * @returns if validation error found returns Promise<error>, if no error nothing is returned.
  */
-async function validateChunk(json_message, reject, results, parser) {
+async function validateChunk(json_message, perms_validation_resp, reject, results, parser) {
     const results_data = results.data ? results.data : results;
     if (results_data.length === 0) {
         return;
@@ -355,30 +369,35 @@ async function validateChunk(json_message, reject, results, parser) {
         parser.pause();
     }
     let write_object = {
-        operation: json_message.operation,
+        operation: json_message.action,
         schema: json_message.schema,
         table: json_message.table,
         records: results_data
     };
 
     try {
-        await insert.validation(write_object);
+        const { attributes } = await insert.validation(write_object);
+        if (json_message.role_perms && json_message.role_perms.super_user !== true) {
+            verifyBulkLoadAttributePerms(json_message.role_perms, json_message.op, json_message.action, json_message.schema,
+                json_message.table, attributes, perms_validation_resp);
+        }
+
         if (parser) {
             parser.resume();
         }
     } catch(err) {
         // reject is a promise object bound to chunk function through hdb_utils.promisifyPapaParse(). In the case of an error
         // reject will bubble up to hdb_utils.promisifyPapaParse() and return a reject promise object with given error.
-        const err_resp = handleValidationError(err, err);
+        const err_resp = handleHDBError(err);
         reject(err_resp);
     }
 }
 
 /**
- * Passed to papaparse to insert chunks of csv data from a read stream.
+ * Passed to papaparse to insert, update, or upsert chunks of csv data from a read stream.
  *
  * @param json_message - An object representing the CSV file.
- * @param insert_results - An object passed by reference used to accumulate results from insert or update function.
+ * @param insert_results - An object passed by reference used to accumulate results from insert, update, or upsert function.
  * @param reject - A promise object bound to function through hdb_utils.promisifyPapaParse().
  * @param results - An object returned by papaparse containing parsed csv data, errors and meta.
  * @param parser - An  object returned by papaparse contains abort, pause and resume.
@@ -453,9 +472,15 @@ async function callPapaParse(json_message) {
     };
 
     try {
+        const attrsPermsErrors = new PermissionResponseObject();
         let stream = fs.createReadStream(json_message.file_path, {highWaterMark:HIGHWATERMARK});
         stream.setEncoding('utf8');
-        await papa_parse.parsePromise(stream, validateChunk.bind(null, json_message));
+        await papa_parse.parsePromise(stream, validateChunk.bind(null, json_message, attrsPermsErrors));
+
+        const attr_perms_errors = attrsPermsErrors.getPermsResponse();
+        if (attr_perms_errors) {
+            throw handleHDBError(new Error(), attr_perms_errors, HTTP_STATUS_CODES.BAD_REQUEST);
+        }
 
         stream = fs.createReadStream(json_message.file_path, {highWaterMark:HIGHWATERMARK});
         stream.setEncoding('utf8');
@@ -480,13 +505,14 @@ async function insertJson(json_message) {
     };
 
     try{
+        const attrsPermsErrors = new PermissionResponseObject();
         let jsonStreamer = chain([
             fs.createReadStream(json_message.file_path, { encoding: 'utf-8'}),
             StreamArray.withParser(),
             data => data.value,
             new Batch({ batchSize: MAX_JSON_ARRAY_SIZE }),
             comp(async (chunk) => {
-                await validateChunk(json_message, throwErr, chunk);
+                await validateChunk(json_message, attrsPermsErrors, throwErr, chunk);
             })
         ]);
 
@@ -500,6 +526,11 @@ async function insertJson(json_message) {
             });
             jsonStreamer.resume();
         });
+
+        const attr_perms_errors = attrsPermsErrors.getPermsResponse();
+        if (attr_perms_errors) {
+            throw handleHDBError(new Error(), attr_perms_errors, HTTP_STATUS_CODES.BAD_REQUEST);
+        }
 
         let jsonStreamerInsert = chain([
             fs.createReadStream(json_message.file_path, { encoding: 'utf-8'}),
@@ -560,11 +591,11 @@ function validateColumnNames(created_record) {
 }
 
 /**
- * Performs either a bulk insert or update depending on the action passed to the function.
- * @param records - The records to be inserted/updated
+ * Performs a bulk insert, update, or upsert depending on the action passed to the function.
+ * @param records - The records to be inserted/updated/upserted
  * @param schema - The schema containing the specified table
- * @param table - The table to perform the insert/update
- * @param action - Specify either insert or update the specified records
+ * @param table - The table to perform the insert/update/upsert
+ * @param action - Specify insert/update/upsert the specified records
  * @returns {Promise<{records: *, new_attributes: *, number_written: number}>}
  */
 async function bulkFileLoad(records, schema, table, action){
@@ -580,20 +611,38 @@ async function bulkFileLoad(records, schema, table, action){
     };
 
     let write_function;
-    if (action === 'insert'){
-        write_function = insert.insert;
-    } else {
-        write_function = insert.update;
+    switch(action) {
+        case 'insert':
+            write_function = insert.insert;
+            break;
+        case 'update':
+            write_function = insert.update;
+            break;
+        case 'upsert':
+            write_function = insert.upsert;
+            break;
+        default:
+            throw handleHDBError(new Error(), HDB_ERROR_MSGS.INVALID_ACTION_PARAM_ERR(action), HTTP_STATUS_CODES.BAD_REQUEST,
+                logger.ERR, HDB_ERROR_MSGS.INVALID_ACTION_PARAM_ERR(action));
     }
 
     try {
         let write_response = await write_function(target_object);
 
         let modified_hashes;
-        if (action === 'insert'){
-            modified_hashes = write_response.inserted_hashes;
-        } else {
-            modified_hashes = write_response.update_hashes;
+        switch(action) {
+            case 'insert':
+                modified_hashes = write_response.inserted_hashes;
+                break;
+            case 'update':
+                modified_hashes = write_response.update_hashes;
+                break;
+            case 'upsert':
+                modified_hashes = write_response.upserted_hashes;
+                break;
+            default:
+                //We should never get here based on the error thrown in the switch above
+                break;
         }
 
         if(Array.isArray(write_response.skipped_hashes) && write_response.skipped_hashes.length > 0){

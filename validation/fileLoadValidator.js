@@ -11,7 +11,7 @@ const { common_validators } = require('./common_validators');
 // Maximum file size in bytes
 const MAX_FILE_SIZE = 1000000000;
 
-const actions = ["update", "insert"];
+const actions = ["insert", "update", "upsert"];
 const constraints = {
     schema: {
         presence: true,
@@ -26,7 +26,7 @@ const constraints = {
     action: {
         inclusion: {
             within: actions,
-            message: 'is required and must be either insert or update'
+            message: 'is required and must be either insert, update, or upsert'
         }
     },
     file_path: {},

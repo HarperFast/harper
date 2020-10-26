@@ -154,8 +154,15 @@ async function runCSVJob(runner_message, operation, argument) {
         // Run the operation.
         result_message = await threadExecute(argument);
     } catch(e) {
-        let e_message = e.message !== undefined ? e.message : e;
-        let err_message =`There was an error running ${operation.name} job with id ${runner_message.job.id} - ${e_message}`;
+        let err_message = e.message !== undefined ? e.message : e;
+        if (typeof err_message === 'string') {
+            err_message = `There was an error running ${operation.name} job with id ${runner_message.job.id} - ${err_message}`;
+            e.message = err_message;
+        } else {
+            //This ensures that the op/job id error is logged if the error message is passed as a non-string which will
+            // be logged right after this below.  If the message is a string, everything will be logged below as the err_message
+            log.error(`There was an error running ${operation.name} job with id ${runner_message.job.id}`);
+        }
         log.error(err_message);
         runner_message.job.message = err_message;
         runner_message.job.status = hdb_terms.JOB_STATUS_ENUM.ERROR;
@@ -167,7 +174,7 @@ async function runCSVJob(runner_message, operation, argument) {
             log.fatal(`Unable to update job with id ${response.job_id}.  Exiting.`);
             throw new Error(ex);
         }
-        throw new Error(err_message + e);
+        throw e;
     }
     runner_message.job.status = hdb_terms.JOB_STATUS_ENUM.COMPLETE;
     runner_message.job.message = result_message;
@@ -197,7 +204,8 @@ function threadExecute(argument){
         forked.send(argument);
         forked.on('message', async data=>{
             if(data.hasOwnProperty('error')){
-                let err = new Error(data.error);
+                let err = new Error();
+                err.message = data.error;
                 err.stack = data.stack;
                 reject(err);
                 forked.kill("SIGINT");
