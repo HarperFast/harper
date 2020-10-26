@@ -1,6 +1,5 @@
 'use strict';
 
-const DeleteObject = require('../../../DeleteObject');
 const SearchObject = require('../../../SearchObject');
 const hdb_utils = require('../../../../utility/common_utils');
 const log = require('../../../../utility/logging/harper_logger');
