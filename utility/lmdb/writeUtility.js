@@ -3,6 +3,7 @@
 const environment_util = require('./environmentUtility');
 const InsertRecordsResponseObject = require('./InsertRecordsResponseObject');
 const UpdateRecordsResponseObject = require('./UpdateRecordsResponseObject');
+const UpsertRecordsResponseObject = require('./UpsertRecordsResponseObject');
 const common = require('./commonUtility');
 const search_utility = require('./searchUtility');
 const LMDB_ERRORS = require('../errors/commonErrors').LMDB_ERRORS_ENUM;
@@ -231,7 +232,7 @@ function upsertRecords(env, hash_attribute, write_attributes , records){
     try {
         txn = initializeTransaction(env, hash_attribute, write_attributes);
 
-        let result = new UpdateRecordsResponseObject();
+        let result = new UpsertRecordsResponseObject();
 
         //iterate upsert records
         for(let index = 0; index < records.length; index++){

@@ -40764,7 +40764,7 @@
 								],
 								"body": {
 									"mode": "raw",
-									"raw": "{\n\"operation\":\"insert\",\n\"schema\":\"test_delete_before\",\n\"table\":\"test_read\",\n\"records\": [{\"id\": 1, \"name\": \"Penny\"}, {\"id\": 2, \"name\": \"Kato\", \"age\": 6}]\n}",
+									"raw": "{\n    \"operation\": \"insert\",\n    \"schema\": \"test_delete_before\",\n    \"table\": \"test_read\",\n    \"records\": [\n        {\n            \"id\": 1,\n            \"name\": \"Penny\"\n        },\n        {\n            \"id\": 2,\n            \"name\": \"Kato\",\n            \"age\": 6\n        }\n    ]\n}",
 									"options": {
 										"raw": {}
 									}
@@ -41244,7 +41244,177 @@
 								],
 								"body": {
 									"mode": "raw",
-									"raw": "{\n\"operation\":\"insert\",\n\"schema\":\"test_delete_before\",\n\"table\":\"test_read\",\n\"records\": [{\"id\": 4, \"name\": \"Griff\"}]\n}",
+									"raw": "{\n    \"operation\": \"insert\",\n    \"schema\": \"test_delete_before\",\n    \"table\": \"test_read\",\n    \"records\": [\n        {\n            \"id\": 4,\n            \"name\": \"Griff\"\n        }\n    ]\n}",
+									"options": {
+										"raw": {}
+									}
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "Upsert records",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"pm.test(\"Check update_hashes array length\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData.upserted_hashes.length).to.eql(3);",
+											"});",
+											"",
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"setTimeout(()=>{}, 100);"
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"exec": [
+											""
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n    \"operation\": \"upsert\",\n    \"schema\": \"test_delete_before\",\n    \"table\": \"test_read\",\n    \"records\": [\n        {\n            \"id\": 4,\n            \"name\": \"Griffy Jr.\"\n        },\n        {\n            \"id\": 5,\n            \"name\": \"Gizmo\",\n            \"age\": 10\n        },\n        {\n            \"name\": \"Moe\",\n            \"age\": 11\n        }\n    ]\n}",
+									"options": {
+										"raw": {}
+									}
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "Check upsert transaction",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"pm.test(\"Check upsert transaction record format/values\", function () {",
+											"    const jsonData = pm.response.json();",
+											"    pm.expect(jsonData[\"5\"].length).to.eql(1);",
+											"",
+											"    const transaction = jsonData[\"5\"][0]",
+											"    pm.expect(transaction.operation).to.eql(\"upsert\");",
+											"    pm.expect(transaction.records.length).to.eql(1);",
+											"    ",
+											"    Object.keys(transaction.records[0]).forEach(key => {",
+											"        pm.expect([\"id\", \"name\", \"age\", \"__updatedtime__\", \"__createdtime__\"]).includes(key);",
+											"    });",
+											"",
+											"    pm.expect(transaction.original_records).to.not.exist;",
+											"});",
+											"",
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"setTimeout(()=>{}, 100);"
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"exec": [
+											""
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n    \"operation\": \"read_transaction_log\",\n    \"schema\": \"test_delete_before\",\n    \"table\": \"test_read\",\n    \"search_type\": \"hash_value\",\n    \"search_values\": [5]\n}",
 									"options": {
 										"raw": {}
 									}
@@ -41266,14 +41436,44 @@
 									"listen": "test",
 									"script": {
 										"exec": [
+											"var jsonData = pm.response.json();",
+											"",
 											"pm.test(\"Check array length\", function () {",
-											"    var jsonData = pm.response.json();",
-											"    pm.expect(jsonData.length).to.eql(7);",
+											"    pm.expect(jsonData.length).to.eql(8);",
 											"});",
 											"",
 											"pm.test(\"Status code is 200\", function () {",
 											"    pm.response.to.have.status(200);",
 											"});",
+											"",
+											"pm.test(\"Check upsert transaction format/random values\", function () {",
+											"    const expected_attrs = [\"id\", \"name\", \"__updatedtime__\"];",
+											"    const other_attrs = [\"age\", \"__createdtime__\"];",
+											"    ",
+											"    const upsert_trans = jsonData[7];",
+											"    pm.expect(upsert_trans.operation).to.eql(\"upsert\");",
+											"    pm.expect(upsert_trans.records.length).to.eql(3);",
+											"    pm.expect(upsert_trans.original_records.length).to.eql(1);",
+											"",
+											"    pm.expect(upsert_trans.records[0].id).to.eql(4);",
+											"    Object.keys(upsert_trans.records[0]).forEach(key => {",
+											"        pm.expect(expected_attrs).includes(key);",
+											"    });",
+											"    pm.expect(upsert_trans.records[1].id).to.eql(5);",
+											"    Object.keys(upsert_trans.records[1]).forEach(key => {",
+											"        pm.expect([...expected_attrs, ...other_attrs]).includes(key);",
+											"    });",
+											"    pm.expect(upsert_trans.records[2].id).to.be.string;",
+											"    Object.keys(upsert_trans.records[2]).forEach(key => {",
+											"        pm.expect([...expected_attrs, ...other_attrs]).includes(key);",
+											"    });",
+											"",
+											"    Object.keys(upsert_trans.original_records[0]).forEach(key => {",
+											"        pm.expect([...expected_attrs, ...other_attrs, \"breed\"]).includes(key);",
+											"    });",
+											"    ",
+											"});",
+											"",
 											"",
 											"setTimeout(()=>{}, 100);"
 										],
@@ -41349,8 +41549,7 @@
 											"pm.test(\"Check array length\", function () {",
 											"    var jsonData = pm.response.json();",
 											"    let user = pm.environment.get(\"username\");",
-											"    pm.expect(jsonData.length).to.eql(7);",
-											"",
+											"    pm.expect(jsonData.length).to.eql(8);",
 											"});",
 											"",
 											"pm.test(\"Status code is 200\", function () {",
@@ -41431,7 +41630,7 @@
 											"pm.test(\"Check array length\", function () {",
 											"    var jsonData = pm.response.json();",
 											"    let user = pm.environment.get(\"username\");",
-											"    pm.expect(jsonData[user].length).to.eql(7);",
+											"    pm.expect(jsonData[user].length).to.eql(8);",
 											"",
 											"});",
 											"",
@@ -41569,7 +41768,7 @@
 								],
 								"body": {
 									"mode": "raw",
-									"raw": "{\n\"operation\":\"read_transaction_log\",\n\"schema\":\"test_delete_before\",\n\"table\":\"test_read\",\n\"search_type\": \"hash_value\",\n\"search_values\":[1, \"blerrrrr\"]\n}",
+									"raw": "{\n    \"operation\": \"read_transaction_log\",\n    \"schema\": \"test_delete_before\",\n    \"table\": \"test_read\",\n    \"search_type\": \"hash_value\",\n    \"search_values\": [\n        1,\n        \"blerrrrr\"\n    ]\n}",
 									"options": {
 										"raw": {}
 									}
