@@ -102,8 +102,12 @@ describe('Test deleteUtility', ()=>{
 
             let orig_records = test_utils.deepClone(records);
             orig_records.forEach(record=>{
-                record.__blob__ = null;
                 record.__createdtime__ = record.__updatedtime__ = TIMESTAMP;
+                ['city', 'text', 'age', 'name'].forEach(prop=>{
+                    if(record[prop] === null){
+                        delete record[prop];
+                    }
+                });
             });
             let expected_delete_results = new DeleteRecordsResponseObject([1,2,3,4,5,6], [], TXN_TIMESTAMP, orig_records);
 
@@ -143,9 +147,13 @@ describe('Test deleteUtility', ()=>{
 
             let orig_records = [];
             records.forEach(rec=>{
-                let record = Object.assign(Object.create(null), rec);
-                record.__blob__ = null;
+                let record = Object.assign({}, rec);
                 record.__createdtime__ = record.__updatedtime__ = TIMESTAMP;
+                ['city', 'text'].forEach(prop=>{
+                    if(record[prop] === null){
+                        delete record[prop];
+                    }
+                });
                 orig_records.push(record);
             });
             let expected_delete_results = new DeleteRecordsResponseObject([2,4], [], TXN_TIMESTAMP, orig_records);
@@ -185,8 +193,7 @@ describe('Test deleteUtility', ()=>{
 
             let orig_records = [];
             records.forEach(rec=>{
-                let record = Object.assign(Object.create(null), rec);
-                record.__blob__ = record.age = record.name =record.city = null;
+                let record = Object.assign({}, rec);
                 record.__createdtime__ = record.__updatedtime__ = TIMESTAMP;
                 orig_records.push(record);
             });
