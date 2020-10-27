@@ -3,7 +3,6 @@
 const environment_util = require('./environmentUtility');
 const common = require('./commonUtility');
 const LMDB_ERRORS = require('../errors/commonErrors').LMDB_ERRORS_ENUM;
-const search_utility = require('./searchUtility');
 const lmdb_terms = require('./terms');
 const log = require('../logging/harper_logger');
 const hdb_utils = require('../common_utils');
@@ -44,42 +43,48 @@ function deleteRecords(env, hash_attribute, ids){
 
         let deleted = new DeleteRecordsResponseObject();
 
-        for(let x = 0; x < ids.length; x++){
-            ids[x] = ids[x].toString();
-        }
-
-        //fetch records & find keys to delete
-        let records = search_utility.batchSearchByHash(env, hash_attribute, all_dbis, ids, deleted.skipped);
-        records = Object.values(records);
         //iterate records and process deletes
         let hash_value;
         let cast_hash_value;
-        for(let x = 0; x < records.length; x++){
+        for(let x = 0, length = ids.length; x < length; x++){
             try {
-                let record = records[x];
+                hash_value = ids[x].toString();
+                cast_hash_value = hdb_utils.autoCast(hash_value);
+
+                //attempt to fetch the hash attribute value, this is the row.
+                let record_string = txn.getString(env.dbis[hash_attribute], hash_value);
+                //if it doesn't exist we skip & move to the next id
+                if(!record_string){
+                    deleted.skipped.push(cast_hash_value);
+                    continue;
+                }
+                //convert the string to a json object
+                let record = JSON.parse(record_string);
+
                 //always just delete the hash_attribute entry upfront
-                hash_value = record[hash_attribute].toString();
-                cast_hash_value = hdb_utils.autoCast(record[hash_attribute]);
                 txn.del(env.dbis[hash_attribute], hash_value);
 
                 //iterate & delete the non-hash attribute entries
-                for (let y = 0; y < all_dbis.length; y++) {
+                for (let y = 0;y < all_dbis.length; y++) {
                     let attribute = all_dbis[y];
-                    if (attribute !== hash_attribute) {
-                        let dbi = env.dbis[attribute];
-                        let value = common.convertKeyValueToWrite(record[attribute], dbi[lmdb_terms.DBI_DEFINITION_NAME].key_type);
-                        if (value !== null) {
-                            if(typeof value === 'string' && Buffer.byteLength(value) > lmdb_terms.MAX_BYTE_SIZE){
-                                txn.del(env.dbis[lmdb_terms.BLOB_DBI_NAME], `${attribute}/${hash_value}`);
-                            } else {
-                                try {
-                                    txn.del(dbi, value, hash_value);
-                                }catch(e){
-                                    log.warn(`cannot delete from attribute: ${attribute}, ${value}:${hash_value}`);
-                                }
+                    if (attribute === hash_attribute) {
+                        continue;
+                    }
+
+                    let dbi = env.dbis[attribute];
+                    let value = common.convertKeyValueToWrite(record[attribute], dbi[lmdb_terms.DBI_DEFINITION_NAME].key_type);
+                    if (value !== null) {
+                        if(typeof value === 'string' && Buffer.byteLength(value) > lmdb_terms.MAX_BYTE_SIZE){
+                            txn.del(env.dbis[lmdb_terms.BLOB_DBI_NAME], `${attribute}/${hash_value}`);
+                        } else {
+                            try {
+                                txn.del(dbi, value, hash_value);
+                            }catch(e){
+                                log.warn(`cannot delete from attribute: ${attribute}, ${value}:${hash_value}`);
                             }
                         }
                     }
+
                 }
                 deleted.deleted.push(cast_hash_value);
                 deleted.original_records.push(record);

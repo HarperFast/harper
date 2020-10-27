@@ -229,14 +229,12 @@ describe('Test lmdbDeleteRecords module', ()=>{
 
             //verify txns with delete
             let orig_rec ={
-                __blob__: null,
-                __createdtime__:INSERT_TIMESTAMP,
-                __updatedtime__: INSERT_TIMESTAMP,
-                age: 5,
+                name: "Harper",
                 breed: "Mutt",
-                height:null,
-                id: 8,
-                name: "Harper"
+                id: "8",
+                age: 5,
+                __updatedtime__: INSERT_TIMESTAMP,
+                __createdtime__:INSERT_TIMESTAMP
             };
 
             let delete_txn = new LMDBDeleteTransactionObject([8], [orig_rec], undefined, m_time);
@@ -283,14 +281,12 @@ describe('Test lmdbDeleteRecords module', ()=>{
 
             //verify txns with delete
             let orig_rec ={
-                __blob__: null,
-                __createdtime__:INSERT_TIMESTAMP,
-                __updatedtime__: INSERT_TIMESTAMP,
-                age: 5,
+                name: "Harper",
                 breed: "Mutt",
-                height:null,
-                id: 8,
-                name: "Harper"
+                id: "8",
+                age: 5,
+                __updatedtime__: INSERT_TIMESTAMP,
+                __createdtime__:INSERT_TIMESTAMP,
             };
 
             let delete_txn = new LMDBDeleteTransactionObject([8], [orig_rec], undefined, m_time);
@@ -331,7 +327,7 @@ describe('Test lmdbDeleteRecords module', ()=>{
                 operation: "delete",
                 table: "dog",
                 schema: "dev",
-                hash_values: [ 12, 10 ]
+                hash_values: [  10,12 ]
             };
             let expected_result = {
                 message: '2 of 2 records successfully deleted',
@@ -363,24 +359,20 @@ describe('Test lmdbDeleteRecords module', ()=>{
 
             //verify txns with delete
             let orig_recs = [{
-                __blob__: null,
-                __createdtime__:INSERT_TIMESTAMP,
-                __updatedtime__:INSERT_TIMESTAMP,
-                age: 5,
+                name: "Rob",
                 breed: "Mutt",
+                id: "10",
+                age: 5,
                 height: 145,
-                id: 10,
-                name: "Rob"
+                __updatedtime__:INSERT_TIMESTAMP,
+                __createdtime__:INSERT_TIMESTAMP
             },
             {
-                __blob__: null,
-                __createdtime__:INSERT_TIMESTAMP,
-                __updatedtime__:INSERT_TIMESTAMP,
-                age: null,
+                name: "David",
                 breed: "Mutt",
-                height: null,
-                id: 12,
-                name: "David"
+                id: "12",
+                __updatedtime__:INSERT_TIMESTAMP,
+                __createdtime__:INSERT_TIMESTAMP
             }];
 
             let delete_txn = new LMDBDeleteTransactionObject([10,12], orig_recs, undefined, m_time);
@@ -452,14 +444,13 @@ describe('Test lmdbDeleteRecords module', ()=>{
 
             //verify txns with delete
             let orig_recs = [{
-                __blob__: null,
-                __createdtime__:INSERT_TIMESTAMP,
-                __updatedtime__:INSERT_TIMESTAMP,
-                age: 5,
+                name: "Rob",
                 breed: "Mutt",
+                id: "10",
+                age: 5,
                 height: 145,
-                id: 10,
-                name: "Rob"
+                __updatedtime__:INSERT_TIMESTAMP,
+                __createdtime__:INSERT_TIMESTAMP,
             }];
 
             let delete_txn = new LMDBDeleteTransactionObject([10], orig_recs, undefined, m_time);
