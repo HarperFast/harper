@@ -11,42 +11,10 @@ const util = require('util');
 const user_functions = require('./user');
 const cb_users_set_global = util.callbackify(user_functions.setUsersToGlobal);
 const clone = require('clone');
-const systemSchema = require('../json/systemSchema');
 const hdb_errors = require('../utility/errors/commonErrors');
 const log = require('../utility/logging/harper_logger');
 
 const GENERIC_AUTH_FAIL = 'Login failed';
-
-/**
- * adds system table permissions to the logged in user.  This is used to protect system tables by leveraging operationAuthoriation.
- * @param user_role - Role of the user found during auth.
- */
-function appendSystemTablesToRole(user_role) {
-    try {
-        if (!user_role) {
-            log.error(`invalid user role found.`);
-            return;
-        }
-        if (!user_role.permission["system"]) {
-            user_role.permission["system"] = {};
-        }
-        if (!user_role.permission.system["tables"]) {
-            user_role.permission.system["tables"] = {};
-        }
-        for (let table of Object.keys(systemSchema)) {
-            let new_prop = {};
-            new_prop["read"] = (!!user_role.permission.super_user);
-            new_prop["insert"] = false;
-            new_prop["update"] = false;
-            new_prop["delete"] = false;
-            new_prop["attribute_permissions"] = [];
-            user_role.permission.system.tables[table] = new_prop;
-        }
-    } catch(err) {
-        log.error(`Got an error trying to set system permissions.`);
-        log.error(err);
-    }
-}
 
 function findAndValidateUser(username, password, done) {
     if (!global.hdb_users) {
@@ -76,7 +44,6 @@ function findAndValidateUser(username, password, done) {
             }
             delete user.password;
             delete user.hash;
-            appendSystemTablesToRole(user.role);
             return done(null, user);
         } catch(err) {
             log.error('There was an error authenticating user.');

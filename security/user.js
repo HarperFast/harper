@@ -36,6 +36,7 @@ const crypto_hash = require('./cryptoHash');
 const terms = require('../utility/hdbTerms');
 const env = require('../utility/environment/environmentManager');
 const license = require('../utility/registration/hdb_license');
+const systemSchema = require('../json/systemSchema');
 
 const USER_ATTRIBUTE_WHITELIST = {
     username: true,
@@ -338,6 +339,7 @@ async function listUsers() {
 
             for (let u in users) {
                 users[u].role = roleMapObj[users[u].role];
+                appendSystemTablesToRole(users[u].role);
             }
             // No enterprise license limits roles to 2 (1 su, 1 cu).  If a license has expired, we need to allow the cluster role
             // and the role with the most users.
@@ -352,6 +354,37 @@ async function listUsers() {
         throw hdb_utility.errorizeMessage(err);
     }
     return null;
+}
+
+/**
+ * adds system table permissions to a role.  This is used to protect system tables by leveraging operationAuthoriation.
+ * @param user_role - Role of the user found during auth.
+ */
+function appendSystemTablesToRole(user_role) {
+    try {
+        if (!user_role) {
+            logger.error(`invalid user role found.`);
+            return;
+        }
+        if (!user_role.permission["system"]) {
+            user_role.permission["system"] = {};
+        }
+        if (!user_role.permission.system["tables"]) {
+            user_role.permission.system["tables"] = {};
+        }
+        for (let table of Object.keys(systemSchema)) {
+            let new_prop = {};
+            new_prop["read"] = (!!user_role.permission.super_user);
+            new_prop["insert"] = false;
+            new_prop["update"] = false;
+            new_prop["delete"] = false;
+            new_prop["attribute_permissions"] = [];
+            user_role.permission.system.tables[table] = new_prop;
+        }
+    } catch(err) {
+        logger.error(`Got an error trying to set system permissions.`);
+        logger.error(err);
+    }
 }
 
 /**

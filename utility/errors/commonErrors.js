@@ -82,6 +82,11 @@ const LMDB_ERRORS_ENUM = {
     CANNOT_DROP_TABLE_HASH_ATTRIBUTE: 'cannot drop a table\'s hash attribute'
 };
 
+const AUTHENTICATION_ERROR_MSGS = {
+    GENERIC_AUTH_FAIL: 'Login failed',
+    USER_INACTIVE: 'Cannot complete request: User is inactive'
+};
+
 const OPERATION_AUTH_ERROR_MSGS = {
     DEFAULT_INVALID_REQUEST: "Invalid request",
     OP_AUTH_PERMS_ERROR: "This operation is not authorized due to role restrictions and/or invalid schema items",

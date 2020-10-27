@@ -195,6 +195,14 @@ const TEST_UPDATE_RESPONSE = {
     skipped_hashes: '[]'
 };
 
+const VALID_ROLE = {
+    "permission": {
+        "super_user": true
+    },
+    "id": "c7035e09-5f5b-43b1-8ba9-c945f8c9da35",
+    "role": "super_user"
+};
+
 const TEST_USER_INFO_SEARCH_FAIL_RESPONSE = "Role Not Found";
 
 const ADD_USER_RESULT = 'test_user successfully added';
@@ -713,5 +721,16 @@ describe('Test nonEnterpriseFilter', function () {
             error = err;
         }
         assert.strictEqual(res.length, 0, "expected empty array");
+    });
+});
+
+describe('Test appendSystemTablesToRole function', function () {
+    it('validate permissions are added for system tables.', function (done) {
+        let role_temp = test_utils.deepClone(VALID_ROLE);
+        let temp_append = user.__get__('appendSystemTablesToRole');
+        temp_append(role_temp);
+        assert.notEqual(role_temp.permission.system.tables, undefined, 'expected system tables to be created');
+        assert.notEqual(role_temp.permission.system.tables.hdb_role, undefined, 'expected system tables to be created');
+        done();
     });
 });
