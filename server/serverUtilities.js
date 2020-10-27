@@ -234,6 +234,9 @@ async function catchup(req) {
                 case terms.OPERATIONS_ENUM.UPDATE:
                     result = await insert.update(transaction);
                     break;
+                case terms.OPERATIONS_ENUM.UPSERT:
+                    result = await insert.upsert(transaction);
+                    break;
                 case terms.OPERATIONS_ENUM.DELETE:
                     result = await delete_.delete(transaction);
                     break;
