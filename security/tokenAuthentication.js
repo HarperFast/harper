@@ -55,12 +55,12 @@ async function createTokens(auth_object){
     }
 
     //get rsa key
-    let rsa_keys = await getJWTRSAKeys();
+    let keys = await getJWTRSAKeys();
 
     //sign & return tokens
-    let operation_token = await signOperationToken(auth_object.username, rsa_keys.private_key, rsa_keys.passphrase);
+    let operation_token = await signOperationToken(auth_object.username, keys.private_key, keys.passphrase);
     let refresh_token = await jwt.sign({username: auth_object.username},
-        {key: rsa_keys.private_key, passphrase: rsa_keys.passphrase},
+        {key: keys.private_key, passphrase: keys.passphrase},
         {expiresIn: THIRTY_MINUTE_EXPIRY, algorithm: RSA_ALGORITHM, subject: TOKEN_TYPE_ENUM.REFRESH});
     return new JWTTokens(operation_token, refresh_token);
 }
@@ -100,16 +100,16 @@ async function getJWTRSAKeys(){
 async function refreshToken(token){
     let username = await validateRefreshToken(token);
 
-    let rsa_keys = await getJWTRSAKeys();
+    let keys = await getJWTRSAKeys();
 
-    let operation_token = await signOperationToken(username, rsa_keys.private_key, rsa_keys.passphrase);
+    let operation_token = await signOperationToken(username, keys.private_key, keys.passphrase);
     return {operation_token};
 }
 
 async function validateOperationToken(token){
     try {
-        let rsa_keys = await getJWTRSAKeys();
-        let token_verified = await jwt.verify(token, rsa_keys.public_key, {
+        let keys = await getJWTRSAKeys();
+        let token_verified = await jwt.verify(token, keys.public_key, {
             algorithms: RSA_ALGORITHM,
             subject: TOKEN_TYPE_ENUM.OPERATION
         });
@@ -122,8 +122,8 @@ async function validateOperationToken(token){
 
 async function validateRefreshToken(token){
     try {
-        let rsa_keys = await getJWTRSAKeys();
-        let token_verified = await jwt.verify(token, rsa_keys.public_key, {
+        let keys = await getJWTRSAKeys();
+        let token_verified = await jwt.verify(token, keys.public_key, {
             algorithms: RSA_ALGORITHM,
             subject: TOKEN_TYPE_ENUM.REFRESH
         });
