@@ -307,7 +307,7 @@ if (cluster.isMaster &&( num_workers >= 1 || DEBUG )) {
             if (typeof err === 'string') {
                 return res.status(hdb_errors.HTTP_STATUS_CODES.UNAUTHORIZED).send({error: err});
             }
-            return res.status(hdb_errors.HTTP_STATUS_CODES.UNAUTHORIZED).send(err);
+            return res.status(hdb_errors.HTTP_STATUS_CODES.UNAUTHORIZED).send({error:err.message});
         }
 
         req.body.hdb_user = user;

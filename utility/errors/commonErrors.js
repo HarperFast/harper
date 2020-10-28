@@ -82,6 +82,17 @@ const LMDB_ERRORS_ENUM = {
     CANNOT_DROP_TABLE_HASH_ATTRIBUTE: 'cannot drop a table\'s hash attribute'
 };
 
+const AUTHENTICATION_ERROR_MSGS = {
+    GENERIC_AUTH_FAIL: 'Login failed',
+    USER_INACTIVE: 'Cannot complete request: User is inactive',
+    INVALID_TOKEN: 'invalid token',
+    NO_ENCRYPTION_KEYS: 'unable to generate JWT as there are no encryption keys.  please contact your administrator',
+    INVALID_CREDENTIALS: 'invalid credentials',
+    PASSWORD_REQUIRED: 'password is required',
+    USERNAME_REQUIRED: 'username is required',
+    INVALID_AUTH_OBJECT: 'invalid auth_object'
+};
+
 const OPERATION_AUTH_ERROR_MSGS = {
     DEFAULT_INVALID_REQUEST: "Invalid request",
     OP_AUTH_PERMS_ERROR: "This operation is not authorized due to role restrictions and/or invalid schema items",
@@ -139,7 +150,8 @@ const HDB_ERROR_MSGS = {
     ...OPERATION_AUTH_ERROR_MSGS,
     ...ROLE_PERMS_ERROR_MSGS,
     ...SQL_ERROR_MSGS,
-    ...SCHEMA_OP_ERROR_MSGS
+    ...SCHEMA_OP_ERROR_MSGS,
+    ...AUTHENTICATION_ERROR_MSGS
 };
 
 module.exports = {
@@ -148,5 +160,6 @@ module.exports = {
     DEFAULT_ERROR_MSGS,
     DEFAULT_ERROR_RESP,
     HTTP_STATUS_CODES,
-    LMDB_ERRORS_ENUM
+    LMDB_ERRORS_ENUM,
+    AUTHENTICATION_ERROR_MSGS
 };

@@ -85,21 +85,21 @@ let invalid_other_user = {
 describe('Test authorize function', function () {
     it('Cannot complete request Basic authorization: User not found ', function (done) {
         auth.authorize(invalid_basic_user, null, function (err, user) {
-            assert.equal(err, "Login failed", "Cannot complete request: User 'nonook' not found");
+            assert.equal(err.message, "Login failed", "Cannot complete request: User 'nonook' not found");
             done();
         });
     });
 
     it('Cannot complete request Basic authorization: User is inactive', function (done) {
         auth.authorize(unactive_basic_request, null, function (err, user) {
-            assert.equal(err, "Cannot complete request: User is inactive", 'Cannot complete request: User is inactive');
+            assert.equal(err.message, "Cannot complete request: User is inactive", 'Cannot complete request: User is inactive');
             done();
         });
     });
 
     it('Cannot complete request Basic authorization:  Invalid password', function (done) {
         auth.authorize(invalid_password_basic_request, null, function (err, user) {
-            assert.equal(err, 'Login failed');
+            assert.equal(err.message, 'Login failed');
             done();
         });
     });
@@ -107,8 +107,6 @@ describe('Test authorize function', function () {
     it('Can authorize with correct username and password Basic authorization', function (done) {
         auth.authorize(active_basic_request, null, function (err, user) {
             let role_temp = test_utils.deepClone(VALID_ROLE);
-            let temp_append = auth.__get__('appendSystemTablesToRole');
-            temp_append(role_temp);
             assert.deepEqual(user, { username: 'nook', active: true, role: role_temp }, 'equal object');
             assert.equal(err, null, 'no error');
             done();
@@ -119,21 +117,21 @@ describe('Test authorize function', function () {
     //other authorization
     it('Cannot complete request Other authorization: User not found ', function (done) {
         auth.authorize(invalid_other_user, null, function (err, user) {
-            assert.equal(err, "Login failed", "Cannot complete request: User 'nouser' not found");
+            assert.equal(err.message, "Login failed", "Cannot complete request: User 'nouser' not found");
             done();
         });
     });
 
     it('Cannot complete request Other authorization: User is inactive', function (done) {
         auth.authorize(unactive_other_request, null, function (err, user) {
-            assert.equal(err, 'Cannot complete request: User is inactive', 'Cannot complete request: User is inactive');
+            assert.equal(err.message, 'Cannot complete request: User is inactive', 'Cannot complete request: User is inactive');
             done();
         });
     });
 
     it('Cannot complete request Other authorization:  Invalid password', function (done) {
         auth.authorize(invalid_password_other_request, null, function (err, user) {
-            assert.equal(err, 'Login failed');
+            assert.equal(err.message, 'Login failed');
             done();
         });
     });
@@ -141,8 +139,6 @@ describe('Test authorize function', function () {
     it('Can authorize with correct username and password Other authorization', function (done) {
         auth.authorize(active_other_request, null, function (err, user) {
             let role_temp = test_utils.deepClone(VALID_ROLE);
-            let temp_append = auth.__get__('appendSystemTablesToRole');
-            temp_append(role_temp);
             assert.deepEqual(user, { username: 'nook', active: true, role: role_temp }, 'equal object');
             assert.equal(err, null, 'no error');
             done();
@@ -366,17 +362,6 @@ let permission_object_no_role = {
         }
     }
 };
-
-describe('Test appendSystemTablesToRole function', function () {
-    it('validate permissions are added for system tables.', function (done) {
-        let role_temp = test_utils.deepClone(VALID_ROLE);
-        let temp_append = auth.__get__('appendSystemTablesToRole');
-        temp_append(role_temp);
-        assert.notEqual(role_temp.permission.system.tables, undefined, 'expected system tables to be created');
-        assert.notEqual(role_temp.permission.system.tables.hdb_role, undefined, 'expected system tables to be created');
-        done();
-    });
-});
 
 describe('Test checkPermissions function', function () {
     it('validate permission object, should get error when object is incomplete ', function (done) {
