@@ -14,6 +14,7 @@ module.exports = {
     listUsers: listUsers,
     listUsersExternal : listUsersExternal,
     setUsersToGlobal,
+    findAndValidateUser,
     USERNAME_REQUIRED,
     ALTERUSER_NOTHING_TO_UPDATE,
     EMPTY_PASSWORD,
@@ -37,6 +38,9 @@ const terms = require('../utility/hdbTerms');
 const env = require('../utility/environment/environmentManager');
 const license = require('../utility/registration/hdb_license');
 const systemSchema = require('../json/systemSchema');
+const {handleHDBError, hdb_errors} = require('../utility/errors/hdbError');
+const { HTTP_STATUS_CODES, AUTHENTICATION_ERROR_MSGS} = hdb_errors;
+const clone = require('clone');
 
 const USER_ATTRIBUTE_WHITELIST = {
     username: true,
@@ -282,7 +286,6 @@ async function userInfo(body) {
 /**
  * This function should be called by chooseOperation as it scrubs sensitive information before returning
  * the results of list users.
- * @param body - request body
  */
 async function listUsersExternal() {
     let user_data = await listUsers().catch((err) => {
@@ -447,4 +450,43 @@ async function setUsersToGlobal() {
         logger.error(err);
         throw err;
     }
+}
+
+/**
+ * iterates global.hdb_users to find and validate the username & optionalally the password as well as if they are active.
+ * @param {string} username
+ * @param {string} pw
+ * @param {boolean} validate_password
+ * @returns {Promise<{}|null>}
+ */
+async function findAndValidateUser(username, pw, validate_password = true) {
+    if (!global.hdb_users) {
+        await setUsersToGlobal();
+    }
+
+    let user_tmp = undefined;
+
+    for(let x = 0, length = global.hdb_users.length; x < length; x++){
+        let hdb_user = global.hdb_users[x];
+        if(hdb_user.username.toString() === username.toString()){
+            user_tmp = hdb_user;
+            break;
+        }
+    }
+
+    if (!user_tmp) {
+        throw handleHDBError(new Error(), AUTHENTICATION_ERROR_MSGS.GENERIC_AUTH_FAIL, HTTP_STATUS_CODES.UNAUTHORIZED);
+    }
+
+    if (user_tmp && !user_tmp.active) {
+        throw handleHDBError(new Error(), AUTHENTICATION_ERROR_MSGS.USER_INACTIVE, HTTP_STATUS_CODES.UNAUTHORIZED);
+    }
+    let user = clone(user_tmp);
+    if (validate_password === true && !password.validate(user.password, pw)) {
+        throw handleHDBError(new Error(), AUTHENTICATION_ERROR_MSGS.GENERIC_AUTH_FAIL, HTTP_STATUS_CODES.UNAUTHORIZED);
+    }
+
+    delete user.password;
+    delete user.hash;
+    return user;
 }

@@ -3,6 +3,7 @@
 const test_util = require('../test_utils');
 test_util.preTestPrep();
 const fs = require('fs-extra');
+const jwt = require('jsonwebtoken');
 const path = require('path');
 const assert = require('assert');
 const sinon = require('sinon');
@@ -154,10 +155,19 @@ describe('test getJWTRSAKeys function', ()=>{
             error = e;
         }
         assert.deepStrictEqual(results, undefined);
-        assert.deepStrictEqual(error.code, 'ENOENT');
+        assert.deepStrictEqual(error,
+            hdb_error(new Error(), 'unable to generate JWT as there are no encryption keys.  please contact your administrator', 500));
 
-        assert(path_join_spy.callCount === 3);
+        assert(path_join_spy.callCount === 3 || path_join_spy.callCount === 4);
         assert(fs_readfile_spy.callCount === 1);
+
+        let fs_error;
+        try{
+            await fs_readfile_spy.lastCall.returnValue;
+        }catch (e){
+            fs_error = e;
+        }
+        assert.deepStrictEqual(fs_error.code, 'ENOENT');
 
         rw_rsa_keys();
     });
@@ -174,10 +184,19 @@ describe('test getJWTRSAKeys function', ()=>{
             error = e;
         }
         assert.deepStrictEqual(results, undefined);
-        assert.deepStrictEqual(error.code, 'ENOENT');
+        assert.deepStrictEqual(error,
+            hdb_error(new Error(), 'unable to generate JWT as there are no encryption keys.  please contact your administrator', 500));
 
-        assert(path_join_spy.callCount === 3);
+        assert(path_join_spy.callCount === 3 || path_join_spy.callCount === 4);
         assert(fs_readfile_spy.callCount === 2);
+
+        let fs_error;
+        try{
+            await fs_readfile_spy.lastCall.returnValue;
+        }catch (e){
+            fs_error = e;
+        }
+        assert.deepStrictEqual(fs_error.code, 'ENOENT');
 
         rw_rsa_keys();
     });
@@ -194,10 +213,19 @@ describe('test getJWTRSAKeys function', ()=>{
             error = e;
         }
         assert.deepStrictEqual(results, undefined);
-        assert.deepStrictEqual(error.code, 'ENOENT');
+        assert.deepStrictEqual(error,
+            hdb_error(new Error(), 'unable to generate JWT as there are no encryption keys.  please contact your administrator', 500));
 
-        assert(path_join_spy.callCount === 3);
+        assert(path_join_spy.callCount === 3 || path_join_spy.callCount === 4);
         assert(fs_readfile_spy.callCount === 3);
+
+        let fs_error;
+        try{
+            await fs_readfile_spy.lastCall.returnValue;
+        }catch (e){
+            fs_error = e;
+        }
+        assert.deepStrictEqual(fs_error.code, 'ENOENT');
 
         rw_rsa_keys();
     });
@@ -219,8 +247,11 @@ describe('test getJWTRSAKeys function', ()=>{
 describe('test createTokens', ()=>{
     let rw_validate_user;
     beforeEach(()=>{
-        rw_validate_user = token_auth.__set__('p_find_validate_user',
-            (u, pw)=>({username: u}));
+        rw_validate_user = token_auth.__set__('user_functions',
+            {
+                findAndValidateUser: async(u, pw)=>({username: u})
+            }
+        );
     });
 
     afterEach(()=>{
@@ -237,7 +268,7 @@ describe('test createTokens', ()=>{
             error = e;
         }
         assert.deepStrictEqual(result, undefined);
-        assert.deepStrictEqual(error, hdb_error(new Error(), 'invalid auth_object', 500));
+        assert.deepStrictEqual(error, hdb_error(new Error(), 'invalid auth_object', 401));
 
         //test not object arg
         try {
@@ -246,7 +277,7 @@ describe('test createTokens', ()=>{
             error = e;
         }
         assert.deepStrictEqual(result, undefined);
-        assert.deepStrictEqual(error, hdb_error(new Error(), 'invalid auth_object', 500));
+        assert.deepStrictEqual(error, hdb_error(new Error(), 'invalid auth_object', 401));
 
         //test no username
         try {
@@ -255,7 +286,7 @@ describe('test createTokens', ()=>{
             error = e;
         }
         assert.deepStrictEqual(result, undefined);
-        assert.deepStrictEqual(error, hdb_error(new Error(), 'username is required', 500));
+        assert.deepStrictEqual(error, hdb_error(new Error(), 'username is required', 401));
 
         //test no password
         try {
@@ -264,12 +295,16 @@ describe('test createTokens', ()=>{
             error = e;
         }
         assert.deepStrictEqual(result, undefined);
-        assert.deepStrictEqual(error, hdb_error(new Error(), 'password is required', 500));
+        assert.deepStrictEqual(error, hdb_error(new Error(), 'password is required', 401));
 
         //test bad credentials
         rw_validate_user();
-        rw_validate_user = token_auth.__set__('p_find_validate_user',
-            (u, pw)=>{throw new Error("bad credentials");});
+        rw_validate_user = token_auth.__set__('user_functions',
+            {
+                findAndValidateUser: async(u, pw)=>{throw new Error("bad credentials");}
+            }
+        );
+
         try {
             result = await token_auth.createTokens({username:'BAD_USER', password: 'blerrrrg'});
         }catch(e){
@@ -280,8 +315,11 @@ describe('test createTokens', ()=>{
 
         //test good credentials, no RSA keys
         rw_validate_user();
-        rw_validate_user = token_auth.__set__('p_find_validate_user',
-            (u, pw)=>({username:u}));
+        rw_validate_user = token_auth.__set__('user_functions',
+            {
+                findAndValidateUser: async(u, pw)=>({username: u})
+            }
+        );
         try {
             result = await token_auth.createTokens({username:'HDB_USER', password: 'pass'});
         }catch(e){
@@ -300,5 +338,375 @@ describe('test createTokens', ()=>{
         assert.notDeepStrictEqual(result.refresh_token, undefined);
 
         rw_get_tokens();
+    });
+});
+
+describe('test validateOperationToken function', ()=>{
+    let rw_get_tokens;
+    let rw_validate_user;
+    let jwt_spy;
+    let validate_user_spy;
+    let hdb_admin_tokens;
+    let old_user_tokens;
+    let non_user_tokens;
+    before(async ()=>{
+        rw_get_tokens = token_auth.__set__('getJWTRSAKeys', async ()=>new JWTObjects.JWTRSAKeys(PUBLIC_KEY_VALUE, PRIVATE_KEY_VALUE, PASSPHRASE_VALUE));
+
+        rw_validate_user = token_auth.__set__('user_functions',
+            {
+                findAndValidateUser: async(u, pw)=>({username: u})
+            }
+        );
+
+        global.hdb_users = [
+            {username: 'HDB_ADMIN', active: true},
+            {username: 'old_user', active: false}
+        ];
+
+        hdb_admin_tokens = await token_auth.createTokens({username: 'HDB_ADMIN', password: 'cool'});
+        old_user_tokens = await token_auth.createTokens({username: 'old_user', password: 'notcool'});
+        non_user_tokens = await token_auth.createTokens({username: 'non_user', password: 'notcool'});
+        rw_validate_user();
+        jwt_spy = sandbox.spy(jwt, 'verify');
+        validate_user_spy = sandbox.spy(token_auth.__get__('user_functions'), 'findAndValidateUser');
+    });
+
+    beforeEach(()=>{
+
+    });
+
+    afterEach(()=>{
+        jwt_spy.resetHistory();
+        validate_user_spy.resetHistory();
+    });
+
+    after(()=>{
+        rw_get_tokens();
+
+        sandbox.restore();
+        delete global.hdb_users;
+    });
+
+    it('test hdb_admin token', async()=>{
+        let error;
+        let user;
+        try {
+            user = await token_auth.validateOperationToken(hdb_admin_tokens.operation_token);
+        }catch (e){
+            error = e;
+        }
+
+        assert.deepStrictEqual(error, undefined);
+        assert.deepStrictEqual(user, {active: true, username: 'HDB_ADMIN'});
+        assert(jwt_spy.callCount === 1);
+        assert(jwt_spy.threw() === false);
+        assert(validate_user_spy.callCount === 1);
+        assert(validate_user_spy.threw() === false);
+    });
+
+    it('test old_user token', async()=>{
+        let error;
+        let user;
+        try {
+            user = await token_auth.validateOperationToken(old_user_tokens.operation_token);
+        }catch (e){
+            error = e;
+        }
+
+        assert.deepStrictEqual(error, hdb_error(new Error(), 'invalid token', 401));
+        assert.deepStrictEqual(user, undefined);
+        assert(jwt_spy.callCount === 1);
+        assert(jwt_spy.threw() === false);
+        assert(validate_user_spy.callCount === 1);
+        let validate_error;
+        try {
+            await validate_user_spy.firstCall.returnValue;
+        }catch(e){
+            validate_error = e;
+        }
+        assert(validate_error !== undefined);
+        assert.deepStrictEqual(validate_error, hdb_error(new Error(), 'Cannot complete request: User is inactive', 401));
+    });
+
+    it('test non-existent user', async()=>{
+        let error;
+        let user;
+        try {
+            user = await token_auth.validateOperationToken(non_user_tokens.operation_token);
+        }catch (e){
+            error = e;
+        }
+
+        assert.deepStrictEqual(error, hdb_error(new Error(), 'invalid token', 401));
+        assert.deepStrictEqual(user, undefined);
+        assert(jwt_spy.callCount === 1);
+        assert(jwt_spy.threw() === false);
+        assert(validate_user_spy.callCount === 1);
+        let validate_error;
+        try {
+            await validate_user_spy.firstCall.returnValue;
+        }catch(e){
+            validate_error = e;
+        }
+        assert(validate_error !== undefined);
+        assert.deepStrictEqual(validate_error, hdb_error(new Error(), 'Login failed', 401));
+    });
+
+    it('test bad token', async()=>{
+        let error;
+        try {
+            await token_auth.validateOperationToken('BAD_TOKEN');
+        }catch (e){
+            error = e;
+        }
+        assert.deepStrictEqual(error, hdb_error(new Error(), 'invalid token', 401));
+        assert(jwt_spy.callCount === 1);
+        assert(jwt_spy.threw() === true);
+        assert(validate_user_spy.callCount === 0);
+    });
+});
+
+describe('test validateRefreshToken function', ()=>{
+    let rw_get_tokens;
+    let rw_validate_user;
+    let jwt_spy;
+    let validate_user_spy;
+    let hdb_admin_tokens;
+    let old_user_tokens;
+    let non_user_tokens;
+    let validate_refresh_token;
+    before(async ()=>{
+        validate_refresh_token = token_auth.__get__('validateRefreshToken');
+        rw_get_tokens = token_auth.__set__('getJWTRSAKeys', async ()=>new JWTObjects.JWTRSAKeys(PUBLIC_KEY_VALUE, PRIVATE_KEY_VALUE, PASSPHRASE_VALUE));
+
+        rw_validate_user = token_auth.__set__('user_functions',
+            {
+                findAndValidateUser: async(u, pw)=>({username: u})
+            }
+        );
+
+        global.hdb_users = [
+            {username: 'HDB_ADMIN', active: true},
+            {username: 'old_user', active: false}
+        ];
+
+        hdb_admin_tokens = await token_auth.createTokens({username: 'HDB_ADMIN', password: 'cool'});
+        old_user_tokens = await token_auth.createTokens({username: 'old_user', password: 'notcool'});
+        non_user_tokens = await token_auth.createTokens({username: 'non_user', password: 'notcool'});
+        rw_validate_user();
+        jwt_spy = sandbox.spy(jwt, 'verify');
+        validate_user_spy = sandbox.spy(token_auth.__get__('user_functions'), 'findAndValidateUser');
+    });
+
+    beforeEach(()=>{
+
+    });
+
+    afterEach(()=>{
+        jwt_spy.resetHistory();
+        validate_user_spy.resetHistory();
+    });
+
+    after(()=>{
+        rw_get_tokens();
+
+        sandbox.restore();
+        delete global.hdb_users;
+    });
+
+    it('test hdb_admin token', async()=>{
+        let error;
+        let user;
+        try {
+            user = await validate_refresh_token(hdb_admin_tokens.refresh_token);
+        }catch (e){
+            error = e;
+        }
+
+        assert.deepStrictEqual(error, undefined);
+        assert.deepStrictEqual(user, {active: true, username: 'HDB_ADMIN'});
+        assert(jwt_spy.callCount === 1);
+        assert(jwt_spy.threw() === false);
+        assert(validate_user_spy.callCount === 1);
+        assert(validate_user_spy.threw() === false);
+    });
+
+    it('test old_user token', async()=>{
+        let error;
+        let user;
+        try {
+            user = await validate_refresh_token(old_user_tokens.refresh_token);
+        }catch (e){
+            error = e;
+        }
+
+        assert.deepStrictEqual(error, hdb_error(new Error(), 'invalid token', 401));
+        assert.deepStrictEqual(user, undefined);
+        assert(jwt_spy.callCount === 1);
+        assert(jwt_spy.threw() === false);
+        assert(validate_user_spy.callCount === 1);
+        let validate_error;
+        try {
+            await validate_user_spy.firstCall.returnValue;
+        }catch(e){
+            validate_error = e;
+        }
+        assert(validate_error !== undefined);
+        assert.deepStrictEqual(validate_error, hdb_error(new Error(), 'Cannot complete request: User is inactive', 401));
+    });
+
+    it('test non-existent user', async()=>{
+        let error;
+        let user;
+        try {
+            user = await validate_refresh_token(non_user_tokens.refresh_token);
+        }catch (e){
+            error = e;
+        }
+
+        assert.deepStrictEqual(error, hdb_error(new Error(), 'invalid token', 401));
+        assert.deepStrictEqual(user, undefined);
+        assert(jwt_spy.callCount === 1);
+        assert(jwt_spy.threw() === false);
+        assert(validate_user_spy.callCount === 1);
+        let validate_error;
+        try {
+            await validate_user_spy.firstCall.returnValue;
+        }catch(e){
+            validate_error = e;
+        }
+        assert(validate_error !== undefined);
+        assert.deepStrictEqual(validate_error, hdb_error(new Error(), 'Login failed', 401));
+    });
+
+    it('test bad token', async()=>{
+        let error;
+        try {
+            await validate_refresh_token('BAD_TOKEN');
+        }catch (e){
+            error = e;
+        }
+        assert.deepStrictEqual(error, hdb_error(new Error(), 'invalid token', 401));
+        assert(jwt_spy.callCount === 1);
+        assert(jwt_spy.threw() === true);
+        assert(validate_user_spy.callCount === 0);
+    });
+});
+
+describe('test refreshToken function', ()=>{
+    let rw_get_tokens;
+    let rw_validate_user;
+    let jwt_spy;
+    let validate_user_spy;
+
+    let hdb_admin_tokens;
+    let old_user_tokens;
+    let non_user_tokens;
+    before(async ()=>{
+        rw_get_tokens = token_auth.__set__('getJWTRSAKeys', async ()=>new JWTObjects.JWTRSAKeys(PUBLIC_KEY_VALUE, PRIVATE_KEY_VALUE, PASSPHRASE_VALUE));
+
+        rw_validate_user = token_auth.__set__('user_functions',
+            {
+                findAndValidateUser: async(u, pw)=>({username: u})
+            }
+        );
+
+        global.hdb_users = [
+            {username: 'HDB_ADMIN', active: true},
+            {username: 'old_user', active: false}
+        ];
+
+        hdb_admin_tokens = await token_auth.createTokens({username: 'HDB_ADMIN', password: 'cool'});
+        old_user_tokens = await token_auth.createTokens({username: 'old_user', password: 'notcool'});
+        non_user_tokens = await token_auth.createTokens({username: 'non_user', password: 'notcool'});
+        rw_validate_user();
+        jwt_spy = sandbox.spy(jwt, 'verify');
+        validate_user_spy = sandbox.spy(token_auth.__get__('user_functions'), 'findAndValidateUser');
+    });
+
+    beforeEach(()=>{
+
+    });
+
+    afterEach(()=>{
+        jwt_spy.resetHistory();
+        validate_user_spy.resetHistory();
+    });
+
+    after(()=>{
+        rw_get_tokens();
+
+        sandbox.restore();
+        delete global.hdb_users;
+    });
+
+    it('test hdb_admin token', async()=>{
+        let error;
+        let token;
+        try {
+            token = await token_auth.refreshToken(hdb_admin_tokens.refresh_token);
+        }catch (e){
+            error = e;
+        }
+
+        assert.deepStrictEqual(error, undefined);
+        assert.notDeepStrictEqual(token, undefined);
+        assert.notDeepStrictEqual(token.operation_token, undefined);
+
+        assert.deepStrictEqual(jwt_spy.callCount, 1);
+        assert.deepStrictEqual(jwt_spy.threw(), false);
+        assert.deepStrictEqual(validate_user_spy.callCount, 1);
+        assert.deepStrictEqual(validate_user_spy.threw(), false);
+    });
+
+    it('test old_user token', async()=>{
+        let error;
+
+        let token;
+        try {
+            token = await token_auth.refreshToken(old_user_tokens.refresh_token);
+        }catch (e){
+            error = e;
+        }
+
+        assert.deepStrictEqual(error, hdb_error(new Error(), 'invalid token', 401));
+        assert.deepStrictEqual(token, undefined);
+
+        assert.deepStrictEqual(jwt_spy.callCount, 1);
+        assert.deepStrictEqual(jwt_spy.threw(), false);
+        assert.deepStrictEqual(validate_user_spy.callCount, 1);
+
+        let validate_error;
+        try {
+            await validate_user_spy.firstCall.returnValue;
+        }catch(e){
+            validate_error = e;
+        }
+        assert(validate_error !== undefined);
+        assert.deepStrictEqual(validate_error, hdb_error(new Error(), 'Cannot complete request: User is inactive', 401));
+    });
+
+    it('test non-existent user', async()=>{
+        let error;
+        let token;
+        try {
+            token = await token_auth.refreshToken(non_user_tokens.refresh_token);
+        }catch (e){
+            error = e;
+        }
+
+        assert.deepStrictEqual(error, hdb_error(new Error(), 'invalid token', 401));
+        assert.deepStrictEqual(token, undefined);
+        assert.deepStrictEqual(jwt_spy.callCount, 1);
+        assert.deepStrictEqual(jwt_spy.threw(), false);
+        assert.deepStrictEqual(validate_user_spy.callCount, 1);
+        let validate_error;
+        try {
+            await validate_user_spy.firstCall.returnValue;
+        }catch(e){
+            validate_error = e;
+        }
+        assert(validate_error !== undefined);
+        assert.deepStrictEqual(validate_error, hdb_error(new Error(), 'Login failed', 401));
     });
 });

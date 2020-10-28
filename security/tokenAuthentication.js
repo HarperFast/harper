@@ -2,14 +2,13 @@
 
 const jwt = require('jsonwebtoken');
 const fs = require('fs-extra');
-const {promisify} = require('util');
-const auth = require('./auth');
-const p_find_validate_user = promisify(auth.findAndValidateUser);
+
 const hdb_utils = require('../utility/common_utils');
 const terms = require('../utility/hdbTerms');
 const {handleHDBError, hdb_errors} = require('../utility/errors/hdbError');
-const { HTTP_STATUS_CODES } = hdb_errors;
+const { HTTP_STATUS_CODES, AUTHENTICATION_ERROR_MSGS} = hdb_errors;
 const logger = require('../utility/logging/harper_logger');
+const user_functions = require('./user');
 const env = require('../utility/environment/environmentManager');
 if(!env.isInitialized()){
     env.initSync();
@@ -24,50 +23,52 @@ const RSA_ALGORITHM = 'RS256';
 
 let rsa_keys = undefined;
 
-module.exports = {createTokens};
+module.exports = {
+    createTokens,
+    validateOperationToken,
+    refreshToken
+};
 
 async function createTokens(auth_object){
     //validate auth_object
     if(hdb_utils.isEmpty(auth_object) || typeof auth_object !== 'object'){
-        throw handleHDBError(new Error(), 'invalid auth_object', HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR);
+        throw handleHDBError(new Error(), AUTHENTICATION_ERROR_MSGS.INVALID_AUTH_OBJECT, HTTP_STATUS_CODES.UNAUTHORIZED);
     }
 
     if(hdb_utils.isEmpty(auth_object.username)){
-        throw handleHDBError(new Error(), 'username is required', HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR);
+        throw handleHDBError(new Error(), AUTHENTICATION_ERROR_MSGS.USERNAME_REQUIRED, HTTP_STATUS_CODES.UNAUTHORIZED);
     }
 
     if(hdb_utils.isEmpty(auth_object.password)){
-        throw handleHDBError(new Error(), 'password is required', HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR);
+        throw handleHDBError(new Error(), AUTHENTICATION_ERROR_MSGS.PASSWORD_REQUIRED, HTTP_STATUS_CODES.UNAUTHORIZED);
     }
 
     //query for user/pw
     try {
-        let user = await p_find_validate_user(auth_object.username, auth_object.password);
+        let user = await user_functions.findAndValidateUser(auth_object.username, auth_object.password);
         if (!user) {
-            throw handleHDBError(new Error(), 'invalid credentials', HTTP_STATUS_CODES.UNAUTHORIZED);
+            throw handleHDBError(new Error(), AUTHENTICATION_ERROR_MSGS.INVALID_CREDENTIALS, HTTP_STATUS_CODES.UNAUTHORIZED);
         }
     }catch(e){
         logger.error(e);
-        throw handleHDBError(new Error(), 'invalid credentials', HTTP_STATUS_CODES.UNAUTHORIZED);
+        throw handleHDBError(new Error(), AUTHENTICATION_ERROR_MSGS.INVALID_CREDENTIALS, HTTP_STATUS_CODES.UNAUTHORIZED);
     }
 
     //get rsa key
-    let rsa_keys = undefined;
-    try {
-        rsa_keys = await getJWTRSAKeys();
-    }catch(e){
-        logger.error(e);
-        throw handleHDBError(new Error(), 'unable to generate JWT as there are no encryption keys.  please contact your administrator', HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR);
-    }
+    let rsa_keys = await getJWTRSAKeys();
 
     //sign & return tokens
-    let operation_token = await jwt.sign({username: auth_object.username},
-        {key: rsa_keys.private_key, passphrase: rsa_keys.passphrase},
-        {expiresIn: THIRTY_DAY_EXPIRY, algorithm: RSA_ALGORITHM, subject: TOKEN_TYPE_ENUM.OPERATION});
+    let operation_token = await signOperationToken(auth_object.username, rsa_keys.private_key, rsa_keys.passphrase);
     let refresh_token = await jwt.sign({username: auth_object.username},
         {key: rsa_keys.private_key, passphrase: rsa_keys.passphrase},
         {expiresIn: THIRTY_MINUTE_EXPIRY, algorithm: RSA_ALGORITHM, subject: TOKEN_TYPE_ENUM.REFRESH});
     return new JWTTokens(operation_token, refresh_token);
+}
+
+async function signOperationToken(username, private_key, passphrase){
+    return await jwt.sign({username: username},
+        {key: private_key, passphrase: passphrase},
+        {expiresIn: THIRTY_DAY_EXPIRY, algorithm: RSA_ALGORITHM, subject: TOKEN_TYPE_ENUM.OPERATION});
 }
 
 /**
@@ -76,31 +77,60 @@ async function createTokens(auth_object){
  */
 async function getJWTRSAKeys(){
     if(rsa_keys === undefined){
-        let passphrase_path = path.join(env.getHdbBasePath(), terms.LICENSE_KEY_DIR_NAME, terms.JWT_ENUM.JWT_PASSPHRASE_NAME);
-        let private_key_path = path.join(env.getHdbBasePath(), terms.LICENSE_KEY_DIR_NAME, terms.JWT_ENUM.JWT_PRIVATE_KEY_NAME);
-        let public_key_path = path.join(env.getHdbBasePath(), terms.LICENSE_KEY_DIR_NAME, terms.JWT_ENUM.JWT_PUBLIC_KEY_NAME);
+        try {
+            let passphrase_path = path.join(env.getHdbBasePath(), terms.LICENSE_KEY_DIR_NAME, terms.JWT_ENUM.JWT_PASSPHRASE_NAME);
+            let private_key_path = path.join(env.getHdbBasePath(), terms.LICENSE_KEY_DIR_NAME, terms.JWT_ENUM.JWT_PRIVATE_KEY_NAME);
+            let public_key_path = path.join(env.getHdbBasePath(), terms.LICENSE_KEY_DIR_NAME, terms.JWT_ENUM.JWT_PUBLIC_KEY_NAME);
 
-        let passphrase = (await fs.readFile(passphrase_path)).toString();
-        let private_key = (await fs.readFile(private_key_path)).toString();
-        let public_key = (await fs.readFile(public_key_path)).toString();
+            let passphrase = (await fs.readFile(passphrase_path)).toString();
+            let private_key = (await fs.readFile(private_key_path)).toString();
+            let public_key = (await fs.readFile(public_key_path)).toString();
 
-        rsa_keys = new JWTRSAKeys(public_key, private_key, passphrase);
+            rsa_keys = new JWTRSAKeys(public_key, private_key, passphrase);
+        }catch(e){
+            logger.error(e);
+            throw handleHDBError(new Error(), AUTHENTICATION_ERROR_MSGS.NO_ENCRYPTION_KEYS,
+                HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR);
+        }
     }
 
     return rsa_keys;
 }
 
-async function validateOperationToken(token){
+async function refreshToken(token){
+    let username = await validateRefreshToken(token);
+
     let rsa_keys = await getJWTRSAKeys();
-    let token_verified = await jwt.verify(token, rsa_keys.public_key, {algorithms: RSA_ALGORITHM, subject: TOKEN_TYPE_ENUM.OPERATION});
-    console.log(token_verified);
+
+    let operation_token = await signOperationToken(username, rsa_keys.private_key, rsa_keys.passphrase);
+    return {operation_token};
+}
+
+async function validateOperationToken(token){
+    try {
+        let rsa_keys = await getJWTRSAKeys();
+        let token_verified = await jwt.verify(token, rsa_keys.public_key, {
+            algorithms: RSA_ALGORITHM,
+            subject: TOKEN_TYPE_ENUM.OPERATION
+        });
+        return await user_functions.findAndValidateUser(token_verified.username, undefined, false);
+    }catch(e){
+        logger.warn(e);
+        throw handleHDBError(new Error(), AUTHENTICATION_ERROR_MSGS.INVALID_TOKEN, HTTP_STATUS_CODES.UNAUTHORIZED);
+    }
 }
 
 async function validateRefreshToken(token){
-    let rsa_keys = await getJWTRSAKeys();
-    let token_verified = await jwt.verify(token, rsa_keys.public_key, {algorithms: RSA_ALGORITHM, subject: TOKEN_TYPE_ENUM.REFRESH});
-    console.log(token_verified);
+    try {
+        let rsa_keys = await getJWTRSAKeys();
+        let token_verified = await jwt.verify(token, rsa_keys.public_key, {
+            algorithms: RSA_ALGORITHM,
+            subject: TOKEN_TYPE_ENUM.REFRESH
+        });
+        return await user_functions.findAndValidateUser(token_verified.username, undefined, false);
+    }catch(e){
+        logger.warn(e);
+        throw handleHDBError(new Error(), AUTHENTICATION_ERROR_MSGS.INVALID_TOKEN, HTTP_STATUS_CODES.UNAUTHORIZED);
+    }
 }
-/*
-validateRefreshToken('eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VybmFtZSI6IkhEQl9BRE1JTiIsImlhdCI6MTYwMzQxOTQ5NCwiZXhwIjoxNjAzNDIxMjk0LCJzdWIiOiJyZWZyZXNoIn0.B7BDhD2R12jthsEymXnqvQvMCuqfgQMR24XNY18RgCOMv1Z26Jqv2OGwKiHIXSnuR-4cRasWl3vNkSR-xS1OuUrQ05pROfB-dHwaJsPWHixj2eJrVSyzDJBHfhHohOrG6tIoOd0KCpIuO3-1uki0HBnlZoqEIk39GOJHYrQyeK3j4S9QExVc1LktWk8KIAKUUW5YYjvuUIvLu2O3t2Cja69_AOG6CF8QgIlzZDDOGTyGwJuKNTdiSjdxE2b_XbHZztOyeHou5334t_ZF_Um0HErdTFXjO3TZpWjebzwYqpOcXsdc84eqLU7pvFqiY2MNY3VR--nHsDrI-TMZtfmzAE_tvifRPSkFOcmLzETXzSKnS-XDAa22pENZo6ayJdwYuMQFpi6AbuMtCKdXghAcV3XhA2nxtilSpA0-1tWzD_Lgf6qC9fr-LsOmVjlaln2hmIQYaAmggt6lYcYzw9CMgL-01zubItNEkqxAFA6StajL9QQh_oNMRzqAGUp3UP_8zfRfhxr5KCdDCKN8tCz4-2-ECW2uRhzN3FJ5iI9VbjPNa-ce_i-AkF1vhcQPoEYxDV-Vt2QWCe73vlwmt45xPvwxcpDzJJUXTy7x0xxog93Shx0r5BV8mOiwCnkma5QfVeqKlfBh7_pjZebP5wQYWrtgi12_8oiWyGpHhJgPqo8')
-    .then(()=>{}).catch(e=>console.error(e));*/
+

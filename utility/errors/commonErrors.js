@@ -84,7 +84,13 @@ const LMDB_ERRORS_ENUM = {
 
 const AUTHENTICATION_ERROR_MSGS = {
     GENERIC_AUTH_FAIL: 'Login failed',
-    USER_INACTIVE: 'Cannot complete request: User is inactive'
+    USER_INACTIVE: 'Cannot complete request: User is inactive',
+    INVALID_TOKEN: 'invalid token',
+    NO_ENCRYPTION_KEYS: 'unable to generate JWT as there are no encryption keys.  please contact your administrator',
+    INVALID_CREDENTIALS: 'invalid credentials',
+    PASSWORD_REQUIRED: 'password is required',
+    USERNAME_REQUIRED: 'username is required',
+    INVALID_AUTH_OBJECT: 'invalid auth_object'
 };
 
 const OPERATION_AUTH_ERROR_MSGS = {
@@ -144,7 +150,8 @@ const HDB_ERROR_MSGS = {
     ...OPERATION_AUTH_ERROR_MSGS,
     ...ROLE_PERMS_ERROR_MSGS,
     ...SQL_ERROR_MSGS,
-    ...SCHEMA_OP_ERROR_MSGS
+    ...SCHEMA_OP_ERROR_MSGS,
+    ...AUTHENTICATION_ERROR_MSGS
 };
 
 module.exports = {
@@ -153,5 +160,6 @@ module.exports = {
     DEFAULT_ERROR_MSGS,
     DEFAULT_ERROR_RESP,
     HTTP_STATUS_CODES,
-    LMDB_ERRORS_ENUM
+    LMDB_ERRORS_ENUM,
+    AUTHENTICATION_ERROR_MSGS
 };

@@ -85,21 +85,21 @@ let invalid_other_user = {
 describe('Test authorize function', function () {
     it('Cannot complete request Basic authorization: User not found ', function (done) {
         auth.authorize(invalid_basic_user, null, function (err, user) {
-            assert.equal(err, "Login failed", "Cannot complete request: User 'nonook' not found");
+            assert.equal(err.message, "Login failed", "Cannot complete request: User 'nonook' not found");
             done();
         });
     });
 
     it('Cannot complete request Basic authorization: User is inactive', function (done) {
         auth.authorize(unactive_basic_request, null, function (err, user) {
-            assert.equal(err, "Cannot complete request: User is inactive", 'Cannot complete request: User is inactive');
+            assert.equal(err.message, "Cannot complete request: User is inactive", 'Cannot complete request: User is inactive');
             done();
         });
     });
 
     it('Cannot complete request Basic authorization:  Invalid password', function (done) {
         auth.authorize(invalid_password_basic_request, null, function (err, user) {
-            assert.equal(err, 'Login failed');
+            assert.equal(err.message, 'Login failed');
             done();
         });
     });
@@ -117,21 +117,21 @@ describe('Test authorize function', function () {
     //other authorization
     it('Cannot complete request Other authorization: User not found ', function (done) {
         auth.authorize(invalid_other_user, null, function (err, user) {
-            assert.equal(err, "Login failed", "Cannot complete request: User 'nouser' not found");
+            assert.equal(err.message, "Login failed", "Cannot complete request: User 'nouser' not found");
             done();
         });
     });
 
     it('Cannot complete request Other authorization: User is inactive', function (done) {
         auth.authorize(unactive_other_request, null, function (err, user) {
-            assert.equal(err, 'Cannot complete request: User is inactive', 'Cannot complete request: User is inactive');
+            assert.equal(err.message, 'Cannot complete request: User is inactive', 'Cannot complete request: User is inactive');
             done();
         });
     });
 
     it('Cannot complete request Other authorization:  Invalid password', function (done) {
         auth.authorize(invalid_password_other_request, null, function (err, user) {
-            assert.equal(err, 'Login failed');
+            assert.equal(err.message, 'Login failed');
             done();
         });
     });
