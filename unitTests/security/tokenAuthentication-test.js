@@ -268,7 +268,7 @@ describe('test createTokens', ()=>{
             error = e;
         }
         assert.deepStrictEqual(result, undefined);
-        assert.deepStrictEqual(error, hdb_error(new Error(), 'invalid auth_object', 401));
+        assert.deepStrictEqual(error, hdb_error(new Error(), 'invalid auth_object', 400));
 
         //test not object arg
         try {
@@ -277,7 +277,7 @@ describe('test createTokens', ()=>{
             error = e;
         }
         assert.deepStrictEqual(result, undefined);
-        assert.deepStrictEqual(error, hdb_error(new Error(), 'invalid auth_object', 401));
+        assert.deepStrictEqual(error, hdb_error(new Error(), 'invalid auth_object', 400));
 
         //test no username
         try {
@@ -286,7 +286,7 @@ describe('test createTokens', ()=>{
             error = e;
         }
         assert.deepStrictEqual(result, undefined);
-        assert.deepStrictEqual(error, hdb_error(new Error(), 'username is required', 401));
+        assert.deepStrictEqual(error, hdb_error(new Error(), 'username is required', 400));
 
         //test no password
         try {
@@ -295,7 +295,7 @@ describe('test createTokens', ()=>{
             error = e;
         }
         assert.deepStrictEqual(result, undefined);
-        assert.deepStrictEqual(error, hdb_error(new Error(), 'password is required', 401));
+        assert.deepStrictEqual(error, hdb_error(new Error(), 'password is required', 400));
 
         //test bad credentials
         rw_validate_user();

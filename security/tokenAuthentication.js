@@ -32,15 +32,15 @@ module.exports = {
 async function createTokens(auth_object){
     //validate auth_object
     if(hdb_utils.isEmpty(auth_object) || typeof auth_object !== 'object'){
-        throw handleHDBError(new Error(), AUTHENTICATION_ERROR_MSGS.INVALID_AUTH_OBJECT, HTTP_STATUS_CODES.UNAUTHORIZED);
+        throw handleHDBError(new Error(), AUTHENTICATION_ERROR_MSGS.INVALID_AUTH_OBJECT, HTTP_STATUS_CODES.BAD_REQUEST);
     }
 
     if(hdb_utils.isEmpty(auth_object.username)){
-        throw handleHDBError(new Error(), AUTHENTICATION_ERROR_MSGS.USERNAME_REQUIRED, HTTP_STATUS_CODES.UNAUTHORIZED);
+        throw handleHDBError(new Error(), AUTHENTICATION_ERROR_MSGS.USERNAME_REQUIRED, HTTP_STATUS_CODES.BAD_REQUEST);
     }
 
     if(hdb_utils.isEmpty(auth_object.password)){
-        throw handleHDBError(new Error(), AUTHENTICATION_ERROR_MSGS.PASSWORD_REQUIRED, HTTP_STATUS_CODES.UNAUTHORIZED);
+        throw handleHDBError(new Error(), AUTHENTICATION_ERROR_MSGS.PASSWORD_REQUIRED, HTTP_STATUS_CODES.BAD_REQUEST);
     }
 
     //query for user/pw
