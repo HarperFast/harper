@@ -56,7 +56,7 @@ describe('Test deleteUtility', ()=>{
     let get_micro_time_stub;
     let date_stub;
     before(()=>{
-        rw_env_util = environment_utility.__set__('MAP_SIZE', 10*1024*1024*1024);
+        rw_env_util = environment_utility.__set__('MAP_SIZE', 5*1024*1024*1024);
         get_micro_time_stub = sandbox.stub(common, 'getMicroTime').returns(TXN_TIMESTAMP);
         date_stub = sandbox.stub(Date, 'now').returns(TIMESTAMP);
     });

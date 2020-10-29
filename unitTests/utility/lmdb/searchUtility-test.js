@@ -39,7 +39,7 @@ const MULTI_RECORD_ARRAY2 = [
 describe('Test searchUtility module', ()=>{
     let rw_env_util;
     before(()=> {
-        rw_env_util = environment_utility.__set__('MAP_SIZE', 10 * 1024 * 1024 * 1024);
+        rw_env_util = environment_utility.__set__('MAP_SIZE', 5 * 1024 * 1024 * 1024);
         test_data.forEach(record=>{
             Object.keys(record).forEach(key=>{
                 record[key] = common_utils.autoCast(record[key]);

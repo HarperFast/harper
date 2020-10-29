@@ -593,7 +593,7 @@ describe('test validateRefreshToken function', ()=>{
     });
 });
 
-describe('test refreshToken function', ()=>{
+describe('test refreshOperationToken function', ()=>{
     let rw_get_tokens;
     let rw_validate_user;
     let jwt_spy;
@@ -644,7 +644,7 @@ describe('test refreshToken function', ()=>{
         let error;
         let token;
         try {
-            token = await token_auth.refreshToken(hdb_admin_tokens.refresh_token);
+            token = await token_auth.refreshOperationToken(hdb_admin_tokens.refresh_token);
         }catch (e){
             error = e;
         }
@@ -664,7 +664,7 @@ describe('test refreshToken function', ()=>{
 
         let token;
         try {
-            token = await token_auth.refreshToken(old_user_tokens.refresh_token);
+            token = await token_auth.refreshOperationToken(old_user_tokens.refresh_token);
         }catch (e){
             error = e;
         }
@@ -690,7 +690,7 @@ describe('test refreshToken function', ()=>{
         let error;
         let token;
         try {
-            token = await token_auth.refreshToken(non_user_tokens.refresh_token);
+            token = await token_auth.refreshOperationToken(non_user_tokens.refresh_token);
         }catch (e){
             error = e;
         }

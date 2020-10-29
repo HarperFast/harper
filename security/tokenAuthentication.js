@@ -26,7 +26,7 @@ let rsa_keys = undefined;
 module.exports = {
     createTokens,
     validateOperationToken,
-    refreshToken
+    refreshOperationToken
 };
 
 async function createTokens(auth_object){
@@ -97,7 +97,7 @@ async function getJWTRSAKeys(){
     return rsa_keys;
 }
 
-async function refreshToken(token){
+async function refreshOperationToken(token){
     let username = await validateRefreshToken(token);
 
     let keys = await getJWTRSAKeys();

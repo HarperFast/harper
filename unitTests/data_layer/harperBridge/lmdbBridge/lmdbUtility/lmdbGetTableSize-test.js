@@ -6,10 +6,13 @@ const path = require('path');
 const assert = require('assert');
 const fs = require('fs-extra');
 const env_util = require('../../../../../utility/lmdb/environmentUtility');
+const rewire = require('rewire');
+const environment_utility = rewire('../../../../../utility/lmdb/environmentUtility');
 const get_table_size = require('../../../../../data_layer/harperBridge/lmdbBridge/lmdbUtility/lmdbGetTableSize');
 
 describe('Test getLMDBStats function', function() {
 
+    let rw_env_util;
     let env = undefined;
     const LMDB_TEST_FOLDER_NAME = 'lmdbTest';
     const BASE_TEST_PATH = path.join(test_util.getMockFSPath(), 'schema', LMDB_TEST_FOLDER_NAME);
@@ -27,7 +30,7 @@ describe('Test getLMDBStats function', function() {
         await fs.remove(test_util.getMockFSPath());
         await fs.mkdirp(BASE_TEST_PATH);
         await fs.mkdirp(BASE_TXN_PATH);
-
+        rw_env_util = environment_utility.__set__('MAP_SIZE', 5*1024*1024*1024);
         env = await env_util.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
         await env_util.createDBI(env, ID_DBI_NAME);
 
@@ -36,6 +39,7 @@ describe('Test getLMDBStats function', function() {
     });
 
     after(async function() {
+        rw_env_util();
         await fs.remove(test_util.getMockFSPath());
         global.lmdb_map = undefined;
     });
