@@ -338,6 +338,7 @@ function initializeOperationFunctionMap(){
     op_func_map.set(terms.OPERATIONS_ENUM.DELETE_TRANSACTION_LOGS_BEFORE, new OperationFunctionObject(signalJob, delete_.deleteTransactionLogsBefore));
     op_func_map.set(terms.OPERATIONS_ENUM.READ_TRANSACTION_LOG, new OperationFunctionObject(read_transaction_log));
     op_func_map.set(terms.OPERATIONS_ENUM.CREATE_AUTHENTICATION_TOKENS, new OperationFunctionObject(token_authentication.createTokens));
+    op_func_map.set(terms.OPERATIONS_ENUM.REFRESH_OPERATION_TOKEN, new OperationFunctionObject(token_authentication.refreshOperationToken));
 
     return op_func_map;
 }

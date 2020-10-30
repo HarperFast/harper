@@ -90,7 +90,10 @@ const AUTHENTICATION_ERROR_MSGS = {
     INVALID_CREDENTIALS: 'invalid credentials',
     PASSWORD_REQUIRED: 'password is required',
     USERNAME_REQUIRED: 'username is required',
-    INVALID_AUTH_OBJECT: 'invalid auth_object'
+    REFRESH_TOKEN_REQUIRED: 'refresh_token is required',
+    INVALID_AUTH_OBJECT: 'invalid auth_object',
+    INVALID_BODY: 'invalid body',
+    TOKEN_EXPIRED: 'token expired'
 };
 
 const OPERATION_AUTH_ERROR_MSGS = {

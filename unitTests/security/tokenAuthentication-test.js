@@ -349,6 +349,8 @@ describe('test validateOperationToken function', ()=>{
     let hdb_admin_tokens;
     let old_user_tokens;
     let non_user_tokens;
+    let token_timeout;
+    let expired_user_tokens;
     before(async ()=>{
         rw_get_tokens = token_auth.__set__('getJWTRSAKeys', async ()=>new JWTObjects.JWTRSAKeys(PUBLIC_KEY_VALUE, PRIVATE_KEY_VALUE, PASSPHRASE_VALUE));
 
@@ -362,6 +364,10 @@ describe('test validateOperationToken function', ()=>{
             {username: 'HDB_ADMIN', active: true},
             {username: 'old_user', active: false}
         ];
+
+        token_timeout = token_auth.__set__('OPERATION_TOKEN_TIMEOUT', '-1');
+        expired_user_tokens = await token_auth.createTokens({username: 'EXPIRED', password: 'cool'});
+        token_timeout();
 
         hdb_admin_tokens = await token_auth.createTokens({username: 'HDB_ADMIN', password: 'cool'});
         old_user_tokens = await token_auth.createTokens({username: 'old_user', password: 'notcool'});
@@ -464,6 +470,19 @@ describe('test validateOperationToken function', ()=>{
         assert(jwt_spy.threw() === true);
         assert(validate_user_spy.callCount === 0);
     });
+
+    it('test expired token', async()=>{
+        let error;
+        try {
+            await token_auth.validateOperationToken(expired_user_tokens.operation_token);
+        }catch (e){
+            error = e;
+        }
+        assert.deepStrictEqual(error, hdb_error(new Error(), 'token expired', 403));
+        assert(jwt_spy.callCount === 1);
+        assert(jwt_spy.threw() === true);
+        assert(validate_user_spy.callCount === 0);
+    });
 });
 
 describe('test validateRefreshToken function', ()=>{
@@ -475,6 +494,8 @@ describe('test validateRefreshToken function', ()=>{
     let old_user_tokens;
     let non_user_tokens;
     let validate_refresh_token;
+    let token_timeout;
+    let expired_user_tokens;
     before(async ()=>{
         validate_refresh_token = token_auth.__get__('validateRefreshToken');
         rw_get_tokens = token_auth.__set__('getJWTRSAKeys', async ()=>new JWTObjects.JWTRSAKeys(PUBLIC_KEY_VALUE, PRIVATE_KEY_VALUE, PASSPHRASE_VALUE));
@@ -489,6 +510,10 @@ describe('test validateRefreshToken function', ()=>{
             {username: 'HDB_ADMIN', active: true},
             {username: 'old_user', active: false}
         ];
+
+        token_timeout = token_auth.__set__('REFRESH_TOKEN_TIMEOUT', '-1');
+        expired_user_tokens = await token_auth.createTokens({username: 'EXPIRED', password: 'cool'});
+        token_timeout();
 
         hdb_admin_tokens = await token_auth.createTokens({username: 'HDB_ADMIN', password: 'cool'});
         old_user_tokens = await token_auth.createTokens({username: 'old_user', password: 'notcool'});
@@ -591,6 +616,19 @@ describe('test validateRefreshToken function', ()=>{
         assert(jwt_spy.threw() === true);
         assert(validate_user_spy.callCount === 0);
     });
+
+    it('test expired token', async()=>{
+        let error;
+        try {
+            await validate_refresh_token(expired_user_tokens.refresh_token);
+        }catch (e){
+            error = e;
+        }
+        assert.deepStrictEqual(error, hdb_error(new Error(), 'token expired', 403));
+        assert(jwt_spy.callCount === 1);
+        assert(jwt_spy.threw() === true);
+        assert(validate_user_spy.callCount === 0);
+    });
 });
 
 describe('test refreshOperationToken function', ()=>{
@@ -640,11 +678,47 @@ describe('test refreshOperationToken function', ()=>{
         delete global.hdb_users;
     });
 
+    it('test no body', async()=>{
+        let error;
+        let token;
+        try {
+            token = await token_auth.refreshOperationToken();
+        }catch (e){
+            error = e;
+        }
+
+        assert.deepStrictEqual(error, hdb_error(new Error(), 'invalid body', 400));
+        assert.deepStrictEqual(token, undefined);
+
+        assert.deepStrictEqual(jwt_spy.callCount, 0);
+        assert.deepStrictEqual(jwt_spy.threw(), false);
+        assert.deepStrictEqual(validate_user_spy.callCount, 0);
+        assert.deepStrictEqual(validate_user_spy.threw(), false);
+    });
+
+    it('test no token', async()=>{
+        let error;
+        let token;
+        try {
+            token = await token_auth.refreshOperationToken({});
+        }catch (e){
+            error = e;
+        }
+
+        assert.deepStrictEqual(error, hdb_error(new Error(), 'refresh_token is required', 400));
+        assert.deepStrictEqual(token, undefined);
+
+        assert.deepStrictEqual(jwt_spy.callCount, 0);
+        assert.deepStrictEqual(jwt_spy.threw(), false);
+        assert.deepStrictEqual(validate_user_spy.callCount, 0);
+        assert.deepStrictEqual(validate_user_spy.threw(), false);
+    });
+
     it('test hdb_admin token', async()=>{
         let error;
         let token;
         try {
-            token = await token_auth.refreshOperationToken(hdb_admin_tokens.refresh_token);
+            token = await token_auth.refreshOperationToken({refresh_token: hdb_admin_tokens.refresh_token});
         }catch (e){
             error = e;
         }
@@ -664,7 +738,7 @@ describe('test refreshOperationToken function', ()=>{
 
         let token;
         try {
-            token = await token_auth.refreshOperationToken(old_user_tokens.refresh_token);
+            token = await token_auth.refreshOperationToken({refresh_token: old_user_tokens.refresh_token});
         }catch (e){
             error = e;
         }
@@ -690,7 +764,7 @@ describe('test refreshOperationToken function', ()=>{
         let error;
         let token;
         try {
-            token = await token_auth.refreshOperationToken(non_user_tokens.refresh_token);
+            token = await token_auth.refreshOperationToken({refresh_token: non_user_tokens.refresh_token});
         }catch (e){
             error = e;
         }
