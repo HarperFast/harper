@@ -271,7 +271,7 @@ function iterateLessThan(env, hash_attribute, attribute, search_value, eval_func
             let key_value = common.convertKeyValueFromSearch(found, txn.key_type);
             eval_function(search_value, key_value, txn, results, hash_attribute, attribute);
         }
-
+        txn.close();
         return results;
     }catch(e) {
         if(txn !== undefined){
@@ -462,7 +462,7 @@ function blobSearch(env, hash_attribute, attribute, search_value, search_type, r
                     break;
             }
         }
-        txn.cursor.close();
+        txn.close();
         return results;
     }catch(e){
         if(txn !== undefined){

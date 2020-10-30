@@ -59,7 +59,7 @@ async function lmdbDeleteRecordsBefore(delete_obj) {
 }
 
 /**
- * chunks the deletes and exectutes them in batches with a pause between each chunk iteration.
+ * chunks the deletes and executes them in batches with a pause between each chunk iteration.
  * @param delete_obj
  * @param deletes
  * @param schema_table_hash
