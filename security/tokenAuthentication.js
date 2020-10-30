@@ -17,8 +17,8 @@ if(!env.isInitialized()){
 const path = require('path');
 const {JWTTokens, JWTRSAKeys, TOKEN_TYPE_ENUM} = require('./JWTObjects');
 
-const OPERATION_TOKEN_TIMEOUT = '30m';
-const REFRESH_TOKEN_TIMEOUT = '30d';
+const OPERATION_TOKEN_TIMEOUT = env.get(terms.HDB_SETTINGS_NAMES.OPERATION_TOKEN_TIMEOUT_KEY) ? env.get(terms.HDB_SETTINGS_NAMES.OPERATION_TOKEN_TIMEOUT_KEY) : '1d';
+const REFRESH_TOKEN_TIMEOUT = env.get(terms.HDB_SETTINGS_NAMES.REFRESH_TOKEN_TIMEOUT_KEY) ? env.get(terms.HDB_SETTINGS_NAMES.REFRESH_TOKEN_TIMEOUT_KEY) : '30d';
 const RSA_ALGORITHM = 'RS256';
 
 let rsa_keys = undefined;

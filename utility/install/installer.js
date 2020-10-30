@@ -664,7 +664,11 @@ function createSettingsFile(mount_status, callback) {
             `   ;The user used to connect to other instances of HarperDB, this user must have a role of cluster_user. \n` +
             `${HDB_SETTINGS_NAMES.CLUSTERING_USER_KEY}=${clustering_username}\n` +
             `   ;Defines if this instance does not record transactions. Note, if Clustering is enabled and Transaction Log is disabled your nodes will not catch up.  \n` +
-            `${HDB_SETTINGS_NAMES.DISABLE_TRANSACTION_LOG_KEY} = false\n`
+            `${HDB_SETTINGS_NAMES.DISABLE_TRANSACTION_LOG_KEY} = false\n` +
+            `   ;Defines the length of time an operation token will be valid until it expires. Example values: https://github.com/vercel/ms  \n` +
+            `${HDB_SETTINGS_NAMES.OPERATION_TOKEN_TIMEOUT_KEY} = 1d\n` +
+            `   ;Defines the length of time a refresh token will be valid until it expires. Example values: https://github.com/vercel/ms  \n` +
+            `${HDB_SETTINGS_NAMES.REFRESH_TOKEN_TIMEOUT_KEY} = 30d\n`
         ;
 
         winston.info('info', `hdb_props_value ${JSON.stringify(hdb_props_value)}`);
