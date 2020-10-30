@@ -33,7 +33,7 @@ const token_authentication = require('../security/tokenAuthentication');
 const alasql = require('alasql');
 
 const PermissionResponseObject = require('../security/data_objects/PermissionResponseObject');
-const { handleHDBError, hdb_errors  } = require('../utility/errors/hdbError');
+const { handleHDBError, hdb_errors } = require('../utility/errors/hdbError');
 const { HDB_ERROR_MSGS, HTTP_STATUS_CODES } = hdb_errors;
 
 const required_permissions = new Map();
@@ -101,6 +101,7 @@ required_permissions.set(system_information.systemInformation.name, new permissi
 
 //this operation must be available to all users so they can create authentication tokens
 required_permissions.set(token_authentication.createTokens.name, new permission(false, []));
+required_permissions.set(token_authentication.refreshOperationToken.name, new permission(false, []));
 
 //Below are functions that are currently open to all roles
 required_permissions.set(reg.getRegistrationInfo.name, new permission(false, []));
@@ -298,7 +299,7 @@ function verifyPerms(request_json, operation) {
                 table_attr_perms.forEach(perm => {
                     final_get_attrs.push(perm.attribute_name);
                 });
-            }  else {
+            } else {
                 final_get_attrs = global.hdb_schema[operation_schema][table].attributes.map(obj => obj.attribute);
             }
 

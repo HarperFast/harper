@@ -10,6 +10,7 @@ const util = require('util');
 const user_functions = require('./user');
 const cb_find_validate_users = util.callbackify(user_functions.findAndValidateUser);
 const hdb_errors = require('../utility/errors/commonErrors');
+const hdb_terms = require('../utility/hdbTerms');
 const token_authentication = require('./tokenAuthentication');
 
 passport.use(new LocalStrategy(
@@ -79,11 +80,20 @@ function authorize(req, res, next) {
             })(req, res, next);
             break;
         case 'Bearer':
-            token_authentication.validateOperationToken(token).then((user)=>{
-                next(null, user);
-            }).catch(e=>{
-                next(e);
-            });
+            if(req.body && req.body.operation && req.body.operation === hdb_terms.OPERATIONS_ENUM.REFRESH_OPERATION_TOKEN){
+                token_authentication.validateRefreshToken(token).then((user)=>{
+                    req.body.refresh_token = token;
+                    next(null, user);
+                }).catch(e=>{
+                    next(e);
+                });
+            }else {
+                token_authentication.validateOperationToken(token).then((user) => {
+                    next(null, user);
+                }).catch(e => {
+                    next(e);
+                });
+            }
             break;
         default:
             passport.authenticate('local', function (err, user, info) {

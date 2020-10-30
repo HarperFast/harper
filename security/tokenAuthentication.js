@@ -17,8 +17,8 @@ if(!env.isInitialized()){
 const path = require('path');
 const {JWTTokens, JWTRSAKeys, TOKEN_TYPE_ENUM} = require('./JWTObjects');
 
-const THIRTY_MINUTE_EXPIRY = '30m';
-const THIRTY_DAY_EXPIRY = '30d';
+const OPERATION_TOKEN_TIMEOUT = '30m';
+const REFRESH_TOKEN_TIMEOUT = '30d';
 const RSA_ALGORITHM = 'RS256';
 
 let rsa_keys = undefined;
@@ -26,7 +26,8 @@ let rsa_keys = undefined;
 module.exports = {
     createTokens,
     validateOperationToken,
-    refreshToken
+    refreshOperationToken,
+    validateRefreshToken
 };
 
 async function createTokens(auth_object){
@@ -61,14 +62,14 @@ async function createTokens(auth_object){
     let operation_token = await signOperationToken(auth_object.username, keys.private_key, keys.passphrase);
     let refresh_token = await jwt.sign({username: auth_object.username},
         {key: keys.private_key, passphrase: keys.passphrase},
-        {expiresIn: THIRTY_MINUTE_EXPIRY, algorithm: RSA_ALGORITHM, subject: TOKEN_TYPE_ENUM.REFRESH});
+        {expiresIn: REFRESH_TOKEN_TIMEOUT, algorithm: RSA_ALGORITHM, subject: TOKEN_TYPE_ENUM.REFRESH});
     return new JWTTokens(operation_token, refresh_token);
 }
 
 async function signOperationToken(username, private_key, passphrase){
     return await jwt.sign({username: username},
         {key: private_key, passphrase: passphrase},
-        {expiresIn: THIRTY_DAY_EXPIRY, algorithm: RSA_ALGORITHM, subject: TOKEN_TYPE_ENUM.OPERATION});
+        {expiresIn: OPERATION_TOKEN_TIMEOUT, algorithm: RSA_ALGORITHM, subject: TOKEN_TYPE_ENUM.OPERATION});
 }
 
 /**
@@ -97,8 +98,16 @@ async function getJWTRSAKeys(){
     return rsa_keys;
 }
 
-async function refreshToken(token){
-    let username = await validateRefreshToken(token);
+async function refreshOperationToken(token_object){
+    if(!token_object){
+        throw handleHDBError(new Error(), AUTHENTICATION_ERROR_MSGS.INVALID_BODY, HTTP_STATUS_CODES.BAD_REQUEST);
+    }
+
+    if(!token_object.refresh_token){
+        throw handleHDBError(new Error(), AUTHENTICATION_ERROR_MSGS.REFRESH_TOKEN_REQUIRED, HTTP_STATUS_CODES.BAD_REQUEST);
+    }
+
+    let username = await validateRefreshToken(token_object.refresh_token);
 
     let keys = await getJWTRSAKeys();
 
@@ -116,6 +125,9 @@ async function validateOperationToken(token){
         return await user_functions.findAndValidateUser(token_verified.username, undefined, false);
     }catch(e){
         logger.warn(e);
+        if(e.name && e.name === 'TokenExpiredError'){
+            throw handleHDBError(new Error(), AUTHENTICATION_ERROR_MSGS.TOKEN_EXPIRED, HTTP_STATUS_CODES.FORBIDDEN);
+        }
         throw handleHDBError(new Error(), AUTHENTICATION_ERROR_MSGS.INVALID_TOKEN, HTTP_STATUS_CODES.UNAUTHORIZED);
     }
 }
@@ -130,6 +142,9 @@ async function validateRefreshToken(token){
         return await user_functions.findAndValidateUser(token_verified.username, undefined, false);
     }catch(e){
         logger.warn(e);
+        if(e.name && e.name === 'TokenExpiredError'){
+            throw handleHDBError(new Error(), AUTHENTICATION_ERROR_MSGS.TOKEN_EXPIRED, HTTP_STATUS_CODES.FORBIDDEN);
+        }
         throw handleHDBError(new Error(), AUTHENTICATION_ERROR_MSGS.INVALID_TOKEN, HTTP_STATUS_CODES.UNAUTHORIZED);
     }
 }
