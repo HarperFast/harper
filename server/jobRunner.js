@@ -199,12 +199,12 @@ function threadExecute(argument){
             if(data.hasOwnProperty('error')){
                 let err = new Error(data.error);
                 err.stack = data.stack;
-                reject(err);
                 forked.kill("SIGINT");
+                reject(err);
             } else if(data.hasOwnProperty('thread_results')){
                 //we have this if statement to stop false processing from schema signalling
-                resolve(data.thread_results);
                 forked.kill("SIGINT");
+                resolve(data.thread_results);
             } else if(data.type === signal.SCHEMA_CHANGE_MESSAGE.type){
                 signal.signalSchemaChange(signal.SCHEMA_CHANGE_MESSAGE);
             }

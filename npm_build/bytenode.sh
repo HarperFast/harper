@@ -48,7 +48,7 @@ unlink ./upgrade/scripts/postInstall_jsc.jsc
 
 
 echo "******** Compile Complete *************"
-rsync --include="*.jsc" --include="harperdb.js" --include="processCSV.worker.js" --exclude="*.js" --exclude=".*" --recursive ./ /tmp/harperdb_dev/
+rsync --include="*.jsc" --include="harperdb.js" --include="hdb.js" --include="processCSV.worker.js" --exclude="*.js" --exclude=".*" --recursive ./ /tmp/harperdb_dev/
 echo "*********** RSYNC COMPLETE *************"
 cd /tmp/harperdb_dev/
 rm -rf ./utility/devops ./test ./unitTests ./integrationTests ./bash ./upgrade_shim ./utility/Docker ./user_guide.html ./sonar-project.properties
