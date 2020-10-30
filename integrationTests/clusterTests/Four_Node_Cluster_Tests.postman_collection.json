@@ -64,7 +64,10 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n    \"operation\": \"add_node\",\n    \"name\": \"{{NODE2_NAME}}\",\n    \"host\": \"{{NODE2_HOST}}\",\n    \"port\": 12345,\n    \"subscriptions\": [\n        {\n            \"channel\": \"dev:dog\",\n            \"subscribe\": true,\n            \"publish\": false\n        }\n    ]\n}"
+							"raw": "{\n    \"operation\": \"add_node\",\n    \"name\": \"{{NODE2_NAME}}\",\n    \"host\": \"{{NODE2_HOST}}\",\n    \"port\": 12345,\n    \"subscriptions\": [\n        {\n            \"channel\": \"dev:dog\",\n            \"subscribe\": true,\n            \"publish\": false\n        }\n    ]\n}",
+							"options": {
+								"raw": {}
+							}
 						},
 						"url": {
 							"raw": "{{NODE1_HOST}}:{{SERVER_HDB_PORT}}",
@@ -193,7 +196,10 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n    \"operation\": \"add_node\",\n    \"name\": \"{{NODE3_NAME}}\",\n    \"host\": \"{{NODE3_HOST}}\",\n    \"port\": 12345,\n    \"subscriptions\": [\n        {\n            \"channel\": \"dev:dog\",\n            \"subscribe\": true,\n            \"publish\": false\n        }\n    ]\n}"
+							"raw": "{\n    \"operation\": \"add_node\",\n    \"name\": \"{{NODE3_NAME}}\",\n    \"host\": \"{{NODE3_HOST}}\",\n    \"port\": 12345,\n    \"subscriptions\": [\n        {\n            \"channel\": \"dev:dog\",\n            \"subscribe\": true,\n            \"publish\": false\n        }\n    ]\n}",
+							"options": {
+								"raw": {}
+							}
 						},
 						"url": {
 							"raw": "{{NODE1_HOST}}:{{SERVER_HDB_PORT}}",
@@ -322,7 +328,10 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n    \"operation\": \"add_node\",\n    \"name\": \"{{NODE4_NAME}}\",\n    \"host\": \"{{NODE4_HOST}}\",\n    \"port\": 12345,\n    \"subscriptions\": [\n        {\n            \"channel\": \"dev:dog\",\n            \"subscribe\": true,\n            \"publish\": true\n        }\n    ]\n}"
+							"raw": "{\n    \"operation\": \"add_node\",\n    \"name\": \"{{NODE4_NAME}}\",\n    \"host\": \"{{NODE4_HOST}}\",\n    \"port\": 12345,\n    \"subscriptions\": [\n        {\n            \"channel\": \"dev:dog\",\n            \"subscribe\": true,\n            \"publish\": true\n        }\n    ]\n}",
+							"options": {
+								"raw": {}
+							}
 						},
 						"url": {
 							"raw": "{{NODE1_HOST}}:{{SERVER_HDB_PORT}}",
@@ -3076,7 +3085,10 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n    \"operation\": \"insert\",\n    \"schema\": \"dev\",\n    \"table\": \"dog\",\n    \"records\": [\n        {\n            \"name\": \"Harper\",\n            \"breed\": \"Pog\",\n            \"id\": \"1\",\n            \"age\": 5\n        }\n    ]\n}"
+							"raw": "{\n    \"operation\": \"insert\",\n    \"schema\": \"dev\",\n    \"table\": \"dog\",\n    \"records\": [\n        {\n            \"name\": \"Harper\",\n            \"breed\": \"Pog\",\n            \"id\": \"1\",\n            \"age\": 5\n        }\n    ]\n}",
+							"options": {
+								"raw": {}
+							}
 						},
 						"url": {
 							"raw": "{{NODE4_HOST}}:{{SERVER_HDB_PORT}}",
@@ -3918,7 +3930,10 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\t\"operation\":\"describe_all\"\n}"
+							"raw": "{\n\t\"operation\":\"describe_all\"\n}",
+							"options": {
+								"raw": {}
+							}
 						},
 						"url": {
 							"raw": "{{NODE4_HOST}}:{{SERVER_HDB_PORT}}",
@@ -4061,7 +4076,10 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\t\"operation\":\"describe_all\"\n}"
+							"raw": "{\n\t\"operation\":\"describe_all\"\n}",
+							"options": {
+								"raw": {}
+							}
 						},
 						"url": {
 							"raw": "{{NODE2_HOST}}:{{SERVER_HDB_PORT}}",
@@ -4203,7 +4221,10 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\t\"operation\":\"describe_all\"\n}"
+							"raw": "{\n\t\"operation\":\"describe_all\"\n}",
+							"options": {
+								"raw": {}
+							}
 						},
 						"url": {
 							"raw": "{{NODE3_HOST}}:{{SERVER_HDB_PORT}}",
@@ -4637,7 +4658,10 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog\",\n\t\"search_attribute\":\"id\",\n\t\"search_value\":\"*\",\n\t\"get_attributes\":[\"*\"]\n}"
+							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog\",\n\t\"search_attribute\":\"id\",\n\t\"search_value\":\"*\",\n\t\"get_attributes\":[\"*\"]\n}",
+							"options": {
+								"raw": {}
+							}
 						},
 						"url": {
 							"raw": "{{NODE4_HOST}}:{{SERVER_HDB_PORT}}",
@@ -5062,7 +5086,10 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog\",\n\t\"search_attribute\":\"id\",\n\t\"search_value\":\"*\",\n\t\"get_attributes\":[\"*\"]\n}"
+							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog\",\n\t\"search_attribute\":\"id\",\n\t\"search_value\":\"*\",\n\t\"get_attributes\":[\"*\"]\n}",
+							"options": {
+								"raw": {}
+							}
 						},
 						"url": {
 							"raw": "{{NODE4_HOST}}:{{SERVER_HDB_PORT}}",
@@ -5624,7 +5651,10 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog\",\n\t\"search_attribute\":\"id\",\n\t\"search_value\":\"*\",\n\t\"get_attributes\":[\"*\"]\n}"
+							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog\",\n\t\"search_attribute\":\"id\",\n\t\"search_value\":\"*\",\n\t\"get_attributes\":[\"*\"]\n}",
+							"options": {
+								"raw": {}
+							}
 						},
 						"url": {
 							"raw": "{{NODE1_HOST}}:{{SERVER_HDB_PORT}}",
@@ -5762,7 +5792,10 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog\",\n\t\"search_attribute\":\"id\",\n\t\"search_value\":\"*\",\n\t\"get_attributes\":[\"*\"]\n}"
+							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog\",\n\t\"search_attribute\":\"id\",\n\t\"search_value\":\"*\",\n\t\"get_attributes\":[\"*\"]\n}",
+							"options": {
+								"raw": {}
+							}
 						},
 						"url": {
 							"raw": "{{NODE4_HOST}}:{{SERVER_HDB_PORT}}",
@@ -5895,7 +5928,10 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog\",\n\t\"search_attribute\":\"id\",\n\t\"search_value\":\"*\",\n\t\"get_attributes\":[\"*\"]\n}"
+							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog\",\n\t\"search_attribute\":\"id\",\n\t\"search_value\":\"*\",\n\t\"get_attributes\":[\"*\"]\n}",
+							"options": {
+								"raw": {}
+							}
 						},
 						"url": {
 							"raw": "{{NODE3_HOST}}:{{SERVER_HDB_PORT}}",
@@ -6174,7 +6210,10 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog\",\n\t\"search_attribute\":\"id\",\n\t\"search_value\":\"*\",\n\t\"get_attributes\":[\"*\"]\n}"
+							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog\",\n\t\"search_attribute\":\"id\",\n\t\"search_value\":\"*\",\n\t\"get_attributes\":[\"*\"]\n}",
+							"options": {
+								"raw": {}
+							}
 						},
 						"url": {
 							"raw": "{{NODE1_HOST}}:{{SERVER_HDB_PORT}}",
@@ -6317,7 +6356,10 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog\",\n\t\"search_attribute\":\"id\",\n\t\"search_value\":\"*\",\n\t\"get_attributes\":[\"*\"]\n}"
+							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog\",\n\t\"search_attribute\":\"id\",\n\t\"search_value\":\"*\",\n\t\"get_attributes\":[\"*\"]\n}",
+							"options": {
+								"raw": {}
+							}
 						},
 						"url": {
 							"raw": "{{NODE4_HOST}}:{{SERVER_HDB_PORT}}",
@@ -6450,7 +6492,10 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog\",\n\t\"search_attribute\":\"id\",\n\t\"search_value\":\"*\",\n\t\"get_attributes\":[\"*\"]\n}"
+							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog\",\n\t\"search_attribute\":\"id\",\n\t\"search_value\":\"*\",\n\t\"get_attributes\":[\"*\"]\n}",
+							"options": {
+								"raw": {}
+							}
 						},
 						"url": {
 							"raw": "{{NODE3_HOST}}:{{SERVER_HDB_PORT}}",
@@ -6728,7 +6773,10 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog\",\n\t\"search_attribute\":\"id\",\n\t\"search_value\":\"*\",\n\t\"get_attributes\":[\"*\"]\n}"
+							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog\",\n\t\"search_attribute\":\"id\",\n\t\"search_value\":\"*\",\n\t\"get_attributes\":[\"*\"]\n}",
+							"options": {
+								"raw": {}
+							}
 						},
 						"url": {
 							"raw": "{{NODE2_HOST}}:{{SERVER_HDB_PORT}}",
@@ -6865,7 +6913,10 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog\",\n\t\"search_attribute\":\"id\",\n\t\"search_value\":\"*\",\n\t\"get_attributes\":[\"*\"]\n}"
+							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog\",\n\t\"search_attribute\":\"id\",\n\t\"search_value\":\"*\",\n\t\"get_attributes\":[\"*\"]\n}",
+							"options": {
+								"raw": {}
+							}
 						},
 						"url": {
 							"raw": "{{NODE1_HOST}}:{{SERVER_HDB_PORT}}",
@@ -7002,7 +7053,10 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog\",\n\t\"search_attribute\":\"id\",\n\t\"search_value\":\"*\",\n\t\"get_attributes\":[\"*\"]\n}"
+							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog\",\n\t\"search_attribute\":\"id\",\n\t\"search_value\":\"*\",\n\t\"get_attributes\":[\"*\"]\n}",
+							"options": {
+								"raw": {}
+							}
 						},
 						"url": {
 							"raw": "{{NODE3_HOST}}:{{SERVER_HDB_PORT}}",
@@ -7139,7 +7193,10 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog\",\n\t\"search_attribute\":\"id\",\n\t\"search_value\":\"*\",\n\t\"get_attributes\":[\"*\"]\n}"
+							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog\",\n\t\"search_attribute\":\"id\",\n\t\"search_value\":\"*\",\n\t\"get_attributes\":[\"*\"]\n}",
+							"options": {
+								"raw": {}
+							}
 						},
 						"url": {
 							"raw": "{{NODE4_HOST}}:{{SERVER_HDB_PORT}}",
@@ -7421,7 +7478,10 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog\",\n\t\"search_attribute\":\"id\",\n\t\"search_value\":\"*\",\n\t\"get_attributes\":[\"*\"]\n}"
+							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog\",\n\t\"search_attribute\":\"id\",\n\t\"search_value\":\"*\",\n\t\"get_attributes\":[\"*\"]\n}",
+							"options": {
+								"raw": {}
+							}
 						},
 						"url": {
 							"raw": "{{NODE2_HOST}}:{{SERVER_HDB_PORT}}",
@@ -7565,7 +7625,10 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog\",\n\t\"search_attribute\":\"id\",\n\t\"search_value\":\"*\",\n\t\"get_attributes\":[\"*\"]\n}"
+							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog\",\n\t\"search_attribute\":\"id\",\n\t\"search_value\":\"*\",\n\t\"get_attributes\":[\"*\"]\n}",
+							"options": {
+								"raw": {}
+							}
 						},
 						"url": {
 							"raw": "{{NODE1_HOST}}:{{SERVER_HDB_PORT}}",
@@ -7709,7 +7772,10 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog\",\n\t\"search_attribute\":\"id\",\n\t\"search_value\":\"*\",\n\t\"get_attributes\":[\"*\"]\n}"
+							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog\",\n\t\"search_attribute\":\"id\",\n\t\"search_value\":\"*\",\n\t\"get_attributes\":[\"*\"]\n}",
+							"options": {
+								"raw": {}
+							}
 						},
 						"url": {
 							"raw": "{{NODE4_HOST}}:{{SERVER_HDB_PORT}}",
@@ -7842,7 +7908,10 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog\",\n\t\"search_attribute\":\"id\",\n\t\"search_value\":\"*\",\n\t\"get_attributes\":[\"*\"]\n}"
+							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog\",\n\t\"search_attribute\":\"id\",\n\t\"search_value\":\"*\",\n\t\"get_attributes\":[\"*\"]\n}",
+							"options": {
+								"raw": {}
+							}
 						},
 						"url": {
 							"raw": "{{NODE3_HOST}}:{{SERVER_HDB_PORT}}",
@@ -8271,7 +8340,10 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog\",\n\t\"search_attribute\":\"id\",\n\t\"search_value\":\"*\",\n\t\"get_attributes\":[\"*\"]\n}"
+							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog\",\n\t\"search_attribute\":\"id\",\n\t\"search_value\":\"*\",\n\t\"get_attributes\":[\"*\"]\n}",
+							"options": {
+								"raw": {}
+							}
 						},
 						"url": {
 							"raw": "{{NODE1_HOST}}:{{SERVER_HDB_PORT}}",
@@ -8371,7 +8443,7 @@
 									"            if ([1,2,3,4].includes(row.id)) {",
 									"                pm.expect(row.rando === null || row.rando === undefined);",
 									"            }",
-									"            pm.expect(Object.keys(row)).to.be.length(9);",
+									"            pm.expect(Object.keys(row)).to.be.length(11);",
 									"        });",
 									"    } catch (error) {",
 									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);",
@@ -8416,7 +8488,10 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog\",\n\t\"search_attribute\":\"id\",\n\t\"search_value\":\"*\",\n\t\"get_attributes\":[\"*\"]\n}"
+							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog\",\n\t\"search_attribute\":\"id\",\n\t\"search_value\":\"*\",\n\t\"get_attributes\":[\"*\"]\n}",
+							"options": {
+								"raw": {}
+							}
 						},
 						"url": {
 							"raw": "{{NODE4_HOST}}:{{SERVER_HDB_PORT}}",
@@ -8653,7 +8728,7 @@
 									"            pm.expect(row.owner).to.be.null;",
 									"            pm.expect(row.name).to.equal('Sammy Jr');",
 									"        } else if (row.id === 4) {",
-									"            pm.expect(row.weight_lbs).to.be.null;",
+									"            pm.expect(row.weight_lbs).to.eql(1);",
 									"            pm.expect(row.owner).to.be.null;",
 									"            pm.expect(row.name).to.equal('Sarah Sarah');",
 									"        }",
@@ -8690,7 +8765,10 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog\",\n\t\"search_attribute\":\"id\",\n\t\"search_value\":\"*\",\n\t\"get_attributes\":[\"*\"]\n}"
+							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog\",\n\t\"search_attribute\":\"id\",\n\t\"search_value\":\"*\",\n\t\"get_attributes\":[\"*\"]\n}",
+							"options": {
+								"raw": {}
+							}
 						},
 						"url": {
 							"raw": "{{NODE2_HOST}}:{{SERVER_HDB_PORT}}",
@@ -8965,7 +9043,10 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\t\"operation\":\"get_job\",\n\t\"id\": \"{{job_id}}\"\n}"
+							"raw": "{\n\t\"operation\":\"get_job\",\n\t\"id\": \"{{job_id}}\"\n}",
+							"options": {
+								"raw": {}
+							}
 						},
 						"url": {
 							"raw": "{{NODE4_HOST}}:{{SERVER_HDB_PORT}}",
@@ -9071,7 +9152,7 @@
 									"    try {",
 									"        pm.expect(response).to.have.lengthOf(1202);  ",
 									"        response.forEach(row => {",
-									"            pm.expect(Object.keys(row)).to.be.length(10);",
+									"            pm.expect(Object.keys(row)).to.be.length(12);",
 									"        });",
 									"    } catch (error) {",
 									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);",
@@ -9107,7 +9188,10 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog\",\n\t\"search_attribute\":\"id\",\n\t\"search_value\":\"*\",\n\t\"get_attributes\":[\"*\"]\n}"
+							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog\",\n\t\"search_attribute\":\"id\",\n\t\"search_value\":\"*\",\n\t\"get_attributes\":[\"*\"]\n}",
+							"options": {
+								"raw": {}
+							}
 						},
 						"url": {
 							"raw": "{{NODE4_HOST}}:{{SERVER_HDB_PORT}}",
@@ -9249,7 +9333,10 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog\",\n\t\"search_attribute\":\"id\",\n\t\"search_value\":\"*\",\n\t\"get_attributes\":[\"*\"]\n}"
+							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog\",\n\t\"search_attribute\":\"id\",\n\t\"search_value\":\"*\",\n\t\"get_attributes\":[\"*\"]\n}",
+							"options": {
+								"raw": {}
+							}
 						},
 						"url": {
 							"raw": "{{NODE1_HOST}}:{{SERVER_HDB_PORT}}",
@@ -9486,11 +9573,10 @@
 									"            pm.expect(row.owner).to.be.null;",
 									"            pm.expect(row.name).to.equal('Sammy Jr');",
 									"        } else if (row.id === 4) {",
-									"            pm.expect(row.weight_lbs).to.be.null;",
+									"            pm.expect(row.weight_lbs).to.eql(1);",
 									"            pm.expect(row.owner).to.be.null;",
 									"            pm.expect(row.name).to.equal('Sarah Sarah');",
 									"        }",
-									"        // pm.expect(Object.keys(row)).to.be.length(7);",
 									"    });",
 									"});"
 								],
@@ -9523,7 +9609,10 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog\",\n\t\"search_attribute\":\"id\",\n\t\"search_value\":\"*\",\n\t\"get_attributes\":[\"*\"]\n}"
+							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog\",\n\t\"search_attribute\":\"id\",\n\t\"search_value\":\"*\",\n\t\"get_attributes\":[\"*\"]\n}",
+							"options": {
+								"raw": {}
+							}
 						},
 						"url": {
 							"raw": "{{NODE2_HOST}}:{{SERVER_HDB_PORT}}",
@@ -9903,9 +9992,9 @@
 									"    var response = pm.response.json();",
 									"    ",
 									"    try {",
-									"        pm.expect(response).to.have.lengthOf(1200);  ",
+									"        pm.expect(response).to.have.lengthOf(1202);  ",
 									"        response.forEach(row => {",
-									"            pm.expect(Object.keys(row)).to.be.length(10);",
+									"            pm.expect(Object.keys(row)).to.be.length(12);",
 									"            if (row.id < 5) {",
 									"                pm.expect(row.name).to.not.equal(row.owner);",
 									"            } else {",
@@ -10041,9 +10130,9 @@
 									"    var response = pm.response.json();",
 									"   ",
 									"    try {",
-									"        pm.expect(response).to.have.lengthOf(1200);  ",
+									"        pm.expect(response).to.have.lengthOf(1202);  ",
 									"        response.forEach(row => {",
-									"            pm.expect(Object.keys(row)).to.be.length(10);",
+									"            pm.expect(Object.keys(row)).to.be.length(12);",
 									"            if (row.id < 5) {",
 									"                pm.expect(row.name).to.not.equal(row.owner);",
 									"            } else {",
@@ -10323,7 +10412,7 @@
 									"",
 									"pm.test(\"Data on Node2\", function () {",
 									"    var response = pm.response.json();",
-									"    pm.expect(response).to.have.lengthOf(4);  ",
+									"    pm.expect(response).to.have.lengthOf(5);  ",
 									"    response.forEach(row => {",
 									"         if (row.id === 3) {",
 									"            pm.expect(row.weight_lbs).to.be.null;",
@@ -10334,7 +10423,6 @@
 									"            pm.expect(row.owner).to.be.null;",
 									"            pm.expect(row.name).to.equal('Sarah Sarah');",
 									"        }",
-									"        // pm.expect(Object.keys(row)).to.be.length(7);",
 									"    });",
 									"});",
 									"",
