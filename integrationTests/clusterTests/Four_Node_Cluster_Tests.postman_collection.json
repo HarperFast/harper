@@ -1,6 +1,5 @@
 {
 	"info": {
-		"_postman_id": "ae2ddb29-6f80-42e4-af81-17be85f13dfa",
 		"name": "Four Node Cluster Tests",
 		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
 	},
@@ -14,7 +13,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "3368f84f-0593-4cf3-b05c-0535a57b65d5",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {",
 									"    pm.response.to.have.status(200);",
@@ -144,7 +142,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "72d3c4bc-e635-4fef-af70-930a3e76b4da",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {",
 									"    pm.response.to.have.status(200);",
@@ -274,7 +271,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "5720ab06-e407-40a7-9543-58995bae03d1",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {",
 									"    pm.response.to.have.status(200);",
@@ -404,7 +400,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "866c35b6-5bac-48a9-9404-7c8e606eaab0",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {",
 									"    pm.response.to.have.status(200);",
@@ -544,7 +539,6 @@
 						{
 							"listen": "prerequest",
 							"script": {
-								"id": "8e4f59d7-3e53-4898-890b-874d21ffce79",
 								"exec": [
 									"postman.setEnvironmentVariable(\"schema\", \"dev\");",
 									"console.log(postman.getEnvironmentVariable(\"schema\"));",
@@ -556,7 +550,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "b25c0f4c-0779-4f7a-b749-acaadef790e4",
 								"exec": [
 									"tests[\"Create Schema\"] = responseBody.has(\"schema 'dev' successfully created\");"
 								],
@@ -685,7 +678,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "f45eb24b-3c6b-4b2a-b990-4ecfb60e0350",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {",
 									"    try {",
@@ -711,7 +703,6 @@
 						{
 							"listen": "prerequest",
 							"script": {
-								"id": "0a701568-8a2d-43e0-87dd-c99e9bcc746b",
 								"exec": [
 									"setTimeout(()=>{}, 100);"
 								],
@@ -834,7 +825,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "16367be5-6189-4843-a173-5b447ec4c167",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {",
 									"    try {",
@@ -972,7 +962,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "72426b71-c5b0-4923-ba9d-c0b429d0685c",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {",
 									"    try {",
@@ -1111,7 +1100,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "069f0845-9597-41da-977c-1d31e9ff8ed1",
 								"exec": [
 									"tests[\"Create Table\"] = responseBody.has(\"table 'dev.dog' successfully created.\");"
 								],
@@ -1240,7 +1228,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "a9a91e7e-0645-4714-9774-5dbb21d9db4c",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {",
 									"    try {",
@@ -1273,7 +1260,6 @@
 						{
 							"listen": "prerequest",
 							"script": {
-								"id": "7254e57f-5d15-4022-b845-e8f370a04fe9",
 								"exec": [
 									"setTimeout(()=>{}, 100);"
 								],
@@ -1396,7 +1382,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "d16c4780-a162-4885-927e-b4822ff5c4f8",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {",
 									"    try {",
@@ -1542,7 +1527,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "02699d7c-c9ca-438f-ad0f-7749bcdbcadf",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {",
 									"    try {",
@@ -1687,7 +1671,6 @@
 						{
 							"listen": "prerequest",
 							"script": {
-								"id": "601efb62-7957-4c90-a278-d18936fb7c77",
 								"exec": [
 									"postman.setEnvironmentVariable(\"schema\", \"dev\");",
 									"console.log(postman.getEnvironmentVariable(\"schema\"));",
@@ -1699,7 +1682,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "a836ff1c-0031-4122-b16a-53029f29434a",
 								"exec": [
 									"tests[\"Drop Schema\"] = responseBody.has(\"successfully deleted table 'dev.dog'\");\r",
 									"\r",
@@ -1831,7 +1813,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "16f62c11-0e6f-401d-9e0b-aca1a5c4fcc9",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {",
 									"    pm.response.to.have.status(200);",
@@ -1968,7 +1949,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "1538f6ee-aa56-4b99-b3ef-1b7f98973a86",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {",
 									"    pm.response.to.have.status(200);",
@@ -2105,7 +2085,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "d75fa515-1087-4b30-9cdc-e0eae994ff40",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {",
 									"    pm.response.to.have.status(200);",
@@ -2242,7 +2221,6 @@
 						{
 							"listen": "prerequest",
 							"script": {
-								"id": "fe519e92-7c71-4e5c-bf2d-31bedaea976e",
 								"exec": [
 									"postman.setEnvironmentVariable(\"schema\", \"dev\");",
 									"console.log(postman.getEnvironmentVariable(\"schema\"));",
@@ -2254,7 +2232,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "b338e205-d430-4f36-a928-82db42e0dcd0",
 								"exec": [
 									"tests[\"Drop Schema\"] = responseBody.has(\"successfully deleted schema 'dev'\");\r",
 									"\r",
@@ -2386,7 +2363,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "3ee81443-55a5-47a3-b924-4dfd2bd5ddfa",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {",
 									"    pm.response.to.have.status(200);",
@@ -2523,7 +2499,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "851f4524-f2d5-49c1-8d52-a0917ccdea43",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {",
 									"    pm.response.to.have.status(200);",
@@ -2660,7 +2635,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "efc9d666-6140-4acf-98dc-b6bad52b0163",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {",
 									"    pm.response.to.have.status(200);",
@@ -2797,7 +2771,6 @@
 						{
 							"listen": "prerequest",
 							"script": {
-								"id": "d5796776-a6c7-4301-a92d-d4b88d34d1c5",
 								"exec": [
 									"postman.setEnvironmentVariable(\"schema\", \"dev\");",
 									"console.log(postman.getEnvironmentVariable(\"schema\"));",
@@ -2809,7 +2782,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "4028d5b2-59d1-4068-abd3-8cdd69249d10",
 								"exec": [
 									"tests[\"Re-create Schema\"] = responseBody.has(\"schema 'dev' successfully created\");"
 								],
@@ -2938,7 +2910,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "4207d282-0181-4295-9639-f52a066b90c8",
 								"exec": [
 									"tests[\"Re-create Table\"] = responseBody.has(\"table 'dev.dog' successfully created.\");"
 								],
@@ -3067,7 +3038,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "de7062b2-e7b5-4fb4-912f-a60d7e20a003",
 								"exec": [
 									"tests[\"Write Single Record\"] = responseBody.has(\"inserted 1 of 1 records\");",
 									"",
@@ -3198,7 +3168,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "c2f4e4bf-38ae-49ed-8360-ffe89e45bff1",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {",
 									"    try {",
@@ -3341,7 +3310,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "81df1bf8-88f4-42ea-8b80-245c466edb08",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {",
 									"    try {",
@@ -3484,7 +3452,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "1c236053-6fe2-4760-9202-e8f667bb7735",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {",
 									"    try {",
@@ -3626,7 +3593,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "ba7aea5f-1f23-40c8-a84e-69f0ae4f73a8",
 								"exec": [
 									"tests[\"Upsert two Record\"] = responseBody.has(\"upserted 2 of 2 records\");",
 									"",
@@ -3757,7 +3723,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "1a4838ef-413d-43ba-9684-c9574e467f35",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {",
 									"    try {",
@@ -3900,7 +3865,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "e8ba0ee9-f0e4-4b25-b6db-2d6ff0a46f53",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {",
 									"    try {",
@@ -4044,7 +4008,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "07515507-d193-4e5c-8a92-dfb0232ee3d9",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {",
 									"    try {",
@@ -4188,7 +4151,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "d4941b79-628a-415b-87f7-e2c3a8ba5438",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {",
 									"    try {",
@@ -4337,7 +4299,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "95b2005b-b7da-4122-8290-6a6a947653e9",
 								"exec": [
 									"tests[\"Insert Two Records into Node2\"] = responseBody.has(\"inserted 2 of 2 records\");"
 								],
@@ -4466,7 +4427,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "6c44aaee-e565-40d7-95da-73c344b27ea4",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {",
 									"    try {",
@@ -4499,7 +4459,6 @@
 						{
 							"listen": "prerequest",
 							"script": {
-								"id": "bc5fbd8b-6806-4492-a197-e18e89d3c77f",
 								"exec": [
 									"setTimeout(()=>{}, 100);"
 								],
@@ -4623,7 +4582,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "bb4fe3df-8875-4bc4-a0bd-e73ab0dbf999",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {",
 									"    try {",
@@ -4769,7 +4727,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "d20caf6c-7aaa-45f9-a9d9-c328774302af",
 								"exec": [
 									"tests[\"Insert Two Records into Node3\"] = responseBody.has(\"inserted 2 of 2 records\");"
 								],
@@ -4898,7 +4855,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "ac015a41-38d6-4e1a-acf0-e00706ddd42d",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {",
 									"    try {",
@@ -4930,7 +4886,6 @@
 						{
 							"listen": "prerequest",
 							"script": {
-								"id": "3451c279-47da-47c5-a7d1-c6f6ca9edb79",
 								"exec": [
 									"setTimeout(()=>{}, 100);"
 								],
@@ -5053,7 +5008,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "d9436092-19e6-4477-aa4d-836ef5440f79",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {",
 									"    try {",
@@ -5198,7 +5152,6 @@
 						{
 							"listen": "prerequest",
 							"script": {
-								"id": "015de782-a35c-4a2f-8059-1f0bc01e8007",
 								"exec": [
 									""
 								],
@@ -5208,7 +5161,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "5f6a6981-a987-4405-bd34-ff8bdfbfec61",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {",
 									"    pm.response.to.have.status(200);",
@@ -5342,7 +5294,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "5f68dcef-ed00-45a7-8e49-c0975f393371",
 								"exec": [
 									"tests[\"Update One Record in Node2\"] = responseBody.has(\"updated 1 of 2 records\");",
 									"",
@@ -5475,7 +5426,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "34058399-fd93-43d4-b630-2615658f998a",
 								"exec": [
 									"//TODO - uncomment out expect statement below when CORE-746",
 									"",
@@ -5504,7 +5454,6 @@
 						{
 							"listen": "prerequest",
 							"script": {
-								"id": "ac34d462-394f-41a6-b566-340043f3a727",
 								"exec": [
 									"setTimeout(()=>{}, 100);"
 								],
@@ -5627,7 +5576,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "64f1c162-8c35-438d-9dde-05052d784fec",
 								"exec": [
 									"pm.test(\"Data for hash = 1 updated correctly on Node1\", function () {",
 									"    var response = pm.response.json();",
@@ -5766,7 +5714,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "1be83546-b21c-4d14-8e49-6c8b9cb0a7e2",
 								"exec": [
 									"pm.test(\"Data for hash = 1 updated correctly on Node4\", function () {",
 									"    var response = pm.response.json();",
@@ -5905,7 +5852,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "fe20ff23-28e2-41d0-b096-6a1c14696261",
 								"exec": [
 									"pm.test(\"Data for hash = 1 NOT added/updated on Node3\", function () {",
 									"    try {",
@@ -6039,7 +5985,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "71bd9d8e-4ea8-44d6-9bba-842fac5583bd",
 								"exec": [
 									"tests[\"Update One Record in Node2\"] = responseBody.has(\"updated 1 of 1 records\");",
 									"",
@@ -6167,7 +6112,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "5d3a341a-ae2b-4954-a69b-6ca248d094de",
 								"exec": [
 									"pm.test(\"Data for hash = 2 updated correctly on Node1\", function () {",
 									"    var response = pm.response.json();",
@@ -6198,7 +6142,6 @@
 						{
 							"listen": "prerequest",
 							"script": {
-								"id": "e4c4de34-385f-4698-9aad-f19a8d072432",
 								"exec": [
 									"setTimeout(()=>{}, 100);"
 								],
@@ -6321,7 +6264,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "bab074a4-8423-4b0c-abe1-6d777776d72c",
 								"exec": [
 									"pm.test(\"Data for hash = 2 updated correctly on Node4\", function () {",
 									"    var response = pm.response.json();",
@@ -6465,7 +6407,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "b2909e9e-2486-4acd-bd32-b71c6cf77041",
 								"exec": [
 									"pm.test(\"Data for hash = 2 NOT added/updated on Node3\", function () {",
 									"    try {",
@@ -6599,7 +6540,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "a00ffe8d-fbc4-4501-8ef1-869179b38fab",
 								"exec": [
 									"tests[\"Insert Two Records into Node2\"] = responseBody.has(\"inserted 2 of 2 records\");"
 								],
@@ -6728,7 +6668,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "8e79476a-2749-4e3c-a9ee-7c0f4103842f",
 								"exec": [
 									"pm.test(\"Data for hash = 3 & 4 on Node2\", function () {",
 									"    try {",
@@ -6757,7 +6696,6 @@
 						{
 							"listen": "prerequest",
 							"script": {
-								"id": "289f53a1-643c-46fc-a9c9-7ef05322510e",
 								"exec": [
 									"setTimeout(()=>{}, 100);"
 								],
@@ -6880,7 +6818,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "4989044c-b063-4cc1-9cde-e12f576e1af4",
 								"exec": [
 									"pm.test(\"Data for hash = 3 & 4 on Node1\", function () {",
 									"    try {",
@@ -7018,7 +6955,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "4d554efe-e23d-4f67-9646-ddc7d093dbfd",
 								"exec": [
 									"pm.test(\"Data for hash = 3 & 4 on Node3\", function () {",
 									"    try {",
@@ -7156,7 +7092,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "87c54cbe-244a-4919-b679-adda1e49b010",
 								"exec": [
 									"pm.test(\"Data for hash = 3 & 4 on Node2\", function () {",
 									"    try {",
@@ -7294,7 +7229,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "05431232-9971-4ba1-8ea1-a4289a386470",
 								"exec": [
 									"tests[\"Upsert Three Record in Node2\"] = responseBody.has(\"upserted 3 of 3 records\");",
 									"",
@@ -7424,7 +7358,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "d0d8ee29-c2f2-4516-95af-7c7048d45491",
 								"exec": [
 									"pm.test(\"Data upserted correctly on Node2\", function () {",
 									"    var response = pm.response.json();",
@@ -7456,7 +7389,6 @@
 						{
 							"listen": "prerequest",
 							"script": {
-								"id": "6f798caf-6cb6-482c-997c-8326edcd82d5",
 								"exec": [
 									"setTimeout(()=>{}, 100);"
 								],
@@ -7579,13 +7511,12 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "1d8b08f3-d88d-42f3-b7f4-a4855fe9df17",
 								"exec": [
 									"pm.test(\"Data upserted correctly on Node1\", function () {",
 									"    var response = pm.response.json();",
 									"    ",
 									"    try {",
-									"        pm.expect(response).to.have.lengthOf(5);  ",
+									"        pm.expect(response).to.have.lengthOf(6);  ",
 									"        const filtered_rows = response.filter(row => [1, 4, 119911].includes(row.id));",
 									"        pm.expect(filtered_rows).to.have.lengthOf(3);",
 									"        filtered_rows.forEach(row => {",
@@ -7724,13 +7655,12 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "8edd548c-7ccd-4336-a1aa-2aec3b462dde",
 								"exec": [
 									"pm.test(\"Data upserted correctly on Node4\", function () {",
 									"    var response = pm.response.json();",
 									"",
 									"    try {",
-									"        pm.expect(response).to.have.lengthOf(5);  ",
+									"        pm.expect(response).to.have.lengthOf(6);  ",
 									"        const filtered_rows = response.filter(row => [1, 4, 119911].includes(row.id));",
 									"        pm.expect(filtered_rows).to.have.lengthOf(3);",
 									"        filtered_rows.forEach(row => {",
@@ -7869,7 +7799,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "0b363d6f-5d05-4de2-9b93-ef1b47b5edfd",
 								"exec": [
 									"pm.test(\"Data for hash = 1 NOT added/updated on Node3\", function () {",
 									"    try {",
@@ -8009,7 +7938,6 @@
 						{
 							"listen": "prerequest",
 							"script": {
-								"id": "776a4dbd-a022-4c56-aef7-b0ed682aee66",
 								"exec": [
 									"pm.environment.set(\"CSV_NODE_HOST\", \"{{NODE1_HOST}}\");"
 								],
@@ -8019,7 +7947,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "df1557d4-ba26-426c-9485-a38ebb717c0a",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {",
 									"    pm.response.to.have.status(200);",
@@ -8151,7 +8078,6 @@
 						{
 							"listen": "prerequest",
 							"script": {
-								"id": "4e00c5fe-098d-4052-bcb4-33bac70ed561",
 								"exec": [
 									" pm.environment.set(\"next_request\", null);"
 								],
@@ -8161,7 +8087,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "d04c46ec-dc64-4361-950b-f76cda997108",
 								"exec": [
 									"pm.test(\"Data inserted correctly on Node1\", function () {",
 									"    var response = pm.response.json()[0];",
@@ -8288,7 +8213,6 @@
 						{
 							"listen": "prerequest",
 							"script": {
-								"id": "4baafd85-7589-4af3-b613-c5dcf64635c2",
 								"exec": [
 									" pm.environment.set(\"next_request\", null);",
 									" pm.environment.set(\"job_id\", null);",
@@ -8300,18 +8224,17 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "faea9295-2a61-4a74-af1e-77fa25d38266",
 								"exec": [
 									"pm.test(\"Data on Node1\", function () {",
 									"    var response = pm.response.json();",
 									"   ",
 									"    try {",
-									"        pm.expect(response).to.have.lengthOf(1200);  ",
+									"        pm.expect(response).to.have.lengthOf(1202);  ",
 									"        response.forEach(row => {",
 									"            if ([1,2,3,4].includes(row.id)) {",
 									"                pm.expect(row.rando).to.be.null;",
 									"            }",
-									"            pm.expect(Object.keys(row)).to.be.length(9);",
+									"            pm.expect(Object.keys(row)).to.be.length(11);",
 									"        });",
 									"",
 									"    } catch (error) {",
@@ -8438,13 +8361,12 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "3c2b153e-3a15-454b-95fe-3356f0b357e8",
 								"exec": [
 									"pm.test(\"Data on Node4\", function () {",
 									"    var response = pm.response.json();",
 									"    ",
 									"    try {",
-									"        pm.expect(response).to.have.lengthOf(1200);  ",
+									"        pm.expect(response).to.have.lengthOf(1202);  ",
 									"        response.forEach(row => {",
 									"            if ([1,2,3,4].includes(row.id)) {",
 									"                pm.expect(row.rando === null || row.rando === undefined);",
@@ -8462,7 +8384,6 @@
 						{
 							"listen": "prerequest",
 							"script": {
-								"id": "1556710a-647e-4a79-859e-f43bfde11cbb",
 								"exec": [
 									"setTimeout(()=>{}, 100);"
 								],
@@ -8585,7 +8506,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "0c9c4625-dc02-45f1-8a50-466b90366521",
 								"exec": [
 									"//Should be testing that the other attrs have updated in the schema (once bug is fixed)",
 									"",
@@ -8721,13 +8641,12 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "98dfe63d-88af-440c-af08-31d9d2dbffc5",
 								"exec": [
 									"//Should be testing that the other attrs have updated in the schema (once bug is fixed)",
 									"",
 									"pm.test(\"Data on Node2\", function () {",
 									"    var response = pm.response.json();",
-									"    pm.expect(response).to.have.lengthOf(4);  ",
+									"    pm.expect(response).to.have.lengthOf(5);  ",
 									"    response.forEach(row => {",
 									"         if (row.id === 3) {",
 									"            pm.expect(row.weight_lbs).to.be.null;",
@@ -8861,7 +8780,6 @@
 						{
 							"listen": "prerequest",
 							"script": {
-								"id": "f1394789-e0e8-454b-a1a4-9965178481b1",
 								"exec": [
 									"pm.environment.set(\"CSV_NODE_HOST\", \"{{NODE4_HOST}}\");"
 								],
@@ -8871,7 +8789,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "34da49e1-66a0-43a6-88dd-a1ab06a8d8a7",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {",
 									"    pm.response.to.have.status(200);",
@@ -9003,7 +8920,6 @@
 						{
 							"listen": "prerequest",
 							"script": {
-								"id": "af95c35c-2990-4aaf-bad6-4e7d3a71ba44",
 								"exec": [
 									"pm.environment.set(\"next_request\", null);"
 								],
@@ -9013,9 +8929,8 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "aede7d03-b6af-4b83-9752-fd726feeaddf",
 								"exec": [
-									"pm.test(\"Data inserted correctly on Node1\", function () {",
+									"pm.test(\"Data inserted correctly on Node4\", function () {",
 									"    var response = pm.response.json()[0];",
 									"    pm.expect(response.status).to.equal(\"COMPLETE\");",
 									"    pm.expect(response.message).to.equal(\"successfully loaded 1200 of 1200 records\");",
@@ -9140,7 +9055,6 @@
 						{
 							"listen": "prerequest",
 							"script": {
-								"id": "2467d6a3-bcf5-4a9c-9d4c-d93ba14c84b7",
 								"exec": [
 									"pm.environment.set(\"job_id\", null);"
 								],
@@ -9150,13 +9064,12 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "0452b9d0-8190-4f2a-b5f0-7fb8890d7f09",
 								"exec": [
 									"pm.test(\"Data on Node4\", function () {",
 									"    var response = pm.response.json();",
 									"  ",
 									"    try {",
-									"        pm.expect(response).to.have.lengthOf(1200);  ",
+									"        pm.expect(response).to.have.lengthOf(1202);  ",
 									"        response.forEach(row => {",
 									"            pm.expect(Object.keys(row)).to.be.length(10);",
 									"        });",
@@ -9284,15 +9197,14 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "473cbf07-5c1b-4e30-aa13-47554b967a6b",
 								"exec": [
 									"pm.test(\"Data on Node1\", function () {",
 									"    var response = pm.response.json();",
 									"  ",
 									"    try {",
-									"        pm.expect(response).to.have.lengthOf(1200);  ",
+									"        pm.expect(response).to.have.lengthOf(1202);  ",
 									"        response.forEach(row => {",
-									"            pm.expect(Object.keys(row)).to.be.length(10);",
+									"            pm.expect(Object.keys(row)).to.be.length(12);",
 									"        });",
 									"    } catch (error) {",
 									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);",
@@ -9305,7 +9217,6 @@
 						{
 							"listen": "prerequest",
 							"script": {
-								"id": "ae1c923b-b717-4e64-ac83-129bcd2067e3",
 								"exec": [
 									"setTimeout(()=>{}, 500);"
 								],
@@ -9428,7 +9339,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "c7176ca8-fc34-4934-8e99-68cd0ff16c25",
 								"exec": [
 									"//Should be testing that the other attrs have updated in the schema (once bug is fixed)",
 									"",
@@ -9564,13 +9474,12 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "18403a1e-4eaa-4d26-87e7-78fa7a9599d8",
 								"exec": [
 									"//Should be testing that the other attrs have updated in the schema (once bug is fixed)",
 									"",
 									"pm.test(\"Data on Node2\", function () {",
 									"    var response = pm.response.json();",
-									"    pm.expect(response).to.have.lengthOf(4);  ",
+									"    pm.expect(response).to.have.lengthOf(5);  ",
 									"    response.forEach(row => {",
 									"         if (row.id === 3) {",
 									"            pm.expect(row.weight_lbs).to.be.null;",
@@ -9704,7 +9613,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "0e82ef1a-a5bf-45fe-9108-ab7635c17462",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {",
 									"    pm.response.to.have.status(200);",
@@ -9723,7 +9631,6 @@
 						{
 							"listen": "prerequest",
 							"script": {
-								"id": "5909e244-66fe-41f2-8f4a-a90372009466",
 								"exec": [
 									"pm.environment.set(\"CSV_NODE_HOST\", \"{{NODE4_HOST}}\");"
 								],
@@ -9846,7 +9753,6 @@
 						{
 							"listen": "prerequest",
 							"script": {
-								"id": "0070f488-af45-4e30-875e-05d13c82f74b",
 								"exec": [
 									"pm.environment.set(\"next_request\", null);",
 									"pm.environment.set(\"CSV_NODE_HOST\", null);"
@@ -9857,7 +9763,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "27c0baa6-eb30-4026-b344-6e5a4d44ae37",
 								"exec": [
 									"pm.test(\"Data updated correctly on Node4\", function () {",
 									"    var response = pm.response.json()[0];",
@@ -9984,7 +9889,6 @@
 						{
 							"listen": "prerequest",
 							"script": {
-								"id": "8f243feb-b219-4b50-bd25-1bc3184df1dd",
 								"exec": [
 									"pm.environment.set(\"job_id\", null);"
 								],
@@ -9994,7 +9898,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "09d5429d-a6b3-4e8a-a995-0624657d517f",
 								"exec": [
 									"pm.test(\"Data on Node4\", function () {",
 									"    var response = pm.response.json();",
@@ -10133,7 +10036,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "1457704d-469a-4328-8ca4-dbce50fad525",
 								"exec": [
 									"pm.test(\"Data on Node1\", function () {",
 									"    var response = pm.response.json();",
@@ -10159,7 +10061,6 @@
 						{
 							"listen": "prerequest",
 							"script": {
-								"id": "f98502f7-0a6b-414b-a45b-ce5b1ad4fb61",
 								"exec": [
 									"setTimeout(()=>{}, 500);"
 								],
@@ -10282,7 +10183,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "27bfdce1-9d55-4bc9-b302-1b3bd31e2a0c",
 								"exec": [
 									"//Should be testing that the other attrs have updated in the schema (once bug is fixed)",
 									"",
@@ -10418,7 +10318,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "b986b873-7b2f-4653-810f-a095346d020f",
 								"exec": [
 									"//Should be testing that the other attrs have updated in the schema (once bug is fixed)",
 									"",
@@ -10560,7 +10459,6 @@
 						{
 							"listen": "prerequest",
 							"script": {
-								"id": "b0c10f13-84a4-4643-878d-1ce229f00e0a",
 								"exec": [
 									"setTimeout(()=>{}, 200);",
 									"console.log(\"Checking Job \" + pm.environment.get(\"job_id\"));"
@@ -10571,7 +10469,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "f6806bcd-275a-4702-b8ce-d60e526cfda5",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {",
 									"    pm.response.to.have.status(200);",
@@ -10661,7 +10558,6 @@
 				{
 					"listen": "prerequest",
 					"script": {
-						"id": "024e755b-3844-44e3-a7dd-4be5f7de3a41",
 						"type": "text/javascript",
 						"exec": [
 							""
@@ -10671,7 +10567,6 @@
 				{
 					"listen": "test",
 					"script": {
-						"id": "b030c90a-ce76-4fc8-8d22-8e253f07928f",
 						"type": "text/javascript",
 						"exec": [
 							""
@@ -10690,7 +10585,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "543a79d6-693c-420d-858d-bc4aca3b9666",
 								"exec": [
 									"tests[\"Deleted one row on Node1\"] = responseBody.has(\"1 of 1 record successfully deleted\");",
 									"",
@@ -10819,7 +10713,6 @@
 						{
 							"listen": "prerequest",
 							"script": {
-								"id": "ba02b57f-3753-45bb-ba14-f0554f2eb3b7",
 								"exec": [
 									""
 								],
@@ -10829,7 +10722,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "c4bf272b-a105-4abc-8968-3b2251210f20",
 								"exec": [
 									"pm.test(\"Test data deleted on Node4\", function () {",
 									"    var response = pm.response.json();",
@@ -10960,7 +10852,6 @@
 						{
 							"listen": "prerequest",
 							"script": {
-								"id": "038e5c17-fab7-48ca-9b44-636938df7466",
 								"exec": [
 									""
 								],
@@ -10970,7 +10861,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "b5ff9ab3-7cf8-4d00-a230-953101dcfa8b",
 								"exec": [
 									"pm.test(\"Test data NOT deleted on Node2\", function () {",
 									"    var response = pm.response.json();",
@@ -11096,7 +10986,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "aacb5894-aa4a-489a-aa92-b583e802e3d0",
 								"exec": [
 									"tests[\"Deleted four rows on Node2\"] = responseBody.has(\"4 of 4 records successfully deleted\");",
 									"",
@@ -11224,7 +11113,6 @@
 						{
 							"listen": "prerequest",
 							"script": {
-								"id": "17b99a55-2180-4593-95e6-daded4702ede",
 								"exec": [
 									""
 								],
@@ -11234,7 +11122,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "7ef23c8a-2fdf-4e55-a74b-6942a3e8e052",
 								"exec": [
 									"pm.test(\"Test data deleted on Node2\", function () {",
 									"    var response = pm.response.json();",
@@ -11365,7 +11252,6 @@
 						{
 							"listen": "prerequest",
 							"script": {
-								"id": "decb65d6-a8c6-4d6a-bd9e-87331b8fa06d",
 								"exec": [
 									""
 								],
@@ -11375,7 +11261,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "37587cf8-0f6a-4a07-a225-359c75a5309b",
 								"exec": [
 									"pm.test(\"Test data NOT deleted on Node3\", function () {",
 									"    var response = pm.response.json();",
@@ -11501,7 +11386,6 @@
 						{
 							"listen": "prerequest",
 							"script": {
-								"id": "d1031c2e-37f0-4e29-9b05-524f7522375a",
 								"exec": [
 									""
 								],
@@ -11511,7 +11395,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "f3cf1771-edac-4791-84a2-eb24b816774e",
 								"exec": [
 									"pm.test(\"Test data deleted on Node1\", function () {",
 									"    var response = pm.response.json();",
@@ -11642,7 +11525,6 @@
 						{
 							"listen": "prerequest",
 							"script": {
-								"id": "667ede8b-bdfb-47a6-92e9-90ec7c4c5067",
 								"exec": [
 									""
 								],
@@ -11652,7 +11534,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "9899b38e-d70d-493d-a1bd-0b8cebbb3314",
 								"exec": [
 									"pm.test(\"Test data deleted on Node4\", function () {",
 									"    var response = pm.response.json();",
@@ -11789,7 +11670,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "6805f0e7-e3e2-46af-92e7-36d86f9c3cbb",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {",
 									"    pm.response.to.have.status(200);",
@@ -11917,7 +11797,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "4554d434-88b9-4a7c-aee7-37b8d65a9eb0",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {",
 									"    pm.response.to.have.status(200);",
@@ -12045,7 +11924,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "1761ba71-1264-4408-9270-4e1d09c9931f",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {",
 									"    pm.response.to.have.status(200);",
@@ -12619,7 +12497,6 @@
 		{
 			"listen": "prerequest",
 			"script": {
-				"id": "b4b6f90f-2624-4438-8af1-7bd14f23b681",
 				"type": "text/javascript",
 				"exec": [
 					""
@@ -12629,7 +12506,6 @@
 		{
 			"listen": "test",
 			"script": {
-				"id": "beff051b-a179-4f6c-a357-d9b349dd0ed2",
 				"type": "text/javascript",
 				"exec": [
 					"postman.setGlobalVariable(\"function:getJobId\", (jsonData, next_req)=>{",
