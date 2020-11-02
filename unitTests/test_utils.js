@@ -10,6 +10,7 @@ const COMMON_TEST_TERMS = require('./commonTestTerms');
 const env = require('../utility/environment/environmentManager');
 const terms = require('../utility/hdbTerms');
 const common_utils = require('../utility/common_utils');
+const { handleHDBError } = require('../utility/errors/hdbError');
 
 let env_mgr_init_sync_stub = undefined;
 const {
@@ -713,6 +714,10 @@ async function testHDBError(test_func, error_msg) {
     return error.__proto__.constructor.name === 'HdbError' && error.http_resp_msg === error_msg;
 }
 
+function generateHDBError(err_msg, status_code) {
+    return handleHDBError(new Error(), err_msg, status_code);
+}
+
 async function assertErrorAsync(test_func, args, error_object, message){
     let error;
     let result;
@@ -767,6 +772,7 @@ module.exports = {
     sortAttrKeyMap,
     testError,
     testHDBError,
+    generateHDBError,
     generateAPIMessage,
     assertErrorSync,
     assertErrorAsync,

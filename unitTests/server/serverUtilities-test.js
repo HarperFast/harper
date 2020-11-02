@@ -22,6 +22,13 @@ describe('test getOperationFunction', ()=>{
         assert.deepStrictEqual(result.job_operation_function, undefined);
     });
 
+    it('test upsert', ()=>{
+        let result = server_utilities.getOperationFunction({operation: 'upsert'});
+
+        assert.deepStrictEqual(result.operation_function.name, 'upsertData');
+        assert.deepStrictEqual(result.job_operation_function, undefined);
+    });
+
     it('test SEARCH_BY_HASH', ()=>{
         let result = server_utilities.getOperationFunction({operation: 'search_by_hash'});
 

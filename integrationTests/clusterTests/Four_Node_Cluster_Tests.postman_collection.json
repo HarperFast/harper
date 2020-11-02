@@ -1,6 +1,5 @@
 {
 	"info": {
-		"_postman_id": "26b3e19c-af1c-4633-8a30-9ea3f21110d8",
 		"name": "Four Node Cluster Tests",
 		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
 	},
@@ -14,7 +13,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "e41b58ba-67b7-4bb1-b3c2-50bb51a36d96",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {",
 									"    pm.response.to.have.status(200);",
@@ -22,9 +20,11 @@
 									"",
 									"pm.test(\"Node2 added\", function () {",
 									"    var jsonData = pm.response.json();",
-									"    pm.expect(jsonData.message).to.eql(\"successfully added Node2 to manifest\");",
+									"    const node_name = pm.environment.get(\"NODE2_NAME\");",
+									"    pm.expect(jsonData.message).to.eql(`successfully added ${node_name} to manifest`);",
 									"});",
-									""
+									"",
+									"setTimeout(() => {}, 100);"
 								],
 								"type": "text/javascript"
 							}
@@ -64,7 +64,10 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n    \"operation\": \"add_node\",\n    \"name\": \"{{NODE2_NAME}}\",\n    \"host\": \"{{NODE2_HOST}}\",\n    \"port\": 12345,\n    \"subscriptions\": [\n        {\n            \"channel\": \"dev:dog\",\n            \"subscribe\": true,\n            \"publish\": false\n        }\n    ]\n}"
+							"raw": "{\n    \"operation\": \"add_node\",\n    \"name\": \"{{NODE2_NAME}}\",\n    \"host\": \"{{NODE2_HOST}}\",\n    \"port\": 12345,\n    \"subscriptions\": [\n        {\n            \"channel\": \"dev:dog\",\n            \"subscribe\": true,\n            \"publish\": false\n        },\n        {\n            \"channel\": \"dev:breeds\",\n            \"subscribe\": true,\n            \"publish\": false\n        }\n    ]\n}",
+							"options": {
+								"raw": {}
+							}
 						},
 						"url": {
 							"raw": "{{NODE1_HOST}}:{{SERVER_HDB_PORT}}",
@@ -142,7 +145,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "db43b381-90c9-4500-b686-4e941b9351db",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {",
 									"    pm.response.to.have.status(200);",
@@ -150,9 +152,11 @@
 									"",
 									"pm.test(\"Node3 added\", function () {",
 									"    var jsonData = pm.response.json();",
-									"    pm.expect(jsonData.message).to.eql(\"successfully added Node3 to manifest\");",
+									"    const node_name = pm.environment.get(\"NODE3_NAME\");",
+									"    pm.expect(jsonData.message).to.eql(`successfully added ${node_name} to manifest`);",
 									"});",
-									""
+									"",
+									"setTimeout(() => {}, 100);"
 								],
 								"type": "text/javascript"
 							}
@@ -192,7 +196,10 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n    \"operation\": \"add_node\",\n    \"name\": \"{{NODE3_NAME}}\",\n    \"host\": \"{{NODE3_HOST}}\",\n    \"port\": 12345,\n    \"subscriptions\": [\n        {\n            \"channel\": \"dev:dog\",\n            \"subscribe\": true,\n            \"publish\": false\n        }\n    ]\n}"
+							"raw": "{\n    \"operation\": \"add_node\",\n    \"name\": \"{{NODE3_NAME}}\",\n    \"host\": \"{{NODE3_HOST}}\",\n    \"port\": 12345,\n    \"subscriptions\": [\n        {\n            \"channel\": \"dev:dog\",\n            \"subscribe\": true,\n            \"publish\": false\n        },\n        {\n            \"channel\": \"dev:breeds\",\n            \"subscribe\": true,\n            \"publish\": false\n        }\n    ]\n}",
+							"options": {
+								"raw": {}
+							}
 						},
 						"url": {
 							"raw": "{{NODE1_HOST}}:{{SERVER_HDB_PORT}}",
@@ -270,7 +277,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "bc98b072-b61e-415a-a7b4-da73d16065b5",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {",
 									"    pm.response.to.have.status(200);",
@@ -278,9 +284,11 @@
 									"",
 									"pm.test(\"Node4 added\", function () {",
 									"    var jsonData = pm.response.json();",
-									"    pm.expect(jsonData.message).to.eql(\"successfully added Node4 to manifest\");",
+									"    const node_name = pm.environment.get(\"NODE4_NAME\");",
+									"    pm.expect(jsonData.message).to.eql(`successfully added ${node_name} to manifest`);",
 									"});",
-									""
+									"",
+									"setTimeout(() => {}, 100);"
 								],
 								"type": "text/javascript"
 							}
@@ -320,7 +328,10 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n    \"operation\": \"add_node\",\n    \"name\": \"{{NODE4_NAME}}\",\n    \"host\": \"{{NODE4_HOST}}\",\n    \"port\": 12345,\n    \"subscriptions\": [\n        {\n            \"channel\": \"dev:dog\",\n            \"subscribe\": true,\n            \"publish\": true\n        }\n    ]\n}"
+							"raw": "{\n    \"operation\": \"add_node\",\n    \"name\": \"{{NODE4_NAME}}\",\n    \"host\": \"{{NODE4_HOST}}\",\n    \"port\": 12345,\n    \"subscriptions\": [\n        {\n            \"channel\": \"dev:dog\",\n            \"subscribe\": true,\n            \"publish\": true\n        },\n        {\n            \"channel\": \"dev:breeds\",\n            \"subscribe\": true,\n            \"publish\": true\n        }\n    ]\n}",
+							"options": {
+								"raw": {}
+							}
 						},
 						"url": {
 							"raw": "{{NODE1_HOST}}:{{SERVER_HDB_PORT}}",
@@ -398,7 +409,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "ebf607ab-da5d-48c4-bb92-6e6ec6d602b1",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {",
 									"    pm.response.to.have.status(200);",
@@ -538,7 +548,6 @@
 						{
 							"listen": "prerequest",
 							"script": {
-								"id": "b0534e74-6ff9-4584-8c8f-98760e58da8f",
 								"exec": [
 									"postman.setEnvironmentVariable(\"schema\", \"dev\");",
 									"console.log(postman.getEnvironmentVariable(\"schema\"));",
@@ -550,7 +559,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "1b9d1dc8-ec11-4a88-be07-0dc306c4313b",
 								"exec": [
 									"tests[\"Create Schema\"] = responseBody.has(\"schema 'dev' successfully created\");"
 								],
@@ -587,7 +595,10 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n  \"operation\":\"create_schema\",\n  \"schema\": \"dev\"\n}"
+							"raw": "{\n  \"operation\":\"create_schema\",\n  \"schema\": \"dev\"\n}",
+							"options": {
+								"raw": {}
+							}
 						},
 						"url": {
 							"raw": "{{NODE2_HOST}}:{{SERVER_HDB_PORT}}",
@@ -679,7 +690,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "6d9c3179-833e-404c-a8ac-a1a645d4d493",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {",
 									"    try {",
@@ -705,7 +715,6 @@
 						{
 							"listen": "prerequest",
 							"script": {
-								"id": "14405552-4214-4e73-89ed-29e3c8193b5c",
 								"exec": [
 									"setTimeout(()=>{}, 100);"
 								],
@@ -828,7 +837,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "3fb17eac-29de-4ed2-b753-c051f5321033",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {",
 									"    try {",
@@ -966,7 +974,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "0f34739c-d6b0-4c66-83d8-6db5d93b36b3",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {",
 									"    try {",
@@ -1100,12 +1107,11 @@
 					]
 				},
 				{
-					"name": "CREATE TABLE on Node 2",
+					"name": "CREATE TABLE  dog on Node 2",
 					"event": [
 						{
 							"listen": "test",
 							"script": {
-								"id": "cb580956-42c2-43cb-b414-549e6a10f574",
 								"exec": [
 									"tests[\"Create Table\"] = responseBody.has(\"table 'dev.dog' successfully created.\");"
 								],
@@ -1142,7 +1148,10 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n  \"operation\":\"create_table\",\n  \"schema\":\"dev\",\n  \"table\":\"dog\",\n  \"hash_attribute\": \"id\"\n}"
+							"raw": "{\n  \"operation\":\"create_table\",\n  \"schema\":\"dev\",\n  \"table\":\"dog\",\n  \"hash_attribute\": \"id\"\n}",
+							"options": {
+								"raw": {}
+							}
 						},
 						"url": {
 							"raw": "{{NODE2_HOST}}:{{SERVER_HDB_PORT}}",
@@ -1229,12 +1238,267 @@
 					]
 				},
 				{
-					"name": "TEST for table on Node1",
+					"name": "CREATE TABLE breeds on Node 2",
 					"event": [
 						{
 							"listen": "test",
 							"script": {
-								"id": "a0b19fa8-8fdf-446a-9088-b0b099692199",
+								"exec": [
+									"tests[\"Create Table\"] = responseBody.has(\"table 'dev.breeds' successfully created.\");"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"create_table\",\n  \"schema\":\"dev\",\n  \"table\":\"breeds\",\n  \"hash_attribute\": \"id\"\n}"
+						},
+						"url": {
+							"raw": "{{NODE2_HOST}}:{{SERVER_HDB_PORT}}",
+							"host": [
+								"{{NODE2_HOST}}"
+							],
+							"port": "{{SERVER_HDB_PORT}}"
+						}
+					},
+					"response": [
+						{
+							"name": "Create dev.dog Table",
+							"originalRequest": {
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"type": "text",
+										"name": "Authorization",
+										"value": "Basic SERCX0FETUlOOjE0MDA="
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"operation\":\"create_table\",\n  \"schema\":\"dev\",\n  \"table\":\"dog\",\n  \"hash_attribute\": \"id\"\n}"
+								},
+								"url": {
+									"raw": "http://localhost:9925",
+									"protocol": "http",
+									"host": [
+										"localhost"
+									],
+									"port": "9925"
+								}
+							},
+							"status": "OK",
+							"code": 200,
+							"_postman_previewlanguage": "json",
+							"header": [
+								{
+									"key": "connection",
+									"value": "keep-alive",
+									"name": "connection",
+									"description": ""
+								},
+								{
+									"key": "content-length",
+									"value": "49",
+									"name": "content-length",
+									"description": ""
+								},
+								{
+									"key": "content-type",
+									"value": "application/json; charset=utf-8",
+									"name": "content-type",
+									"description": ""
+								},
+								{
+									"key": "date",
+									"value": "Fri, 01 Sep 2017 17:00:40 GMT",
+									"name": "date",
+									"description": ""
+								},
+								{
+									"key": "etag",
+									"value": "W/\"31-2FV9i2eJXU1F9rNuA4B9T7Vu7EA\"",
+									"name": "etag",
+									"description": ""
+								},
+								{
+									"key": "x-powered-by",
+									"value": "HarperDB",
+									"name": "x-powered-by",
+									"description": ""
+								}
+							],
+							"cookie": [],
+							"body": "{\"message\":\"table dev.dog successfully created.\"}"
+						}
+					]
+				},
+				{
+					"name": "CREATE TABLE owners on Node 2",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"tests[\"Create Table\"] = responseBody.has(\"table 'dev.owners' successfully created.\");"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"create_table\",\n  \"schema\":\"dev\",\n  \"table\":\"owners\",\n  \"hash_attribute\": \"id\"\n}"
+						},
+						"url": {
+							"raw": "{{NODE2_HOST}}:{{SERVER_HDB_PORT}}",
+							"host": [
+								"{{NODE2_HOST}}"
+							],
+							"port": "{{SERVER_HDB_PORT}}"
+						}
+					},
+					"response": [
+						{
+							"name": "Create dev.dog Table",
+							"originalRequest": {
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"type": "text",
+										"name": "Authorization",
+										"value": "Basic SERCX0FETUlOOjE0MDA="
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"operation\":\"create_table\",\n  \"schema\":\"dev\",\n  \"table\":\"dog\",\n  \"hash_attribute\": \"id\"\n}"
+								},
+								"url": {
+									"raw": "http://localhost:9925",
+									"protocol": "http",
+									"host": [
+										"localhost"
+									],
+									"port": "9925"
+								}
+							},
+							"status": "OK",
+							"code": 200,
+							"_postman_previewlanguage": "json",
+							"header": [
+								{
+									"key": "connection",
+									"value": "keep-alive",
+									"name": "connection",
+									"description": ""
+								},
+								{
+									"key": "content-length",
+									"value": "49",
+									"name": "content-length",
+									"description": ""
+								},
+								{
+									"key": "content-type",
+									"value": "application/json; charset=utf-8",
+									"name": "content-type",
+									"description": ""
+								},
+								{
+									"key": "date",
+									"value": "Fri, 01 Sep 2017 17:00:40 GMT",
+									"name": "date",
+									"description": ""
+								},
+								{
+									"key": "etag",
+									"value": "W/\"31-2FV9i2eJXU1F9rNuA4B9T7Vu7EA\"",
+									"name": "etag",
+									"description": ""
+								},
+								{
+									"key": "x-powered-by",
+									"value": "HarperDB",
+									"name": "x-powered-by",
+									"description": ""
+								}
+							],
+							"cookie": [],
+							"body": "{\"message\":\"table dev.dog successfully created.\"}"
+						}
+					]
+				},
+				{
+					"name": "TEST for tables on Node1",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {",
 									"    try {",
@@ -1246,15 +1510,19 @@
 									"",
 									"pm.test(\"dev.dog table on Node1\", function () {",
 									"    try {",
-									"        pm.expect(pm.response.json().dev.dog.name).to.equal(\"dog\");",
-									"        pm.expect(pm.response.json().dev.dog.hash_attribute).to.equal(\"id\");",
-									"        pm.expect(pm.response.json().dev.dog.schema).to.equal(\"dev\");",
+									"        const resp = pm.response.json();",
+									"        pm.expect(resp.dev.dog.name).to.equal(\"dog\");",
+									"        pm.expect(resp.dev.dog.hash_attribute).to.equal(\"id\");",
+									"        pm.expect(resp.dev.dog.schema).to.equal(\"dev\");",
 									"        ",
-									"        let attributes = pm.response.json().dev.dog.attributes;",
+									"        let attributes = resp.dev.dog.attributes;",
 									"        let expected_attributes = ['id', '__createdtime__', '__updatedtime__'];",
 									"        attributes.forEach(attribute=>{",
 									"            pm.expect(attribute.attribute).to.be.oneOf(expected_attributes);",
 									"        });",
+									"",
+									"        pm.expect(resp.dev.breeds.name).to.equal(\"breeds\");",
+									"        pm.expect(resp.dev.owners.name).to.equal(\"owners\");",
 									"    } catch (error) {",
 									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);",
 									"    }",
@@ -1267,7 +1535,6 @@
 						{
 							"listen": "prerequest",
 							"script": {
-								"id": "78f92036-2054-4dc9-8927-fd0f132dfee5",
 								"exec": [
 									"setTimeout(()=>{}, 100);"
 								],
@@ -1300,7 +1567,10 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\t\"operation\":\"describe_all\"\n}"
+							"raw": "{\n\t\"operation\":\"describe_all\"\n}",
+							"options": {
+								"raw": {}
+							}
 						},
 						"url": {
 							"raw": "{{NODE1_HOST}}:{{SERVER_HDB_PORT}}",
@@ -1385,12 +1655,11 @@
 					]
 				},
 				{
-					"name": "TEST for table on Node3",
+					"name": "TEST for tables on Node3",
 					"event": [
 						{
 							"listen": "test",
 							"script": {
-								"id": "0b89f2e5-1905-438f-8ea4-17a5284b791f",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {",
 									"    try {",
@@ -1402,15 +1671,19 @@
 									"",
 									"pm.test(\"dev.dog table on Node3\", function () {",
 									"    try {",
-									"        pm.expect(pm.response.json().dev.dog.name).to.equal(\"dog\");",
-									"        pm.expect(pm.response.json().dev.dog.hash_attribute).to.equal(\"id\");",
-									"        pm.expect(pm.response.json().dev.dog.schema).to.equal(\"dev\");",
+									"        const resp = pm.response.json();",
+									"        pm.expect(resp.dev.dog.name).to.equal(\"dog\");",
+									"        pm.expect(resp.dev.dog.hash_attribute).to.equal(\"id\");",
+									"        pm.expect(resp.dev.dog.schema).to.equal(\"dev\");",
 									"        ",
-									"        let attributes = pm.response.json().dev.dog.attributes;",
+									"        let attributes = resp.dev.dog.attributes;",
 									"        let expected_attributes = ['id', '__createdtime__', '__updatedtime__'];",
 									"        attributes.forEach(attribute=>{",
 									"            pm.expect(attribute.attribute).to.be.oneOf(expected_attributes);",
 									"        });",
+									"        ",
+									"        pm.expect(resp.dev.breeds.name).to.equal(\"breeds\");",
+									"        pm.expect(resp.dev.owners.name).to.equal(\"owners\");",
 									"    } catch (error) {",
 									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);",
 									"    }",
@@ -1446,7 +1719,10 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\t\"operation\":\"describe_all\"\n}"
+							"raw": "{\n\t\"operation\":\"describe_all\"\n}",
+							"options": {
+								"raw": {}
+							}
 						},
 						"url": {
 							"raw": "{{NODE3_HOST}}:{{SERVER_HDB_PORT}}",
@@ -1531,12 +1807,11 @@
 					]
 				},
 				{
-					"name": "TEST for table on Node4",
+					"name": "TEST for tables on Node4",
 					"event": [
 						{
 							"listen": "test",
 							"script": {
-								"id": "f4da7192-3799-42dc-bfa4-91bc8498df90",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {",
 									"    try {",
@@ -1548,14 +1823,19 @@
 									"",
 									"pm.test(\"dev.dog table on Node4\", function () {",
 									"    try {",
-									"        pm.expect(pm.response.json().dev.dog.name).to.equal(\"dog\");",
-									"        pm.expect(pm.response.json().dev.dog.hash_attribute).to.equal(\"id\");",
-									"        pm.expect(pm.response.json().dev.dog.schema).to.equal(\"dev\");",
-									"        let attributes = pm.response.json().dev.dog.attributes;",
+									"        const resp = pm.response.json();",
+									"        pm.expect(resp.dev.dog.name).to.equal(\"dog\");",
+									"        pm.expect(resp.dev.dog.hash_attribute).to.equal(\"id\");",
+									"        pm.expect(resp.dev.dog.schema).to.equal(\"dev\");",
+									"        ",
+									"        let attributes = resp.dev.dog.attributes;",
 									"        let expected_attributes = ['id', '__createdtime__', '__updatedtime__'];",
 									"        attributes.forEach(attribute=>{",
 									"            pm.expect(attribute.attribute).to.be.oneOf(expected_attributes);",
 									"        });",
+									"",
+									"        pm.expect(resp.dev.breeds.name).to.equal(\"breeds\");",
+									"        pm.expect(resp.dev.owners.name).to.equal(\"owners\");",
 									"    } catch (error) {",
 									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);",
 									"    }",
@@ -1591,7 +1871,10 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\t\"operation\":\"describe_all\"\n}"
+							"raw": "{\n\t\"operation\":\"describe_all\"\n}",
+							"options": {
+								"raw": {}
+							}
 						},
 						"url": {
 							"raw": "{{NODE4_HOST}}:{{SERVER_HDB_PORT}}",
@@ -1681,7 +1964,6 @@
 						{
 							"listen": "prerequest",
 							"script": {
-								"id": "e0fe6cd6-6d86-4629-bd29-76b593432944",
 								"exec": [
 									"postman.setEnvironmentVariable(\"schema\", \"dev\");",
 									"console.log(postman.getEnvironmentVariable(\"schema\"));",
@@ -1693,7 +1975,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "094783df-bbb5-4435-8278-856b263ced9c",
 								"exec": [
 									"tests[\"Drop Schema\"] = responseBody.has(\"successfully deleted table 'dev.dog'\");\r",
 									"\r",
@@ -1825,7 +2106,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "74ca06a5-c961-4b7c-b6ed-03406b491d51",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {",
 									"    pm.response.to.have.status(200);",
@@ -1962,7 +2242,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "114255fb-ae61-4658-8c53-f4ed066e35e1",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {",
 									"    pm.response.to.have.status(200);",
@@ -2099,7 +2378,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "523b3cb7-74ed-4dd6-bf39-4d2e547f99e9",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {",
 									"    pm.response.to.have.status(200);",
@@ -2236,7 +2514,6 @@
 						{
 							"listen": "prerequest",
 							"script": {
-								"id": "c03fe9c8-9ada-4507-9ecd-f2227e6377e6",
 								"exec": [
 									"postman.setEnvironmentVariable(\"schema\", \"dev\");",
 									"console.log(postman.getEnvironmentVariable(\"schema\"));",
@@ -2248,7 +2525,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "8f2f3927-3266-4891-999f-70907bbc1b6e",
 								"exec": [
 									"tests[\"Drop Schema\"] = responseBody.has(\"successfully deleted schema 'dev'\");\r",
 									"\r",
@@ -2380,7 +2656,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "f6f31074-c753-4526-bf59-b4a20b0f2848",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {",
 									"    pm.response.to.have.status(200);",
@@ -2517,7 +2792,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "0851f12d-d4ac-4fb0-ac2f-e3bfd6e279b4",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {",
 									"    pm.response.to.have.status(200);",
@@ -2654,7 +2928,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "037dd552-2c1e-41b7-ad6e-16c5f67d081e",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {",
 									"    pm.response.to.have.status(200);",
@@ -2791,7 +3064,6 @@
 						{
 							"listen": "prerequest",
 							"script": {
-								"id": "1a34f784-322e-4204-93e3-49079dc1e9d1",
 								"exec": [
 									"postman.setEnvironmentVariable(\"schema\", \"dev\");",
 									"console.log(postman.getEnvironmentVariable(\"schema\"));",
@@ -2803,7 +3075,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "2a582c6a-e76b-4ec4-a3c4-14716e5f252a",
 								"exec": [
 									"tests[\"Re-create Schema\"] = responseBody.has(\"schema 'dev' successfully created\");"
 								],
@@ -2927,12 +3198,11 @@
 					]
 				},
 				{
-					"name": "RE-CREATE TABLE on Node1",
+					"name": "RE-CREATE TABLE dog on Node1",
 					"event": [
 						{
 							"listen": "test",
 							"script": {
-								"id": "abbe659d-1532-4851-8970-84dfe23839a7",
 								"exec": [
 									"tests[\"Re-create Table\"] = responseBody.has(\"table 'dev.dog' successfully created.\");"
 								],
@@ -3056,12 +3326,267 @@
 					]
 				},
 				{
+					"name": "RE-CREATE TABLE breeds on Node1",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"tests[\"Re-create Table\"] = responseBody.has(\"table 'dev.breeds' successfully created.\");"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"create_table\",\n  \"schema\":\"dev\",\n  \"table\":\"breeds\",\n  \"hash_attribute\": \"id\"\n}"
+						},
+						"url": {
+							"raw": "{{NODE1_HOST}}:{{SERVER_HDB_PORT}}",
+							"host": [
+								"{{NODE1_HOST}}"
+							],
+							"port": "{{SERVER_HDB_PORT}}"
+						}
+					},
+					"response": [
+						{
+							"name": "Create dev.dog Table",
+							"originalRequest": {
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"type": "text",
+										"name": "Authorization",
+										"value": "Basic SERCX0FETUlOOjE0MDA="
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"operation\":\"create_table\",\n  \"schema\":\"dev\",\n  \"table\":\"dog\",\n  \"hash_attribute\": \"id\"\n}"
+								},
+								"url": {
+									"raw": "http://localhost:9925",
+									"protocol": "http",
+									"host": [
+										"localhost"
+									],
+									"port": "9925"
+								}
+							},
+							"status": "OK",
+							"code": 200,
+							"_postman_previewlanguage": "json",
+							"header": [
+								{
+									"key": "connection",
+									"value": "keep-alive",
+									"name": "connection",
+									"description": ""
+								},
+								{
+									"key": "content-length",
+									"value": "49",
+									"name": "content-length",
+									"description": ""
+								},
+								{
+									"key": "content-type",
+									"value": "application/json; charset=utf-8",
+									"name": "content-type",
+									"description": ""
+								},
+								{
+									"key": "date",
+									"value": "Fri, 01 Sep 2017 17:00:40 GMT",
+									"name": "date",
+									"description": ""
+								},
+								{
+									"key": "etag",
+									"value": "W/\"31-2FV9i2eJXU1F9rNuA4B9T7Vu7EA\"",
+									"name": "etag",
+									"description": ""
+								},
+								{
+									"key": "x-powered-by",
+									"value": "HarperDB",
+									"name": "x-powered-by",
+									"description": ""
+								}
+							],
+							"cookie": [],
+							"body": "{\"message\":\"table dev.dog successfully created.\"}"
+						}
+					]
+				},
+				{
+					"name": "RE-CREATE TABLE owners on Node1",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"tests[\"Re-create Table\"] = responseBody.has(\"table 'dev.owners' successfully created.\");"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"create_table\",\n  \"schema\":\"dev\",\n  \"table\":\"owners\",\n  \"hash_attribute\": \"id\"\n}"
+						},
+						"url": {
+							"raw": "{{NODE1_HOST}}:{{SERVER_HDB_PORT}}",
+							"host": [
+								"{{NODE1_HOST}}"
+							],
+							"port": "{{SERVER_HDB_PORT}}"
+						}
+					},
+					"response": [
+						{
+							"name": "Create dev.dog Table",
+							"originalRequest": {
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"type": "text",
+										"name": "Authorization",
+										"value": "Basic SERCX0FETUlOOjE0MDA="
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"operation\":\"create_table\",\n  \"schema\":\"dev\",\n  \"table\":\"dog\",\n  \"hash_attribute\": \"id\"\n}"
+								},
+								"url": {
+									"raw": "http://localhost:9925",
+									"protocol": "http",
+									"host": [
+										"localhost"
+									],
+									"port": "9925"
+								}
+							},
+							"status": "OK",
+							"code": 200,
+							"_postman_previewlanguage": "json",
+							"header": [
+								{
+									"key": "connection",
+									"value": "keep-alive",
+									"name": "connection",
+									"description": ""
+								},
+								{
+									"key": "content-length",
+									"value": "49",
+									"name": "content-length",
+									"description": ""
+								},
+								{
+									"key": "content-type",
+									"value": "application/json; charset=utf-8",
+									"name": "content-type",
+									"description": ""
+								},
+								{
+									"key": "date",
+									"value": "Fri, 01 Sep 2017 17:00:40 GMT",
+									"name": "date",
+									"description": ""
+								},
+								{
+									"key": "etag",
+									"value": "W/\"31-2FV9i2eJXU1F9rNuA4B9T7Vu7EA\"",
+									"name": "etag",
+									"description": ""
+								},
+								{
+									"key": "x-powered-by",
+									"value": "HarperDB",
+									"name": "x-powered-by",
+									"description": ""
+								}
+							],
+							"cookie": [],
+							"body": "{\"message\":\"table dev.dog successfully created.\"}"
+						}
+					]
+				},
+				{
 					"name": "INSERT one record into Node4",
 					"event": [
 						{
 							"listen": "test",
 							"script": {
-								"id": "b4173e17-51c7-40c2-b029-6b97eef5254c",
 								"exec": [
 									"tests[\"Write Single Record\"] = responseBody.has(\"inserted 1 of 1 records\");",
 									"",
@@ -3100,7 +3625,10 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\"operation\":\"insert\",\n\"schema\":\"dev\",\n\"table\":\"dog\",\n\"records\": [\n  {\n    \"name\":\"Harper\",\n    \"breed\":\"Pog\",\n    \"id\":\"1\",\n    \"age\":5\n    \n  }\n]\n\n}"
+							"raw": "{\n    \"operation\": \"insert\",\n    \"schema\": \"dev\",\n    \"table\": \"dog\",\n    \"records\": [\n        {\n            \"name\": \"Harper\",\n            \"breed\": \"Pog\",\n            \"id\": \"1\",\n            \"age\": 5\n        }\n    ]\n}",
+							"options": {
+								"raw": {}
+							}
 						},
 						"url": {
 							"raw": "{{NODE4_HOST}}:{{SERVER_HDB_PORT}}",
@@ -3192,7 +3720,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "16644457-2e46-431c-afcc-cb3010a3353c",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {",
 									"    try {",
@@ -3335,7 +3862,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "ce630a9b-987f-4be0-ac17-aa57ae3e5453",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {",
 									"    try {",
@@ -3478,7 +4004,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "4c1d7d27-2595-40f4-bc10-ecd553e05556",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {",
 									"    try {",
@@ -3613,12 +4138,721 @@
 							"body": ""
 						}
 					]
+				},
+				{
+					"name": "UPSERT records with new attrs into Node1",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"tests[\"Upsert two Record\"] = responseBody.has(\"upserted 2 of 2 records\");",
+									"",
+									""
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"operation\": \"upsert\",\n    \"schema\": \"dev\",\n    \"table\": \"dog\",\n    \"records\": [\n        {\n            \"nickname\": \"Hey you...\",\n            \"id\": \"1\"\n        },\n        {\n            \"name\":\"Jimmy\",\n            \"breed\":\"Mix\",\n            \"age\": \"?\",\n            \"gender\": \"female\"\n        }\n    ]\n}"
+						},
+						"url": {
+							"raw": "{{NODE1_HOST}}:{{SERVER_HDB_PORT}}",
+							"host": [
+								"{{NODE1_HOST}}"
+							],
+							"port": "{{SERVER_HDB_PORT}}"
+						}
+					},
+					"response": [
+						{
+							"name": "NoSQL Insert into dev.dog",
+							"originalRequest": {
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"type": "text",
+										"name": "Authorization",
+										"value": "Basic SERCX0FETUlOOjE0MDA="
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\"operation\":\"insert\",\n\"schema\":\"dev\",\n\"table\":\"dog\",\n\"records\": [\n  {\n    \"name\":\"Harper\",\n    \"breed\":\"Mutt\",\n    \"id\":\"1\",\n    \"age\":5\n    \n  },\n  {\n    \"name\":\"Penny\",\n    \"breed\":\"Mutt\",\n    \"id\":\"3\",\n    \"age\":5\n    \n  }\n]\n\n}"
+								},
+								"url": {
+									"raw": "http://localhost:9925",
+									"protocol": "http",
+									"host": [
+										"localhost"
+									],
+									"port": "9925"
+								}
+							},
+							"status": "OK",
+							"code": 200,
+							"_postman_previewlanguage": "json",
+							"header": [
+								{
+									"key": "connection",
+									"value": "keep-alive",
+									"name": "connection",
+									"description": ""
+								},
+								{
+									"key": "content-length",
+									"value": "42",
+									"name": "content-length",
+									"description": ""
+								},
+								{
+									"key": "content-type",
+									"value": "application/json; charset=utf-8",
+									"name": "content-type",
+									"description": ""
+								},
+								{
+									"key": "date",
+									"value": "Fri, 01 Sep 2017 17:43:34 GMT",
+									"name": "date",
+									"description": ""
+								},
+								{
+									"key": "etag",
+									"value": "W/\"2a-+I7U4Tpdia9SawmsfcyNUq20tzU\"",
+									"name": "etag",
+									"description": ""
+								},
+								{
+									"key": "x-powered-by",
+									"value": "HarperDB",
+									"name": "x-powered-by",
+									"description": ""
+								}
+							],
+							"cookie": [],
+							"body": "{\"message\":\"successfully wrote 2 records\"}"
+						}
+					]
+				},
+				{
+					"name": "TEST attr metadata from upsert exists on Node1",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    try {",
+									"        pm.response.to.have.status(200);",
+									"    } catch (error) {",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);",
+									"    }",
+									"});",
+									"",
+									"pm.test(\"dev.dog table has attr metadata on Node1\", function () {",
+									"    var attr_keys = ['id', 'age', 'breed', 'name', 'nickname', 'gender', '__createdtime__', '__updatedtime__'];",
+									"    var attr_metadata = pm.response.json().dev.dog.attributes;",
+									"",
+									"    try {",
+									"        attr_metadata.forEach(attr => {",
+									"            pm.expect(attr.attribute).to.be.oneOf(attr_keys);  ",
+									"        });",
+									"    } catch (error) {",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);",
+									"    }",
+									"});",
+									""
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"describe_all\"\n}"
+						},
+						"url": {
+							"raw": "{{NODE1_HOST}}:{{SERVER_HDB_PORT}}",
+							"host": [
+								"{{NODE1_HOST}}"
+							],
+							"port": "{{SERVER_HDB_PORT}}"
+						}
+					},
+					"response": [
+						{
+							"name": "Decribe All",
+							"originalRequest": {
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"type": "text",
+										"name": "Authorization",
+										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\"operation\":\"describe_all\"\n\n}"
+								},
+								"url": {
+									"raw": "{{HDB_ENDPOINT}}",
+									"host": [
+										"{{HDB_ENDPOINT}}"
+									]
+								}
+							},
+							"status": "OK",
+							"code": 200,
+							"_postman_previewlanguage": "json",
+							"header": [
+								{
+									"key": "connection",
+									"value": "keep-alive",
+									"name": "connection",
+									"description": ""
+								},
+								{
+									"key": "content-length",
+									"value": "568",
+									"name": "content-length",
+									"description": ""
+								},
+								{
+									"key": "content-type",
+									"value": "application/json; charset=utf-8",
+									"name": "content-type",
+									"description": ""
+								},
+								{
+									"key": "date",
+									"value": "Fri, 01 Sep 2017 17:07:00 GMT",
+									"name": "date",
+									"description": ""
+								},
+								{
+									"key": "etag",
+									"value": "W/\"238-gfg0d+lv1qmocnKKFjlrSBm00dM\"",
+									"name": "etag",
+									"description": ""
+								},
+								{
+									"key": "x-powered-by",
+									"value": "HarperDB",
+									"name": "x-powered-by",
+									"description": ""
+								}
+							],
+							"cookie": [],
+							"body": ""
+						}
+					]
+				},
+				{
+					"name": "TEST attr metadata from upsert exists on Node4",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    try {",
+									"        pm.response.to.have.status(200);",
+									"    } catch (error) {",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);",
+									"    }",
+									"});",
+									"",
+									"pm.test(\"dev.dog table has attr metadata on Node4\", function () {",
+									"    var attr_keys = ['id', 'age', 'breed', 'name', 'nickname', 'gender', '__createdtime__', '__updatedtime__'];",
+									"    var attr_metadata = pm.response.json().dev.dog.attributes;",
+									"",
+									"    try {",
+									"        attr_metadata.forEach(attr => {",
+									"            pm.expect(attr.attribute).to.be.oneOf(attr_keys);  ",
+									"        });",
+									"        pm.expect(attr_metadata.length).to.eql(attr_keys.length);",
+									"    } catch (error) {",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);",
+									"    }",
+									"});",
+									""
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"describe_all\"\n}",
+							"options": {
+								"raw": {}
+							}
+						},
+						"url": {
+							"raw": "{{NODE4_HOST}}:{{SERVER_HDB_PORT}}",
+							"host": [
+								"{{NODE4_HOST}}"
+							],
+							"port": "{{SERVER_HDB_PORT}}"
+						}
+					},
+					"response": [
+						{
+							"name": "Decribe All",
+							"originalRequest": {
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"type": "text",
+										"name": "Authorization",
+										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\"operation\":\"describe_all\"\n\n}"
+								},
+								"url": {
+									"raw": "{{HDB_ENDPOINT}}",
+									"host": [
+										"{{HDB_ENDPOINT}}"
+									]
+								}
+							},
+							"status": "OK",
+							"code": 200,
+							"_postman_previewlanguage": "json",
+							"header": [
+								{
+									"key": "connection",
+									"value": "keep-alive",
+									"name": "connection",
+									"description": ""
+								},
+								{
+									"key": "content-length",
+									"value": "568",
+									"name": "content-length",
+									"description": ""
+								},
+								{
+									"key": "content-type",
+									"value": "application/json; charset=utf-8",
+									"name": "content-type",
+									"description": ""
+								},
+								{
+									"key": "date",
+									"value": "Fri, 01 Sep 2017 17:07:00 GMT",
+									"name": "date",
+									"description": ""
+								},
+								{
+									"key": "etag",
+									"value": "W/\"238-gfg0d+lv1qmocnKKFjlrSBm00dM\"",
+									"name": "etag",
+									"description": ""
+								},
+								{
+									"key": "x-powered-by",
+									"value": "HarperDB",
+									"name": "x-powered-by",
+									"description": ""
+								}
+							],
+							"cookie": [],
+							"body": ""
+						}
+					]
+				},
+				{
+					"name": "TEST attr metadata from upsert exists on Node2",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    try {",
+									"        pm.response.to.have.status(200);",
+									"    } catch (error) {",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);",
+									"    }",
+									"});",
+									"",
+									"pm.test(\"dev.dog table has attr metadata on Node2\", function () {",
+									"    var attr_keys = ['id', 'age', 'breed', 'name', 'nickname', 'gender', '__createdtime__', '__updatedtime__'];",
+									"    var attr_metadata = pm.response.json().dev.dog.attributes;",
+									"",
+									"    try {",
+									"        attr_metadata.forEach(attr => {",
+									"            pm.expect(attr.attribute).to.be.oneOf(attr_keys);  ",
+									"        });",
+									"        pm.expect(attr_metadata.length).to.eql(attr_keys.length);",
+									"    } catch (error) {",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);",
+									"    }",
+									"});",
+									""
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"describe_all\"\n}",
+							"options": {
+								"raw": {}
+							}
+						},
+						"url": {
+							"raw": "{{NODE2_HOST}}:{{SERVER_HDB_PORT}}",
+							"host": [
+								"{{NODE2_HOST}}"
+							],
+							"port": "{{SERVER_HDB_PORT}}"
+						}
+					},
+					"response": [
+						{
+							"name": "Decribe All",
+							"originalRequest": {
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"type": "text",
+										"name": "Authorization",
+										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\"operation\":\"describe_all\"\n\n}"
+								},
+								"url": {
+									"raw": "{{HDB_ENDPOINT}}",
+									"host": [
+										"{{HDB_ENDPOINT}}"
+									]
+								}
+							},
+							"status": "OK",
+							"code": 200,
+							"_postman_previewlanguage": "json",
+							"header": [
+								{
+									"key": "connection",
+									"value": "keep-alive",
+									"name": "connection",
+									"description": ""
+								},
+								{
+									"key": "content-length",
+									"value": "568",
+									"name": "content-length",
+									"description": ""
+								},
+								{
+									"key": "content-type",
+									"value": "application/json; charset=utf-8",
+									"name": "content-type",
+									"description": ""
+								},
+								{
+									"key": "date",
+									"value": "Fri, 01 Sep 2017 17:07:00 GMT",
+									"name": "date",
+									"description": ""
+								},
+								{
+									"key": "etag",
+									"value": "W/\"238-gfg0d+lv1qmocnKKFjlrSBm00dM\"",
+									"name": "etag",
+									"description": ""
+								},
+								{
+									"key": "x-powered-by",
+									"value": "HarperDB",
+									"name": "x-powered-by",
+									"description": ""
+								}
+							],
+							"cookie": [],
+							"body": ""
+						}
+					]
+				},
+				{
+					"name": "TEST attr metadata from upsert exists on Node3",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    try {",
+									"        pm.response.to.have.status(200);",
+									"    } catch (error) {",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);",
+									"    }",
+									"});",
+									"",
+									"pm.test(\"dev.dog table has attr metadata on Node3\", function () {",
+									"    var attr_keys = ['id', 'age', 'breed', 'name', 'nickname', 'gender', '__createdtime__', '__updatedtime__'];",
+									"    var attr_metadata = pm.response.json().dev.dog.attributes;",
+									"",
+									"    try {",
+									"        attr_metadata.forEach(attr => {",
+									"            pm.expect(attr.attribute).to.be.oneOf(attr_keys);  ",
+									"        });",
+									"        pm.expect(attr_metadata.length).to.eql(attr_keys.length);",
+									"    } catch (error) {",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);",
+									"    }",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"describe_all\"\n}",
+							"options": {
+								"raw": {}
+							}
+						},
+						"url": {
+							"raw": "{{NODE3_HOST}}:{{SERVER_HDB_PORT}}",
+							"host": [
+								"{{NODE3_HOST}}"
+							],
+							"port": "{{SERVER_HDB_PORT}}"
+						}
+					},
+					"response": [
+						{
+							"name": "Decribe All",
+							"originalRequest": {
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"type": "text",
+										"name": "Authorization",
+										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\"operation\":\"describe_all\"\n\n}"
+								},
+								"url": {
+									"raw": "{{HDB_ENDPOINT}}",
+									"host": [
+										"{{HDB_ENDPOINT}}"
+									]
+								}
+							},
+							"status": "OK",
+							"code": 200,
+							"_postman_previewlanguage": "json",
+							"header": [
+								{
+									"key": "connection",
+									"value": "keep-alive",
+									"name": "connection",
+									"description": ""
+								},
+								{
+									"key": "content-length",
+									"value": "568",
+									"name": "content-length",
+									"description": ""
+								},
+								{
+									"key": "content-type",
+									"value": "application/json; charset=utf-8",
+									"name": "content-type",
+									"description": ""
+								},
+								{
+									"key": "date",
+									"value": "Fri, 01 Sep 2017 17:07:00 GMT",
+									"name": "date",
+									"description": ""
+								},
+								{
+									"key": "etag",
+									"value": "W/\"238-gfg0d+lv1qmocnKKFjlrSBm00dM\"",
+									"name": "etag",
+									"description": ""
+								},
+								{
+									"key": "x-powered-by",
+									"value": "HarperDB",
+									"name": "x-powered-by",
+									"description": ""
+								}
+							],
+							"cookie": [],
+							"body": ""
+						}
+					]
 				}
 			],
 			"protocolProfileBehavior": {}
 		},
 		{
-			"name": "Test insert/update propagation",
+			"name": "Test insert/update/upsert propagation",
 			"item": [
 				{
 					"name": "INSERT - NoSQL - into Node2",
@@ -3626,7 +4860,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "7f02f6bf-bf1d-4c93-b658-06643ee5d0b3",
 								"exec": [
 									"tests[\"Insert Two Records into Node2\"] = responseBody.has(\"inserted 2 of 2 records\");"
 								],
@@ -3755,7 +4988,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "a27546df-b114-41af-9e2f-c97487b92c13",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {",
 									"    try {",
@@ -3766,11 +4998,11 @@
 									"});",
 									"",
 									"pm.test(\"Data propagated to Node1\", function () {",
-									"    var table_attrs = ['breed', 'id', 'name', 'age', '__createdtime__', '__updatedtime__'];",
+									"    var table_attrs = ['id', 'age', 'breed', 'name', 'nickname', 'gender', '__createdtime__', '__updatedtime__'];",
 									"    var response = pm.response.json();",
 									"   ",
 									"    try {",
-									"        pm.expect(response).to.have.lengthOf(2);  ",
+									"        pm.expect(response).to.have.lengthOf(3);  ",
 									"        response.forEach(row => {",
 									"            Object.keys(row).map(attr => {",
 									"                pm.expect(attr).to.be.oneOf(table_attrs);",
@@ -3788,7 +5020,6 @@
 						{
 							"listen": "prerequest",
 							"script": {
-								"id": "9a3515a9-eeaa-445a-9d62-c2c267e690d8",
 								"exec": [
 									"setTimeout(()=>{}, 100);"
 								],
@@ -3912,7 +5143,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "e2e38fb1-69b7-4961-a3be-08fd3a67ff58",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {",
 									"    try {",
@@ -3923,11 +5153,11 @@
 									"});",
 									"",
 									"pm.test(\"Data propagated to Node4\", function () {",
-									"    var table_attrs = ['breed', 'id', 'name', 'age', '__createdtime__', '__updatedtime__'];",
+									"    var table_attrs = ['id', 'age', 'breed', 'name', 'nickname', 'gender', '__createdtime__', '__updatedtime__'];",
 									"    var response = pm.response.json();",
 									"   ",
 									"    try {",
-									"        pm.expect(response).to.have.lengthOf(2);  ",
+									"        pm.expect(response).to.have.lengthOf(3);  ",
 									"        response.forEach(row => {",
 									"            Object.keys(row).map(attr => {",
 									"                pm.expect(attr).to.be.oneOf(table_attrs);",
@@ -3968,7 +5198,10 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog\",\n\t\"search_attribute\":\"id\",\n\t\"search_value\":\"*\",\n\t\"get_attributes\":[\"*\"]\n}"
+							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog\",\n\t\"search_attribute\":\"id\",\n\t\"search_value\":\"*\",\n\t\"get_attributes\":[\"*\"]\n}",
+							"options": {
+								"raw": {}
+							}
 						},
 						"url": {
 							"raw": "{{NODE4_HOST}}:{{SERVER_HDB_PORT}}",
@@ -4058,7 +5291,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "461ea2db-df7c-40a7-9191-73f32eef9d87",
 								"exec": [
 									"tests[\"Insert Two Records into Node3\"] = responseBody.has(\"inserted 2 of 2 records\");"
 								],
@@ -4187,7 +5419,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "01a99d96-728e-4061-ac59-9c6eac89660d",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {",
 									"    try {",
@@ -4198,11 +5429,11 @@
 									"});",
 									"",
 									"pm.test(\"Data propagated to Node1\", function () {",
-									"    var table_attrs = ['breed', 'id', 'name', 'age', '__createdtime__', '__updatedtime__'];",
+									"    var table_attrs = ['id', 'age', 'breed', 'name', 'nickname', 'gender', '__createdtime__', '__updatedtime__'];",
 									"    var response = pm.response.json();",
 									"   ",
 									"    try {",
-									"        pm.expect(response).to.have.lengthOf(4);  ",
+									"        pm.expect(response).to.have.lengthOf(5);  ",
 									"        response.forEach(row => {",
 									"            Object.keys(row).map(attr => {",
 									"                pm.expect(attr).to.be.oneOf(table_attrs);",
@@ -4219,7 +5450,6 @@
 						{
 							"listen": "prerequest",
 							"script": {
-								"id": "4d738b08-9bad-4400-b8e8-4b00a4204cb8",
 								"exec": [
 									"setTimeout(()=>{}, 100);"
 								],
@@ -4342,7 +5572,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "3c4a963d-1cf2-435e-98d8-069e059e2e6c",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {",
 									"    try {",
@@ -4353,11 +5582,11 @@
 									"});",
 									"",
 									"pm.test(\"Data propagated to Node4\", function () {",
-									"    var table_attrs = ['breed', 'id', 'name', 'age', '__createdtime__', '__updatedtime__'];",
+									"    var table_attrs = ['id', 'age', 'breed', 'name', 'nickname', 'gender', '__createdtime__', '__updatedtime__'];",
 									"    var response = pm.response.json();",
 									"   ",
 									"    try {",
-									"        pm.expect(response).to.have.lengthOf(4);  ",
+									"        pm.expect(response).to.have.lengthOf(5);  ",
 									"        response.forEach(row => {",
 									"            Object.keys(row).map(attr => {",
 									"                pm.expect(attr).to.be.oneOf(table_attrs);",
@@ -4397,7 +5626,10 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog\",\n\t\"search_attribute\":\"id\",\n\t\"search_value\":\"*\",\n\t\"get_attributes\":[\"*\"]\n}"
+							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog\",\n\t\"search_attribute\":\"id\",\n\t\"search_value\":\"*\",\n\t\"get_attributes\":[\"*\"]\n}",
+							"options": {
+								"raw": {}
+							}
 						},
 						"url": {
 							"raw": "{{NODE4_HOST}}:{{SERVER_HDB_PORT}}",
@@ -4487,7 +5719,6 @@
 						{
 							"listen": "prerequest",
 							"script": {
-								"id": "d2350a0c-c011-41ee-aba0-d59304ba6e10",
 								"exec": [
 									""
 								],
@@ -4497,7 +5728,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "789f88c0-1242-43f2-958d-d87773e99925",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {",
 									"    pm.response.to.have.status(200);",
@@ -4631,7 +5861,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "48cdb9ee-4a59-4d1b-8bc6-8a35332eb05b",
 								"exec": [
 									"tests[\"Update One Record in Node2\"] = responseBody.has(\"updated 1 of 2 records\");",
 									"",
@@ -4764,7 +5993,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "4374b8f7-ca9f-47f1-a6ee-67b3c8644794",
 								"exec": [
 									"//TODO - uncomment out expect statement below when CORE-746",
 									"",
@@ -4793,7 +6021,6 @@
 						{
 							"listen": "prerequest",
 							"script": {
-								"id": "eb63f6e3-f2e9-4406-b3f2-2ece457b420e",
 								"exec": [
 									"setTimeout(()=>{}, 100);"
 								],
@@ -4916,20 +6143,19 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "b8bb90e0-8ed3-4172-9db0-2cf8d9f1ca50",
 								"exec": [
 									"pm.test(\"Data for hash = 1 updated correctly on Node1\", function () {",
 									"    var response = pm.response.json();",
 									"    ",
 									"    try {",
-									"        pm.expect(response).to.have.lengthOf(4);  ",
+									"        pm.expect(response).to.have.lengthOf(5);  ",
 									"        response.forEach(row => {",
 									"            if (row.id === 1) {",
 									"                pm.expect(row.weight_lbs).to.equal(55);",
 									"            } else {",
 									"                pm.expect(row.weight_lbs === undefined || row.weight_lbs === null);",
 									"            }",
-									"            pm.expect(Object.keys(row)).to.be.length(8);",
+									"            pm.expect(Object.keys(row)).to.be.length(10);",
 									"        });",
 									"    } catch (error) {",
 									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);",
@@ -4965,7 +6191,10 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog\",\n\t\"search_attribute\":\"id\",\n\t\"search_value\":\"*\",\n\t\"get_attributes\":[\"*\"]\n}"
+							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog\",\n\t\"search_attribute\":\"id\",\n\t\"search_value\":\"*\",\n\t\"get_attributes\":[\"*\"]\n}",
+							"options": {
+								"raw": {}
+							}
 						},
 						"url": {
 							"raw": "{{NODE1_HOST}}:{{SERVER_HDB_PORT}}",
@@ -5055,20 +6284,19 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "5ac5a7cb-4188-4d42-924f-f5509f7a0a32",
 								"exec": [
 									"pm.test(\"Data for hash = 1 updated correctly on Node4\", function () {",
 									"    var response = pm.response.json();",
 									"",
 									"    try {",
-									"        pm.expect(response).to.have.lengthOf(4);  ",
+									"        pm.expect(response).to.have.lengthOf(5);  ",
 									"        response.forEach(row => {",
 									"            if (row.id === 1) {",
 									"                pm.expect(row.weight_lbs).to.equal(55);",
 									"            } else {",
 									"                pm.expect(row.weight_lbs === undefined || row.weight_lbs === null);",
 									"            }",
-									"            pm.expect(Object.keys(row)).to.be.length(8);",
+									"            pm.expect(Object.keys(row)).to.be.length(10);",
 									"        });",
 									"    } catch (error) {",
 									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);",
@@ -5104,7 +6332,10 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog\",\n\t\"search_attribute\":\"id\",\n\t\"search_value\":\"*\",\n\t\"get_attributes\":[\"*\"]\n}"
+							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog\",\n\t\"search_attribute\":\"id\",\n\t\"search_value\":\"*\",\n\t\"get_attributes\":[\"*\"]\n}",
+							"options": {
+								"raw": {}
+							}
 						},
 						"url": {
 							"raw": "{{NODE4_HOST}}:{{SERVER_HDB_PORT}}",
@@ -5194,15 +6425,18 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "685bb370-315e-458d-8f69-c8ed2979b417",
 								"exec": [
 									"pm.test(\"Data for hash = 1 NOT added/updated on Node3\", function () {",
-									"    var response = pm.response.json();",
-									"    pm.expect(response).to.have.lengthOf(2);  ",
-									"    response.forEach(row => {",
-									"        pm.expect(Object.keys(row)).to.be.length(8);",
-									"        pm.expect(row.id).to.be.oneOf([3,4]);",
-									"    });",
+									"    try {",
+									"        var response = pm.response.json();",
+									"        pm.expect(response).to.have.lengthOf(2);  ",
+									"        response.forEach(row => {",
+									"            pm.expect(Object.keys(row)).to.be.length(10);",
+									"            pm.expect(row.id).to.be.oneOf([3,4]);",
+									"        });",
+									"    } catch (error) {",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);",
+									"    }",
 									"});"
 								],
 								"type": "text/javascript"
@@ -5234,7 +6468,10 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog\",\n\t\"search_attribute\":\"id\",\n\t\"search_value\":\"*\",\n\t\"get_attributes\":[\"*\"]\n}"
+							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog\",\n\t\"search_attribute\":\"id\",\n\t\"search_value\":\"*\",\n\t\"get_attributes\":[\"*\"]\n}",
+							"options": {
+								"raw": {}
+							}
 						},
 						"url": {
 							"raw": "{{NODE3_HOST}}:{{SERVER_HDB_PORT}}",
@@ -5324,7 +6561,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "5938909d-f51a-4ce5-a933-384aac62bcd0",
 								"exec": [
 									"tests[\"Update One Record in Node2\"] = responseBody.has(\"updated 1 of 1 records\");",
 									"",
@@ -5447,18 +6683,17 @@
 					]
 				},
 				{
-					"name": "TEST updated data in Node1",
+					"name": "TEST more updated data in Node1",
 					"event": [
 						{
 							"listen": "test",
 							"script": {
-								"id": "59278ce7-1f64-441b-8d26-5a169024453e",
 								"exec": [
 									"pm.test(\"Data for hash = 2 updated correctly on Node1\", function () {",
 									"    var response = pm.response.json();",
 									"   ",
 									"    try {",
-									"        pm.expect(response).to.have.lengthOf(4);  ",
+									"        pm.expect(response).to.have.lengthOf(5);  ",
 									"        response.forEach(row => {",
 									"            if (row.id === 2) {",
 									"                pm.expect(row.weight_lbs).to.equal(35);",
@@ -5470,7 +6705,7 @@
 									"                pm.expect(row.weight_lbs).to.be.null;",
 									"                pm.expect(row.owner).to.be.null;",
 									"            }",
-									"            pm.expect(Object.keys(row)).to.be.length(8)",
+									"            pm.expect(Object.keys(row)).to.be.length(10)",
 									"        });",
 									"    } catch (error) {",
 									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);",
@@ -5483,7 +6718,6 @@
 						{
 							"listen": "prerequest",
 							"script": {
-								"id": "0a48ae5d-6018-42a9-a05c-ec98a5e4b0e1",
 								"exec": [
 									"setTimeout(()=>{}, 100);"
 								],
@@ -5516,7 +6750,10 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog\",\n\t\"search_attribute\":\"id\",\n\t\"search_value\":\"*\",\n\t\"get_attributes\":[\"*\"]\n}"
+							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog\",\n\t\"search_attribute\":\"id\",\n\t\"search_value\":\"*\",\n\t\"get_attributes\":[\"*\"]\n}",
+							"options": {
+								"raw": {}
+							}
 						},
 						"url": {
 							"raw": "{{NODE1_HOST}}:{{SERVER_HDB_PORT}}",
@@ -5601,18 +6838,17 @@
 					]
 				},
 				{
-					"name": "TEST updated data in Node4",
+					"name": "TEST more updated data in Node4",
 					"event": [
 						{
 							"listen": "test",
 							"script": {
-								"id": "25fad989-b6a5-49e9-b7be-ce8317848250",
 								"exec": [
 									"pm.test(\"Data for hash = 2 updated correctly on Node4\", function () {",
 									"    var response = pm.response.json();",
 									"    ",
 									"    try {",
-									"        pm.expect(response).to.have.lengthOf(4);  ",
+									"        pm.expect(response).to.have.lengthOf(5);  ",
 									"        response.forEach(row => {",
 									"            if (row.id === 2) {",
 									"                pm.expect(row.weight_lbs).to.equal(35);",
@@ -5624,7 +6860,7 @@
 									"                pm.expect(row.weight_lbs).to.be.null;",
 									"                pm.expect(row.owner).to.be.null;",
 									"            }",
-									"            pm.expect(Object.keys(row)).to.be.length(8);",
+									"            pm.expect(Object.keys(row)).to.be.length(10)",
 									"        });",
 									"    } catch (error) {",
 									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);",
@@ -5660,7 +6896,10 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog\",\n\t\"search_attribute\":\"id\",\n\t\"search_value\":\"*\",\n\t\"get_attributes\":[\"*\"]\n}"
+							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog\",\n\t\"search_attribute\":\"id\",\n\t\"search_value\":\"*\",\n\t\"get_attributes\":[\"*\"]\n}",
+							"options": {
+								"raw": {}
+							}
 						},
 						"url": {
 							"raw": "{{NODE4_HOST}}:{{SERVER_HDB_PORT}}",
@@ -5745,20 +6984,23 @@
 					]
 				},
 				{
-					"name": "TEST updated data NOT in Node3",
+					"name": "TEST more updated data NOT in Node3",
 					"event": [
 						{
 							"listen": "test",
 							"script": {
-								"id": "9f59f7eb-8580-4db1-9a7f-14d81f13c67a",
 								"exec": [
 									"pm.test(\"Data for hash = 2 NOT added/updated on Node3\", function () {",
-									"    var response = pm.response.json();",
-									"    pm.expect(response).to.have.lengthOf(2);  ",
-									"    response.forEach(row => {",
-									"        pm.expect(Object.keys(row)).to.be.length(8);",
-									"        pm.expect(row.id).to.be.oneOf([3,4]);",
-									"    });",
+									"    try {",
+									"        var response = pm.response.json();",
+									"        pm.expect(response).to.have.lengthOf(2);  ",
+									"        response.forEach(row => {",
+									"            pm.expect(Object.keys(row)).to.be.length(10)",
+									"            pm.expect(row.id).to.be.oneOf([3,4]);",
+									"        });",
+									"    } catch (error) {",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);",
+									"    }",
 									"});"
 								],
 								"type": "text/javascript"
@@ -5790,7 +7032,10 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog\",\n\t\"search_attribute\":\"id\",\n\t\"search_value\":\"*\",\n\t\"get_attributes\":[\"*\"]\n}"
+							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog\",\n\t\"search_attribute\":\"id\",\n\t\"search_value\":\"*\",\n\t\"get_attributes\":[\"*\"]\n}",
+							"options": {
+								"raw": {}
+							}
 						},
 						"url": {
 							"raw": "{{NODE3_HOST}}:{{SERVER_HDB_PORT}}",
@@ -5880,7 +7125,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "1803d812-2796-429d-8efd-6acbd0c13d3c",
 								"exec": [
 									"tests[\"Insert Two Records into Node2\"] = responseBody.has(\"inserted 2 of 2 records\");"
 								],
@@ -6009,23 +7253,26 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "63141827-1cb7-4d44-979e-dc08d4e70789",
 								"exec": [
 									"pm.test(\"Data for hash = 3 & 4 on Node2\", function () {",
-									"    var response = pm.response.json();",
-									"    pm.expect(response).to.have.lengthOf(4);  ",
-									"    response.forEach(row => {",
-									"        if (row.id === 3) {",
-									"            pm.expect(row.weight_lbs === null);",
-									"            pm.expect(row.owner === null);",
-									"            pm.expect(row.name).to.equal('Sammy Jr');",
-									"        } else if (row.id === 4) {",
-									"            pm.expect(row.weight_lbs === null);",
-									"            pm.expect(row.owner === null);",
-									"            pm.expect(row.name).to.equal('Sarah Sarah');",
-									"        }",
-									"        pm.expect(Object.keys(row)).to.be.length(8);",
-									"    });",
+									"    try {",
+									"        var response = pm.response.json();",
+									"        pm.expect(response).to.have.lengthOf(4);  ",
+									"        response.forEach(row => {",
+									"            if (row.id === 3) {",
+									"                pm.expect(row.weight_lbs === null);",
+									"                pm.expect(row.owner === null);",
+									"                pm.expect(row.name).to.equal('Sammy Jr');",
+									"            } else if (row.id === 4) {",
+									"                pm.expect(row.weight_lbs === null);",
+									"                pm.expect(row.owner === null);",
+									"                pm.expect(row.name).to.equal('Sarah Sarah');",
+									"            }",
+									"            pm.expect(Object.keys(row)).to.be.length(10)",
+									"        });",
+									"    } catch (error) {",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);",
+									"    }",
 									"});"
 								],
 								"type": "text/javascript"
@@ -6034,7 +7281,6 @@
 						{
 							"listen": "prerequest",
 							"script": {
-								"id": "a0396bfc-4b88-4e65-bdd5-d27accfe241f",
 								"exec": [
 									"setTimeout(()=>{}, 100);"
 								],
@@ -6067,7 +7313,10 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog\",\n\t\"search_attribute\":\"id\",\n\t\"search_value\":\"*\",\n\t\"get_attributes\":[\"*\"]\n}"
+							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog\",\n\t\"search_attribute\":\"id\",\n\t\"search_value\":\"*\",\n\t\"get_attributes\":[\"*\"]\n}",
+							"options": {
+								"raw": {}
+							}
 						},
 						"url": {
 							"raw": "{{NODE2_HOST}}:{{SERVER_HDB_PORT}}",
@@ -6152,24 +7401,27 @@
 					]
 				},
 				{
-					"name": "TEST data NOT updated on Node1",
+					"name": "TEST inserted data NOT updated on Node1",
 					"event": [
 						{
 							"listen": "test",
 							"script": {
-								"id": "bcfa0559-9d1d-4d85-b8ca-0e03bf366c6a",
 								"exec": [
-									"pm.test(\"Data for hash = 3 & 4 on Node2\", function () {",
-									"    var response = pm.response.json();",
-									"    pm.expect(response).to.have.lengthOf(4);  ",
-									"    response.forEach(row => {",
-									"        if (row.id === 3) {",
-									"            pm.expect(row.name).to.equal('Sammy');",
-									"        } else if (row.id === 4) {",
-									"            pm.expect(row.name).to.equal('Sarah');",
-									"        }",
-									"        pm.expect(Object.keys(row)).to.be.length(8);",
-									"    });",
+									"pm.test(\"Data for hash = 3 & 4 on Node1\", function () {",
+									"    try {",
+									"        var response = pm.response.json();",
+									"        pm.expect(response).to.have.lengthOf(5);  ",
+									"        response.forEach(row => {",
+									"            if (row.id === 3) {",
+									"                pm.expect(row.name).to.equal('Sammy');",
+									"            } else if (row.id === 4) {",
+									"                pm.expect(row.name).to.equal('Sarah');",
+									"            }",
+									"            pm.expect(Object.keys(row)).to.be.length(10);",
+									"        });",
+									"    } catch (error) {",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);",
+									"    }",
 									"});"
 								],
 								"type": "text/javascript"
@@ -6201,7 +7453,10 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog\",\n\t\"search_attribute\":\"id\",\n\t\"search_value\":\"*\",\n\t\"get_attributes\":[\"*\"]\n}"
+							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog\",\n\t\"search_attribute\":\"id\",\n\t\"search_value\":\"*\",\n\t\"get_attributes\":[\"*\"]\n}",
+							"options": {
+								"raw": {}
+							}
 						},
 						"url": {
 							"raw": "{{NODE1_HOST}}:{{SERVER_HDB_PORT}}",
@@ -6286,24 +7541,27 @@
 					]
 				},
 				{
-					"name": "TEST data NOT updated on Node3",
+					"name": "TEST inserted data NOT updated on Node3",
 					"event": [
 						{
 							"listen": "test",
 							"script": {
-								"id": "d7f16e86-b447-42a8-bfad-f5cd34971514",
 								"exec": [
 									"pm.test(\"Data for hash = 3 & 4 on Node3\", function () {",
-									"    var response = pm.response.json();",
-									"    pm.expect(response).to.have.lengthOf(2);  ",
-									"    response.forEach(row => {",
-									"        if (row.id === 3) {",
-									"            pm.expect(row.name).to.equal('Sammy');",
-									"        } else if (row.id === 4) {",
-									"            pm.expect(row.name).to.equal('Sarah');",
-									"        }",
-									"        pm.expect(Object.keys(row)).to.be.length(8);",
-									"    });",
+									"    try {",
+									"        var response = pm.response.json();",
+									"        pm.expect(response).to.have.lengthOf(2);  ",
+									"        response.forEach(row => {",
+									"            if (row.id === 3) {",
+									"                pm.expect(row.name).to.equal('Sammy');",
+									"            } else if (row.id === 4) {",
+									"                pm.expect(row.name).to.equal('Sarah');",
+									"            }",
+									"            pm.expect(Object.keys(row)).to.be.length(10);",
+									"        });",
+									"    } catch (error) {",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);",
+									"    }",
 									"});"
 								],
 								"type": "text/javascript"
@@ -6335,7 +7593,10 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog\",\n\t\"search_attribute\":\"id\",\n\t\"search_value\":\"*\",\n\t\"get_attributes\":[\"*\"]\n}"
+							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog\",\n\t\"search_attribute\":\"id\",\n\t\"search_value\":\"*\",\n\t\"get_attributes\":[\"*\"]\n}",
+							"options": {
+								"raw": {}
+							}
 						},
 						"url": {
 							"raw": "{{NODE3_HOST}}:{{SERVER_HDB_PORT}}",
@@ -6420,24 +7681,27 @@
 					]
 				},
 				{
-					"name": "TEST data NOT updated on Node4",
+					"name": "TEST inserted data NOT updated on Node4",
 					"event": [
 						{
 							"listen": "test",
 							"script": {
-								"id": "4f31e966-c3d8-41ca-867c-ec0edb75e316",
 								"exec": [
 									"pm.test(\"Data for hash = 3 & 4 on Node2\", function () {",
-									"    var response = pm.response.json();",
-									"    pm.expect(response).to.have.lengthOf(4);  ",
-									"    response.forEach(row => {",
-									"        if (row.id === 3) {",
-									"            pm.expect(row.name).to.equal('Sammy');",
-									"        } else if (row.id === 4) {",
-									"            pm.expect(row.name).to.equal('Sarah');",
-									"        }",
-									"        pm.expect(Object.keys(row)).to.be.length(8);",
-									"    });",
+									"    try {",
+									"        var response = pm.response.json();",
+									"        pm.expect(response).to.have.lengthOf(5);  ",
+									"        response.forEach(row => {",
+									"            if (row.id === 3) {",
+									"                pm.expect(row.name).to.equal('Sammy');",
+									"            } else if (row.id === 4) {",
+									"                pm.expect(row.name).to.equal('Sarah');",
+									"            }",
+									"            pm.expect(Object.keys(row)).to.be.length(10);",
+									"        });",
+									"    } catch (error) {",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);",
+									"    }",
 									"});"
 								],
 								"type": "text/javascript"
@@ -6469,12 +7733,730 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog\",\n\t\"search_attribute\":\"id\",\n\t\"search_value\":\"*\",\n\t\"get_attributes\":[\"*\"]\n}"
+							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog\",\n\t\"search_attribute\":\"id\",\n\t\"search_value\":\"*\",\n\t\"get_attributes\":[\"*\"]\n}",
+							"options": {
+								"raw": {}
+							}
 						},
 						"url": {
 							"raw": "{{NODE4_HOST}}:{{SERVER_HDB_PORT}}",
 							"host": [
 								"{{NODE4_HOST}}"
+							],
+							"port": "{{SERVER_HDB_PORT}}"
+						}
+					},
+					"response": [
+						{
+							"name": "Search By Hash",
+							"originalRequest": {
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"type": "text",
+										"name": "Authorization",
+										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"operation\":\"search_by_hash\",\n  \"schema\": \"dev\",\n  \"table\": \"dog\",\n  \"hash_values\":[1,3],\n  \"get_attributes\": [\"*\"]\n}"
+								},
+								"url": {
+									"raw": "{{HDB_ENDPOINT}}",
+									"host": [
+										"{{HDB_ENDPOINT}}"
+									]
+								}
+							},
+							"status": "OK",
+							"code": 200,
+							"_postman_previewlanguage": "json",
+							"header": [
+								{
+									"key": "connection",
+									"value": "keep-alive",
+									"name": "connection",
+									"description": ""
+								},
+								{
+									"key": "content-length",
+									"value": "145",
+									"name": "content-length",
+									"description": ""
+								},
+								{
+									"key": "content-type",
+									"value": "application/json; charset=utf-8",
+									"name": "content-type",
+									"description": ""
+								},
+								{
+									"key": "date",
+									"value": "Fri, 01 Sep 2017 17:47:21 GMT",
+									"name": "date",
+									"description": ""
+								},
+								{
+									"key": "etag",
+									"value": "W/\"91-7qgDOcZcf+jmd3/hkx3lrpmyUCA\"",
+									"name": "etag",
+									"description": ""
+								},
+								{
+									"key": "x-powered-by",
+									"value": "HarperDB",
+									"name": "x-powered-by",
+									"description": ""
+								}
+							],
+							"cookie": [],
+							"body": ""
+						}
+					]
+				},
+				{
+					"name": "UPSERT - NoSQL - row in Node2",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"tests[\"Upsert Three Record in Node2\"] = responseBody.has(\"upserted 3 of 3 records\");",
+									"",
+									"pm.test(\"Data hashes upserted\", function () {",
+									"    var response = pm.response.json()",
+									"    pm.expect(response.upserted_hashes).to.include(1);  ",
+									"    pm.expect(response.upserted_hashes).to.include(4);  ",
+									"    pm.expect(response.upserted_hashes).to.include(119911);  ",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"upsert\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog\",\n\t\"records\": [\n\t  {\n\t    \"id\": 1,\n\t    \"weight_lbs\": null\n\t  },\n\t  {\n\t    \"id\": 4,\n\t    \"weight_lbs\": 1\n\t  },\n      {\n\t    \"id\": 119911,\n\t    \"owner\": \"Samalama\",\n\t    \"weight_lbs\": 105\n\t  }\n\t]\n}"
+						},
+						"url": {
+							"raw": "{{NODE2_HOST}}:{{SERVER_HDB_PORT}}",
+							"host": [
+								"{{NODE2_HOST}}"
+							],
+							"port": "{{SERVER_HDB_PORT}}"
+						}
+					},
+					"response": [
+						{
+							"name": "Update",
+							"originalRequest": {
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"type": "text",
+										"name": "Authorization",
+										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\"operation\":\"update\",\n\"schema\":\"dev\",\n\"table\":\"dog\",\n\"records\": [\n  {\n    \"id\": 1,\n    \"weight_lbs\": 55\n  },\n    {\n    \"id\": 3,\n    \"owner\": \"kyle b\",\n    \"weight_lbs\": 35\n  }\n]\n\n}"
+								},
+								"url": {
+									"raw": "{{HDB_ENDPOINT}}",
+									"host": [
+										"{{HDB_ENDPOINT}}"
+									]
+								}
+							},
+							"status": "OK",
+							"code": 200,
+							"_postman_previewlanguage": "json",
+							"header": [
+								{
+									"key": "connection",
+									"value": "keep-alive",
+									"name": "connection",
+									"description": ""
+								},
+								{
+									"key": "content-length",
+									"value": "78",
+									"name": "content-length",
+									"description": ""
+								},
+								{
+									"key": "content-type",
+									"value": "application/json; charset=utf-8",
+									"name": "content-type",
+									"description": ""
+								},
+								{
+									"key": "date",
+									"value": "Fri, 01 Sep 2017 17:44:20 GMT",
+									"name": "date",
+									"description": ""
+								},
+								{
+									"key": "etag",
+									"value": "W/\"4e-TQj7cawhxiZSTYGpOL1BQRmQM/8\"",
+									"name": "etag",
+									"description": ""
+								},
+								{
+									"key": "x-powered-by",
+									"value": "HarperDB",
+									"name": "x-powered-by",
+									"description": ""
+								}
+							],
+							"cookie": [],
+							"body": ""
+						}
+					]
+				},
+				{
+					"name": "TEST upserted data in Node2",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Data upserted correctly on Node2\", function () {",
+									"    var response = pm.response.json();",
+									"    ",
+									"    try {",
+									"        pm.expect(response).to.have.lengthOf(5);  ",
+									"        const filtered_rows = response.filter(row => [1, 4, 119911].includes(row.id));",
+									"        pm.expect(filtered_rows).to.have.lengthOf(3);",
+									"        filtered_rows.forEach(row => {",
+									"            if (row.id === 1) {",
+									"                pm.expect(row.weight_lbs).to.equal(null);",
+									"            }",
+									"            if (row.id === 4) {",
+									"                pm.expect(row.weight_lbs).to.equal(1);",
+									"            }",
+									"            if (row.id === 119911) {",
+									"                pm.expect(row.weight_lbs).to.equal(105);",
+									"                pm.expect(row.owner).to.equal(\"Samalama\");",
+									"            }",
+									"        });",
+									"    } catch (error) {",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);",
+									"    }",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						},
+						{
+							"listen": "prerequest",
+							"script": {
+								"exec": [
+									"setTimeout(()=>{}, 100);"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog\",\n\t\"search_attribute\":\"id\",\n\t\"search_value\":\"*\",\n\t\"get_attributes\":[\"*\"]\n}",
+							"options": {
+								"raw": {}
+							}
+						},
+						"url": {
+							"raw": "{{NODE2_HOST}}:{{SERVER_HDB_PORT}}",
+							"host": [
+								"{{NODE2_HOST}}"
+							],
+							"port": "{{SERVER_HDB_PORT}}"
+						}
+					},
+					"response": [
+						{
+							"name": "Search By Hash",
+							"originalRequest": {
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"type": "text",
+										"name": "Authorization",
+										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"operation\":\"search_by_hash\",\n  \"schema\": \"dev\",\n  \"table\": \"dog\",\n  \"hash_values\":[1,3],\n  \"get_attributes\": [\"*\"]\n}"
+								},
+								"url": {
+									"raw": "{{HDB_ENDPOINT}}",
+									"host": [
+										"{{HDB_ENDPOINT}}"
+									]
+								}
+							},
+							"status": "OK",
+							"code": 200,
+							"_postman_previewlanguage": "json",
+							"header": [
+								{
+									"key": "connection",
+									"value": "keep-alive",
+									"name": "connection",
+									"description": ""
+								},
+								{
+									"key": "content-length",
+									"value": "145",
+									"name": "content-length",
+									"description": ""
+								},
+								{
+									"key": "content-type",
+									"value": "application/json; charset=utf-8",
+									"name": "content-type",
+									"description": ""
+								},
+								{
+									"key": "date",
+									"value": "Fri, 01 Sep 2017 17:47:21 GMT",
+									"name": "date",
+									"description": ""
+								},
+								{
+									"key": "etag",
+									"value": "W/\"91-7qgDOcZcf+jmd3/hkx3lrpmyUCA\"",
+									"name": "etag",
+									"description": ""
+								},
+								{
+									"key": "x-powered-by",
+									"value": "HarperDB",
+									"name": "x-powered-by",
+									"description": ""
+								}
+							],
+							"cookie": [],
+							"body": ""
+						}
+					]
+				},
+				{
+					"name": "TEST upserted data in Node1",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Data upserted correctly on Node1\", function () {",
+									"    var response = pm.response.json();",
+									"    ",
+									"    try {",
+									"        pm.expect(response).to.have.lengthOf(6);  ",
+									"        const filtered_rows = response.filter(row => [1, 4, 119911].includes(row.id));",
+									"        pm.expect(filtered_rows).to.have.lengthOf(3);",
+									"        filtered_rows.forEach(row => {",
+									"            if (row.id === 1) {",
+									"                pm.expect(row.weight_lbs).to.equal(null);",
+									"            }",
+									"            if (row.id === 4) {",
+									"                pm.expect(row.weight_lbs).to.equal(1);",
+									"            }",
+									"            if (row.id === 119911) {",
+									"                pm.expect(row.weight_lbs).to.equal(105);",
+									"                pm.expect(row.owner).to.equal(\"Samalama\");",
+									"            }",
+									"        });",
+									"    } catch (error) {",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);",
+									"    }",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog\",\n\t\"search_attribute\":\"id\",\n\t\"search_value\":\"*\",\n\t\"get_attributes\":[\"*\"]\n}",
+							"options": {
+								"raw": {}
+							}
+						},
+						"url": {
+							"raw": "{{NODE1_HOST}}:{{SERVER_HDB_PORT}}",
+							"host": [
+								"{{NODE1_HOST}}"
+							],
+							"port": "{{SERVER_HDB_PORT}}"
+						}
+					},
+					"response": [
+						{
+							"name": "Search By Hash",
+							"originalRequest": {
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"type": "text",
+										"name": "Authorization",
+										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"operation\":\"search_by_hash\",\n  \"schema\": \"dev\",\n  \"table\": \"dog\",\n  \"hash_values\":[1,3],\n  \"get_attributes\": [\"*\"]\n}"
+								},
+								"url": {
+									"raw": "{{HDB_ENDPOINT}}",
+									"host": [
+										"{{HDB_ENDPOINT}}"
+									]
+								}
+							},
+							"status": "OK",
+							"code": 200,
+							"_postman_previewlanguage": "json",
+							"header": [
+								{
+									"key": "connection",
+									"value": "keep-alive",
+									"name": "connection",
+									"description": ""
+								},
+								{
+									"key": "content-length",
+									"value": "145",
+									"name": "content-length",
+									"description": ""
+								},
+								{
+									"key": "content-type",
+									"value": "application/json; charset=utf-8",
+									"name": "content-type",
+									"description": ""
+								},
+								{
+									"key": "date",
+									"value": "Fri, 01 Sep 2017 17:47:21 GMT",
+									"name": "date",
+									"description": ""
+								},
+								{
+									"key": "etag",
+									"value": "W/\"91-7qgDOcZcf+jmd3/hkx3lrpmyUCA\"",
+									"name": "etag",
+									"description": ""
+								},
+								{
+									"key": "x-powered-by",
+									"value": "HarperDB",
+									"name": "x-powered-by",
+									"description": ""
+								}
+							],
+							"cookie": [],
+							"body": ""
+						}
+					]
+				},
+				{
+					"name": "TEST upserted data in Node4",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Data upserted correctly on Node4\", function () {",
+									"    var response = pm.response.json();",
+									"",
+									"    try {",
+									"        pm.expect(response).to.have.lengthOf(6);  ",
+									"        const filtered_rows = response.filter(row => [1, 4, 119911].includes(row.id));",
+									"        pm.expect(filtered_rows).to.have.lengthOf(3);",
+									"        filtered_rows.forEach(row => {",
+									"            if (row.id === 1) {",
+									"                pm.expect(row.weight_lbs).to.equal(null);",
+									"            }",
+									"            if (row.id === 4) {",
+									"                pm.expect(row.weight_lbs).to.equal(1);",
+									"            }",
+									"            if (row.id === 119911) {",
+									"                pm.expect(row.weight_lbs).to.equal(105);",
+									"                pm.expect(row.owner).to.equal(\"Samalama\");",
+									"            }",
+									"        });",
+									"    } catch (error) {",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);",
+									"    }",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog\",\n\t\"search_attribute\":\"id\",\n\t\"search_value\":\"*\",\n\t\"get_attributes\":[\"*\"]\n}",
+							"options": {
+								"raw": {}
+							}
+						},
+						"url": {
+							"raw": "{{NODE4_HOST}}:{{SERVER_HDB_PORT}}",
+							"host": [
+								"{{NODE4_HOST}}"
+							],
+							"port": "{{SERVER_HDB_PORT}}"
+						}
+					},
+					"response": [
+						{
+							"name": "Search By Hash",
+							"originalRequest": {
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"type": "text",
+										"name": "Authorization",
+										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"operation\":\"search_by_hash\",\n  \"schema\": \"dev\",\n  \"table\": \"dog\",\n  \"hash_values\":[1,3],\n  \"get_attributes\": [\"*\"]\n}"
+								},
+								"url": {
+									"raw": "{{HDB_ENDPOINT}}",
+									"host": [
+										"{{HDB_ENDPOINT}}"
+									]
+								}
+							},
+							"status": "OK",
+							"code": 200,
+							"_postman_previewlanguage": "json",
+							"header": [
+								{
+									"key": "connection",
+									"value": "keep-alive",
+									"name": "connection",
+									"description": ""
+								},
+								{
+									"key": "content-length",
+									"value": "145",
+									"name": "content-length",
+									"description": ""
+								},
+								{
+									"key": "content-type",
+									"value": "application/json; charset=utf-8",
+									"name": "content-type",
+									"description": ""
+								},
+								{
+									"key": "date",
+									"value": "Fri, 01 Sep 2017 17:47:21 GMT",
+									"name": "date",
+									"description": ""
+								},
+								{
+									"key": "etag",
+									"value": "W/\"91-7qgDOcZcf+jmd3/hkx3lrpmyUCA\"",
+									"name": "etag",
+									"description": ""
+								},
+								{
+									"key": "x-powered-by",
+									"value": "HarperDB",
+									"name": "x-powered-by",
+									"description": ""
+								}
+							],
+							"cookie": [],
+							"body": ""
+						}
+					]
+				},
+				{
+					"name": "TEST upserted data NOT in Node3",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Data for hash = 1 NOT added/updated on Node3\", function () {",
+									"    try {",
+									"        var response = pm.response.json();",
+									"        pm.expect(response).to.have.lengthOf(2);  ",
+									"        response.forEach(row => {",
+									"            pm.expect(Object.keys(row)).to.be.length(10);",
+									"            pm.expect(row.id).to.be.oneOf([3,4]);",
+									"        });",
+									"    } catch (error) {",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);",
+									"    }",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog\",\n\t\"search_attribute\":\"id\",\n\t\"search_value\":\"*\",\n\t\"get_attributes\":[\"*\"]\n}",
+							"options": {
+								"raw": {}
+							}
+						},
+						"url": {
+							"raw": "{{NODE3_HOST}}:{{SERVER_HDB_PORT}}",
+							"host": [
+								"{{NODE3_HOST}}"
 							],
 							"port": "{{SERVER_HDB_PORT}}"
 						}
@@ -6565,7 +8547,6 @@
 						{
 							"listen": "prerequest",
 							"script": {
-								"id": "d3f61a23-0d7f-444b-a728-41fff06e88f5",
 								"exec": [
 									"pm.environment.set(\"CSV_NODE_HOST\", \"{{NODE1_HOST}}\");"
 								],
@@ -6575,7 +8556,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "d8151c58-407f-4c80-91f0-f9e04599e001",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {",
 									"    pm.response.to.have.status(200);",
@@ -6707,7 +8687,6 @@
 						{
 							"listen": "prerequest",
 							"script": {
-								"id": "9f76ab41-ec1d-465d-bda1-5d0caffb81be",
 								"exec": [
 									" pm.environment.set(\"next_request\", null);"
 								],
@@ -6717,7 +8696,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "8a3a5eb3-7163-4eee-a895-a2ed5598b4b9",
 								"exec": [
 									"pm.test(\"Data inserted correctly on Node1\", function () {",
 									"    var response = pm.response.json()[0];",
@@ -6844,7 +8822,6 @@
 						{
 							"listen": "prerequest",
 							"script": {
-								"id": "5f9e23d8-3fc7-405f-921c-77b2413e4297",
 								"exec": [
 									" pm.environment.set(\"next_request\", null);",
 									" pm.environment.set(\"job_id\", null);",
@@ -6856,18 +8833,17 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "f1be3c10-51ab-41ac-9352-159904346744",
 								"exec": [
 									"pm.test(\"Data on Node1\", function () {",
 									"    var response = pm.response.json();",
 									"   ",
 									"    try {",
-									"        pm.expect(response).to.have.lengthOf(1200);  ",
+									"        pm.expect(response).to.have.lengthOf(1202);  ",
 									"        response.forEach(row => {",
 									"            if ([1,2,3,4].includes(row.id)) {",
 									"                pm.expect(row.rando).to.be.null;",
 									"            }",
-									"            pm.expect(Object.keys(row)).to.be.length(9);",
+									"            pm.expect(Object.keys(row)).to.be.length(11);",
 									"        });",
 									"",
 									"    } catch (error) {",
@@ -6904,7 +8880,10 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog\",\n\t\"search_attribute\":\"id\",\n\t\"search_value\":\"*\",\n\t\"get_attributes\":[\"*\"]\n}"
+							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog\",\n\t\"search_attribute\":\"id\",\n\t\"search_value\":\"*\",\n\t\"get_attributes\":[\"*\"]\n}",
+							"options": {
+								"raw": {}
+							}
 						},
 						"url": {
 							"raw": "{{NODE1_HOST}}:{{SERVER_HDB_PORT}}",
@@ -6994,18 +8973,17 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "70133a16-c1b0-4526-93d0-e5c51e2f63ad",
 								"exec": [
 									"pm.test(\"Data on Node4\", function () {",
 									"    var response = pm.response.json();",
 									"    ",
 									"    try {",
-									"        pm.expect(response).to.have.lengthOf(1200);  ",
+									"        pm.expect(response).to.have.lengthOf(1202);  ",
 									"        response.forEach(row => {",
 									"            if ([1,2,3,4].includes(row.id)) {",
 									"                pm.expect(row.rando === null || row.rando === undefined);",
 									"            }",
-									"            pm.expect(Object.keys(row)).to.be.length(9);",
+									"            pm.expect(Object.keys(row)).to.be.length(11);",
 									"        });",
 									"    } catch (error) {",
 									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);",
@@ -7018,7 +8996,6 @@
 						{
 							"listen": "prerequest",
 							"script": {
-								"id": "53034e45-ee73-4942-b919-c54af11a4d56",
 								"exec": [
 									"setTimeout(()=>{}, 100);"
 								],
@@ -7051,7 +9028,10 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog\",\n\t\"search_attribute\":\"id\",\n\t\"search_value\":\"*\",\n\t\"get_attributes\":[\"*\"]\n}"
+							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog\",\n\t\"search_attribute\":\"id\",\n\t\"search_value\":\"*\",\n\t\"get_attributes\":[\"*\"]\n}",
+							"options": {
+								"raw": {}
+							}
 						},
 						"url": {
 							"raw": "{{NODE4_HOST}}:{{SERVER_HDB_PORT}}",
@@ -7141,7 +9121,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "bd6566e5-b164-4f23-ab5a-5a1a12e8bf2c",
 								"exec": [
 									"//Should be testing that the other attrs have updated in the schema (once bug is fixed)",
 									"",
@@ -7277,20 +9256,19 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "bf097ab7-d44d-4d27-9e9d-9f01aa6f894f",
 								"exec": [
 									"//Should be testing that the other attrs have updated in the schema (once bug is fixed)",
 									"",
 									"pm.test(\"Data on Node2\", function () {",
 									"    var response = pm.response.json();",
-									"    pm.expect(response).to.have.lengthOf(4);  ",
+									"    pm.expect(response).to.have.lengthOf(5);  ",
 									"    response.forEach(row => {",
 									"         if (row.id === 3) {",
 									"            pm.expect(row.weight_lbs).to.be.null;",
 									"            pm.expect(row.owner).to.be.null;",
 									"            pm.expect(row.name).to.equal('Sammy Jr');",
 									"        } else if (row.id === 4) {",
-									"            pm.expect(row.weight_lbs).to.be.null;",
+									"            pm.expect(row.weight_lbs).to.eql(1);",
 									"            pm.expect(row.owner).to.be.null;",
 									"            pm.expect(row.name).to.equal('Sarah Sarah');",
 									"        }",
@@ -7327,7 +9305,10 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog\",\n\t\"search_attribute\":\"id\",\n\t\"search_value\":\"*\",\n\t\"get_attributes\":[\"*\"]\n}"
+							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog\",\n\t\"search_attribute\":\"id\",\n\t\"search_value\":\"*\",\n\t\"get_attributes\":[\"*\"]\n}",
+							"options": {
+								"raw": {}
+							}
 						},
 						"url": {
 							"raw": "{{NODE2_HOST}}:{{SERVER_HDB_PORT}}",
@@ -7417,7 +9398,6 @@
 						{
 							"listen": "prerequest",
 							"script": {
-								"id": "f10f3b9f-783b-4d60-8a7e-12e673c87a4a",
 								"exec": [
 									"pm.environment.set(\"CSV_NODE_HOST\", \"{{NODE4_HOST}}\");"
 								],
@@ -7427,7 +9407,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "8931b5da-b670-4463-9918-ec7800dec6d0",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {",
 									"    pm.response.to.have.status(200);",
@@ -7559,7 +9538,6 @@
 						{
 							"listen": "prerequest",
 							"script": {
-								"id": "60d8763e-478e-4131-b102-4e2aeeeeaa78",
 								"exec": [
 									"pm.environment.set(\"next_request\", null);"
 								],
@@ -7569,9 +9547,8 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "1b43cf0c-e5bc-46a6-bbe1-33404de8e49b",
 								"exec": [
-									"pm.test(\"Data inserted correctly on Node1\", function () {",
+									"pm.test(\"Data inserted correctly on Node4\", function () {",
 									"    var response = pm.response.json()[0];",
 									"    pm.expect(response.status).to.equal(\"COMPLETE\");",
 									"    pm.expect(response.message).to.equal(\"successfully loaded 1200 of 1200 records\");",
@@ -7606,7 +9583,10 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\t\"operation\":\"get_job\",\n\t\"id\": \"{{job_id}}\"\n}"
+							"raw": "{\n\t\"operation\":\"get_job\",\n\t\"id\": \"{{job_id}}\"\n}",
+							"options": {
+								"raw": {}
+							}
 						},
 						"url": {
 							"raw": "{{NODE4_HOST}}:{{SERVER_HDB_PORT}}",
@@ -7696,7 +9676,6 @@
 						{
 							"listen": "prerequest",
 							"script": {
-								"id": "cee0eb0c-d445-4ff7-9e79-d63da16cd766",
 								"exec": [
 									"pm.environment.set(\"job_id\", null);"
 								],
@@ -7706,15 +9685,14 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "37507982-881f-4f7d-8a1a-91ac0aa3e282",
 								"exec": [
 									"pm.test(\"Data on Node4\", function () {",
 									"    var response = pm.response.json();",
 									"  ",
 									"    try {",
-									"        pm.expect(response).to.have.lengthOf(1200);  ",
+									"        pm.expect(response).to.have.lengthOf(1202);  ",
 									"        response.forEach(row => {",
-									"            pm.expect(Object.keys(row)).to.be.length(10);",
+									"            pm.expect(Object.keys(row)).to.be.length(12);",
 									"        });",
 									"    } catch (error) {",
 									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);",
@@ -7750,7 +9728,10 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog\",\n\t\"search_attribute\":\"id\",\n\t\"search_value\":\"*\",\n\t\"get_attributes\":[\"*\"]\n}"
+							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog\",\n\t\"search_attribute\":\"id\",\n\t\"search_value\":\"*\",\n\t\"get_attributes\":[\"*\"]\n}",
+							"options": {
+								"raw": {}
+							}
 						},
 						"url": {
 							"raw": "{{NODE4_HOST}}:{{SERVER_HDB_PORT}}",
@@ -7840,15 +9821,14 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "7b4b6136-7939-4f98-8bd8-7523fe0ed098",
 								"exec": [
 									"pm.test(\"Data on Node1\", function () {",
 									"    var response = pm.response.json();",
 									"  ",
 									"    try {",
-									"        pm.expect(response).to.have.lengthOf(1200);  ",
+									"        pm.expect(response).to.have.lengthOf(1202);  ",
 									"        response.forEach(row => {",
-									"            pm.expect(Object.keys(row)).to.be.length(10);",
+									"            pm.expect(Object.keys(row)).to.be.length(12);",
 									"        });",
 									"    } catch (error) {",
 									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);",
@@ -7861,7 +9841,6 @@
 						{
 							"listen": "prerequest",
 							"script": {
-								"id": "ca133378-b97b-40d7-a0af-d0c6e66bd078",
 								"exec": [
 									"setTimeout(()=>{}, 500);"
 								],
@@ -7894,7 +9873,10 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog\",\n\t\"search_attribute\":\"id\",\n\t\"search_value\":\"*\",\n\t\"get_attributes\":[\"*\"]\n}"
+							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog\",\n\t\"search_attribute\":\"id\",\n\t\"search_value\":\"*\",\n\t\"get_attributes\":[\"*\"]\n}",
+							"options": {
+								"raw": {}
+							}
 						},
 						"url": {
 							"raw": "{{NODE1_HOST}}:{{SERVER_HDB_PORT}}",
@@ -7984,7 +9966,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "c8cb2e90-1357-42b1-b887-b5ad99d0a3f6",
 								"exec": [
 									"//Should be testing that the other attrs have updated in the schema (once bug is fixed)",
 									"",
@@ -8120,24 +10101,22 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "e3232d50-db0c-4dc4-a801-d14dd8b37977",
 								"exec": [
 									"//Should be testing that the other attrs have updated in the schema (once bug is fixed)",
 									"",
 									"pm.test(\"Data on Node2\", function () {",
 									"    var response = pm.response.json();",
-									"    pm.expect(response).to.have.lengthOf(4);  ",
+									"    pm.expect(response).to.have.lengthOf(5);  ",
 									"    response.forEach(row => {",
 									"         if (row.id === 3) {",
 									"            pm.expect(row.weight_lbs).to.be.null;",
 									"            pm.expect(row.owner).to.be.null;",
 									"            pm.expect(row.name).to.equal('Sammy Jr');",
 									"        } else if (row.id === 4) {",
-									"            pm.expect(row.weight_lbs).to.be.null;",
+									"            pm.expect(row.weight_lbs).to.eql(1);",
 									"            pm.expect(row.owner).to.be.null;",
 									"            pm.expect(row.name).to.equal('Sarah Sarah');",
 									"        }",
-									"        // pm.expect(Object.keys(row)).to.be.length(7);",
 									"    });",
 									"});"
 								],
@@ -8170,7 +10149,10 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog\",\n\t\"search_attribute\":\"id\",\n\t\"search_value\":\"*\",\n\t\"get_attributes\":[\"*\"]\n}"
+							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog\",\n\t\"search_attribute\":\"id\",\n\t\"search_value\":\"*\",\n\t\"get_attributes\":[\"*\"]\n}",
+							"options": {
+								"raw": {}
+							}
 						},
 						"url": {
 							"raw": "{{NODE2_HOST}}:{{SERVER_HDB_PORT}}",
@@ -8260,7 +10242,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "5c0b3db2-542d-49ce-a10d-803b2ffb65da",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {",
 									"    pm.response.to.have.status(200);",
@@ -8279,7 +10260,6 @@
 						{
 							"listen": "prerequest",
 							"script": {
-								"id": "82bf7215-699a-4922-a8ad-942252334a05",
 								"exec": [
 									"pm.environment.set(\"CSV_NODE_HOST\", \"{{NODE4_HOST}}\");"
 								],
@@ -8402,10 +10382,8 @@
 						{
 							"listen": "prerequest",
 							"script": {
-								"id": "be26b28a-ddf4-4bfd-8833-71115975b9ca",
 								"exec": [
-									"pm.environment.set(\"next_request\", null);",
-									"pm.environment.set(\"CSV_NODE_HOST\", null);"
+									"pm.environment.set(\"next_request\", null);"
 								],
 								"type": "text/javascript"
 							}
@@ -8413,7 +10391,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "b11ae148-a34a-408d-993c-7b2140d3429e",
 								"exec": [
 									"pm.test(\"Data updated correctly on Node4\", function () {",
 									"    var response = pm.response.json()[0];",
@@ -8540,7 +10517,6 @@
 						{
 							"listen": "prerequest",
 							"script": {
-								"id": "34d92834-3136-4c39-8362-29ee8a3ce7c8",
 								"exec": [
 									"pm.environment.set(\"job_id\", null);"
 								],
@@ -8550,19 +10526,20 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "f977f5c2-aae6-46e6-8253-950f5f31ea01",
 								"exec": [
 									"pm.test(\"Data on Node4\", function () {",
 									"    var response = pm.response.json();",
 									"    ",
 									"    try {",
-									"        pm.expect(response).to.have.lengthOf(1200);  ",
+									"        pm.expect(response).to.have.lengthOf(1202);  ",
 									"        response.forEach(row => {",
-									"            pm.expect(Object.keys(row)).to.be.length(10);",
-									"            if (row.id < 5) {",
+									"            pm.expect(Object.keys(row)).to.be.length(12);",
+									"            if (row.id <= 1200) {",
+									"                if (row.id < 5) {",
 									"                pm.expect(row.name).to.not.equal(row.owner);",
 									"            } else {",
 									"                pm.expect(row.name).to.equal(row.owner);",
+									"            }",
 									"            }",
 									"        });",
 									"    } catch (error) {",
@@ -8599,7 +10576,10 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog\",\n\t\"search_attribute\":\"id\",\n\t\"search_value\":\"*\",\n\t\"get_attributes\":[\"*\"]\n}"
+							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog\",\n\t\"search_attribute\":\"id\",\n\t\"search_value\":\"*\",\n\t\"get_attributes\":[\"*\"]\n}",
+							"options": {
+								"raw": {}
+							}
 						},
 						"url": {
 							"raw": "{{NODE4_HOST}}:{{SERVER_HDB_PORT}}",
@@ -8689,19 +10669,20 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "8bbdb5e1-042e-4fa8-8128-61eeff9beddc",
 								"exec": [
 									"pm.test(\"Data on Node1\", function () {",
 									"    var response = pm.response.json();",
 									"   ",
 									"    try {",
-									"        pm.expect(response).to.have.lengthOf(1200);  ",
+									"        pm.expect(response).to.have.lengthOf(1202);  ",
 									"        response.forEach(row => {",
-									"            pm.expect(Object.keys(row)).to.be.length(10);",
-									"            if (row.id < 5) {",
-									"                pm.expect(row.name).to.not.equal(row.owner);",
-									"            } else {",
-									"                pm.expect(row.name).to.equal(row.owner);",
+									"            pm.expect(Object.keys(row)).to.be.length(12);",
+									"            if (row.id <= 1200) {",
+									"                if (row.id < 5) {",
+									"                    pm.expect(row.name).to.not.equal(row.owner);",
+									"                } else {",
+									"                    pm.expect(row.name).to.equal(row.owner);",
+									"                }",
 									"            }",
 									"        });",
 									"    } catch (error) {",
@@ -8715,9 +10696,8 @@
 						{
 							"listen": "prerequest",
 							"script": {
-								"id": "2864b9e5-7c16-496c-9fb5-1868db6a5e6d",
 								"exec": [
-									"setTimeout(()=>{}, 500);"
+									""
 								],
 								"type": "text/javascript"
 							}
@@ -8748,7 +10728,10 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog\",\n\t\"search_attribute\":\"id\",\n\t\"search_value\":\"*\",\n\t\"get_attributes\":[\"*\"]\n}"
+							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog\",\n\t\"search_attribute\":\"id\",\n\t\"search_value\":\"*\",\n\t\"get_attributes\":[\"*\"]\n}",
+							"options": {
+								"raw": {}
+							}
 						},
 						"url": {
 							"raw": "{{NODE1_HOST}}:{{SERVER_HDB_PORT}}",
@@ -8838,10 +10821,7 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "e7f51e59-4979-4ce4-946c-d8c4258ebe86",
 								"exec": [
-									"//Should be testing that the other attrs have updated in the schema (once bug is fixed)",
-									"",
 									"pm.test(\"Data on Node3\", function () {",
 									"    var response = pm.response.json();",
 									"    pm.expect(response).to.have.lengthOf(2);  ",
@@ -8851,7 +10831,6 @@
 									"        } else if (row.id === 4) {",
 									"            pm.expect(row.name).to.equal('Sarah');",
 									"        }",
-									"        // pm.expect(Object.keys(row)).to.be.length(7);",
 									"    });",
 									"});"
 								],
@@ -8974,28 +10953,22 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "5f019fc1-67fd-4bb3-8d9d-dcc94f9b860b",
 								"exec": [
-									"//Should be testing that the other attrs have updated in the schema (once bug is fixed)",
-									"",
 									"pm.test(\"Data on Node2\", function () {",
 									"    var response = pm.response.json();",
-									"    pm.expect(response).to.have.lengthOf(4);  ",
+									"    pm.expect(response).to.have.lengthOf(5);  ",
 									"    response.forEach(row => {",
 									"         if (row.id === 3) {",
 									"            pm.expect(row.weight_lbs).to.be.null;",
 									"            pm.expect(row.owner).to.be.null;",
 									"            pm.expect(row.name).to.equal('Sammy Jr');",
 									"        } else if (row.id === 4) {",
-									"            pm.expect(row.weight_lbs).to.be.null;",
+									"            pm.expect(row.weight_lbs).to.eql(1);",
 									"            pm.expect(row.owner).to.be.null;",
 									"            pm.expect(row.name).to.equal('Sarah Sarah');",
 									"        }",
-									"        // pm.expect(Object.keys(row)).to.be.length(7);",
 									"    });",
-									"});",
-									"",
-									"postman.setNextRequest(\"Delete row on Node1\");"
+									"});"
 								],
 								"type": "text/javascript"
 							}
@@ -9026,7 +10999,10 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog\",\n\t\"search_attribute\":\"id\",\n\t\"search_value\":\"*\",\n\t\"get_attributes\":[\"*\"]\n}"
+							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog\",\n\t\"search_attribute\":\"id\",\n\t\"search_value\":\"*\",\n\t\"get_attributes\":[\"*\"]\n}",
+							"options": {
+								"raw": {}
+							}
 						},
 						"url": {
 							"raw": "{{NODE2_HOST}}:{{SERVER_HDB_PORT}}",
@@ -9111,12 +11087,1665 @@
 					]
 				},
 				{
+					"name": "CSV Upsert breed data on Node3",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"Check for job message\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.message.indexOf('Starting job')).to.eql(0);",
+									"    ",
+									"    eval(pm.globals.get(\"function:getJobId\"))(jsonData, \"4. TEST csv job correctly upsert data on Node3\");",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						},
+						{
+							"listen": "prerequest",
+							"script": {
+								"exec": [
+									"pm.environment.set(\"CSV_NODE_HOST\", \"{{NODE3_HOST}}\");"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"csv_file_load\",\n\t\"action\": \"upsert\",\n\t\"schema\":\"dev\",\n\t\"table\":\"breeds\",\n\t\"transact_to_cluster\":true,\n\t\"file_path\":\"{{CSV_BASE_PATH}}/breeds.csv\"\n}"
+						},
+						"url": {
+							"raw": "{{NODE3_HOST}}:{{SERVER_HDB_PORT}}",
+							"host": [
+								"{{NODE3_HOST}}"
+							],
+							"port": "{{SERVER_HDB_PORT}}"
+						}
+					},
+					"response": [
+						{
+							"name": "Search By Hash",
+							"originalRequest": {
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"type": "text",
+										"name": "Authorization",
+										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"operation\":\"search_by_hash\",\n  \"schema\": \"dev\",\n  \"table\": \"dog\",\n  \"hash_values\":[1,3],\n  \"get_attributes\": [\"*\"]\n}"
+								},
+								"url": {
+									"raw": "{{HDB_ENDPOINT}}",
+									"host": [
+										"{{HDB_ENDPOINT}}"
+									]
+								}
+							},
+							"status": "OK",
+							"code": 200,
+							"_postman_previewlanguage": "json",
+							"header": [
+								{
+									"key": "connection",
+									"value": "keep-alive",
+									"name": "connection",
+									"description": ""
+								},
+								{
+									"key": "content-length",
+									"value": "145",
+									"name": "content-length",
+									"description": ""
+								},
+								{
+									"key": "content-type",
+									"value": "application/json; charset=utf-8",
+									"name": "content-type",
+									"description": ""
+								},
+								{
+									"key": "date",
+									"value": "Fri, 01 Sep 2017 17:47:21 GMT",
+									"name": "date",
+									"description": ""
+								},
+								{
+									"key": "etag",
+									"value": "W/\"91-7qgDOcZcf+jmd3/hkx3lrpmyUCA\"",
+									"name": "etag",
+									"description": ""
+								},
+								{
+									"key": "x-powered-by",
+									"value": "HarperDB",
+									"name": "x-powered-by",
+									"description": ""
+								}
+							],
+							"cookie": [],
+							"body": ""
+						}
+					]
+				},
+				{
+					"name": "4. TEST csv job correctly upsert data on Node3",
+					"event": [
+						{
+							"listen": "prerequest",
+							"script": {
+								"exec": [
+									"pm.environment.set(\"next_request\", null);"
+								],
+								"type": "text/javascript"
+							}
+						},
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Data updated correctly on Node3\", function () {",
+									"    var response = pm.response.json()[0];",
+									"    pm.expect(response.status).to.equal(\"COMPLETE\");",
+									"    pm.expect(response.message).to.equal(\"successfully loaded 350 of 350 records\");",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"get_job\",\n\t\"id\": \"{{job_id}}\"\n}"
+						},
+						"url": {
+							"raw": "{{NODE3_HOST}}:{{SERVER_HDB_PORT}}",
+							"host": [
+								"{{NODE3_HOST}}"
+							],
+							"port": "{{SERVER_HDB_PORT}}"
+						}
+					},
+					"response": [
+						{
+							"name": "Search By Hash",
+							"originalRequest": {
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"type": "text",
+										"name": "Authorization",
+										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"operation\":\"search_by_hash\",\n  \"schema\": \"dev\",\n  \"table\": \"dog\",\n  \"hash_values\":[1,3],\n  \"get_attributes\": [\"*\"]\n}"
+								},
+								"url": {
+									"raw": "{{HDB_ENDPOINT}}",
+									"host": [
+										"{{HDB_ENDPOINT}}"
+									]
+								}
+							},
+							"status": "OK",
+							"code": 200,
+							"_postman_previewlanguage": "json",
+							"header": [
+								{
+									"key": "connection",
+									"value": "keep-alive",
+									"name": "connection",
+									"description": ""
+								},
+								{
+									"key": "content-length",
+									"value": "145",
+									"name": "content-length",
+									"description": ""
+								},
+								{
+									"key": "content-type",
+									"value": "application/json; charset=utf-8",
+									"name": "content-type",
+									"description": ""
+								},
+								{
+									"key": "date",
+									"value": "Fri, 01 Sep 2017 17:47:21 GMT",
+									"name": "date",
+									"description": ""
+								},
+								{
+									"key": "etag",
+									"value": "W/\"91-7qgDOcZcf+jmd3/hkx3lrpmyUCA\"",
+									"name": "etag",
+									"description": ""
+								},
+								{
+									"key": "x-powered-by",
+									"value": "HarperDB",
+									"name": "x-powered-by",
+									"description": ""
+								}
+							],
+							"cookie": [],
+							"body": ""
+						}
+					]
+				},
+				{
+					"name": "TEST breed data upserted on Node3",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Data on Node3\", function () {",
+									"    var response = pm.response.json();",
+									"    pm.expect(response).to.have.lengthOf(350);  ",
+									"    response.forEach(row => {",
+									"        pm.expect(Object.keys(row).length).to.equal(7);",
+									"    });",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						},
+						{
+							"listen": "prerequest",
+							"script": {
+								"exec": [
+									""
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"dev\",\n\t\"table\":\"breeds\",\n\t\"search_attribute\":\"id\",\n\t\"search_value\":\"*\",\n\t\"get_attributes\":[\"*\"]\n}"
+						},
+						"url": {
+							"raw": "{{NODE3_HOST}}:{{SERVER_HDB_PORT}}",
+							"host": [
+								"{{NODE3_HOST}}"
+							],
+							"port": "{{SERVER_HDB_PORT}}"
+						}
+					},
+					"response": [
+						{
+							"name": "Search By Hash",
+							"originalRequest": {
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"type": "text",
+										"name": "Authorization",
+										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"operation\":\"search_by_hash\",\n  \"schema\": \"dev\",\n  \"table\": \"dog\",\n  \"hash_values\":[1,3],\n  \"get_attributes\": [\"*\"]\n}"
+								},
+								"url": {
+									"raw": "{{HDB_ENDPOINT}}",
+									"host": [
+										"{{HDB_ENDPOINT}}"
+									]
+								}
+							},
+							"status": "OK",
+							"code": 200,
+							"_postman_previewlanguage": "json",
+							"header": [
+								{
+									"key": "connection",
+									"value": "keep-alive",
+									"name": "connection",
+									"description": ""
+								},
+								{
+									"key": "content-length",
+									"value": "145",
+									"name": "content-length",
+									"description": ""
+								},
+								{
+									"key": "content-type",
+									"value": "application/json; charset=utf-8",
+									"name": "content-type",
+									"description": ""
+								},
+								{
+									"key": "date",
+									"value": "Fri, 01 Sep 2017 17:47:21 GMT",
+									"name": "date",
+									"description": ""
+								},
+								{
+									"key": "etag",
+									"value": "W/\"91-7qgDOcZcf+jmd3/hkx3lrpmyUCA\"",
+									"name": "etag",
+									"description": ""
+								},
+								{
+									"key": "x-powered-by",
+									"value": "HarperDB",
+									"name": "x-powered-by",
+									"description": ""
+								}
+							],
+							"cookie": [],
+							"body": ""
+						}
+					]
+				},
+				{
+					"name": "TEST breeds data upserted on Node1",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Data on Node1\", function () {",
+									"    var response = pm.response.json();",
+									"   ",
+									"    try {",
+									"        var response = pm.response.json();",
+									"        pm.expect(response).to.have.lengthOf(350);  ",
+									"        response.forEach(row => {",
+									"            pm.expect(Object.keys(row).length).to.equal(7);",
+									"        });",
+									"    } catch (error) {",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);",
+									"    }",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						},
+						{
+							"listen": "prerequest",
+							"script": {
+								"exec": [
+									""
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"dev\",\n\t\"table\":\"breeds\",\n\t\"search_attribute\":\"id\",\n\t\"search_value\":\"*\",\n\t\"get_attributes\":[\"*\"]\n}",
+							"options": {
+								"raw": {}
+							}
+						},
+						"url": {
+							"raw": "{{NODE1_HOST}}:{{SERVER_HDB_PORT}}",
+							"host": [
+								"{{NODE1_HOST}}"
+							],
+							"port": "{{SERVER_HDB_PORT}}"
+						}
+					},
+					"response": [
+						{
+							"name": "Search By Hash",
+							"originalRequest": {
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"type": "text",
+										"name": "Authorization",
+										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"operation\":\"search_by_hash\",\n  \"schema\": \"dev\",\n  \"table\": \"dog\",\n  \"hash_values\":[1,3],\n  \"get_attributes\": [\"*\"]\n}"
+								},
+								"url": {
+									"raw": "{{HDB_ENDPOINT}}",
+									"host": [
+										"{{HDB_ENDPOINT}}"
+									]
+								}
+							},
+							"status": "OK",
+							"code": 200,
+							"_postman_previewlanguage": "json",
+							"header": [
+								{
+									"key": "connection",
+									"value": "keep-alive",
+									"name": "connection",
+									"description": ""
+								},
+								{
+									"key": "content-length",
+									"value": "145",
+									"name": "content-length",
+									"description": ""
+								},
+								{
+									"key": "content-type",
+									"value": "application/json; charset=utf-8",
+									"name": "content-type",
+									"description": ""
+								},
+								{
+									"key": "date",
+									"value": "Fri, 01 Sep 2017 17:47:21 GMT",
+									"name": "date",
+									"description": ""
+								},
+								{
+									"key": "etag",
+									"value": "W/\"91-7qgDOcZcf+jmd3/hkx3lrpmyUCA\"",
+									"name": "etag",
+									"description": ""
+								},
+								{
+									"key": "x-powered-by",
+									"value": "HarperDB",
+									"name": "x-powered-by",
+									"description": ""
+								}
+							],
+							"cookie": [],
+							"body": ""
+						}
+					]
+				},
+				{
+					"name": "TEST breeds data upserted on Node4",
+					"event": [
+						{
+							"listen": "prerequest",
+							"script": {
+								"exec": [
+									""
+								],
+								"type": "text/javascript"
+							}
+						},
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Data on Node4\", function () {",
+									"    var response = pm.response.json();",
+									"    ",
+									"    try {",
+									"        var response = pm.response.json();",
+									"        pm.expect(response).to.have.lengthOf(350);  ",
+									"        response.forEach(row => {",
+									"            pm.expect(Object.keys(row).length).to.equal(7);",
+									"        });",
+									"    } catch (error) {",
+									"        eval(pm.globals.get(\"function:retryRequest\"))(request, error);",
+									"    }",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"dev\",\n\t\"table\":\"breeds\",\n\t\"search_attribute\":\"id\",\n\t\"search_value\":\"*\",\n\t\"get_attributes\":[\"*\"]\n}",
+							"options": {
+								"raw": {}
+							}
+						},
+						"url": {
+							"raw": "{{NODE4_HOST}}:{{SERVER_HDB_PORT}}",
+							"host": [
+								"{{NODE4_HOST}}"
+							],
+							"port": "{{SERVER_HDB_PORT}}"
+						}
+					},
+					"response": [
+						{
+							"name": "Search By Hash",
+							"originalRequest": {
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"type": "text",
+										"name": "Authorization",
+										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"operation\":\"search_by_hash\",\n  \"schema\": \"dev\",\n  \"table\": \"dog\",\n  \"hash_values\":[1,3],\n  \"get_attributes\": [\"*\"]\n}"
+								},
+								"url": {
+									"raw": "{{HDB_ENDPOINT}}",
+									"host": [
+										"{{HDB_ENDPOINT}}"
+									]
+								}
+							},
+							"status": "OK",
+							"code": 200,
+							"_postman_previewlanguage": "json",
+							"header": [
+								{
+									"key": "connection",
+									"value": "keep-alive",
+									"name": "connection",
+									"description": ""
+								},
+								{
+									"key": "content-length",
+									"value": "145",
+									"name": "content-length",
+									"description": ""
+								},
+								{
+									"key": "content-type",
+									"value": "application/json; charset=utf-8",
+									"name": "content-type",
+									"description": ""
+								},
+								{
+									"key": "date",
+									"value": "Fri, 01 Sep 2017 17:47:21 GMT",
+									"name": "date",
+									"description": ""
+								},
+								{
+									"key": "etag",
+									"value": "W/\"91-7qgDOcZcf+jmd3/hkx3lrpmyUCA\"",
+									"name": "etag",
+									"description": ""
+								},
+								{
+									"key": "x-powered-by",
+									"value": "HarperDB",
+									"name": "x-powered-by",
+									"description": ""
+								}
+							],
+							"cookie": [],
+							"body": ""
+						}
+					]
+				},
+				{
+					"name": "TEST breeds data NOT upserted on Node2",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Data on Node2\", function () {",
+									"    var response = pm.response.json();",
+									"    pm.expect(response).to.have.lengthOf(0);",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"dev\",\n\t\"table\":\"breeds\",\n\t\"search_attribute\":\"id\",\n\t\"search_value\":\"*\",\n\t\"get_attributes\":[\"*\"]\n}",
+							"options": {
+								"raw": {}
+							}
+						},
+						"url": {
+							"raw": "{{NODE2_HOST}}:{{SERVER_HDB_PORT}}",
+							"host": [
+								"{{NODE2_HOST}}"
+							],
+							"port": "{{SERVER_HDB_PORT}}"
+						}
+					},
+					"response": [
+						{
+							"name": "Search By Hash",
+							"originalRequest": {
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"type": "text",
+										"name": "Authorization",
+										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"operation\":\"search_by_hash\",\n  \"schema\": \"dev\",\n  \"table\": \"dog\",\n  \"hash_values\":[1,3],\n  \"get_attributes\": [\"*\"]\n}"
+								},
+								"url": {
+									"raw": "{{HDB_ENDPOINT}}",
+									"host": [
+										"{{HDB_ENDPOINT}}"
+									]
+								}
+							},
+							"status": "OK",
+							"code": 200,
+							"_postman_previewlanguage": "json",
+							"header": [
+								{
+									"key": "connection",
+									"value": "keep-alive",
+									"name": "connection",
+									"description": ""
+								},
+								{
+									"key": "content-length",
+									"value": "145",
+									"name": "content-length",
+									"description": ""
+								},
+								{
+									"key": "content-type",
+									"value": "application/json; charset=utf-8",
+									"name": "content-type",
+									"description": ""
+								},
+								{
+									"key": "date",
+									"value": "Fri, 01 Sep 2017 17:47:21 GMT",
+									"name": "date",
+									"description": ""
+								},
+								{
+									"key": "etag",
+									"value": "W/\"91-7qgDOcZcf+jmd3/hkx3lrpmyUCA\"",
+									"name": "etag",
+									"description": ""
+								},
+								{
+									"key": "x-powered-by",
+									"value": "HarperDB",
+									"name": "x-powered-by",
+									"description": ""
+								}
+							],
+							"cookie": [],
+							"body": ""
+						}
+					]
+				},
+				{
+					"name": "CSV Upsert breed data on Node2",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"Check for job message\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.message.indexOf('Starting job')).to.eql(0);",
+									"    ",
+									"    eval(pm.globals.get(\"function:getJobId\"))(jsonData, \"5. TEST csv job correctly upsert data on Node2\");",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						},
+						{
+							"listen": "prerequest",
+							"script": {
+								"exec": [
+									"pm.environment.set(\"CSV_NODE_HOST\", \"{{NODE2_HOST}}\");"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"csv_file_load\",\n\t\"action\": \"upsert\",\n\t\"schema\":\"dev\",\n\t\"table\":\"breeds\",\n\t\"transact_to_cluster\":true,\n\t\"file_path\":\"{{CSV_BASE_PATH}}/breeds.csv\"\n}"
+						},
+						"url": {
+							"raw": "{{NODE2_HOST}}:{{SERVER_HDB_PORT}}",
+							"host": [
+								"{{NODE2_HOST}}"
+							],
+							"port": "{{SERVER_HDB_PORT}}"
+						}
+					},
+					"response": [
+						{
+							"name": "Search By Hash",
+							"originalRequest": {
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"type": "text",
+										"name": "Authorization",
+										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"operation\":\"search_by_hash\",\n  \"schema\": \"dev\",\n  \"table\": \"dog\",\n  \"hash_values\":[1,3],\n  \"get_attributes\": [\"*\"]\n}"
+								},
+								"url": {
+									"raw": "{{HDB_ENDPOINT}}",
+									"host": [
+										"{{HDB_ENDPOINT}}"
+									]
+								}
+							},
+							"status": "OK",
+							"code": 200,
+							"_postman_previewlanguage": "json",
+							"header": [
+								{
+									"key": "connection",
+									"value": "keep-alive",
+									"name": "connection",
+									"description": ""
+								},
+								{
+									"key": "content-length",
+									"value": "145",
+									"name": "content-length",
+									"description": ""
+								},
+								{
+									"key": "content-type",
+									"value": "application/json; charset=utf-8",
+									"name": "content-type",
+									"description": ""
+								},
+								{
+									"key": "date",
+									"value": "Fri, 01 Sep 2017 17:47:21 GMT",
+									"name": "date",
+									"description": ""
+								},
+								{
+									"key": "etag",
+									"value": "W/\"91-7qgDOcZcf+jmd3/hkx3lrpmyUCA\"",
+									"name": "etag",
+									"description": ""
+								},
+								{
+									"key": "x-powered-by",
+									"value": "HarperDB",
+									"name": "x-powered-by",
+									"description": ""
+								}
+							],
+							"cookie": [],
+							"body": ""
+						}
+					]
+				},
+				{
+					"name": "5. TEST csv job correctly upsert data on Node2",
+					"event": [
+						{
+							"listen": "prerequest",
+							"script": {
+								"exec": [
+									"pm.environment.set(\"next_request\", null);",
+									"pm.environment.set(\"CSV_NODE_HOST\", null);"
+								],
+								"type": "text/javascript"
+							}
+						},
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Data updated correctly on Node2\", function () {",
+									"    var response = pm.response.json()[0];",
+									"    pm.expect(response.status).to.equal(\"COMPLETE\");",
+									"    pm.expect(response.message).to.equal(\"successfully loaded 350 of 350 records\");",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"get_job\",\n\t\"id\": \"{{job_id}}\"\n}"
+						},
+						"url": {
+							"raw": "{{NODE2_HOST}}:{{SERVER_HDB_PORT}}",
+							"host": [
+								"{{NODE2_HOST}}"
+							],
+							"port": "{{SERVER_HDB_PORT}}"
+						}
+					},
+					"response": [
+						{
+							"name": "Search By Hash",
+							"originalRequest": {
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"type": "text",
+										"name": "Authorization",
+										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"operation\":\"search_by_hash\",\n  \"schema\": \"dev\",\n  \"table\": \"dog\",\n  \"hash_values\":[1,3],\n  \"get_attributes\": [\"*\"]\n}"
+								},
+								"url": {
+									"raw": "{{HDB_ENDPOINT}}",
+									"host": [
+										"{{HDB_ENDPOINT}}"
+									]
+								}
+							},
+							"status": "OK",
+							"code": 200,
+							"_postman_previewlanguage": "json",
+							"header": [
+								{
+									"key": "connection",
+									"value": "keep-alive",
+									"name": "connection",
+									"description": ""
+								},
+								{
+									"key": "content-length",
+									"value": "145",
+									"name": "content-length",
+									"description": ""
+								},
+								{
+									"key": "content-type",
+									"value": "application/json; charset=utf-8",
+									"name": "content-type",
+									"description": ""
+								},
+								{
+									"key": "date",
+									"value": "Fri, 01 Sep 2017 17:47:21 GMT",
+									"name": "date",
+									"description": ""
+								},
+								{
+									"key": "etag",
+									"value": "W/\"91-7qgDOcZcf+jmd3/hkx3lrpmyUCA\"",
+									"name": "etag",
+									"description": ""
+								},
+								{
+									"key": "x-powered-by",
+									"value": "HarperDB",
+									"name": "x-powered-by",
+									"description": ""
+								}
+							],
+							"cookie": [],
+							"body": ""
+						}
+					]
+				},
+				{
+					"name": "TEST breed data upserted on Node2",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Data on Node2\", function () {",
+									"    var response = pm.response.json();",
+									"    pm.expect(response).to.have.lengthOf(350);  ",
+									"    response.forEach(row => {",
+									"        pm.expect(Object.keys(row).length).to.equal(7);",
+									"        pm.expect(row['__createdtime__']).to.equal(row['__updatedtime__']);",
+									"    });",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						},
+						{
+							"listen": "prerequest",
+							"script": {
+								"exec": [
+									"pm.environment.set(\"job_id\", null);"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"dev\",\n\t\"table\":\"breeds\",\n\t\"search_attribute\":\"id\",\n\t\"search_value\":\"*\",\n\t\"get_attributes\":[\"*\"]\n}"
+						},
+						"url": {
+							"raw": "{{NODE2_HOST}}:{{SERVER_HDB_PORT}}",
+							"host": [
+								"{{NODE2_HOST}}"
+							],
+							"port": "{{SERVER_HDB_PORT}}"
+						}
+					},
+					"response": [
+						{
+							"name": "Search By Hash",
+							"originalRequest": {
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"type": "text",
+										"name": "Authorization",
+										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"operation\":\"search_by_hash\",\n  \"schema\": \"dev\",\n  \"table\": \"dog\",\n  \"hash_values\":[1,3],\n  \"get_attributes\": [\"*\"]\n}"
+								},
+								"url": {
+									"raw": "{{HDB_ENDPOINT}}",
+									"host": [
+										"{{HDB_ENDPOINT}}"
+									]
+								}
+							},
+							"status": "OK",
+							"code": 200,
+							"_postman_previewlanguage": "json",
+							"header": [
+								{
+									"key": "connection",
+									"value": "keep-alive",
+									"name": "connection",
+									"description": ""
+								},
+								{
+									"key": "content-length",
+									"value": "145",
+									"name": "content-length",
+									"description": ""
+								},
+								{
+									"key": "content-type",
+									"value": "application/json; charset=utf-8",
+									"name": "content-type",
+									"description": ""
+								},
+								{
+									"key": "date",
+									"value": "Fri, 01 Sep 2017 17:47:21 GMT",
+									"name": "date",
+									"description": ""
+								},
+								{
+									"key": "etag",
+									"value": "W/\"91-7qgDOcZcf+jmd3/hkx3lrpmyUCA\"",
+									"name": "etag",
+									"description": ""
+								},
+								{
+									"key": "x-powered-by",
+									"value": "HarperDB",
+									"name": "x-powered-by",
+									"description": ""
+								}
+							],
+							"cookie": [],
+							"body": ""
+						}
+					]
+				},
+				{
+					"name": "TEST breed data upserted on Node1",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Data upserted on Node1\", function () {",
+									"    var response = pm.response.json();",
+									"    pm.expect(response).to.have.lengthOf(350);  ",
+									"    response.forEach(row => {",
+									"        pm.expect(row['__createdtime__']).to.be.lessThan(row['__updatedtime__']);",
+									"    });",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						},
+						{
+							"listen": "prerequest",
+							"script": {
+								"exec": [
+									""
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"dev\",\n\t\"table\":\"breeds\",\n\t\"search_attribute\":\"id\",\n\t\"search_value\":\"*\",\n\t\"get_attributes\":[\"*\"]\n}"
+						},
+						"url": {
+							"raw": "{{NODE1_HOST}}:{{SERVER_HDB_PORT}}",
+							"host": [
+								"{{NODE1_HOST}}"
+							],
+							"port": "{{SERVER_HDB_PORT}}"
+						}
+					},
+					"response": [
+						{
+							"name": "Search By Hash",
+							"originalRequest": {
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"type": "text",
+										"name": "Authorization",
+										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"operation\":\"search_by_hash\",\n  \"schema\": \"dev\",\n  \"table\": \"dog\",\n  \"hash_values\":[1,3],\n  \"get_attributes\": [\"*\"]\n}"
+								},
+								"url": {
+									"raw": "{{HDB_ENDPOINT}}",
+									"host": [
+										"{{HDB_ENDPOINT}}"
+									]
+								}
+							},
+							"status": "OK",
+							"code": 200,
+							"_postman_previewlanguage": "json",
+							"header": [
+								{
+									"key": "connection",
+									"value": "keep-alive",
+									"name": "connection",
+									"description": ""
+								},
+								{
+									"key": "content-length",
+									"value": "145",
+									"name": "content-length",
+									"description": ""
+								},
+								{
+									"key": "content-type",
+									"value": "application/json; charset=utf-8",
+									"name": "content-type",
+									"description": ""
+								},
+								{
+									"key": "date",
+									"value": "Fri, 01 Sep 2017 17:47:21 GMT",
+									"name": "date",
+									"description": ""
+								},
+								{
+									"key": "etag",
+									"value": "W/\"91-7qgDOcZcf+jmd3/hkx3lrpmyUCA\"",
+									"name": "etag",
+									"description": ""
+								},
+								{
+									"key": "x-powered-by",
+									"value": "HarperDB",
+									"name": "x-powered-by",
+									"description": ""
+								}
+							],
+							"cookie": [],
+							"body": ""
+						}
+					]
+				},
+				{
+					"name": "TEST breed data upserted on Node4",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Data upserted on Node4\", function () {",
+									"    var response = pm.response.json();",
+									"    pm.expect(response).to.have.lengthOf(350);  ",
+									"    response.forEach(row => {",
+									"        pm.expect(row['__createdtime__']).to.be.lessThan(row['__updatedtime__']);",
+									"    });",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						},
+						{
+							"listen": "prerequest",
+							"script": {
+								"exec": [
+									""
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"dev\",\n\t\"table\":\"breeds\",\n\t\"search_attribute\":\"id\",\n\t\"search_value\":\"*\",\n\t\"get_attributes\":[\"*\"]\n}"
+						},
+						"url": {
+							"raw": "{{NODE4_HOST}}:{{SERVER_HDB_PORT}}",
+							"host": [
+								"{{NODE4_HOST}}"
+							],
+							"port": "{{SERVER_HDB_PORT}}"
+						}
+					},
+					"response": [
+						{
+							"name": "Search By Hash",
+							"originalRequest": {
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"type": "text",
+										"name": "Authorization",
+										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"operation\":\"search_by_hash\",\n  \"schema\": \"dev\",\n  \"table\": \"dog\",\n  \"hash_values\":[1,3],\n  \"get_attributes\": [\"*\"]\n}"
+								},
+								"url": {
+									"raw": "{{HDB_ENDPOINT}}",
+									"host": [
+										"{{HDB_ENDPOINT}}"
+									]
+								}
+							},
+							"status": "OK",
+							"code": 200,
+							"_postman_previewlanguage": "json",
+							"header": [
+								{
+									"key": "connection",
+									"value": "keep-alive",
+									"name": "connection",
+									"description": ""
+								},
+								{
+									"key": "content-length",
+									"value": "145",
+									"name": "content-length",
+									"description": ""
+								},
+								{
+									"key": "content-type",
+									"value": "application/json; charset=utf-8",
+									"name": "content-type",
+									"description": ""
+								},
+								{
+									"key": "date",
+									"value": "Fri, 01 Sep 2017 17:47:21 GMT",
+									"name": "date",
+									"description": ""
+								},
+								{
+									"key": "etag",
+									"value": "W/\"91-7qgDOcZcf+jmd3/hkx3lrpmyUCA\"",
+									"name": "etag",
+									"description": ""
+								},
+								{
+									"key": "x-powered-by",
+									"value": "HarperDB",
+									"name": "x-powered-by",
+									"description": ""
+								}
+							],
+							"cookie": [],
+							"body": ""
+						}
+					]
+				},
+				{
+					"name": "TEST breeds data NOT upserted on Node3",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Data on Node3\", function () {",
+									"    var response = pm.response.json();",
+									"    pm.expect(response).to.have.lengthOf(350);  ",
+									"    response.forEach(row => {",
+									"        pm.expect(Object.keys(row).length).to.equal(7);",
+									"        pm.expect(row['__createdtime__']).to.equal(row['__updatedtime__']);",
+									"    });",
+									"});",
+									"",
+									"postman.setNextRequest(\"Delete row on Node1\");"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"dev\",\n\t\"table\":\"breeds\",\n\t\"search_attribute\":\"id\",\n\t\"search_value\":\"*\",\n\t\"get_attributes\":[\"*\"]\n}",
+							"options": {
+								"raw": {}
+							}
+						},
+						"url": {
+							"raw": "{{NODE3_HOST}}:{{SERVER_HDB_PORT}}",
+							"host": [
+								"{{NODE3_HOST}}"
+							],
+							"port": "{{SERVER_HDB_PORT}}"
+						}
+					},
+					"response": [
+						{
+							"name": "Search By Hash",
+							"originalRequest": {
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"type": "text",
+										"name": "Authorization",
+										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"operation\":\"search_by_hash\",\n  \"schema\": \"dev\",\n  \"table\": \"dog\",\n  \"hash_values\":[1,3],\n  \"get_attributes\": [\"*\"]\n}"
+								},
+								"url": {
+									"raw": "{{HDB_ENDPOINT}}",
+									"host": [
+										"{{HDB_ENDPOINT}}"
+									]
+								}
+							},
+							"status": "OK",
+							"code": 200,
+							"_postman_previewlanguage": "json",
+							"header": [
+								{
+									"key": "connection",
+									"value": "keep-alive",
+									"name": "connection",
+									"description": ""
+								},
+								{
+									"key": "content-length",
+									"value": "145",
+									"name": "content-length",
+									"description": ""
+								},
+								{
+									"key": "content-type",
+									"value": "application/json; charset=utf-8",
+									"name": "content-type",
+									"description": ""
+								},
+								{
+									"key": "date",
+									"value": "Fri, 01 Sep 2017 17:47:21 GMT",
+									"name": "date",
+									"description": ""
+								},
+								{
+									"key": "etag",
+									"value": "W/\"91-7qgDOcZcf+jmd3/hkx3lrpmyUCA\"",
+									"name": "etag",
+									"description": ""
+								},
+								{
+									"key": "x-powered-by",
+									"value": "HarperDB",
+									"name": "x-powered-by",
+									"description": ""
+								}
+							],
+							"cookie": [],
+							"body": ""
+						}
+					]
+				},
+				{
 					"name": "Check Job Completed",
 					"event": [
 						{
 							"listen": "prerequest",
 							"script": {
-								"id": "f727f848-80a9-4aad-b3dd-322ac7de7009",
 								"exec": [
 									"setTimeout(()=>{}, 200);",
 									"console.log(\"Checking Job \" + pm.environment.get(\"job_id\"));"
@@ -9127,7 +12756,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "e372721f-0ec9-43ae-88a6-66e3a18a49a4",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {",
 									"    pm.response.to.have.status(200);",
@@ -9217,7 +12845,6 @@
 				{
 					"listen": "prerequest",
 					"script": {
-						"id": "811902d4-d4bc-4278-8599-dca75c7b8d4b",
 						"type": "text/javascript",
 						"exec": [
 							""
@@ -9227,7 +12854,6 @@
 				{
 					"listen": "test",
 					"script": {
-						"id": "e84f8c4c-4146-4832-bdd6-50cf3b4e36ff",
 						"type": "text/javascript",
 						"exec": [
 							""
@@ -9246,7 +12872,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "880a06c9-9eae-4cc1-847b-91fede7cebf3",
 								"exec": [
 									"tests[\"Deleted one row on Node1\"] = responseBody.has(\"1 of 1 record successfully deleted\");",
 									"",
@@ -9375,7 +13000,6 @@
 						{
 							"listen": "prerequest",
 							"script": {
-								"id": "aa211bfe-656d-4e8d-8c7d-bd22d4d26ec0",
 								"exec": [
 									""
 								],
@@ -9385,7 +13009,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "fa26be30-64dd-417d-bbe1-5c385e36eb69",
 								"exec": [
 									"pm.test(\"Test data deleted on Node4\", function () {",
 									"    var response = pm.response.json();",
@@ -9516,7 +13139,6 @@
 						{
 							"listen": "prerequest",
 							"script": {
-								"id": "2997174c-00bd-459b-9bf7-5065e1679b18",
 								"exec": [
 									""
 								],
@@ -9526,7 +13148,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "94c3a5e3-3c12-4a38-8f6e-e6e9449a3b27",
 								"exec": [
 									"pm.test(\"Test data NOT deleted on Node2\", function () {",
 									"    var response = pm.response.json();",
@@ -9652,7 +13273,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "b9da00da-8e8a-4d4a-bb3f-b930d8b71c0c",
 								"exec": [
 									"tests[\"Deleted four rows on Node2\"] = responseBody.has(\"4 of 4 records successfully deleted\");",
 									"",
@@ -9780,7 +13400,6 @@
 						{
 							"listen": "prerequest",
 							"script": {
-								"id": "31ec06c9-3e80-473d-acc6-2fe3f969cdb5",
 								"exec": [
 									""
 								],
@@ -9790,7 +13409,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "d5d2c9c7-1a81-4a4c-a1b0-124d49f529ae",
 								"exec": [
 									"pm.test(\"Test data deleted on Node2\", function () {",
 									"    var response = pm.response.json();",
@@ -9921,7 +13539,6 @@
 						{
 							"listen": "prerequest",
 							"script": {
-								"id": "3ba22fad-ba16-4918-92f1-751f34895db7",
 								"exec": [
 									""
 								],
@@ -9931,7 +13548,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "74a858a9-4c08-4632-9c77-601a80027ed8",
 								"exec": [
 									"pm.test(\"Test data NOT deleted on Node3\", function () {",
 									"    var response = pm.response.json();",
@@ -10057,7 +13673,6 @@
 						{
 							"listen": "prerequest",
 							"script": {
-								"id": "bebf26f0-5ae2-47d5-8704-e61131626b17",
 								"exec": [
 									""
 								],
@@ -10067,7 +13682,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "defaee27-1d70-4ff9-952b-1956b3a48bdc",
 								"exec": [
 									"pm.test(\"Test data deleted on Node1\", function () {",
 									"    var response = pm.response.json();",
@@ -10198,7 +13812,6 @@
 						{
 							"listen": "prerequest",
 							"script": {
-								"id": "5e3870a1-ae0e-48f6-9b03-6ba2f07c73cb",
 								"exec": [
 									""
 								],
@@ -10208,7 +13821,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "b9055a7f-43d3-4495-88c1-56479fd88687",
 								"exec": [
 									"pm.test(\"Test data deleted on Node4\", function () {",
 									"    var response = pm.response.json();",
@@ -10345,7 +13957,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "5fa1b24f-309b-4e71-bf48-b7c1a5b7a357",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {",
 									"    pm.response.to.have.status(200);",
@@ -10353,7 +13964,8 @@
 									"",
 									"pm.test(\"Node2 removed\", function () {",
 									"    var jsonData = pm.response.json();",
-									"    pm.expect(jsonData.message).to.eql(\"successfully removed Node2 from manifest\");",
+									"    const node_name = pm.environment.get(\"NODE2_NAME\");",
+									"    pm.expect(jsonData.message).to.eql(`successfully removed ${node_name} from manifest`);",
 									"});",
 									""
 								],
@@ -10396,7 +14008,10 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\t\"operation\":\"remove_node\",\n\t\"name\":\"Node2\"\n}"
+							"raw": "{\n\t\"operation\":\"remove_node\",\n\t\"name\":\"{{NODE2_NAME}}\"\n}",
+							"options": {
+								"raw": {}
+							}
 						},
 						"url": {
 							"raw": "{{NODE1_HOST}}:{{SERVER_HDB_PORT}}",
@@ -10473,7 +14088,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "0bdfa8f4-9f6d-439e-b37c-468e166d4279",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {",
 									"    pm.response.to.have.status(200);",
@@ -10481,7 +14095,8 @@
 									"",
 									"pm.test(\"Node3 removed\", function () {",
 									"    var jsonData = pm.response.json();",
-									"    pm.expect(jsonData.message).to.eql(\"successfully removed Node3 from manifest\");",
+									"    const node_name = pm.environment.get(\"NODE3_NAME\");",
+									"    pm.expect(jsonData.message).to.eql(`successfully removed ${node_name} from manifest`);",
 									"});",
 									""
 								],
@@ -10524,7 +14139,10 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\t\"operation\":\"remove_node\",\n\t\"name\":\"Node3\"\n}"
+							"raw": "{\n\t\"operation\":\"remove_node\",\n\t\"name\":\"{{NODE3_NAME}}\"\n}",
+							"options": {
+								"raw": {}
+							}
 						},
 						"url": {
 							"raw": "{{NODE1_HOST}}:{{SERVER_HDB_PORT}}",
@@ -10601,7 +14219,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"id": "ae47e702-eb1b-4c79-a3cf-c80c865c388a",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {",
 									"    pm.response.to.have.status(200);",
@@ -10609,7 +14226,8 @@
 									"",
 									"pm.test(\"Node4 removed\", function () {",
 									"    var jsonData = pm.response.json();",
-									"    pm.expect(jsonData.message).to.eql(\"successfully removed Node4 from manifest\");",
+									"    const node_name = pm.environment.get(\"NODE4_NAME\");",
+									"    pm.expect(jsonData.message).to.eql(`successfully removed ${node_name} from manifest`);",
 									"});",
 									""
 								],
@@ -10652,7 +14270,10 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\t\"operation\":\"remove_node\",\n\t\"name\":\"Node4\"\n}"
+							"raw": "{\n\t\"operation\":\"remove_node\",\n\t\"name\":\"{{NODE4_NAME}}\"\n}",
+							"options": {
+								"raw": {}
+							}
 						},
 						"url": {
 							"raw": "{{NODE1_HOST}}:{{SERVER_HDB_PORT}}",
@@ -10725,6 +14346,19 @@
 				},
 				{
 					"name": "DROP SCHEMA on Node1",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
 					"request": {
 						"auth": {
 							"type": "basic",
@@ -10750,7 +14384,10 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\t\"operation\":\"drop_schema\",\n\t\"schema\":\"dev\"\n}"
+							"raw": "{\n\t\"operation\":\"drop_schema\",\n\t\"schema\":\"dev\"\n}",
+							"options": {
+								"raw": {}
+							}
 						},
 						"url": {
 							"raw": "{{NODE1_HOST}}:{{SERVER_HDB_PORT}}",
@@ -10836,6 +14473,19 @@
 				},
 				{
 					"name": "DROP SCHEMA on Node2",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
 					"request": {
 						"auth": {
 							"type": "basic",
@@ -10861,7 +14511,10 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\t\"operation\":\"drop_schema\",\n\t\"schema\":\"dev\"\n}"
+							"raw": "{\n\t\"operation\":\"drop_schema\",\n\t\"schema\":\"dev\"\n}",
+							"options": {
+								"raw": {}
+							}
 						},
 						"url": {
 							"raw": "{{NODE2_HOST}}:{{SERVER_HDB_PORT}}",
@@ -10947,6 +14600,19 @@
 				},
 				{
 					"name": "DROP SCHEMA on Node3",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
 					"request": {
 						"auth": {
 							"type": "basic",
@@ -10972,7 +14638,10 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\t\"operation\":\"drop_schema\",\n\t\"schema\":\"dev\"\n}"
+							"raw": "{\n\t\"operation\":\"drop_schema\",\n\t\"schema\":\"dev\"\n}",
+							"options": {
+								"raw": {}
+							}
 						},
 						"url": {
 							"raw": "{{NODE3_HOST}}:{{SERVER_HDB_PORT}}",
@@ -11058,6 +14727,19 @@
 				},
 				{
 					"name": "DROP SCHEMA on Node4",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
 					"request": {
 						"auth": {
 							"type": "basic",
@@ -11083,7 +14765,10 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\t\"operation\":\"drop_schema\",\n\t\"schema\":\"dev\"\n}"
+							"raw": "{\n\t\"operation\":\"drop_schema\",\n\t\"schema\":\"dev\"\n}",
+							"options": {
+								"raw": {}
+							}
 						},
 						"url": {
 							"raw": "{{NODE4_HOST}}:{{SERVER_HDB_PORT}}",
@@ -11175,7 +14860,6 @@
 		{
 			"listen": "prerequest",
 			"script": {
-				"id": "c51df27c-26f8-4773-ad75-d1fce7e068b5",
 				"type": "text/javascript",
 				"exec": [
 					""
@@ -11185,7 +14869,6 @@
 		{
 			"listen": "test",
 			"script": {
-				"id": "605aebad-fabd-45eb-9131-df73f60cba0d",
 				"type": "text/javascript",
 				"exec": [
 					"postman.setGlobalVariable(\"function:getJobId\", (jsonData, next_req)=>{",
