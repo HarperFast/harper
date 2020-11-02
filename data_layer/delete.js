@@ -55,9 +55,12 @@ async function deleteFilesBefore(delete_obj) {
     }
 
     try {
-        await harperBridge.deleteRecordsBefore(delete_obj);
+        let results = await harperBridge.deleteRecordsBefore(delete_obj);
         await p_global_schema(delete_obj.schema, delete_obj.table);
         harper_logger.info(`Finished deleting files before ${delete_obj.date}`);
+        if(results && results.message){
+            return results.message;
+        }
     } catch (err) {
         throw err;
     }
