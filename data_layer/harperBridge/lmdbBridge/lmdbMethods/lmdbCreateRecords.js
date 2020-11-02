@@ -17,7 +17,7 @@ const write_transaction = require('../lmdbUtility/lmdbWriteTransaction');
 module.exports = lmdbCreateRecords;
 
 /**
- * Orchestrates the insertion of data into Helium and the creation of new attributes/dbis
+ * Orchestrates the insertion of data into LMDB and the creation of new attributes/dbis
  * if they do not already exist.
  * @param {InsertObject} insert_obj
  * @returns {Promise<{skipped_hashes: *, written_hashes: *, schema_table: *}>}

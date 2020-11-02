@@ -99,7 +99,16 @@ function postOperationHandler(request_body, result, orig_req) {
                 sendOperationTransaction(transaction_msg, request_body, result.update_hashes, orig_req, result.txn_time);
                 sendAttributeTransaction(result, request_body, transaction_msg, orig_req);
             } catch(err) {
-                harper_logger.error('There was an error calling delete followup function.');
+                harper_logger.error('There was an error calling update followup function.');
+                harper_logger.error(err);
+            }
+            break;
+        case terms.OPERATIONS_ENUM.UPSERT:
+            try {
+                sendOperationTransaction(transaction_msg, request_body, result.upserted_hashes, orig_req, result.txn_time);
+                sendAttributeTransaction(result, request_body, transaction_msg, orig_req);
+            } catch(err) {
+                harper_logger.error('There was an error calling upsert followup function.');
                 harper_logger.error(err);
             }
             break;

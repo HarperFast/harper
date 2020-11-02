@@ -7053,8 +7053,8 @@
 							"listen": "test",
 							"script": {
 								"exec": [
-									"pm.test(\"Status code is 500\", function () {",
-									"    pm.response.to.have.status(500);",
+									"pm.test(\"Status code is 400\", function () {",
+									"    pm.response.to.have.status(400);",
 									"});",
 									"",
 									"pm.test(\"attribute too long error message\", function () {",
@@ -7388,8 +7388,8 @@
 									"listen": "test",
 									"script": {
 										"exec": [
-											"pm.test(\"Status code is 500\", function () {",
-											"    pm.response.to.have.status(500);",
+											"pm.test(\"Status code is 400\", function () {",
+											"    pm.response.to.have.status(400);",
 											"});",
 											"",
 											"pm.test(\"Receives invalid SQL error msg\", function () {",
@@ -7451,8 +7451,8 @@
 									"listen": "test",
 									"script": {
 										"exec": [
-											"pm.test(\"Status code is 500\", function () {",
-											"    pm.response.to.have.status(500);",
+											"pm.test(\"Status code is 400\", function () {",
+											"    pm.response.to.have.status(400);",
 											"});",
 											"",
 											"pm.test(\"Receives invalid SQL error msg\", function () {",
@@ -7514,8 +7514,8 @@
 									"listen": "test",
 									"script": {
 										"exec": [
-											"pm.test(\"Status code is 500\", function () {",
-											"    pm.response.to.have.status(500);",
+											"pm.test(\"Status code is 400\", function () {",
+											"    pm.response.to.have.status(400);",
 											"});",
 											"",
 											"pm.test(\"Receives invalid SQL error msg\", function () {",
@@ -7577,8 +7577,8 @@
 									"listen": "test",
 									"script": {
 										"exec": [
-											"pm.test(\"Status code is 500\", function () {",
-											"    pm.response.to.have.status(500);",
+											"pm.test(\"Status code is 400\", function () {",
+											"    pm.response.to.have.status(400);",
 											"});",
 											"",
 											"pm.test(\"Receives invalid SQL error msg\", function () {",
@@ -7640,8 +7640,8 @@
 									"listen": "test",
 									"script": {
 										"exec": [
-											"pm.test(\"Status code is 500\", function () {",
-											"    pm.response.to.have.status(500);",
+											"pm.test(\"Status code is 400\", function () {",
+											"    pm.response.to.have.status(400);",
 											"});",
 											"",
 											"pm.test(\"Receives invalid SQL error msg\", function () {",
@@ -8594,7 +8594,7 @@
 									"listen": "prerequest",
 									"script": {
 										"exec": [
-											"setTimeout(()=>{}, 200);"
+											"setTimeout(()=>{}, 400);"
 										],
 										"type": "text/javascript"
 									}
@@ -16771,8 +16771,8 @@
 									"listen": "test",
 									"script": {
 										"exec": [
-											"pm.test(\"Status code is 500\", function () {",
-											"    pm.response.to.have.status(500);",
+											"pm.test(\"Status code is 400\", function () {",
+											"    pm.response.to.have.status(400);",
 											"});",
 											"",
 											"pm.test(\"Receives invalid attribute name error msg\", function () {",
@@ -16834,8 +16834,8 @@
 									"listen": "test",
 									"script": {
 										"exec": [
-											"pm.test(\"Status code is 500\", function () {",
-											"    pm.response.to.have.status(500);",
+											"pm.test(\"Status code is 400\", function () {",
+											"    pm.response.to.have.status(400);",
 											"});",
 											"",
 											"pm.test(\"Receives invalid attribute name error msg\", function () {",
@@ -16897,8 +16897,8 @@
 									"listen": "test",
 									"script": {
 										"exec": [
-											"pm.test(\"Status code is 500\", function () {",
-											"    pm.response.to.have.status(500);",
+											"pm.test(\"Status code is 400\", function () {",
+											"    pm.response.to.have.status(400);",
 											"});",
 											"",
 											"pm.test(\"Receives invalid attribute name error msg\", function () {",
@@ -16960,8 +16960,8 @@
 									"listen": "test",
 									"script": {
 										"exec": [
-											"pm.test(\"Status code is 500\", function () {",
-											"    pm.response.to.have.status(500);",
+											"pm.test(\"Status code is 400\", function () {",
+											"    pm.response.to.have.status(400);",
 											"});",
 											"",
 											"pm.test(\"Receives invalid attribute name error msg\", function () {",
@@ -17017,14 +17017,77 @@
 							"response": []
 						},
 						{
+							"name": "upsert multiple rows with invalid attribute key",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"pm.test(\"Status code is 400\", function () {",
+											"    pm.response.to.have.status(400);",
+											"});",
+											"",
+											"pm.test(\"Receives invalid attribute name error msg\", function () {",
+											"    const errorMsg = pm.response.json().error;",
+											"    pm.expect(errorMsg).to.equal(",
+											"        \"Attribute names cannot include backticks or forward slashes\"",
+											"    );",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"type": "text",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n    \"operation\": \"upsert\",\n    \"schema\": \"dev\",\n    \"table\": \"invalid_attribute\",\n    \"records\": [\n        {\n            \"id\": 100,\n            \"some/attribute\": \"some_attribute\"\n        },\n        {\n            \"id\": 101,\n            \"some-`attribute`\": \"some_attribute\"\n        }\n    ]\n}",
+									"options": {
+										"raw": {}
+									}
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
 							"name": "insert some invalid attribute names - multiple rows",
 							"event": [
 								{
 									"listen": "test",
 									"script": {
 										"exec": [
-											"pm.test(\"Status code is 500\", function () {",
-											"    pm.response.to.have.status(500);",
+											"pm.test(\"Status code is 400\", function () {",
+											"    pm.response.to.have.status(400);",
 											"});",
 											"",
 											"pm.test(\"Receives invalid attribute name error msg\", function () {",
@@ -17564,7 +17627,6 @@
 						{
 							"listen": "test",
 							"script": {
-								"type": "text/javascript",
 								"exec": [
 									"pm.test(\"Update employee id 1 address\", function () {",
 									"    var jsonData = pm.response.json();",
@@ -17574,7 +17636,8 @@
 									"pm.test(\"Status code is 200\", function () {",
 									"    pm.response.to.have.status(200);",
 									"});"
-								]
+								],
+								"type": "text/javascript"
 							}
 						}
 					],
@@ -17612,7 +17675,7 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\"operation\":\"update\",\n\"schema\":\"{{schema}}\",\n\"table\":\"{{emps_tb}}\",\n\"records\": [\n  {\n    \"{{emps_id}}\": 1,\n    \"address\": \"def1234\"\n  }\n]\n\n}",
+							"raw": "{\n    \"operation\": \"update\",\n    \"schema\": \"{{schema}}\",\n    \"table\": \"{{emps_tb}}\",\n    \"records\": [\n        {\n            \"{{emps_id}}\": 1,\n            \"address\": \"def1234\"\n        }\n    ]\n}",
 							"options": {
 								"raw": {}
 							}
@@ -20317,7 +20380,7 @@
 					"response": []
 				},
 				{
-					"name": "Insert into products 1 new record & one that exists",
+					"name": "Upsert into products 1 new record & 2 that exist",
 					"event": [
 						{
 							"listen": "test",
@@ -20329,11 +20392,10 @@
 									"",
 									"pm.test(\"Insert validate\", function () {",
 									"    var jsonData = pm.response.json();",
-									"    pm.expect(jsonData.inserted_hashes.length).to.eql(1);",
-									"    pm.expect(jsonData.inserted_hashes).to.eql([100]);",
-									"    pm.expect(jsonData.skipped_hashes.length).to.eql(1);",
-									"    pm.expect(jsonData.skipped_hashes).to.eql([1]);",
-									"    pm.expect(jsonData.message).to.eql(\"inserted 1 of 2 records\");",
+									"    pm.expect(jsonData.upserted_hashes.length).to.eql(3);",
+									"    pm.expect(jsonData.upserted_hashes).to.eql([1, 100, 101]);",
+									"    pm.expect(jsonData.skipped_hashes).to.eql(undefined);",
+									"    pm.expect(jsonData.message).to.eql(\"upserted 3 of 3 records\");",
 									"});"
 								],
 								"type": "text/javascript"
@@ -20374,7 +20436,151 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\t\"operation\":\"insert\",\n\t\"schema\":\"{{schema}}\",\n\t\"table\":\"{{prod_tb}}\",\n\t\"records\": [\n\t  {\n        \"categoryid\": 1,\n        \"unitsnnorder\": 0,\n        \"unitsinstock\": 39,\n        \"supplierid\": 1,\n        \"productid\": 1,\n        \"discontinued\": \"False\",\n        \"reorderlevel\": 10,\n        \"productname\": \"Chai\",\n        \"quantityperunit\": \"10 boxes x 20 bags\",\n        \"unitprice\": 18\n    },\n\t{\n        \"categoryid\": 1,\n        \"unitsnnorder\": 0,\n        \"unitsinstock\": 39,\n        \"supplierid\": 1,\n        \"productid\": 100,\n        \"discontinued\": \"False\",\n        \"reorderlevel\": 10,\n        \"productname\": \"Chai\",\n        \"quantityperunit\": \"10 boxes x 20 bags\",\n        \"unitprice\": 18\n    }\n\t]\n}",
+							"raw": "{\n    \"operation\": \"upsert\",\n    \"schema\": \"{{schema}}\",\n    \"table\": \"{{prod_tb}}\",\n    \"records\": [\n        {\n            \"categoryid\": 1,\n            \"unitsnnorder\": 0,\n            \"unitsinstock\": 39,\n            \"supplierid\": 1,\n            \"productid\": 1,\n            \"discontinued\": true,\n            \"reorderlevel\": 10,\n            \"productname\": \"Chai\",\n            \"quantityperunit\": \"10 boxes x 20 bags\",\n            \"unitprice\": 18\n        },\n        {\n            \"productid\": 100,\n            \"categoryid\": 1,\n            \"unitsnnorder\": 0,\n            \"unitsinstock\": 39,\n            \"supplierid\": 1,\n            \"discontinued\": true,\n            \"reorderlevel\": 10,\n            \"productname\": \"Chai\",\n            \"quantityperunit\": \"10 boxes x 20 bags\",\n            \"unitprice\": 18\n        },\n        {\n            \"productid\": 101,\n            \"categoryid\": 1,\n            \"unitsnnorder\": 0,\n            \"unitsinstock\": 39,\n            \"supplierid\": 1,\n            \"discontinued\": true,\n            \"reorderlevel\": 10,\n            \"productname\": \"Chai\",\n            \"quantityperunit\": \"10 boxes x 20 bags\",\n            \"unitprice\": 18\n        }\n    ]\n}",
+							"options": {
+								"raw": {}
+							}
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Confirm upserted records exist and are updated",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"Results include correct 3 records\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    const expectedHashes = [1, 100, 101];",
+									"    jsonData.forEach(row => {",
+									"        pm.expect(expectedHashes.includes(row.productid)).to.be.true;",
+									"        pm.expect(row.discontinued).to.be.true;    ",
+									"    });",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"operation\": \"search_by_value\",\n    \"schema\": \"{{schema}}\",\n    \"table\": \"{{prod_tb}}\",\n    \"search_attribute\": \"discontinued\",\n    \"search_value\": true,\n    \"get_attributes\": [\n        \"*\"\n    ]\n}",
+							"options": {
+								"raw": {}
+							}
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Upsert into products 3 new records w/o hash vals",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"Insert validate\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.upserted_hashes.length).to.eql(3);",
+									"    pm.expect(jsonData.skipped_hashes).to.eql(undefined);",
+									"    pm.expect(jsonData.message).to.eql(\"upserted 3 of 3 records\");",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"operation\": \"upsert\",\n    \"schema\": \"{{schema}}\",\n    \"table\": \"{{prod_tb}}\",\n    \"records\": [\n        {\n            \"categoryid\": 1,\n            \"unitsnnorder\": 0,\n            \"unitsinstock\": 39,\n            \"supplierid\": 1,\n            \"discontinued\": \"True\",\n            \"reorderlevel\": 10,\n            \"productname\": \"Chai\",\n            \"quantityperunit\": \"10 boxes x 20 bags\",\n            \"unitprice\": 18\n        },\n        {\n            \"categoryid\": 1,\n            \"unitsnnorder\": 0,\n            \"unitsinstock\": 39,\n            \"supplierid\": 1,\n            \"discontinued\": \"True\",\n            \"reorderlevel\": 10,\n            \"productname\": \"Chai\",\n            \"quantityperunit\": \"10 boxes x 20 bags\",\n            \"unitprice\": 18\n        },\n        {\n            \"categoryid\": 1,\n            \"unitsnnorder\": 0,\n            \"unitsinstock\": 39,\n            \"supplierid\": 1,\n            \"discontinued\": \"True\",\n            \"reorderlevel\": 10,\n            \"productname\": \"Chai\",\n            \"quantityperunit\": \"10 boxes x 20 bags\",\n            \"unitprice\": 18\n        }\n    ]\n}",
 							"options": {
 								"raw": {}
 							}
@@ -21036,6 +21242,2622 @@
 			"name": "5. NoSQL Role Testing",
 			"item": [
 				{
+					"name": "Bulk Load Perms Tests",
+					"item": [
+						{
+							"name": "Add non-SU bulk_load_role",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"responseData = JSON.parse(responseBody);",
+											"postman.setEnvironmentVariable(\"role_id\", responseData.id)"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n    \"operation\": \"add_role\",\n    \"role\": \"bulk_load_role\",\n    \"permission\": {\n        \"super_user\": false,\n        \"{{schema}}\": {\n            \"tables\": {\n                \"{{supp_tb}}\": {\n                    \"read\": true,\n                    \"insert\": true,\n                    \"update\": true,\n                    \"delete\": true,\n                    \"attribute_permissions\": [\n                        {\n                            \"attribute_name\": \"companyname\",\n                            \"read\": true,\n                            \"insert\": true,\n                            \"update\": true\n                        }\n                    ]\n                },\n                \"{{csv_tb}}\": {\n                    \"read\": true,\n                    \"insert\": true,\n                    \"update\": true,\n                    \"delete\": false,\n                    \"attribute_permissions\": [\n                        {\n                            \"attribute_name\": \"name\",\n                            \"read\": false,\n                            \"insert\": true,\n                            \"update\": false\n                        },\n                        {\n                            \"attribute_name\": \"section\",\n                            \"read\": true,\n                            \"insert\": false,\n                            \"update\": true\n                        },\n                        {\n                            \"attribute_name\": \"image\",\n                            \"read\": true,\n                            \"insert\": true,\n                            \"update\": true\n                        }\n                    ]\n                }\n            }\n        },\n        \"dev\": {\n            \"tables\": {\n                \"books\": {\n                    \"read\": true,\n                    \"insert\": true,\n                    \"update\": true,\n                    \"delete\": true,\n                    \"attribute_permissions\": [\n                        {\n                            \"attribute_name\": \"books_count\",\n                            \"read\": true,\n                            \"insert\": false,\n                            \"update\": true\n                        }\n                    ]\n                },\n                \"dog\": {\n                    \"read\": true,\n                    \"insert\": true,\n                    \"update\": true,\n                    \"delete\": false,\n                    \"attribute_permissions\": [\n                        {\n                            \"attribute_name\": \"dog_name\",\n                            \"read\": false,\n                            \"insert\": true,\n                            \"update\": true\n                        },\n                        {\n                            \"attribute_name\": \"age\",\n                            \"read\": true,\n                            \"insert\": false,\n                            \"update\": true\n                        },\n                        {\n                            \"attribute_name\": \"adorable\",\n                            \"read\": true,\n                            \"insert\": true,\n                            \"update\": false\n                        },\n                        {\n                            \"attribute_name\": \"owner_id\",\n                            \"read\": true,\n                            \"insert\": false,\n                            \"update\": false\n                        }\n                    ]\n                },\n                \"owner\": {\n                    \"read\": true,\n                    \"insert\": true,\n                    \"update\": true,\n                    \"delete\": false,\n                    \"attribute_permissions\": [\n                        {\n                            \"attribute_name\": \"name\",\n                            \"read\": true,\n                            \"insert\": false,\n                            \"update\": false\n                        }\n                    ]\n                }\n            }\n        }\n    }\n}",
+									"options": {
+										"raw": {}
+									}
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "Add user with new bulk_load_role",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"value": "Basic c2dvbGRiZXJnOnRlc3QxMjM0IQ=="
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n    \"operation\": \"add_user\",\n    \"role\": \"{{role_id}}\",\n    \"username\": \"bulk_load_user\",\n    \"password\": \"{{password}}\",\n    \"active\": true\n}",
+									"options": {
+										"raw": {}
+									}
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								},
+								"description": "Method for adding users.  Users can be assigned roles which provide granular access at a table, operation, and attirbute level.  \n\n<ul>\n<li><b>operation </b> <i>(required) </i> - must always be 'add_user'</li>\n\n<li><b>role </b><i>(required) </i>- id of the role you wish to assign to the user.  See add_role for more detail.  </li>\n\n<li><b>username </b> <i>(required)</i> - username assigned to the user.  It can not be altered after adding the user.  It serves as the hash. </li>\n\n<li><b>password </b> <i>(required) </i>- clear text for password.  HarperDB will encrypt the password upon reciept. </li>\n\n</ul>"
+							},
+							"response": []
+						},
+						{
+							"name": "CSV Data Load  update to table w/ new attr & restricted attrs",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"const responseData = JSON.parse(responseBody);",
+											"",
+											"let id_index = responseData.message.indexOf('id ');",
+											"let parsedId = responseData.message.substr(id_index + 3, responseData.message.length);",
+											"pm.environment.set(\"job_id\", parsedId);"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "bulk_load_user",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"operation\":\"csv_data_load\",\n  \"action\": \"update\",\n  \"schema\":\"{{schema}}\",\n  \"table\":\"{{supp_tb}}\",\n  \"data\":\"supplierid,companyname, rando\\n19,The Chum Bucket, Another attr value\\n\"\n}\n",
+									"options": {
+										"raw": {}
+									}
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								},
+								"description": "update a table with csv data uplaod"
+							},
+							"response": []
+						},
+						{
+							"name": "Check Data CSV job - update - perms error",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"",
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"test Job Found\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData.length).to.eql(1);",
+											"    ",
+											"    pm.expect(jsonData[0]).to.have.property('status');",
+											"    ",
+											"    let status = jsonData[0].status;",
+											"    ",
+											"    switch(status){",
+											"        case 'ERROR':",
+											"            console.log(jsonData[0]);",
+											"            const msg = jsonData[0].message;",
+											"            ",
+											"            pm.expect(status).to.eql('ERROR');",
+											"            pm.expect(jsonData[0].id).to.eql(pm.environment.get(\"job_id\"));",
+											"            pm.expect(msg.error).to.eql(\"This operation is not authorized due to role restrictions and/or invalid schema items\");",
+											"",
+											"            pm.expect(msg.unauthorized_access.length).to.eql(0);",
+											"            pm.expect(msg.invalid_schema_items.length).to.eql(1);",
+											"            pm.expect(msg.invalid_schema_items[0]).to.eql(\"Attribute ' rando' does not exist on 'northnwd.suppliers'\");",
+											"",
+											"            break;",
+											"        case 'COMPLETE':",
+											"            console.log(jsonData[0]);",
+											"            ",
+											"            pm.expect(status).to.not.eql('COMPLETE');",
+											"            break;",
+											"        case '0':",
+											"        case 0:",
+											"        case 'IN_PROGRESS':",
+											"            console.log('in progress, checking again');",
+											"            postman.setNextRequest('Check Data CSV job - update - perms error');",
+											"            pm.expect(status).to.be.oneOf(['IN_PROGRESS', 0, '0']);",
+											"            break;",
+											"        default:",
+											"            postman.setNextRequest('Check Data CSV job - update - perms error');",
+											"            pm.expect(status).to.be.oneOf(['IN_PROGRESS', 0, '0', 'ERROR', 'COMPLETE']);",
+											"            break;",
+											"    }",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"exec": [
+											"setTimeout(()=>{}, 200);"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "saveHelperData",
+											"type": "any"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\t\"operation\":\"get_job\",\n\t\"id\": \"{{job_id}}\"\n}",
+									"options": {
+										"raw": {}
+									}
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "CSV Data Load - upsert - to table w/ some restricted attrs & new attr",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"const responseData = JSON.parse(responseBody);",
+											"",
+											"let id_index = responseData.message.indexOf('id ');",
+											"let parsedId = responseData.message.substr(id_index + 3, responseData.message.length);",
+											"pm.environment.set(\"job_id\", parsedId);"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "bulk_load_user",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"operation\":\"csv_data_load\",\n  \"action\": \"upsert\",\n  \"schema\":\"dev\",\n  \"table\":\"dog\",\n  \"data\":\"id,dog_name,adorable,age,rando\\n19,doggy,true,22,Another attr value\\n\"\n}\n",
+									"options": {
+										"raw": {}
+									}
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								},
+								"description": "update a table with csv data uplaod"
+							},
+							"response": []
+						},
+						{
+							"name": "Check Data CSV job - upsert - perms error",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"",
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"test Job Found\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData.length).to.eql(1);",
+											"    ",
+											"    pm.expect(jsonData[0]).to.have.property('status');",
+											"    ",
+											"    let status = jsonData[0].status;",
+											"    ",
+											"    switch(status){",
+											"        case 'ERROR':",
+											"            console.log(jsonData[0]);",
+											"            const msg = jsonData[0].message;",
+											"            ",
+											"            pm.expect(status).to.eql('ERROR');",
+											"            pm.expect(jsonData[0].id).to.eql(pm.environment.get(\"job_id\"));",
+											"            pm.expect(msg.error).to.eql(\"This operation is not authorized due to role restrictions and/or invalid schema items\");",
+											"",
+											"            pm.expect(msg.unauthorized_access.length).to.eql(1);",
+											"            const unauth_obj = msg.unauthorized_access[0];",
+											"            pm.expect(unauth_obj.schema).to.eql(\"dev\");",
+											"            pm.expect(unauth_obj.table).to.eql(\"dog\");",
+											"            pm.expect(unauth_obj.required_table_permissions.length).to.eql(0);",
+											"            pm.expect(unauth_obj.required_attribute_permissions.length).to.eql(2);",
+											"            pm.expect(unauth_obj.required_attribute_permissions[0].attribute_name).to.eql(\"adorable\");",
+											"            pm.expect(unauth_obj.required_attribute_permissions[0].required_permissions.length).to.eql(1);",
+											"            pm.expect(unauth_obj.required_attribute_permissions[0].required_permissions[0]).to.eql(\"update\");",
+											"",
+											"            pm.expect(unauth_obj.required_attribute_permissions[1].attribute_name).to.eql(\"age\");",
+											"            pm.expect(unauth_obj.required_attribute_permissions[1].required_permissions.length).to.eql(1);",
+											"            pm.expect(unauth_obj.required_attribute_permissions[1].required_permissions[0]).to.eql(\"insert\");",
+											"",
+											"            pm.expect(msg.invalid_schema_items.length).to.eql(1);",
+											"            pm.expect(msg.invalid_schema_items[0]).to.eql(\"Attribute 'rando' does not exist on 'dev.dog'\");",
+											"            break;",
+											"        case 'COMPLETE':",
+											"            console.log(jsonData[0]);",
+											"            ",
+											"            pm.expect(status).to.not.eql('COMPLETE');",
+											"            break;",
+											"        case '0':",
+											"        case 0:",
+											"        case 'IN_PROGRESS':",
+											"            console.log('in progress, checking again');",
+											"            postman.setNextRequest('Check Data CSV job - upsert - perms error');",
+											"            pm.expect(status).to.be.oneOf(['IN_PROGRESS', 0, '0']);",
+											"            break;",
+											"        default:",
+											"            postman.setNextRequest('Check Data CSV job - upsert - perms error');",
+											"            pm.expect(status).to.be.oneOf(['IN_PROGRESS', 0, '0', 'ERROR', 'COMPLETE']);",
+											"            break;",
+											"    }",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"exec": [
+											"setTimeout(()=>{}, 200);"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "saveHelperData",
+											"type": "any"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\t\"operation\":\"get_job\",\n\t\"id\": \"{{job_id}}\"\n}",
+									"options": {
+										"raw": {}
+									}
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "CSV URL Load - upsert - to table w/ restricted attrs",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"var jsonData = pm.response.json();",
+											"",
+											"pm.test(\"Check for job message\", function () {",
+											"    pm.expect(jsonData.message.indexOf('Starting job')).to.eql(0);",
+											"});",
+											"",
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"let id_index = jsonData.message.indexOf('id ');",
+											"let parsedId = jsonData.message.substr(id_index + 3, jsonData.message.length);",
+											"pm.environment.set(\"job_id\", parsedId);"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "bulk_load_user",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"operation\":\"csv_url_load\",\n  \"action\": \"upsert\",\n  \"schema\":\"{{schema}}\",\n  \"table\":\"{{csv_tb}}\",\n  \"csv_url\":\"https://harperdb-integration-test-data.s3.us-east-2.amazonaws.com/breeds.csv\"\n}",
+									"options": {
+										"raw": {}
+									}
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": [
+								{
+									"name": "CSV Data Load",
+									"originalRequest": {
+										"method": "POST",
+										"header": [
+											{
+												"key": "Content-Type",
+												"value": "application/json"
+											},
+											{
+												"key": "Authorization",
+												"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+											}
+										],
+										"body": {
+											"mode": "raw",
+											"raw": "{\n  \"operation\":\"csv_data_load\",\n  \"schema\":\"dev\",\n  \"action\": \"insert\",\n  \"table\":\"breed\",\n  \"data\":\"id,name,section,country,image\\n1,ENGLISH POINTER,British and Irish Pointers and Setters,GREAT BRITAIN,http://www.fci.be/Nomenclature/Illustrations/001g07.jpg\\n2,ENGLISH SETTER,British and Irish Pointers and Setters,GREAT BRITAIN,http://www.fci.be/Nomenclature/Illustrations/002g07.jpg\\n3,KERRY BLUE TERRIER,Large and medium sized Terriers,IRELAND,\\n\"\n}"
+										},
+										"url": {
+											"raw": "{{HDB_ENDPOINT}}",
+											"host": [
+												"{{HDB_ENDPOINT}}"
+											]
+										}
+									},
+									"status": "OK",
+									"code": 200,
+									"_postman_previewlanguage": "json",
+									"header": [
+										{
+											"key": "Connection",
+											"value": "keep-alive",
+											"name": "Connection",
+											"description": "Options that are desired for the connection"
+										},
+										{
+											"key": "Content-Length",
+											"value": "71",
+											"name": "Content-Length",
+											"description": "The length of the response body in octets (8-bit bytes)"
+										},
+										{
+											"key": "Content-Type",
+											"value": "application/json; charset=utf-8",
+											"name": "Content-Type",
+											"description": "The mime type of this content"
+										},
+										{
+											"key": "Date",
+											"value": "Mon, 09 Jul 2018 20:07:14 GMT",
+											"name": "Date",
+											"description": "The date and time that the message was sent"
+										},
+										{
+											"key": "ETag",
+											"value": "W/\"47-FY/m86hgW/48m7lLK1CpL02xrIw\"",
+											"name": "ETag",
+											"description": "An identifier for a specific version of a resource, often a message digest"
+										},
+										{
+											"key": "Vary",
+											"value": "Origin",
+											"name": "Vary",
+											"description": "Tells downstream proxies how to match future request headers to decide whether the cached response can be used rather than requesting a fresh one from the origin server."
+										}
+									],
+									"cookie": [],
+									"body": ""
+								}
+							]
+						},
+						{
+							"name": "Check URL CSV job  - upsert -  perms error",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"",
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"test Job Found\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData.length).to.eql(1);",
+											"    ",
+											"    pm.expect(jsonData[0]).to.have.property('status');",
+											"    ",
+											"    let status = jsonData[0].status;",
+											"    ",
+											"    switch(status){",
+											"        case 'ERROR':",
+											"            console.log(jsonData[0]);",
+											"            const msg = jsonData[0].message;",
+											"            ",
+											"            pm.expect(status).to.eql('ERROR');",
+											"            pm.expect(jsonData[0].id).to.eql(pm.environment.get(\"job_id\"));",
+											"            pm.expect(msg.error).to.eql(\"This operation is not authorized due to role restrictions and/or invalid schema items\");",
+											"",
+											"            pm.expect(msg.unauthorized_access.length).to.eql(1);",
+											"            const unauth_obj = msg.unauthorized_access[0];",
+											"            pm.expect(unauth_obj.schema).to.eql(\"northnwd\");",
+											"            pm.expect(unauth_obj.table).to.eql(\"url_csv_data\");",
+											"            pm.expect(unauth_obj.required_table_permissions.length).to.eql(0);",
+											"            pm.expect(unauth_obj.required_attribute_permissions.length).to.eql(2);",
+											"            pm.expect(unauth_obj.required_attribute_permissions[0].attribute_name).to.eql(\"name\");",
+											"            pm.expect(unauth_obj.required_attribute_permissions[0].required_permissions.length).to.eql(1);",
+											"            pm.expect(unauth_obj.required_attribute_permissions[0].required_permissions[0]).to.eql(\"update\");",
+											"",
+											"            pm.expect(unauth_obj.required_attribute_permissions[1].attribute_name).to.eql(\"section\");",
+											"            pm.expect(unauth_obj.required_attribute_permissions[1].required_permissions.length).to.eql(1);",
+											"            pm.expect(unauth_obj.required_attribute_permissions[1].required_permissions[0]).to.eql(\"insert\");",
+											"",
+											"            pm.expect(msg.invalid_schema_items.length).to.eql(1);",
+											"            pm.expect(msg.invalid_schema_items[0]).to.eql(\"Attribute 'country' does not exist on 'northnwd.url_csv_data'\");",
+											"",
+											"            break;",
+											"        case 'COMPLETE':",
+											"            console.log(jsonData[0]);",
+											"            pm.expect(status).to.not.eql('COMPLETE');",
+											"            break;",
+											"        case '0':",
+											"        case 0:",
+											"        case 'IN_PROGRESS':",
+											"            console.log('in progress, checking again');",
+											"            postman.setNextRequest('Check URL CSV job  - upsert -  perms error');",
+											"            pm.expect(status).to.be.oneOf(['IN_PROGRESS', 0, '0']);",
+											"            break;",
+											"        default:",
+											"            postman.setNextRequest('Check URL CSV job  - upsert -  perms error');",
+											"            pm.expect(status).to.be.oneOf(['IN_PROGRESS', 0, '0', 'ERROR', 'COMPLETE']);",
+											"            break;",
+											"    }",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"exec": [
+											"setTimeout(()=>{}, 200);"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "saveHelperData",
+											"type": "any"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\t\"operation\":\"get_job\",\n\t\"id\": \"{{job_id}}\"\n}",
+									"options": {
+										"raw": {}
+									}
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "CSV URL Load - update - to table w/ restricted attrs",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"var jsonData = pm.response.json();",
+											"",
+											"pm.test(\"Check for job message\", function () {",
+											"    pm.expect(jsonData.message.indexOf('Starting job')).to.eql(0);",
+											"});",
+											"",
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"let id_index = jsonData.message.indexOf('id ');",
+											"let parsedId = jsonData.message.substr(id_index + 3, jsonData.message.length);",
+											"pm.environment.set(\"job_id\", parsedId);"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "bulk_load_user",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"operation\":\"csv_url_load\",\n  \"action\": \"update\",\n  \"schema\":\"{{schema}}\",\n  \"table\":\"{{csv_tb}}\",\n  \"csv_url\":\"https://harperdb-integration-test-data.s3.us-east-2.amazonaws.com/breeds.csv\"\n}",
+									"options": {
+										"raw": {}
+									}
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": [
+								{
+									"name": "CSV Data Load",
+									"originalRequest": {
+										"method": "POST",
+										"header": [
+											{
+												"key": "Content-Type",
+												"value": "application/json"
+											},
+											{
+												"key": "Authorization",
+												"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+											}
+										],
+										"body": {
+											"mode": "raw",
+											"raw": "{\n  \"operation\":\"csv_data_load\",\n  \"schema\":\"dev\",\n  \"action\": \"insert\",\n  \"table\":\"breed\",\n  \"data\":\"id,name,section,country,image\\n1,ENGLISH POINTER,British and Irish Pointers and Setters,GREAT BRITAIN,http://www.fci.be/Nomenclature/Illustrations/001g07.jpg\\n2,ENGLISH SETTER,British and Irish Pointers and Setters,GREAT BRITAIN,http://www.fci.be/Nomenclature/Illustrations/002g07.jpg\\n3,KERRY BLUE TERRIER,Large and medium sized Terriers,IRELAND,\\n\"\n}"
+										},
+										"url": {
+											"raw": "{{HDB_ENDPOINT}}",
+											"host": [
+												"{{HDB_ENDPOINT}}"
+											]
+										}
+									},
+									"status": "OK",
+									"code": 200,
+									"_postman_previewlanguage": "json",
+									"header": [
+										{
+											"key": "Connection",
+											"value": "keep-alive",
+											"name": "Connection",
+											"description": "Options that are desired for the connection"
+										},
+										{
+											"key": "Content-Length",
+											"value": "71",
+											"name": "Content-Length",
+											"description": "The length of the response body in octets (8-bit bytes)"
+										},
+										{
+											"key": "Content-Type",
+											"value": "application/json; charset=utf-8",
+											"name": "Content-Type",
+											"description": "The mime type of this content"
+										},
+										{
+											"key": "Date",
+											"value": "Mon, 09 Jul 2018 20:07:14 GMT",
+											"name": "Date",
+											"description": "The date and time that the message was sent"
+										},
+										{
+											"key": "ETag",
+											"value": "W/\"47-FY/m86hgW/48m7lLK1CpL02xrIw\"",
+											"name": "ETag",
+											"description": "An identifier for a specific version of a resource, often a message digest"
+										},
+										{
+											"key": "Vary",
+											"value": "Origin",
+											"name": "Vary",
+											"description": "Tells downstream proxies how to match future request headers to decide whether the cached response can be used rather than requesting a fresh one from the origin server."
+										}
+									],
+									"cookie": [],
+									"body": ""
+								}
+							]
+						},
+						{
+							"name": "Check URL CSV job  - update -  perms error",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"",
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"test Job Found\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData.length).to.eql(1);",
+											"    ",
+											"    pm.expect(jsonData[0]).to.have.property('status');",
+											"    ",
+											"    let status = jsonData[0].status;",
+											"    ",
+											"    switch(status){",
+											"        case 'ERROR':",
+											"            console.log(jsonData[0]);",
+											"            const msg = jsonData[0].message;",
+											"            ",
+											"            pm.expect(status).to.eql('ERROR');",
+											"            pm.expect(jsonData[0].id).to.eql(pm.environment.get(\"job_id\"));",
+											"            pm.expect(msg.error).to.eql(\"This operation is not authorized due to role restrictions and/or invalid schema items\");",
+											"",
+											"            pm.expect(msg.unauthorized_access.length).to.eql(1);",
+											"            const unauth_obj = msg.unauthorized_access[0];",
+											"            pm.expect(unauth_obj.schema).to.eql(\"northnwd\");",
+											"            pm.expect(unauth_obj.table).to.eql(\"url_csv_data\");",
+											"            pm.expect(unauth_obj.required_table_permissions.length).to.eql(0);",
+											"            pm.expect(unauth_obj.required_attribute_permissions.length).to.eql(1);",
+											"            pm.expect(unauth_obj.required_attribute_permissions[0].attribute_name).to.eql(\"name\");",
+											"            pm.expect(unauth_obj.required_attribute_permissions[0].required_permissions.length).to.eql(1);",
+											"            pm.expect(unauth_obj.required_attribute_permissions[0].required_permissions[0]).to.eql(\"update\");",
+											"",
+											"            pm.expect(msg.invalid_schema_items.length).to.eql(1);",
+											"            pm.expect(msg.invalid_schema_items[0]).to.eql(\"Attribute 'country' does not exist on 'northnwd.url_csv_data'\");",
+											"            break;",
+											"        case 'COMPLETE':",
+											"            console.log(jsonData[0]);",
+											"            pm.expect(status).to.not.eql('COMPLETE');",
+											"            break;",
+											"        case '0':",
+											"        case 0:",
+											"        case 'IN_PROGRESS':",
+											"            console.log('in progress, checking again');",
+											"            postman.setNextRequest('Check URL CSV job  - update -  perms error');",
+											"            pm.expect(status).to.be.oneOf(['IN_PROGRESS', 0, '0']);",
+											"            break;",
+											"        default:",
+											"            postman.setNextRequest('Check URL CSV job  - update -  perms error');",
+											"            pm.expect(status).to.be.oneOf(['IN_PROGRESS', 0, '0', 'ERROR', 'COMPLETE']);",
+											"            break;",
+											"    }",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"exec": [
+											"setTimeout(()=>{}, 200);"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "saveHelperData",
+											"type": "any"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\t\"operation\":\"get_job\",\n\t\"id\": \"{{job_id}}\"\n}",
+									"options": {
+										"raw": {}
+									}
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "CSV File Load to table w/ restricted attrs",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"var jsonData = pm.response.json();",
+											"",
+											"pm.test(\"Check for job message\", function () {",
+											"    pm.expect(jsonData.message.indexOf('Starting job')).to.eql(0);",
+											"});",
+											"",
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"let id_index = jsonData.message.indexOf('id ');",
+											"let parsedId = jsonData.message.substr(id_index + 3, jsonData.message.length);",
+											"pm.environment.set(\"job_id\", parsedId);"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "bulk_load_user",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"operation\":\"csv_file_load\",\n  \"action\":\"insert\",\n  \"schema\":\"dev\",\n  \"table\":\"books\",\n  \"file_path\":\"{{files_location}}Books.csv\"\n}",
+									"options": {
+										"raw": {}
+									}
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								},
+								"description": "Import data csv files into orders table"
+							},
+							"response": []
+						},
+						{
+							"name": "Check File CSV job perms error",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"",
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"test Job Found\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData.length).to.eql(1);",
+											"    ",
+											"    pm.expect(jsonData[0]).to.have.property('status');",
+											"    ",
+											"    let status = jsonData[0].status;",
+											"    ",
+											"    switch(status){",
+											"        case 'ERROR':",
+											"            console.log(jsonData[0]);",
+											"            const msg = jsonData[0].message;",
+											"            ",
+											"            pm.expect(status).to.eql('ERROR');",
+											"            pm.expect(jsonData[0].id).to.eql(pm.environment.get(\"job_id\"));",
+											"            pm.expect(msg.error).to.eql(\"This operation is not authorized due to role restrictions and/or invalid schema items\");",
+											"",
+											"            pm.expect(msg.unauthorized_access.length).to.eql(1);",
+											"            const unauth_obj = msg.unauthorized_access[0];",
+											"            pm.expect(unauth_obj.schema).to.eql(\"dev\");",
+											"            pm.expect(unauth_obj.table).to.eql(\"books\");",
+											"            pm.expect(unauth_obj.required_table_permissions.length).to.eql(0);",
+											"            pm.expect(unauth_obj.required_attribute_permissions.length).to.eql(2);",
+											"            pm.expect(unauth_obj.required_attribute_permissions[0].attribute_name).to.eql(\"id\");",
+											"            pm.expect(unauth_obj.required_attribute_permissions[0].required_permissions.length).to.eql(1);",
+											"            pm.expect(unauth_obj.required_attribute_permissions[0].required_permissions[0]).to.eql(\"insert\");",
+											"",
+											"            pm.expect(unauth_obj.required_attribute_permissions[1].attribute_name).to.eql(\"books_count\");",
+											"            pm.expect(unauth_obj.required_attribute_permissions[1].required_permissions.length).to.eql(1);",
+											"            pm.expect(unauth_obj.required_attribute_permissions[1].required_permissions[0]).to.eql(\"insert\");",
+											"",
+											"            pm.expect(msg.invalid_schema_items.length).to.eql(17);",
+											"            const expected_invalid_items = [",
+											"                \"Attribute 'authors' does not exist on 'dev.books'\",",
+											"                \"Attribute 'original_publication_year' does not exist on 'dev.books'\",",
+											"                \"Attribute 'original_title' does not exist on 'dev.books'\",",
+											"                \"Attribute 'title' does not exist on 'dev.books'\",",
+											"                \"Attribute 'language_code' does not exist on 'dev.books'\",",
+											"                \"Attribute 'average_rating' does not exist on 'dev.books'\",",
+											"                \"Attribute 'ratings_count' does not exist on 'dev.books'\",",
+											"                \"Attribute 'work_ratings_count' does not exist on 'dev.books'\",",
+											"                \"Attribute 'work_text_reviews_count' does not exist on 'dev.books'\",",
+											"                \"Attribute 'ratings_1' does not exist on 'dev.books'\",",
+											"                \"Attribute 'ratings_2' does not exist on 'dev.books'\",",
+											"                \"Attribute 'ratings_3' does not exist on 'dev.books'\",",
+											"                \"Attribute 'ratings_4' does not exist on 'dev.books'\",",
+											"                \"Attribute 'ratings_5' does not exist on 'dev.books'\",",
+											"                \"Attribute 'nytimes_best_seller' does not exist on 'dev.books'\",",
+											"                \"Attribute 'image_url' does not exist on 'dev.books'\",",
+											"                \"Attribute 'small_image_url' does not exist on 'dev.books'\"",
+											"            ];",
+											"            msg.invalid_schema_items.forEach(item => {",
+											"                pm.expect(expected_invalid_items.includes(item)).to.be.true;",
+											"            });",
+											"",
+											"            break;",
+											"        case 'COMPLETE':",
+											"            console.log(jsonData[0]);",
+											"            pm.expect(status).to.not.eql('COMPLETE');",
+											"            break;",
+											"        case '0':",
+											"        case 0:",
+											"        case 'IN_PROGRESS':",
+											"            console.log('in progress, checking again');",
+											"            postman.setNextRequest('Check File CSV job perms error');",
+											"            pm.expect(status).to.be.oneOf(['IN_PROGRESS', 0, '0']);",
+											"            break;",
+											"        default:",
+											"            postman.setNextRequest('Check File CSV job perms error');",
+											"            pm.expect(status).to.be.oneOf(['IN_PROGRESS', 0, '0', 'ERROR', 'COMPLETE']);",
+											"            break;",
+											"    }",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"exec": [
+											"setTimeout(()=>{}, 200);"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "saveHelperData",
+											"type": "any"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\t\"operation\":\"get_job\",\n\t\"id\": \"{{job_id}}\"\n}",
+									"options": {
+										"raw": {}
+									}
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "Import CSV from S3 to table w/ restricted attrs",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"var jsonData = pm.response.json();",
+											"",
+											"pm.test(\"Check for job message\", function () {",
+											"    pm.expect(jsonData.message.indexOf('Starting job')).to.eql(0);",
+											"});",
+											"",
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"let id_index = jsonData.message.indexOf('id ');",
+											"let parsedId = jsonData.message.substr(id_index + 3, jsonData.message.length);",
+											"pm.environment.set(\"job_id\", parsedId);"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "bulk_load_user",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"value": "Basic c2dvbGRiZXJnOnRlc3QxMjM0IQ=="
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\t\"operation\":\"import_from_s3\",\n\t\"action\": \"insert\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog\",\n\t\"s3\":{\n\t\t\"aws_access_key_id\":\"{{s3_key}}\",\n\t\t\"aws_secret_access_key\":\"{{s3_secret}}\",\n\t\t\"bucket\":\"harperdb-integration-test-data/non_public_folder\",\n\t\t\"key\":\"dogs.csv\"\n\t}\n}",
+									"options": {
+										"raw": {}
+									}
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "Check S3 CSV job perms error",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"",
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"test Job Found\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData.length).to.eql(1);",
+											"    ",
+											"    pm.expect(jsonData[0]).to.have.property('status');",
+											"    ",
+											"    let status = jsonData[0].status;",
+											"    ",
+											"    switch(status){",
+											"        case 'ERROR':",
+											"            console.log(jsonData[0]);",
+											"            const msg = jsonData[0].message;",
+											"            ",
+											"            pm.expect(status).to.eql('ERROR');",
+											"            pm.expect(jsonData[0].id).to.eql(pm.environment.get(\"job_id\"));",
+											"            pm.expect(msg.error).to.eql(\"This operation is not authorized due to role restrictions and/or invalid schema items\");",
+											"",
+											"            pm.expect(msg.unauthorized_access.length).to.eql(1);",
+											"            const unauth_obj = msg.unauthorized_access[0];",
+											"            pm.expect(unauth_obj.schema).to.eql(\"dev\");",
+											"            pm.expect(unauth_obj.table).to.eql(\"dog\");",
+											"            pm.expect(unauth_obj.required_table_permissions.length).to.eql(0);",
+											"            pm.expect(unauth_obj.required_attribute_permissions.length).to.eql(2);",
+											"            pm.expect(unauth_obj.required_attribute_permissions[0].attribute_name).to.eql(\"owner_id\");",
+											"            pm.expect(unauth_obj.required_attribute_permissions[0].required_permissions.length).to.eql(1);",
+											"            pm.expect(unauth_obj.required_attribute_permissions[0].required_permissions[0]).to.eql(\"insert\");",
+											"",
+											"            pm.expect(unauth_obj.required_attribute_permissions[1].attribute_name).to.eql(\"age\");",
+											"            pm.expect(unauth_obj.required_attribute_permissions[1].required_permissions.length).to.eql(1);",
+											"            pm.expect(unauth_obj.required_attribute_permissions[1].required_permissions[0]).to.eql(\"insert\");",
+											"",
+											"            pm.expect(msg.invalid_schema_items.length).to.eql(2);",
+											"            const expected_invalid_items = [",
+											"                \"Attribute 'breed_id' does not exist on 'dev.dog'\",",
+											"                \"Attribute 'weight_lbs' does not exist on 'dev.dog'\"",
+											"            ];",
+											"            msg.invalid_schema_items.forEach(item => {",
+											"                pm.expect(expected_invalid_items.includes(item)).to.be.true;",
+											"            });",
+											"",
+											"            break;",
+											"        case 'COMPLETE':",
+											"            console.log(jsonData[0]);",
+											"            pm.expect(status).to.not.eql('COMPLETE');",
+											"            break;",
+											"        case '0':",
+											"        case 0:",
+											"        case 'IN_PROGRESS':",
+											"            console.log('in progress, checking again');",
+											"            postman.setNextRequest('Check S3 CSV job perms error');",
+											"            pm.expect(status).to.be.oneOf(['IN_PROGRESS', 0, '0']);",
+											"            break;",
+											"        default:",
+											"            postman.setNextRequest('Check S3 CSV job perms error');",
+											"            pm.expect(status).to.be.oneOf(['IN_PROGRESS', 0, '0', 'ERROR', 'COMPLETE']);",
+											"            break;",
+											"    }",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"exec": [
+											"setTimeout(()=>{}, 200);",
+											""
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "saveHelperData",
+											"type": "any"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\t\"operation\":\"get_job\",\n\t\"id\": \"{{job_id}}\"\n}",
+									"options": {
+										"raw": {}
+									}
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "Import JSON from S3 - upsert - to table w/ restricted attrs",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"var jsonData = pm.response.json();",
+											"",
+											"pm.test(\"Check for job message\", function () {",
+											"    pm.expect(jsonData.message.indexOf('Starting job')).to.eql(0);",
+											"});",
+											"",
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"let id_index = jsonData.message.indexOf('id ');",
+											"let parsedId = jsonData.message.substr(id_index + 3, jsonData.message.length);",
+											"pm.environment.set(\"job_id\", parsedId);"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "bulk_load_user",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"value": "Basic c2dvbGRiZXJnOnRlc3QxMjM0IQ=="
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\t\"operation\":\"import_from_s3\",\n\t\"action\": \"upsert\",\n\t\"schema\":\"dev\",\n\t\"table\":\"owner\",\n\t\"s3\":{\n\t\t\"aws_access_key_id\":\"{{s3_key}}\",\n\t\t\"aws_secret_access_key\":\"{{s3_secret}}\",\n\t\t\"bucket\":\"harperdb-integration-test-data/non_public_folder\",\n\t\t\"key\":\"owners_update.json\"\n\t}\n}",
+									"options": {
+										"raw": {}
+									}
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "Check S3 JSON upsert perms error",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"",
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"test Job Found\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData.length).to.eql(1);",
+											"",
+											"    pm.expect(jsonData[0]).to.have.property('status');",
+											"",
+											"    let status = jsonData[0].status;",
+											"",
+											"    switch (status) {",
+											"        case 'ERROR':",
+											"            console.log(jsonData[0]);",
+											"            const msg = jsonData[0].message;",
+											"",
+											"            pm.expect(status).to.eql('ERROR');",
+											"            pm.expect(jsonData[0].id).to.eql(pm.environment.get(\"job_id\"));",
+											"            pm.expect(msg.error).to.eql(\"This operation is not authorized due to role restrictions and/or invalid schema items\");",
+											"",
+											"            pm.expect(msg.unauthorized_access.length).to.eql(1);",
+											"            const unauth_obj = msg.unauthorized_access[0];",
+											"            pm.expect(unauth_obj.schema).to.eql(\"dev\");",
+											"            pm.expect(unauth_obj.table).to.eql(\"owner\");",
+											"            pm.expect(unauth_obj.required_table_permissions.length).to.eql(0);",
+											"            pm.expect(unauth_obj.required_attribute_permissions.length).to.eql(2);",
+											"            pm.expect(unauth_obj.required_attribute_permissions[0].attribute_name).to.eql(\"id\");",
+											"            pm.expect(unauth_obj.required_attribute_permissions[0].required_permissions.length).to.eql(2);",
+											"            pm.expect(unauth_obj.required_attribute_permissions[0].required_permissions[0]).to.eql(\"insert\");",
+											"            pm.expect(unauth_obj.required_attribute_permissions[0].required_permissions[1]).to.eql(\"update\");",
+											"",
+											"            pm.expect(unauth_obj.required_attribute_permissions[1].attribute_name).to.eql(\"name\");",
+											"            pm.expect(unauth_obj.required_attribute_permissions[1].required_permissions.length).to.eql(2);",
+											"            pm.expect(unauth_obj.required_attribute_permissions[1].required_permissions[0]).to.eql(\"insert\");",
+											"            pm.expect(unauth_obj.required_attribute_permissions[1].required_permissions[1]).to.eql(\"update\");",
+											"",
+											"            pm.expect(msg.invalid_schema_items.length).to.eql(0);",
+											"",
+											"            break;",
+											"        case 'COMPLETE':",
+											"            console.log(jsonData[0]);",
+											"            pm.expect(status).to.not.eql('COMPLETE');",
+											"            break;",
+											"        case '0':",
+											"        case 0:",
+											"        case 'IN_PROGRESS':",
+											"            console.log('in progress, checking again');",
+											"            postman.setNextRequest('Check S3 JSON upsert perms error');",
+											"            pm.expect(status).to.be.oneOf(['IN_PROGRESS', 0, '0']);",
+											"            break;",
+											"        default:",
+											"            postman.setNextRequest('Check S3 JSON upsert perms error');",
+											"            pm.expect(status).to.be.oneOf(['IN_PROGRESS', 0, '0', 'ERROR', 'COMPLETE']);",
+											"            break;",
+											"    }",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"exec": [
+											"setTimeout(()=>{}, 200);"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "saveHelperData",
+											"type": "any"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\t\"operation\":\"get_job\",\n\t\"id\": \"{{job_id}}\"\n}",
+									"options": {
+										"raw": {}
+									}
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "Import JSON from S3 - insert - to table w/ restricted attrs",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"var jsonData = pm.response.json();",
+											"",
+											"pm.test(\"Check for job message\", function () {",
+											"    pm.expect(jsonData.message.indexOf('Starting job')).to.eql(0);",
+											"});",
+											"",
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"let id_index = jsonData.message.indexOf('id ');",
+											"let parsedId = jsonData.message.substr(id_index + 3, jsonData.message.length);",
+											"pm.environment.set(\"job_id\", parsedId);"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "bulk_load_user",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"value": "Basic c2dvbGRiZXJnOnRlc3QxMjM0IQ=="
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\t\"operation\":\"import_from_s3\",\n\t\"action\": \"insert\",\n\t\"schema\":\"dev\",\n\t\"table\":\"owner\",\n\t\"s3\":{\n\t\t\"aws_access_key_id\":\"{{s3_key}}\",\n\t\t\"aws_secret_access_key\":\"{{s3_secret}}\",\n\t\t\"bucket\":\"harperdb-integration-test-data/non_public_folder\",\n\t\t\"key\":\"owners_update.json\"\n\t}\n}",
+									"options": {
+										"raw": {}
+									}
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "Check S3 JSON insert perms error",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"",
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"test Job Found\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData.length).to.eql(1);",
+											"    ",
+											"    pm.expect(jsonData[0]).to.have.property('status');",
+											"    ",
+											"    let status = jsonData[0].status;",
+											"    ",
+											"    switch(status){",
+											"        case 'ERROR':",
+											"            console.log(jsonData[0]);",
+											"            const msg = jsonData[0].message;",
+											"            ",
+											"            pm.expect(status).to.eql('ERROR');",
+											"            pm.expect(jsonData[0].id).to.eql(pm.environment.get(\"job_id\"));",
+											"            pm.expect(msg.error).to.eql(\"This operation is not authorized due to role restrictions and/or invalid schema items\");",
+											"",
+											"            pm.expect(msg.unauthorized_access.length).to.eql(1);",
+											"            const unauth_obj = msg.unauthorized_access[0];",
+											"            pm.expect(unauth_obj.schema).to.eql(\"dev\");",
+											"            pm.expect(unauth_obj.table).to.eql(\"owner\");",
+											"            pm.expect(unauth_obj.required_table_permissions.length).to.eql(0);",
+											"            pm.expect(unauth_obj.required_attribute_permissions.length).to.eql(2);",
+											"            pm.expect(unauth_obj.required_attribute_permissions[0].attribute_name).to.eql(\"id\");",
+											"            pm.expect(unauth_obj.required_attribute_permissions[0].required_permissions.length).to.eql(1);",
+											"            pm.expect(unauth_obj.required_attribute_permissions[0].required_permissions[0]).to.eql(\"insert\");",
+											"",
+											"            pm.expect(unauth_obj.required_attribute_permissions[1].attribute_name).to.eql(\"name\");",
+											"            pm.expect(unauth_obj.required_attribute_permissions[1].required_permissions.length).to.eql(1);",
+											"            pm.expect(unauth_obj.required_attribute_permissions[1].required_permissions[0]).to.eql(\"insert\");",
+											"",
+											"            pm.expect(msg.invalid_schema_items.length).to.eql(0);",
+											"",
+											"            break;",
+											"        case 'COMPLETE':",
+											"            console.log(jsonData[0]);",
+											"            pm.expect(status).to.not.eql('COMPLETE');",
+											"            break;",
+											"        case '0':",
+											"        case 0:",
+											"        case 'IN_PROGRESS':",
+											"            console.log('in progress, checking again');",
+											"            postman.setNextRequest('Check S3 JSON insert perms error');",
+											"            pm.expect(status).to.be.oneOf(['IN_PROGRESS', 0, '0']);",
+											"            break;",
+											"        default:",
+											"            postman.setNextRequest('Check S3 JSON insert perms error');",
+											"            pm.expect(status).to.be.oneOf(['IN_PROGRESS', 0, '0', 'ERROR', 'COMPLETE']);",
+											"            break;",
+											"    }",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"exec": [
+											"setTimeout(()=>{}, 200);"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "saveHelperData",
+											"type": "any"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\t\"operation\":\"get_job\",\n\t\"id\": \"{{job_id}}\"\n}",
+									"options": {
+										"raw": {}
+									}
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "Alter non-SU bulk_load_role",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n    \"operation\": \"alter_role\",\n    \"id\": \"{{role_id}}\",\n    \"role\": \"bulk_load_role\",\n    \"permission\": {\n        \"super_user\": false,\n        \"{{schema}}\": {\n            \"tables\": {\n                \"{{supp_tb}}\": {\n                    \"read\": true,\n                    \"insert\": true,\n                    \"update\": true,\n                    \"delete\": true,\n                    \"attribute_permissions\": []\n                }\n            }\n        },\n        \"dev\": {\n            \"tables\": {\n                \"dog\": {\n                    \"read\": true,\n                    \"insert\": true,\n                    \"update\": true,\n                    \"delete\": false,\n                    \"attribute_permissions\": [\n                        {\n                            \"attribute_name\": \"dog_name\",\n                            \"read\": false,\n                            \"insert\": true,\n                            \"update\": true\n                        },\n                        {\n                            \"attribute_name\": \"age\",\n                            \"read\": true,\n                            \"insert\": true,\n                            \"update\": true\n                        },\n                        {\n                            \"attribute_name\": \"adorable\",\n                            \"read\": true,\n                            \"insert\": true,\n                            \"update\": true\n                        },\n                        {\n                            \"attribute_name\": \"owner_id\",\n                            \"read\": true,\n                            \"insert\": true,\n                            \"update\": true\n                        },\n                        {\n                            \"attribute_name\": \"weight_lbs\",\n                            \"read\": true,\n                            \"insert\": true,\n                            \"update\": true\n                        },\n                        {\n                            \"attribute_name\": \"breed_id\",\n                            \"read\": true,\n                            \"insert\": true,\n                            \"update\": true\n                        },\n                        {\n                            \"attribute_name\": \"__updatedtime__\",\n                            \"read\": true,\n                            \"insert\": true,\n                            \"update\": false\n                        }\n                    ]\n                }\n            }\n        }\n    }\n}",
+									"options": {
+										"raw": {}
+									}
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "CSV Data Load  upsert to table w/ full perms",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"const responseData = JSON.parse(responseBody);",
+											"",
+											"let id_index = responseData.message.indexOf('id ');",
+											"let parsedId = responseData.message.substr(id_index + 3, responseData.message.length);",
+											"pm.environment.set(\"job_id\", parsedId);"
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"exec": [
+											"setTimeout(()=>{}, 400);"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "bulk_load_user",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"operation\":\"csv_data_load\",\n  \"action\": \"upsert\",\n  \"schema\":\"{{schema}}\",\n  \"table\":\"{{supp_tb}}\",\n  \"data\":\"companyname, new_attr\\nThe Chum Bucket, Another attr value\\n\"\n}\n",
+									"options": {
+										"raw": {}
+									}
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								},
+								"description": "update a table with csv data uplaod"
+							},
+							"response": []
+						},
+						{
+							"name": "Check Data CSV upsert job completed",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"",
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"test Job Found\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData.length).to.eql(1);",
+											"    ",
+											"    pm.expect(jsonData[0]).to.have.property('status');",
+											"    ",
+											"    let status = jsonData[0].status;",
+											"    ",
+											"    switch(status){",
+											"        case 'ERROR':",
+											"            console.log(jsonData[0]);",
+											"",
+											"            pm.expect(status).to.not.eql('ERROR');",
+											"            break;",
+											"        case 'COMPLETE':",
+											"            console.log(jsonData[0]);",
+											"",
+											"            pm.expect(jsonData[0].message).to.contain(\"successfully loaded 1 of 1 records\");",
+											"            pm.expect(status).to.eql('COMPLETE');",
+											"            break;",
+											"        case '0':",
+											"        case 0:",
+											"        case 'IN_PROGRESS':",
+											"            console.log('in progress, checking again');",
+											"            postman.setNextRequest('Check Data CSV upsert job completed');",
+											"            pm.expect(status).to.be.oneOf(['IN_PROGRESS', 0, '0']);",
+											"            break;",
+											"        default:",
+											"            postman.setNextRequest('Check Data CSV upsert job completed');",
+											"            pm.expect(status).to.be.oneOf(['IN_PROGRESS', 0, '0', 'ERROR', 'COMPLETE']);",
+											"            break;",
+											"    }",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"exec": [
+											"setTimeout(()=>{}, 200);"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "saveHelperData",
+											"type": "any"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\t\"operation\":\"get_job\",\n\t\"id\": \"{{job_id}}\"\n}",
+									"options": {
+										"raw": {}
+									}
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "Check row from Data CSV job was upserted",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"",
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"test correct new row count on table\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData[0].row_count).to.eql(30);",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"exec": [
+											"setTimeout(()=>{}, 200);"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "saveHelperData",
+											"type": "any"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\t\"operation\":\"sql\",\n\t\"sql\": \"SELECT count(*) AS row_count FROM {{schema}}.{{supp_tb}}\"\n}",
+									"options": {
+										"raw": {}
+									}
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "Import CSV from S3 to table w/ full attr perms - update",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"var jsonData = pm.response.json();",
+											"",
+											"pm.test(\"Check for job message\", function () {",
+											"    pm.expect(jsonData.message.indexOf('Starting job')).to.eql(0);",
+											"});",
+											"",
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"let id_index = jsonData.message.indexOf('id ');",
+											"let parsedId = jsonData.message.substr(id_index + 3, jsonData.message.length);",
+											"pm.environment.set(\"job_id\", parsedId);"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "bulk_load_user",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"value": "Basic c2dvbGRiZXJnOnRlc3QxMjM0IQ=="
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\t\"operation\":\"import_from_s3\",\n\t\"action\": \"update\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog\",\n\t\"s3\":{\n\t\t\"aws_access_key_id\":\"{{s3_key}}\",\n\t\t\"aws_secret_access_key\":\"{{s3_secret}}\",\n\t\t\"bucket\":\"harperdb-integration-test-data/non_public_folder\",\n\t\t\"key\":\"dogs.csv\"\n\t}\n}",
+									"options": {
+										"raw": {}
+									}
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "Check S3 CSV update job completed",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"",
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"test Job Found\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData.length).to.eql(1);",
+											"    ",
+											"    pm.expect(jsonData[0]).to.have.property('status');",
+											"    ",
+											"    let status = jsonData[0].status;",
+											"    ",
+											"    switch(status){",
+											"        case 'ERROR':",
+											"            console.log(jsonData[0]);",
+											"            pm.expect(status).to.not.eql('ERROR');",
+											"            break;",
+											"        case 'COMPLETE':",
+											"            console.log(jsonData[0]);",
+											"            pm.expect(jsonData[0].message).to.contain(\"successfully loaded 9 of 9 records\");",
+											"            pm.expect(status).to.eql('COMPLETE');",
+											"            break;",
+											"        case '0':",
+											"        case 0:",
+											"        case 'IN_PROGRESS':",
+											"            console.log('in progress, checking again');",
+											"            postman.setNextRequest('Check S3 CSV update job completed');",
+											"            pm.expect(status).to.be.oneOf(['IN_PROGRESS', 0, '0']);",
+											"            break;",
+											"        default:",
+											"            postman.setNextRequest('Check S3 CSV update job completed');",
+											"            pm.expect(status).to.be.oneOf(['IN_PROGRESS', 0, '0', 'ERROR', 'COMPLETE']);",
+											"            break;",
+											"    }",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"exec": [
+											"setTimeout(()=>{}, 200);",
+											""
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "saveHelperData",
+											"type": "any"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\t\"operation\":\"get_job\",\n\t\"id\": \"{{job_id}}\"\n}",
+									"options": {
+										"raw": {}
+									}
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "Check rows from S3 update were updated",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"",
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"test all rows on table have new __updatedtime__ value\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    jsonData.forEach(row => {",
+											"        pm.expect(row.__updatedtime__).to.be.greaterThan(row.__createdtime__);",
+											"    })",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"exec": [
+											"setTimeout(()=>{}, 200);"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "saveHelperData",
+											"type": "any"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\t\"operation\":\"sql\",\n\t\"sql\": \"SELECT * FROM dev.dog\"\n}",
+									"options": {
+										"raw": {}
+									}
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "Drop bulk_load_user",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"Success message\", function () {",
+											"    pm.response.to.have.jsonBody('message');",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData.message).to.contain('successfully deleted');",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"value": "Basic YWRtaW46cGFzc3dvcmQ="
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"operation\":\"drop_user\",\n  \"username\":\"bulk_load_user\"\n}",
+									"options": {
+										"raw": {}
+									}
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								},
+								"description": "This method is used for dropping a role.  \n\n<i>You cannot drop a role with associated users.  </i>\n\n<ul>\n<li><b>operation </b><i>(required)</i> - this must always be drop_role </li>\n<li><b>id </b><i>(required) </i> - this is the id of the role you are dropping\n</ul>"
+							},
+							"response": []
+						},
+						{
+							"name": "Drop bulk_load_user role",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"Success message\", function () {",
+											"    pm.response.to.have.jsonBody('message');",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData.message).to.contain('successfully deleted');",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"value": "Basic YWRtaW46cGFzc3dvcmQ="
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\"operation\":\"drop_role\",\n\"id\":\"{{role_id}}\"\n}",
+									"options": {
+										"raw": {}
+									}
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								},
+								"description": "This method is used for dropping a role.  \n\n<i>You cannot drop a role with associated users.  </i>\n\n<ul>\n<li><b>operation </b><i>(required)</i> - this must always be drop_role </li>\n<li><b>id </b><i>(required) </i> - this is the id of the role you are dropping\n</ul>"
+							},
+							"response": []
+						}
+					],
+					"protocolProfileBehavior": {},
+					"_postman_isSubFolder": true
+				},
+				{
 					"name": "Authentication - bad username",
 					"event": [
 						{
@@ -21221,7 +24043,7 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n    \"operation\": \"add_role\",\n    \"role\": \"developer_test_5\",\n    \"permission\": {\n        \"super_user\": false,\n        \"northnwd\": {\n            \"tables\": {\n                \"customers\": {\n                    \"read\": true,\n                    \"insert\": true,\n                    \"update\": true,\n                    \"delete\": true,\n                    \"attribute_permissions\": []\n                },\n                \"suppliers\": {\n                    \"read\": false,\n                    \"insert\": false,\n                    \"update\": false,\n                    \"delete\": false,\n                    \"attribute_permissions\": []\n                },\n                \"region\": {\n                    \"read\": true,\n                    \"insert\": false,\n                    \"update\": false,\n                    \"delete\": false,\n                    \"attribute_permissions\": [\n                        {\n                            \"attribute_name\": \"regiondescription\",\n                            \"read\": true,\n                            \"insert\": false,\n                            \"update\": false,\n                            \"delete\": false\n                        }\n                    ]\n                },\n                \"territories\": {\n                    \"read\": true,\n                    \"insert\": true,\n                    \"update\": false,\n                    \"delete\": false,\n                    \"attribute_permissions\": [\n                        {\n                            \"attribute_name\": \"territorydescription\",\n                            \"read\": true,\n                            \"insert\": true,\n                            \"update\": false,\n                            \"delete\": false\n                        }\n                    ]\n                },\n                \"categories\": {\n                    \"read\": true,\n                    \"insert\": true,\n                    \"update\": true,\n                    \"delete\": false,\n                    \"attribute_permissions\": [\n                        {\n                            \"attribute_name\": \"description\",\n                            \"read\": true,\n                            \"insert\": true,\n                            \"update\": true,\n                            \"delete\": false\n                        }\n                    ]\n                },\n                \"shippers\": {\n                    \"read\": true,\n                    \"insert\": true,\n                    \"update\": true,\n                    \"delete\": true,\n                    \"attribute_permissions\": [\n                        {\n                            \"attribute_name\": \"companyname\",\n                            \"read\": false,\n                            \"insert\": false,\n                            \"update\": false,\n                            \"delete\": false\n                        }\n                    ]\n                }\n            }\n        },\n        \"dev\": {\n            \"tables\": {\n                \"dog\": {\n                    \"read\": true,\n                    \"insert\": true,\n                    \"update\": true,\n                    \"delete\": true,\n                    \"attribute_permissions\": [\n                        {\n                            \"attribute_name\": \"__createdtime__\",\n                            \"read\": true,\n                            \"insert\": true,\n                            \"update\": true\n                        },\n                        {\n                            \"attribute_name\": \"__updatedtime__\",\n                            \"read\": true,\n                            \"insert\": true,\n                            \"update\": true\n                        }\n                    ]\n                },\n                \"breed\": {\n                    \"read\": true,\n                    \"insert\": true,\n                    \"update\": true,\n                    \"delete\": true,\n                    \"attribute_permissions\": [\n                        {\n                            \"attribute_name\": \"__createdtime__\",\n                            \"read\": false,\n                            \"insert\": false,\n                            \"update\": true\n                        },\n                        {\n                            \"attribute_name\": \"__updatedtime__\",\n                            \"read\": false,\n                            \"insert\": true,\n                            \"update\": true\n                        }\n                    ]\n                }\n            }\n        }\n    }\n}",
+							"raw": "{\n    \"operation\": \"add_role\",\n    \"role\": \"developer_test_5\",\n    \"permission\": {\n        \"super_user\": false,\n        \"northnwd\": {\n            \"tables\": {\n                \"customers\": {\n                    \"read\": true,\n                    \"insert\": true,\n                    \"update\": true,\n                    \"delete\": true,\n                    \"attribute_permissions\": []\n                },\n                \"suppliers\": {\n                    \"read\": false,\n                    \"insert\": false,\n                    \"update\": false,\n                    \"delete\": false,\n                    \"attribute_permissions\": []\n                },\n                \"region\": {\n                    \"read\": true,\n                    \"insert\": false,\n                    \"update\": false,\n                    \"delete\": false,\n                    \"attribute_permissions\": [\n                        {\n                            \"attribute_name\": \"regiondescription\",\n                            \"read\": true,\n                            \"insert\": false,\n                            \"update\": false,\n                            \"delete\": false\n                        }\n                    ]\n                },\n                \"territories\": {\n                    \"read\": true,\n                    \"insert\": true,\n                    \"update\": false,\n                    \"delete\": false,\n                    \"attribute_permissions\": [\n                        {\n                            \"attribute_name\": \"territorydescription\",\n                            \"read\": true,\n                            \"insert\": true,\n                            \"update\": false,\n                            \"delete\": false\n                        }\n                    ]\n                },\n                \"categories\": {\n                    \"read\": true,\n                    \"insert\": true,\n                    \"update\": true,\n                    \"delete\": false,\n                    \"attribute_permissions\": [\n                        {\n                            \"attribute_name\": \"description\",\n                            \"read\": true,\n                            \"insert\": true,\n                            \"update\": true,\n                            \"delete\": false\n                        }\n                    ]\n                },\n                \"shippers\": {\n                    \"read\": true,\n                    \"insert\": true,\n                    \"update\": true,\n                    \"delete\": true,\n                    \"attribute_permissions\": [\n                        {\n                            \"attribute_name\": \"companyname\",\n                            \"read\": false,\n                            \"insert\": false,\n                            \"update\": false,\n                            \"delete\": false\n                        }\n                    ]\n                }\n            }\n        },\n        \"dev\": {\n            \"tables\": {\n                \"dog\": {\n                    \"read\": true,\n                    \"insert\": true,\n                    \"update\": true,\n                    \"delete\": true,\n                    \"attribute_permissions\": [\n                        {\n                            \"attribute_name\": \"__createdtime__\",\n                            \"read\": true,\n                            \"insert\": true,\n                            \"update\": true\n                        },\n                        {\n                            \"attribute_name\": \"__updatedtime__\",\n                            \"read\": true,\n                            \"insert\": true,\n                            \"update\": true\n                        },\n                        {\n                            \"attribute_name\": \"age\",\n                            \"read\": true,\n                            \"insert\": true,\n                            \"update\": false\n                        },\n                        {\n                            \"attribute_name\": \"dog_name\",\n                            \"read\": true,\n                            \"insert\": false,\n                            \"update\": true\n                        },\n                        {\n                            \"attribute_name\": \"adorable\",\n                            \"read\": true,\n                            \"insert\": true,\n                            \"update\": true\n                        },\n                        {\n                            \"attribute_name\": \"owner_id\",\n                            \"read\": false,\n                            \"insert\": true,\n                            \"update\": true\n                        }\n                    ]\n                },\n                \"breed\": {\n                    \"read\": true,\n                    \"insert\": true,\n                    \"update\": true,\n                    \"delete\": true,\n                    \"attribute_permissions\": [\n                        {\n                            \"attribute_name\": \"__createdtime__\",\n                            \"read\": false,\n                            \"insert\": false,\n                            \"update\": true\n                        },\n                        {\n                            \"attribute_name\": \"__updatedtime__\",\n                            \"read\": false,\n                            \"insert\": true,\n                            \"update\": true\n                        }\n                    ]\n                }\n            }\n        }\n    }\n}",
 							"options": {
 								"raw": {}
 							}
@@ -22218,6 +25040,79 @@
 						"body": {
 							"mode": "raw",
 							"raw": "{\n  \"operation\":\"update\",\n  \"schema\":\"{{schema}}\",\n  \"table\":\"{{cate_tb}}\",\n  \"records\": [\n    {\n      \"{{cate_id}}\":1,\n      \"description\":\"test description updated\"\n    }\n  ]\n}",
+							"options": {
+								"raw": {}
+							}
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						},
+						"description": "Method for adding users.  Users can be assigned roles which provide granular access at a table, operation, and attirbute level.  \n\n<ul>\n<li><b>operation </b> <i>(required) </i> - must always be 'add_user'</li>\n\n<li><b>role </b><i>(required) </i>- id of the role you wish to assign to the user.  See add_role for more detail.  </li>\n\n<li><b>username </b> <i>(required)</i> - username assigned to the user.  It can not be altered after adding the user.  It serves as the hash. </li>\n\n<li><b>password </b> <i>(required) </i>- clear text for password.  HarperDB will encrypt the password upon reciept. </li>\n\n</ul>"
+					},
+					"response": []
+				},
+				{
+					"name": "NoSQL Try to update categories table with new attr as test_user - expect error",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 403\", function () {",
+									"    pm.response.to.have.status(403);",
+									"});",
+									"",
+									"pm.test(\"Update validation error response\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.error).to.eql(\"This operation is not authorized due to role restrictions and/or invalid schema items\");",
+									"    pm.expect(jsonData.unauthorized_access.length).to.eql(0);",
+									"    pm.expect(jsonData.invalid_schema_items.length).to.eql(1);",
+									"    pm.expect(jsonData.invalid_schema_items[0]).to.eql(\"Attribute 'active' does not exist on 'northnwd.categories'\");",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{test_user_name}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic c2dvbGRiZXJnOnRlc3QxMjM0IQ=="
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"update\",\n  \"schema\":\"{{schema}}\",\n  \"table\":\"{{cate_tb}}\",\n  \"records\": [\n    {\n      \"{{cate_id}}\":1,\n      \"description\":\"test description updated\",\n      \"active\": true\n    }\n  ]\n}",
 							"options": {
 								"raw": {}
 							}
@@ -23318,6 +26213,15 @@
 								],
 								"type": "text/javascript"
 							}
+						},
+						{
+							"listen": "prerequest",
+							"script": {
+								"exec": [
+									"setTimeout(()=>{}, 400);"
+								],
+								"type": "text/javascript"
+							}
 						}
 					],
 					"request": {
@@ -24103,6 +27007,660 @@
 							"port": "{{port}}"
 						},
 						"description": "Method for adding users.  Users can be assigned roles which provide granular access at a table, operation, and attirbute level.  \n\n<ul>\n<li><b>operation </b> <i>(required) </i> - must always be 'add_user'</li>\n\n<li><b>role </b><i>(required) </i>- id of the role you wish to assign to the user.  See add_role for more detail.  </li>\n\n<li><b>username </b> <i>(required)</i> - username assigned to the user.  It can not be altered after adding the user.  It serves as the hash. </li>\n\n<li><b>password </b> <i>(required) </i>- clear text for password.  HarperDB will encrypt the password upon reciept. </li>\n\n</ul>"
+					},
+					"response": []
+				},
+				{
+					"name": "NoSQL - Upsert - table perms true/no attribute perms set - expect success",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"Upsert validate\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.upserted_hashes.length).to.eql(2);",
+									"    pm.expect(jsonData.upserted_hashes.includes('FURIB')).to.be.true;",
+									"    pm.expect(jsonData.skipped_hashes).to.eql(undefined);",
+									"    pm.expect(jsonData.message).to.eql(\"upserted 2 of 2 records\");",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{test_user_name}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"upsert\",\n  \"schema\":\"{{schema}}\",\n  \"table\":\"{{cust_tb}}\",\n  \"records\": [\n    {\n      \"{{cust_id}}\": \"FURIB\",\n      \"region\":\"Durkastan\",\n      \"contactmame\": \"Hans Blix\"\n    },\n    {\n      \"region\":\"Durkastan\",\n      \"contactmame\": \"Hans Blix\"\n    }\n  ]\n}",
+							"options": {
+								"raw": {}
+							}
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "NoSQL - Upsert - table perms true/attr perms true - expect success",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"Upsert validate\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.upserted_hashes.length).to.eql(2);",
+									"    pm.expect(jsonData.upserted_hashes.includes(8)).to.be.true;",
+									"    pm.expect(jsonData.skipped_hashes).to.eql(undefined);",
+									"    pm.expect(jsonData.message).to.eql(\"upserted 2 of 2 records\");",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{test_user_name}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"upsert\",\n  \"schema\":\"{{schema}}\",\n  \"table\":\"{{cate_tb}}\",\n  \"records\": [\n    {\n      \"{{cate_id}}\": 8,\n      \"description\":\"Seaweed and fishies\"\n    },\n    {\n      \"description\":\"Junk food\"\n    }\n  ]\n}",
+							"options": {
+								"raw": {}
+							}
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "NoSQL - Upsert - table perms true/no attr perms and new attribute included - expect success",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"Upsert validate\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.upserted_hashes.length).to.eql(2);",
+									"    pm.expect(jsonData.upserted_hashes.includes('FURIB')).to.be.true;",
+									"    pm.expect(jsonData.skipped_hashes).to.eql(undefined);",
+									"    pm.expect(jsonData.message).to.eql(\"upserted 2 of 2 records\");",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{test_user_name}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"upsert\",\n  \"schema\":\"{{schema}}\",\n  \"table\":\"{{cust_tb}}\",\n  \"records\": [\n    {\n      \"{{cust_id}}\": \"FURIB\",\n      \"region\":\"Durkastan\",\n      \"contactmame\": \"Hans Blix\",\n      \"active\": false\n    },\n    {\n      \"region\":\"Durkastan\",\n      \"contactmame\": \"Sam Johnson\",\n      \"active\": true\n    }\n  ]\n}",
+							"options": {
+								"raw": {}
+							}
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "NoSQL - Upsert - table perms true/false  - expect error",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 403\", function () {",
+									"    pm.response.to.have.status(403);",
+									"});",
+									"",
+									"pm.test(\"Validate - upsert error response\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.error).to.eql(\"This operation is not authorized due to role restrictions and/or invalid schema items\");",
+									"    pm.expect(jsonData.invalid_schema_items.length).to.eql(0);",
+									"    pm.expect(jsonData.unauthorized_access.length).to.eql(1);",
+									"    pm.expect(jsonData.unauthorized_access[0].schema).to.eql(\"northnwd\");",
+									"    pm.expect(jsonData.unauthorized_access[0].table).to.eql(\"territories\");",
+									"    pm.expect(jsonData.unauthorized_access[0].required_table_permissions.length).to.eql(1);",
+									"    pm.expect(jsonData.unauthorized_access[0].required_table_permissions[0]).to.eql(\"update\");",
+									"    pm.expect(jsonData.unauthorized_access[0].required_attribute_permissions.length).to.eql(0);",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{test_user_name}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"operation\": \"upsert\",\n    \"schema\": \"{{schema}}\",\n    \"table\": \"{{terr_tb}}\",\n    \"records\": [\n        {\n            \"regionid\": 1,\n            \"territorydescription\": \"Westboro\",\n            \"territoryid\": 1581\n        },\n        {\n            \"regionid\": 55,\n            \"territorydescription\": \"Denver Metro\"\n        }\n    ]\n}",
+							"options": {
+								"raw": {}
+							}
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "NoSQL - Upsert - table perms true/attr perms true but new attribute included - expect error",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 403\", function () {",
+									"    pm.response.to.have.status(403);",
+									"});",
+									"",
+									"pm.test(\"Validate - upsert error response\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.unauthorized_access.length).to.eql(0);",
+									"    pm.expect(jsonData.invalid_schema_items.length).to.eql(1);",
+									"    pm.expect(jsonData.invalid_schema_items[0]).to.eql(\"Attribute 'active' does not exist on 'northnwd.categories'\");",
+									"    pm.expect(jsonData.error).to.eql(\"This operation is not authorized due to role restrictions and/or invalid schema items\");",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{test_user_name}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"upsert\",\n  \"schema\":\"{{schema}}\",\n  \"table\":\"{{cate_tb}}\",\n  \"records\": [\n    {\n      \"{{cate_id}}\": 8,\n      \"description\":\"Seaweed and fishies\",\n      \"active\": true\n    },\n    {\n      \"description\":\"Junk food\",\n      \"active\": false\n    }\n  ]\n}",
+							"options": {
+								"raw": {}
+							}
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "NoSQL - Upsert - table perms true/some attr perms false - expect error",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 403\", function () {",
+									"    pm.response.to.have.status(403);",
+									"});",
+									"",
+									"pm.test(\"Validate - upsert error response\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.error).to.eql(\"This operation is not authorized due to role restrictions and/or invalid schema items\");",
+									"    ",
+									"    const expected_attr_perm_errs = {",
+									"        dog_name: \"insert\",",
+									"        age: \"update\"",
+									"    }",
+									"    pm.expect(jsonData.unauthorized_access.length).to.eql(1);",
+									"    pm.expect(jsonData.unauthorized_access[0].schema).to.eql(\"dev\");",
+									"    pm.expect(jsonData.unauthorized_access[0].table).to.eql(\"dog\");",
+									"    pm.expect(jsonData.unauthorized_access[0].required_table_permissions.length).to.eql(0);",
+									"    pm.expect(jsonData.unauthorized_access[0].required_attribute_permissions.length).to.eql(2);",
+									"    jsonData.unauthorized_access[0].required_attribute_permissions.forEach(attr_perm_err => {",
+									"        pm.expect(attr_perm_err.required_permissions[0]).to.eql(expected_attr_perm_errs[attr_perm_err.attribute_name]);    ",
+									"    })",
+									"    ",
+									"    pm.expect(jsonData.invalid_schema_items.length).to.eql(1);",
+									"    pm.expect(jsonData.invalid_schema_items[0]).to.eql(\"Attribute 'birthday' does not exist on 'dev.dog'\");",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{test_user_name}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"operation\": \"upsert\",\n    \"schema\": \"dev\",\n    \"table\": \"dog\",\n    \"records\": [\n        {\n            \"adorable\": true,\n            \"dog_name\": \"Penny\",\n            \"owner_id\": 2,\n            \"age\": 5,\n            \"id\": 10\n        },\n        {\n            \"adorable\": true,\n            \"dog_name\": \"Penny\",\n            \"owner_id\": 2,\n            \"age\": 5,\n            \"id\": 2\n        },\n        {\n            \"adorable\": true,\n            \"dog_name\": \"Penny\",\n            \"owner_id\": 2,\n            \"age\": 5,\n            \"id\": 10,\n            \"birthday\": \"10/11/19\"\n        }\n    ]\n}",
+							"options": {
+								"raw": {}
+							}
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "NoSQL - Upsert - w/ null value as hash- expect error",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 400\", function () {",
+									"    pm.response.to.have.status(400);",
+									"});",
+									"pm.test(\"Validate - upsert error response\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.error).to.eql(\"Invalid hash value: 'null' is not a valid hash attribute value, check log for more info\");",
+									"",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{test_user_name}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"upsert\",\n  \"schema\":\"{{schema}}\",\n  \"table\":\"{{cust_tb}}\",\n  \"records\": [\n    {\n      \"{{cust_id}}\": \"null\",\n      \"region\":\"Durkastan\",\n      \"contactmame\": \"Hans Blix\",\n      \"active\": false\n    },\n    {\n      \"region\":\"Durkastan\",\n      \"contactmame\": \"Sam Johnson\",\n      \"active\": true\n    }\n  ]\n}",
+							"options": {
+								"raw": {}
+							}
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "NoSQL - Upsert - w/ invalid attr name - expect error",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 400\", function () {",
+									"    pm.response.to.have.status(400);",
+									"});",
+									"pm.test(\"Validate - upsert error response\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.error).to.eql(\"Attribute names cannot include backticks or forward slashes\");",
+									"",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{test_user_name}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"upsert\",\n  \"schema\":\"{{schema}}\",\n  \"table\":\"{{cust_tb}}\",\n  \"records\": [\n    {\n      \"{{cust_id}}\": \"FURIB\",\n      \"region\":\"Durkastan\",\n      \"contactmame\": \"Hans Blix\",\n      \"active/not active\": false\n    },\n    {\n      \"region\":\"Durkastan\",\n      \"contactmame\": \"Sam Johnson\",\n      \"active/not active\": false\n    }\n  ]\n}",
+							"options": {
+								"raw": {}
+							}
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "NoSQL Alter non-SU role",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"responseData = JSON.parse(responseBody);",
+									"postman.setEnvironmentVariable(\"role_id\", responseData.id)"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"operation\": \"alter_role\",\n    \"id\": \"{{role_id}}\",\n    \"role\": \"developer_test_5\",\n    \"permission\": {\n        \"super_user\": false,\n        \"northnwd\": {\n            \"tables\": {\n                \"customers\": {\n                    \"read\": true,\n                    \"insert\": true,\n                    \"update\": true,\n                    \"delete\": true,\n                    \"attribute_permissions\": []\n                },\n                \"suppliers\": {\n                    \"read\": false,\n                    \"insert\": false,\n                    \"update\": false,\n                    \"delete\": false,\n                    \"attribute_permissions\": []\n                },\n                \"region\": {\n                    \"read\": true,\n                    \"insert\": false,\n                    \"update\": false,\n                    \"delete\": false,\n                    \"attribute_permissions\": [\n                        {\n                            \"attribute_name\": \"regiondescription\",\n                            \"read\": true,\n                            \"insert\": false,\n                            \"update\": false,\n                            \"delete\": false\n                        }\n                    ]\n                },\n                \"territories\": {\n                    \"read\": true,\n                    \"insert\": true,\n                    \"update\": false,\n                    \"delete\": false,\n                    \"attribute_permissions\": [\n                        {\n                            \"attribute_name\": \"territorydescription\",\n                            \"read\": true,\n                            \"insert\": true,\n                            \"update\": false,\n                            \"delete\": false\n                        }\n                    ]\n                },\n                \"categories\": {\n                    \"read\": true,\n                    \"insert\": true,\n                    \"update\": true,\n                    \"delete\": false,\n                    \"attribute_permissions\": [\n                        {\n                            \"attribute_name\": \"description\",\n                            \"read\": true,\n                            \"insert\": true,\n                            \"update\": true,\n                            \"delete\": false\n                        }\n                    ]\n                },\n                \"shippers\": {\n                    \"read\": true,\n                    \"insert\": true,\n                    \"update\": true,\n                    \"delete\": true,\n                    \"attribute_permissions\": [\n                        {\n                            \"attribute_name\": \"companyname\",\n                            \"read\": false,\n                            \"insert\": false,\n                            \"update\": false,\n                            \"delete\": false\n                        }\n                    ]\n                }\n            }\n        },\n        \"dev\": {\n            \"tables\": {\n                \"dog\": {\n                    \"read\": true,\n                    \"insert\": true,\n                    \"update\": true,\n                    \"delete\": true,\n                    \"attribute_permissions\": [\n                        {\n                            \"attribute_name\": \"__createdtime__\",\n                            \"read\": true,\n                            \"insert\": true,\n                            \"update\": true\n                        },\n                        {\n                            \"attribute_name\": \"__updatedtime__\",\n                            \"read\": true,\n                            \"insert\": true,\n                            \"update\": true\n                        }\n                    ]\n                },\n                \"breed\": {\n                    \"read\": true,\n                    \"insert\": true,\n                    \"update\": true,\n                    \"delete\": true,\n                    \"attribute_permissions\": [\n                        {\n                            \"attribute_name\": \"__createdtime__\",\n                            \"read\": false,\n                            \"insert\": false,\n                            \"update\": true\n                        },\n                        {\n                            \"attribute_name\": \"__updatedtime__\",\n                            \"read\": false,\n                            \"insert\": true,\n                            \"update\": true\n                        }\n                    ]\n                }\n            }\n        }\n    }\n}",
+							"options": {
+								"raw": {}
+							}
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
 					},
 					"response": []
 				},
@@ -26472,7 +30030,7 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"insert into northnwd.categories (categoriesid, description) values ('9', 'Other food stuff');\"\n}",
+							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"insert into northnwd.categories (categoryid, description) values ('9', 'Other food stuff');\"\n}",
 							"options": {
 								"raw": {}
 							}
@@ -27066,8 +30624,8 @@
 									"",
 									"var jsonData = pm.response.json();",
 									"",
-									"pm.test(\"test 8 records returned\", function () {",
-									"    pm.expect(jsonData.length).to.eql(8);",
+									"pm.test(\"test 9 records returned\", function () {",
+									"    pm.expect(jsonData.length).to.eql(9);",
 									"});",
 									"",
 									"var expected_attributes = [\"id\", \"dog_name\", \"age\", \"adorable\", \"id1\", \"name\"]",
@@ -27082,8 +30640,8 @@
 									"});",
 									"",
 									"pm.test(\"test random row values\", function () {",
-									"    pm.expect(jsonData[1].name).to.eql(\"David\");",
-									"    pm.expect(jsonData[1].id1).to.eql(3);",
+									"    pm.expect(jsonData[1].name).to.eql(\"Kyle\");",
+									"    pm.expect(jsonData[3].id1).to.eql(1);",
 									"    pm.expect(jsonData[4].id1).to.eql(2);",
 									"});"
 								],
@@ -27153,7 +30711,7 @@
 									"});",
 									"",
 									"var jsonData = pm.response.json();",
-									"var expected_names = [\"David\", \"Kaylan\", \"Kaylan\", \"Kyle\", \"Kyle\"];",
+									"var expected_names = [\"David\", \"Kaylan\", \"Kyle\", \"Kyle\", \"Kyle\"];",
 									"var expected_attrs = [\"__createdtime__\", \"age\", \"dog_name\", \"adorable\", \"owner_id\", \"__updatedtime__\", \"id\", \"weight_lbs\", \"breed_id\", \"name\", \"id1\"]",
 									"",
 									"pm.test(\"Returns merged table data in correct order\", function () {",
@@ -27227,9 +30785,9 @@
 							"listen": "test",
 							"script": {
 								"exec": [
-									"pm.test(\"test 7 records returned\", function () {",
+									"pm.test(\"test 9 records returned\", function () {",
 									"    var jsonData = pm.response.json();",
-									"    pm.expect(jsonData.length).to.eql(7);",
+									"    pm.expect(jsonData.length).to.eql(9);",
 									"});",
 									"",
 									"pm.test(\"test for all columns exist including duplicate column name numbering\", function () {",
@@ -27247,11 +30805,11 @@
 									"",
 									"pm.test(\"test random row values\", function () {",
 									"    var jsonData = pm.response.json();",
-									"    pm.expect(jsonData[1].name).to.eql(\"David\");",
-									"    pm.expect(jsonData[1].id1).to.eql(3);",
+									"    pm.expect(jsonData[1].name).to.eql(\"Kyle\");",
+									"    pm.expect(jsonData[1].id1).to.eql(2);",
 									"    pm.expect(jsonData[4].id1).to.eql(2);",
-									"    pm.expect(jsonData[6].id1).to.eql(1);",
-									"    pm.expect(jsonData[6].name1).to.eql(\"MASTIFF\");",
+									"    pm.expect(jsonData[6].id1).to.eql(4);",
+									"    pm.expect(jsonData[6].name1).to.eql(\"BEAGLE MIX\");",
 									"});"
 								],
 								"type": "text/javascript"
@@ -27315,9 +30873,9 @@
 							"listen": "test",
 							"script": {
 								"exec": [
-									"pm.test(\"test 7 records returned\", function () {",
+									"pm.test(\"test 9 records returned\", function () {",
 									"    var jsonData = pm.response.json();",
-									"    pm.expect(jsonData.length).to.eql(7);",
+									"    pm.expect(jsonData.length).to.eql(9);",
 									"});",
 									"",
 									"pm.test(\"test for all columns exist including duplicate column name numbering\", function () {",
@@ -27332,14 +30890,14 @@
 									"",
 									"pm.test(\"test first and last row values\", function () {",
 									"    var jsonData = pm.response.json();",
-									"    pm.expect(jsonData[0].dog_age).to.eql(1);",
+									"    pm.expect(jsonData[0].dog_age).to.eql(3);",
 									"    pm.expect(jsonData[0].dog_weight).to.eql(35);",
 									"    pm.expect(jsonData[0].owner_name).to.eql(\"Kaylan\");",
 									"    pm.expect(jsonData[0].name).to.eql(\"BEAGLE MIX\");",
-									"    pm.expect(jsonData[6].dog_age).to.eql(5);",
-									"    pm.expect(jsonData[6].dog_weight).to.eql(35);",
+									"    pm.expect(jsonData[6].dog_age).to.eql(8);",
+									"    pm.expect(jsonData[6].dog_weight).to.eql(15);",
 									"    pm.expect(jsonData[6].owner_name).to.eql(\"Kyle\");",
-									"    pm.expect(jsonData[6].name).to.eql(\"WHIPPET\");",
+									"    pm.expect(jsonData[6].name).to.eql(\"TERRIER MIX\");",
 									"});"
 								],
 								"type": "text/javascript"
@@ -29280,9 +32838,9 @@
 											"",
 											"    if (jsonData.message) {",
 											"        pm.expect(jsonData.message.indexOf('Starting job')).to.eql(0);",
-											"        eval(pm.globals.get(\"function:getJobId\"))(jsonData, \"Import does_not_exist_UPDATE.csv from S3 - expect fail\");",
+											"        eval(pm.globals.get(\"function:getJobId\"))(jsonData, \"Import large sensor_data.json for UPSERT from S3\");",
 											"    } else {",
-											"        postman.setNextRequest(\"Import does_not_exist_UPDATE.csv from S3 - expect fail\");",
+											"        postman.setNextRequest(\"Import large sensor_data.json for UPSERT from S3\");",
 											"        pm.expect(jsonData).to.have.message;",
 											"    }",
 											"});"
@@ -29442,6 +33000,279 @@
 								"body": {
 									"mode": "raw",
 									"raw": "{\n\t\"operation\":\"get_job\",\n\t\"id\": \"{{job_id}}\"\n}",
+									"options": {
+										"raw": {}
+									}
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "Import large sensor_data.json for UPSERT from S3",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"Check for job message\", function () {",
+											"    var jsonData = pm.response.json();",
+											"",
+											"    if (jsonData.message) {",
+											"        pm.expect(jsonData.message.indexOf('Starting job')).to.eql(0);",
+											"        eval(pm.globals.get(\"function:getJobId\"))(jsonData, \"Import does_not_exist_UPDATE.csv from S3 - expect fail\");",
+											"    } else {",
+											"        postman.setNextRequest(\"Import does_not_exist_UPDATE.csv from S3 - expect fail\");",
+											"        pm.expect(jsonData).to.have.message;",
+											"    }",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"value": "Basic c2dvbGRiZXJnOnRlc3QxMjM0IQ=="
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\t\"operation\":\"import_from_s3\",\n\t\"action\": \"upsert\",\n\t\"schema\":\"S3_DATA\",\n\t\"table\":\"sensor\",\n\t\"s3\":{\n\t\t\"aws_access_key_id\":\"{{s3_key}}\",\n\t\t\"aws_secret_access_key\":\"{{s3_secret}}\",\n\t\t\"bucket\":\"harperdb-integration-test-data/non_public_folder\",\n\t\t\"key\":\"sensor_data.json\"\n\t}\n}",
+									"options": {
+										"raw": {}
+									}
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "Check S3 large sensor_data upserted",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"",
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"test Job Found\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData.length).to.eql(1);",
+											"    ",
+											"    pm.expect(jsonData[0]).to.have.property('status');",
+											"    ",
+											"    let status = jsonData[0].status;",
+											"    ",
+											"    switch(status){",
+											"        case 'ERROR':",
+											"            console.log(jsonData[0]);",
+											"            console.log(\"Error checking S3 import job.\")",
+											"            if(pm.environment.get(\"next_request\")){",
+											"                postman.setNextRequest(pm.environment.get(\"next_request\"));",
+											"            }",
+											"            pm.expect(status).to.not.eql('ERROR');",
+											"            break;",
+											"        case 'COMPLETE':",
+											"            console.log(jsonData[0]);",
+											"            if(pm.environment.get(\"next_request\")){",
+											"                postman.setNextRequest(pm.environment.get(\"next_request\"));",
+											"            }",
+											"           ",
+											"            pm.expect(jsonData[0].message).to.eql(\"successfully loaded 20020 of 20020 records\");",
+											"            pm.expect(status).to.be.oneOf(['COMPLETE', 'ERROR']);",
+											"            break;",
+											"        case '0':",
+											"        case 0:",
+											"        case 'IN_PROGRESS':",
+											"            console.log('in progress, checking again');",
+											"            postman.setNextRequest('Check S3 large sensor_data upserted');",
+											"            pm.expect(status).to.be.oneOf(['IN_PROGRESS', 0, '0']);",
+											"            break;",
+											"        default:",
+											"            postman.setNextRequest('Check S3 large sensor_data upserted');",
+											"            pm.expect(status).to.be.oneOf(['IN_PROGRESS', 0, '0', 'ERROR', 'COMPLETE']);",
+											"            break;",
+											"    }",
+											"});",
+											""
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"exec": [
+											"setTimeout(()=>{}, 200);",
+											"console.log(\"Checking Job CSV URL load\" + pm.environment.get(\"job_id\"));"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "saveHelperData",
+											"type": "any"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\t\"operation\":\"get_job\",\n\t\"id\": \"{{job_id}}\"\n}",
+									"options": {
+										"raw": {}
+									}
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "Check rows from S3 upsert were updated",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"",
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"test all rows on table have new __updatedtime__ value\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    jsonData.forEach(row => {",
+											"        pm.expect(row.__updatedtime__).to.be.greaterThan(row.__createdtime__);",
+											"    })",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"exec": [
+											"setTimeout(()=>{}, 200);"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "saveHelperData",
+											"type": "any"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\t\"operation\":\"sql\",\n\t\"sql\": \"SELECT * FROM S3_DATA.sensor\"\n}",
 									"options": {
 										"raw": {}
 									}
@@ -31026,7 +34857,7 @@
 					"response": []
 				},
 				{
-					"name": "Jobs - Bulk CSV Try to insert suppliers table restricted attribute as test_user Copy",
+					"name": "Jobs - Bulk CSV Load - insert suppliers table restricted attribute as test_user",
 					"event": [
 						{
 							"listen": "test",
@@ -36933,7 +40764,7 @@
 								],
 								"body": {
 									"mode": "raw",
-									"raw": "{\n\"operation\":\"insert\",\n\"schema\":\"test_delete_before\",\n\"table\":\"test_read\",\n\"records\": [{\"id\": 1, \"name\": \"Penny\"}, {\"id\": 2, \"name\": \"Kato\", \"age\": 6}]\n}",
+									"raw": "{\n    \"operation\": \"insert\",\n    \"schema\": \"test_delete_before\",\n    \"table\": \"test_read\",\n    \"records\": [\n        {\n            \"id\": 1,\n            \"name\": \"Penny\"\n        },\n        {\n            \"id\": 2,\n            \"name\": \"Kato\",\n            \"age\": 6\n        }\n    ]\n}",
 									"options": {
 										"raw": {}
 									}
@@ -37413,7 +41244,177 @@
 								],
 								"body": {
 									"mode": "raw",
-									"raw": "{\n\"operation\":\"insert\",\n\"schema\":\"test_delete_before\",\n\"table\":\"test_read\",\n\"records\": [{\"id\": 4, \"name\": \"Griff\"}]\n}",
+									"raw": "{\n    \"operation\": \"insert\",\n    \"schema\": \"test_delete_before\",\n    \"table\": \"test_read\",\n    \"records\": [\n        {\n            \"id\": 4,\n            \"name\": \"Griff\"\n        }\n    ]\n}",
+									"options": {
+										"raw": {}
+									}
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "Upsert records",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"pm.test(\"Check update_hashes array length\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData.upserted_hashes.length).to.eql(3);",
+											"});",
+											"",
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"setTimeout(()=>{}, 100);"
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"exec": [
+											""
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n    \"operation\": \"upsert\",\n    \"schema\": \"test_delete_before\",\n    \"table\": \"test_read\",\n    \"records\": [\n        {\n            \"id\": 4,\n            \"name\": \"Griffy Jr.\"\n        },\n        {\n            \"id\": 5,\n            \"name\": \"Gizmo\",\n            \"age\": 10\n        },\n        {\n            \"name\": \"Moe\",\n            \"age\": 11\n        }\n    ]\n}",
+									"options": {
+										"raw": {}
+									}
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "Check upsert transaction",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"pm.test(\"Check upsert transaction record format/values\", function () {",
+											"    const jsonData = pm.response.json();",
+											"    pm.expect(jsonData[\"5\"].length).to.eql(1);",
+											"",
+											"    const transaction = jsonData[\"5\"][0]",
+											"    pm.expect(transaction.operation).to.eql(\"upsert\");",
+											"    pm.expect(transaction.records.length).to.eql(1);",
+											"    ",
+											"    Object.keys(transaction.records[0]).forEach(key => {",
+											"        pm.expect([\"id\", \"name\", \"age\", \"__updatedtime__\", \"__createdtime__\"]).includes(key);",
+											"    });",
+											"",
+											"    pm.expect(transaction.original_records).to.not.exist;",
+											"});",
+											"",
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"setTimeout(()=>{}, 100);"
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"exec": [
+											""
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n    \"operation\": \"read_transaction_log\",\n    \"schema\": \"test_delete_before\",\n    \"table\": \"test_read\",\n    \"search_type\": \"hash_value\",\n    \"search_values\": [5]\n}",
 									"options": {
 										"raw": {}
 									}
@@ -37435,14 +41436,44 @@
 									"listen": "test",
 									"script": {
 										"exec": [
+											"var jsonData = pm.response.json();",
+											"",
 											"pm.test(\"Check array length\", function () {",
-											"    var jsonData = pm.response.json();",
-											"    pm.expect(jsonData.length).to.eql(7);",
+											"    pm.expect(jsonData.length).to.eql(8);",
 											"});",
 											"",
 											"pm.test(\"Status code is 200\", function () {",
 											"    pm.response.to.have.status(200);",
 											"});",
+											"",
+											"pm.test(\"Check upsert transaction format/random values\", function () {",
+											"    const expected_attrs = [\"id\", \"name\", \"__updatedtime__\"];",
+											"    const other_attrs = [\"age\", \"__createdtime__\"];",
+											"    ",
+											"    const upsert_trans = jsonData[7];",
+											"    pm.expect(upsert_trans.operation).to.eql(\"upsert\");",
+											"    pm.expect(upsert_trans.records.length).to.eql(3);",
+											"    pm.expect(upsert_trans.original_records.length).to.eql(1);",
+											"",
+											"    pm.expect(upsert_trans.records[0].id).to.eql(4);",
+											"    Object.keys(upsert_trans.records[0]).forEach(key => {",
+											"        pm.expect(expected_attrs).includes(key);",
+											"    });",
+											"    pm.expect(upsert_trans.records[1].id).to.eql(5);",
+											"    Object.keys(upsert_trans.records[1]).forEach(key => {",
+											"        pm.expect([...expected_attrs, ...other_attrs]).includes(key);",
+											"    });",
+											"    pm.expect(upsert_trans.records[2].id).to.be.string;",
+											"    Object.keys(upsert_trans.records[2]).forEach(key => {",
+											"        pm.expect([...expected_attrs, ...other_attrs]).includes(key);",
+											"    });",
+											"",
+											"    Object.keys(upsert_trans.original_records[0]).forEach(key => {",
+											"        pm.expect([...expected_attrs, ...other_attrs, \"breed\"]).includes(key);",
+											"    });",
+											"    ",
+											"});",
+											"",
 											"",
 											"setTimeout(()=>{}, 100);"
 										],
@@ -37518,8 +41549,7 @@
 											"pm.test(\"Check array length\", function () {",
 											"    var jsonData = pm.response.json();",
 											"    let user = pm.environment.get(\"username\");",
-											"    pm.expect(jsonData.length).to.eql(7);",
-											"",
+											"    pm.expect(jsonData.length).to.eql(8);",
 											"});",
 											"",
 											"pm.test(\"Status code is 200\", function () {",
@@ -37600,7 +41630,7 @@
 											"pm.test(\"Check array length\", function () {",
 											"    var jsonData = pm.response.json();",
 											"    let user = pm.environment.get(\"username\");",
-											"    pm.expect(jsonData[user].length).to.eql(7);",
+											"    pm.expect(jsonData[user].length).to.eql(8);",
 											"",
 											"});",
 											"",
@@ -37738,7 +41768,7 @@
 								],
 								"body": {
 									"mode": "raw",
-									"raw": "{\n\"operation\":\"read_transaction_log\",\n\"schema\":\"test_delete_before\",\n\"table\":\"test_read\",\n\"search_type\": \"hash_value\",\n\"search_values\":[1, \"blerrrrr\"]\n}",
+									"raw": "{\n    \"operation\": \"read_transaction_log\",\n    \"schema\": \"test_delete_before\",\n    \"table\": \"test_read\",\n    \"search_type\": \"hash_value\",\n    \"search_values\": [\n        1,\n        \"blerrrrr\"\n    ]\n}",
 									"options": {
 										"raw": {}
 									}
@@ -45605,6 +49635,15 @@
 									"    pm.expect(jsonData.error === \"attribute 'created_attribute' already exists in dev.AttributeDropTest\");",
 									"});",
 									""
+								],
+								"type": "text/javascript"
+							}
+						},
+						{
+							"listen": "prerequest",
+							"script": {
+								"exec": [
+									"setTimeout(() => {}, 200);"
 								],
 								"type": "text/javascript"
 							}

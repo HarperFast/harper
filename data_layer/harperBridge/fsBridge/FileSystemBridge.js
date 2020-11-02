@@ -1,6 +1,8 @@
 "use strict";
 
 const log = require('../../../utility/logging/harper_logger');
+const { handleHDBError, hdb_errors } = require('../../../utility/errors/hdbError');
+const { HDB_ERROR_MSGS, HTTP_STATUS_CODES } = hdb_errors;
 const BridgeMethods = require("../BridgeMethods");
 const fsCreateAttribute = require('./fsMethods/fsCreateAttribute');
 const fsCreateRecords = require('./fsMethods/fsCreateRecords');
@@ -118,6 +120,10 @@ class FileSystemBridge extends BridgeMethods {
         }
     }
 
+    async upsertRecords(upsert_obj) {
+        throw handleHDBError(new Error(), HDB_ERROR_MSGS.OP_NOT_SUPPORTED_FOR_FS(upsert_obj.operation), HTTP_STATUS_CODES.BAD_REQUEST);
+    }
+
     async deleteRecords(delete_obj) {
         try {
             return await fsDeleteRecords(delete_obj);
@@ -137,11 +143,11 @@ class FileSystemBridge extends BridgeMethods {
     }
 
     async deleteTransactionLogsBefore(delete_obj) {
-        throw new Error('delete_transaction_logs_before is not available for this instance because it uses the File System data store.');
+        throw handleHDBError(new Error(), HDB_ERROR_MSGS.OP_NOT_SUPPORTED_FOR_FS(delete_obj.operation), HTTP_STATUS_CODES.BAD_REQUEST);
     }
 
     async readTransactionLog(read_transaction_log_obj) {
-        throw new Error('read_transaction_log is not available for this instance because it uses the File System data store.');
+        throw handleHDBError(new Error(), HDB_ERROR_MSGS.OP_NOT_SUPPORTED_FOR_FS(read_transaction_log_obj.operation), HTTP_STATUS_CODES.BAD_REQUEST);
     }
 
     async dropAttribute(drop_attr_obj) {

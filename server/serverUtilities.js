@@ -234,6 +234,9 @@ async function catchup(req) {
                 case terms.OPERATIONS_ENUM.UPDATE:
                     result = await insert.update(transaction);
                     break;
+                case terms.OPERATIONS_ENUM.UPSERT:
+                    result = await insert.upsert(transaction);
+                    break;
                 case terms.OPERATIONS_ENUM.DELETE:
                     result = await delete_.delete(transaction);
                     break;
@@ -289,6 +292,7 @@ function initializeOperationFunctionMap(){
 
     op_func_map.set(terms.OPERATIONS_ENUM.INSERT, new OperationFunctionObject(insert.insert));
     op_func_map.set(terms.OPERATIONS_ENUM.UPDATE, new OperationFunctionObject(insert.update));
+    op_func_map.set(terms.OPERATIONS_ENUM.UPSERT, new OperationFunctionObject(insert.upsert));
     op_func_map.set(terms.OPERATIONS_ENUM.SEARCH_BY_HASH, new OperationFunctionObject(p_search_search_by_hash));
     op_func_map.set(terms.OPERATIONS_ENUM.SEARCH_BY_VALUE, new OperationFunctionObject(p_search_search_by_value));
     op_func_map.set(terms.OPERATIONS_ENUM.SEARCH, new OperationFunctionObject(p_search_search));
