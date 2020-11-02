@@ -72,7 +72,7 @@ async function csvDataLoad(json_message) {
 
         const attrsPermsErrors = new PermissionResponseObject();
 
-        if (json_message.hdb_user.role.permission && json_message.hdb_user.role.permission.super_user !== true) {
+        if (json_message.hdb_user && json_message.hdb_user.role && json_message.hdb_user.role.permission && json_message.hdb_user.role.permission.super_user !== true) {
             verifyBulkLoadAttributePerms(json_message.hdb_user.role.permission, this.job_operation_function.name, json_message.action, json_message.schema,
                 json_message.table, parse_results.meta.fields, attrsPermsErrors);
         }

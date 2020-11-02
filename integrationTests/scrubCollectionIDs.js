@@ -21,8 +21,10 @@ for (const event of collection.event) {
 
 delete collection.info._postman_id;
 
-for (const event of collection.variable) {
-    delete event.id;
+if (collection.variable) {
+    for (const event of collection.variable) {
+        delete event.id;
+    }
 }
 
 function delve(item){
