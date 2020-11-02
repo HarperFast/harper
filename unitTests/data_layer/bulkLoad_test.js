@@ -11,6 +11,7 @@ const sinon_chai = require('sinon-chai');
 chai.use(sinon_chai);
 const rewire = require('rewire');
 let bulkLoad_rewire = rewire('../../data_layer/bulkLoad');
+const PermissionResponseObject = require('../../security/data_objects/PermissionResponseObject');
 const hdb_terms = require('../../utility/hdbTerms');
 const hdb_utils = require('../../utility/common_utils');
 const sc_utils = require('../../server/socketcluster/util/socketClusterUtils');
@@ -19,10 +20,10 @@ const insert = require('../../data_layer/insert');
 const logger = require('../../utility/logging/harper_logger');
 const env = require('../../utility/environment/environmentManager');
 const path = require('path');
-const  { EventEmitter } = require('events');
+const { EventEmitter } = require('events');
 const papa_parse = require('papaparse');
 const fs = require('fs-extra');
-const { CHECK_LOGS_WRAPPER, TEST_BULK_LOAD_ERROR_MSGS, HTTP_STATUS_CODES } = require('../commonTestErrors');
+const { CHECK_LOGS_WRAPPER, TEST_BULK_LOAD_ERROR_MSGS, HTTP_STATUS_CODES, isHDBError } = require('../commonTestErrors');
 
 const VALID_CSV_DATA = "id,name,section,country,image\n1,ENGLISH POINTER,British and Irish Pointers and Setters,GREAT BRITAIN,http://www.fci.be/Nomenclature/Illustrations/001g07.jpg\n2,ENGLISH SETTER,British and Irish Pointers and Setters,GREAT BRITAIN,http://www.fci.be/Nomenclature/Illustrations/002g07.jpg\n3,KERRY BLUE TERRIER,Large and medium sized Terriers,IRELAND,\n";
 const INVALID_CSV_ID_COLUMN_NAME = "id/,name,section,country,image\n1,ENGLISH POINTER,British and Irish Pointers and Setters,GREAT BRITAIN,http://www.fci.be/Nomenclature/Illustrations/001g07.jpg\n2,ENGLISH SETTER,British and Irish Pointers and Setters,GREAT BRITAIN,http://www.fci.be/Nomenclature/Illustrations/002g07.jpg\n3,KERRY BLUE TERRIER,Large and medium sized Terriers,IRELAND,\n";
@@ -41,7 +42,24 @@ const BULK_LOAD_RESPONSE = {
     records: '3'
 };
 
+const TEST_SUPER_USER = {
+    role: {
+        permission: {
+            super_user: true
+        }
+    }
+}
+
+const TEST_USER = {
+    role: {
+        permission: {
+            super_user: false
+        }
+    }
+}
+
 const DATA_LOAD_MESSAGE = {
+    "hdb_user": TEST_SUPER_USER,
     "operation":"",
     "schema":"dev",
     "table":"breed",
@@ -50,6 +68,7 @@ const DATA_LOAD_MESSAGE = {
 };
 
 const CSV_URL_MESSAGE = {
+    "hdb_user": TEST_SUPER_USER,
     "operation": "csv_url_load",
     "action": "insert",
     "schema": "test",
@@ -62,10 +81,32 @@ function  postCSVLoadFunction_stub(orig_bulk_msg, result, orig_req) {
     return result;
 }
 
+async function stubHOC(func, args) {
+    const stub_obj = { job_operation_function: func };
+    return await callStubFunc(stub_obj, args)
+
+}
+
+async function callStubFunc(obj, args) {
+    return await obj.job_operation_function(args);
+}
+
 describe('Test bulkLoad.js', () => {
     let call_papaparse_stub;
     let call_papaparse_rewire;
+    let test_bulk_load_file_obj = {
+        "role_perms": TEST_USER.role.permission,
+        "op": "file_load",
+        "action": "insert",
+        "schema": "golden",
+        "table": "retriever",
+        "transact_to_cluster_to_cluster": "false",
+        "file_path": "fake/file/path.csv",
+        "data": "[{\"blah\":\"blah\"}]"
+    };
+
     let json_message_fake = {
+        "hdb_user": TEST_SUPER_USER,
         "operation": "file_load",
         "action": "insert",
         "schema": "golden",
@@ -76,6 +117,7 @@ describe('Test bulkLoad.js', () => {
     };
 
     let s3_message_fake = {
+        hdb_user: TEST_SUPER_USER,
         operation: "import_from_s3",
         action: "insert",
         schema: "golden",
@@ -89,6 +131,7 @@ describe('Test bulkLoad.js', () => {
     }
 
     let json_file_msg_fake = {
+        hdb_user: TEST_SUPER_USER,
         operation: "import_from_s3",
         action: "update",
         schema: "golden",
@@ -139,16 +182,25 @@ describe('Test bulkLoad.js', () => {
     };
 
     describe('Test csvDataLoad', function () {
-        let test_msg = undefined;
         let sandbox = sinon.createSandbox();
-        let bulk_file_load_stub = undefined;
+
+        let test_msg;
+        let bulk_file_load_stub;
         let bulk_file_load_rewire;
-        let bulk_file_load_stub_orig = undefined;
+        let bulk_file_load_stub_orig;
+        let verify_attr_perms_stub = sandbox.stub().returns();
+        let verify_attr_perms_rw;
+
+        let PermissionResponseObject_rw = bulkLoad_rewire.__get__('PermissionResponseObject');
+        const getPerms_orig = PermissionResponseObject_rw.prototype.getPermsResponse;
+        const perms_err_msg = 'Perms error msg';
+        let get_perms_resp_stub = sandbox.stub().returns(perms_err_msg);
 
         before(() => {
             bulk_file_load_stub_orig = bulkLoad_rewire.__get__('bulkFileLoad');
             bulk_file_load_stub = sandbox.stub().returns(BULK_LOAD_RESPONSE);
             bulk_file_load_rewire = bulkLoad_rewire.__set__('bulkFileLoad', bulk_file_load_stub);
+
         });
 
         beforeEach(function () {
@@ -174,6 +226,33 @@ describe('Test bulkLoad.js', () => {
             } catch(e) {
                 throw e;
             }
+        });
+
+        it('Test csvDataLoad with non-SU role evaluates attr-level perms' , async function() {
+            verify_attr_perms_rw = bulkLoad_rewire.__set__('verifyBulkLoadAttributePerms', verify_attr_perms_stub);
+            bulk_file_load_rewire = bulkLoad_rewire.__set__('bulkFileLoad', bulk_file_load_stub);
+
+            test_msg.hdb_user = TEST_USER;
+            await stubHOC(bulkLoad_rewire.csvDataLoad, test_msg);
+            assert.equal(verify_attr_perms_stub.calledOnce, true, 'Attr perms were not checked');
+            verify_attr_perms_rw();
+        });
+
+        it('Test csvDataLoad with attr-level perms issues - returns errors' , async function() {
+            PermissionResponseObject_rw.prototype.getPermsResponse = () => get_perms_resp_stub();
+            const getPermsError_rw = bulkLoad_rewire.__set__('PermissionResponseObject', PermissionResponseObject_rw);
+            let result;
+
+            try {
+                await bulkLoad_rewire.csvDataLoad(test_msg);
+            } catch(err) {
+                result = err;
+            }
+
+            assert.equal(isHDBError(result), true, 'HDB perms error was not thrown');
+            assert.equal(result.message, "Perms error msg", 'Perms error message was not thrown');
+            getPermsError_rw();
+            PermissionResponseObject_rw.prototype.getPermsResponse = getPerms_orig;
         });
 
         it('Test csvDataLoad invalid column names, expect exception', async function() {
@@ -241,7 +320,7 @@ describe('Test bulkLoad.js', () => {
 
         it('Test bad URL throws validation error', async () => {
             CSV_URL_MESSAGE.csv_url = "breeds.csv";
-            let test_err_result = await test_utils.testHDBError(bulkLoad_rewire.csvURLLoad(CSV_URL_MESSAGE), 'Error: Csv url is not a valid url');
+            let test_err_result = await test_utils.testHDBError(bulkLoad_rewire.csvURLLoad(CSV_URL_MESSAGE), 'Csv url is not a valid url');
 
             expect(test_err_result).to.be.true;
         });
@@ -249,7 +328,7 @@ describe('Test bulkLoad.js', () => {
         it('Test for nominal behaviour and success message is returned', async () => {
             CSV_URL_MESSAGE.csv_url = 'http://data.neo4j.com/northwind/products.csv';
             sandbox.stub(validator, 'urlObject').returns(null);
-            let result = await bulkLoad_rewire.csvURLLoad(CSV_URL_MESSAGE);
+            let result = await stubHOC(bulkLoad_rewire.csvURLLoad, CSV_URL_MESSAGE);
 
             expect(result).to.equal(success_msg);
         });
@@ -409,7 +488,7 @@ describe('Test bulkLoad.js', () => {
         });
 
         it('Test success message is returned', async () => {
-            let result = await bulkLoad_rewire.csvFileLoad(json_message_fake);
+            let result = await stubHOC(bulkLoad_rewire.csvFileLoad,json_message_fake);
 
             expect(result).to.equal(`successfully loaded ${bulk_file_load_result_fake.number_written} of ${bulk_file_load_result_fake.records} records`);
             expect(call_papaparse_stub).to.have.been.calledOnce;
@@ -420,7 +499,7 @@ describe('Test bulkLoad.js', () => {
             let error;
 
             try {
-                await bulkLoad_rewire.csvFileLoad(json_message_fake);
+                await stubHOC(bulkLoad_rewire.csvFileLoad, json_message_fake);
             } catch(err) {
                 error = err;
             }
@@ -449,9 +528,9 @@ describe('Test bulkLoad.js', () => {
             validator_stub = sandbox.stub(validator, 's3FileObject').callThrough();
             bulkLoad_rewire.__set__('validator', {s3FileObject: validator_stub});
 
-            const handleValidationErr_orig = bulkLoad_rewire.__get__('handleValidationError');
+            const handleValidationErr_orig = bulkLoad_rewire.__get__('handleHDBError');
             handleValidationErr_spy = sandbox.spy(handleValidationErr_orig);
-            bulkLoad_rewire.__set__('handleValidationError', handleValidationErr_spy);
+            bulkLoad_rewire.__set__('handleHDBError', handleValidationErr_spy);
 
             downloadFileFromS3_stub = sandbox.stub().resolves();
             bulkLoad_rewire.__set__('downloadFileFromS3', downloadFileFromS3_stub);
@@ -492,7 +571,7 @@ describe('Test bulkLoad.js', () => {
         });
 
         it('NOMINAL - Should call through and return results', async () => {
-            const results = await importFromS3_rw(test_S3_message_json);
+            const results = await stubHOC(importFromS3_rw, test_S3_message_json);
 
             expect(results).to.equal(expected_insert_results_resp)
             expect(logger_error_spy).to.have.not.been.called;
@@ -500,7 +579,7 @@ describe('Test bulkLoad.js', () => {
         });
 
         it('NOMINAL - Should add `file_type` and `file_path` variables to the json message - csv', async () => {
-            await importFromS3_rw(test_S3_message_json);
+            await stubHOC(importFromS3_rw, test_S3_message_json);
 
             expect(fileLoad_stub.args[0][0].file_type).to.equal(".csv");
             expect(typeof fileLoad_stub.args[0][0].file_path === "string").to.be.true;
@@ -509,14 +588,14 @@ describe('Test bulkLoad.js', () => {
 
         it('NOMINAL - Should add `file_type` and `file_path` variables to the json message - json', async () => {
             test_S3_message_json.s3.key = "test_file.json";
-            await importFromS3_rw(test_S3_message_json);
+            await stubHOC(importFromS3_rw, test_S3_message_json);
 
             expect(fileLoad_stub.args[0][0].file_type).to.equal(".json");
             expect(typeof fileLoad_stub.args[0][0].file_path === "string").to.be.true;
             expect(fileLoad_stub.args[0][0].file_path.endsWith(".json")).to.be.true;
         });
 
-        it('Should use handleValidationError to handle any validation issues', async () => {
+        it('Should use handleHDBError to handle any validation issues', async () => {
             delete test_S3_message_json.schema;
             let result;
             try {
@@ -526,7 +605,7 @@ describe('Test bulkLoad.js', () => {
             }
 
             expect(result).to.be.instanceof(Error);
-            expect(result.http_resp_msg).to.equal("Error: Schema can't be blank");
+            expect(result.http_resp_msg).to.equal("Schema can't be blank");
             expect(result.http_resp_code).to.equal(HTTP_STATUS_CODES.BAD_REQUEST);
             expect(handleValidationErr_spy).to.have.been.calledOnce;
             expect(downloadFileFromS3_stub).to.have.not.been.called;
@@ -538,7 +617,7 @@ describe('Test bulkLoad.js', () => {
 
             let result;
             try {
-                await importFromS3_rw(test_S3_message_json);
+                await stubHOC(importFromS3_rw, test_S3_message_json);
             } catch(err) {
                 result = err
             }
@@ -645,21 +724,28 @@ describe('Test bulkLoad.js', () => {
         let logger_error_spy;
         let console_info_spy;
         let validate_chunk_rewire;
+        let verify_attr_perms_stub = sandbox.stub().returns();
+        let verify_attr_perms_rw;
 
         let write_object_fake = {
-            operation: json_message_fake.operation,
+            operation: json_message_fake.action,
             schema: json_message_fake.schema,
             table: json_message_fake.table,
             records: data_array_fake
         };
+        let permsResponse;
 
         before(() => {
             sandbox.restore();
             validate_chunk_rewire = bulkLoad_rewire.__get__('validateChunk');
-            insert_validation_stub = sandbox.stub(insert, 'validation').resolves();
+            insert_validation_stub = sandbox.stub(insert, 'validation').resolves({ attributes: ["Column 1", "Column 2"]});
             console_info_spy = sandbox.spy(console, 'info');
             logger_error_spy = sandbox.spy(logger, 'error');
         });
+
+        beforeEach(() => {
+            permsResponse = new PermissionResponseObject();
+        })
 
         after(() => {
             sandbox.restore();
@@ -667,16 +753,26 @@ describe('Test bulkLoad.js', () => {
         });
 
         it('Test validation function returns if no data', async () => {
-            await validate_chunk_rewire(json_message_fake, reject_fake, results_fake, parser_fake);
+            await validate_chunk_rewire(json_message_fake, permsResponse, reject_fake, results_fake, parser_fake);
 
             expect(console_info_spy).to.have.not.been.calledWith('parser pause');
             expect(insert_validation_stub).to.not.have.been.calledWith(write_object_fake);
         });
 
+        it('Test verifyBulkLoadAttributePerms method is called when user is non-SU', async () => {
+            verify_attr_perms_rw = bulkLoad_rewire.__set__('verifyBulkLoadAttributePerms', verify_attr_perms_stub);
+            results_fake.data = data_array_fake;
+
+            await validate_chunk_rewire(test_bulk_load_file_obj, permsResponse, reject_fake, results_fake, parser_fake);
+
+            assert.equal(verify_attr_perms_stub.callCount, 1, 'Attr perms were not checked');
+            verify_attr_perms_rw();
+        });
+
         it('Test parser is paused/resumed and validation called', async () => {
             results_fake.data = data_array_fake;
 
-            await validate_chunk_rewire(json_message_fake, reject_fake, results_fake, parser_fake);
+            await validate_chunk_rewire(json_message_fake, permsResponse, reject_fake, results_fake, parser_fake);
 
             expect(console_info_spy).to.have.been.calledWith('parser pause');
             expect(console_info_spy).to.have.been.calledWith('parser resume');
@@ -688,7 +784,7 @@ describe('Test bulkLoad.js', () => {
             let error;
 
             try {
-                await validate_chunk_rewire(json_message_fake, reject_fake, results_fake, parser_fake);
+                await validate_chunk_rewire(json_message_fake, permsResponse, reject_fake, results_fake, parser_fake);
             } catch(err) {
                 error = err;
             }
@@ -929,6 +1025,21 @@ describe('Test bulkLoad.js', () => {
 
             expect(result).to.eql(expected_result);
             expect(insert_update_stub).to.have.been.calledOnce;
+        });
+
+        it('Test error is thrown if invalid action is passed', async () => {
+            const invalid_action = "blaaaah";
+            const expected_error = test_utils.generateHDBError(TEST_BULK_LOAD_ERROR_MSGS.INVALID_ACTION_PARAM_ERR(invalid_action),400);
+
+            let result;
+            try {
+                await bulk_file_load_rewire(data_array_fake, schema_fake, table_fake, invalid_action);
+            } catch(e) {
+                result = e;
+            }
+
+            expect(result.message).to.eql(expected_error.message);
+            expect(isHDBError(result)).to.be.true;
         });
 
         it('Test insert error caught and thrown', async () => {

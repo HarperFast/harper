@@ -29,6 +29,10 @@ class BridgeMethods {
         throw new Error("updateRecords bridge method is not defined");
     }
 
+    async upsertRecords() {
+        throw new Error("upsertRecords bridge method is not defined");
+    }
+
     deleteRecords() {
         throw new Error("deleteRecords bridge method is not defined");
     }

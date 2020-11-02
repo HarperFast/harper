@@ -1,12 +1,14 @@
 "use strict";
 
 class BulkLoadFileObject {
-    constructor(action, schema, table, file_path, file_type, transact_to_cluster = null) {
+    constructor(operation_func, action, schema, table, file_path, file_type, role_perms = null, transact_to_cluster = null) {
+        this.op = operation_func;
         this.action = action;
         this.schema = schema;
         this.table = table;
         this.file_path = file_path;
         this.file_type = file_type;
+        this.role_perms = role_perms;
         this.transact_to_cluster = transact_to_cluster;
     }
 }
