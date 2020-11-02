@@ -9,6 +9,7 @@ const rw_server_utilities = rewire('../../server/transactToClusteringUtilities')
 const rw_convert_crud_op = rw_server_utilities.__get__('convertCRUDOperationToTransaction');
 const InsertObject = require('../../data_layer/InsertObject');
 const UpdateObject = require('../../data_layer/UpdateObject');
+const UpsertObject = require('../../data_layer/UpsertObject');
 const DeleteObject = require('../../data_layer/DeleteObject');
 const cluster_messages = require('../../server/socketcluster/room/RoomMessageObjects');
 const ClusteringOriginObject = require('../../server/ClusteringOriginObject');
@@ -30,6 +31,9 @@ INSERT_OP.hdb_user = USER;
 
 let UPDATE_OP = new UpdateObject('dev', 'dog', [{id: 1, name: 'Penny B', age: 8}]);
 UPDATE_OP.hdb_user = USER;
+
+let UPSERT_OP = new UpsertObject('dev', 'dog', [{id: 1, name: 'Penny', age: 8}]);
+UPSERT_OP.hdb_user = USER;
 
 let DELETE_OP = new DeleteObject('dev', 'dog', [1]);
 DELETE_OP.hdb_user = USER;
@@ -93,6 +97,25 @@ describe('test convertCRUDOperationToTransaction function', ()=>{
         expected.type = 'HDB_TRANSACTION';
         expected.transaction = {
             operation: 'update',
+            schema: 'dev',
+            table: 'dog',
+            records: op.records,
+            __origin: new ClusteringOriginObject(txn_time, USER.username, '1231412de213')
+        };
+
+        assert.deepStrictEqual(result, expected);
+    });
+
+    it('test with an upsert operation', ()=>{
+        let op = test_utils.deepClone(UPSERT_OP);
+        const hashes = [1];
+        let txn_time = lmdb_utils.getMicroTime();
+        let result = rw_convert_crud_op(op, hashes, txn_time);
+
+        let expected = new cluster_messages.HdbCoreTransactionMessage();
+        expected.type = 'HDB_TRANSACTION';
+        expected.transaction = {
+            operation: 'upsert',
             schema: 'dev',
             table: 'dog',
             records: op.records,
@@ -180,6 +203,15 @@ describe('test postOperationHandler', ()=>{
 
     it('test update', ()=>{
         rw_server_utilities.postOperationHandler({operation:'update'}, {update_hashes:[]});
+        assert(get_cluster_msg_spy.calledOnce === true);
+        assert(send_op_txn_spy.calledOnce === true);
+        assert(send_op_txn_spy.threw() === false);
+        assert(send_attr_txn_stub.calledOnce === true);
+        assert(send_attr_txn_stub.threw() === false);
+    });
+
+    it('test upsert', ()=>{
+        rw_server_utilities.postOperationHandler({operation:'upsert'}, {update_hashes:[]});
         assert(get_cluster_msg_spy.calledOnce === true);
         assert(send_op_txn_spy.calledOnce === true);
         assert(send_op_txn_spy.threw() === false);
