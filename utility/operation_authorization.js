@@ -267,6 +267,7 @@ function verifyPerms(request_json, operation) {
     const full_role_perms = permsTranslator.getRolePermissions(request_json.hdb_user.role);
     request_json.hdb_user.role.permission = full_role_perms;
 
+    //check if user is trying to describe a system table and, if so, return schema perm error
     if (op === DESCRIBE_SCHEMA_KEY || op === DESCRIBE_TABLE_KEY) {
         if (operation_schema === terms.SYSTEM_SCHEMA_NAME) {
             const system_schema_err = permsResponse.handleUnauthorizedItem(HDB_ERROR_MSGS.SCHEMA_PERM_ERROR(operation_schema));
@@ -364,30 +365,30 @@ function hasPermissions(user_object, op, schema_table_map, permsResponse, action
 
     const schema_table_keys = schema_table_map.keys();
     for (let schema_table of schema_table_keys) {
-        //check if schema has DESCRIBE perms
-        if (schema_table && user_perms[schema_table][DESCRIBE_PERM] === false) {
-            //add schema does not exist error message
+        //check if schema exists and, if so, if user has DESCRIBE perms
+        try {
+            if (schema_table && !user_perms[schema_table] || user_perms[schema_table][DESCRIBE_PERM] === false) {
+                //add schema does not exist error message
+                permsResponse.addInvalidItem(HDB_ERROR_MSGS.SCHEMA_NOT_FOUND(schema_table));
+                continue;
+            }
+        } catch(e) {
+            //we should never get here b/c if statement above should catch any possible errors and log the issue to
+            // permsResponse but keeping this here just to be safe
             permsResponse.addInvalidItem(HDB_ERROR_MSGS.SCHEMA_NOT_FOUND(schema_table));
             continue;
         }
 
         const schema_table_data = schema_table_map.get(schema_table);
         for (let table of schema_table_data) {
-            let table_permissions = [];
-            try {
-                table_permissions = user_perms[schema_table].tables[table];
-            } catch(e) {
-                //we should never get here b/c perms are always set against global schema but, if we do, assume table is restricted
+            const table_permissions = user_perms[schema_table].tables[table];
+
+            //if table perms don't exist or DESCRIBE perm set to false, we add an invalid item error to response
+            if (!table_permissions || table_permissions[DESCRIBE_PERM] === false) {
                 permsResponse.addInvalidItem(HDB_ERROR_MSGS.TABLE_NOT_FOUND(schema_table, table));
                 continue;
-            }
-
-            if (table_permissions && table) {
+            } else {
                 try {
-                    if (table_permissions[DESCRIBE_PERM] === false) {
-                        permsResponse.addInvalidItem(HDB_ERROR_MSGS.TABLE_NOT_FOUND(schema_table, table));
-                        continue;
-                    }
                     //Here we check all required permissions for the operation defined in the map with the values of the permissions in the role.
                     const required_table_perms = [];
                     let required_perms = required_permissions.get(op).perms;
