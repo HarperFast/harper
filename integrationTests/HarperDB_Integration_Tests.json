@@ -18351,8 +18351,8 @@
 							"listen": "test",
 							"script": {
 								"exec": [
-									"pm.test(\"Status code is 500\", function () {",
-									"    pm.response.to.have.status(500);",
+									"pm.test(\"Status code is 404\", function () {",
+									"    pm.response.to.have.status(404);",
 									"});",
 									"",
 									"pm.test(\"verify proper error message is given\", function () {",
@@ -18421,8 +18421,8 @@
 							"listen": "test",
 							"script": {
 								"exec": [
-									"pm.test(\"Status code is 500\", function () {",
-									"    pm.response.to.have.status(500);",
+									"pm.test(\"Status code is 404\", function () {",
+									"    pm.response.to.have.status(404);",
 									"});",
 									"",
 									"pm.test(\"verify proper error message is given\", function () {",
@@ -47987,6 +47987,907 @@
 					"_postman_isSubFolder": true
 				},
 				{
+					"name": "Search schema error checks",
+					"item": [
+						{
+							"name": "Add non-SU role for schema tests",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"responseData = JSON.parse(responseBody);",
+											"postman.setEnvironmentVariable(\"role_id\", responseData.id)"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n    \"operation\": \"add_role\",\n    \"role\": \"test_schema_user\",\n    \"permission\": {\n        \"super_user\": false,\n        \"northnwd\": {\n            \"tables\": {\n                \"customers\": {\n                    \"read\": true,\n                    \"insert\": true,\n                    \"update\": true,\n                    \"delete\": true,\n                    \"attribute_permissions\": []\n                },\n                \"suppliers\": {\n                    \"read\": false,\n                    \"insert\": false,\n                    \"update\": false,\n                    \"delete\": false,\n                    \"attribute_permissions\": []\n                },\n                \"region\": {\n                    \"read\": true,\n                    \"insert\": false,\n                    \"update\": false,\n                    \"delete\": false,\n                    \"attribute_permissions\": [\n                        {\n                            \"attribute_name\": \"regiondescription\",\n                            \"read\": true,\n                            \"insert\": false,\n                            \"update\": false,\n                            \"delete\": false\n                        }\n                    ]\n                },\n                \"territories\": {\n                    \"read\": true,\n                    \"insert\": true,\n                    \"update\": false,\n                    \"delete\": false,\n                    \"attribute_permissions\": [\n                        {\n                            \"attribute_name\": \"territorydescription\",\n                            \"read\": true,\n                            \"insert\": true,\n                            \"update\": false,\n                            \"delete\": false\n                        }\n                    ]\n                },\n                \"categories\": {\n                    \"read\": true,\n                    \"insert\": true,\n                    \"update\": true,\n                    \"delete\": false,\n                    \"attribute_permissions\": [\n                        {\n                            \"attribute_name\": \"description\",\n                            \"read\": true,\n                            \"insert\": true,\n                            \"update\": true,\n                            \"delete\": false\n                        }\n                    ]\n                },\n                \"shippers\": {\n                    \"read\": true,\n                    \"insert\": true,\n                    \"update\": true,\n                    \"delete\": true,\n                    \"attribute_permissions\": [\n                        {\n                            \"attribute_name\": \"companyname\",\n                            \"read\": false,\n                            \"insert\": false,\n                            \"update\": false,\n                            \"delete\": false\n                        }\n                    ]\n                }\n            }\n        },\n        \"dev\": {\n            \"tables\": {\n                \"dog\": {\n                    \"read\": true,\n                    \"insert\": true,\n                    \"update\": true,\n                    \"delete\": true,\n                    \"attribute_permissions\": [\n                        {\n                            \"attribute_name\": \"__createdtime__\",\n                            \"read\": true,\n                            \"insert\": true,\n                            \"update\": true\n                        },\n                        {\n                            \"attribute_name\": \"__updatedtime__\",\n                            \"read\": true,\n                            \"insert\": true,\n                            \"update\": true\n                        },\n                        {\n                            \"attribute_name\": \"age\",\n                            \"read\": true,\n                            \"insert\": true,\n                            \"update\": false\n                        },\n                        {\n                            \"attribute_name\": \"dog_name\",\n                            \"read\": true,\n                            \"insert\": false,\n                            \"update\": true\n                        },\n                        {\n                            \"attribute_name\": \"adorable\",\n                            \"read\": true,\n                            \"insert\": true,\n                            \"update\": true\n                        },\n                        {\n                            \"attribute_name\": \"owner_id\",\n                            \"read\": false,\n                            \"insert\": true,\n                            \"update\": true\n                        }\n                    ]\n                },\n                \"breed\": {\n                    \"read\": true,\n                    \"insert\": true,\n                    \"update\": true,\n                    \"delete\": true,\n                    \"attribute_permissions\": [\n                        {\n                            \"attribute_name\": \"__createdtime__\",\n                            \"read\": false,\n                            \"insert\": false,\n                            \"update\": true\n                        },\n                        {\n                            \"attribute_name\": \"__updatedtime__\",\n                            \"read\": false,\n                            \"insert\": true,\n                            \"update\": true\n                        }\n                    ]\n                }\n            }\n        }\n    }\n}",
+									"options": {
+										"raw": {}
+									}
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "Add test_user  with new role for schema error tests",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"value": "Basic c2dvbGRiZXJnOnRlc3QxMjM0IQ=="
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n    \"operation\": \"add_user\",\n    \"role\": \"{{role_id}}\",\n    \"username\": \"test_user\",\n    \"password\": \"{{password}}\",\n    \"active\": true\n}",
+									"options": {
+										"raw": {}
+									}
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								},
+								"description": "Method for adding users.  Users can be assigned roles which provide granular access at a table, operation, and attirbute level.  \n\n<ul>\n<li><b>operation </b> <i>(required) </i> - must always be 'add_user'</li>\n\n<li><b>role </b><i>(required) </i>- id of the role you wish to assign to the user.  See add_role for more detail.  </li>\n\n<li><b>username </b> <i>(required)</i> - username assigned to the user.  It can not be altered after adding the user.  It serves as the hash. </li>\n\n<li><b>password </b> <i>(required) </i>- clear text for password.  HarperDB will encrypt the password upon reciept. </li>\n\n</ul>"
+							},
+							"response": []
+						},
+						{
+							"name": "NoSQL - Non-SU search on schema that doesn't exist as test_user - expect error",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"pm.test(\"Status code is 403\", function () {",
+											"    pm.response.to.have.status(403);",
+											"});",
+											"",
+											"var jsonData = pm.response.json();",
+											"",
+											"pm.test(\"Op auth error message\", function () {",
+											"    pm.expect(jsonData.error).to.eql(\"This operation is not authorized due to role restrictions and/or invalid schema items\");",
+											"});",
+											"",
+											"pm.test(\"Does not include anything in unauthorized_access\", function () {",
+											"    pm.expect(jsonData.unauthorized_access.length).to.eql(0);",
+											"});",
+											"",
+											"pm.test(\"Includes search schema in invalid_schema_items array\", function () {",
+											"    pm.expect(jsonData.invalid_schema_items.length).to.eql(1);",
+											"    pm.expect(jsonData.invalid_schema_items[0]).to.eql(\"Schema 'rick_rolled' does not exist\");",
+											"});",
+											""
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{test_user_name}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"value": "Basic c2dvbGRiZXJnOnRlc3QxMjM0IQ=="
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n    \"operation\": \"search_by_value\",\n    \"schema\": \"rick_rolled\",\n    \"table\": \"{{regi_tb}}\",\n    \"hash_attribute\": \"id\",\n    \"search_attribute\": \"id\",\n    \"search_value\": \"*\",\n    \"get_attributes\": [\n        \"*\"\n    ]\n}",
+									"options": {
+										"raw": {}
+									}
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								},
+								"description": "Method for adding users.  Users can be assigned roles which provide granular access at a table, operation, and attirbute level.  \n\n<ul>\n<li><b>operation </b> <i>(required) </i> - must always be 'add_user'</li>\n\n<li><b>role </b><i>(required) </i>- id of the role you wish to assign to the user.  See add_role for more detail.  </li>\n\n<li><b>username </b> <i>(required)</i> - username assigned to the user.  It can not be altered after adding the user.  It serves as the hash. </li>\n\n<li><b>password </b> <i>(required) </i>- clear text for password.  HarperDB will encrypt the password upon reciept. </li>\n\n</ul>"
+							},
+							"response": []
+						},
+						{
+							"name": "NoSQL - SU search on schema that doesn't exist as test_user - expect error",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"pm.test(\"Status code is 404\", function () {",
+											"    pm.response.to.have.status(404);",
+											"});",
+											"",
+											"var jsonData = pm.response.json();",
+											"",
+											"pm.test(\"Schema error message included\", function () {",
+											"    pm.expect(jsonData.error).to.eql(\"Schema 'rick_rolled' does not exist\");",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"value": "Basic c2dvbGRiZXJnOnRlc3QxMjM0IQ=="
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n    \"operation\": \"search_by_value\",\n    \"schema\": \"rick_rolled\",\n    \"table\": \"{{regi_tb}}\",\n    \"hash_attribute\": \"id\",\n    \"search_attribute\": \"id\",\n    \"search_value\": \"*\",\n    \"get_attributes\": [\n        \"*\"\n    ]\n}",
+									"options": {
+										"raw": {}
+									}
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								},
+								"description": "Method for adding users.  Users can be assigned roles which provide granular access at a table, operation, and attirbute level.  \n\n<ul>\n<li><b>operation </b> <i>(required) </i> - must always be 'add_user'</li>\n\n<li><b>role </b><i>(required) </i>- id of the role you wish to assign to the user.  See add_role for more detail.  </li>\n\n<li><b>username </b> <i>(required)</i> - username assigned to the user.  It can not be altered after adding the user.  It serves as the hash. </li>\n\n<li><b>password </b> <i>(required) </i>- clear text for password.  HarperDB will encrypt the password upon reciept. </li>\n\n</ul>"
+							},
+							"response": []
+						},
+						{
+							"name": "NoSQL - Non-SU search on table that doesn't exist as test_user - expect error",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"pm.test(\"Status code is 403\", function () {",
+											"    pm.response.to.have.status(403);",
+											"});",
+											"",
+											"var jsonData = pm.response.json();",
+											"",
+											"pm.test(\"Op auth error message\", function () {",
+											"    pm.expect(jsonData.error).to.eql(\"This operation is not authorized due to role restrictions and/or invalid schema items\");",
+											"});",
+											"",
+											"pm.test(\"Does not include anything in unauthorized_access\", function () {",
+											"    pm.expect(jsonData.unauthorized_access.length).to.eql(0);",
+											"});",
+											"",
+											"pm.test(\"Includes search schema in invalid_schema_items array\", function () {",
+											"    pm.expect(jsonData.invalid_schema_items.length).to.eql(1);",
+											"    pm.expect(jsonData.invalid_schema_items[0]).to.eql(\"Table 'dev.rick_rolled' does not exist\");",
+											"});",
+											""
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{test_user_name}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"value": "Basic c2dvbGRiZXJnOnRlc3QxMjM0IQ=="
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n    \"operation\": \"search_by_value\",\n    \"schema\": \"dev\",\n    \"table\": \"rick_rolled\",\n    \"hash_attribute\": \"id\",\n    \"search_attribute\": \"id\",\n    \"search_value\": \"*\",\n    \"get_attributes\": [\n        \"*\"\n    ]\n}",
+									"options": {
+										"raw": {}
+									}
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								},
+								"description": "Method for adding users.  Users can be assigned roles which provide granular access at a table, operation, and attirbute level.  \n\n<ul>\n<li><b>operation </b> <i>(required) </i> - must always be 'add_user'</li>\n\n<li><b>role </b><i>(required) </i>- id of the role you wish to assign to the user.  See add_role for more detail.  </li>\n\n<li><b>username </b> <i>(required)</i> - username assigned to the user.  It can not be altered after adding the user.  It serves as the hash. </li>\n\n<li><b>password </b> <i>(required) </i>- clear text for password.  HarperDB will encrypt the password upon reciept. </li>\n\n</ul>"
+							},
+							"response": []
+						},
+						{
+							"name": "NoSQL - SU search on table that doesn't exist as test_user - expect error",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"pm.test(\"Status code is 404\", function () {",
+											"    pm.response.to.have.status(404);",
+											"});",
+											"",
+											"var jsonData = pm.response.json();",
+											"",
+											"pm.test(\"Schema error message included\", function () {",
+											"    pm.expect(jsonData.error).to.eql(\"Table 'dev.rick_rolled' does not exist\");",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"value": "Basic c2dvbGRiZXJnOnRlc3QxMjM0IQ=="
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n    \"operation\": \"search_by_value\",\n    \"schema\": \"dev\",\n    \"table\": \"rick_rolled\",\n    \"hash_attribute\": \"id\",\n    \"search_attribute\": \"id\",\n    \"search_value\": \"*\",\n    \"get_attributes\": [\n        \"*\"\n    ]\n}",
+									"options": {
+										"raw": {}
+									}
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								},
+								"description": "Method for adding users.  Users can be assigned roles which provide granular access at a table, operation, and attirbute level.  \n\n<ul>\n<li><b>operation </b> <i>(required) </i> - must always be 'add_user'</li>\n\n<li><b>role </b><i>(required) </i>- id of the role you wish to assign to the user.  See add_role for more detail.  </li>\n\n<li><b>username </b> <i>(required)</i> - username assigned to the user.  It can not be altered after adding the user.  It serves as the hash. </li>\n\n<li><b>password </b> <i>(required) </i>- clear text for password.  HarperDB will encrypt the password upon reciept. </li>\n\n</ul>"
+							},
+							"response": []
+						},
+						{
+							"name": "SQL - Non-SU select on schema that doesn't exist as test_user - expect error",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"pm.test(\"Status code is 403\", function () {",
+											"    pm.response.to.have.status(403);",
+											"});",
+											"",
+											"var jsonData = pm.response.json();",
+											"",
+											"pm.test(\"Op auth error message\", function () {",
+											"    pm.expect(jsonData.error).to.eql(\"This operation is not authorized due to role restrictions and/or invalid schema items\");",
+											"});",
+											"",
+											"pm.test(\"Does not include anything in unauthorized_access\", function () {",
+											"    pm.expect(jsonData.unauthorized_access.length).to.eql(0);",
+											"});",
+											"",
+											"pm.test(\"Includes search schema in invalid_schema_items array\", function () {",
+											"    pm.expect(jsonData.invalid_schema_items.length).to.eql(1);",
+											"    pm.expect(jsonData.invalid_schema_items[0]).to.eql(\"Schema 'rick_rolled' does not exist\");",
+											"});",
+											""
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{test_user_name}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"value": "Basic c2dvbGRiZXJnOnRlc3QxMjM0IQ=="
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n    \"operation\": \"sql\",\n    \"sql\": \"SELECT * FROM rick_rolled.{{regi_tb}}\"\n}",
+									"options": {
+										"raw": {}
+									}
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								},
+								"description": "Method for adding users.  Users can be assigned roles which provide granular access at a table, operation, and attirbute level.  \n\n<ul>\n<li><b>operation </b> <i>(required) </i> - must always be 'add_user'</li>\n\n<li><b>role </b><i>(required) </i>- id of the role you wish to assign to the user.  See add_role for more detail.  </li>\n\n<li><b>username </b> <i>(required)</i> - username assigned to the user.  It can not be altered after adding the user.  It serves as the hash. </li>\n\n<li><b>password </b> <i>(required) </i>- clear text for password.  HarperDB will encrypt the password upon reciept. </li>\n\n</ul>"
+							},
+							"response": []
+						},
+						{
+							"name": "SQL - SU search on schema that doesn't exist as test_user - expect error",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"pm.test(\"Status code is 404\", function () {",
+											"    pm.response.to.have.status(404);",
+											"});",
+											"",
+											"var jsonData = pm.response.json();",
+											"",
+											"pm.test(\"Schema error message included\", function () {",
+											"    pm.expect(jsonData.error).to.eql(\"Schema 'rick_rolled' does not exist\");",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"value": "Basic c2dvbGRiZXJnOnRlc3QxMjM0IQ=="
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n    \"operation\": \"sql\",\n    \"sql\": \"SELECT * FROM rick_rolled.{{regi_tb}}\"\n}",
+									"options": {
+										"raw": {}
+									}
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								},
+								"description": "Method for adding users.  Users can be assigned roles which provide granular access at a table, operation, and attirbute level.  \n\n<ul>\n<li><b>operation </b> <i>(required) </i> - must always be 'add_user'</li>\n\n<li><b>role </b><i>(required) </i>- id of the role you wish to assign to the user.  See add_role for more detail.  </li>\n\n<li><b>username </b> <i>(required)</i> - username assigned to the user.  It can not be altered after adding the user.  It serves as the hash. </li>\n\n<li><b>password </b> <i>(required) </i>- clear text for password.  HarperDB will encrypt the password upon reciept. </li>\n\n</ul>"
+							},
+							"response": []
+						},
+						{
+							"name": "SQL - Non-SU search on table that doesn't exist as test_user - expect error",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"pm.test(\"Status code is 403\", function () {",
+											"    pm.response.to.have.status(403);",
+											"});",
+											"",
+											"var jsonData = pm.response.json();",
+											"",
+											"pm.test(\"Op auth error message\", function () {",
+											"    pm.expect(jsonData.error).to.eql(\"This operation is not authorized due to role restrictions and/or invalid schema items\");",
+											"});",
+											"",
+											"pm.test(\"Does not include anything in unauthorized_access\", function () {",
+											"    pm.expect(jsonData.unauthorized_access.length).to.eql(0);",
+											"});",
+											"",
+											"pm.test(\"Includes search schema in invalid_schema_items array\", function () {",
+											"    pm.expect(jsonData.invalid_schema_items.length).to.eql(1);",
+											"    pm.expect(jsonData.invalid_schema_items[0]).to.eql(\"Table 'dev.rick_rolled' does not exist\");",
+											"});",
+											""
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{test_user_name}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"value": "Basic c2dvbGRiZXJnOnRlc3QxMjM0IQ=="
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n    \"operation\": \"sql\",\n    \"sql\": \"SELECT * FROM dev.rick_rolled\"\n}",
+									"options": {
+										"raw": {}
+									}
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								},
+								"description": "Method for adding users.  Users can be assigned roles which provide granular access at a table, operation, and attirbute level.  \n\n<ul>\n<li><b>operation </b> <i>(required) </i> - must always be 'add_user'</li>\n\n<li><b>role </b><i>(required) </i>- id of the role you wish to assign to the user.  See add_role for more detail.  </li>\n\n<li><b>username </b> <i>(required)</i> - username assigned to the user.  It can not be altered after adding the user.  It serves as the hash. </li>\n\n<li><b>password </b> <i>(required) </i>- clear text for password.  HarperDB will encrypt the password upon reciept. </li>\n\n</ul>"
+							},
+							"response": []
+						},
+						{
+							"name": "SQL - SU search on table that doesn't exist as test_user - expect error",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"pm.test(\"Status code is 404\", function () {",
+											"    pm.response.to.have.status(404);",
+											"});",
+											"",
+											"var jsonData = pm.response.json();",
+											"",
+											"pm.test(\"Schema error message included\", function () {",
+											"    pm.expect(jsonData.error).to.eql(\"Table 'dev.rick_rolled' does not exist\");",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"value": "Basic c2dvbGRiZXJnOnRlc3QxMjM0IQ=="
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n    \"operation\": \"sql\",\n    \"sql\": \"SELECT * FROM dev.rick_rolled\"\n}",
+									"options": {
+										"raw": {}
+									}
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								},
+								"description": "Method for adding users.  Users can be assigned roles which provide granular access at a table, operation, and attirbute level.  \n\n<ul>\n<li><b>operation </b> <i>(required) </i> - must always be 'add_user'</li>\n\n<li><b>role </b><i>(required) </i>- id of the role you wish to assign to the user.  See add_role for more detail.  </li>\n\n<li><b>username </b> <i>(required)</i> - username assigned to the user.  It can not be altered after adding the user.  It serves as the hash. </li>\n\n<li><b>password </b> <i>(required) </i>- clear text for password.  HarperDB will encrypt the password upon reciept. </li>\n\n</ul>"
+							},
+							"response": []
+						},
+						{
+							"name": "Drop test_user for search schema error checks",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"value": "Basic YWRtaW46cGFzc3dvcmQ="
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"operation\":\"drop_user\",\n  \"username\":\"test_user\"\n}",
+									"options": {
+										"raw": {}
+									}
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								},
+								"description": "This method is used for dropping a role.  \n\n<i>You cannot drop a role with associated users.  </i>\n\n<ul>\n<li><b>operation </b><i>(required)</i> - this must always be drop_role </li>\n<li><b>id </b><i>(required) </i> - this is the id of the role you are dropping\n</ul>"
+							},
+							"response": []
+						},
+						{
+							"name": "Drop role for search schema error checks",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"value": "Basic YWRtaW46cGFzc3dvcmQ="
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n    \"operation\": \"drop_role\",\n    \"id\": \"{{role_id}}\"\n}",
+									"options": {
+										"raw": {}
+									}
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								},
+								"description": "This method is used for dropping a role.  \n\n<i>You cannot drop a role with associated users.  </i>\n\n<ul>\n<li><b>operation </b><i>(required)</i> - this must always be drop_role </li>\n<li><b>id </b><i>(required) </i> - this is the id of the role you are dropping\n</ul>"
+							},
+							"response": []
+						}
+					],
+					"auth": {
+						"type": "basic",
+						"basic": [
+							{
+								"key": "username",
+								"value": "{{username}}",
+								"type": "string"
+							},
+							{
+								"key": "password",
+								"value": "{{password}}",
+								"type": "string"
+							},
+							{
+								"key": "saveHelperData",
+								"type": "any"
+							},
+							{
+								"key": "showPassword",
+								"value": false,
+								"type": "boolean"
+							}
+						]
+					},
+					"protocolProfileBehavior": {},
+					"_postman_isSubFolder": true
+				},
+				{
 					"name": "Add non-SU role",
 					"event": [
 						{
@@ -53237,11 +54138,11 @@
 		},
 		{
 			"key": "operation_token",
-			"value": ""
+			"value": "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VybmFtZSI6eyJfX2NyZWF0ZWR0aW1lX18iOjE2MDQ1MTE3NzkyMDYsIl9fdXBkYXRlZHRpbWVfXyI6MTYwNDUxMTc3OTIwNiwiYWN0aXZlIjp0cnVlLCJhdXRoX3Rva2VuIjpudWxsLCJyb2xlIjp7Il9fY3JlYXRlZHRpbWVfXyI6MTYwNDUxMTc3OTIwMiwiX191cGRhdGVkdGltZV9fIjoxNjA0NTExNzc5MjAyLCJpZCI6IjIxYWYyNjVmLWNiZmMtNDEwMy04YmZkLTg1OWZlNWM1MGVlMiIsInBlcm1pc3Npb24iOnsic3VwZXJfdXNlciI6dHJ1ZSwic3lzdGVtIjp7InRhYmxlcyI6eyJoZGJfdGFibGUiOnsicmVhZCI6dHJ1ZSwiaW5zZXJ0IjpmYWxzZSwidXBkYXRlIjpmYWxzZSwiZGVsZXRlIjpmYWxzZSwiYXR0cmlidXRlX3Blcm1pc3Npb25zIjpbXX0sImhkYl9hdHRyaWJ1dGUiOnsicmVhZCI6dHJ1ZSwiaW5zZXJ0IjpmYWxzZSwidXBkYXRlIjpmYWxzZSwiZGVsZXRlIjpmYWxzZSwiYXR0cmlidXRlX3Blcm1pc3Npb25zIjpbXX0sImhkYl9zY2hlbWEiOnsicmVhZCI6dHJ1ZSwiaW5zZXJ0IjpmYWxzZSwidXBkYXRlIjpmYWxzZSwiZGVsZXRlIjpmYWxzZSwiYXR0cmlidXRlX3Blcm1pc3Npb25zIjpbXX0sImhkYl91c2VyIjp7InJlYWQiOnRydWUsImluc2VydCI6ZmFsc2UsInVwZGF0ZSI6ZmFsc2UsImRlbGV0ZSI6ZmFsc2UsImF0dHJpYnV0ZV9wZXJtaXNzaW9ucyI6W119LCJoZGJfcm9sZSI6eyJyZWFkIjp0cnVlLCJpbnNlcnQiOmZhbHNlLCJ1cGRhdGUiOmZhbHNlLCJkZWxldGUiOmZhbHNlLCJhdHRyaWJ1dGVfcGVybWlzc2lvbnMiOltdfSwiaGRiX2pvYiI6eyJyZWFkIjp0cnVlLCJpbnNlcnQiOmZhbHNlLCJ1cGRhdGUiOmZhbHNlLCJkZWxldGUiOmZhbHNlLCJhdHRyaWJ1dGVfcGVybWlzc2lvbnMiOltdfSwiaGRiX2xpY2Vuc2UiOnsicmVhZCI6dHJ1ZSwiaW5zZXJ0IjpmYWxzZSwidXBkYXRlIjpmYWxzZSwiZGVsZXRlIjpmYWxzZSwiYXR0cmlidXRlX3Blcm1pc3Npb25zIjpbXX0sImhkYl9pbmZvIjp7InJlYWQiOnRydWUsImluc2VydCI6ZmFsc2UsInVwZGF0ZSI6ZmFsc2UsImRlbGV0ZSI6ZmFsc2UsImF0dHJpYnV0ZV9wZXJtaXNzaW9ucyI6W119LCJoZGJfbm9kZXMiOnsicmVhZCI6dHJ1ZSwiaW5zZXJ0IjpmYWxzZSwidXBkYXRlIjpmYWxzZSwiZGVsZXRlIjpmYWxzZSwiYXR0cmlidXRlX3Blcm1pc3Npb25zIjpbXX0sImhkYl90ZW1wIjp7InJlYWQiOnRydWUsImluc2VydCI6ZmFsc2UsInVwZGF0ZSI6ZmFsc2UsImRlbGV0ZSI6ZmFsc2UsImF0dHJpYnV0ZV9wZXJtaXNzaW9ucyI6W119fX19LCJyb2xlIjoic3VwZXJfdXNlciJ9LCJ1c2VybmFtZSI6ImFkbWluIn0sImlhdCI6MTYwNDUxMjAzNSwiZXhwIjoxNjA0NTk4NDM1LCJzdWIiOiJvcGVyYXRpb24ifQ.I2HrjkXkHUv6-hX6hP0Iw9PHUPggXaPb-3rBDVonbs6a3myfdxVoLLGkDmGuN43_tEf8PUxPQEsRQj1WkPj2KVDxl_wXY7jEnxx8vedBzcdUepOrUL_NyunvK6KYseVGbnn0MtpT6Nk4xJm_lcmB1c_8oUaK22cMoZlxAqgCZt6dLYwS90FrvX_--qLpbTRsfZQojJjsGyBgNi2-vS94yCoE7LP5UxpSYjCAMbP1awQ1b_yvbpB4o9pbWQyGttgk_i4d8E7wCyCI6TM7rPs5_2_o7LRwOrzhVuKyCfE4cjlp7Lnp1TsPcQCt-uPLEQunFrSKASkfoEvszoPqOEA1vA8sK0yPdHq6II4L0mNYcB19iJW7ksUlncueIdjgbDiB5r3_HtuZfNDp7fMz22hEQPM-QiDYcnyR9M2_SQmb84qYvI2a00VFnbhaoljIGsNhWGWRkYW29Dzv73QariLs1b5-717PVQjePr5tW6ek-Agtu_-g2PmuK7St6sj_q7eoLAkVv3HBO-l0pBhRauMrBQRpEwFEcQu4pNMJgCtnp-WmoEV-2SJuOEHTxBcGCKkQyDSXC7xGGDX1a2bLP_xz9SCokFNVGrFBV8V5yccBRX-rgemySmuo0Pq5OMLy9QsJ8JsFSdqTar-IJIsoprmzSMGyQowwLdIQ1L8SkySUUrA"
 		},
 		{
 			"key": "refresh_token",
-			"value": ""
+			"value": "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VybmFtZSI6ImFkbWluIiwiaWF0IjoxNjA0NTEyMDM1LCJleHAiOjE2MDcxMDQwMzUsInN1YiI6InJlZnJlc2gifQ.A_imVckx_Wy0_g1WnbwMzYFrbt5AvNsUMIhIq1ZeDFBBV7pf91fBMf4Es-BcltlXAqKQ7QGZsdl3efa8hl0-C_NjSXscQNtqDcJXdZt74YvtSU3-C_fEOOAAy0q7Gw7bctN-JGbhC2cuz1vTEnJlosLX4dt5lqkB7nosQgBGWK7Y0BltF4khggpeUUs81P55ohC9Lox68b7St4uLlX45KIsxMfkjPGtB0O01pVqxDoPrEdjW4xT4Zb9UK40KXczFwvKJEQsQ1eRRedjNQBR-hrXqvUZSUUzJjcsWCn0YTatWfy8-lry2Z_U9uB4U9RJBpxlBp07VEjcGJQIya3mhyO9Y5xpqI3wuDgl4dhyUykuZz-C-xSx_WEswsVSHeFdj_fcNDM17K-DM4Up9DDljGSSwpNY1HiZcObaHviC1j2wf9gcANpRc3wNpAVboJYCxbWIEbI34Z831DAQtJn-2t8-cBJrJ2xWUnzP_9b-sO7mle3kzezZ6EHafSsmYPc4m201DZvKzg5pnKHA4V35sDPFmKv2jTeB3HYa0xDRRCZy857Bwy5pEpXvXJON_mCyvdw9NpUTf1kBd8R0sg9AFVXINjkY3S2IGYxXcmoRS-5WbBvbff9mApF9OIrZuKokqZQeevFaCaVLX7pniZ4hTB6N3F728uWXXB_ae7yN9Cq4"
 		}
 	],
 	"protocolProfileBehavior": {}
