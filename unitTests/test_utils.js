@@ -703,15 +703,17 @@ async function testError(test_func, error_msg) {
  * @param error_msg
  * @returns {Promise<boolean>}
  */
-async function testHDBError(test_func, error_msg) {
+async function testHDBError(test_func, expected_error) {
     let error;
+    let results;
     try {
-        console.log(await test_func);
+        results = await test_func;
     } catch(err) {
         error = err;
     }
 
-    return error.__proto__.constructor.name === 'HdbError' && error.http_resp_msg === error_msg;
+    assert.deepStrictEqual(error, expected_error);
+    return results;
 }
 
 function generateHDBError(err_msg, status_code) {
