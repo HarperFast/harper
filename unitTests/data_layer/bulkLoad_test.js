@@ -320,9 +320,7 @@ describe('Test bulkLoad.js', () => {
 
         it('Test bad URL throws validation error', async () => {
             CSV_URL_MESSAGE.csv_url = "breeds.csv";
-            let test_err_result = await test_utils.testHDBError(bulkLoad_rewire.csvURLLoad(CSV_URL_MESSAGE), 'Csv url is not a valid url');
-
-            expect(test_err_result).to.be.true;
+            await test_utils.testHDBError(bulkLoad_rewire.csvURLLoad(CSV_URL_MESSAGE), test_utils.generateHDBError('Csv url is not a valid url', 400));
         });
 
         it('Test for nominal behaviour and success message is returned', async () => {
