@@ -16,7 +16,7 @@
 1. Node.js 12 and npm
 2. GCC
 3. Make
-4. Python 2.7
+4. Python v2.7, v3.5, v3.6, v3.7, or v3.8
 5. (macOS) Xcode
 
 ```
