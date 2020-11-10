@@ -27,7 +27,7 @@ module.exports = {
 const SQL_UPDATE_ERROR_MSG = 'There was a problem performing this update. Please check the logs and try again.';
 
 /**
- * Description
+ * This method is used specifically for SQL UPDATE statements.
  * @method update
  * @param statement
  * @param hdb_user
@@ -38,7 +38,8 @@ async function update({statement, hdb_user}){
         let table_info = await p_get_table_schema(statement.table.databaseid, statement.table.tableid);
         let update_record = createUpdateRecord(statement.columns);
 
-        //convert this update statement to a search capable statement
+        //convert this update statement to a SQL search capable statement
+        hdb_utils.backtickASTSchemaItems(statement);
         let {table: from, where} = statement;
         let table_clone = clone(from);
 
@@ -104,8 +105,8 @@ function buildUpdateRecords(update_record, records){
 async function updateRecords(table, records, hdb_user){
     let update_object = {
         operation:'update',
-        schema: table.databaseid,
-        table: table.tableid,
+        schema: table.databaseid_orig,
+        table: table.tableid_orig,
         records:records,
         hdb_user
     };
