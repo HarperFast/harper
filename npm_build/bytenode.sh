@@ -12,7 +12,7 @@ bytenode --compile events/*.js
 bytenode --compile lib/**/*.js
 
 bytenode --compile security/*.js
-bytenode --compile security/data_model/*.js
+bytenode --compile security/data_objects/*.js
 
 bytenode --compile server/*.js
 bytenode --compile server/**/*.js
@@ -35,6 +35,7 @@ bytenode --compile utility/logging/*.js
 bytenode --compile utility/registration/*.js
 bytenode --compile utility/userInterface/*.js
 bytenode --compile utility/errors/*.js
+bytenode --compile utility/AWS/*.js
 
 bytenode --compile validation/*.js
 bytenode --compile validation/**/*.js
