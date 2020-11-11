@@ -173,7 +173,7 @@ describe('Test lmdbCreateRecords module', ()=>{
     let hdb_attribute_env;
     let rw_env_util;
     before(()=>{
-        rw_env_util = environment_utility.__set__('MAP_SIZE', 10*1024*1024*1024);
+        rw_env_util = environment_utility.__set__('MAP_SIZE', 5*1024*1024*1024);
         date_stub = sandbox.stub(Date, 'now').returns(TIMESTAMP);
     });
 

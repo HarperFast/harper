@@ -76,7 +76,7 @@ describe("test lmdbCreateTable module", ()=>{
     let date_stub;
     let rw_env_util;
     before(async ()=>{
-        rw_env_util = environment_utility.__set__('MAP_SIZE', 10*1024*1024*1024);
+        rw_env_util = environment_utility.__set__('MAP_SIZE', 5*1024*1024*1024);
         global.lmdb_map = undefined;
         global.hdb_schema = {system: systemSchema};
         date_stub = sandbox.stub(Date, 'now').returns(TIMESTAMP);

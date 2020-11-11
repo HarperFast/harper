@@ -1,5 +1,6 @@
 "use strict";
 
+const hdb_terms = require('../hdbTerms');
 const lmdb_terms = require('../lmdb/terms');
 
 // A subset of HTTP error codes that we may use in code.
@@ -36,13 +37,16 @@ const DEFAULT_ERROR_MSGS = {
 const DEFAULT_ERROR_RESP = DEFAULT_ERROR_MSGS[HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR];
 
 //Add all error messages that are generic and can be used across modules here
-const COMMON_ERROR_MSGS = {};
+const COMMON_ERROR_MSGS = {
+    OP_NOT_SUPPORTED_FOR_FS: (op) => `${op} is not available for this instance because it uses the File System data store.`
+};
 
 const BULK_LOAD_ERROR_MSGS = {
     DEFAULT_BULK_LOAD_ERR: 'There was an error during your bulk load into HarperDB.',
     DOWNLOAD_FILE_ERR: (file_name) => `There was an error downloading '${file_name}'.`,
     INSERT_JSON_ERR: 'There was an error inserting the downloaded JSON data.',
     INSERT_CSV_ERR: 'There was an error inserting the downloaded CSV data.',
+    INVALID_ACTION_PARAM_ERR: (action) => `Bulk load operation failed - ${action} is not a valid 'action' parameter`,
     INVALID_FILE_EXT_ERR: (json) => `Error selecting correct parser - valid file type not found in json - ${json}`,
     MAX_FILE_SIZE_ERR: (file_size, max_size) => `File size is ${file_size} bytes, which exceeded the maximum size allowed of: ${max_size} bytes`,
     PAPA_PARSE_ERR: 'There was an error parsing the downloaded CSV data.',
@@ -80,6 +84,29 @@ const LMDB_ERRORS_ENUM = {
     END_VALUE_MUST_BE_GREATER_THAN_START_VALUE: 'end_value must be greater than start_value',
     UNKNOWN_SEARCH_TYPE: 'unknown search type',
     CANNOT_DROP_TABLE_HASH_ATTRIBUTE: 'cannot drop a table\'s hash attribute'
+};
+
+//This ENUM includes error messages for INSERT, UPDATE, and UPSERT related ops
+const WRITE_OPS_ERROR_MSGS = {
+    ATTR_NAME_LENGTH_ERR: (attr_name) => `transaction aborted due to attribute name ${attr_name} being too long. Attribute names cannot be longer than ${hdb_terms.INSERT_MODULE_ENUM.MAX_CHARACTER_SIZE} bytes.`,
+    ATTR_NAME_NULLISH_ERR: 'transaction aborted due to record(s) with an attribute name that is null, undefined or empty string',
+    HASH_VAL_LENGTH_ERR: `transaction aborted due to record(s) with a hash value that exceeds ${hdb_terms.INSERT_MODULE_ENUM.MAX_CHARACTER_SIZE} bytes, check log for more info`,
+    INVALID_FORWARD_SLASH_IN_HASH_ERR: 'transaction aborted due to record(s) with a hash value that contains a forward slash, check log for more info',
+    RECORD_MISSING_HASH_ERR: 'transaction aborted due to record(s) with no hash value, check log for more info'
+};
+
+const AUTHENTICATION_ERROR_MSGS = {
+    GENERIC_AUTH_FAIL: 'Login failed',
+    USER_INACTIVE: 'Cannot complete request: User is inactive',
+    INVALID_TOKEN: 'invalid token',
+    NO_ENCRYPTION_KEYS: 'unable to generate JWT as there are no encryption keys.  please contact your administrator',
+    INVALID_CREDENTIALS: 'invalid credentials',
+    PASSWORD_REQUIRED: 'password is required',
+    USERNAME_REQUIRED: 'username is required',
+    REFRESH_TOKEN_REQUIRED: 'refresh_token is required',
+    INVALID_AUTH_OBJECT: 'invalid auth_object',
+    INVALID_BODY: 'invalid body',
+    TOKEN_EXPIRED: 'token expired'
 };
 
 const OPERATION_AUTH_ERROR_MSGS = {
@@ -136,10 +163,12 @@ const SQL_ERROR_MSGS = {
 const HDB_ERROR_MSGS = {
     ...COMMON_ERROR_MSGS,
     ...BULK_LOAD_ERROR_MSGS,
+    ...WRITE_OPS_ERROR_MSGS,
     ...OPERATION_AUTH_ERROR_MSGS,
     ...ROLE_PERMS_ERROR_MSGS,
     ...SQL_ERROR_MSGS,
-    ...SCHEMA_OP_ERROR_MSGS
+    ...SCHEMA_OP_ERROR_MSGS,
+    ...AUTHENTICATION_ERROR_MSGS
 };
 
 module.exports = {
@@ -148,5 +177,6 @@ module.exports = {
     DEFAULT_ERROR_MSGS,
     DEFAULT_ERROR_RESP,
     HTTP_STATUS_CODES,
-    LMDB_ERRORS_ENUM
+    LMDB_ERRORS_ENUM,
+    AUTHENTICATION_ERROR_MSGS
 };

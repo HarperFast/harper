@@ -46,7 +46,7 @@ describe('test lmdbGetDataByValue module', ()=>{
         });
 
 
-        rw_env_util = environment_utility.__set__('MAP_SIZE', 10*1024*1024*1024);
+        rw_env_util = environment_utility.__set__('MAP_SIZE', 5*1024*1024*1024);
         date_stub = sandbox.stub(Date, 'now').returns(TIMESTAMP);
     });
 
@@ -104,8 +104,8 @@ describe('test lmdbGetDataByValue module', ()=>{
         });
 
         it('test schema validation', async()=>{
-            await test_utils.assertErrorAsync(lmdb_search, [{schema:'dev2', table:'test', search_attribute: 'city', search_value: '*', get_attributes:['*']}], new Error("Schema 'dev2' does not exist"));
-            await test_utils.assertErrorAsync(lmdb_search, [{schema:'dev', table:'fake', search_attribute: 'city', search_value: '*', get_attributes:['*']}], new Error("Table 'dev.fake' does not exist"));
+            await test_utils.testHDBError(lmdb_search({schema:'dev2', table:'test', search_attribute: 'city', search_value: '*', get_attributes:['*']}), test_utils.generateHDBError("Schema 'dev2' does not exist", 404));
+            await test_utils.testHDBError(lmdb_search({schema:'dev', table:'fake', search_attribute: 'city', search_value: '*', get_attributes:['*']}), test_utils.generateHDBError("Table 'dev.fake' does not exist", 404));
             await test_utils.assertErrorAsync(lmdb_search, [{schema:'dev', table:'test', search_attribute: 'fake_city', search_value: '*', get_attributes:['*']}], new Error("unknown attribute 'fake_city'"));
             await test_utils.assertErrorAsync(lmdb_search, [{schema:'dev', table:'test', search_attribute: 'city', search_value: '*', get_attributes:['id','fake']}], new Error("unknown attribute 'fake'"));
         });

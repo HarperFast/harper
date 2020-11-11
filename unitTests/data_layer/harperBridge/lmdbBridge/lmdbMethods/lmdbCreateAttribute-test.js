@@ -81,7 +81,7 @@ describe("test lmdbCreateAttribute module", ()=>{
     let hdb_attribute_env;
     let rw_env_util;
     before(async ()=>{
-        rw_env_util = environment_utility.__set__('MAP_SIZE', 10*1024*1024*1024);
+        rw_env_util = environment_utility.__set__('MAP_SIZE', 5*1024*1024*1024);
         //uuid_stub = sandbox.stub(uuid, 'v4').returns(MOCK_UUID_VALUE);
         global.hdb_schema = {system: systemSchema};
         await fs.mkdirp(BASE_TEST_PATH);
@@ -144,7 +144,7 @@ describe("test lmdbCreateAttribute module", ()=>{
     });
 
     it('Test that validation error is thrown', async () => {
-        let attr_required = new Error('Attribute  is required');
+        let attr_required = test_utils.generateHDBError('Attribute  is required', 400);
         let create_attr_obj = test_utils.deepClone(CREATE_ATTR_OBJ_TEST);
         delete create_attr_obj.attribute;
         await test_utils.assertErrorAsync(lmdb_create_attribute, [create_attr_obj],attr_required);
@@ -163,7 +163,8 @@ describe("test lmdbCreateAttribute module", ()=>{
 
         create_attr_obj = test_utils.deepClone(CREATE_ATTR_OBJ_TEST);
         create_attr_obj.attribute = 'slash/er';
-        await test_utils.assertErrorAsync(lmdb_create_attribute, [create_attr_obj],new Error('Attribute names cannot include backticks or forward slashes'));
+        await test_utils.assertErrorAsync(lmdb_create_attribute, [create_attr_obj],
+            test_utils.generateHDBError('Attribute names cannot include backticks or forward slashes',400));
     });
 
 });

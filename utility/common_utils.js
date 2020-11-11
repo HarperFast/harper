@@ -5,6 +5,7 @@ const log = require('./logging/harper_logger');
 const fs_extra = require('fs-extra');
 const truncate = require('truncate-utf8-bytes');
 const os = require('os');
+const RecursiveIterator = require('recursive-iterator');
 const terms = require('./hdbTerms');
 const ps_list = require('./psList');
 const papa_parse = require('papaparse');
@@ -70,7 +71,8 @@ module.exports = {
     getLimitKey,
     isObject,
     isNotEmptyAndHasValue,
-    autoCasterIsNumberCheck
+    autoCasterIsNumberCheck,
+    backtickASTSchemaItems
 };
 
 /**
@@ -726,4 +728,43 @@ function getStartOfTomorrowInSeconds() {
  */
 function getLimitKey() {
         return moment().utc().format('DD-MM-YYYY');
+}
+
+
+/**
+ * Automatically adds backticks "`" to all schema elements found in an AST - the reason for this is in SQL you can surround
+ * a reserved word with backticks as an escape to allow a schema element which is named the same as a reserved word to be used.
+ * The issue is once alasql parses the sql the backticks are removed and we need them when we execute the final SQL.
+ */
+function backtickASTSchemaItems(statement) {
+    try {
+        let iterator = new RecursiveIterator(statement);
+        for (let { node } of iterator) {
+            if (node) {
+                if (node.columnid && (typeof node.columnid !== "string")) {
+                    node.columnid = node.columnid.toString();
+                }
+                if (node.columnid && !node.columnid.startsWith('`')) {
+                    node.columnid_orig = node.columnid;
+                    node.columnid = `\`${node.columnid}\``;
+                }
+                if (node.tableid && !node.tableid.startsWith('`')) {
+                    node.tableid_orig = node.tableid;
+                    node.tableid = `\`${node.tableid}\``;
+                }
+                if (node.databaseid && !node.databaseid.startsWith('`')) {
+                    node.databaseid_orig = node.databaseid;
+                    node.databaseid = `\`${node.databaseid}\``;
+                }
+
+                if (node.as && typeof node.as === "string" && !node.as.startsWith('[')) {
+                    node.as_orig = node.as;
+                    node.as = `\`${node.as}\``;
+                }
+            }
+        }
+    } catch(err) {
+        log.error(`Got an error back ticking items.`);
+        log.error(err);
+    }
 }

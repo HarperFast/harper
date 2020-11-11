@@ -12,7 +12,7 @@ const OpenEnvironmentObject = require('./OpenEnvironmentObject');
 const lmdb_terms = require('./terms');
 //allow an environment to grow up to 1 TB
 // eslint-disable-next-line no-magic-numbers
-const MAP_SIZE = 100 * 1024 * 1024 * 1024;
+const MAP_SIZE = 200 * 1024 * 1024 * 1024;
 //allow up to 10,000 named data bases in an environment
 const MAX_DBS = 10000;
 const MAX_READERS = 10000;

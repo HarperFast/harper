@@ -2,100 +2,26 @@
 
 const express = require('express');
 const router = express.Router();
-const password_function = require('../utility/password');
 const validation = require('../validation/check_permissions');
 const passport = require('passport');
 const LocalStrategy = require('passport-local').Strategy;
 const BasicStrategy = require('passport-http').BasicStrategy;
 const util = require('util');
 const user_functions = require('./user');
-const cb_users_set_global = util.callbackify(user_functions.setUsersToGlobal);
-const clone = require('clone');
-const systemSchema = require('../json/systemSchema');
+const cb_find_validate_users = util.callbackify(user_functions.findAndValidateUser);
 const hdb_errors = require('../utility/errors/commonErrors');
-const log = require('../utility/logging/harper_logger');
-
-const GENERIC_AUTH_FAIL = 'Login failed';
-
-/**
- * adds system table permissions to the logged in user.  This is used to protect system tables by leveraging operationAuthoriation.
- * @param user_role - Role of the user found during auth.
- */
-function appendSystemTablesToRole(user_role) {
-    try {
-        if (!user_role) {
-            log.error(`invalid user role found.`);
-            return;
-        }
-        if (!user_role.permission["system"]) {
-            user_role.permission["system"] = {};
-        }
-        if (!user_role.permission.system["tables"]) {
-            user_role.permission.system["tables"] = {};
-        }
-        for (let table of Object.keys(systemSchema)) {
-            let new_prop = {};
-            new_prop["read"] = (!!user_role.permission.super_user);
-            new_prop["insert"] = false;
-            new_prop["update"] = false;
-            new_prop["delete"] = false;
-            new_prop["attribute_permissions"] = [];
-            user_role.permission.system.tables[table] = new_prop;
-        }
-    } catch(err) {
-        log.error(`Got an error trying to set system permissions.`);
-        log.error(err);
-    }
-}
-
-function findAndValidateUser(username, password, done) {
-    if (!global.hdb_users) {
-        cb_users_set_global(() => {
-            handleResponse();
-        });
-    } else {
-        handleResponse();
-    }
-
-    function handleResponse() {
-        try {
-            let user_tmp = global.hdb_users.filter((hdb_user) => {
-                return hdb_user.username.toString() === username.toString();
-            })[0];
-
-            if (!user_tmp) {
-                return done(GENERIC_AUTH_FAIL, null);
-            }
-
-            if (user_tmp && !user_tmp.active) {
-                return done('Cannot complete request: User is inactive', null);
-            }
-            let user = clone(user_tmp);
-            if (!password_function.validate(user.password, password)) {
-                return done(GENERIC_AUTH_FAIL, false);
-            }
-            delete user.password;
-            delete user.hash;
-            appendSystemTablesToRole(user.role);
-            return done(null, user);
-        } catch(err) {
-            log.error('There was an error authenticating user.');
-            log.error(err);
-            return done(GENERIC_AUTH_FAIL, null);
-        }
-    }
-}
+const hdb_terms = require('../utility/hdbTerms');
+const token_authentication = require('./tokenAuthentication');
 
 passport.use(new LocalStrategy(
     function (username, password, done) {
-        findAndValidateUser(username, password, done);
-
+        cb_find_validate_users(username, password, done);
     }
 ));
 
 passport.use(new BasicStrategy(
     function (username, password, done) {
-        findAndValidateUser(username, password, done);
+        cb_find_validate_users(username, password, done);
     }));
 
 
@@ -119,8 +45,11 @@ router.post('/',
 function authorize(req, res, next) {
     let found_user = null;
     let strategy;
+    let token;
     if (req.headers && req.headers.authorization) {
-        strategy = req.headers.authorization.split(' ')[0];
+        let split_auth_header = req.headers.authorization.split(' ');
+        strategy = split_auth_header[0];
+        token = split_auth_header[1];
     }
 
     function handleResponse(err, user, info) {
@@ -149,6 +78,22 @@ function authorize(req, res, next) {
             passport.authenticate('basic', function (err, user, info) {
                 handleResponse(err, user, info);
             })(req, res, next);
+            break;
+        case 'Bearer':
+            if(req.body && req.body.operation && req.body.operation === hdb_terms.OPERATIONS_ENUM.REFRESH_OPERATION_TOKEN){
+                token_authentication.validateRefreshToken(token).then((user)=>{
+                    req.body.refresh_token = token;
+                    next(null, user);
+                }).catch(e=>{
+                    next(e);
+                });
+            }else {
+                token_authentication.validateOperationToken(token).then((user) => {
+                    next(null, user);
+                }).catch(e => {
+                    next(e);
+                });
+            }
             break;
         default:
             passport.authenticate('local', function (err, user, info) {

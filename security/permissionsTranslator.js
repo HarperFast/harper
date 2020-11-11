@@ -200,7 +200,6 @@ function getTableAttrPerms(table_perms, table_schema) {
             if (attr_r_map[attribute]) {
                 //if there is a permission set passed for current attribute, set it to the final perms object
                 let attr_perm_obj = attr_r_map[attribute];
-                //TODO - need to have updated attr_perm_obj before next step
                 attr_perm_obj.describe = getAttributeDescribePerm(attr_perm_obj);
                 final_table_perms.attribute_permissions.push(attr_perm_obj);
                 //if hash attr perms are not provided, check current CRUD perms values and make sure hash_attr is provided
@@ -210,7 +209,12 @@ function getTableAttrPerms(table_perms, table_schema) {
                 }
             } else if (attribute !== table_hash) {
                 //if the attr isn't included in attr perms and isn't the hash, we set all perms to false
-                const attr_perms = attr_perms_template(attribute);
+                let attr_perms;
+                if (terms.TIME_STAMP_NAMES.includes(attribute)) {
+                    attr_perms = timestamp_attr_perms_template(attribute);
+                } else {
+                    attr_perms = attr_perms_template(attribute);
+                }
                 final_table_perms.attribute_permissions.push(attr_perms);
             }
         });

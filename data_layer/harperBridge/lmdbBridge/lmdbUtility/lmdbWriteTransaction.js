@@ -4,6 +4,7 @@ const path = require('path');
 const environment_util = require('../../../../utility/lmdb/environmentUtility');
 const LMDBInsertTransactionObject = require('./LMDBInsertTransactionObject');
 const LMDBUpdateTransactionObject = require('./LMDBUpdateTransactionObject');
+const LMDBUpsertTransactionObject = require('./LMDBUpsertTransactionObject');
 const LMDBDeleteTransactionObject = require('./LMDBDeleteTransactionObject');
 
 const lmdb_terms = require('../../../../utility/lmdb/terms');
@@ -24,8 +25,8 @@ module.exports = writeTransaction;
 
 /**
  *
- * @param {InsertObject|UpdateObject|DeleteObject} hdb_operation
- * @param {InsertRecordsResponseObject | UpdateRecordsResponseObject | DeleteRecordsResponseObject} lmdb_response
+ * @param {InsertObject|UpdateObject|DeleteObject|UpsertObject} hdb_operation
+ * @param {InsertRecordsResponseObject | UpdateRecordsResponseObject | UpdateRecordsResponseObject | DeleteRecordsResponseObject} lmdb_response
  * @returns {Promise<void>}
  */
 async function writeTransaction(hdb_operation, lmdb_response){
@@ -84,6 +85,10 @@ function createTransactionObject(hdb_operation, lmdb_response){
         return new LMDBUpdateTransactionObject(hdb_operation.records, lmdb_response.original_records, username, lmdb_response.txn_time, lmdb_response.written_hashes, hdb_operation.__origin);
     }
 
+    if(hdb_operation.operation === OPERATIONS_ENUM.UPSERT) {
+        return new LMDBUpsertTransactionObject(hdb_operation.records, lmdb_response.original_records, username, lmdb_response.txn_time, lmdb_response.written_hashes, hdb_operation.__origin);
+    }
+
     if(hdb_operation.operation === OPERATIONS_ENUM.DELETE) {
         return new LMDBDeleteTransactionObject(lmdb_response.deleted, lmdb_response.original_records, username, lmdb_response.txn_time, hdb_operation.__origin);
     }
@@ -92,11 +97,6 @@ function createTransactionObject(hdb_operation, lmdb_response){
 function getDisableTxnLogSetting(){
     let disable_txn_setting = env_mngr.get(HDB_SETTINGS_NAMES.DISABLE_TRANSACTION_LOG_KEY);
 
-    let clustering_on = env_mngr.get(HDB_SETTINGS_NAMES.CLUSTERING_ENABLED_KEY);
-
-    let clustering_on_bool = !hdb_util.isEmptyOrZeroLength(clustering_on) && (clustering_on === true
-        || clustering_on.toString().toLowerCase() === 'true');
-
-    return clustering_on_bool === false && !hdb_util.isEmptyOrZeroLength(disable_txn_setting) && (disable_txn_setting === true
+    return !hdb_util.isEmptyOrZeroLength(disable_txn_setting) && (disable_txn_setting === true
         || disable_txn_setting.toString().toLowerCase() === 'true');
 }

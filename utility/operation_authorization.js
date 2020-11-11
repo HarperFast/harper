@@ -12,7 +12,6 @@
  * */
 const write = require('../data_layer/insert');
 const search = require('../data_layer/search');
-const bulkLoad = require('../data_layer/bulkLoad');
 const schema = require('../data_layer/schema');
 const schema_describe = require('../data_layer/schemaDescribe');
 const delete_ = require('../data_layer/delete');
@@ -23,16 +22,16 @@ const harper_logger = require('../utility/logging/harper_logger');
 const common_utils = require('./common_utils');
 const bucket = require('../sqlTranslator/sql_statement_bucket');
 const cluster_utilities = require('../server/clustering/clusterUtilities');
-const data_export = require('../data_layer/export');
 const reg = require('./registration/registrationHandler');
 const stop = require('../bin/stop');
 const terms = require('./hdbTerms');
 const permsTranslator = require('../security/permissionsTranslator');
 const system_information = require('../utility/environment/systemInformation');
+const token_authentication = require('../security/tokenAuthentication');
 const alasql = require('alasql');
 
 const PermissionResponseObject = require('../security/data_objects/PermissionResponseObject');
-const { handleHDBError, hdb_errors  } = require('../utility/errors/hdbError');
+const { handleHDBError, hdb_errors } = require('../utility/errors/hdbError');
 const { HDB_ERROR_MSGS, HTTP_STATUS_CODES } = hdb_errors;
 
 const required_permissions = new Map();
@@ -42,12 +41,25 @@ const READ_PERM = 'read';
 const UPDATE_PERM = 'update';
 const DESCRIBE_PERM = 'describe';
 
+const UPSERT_OP = 'upsert';
+
 const DESCRIBE_SCHEMA_KEY = schema_describe.describeSchema.name;
 const DESCRIBE_TABLE_KEY = schema_describe.describeTable.name;
 
 const CATCHUP = 'catchup';
 const HANDLE_GET_JOB = 'handleGetJob';
 const HANDLE_GET_JOB_BY_START_DATE = 'handleGetJobsByStartDate';
+const BULK_OPS = {
+    CSV_DATA_LOAD: 'csvDataLoad',
+    CSV_URL_LOAD: 'csvURLLoad',
+    CSV_FILE_LOAD: 'csvFileLoad',
+    IMPORT_FROM_S3: 'importFromS3'
+};
+
+const DATA_EXPORT = {
+    EXPORT_TO_S3: 'export_to_s3',
+    EXPORT_LOCAL: 'export_local'
+};
 
 class permission {
     constructor(requires_su, perms) {
@@ -58,13 +70,10 @@ class permission {
 
 required_permissions.set(write.insert.name, new permission(false, [INSERT_PERM]));
 required_permissions.set(write.update.name, new permission(false, [UPDATE_PERM]));
+required_permissions.set(write.upsert.name, new permission(false, [INSERT_PERM, UPDATE_PERM]));
 required_permissions.set(search.searchByHash.name, new permission(false, [READ_PERM]));
 required_permissions.set(search.searchByValue.name, new permission(false, [READ_PERM]));
 required_permissions.set(search.search.name, new permission(false, [READ_PERM]));
-required_permissions.set(bulkLoad.csvDataLoad.name, new permission(false, [INSERT_PERM, UPDATE_PERM]));
-required_permissions.set(bulkLoad.csvURLLoad.name, new permission(false, [INSERT_PERM, UPDATE_PERM]));
-required_permissions.set(bulkLoad.csvFileLoad.name, new permission(false, [INSERT_PERM, UPDATE_PERM]));
-required_permissions.set(bulkLoad.importFromS3.name, new permission(false, [INSERT_PERM, UPDATE_PERM]));
 required_permissions.set(schema.createSchema.name, new permission(true, []));
 required_permissions.set(schema.createTable.name, new permission(true, []));
 required_permissions.set(schema.createAttribute.name, new permission(false, [INSERT_PERM]));
@@ -90,13 +99,15 @@ required_permissions.set(cluster_utilities.configureCluster.name, new permission
 required_permissions.set(cluster_utilities.clusterStatus.name, new permission(true, []));
 required_permissions.set(reg.getFingerprint.name, new permission(true, []));
 required_permissions.set(reg.setLicense.name, new permission(true, []));
-required_permissions.set(data_export.export_to_s3.name, new permission(false, [READ_PERM]));
-required_permissions.set(data_export.export_local.name, new permission(false, [READ_PERM]));
 required_permissions.set(delete_.deleteFilesBefore.name, new permission(true, []));
 required_permissions.set(delete_.deleteTransactionLogsBefore.name, new permission(true, []));
 required_permissions.set(stop.restartProcesses.name, new permission(true, []));
 required_permissions.set(read_transaction_log.name, new permission(true, []));
 required_permissions.set(system_information.systemInformation.name, new permission(true, []));
+
+//this operation must be available to all users so they can create authentication tokens
+required_permissions.set(token_authentication.createTokens.name, new permission(false, []));
+required_permissions.set(token_authentication.refreshOperationToken.name, new permission(false, []));
 
 //Below are functions that are currently open to all roles
 required_permissions.set(reg.getRegistrationInfo.name, new permission(false, []));
@@ -108,6 +119,12 @@ required_permissions.set(schema_describe.describeAll.name, new permission(false,
 required_permissions.set(HANDLE_GET_JOB, new permission(false, []));
 required_permissions.set(HANDLE_GET_JOB_BY_START_DATE, new permission(true, []));
 required_permissions.set(CATCHUP, new permission(true, []));
+required_permissions.set(BULK_OPS.CSV_DATA_LOAD, new permission(false, [INSERT_PERM, UPDATE_PERM]));
+required_permissions.set(BULK_OPS.CSV_URL_LOAD, new permission(false, [INSERT_PERM, UPDATE_PERM]));
+required_permissions.set(BULK_OPS.CSV_FILE_LOAD, new permission(false, [INSERT_PERM, UPDATE_PERM]));
+required_permissions.set(BULK_OPS.IMPORT_FROM_S3, new permission(false, [INSERT_PERM, UPDATE_PERM]));
+required_permissions.set(DATA_EXPORT.EXPORT_TO_S3, new permission(false, [READ_PERM]));
+required_permissions.set(DATA_EXPORT.EXPORT_LOCAL, new permission(false, [READ_PERM]));
 
 //NOTE: 'registration_info' and 'user_info' operations are intentionally left off here since both should be accessible
 // for all roles/users no matter what their permissions are
@@ -120,7 +137,8 @@ required_permissions.set(terms.VALID_SQL_OPS_ENUM.UPDATE, new permission(false, 
 
 module.exports = {
     verifyPerms,
-    verifyPermsAst
+    verifyPermsAst,
+    verifyBulkLoadAttributePerms
 };
 
 /**
@@ -188,7 +206,7 @@ function verifyPermsAst(ast, user_object, operation) {
         schema_table_map.forEach((tables, schema_key) => {
             for (let t = 0; t < tables.length; t++) {
                 let attributes = parsed_ast.getAttributesBySchemaTableName(schema_key, tables[t]);
-                const attribute_permissions = getAttributePermissions(user_object, schema_key, tables[t]);
+                const attribute_permissions = getAttributePermissions(user_object.role.permission, schema_key, tables[t]);
                 checkAttributePerms(attributes, attribute_permissions, operation, tables[t], schema_key, permsResponse);
             }
         });
@@ -249,6 +267,7 @@ function verifyPerms(request_json, operation) {
     const full_role_perms = permsTranslator.getRolePermissions(request_json.hdb_user.role);
     request_json.hdb_user.role.permission = full_role_perms;
 
+    //check if user is trying to describe a system table and, if so, return schema perm error
     if (op === DESCRIBE_SCHEMA_KEY || op === DESCRIBE_TABLE_KEY) {
         if (operation_schema === terms.SYSTEM_SCHEMA_NAME) {
             const system_schema_err = permsResponse.handleUnauthorizedItem(HDB_ERROR_MSGS.SCHEMA_PERM_ERROR(operation_schema));
@@ -294,7 +313,7 @@ function verifyPerms(request_json, operation) {
                 table_attr_perms.forEach(perm => {
                     final_get_attrs.push(perm.attribute_name);
                 });
-            }  else {
+            } else {
                 final_get_attrs = global.hdb_schema[operation_schema][table].attributes.map(obj => obj.attribute);
             }
 
@@ -303,7 +322,7 @@ function verifyPerms(request_json, operation) {
     }
 
     const record_attrs = getRecordAttributes(request_json);
-    const attr_permissions = getAttributePermissions(request_json.hdb_user, operation_schema, table);
+    const attr_permissions = getAttributePermissions(request_json.hdb_user.role.permission, operation_schema, table);
     checkAttributePerms(record_attrs, attr_permissions, op, table, operation_schema, permsResponse, action);
 
     //This result value will be null if no perms issues were found in checkAttributePerms
@@ -344,40 +363,43 @@ function hasPermissions(user_object, op, schema_table_map, permsResponse, action
         return no_perms_err;
     }
 
-    for (let schema_table of schema_table_map.keys()) {
-        //check if schema has DESCRIBE perms
-        if (schema_table && user_perms[schema_table][DESCRIBE_PERM] === false) {
-            //add schema does not exist error message
+    const schema_table_keys = schema_table_map.keys();
+    for (let schema_table of schema_table_keys) {
+        //check if schema exists and, if so, if user has DESCRIBE perms
+        try {
+            if (schema_table && !user_perms[schema_table] || user_perms[schema_table][DESCRIBE_PERM] === false) {
+                //add schema does not exist error message
+                permsResponse.addInvalidItem(HDB_ERROR_MSGS.SCHEMA_NOT_FOUND(schema_table));
+                continue;
+            }
+        } catch(e) {
+            //we should never get here b/c if statement above should catch any possible errors and log the issue to
+            // permsResponse but keeping this here just to be safe
             permsResponse.addInvalidItem(HDB_ERROR_MSGS.SCHEMA_NOT_FOUND(schema_table));
             continue;
         }
-        for (let table of schema_table_map.get(schema_table)) {
-            let table_permissions = [];
-            try {
-                table_permissions = user_perms[schema_table].tables[table];
-            } catch(e) {
-                //we should never get here b/c perms are always set against global schema but, if we do, assume table is restricted
+
+        const schema_table_data = schema_table_map.get(schema_table);
+        for (let table of schema_table_data) {
+            const table_permissions = user_perms[schema_table].tables[table];
+
+            //if table perms don't exist or DESCRIBE perm set to false, we add an invalid item error to response
+            if (!table_permissions || table_permissions[DESCRIBE_PERM] === false) {
                 permsResponse.addInvalidItem(HDB_ERROR_MSGS.TABLE_NOT_FOUND(schema_table, table));
                 continue;
-            }
-
-            if (table_permissions && table) {
+            } else {
                 try {
-                    if (table_permissions[DESCRIBE_PERM] === false) {
-                        permsResponse.addInvalidItem(HDB_ERROR_MSGS.TABLE_NOT_FOUND(schema_table, table));
-                        continue;
-                    }
                     //Here we check all required permissions for the operation defined in the map with the values of the permissions in the role.
                     const required_table_perms = [];
                     let required_perms = required_permissions.get(op).perms;
 
                     //If an 'action' is included in the operation json, we want to only check permissions for that action
-                    if (!common_utils.isEmpty(action)) {
+                    if (!common_utils.isEmpty(action) && required_perms.includes(action)) {
                         required_perms = [action];
                     }
 
                     for (let i = 0; i < required_perms.length; i++) {
-                        let perm = required_perms[i];
+                    let perm = required_perms[i];
                         let user_permission = table_permissions[perm];
                         if (user_permission === undefined || user_permission === null || user_permission === false) {
                             //need to check if any perm on table OR should return table not found
@@ -426,7 +448,7 @@ function checkAttributePerms(record_attributes, role_attribute_permissions, oper
     }
 
     // check each attribute with role permissions.  Required perm should match the per in the operation
-    let needed_perms = required_permissions.get(operation);
+    let needed_perms = required_permissions.get(operation).perms;
 
     if (!needed_perms || needed_perms === '') {
         // We should never get in here since all of our operations should have a perm, but just in case we should fail
@@ -442,8 +464,8 @@ function checkAttributePerms(record_attributes, role_attribute_permissions, oper
     }
 
     //If an 'action' is included in the operation json, we want to only check permissions for that action
-    if (action && needed_perms.perms.includes(action)) {
-        needed_perms.perms = [action];
+    if (action && needed_perms.includes(action)) {
+        needed_perms = [action];
     }
 
     let required_attr_perms = {};
@@ -456,13 +478,12 @@ function checkAttributePerms(record_attributes, role_attribute_permissions, oper
                 permsResponse.addInvalidItem(HDB_ERROR_MSGS.ATTR_NOT_FOUND(schema_name, table_name, element), schema_name, table_name);
                 continue;
             }
-            if (needed_perms.perms) {
-                for (let perm of needed_perms.perms) {
-                    //TODO - add check for insert/update op on timestamp value and return error message, if so
+            if (needed_perms) {
+                for (let perm of needed_perms) {
                     if (terms.TIME_STAMP_NAMES.includes(permission.attribute_name) && perm !== READ_PERM) {
                         throw handleHDBError(new Error(), HDB_ERROR_MSGS.SYSTEM_TIMESTAMP_PERMS_ERR, HTTP_STATUS_CODES.FORBIDDEN);
                     }
-                    if (permission[perm] === false) {
+                     if (permission[perm] === false) {
                         if (!required_attr_perms[permission.attribute_name]) {
                             required_attr_perms[permission.attribute_name] = [perm];
                         } else {
@@ -471,6 +492,10 @@ function checkAttributePerms(record_attributes, role_attribute_permissions, oper
                     }
                 }
             }
+        } else {
+            //if we get here, it means that this is a new attribute and, because there are attr-level perms set, the role
+            // does not have permission to do anything with it b/c all perms will be set to FALSE by default
+            permsResponse.addInvalidItem(HDB_ERROR_MSGS.ATTR_NOT_FOUND(schema_name, table_name, element), schema_name, table_name);
         }
     }
 
@@ -489,6 +514,11 @@ function checkAttributePerms(record_attributes, role_attribute_permissions, oper
 function getRecordAttributes(json) {
     let affected_attributes = new Set();
     try {
+        //Bulk load operations need to have attr-level permissions checked during the validateChunk step of the operation
+        // in the bulkLoad.js methods
+        if (json.action) {
+            return affected_attributes;
+        }
         if (json && json.search_attribute) {
             affected_attributes.add(json.search_attribute);
         }
@@ -527,13 +557,13 @@ function getRecordAttributes(json) {
  * @param table - The table specified.
  * @returns {Map} A Map of attribute permissions of the form [attribute_name, attribute_permission];
  */
-function getAttributePermissions(json_hdb_user, operation_schema, table) {
+function getAttributePermissions(role_perms, operation_schema, table) {
     let role_attribute_permissions = new Map();
-    if ( !json_hdb_user || json_hdb_user.length === 0) {
+    if (common_utils.isEmpty(role_perms)) {
         harper_logger.info(`no hdb_user specified in getAttributePermissions`);
         return role_attribute_permissions;
     }
-    if (json_hdb_user.role.permission.super_user) {
+    if (role_perms.super_user) {
         return role_attribute_permissions;
     }
     //Some commands do not require a table to be specified.  If there is no table, there is likely not
@@ -542,13 +572,19 @@ function getAttributePermissions(json_hdb_user, operation_schema, table) {
         return role_attribute_permissions;
     }
     try {
-        json_hdb_user.role.permission[operation_schema].tables[table].attribute_permissions.forEach(function (permission) {
-            if (!role_attribute_permissions.has(permission.attribute_name)) {
-                role_attribute_permissions.set(permission.attribute_name, permission);
+        role_perms[operation_schema].tables[table].attribute_permissions.forEach(perm => {
+            if (!role_attribute_permissions.has(perm.attribute_name)) {
+                role_attribute_permissions.set(perm.attribute_name, perm);
             }
         });
     } catch (e) {
         harper_logger.info(`No attribute permissions found for schema ${operation_schema} and table ${table}.`);
     }
     return role_attribute_permissions;
+}
+
+function verifyBulkLoadAttributePerms(role_perms, op, action, operation_schema, operation_table, attributes, permsResponse) {
+    const record_attrs = new Set(attributes);
+    const attr_permissions = getAttributePermissions(role_perms, operation_schema, operation_table);
+    checkAttributePerms(record_attrs, attr_permissions, op, operation_table, operation_schema, permsResponse, action);
 }

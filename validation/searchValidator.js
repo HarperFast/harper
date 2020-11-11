@@ -2,6 +2,8 @@ const _ = require('lodash'),
     validator = require('./validationWrapper');
 const hdb_terms = require('../utility/common_utils');
 const { common_validators, schema_regex } = require('./common_validators');
+const { handleHDBError, hdb_errors } = require('../utility/errors/hdbError');
+const { HTTP_STATUS_CODES } = hdb_errors;
 
 let search_by_hash_constraints = {
     schema: {
@@ -112,7 +114,7 @@ module.exports = function (search_object, type) {
         if (search_object.schema !== 'system') { // skip validation for system schema
             let check_schema_table = hdb_terms.checkGlobalSchemaTable(search_object.schema, search_object.table);
             if (check_schema_table) {
-                return new Error(check_schema_table);
+                return handleHDBError(new Error(), check_schema_table, HTTP_STATUS_CODES.NOT_FOUND);
             }
 
             let all_table_attributes = global.hdb_schema[search_object.schema][search_object.table].attributes;

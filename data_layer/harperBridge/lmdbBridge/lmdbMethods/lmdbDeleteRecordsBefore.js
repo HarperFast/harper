@@ -1,12 +1,20 @@
 'use strict';
 
-const DeleteObject = require('../../../DeleteObject');
 const SearchObject = require('../../../SearchObject');
 const hdb_utils = require('../../../../utility/common_utils');
 const log = require('../../../../utility/logging/harper_logger');
 const search_by_value = require('./lmdbSearchByValue');
 const hdb_terms = require('../../../../utility/hdbTerms');
-const delete_records = require('./lmdbDeleteRecords');
+const delete_records = require('../../../../utility/lmdb/deleteUtility').deleteRecords;
+const environment_utility = require('../../../../utility/lmdb/environmentUtility');
+const path = require('path');
+const {getBaseSchemaPath} = require('../lmdbUtility/initializePaths');
+
+const {promisify} = require('util');
+const p_timeout = promisify(setTimeout);
+
+const DELETE_CHUNK = 10000;
+const DELETE_PAUSE_MS = 10;
 
 module.exports = lmdbDeleteRecordsBefore;
 
@@ -47,16 +55,43 @@ async function lmdbDeleteRecordsBefore(delete_obj) {
         return;
     }
 
-    let hashes_to_delete = [];
-    for (let i = 0; i < search_result.length; i++) {
-        hashes_to_delete.push(search_result[i][schema_table_hash]);
+    return await chunkDeletes(delete_obj, search_result, schema_table_hash);
+}
+
+/**
+ * chunks the deletes and executes them in batches with a pause between each chunk iteration.
+ * @param delete_obj
+ * @param deletes
+ * @param schema_table_hash
+ * @returns {Promise<{skipped_hashes: [], deleted_hashes: [], message: string}>}
+ */
+async function chunkDeletes(delete_obj, deletes, schema_table_hash){
+    let env_base_path = path.join(getBaseSchemaPath(), delete_obj.schema.toString());
+    let environment = await environment_utility.openEnvironment(env_base_path, delete_obj.table);
+
+    let total_results = {
+        message:'',
+        deleted_hashes:[],
+        skipped_hashes:[]
+    };
+
+    for (let i = 0, length = deletes.length; i < length; i += DELETE_CHUNK) {
+        let chunk = deletes.slice(i, i + DELETE_CHUNK);
+        let ids = [];
+        for(let x = 0, chunk_length = chunk.length; x < chunk_length; x++){
+            ids.push(chunk[x][schema_table_hash]);
+        }
+
+        try {
+            let result = delete_records(environment, schema_table_hash, ids);
+            total_results.deleted_hashes = total_results.deleted_hashes.concat(result.deleted);
+            total_results.skipped_hashes = total_results.skipped_hashes.concat(result.skipped);
+        } catch(err) {
+            throw err;
+        }
+        await p_timeout(DELETE_PAUSE_MS);
     }
 
-    let delete_object = new DeleteObject(delete_obj.schema, delete_obj.table, hashes_to_delete);
-
-    try {
-        return await delete_records(delete_object);
-    } catch(err) {
-        throw err;
-    }
+    total_results.message = `${total_results.deleted_hashes.length} of ${total_results.deleted_hashes.length + total_results.skipped_hashes.length} records successfully deleted`;
+    return total_results;
 }

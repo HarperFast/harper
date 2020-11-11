@@ -56,7 +56,7 @@ describe('Test deleteUtility', ()=>{
     let get_micro_time_stub;
     let date_stub;
     before(()=>{
-        rw_env_util = environment_utility.__set__('MAP_SIZE', 10*1024*1024*1024);
+        rw_env_util = environment_utility.__set__('MAP_SIZE', 5*1024*1024*1024);
         get_micro_time_stub = sandbox.stub(common, 'getMicroTime').returns(TXN_TIMESTAMP);
         date_stub = sandbox.stub(Date, 'now').returns(TIMESTAMP);
     });
@@ -102,8 +102,12 @@ describe('Test deleteUtility', ()=>{
 
             let orig_records = test_utils.deepClone(records);
             orig_records.forEach(record=>{
-                record.__blob__ = null;
                 record.__createdtime__ = record.__updatedtime__ = TIMESTAMP;
+                ['city', 'text', 'age', 'name'].forEach(prop=>{
+                    if(record[prop] === null){
+                        delete record[prop];
+                    }
+                });
             });
             let expected_delete_results = new DeleteRecordsResponseObject([1,2,3,4,5,6], [], TXN_TIMESTAMP, orig_records);
 
@@ -143,9 +147,13 @@ describe('Test deleteUtility', ()=>{
 
             let orig_records = [];
             records.forEach(rec=>{
-                let record = Object.assign(Object.create(null), rec);
-                record.__blob__ = null;
+                let record = Object.assign({}, rec);
                 record.__createdtime__ = record.__updatedtime__ = TIMESTAMP;
+                ['city', 'text'].forEach(prop=>{
+                    if(record[prop] === null){
+                        delete record[prop];
+                    }
+                });
                 orig_records.push(record);
             });
             let expected_delete_results = new DeleteRecordsResponseObject([2,4], [], TXN_TIMESTAMP, orig_records);
@@ -185,8 +193,7 @@ describe('Test deleteUtility', ()=>{
 
             let orig_records = [];
             records.forEach(rec=>{
-                let record = Object.assign(Object.create(null), rec);
-                record.__blob__ = record.age = record.name =record.city = null;
+                let record = Object.assign({}, rec);
                 record.__createdtime__ = record.__updatedtime__ = TIMESTAMP;
                 orig_records.push(record);
             });

@@ -25,6 +25,7 @@ const Papa = require('papaparse');
 const SQLSearch = require('../../data_layer/SQLSearch');
 const harperBridge = require('../../data_layer/harperBridge/harperBridge');
 const log = require('../../utility/logging/harper_logger');
+const hdb_utils = require('../../utility/common_utils');
 
 const {
     TEST_DATA_AGGR,
@@ -58,7 +59,7 @@ let _getColumns_spy;
 let _findColumn_spy;
 let _getTables_spy;
 let _conditionsToFetchAttributeValues_spy;
-let _backtickAllSchemaItems_spy;
+let backtickASTSchemaItems_spy;
 let _getFetchAttributeValues_spy;
 let _simpleSQLQuery_spy;
 let _getDataByValue_spy;
@@ -75,7 +76,6 @@ function setClassMethodSpies() {
     _findColumn_spy = sandbox.spy(SQLSearch.prototype, '_findColumn');
     _getTables_spy = sandbox.spy(SQLSearch.prototype, '_getTables');
     _conditionsToFetchAttributeValues_spy = sandbox.spy(SQLSearch.prototype, '_conditionsToFetchAttributeValues');
-    _backtickAllSchemaItems_spy = sandbox.spy(SQLSearch.prototype, '_backtickAllSchemaItems');
     _getFetchAttributeValues_spy = sandbox.spy(SQLSearch.prototype, '_getFetchAttributeValues');
     _simpleSQLQuery_spy = sandbox.spy(SQLSearch.prototype, '_simpleSQLQuery');
     _getDataByValue_spy = sandbox.spy(harperBridge, 'getDataByValue');
@@ -84,6 +84,7 @@ function setClassMethodSpies() {
     _getData_spy = sandbox.stub(SQLSearch.prototype, '_getData').callThrough();
     _finalSQL_spy = sandbox.spy(SQLSearch.prototype, '_finalSQL');
     _buildSQL_spy = sandbox.spy(SQLSearch.prototype, '_buildSQL');
+    backtickASTSchemaItems_spy = sandbox.spy(hdb_utils, 'backtickASTSchemaItems');
     error_logger_spy = sandbox.spy(log, 'error');
 }
 
@@ -156,7 +157,7 @@ describe('Test FileSystem Class',function() {
             expect(_getColumns_spy.calledOnce).to.equal(true);
             expect(_getTables_spy.calledOnce).to.equal(true);
             expect(_conditionsToFetchAttributeValues_spy.calledOnce).to.equal(true);
-            expect(_backtickAllSchemaItems_spy.calledOnce).to.equal(true);
+            expect(backtickASTSchemaItems_spy.calledOnce).to.equal(true);
         });
 
         it('should throw an exception if no statement argument is provided',function() {
@@ -999,7 +1000,7 @@ describe('Test FileSystem Class',function() {
             setupTestInstance(test_sql_statement);
             test_instance.statement = test_AST_statememt;
 
-            test_instance._backtickAllSchemaItems();
+            hdb_utils.backtickASTSchemaItems(test_instance.statement);
 
             const test_statement_keys = Object.keys(test_AST_statememt);
             test_statement_keys.forEach(key => {

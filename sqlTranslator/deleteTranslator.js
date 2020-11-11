@@ -26,10 +26,11 @@ function generateReturnMessage(delete_results_object) {
 
 async function convertDelete({statement, hdb_user}){
     //convert this update statement to a search capable statement
-    //use javascript destructuring to assign variables into from & where
-    let {table: from, where} = statement;
-
     let table_info = await p_get_table_schema(statement.table.databaseid, statement.table.tableid);
+
+    //convert this delete statement to a SQL search capable statement
+    hdb_utils.backtickASTSchemaItems(statement);
+    let {table: from, where} = statement;
 
     let where_string = hdb_utils.isEmpty(where) ? '' : ` WHERE  ${where.toString()}`;
     let select_string = `SELECT ${table_info.hash_attribute} FROM ${from.toString()} ${where_string}`;
@@ -37,8 +38,8 @@ async function convertDelete({statement, hdb_user}){
 
     let delete_obj = {
         operation: terms.OPERATIONS_ENUM.DELETE,
-        schema: from.databaseid,
-        table: from.tableid,
+        schema: from.databaseid_orig,
+        table: from.tableid_orig,
         hdb_user: hdb_user
     };
 

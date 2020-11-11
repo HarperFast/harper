@@ -12,7 +12,7 @@ bytenode --compile events/*.js
 bytenode --compile lib/**/*.js
 
 bytenode --compile security/*.js
-bytenode --compile security/data_model/*.js
+bytenode --compile security/data_objects/*.js
 
 bytenode --compile server/*.js
 bytenode --compile server/**/*.js
@@ -35,6 +35,7 @@ bytenode --compile utility/logging/*.js
 bytenode --compile utility/registration/*.js
 bytenode --compile utility/userInterface/*.js
 bytenode --compile utility/errors/*.js
+bytenode --compile utility/AWS/*.js
 
 bytenode --compile validation/*.js
 bytenode --compile validation/**/*.js
@@ -48,7 +49,7 @@ unlink ./upgrade/scripts/postInstall_jsc.jsc
 
 
 echo "******** Compile Complete *************"
-rsync --include="*.jsc" --include="harperdb.js" --include="processCSV.worker.js" --exclude="*.js" --exclude=".*" --recursive ./ /tmp/harperdb_dev/
+rsync --include="*.jsc" --include="harperdb.js" --include="hdb.js" --include="processCSV.worker.js" --exclude="*.js" --exclude=".*" --recursive ./ /tmp/harperdb_dev/
 echo "*********** RSYNC COMPLETE *************"
 cd /tmp/harperdb_dev/
 rm -rf ./utility/devops ./test ./unitTests ./integrationTests ./bash ./upgrade_shim ./utility/Docker ./user_guide.html ./sonar-project.properties

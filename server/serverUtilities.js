@@ -25,6 +25,7 @@ const system_information = require('../utility/environment/systemInformation');
 const transact_to_clustering_utils = require('./transactToClusteringUtilities');
 const job_runner = require('./jobRunner');
 const signal = require('../utility/signalling');
+const token_authentication = require('../security/tokenAuthentication');
 
 const operation_function_caller = require(`../utility/OperationFunctionCaller`);
 
@@ -181,7 +182,8 @@ function chooseOperation(json, callback) {
                 harper_logger.error(`${UNAUTH_RESPONSE} from operation ${json.search_operation}`);
                 return callback(ast_perm_check, null);
             }
-        } else {
+        //we need to bypass permission checks to allow the create_authorization_tokens
+        } else if(json.operation !== terms.OPERATIONS_ENUM.CREATE_AUTHENTICATION_TOKENS){
             let function_to_check = (job_operation_function === undefined ? operation_function : job_operation_function);
             let operation_json = ((json.search_operation) ? json.search_operation : json);
             if (!operation_json.hdb_user) {
@@ -233,6 +235,9 @@ async function catchup(req) {
                     break;
                 case terms.OPERATIONS_ENUM.UPDATE:
                     result = await insert.update(transaction);
+                    break;
+                case terms.OPERATIONS_ENUM.UPSERT:
+                    result = await insert.upsert(transaction);
                     break;
                 case terms.OPERATIONS_ENUM.DELETE:
                     result = await delete_.delete(transaction);
@@ -289,6 +294,7 @@ function initializeOperationFunctionMap(){
 
     op_func_map.set(terms.OPERATIONS_ENUM.INSERT, new OperationFunctionObject(insert.insert));
     op_func_map.set(terms.OPERATIONS_ENUM.UPDATE, new OperationFunctionObject(insert.update));
+    op_func_map.set(terms.OPERATIONS_ENUM.UPSERT, new OperationFunctionObject(insert.upsert));
     op_func_map.set(terms.OPERATIONS_ENUM.SEARCH_BY_HASH, new OperationFunctionObject(p_search_search_by_hash));
     op_func_map.set(terms.OPERATIONS_ENUM.SEARCH_BY_VALUE, new OperationFunctionObject(p_search_search_by_value));
     op_func_map.set(terms.OPERATIONS_ENUM.SEARCH, new OperationFunctionObject(p_search_search));
@@ -335,6 +341,8 @@ function initializeOperationFunctionMap(){
     op_func_map.set(terms.OPERATIONS_ENUM.SYSTEM_INFORMATION, new OperationFunctionObject(system_information.systemInformation));
     op_func_map.set(terms.OPERATIONS_ENUM.DELETE_TRANSACTION_LOGS_BEFORE, new OperationFunctionObject(signalJob, delete_.deleteTransactionLogsBefore));
     op_func_map.set(terms.OPERATIONS_ENUM.READ_TRANSACTION_LOG, new OperationFunctionObject(read_transaction_log));
+    op_func_map.set(terms.OPERATIONS_ENUM.CREATE_AUTHENTICATION_TOKENS, new OperationFunctionObject(token_authentication.createTokens));
+    op_func_map.set(terms.OPERATIONS_ENUM.REFRESH_OPERATION_TOKEN, new OperationFunctionObject(token_authentication.refreshOperationToken));
 
     return op_func_map;
 }
