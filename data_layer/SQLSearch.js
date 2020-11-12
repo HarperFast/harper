@@ -155,7 +155,7 @@ class SQLSearch {
 
         this.tables = _.uniqBy(tbls, tbl => [tbl.databaseid, tbl.tableid, tbl.as].join());
         this.tables.forEach(table => {
-            const schema_table = `${table.databaseid}_${table.tableid}`;
+            const schema_table = `${table.databaseid}_${table.as ? table.as : table.tableid}`;
             this.data[schema_table] = {};
             this.data[schema_table].__hash_name = global.hdb_schema[table.databaseid][table.tableid].hash_attribute;
             this.data[schema_table].__merged_data = {};
@@ -516,7 +516,7 @@ class SQLSearch {
         }
 
         // do we need this uniqueby, could just use object as map
-        this.fetch_attributes = _.uniqBy(this.fetch_attributes, attribute => [attribute.table.databaseid, attribute.table.tableid, attribute.attribute].join());
+        this.fetch_attributes = _.uniqBy(this.fetch_attributes, attribute => [attribute.table.databaseid, (attribute.table.as ? attribute.table.as : attribute.table.tableid), attribute.attribute].join());
 
         if (simple_select_query) {
             return await this._simpleSQLQuery();
@@ -524,7 +524,7 @@ class SQLSearch {
 
         // create a template for each table row to ensure each row has a null value for attrs not returned in the search
         const fetch_attr_row_templates = this.fetch_attributes.reduce((acc, attr) => {
-            const schema_table = `${attr.table.databaseid}_${attr.table.tableid}`;
+            const schema_table = `${attr.table.databaseid}_${attr.table.as ? attr.table.as : attr.table.tableid}`;
             const hash_name = this.data[schema_table].__hash_name;
 
             if (!acc[schema_table]) {
@@ -542,7 +542,7 @@ class SQLSearch {
         }, {});
 
         for (const attribute of this.fetch_attributes) {
-            const schema_table = `${attribute.table.databaseid}_${attribute.table.tableid}`;
+            const schema_table = `${attribute.table.databaseid}_${attribute.table.as ? attribute.table.as : attribute.table.tableid}`;
             let hash_name = this.data[schema_table].__hash_name;
 
             let search_object = {
@@ -793,7 +793,7 @@ class SQLSearch {
             '? ' + (from_statement.as ? ' AS ' + from_statement.as : from_statement.tableid)
         ];
 
-        table_data.push(Object.values(this.data[`${from_statement.databaseid_orig}_${from_statement.tableid_orig}`].__merged_data));
+        table_data.push(Object.values(this.data[`${from_statement.databaseid_orig}_${from_statement.as ? from_statement.as_orig : from_statement.tableid_orig}`].__merged_data));
 
         if (this.statement.joins) {
             this.statement.joins.forEach(join => {
@@ -808,7 +808,7 @@ class SQLSearch {
                 }
                 from_clause.push(from);
 
-                table_data.push(Object.values(this.data[`${join.table.databaseid_orig}_${join.table.tableid_orig}`].__merged_data));
+                table_data.push(Object.values(this.data[`${join.table.databaseid_orig}_${join.table.as ? join.table.as_orig : join.table.tableid_orig}`].__merged_data));
             });
         }
 
@@ -816,16 +816,17 @@ class SQLSearch {
         let hash_attributes = [];
         let existing_attributes = {};
         tables.forEach(table => {
-            let hash = this.data[`${table.databaseid_orig}_${table.tableid_orig}`].__hash_name;
+            let hash = this.data[`${table.databaseid_orig}_${table.as ? table.as_orig : table.tableid_orig}`].__hash_name;
+            const table_key = table.as ? table.as_orig : table.tableid_orig;
             hash_attributes.push({
-                key:`'${table.tableid_orig}.${hash}'`,
+                key:`'${table_key}.${hash}'`,
                 schema:table.databaseid_orig,
-                table:table.tableid_orig,
+                table: table.as ? table.as_orig : table.tableid_orig,
                 keys: new Set()
             });
-            select.push(`${(table.as ? table.as : table.tableid)}.\`${hash}\` AS "${table.tableid_orig}.${hash}"`);
+            select.push(`${(table.as ? table.as : table.tableid)}.\`${hash}\` AS "${table_key}.${hash}"`);
 
-            existing_attributes[table.tableid_orig] = this.data[`${table.databaseid_orig}_${table.tableid_orig}`].__merged_attributes;
+            existing_attributes[table.as ? table.as_orig : table.tableid_orig] = this.data[`${table.databaseid_orig}_${table.as ? table.as_orig : table.tableid_orig}`].__merged_attributes;
         });
 
         //TODO there is an error with between statements being converted back to string.  need to handle
@@ -918,13 +919,16 @@ class SQLSearch {
         for (let {node} of iterator) {
             if (node && node.columnid) {
                 let found = this._findColumn(node);
-                if (found && (!existing_attributes[found.table.tableid] || existing_attributes[found.table.tableid].indexOf(found.attribute) < 0)) {
-                    all_columns.push(found);
+                if (found) {
+                    let table_key = found.table.as ? found.table.as : found.table.tableid;
+                    if (!existing_attributes[table_key] || existing_attributes[table_key].indexOf(found.attribute) < 0) {
+                        all_columns.push(found);
+                    }
                 }
             }
         }
 
-        all_columns = _.uniqBy(all_columns, attribute => [attribute.table.databaseid, attribute.table.tableid, attribute.attribute].join());
+        all_columns = _.uniqBy(all_columns, attribute => [attribute.table.databaseid, (attribute.table.as ? attribute.table.as : attribute.table.tableid), attribute.attribute].join());
 
         try {
             await this._getData(all_columns);
@@ -943,7 +947,7 @@ class SQLSearch {
     async _getData(all_columns) {
         try {
             const table_searches = all_columns.reduce((acc, column) => {
-                const table_key = `${column.table.databaseid}_${column.table.tableid}`;
+                const table_key = `${column.table.databaseid}_${column.table.as ? column.table.as : column.table.tableid}`;
                 if (!acc[table_key]) {
                     acc[table_key] = {
                         schema: column.table.databaseid,
@@ -959,6 +963,8 @@ class SQLSearch {
             for (const schema_table in table_searches) {
                 const table = table_searches[schema_table];
                 const merged_hash_keys = Object.keys(this.data[schema_table].__merged_data);
+                //we do not need to update the merged_attr_map values here b/c we will use the index value from
+                // __merged_attributes when do the final translation of the SQL statement
                 this.data[schema_table].__merged_attributes.push(...table.columns);
 
                 const search_object = {
@@ -998,7 +1004,7 @@ class SQLSearch {
         //TODO need to loop from here to ensure cross joins are covered - i.e. 'from tablea a, tableb b, tablec c' -
         // this is not high priority but is covered in CORE-894
         let from_statement = this.statement.from[0];
-        table_data.push(Object.values(this.data[`${from_statement.databaseid_orig}_${from_statement.tableid_orig}`].__merged_data));
+        table_data.push(Object.values(this.data[`${from_statement.databaseid_orig}_${from_statement.as ? from_statement.as_orig : from_statement.tableid_orig}`].__merged_data));
         from_statement.as = (from_statement.as ? from_statement.as : from_statement.tableid);
         from_statement.databaseid = '';
         from_statement.tableid = '?';
@@ -1007,7 +1013,7 @@ class SQLSearch {
             this.statement.joins.forEach(join => {
                 join.as = join.as ? join.as : join.table.tableid;
 
-                table_data.push(Object.values(this.data[`${join.table.databaseid_orig}_${join.table.tableid_orig}`].__merged_data));
+                table_data.push(Object.values(this.data[`${join.table.databaseid_orig}_${join.table.as ? join.table.as_orig : join.table.tableid_orig}`].__merged_data));
                 join.table.databaseid = '';
                 join.table.tableid = '?';
             });
@@ -1118,9 +1124,9 @@ class SQLSearch {
         const tables_map = {};
         tables.forEach(table => {
             if (table.databaseid_orig) {
-                tables_map[`${table.databaseid_orig}_${table.tableid_orig}`] = table.as ? table.as : table.tableid;
+                tables_map[`${table.databaseid_orig}_${table.as ? table.as_orig : table.tableid_orig}`] = table.as ? table.as : table.tableid;
             } else {
-                tables_map[`${table.databaseid}_${table.tableid}`] = `\`${table.as ? table.as : table.tableid}\``;
+                tables_map[`${table.databaseid}_${table.as ? table.as : table.tableid}`] = `\`${table.as ? table.as : table.tableid}\``;
             }
         });
         for (const schema_table in this.data) {
@@ -1160,7 +1166,7 @@ class SQLSearch {
             }, {});
 
         const fetch_attributes_objs = this.fetch_attributes.reduce((acc, attr) => {
-            const schema_table = `${attr.table.databaseid}_${attr.table.tableid}`;
+            const schema_table = `${attr.table.databaseid}_${attr.table.as ? attr.table.as : attr.table.tableid}`;
             if (!acc[schema_table]) {
                 acc[schema_table] = {};
             }
@@ -1169,7 +1175,7 @@ class SQLSearch {
         }, {});
 
         for (const attribute of this.fetch_attributes) {
-            const schema_table = `${attribute.table.databaseid}_${attribute.table.tableid}`;
+            const schema_table = `${attribute.table.databaseid}_${attribute.table.as ? attribute.table.as : attribute.table.tableid}`;
 
             let search_object = {
                 schema: attribute.table.databaseid,
