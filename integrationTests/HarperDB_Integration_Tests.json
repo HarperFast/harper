@@ -5579,7 +5579,7 @@
 								],
 								"body": {
 									"mode": "raw",
-									"raw": "{\n    \"operation\":\"insert\",\n    \"schema\" :  \"dev\",\n    \"table\":\"owner\",\n\t\"records\": [\n    {\n        \"id\": 1,\n        \"name\": \"Sam\"\n    },\n    {\n        \"id\": 2,\n        \"name\": \"Kyle\"\n    },\n    {\n        \"id\": 3,\n        \"name\": \"David\"\n    },\n    {\n        \"id\": 4,\n        \"name\": \"Kaylan\"\n    }\n]\n}",
+									"raw": "{\n    \"operation\":\"insert\",\n    \"schema\" :  \"dev\",\n    \"table\":\"owner\",\n\t\"records\": [\n    {\n        \"id\": 1,\n        \"name\": \"Sam\",\n        \"best_friend\": \"Charlie\"\n    },\n    {\n        \"id\": 2,\n        \"name\": \"Kyle\",\n        \"best_friend\": \"Stephen\"\n    },\n    {\n        \"id\": 3,\n        \"name\": \"David\",\n        \"best_friend\": \"Sam\"\n    },\n    {\n        \"id\": 4,\n        \"name\": \"Kaylan\",\n        \"best_friend\": \"Stephen\"\n    }\n]\n}",
 									"options": {
 										"raw": {
 											"language": "json"
@@ -9808,6 +9808,478 @@
 									""
 								]
 							}
+						}
+					],
+					"protocolProfileBehavior": {},
+					"_postman_isSubFolder": true
+				},
+				{
+					"name": "Restricted Keywords",
+					"item": [
+						{
+							"name": "Create table keywords for SQL tests",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"tests[\"Create Table\"] = responseBody.has(\"successfully created.\");"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "saveHelperData",
+											"value": true,
+											"type": "boolean"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n    \"operation\": \"create_table\",\n    \"schema\": \"dev\",\n    \"table\": \"keywords\",\n    \"hash_attribute\": \"id\"\n}",
+									"options": {
+										"raw": {}
+									}
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "Upsert keywords data for SQL tests",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"Verify data was upserted\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData.upserted_hashes).to.have.length(10);",
+											"});",
+											""
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"exec": [
+											"setTimeout(() => {}, 500);"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n    \"operation\": \"upsert\",\n    \"schema\": \"dev\",\n    \"table\": \"keywords\",\n    \"records\": [\n        {\n            \"ALL\": \"yes\",\n            \"Inserted\": true,\n            \"__createdtime__\": 1605111134623,\n            \"__updatedtime__\": 1605111134623,\n            \"group\": \"A\",\n            \"id\": 1\n        },\n        {\n            \"ALL\": \"no\",\n            \"Inserted\": false,\n            \"__createdtime__\": 1605111134624,\n            \"__updatedtime__\": 1605111134624,\n            \"group\": \"B\",\n            \"id\": 2\n        },\n        {\n            \"ALL\": \"yes\",\n            \"Inserted\": true,\n            \"__createdtime__\": 1605111134624,\n            \"__updatedtime__\": 1605111134624,\n            \"group\": \"C\",\n            \"id\": 3\n        },\n        {\n            \"ALL\": \"no\",\n            \"Inserted\": false,\n            \"__createdtime__\": 1605111134624,\n            \"__updatedtime__\": 1605111134624,\n            \"group\": \"A\",\n            \"id\": 4\n        },\n        {\n            \"ALL\": \"yes\",\n            \"Inserted\": true,\n            \"__createdtime__\": 1605111134624,\n            \"__updatedtime__\": 1605111134624,\n            \"group\": \"B\",\n            \"id\": 5\n        },\n        {\n            \"ALL\": \"no\",\n            \"Inserted\": false,\n            \"__createdtime__\": 1605111134624,\n            \"__updatedtime__\": 1605111134624,\n            \"group\": \"C\",\n            \"id\": 6\n        },\n        {\n            \"ALL\": \"yes\",\n            \"Inserted\": true,\n            \"__createdtime__\": 1605111134624,\n            \"__updatedtime__\": 1605111134624,\n            \"group\": \"A\",\n            \"id\": 7\n        },\n        {\n            \"ALL\": \"no\",\n            \"Inserted\": false,\n            \"__createdtime__\": 1605111134624,\n            \"__updatedtime__\": 1605111134624,\n            \"group\": \"B\",\n            \"id\": 8\n        },\n        {\n            \"ALL\": \"yes\",\n            \"Inserted\": true,\n            \"__createdtime__\": 1605111134624,\n            \"__updatedtime__\": 1605111134624,\n            \"group\": \"C\",\n            \"id\": 9\n        },\n        {\n            \"ALL\": \"no\",\n            \"Inserted\": false,\n            \"__createdtime__\": 1605111134624,\n            \"__updatedtime__\": 1605111134624,\n            \"group\": \"D\",\n            \"id\": 10\n        }\n    ]\n}",
+									"options": {
+										"raw": {}
+									}
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								},
+								"description": "update a table with csv data uplaod"
+							},
+							"response": []
+						},
+						{
+							"name": "Delete row from table with reserverd word in WHERE clause",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"SQL delete successful reponse\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData.message).to.eql(\"1 of 1 record successfully deleted\");",
+											"    pm.expect(jsonData.deleted_hashes[0]).to.eql(10);",
+											"    pm.expect(jsonData.deleted_hashes).to.have.length(1);",
+											"    pm.expect(jsonData.skipped_hashes).to.have.length(0);",
+											"});",
+											""
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"exec": [
+											"setTimeout(() => {}, 500);"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "saveHelperData",
+											"value": true,
+											"type": "boolean"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"operation\":\"sql\",\n  \"sql\": \"DELETE FROM dev.keywords WHERE `group` = 'D'\"\n}\n",
+									"options": {
+										"raw": {}
+									}
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "Delete row from table with multiple reserverd words in WHERE clause",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"SQL delete successful reponse\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData.message).to.eql(\"2 of 2 records successfully deleted\");",
+											"    pm.expect(jsonData.deleted_hashes[0]).to.eql(1);",
+											"    pm.expect(jsonData.deleted_hashes[1]).to.eql(7);",
+											"    pm.expect(jsonData.deleted_hashes).to.have.length(2);",
+											"    pm.expect(jsonData.skipped_hashes).to.have.length(0);",
+											"});",
+											""
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"exec": [
+											""
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "saveHelperData",
+											"value": true,
+											"type": "boolean"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"operation\":\"sql\",\n  \"sql\": \"DELETE FROM dev.keywords WHERE `group` = 'A' AND [Inserted] = true\"\n}\n",
+									"options": {
+										"raw": {}
+									}
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								},
+								"description": "Using SQL, delete a value and confirm success response"
+							},
+							"response": []
+						},
+						{
+							"name": "UPDATE rows from table with reserved word in SET and WHERE clause",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"SQL update successful reponse\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData.message).to.eql(\"updated 4 of 4 records\");",
+											"    pm.expect(jsonData.update_hashes).to.have.length(4);",
+											"    pm.expect(jsonData.skipped_hashes).to.have.length(0);",
+											"});",
+											""
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"exec": [
+											""
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "saveHelperData",
+											"value": true,
+											"type": "boolean"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"operation\":\"sql\",\n  \"sql\": \"UPDATE dev.keywords SET `group` = 'D' WHERE [ALL] = 'no'\"\n}\n",
+									"options": {
+										"raw": {}
+									}
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								},
+								"description": "Using SQL, delete a value and confirm success response"
+							},
+							"response": []
+						},
+						{
+							"name": "Drop table keywords",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"tests[\"Create Table\"] = responseBody.has(\"successfully deleted table 'dev.keywords'\");"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "saveHelperData",
+											"value": true,
+											"type": "boolean"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n    \"operation\": \"drop_table\",\n    \"schema\": \"dev\",\n    \"table\": \"keywords\"\n}",
+									"options": {
+										"raw": {}
+									}
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
 						}
 					],
 					"protocolProfileBehavior": {},
@@ -16243,6 +16715,148 @@
 						"body": {
 							"mode": "raw",
 							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"SELECT * FROM dev.leading_zero\"\n}",
+							"options": {
+								"raw": {}
+							}
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Select - basic self JOIN",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"var jsonData = pm.response.json();",
+									"",
+									"pm.test(\"test 1 records returned\", function () {",
+									"    pm.expect(jsonData.length).to.eql(1);",
+									"});",
+									"",
+									"pm.test(\"test for correct id\", function () {",
+									"    pm.expect(jsonData[0].id).to.eql(1);",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"value": true,
+									"type": "boolean"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"operation\": \"sql\",\n    \"sql\": \"SELECT a.* FROM dev.owner as a INNER JOIN dev.owner as b ON a.name = b.best_friend\"\n}",
+							"options": {
+								"raw": {}
+							}
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Select - basic self JOIN - reverse scenario",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"var jsonData = pm.response.json();",
+									"",
+									"pm.test(\"test 1 records returned\", function () {",
+									"    pm.expect(jsonData.length).to.eql(1);",
+									"});",
+									"",
+									"pm.test(\"test for correct id\", function () {",
+									"    pm.expect(jsonData[0].id).to.eql(3);",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"value": true,
+									"type": "boolean"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"operation\": \"sql\",\n    \"sql\": \"SELECT b.* FROM dev.owner as a INNER JOIN dev.owner as b ON a.name = b.best_friend\"\n}",
 							"options": {
 								"raw": {}
 							}
@@ -54138,11 +54752,11 @@
 		},
 		{
 			"key": "operation_token",
-			"value": "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VybmFtZSI6eyJfX2NyZWF0ZWR0aW1lX18iOjE2MDQ1MTkyNDIwOTQsIl9fdXBkYXRlZHRpbWVfXyI6MTYwNDUxOTI0MjA5NCwiYWN0aXZlIjp0cnVlLCJhdXRoX3Rva2VuIjpudWxsLCJyb2xlIjp7Il9fY3JlYXRlZHRpbWVfXyI6MTYwNDUxOTI0MjA5MCwiX191cGRhdGVkdGltZV9fIjoxNjA0NTE5MjQyMDkwLCJpZCI6IjkwOTdlYjc2LWYyNGMtNDJhZS05OWE3LWNhODBlY2ExMzFkZCIsInBlcm1pc3Npb24iOnsic3VwZXJfdXNlciI6dHJ1ZSwic3lzdGVtIjp7InRhYmxlcyI6eyJoZGJfdGFibGUiOnsicmVhZCI6dHJ1ZSwiaW5zZXJ0IjpmYWxzZSwidXBkYXRlIjpmYWxzZSwiZGVsZXRlIjpmYWxzZSwiYXR0cmlidXRlX3Blcm1pc3Npb25zIjpbXX0sImhkYl9hdHRyaWJ1dGUiOnsicmVhZCI6dHJ1ZSwiaW5zZXJ0IjpmYWxzZSwidXBkYXRlIjpmYWxzZSwiZGVsZXRlIjpmYWxzZSwiYXR0cmlidXRlX3Blcm1pc3Npb25zIjpbXX0sImhkYl9zY2hlbWEiOnsicmVhZCI6dHJ1ZSwiaW5zZXJ0IjpmYWxzZSwidXBkYXRlIjpmYWxzZSwiZGVsZXRlIjpmYWxzZSwiYXR0cmlidXRlX3Blcm1pc3Npb25zIjpbXX0sImhkYl91c2VyIjp7InJlYWQiOnRydWUsImluc2VydCI6ZmFsc2UsInVwZGF0ZSI6ZmFsc2UsImRlbGV0ZSI6ZmFsc2UsImF0dHJpYnV0ZV9wZXJtaXNzaW9ucyI6W119LCJoZGJfcm9sZSI6eyJyZWFkIjp0cnVlLCJpbnNlcnQiOmZhbHNlLCJ1cGRhdGUiOmZhbHNlLCJkZWxldGUiOmZhbHNlLCJhdHRyaWJ1dGVfcGVybWlzc2lvbnMiOltdfSwiaGRiX2pvYiI6eyJyZWFkIjp0cnVlLCJpbnNlcnQiOmZhbHNlLCJ1cGRhdGUiOmZhbHNlLCJkZWxldGUiOmZhbHNlLCJhdHRyaWJ1dGVfcGVybWlzc2lvbnMiOltdfSwiaGRiX2xpY2Vuc2UiOnsicmVhZCI6dHJ1ZSwiaW5zZXJ0IjpmYWxzZSwidXBkYXRlIjpmYWxzZSwiZGVsZXRlIjpmYWxzZSwiYXR0cmlidXRlX3Blcm1pc3Npb25zIjpbXX0sImhkYl9pbmZvIjp7InJlYWQiOnRydWUsImluc2VydCI6ZmFsc2UsInVwZGF0ZSI6ZmFsc2UsImRlbGV0ZSI6ZmFsc2UsImF0dHJpYnV0ZV9wZXJtaXNzaW9ucyI6W119LCJoZGJfbm9kZXMiOnsicmVhZCI6dHJ1ZSwiaW5zZXJ0IjpmYWxzZSwidXBkYXRlIjpmYWxzZSwiZGVsZXRlIjpmYWxzZSwiYXR0cmlidXRlX3Blcm1pc3Npb25zIjpbXX0sImhkYl90ZW1wIjp7InJlYWQiOnRydWUsImluc2VydCI6ZmFsc2UsInVwZGF0ZSI6ZmFsc2UsImRlbGV0ZSI6ZmFsc2UsImF0dHJpYnV0ZV9wZXJtaXNzaW9ucyI6W119fX19LCJyb2xlIjoic3VwZXJfdXNlciJ9LCJ1c2VybmFtZSI6ImFkbWluIn0sImlhdCI6MTYwNDUxOTQxOSwiZXhwIjoxNjA0NjA1ODE5LCJzdWIiOiJvcGVyYXRpb24ifQ.vNb3uesh73e14OpoTBaE7OA6szm_cELFCU_FRrTylhWxkm_tUfArb9rChiQIYUxLk_5X8oFRa1RYQGgwjDo0yVTINc2n_bc20H62QPy6jt4XkTzwyPUuNOrYES6ehdJwbp6F3zfMh-5ebb0XtHZeUwkc9faJhkov29RMuLhn_hAsmc3W-joN1SP7uSLoKtZf3nwyJAqqepqd9yJbvkmyP1U5tskwUzLppWHVapSERVx3chq3Av2qAMdoS-XC_kVSk17WCqZPlezeaRMyd2tTiRgeZoJc-oV-XnzmEugfVZlTsfOfh00gYL4F_yrqZzMb7ZobCT8F35JD7kEaTJc0dVXf08gqlvqUafvLTDadb57Q6kHh4j1u_vR_RaYs0Uqc2W5fEAYiZxdHCITEzq-e0BG5Mt8WZ6A06a977aN9Age1Z6oMkJq5Sr8fyqv27ZJpmkbMJANzKgAgTU2Yy_XsovNH3kRGzdL1WqFHOW2DO3qoQuIm3KWnKlsgKmqxVMQPbf_r1lb4KZABUuSL6gYW3OwUbGaPm9nyG027aquITuH1iX8m0FxDIRfGyz67UmDCNJb4RTghiLdavMVbTs39JGwMhi65h2Rg_Sm_Dh6esakYbXr3g_36y36ghsKnr84scM96dYjERXXg631Xn08UjirPB2Wenu3gB8FHAblgvuM"
+			"value": "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VybmFtZSI6eyJfX2NyZWF0ZWR0aW1lX18iOjE2MDUxMTI1OTMxMTEsIl9fdXBkYXRlZHRpbWVfXyI6MTYwNTExMjU5MzExMSwiYWN0aXZlIjp0cnVlLCJhdXRoX3Rva2VuIjpudWxsLCJyb2xlIjp7Il9fY3JlYXRlZHRpbWVfXyI6MTYwNTExMjU5MzEwOCwiX191cGRhdGVkdGltZV9fIjoxNjA1MTEyNTkzMTA4LCJpZCI6ImZkNDc1MGEwLTY5M2YtNGQzYi1hNGFjLTU1Y2JhZjBkMWFiNiIsInBlcm1pc3Npb24iOnsic3VwZXJfdXNlciI6dHJ1ZSwic3lzdGVtIjp7InRhYmxlcyI6eyJoZGJfdGFibGUiOnsicmVhZCI6dHJ1ZSwiaW5zZXJ0IjpmYWxzZSwidXBkYXRlIjpmYWxzZSwiZGVsZXRlIjpmYWxzZSwiYXR0cmlidXRlX3Blcm1pc3Npb25zIjpbXX0sImhkYl9hdHRyaWJ1dGUiOnsicmVhZCI6dHJ1ZSwiaW5zZXJ0IjpmYWxzZSwidXBkYXRlIjpmYWxzZSwiZGVsZXRlIjpmYWxzZSwiYXR0cmlidXRlX3Blcm1pc3Npb25zIjpbXX0sImhkYl9zY2hlbWEiOnsicmVhZCI6dHJ1ZSwiaW5zZXJ0IjpmYWxzZSwidXBkYXRlIjpmYWxzZSwiZGVsZXRlIjpmYWxzZSwiYXR0cmlidXRlX3Blcm1pc3Npb25zIjpbXX0sImhkYl91c2VyIjp7InJlYWQiOnRydWUsImluc2VydCI6ZmFsc2UsInVwZGF0ZSI6ZmFsc2UsImRlbGV0ZSI6ZmFsc2UsImF0dHJpYnV0ZV9wZXJtaXNzaW9ucyI6W119LCJoZGJfcm9sZSI6eyJyZWFkIjp0cnVlLCJpbnNlcnQiOmZhbHNlLCJ1cGRhdGUiOmZhbHNlLCJkZWxldGUiOmZhbHNlLCJhdHRyaWJ1dGVfcGVybWlzc2lvbnMiOltdfSwiaGRiX2pvYiI6eyJyZWFkIjp0cnVlLCJpbnNlcnQiOmZhbHNlLCJ1cGRhdGUiOmZhbHNlLCJkZWxldGUiOmZhbHNlLCJhdHRyaWJ1dGVfcGVybWlzc2lvbnMiOltdfSwiaGRiX2xpY2Vuc2UiOnsicmVhZCI6dHJ1ZSwiaW5zZXJ0IjpmYWxzZSwidXBkYXRlIjpmYWxzZSwiZGVsZXRlIjpmYWxzZSwiYXR0cmlidXRlX3Blcm1pc3Npb25zIjpbXX0sImhkYl9pbmZvIjp7InJlYWQiOnRydWUsImluc2VydCI6ZmFsc2UsInVwZGF0ZSI6ZmFsc2UsImRlbGV0ZSI6ZmFsc2UsImF0dHJpYnV0ZV9wZXJtaXNzaW9ucyI6W119LCJoZGJfbm9kZXMiOnsicmVhZCI6dHJ1ZSwiaW5zZXJ0IjpmYWxzZSwidXBkYXRlIjpmYWxzZSwiZGVsZXRlIjpmYWxzZSwiYXR0cmlidXRlX3Blcm1pc3Npb25zIjpbXX0sImhkYl90ZW1wIjp7InJlYWQiOnRydWUsImluc2VydCI6ZmFsc2UsInVwZGF0ZSI6ZmFsc2UsImRlbGV0ZSI6ZmFsc2UsImF0dHJpYnV0ZV9wZXJtaXNzaW9ucyI6W119fX19LCJyb2xlIjoic3VwZXJfdXNlciJ9LCJ1c2VybmFtZSI6ImFkbWluIn0sImlhdCI6MTYwNTExMzU1NiwiZXhwIjoxNjA1MTk5OTU2LCJzdWIiOiJvcGVyYXRpb24ifQ.DcBS4dIRh3ZOJN_OotXRy5RoZZqihYa2HBgyHsMOxh_A4rUhxAfqTdE0rBzeZVNRESLiBy567BwiRXI1eXmjEwRAH4TdKHkglsV96Zo7v6DTIh_IRfcrZvxgc8bVoKMezfwOqcoF0tdQNzHVqB2G8UZJ-ZQmwXn4QqJOYXgbc18mA5wHS9xhNoOLszAnoe9f8DKcHCeLG1XhB0piOtnAu8PVRF2XxEbDdl2DUKkIkFAYP8qLtNati2mpfo4aJrprsM4eC3qRKi4ZCcEeTbIbGt8vJ6m6pLyV2p2uwPhauo-9UC-3yd-2Clcb9N2MbGLU0ZTVpDfyIvXQsgQxOAoVfKiGMjW49wR4ztMNALx_qqnbUuP1O58zVxmPurLngJqaqjaFBm0eCEk61fsEpVKBP8TdTV86zdp1s2P34bTQ4mqdCZ7Arrs6zChybsrsLUsOMJ0pdy1jf3wB7X_0WC6SA2Jobpd6NzFw-XiWf-mqxyk7Yh0QEEAtttc9zC4S8Jd4mYZHia96SnfU2CNAe9A6vP6cUHZCur4-AtwjZhUvRylSyJbQi59tLZmRXRZh0CHVfql7wV4IFOKuInVv_BbgPUVhJlJjbdeidepWU2zDmlbofq5AZ8ud5kxWQN9x3j2DYR0hoRO5Sf7ePrvL9d0KXXrxRWF7OaH051piqvDSo9o"
 		},
 		{
 			"key": "refresh_token",
-			"value": "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VybmFtZSI6ImFkbWluIiwiaWF0IjoxNjA0NTE5NDE5LCJleHAiOjE2MDcxMTE0MTksInN1YiI6InJlZnJlc2gifQ.lL9JEKPKXYL9k9-aL-4pXMKBWzLB7YeRQeNgPi8377chSEG_ldMUb0AVnlYZnYgrTna0UpRTK63-yeBvRxsETXWP5x6dMJ2fPugKu7RJ7dT3JGYhmT23AoEo7WcYperuQzzEuHfeGGXCUQFCDeTN2gvttu9dhQX8MSHIyXhf7pGQJVuDReXY36EpxOd6iYOiblk7NW9Kz6xlurTnPiZN5mWsNhIv0gC9NKEVDSurL0d9azHJcmMVzWImOuTLsEejrPTn_mN701wiWQYgOuyG7NCIjgE7DbbenoRBexSmJfZV_-RfSKN-goJG2jLPKZyrrJ6XJE_G2fSKQ-yLkmkhtoeQH6vThWVy6Ni-HvoEak7oTGDfn6OeMhW4ZuQqCYP3q1bshhJToSm64s8o9dTdPr9KRkoEdwYa2C8ckkNPwnzEFHhAimZXvrLbfrgSXTwCQWGUWqGJ8SFhijX0AeCmVP96k0OI1WSedRpxvfp1bA5MOHCNZXW92cVnarDFEmVkAfq5xNQCD2RLE8GsakaFqIEmStJlo_hJh44p1YxGnIBNQV8oN0_X3Xnh0I5IxJvMB9I_Sa0Kq9qdHWPDuZSCBjd_9znd0A_uCjlc1Xcd6M64LJ_VnjYXIPWy-nrFb9NCM25W8WcpWIYFlfgwOvEDHWW7NUZGq970kiV7tU8xX8k"
+			"value": "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VybmFtZSI6ImFkbWluIiwiaWF0IjoxNjA1MTEzNTU2LCJleHAiOjE2MDc3MDU1NTYsInN1YiI6InJlZnJlc2gifQ.YQFOPzr6ly50KElnj8QLOt67yAP6XMPc6FWi_2aTJtWvPzkpALxLYCv4GTwyjJewyP6EkNxRUNX4jdDN3hQp_TiS82VTEjIehtRUnrlCBPH2YWfHyckyy19KzV38ND2TDepSfJw7Ws7ZG2SKzy3agZ54XCLDDPMRxejoJy8RVN00ABmHz6SWs65NczBuD5T0S6yQYaG0a1bXXXggNrx6osFQkd3PtVIBkV4afjKLDsL5JiFw6djWXdARgd3giintKX9ZBrZymmQ-DFIAiVQQIgSNgmeZEipOxtjhjuMmcPirGBlXf2PAlzfbXKHxdbXqkIh9GFgt2Ct7WWqBtIZgN_QyMx5-2VwPzRuP3WYd8YqD7mBj_9dxWTbVup8fNcLrxkZbHqWrGze2vUq3iRwfmUMMzX686GlfF0PoqNhcu9QrW6pRizLWs2BBUWZTyiUVhyfx6JqwLKXlBl-Q_TpQONekkq4V6oriZp3f7RSEevGF197clzaMtyVb9ZjVeNoAKCFTlow5_tDQLlIk4OUxzGfZQNUTgeggQmsQLvIEOU3ymhDVWya0sdl5cQaep2u3XKEW2fpTdZbrg_wYaXl4CofOJlCs0wZxchuB-ZnVswcOU6G4ErIQNvvpuf6pIYvNxQWK6QpsX-iIR4WyqIjpwAc5ZaYyYeKzNLOP_C26THI"
 		}
 	],
 	"protocolProfileBehavior": {}

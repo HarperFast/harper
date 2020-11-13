@@ -25,6 +25,7 @@ const Papa = require('papaparse');
 const SQLSearch = require('../../data_layer/SQLSearch');
 const harperBridge = require('../../data_layer/harperBridge/harperBridge');
 const log = require('../../utility/logging/harper_logger');
+const hdb_utils = require('../../utility/common_utils');
 
 const {
     TEST_DATA_AGGR,
@@ -39,9 +40,9 @@ const HASH_ATTRIBUTE = 'id';
 const TEST_TABLE_CAT = 'cat';
 const TEST_TABLE_DOG = 'dog';
 const TEST_TABLE_LONGTEXT = 'longtext';
-const dog_schema_table_id = `${TEST_SCHEMA}_${TEST_TABLE_DOG}`;
-const cat_schema_table_id = `${TEST_SCHEMA}_${TEST_TABLE_CAT}`;
-const longtext_schema_table_id = `${TEST_SCHEMA}_${TEST_TABLE_LONGTEXT}`;
+const dog_schema_table_id = (as_val) => `${TEST_SCHEMA}_${as_val ? as_val : TEST_TABLE_DOG}`;
+const cat_schema_table_id = (as_val) => `${TEST_SCHEMA}_${as_val ? as_val : TEST_TABLE_CAT}`;
+const longtext_schema_table_id = (as_val) => `${TEST_SCHEMA}_${as_val ? as_val : TEST_TABLE_LONGTEXT}`;
 
 const sql_basic_dog_select = `SELECT * FROM ${TEST_SCHEMA}.${TEST_TABLE_DOG}`;
 const sql_basic_cat_select = `SELECT * FROM ${TEST_SCHEMA}.${TEST_TABLE_CAT}`;
@@ -58,7 +59,7 @@ let _getColumns_spy;
 let _findColumn_spy;
 let _getTables_spy;
 let _conditionsToFetchAttributeValues_spy;
-let _backtickAllSchemaItems_spy;
+let backtickASTSchemaItems_spy;
 let _getFetchAttributeValues_spy;
 let _simpleSQLQuery_spy;
 let _getDataByValue_spy;
@@ -75,7 +76,6 @@ function setClassMethodSpies() {
     _findColumn_spy = sandbox.spy(SQLSearch.prototype, '_findColumn');
     _getTables_spy = sandbox.spy(SQLSearch.prototype, '_getTables');
     _conditionsToFetchAttributeValues_spy = sandbox.spy(SQLSearch.prototype, '_conditionsToFetchAttributeValues');
-    _backtickAllSchemaItems_spy = sandbox.spy(SQLSearch.prototype, '_backtickAllSchemaItems');
     _getFetchAttributeValues_spy = sandbox.spy(SQLSearch.prototype, '_getFetchAttributeValues');
     _simpleSQLQuery_spy = sandbox.spy(SQLSearch.prototype, '_simpleSQLQuery');
     _getDataByValue_spy = sandbox.spy(harperBridge, 'getDataByValue');
@@ -84,6 +84,7 @@ function setClassMethodSpies() {
     _getData_spy = sandbox.stub(SQLSearch.prototype, '_getData').callThrough();
     _finalSQL_spy = sandbox.spy(SQLSearch.prototype, '_finalSQL');
     _buildSQL_spy = sandbox.spy(SQLSearch.prototype, '_buildSQL');
+    backtickASTSchemaItems_spy = sandbox.spy(hdb_utils, 'backtickASTSchemaItems');
     error_logger_spy = sandbox.spy(log, 'error');
 }
 
@@ -156,7 +157,7 @@ describe('Test FileSystem Class',function() {
             expect(_getColumns_spy.calledOnce).to.equal(true);
             expect(_getTables_spy.calledOnce).to.equal(true);
             expect(_conditionsToFetchAttributeValues_spy.calledOnce).to.equal(true);
-            expect(_backtickAllSchemaItems_spy.calledOnce).to.equal(true);
+            expect(backtickASTSchemaItems_spy.calledOnce).to.equal(true);
         });
 
         it('should throw an exception if no statement argument is provided',function() {
@@ -740,7 +741,7 @@ describe('Test FileSystem Class',function() {
             test_instance._getTables();
 
             const { data, tables } = test_instance;
-            checkTestInstanceData(data, dog_schema_table_id);
+            checkTestInstanceData(data, dog_schema_table_id());
             expect(tables[0].databaseid).to.equal(TEST_SCHEMA);
             expect(tables[0].tableid).to.equal(TEST_TABLE_DOG);
         });
@@ -754,8 +755,8 @@ describe('Test FileSystem Class',function() {
             test_instance._getTables();
 
             const { data, tables } = test_instance;
-            checkTestInstanceData(data, dog_schema_table_id);
-            checkTestInstanceData(data, cat_schema_table_id);
+            checkTestInstanceData(data, dog_schema_table_id("d"));
+            checkTestInstanceData(data, cat_schema_table_id("c"));
             expect(tables[0].databaseid).to.equal(TEST_SCHEMA);
             expect(tables[0].tableid).to.equal(TEST_TABLE_DOG);
             expect(tables[1].databaseid).to.equal(TEST_SCHEMA);
@@ -999,7 +1000,7 @@ describe('Test FileSystem Class',function() {
             setupTestInstance(test_sql_statement);
             test_instance.statement = test_AST_statememt;
 
-            test_instance._backtickAllSchemaItems();
+            hdb_utils.backtickASTSchemaItems(test_instance.statement);
 
             const test_statement_keys = Object.keys(test_AST_statememt);
             test_statement_keys.forEach(key => {
@@ -1155,7 +1156,7 @@ describe('Test FileSystem Class',function() {
 
             const test_result = await test_instance._getFetchAttributeValues();
 
-            expect(Object.values(test_instance.data[dog_schema_table_id].__merged_data)).to.deep.equal(expected_result);
+            expect(Object.values(test_instance.data[dog_schema_table_id()].__merged_data)).to.deep.equal(expected_result);
             expect(test_result).to.deep.equal(expected_result);
             expect(_getDataByValue_spy.callCount).to.equal(4);
             expect(_simpleSQLQuery_spy.calledOnce).to.equal(true);
@@ -1173,7 +1174,7 @@ describe('Test FileSystem Class',function() {
 
             await test_instance._getFetchAttributeValues();
 
-            const test_data_result = test_instance.data[dog_schema_table_id].__merged_data;
+            const test_data_result = test_instance.data[dog_schema_table_id()].__merged_data;
             expect(test_instance.fetch_attributes.length).to.equal(1);
             expect(Object.values(test_data_result).length).to.equal(expected_result.length);
             Object.keys(test_data_result).forEach(key => {
@@ -1198,7 +1199,7 @@ describe('Test FileSystem Class',function() {
             setupTestInstance(test_sql_where);
 
             await test_instance._getFetchAttributeValues();
-            const test_data_result = test_instance.data[dog_schema_table_id].__merged_data;
+            const test_data_result = test_instance.data[dog_schema_table_id()].__merged_data;
 
             expect(Object.values(test_data_result).length).to.equal(Object.values(expected_result).length);
             expect(test_data_result).to.deep.equal(expected_result);
@@ -1219,8 +1220,8 @@ describe('Test FileSystem Class',function() {
             setupTestInstance(test_sql_join);
 
             await test_instance._getFetchAttributeValues();
-            const test_data_result_dog = test_instance.data[dog_schema_table_id].__merged_data;
-            const test_data_result_cat = test_instance.data[cat_schema_table_id].__merged_data;
+            const test_data_result_dog = test_instance.data[dog_schema_table_id('d')].__merged_data;
+            const test_data_result_cat = test_instance.data[cat_schema_table_id('c')].__merged_data;
 
             expect(test_instance.fetch_attributes.length).to.equal(2);
             expect(test_data_result_dog).to.deep.equal(expected_result_dog);
@@ -1237,7 +1238,7 @@ describe('Test FileSystem Class',function() {
             setupTestInstance(test_sql_orderby);
 
             await test_instance._getFetchAttributeValues();
-            const test_data_result = test_instance.data[dog_schema_table_id].__merged_data;
+            const test_data_result = test_instance.data[dog_schema_table_id()].__merged_data;
 
             expect(test_instance.fetch_attributes.length).to.equal(1);
             expect(test_data_result).to.deep.equal(expected_result);
@@ -1254,7 +1255,7 @@ describe('Test FileSystem Class',function() {
             setupTestInstance(test_sql_orderby);
 
             await test_instance._getFetchAttributeValues();
-            const test_data_result = test_instance.data[dog_schema_table_id].__merged_data;
+            const test_data_result = test_instance.data[dog_schema_table_id()].__merged_data;
 
             expect(test_instance.fetch_attributes.length).to.equal(2);
             expect(test_data_result).to.deep.equal(expected_result_name);
@@ -1272,7 +1273,7 @@ describe('Test FileSystem Class',function() {
             setupTestInstance(test_sql_null);
 
             await test_instance._getFetchAttributeValues();
-            const test_data_result = test_instance.data[cat_schema_table_id].__merged_data;
+            const test_data_result = test_instance.data[cat_schema_table_id()].__merged_data;
 
             expect(test_instance.fetch_attributes.length).to.equal(3);
             expect(test_data_result).to.deep.equal(expected_result_name);
@@ -1346,7 +1347,7 @@ describe('Test FileSystem Class',function() {
 
             await test_instance._getData(all_columns);
 
-            const test_merged_data = test_instance.data[dog_schema_table_id].__merged_data;
+            const test_merged_data = test_instance.data[dog_schema_table_id()].__merged_data;
 
             expect(_getDataByHash_spy.callCount).to.equal(1);
             Object.keys(test_merged_data).forEach(key => {
@@ -1380,8 +1381,8 @@ describe('Test FileSystem Class',function() {
 
             await test_instance._getData(all_columns);
 
-            const test_merged_data_dog = test_instance.data[dog_schema_table_id].__merged_data;
-            const test_merged_data_cat = test_instance.data[cat_schema_table_id].__merged_data;
+            const test_merged_data_dog = test_instance.data[dog_schema_table_id('d')].__merged_data;
+            const test_merged_data_cat = test_instance.data[cat_schema_table_id('c')].__merged_data;
 
             expect(_getDataByHash_spy.callCount).to.equal(2);
             Object.keys(test_merged_data_dog).forEach(key => {
@@ -1417,7 +1418,7 @@ describe('Test FileSystem Class',function() {
             sandbox.resetHistory();
             await test_instance._getData(all_columns);
 
-            const test_merged_data = test_instance.data[longtext_schema_table_id].__merged_data;
+            const test_merged_data = test_instance.data[longtext_schema_table_id()].__merged_data;
 
             expect(_getDataByHash_spy.callCount).to.equal(1);
             Object.keys(test_merged_data).forEach(key => {
@@ -1442,7 +1443,7 @@ describe('Test FileSystem Class',function() {
             const test_sql_statement = `SELECT * FROM dev.dog WHERE id IN(${sql_where_in_ids}) ORDER BY ${expected_attr_keys.toString()}`;
             setupTestInstance(test_sql_statement);
             await test_instance._getFetchAttributeValues();
-            const merged_data = test_instance.data[dog_schema_table_id].__merged_data;
+            const merged_data = test_instance.data[dog_schema_table_id()].__merged_data;
             const expected_merged_data = Object.keys(merged_data).reduce((acc, key) => {
                 if (sql_where_in_ids.includes(parseInt(key))) {
                     acc[key] = merged_data[key];
@@ -1466,8 +1467,8 @@ describe('Test FileSystem Class',function() {
             const expected_attr_keys_d = ['id', 'name', 'breed'];
             setupTestInstance(test_sql_statement);
             await test_instance._getFetchAttributeValues();
-            const merged_data_d = test_instance.data[dog_schema_table_id].__merged_data;
-            const merged_data_c = test_instance.data[cat_schema_table_id].__merged_data;
+            const merged_data_d = test_instance.data[dog_schema_table_id('d')].__merged_data;
+            const merged_data_c = test_instance.data[cat_schema_table_id('c')].__merged_data;
             const expected_merged_data_d = Object.keys(merged_data_d).reduce((acc, key) => {
                 if (Object.keys(merged_data_c).includes(key)) {
                     acc[key] = merged_data_d[key];
@@ -1479,12 +1480,12 @@ describe('Test FileSystem Class',function() {
             const test_results = await test_instance._processJoins();
 
             expect(test_results.joined_length).to.equal(2);
-            const test_result_table_attrs_d = test_results.existing_attributes[TEST_TABLE_DOG];
+            const test_result_table_attrs_d = test_results.existing_attributes['d'];
             expect(test_result_table_attrs_d.length).to.equal(3);
             test_result_table_attrs_d.forEach(attr => {
                 expect(expected_attr_keys_d.includes(attr)).to.equal(true);
             });
-            const test_result_table_attrs_c = test_results.existing_attributes[TEST_TABLE_CAT];
+            const test_result_table_attrs_c = test_results.existing_attributes['c'];
             expect(test_result_table_attrs_c.length).to.equal(1);
             expect(test_result_table_attrs_c[0]).to.equal(HASH_ATTRIBUTE);
             expect(merged_data_d).to.deep.equal(expected_merged_data_d);
@@ -1500,7 +1501,7 @@ describe('Test FileSystem Class',function() {
 
             const test_results = await test_instance._processJoins();
 
-            const merged_data = test_instance.data[longtext_schema_table_id].__merged_data;
+            const merged_data = test_instance.data[longtext_schema_table_id()].__merged_data;
             const merged_data_keys = Object.keys(merged_data);
             expect(test_results.joined_length).to.equal(merged_data_keys.length);
             merged_data_keys.forEach(key => {
