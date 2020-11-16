@@ -9,9 +9,11 @@ const { HTTP_STATUS_CODES } = hdb_errors;
 
 const LMDB_ERRORS_ENUM = {
     BASE_PATH_REQUIRED: new Error('base_path is required'),
+    DESTINATION_PATH_REQUIRED: new Error('destination_path is required'),
     ENV_NAME_REQUIRED: new Error('env_name is required'),
     INVALID_BASE_PATH: new Error('invalid base_path'),
     INVALID_ENVIRONMENT: new Error('invalid environment'),
+    INVALID_DESTINATION_PATH: new Error('invalid destination_path'),
     ENV_REQUIRED: new Error('env is required'),
     DBI_NAME_REQUIRED: new Error('dbi_name is required'),
     DBI_DOES_NOT_EXIST: new Error('dbi does not exist'),

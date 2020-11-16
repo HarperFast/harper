@@ -58,8 +58,10 @@ const BULK_LOAD_ERROR_MSGS = {
 //NOTE: Any changes made to these errors must also be made to unitTests/commonTestErrors.js otherwise the unit tests will fail
 const LMDB_ERRORS_ENUM = {
     BASE_PATH_REQUIRED: 'base_path is required',
+    DESTINATION_PATH_REQUIRED: 'destination_path is required',
     ENV_NAME_REQUIRED: 'env_name is required',
     INVALID_BASE_PATH: 'invalid base_path',
+    INVALID_DESTINATION_PATH: 'invalid destination_path',
     INVALID_ENVIRONMENT: 'invalid environment',
     ENV_REQUIRED: 'env is required',
     DBI_NAME_REQUIRED: 'dbi_name is required',

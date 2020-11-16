@@ -10,6 +10,7 @@ const DBIDefinition = require('./DBIDefinition');
 const OpenDBIObject = require('./OpenDBIObject');
 const OpenEnvironmentObject = require('./OpenEnvironmentObject');
 const lmdb_terms = require('./terms');
+const promisify = require('util').promisify;
 //allow an environment to grow up to 1 TB
 // eslint-disable-next-line no-magic-numbers
 const MAP_SIZE = 200 * 1024 * 1024 * 1024;
@@ -159,6 +160,28 @@ async function createEnvironment(base_path, env_name, is_txn = false) {
         }
         throw e;
     }
+}
+
+async function copyEnvironment(base_path, env_name, destination_path, compact_environment = true){
+    let env = await openEnvironment(base_path, env_name);
+
+    if(destination_path === undefined){
+        throw new Error(LMDB_ERRORS.DESTINATION_PATH_REQUIRED);
+    }
+
+    //verify the destination_path is valid
+    try {
+        await fs.access(destination_path);
+    } catch(e){
+        if(e.code === 'ENOENT'){
+            throw new Error(LMDB_ERRORS.INVALID_DESTINATION_PATH);
+        }
+
+        throw e;
+    }
+    let p_environment_copy = promisify(env.copy).bind(env);
+
+    await p_environment_copy(destination_path, compact_environment);
 }
 
 /**
@@ -508,5 +531,6 @@ module.exports = {
     deleteEnvironment,
     initializeDBIs,
     TransactionCursor,
-    environmentDataSize
+    environmentDataSize,
+    copyEnvironment
 };
