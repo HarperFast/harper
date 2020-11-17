@@ -12,9 +12,14 @@ const LMDB_TEST_ERRORS = require('../../commonTestErrors').LMDB_ERRORS_ENUM;
 const lmdb_terms = require('../../../utility/lmdb/terms');
 
 const LMDB_TEST_FOLDER_NAME = 'lmdbTest';
+const BACKUP_FOLDER_NAME = 'backup';
 const BASE_TEST_PATH = path.join(test_utils.getMockFSPath(), LMDB_TEST_FOLDER_NAME);
-const INVALID_BASE_TEST_PATH = '/bad/path/zzz/';
 const TEST_ENVIRONMENT_NAME = 'test';
+const BACKUP_PATH = path.join(test_utils.getMockFSPath(), BACKUP_FOLDER_NAME);
+const BACKUP_TEST_ENV_PATH = path.join(BACKUP_PATH, TEST_ENVIRONMENT_NAME);
+
+const INVALID_BASE_TEST_PATH = '/bad/path/zzz/';
+
 const CACHED_ENV_NAME = `${LMDB_TEST_FOLDER_NAME}.${TEST_ENVIRONMENT_NAME}`;
 const BAD_TEST_ENVIRONMENT_NAME = 'bad_test';
 const ID_DBI_NAME = 'id';
@@ -201,6 +206,62 @@ describe("Test LMDB environmentUtility module", ()=>{
 
             //test to make sure the internal dbi exists
             await test_utils.assertErrorAsync(lmdb_env_util.openDBI, [env, lmdb_terms.INTERNAL_DBIS_NAME], undefined);
+        });
+
+    });
+
+    describe("Test copyEnvironment function", ()=> {
+        before(async () => {
+            global.lmdb_map = undefined;
+            await fs.mkdirp(BASE_TEST_PATH);
+            await fs.mkdirp(BACKUP_TEST_ENV_PATH);
+            await lmdb_env_util.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
+        });
+
+        after(async () => {
+            await fs.remove(BASE_TEST_PATH);
+            await fs.remove(BACKUP_PATH);
+            test_utils.tearDownMockFS();
+            global.lmdb_map = undefined;
+        });
+
+        it('call function no args', async ()=>{
+            await test_utils.assertErrorAsync(lmdb_env_util.copyEnvironment, [], LMDB_TEST_ERRORS.BASE_PATH_REQUIRED);
+        });
+
+        it('call function no env_name', async()=>{
+            await test_utils.assertErrorAsync(lmdb_env_util.copyEnvironment, [BASE_TEST_PATH], LMDB_TEST_ERRORS.ENV_NAME_REQUIRED);
+        });
+
+        it('call function invalid base_path', async ()=>{
+            await test_utils.assertErrorAsync(lmdb_env_util.copyEnvironment, [INVALID_BASE_TEST_PATH, TEST_ENVIRONMENT_NAME], LMDB_TEST_ERRORS.INVALID_BASE_PATH);
+        });
+
+        it('open non-existent environment', async ()=>{
+            await test_utils.assertErrorAsync(lmdb_env_util.copyEnvironment, [BASE_TEST_PATH, BAD_TEST_ENVIRONMENT_NAME], LMDB_TEST_ERRORS.INVALID_ENVIRONMENT);
+        });
+
+        it('call function no destination_path', async ()=>{
+            await test_utils.assertErrorAsync(lmdb_env_util.copyEnvironment, [BASE_TEST_PATH, TEST_ENVIRONMENT_NAME], LMDB_TEST_ERRORS.DESTINATION_PATH_REQUIRED);
+        });
+
+        it('call function invalid destination_path', async ()=>{
+            await test_utils.assertErrorAsync(lmdb_env_util.copyEnvironment, [BASE_TEST_PATH, TEST_ENVIRONMENT_NAME, '/fake/path'], LMDB_TEST_ERRORS.INVALID_DESTINATION_PATH);
+        });
+
+        it('happy path test', async ()=>{
+            await test_utils.assertErrorAsync(lmdb_env_util.copyEnvironment, [BASE_TEST_PATH, TEST_ENVIRONMENT_NAME, BACKUP_TEST_ENV_PATH], undefined);
+
+            let err;
+            let env_copy;
+            try {
+                env_copy = await lmdb_env_util.openEnvironment(BACKUP_PATH, TEST_ENVIRONMENT_NAME);
+            }catch(e){
+                err = e;
+            }
+
+            assert.deepStrictEqual(err, undefined);
+            assert.deepStrictEqual(typeof env_copy, 'object');
         });
 
     });
