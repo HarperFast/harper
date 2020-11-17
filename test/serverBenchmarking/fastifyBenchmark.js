@@ -86,7 +86,12 @@ async function setupBenchmarkData() {
                     'Content-Type': 'application/json'
                 }
             });
-        await pause();
+    } catch(e) {
+        console.log(colors.red('There was an error setting up benchmark schema - ', e));
+    }
+
+    await pause();
+    try {
         await instance.post(BASE_ROUTE,
             {
                 operation: "create_table",
@@ -101,7 +106,12 @@ async function setupBenchmarkData() {
                     'Content-Type': 'application/json'
                 }
             });
-        await pause();
+    } catch(e) {
+        console.log(colors.red('There was an error setting up benchmark table - ', e));
+    }
+
+    await pause();
+    try {
         await instance.post(BASE_ROUTE,
             {
                 "operation":"insert",
@@ -116,27 +126,32 @@ async function setupBenchmarkData() {
                     'Content-Type': 'application/json'
                 }
             });
-        await pause();
     } catch(e) {
-        console.log(colors.red('Error setting up benchmark env - ', e));
+        console.log(colors.red('There was an error inserting benchmark data - ', e));
     }
-    console.log(colors.blue('Benchmark data setup complete'));
+
+    await pause();
+    console.log(colors.blue('Benchmark data setup COMPLETE'));
 }
 
 async function dropBenchmarkData() {
     console.log(colors.blue('Dropping benchmark data'));
-    await instance.post(BASE_ROUTE,
-        {
-            operation: "drop_schema",
-            schema: "benchmarks"
-        },
-        {
-            headers: {
-                'X-Custom-Header': 'foobar',
-                'Authorization': BASIC_AUTH,
-                'Content-Type': 'application/json'
-            }
-        });
+    try {
+        await instance.post(BASE_ROUTE,
+            {
+                operation: "drop_schema",
+                schema: "benchmarks"
+            },
+            {
+                headers: {
+                    'X-Custom-Header': 'foobar',
+                    'Authorization': BASIC_AUTH,
+                    'Content-Type': 'application/json'
+                }
+            });
+    } catch(e) {
+        console.log(colors.red('There was an error dropping benchmark data - ', e));
+    }
     console.log(colors.blue('Dropping benchmark data COMPLETE'));
 }
 
