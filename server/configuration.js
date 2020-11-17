@@ -7,19 +7,18 @@ if(!env.isInitialized()){
 }
 
 module.exports = {
-    getConfig
+    getConfiguration
 };
 
 /**
  * this function returns all of the config settings
  * @returns {{}}
  */
-function getConfig(){
+function getConfiguration(){
     let result = {};
     for(let x = 0, length = HDB_SETTINGS_KEYS.length; x < length; x++){
         let key = HDB_SETTINGS_KEYS[x];
-        let value = env.getProperty(key);
-        result[key] = value;
+        result[key] = env.getProperty(key);
     }
 
     return result;
