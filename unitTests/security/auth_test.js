@@ -240,6 +240,14 @@ describe('test authorize function for JWT', ()=>{
             }
         );
 
+        let rw_update = token_auth.__set__('update', async (update_object)=>{
+            return {message: 'updated 1 of 1', update_hashes:['1'], skipped_hashes: []};
+        });
+
+        let rw_signalling = token_auth.__set__('signalling', {
+            signalUserChange: (obj)=>{}
+        });
+
         global.hdb_users = [
             {username: 'HDB_ADMIN', active: true},
             {username: 'old_user', active: false}
@@ -256,7 +264,10 @@ describe('test authorize function for JWT', ()=>{
         hdb_admin_tokens = await token_auth.createTokens({username: 'HDB_ADMIN', password: 'cool'});
         old_user_tokens = await token_auth.createTokens({username: 'old_user', password: 'notcool'});
         non_user_tokens = await token_auth.createTokens({username: 'non_user', password: 'notcool'});
+        global.hdb_users[0].refresh_token = hdb_admin_tokens.refresh_token;
         rw_validate_user();
+        rw_signalling();
+        rw_update();
     });
 
 

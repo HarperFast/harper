@@ -99,7 +99,7 @@
         "attribute": "hash"
       },
       {
-        "attribute": "auth_token"
+        "attribute": "refresh_token"
       },
       {
         "attribute":"__createdtime__"

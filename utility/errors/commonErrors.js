@@ -106,7 +106,8 @@ const AUTHENTICATION_ERROR_MSGS = {
     REFRESH_TOKEN_REQUIRED: 'refresh_token is required',
     INVALID_AUTH_OBJECT: 'invalid auth_object',
     INVALID_BODY: 'invalid body',
-    TOKEN_EXPIRED: 'token expired'
+    TOKEN_EXPIRED: 'token expired',
+    REFRESH_TOKEN_SAVE_FAILED: 'unable to store refresh_token'
 };
 
 const OPERATION_AUTH_ERROR_MSGS = {
