@@ -24,8 +24,7 @@ const BASE_ROUTE = `http://localhost:${HTTP_PORT}`;
 const { BASIC_AUTH, FUNC_INPUT, REQUEST_JSON, TEST_DOG_RECORDS } = require('./testData');
 
 const USE_JWTS = true;
-const JWT_AUTH = "Bearer eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VybmFtZSI6ImFkbWluIiwiaWF0IjoxNjA1NjUxMjMzLCJleHAiOjE2MDU3Mzc2MzMsInN1YiI6Im9wZXJhdGlvbiJ9.L8Az4Sha2cNA797OHhkAswm-aLkK9odXcn7t0MXJJoF2BtCb7RDYPOI1xcVS9JdmpxYRnCTvROnT7D6jkCs8ROWXJNYo7y0n6hudQpAaQQsiwVG7Vfj_6IRuClRTygMc122uM2KoaB4y4cYZHs-tDM8FWIyVwD0Vrj3gHOm8Tes4-RbjjCv2dJi_KpvjwwRi2dX3MMEuKrLo4zF3-w1n5zymkCdd890mk7lTS2ID29g8Kzth1hgbhBgzja6zoxSXOAAvrCJeP0kvhFfsBAvWslFZNnsjBYBcs9nMMHiFBd6JFenEK6nNc-ftud2EKxjjm135Z1gJdZZVnVfeFlSNTYJBL61LAe8bU55YzkhfbY8ejn0qpdGIQA0Ab6IihdacSNH8B7cb3UCw7vvO7haRv9JTc_0nf10uoA8R9vEfFSh9seRkJAKBTRrq6Nw4IUUx3cKB8WBHOeqnOrZtXzDKgSVnAYEzQeqETy5hlpIS31ZyoCYdiF0urN4R9j_Y1G0PKHAyBqzPQcJMSfwDkaP8_FMTdewIsUa-a8iXZglXIvdoxv3-vGCdRDTcfoKuHhBFqm75A0s5fLWaxwe85k66-gSVeBUPleOZ4w7ZrraYYMoYTXJyJ264zFWWhfxKUkasnOpHbMHKoa2BO4niOCRMFzV5wibDH7e5-DBgVLJ54No";
-const test_auth_method = USE_JWTS ? JWT_AUTH : BASIC_AUTH;
+let TEST_AUTH_METHOD = BASIC_AUTH;
 
 const REQS_KEYS = Object.keys(REQUEST_JSON);
 const REQS_LENGTH = REQS_KEYS.length
@@ -76,7 +75,29 @@ function pause() {
 }
 
 async function setupBenchmarkData() {
-    console.log(colors.blue(`Setting up benchmark data for ${JWT_AUTH ? 'TOKEN' : 'BASIC' } auth`));
+    console.log(colors.blue(`Setting up benchmark data for ${USE_JWTS ? 'TOKEN' : 'BASIC' } auth`));
+    if (USE_JWTS) {
+        try {
+            const token_resp = await instance.post(BASE_ROUTE,
+                {
+                    "operation": "create_authentication_tokens",
+                    "username": "admin",
+                    "password": "Abc1234!"
+                },
+                {
+                    headers: {
+                        'X-Custom-Header': 'foobar',
+                        'Authorization': BASIC_AUTH,
+                        'Content-Type': 'application/json'
+                    }
+                });
+            TEST_AUTH_METHOD = `Bearer ${token_resp.data.operation_token}`;
+        } catch(e) {
+            console.log(colors.red('There was an error setting the operation token - ', e));
+            process.exit();
+        }
+    }
+
     try {
         await instance.post(BASE_ROUTE,
             {
@@ -199,7 +220,7 @@ async function httpBenchmark() {
                     {
                         headers: {
                             'X-Custom-Header': 'foobar',
-                            'Authorization': test_auth_method,
+                            'Authorization': TEST_AUTH_METHOD,
                             'Content-Type': 'application/json'
                         }
                     });
