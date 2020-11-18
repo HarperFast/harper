@@ -23,7 +23,8 @@ const HTTP_PORT = 9925;//env_mngr.get('HTTP_PORT');
 const BASE_ROUTE = `http://localhost:${HTTP_PORT}`;
 const { BASIC_AUTH, FUNC_INPUT, REQUEST_JSON, TEST_DOG_RECORDS } = require('./testData');
 
-const USE_JWTS = true;
+const USE_JWT = false;
+//this value will get updated below if USE_JWT is set to true
 let TEST_AUTH_METHOD = BASIC_AUTH;
 
 const REQS_KEYS = Object.keys(REQUEST_JSON);
@@ -75,8 +76,8 @@ function pause() {
 }
 
 async function setupBenchmarkData() {
-    console.log(colors.blue(`Setting up benchmark data for ${USE_JWTS ? 'TOKEN' : 'BASIC' } auth`));
-    if (USE_JWTS) {
+    console.log(colors.blue(`Setting up benchmark data for ${USE_JWT ? 'TOKEN' : 'BASIC' } AUTH`));
+    if (USE_JWT) {
         try {
             const token_resp = await instance.post(BASE_ROUTE,
                 {
@@ -188,6 +189,7 @@ async function rawDataFunctionBenchmark() {
         const input = FUNC_INPUT(REQUEST_JSON[func_key]);
         let x = 6000;
         let sum = 0;
+        let times_run = 0;
         while (x-- > 3000) {
 
             try {
@@ -196,12 +198,13 @@ async function rawDataFunctionBenchmark() {
                 const end = lmdb_util.getMicroTime();
 
                 sum+= end-start;
+                times_run += 1;
             } catch(e){
                 console.error(e);
             }
         }
-        // console.log(`${func_key} average response time: ${sum / 1000}`);
-        benchmarkResults[func_key].data = sum / 1000
+        // console.log(`${func_key} average response time: ${sum / times_run}`);
+        benchmarkResults[func_key].data = sum / times_run
     }
     console.log("Raw data function benchmarks completed");
 }
@@ -213,6 +216,7 @@ async function httpBenchmark() {
         const body_json = REQUEST_JSON[key];
         let x = 6000;
         let sum = 0;
+        let times_run = 0;
         while (x-- > 3000) {
             try {
                 const response = await instance.post(BASE_ROUTE,
@@ -227,12 +231,13 @@ async function httpBenchmark() {
                 const response_time = response.headers['request-duration'];
 
                 sum+=response_time;
+                times_run += 1;
             }catch(e){
                 console.error(e);
             }
         }
-        benchmarkResults[key].api = sum / 1000
-        // console.log(`${key} average response time: ${sum / 1000}`);
+        benchmarkResults[key].api = sum / times_run;
+        // console.log(`${key} average response time: ${sum / times_run}`);
     }
     console.log("API benchmarks completed");
 }
