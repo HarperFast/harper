@@ -9,6 +9,9 @@ const {handleHDBError, hdb_errors} = require('../utility/errors/hdbError');
 const { HTTP_STATUS_CODES, AUTHENTICATION_ERROR_MSGS} = hdb_errors;
 const logger = require('../utility/logging/harper_logger');
 const user_functions = require('./user');
+const update = require('../data_layer/insert').update;
+const UpdateObject = require('../data_layer/UpdateObject');
+const signalling = require('../utility/signalling');
 const env = require('../utility/environment/environmentManager');
 if(!env.isInitialized()){
     env.initSync();
@@ -63,6 +66,26 @@ async function createTokens(auth_object){
     let refresh_token = await jwt.sign({username: auth_object.username},
         {key: keys.private_key, passphrase: keys.passphrase},
         {expiresIn: REFRESH_TOKEN_TIMEOUT, algorithm: RSA_ALGORITHM, subject: TOKEN_TYPE_ENUM.REFRESH});
+
+    //update the user.refresh_token
+    let update_user_object = new UpdateObject(terms.SYSTEM_SCHEMA_NAME, terms.SYSTEM_TABLE_NAMES.USER_TABLE_NAME,
+        [{username: auth_object.username, refresh_token: refresh_token}]);
+
+    let result;
+    let update_error;
+    try {
+        result = await update(update_user_object);
+    }catch(e){
+        logger.error(e);
+        update_error = e;
+    }
+
+    if(update_error !== undefined || result.skipped_hashes.length > 0){
+        throw handleHDBError(new Error(), AUTHENTICATION_ERROR_MSGS.REFRESH_TOKEN_SAVE_FAILED, HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR);
+    }
+
+    signalling.signalUserChange({type: 'user'});
+
     return new JWTTokens(operation_token, refresh_token);
 }
 
@@ -118,6 +141,7 @@ async function refreshOperationToken(token_object){
 async function validateOperationToken(token){
     try {
         let keys = await getJWTRSAKeys();
+
         let token_verified = await jwt.verify(token, keys.public_key, {
             algorithms: RSA_ALGORITHM,
             subject: TOKEN_TYPE_ENUM.OPERATION
@@ -133,13 +157,14 @@ async function validateOperationToken(token){
 }
 
 async function validateRefreshToken(token){
+    let user;
     try {
         let keys = await getJWTRSAKeys();
         let token_verified = await jwt.verify(token, keys.public_key, {
             algorithms: RSA_ALGORITHM,
             subject: TOKEN_TYPE_ENUM.REFRESH
         });
-        return await user_functions.findAndValidateUser(token_verified.username, undefined, false);
+        user = await user_functions.findAndValidateUser(token_verified.username, undefined, false);
     }catch(e){
         logger.warn(e);
         if(e.name && e.name === 'TokenExpiredError'){
@@ -147,5 +172,10 @@ async function validateRefreshToken(token){
         }
         throw handleHDBError(new Error(), AUTHENTICATION_ERROR_MSGS.INVALID_TOKEN, HTTP_STATUS_CODES.UNAUTHORIZED);
     }
+
+    if(user.refresh_token !== token){
+        throw handleHDBError(new Error(), AUTHENTICATION_ERROR_MSGS.INVALID_TOKEN, HTTP_STATUS_CODES.UNAUTHORIZED);
+    }
+    return user;
 }
 
