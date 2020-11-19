@@ -251,7 +251,7 @@ describe('test createTokens', ()=>{
     beforeEach(()=>{
         rw_validate_user = token_auth.__set__('user_functions',
             {
-                findAndValidateUser: async(u, pw)=>({username: u})
+                findAndValidateUser: async(u, pw)=>({username: u, role:{permission:{super_user: true}}})
             }
         );
 
@@ -744,7 +744,7 @@ describe('test refreshOperationToken function', ()=>{
         );
 
         global.hdb_users = [
-            {username: 'HDB_ADMIN', active: true},
+            {username: 'HDB_ADMIN', active: true, role:{permission:{super_user: true}}},
             {username: 'old_user', active: false}
         ];
 
