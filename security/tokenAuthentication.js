@@ -48,8 +48,9 @@ async function createTokens(auth_object){
     }
 
     //query for user/pw
+    let user;
     try {
-        let user = await user_functions.findAndValidateUser(auth_object.username, auth_object.password);
+        user = await user_functions.findAndValidateUser(auth_object.username, auth_object.password);
         if (!user) {
             throw handleHDBError(new Error(), AUTHENTICATION_ERROR_MSGS.INVALID_CREDENTIALS, HTTP_STATUS_CODES.UNAUTHORIZED);
         }
@@ -61,9 +62,18 @@ async function createTokens(auth_object){
     //get rsa key
     let keys = await getJWTRSAKeys();
 
+    let super_user = false;
+    let cluster_user = false;
+    if(user.role && user.role.permission){
+        super_user = user.role.permission.super_user === true;
+        cluster_user = user.role.permission.cluster_user === true;
+    }
+
+    let payload = {username: auth_object.username, super_user: super_user, cluster_user: cluster_user};
+
     //sign & return tokens
-    let operation_token = await signOperationToken(auth_object.username, keys.private_key, keys.passphrase);
-    let refresh_token = await jwt.sign({username: auth_object.username},
+    let operation_token = await signOperationToken(payload, keys.private_key, keys.passphrase);
+    let refresh_token = await jwt.sign(payload,
         {key: keys.private_key, passphrase: keys.passphrase},
         {expiresIn: REFRESH_TOKEN_TIMEOUT, algorithm: RSA_ALGORITHM, subject: TOKEN_TYPE_ENUM.REFRESH});
 
@@ -89,8 +99,8 @@ async function createTokens(auth_object){
     return new JWTTokens(operation_token, refresh_token);
 }
 
-async function signOperationToken(username, private_key, passphrase){
-    return await jwt.sign({username: username},
+async function signOperationToken(payload, private_key, passphrase){
+    return await jwt.sign(payload,
         {key: private_key, passphrase: passphrase},
         {expiresIn: OPERATION_TOKEN_TIMEOUT, algorithm: RSA_ALGORITHM, subject: TOKEN_TYPE_ENUM.OPERATION});
 }
@@ -130,11 +140,12 @@ async function refreshOperationToken(token_object){
         throw handleHDBError(new Error(), AUTHENTICATION_ERROR_MSGS.REFRESH_TOKEN_REQUIRED, HTTP_STATUS_CODES.BAD_REQUEST);
     }
 
-    let username = await validateRefreshToken(token_object.refresh_token);
+    await validateRefreshToken(token_object.refresh_token);
 
     let keys = await getJWTRSAKeys();
-
-    let operation_token = await signOperationToken(username, keys.private_key, keys.passphrase);
+    let decoded = await jwt.decode(token_object.refresh_token);
+    let operation_token = await signOperationToken({username:decoded.username, super_user: decoded.super_user, cluster_user: decoded.cluster_user},
+        keys.private_key, keys.passphrase);
     return {operation_token};
 }
 
