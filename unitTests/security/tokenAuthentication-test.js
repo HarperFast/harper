@@ -344,10 +344,17 @@ describe('test createTokens', ()=>{
     it('test happy path', async()=>{
         let rw_get_tokens = token_auth.__set__('getJWTRSAKeys', async ()=>new JWTObjects.JWTRSAKeys(PUBLIC_KEY_VALUE, PRIVATE_KEY_VALUE, PASSPHRASE_VALUE));
         let result = await token_auth.createTokens({username:'HDB_USER', password: 'pass'});
-
+        let refresh_payload = jwt.decode(result.refresh_token);
+        let operation_payload = jwt.decode(result.operation_token);
         assert.notDeepStrictEqual(result, undefined);
         assert.notDeepStrictEqual(result.operation_token, undefined);
         assert.notDeepStrictEqual(result.refresh_token, undefined);
+
+        let expected_payload_attributes = ['username', 'super_user', 'cluster_user'];
+        expected_payload_attributes.forEach(attr=>{
+            assert.deepStrictEqual(refresh_payload.hasOwnProperty(attr), true);
+            assert.deepStrictEqual(operation_payload.hasOwnProperty(attr), true);
+        });
 
         rw_get_tokens();
     });
@@ -822,6 +829,12 @@ describe('test refreshOperationToken function', ()=>{
         assert.deepStrictEqual(jwt_spy.threw(), false);
         assert.deepStrictEqual(validate_user_spy.callCount, 1);
         assert.deepStrictEqual(validate_user_spy.threw(), false);
+
+        let operation_payload = jwt.decode(token.operation_token);
+        let expected_payload_attributes = ['username', 'super_user', 'cluster_user'];
+        expected_payload_attributes.forEach(attr=>{
+            assert.deepStrictEqual(operation_payload.hasOwnProperty(attr), true);
+        });
     });
 
     it('test old_user token', async()=>{
