@@ -29,7 +29,7 @@ const PROCESS_INFO = {
             "tty": "",
             "user": "kyle",
             "command": "node",
-            "params": "/home/kyle/WebstormProjects/harperdb/server/hdb_express.js",
+            "params": "/home/kyle/WebstormProjects/harperdb/server/hdbServer.js",
             "path": "/usr/bin"
         },
         {
@@ -49,7 +49,7 @@ const PROCESS_INFO = {
             "tty": "",
             "user": "kyle",
             "command": "node",
-            "params": "/home/kyle/WebstormProjects/harperdb/server/hdb_express.js",
+            "params": "/home/kyle/WebstormProjects/harperdb/server/hdbServer.js",
             "path": "/usr/bin"
         },
         {
@@ -69,7 +69,7 @@ const PROCESS_INFO = {
             "tty": "",
             "user": "kyle",
             "command": "node",
-            "params": "/home/kyle/WebstormProjects/harperdb/server/hdb_express.js",
+            "params": "/home/kyle/WebstormProjects/harperdb/server/hdbServer.js",
             "path": "/usr/bin"
         }
     ],

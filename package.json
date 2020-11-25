@@ -1,6 +1,6 @@
 {
   "name": "harperdb",
-  "version": "2.0.000",
+  "version": "2.4.0",
   "description": "",
   "main": "harperdb.js",
   "bin": {
@@ -46,6 +46,11 @@
     "cors": "^2.8.5",
     "enquirer": "^2.3.0",
     "express": "^4.17.1",
+    "fastify": "^3.8.0",
+    "fastify-compress": "^3.4.0",
+    "fastify-cors": "^5.0.0",
+    "fastify-helmet": "^5.0.3",
+    "fastify-static": "^3.3.0",
     "fill-range": "^4.0.0",
     "fs-extra": "^7.0.1",
     "graceful-fs": "^4.1.15",

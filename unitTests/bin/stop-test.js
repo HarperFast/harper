@@ -32,7 +32,7 @@ describe('Test stop.js' , () => {
     let harper_instances_fake = [{
         pid: 2235,
         name: 'node',
-        cmd:'Desktop/harperdb/server/hdb_express.js',
+        cmd:'Desktop/harperdb/server/hdbServer.js',
         ppid: 1,
         uid: 501,
         cpu: 0,
@@ -247,7 +247,7 @@ describe('Test stop.js' , () => {
         let hdb_instance_first = [{
             pid: 2235,
             name: 'node',
-            cmd:'Desktop/harperdb/server/hdb_express.js',
+            cmd:'Desktop/harperdb/server/hdbServer.js',
             ppid: 1,
             uid: 501,
             cpu: 0,
@@ -274,7 +274,7 @@ describe('Test stop.js' , () => {
         let hdb_instance_second = [{
             pid: 2235,
             name: 'node',
-            cmd:'Desktop/harperdb/server/hdb_express.js',
+            cmd:'Desktop/harperdb/server/hdbServer.js',
             ppid: 1,
             uid: 501,
             cpu: 0,
