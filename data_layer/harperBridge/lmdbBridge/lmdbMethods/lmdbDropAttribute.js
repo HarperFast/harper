@@ -34,12 +34,14 @@ async function lmdbDropAttribute(drop_attribute_obj, remove_data = true) {
         //drop dbi
         let schema_path = path.join(getBaseSchemaPath(), drop_attribute_obj.schema.toString());
         let env = await environment_utility.openEnvironment(schema_path, drop_attribute_obj.table);
-        environment_utility.dropDBI(env, drop_attribute_obj.attribute);
 
         //in the scenario of drop table / schema we don't need to remove individual elements since we are removing entire environments
         if(remove_data === true) {
             removeAttributeFromAllObjects(drop_attribute_obj, env, table_info.hash_attribute);
         }
+
+        environment_utility.dropDBI(env, drop_attribute_obj.attribute);
+
         return delete_results;
     } catch (e) {
         throw e;

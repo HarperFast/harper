@@ -275,6 +275,7 @@ async function userInfo(body) {
         });
         user.role = role_data[0];
         delete user.password;
+        delete user.refresh_token;
         delete user.hash;
     } catch(err) {
         logger.error(err);

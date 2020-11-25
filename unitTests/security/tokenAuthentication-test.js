@@ -246,16 +246,28 @@ describe('test getJWTRSAKeys function', ()=>{
 
 describe('test createTokens', ()=>{
     let rw_validate_user;
+    let rw_update;
+    let rw_signalling;
     beforeEach(()=>{
         rw_validate_user = token_auth.__set__('user_functions',
             {
-                findAndValidateUser: async(u, pw)=>({username: u})
+                findAndValidateUser: async(u, pw)=>({username: u, role:{permission:{super_user: true}}})
             }
         );
+
+        rw_update = token_auth.__set__('update', async (update_object)=>{
+            return {message: 'updated 1 of 1', update_hashes:['1'], skipped_hashes: []};
+        });
+
+        rw_signalling = token_auth.__set__('signalling', {
+            signalUserChange: (obj)=>{}
+        });
     });
 
     afterEach(()=>{
         rw_validate_user();
+        rw_update();
+        rw_signalling();
     });
 
     it('test validation', async()=>{
@@ -332,10 +344,59 @@ describe('test createTokens', ()=>{
     it('test happy path', async()=>{
         let rw_get_tokens = token_auth.__set__('getJWTRSAKeys', async ()=>new JWTObjects.JWTRSAKeys(PUBLIC_KEY_VALUE, PRIVATE_KEY_VALUE, PASSPHRASE_VALUE));
         let result = await token_auth.createTokens({username:'HDB_USER', password: 'pass'});
-
+        let refresh_payload = jwt.decode(result.refresh_token);
+        let operation_payload = jwt.decode(result.operation_token);
         assert.notDeepStrictEqual(result, undefined);
         assert.notDeepStrictEqual(result.operation_token, undefined);
         assert.notDeepStrictEqual(result.refresh_token, undefined);
+
+        let expected_payload_attributes = ['username', 'super_user', 'cluster_user'];
+        expected_payload_attributes.forEach(attr=>{
+            assert.deepStrictEqual(refresh_payload.hasOwnProperty(attr), true);
+            assert.deepStrictEqual(operation_payload.hasOwnProperty(attr), true);
+        });
+
+        rw_get_tokens();
+    });
+
+    it('test update failed', async()=>{
+        rw_update();
+        rw_update = token_auth.__set__('update', async (update_object)=>{
+            throw Error('update failed');
+        });
+
+        let rw_get_tokens = token_auth.__set__('getJWTRSAKeys', async ()=>new JWTObjects.JWTRSAKeys(PUBLIC_KEY_VALUE, PRIVATE_KEY_VALUE, PASSPHRASE_VALUE));
+        let result;
+        let error;
+        try {
+            result = await token_auth.createTokens({username: 'HDB_USER', password: 'pass'});
+        }catch(e){
+            error = e;
+        }
+
+        assert.deepStrictEqual(result, undefined);
+        assert.deepStrictEqual(error, hdb_error(new Error(), 'unable to store refresh_token', 500));
+
+        rw_get_tokens();
+    });
+
+    it('test update skipped the record', async()=>{
+        rw_update();
+        rw_update = token_auth.__set__('update', async (update_object)=>{
+            return {message: 'updated 0 of 1', update_hashes:[], skipped_hashes: ['1']};
+        });
+
+        let rw_get_tokens = token_auth.__set__('getJWTRSAKeys', async ()=>new JWTObjects.JWTRSAKeys(PUBLIC_KEY_VALUE, PRIVATE_KEY_VALUE, PASSPHRASE_VALUE));
+        let result;
+        let error;
+        try {
+            result = await token_auth.createTokens({username: 'HDB_USER', password: 'pass'});
+        }catch(e){
+            error = e;
+        }
+
+        assert.deepStrictEqual(result, undefined);
+        assert.deepStrictEqual(error, hdb_error(new Error(), 'unable to store refresh_token', 500));
 
         rw_get_tokens();
     });
@@ -353,6 +414,14 @@ describe('test validateOperationToken function', ()=>{
     let expired_user_tokens;
     before(async ()=>{
         rw_get_tokens = token_auth.__set__('getJWTRSAKeys', async ()=>new JWTObjects.JWTRSAKeys(PUBLIC_KEY_VALUE, PRIVATE_KEY_VALUE, PASSPHRASE_VALUE));
+
+        let rw_update = token_auth.__set__('update', async (update_object)=>{
+            return {message: 'updated 1 of 1', update_hashes:['1'], skipped_hashes: []};
+        });
+
+        let rw_signalling = token_auth.__set__('signalling', {
+            signalUserChange: (obj)=>{}
+        });
 
         rw_validate_user = token_auth.__set__('user_functions',
             {
@@ -375,6 +444,9 @@ describe('test validateOperationToken function', ()=>{
         rw_validate_user();
         jwt_spy = sandbox.spy(jwt, 'verify');
         validate_user_spy = sandbox.spy(token_auth.__get__('user_functions'), 'findAndValidateUser');
+
+        rw_update();
+        rw_signalling();
     });
 
     beforeEach(()=>{
@@ -500,16 +572,26 @@ describe('test validateRefreshToken function', ()=>{
         validate_refresh_token = token_auth.__get__('validateRefreshToken');
         rw_get_tokens = token_auth.__set__('getJWTRSAKeys', async ()=>new JWTObjects.JWTRSAKeys(PUBLIC_KEY_VALUE, PRIVATE_KEY_VALUE, PASSPHRASE_VALUE));
 
-        rw_validate_user = token_auth.__set__('user_functions',
-            {
-                findAndValidateUser: async(u, pw)=>({username: u})
-            }
-        );
+        let rw_update = token_auth.__set__('update', async (update_object)=>{
+            return {message: 'updated 1 of 1', update_hashes:['1'], skipped_hashes: []};
+        });
+
+        let rw_signalling = token_auth.__set__('signalling', {
+            signalUserChange: (obj)=>{}
+        });
 
         global.hdb_users = [
             {username: 'HDB_ADMIN', active: true},
             {username: 'old_user', active: false}
         ];
+
+        rw_validate_user = token_auth.__set__('user_functions',
+            {
+                findAndValidateUser: async(u, pw)=>{
+                    return {username: u};
+                }
+            }
+        );
 
         token_timeout = token_auth.__set__('REFRESH_TOKEN_TIMEOUT', '-1');
         expired_user_tokens = await token_auth.createTokens({username: 'EXPIRED', password: 'cool'});
@@ -518,9 +600,14 @@ describe('test validateRefreshToken function', ()=>{
         hdb_admin_tokens = await token_auth.createTokens({username: 'HDB_ADMIN', password: 'cool'});
         old_user_tokens = await token_auth.createTokens({username: 'old_user', password: 'notcool'});
         non_user_tokens = await token_auth.createTokens({username: 'non_user', password: 'notcool'});
+
+        global.hdb_users[0].refresh_token = hdb_admin_tokens.refresh_token;
+
         rw_validate_user();
         jwt_spy = sandbox.spy(jwt, 'verify');
         validate_user_spy = sandbox.spy(token_auth.__get__('user_functions'), 'findAndValidateUser');
+        rw_update();
+        rw_signalling();
     });
 
     beforeEach(()=>{
@@ -534,7 +621,6 @@ describe('test validateRefreshToken function', ()=>{
 
     after(()=>{
         rw_get_tokens();
-
         sandbox.restore();
         delete global.hdb_users;
     });
@@ -549,7 +635,7 @@ describe('test validateRefreshToken function', ()=>{
         }
 
         assert.deepStrictEqual(error, undefined);
-        assert.deepStrictEqual(user, {active: true, username: 'HDB_ADMIN'});
+        assert.deepStrictEqual(user, {active: true, username: 'HDB_ADMIN', refresh_token: hdb_admin_tokens.refresh_token});
         assert(jwt_spy.callCount === 1);
         assert(jwt_spy.threw() === false);
         assert(validate_user_spy.callCount === 1);
@@ -643,6 +729,14 @@ describe('test refreshOperationToken function', ()=>{
     before(async ()=>{
         rw_get_tokens = token_auth.__set__('getJWTRSAKeys', async ()=>new JWTObjects.JWTRSAKeys(PUBLIC_KEY_VALUE, PRIVATE_KEY_VALUE, PASSPHRASE_VALUE));
 
+        let rw_update = token_auth.__set__('update', async (update_object)=>{
+            return {message: 'updated 1 of 1', update_hashes:['1'], skipped_hashes: []};
+        });
+
+        let rw_signalling = token_auth.__set__('signalling', {
+            signalUserChange: (obj)=>{}
+        });
+
         rw_validate_user = token_auth.__set__('user_functions',
             {
                 findAndValidateUser: async(u, pw)=>({username: u})
@@ -650,7 +744,7 @@ describe('test refreshOperationToken function', ()=>{
         );
 
         global.hdb_users = [
-            {username: 'HDB_ADMIN', active: true},
+            {username: 'HDB_ADMIN', active: true, role:{permission:{super_user: true}}},
             {username: 'old_user', active: false}
         ];
 
@@ -658,8 +752,12 @@ describe('test refreshOperationToken function', ()=>{
         old_user_tokens = await token_auth.createTokens({username: 'old_user', password: 'notcool'});
         non_user_tokens = await token_auth.createTokens({username: 'non_user', password: 'notcool'});
         rw_validate_user();
+        global.hdb_users[0].refresh_token = hdb_admin_tokens.refresh_token;
         jwt_spy = sandbox.spy(jwt, 'verify');
         validate_user_spy = sandbox.spy(token_auth.__get__('user_functions'), 'findAndValidateUser');
+
+        rw_update();
+        rw_signalling();
     });
 
     beforeEach(()=>{
@@ -731,6 +829,12 @@ describe('test refreshOperationToken function', ()=>{
         assert.deepStrictEqual(jwt_spy.threw(), false);
         assert.deepStrictEqual(validate_user_spy.callCount, 1);
         assert.deepStrictEqual(validate_user_spy.threw(), false);
+
+        let operation_payload = jwt.decode(token.operation_token);
+        let expected_payload_attributes = ['username', 'super_user', 'cluster_user'];
+        expected_payload_attributes.forEach(attr=>{
+            assert.deepStrictEqual(operation_payload.hasOwnProperty(attr), true);
+        });
     });
 
     it('test old_user token', async()=>{
