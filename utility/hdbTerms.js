@@ -10,7 +10,7 @@ const JAVASCRIPT_EXTENSION = 'js';
 const CODE_EXTENSION = process.env.HDB_COMPILED === 'true' ? COMPILED_EXTENSION : JAVASCRIPT_EXTENSION;
 
  // Name of the HDB process
-const HDB_PROC_NAME = `hdb_express.${CODE_EXTENSION}`;
+const HDB_PROC_NAME = `hdbServer.${CODE_EXTENSION}`;
 const SC_PROC_NAME = `Server.${CODE_EXTENSION}`;
 
 

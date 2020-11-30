@@ -146,8 +146,7 @@ describe(`Test processLocalTransaction`, function () {
     it('Test processLocalTransaction nominal path by using test_func declared above', function (done) {
         let processLocalTransaction = server_utilities.__get__('processLocalTransaction');
         let mock = {
-            send: function(){ },
-            json: function(stuff){
+            send: function(stuff){
                 this.json = stuff;
             },
             status: function(responseStatus) {
@@ -166,8 +165,7 @@ describe(`Test processLocalTransaction`, function () {
     it('Test processLocalTransaction error path by using test_func_error declared above', function (done) {
         let processLocalTransaction = server_utilities.__get__('processLocalTransaction');
         let mock = {
-            send: function(){ },
-            json: function(stuff){
+            send: function(stuff){
                 this.json = stuff;
             },
             status: function(responseStatus) {

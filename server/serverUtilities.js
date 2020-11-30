@@ -147,8 +147,8 @@ function processLocalTransaction(req, res, operation_function, callback) {
  */
 function setResponseStatus(res, status, msg) {
     try {
-        if(!res._headerSent) {
-            res.status(status).json(msg);
+        if (!res._headerSent) {
+            res.status(status).send(msg);
         }
     } catch(err) {
         harper_logger.info('Tried to set response status, but it has already been set.');
