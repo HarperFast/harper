@@ -227,7 +227,7 @@ if (cluster.isMaster &&( num_workers >= 1 || DEBUG )) {
     const bodyParser = require('body-parser');
     const auth = require('../security/auth');
     const p_authorize = promisify(auth.authorize);
-
+    const {closeEnvironment} = require('../utility/lmdb/environmentUtility');
     const passport = require('passport');
     const pjson = require(`${__dirname}/../package.json`);
     const server_utilities = require('./serverUtilities');
@@ -349,14 +349,22 @@ if (cluster.isMaster &&( num_workers >= 1 || DEBUG )) {
                         for(let x = 0; x < keys.length; x ++){
                             let key = keys[x];
                             if(key.startsWith(`${msg.operation.schema}.`) || key.startsWith(`txn.${msg.operation.schema}.`)){
+                                closeEnvironment(global.lmdb_map[key]);
+                                closeEnvironment(global.lmdb_map[`txn.${key}`]);
                                 delete global.lmdb_map[key];
                                 delete global.lmdb_map[`txn.${key}`];
                             }
                         }
                         break;
                     case 'drop_table':
-                        delete global.lmdb_map[`${msg.operation.schema}.${msg.operation.table}`];
-                        delete global.lmdb_map[`txn.${msg.operation.schema}.${msg.operation.table}`];
+                        // eslint-disable-next-line no-case-declarations
+                        let schema_table_name = `${msg.operation.schema}.${msg.operation.table}`;
+                        // eslint-disable-next-line no-case-declarations
+                        let txn_schema_table_name = `txn.${schema_table_name}`;
+                        closeEnvironment(global.lmdb_map[schema_table_name]);
+                        closeEnvironment(global.lmdb_map[txn_schema_table_name]);
+                        delete global.lmdb_map[schema_table_name];
+                        delete global.lmdb_map[txn_schema_table_name];
                         break;
                     case 'drop_attribute':
                         cached_environment = global.lmdb_map[`${msg.operation.schema}.${msg.operation.table}`];
