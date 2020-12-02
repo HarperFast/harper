@@ -48,8 +48,8 @@ const PROPS_HTTP_SECURE_ON_KEY = 'HTTPS_ON';
 const PROPS_HTTP_PORT_KEY = 'HTTP_PORT';
 const PROPS_HTTP_SECURE_PORT_KEY = 'HTTPS_PORT';
 
-const http = require('http');
-const httpsecure = require('https');
+// const http = require('http');
+// const httpsecure = require('https');
 
 const privateKey = env.get(PROPS_PRIVATE_KEY);
 const certificate = env.get(PROPS_CERT_KEY);
@@ -60,37 +60,30 @@ const props_http_on = env.get(PROPS_HTTP_ON_KEY);
 let keep_alive_timeout = env.get(terms.HDB_SETTINGS_NAMES.SERVER_KEEP_ALIVE_TIMEOUT_KEY);
 let headers_timeout = env.get(terms.HDB_SETTINGS_NAMES.SERVER_HEADERS_TIMEOUT_KEY);
 
-
 let app;
 let httpServer = undefined;
 let secureServer = undefined;
 let server_connections = {};
 
 const fastify_options = {
-    bodyLimit: REQ_MAX_BODY_SIZE
+    bodyLimit: REQ_MAX_BODY_SIZE,
+    connectionTimeout: server_timeout ? server_timeout : DEFAULT_SERVER_TIMEOUT,
+    keepAliveTimeout: keep_alive_timeout ? keep_alive_timeout : null,
+    headersTimeout: headers_timeout ?  headers_timeout : null
 };
+
+let props_cors = env.get(PROPS_CORS_KEY);
+let props_cors_whitelist = env.get(PROPS_CORS_WHITELIST_KEY);
+let cors_options;
 
 function serverChild() {
     harper_logger.info('In express' + process.cwd());
     harper_logger.info(`Running with NODE_ENV set as: ${process.env.NODE_ENV}`);
-    app = fastify(fastify_options);
-
-    app.register(fastify_helmet);
-    if(keep_alive_timeout !== undefined){
-        app.server.keepAliveTimeout = keep_alive_timeout;
-    }
-
-    if(headers_timeout !== undefined){
-        app.server.headersTimeout = headers_timeout;
-    }
 
     global.clustering_on = false;
 
-    let props_cors = env.get(PROPS_CORS_KEY);
-    let props_cors_whitelist = env.get(PROPS_CORS_WHITELIST_KEY);
-
     if (props_cors && (props_cors === true || props_cors.toUpperCase() === TRUE_COMPARE_VAL)) {
-        let cors_options = {
+        cors_options = {
             origin: true,
             allowedHeaders: ['Content-Type', 'Authorization'],
             credentials: false
@@ -104,6 +97,63 @@ function serverChild() {
                 return callback(new Error(`domain ${origin} is not whitelisted`));
             };
         }
+    }
+
+    process.on('message', handleServerMessage);
+
+    process.on('uncaughtException', handleServerUncaughtException);
+
+    process.on('close',() => {
+        harper_logger.info(`Server close event received for process ${process.pid}`);
+    });
+
+    global.isMaster = cluster.isMaster;
+
+    harper_logger.debug(`child process ${process.pid} starting up.`);
+    setUp().then(()=>{});
+
+    if (props_http_secure_on &&
+        (props_http_secure_on === true || props_http_secure_on.toUpperCase() === TRUE_COMPARE_VAL)) {
+
+        secureServer = buildServer(true);
+
+        // secureServer.listen(env.get(PROPS_HTTP_SECURE_PORT_KEY), function () {
+        //     harper_logger.info(`HarperDB ${pjson.version} HTTPS Server running on ${env.get(PROPS_HTTP_SECURE_PORT_KEY)}`);
+        //     signalling.signalChildStarted();
+        // });
+    }
+
+    if (props_http_on &&
+        (props_http_on === true || props_http_on.toUpperCase() === TRUE_COMPARE_VAL)) {
+
+        httpServer = buildServer(false);
+
+        httpServer.server.on('connection', function(conn) {
+            let key = conn.remoteAddress + ':' + conn.remotePort;
+            server_connections[key] = conn;
+            conn.on('close', function() {
+                harper_logger.debug(`removing connection for ${key}`);
+                delete server_connections[key];
+            });
+        });
+
+        // httpServer.listen(env.get(PROPS_HTTP_PORT_KEY), function () {
+        //     harper_logger.info(`HarperDB ${pjson.version} HTTP Server running on ${env.get(PROPS_HTTP_PORT_KEY)}`);
+        //     signalling.signalChildStarted();
+        // });
+    }
+}
+
+function buildServer(is_https) {
+    let server_opts = Object.assign({}, fastify_options);
+    if (is_https) {
+        server_opts.https = credentials;
+    }
+    const app = fastify(fastify_options);
+
+    app.register(fastify_helmet);
+
+    if (props_cors && (props_cors === true || props_cors.toUpperCase() === TRUE_COMPARE_VAL)) {
         app.register(cors, cors_options);
     }
 
@@ -127,20 +177,12 @@ function serverChild() {
 // This handles all get requests for the studio
     app.register(fastify_compress);
     app.register(fastify_static, {root: guidePath.join(__dirname,'../docs')});
-    app.get('/', function (req, res) {
+    app.get('/', function(req, res) {
         return res.sendFile('index.html');
     });
 
     app.post('/',async function (req, res) {
         await handlePostRequest(req, res);
-    });
-
-    process.on('message', handleServerMessage);
-
-    process.on('uncaughtException', handleServerUncaughtException);
-
-    process.on('close',() => {
-        harper_logger.info(`Server close event received for process ${process.pid}`);
     });
 
     try {
@@ -154,88 +196,53 @@ function serverChild() {
         // const props_http_secure_on = env.get(PROPS_HTTP_SECURE_ON_KEY);
         // const props_http_on = env.get(PROPS_HTTP_ON_KEY);
 
-        global.isMaster = cluster.isMaster;
-
-        harper_logger.debug(`child process ${process.pid} starting up.`);
-
-        setUp().then(()=>{
-            //TODO - will be removed and updated with a server factory function for generating the server with correct config
-            // for http/https and other config options (in next PR for CORE-1181)
-            tempServerListener();
-        });
         //TODO we need to be able to create a http & https endpoint based on config, this code will be refactored to
         // accomplish this with fastify in the next PR (CORE-1181)
-        /*let keep_alive_timeout = env.get(terms.HDB_SETTINGS_NAMES.SERVER_KEEP_ALIVE_TIMEOUT_KEY);
-        let headers_timeout = env.get(terms.HDB_SETTINGS_NAMES.SERVER_HEADERS_TIMEOUT_KEY);
+        // let keep_alive_timeout = env.get(terms.HDB_SETTINGS_NAMES.SERVER_KEEP_ALIVE_TIMEOUT_KEY);
+        // let headers_timeout = env.get(terms.HDB_SETTINGS_NAMES.SERVER_HEADERS_TIMEOUT_KEY);
 
-        if (props_http_secure_on &&
-            (props_http_secure_on === true || props_http_secure_on.toUpperCase() === TRUE_COMPARE_VAL)) {
-            secureServer = httpsecure.createServer(credentials, app);
-
-            if(keep_alive_timeout !== undefined){
-                secureServer.keepAliveTimeout = keep_alive_timeout;
-            }
-
-            if(headers_timeout !== undefined){
-                secureServer.headersTimeout = headers_timeout;
-            }
-
-            secureServer.setTimeout(server_timeout ? server_timeout : DEFAULT_SERVER_TIMEOUT);
-            secureServer.listen(env.get(PROPS_HTTP_SECURE_PORT_KEY), function () {
+        if (is_https) {
+            app.listen(env.get(PROPS_HTTP_SECURE_PORT_KEY), function () {
                 harper_logger.info(`HarperDB ${pjson.version} HTTPS Server running on ${env.get(PROPS_HTTP_SECURE_PORT_KEY)}`);
                 signalling.signalChildStarted();
             });
-        }
-
-        if (props_http_on &&
-            (props_http_on === true || props_http_on.toUpperCase() === TRUE_COMPARE_VAL)) {
+        } else {
             harper_logger.debug(`child process starting up http server.`);
-            httpServer = http.createServer(app);
-            httpServer.on('connection', function(conn) {
-                let key = conn.remoteAddress + ':' + conn.remotePort;
-                server_connections[key] = conn;
-                conn.on('close', function() {
-                    harper_logger.debug(`removing connection for ${key}`);
-                    delete server_connections[key];
-                });
-            });
+            // app.server.on('connection', function(conn) {
+            //     let key = conn.remoteAddress + ':' + conn.remotePort;
+            //     server_connections[key] = conn;
+            //     conn.on('close', function() {
+            //         harper_logger.debug(`removing connection for ${key}`);
+            //         delete server_connections[key];
+            //     });
+            // });
 
-            if(keep_alive_timeout !== undefined){
-                httpServer.keepAliveTimeout = keep_alive_timeout;
-            }
-
-            if(headers_timeout !== undefined){
-                httpServer.headersTimeout = headers_timeout;
-            }
-
-            httpServer.setTimeout(server_timeout ? server_timeout : DEFAULT_SERVER_TIMEOUT);
-            httpServer.listen(env.get(PROPS_HTTP_PORT_KEY), function () {
+            app.listen(env.get(PROPS_HTTP_PORT_KEY), function () {
                 harper_logger.info(`HarperDB ${pjson.version} HTTP Server running on ${env.get(PROPS_HTTP_PORT_KEY)}`);
                 signalling.signalChildStarted();
             });
-        }*/
-
-
-    } catch (e) {
+        }
+        return app;
+    } catch(e) {
         harper_logger.error(e);
     }
 }
 
 //TODO - THIS METHOD WILL BE REMOVED WHEN THE SERVER FACTORY METHOD IS ADDED IN NEXT PR (CORE-1181)
-function tempServerListener() {
-    app.listen("9925",'0.0.0.0', (err, address) => {
-        if (err) {
-            console.error(err);
-            process.exit(1);
-        }
-        harper_logger.info(`HarperDB ${pjson.version} HTTP Server running on ${env.get(PROPS_HTTP_PORT_KEY)}`);
-        signalling.signalChildStarted();
-        console.log('running on ' + address);
-        //tracer.use('fastify');
-        process.on('SIGINT', () => app.close());
-        process.on('SIGTERM', () => app.close());
-    });
-}
+//function tempServerListener() {
+//     app.listen("9925",'0.0.0.0', (err, address) => {
+//         if (err) {
+//             console.error(err);
+//             process.exit(1);
+//         }
+//         harper_logger.info(`HarperDB ${pjson.version} HTTP Server running on ${env.get(PROPS_HTTP_PORT_KEY)}`);
+//         signalling.signalChildStarted();
+//         console.log('running on ' + address);
+//         //tracer.use('fastify');
+//         process.on('SIGINT', () => app.close());
+//         process.on('SIGTERM', () => app.close());
+//     });
+// }
 
 async function handlePostRequest(req, res) {
     // Per the body-parser docs, any request which does not match the bodyParser.json middleware will be returned with
