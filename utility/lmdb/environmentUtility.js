@@ -237,7 +237,23 @@ async function deleteEnvironment(base_path, env_name, is_txn = false) {
     await fs.remove(path.join(base_path, env_name));
     if(global.lmdb_map !== undefined) {
         let full_name = getCachedEnvironmentName(base_path, env_name, is_txn);
-        delete global.lmdb_map[full_name];
+        if(global.lmdb_map[full_name]){
+            let env = global.lmdb_map[full_name];
+            closeEnvironment(env);
+            delete global.lmdb_map[full_name];
+        }
+    }
+}
+
+/**
+ * takes an environment and closes it
+ * @param env
+ */
+function closeEnvironment(env){
+    //make sure env is actually a reference to the lmdb environment class so we don't blow anything up
+    if(env && env.constructor && env.constructor.name === 'Env') {
+        //we need to close the environment to release the file from the process
+        env.close();
     }
 }
 
@@ -532,5 +548,6 @@ module.exports = {
     initializeDBIs,
     TransactionCursor,
     environmentDataSize,
-    copyEnvironment
+    copyEnvironment,
+    closeEnvironment
 };
