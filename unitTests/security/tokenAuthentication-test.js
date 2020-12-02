@@ -9,6 +9,7 @@ const assert = require('assert');
 const sinon = require('sinon');
 const sandbox = sinon.createSandbox();
 const rewire = require('rewire');
+const password_function = require('../../utility/password');
 const token_auth = rewire('../../security/tokenAuthentication');
 const JWTObjects = require('../../security/JWTObjects');
 const get_jwt_keys_func = token_auth.__get__('getJWTRSAKeys');
@@ -601,7 +602,7 @@ describe('test validateRefreshToken function', ()=>{
         old_user_tokens = await token_auth.createTokens({username: 'old_user', password: 'notcool'});
         non_user_tokens = await token_auth.createTokens({username: 'non_user', password: 'notcool'});
 
-        global.hdb_users[0].refresh_token = hdb_admin_tokens.refresh_token;
+        global.hdb_users[0].refresh_token = password_function.hash(hdb_admin_tokens.refresh_token);
 
         rw_validate_user();
         jwt_spy = sandbox.spy(jwt, 'verify');
@@ -635,7 +636,7 @@ describe('test validateRefreshToken function', ()=>{
         }
 
         assert.deepStrictEqual(error, undefined);
-        assert.deepStrictEqual(user, {active: true, username: 'HDB_ADMIN', refresh_token: hdb_admin_tokens.refresh_token});
+        assert.deepStrictEqual(user, {active: true, username: 'HDB_ADMIN', refresh_token: global.hdb_users[0].refresh_token});
         assert(jwt_spy.callCount === 1);
         assert(jwt_spy.threw() === false);
         assert(validate_user_spy.callCount === 1);
@@ -752,7 +753,7 @@ describe('test refreshOperationToken function', ()=>{
         old_user_tokens = await token_auth.createTokens({username: 'old_user', password: 'notcool'});
         non_user_tokens = await token_auth.createTokens({username: 'non_user', password: 'notcool'});
         rw_validate_user();
-        global.hdb_users[0].refresh_token = hdb_admin_tokens.refresh_token;
+        global.hdb_users[0].refresh_token = password_function.hash(hdb_admin_tokens.refresh_token);
         jwt_spy = sandbox.spy(jwt, 'verify');
         validate_user_spy = sandbox.spy(token_auth.__get__('user_functions'), 'findAndValidateUser');
 
