@@ -264,7 +264,7 @@ describe('test authorize function for JWT', ()=>{
         hdb_admin_tokens = await token_auth.createTokens({username: 'HDB_ADMIN', password: 'cool'});
         old_user_tokens = await token_auth.createTokens({username: 'old_user', password: 'notcool'});
         non_user_tokens = await token_auth.createTokens({username: 'non_user', password: 'notcool'});
-        global.hdb_users[0].refresh_token = hdb_admin_tokens.refresh_token;
+        global.hdb_users[0].refresh_token = password_function.hash(hdb_admin_tokens.refresh_token);
         rw_validate_user();
         rw_signalling();
         rw_update();
