@@ -381,15 +381,51 @@ if (cluster.isMaster &&( num_workers >= 1 || DEBUG )) {
         }
     }
 
+    function removeFromHDBSchema(msg){
+        try{
+            if(global.hdb_schema !== undefined && typeof global.hdb_schema === 'object' && msg.operation !== undefined){
+                let cached_environment = undefined;
+                switch (msg.operation.operation) {
+                    case 'drop_schema':
+                        delete global.hdb_schema[msg.operation.schema];
+                        break;
+                    case 'drop_table':
+                        if(global.hdb_schema[msg.operation.schema]){
+                            delete global.hdb_schema[msg.operation.schema][msg.operation.table];
+                        }
+                        break;
+                    /*case 'drop_attribute':
+                        if(global.hdb_schema[msg.operation.schema] && global.hdb_schema[msg.operation.schema][msg.operation.table]
+                            && global.hdb_schema[msg.operation.schema][msg.operation.table].attributes) {
+                            let index = undefined;
+                            for(let x = 0, length = global.hdb_schema[msg.operation.schema][msg.operation.table].attributes.length; x < length; x++){
+                                let attribute = global.hdb_schema[msg.operation.schema][msg.operation.table].attributes[x];
+                                if(attribute.attribute === msg.operation.attribute){
+                                    index = x;
+                                    return;
+                                }
+                            }
+                        }
+                        break;*/
+                    default:
+                        global_schema.schemaSignal((err) => {
+                            if (err) {
+                                harper_logger.error(err);
+                            }
+                        });
+                        break;
+                }
+            }
+        } catch(e){
+            harper_logger.error(e);
+        }
+    }
+
     process.on('message', (msg) => {
         switch (msg.type) {
             case 'schema':
                 removeSchemaFromLMDBMap(msg);
-                global_schema.schemaSignal((err) => {
-                    if (err) {
-                        harper_logger.error(err);
-                    }
-                });
+                removeFromHDBSchema(msg);
                 break;
             case 'user':
                 user_schema.setUsersToGlobal((err) => {
