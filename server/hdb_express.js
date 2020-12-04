@@ -31,6 +31,7 @@ const promisify = util.promisify;
 const hdb_license = require('../utility/registration/hdb_license');
 const PermissionResponseObject = require('../security/data_objects/PermissionResponseObject');
 const check_jwt_tokens = require('../utility/install/checkJWTTokensExist');
+const {closeEnvironment} = require('../utility/lmdb/environmentUtility');
 
 const p_schema_to_global = promisify(global_schema.setSchemaDataToGlobal);
 
@@ -182,6 +183,14 @@ if (cluster.isMaster &&( num_workers >= 1 || DEBUG )) {
         global.clustering_on = env.get('CLUSTERING');
 
         await p_schema_to_global();
+
+        //we need to close all of the environments on the parent process & delete the references.
+        let keys = Object.keys(global.lmdb_map);
+        for(let x = 0, length = keys.length; x < length; x++){
+            closeEnvironment(global.lmdb_map[keys[x]]);
+        }
+        delete global.lmdb_map;
+
         await user_schema.setUsersToGlobal();
 
         harper_logger.notify(`HarperDB successfully started`);
@@ -235,6 +244,7 @@ if (cluster.isMaster &&( num_workers >= 1 || DEBUG )) {
     const cors = require('cors');
     const compression = require('compression');
     const spawn_cluster_connection = require('./socketcluster/connector/spawnSCConnection');
+    const schema_describe = require('../data_layer/schemaDescribe');
 
     const app = express();
 
@@ -350,9 +360,7 @@ if (cluster.isMaster &&( num_workers >= 1 || DEBUG )) {
                             let key = keys[x];
                             if(key.startsWith(`${msg.operation.schema}.`) || key.startsWith(`txn.${msg.operation.schema}.`)){
                                 closeEnvironment(global.lmdb_map[key]);
-                                closeEnvironment(global.lmdb_map[`txn.${key}`]);
                                 delete global.lmdb_map[key];
-                                delete global.lmdb_map[`txn.${key}`];
                             }
                         }
                         break;
@@ -381,10 +389,10 @@ if (cluster.isMaster &&( num_workers >= 1 || DEBUG )) {
         }
     }
 
-    function removeFromHDBSchema(msg){
+    async function removeFromHDBSchema(msg){
         try{
             if(global.hdb_schema !== undefined && typeof global.hdb_schema === 'object' && msg.operation !== undefined){
-                let cached_environment = undefined;
+
                 switch (msg.operation.operation) {
                     case 'drop_schema':
                         delete global.hdb_schema[msg.operation.schema];
@@ -394,19 +402,20 @@ if (cluster.isMaster &&( num_workers >= 1 || DEBUG )) {
                             delete global.hdb_schema[msg.operation.schema][msg.operation.table];
                         }
                         break;
-                    /*case 'drop_attribute':
-                        if(global.hdb_schema[msg.operation.schema] && global.hdb_schema[msg.operation.schema][msg.operation.table]
-                            && global.hdb_schema[msg.operation.schema][msg.operation.table].attributes) {
-                            let index = undefined;
-                            for(let x = 0, length = global.hdb_schema[msg.operation.schema][msg.operation.table].attributes.length; x < length; x++){
-                                let attribute = global.hdb_schema[msg.operation.schema][msg.operation.table].attributes[x];
-                                if(attribute.attribute === msg.operation.attribute){
-                                    index = x;
-                                    return;
-                                }
-                            }
+                    case 'create_schema':
+                        if(!hasOwnProperty(global.hdb_schema, msg.operation.schema)){
+                            global.hdb_schema[msg.operation.schema] = {};
                         }
-                        break;*/
+                        break;
+                    case 'create_table':
+                    case 'create_attribute':
+                        if(!hasOwnProperty(global.hdb_schema, msg.operation.schema)){
+                            global.hdb_schema[msg.operation.schema] = {};
+                        }
+
+                        global.hdb_schema[msg.operation.schema][msg.operation.table] =
+                            await schema_describe.describeTable({schema: msg.operation.schema, table: msg.operation.table});
+                        break;
                     default:
                         global_schema.schemaSignal((err) => {
                             if (err) {
@@ -415,24 +424,30 @@ if (cluster.isMaster &&( num_workers >= 1 || DEBUG )) {
                         });
                         break;
                 }
+            } else{
+                global_schema.schemaSignal((err) => {
+                    if (err) {
+                        harper_logger.error(err);
+                    }
+                });
             }
         } catch(e){
             harper_logger.error(e);
         }
     }
 
-    process.on('message', (msg) => {
+    process.on('message', async (msg) => {
         switch (msg.type) {
             case 'schema':
                 removeSchemaFromLMDBMap(msg);
-                removeFromHDBSchema(msg);
+                await removeFromHDBSchema(msg);
                 break;
             case 'user':
-                user_schema.setUsersToGlobal((err) => {
-                    if (err) {
-                        harper_logger.error(err);
-                    }
-                });
+                try {
+                    await user_schema.setUsersToGlobal();
+                } catch(e){
+                    harper_logger.error(e);
+                }
                 break;
             case 'job':
                 job_runner.parseMessage(msg.runner_message).then((result) => {
