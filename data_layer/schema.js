@@ -1,11 +1,11 @@
 'use strict';
 
 const validation = require('../validation/schema_validator');
+const schema_metadata_validator = require('../validation/schemaMetadataValidator');
 const logger = require('../utility/logging/harper_logger');
 const uuidV4 = require('uuid/v4');
 const clone = require('clone');
 const signalling = require('../utility/signalling');
-const hdb_util = require('../utility/common_utils');
 const hdb_terms = require('../utility/hdbTerms');
 const util = require('util');
 const harperBridge = require('./harperBridge/harperBridge');
@@ -46,7 +46,7 @@ async function createSchemaStructure(schema_create_object) {
         throw validation_error;
     }
 
-    if (!hdb_util.checkSchemaExists(schema_create_object.schema)) {
+    if (!await schema_metadata_validator.checkSchemaExists(schema_create_object.schema)) {
         throw `schema '${schema_create_object.schema}' already exists`;
     }
 
@@ -81,12 +81,13 @@ async function createTableStructure(create_table_object) {
 
     validation.validateTableResidence(create_table_object.residence);
 
-    let invalid_schema_msg = hdb_util.checkSchemaExists(create_table_object.schema);
+    let invalid_schema_msg = await schema_metadata_validator.checkSchemaExists(create_table_object.schema);
     if (invalid_schema_msg) {
         throw invalid_schema_msg;
     }
 
-    if (!hdb_util.checkTableExists(create_table_object.schema, create_table_object.table)) {
+    let invalid_table_msg = await schema_metadata_validator.checkSchemaTableExists(create_table_object.schema, create_table_object.table);
+    if (!invalid_table_msg) {
         throw `table '${create_table_object.table}' already exists in schema '${create_table_object.schema}'`;
     }
 
@@ -121,10 +122,14 @@ async function dropSchema(drop_schema_object) {
         throw validation_error;
     }
 
-    let invalid_schema_msg = hdb_util.checkSchemaExists(drop_schema_object.schema);
+    let invalid_schema_msg = await schema_metadata_validator.checkSchemaExists(drop_schema_object.schema);
     if (invalid_schema_msg) {
         throw invalid_schema_msg;
     }
+
+    //we refresh and assign the entire schema metadata to global in order to make sure we have the latest
+    let schema = await schema_metadata_validator.schema_describe.describeSchema({schema: drop_schema_object.schema});
+    global.hdb_schema[drop_schema_object.schema] = schema;
 
     try {
         await harperBridge.dropSchema(drop_schema_object);
@@ -147,10 +152,14 @@ async function dropTable(drop_table_object) {
         throw validation_error;
     }
 
-    let invalid_schema_table_msg = hdb_util.checkSchemaTableExist(drop_table_object.schema, drop_table_object.table);
+    let invalid_schema_table_msg = await schema_metadata_validator.checkSchemaTableExists(drop_table_object.schema, drop_table_object.table);
     if (invalid_schema_table_msg) {
         throw invalid_schema_table_msg;
     }
+
+    //we refresh and assign the entire table metadata to global in order to make sure we have the latest
+    let table = await schema_metadata_validator.schema_describe.describeTable({schema: drop_table_object.schema, table: drop_table_object.table});
+    global.hdb_schema[drop_table_object.schema][drop_table_object.table] = table;
 
     try {
         await harperBridge.dropTable(drop_table_object);
@@ -177,7 +186,7 @@ async function dropAttribute(drop_attribute_object) {
         throw validation_error;
     }
 
-    let invalid_schema_table_msg = hdb_util.checkSchemaTableExist(drop_attribute_object.schema, drop_attribute_object.table);
+    let invalid_schema_table_msg = await schema_metadata_validator.checkSchemaTableExists(drop_attribute_object.schema, drop_attribute_object.table);
     if (invalid_schema_table_msg) {
         throw invalid_schema_table_msg;
     }

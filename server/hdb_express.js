@@ -398,18 +398,18 @@ if (cluster.isMaster &&( num_workers >= 1 || DEBUG )) {
                         delete global.hdb_schema[msg.operation.schema];
                         break;
                     case 'drop_table':
-                        if(global.hdb_schema[msg.operation.schema]){
+                        if(global.hdb_schema[msg.operation.schema] !== undefined){
                             delete global.hdb_schema[msg.operation.schema][msg.operation.table];
                         }
                         break;
                     case 'create_schema':
-                        if(!hasOwnProperty(global.hdb_schema, msg.operation.schema)){
+                        if(global.hdb_schema[msg.operation.schema] === undefined){
                             global.hdb_schema[msg.operation.schema] = {};
                         }
                         break;
                     case 'create_table':
                     case 'create_attribute':
-                        if(!hasOwnProperty(global.hdb_schema, msg.operation.schema)){
+                        if(global.hdb_schema[msg.operation.schema] === undefined){
                             global.hdb_schema[msg.operation.schema] = {};
                         }
 
