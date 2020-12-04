@@ -18,7 +18,7 @@ const p_authorize = util.promisify(auth.authorize);
 const pjson = require(`${__dirname}/../package.json`);
 const server_utilities = require('./serverUtilities');
 const p_choose_operation = util.promisify(server_utilities.chooseOperation);
-const cors = require('fastify-cors');
+const fastify_cors = require('fastify-cors');
 const fastify_compress = require('fastify-compress');
 const fastify_static = require('fastify-static');
 const fastify_helmet = require('fastify-helmet');
@@ -40,6 +40,8 @@ const PROPS_CORS_KEY = 'CORS_ON';
 const PROPS_CORS_WHITELIST_KEY = 'CORS_WHITELIST';
 const TRUE_COMPARE_VAL = 'TRUE';
 const DEFAULT_SERVER_TIMEOUT = 120000;
+const DEFAULT_KEEP_ALIVE_TIMEOUT = 5000;
+const DEFAULT_HEADER_TIMEOUT = 60000;
 const PROPS_SERVER_TIMEOUT_KEY = 'SERVER_TIMEOUT_MS';
 const PROPS_PRIVATE_KEY = 'PRIVATE_KEY';
 const PROPS_CERT_KEY = 'CERTIFICATE';
@@ -48,9 +50,7 @@ const PROPS_HTTP_SECURE_ON_KEY = 'HTTPS_ON';
 const PROPS_HTTP_PORT_KEY = 'HTTP_PORT';
 const PROPS_HTTP_SECURE_PORT_KEY = 'HTTPS_PORT';
 
-// const http = require('http');
-// const httpsecure = require('https');
-
+/*Config values needed for Fastify server options*/
 const privateKey = env.get(PROPS_PRIVATE_KEY);
 const certificate = env.get(PROPS_CERT_KEY);
 const credentials = {key: fs.readFileSync(`${privateKey}`), cert: fs.readFileSync(`${certificate}`)};
@@ -60,7 +60,6 @@ const props_http_on = env.get(PROPS_HTTP_ON_KEY);
 let keep_alive_timeout = env.get(terms.HDB_SETTINGS_NAMES.SERVER_KEEP_ALIVE_TIMEOUT_KEY);
 let headers_timeout = env.get(terms.HDB_SETTINGS_NAMES.SERVER_HEADERS_TIMEOUT_KEY);
 
-let app;
 let httpServer = undefined;
 let secureServer = undefined;
 let server_connections = {};
@@ -68,8 +67,7 @@ let server_connections = {};
 const fastify_options = {
     bodyLimit: REQ_MAX_BODY_SIZE,
     connectionTimeout: server_timeout ? server_timeout : DEFAULT_SERVER_TIMEOUT,
-    keepAliveTimeout: keep_alive_timeout ? keep_alive_timeout : null,
-    headersTimeout: headers_timeout ?  headers_timeout : null
+    keepAliveTimeout: keep_alive_timeout ? keep_alive_timeout : DEFAULT_KEEP_ALIVE_TIMEOUT
 };
 
 let props_cors = env.get(PROPS_CORS_KEY);
@@ -107,40 +105,20 @@ function serverChild() {
         harper_logger.info(`Server close event received for process ${process.pid}`);
     });
 
+    process.on('SIGINT', () => shutDown());
+    process.on('SIGTERM', () => shutDown());
+
     global.isMaster = cluster.isMaster;
 
     harper_logger.debug(`child process ${process.pid} starting up.`);
     setUp().then(()=>{});
 
-    if (props_http_secure_on &&
-        (props_http_secure_on === true || props_http_secure_on.toUpperCase() === TRUE_COMPARE_VAL)) {
-
+    if (props_http_secure_on && (props_http_secure_on === true || props_http_secure_on.toUpperCase() === TRUE_COMPARE_VAL)) {
         secureServer = buildServer(true);
-
-        // secureServer.listen(env.get(PROPS_HTTP_SECURE_PORT_KEY), function () {
-        //     harper_logger.info(`HarperDB ${pjson.version} HTTPS Server running on ${env.get(PROPS_HTTP_SECURE_PORT_KEY)}`);
-        //     signalling.signalChildStarted();
-        // });
     }
 
-    if (props_http_on &&
-        (props_http_on === true || props_http_on.toUpperCase() === TRUE_COMPARE_VAL)) {
-
+    if (props_http_on && (props_http_on === true || props_http_on.toUpperCase() === TRUE_COMPARE_VAL)) {
         httpServer = buildServer(false);
-
-        httpServer.server.on('connection', function(conn) {
-            let key = conn.remoteAddress + ':' + conn.remotePort;
-            server_connections[key] = conn;
-            conn.on('close', function() {
-                harper_logger.debug(`removing connection for ${key}`);
-                delete server_connections[key];
-            });
-        });
-
-        // httpServer.listen(env.get(PROPS_HTTP_PORT_KEY), function () {
-        //     harper_logger.info(`HarperDB ${pjson.version} HTTP Server running on ${env.get(PROPS_HTTP_PORT_KEY)}`);
-        //     signalling.signalChildStarted();
-        // });
     }
 }
 
@@ -150,15 +128,16 @@ function buildServer(is_https) {
         server_opts.https = credentials;
     }
     const app = fastify(fastify_options);
+    app.server.headersTimeout = headers_timeout ?  headers_timeout : DEFAULT_HEADER_TIMEOUT;
 
     app.register(fastify_helmet);
 
     if (props_cors && (props_cors === true || props_cors.toUpperCase() === TRUE_COMPARE_VAL)) {
-        app.register(cors, cors_options);
+        app.register(fastify_cors, cors_options);
     }
 
     //TODO THIS CODE IS COMMENTED OUT AS IT IS SUPERCEDED WITH FASTIFY NATIVELY CONVERTING THE REQUEST BODY TO JSON,
-    // HOWEVER PLEASE MAKE SURE THIS CODE CAN BE FULL REMOVED
+    // HOWEVER PLEASE MAKE SURE THIS CODE CAN BE FULL REMOVED - TO BE COVERED IN CORE-1180
     /*
     app.use(bodyParser.json({limit: '1gb'})); // support json encoded bodies
     app.use(bodyParser.urlencoded({extended: true}));
@@ -172,6 +151,7 @@ function buildServer(is_https) {
         }
     });
 
+    //TODO - CAN THE AUTH PROCESS BE REGISTERED AS A PLUGIN?
     app.use(passport.initialize());*/
 
 // This handles all get requests for the studio
@@ -185,22 +165,16 @@ function buildServer(is_https) {
         await handlePostRequest(req, res);
     });
 
+    app.server.on('connection', function(conn) {
+        let key = conn.remoteAddress + ':' + conn.remotePort;
+        server_connections[key] = conn;
+        conn.on('close', function() {
+            harper_logger.debug(`removing connection for ${key}`);
+            delete server_connections[key];
+        });
+    });
+
     try {
-        // const http = require('http');
-        // const httpsecure = require('https');
-        //
-        // const privateKey = env.get(PROPS_PRIVATE_KEY);
-        // const certificate = env.get(PROPS_CERT_KEY);
-        // const credentials = {key: fs.readFileSync(`${privateKey}`), cert: fs.readFileSync(`${certificate}`)};
-        // const server_timeout = env.get(PROPS_SERVER_TIMEOUT_KEY);
-        // const props_http_secure_on = env.get(PROPS_HTTP_SECURE_ON_KEY);
-        // const props_http_on = env.get(PROPS_HTTP_ON_KEY);
-
-        //TODO we need to be able to create a http & https endpoint based on config, this code will be refactored to
-        // accomplish this with fastify in the next PR (CORE-1181)
-        // let keep_alive_timeout = env.get(terms.HDB_SETTINGS_NAMES.SERVER_KEEP_ALIVE_TIMEOUT_KEY);
-        // let headers_timeout = env.get(terms.HDB_SETTINGS_NAMES.SERVER_HEADERS_TIMEOUT_KEY);
-
         if (is_https) {
             app.listen(env.get(PROPS_HTTP_SECURE_PORT_KEY), function () {
                 harper_logger.info(`HarperDB ${pjson.version} HTTPS Server running on ${env.get(PROPS_HTTP_SECURE_PORT_KEY)}`);
@@ -208,14 +182,6 @@ function buildServer(is_https) {
             });
         } else {
             harper_logger.debug(`child process starting up http server.`);
-            // app.server.on('connection', function(conn) {
-            //     let key = conn.remoteAddress + ':' + conn.remotePort;
-            //     server_connections[key] = conn;
-            //     conn.on('close', function() {
-            //         harper_logger.debug(`removing connection for ${key}`);
-            //         delete server_connections[key];
-            //     });
-            // });
 
             app.listen(env.get(PROPS_HTTP_PORT_KEY), function () {
                 harper_logger.info(`HarperDB ${pjson.version} HTTP Server running on ${env.get(PROPS_HTTP_PORT_KEY)}`);
@@ -269,7 +235,6 @@ async function handlePostRequest(req, res) {
 
     req.body.hdb_user = user;
     req.body.hdb_auth_header = req.headers.authorization;
-
 
     try {
         operation_function = await p_choose_operation(req.body);
@@ -390,22 +355,27 @@ function removeSchemaFromLMDBMap(msg){
 
 async function shutDown(force_bool) {
     harper_logger.debug(`calling shutdown`);
-    let target_server = (httpServer ? httpServer : secureServer);
-    if(target_server) {
+    if (httpServer || secureServer) {
         harper_logger.warn(`Process pid:${process.pid} - SIGINT received, closing connections and finishing existing work.`);
         harper_logger.info(`There are ${Object.keys(server_connections).length} connections.`);
-        for (let conn of Object.keys(server_connections)) {
-            harper_logger.info(`Closing connection ${util.inspect(server_connections[conn])}`);
-            server_connections[conn].destroy();
+        if (force_bool) {
+            for (let conn of Object.keys(server_connections)) {
+                harper_logger.info(`Closing connection ${util.inspect(server_connections[conn])}`);
+                server_connections[conn].destroy();
+            }
         }
         setTimeout(() => {
             harper_logger.info(`Timeout occurred during client disconnect.  Took longer than ${terms.RESTART_TIMEOUT_MS}ms.`);
             hdb_util.callProcessSend({type: terms.CLUSTER_MESSAGE_TYPE_ENUM.CHILD_STOPPED, pid: process.pid});
         }, terms.RESTART_TIMEOUT_MS);
-        target_server.close(function () {
-            harper_logger.warn(`Process pid:${process.pid} - Work completed, shutting down`);
-            hdb_util.callProcessSend({type: terms.CLUSTER_MESSAGE_TYPE_ENUM.CHILD_STOPPED, pid: process.pid});
-        });
+        if (httpServer) {
+            await httpServer.close();
+        }
+        if (secureServer) {
+            await secureServer.close();
+        }
+        harper_logger.warn(`Process pid:${process.pid} - Work completed, shutting down`);
+        hdb_util.callProcessSend({type: terms.CLUSTER_MESSAGE_TYPE_ENUM.CHILD_STOPPED, pid: process.pid});
     }
 }
 
