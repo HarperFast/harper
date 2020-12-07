@@ -28,6 +28,7 @@ const harperBridge = require('../../data_layer/harperBridge/harperBridge');
 // being called inside another function declared within the same file.
 const rewire = require('rewire');
 let schema = rewire('../../data_layer/schema');
+let schema_metadata_validator = require('../../validation/schemaMetadataValidator');
 
 const SCHEMA_NAME_TEST = 'dogsrule';
 const TABLE_NAME_TEST = 'catsdrool';
@@ -324,27 +325,46 @@ describe('Test schema module', function() {
      */
     describe('Drop Schema', function() {
         let bridge_drop_schema_stub = sinon.stub(harperBridge, 'dropSchema');
-        /*let schema_describe_rw;
-        before(()=>{
-            schema_describe_rw = schema.__set__('schema_describe', {
-                describeSchema: async(describe_schema_object)=>GLOBAL_SCHEMA_FAKE,
-                describeTable: async(describe_table_object)=>GLOBAL_SCHEMA_FAKE.dogsrule
+        let schema_describe_rw;
+        beforeEach(()=>{
+            schema_describe_rw = schema.__set__('schema_metadata_validator', {
+                schema_describe: {
+                    describeSchema: async (describe_schema_object) => GLOBAL_SCHEMA_FAKE,
+                    describeTable: async (describe_table_object) => GLOBAL_SCHEMA_FAKE.dogsrule
+                },
+                checkSchemaExists: async(schema_name)=> {
+                    global.hdb_schema[schema_name] = GLOBAL_SCHEMA_FAKE[schema_name];
+                }
             });
         });
 
-        after(()=>{
+        afterEach(()=>{
             schema_describe_rw();
-        });*/
+        });
 
         it('Test that bridge stub is called as expected and success msg is returned', async () => {
+            let schema_describe_rw = schema.__set__('schema_metadata_validator', {
+                schema_describe: {
+                    describeSchema: async (describe_schema_object) => GLOBAL_SCHEMA_FAKE,
+                    describeTable: async (describe_table_object) => GLOBAL_SCHEMA_FAKE.dogsrule
+                },
+                checkSchemaExists: async(schema_name)=> {
+                    global.hdb_schema[schema_name] = GLOBAL_SCHEMA_FAKE[schema_name];
+                }
+            });
+
             let result = await schema.dropSchema(DROP_SCHEMA_OBJECT_TEST);
 
             expect(bridge_drop_schema_stub).to.have.been.calledWith(DROP_SCHEMA_OBJECT_TEST);
             expect(signal_schema_change_stub).to.have.been.calledWith({ operation: { operation: "drop_schema", schema: "dogsrule" }, type: "schema" });
             expect(result).to.equal(`successfully deleted schema '${DROP_SCHEMA_OBJECT_TEST.schema}'`);
+
+            schema_describe_rw();
         });
 
         it('Test schema does not exist error is thrown', async () => {
+            schema_describe_rw();
+
             let error;
             try {
                 await schema.dropSchema(DROP_SCHEMA_OBJECT_TEST);
@@ -382,9 +402,31 @@ describe('Test schema module', function() {
      */
     describe('Drop table', function() {
         let bridge_drop_table_stub;
+        let schema_describe_rw;
 
-        before(() => {
+        before(()=>{
             bridge_drop_table_stub = sandbox.stub(harperBridge, 'dropTable');
+        });
+
+        beforeEach(()=>{
+
+            schema_describe_rw = schema.__set__('schema_metadata_validator', {
+                schema_describe: {
+                    describeSchema: async (describe_schema_object) => GLOBAL_SCHEMA_FAKE,
+                    describeTable: async (describe_table_object) => GLOBAL_SCHEMA_FAKE.dogsrule
+                },
+                checkSchemaExists: async(schema_name)=> {
+                    global.hdb_schema[schema_name] = GLOBAL_SCHEMA_FAKE[schema_name];
+                },
+                checkSchemaTableExists: async(schema_name, table_name)=> {
+                    global.hdb_schema[schema_name] = {};
+                    global.hdb_schema[schema_name][table_name] = GLOBAL_SCHEMA_FAKE[schema_name][table_name];
+                }
+            });
+        });
+
+        afterEach(()=>{
+            schema_describe_rw();
         });
 
         it('Test that validation error is caught and thrown', async () => {
