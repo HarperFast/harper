@@ -92,6 +92,14 @@ try {
 
     let p_send_to_worker = promisify(socketCluster.sendToWorker).bind(socketCluster);
     registerHandlers();
+
+    process.on('message', async (msg) => {
+        if(socketCluster.isWorkerClusterReady === true && socketCluster.workerCluster && socketCluster.workerCluster.pid &&
+            msg.type && msg.type === 'schema' ){
+            await p_send_to_worker(0, msg);
+        }
+    });
+
 } catch(err) {
     log.fatal('There was a fatal error starting clustering.  Please check the logs and try again.');
     log.fatal(err);
@@ -111,7 +119,6 @@ function registerHandlers() {
     socketCluster.on('brokerExit', brokerExitHandler);
     socketCluster.on('brokerMessage', brokerMessageHandler);
 }
-
 
 /**
  * Any error from any child process or parent will cause the 'fail' event to be emitted on your SocketCluster instance (assuming the propagateErrors option is not set to false).

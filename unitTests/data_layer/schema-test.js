@@ -324,6 +324,17 @@ describe('Test schema module', function() {
      */
     describe('Drop Schema', function() {
         let bridge_drop_schema_stub = sinon.stub(harperBridge, 'dropSchema');
+        /*let schema_describe_rw;
+        before(()=>{
+            schema_describe_rw = schema.__set__('schema_describe', {
+                describeSchema: async(describe_schema_object)=>GLOBAL_SCHEMA_FAKE,
+                describeTable: async(describe_table_object)=>GLOBAL_SCHEMA_FAKE.dogsrule
+            });
+        });
+
+        after(()=>{
+            schema_describe_rw();
+        });*/
 
         it('Test that bridge stub is called as expected and success msg is returned', async () => {
             let result = await schema.dropSchema(DROP_SCHEMA_OBJECT_TEST);

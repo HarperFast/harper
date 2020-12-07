@@ -236,7 +236,6 @@ if (cluster.isMaster &&( num_workers >= 1 || DEBUG )) {
     const bodyParser = require('body-parser');
     const auth = require('../security/auth');
     const p_authorize = promisify(auth.authorize);
-    const {closeEnvironment} = require('../utility/lmdb/environmentUtility');
     const passport = require('passport');
     const pjson = require(`${__dirname}/../package.json`);
     const server_utilities = require('./serverUtilities');
@@ -245,6 +244,7 @@ if (cluster.isMaster &&( num_workers >= 1 || DEBUG )) {
     const compression = require('compression');
     const spawn_cluster_connection = require('./socketcluster/connector/spawnSCConnection');
     const schema_describe = require('../data_layer/schemaDescribe');
+    const clean_lmdb = require('../utility/lmdb/cleanLMDBMap');
 
     const app = express();
 
@@ -345,51 +345,7 @@ if (cluster.isMaster &&( num_workers >= 1 || DEBUG )) {
         server_utilities.processLocalTransaction(req, res, operation_function, function () {});
     });
 
-    /**
-     * this function strips away the cached environments from global when a schema item is removed
-     * @param msg
-     */
-    function removeSchemaFromLMDBMap(msg){
-        try{
-            if(global.lmdb_map !== undefined && msg.operation !== undefined){
-                let keys = Object.keys(global.lmdb_map);
-                let cached_environment = undefined;
-                switch (msg.operation.operation) {
-                    case 'drop_schema':
-                        for(let x = 0; x < keys.length; x ++){
-                            let key = keys[x];
-                            if(key.startsWith(`${msg.operation.schema}.`) || key.startsWith(`txn.${msg.operation.schema}.`)){
-                                closeEnvironment(global.lmdb_map[key]);
-                                delete global.lmdb_map[key];
-                            }
-                        }
-                        break;
-                    case 'drop_table':
-                        // eslint-disable-next-line no-case-declarations
-                        let schema_table_name = `${msg.operation.schema}.${msg.operation.table}`;
-                        // eslint-disable-next-line no-case-declarations
-                        let txn_schema_table_name = `txn.${schema_table_name}`;
-                        closeEnvironment(global.lmdb_map[schema_table_name]);
-                        closeEnvironment(global.lmdb_map[txn_schema_table_name]);
-                        delete global.lmdb_map[schema_table_name];
-                        delete global.lmdb_map[txn_schema_table_name];
-                        break;
-                    case 'drop_attribute':
-                        cached_environment = global.lmdb_map[`${msg.operation.schema}.${msg.operation.table}`];
-                        if(cached_environment !== undefined && typeof cached_environment.dbis === 'object' && cached_environment.dbis[`${msg.operation.attribute}`] !== undefined){
-                            delete cached_environment.dbis[`${msg.operation.attribute}`];
-                        }
-                        break;
-                    default:
-                        break;
-                }
-            }
-        } catch(e){
-            harper_logger.error(e);
-        }
-    }
-
-    async function removeFromHDBSchema(msg){
+    async function syncSchemaMetadata(msg){
         try{
             if(global.hdb_schema !== undefined && typeof global.hdb_schema === 'object' && msg.operation !== undefined){
 
@@ -439,8 +395,8 @@ if (cluster.isMaster &&( num_workers >= 1 || DEBUG )) {
     process.on('message', async (msg) => {
         switch (msg.type) {
             case 'schema':
-                removeSchemaFromLMDBMap(msg);
-                await removeFromHDBSchema(msg);
+                clean_lmdb(msg);
+                await syncSchemaMetadata(msg);
                 break;
             case 'user':
                 try {
