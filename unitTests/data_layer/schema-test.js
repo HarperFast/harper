@@ -458,10 +458,31 @@ describe('Test schema module', function() {
         let bridge_drop_attr_stub;
         let drop_attr_from_global_stub = sandbox.stub();
         let drop_attr_from_global_rw;
-
+        let schema_describe_rw;
         before(() => {
             bridge_drop_attr_stub = sandbox.stub(harperBridge, 'dropAttribute');
             drop_attr_from_global_rw = schema.__set__('dropAttributeFromGlobal', drop_attr_from_global_stub);
+        });
+
+        beforeEach(()=>{
+
+            schema_describe_rw = schema.__set__('schema_metadata_validator', {
+                schema_describe: {
+                    describeSchema: async (describe_schema_object) => GLOBAL_SCHEMA_FAKE,
+                    describeTable: async (describe_table_object) => GLOBAL_SCHEMA_FAKE.dogsrule
+                },
+                checkSchemaExists: async(schema_name)=> {
+                    global.hdb_schema[schema_name] = GLOBAL_SCHEMA_FAKE[schema_name];
+                },
+                checkSchemaTableExists: async(schema_name, table_name)=> {
+                    global.hdb_schema[schema_name] = {};
+                    global.hdb_schema[schema_name][table_name] = GLOBAL_SCHEMA_FAKE[schema_name][table_name];
+                }
+            });
+        });
+
+        afterEach(()=>{
+            schema_describe_rw();
         });
 
         after(function() {
