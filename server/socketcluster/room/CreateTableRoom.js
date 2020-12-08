@@ -47,7 +47,7 @@ class CreateAttributeRoom extends RoomIF {
             // no-op for now, let it be pushed to the child for processing.
             log.trace('In CreateTableRoom');
 
-            await socket_utils.setGlobalSchema();
+            //await socket_utils.setGlobalSchema();
         } catch(e) {
             log.error(e);
         }
