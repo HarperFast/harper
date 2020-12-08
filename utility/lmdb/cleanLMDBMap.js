@@ -1,6 +1,6 @@
 'use strict';
 
-const {closeEnvironment} = require('./environmentUtility');
+const environment_utility = require('./environmentUtility');
 const harper_logger = require('../logging/harper_logger');
 
 module.exports = cleanLMDBMap;
@@ -11,7 +11,7 @@ module.exports = cleanLMDBMap;
  */
 function cleanLMDBMap(msg){
     try{
-        if(global.lmdb_map !== undefined && msg.operation !== undefined){
+        if(global.lmdb_map && typeof global.lmdb_map === 'object' && msg && msg.operation !== undefined){
             let keys = Object.keys(global.lmdb_map);
             let cached_environment = undefined;
             switch (msg.operation.operation) {
@@ -19,7 +19,7 @@ function cleanLMDBMap(msg){
                     for(let x = 0; x < keys.length; x ++){
                         let key = keys[x];
                         if(key.startsWith(`${msg.operation.schema}.`) || key.startsWith(`txn.${msg.operation.schema}.`)){
-                            closeEnvironment(global.lmdb_map[key]);
+                            environment_utility.closeEnvironment(global.lmdb_map[key]);
                             delete global.lmdb_map[key];
                         }
                     }
@@ -29,8 +29,8 @@ function cleanLMDBMap(msg){
                     let schema_table_name = `${msg.operation.schema}.${msg.operation.table}`;
                     // eslint-disable-next-line no-case-declarations
                     let txn_schema_table_name = `txn.${schema_table_name}`;
-                    closeEnvironment(global.lmdb_map[schema_table_name]);
-                    closeEnvironment(global.lmdb_map[txn_schema_table_name]);
+                    environment_utility.closeEnvironment(global.lmdb_map[schema_table_name]);
+                    environment_utility.closeEnvironment(global.lmdb_map[txn_schema_table_name]);
                     delete global.lmdb_map[schema_table_name];
                     delete global.lmdb_map[txn_schema_table_name];
                     break;
@@ -39,8 +39,6 @@ function cleanLMDBMap(msg){
                     if(cached_environment !== undefined && typeof cached_environment.dbis === 'object' && cached_environment.dbis[`${msg.operation.attribute}`] !== undefined){
                         delete cached_environment.dbis[`${msg.operation.attribute}`];
                     }
-                    break;
-                default:
                     break;
             }
         }
