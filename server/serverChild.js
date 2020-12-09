@@ -39,26 +39,34 @@ const REQ_MAX_BODY_SIZE = 1024*1024*1024; //this is 1GB in bytes
 const PROPS_CORS_KEY = 'CORS_ON';
 const PROPS_CORS_WHITELIST_KEY = 'CORS_WHITELIST';
 const TRUE_COMPARE_VAL = 'TRUE';
-const DEFAULT_SERVER_TIMEOUT = 120000;
-const DEFAULT_KEEP_ALIVE_TIMEOUT = 5000;
-const DEFAULT_HEADER_TIMEOUT = 60000;
-const PROPS_SERVER_TIMEOUT_KEY = 'SERVER_TIMEOUT_MS';
-const PROPS_PRIVATE_KEY = 'PRIVATE_KEY';
-const PROPS_CERT_KEY = 'CERTIFICATE';
-const PROPS_HTTP_ON_KEY = 'HTTP_ON';
-const PROPS_HTTP_SECURE_ON_KEY = 'HTTPS_ON';
-const PROPS_HTTP_PORT_KEY = 'HTTP_PORT';
-const PROPS_HTTP_SECURE_PORT_KEY = 'HTTPS_PORT';
+
+const { HDB_SETTINGS_NAMES, HDB_SETTINGS_DEFAULT_VALUES } = terms;
+const PROPS_SERVER_TIMEOUT_KEY = HDB_SETTINGS_NAMES.PROPS_SERVER_TIMEOUT_KEY;
+const PROPS_SERVER_KEEP_ALIVE_TIMEOUT_KEY = HDB_SETTINGS_NAMES.SERVER_KEEP_ALIVE_TIMEOUT_KEY;
+const PROPS_HEADER_TIMEOUT_KEY = HDB_SETTINGS_NAMES.SERVER_HEADERS_TIMEOUT_KEY;
+const PROPS_PRIVATE_KEY = HDB_SETTINGS_NAMES.PRIVATE_KEY_KEY;
+const PROPS_CERT_KEY = HDB_SETTINGS_NAMES.CERT_KEY;
+const PROPS_HTTP_ON_KEY = HDB_SETTINGS_NAMES.HTTP_ENABLED_KEY;
+const PROPS_HTTP_SECURE_ON_KEY = HDB_SETTINGS_NAMES.HTTP_SECURE_ENABLED_KEY;
+const PROPS_HTTP_PORT_KEY = HDB_SETTINGS_NAMES.HTTP_PORT_KEY;
+const PROPS_HTTP_SECURE_PORT_KEY = HDB_SETTINGS_NAMES.HTTP_SECURE_PORT_KEY;
+
+
+const DEFAULT_SERVER_TIMEOUT = HDB_SETTINGS_DEFAULT_VALUES[PROPS_SERVER_TIMEOUT_KEY];
+const DEFAULT_KEEP_ALIVE_TIMEOUT = HDB_SETTINGS_DEFAULT_VALUES[PROPS_SERVER_KEEP_ALIVE_TIMEOUT_KEY];
+const DEFAULT_HEADER_TIMEOUT = HDB_SETTINGS_DEFAULT_VALUES[PROPS_HEADER_TIMEOUT_KEY];
 
 /*Config values needed for Fastify server options*/
 const privateKey = env.get(PROPS_PRIVATE_KEY);
 const certificate = env.get(PROPS_CERT_KEY);
 const credentials = {key: fs.readFileSync(`${privateKey}`), cert: fs.readFileSync(`${certificate}`)};
-const server_timeout = env.get(PROPS_SERVER_TIMEOUT_KEY) ? env.get(PROPS_SERVER_TIMEOUT_KEY) : DEFAULT_SERVER_TIMEOUT;
 const props_http_secure_on = env.get(PROPS_HTTP_SECURE_ON_KEY);
 const props_http_on = env.get(PROPS_HTTP_ON_KEY);
-let keep_alive_timeout = env.get(terms.HDB_SETTINGS_NAMES.SERVER_KEEP_ALIVE_TIMEOUT_KEY);
-let headers_timeout = env.get(terms.HDB_SETTINGS_NAMES.SERVER_HEADERS_TIMEOUT_KEY);
+const server_timeout = env.get(PROPS_SERVER_TIMEOUT_KEY) ? env.get(PROPS_SERVER_TIMEOUT_KEY) : DEFAULT_SERVER_TIMEOUT;
+const keep_alive_timeout = env.get(PROPS_SERVER_KEEP_ALIVE_TIMEOUT_KEY) ?
+    env.get(PROPS_SERVER_KEEP_ALIVE_TIMEOUT_KEY) : DEFAULT_KEEP_ALIVE_TIMEOUT;
+const headers_timeout = env.get(PROPS_HEADER_TIMEOUT_KEY) ?
+    env.get(PROPS_HEADER_TIMEOUT_KEY) : DEFAULT_HEADER_TIMEOUT;
 
 let httpServer = undefined;
 let secureServer = undefined;
@@ -66,8 +74,8 @@ let server_connections = {};
 
 const fastify_options = {
     bodyLimit: REQ_MAX_BODY_SIZE,
-    connectionTimeout: server_timeout ? server_timeout : DEFAULT_SERVER_TIMEOUT,
-    keepAliveTimeout: keep_alive_timeout ? keep_alive_timeout : DEFAULT_KEEP_ALIVE_TIMEOUT
+    connectionTimeout: server_timeout,
+    keepAliveTimeout: keep_alive_timeout
 };
 
 let props_cors = env.get(PROPS_CORS_KEY);
@@ -105,9 +113,6 @@ function serverChild() {
         harper_logger.info(`Server close event received for process ${process.pid}`);
     });
 
-    process.on('SIGINT', () => shutDown());
-    process.on('SIGTERM', () => shutDown());
-
     global.isMaster = cluster.isMaster;
 
     harper_logger.debug(`child process ${process.pid} starting up.`);
@@ -120,6 +125,23 @@ function serverChild() {
     if (props_http_on && (props_http_on === true || props_http_on.toUpperCase() === TRUE_COMPARE_VAL)) {
         httpServer = buildServer(false);
     }
+
+    //TODO - will revisit below in new JIRA around restart/shutdown functionality - CORE-1209
+
+    // process.on('SIGINT', () => {
+    //     harper_logger.warn(`Process pid:${process.pid} - SIGINT received, closing connections and finishing existing work.`);
+    //     shutDown(true, true).then(() => {
+    //         console.log('IT WORKED');
+    //         process.exit(0);
+    //     });
+    // });
+    // process.on('SIGTERM', () => {
+    //     harper_logger.warn(`Process pid:${process.pid} - SIGTERM received, closing connections and finishing existing work.`);
+    //     shutDown(true, true).then(() => {
+    //         console.log('IT WORKED');
+    //         process.exit(0);
+    //     });
+    // });
 }
 
 function buildServer(is_https) {
@@ -128,7 +150,7 @@ function buildServer(is_https) {
         server_opts.https = credentials;
     }
     const app = fastify(fastify_options);
-    app.server.headersTimeout = headers_timeout ?  headers_timeout : DEFAULT_HEADER_TIMEOUT;
+    app.server.headersTimeout = headers_timeout;
 
     app.register(fastify_helmet);
 
@@ -161,7 +183,7 @@ function buildServer(is_https) {
         return res.sendFile('index.html');
     });
 
-    app.post('/',async function (req, res) {
+    app.post('/', async function (req, res) {
         await handlePostRequest(req, res);
     });
 
@@ -176,15 +198,17 @@ function buildServer(is_https) {
 
     try {
         if (is_https) {
-            app.listen(env.get(PROPS_HTTP_SECURE_PORT_KEY), function () {
-                harper_logger.info(`HarperDB ${pjson.version} HTTPS Server running on ${env.get(PROPS_HTTP_SECURE_PORT_KEY)}`);
+            harper_logger.debug(`child process starting up https server.`);
+
+            app.listen(env.get(PROPS_HTTP_SECURE_PORT_KEY), function (err, address) {
+                harper_logger.info(`HarperDB ${pjson.version} HTTPS Server running on ${address}`);
                 signalling.signalChildStarted();
             });
         } else {
             harper_logger.debug(`child process starting up http server.`);
 
-            app.listen(env.get(PROPS_HTTP_PORT_KEY), function () {
-                harper_logger.info(`HarperDB ${pjson.version} HTTP Server running on ${env.get(PROPS_HTTP_PORT_KEY)}`);
+            app.listen(env.get(PROPS_HTTP_PORT_KEY), function (err, address) {
+                harper_logger.info(`HarperDB ${pjson.version} HTTP Server running on ${address}`);
                 signalling.signalChildStarted();
             });
         }
@@ -209,6 +233,18 @@ function buildServer(is_https) {
 //         process.on('SIGTERM', () => app.close());
 //     });
 // }
+
+async function setUp(){
+    try {
+        harper_logger.trace('Configuring child process.');
+        await p_schema_to_global();
+        await user_schema.setUsersToGlobal();
+        spawn_cluster_connection(true);
+        await hdb_license.getLicense();
+    } catch(e) {
+        harper_logger.error(e);
+    }
+}
 
 async function handlePostRequest(req, res) {
     // Per the body-parser docs, any request which does not match the bodyParser.json middleware will be returned with
@@ -284,7 +320,7 @@ function handleServerMessage(msg) {
         case terms.CLUSTER_MESSAGE_TYPE_ENUM.RESTART:
             harper_logger.info(`Server close event received for process ${process.pid}`);
             harper_logger.debug(`calling shutdown`);
-            let force = (msg.force_shutdown === undefined? true : msg.force_shutdown);
+            let force = msg.force_shutdown === undefined ? true : msg.force_shutdown;
             shutDown(force).then(() => {
                 harper_logger.info(`Completed shut down`);
                 process.exit(terms.RESTART_CODE_NUM);
@@ -301,18 +337,6 @@ function handleServerUncaughtException(err) {
     console.error(message);
     harper_logger.fatal(message);
     process.exit(1);
-}
-
-async function setUp(){
-    try {
-        harper_logger.trace('Configuring child process.');
-        await p_schema_to_global();
-        await user_schema.setUsersToGlobal();
-        spawn_cluster_connection(true);
-        await hdb_license.getLicense();
-    } catch(e) {
-        harper_logger.error(e);
-    }
 }
 
 /**
@@ -354,11 +378,13 @@ function removeSchemaFromLMDBMap(msg){
 }
 
 async function shutDown(force_bool) {
-    harper_logger.debug(`calling shutdown`);
+    harper_logger.debug(`Calling shutdown`);
     if (httpServer || secureServer) {
-        harper_logger.warn(`Process pid:${process.pid} - SIGINT received, closing connections and finishing existing work.`);
-        harper_logger.info(`There are ${Object.keys(server_connections).length} connections.`);
+        //TODO - continue digging on whether or not this is necessary w/ Fastify. It seems like connections are being
+        // handled internally on fastify.close but need to do more research to confirm.  In old hdb_express, we were not
+        // using the force_bool in the method so also dig more to understand what that might have been used for in past.
         if (force_bool) {
+            harper_logger.info(`Closing ${Object.keys(server_connections).length} server connections.`);
             for (let conn of Object.keys(server_connections)) {
                 harper_logger.info(`Closing connection ${util.inspect(server_connections[conn])}`);
                 server_connections[conn].destroy();
@@ -369,14 +395,24 @@ async function shutDown(force_bool) {
             hdb_util.callProcessSend({type: terms.CLUSTER_MESSAGE_TYPE_ENUM.CHILD_STOPPED, pid: process.pid});
         }, terms.RESTART_TIMEOUT_MS);
         if (httpServer) {
-            await httpServer.close();
+            try {
+                await httpServer.close();
+                harper_logger.debug(`Process pid:${process.pid} - http server closed`);
+            } catch(err) {
+                harper_logger.debug(`Process pid:${process.pid} - error closing http server - ${err}`);
+            }
         }
         if (secureServer) {
-            await secureServer.close();
+            try {
+                await secureServer.close();
+                harper_logger.debug(`Process pid:${process.pid} - https server closed`);
+            } catch (err) {
+                harper_logger.debug(`Process pid:${process.pid} - error closing https server - ${err}`);
+            }
         }
-        harper_logger.warn(`Process pid:${process.pid} - Work completed, shutting down`);
+        harper_logger.info(`Process pid:${process.pid} - Work completed, shutting down`);
         hdb_util.callProcessSend({type: terms.CLUSTER_MESSAGE_TYPE_ENUM.CHILD_STOPPED, pid: process.pid});
     }
-}
+};
 
 module.exports = serverChild;

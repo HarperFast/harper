@@ -343,6 +343,8 @@ const HDB_SETTINGS_DEFAULT_VALUES = {
     CORS_ON: 'true',
     CORS_WHITELIST: '',
     SERVER_TIMEOUT_MS: '120000',
+    SERVER_KEEP_ALIVE_TIMEOUT: '5000',
+    SERVER_HEADERS_TIMEOUT: '60000',
     LOG_LEVEL: 'error',
     LOGGER: '1',
     LOG_PATH: './harper_log.log',
