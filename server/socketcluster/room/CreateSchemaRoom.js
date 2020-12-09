@@ -46,8 +46,6 @@ class CreateSchemaRoom extends RoomIF {
         try {
             // no-op for now, let it be pushed to the child for processing.
             log.trace('In CreateSchemaRoom');
-
-           // await socket_utils.setGlobalSchema();
         } catch(e) {
             log.error(e);
         }
