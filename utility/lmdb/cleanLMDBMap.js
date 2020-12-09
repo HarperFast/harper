@@ -11,7 +11,7 @@ module.exports = cleanLMDBMap;
  */
 function cleanLMDBMap(msg){
     try{
-        if(global.lmdb_map && msg && msg.operation !== undefined){
+        if(global.lmdb_map !== undefined && msg.operation !== undefined){
             let keys = Object.keys(global.lmdb_map);
             let cached_environment = undefined;
 
@@ -44,6 +44,7 @@ function cleanLMDBMap(msg){
                 default:
                     break;
             }
+
         }
     } catch(e){
         harper_logger.error(e);
