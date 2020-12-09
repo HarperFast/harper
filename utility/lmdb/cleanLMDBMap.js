@@ -9,7 +9,7 @@ module.exports = cleanLMDBMap;
  * this function strips away the cached environments from global when a schema item is removed
  * @param msg
  */
-function cleanLMDBMap(msg, log = false){
+function cleanLMDBMap(msg){
     try{
         if(global.lmdb_map && msg && msg.operation !== undefined){
             let keys = Object.keys(global.lmdb_map);
@@ -17,32 +17,14 @@ function cleanLMDBMap(msg, log = false){
             let deleted_keys = [];
             switch (msg.operation.operation) {
                 case 'drop_schema':
-
-
                     for(let x = 0; x < keys.length; x ++){
                         let key = keys[x];
                         if(key.startsWith(`${msg.operation.schema}.`) || key.startsWith(`txn.${msg.operation.schema}.`)){
                             deleted_keys.push(key);
                             environment_utility.closeEnvironment(global.lmdb_map[key]);
-                            try{
-                                if(log) {
-                                    console.log(`closed ${key}`);
-                                    console.log(global.lmdb_map[key].stat());
-                                }
-                            }catch (e){
-                                if(log){
-                                    console.error(`${key}: ${e}`);
-                                }
-                            }
-                            //delete global.lmdb_map[key];
                         }
                     }
-                    /*if(log === true){
-                        console.log(process.pid, msg, deleted_keys);
-
-                    }*/
                     for(let x = 0, length = deleted_keys.length; x< length; x++){
-
                         delete global.lmdb_map[deleted_keys[x]];
                     }
                     break;
@@ -61,6 +43,8 @@ function cleanLMDBMap(msg, log = false){
                     if(cached_environment !== undefined && typeof cached_environment.dbis === 'object' && cached_environment.dbis[`${msg.operation.attribute}`] !== undefined){
                         delete cached_environment.dbis[`${msg.operation.attribute}`];
                     }
+                    break;
+                default:
                     break;
             }
         }

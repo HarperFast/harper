@@ -138,7 +138,6 @@ class ClusterWorker extends WorkerIF {
             }
 
             if(data.type && data.type === 'schema'){
-                //console.log(data);
                 clean_lmdb(data, true);
             }
 
