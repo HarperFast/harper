@@ -14,18 +14,15 @@ function cleanLMDBMap(msg){
         if(global.lmdb_map && msg && msg.operation !== undefined){
             let keys = Object.keys(global.lmdb_map);
             let cached_environment = undefined;
-            let deleted_keys = [];
+
             switch (msg.operation.operation) {
                 case 'drop_schema':
                     for(let x = 0; x < keys.length; x ++){
                         let key = keys[x];
                         if(key.startsWith(`${msg.operation.schema}.`) || key.startsWith(`txn.${msg.operation.schema}.`)){
-                            deleted_keys.push(key);
                             environment_utility.closeEnvironment(global.lmdb_map[key]);
+                            delete global.lmdb_map[key];
                         }
-                    }
-                    for(let x = 0, length = deleted_keys.length; x< length; x++){
-                        delete global.lmdb_map[deleted_keys[x]];
                     }
                     break;
                 case 'drop_table':
