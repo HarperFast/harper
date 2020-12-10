@@ -82,7 +82,7 @@ let props_cors = env.get(PROPS_CORS_KEY);
 let props_cors_whitelist = env.get(PROPS_CORS_WHITELIST_KEY);
 let cors_options;
 
-function serverChild() {
+function childServer() {
     harper_logger.info('In express' + process.cwd());
     harper_logger.info(`Running with NODE_ENV set as: ${process.env.NODE_ENV}`);
 
@@ -415,4 +415,4 @@ async function shutDown(force_bool) {
     }
 };
 
-module.exports = serverChild;
+module.exports = childServer;

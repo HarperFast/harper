@@ -84,7 +84,7 @@ cluster.on('exit', handleClusterExit);
 if (cluster.isMaster && (num_workers >= 1)) {
     serverParent(num_workers);
 } else {
-    serverChild();
+    serverChild.build();
 }
 
 function handleClusterExit(dead_worker, code, signal) {
