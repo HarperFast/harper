@@ -81,13 +81,13 @@ let mochaAsyncWrapper = (fn) => (done) => {
  * Call this function near the top of any unit test to assign the unhandledReject event handler (this is due to a bug in Node).
  * This will prevent tests bombing with an unhandled promise rejection in some cases.
  */
-function preTestPrep() {
+function preTestPrep(test_config_obj) {
     let unhandledRejectionExitCode = 0;
     if(env_mgr_init_sync_stub) {
         env_mgr_init_sync_stub.restore();
     }
     env_mgr_init_sync_stub = sinon.stub(env, 'initSync').callsFake(() => {
-       env.initTestEnvironment();
+       env.initTestEnvironment(test_config_obj);
     });
     process.on("unhandledRejection", (reason) => {
         console.log("unhandled rejection:", reason);
@@ -102,7 +102,7 @@ function preTestPrep() {
     });
     // Try to change to bin
     changeProcessToBinDir();
-    env.initTestEnvironment();
+    env.initTestEnvironment(test_config_obj);
 }
 
 function makeTheDir(path_value) {

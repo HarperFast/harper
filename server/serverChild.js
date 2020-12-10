@@ -10,11 +10,9 @@ const util = require('util');
 const harper_logger = require('../utility/logging/harper_logger');
 const fs = require('fs');
 const fastify = require('fastify');
-// const bodyParser = require('body-parser');
 const auth = require('../security/auth');
 const p_authorize = util.promisify(auth.authorize);
 
-// const passport = require('passport');
 const pjson = require(`${__dirname}/../package.json`);
 const server_utilities = require('./serverUtilities');
 const p_choose_operation = util.promisify(server_utilities.chooseOperation);
@@ -82,7 +80,7 @@ let props_cors = env.get(PROPS_CORS_KEY);
 let props_cors_whitelist = env.get(PROPS_CORS_WHITELIST_KEY);
 let cors_options;
 
-function childServer() {
+async function childServer() {
     harper_logger.info('In express' + process.cwd());
     harper_logger.info(`Running with NODE_ENV set as: ${process.env.NODE_ENV}`);
 
@@ -116,7 +114,7 @@ function childServer() {
     global.isMaster = cluster.isMaster;
 
     harper_logger.debug(`child process ${process.pid} starting up.`);
-    setUp().then(()=>{});
+    await setUp();
 
     if (props_http_secure_on && (props_http_secure_on === true || props_http_secure_on.toUpperCase() === TRUE_COMPARE_VAL)) {
         secureServer = buildServer(true);
@@ -125,23 +123,6 @@ function childServer() {
     if (props_http_on && (props_http_on === true || props_http_on.toUpperCase() === TRUE_COMPARE_VAL)) {
         httpServer = buildServer(false);
     }
-
-    //TODO - will revisit below in new JIRA around restart/shutdown functionality - CORE-1209
-
-    // process.on('SIGINT', () => {
-    //     harper_logger.warn(`Process pid:${process.pid} - SIGINT received, closing connections and finishing existing work.`);
-    //     shutDown(true, true).then(() => {
-    //         console.log('IT WORKED');
-    //         process.exit(0);
-    //     });
-    // });
-    // process.on('SIGTERM', () => {
-    //     harper_logger.warn(`Process pid:${process.pid} - SIGTERM received, closing connections and finishing existing work.`);
-    //     shutDown(true, true).then(() => {
-    //         console.log('IT WORKED');
-    //         process.exit(0);
-    //     });
-    // });
 }
 
 function buildServer(is_https) {
@@ -158,25 +139,7 @@ function buildServer(is_https) {
         app.register(fastify_cors, cors_options);
     }
 
-    //TODO THIS CODE IS COMMENTED OUT AS IT IS SUPERCEDED WITH FASTIFY NATIVELY CONVERTING THE REQUEST BODY TO JSON,
-    // HOWEVER PLEASE MAKE SURE THIS CODE CAN BE FULL REMOVED - TO BE COVERED IN CORE-1180
-    /*
-    app.use(bodyParser.json({limit: '1gb'})); // support json encoded bodies
-    app.use(bodyParser.urlencoded({extended: true}));
-    app.use(function (error, req, res, next) {
-        if (error instanceof SyntaxError) {
-            res.status(hdb_errors.HTTP_STATUS_CODES.BAD_REQUEST).send({error: 'invalid JSON: ' + error.message.replace('\n', '')});
-        } else if (error) {
-            res.status(hdb_errors.HTTP_STATUS_CODES.BAD_REQUEST).send({error: error.message});
-        } else {
-            next();
-        }
-    });
-
-    //TODO - CAN THE AUTH PROCESS BE REGISTERED AS A PLUGIN?
-    app.use(passport.initialize());*/
-
-// This handles all get requests for the studio
+    // This handles all get requests for the studio
     app.register(fastify_compress);
     app.register(fastify_static, {root: guidePath.join(__dirname,'../docs')});
     app.get('/', function(req, res) {
@@ -217,22 +180,6 @@ function buildServer(is_https) {
         harper_logger.error(e);
     }
 }
-
-//TODO - THIS METHOD WILL BE REMOVED WHEN THE SERVER FACTORY METHOD IS ADDED IN NEXT PR (CORE-1181)
-//function tempServerListener() {
-//     app.listen("9925",'0.0.0.0', (err, address) => {
-//         if (err) {
-//             console.error(err);
-//             process.exit(1);
-//         }
-//         harper_logger.info(`HarperDB ${pjson.version} HTTP Server running on ${env.get(PROPS_HTTP_PORT_KEY)}`);
-//         signalling.signalChildStarted();
-//         console.log('running on ' + address);
-//         //tracer.use('fastify');
-//         process.on('SIGINT', () => app.close());
-//         process.on('SIGTERM', () => app.close());
-//     });
-// }
 
 async function setUp(){
     try {

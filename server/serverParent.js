@@ -16,11 +16,11 @@ const util = require('util');
 
 const p_schema_to_global = util.promisify(global_schema.setSchemaDataToGlobal);
 
-function serverParent(num_workers) {
+async function serverParent(num_workers) {
     check_jwt_tokens();
     global.isMaster = cluster.isMaster;
 
-    process.on('uncaughtException', async function (err) {
+    process.on('uncaughtException', function (err) {
         let message = `Found an uncaught exception with message: os.EOL ${err.message}.  Stack: ${err.stack} ${os.EOL} Terminating HDB.`;
         console.error(message);
         harper_logger.fatal(message);
@@ -31,7 +31,7 @@ function serverParent(num_workers) {
     let restart_in_progress = false;
     //TODO - WHAT CAUSES THIS - THIS IS MEANT AS A WAY TO INDICATE A USER IS TRYING TO STOP OR RESTART - DOES FASTIFY HAVE A BETTER WAY TO DO THIS?
     // Consume AllChildrenStopped Event.
-    all_children_stopped_event.allChildrenStoppedEmitter.on(all_children_stopped_event.EVENT_NAME,async (msg) => {
+    all_children_stopped_event.allChildrenStoppedEmitter.on(all_children_stopped_event.EVENT_NAME,(msg) => {
         harper_logger.info(`Got all children stopped event.`);
         try {
             restart_event_tracker.express_connections_stopped = true;
@@ -47,7 +47,7 @@ function serverParent(num_workers) {
     });
 
     // Consume SocketIOServerStopped event.
-    sio_server_stopped_event.sioServerStoppedEmitter.on(sio_server_stopped_event.EVENT_NAME,async (msg) => {
+    sio_server_stopped_event.sioServerStoppedEmitter.on(sio_server_stopped_event.EVENT_NAME, (msg) => {
         harper_logger.info(`Got sio server stopped event.`);
         try {
             restart_event_tracker.sio_connections_stopped = true;
@@ -62,8 +62,7 @@ function serverParent(num_workers) {
         }
     });
 
-    launch(num_workers)
-        .then(() => {})
+    await launch(num_workers)
         .catch(e => {
             harper_logger.error(e);
         });
