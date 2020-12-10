@@ -1,4 +1,4 @@
-<img src="https://hdb-marketing.s3.amazonaws.com/Purple_Large1200TM.png" >
+<img src="https://hdb-marketing.s3.amazonaws.com/large_purple_horiz_new.png" width="562" height="161">
 
 ## Contents
 
