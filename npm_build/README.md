@@ -77,7 +77,7 @@ support@harperdb.io
 
 [Support Portal](https://harperdbhelp.zendesk.com)
 
-[Documentation](https://docs.harperdb.io/)
+[Documentation](https://harperdb.io/developers/documentation)
 
 **Thank You to Rajat Kumar rajat.io for allowing us to take over this package name.  Find his harperdb client at https://www.npmjs.com/package/harperdb-client**
 
