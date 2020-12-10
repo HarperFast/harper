@@ -1,4 +1,4 @@
-<img src="https://hdb-marketing.s3.amazonaws.com/Purple_Large1200TM.png" >
+<img src="https://hdb-marketing.s3.amazonaws.com/large_purple_horiz_new.png" width="562" height="161">
 
 ## Contents
 
@@ -77,7 +77,7 @@ support@harperdb.io
 
 [Support Portal](https://harperdbhelp.zendesk.com)
 
-[Documentation](https://docs.harperdb.io/)
+[Documentation](https://harperdb.io/developers/documentation)
 
 **Thank You to Rajat Kumar rajat.io for allowing us to take over this package name.  Find his harperdb client at https://www.npmjs.com/package/harperdb-client**
 

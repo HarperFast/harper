@@ -8,6 +8,7 @@ const terms = require('../utility/hdbTerms');
 const {handleHDBError, hdb_errors} = require('../utility/errors/hdbError');
 const { HTTP_STATUS_CODES, AUTHENTICATION_ERROR_MSGS} = hdb_errors;
 const logger = require('../utility/logging/harper_logger');
+const password = require('../utility/password');
 const user_functions = require('./user');
 const update = require('../data_layer/insert').update;
 const UpdateObject = require('../data_layer/UpdateObject');
@@ -77,9 +78,10 @@ async function createTokens(auth_object){
         {key: keys.private_key, passphrase: keys.passphrase},
         {expiresIn: REFRESH_TOKEN_TIMEOUT, algorithm: RSA_ALGORITHM, subject: TOKEN_TYPE_ENUM.REFRESH});
 
+    let hashed_token = password.hash(refresh_token);
     //update the user.refresh_token
     let update_user_object = new UpdateObject(terms.SYSTEM_SCHEMA_NAME, terms.SYSTEM_TABLE_NAMES.USER_TABLE_NAME,
-        [{username: auth_object.username, refresh_token: refresh_token}]);
+        [{username: auth_object.username, refresh_token: hashed_token}]);
 
     let result;
     let update_error;
@@ -184,7 +186,7 @@ async function validateRefreshToken(token){
         throw handleHDBError(new Error(), AUTHENTICATION_ERROR_MSGS.INVALID_TOKEN, HTTP_STATUS_CODES.UNAUTHORIZED);
     }
 
-    if(user.refresh_token !== token){
+    if(!password.validate(user.refresh_token, token)){
         throw handleHDBError(new Error(), AUTHENTICATION_ERROR_MSGS.INVALID_TOKEN, HTTP_STATUS_CODES.UNAUTHORIZED);
     }
     return user;

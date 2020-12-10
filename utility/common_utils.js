@@ -56,7 +56,7 @@ module.exports = {
     isClusterOperation: isClusterOperation,
     getClusterUser: getClusterUser,
     sendTransactionToSocketCluster,
-    checkGlobalSchemaTable: checkGlobalSchemaTable,
+    checkGlobalSchemaTable,
     getHomeDir: getHomeDir,
     getPropsFilePath: getPropsFilePath,
     promisifyPapaParse,

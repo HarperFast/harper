@@ -2,6 +2,7 @@
 
 const all_children_stopped_event = require('../events/AllChildrenStoppedEvent');
 const check_jwt_tokens = require('../utility/install/checkJWTTokensExist');
+const { closeEnvironment } = require('../utility/lmdb/environmentUtility');
 const cluster = require('cluster');
 const cluster_utilities = require('./clustering/clusterUtilities');
 const env = require('../utility/environment/environmentManager');
@@ -74,6 +75,14 @@ async function launch(num_workers) {
     global.clustering_on = env.get('CLUSTERING');
 
     await p_schema_to_global();
+
+    //we need to close all of the environments on the parent process & delete the references.
+    let keys = Object.keys(global.lmdb_map);
+    for(let x = 0, length = keys.length; x < length; x++){
+        closeEnvironment(global.lmdb_map[keys[x]]);
+    }
+    delete global.lmdb_map;
+
     await user_schema.setUsersToGlobal();
 
     harper_logger.notify(`HarperDB successfully started`);

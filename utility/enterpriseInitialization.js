@@ -58,7 +58,8 @@ async function kickOffEnterprise() {
         try {
             let file_path = path.join(env.getHdbBasePath(), terms.CLUSTERING_FOLDER_NAMES_ENUM.CLUSTERING_FOLDER, terms.CLUSTERING_PAYLOAD_FILE_NAME);
             await fs.writeFile(file_path, JSON.stringify(sc_data_payload), {mode: terms.HDB_FILE_PERMISSIONS});
-            fork(path.join(__dirname, `../server/socketcluster/${terms.SC_PROC_NAME}`));
+            //we get a handle to the fork process for the WS server so we can signal to it
+            global.ws_fork = fork(path.join(__dirname, `../server/socketcluster/${terms.SC_PROC_NAME}`));
             log.debug('Started Clustering server.');
         } catch(err) {
             log.error(err);

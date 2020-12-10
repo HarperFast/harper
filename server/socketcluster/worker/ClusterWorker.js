@@ -12,6 +12,7 @@ const {inspect} = require('util');
 const RoomMessageObjects = require('../room/RoomMessageObjects');
 const fs = require('fs-extra');
 const path = require('path');
+const clean_lmdb = require('../../../utility/lmdb/cleanLMDBMap');
 // NOTE: The cluster worker doesn't use the environment manager yet, but some of the commands need values in there.
 // We initialize this here so the manager is always ready and initialized when a rule needs it.
 const env = require('../../../utility/environment/environmentManager');
@@ -127,6 +128,22 @@ class ClusterWorker extends WorkerIF {
         }
     }
 
+    syncSchemaMetadata(msg) {
+            if (global.hdb_schema !== undefined && typeof global.hdb_schema === 'object' && msg.operation !== undefined) {
+                // eslint-disable-next-line default-case
+                switch (msg.operation.operation) {
+                    case 'drop_schema':
+                        delete global.hdb_schema[msg.operation.schema];
+                        break;
+                    case 'drop_table':
+                        if (global.hdb_schema[msg.operation.schema] !== undefined) {
+                            delete global.hdb_schema[msg.operation.schema][msg.operation.table];
+                        }
+                        break;
+                }
+            }
+    }
+
     parentMessageHandler(data, respond) {
         log.trace('parentMessageHandler.');
         try {
@@ -135,6 +152,12 @@ class ClusterWorker extends WorkerIF {
                     log.info('hdb_data successfully set to exchange');
                 });
             }
+
+            if(data.type && data.type === 'schema'){
+                clean_lmdb(data, true);
+                this.syncSchemaMetadata(data);
+            }
+
             respond();
         }catch(e){
             respond(e);

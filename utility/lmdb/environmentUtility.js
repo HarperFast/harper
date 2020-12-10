@@ -11,12 +11,12 @@ const OpenDBIObject = require('./OpenDBIObject');
 const OpenEnvironmentObject = require('./OpenEnvironmentObject');
 const lmdb_terms = require('./terms');
 const promisify = require('util').promisify;
-//allow an environment to grow up to 1 TB
+//allow an environment to grow up to 100Gb
 // eslint-disable-next-line no-magic-numbers
 const MAP_SIZE = 200 * 1024 * 1024 * 1024;
-//allow up to 10,000 named data bases in an environment
-const MAX_DBS = 10000;
-const MAX_READERS = 10000;
+//allow up to 1,000 named data bases in an environment
+const MAX_DBS = 1000;
+const MAX_READERS = 1000;
 const INTERNAL_DBIS_NAME = lmdb_terms.INTERNAL_DBIS_NAME;
 const DBI_DEFINITION_NAME = lmdb_terms.DBI_DEFINITION_NAME;
 const MDB_FILE_NAME = 'data.mdb';
@@ -237,7 +237,23 @@ async function deleteEnvironment(base_path, env_name, is_txn = false) {
     await fs.remove(path.join(base_path, env_name));
     if(global.lmdb_map !== undefined) {
         let full_name = getCachedEnvironmentName(base_path, env_name, is_txn);
-        delete global.lmdb_map[full_name];
+        if(global.lmdb_map[full_name]){
+            let env = global.lmdb_map[full_name];
+            closeEnvironment(env);
+            delete global.lmdb_map[full_name];
+        }
+    }
+}
+
+/**
+ * takes an environment and closes it
+ * @param env
+ */
+function closeEnvironment(env){
+    //make sure env is actually a reference to the lmdb environment class so we don't blow anything up
+    if(env && env.constructor && env.constructor.name === 'Env') {
+        //we need to close the environment to release the file from the process
+        env.close();
     }
 }
 
@@ -532,5 +548,6 @@ module.exports = {
     initializeDBIs,
     TransactionCursor,
     environmentDataSize,
-    copyEnvironment
+    copyEnvironment,
+    closeEnvironment
 };
