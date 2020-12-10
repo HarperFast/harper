@@ -284,7 +284,7 @@ async function startHarper() {
 async function completeRun() {
     try {
         await checkPermission();
-        let result = await kickOffExpress();
+        let result = await kickOffFastify();
         if (result === SUCCESS_CODE) {
             foregroundHandler();
         } else {
@@ -356,7 +356,7 @@ async function checkPermission() {
     return SUCCESS_CODE;
 }
 
-async function kickOffExpress() {
+async function kickOffFastify() {
     try {
         let license = hdb_license.licenseSearch();
 

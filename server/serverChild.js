@@ -60,15 +60,16 @@ const certificate = env.get(PROPS_CERT_KEY);
 const credentials = {key: fs.readFileSync(`${privateKey}`), cert: fs.readFileSync(`${certificate}`)};
 const props_http_secure_on = env.get(PROPS_HTTP_SECURE_ON_KEY);
 const props_http_on = env.get(PROPS_HTTP_ON_KEY);
+
+let httpServer = undefined;
+let secureServer = undefined;
+let server_connections = {};
+
 const server_timeout = env.get(PROPS_SERVER_TIMEOUT_KEY) ? env.get(PROPS_SERVER_TIMEOUT_KEY) : DEFAULT_SERVER_TIMEOUT;
 const keep_alive_timeout = env.get(PROPS_SERVER_KEEP_ALIVE_TIMEOUT_KEY) ?
     env.get(PROPS_SERVER_KEEP_ALIVE_TIMEOUT_KEY) : DEFAULT_KEEP_ALIVE_TIMEOUT;
 const headers_timeout = env.get(PROPS_HEADER_TIMEOUT_KEY) ?
     env.get(PROPS_HEADER_TIMEOUT_KEY) : DEFAULT_HEADER_TIMEOUT;
-
-let httpServer = undefined;
-let secureServer = undefined;
-let server_connections = {};
 
 const fastify_options = {
     bodyLimit: REQ_MAX_BODY_SIZE,
@@ -163,14 +164,14 @@ function buildServer(is_https) {
         if (is_https) {
             harper_logger.debug(`child process starting up https server.`);
 
-            app.listen(env.get(PROPS_HTTP_SECURE_PORT_KEY), function (err, address) {
+            app.listen(env.get(PROPS_HTTP_SECURE_PORT_KEY), '::', function (err, address) {
                 harper_logger.info(`HarperDB ${pjson.version} HTTPS Server running on ${address}`);
                 signalling.signalChildStarted();
             });
         } else {
             harper_logger.debug(`child process starting up http server.`);
 
-            app.listen(env.get(PROPS_HTTP_PORT_KEY), function (err, address) {
+            app.listen(env.get(PROPS_HTTP_PORT_KEY), '::', function (err, address) {
                 harper_logger.info(`HarperDB ${pjson.version} HTTP Server running on ${address}`);
                 signalling.signalChildStarted();
             });

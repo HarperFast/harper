@@ -336,15 +336,15 @@ const HDB_SETTINGS_NAMES_REVERSE_LOOKUP = _.invert(HDB_SETTINGS_NAMES);
 
 // Default values for the Settings, some do not have a default.
 const HDB_SETTINGS_DEFAULT_VALUES = {
-    HTTP_PORT: '9925',
-    HTTPS_PORT: '31283',
+    HTTP_PORT: 9925,
+    HTTPS_PORT: 31283,
     HTTPS_ON: 'true',
     HTTP_ON: 'false',
     CORS_ON: 'true',
     CORS_WHITELIST: '',
-    SERVER_TIMEOUT_MS: '120000',
-    SERVER_KEEP_ALIVE_TIMEOUT: '5000',
-    SERVER_HEADERS_TIMEOUT: '60000',
+    SERVER_TIMEOUT_MS: 120000,
+    SERVER_KEEP_ALIVE_TIMEOUT: 5000,
+    SERVER_HEADERS_TIMEOUT: 60000,
     LOG_LEVEL: 'error',
     LOGGER: '1',
     LOG_PATH: './harper_log.log',
