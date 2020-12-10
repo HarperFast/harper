@@ -1,11 +1,11 @@
 'use strict';
 
 const validation = require('../validation/schema_validator');
+const schema_metadata_validator = require('../validation/schemaMetadataValidator');
 const logger = require('../utility/logging/harper_logger');
 const uuidV4 = require('uuid/v4');
 const clone = require('clone');
 const signalling = require('../utility/signalling');
-const hdb_util = require('../utility/common_utils');
 const hdb_terms = require('../utility/hdbTerms');
 const util = require('util');
 const harperBridge = require('./harperBridge/harperBridge');
@@ -29,7 +29,10 @@ module.exports = {
 async function createSchema(schema_create_object) {
     try {
         let schema_structure = await createSchemaStructure(schema_create_object);
-        signalling.signalSchemaChange(signalling.SCHEMA_CHANGE_MESSAGE);
+
+        let create_schema_message = Object.assign({}, signalling.SCHEMA_CHANGE_MESSAGE);
+        create_schema_message.operation = schema_create_object;
+        signalling.signalSchemaChange(create_schema_message);
 
         return schema_structure;
     } catch(err) {
@@ -43,7 +46,7 @@ async function createSchemaStructure(schema_create_object) {
         throw validation_error;
     }
 
-    if (!hdb_util.checkSchemaExists(schema_create_object.schema)) {
+    if (!await schema_metadata_validator.checkSchemaExists(schema_create_object.schema)) {
         throw `schema '${schema_create_object.schema}' already exists`;
     }
 
@@ -59,7 +62,9 @@ async function createSchemaStructure(schema_create_object) {
 async function createTable(create_table_object) {
     try {
         let create_table_structure = await createTableStructure(create_table_object);
-        signalling.signalSchemaChange(signalling.SCHEMA_CHANGE_MESSAGE);
+        let create_table_message = Object.assign({}, signalling.SCHEMA_CHANGE_MESSAGE);
+        create_table_message.operation = create_table_object;
+        signalling.signalSchemaChange(create_table_message);
 
         return create_table_structure;
     } catch(err) {
@@ -76,12 +81,13 @@ async function createTableStructure(create_table_object) {
 
     validation.validateTableResidence(create_table_object.residence);
 
-    let invalid_schema_msg = hdb_util.checkSchemaExists(create_table_object.schema);
+    let invalid_schema_msg = await schema_metadata_validator.checkSchemaExists(create_table_object.schema);
     if (invalid_schema_msg) {
         throw invalid_schema_msg;
     }
 
-    if (!hdb_util.checkTableExists(create_table_object.schema, create_table_object.table)) {
+    let invalid_table_msg = await schema_metadata_validator.checkSchemaTableExists(create_table_object.schema, create_table_object.table);
+    if (!invalid_table_msg) {
         throw `table '${create_table_object.table}' already exists in schema '${create_table_object.schema}'`;
     }
 
@@ -116,16 +122,20 @@ async function dropSchema(drop_schema_object) {
         throw validation_error;
     }
 
-    let invalid_schema_msg = hdb_util.checkSchemaExists(drop_schema_object.schema);
+    let invalid_schema_msg = await schema_metadata_validator.checkSchemaExists(drop_schema_object.schema);
     if (invalid_schema_msg) {
         throw invalid_schema_msg;
     }
 
+    //we refresh and assign the entire schema metadata to global in order to make sure we have the latest
+    let schema = await schema_metadata_validator.schema_describe.describeSchema({schema: drop_schema_object.schema});
+    global.hdb_schema[drop_schema_object.schema] = schema;
+
     try {
         await harperBridge.dropSchema(drop_schema_object);
-        let drop_schema_message = signalling.SCHEMA_CHANGE_MESSAGE;
-        drop_schema_message.operation = drop_schema_object;
 
+        let drop_schema_message = Object.assign({}, signalling.SCHEMA_CHANGE_MESSAGE);
+        drop_schema_message.operation = drop_schema_object;
         signalling.signalSchemaChange(drop_schema_message);
         delete global.hdb_schema[drop_schema_object.schema];
         const SCHEMA_DELETE_MSG = `successfully deleted schema '${drop_schema_object.schema}'`;
@@ -142,14 +152,19 @@ async function dropTable(drop_table_object) {
         throw validation_error;
     }
 
-    let invalid_schema_table_msg = hdb_util.checkSchemaTableExist(drop_table_object.schema, drop_table_object.table);
+    let invalid_schema_table_msg = await schema_metadata_validator.checkSchemaTableExists(drop_table_object.schema, drop_table_object.table);
     if (invalid_schema_table_msg) {
         throw invalid_schema_table_msg;
     }
 
+    //we refresh and assign the entire table metadata to global in order to make sure we have the latest
+    let table = await schema_metadata_validator.schema_describe.describeTable({schema: drop_table_object.schema, table: drop_table_object.table});
+    global.hdb_schema[drop_table_object.schema][drop_table_object.table] = table;
+
     try {
         await harperBridge.dropTable(drop_table_object);
-        let drop_table_message = signalling.SCHEMA_CHANGE_MESSAGE;
+
+        let drop_table_message = Object.assign({}, signalling.SCHEMA_CHANGE_MESSAGE);
         drop_table_message.operation = drop_table_object;
         signalling.signalSchemaChange(drop_table_message);
         const TABLE_DELETE_MSG = `successfully deleted table '${drop_table_object.schema}.${drop_table_object.table}'`;
@@ -171,7 +186,7 @@ async function dropAttribute(drop_attribute_object) {
         throw validation_error;
     }
 
-    let invalid_schema_table_msg = hdb_util.checkSchemaTableExist(drop_attribute_object.schema, drop_attribute_object.table);
+    let invalid_schema_table_msg = await schema_metadata_validator.checkSchemaTableExists(drop_attribute_object.schema, drop_attribute_object.table);
     if (invalid_schema_table_msg) {
         throw invalid_schema_table_msg;
     }
@@ -188,9 +203,10 @@ async function dropAttribute(drop_attribute_object) {
         await harperBridge.dropAttribute(drop_attribute_object);
         dropAttributeFromGlobal(drop_attribute_object);
 
-        let drop_atribute_message = signalling.SCHEMA_CHANGE_MESSAGE;
-        drop_atribute_message.operation = drop_attribute_object;
-        signalling.signalSchemaChange(drop_atribute_message);
+
+        let drop_attribute_message = Object.assign({}, signalling.SCHEMA_CHANGE_MESSAGE);
+        drop_attribute_message.operation = drop_attribute_object;
+        signalling.signalSchemaChange(drop_attribute_message);
 
         return `successfully deleted attribute '${drop_attribute_object.attribute}'`;
     } catch(err) {
@@ -225,7 +241,10 @@ async function createAttribute(create_attribute_object) {
     let attribute_structure;
     try {
         attribute_structure = await harperBridge.createAttribute(create_attribute_object);
-        signalling.signalSchemaChange(signalling.SCHEMA_CHANGE_MESSAGE);
+
+        let create_attribute_message = Object.assign({}, signalling.SCHEMA_CHANGE_MESSAGE);
+        create_attribute_message.operation = create_attribute_object;
+        signalling.signalSchemaChange(create_attribute_message);
 
         return attribute_structure;
     } catch(err) {
