@@ -21,6 +21,8 @@ const fastify_compress = require('fastify-compress');
 const fastify_static = require('fastify-static');
 const fastify_helmet = require('fastify-helmet');
 const spawn_cluster_connection = require('./socketcluster/connector/spawnSCConnection');
+const schema_describe = require('../data_layer/schemaDescribe');
+const clean_lmdb = require('../utility/lmdb/cleanLMDBMap');
 
 const signalling = require('../utility/signalling');
 const guidePath = require('path');
@@ -241,27 +243,23 @@ async function handlePostRequest(req, res) {
     server_utilities.processLocalTransaction(req, res, operation_function, function () {});
 }
 
-function handleServerMessage(msg) {
+async function handleServerMessage(msg) {
     switch (msg.type) {
         case 'schema':
-            removeSchemaFromLMDBMap(msg);
-            global_schema.schemaSignal((err) => {
-                if (err) {
-                    harper_logger.error(err);
-                }
-            });
+            clean_lmdb(msg);
+            await syncSchemaMetadata(msg);
             break;
         case 'user':
-            user_schema.setUsersToGlobal((err) => {
-                if (err) {
-                    harper_logger.error(err);
-                }
-            });
+            try {
+                await user_schema.setUsersToGlobal();
+            } catch(e){
+                harper_logger.error(e);
+            }
             break;
         case 'job':
             job_runner.parseMessage(msg.runner_message).then((result) => {
                 harper_logger.info(`completed job with result: ${JSON.stringify(result)}`);
-            }).catch((e) => {
+            }).catch(function isError(e) {
                 harper_logger.error(e);
             });
             break;
@@ -287,38 +285,47 @@ function handleServerUncaughtException(err) {
     process.exit(1);
 }
 
-/**
- * this function strips away the cached environments from global when a schema item is removed
- * @param msg
- */
-function removeSchemaFromLMDBMap(msg){
+async function syncSchemaMetadata(msg){
     try{
-        if(global.lmdb_map !== undefined && msg.operation !== undefined){
-            let keys = Object.keys(global.lmdb_map);
-            let cached_environment = undefined;
+        if(global.hdb_schema !== undefined && typeof global.hdb_schema === 'object' && msg.operation !== undefined){
+
             switch (msg.operation.operation) {
                 case 'drop_schema':
-                    for(let x = 0; x < keys.length; x ++){
-                        let key = keys[x];
-                        if(key.startsWith(`${msg.operation.schema}.`) || key.startsWith(`txn.${msg.operation.schema}.`)){
-                            delete global.lmdb_map[key];
-                            delete global.lmdb_map[`txn.${key}`];
-                        }
-                    }
+                    delete global.hdb_schema[msg.operation.schema];
                     break;
                 case 'drop_table':
-                    delete global.lmdb_map[`${msg.operation.schema}.${msg.operation.table}`];
-                    delete global.lmdb_map[`txn.${msg.operation.schema}.${msg.operation.table}`];
-                    break;
-                case 'drop_attribute':
-                    cached_environment = global.lmdb_map[`${msg.operation.schema}.${msg.operation.table}`];
-                    if(cached_environment !== undefined && typeof cached_environment.dbis === 'object' && cached_environment.dbis[`${msg.operation.attribute}`] !== undefined){
-                        delete cached_environment.dbis[`${msg.operation.attribute}`];
+                    if(global.hdb_schema[msg.operation.schema] !== undefined){
+                        delete global.hdb_schema[msg.operation.schema][msg.operation.table];
                     }
                     break;
+                case 'create_schema':
+                    if(global.hdb_schema[msg.operation.schema] === undefined){
+                        global.hdb_schema[msg.operation.schema] = {};
+                    }
+                    break;
+                case 'create_table':
+                case 'create_attribute':
+                    if(global.hdb_schema[msg.operation.schema] === undefined){
+                        global.hdb_schema[msg.operation.schema] = {};
+                    }
+
+                    global.hdb_schema[msg.operation.schema][msg.operation.table] =
+                        await schema_describe.describeTable({schema: msg.operation.schema, table: msg.operation.table});
+                    break;
                 default:
+                    global_schema.schemaSignal((err) => {
+                        if (err) {
+                            harper_logger.error(err);
+                        }
+                    });
                     break;
             }
+        } else{
+            global_schema.schemaSignal((err) => {
+                if (err) {
+                    harper_logger.error(err);
+                }
+            });
         }
     } catch(e){
         harper_logger.error(e);
