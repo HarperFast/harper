@@ -680,6 +680,62 @@ function generateAPIMessage(msg_type_enum) {
     return generated_msg;
 }
 
+function getHTTPSOptsVals() {
+    return {
+        key: "-----BEGIN RSA PRIVATE KEY-----\n" +
+            "MIIEpQIBAAKCAQEA0rzroDdeK/p5vf79zGyrJk0/21wdR/FJufOj/V17T7gyyj0Q\n" +
+            "wlA71cqYv2kLzgZ51kBtnY2T3aARWRiORFE7hZqKDuGt753letSX4HuOHH3sWeAu\n" +
+            "hVzPKQspG978w+EgnwlxtqydhlrK2hV2V9ToPf4QlbAzFcZD5XvkPvjQqrcy5o3o\n" +
+            "dCMcrU+QLUPo15kpEeYRGN8I06EpfWx8QvB2AKbKSuZN2SrIpfLtat9TmZwf6fii\n" +
+            "mRriik3FlphKlj7y+rzMxuNIDI1QMf0DRWLR18AvKbPov0Ad211dpVzbfnrbD5HA\n" +
+            "t9HYCs2HR+f1XCNMQ77BqUnQrOrmg2junARFBQIDAQABAoIBAQCLgpoSdNUZFDao\n" +
+            "OzjVrlMXhihyFecki24ddlfoEYzi17R4AjkoCmmyPO8mOGqiN9NMrVZj6Sgsnh0d\n" +
+            "+I2mWIipCAfBllHJwaP7zuXErMcFwa9ISItDqo9SQpsyYkq/ejhYUK5BGsEmAtEr\n" +
+            "0u2Hc+FTuPBNyFnpXlnwgDY4IgwyFuZB/t9mcn2Y0V8k2a5bCnykAwH5Nn+4LPgh\n" +
+            "AklRu8PmlQg/4IrtuknpX4WDSD3GuFxZrcJbZcxlX43XrYVWB/nmcb/zBeeCP8uu\n" +
+            "3DsKUmPAjGeXcEDPVlBpaQPhl7A8Aubnnm9uT6jxuCpNteOw2sxOGFgWcgXxclSf\n" +
+            "Gemy7t45AoGBAOtwnqTN1Wc/FpBNuFmPe4VMVV55YqveocKvrx88Z+xSlal8bxVJ\n" +
+            "80DjT8YWpQxq2YdkE60G5vDjVnmFn1K9mMlRFsWgshSnfT7A3fm8nrjJjN2GAvL3\n" +
+            "brCNdT+9rLvKvh+93d331NFzmaqn2pAlIpfnElFgAgskwK2C36dNKrCrAoGBAOUk\n" +
+            "E3AhuzXXfnjzWq85DXxpjfjHZOWrCVYU689yxB+ZLG5Mb+lNUxN5jos1UnnKqbN5\n" +
+            "83lt2tLeQRHwW7OUdHUIkP8DgoG9sVRrtH9+g6bmAVQweoU5gK+Lkg5V+6nPvAGm\n" +
+            "eTRrqds8vbWrsuWPAA94+v9AT5fphZwKL7Qz+cEPAoGBAML+BQYtS181SvS8yb+z\n" +
+            "K/QcYl/aXLRHsOVTJ9DQ8KkzRKyYWE/jbUoCeWFwA8YjAII3imw1WTOMtWP0HR4j\n" +
+            "1NR3CksnahXdGcfNaIqbg0E7/CTEBtE/yDcFEWR3LQZjRc94KrbZuTK3cT97wXK8\n" +
+            "rsfsIqmuwEKGb+XEjIM9T+v9AoGACL6Qs1XGNC7OF8WJr2go+Jd6oITTd+RIDe3s\n" +
+            "ddU2YNJSnL70Al4+Dl80LmHRjO5L/ZpozTiBAk0TBKE8jqTasOCrz9+NanAXxVX6\n" +
+            "5GaqlYLviAv1kQH5xDk6UKu9V+SikxmMRJDbQY+W2cj8ocAMS4rdYUJOB0kVHThS\n" +
+            "S7k0DccCgYEAo1EVPdc41HNDSyIxDZVq+LGWM9Ypz0jLoO283swk5WiXyupHlnpy\n" +
+            "VQkcIptaQKhYN/yw4otFGX+efp05DkJbdo4EjV7YmHHKo2vdeF87i2clSu8BWGod\n" +
+            "J2OZW7+gJXzxs7FpWZHp8pxzXBwDj7dbLtB2yCjh5T7vTe6bGeP6usU=\n" +
+            "-----END RSA PRIVATE KEY-----\n",
+        cert: "-----BEGIN CERTIFICATE-----\n" +
+            "MIIEDzCCAvegAwIBAgIBATANBgkqhkiG9w0BAQUFADBtMRQwEgYDVQQDEwtoYXJw\n" +
+            "ZXJkYi5pbzELMAkGA1UEBhMCVVMxETAPBgNVBAgTCENvbG9yYWRvMQ8wDQYDVQQH\n" +
+            "EwZEZW52ZXIxFjAUBgNVBAoTDUhhcnBlckRCLCBJbmMxDDAKBgNVBAsTA0hEQjAe\n" +
+            "Fw0yMDEyMTExNTU0MDJaFw0yMTEyMTExNTU0MDJaMG0xFDASBgNVBAMTC2hhcnBl\n" +
+            "cmRiLmlvMQswCQYDVQQGEwJVUzERMA8GA1UECBMIQ29sb3JhZG8xDzANBgNVBAcT\n" +
+            "BkRlbnZlcjEWMBQGA1UEChMNSGFycGVyREIsIEluYzEMMAoGA1UECxMDSERCMIIB\n" +
+            "IjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA0rzroDdeK/p5vf79zGyrJk0/\n" +
+            "21wdR/FJufOj/V17T7gyyj0QwlA71cqYv2kLzgZ51kBtnY2T3aARWRiORFE7hZqK\n" +
+            "DuGt753letSX4HuOHH3sWeAuhVzPKQspG978w+EgnwlxtqydhlrK2hV2V9ToPf4Q\n" +
+            "lbAzFcZD5XvkPvjQqrcy5o3odCMcrU+QLUPo15kpEeYRGN8I06EpfWx8QvB2AKbK\n" +
+            "SuZN2SrIpfLtat9TmZwf6fiimRriik3FlphKlj7y+rzMxuNIDI1QMf0DRWLR18Av\n" +
+            "KbPov0Ad211dpVzbfnrbD5HAt9HYCs2HR+f1XCNMQ77BqUnQrOrmg2junARFBQID\n" +
+            "AQABo4G5MIG2MAoGAQAEBTADAQH/MAsGA1UdDwQEAwIC9DA7BgNVHSUENDAyBggr\n" +
+            "BgEFBQcDAQYIKwYBBQUHAwIGCCsGAQUFBwMDBggrBgEFBQcDBAYIKwYBBQUHAwgw\n" +
+            "EQYJYIZIAYb4QgEBBAQDAgD3MCwGA1UdEQQlMCOGG2h0dHA6Ly9leGFtcGxlLm9y\n" +
+            "Zy93ZWJpZCNtZYcEfwAAATAdBgNVHQ4EFgQUMEWOqB/VcD5j63kC2pRimmMH9Fcw\n" +
+            "DQYJKoZIhvcNAQEFBQADggEBAD0/oDrYW3rHvZRRX+IXgJ55yCEvrTWkoWoE5qeZ\n" +
+            "L2R7K9cQyUeVLK+95TwnUhYb7iyHnG6DEXWrGfWtLNVihWhjXSwVlYmdSO6OoOye\n" +
+            "hc7ztLGFtc7zlYeb3xmg8sVYXC0nPjNaOtRc+TACwD7TJIrEyGkuyaIsSuIVlKuc\n" +
+            "b4I5NwpED0UOL/qOfXSyTyKsvhd78VPO/PZlMK2uwHniLhhOCaedhJzfGt9XzrJ0\n" +
+            "P9kAKD3/uvPtZSz77jAdIk/1hwv+QUzahhhYHUcWL7N+nreYyigAdFI0/2Z/BcKO\n" +
+            "KA+qobbatVaK0aihycZhrwyomOGBy5X/TpVTQWCvdNCL0Hg=\n" +
+            "-----END CERTIFICATE-----"
+    }
+}
+
 /**
  * Helper function that tests for correct error instance and its message.
  * @param test_func
@@ -776,6 +832,7 @@ module.exports = {
     testHDBError,
     generateHDBError,
     generateAPIMessage,
+    getHTTPSOptsVals,
     assertErrorSync,
     assertErrorAsync,
     assignObjecttoNullObject: assignObjectToNullObject,

@@ -36,16 +36,16 @@ const hdb_license = require('../utility/registration/hdb_license');
 const p_schema_to_global = util.promisify(global_schema.setSchemaDataToGlobal);
 
 const REQ_MAX_BODY_SIZE = 1024*1024*1024; //this is 1GB in bytes
-const PROPS_CORS_KEY = 'CORS_ON';
-const PROPS_CORS_WHITELIST_KEY = 'CORS_WHITELIST';
 const TRUE_COMPARE_VAL = 'TRUE';
 
 const { HDB_SETTINGS_NAMES, HDB_SETTINGS_DEFAULT_VALUES } = terms;
+const PROPS_CORS_KEY = HDB_SETTINGS_NAMES.CORS_ENABLED_KEY;
+const PROPS_CORS_WHITELIST_KEY = HDB_SETTINGS_NAMES.CORS_WHITELIST_KEY;
 const PROPS_SERVER_TIMEOUT_KEY = HDB_SETTINGS_NAMES.PROPS_SERVER_TIMEOUT_KEY;
 const PROPS_SERVER_KEEP_ALIVE_TIMEOUT_KEY = HDB_SETTINGS_NAMES.SERVER_KEEP_ALIVE_TIMEOUT_KEY;
 const PROPS_HEADER_TIMEOUT_KEY = HDB_SETTINGS_NAMES.SERVER_HEADERS_TIMEOUT_KEY;
 const PROPS_PRIVATE_KEY = HDB_SETTINGS_NAMES.PRIVATE_KEY_KEY;
-const PROPS_CERT_KEY = HDB_SETTINGS_NAMES.CERT_KEY;
+const  PROPS_CERT_KEY = HDB_SETTINGS_NAMES.CERT_KEY;
 const PROPS_HTTP_ON_KEY = HDB_SETTINGS_NAMES.HTTP_ENABLED_KEY;
 const PROPS_HTTP_SECURE_ON_KEY = HDB_SETTINGS_NAMES.HTTP_SECURE_ENABLED_KEY;
 const PROPS_HTTP_PORT_KEY = HDB_SETTINGS_NAMES.HTTP_PORT_KEY;
@@ -56,55 +56,15 @@ const DEFAULT_SERVER_TIMEOUT = HDB_SETTINGS_DEFAULT_VALUES[PROPS_SERVER_TIMEOUT_
 const DEFAULT_KEEP_ALIVE_TIMEOUT = HDB_SETTINGS_DEFAULT_VALUES[PROPS_SERVER_KEEP_ALIVE_TIMEOUT_KEY];
 const DEFAULT_HEADER_TIMEOUT = HDB_SETTINGS_DEFAULT_VALUES[PROPS_HEADER_TIMEOUT_KEY];
 
-/*Config values needed for Fastify server options*/
-const privateKey = env.get(PROPS_PRIVATE_KEY);
-const certificate = env.get(PROPS_CERT_KEY);
-const credentials = {key: fs.readFileSync(`${privateKey}`), cert: fs.readFileSync(`${certificate}`)};
-const props_http_secure_on = env.get(PROPS_HTTP_SECURE_ON_KEY);
-const props_http_on = env.get(PROPS_HTTP_ON_KEY);
-
 let httpServer = undefined;
 let secureServer = undefined;
 let server_connections = {};
-
-const server_timeout = env.get(PROPS_SERVER_TIMEOUT_KEY) ? env.get(PROPS_SERVER_TIMEOUT_KEY) : DEFAULT_SERVER_TIMEOUT;
-const keep_alive_timeout = env.get(PROPS_SERVER_KEEP_ALIVE_TIMEOUT_KEY) ?
-    env.get(PROPS_SERVER_KEEP_ALIVE_TIMEOUT_KEY) : DEFAULT_KEEP_ALIVE_TIMEOUT;
-const headers_timeout = env.get(PROPS_HEADER_TIMEOUT_KEY) ?
-    env.get(PROPS_HEADER_TIMEOUT_KEY) : DEFAULT_HEADER_TIMEOUT;
-
-const fastify_options = {
-    bodyLimit: REQ_MAX_BODY_SIZE,
-    connectionTimeout: server_timeout,
-    keepAliveTimeout: keep_alive_timeout
-};
-
-let props_cors = env.get(PROPS_CORS_KEY);
-let props_cors_whitelist = env.get(PROPS_CORS_WHITELIST_KEY);
-let cors_options;
 
 async function childServer() {
     harper_logger.info('In express' + process.cwd());
     harper_logger.info(`Running with NODE_ENV set as: ${process.env.NODE_ENV}`);
 
     global.clustering_on = false;
-
-    if (props_cors && (props_cors === true || props_cors.toUpperCase() === TRUE_COMPARE_VAL)) {
-        cors_options = {
-            origin: true,
-            allowedHeaders: ['Content-Type', 'Authorization'],
-            credentials: false
-        };
-        if (props_cors_whitelist && props_cors_whitelist.length > 0) {
-            let whitelist = props_cors_whitelist.split(',');
-            cors_options.origin = (origin, callback) => {
-                if (whitelist.indexOf(origin) !== -1) {
-                    return callback(null, true);
-                }
-                return callback(new Error(`domain ${origin} is not whitelisted`));
-            };
-        }
-    }
 
     process.on('message', handleServerMessage);
 
@@ -119,6 +79,9 @@ async function childServer() {
     harper_logger.debug(`child process ${process.pid} starting up.`);
     await setUp();
 
+    const props_http_secure_on = env.get(PROPS_HTTP_SECURE_ON_KEY);
+    const props_http_on = env.get(PROPS_HTTP_ON_KEY);
+
     if (props_http_secure_on && (props_http_secure_on === true || props_http_secure_on.toUpperCase() === TRUE_COMPARE_VAL)) {
         secureServer = buildServer(true);
     }
@@ -129,18 +92,18 @@ async function childServer() {
 }
 
 function buildServer(is_https) {
-    let server_opts = Object.assign({}, fastify_options);
-    if (is_https) {
-        server_opts.https = credentials;
-    }
-    const app = fastify(fastify_options);
-    app.server.headersTimeout = headers_timeout;
+    let server_opts = getServerOptions(is_https);
+    const app = fastify(server_opts);
+    //Fastify does not set this property in the initial app construction
+    app.server.headersTimeout = getHeaderTimeoutConfig();
 
-    app.register(fastify_helmet);
-
-    if (props_cors && (props_cors === true || props_cors.toUpperCase() === TRUE_COMPARE_VAL)) {
+    const cors_options = getCORSOpts();
+    if (cors_options) {
         app.register(fastify_cors, cors_options);
     }
+
+    //Register security headers for Fastify instance - https://helmetjs.github.io/
+    app.register(fastify_helmet);
 
     // This handles all get requests for the studio
     app.register(fastify_compress);
@@ -182,6 +145,55 @@ function buildServer(is_https) {
     } catch(e) {
         harper_logger.error(e);
     }
+}
+
+function getServerOptions(is_https) {
+    const server_timeout = env.get(PROPS_SERVER_TIMEOUT_KEY) ? env.get(PROPS_SERVER_TIMEOUT_KEY) : DEFAULT_SERVER_TIMEOUT;
+    const keep_alive_timeout = env.get(PROPS_SERVER_KEEP_ALIVE_TIMEOUT_KEY) ?
+        env.get(PROPS_SERVER_KEEP_ALIVE_TIMEOUT_KEY) : DEFAULT_KEEP_ALIVE_TIMEOUT;
+
+    const server_opts = {
+        bodyLimit: REQ_MAX_BODY_SIZE,
+        connectionTimeout: server_timeout,
+        keepAliveTimeout: keep_alive_timeout
+    };
+
+    if (is_https) {
+        const privateKey = env.get(PROPS_PRIVATE_KEY);
+        const certificate = env.get(PROPS_CERT_KEY);
+        const credentials = {key: fs.readFileSync(`${privateKey}`), cert: fs.readFileSync(`${certificate}`)};
+        server_opts.https = credentials;
+    }
+
+    return server_opts;
+}
+
+function getCORSOpts() {
+    let props_cors = env.get(PROPS_CORS_KEY);
+    let props_cors_whitelist = env.get(PROPS_CORS_WHITELIST_KEY);
+    let cors_options;
+
+    if (props_cors && (props_cors === true || props_cors.toUpperCase() === TRUE_COMPARE_VAL)) {
+        cors_options = {
+            origin: true,
+            allowedHeaders: ['Content-Type', 'Authorization'],
+            credentials: false
+        };
+        if (props_cors_whitelist && props_cors_whitelist.length > 0) {
+            let whitelist = props_cors_whitelist.split(',');
+            cors_options.origin = (origin, callback) => {
+                if (whitelist.indexOf(origin) !== -1) {
+                    return callback(null, true);
+                }
+                return callback(new Error(`domain ${origin} is not whitelisted`));
+            };
+        }
+    }
+    return cors_options;
+}
+
+function getHeaderTimeoutConfig() {
+    return env.get(PROPS_HEADER_TIMEOUT_KEY) ? env.get(PROPS_HEADER_TIMEOUT_KEY) : DEFAULT_HEADER_TIMEOUT;
 }
 
 async function setUp(){
