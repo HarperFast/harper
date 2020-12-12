@@ -2,9 +2,7 @@
 
 const HDB_SETTINGS_KEYS = Object.keys(require('../utility/hdbTerms').HDB_SETTINGS_NAMES_REVERSE_LOOKUP);
 const env = require('../utility/environment/environmentManager');
-if(!env.isInitialized()){
-    env.initSync();
-}
+env.initSync();
 
 module.exports = {
     getConfiguration

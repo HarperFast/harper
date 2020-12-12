@@ -1,9 +1,7 @@
 'use strict';
 
 const env_mgr = require('../../../../../utility/environment/environmentManager');
-if(!env_mgr.isInitialized()){
-    env_mgr.initSync();
-}
+env_mgr.initSync();
 
 const path = require('path');
 

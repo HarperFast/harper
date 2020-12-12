@@ -17,9 +17,7 @@ const terms = require('../hdbTerms');
 const LICENSE_FILE = path.join(hdb_utils.getHomeDir(), terms.HDB_HOME_DIR_NAME, terms.LICENSE_KEY_DIR_NAME, terms.LICENSE_FILE_NAME);
 const moment = require('moment');
 const env = require('../environment/environmentManager');
-if(!env.isInitialized()) {
-    env.initSync();
-}
+env.initSync();
 
 const ARGS = minimist(process.argv.slice(2));
 let RESET_SUCCESS_MSG = 'successfully reset license';

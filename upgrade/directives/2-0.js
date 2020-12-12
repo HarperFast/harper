@@ -8,9 +8,7 @@ const {HDB_SETTINGS_NAMES, HDB_SETTINGS_DEFAULT_VALUES, CLUSTERING_FOLDER_NAMES_
 let directive2_0_0 = new upgrade_directive('2.0.000');
 let directives = [];
 const env = require('../../utility/environment/environmentManager');
-if(!env.isInitialized()) {
-    env.initSync();
-}
+env.initSync();
 
 const KEYS_FILE_NAME = '060493.ks';
 let home_dir = process.env['HOME'];
