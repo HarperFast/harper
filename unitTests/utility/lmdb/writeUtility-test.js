@@ -200,7 +200,7 @@ describe("Test writeUtility module", ()=>{
             let txn = new environment_utility.TransactionCursor(env, '__blob__');
             let key = txn.cursor.goToKey(`text/${record.id}`);
             assert.deepStrictEqual(key, `text/${record.id}`);
-            let value = txn.cursor.getCurrentString();
+            let value = txn.cursor.getCurrentUtf8();
             assert.deepStrictEqual(value, record.text);
             txn.close();
         });
@@ -397,7 +397,7 @@ describe("Test writeUtility module", ()=>{
             let txn = new environment_utility.TransactionCursor(env, '__blob__');
             let key = txn.cursor.goToKey(`text/${record.id}`);
             assert.deepStrictEqual(key, `text/${record.id}`);
-            let value = txn.cursor.getCurrentString();
+            let value = txn.cursor.getCurrentUtf8();
             assert.deepStrictEqual(value, record.text);
             txn.close();
 
@@ -453,7 +453,7 @@ describe("Test writeUtility module", ()=>{
             let txn = new environment_utility.TransactionCursor(env, '__blob__');
             let key = txn.cursor.goToKey(`json/${record.id}`);
             assert.deepStrictEqual(key, `json/${record.id}`);
-            let value = txn.cursor.getCurrentString();
+            let value = txn.cursor.getCurrentUtf8();
             assert.deepStrictEqual(value, JSON.stringify(record.json));
             txn.close();
 
@@ -722,7 +722,7 @@ describe("Test writeUtility module", ()=>{
             let txn = new environment_utility.TransactionCursor(env, '__blob__');
             let key = txn.cursor.goToKey(`text/${record.id}`);
             assert.deepStrictEqual(key, `text/${record.id}`);
-            let value = txn.cursor.getCurrentString();
+            let value = txn.cursor.getCurrentUtf8();
             assert.deepStrictEqual(value, record.text);
             txn.close();
 
@@ -744,7 +744,7 @@ describe("Test writeUtility module", ()=>{
             assert.deepStrictEqual(records,expected2);
             txn = new environment_utility.TransactionCursor(env, '__blob__');
             key = txn.cursor.goToKey(`text/${record.id}`);
-            assert.deepStrictEqual(key, null);
+            assert.deepStrictEqual(key, undefined);
             txn.close();
         });
 
@@ -778,7 +778,7 @@ describe("Test writeUtility module", ()=>{
             let txn = new environment_utility.TransactionCursor(env, '__blob__');
             let key = txn.cursor.goToKey(`json/${record.id}`);
             assert.deepStrictEqual(key, `json/${record.id}`);
-            let value = txn.cursor.getCurrentString();
+            let value = txn.cursor.getCurrentUtf8();
             assert.deepStrictEqual(value, JSON.stringify(record.json));
             txn.close();
 
@@ -797,7 +797,7 @@ describe("Test writeUtility module", ()=>{
             assert.deepStrictEqual(records,expected2);
             txn = new environment_utility.TransactionCursor(env, '__blob__');
             key = txn.cursor.goToKey(`json/${record.id}`);
-            assert.deepStrictEqual(key, null);
+            assert.deepStrictEqual(key, undefined);
             txn.close();
         });
 

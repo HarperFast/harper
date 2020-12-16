@@ -71,7 +71,7 @@ function searchTransactionsByTimestamp(env, timestamps = [0, lmdb_utils.getMicro
             if(key_value > timestamps[1]){
                 break;
             }
-            let txn_record = Object.assign(new LMDBTransactionObject(), JSON.parse(txn.cursor.getCurrentString()));
+            let txn_record = Object.assign(new LMDBTransactionObject(), JSON.parse(txn.cursor.getCurrentUtf8()));
             results.push(txn_record);
         }
 
@@ -207,7 +207,7 @@ function batchSearchTransactions(env, ids){
 
                 let binary_key = txn.cursor.goToKey(binary_id);
                 if(!hdb_utils.isEmpty(binary_key)){
-                    let txn_record = Object.assign(new LMDBTransactionObject(), JSON.parse(txn.cursor.getCurrentString()));
+                    let txn_record = Object.assign(new LMDBTransactionObject(), JSON.parse(txn.cursor.getCurrentUtf8()));
                     results.push(txn_record);
                 }
             }catch(e){

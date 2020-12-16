@@ -51,12 +51,12 @@ async function writeTransaction(hdb_operation, lmdb_response){
 
             let txn_timestamp = txn_object.timestamp;
             let txn_timestamp_key_value = lmdb_utils.convertKeyValueToWrite(txn_timestamp, lmdb_terms.DBI_KEY_TYPES.NUMBER);
-            txn.putString(txn_env.dbis[lmdb_terms.TRANSACTIONS_DBI_NAMES_ENUM.TIMESTAMP], txn_timestamp_key_value, JSON.stringify(txn_object), {noOverwrite: true});
+            txn.putUtf8(txn_env.dbis[lmdb_terms.TRANSACTIONS_DBI_NAMES_ENUM.TIMESTAMP], txn_timestamp_key_value, JSON.stringify(txn_object), {noOverwrite: true});
             if (!hdb_util.isEmpty(txn_object.user_name)) {
-                txn.putString(txn_env.dbis[lmdb_terms.TRANSACTIONS_DBI_NAMES_ENUM.USER_NAME], txn_object.user_name.toString(), txn_timestamp.toString());
+                txn.putUtf8(txn_env.dbis[lmdb_terms.TRANSACTIONS_DBI_NAMES_ENUM.USER_NAME], txn_object.user_name.toString(), txn_timestamp.toString());
             }
             for (let x = 0; x < txn_object.hash_values.length; x++) {
-                txn.putString(txn_env.dbis[lmdb_terms.TRANSACTIONS_DBI_NAMES_ENUM.HASH_VALUE], txn_object.hash_values[x].toString(), txn_timestamp.toString());
+                txn.putUtf8(txn_env.dbis[lmdb_terms.TRANSACTIONS_DBI_NAMES_ENUM.HASH_VALUE], txn_object.hash_values[x].toString(), txn_timestamp.toString());
             }
 
             txn.commit();
