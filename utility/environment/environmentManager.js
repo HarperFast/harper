@@ -382,7 +382,7 @@ function initSync() {
 
 function initTestEnvironment(test_config_obj = {}) {
     try {
-        const { keep_alive_timeout, headers_timeout, http_enabled, https_enabled } = test_config_obj;
+        const { keep_alive_timeout, headers_timeout, server_timeout, http_enabled, https_enabled } = test_config_obj;
         let props_path = process.cwd();
         props_path = path.join(props_path, '../', 'unitTests');
         setPropsFilePath(`${props_path}/hdb_boot_properties.file`);
@@ -398,10 +398,13 @@ function initTestEnvironment(test_config_obj = {}) {
         setProperty(hdb_terms.HDB_SETTINGS_NAMES.CLUSTERING_ENABLED_KEY, 'TRUE');
         setProperty(hdb_terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY, '1231412de213');
         setProperty(hdb_terms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY, `${props_path}/envDir/`);
-        setProperty(hdb_terms.HDB_SETTINGS_NAMES.HTTP_ENABLED_KEY, http_enabled ? http_enabled : true);
-        setProperty(hdb_terms.HDB_SETTINGS_NAMES.HTTP_SECURE_ENABLED_KEY, https_enabled ? https_enabled : true);
+        setProperty(hdb_terms.HDB_SETTINGS_NAMES.HTTP_ENABLED_KEY, common_utils.isEmpty(http_enabled) ? true : http_enabled);
+        setProperty(hdb_terms.HDB_SETTINGS_NAMES.HTTP_SECURE_ENABLED_KEY, common_utils.isEmpty(https_enabled) ? true : https_enabled);
         setProperty(hdb_terms.HDB_SETTINGS_NAMES.HTTP_PORT_KEY, 9925);
         setProperty(hdb_terms.HDB_SETTINGS_NAMES.HTTP_SECURE_PORT_KEY, 31283);
+        if (server_timeout) {
+            setProperty(hdb_terms.HDB_SETTINGS_NAMES.PROPS_SERVER_TIMEOUT_KEY, server_timeout);
+        }
         if (keep_alive_timeout) {
             setProperty(hdb_terms.HDB_SETTINGS_NAMES.SERVER_KEEP_ALIVE_TIMEOUT_KEY, keep_alive_timeout);
         }

@@ -2,6 +2,7 @@
 
 const cluster = require('cluster');
 const env = require('../utility/environment/environmentManager');
+env.initSync();
 const terms = require('../utility/hdbTerms');
 const hdb_util = require('../utility/common_utils');
 const os = require('os');
@@ -83,15 +84,15 @@ async function childServer() {
     const props_http_on = env.get(PROPS_HTTP_ON_KEY);
 
     if (props_http_secure_on && (props_http_secure_on === true || props_http_secure_on.toUpperCase() === TRUE_COMPARE_VAL)) {
-        secureServer = buildServer(true);
+        secureServer = await buildServer(true);
     }
 
     if (props_http_on && (props_http_on === true || props_http_on.toUpperCase() === TRUE_COMPARE_VAL)) {
-        httpServer = buildServer(false);
+        httpServer = await buildServer(false);
     }
 }
 
-function buildServer(is_https) {
+async function buildServer(is_https) {
     let server_opts = getServerOptions(is_https);
     const app = fastify(server_opts);
     //Fastify does not set this property in the initial app construction
@@ -99,15 +100,15 @@ function buildServer(is_https) {
 
     const cors_options = getCORSOpts();
     if (cors_options) {
-        app.register(fastify_cors, cors_options);
+        await app.register(fastify_cors, cors_options);
     }
 
     //Register security headers for Fastify instance - https://helmetjs.github.io/
-    app.register(fastify_helmet);
+    await app.register(fastify_helmet);
 
     // This handles all get requests for the studio
-    app.register(fastify_compress);
-    app.register(fastify_static, {root: guidePath.join(__dirname,'../docs')});
+    await app.register(fastify_compress);
+    await app.register(fastify_static, {root: guidePath.join(__dirname,'../docs')});
     app.get('/', function(req, res) {
         return res.sendFile('index.html');
     });
@@ -116,10 +117,10 @@ function buildServer(is_https) {
         await handlePostRequest(req, res);
     });
 
-    app.server.on('connection', function(conn) {
-        let key = conn.remoteAddress + ':' + conn.remotePort;
-        server_connections[key] = conn;
-        conn.on('close', function() {
+    app.server.on('connection', function(socket) {
+        let key = socket.remoteAddress + ':' + socket.remotePort;
+        server_connections[key] = socket;
+        socket.on('close', function() {
             harper_logger.debug(`removing connection for ${key}`);
             delete server_connections[key];
         });
@@ -129,17 +130,25 @@ function buildServer(is_https) {
         if (is_https) {
             harper_logger.debug(`child process starting up https server.`);
 
-            app.listen(env.get(PROPS_HTTP_SECURE_PORT_KEY), '::', function (err, address) {
-                harper_logger.info(`HarperDB ${pjson.version} HTTPS Server running on ${address}`);
-                signalling.signalChildStarted();
-            });
+            await app.listen(env.get(PROPS_HTTP_SECURE_PORT_KEY), '::')
+                .then(address => {
+                    harper_logger.info(`HarperDB ${pjson.version} HTTPS Server running on ${address}`);
+                    signalling.signalChildStarted();
+                }).catch(err => {
+                    //TODO - add better error handling
+                    console.log(err);
+                });
         } else {
             harper_logger.debug(`child process starting up http server.`);
 
-            app.listen(env.get(PROPS_HTTP_PORT_KEY), '::', function (err, address) {
-                harper_logger.info(`HarperDB ${pjson.version} HTTP Server running on ${address}`);
-                signalling.signalChildStarted();
-            });
+            await app.listen(env.get(PROPS_HTTP_PORT_KEY), '::')
+                .then(address => {
+                    harper_logger.info(`HarperDB ${pjson.version} HTTP Server running on ${address}`);
+                    signalling.signalChildStarted();
+                }).catch(err => {
+                    //TODO - add better error handling
+                    console.log(err);
+                });
         }
         return app;
     } catch(e) {
@@ -224,7 +233,7 @@ async function handlePostRequest(req, res) {
         }
     } catch(err){
         harper_logger.warn(err);
-        harper_logger.warn(`{"ip":"${req.connection.remoteAddress}", "error":"${err.stack}"`);
+        harper_logger.warn(`{"ip":"${req.socket.remoteAddress}", "error":"${err.stack}"`);
         if (typeof err === 'string') {
             return res.status(hdb_errors.HTTP_STATUS_CODES.UNAUTHORIZED).send({error: err});
         }
@@ -380,6 +389,6 @@ async function shutDown(force_bool) {
         harper_logger.info(`Process pid:${process.pid} - Work completed, shutting down`);
         hdb_util.callProcessSend({type: terms.CLUSTER_MESSAGE_TYPE_ENUM.CHILD_STOPPED, pid: process.pid});
     }
-};
+}
 
 module.exports = childServer;
