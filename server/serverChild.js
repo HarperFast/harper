@@ -134,9 +134,6 @@ async function buildServer(is_https) {
                 .then(address => {
                     harper_logger.info(`HarperDB ${pjson.version} HTTPS Server running on ${address}`);
                     signalling.signalChildStarted();
-                }).catch(err => {
-                    //TODO - add better error handling
-                    console.log(err);
                 });
         } else {
             harper_logger.debug(`child process starting up http server.`);
@@ -145,9 +142,6 @@ async function buildServer(is_https) {
                 .then(address => {
                     harper_logger.info(`HarperDB ${pjson.version} HTTP Server running on ${address}`);
                     signalling.signalChildStarted();
-                }).catch(err => {
-                    //TODO - add better error handling
-                    console.log(err);
                 });
         }
         return app;

@@ -27,6 +27,9 @@ const test_req_options = {
     body: { 'operation': 'describe_all'}
 };
 
+const REQ_MAX_BODY_SIZE = 1024*1024*1024; //this is 1GB in bytes
+const DEFAULT_FASTIFY_PLUGIN_ARR = ['fastify-helmet', 'fastify-compress', 'fastify-static'];
+
 const chai = require('chai');
 const { expect } = chai;
 const sinon = require('sinon');
@@ -39,6 +42,8 @@ let chooseOp_stub;
 let serverChild_rw;
 
 const test_op_resp = "table 'dev.dogz' successfully created.";
+const test_cert_val = test_utils.getHTTPSOptsVals().cert;
+const test_key_val = test_utils.getHTTPSOptsVals().key;
 
 function setupServerTest() {
     serverChild_rw = rewire('../../server/serverChild');
@@ -51,8 +56,9 @@ describe('Test serverChild.js', () => {
     before(() => {
         test_utils.preTestPrep();
         fs.mkdirpSync(KEYS_PATH);
-        fs.writeFileSync(PRIVATE_KEY_PATH, test_utils.getHTTPSOptsVals().key);
-        fs.writeFileSync(CERTIFICATE_PATH, test_utils.getHTTPSOptsVals().cert);
+
+        fs.writeFileSync(PRIVATE_KEY_PATH, test_key_val);
+        fs.writeFileSync(CERTIFICATE_PATH, test_cert_val);
         callOperation_stub = sandbox.stub(OperationFunctionCaller, 'callOperationFunctionAsAwait').resolves(test_op_resp);
         auth_stub = sandbox.stub(auth, 'authorize').callsFake((req, res, next) => next(null, {}));
         chooseOp_stub = sandbox.stub(server_utilities, 'chooseOperation').callsFake(({}, callback) => callback(null, {}));
@@ -64,6 +70,7 @@ describe('Test serverChild.js', () => {
     })
 
     afterEach(async() => {
+        test_utils.preTestPrep();
         const http = serverChild_rw.__get__('httpServer');
         if (http) await http.close();
         const https = serverChild_rw.__get__('secureServer');
@@ -72,7 +79,6 @@ describe('Test serverChild.js', () => {
     })
 
     after(() => {
-        test_utils.preTestPrep();
         fs.removeSync(KEYS_PATH);
         sandbox.restore();
         rewire('../../server/serverChild');
@@ -83,6 +89,7 @@ describe('Test serverChild.js', () => {
             await serverChild_rw();
             const http_server = serverChild_rw.__get__('httpServer');
             const secure_server = serverChild_rw.__get__('secureServer');
+
             expect(http_server).to.not.be.undefined;
             expect(http_server.server.constructor.name).to.equal('Server');
             expect(http_server.initialConfig.https).to.be.undefined;
@@ -103,6 +110,16 @@ describe('Test serverChild.js', () => {
             expect(http_server[state_key].listening).to.be.true;
             expect(secure_server[state_key].started).to.be.true;
             expect(secure_server[state_key].listening).to.be.true;
+        })
+
+        it('should register 3 fastify plugins by default - fastify-helmet, fastify-compress, fastify-static', async() => {
+            await serverChild_rw();
+            const http_server = serverChild_rw.__get__('httpServer');
+            const secure_server = serverChild_rw.__get__('secureServer');
+            const plugin_key = Object.getOwnPropertySymbols(secure_server).find((s => String(s) === "Symbol(fastify.pluginNameChain)"))
+
+            expect(http_server[plugin_key]).to.deep.equal(DEFAULT_FASTIFY_PLUGIN_ARR);
+            expect(secure_server[plugin_key]).to.deep.equal(DEFAULT_FASTIFY_PLUGIN_ARR);
         })
 
         it('should build http and https server instances with default config settings', async() => {
@@ -204,6 +221,32 @@ describe('Test serverChild.js', () => {
             expect(handlePostRequest_spy.calledOnce).to.be.true;
         })
 
+        it('should return docs html static file result w/ status 200 for valid HTTP get request',async() => {
+            await serverChild_rw();
+            const http_server = serverChild_rw.__get__('httpServer');
+
+            const test_response = await http_server.inject({
+                method: 'get',
+                url:'/'
+            })
+
+            expect(test_response.statusCode).to.equal(200);
+            expect(test_response.body).to.equal(fs.readFileSync(path.join(__dirname, '../../docs/index.html'), 'utf8'));
+        })
+
+        it('should return docs html static file result w/ status 200 for valid HTTPS get request',async() => {
+            await serverChild_rw();
+            const https_server = serverChild_rw.__get__('secureServer');
+
+            const test_response = await https_server.inject({
+                method: 'get',
+                url:'/'
+            })
+
+            expect(test_response.statusCode).to.equal(200);
+            expect(test_response.body).to.equal(fs.readFileSync(path.join(__dirname, '../../docs/index.html'), 'utf8'));
+        })
+
         it('should return op result w/ status 200 for valid HTTP post request',async() => {
             await serverChild_rw();
             const http_server = serverChild_rw.__get__('httpServer');
@@ -245,6 +288,123 @@ describe('Test serverChild.js', () => {
             })
 
             expect(test_response.statusCode).to.equal(200);
+        })
+
+        it('should not register fastify-cors if cors is not enabled',async() => {
+            test_utils.preTestPrep();
+            await serverChild_rw();
+            const secure_server = serverChild_rw.__get__('secureServer');
+
+            const plugin_key = Object.getOwnPropertySymbols(secure_server).find((s => String(s) === "Symbol(fastify.pluginNameChain)"))
+
+            expect(secure_server[plugin_key].length).to.equal(3);
+            expect(secure_server[plugin_key]).to.deep.equal(['fastify-helmet', 'fastify-compress', 'fastify-static']);
+        })
+
+        it('should register fastify-cors if cors is enabled',async() => {
+            const test_config_settings = {
+                cors_enabled: true,
+                cors_whitelist: 'harperdb.io, sam-johnson.io'
+            }
+
+            test_utils.preTestPrep(test_config_settings);
+            await serverChild_rw();
+            const secure_server = serverChild_rw.__get__('secureServer');
+
+            const plugin_key = Object.getOwnPropertySymbols(secure_server).find((s => String(s) === "Symbol(fastify.pluginNameChain)"))
+
+            expect(secure_server[plugin_key].length).to.equal(4);
+            expect(secure_server[plugin_key]).to.deep.equal(['fastify-cors', ...DEFAULT_FASTIFY_PLUGIN_ARR]);
+        })
+    })
+
+    describe('buildServer() method', () => {
+        let buildServer_rw;
+        let test_result;
+
+        beforeEach(() => {
+            buildServer_rw = serverChild_rw.__get__('buildServer');
+        });
+
+        afterEach(async() => {
+            await test_result.close();
+        })
+
+        it('should return an http server', async() => {
+            const test_is_https = false;
+            test_result = await buildServer_rw(test_is_https);
+
+            expect(test_result.server.constructor.name).to.equal('Server');
+            expect(test_result.initialConfig.https).to.be.undefined;
+        })
+
+        it('should return an https server', async() => {
+            const test_is_https = true;
+            test_result = await buildServer_rw(test_is_https);
+
+            expect(test_result.server.constructor.name).to.equal('Server');
+            expect(test_result.initialConfig.https).to.be.true;
+        })
+    })
+
+    describe('getServerOptions() method', () => {
+        let getServerOptions_rw;
+
+        beforeEach(() => {
+            getServerOptions_rw = serverChild_rw.__get__('getServerOptions');
+        })
+
+        it('should return http server options based based on settings values',() => {
+            const test_config_settings = {
+                server_timeout: 3333,
+                keep_alive_timeout: 2222,
+                headers_timeout: 1111
+            }
+            test_utils.preTestPrep(test_config_settings);
+
+            const test_is_https = false;
+            const test_results = getServerOptions_rw(test_is_https);
+
+            expect(test_results.bodyLimit).to.equal(REQ_MAX_BODY_SIZE);
+            expect(test_results.keepAliveTimeout).to.equal(test_config_settings.keep_alive_timeout);
+            expect(test_results.connectionTimeout).to.equal(test_config_settings.server_timeout);
+            expect(test_results.https).to.be.undefined;
+        })
+
+        it('should return https server options based based on settings values',() => {
+            const test_config_settings = {
+                server_timeout: 3333,
+                keep_alive_timeout: 2222
+            }
+            test_utils.preTestPrep(test_config_settings);
+
+            const test_is_https = true;
+            const test_results = getServerOptions_rw(test_is_https);
+
+            expect(test_results.bodyLimit).to.equal(REQ_MAX_BODY_SIZE);
+            expect(test_results.keepAliveTimeout).to.equal(test_config_settings.keep_alive_timeout);
+            expect(test_results.connectionTimeout).to.equal(test_config_settings.server_timeout);
+            expect(test_results.https).to.be.an.instanceOf(Object);
+            expect(test_results.https.key).to.be.an.instanceOf(Buffer);
+            expect(test_results.https.cert).to.be.an.instanceOf(Buffer);
+        })
+    })
+
+    describe('getHeaderTimeoutConfig() method',() => {
+        let getHeaderTimeoutConfig_rw;
+
+        beforeEach(() => {
+            getHeaderTimeoutConfig_rw = serverChild_rw.__get__('getHeaderTimeoutConfig');
+        })
+
+        it('should return the header timeout config value', () => {
+            const test_config_settings = {
+                headers_timeout: 1234
+            }
+            test_utils.preTestPrep(test_config_settings);
+
+            const test_results = getHeaderTimeoutConfig_rw();
+            expect(test_results).to.equal(test_config_settings.headers_timeout);
         })
     })
 })
