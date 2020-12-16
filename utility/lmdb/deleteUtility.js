@@ -52,7 +52,7 @@ function deleteRecords(env, hash_attribute, ids){
                 cast_hash_value = hdb_utils.autoCast(hash_value);
 
                 //attempt to fetch the hash attribute value, this is the row.
-                let record_string = txn.getString(env.dbis[hash_attribute], hash_value);
+                let record_string = txn.getUtf8(env.dbis[hash_attribute], hash_value);
                 //if it doesn't exist we skip & move to the next id
                 if(!record_string){
                     deleted.skipped.push(cast_hash_value);

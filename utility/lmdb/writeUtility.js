@@ -64,9 +64,9 @@ function insertRecords(env, hash_attribute, write_attributes , records){
                     //LMDB has a 254 byte limit for keys, so we return null if the byte size is larger than 254 to not index that value
                     if(checkIsBlob(value)){
                         let key = `${attribute}/${primary_key}`;
-                        txn.putString(env.dbis[lmdb_terms.BLOB_DBI_NAME], key, value);
+                        txn.putUtf8(env.dbis[lmdb_terms.BLOB_DBI_NAME], key, value);
                     }else {
-                        txn.putString(env.dbis[attribute], value, primary_key);
+                        txn.putUtf8(env.dbis[attribute], value, primary_key);
                     }
                 }
             }
@@ -74,7 +74,7 @@ function insertRecords(env, hash_attribute, write_attributes , records){
             // with the flag noOverwrite: true we can force lmdb to throw an error if the key already exists.
             // this allows us to auto check if the row already exists
             try {
-                txn.putString(env.dbis[hash_attribute], primary_key, JSON.stringify(record), {noOverwrite: true});
+                txn.putUtf8(env.dbis[hash_attribute], primary_key, JSON.stringify(record), {noOverwrite: true});
             } catch(e){
                 if(e.message.startsWith('MDB_KEYEXIST') === true){
                     result.skipped_hashes.push(cast_hash_value);
@@ -335,16 +335,16 @@ function updateUpsertRecord(env, txn, hash_attribute, record, existing_record, h
             //LMDB has a 254 byte limit for keys, so we return null if the byte size is larger than 254 to not index that value
             if(checkIsBlob(str_new_value)){
                 let key_value = `${key}/${hash_value}`;
-                txn.putString(env.dbis[lmdb_terms.BLOB_DBI_NAME], key_value, str_new_value);
+                txn.putUtf8(env.dbis[lmdb_terms.BLOB_DBI_NAME], key_value, str_new_value);
             }else {
-                txn.putString(dbi, str_new_value, hash_value);
+                txn.putUtf8(dbi, str_new_value, hash_value);
             }
         }
 
     }
 
     let merged_record = Object.assign({}, existing_record, record);
-    txn.putString(env.dbis[hash_attribute], hash_value.toString(), JSON.stringify(merged_record));
+    txn.putUtf8(env.dbis[hash_attribute], hash_value.toString(), JSON.stringify(merged_record));
     result.written_hashes.push(cast_hash_value);
 }
 

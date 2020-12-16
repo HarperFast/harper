@@ -293,7 +293,7 @@ function listDBIDefinitions(env){
         for (let found = txn.cursor.goToFirst(); found !== null && found !== undefined; found = txn.cursor.goToNext()) {
             if (found !== INTERNAL_DBIS_NAME) {
                 try {
-                    dbis[found] = Object.assign(new DBIDefinition(), JSON.parse(txn.cursor.getCurrentString()));
+                    dbis[found] = Object.assign(new DBIDefinition(), JSON.parse(txn.cursor.getCurrentUtf8()));
                 } catch (e) {
                     log.warn(`an internal error occurred: unable to parse DBI Definition for ${found}`);
                 }
@@ -359,7 +359,7 @@ function getDBIDefinition(env, dbi_name){
         }
 
         try {
-            dbi_definition = Object.assign(dbi_definition, JSON.parse(txn.cursor.getCurrentString()));
+            dbi_definition = Object.assign(dbi_definition, JSON.parse(txn.cursor.getCurrentUtf8()));
         } catch (e) {
             log.warn(`an internal error occurred: unable to parse DBI Definition for ${found}`);
         }
@@ -404,7 +404,7 @@ function createDBI(env, dbi_name, dup_sort, key_type, is_hash_attribute= false){
 
             let dbis = openDBI(env, INTERNAL_DBIS_NAME);
             let txn = env.beginTxn();
-            txn.putString(dbis, dbi_name, JSON.stringify(dbi_definition));
+            txn.putUtf8(dbis, dbi_name, JSON.stringify(dbi_definition));
             txn.commit();
 
             env.dbis[dbi_name] = new_dbi;

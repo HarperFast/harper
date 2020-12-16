@@ -6,7 +6,7 @@ const lmdb_terms = require('./terms');
 
 function parseRow(txn, attributes){
     let return_object = Object.create(null);
-    let original_object = JSON.parse(txn.cursor.getCurrentString());
+    let original_object = JSON.parse(txn.cursor.getCurrentUtf8());
 
     for (let x = 0; x < attributes.length; x++) {
         let attribute = attributes[x];
@@ -53,7 +53,7 @@ function iterateDBI(found, txn, results){
     if(results[found] === undefined){
         results[found] = [];
     }
-    results[found].push(txn.cursor.getCurrentString());
+    results[found].push(txn.cursor.getCurrentUtf8());
 }
 
 /**
@@ -72,7 +72,7 @@ function pushResults(found, txn, results, hash_attribute, attribute){
     if(txn.is_hash_attribute === true){
         hash_value = found;
     } else {
-        hash_value = txn.cursor.getCurrentString();
+        hash_value = txn.cursor.getCurrentUtf8();
         if(hash_attribute !== undefined) {
             new_object[hash_attribute] = auto_cast(hash_value);
         }

@@ -60,9 +60,9 @@ function removeAttributeFromAllObjects(drop_attribute_obj, env, hash_attribute){
         txn = new environment_utility.TransactionCursor(env, hash_attribute, true);
 
         for (let found = txn.cursor.goToFirst(); found !== null && found !== undefined; found = txn.cursor.goToNext()) {
-            let orig_object = JSON.parse(txn.cursor.getCurrentString());
+            let orig_object = JSON.parse(txn.cursor.getCurrentUtf8());
             delete orig_object[drop_attribute_obj.attribute];
-            txn.txn.putString(txn.dbi, found, JSON.stringify(orig_object));
+            txn.txn.putUtf8(txn.dbi, found, JSON.stringify(orig_object));
         }
         txn.commit();
     }catch(e){

@@ -72,7 +72,7 @@ function deleteTransactions(env, timestamp){
                         if(key_value >= timestamp){
                                 break;
                         }
-                        let txn_record = JSON.parse(txn.cursor.getCurrentString());
+                        let txn_record = JSON.parse(txn.cursor.getCurrentUtf8());
 
                         //delete the transaction record
                         txn.txn.del(env.dbis[lmdb_terms.TRANSACTIONS_DBI_NAMES_ENUM.TIMESTAMP], found);

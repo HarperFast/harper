@@ -435,7 +435,7 @@ function blobSearch(env, hash_attribute, attribute, search_value, search_type, r
                 continue;
             }
 
-            let text = txn.cursor.getCurrentString();
+            let text = txn.cursor.getCurrentUtf8();
             let hash_value = found.replace(range_value, '');
             switch(search_type){
                 case lmdb_terms.SEARCH_TYPES.EQUALS:
