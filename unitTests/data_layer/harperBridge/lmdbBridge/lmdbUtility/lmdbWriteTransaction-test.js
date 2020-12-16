@@ -282,13 +282,15 @@ describe('test lmdbWriteTransaction module', ()=>{
     });
 
     describe('test writeTransaction function', ()=> {
+        let env;
         beforeEach(async ()=>{
             await fs.mkdirp(BASE_PATH);
             global.lmdb_map = undefined;
-            await lmdb_create_txn_envs(CREATE_TABLE_OBJ);
+            env = await lmdb_create_txn_envs(CREATE_TABLE_OBJ);
         });
 
         afterEach(async ()=>{
+            env.close();
             await fs.remove(BASE_PATH);
             global.lmdb_map = undefined;
         });

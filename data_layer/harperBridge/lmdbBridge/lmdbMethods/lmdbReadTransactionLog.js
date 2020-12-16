@@ -65,7 +65,7 @@ function searchTransactionsByTimestamp(env, timestamps = [0, lmdb_utils.getMicro
             found = txn.cursor.goToRange(search_value);
         }
 
-        for (found; found !== null; found = txn.cursor.goToNext()) {
+        for (found; found !== null && found !== undefined; found = txn.cursor.goToNext()) {
             let key_value = found.readDoubleBE(0);
 
             if(key_value > timestamps[1]){

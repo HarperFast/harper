@@ -106,9 +106,7 @@ const sandbox = sinon.createSandbox();
 
 describe('Test lmdbDeleteRecords module', ()=>{
     let date_stub;
-    let hdb_schema_env;
-    let hdb_table_env;
-    let hdb_attribute_env;
+
     let rw_env_util;
     before(()=>{
         rw_env_util = environment_utility.__set__('MAP_SIZE', 5*1024*1024*1024);
@@ -128,6 +126,9 @@ describe('Test lmdbDeleteRecords module', ()=>{
         let expected_timestamp_txn;
         let expected_hashes_txn;
 
+        let hdb_schema_env;
+        let hdb_table_env;
+        let hdb_attribute_env;
         beforeEach(async ()=>{
             date_stub.restore();
             date_stub = sandbox.stub(Date, 'now').returns(INSERT_TIMESTAMP);
@@ -186,6 +187,16 @@ describe('Test lmdbDeleteRecords module', ()=>{
         });
 
         afterEach(async ()=>{
+            let env2 = await environment_utility.openEnvironment(path.join(BASE_SCHEMA_PATH, CREATE_TABLE_OBJ_TEST_A.schema), CREATE_TABLE_OBJ_TEST_A.table);
+            env2.close();
+
+            let txn_env1 = await environment_utility.openEnvironment(path.join(BASE_TXN_PATH, CREATE_TABLE_OBJ_TEST_A.schema), CREATE_TABLE_OBJ_TEST_A.table, true);
+            txn_env1.close();
+
+            hdb_schema_env.close();
+            hdb_table_env.close();
+            hdb_attribute_env.close();
+
             m_time_stub.restore();
             await fs.remove(BASE_PATH);
             global.lmdb_map = undefined;

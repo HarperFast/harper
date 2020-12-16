@@ -217,6 +217,7 @@ describe('test lmdbSearch module', ()=>{
         });
 
         after(async () => {
+            env.close();
             await fs.remove(BASE_PATH);
             global.lmdb_map = undefined;
         });
@@ -781,12 +782,13 @@ describe('test lmdbSearch module', ()=>{
 
     describe('test threadSearch function', ()=>{
         let env;
+        let temp_env;
         let rw_ts_path;
         before(async () => {
             test_data = require('../../../../testData');
             rw_ts_path = lmdb_search.__set__('LMDB_THREAD_SEARCH_MODULE_PATH', path.join(__dirname, '_lmdbThreadSearch'));
             await fs.mkdirp(SYSTEM_SCHEMA_PATH);
-            let temp_env = await environment_utility.createEnvironment(SYSTEM_SCHEMA_PATH, 'hdb_temp');
+            temp_env = await environment_utility.createEnvironment(SYSTEM_SCHEMA_PATH, 'hdb_temp');
             environment_utility.createDBI(temp_env, 'id', false);
 
             await fs.mkdirp(DEV_SCHEMA_PATH);
@@ -817,6 +819,8 @@ describe('test lmdbSearch module', ()=>{
         });
 
         after(async () => {
+            env.close();
+            temp_env.close();
             rw_ts_path();
             await fs.remove(BASE_PATH);
             global.lmdb_map = undefined;

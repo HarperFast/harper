@@ -8,7 +8,8 @@ const SCHEMA_NAME = 'schema';
 const BASE_PATH = test_utils.getMockFSPath();
 const BASE_SCHEMA_PATH = path.join(BASE_PATH, SCHEMA_NAME);
 const SYSTEM_SCHEMA_PATH = path.join(BASE_SCHEMA_PATH, SYSTEM_FOLDER_NAME);
-
+const TRANSACTIONS_NAME = 'transactions';
+const BASE_TXN_PATH = path.join(BASE_PATH, TRANSACTIONS_NAME);
 
 const rewire = require('rewire');
 const lmdb_create_records = rewire('../../../../../data_layer/harperBridge/lmdbBridge/lmdbMethods/lmdbCreateRecords');
@@ -197,6 +198,15 @@ describe('Test lmdbUpsertRecords module',() => {
         });
 
         afterEach(async ()=>{
+            let env = await environment_utility.openEnvironment(path.join(BASE_SCHEMA_PATH, CREATE_TABLE_OBJ_TEST_A.schema), CREATE_TABLE_OBJ_TEST_A.table);
+            env.close();
+
+            let txn_env1 = await environment_utility.openEnvironment(path.join(BASE_TXN_PATH, CREATE_TABLE_OBJ_TEST_A.schema), CREATE_TABLE_OBJ_TEST_A.table, true);
+            txn_env1.close();
+
+            hdb_schema_env.close();
+            hdb_table_env.close();
+            hdb_attribute_env.close();
             m_time_stub.restore();
             await fs.remove(BASE_PATH);
             global.lmdb_map = undefined;

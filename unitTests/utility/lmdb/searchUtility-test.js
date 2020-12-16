@@ -62,6 +62,7 @@ describe('Test searchUtility module', ()=>{
         });
 
         after(async ()=>{
+            env.close();
             await fs.remove(BASE_TEST_PATH);
             global.lmdb_map = undefined;
         });
@@ -73,7 +74,7 @@ describe('Test searchUtility module', ()=>{
             test_utils.assertErrorSync(search_util.searchByHash, [env, HASH_ATTRIBUTE_NAME], LMDB_TEST_ERRORS.FETCH_ATTRIBUTES_REQUIRED, 'no fetch_attributes');
             test_utils.assertErrorSync(search_util.searchByHash, [env, HASH_ATTRIBUTE_NAME, HASH_ATTRIBUTE_NAME], LMDB_TEST_ERRORS.FETCH_ATTRIBUTES_MUST_BE_ARRAY, 'invalid fetch_attributes');
             test_utils.assertErrorSync(search_util.searchByHash, [env, HASH_ATTRIBUTE_NAME, SOME_ATTRIBUTES], LMDB_TEST_ERRORS.ID_REQUIRED, 'no id');
-            test_utils.assertErrorSync(search_util.searchByHash, [env, HASH_ATTRIBUTE_NAME, SOME_ATTRIBUTES, MULTI_RECORD_ARRAY[0][HASH_ATTRIBUTE_NAME]],
+            test_utils.assertErrorSync(search_util.searchByHash, [env, HASH_ATTRIBUTE_NAME, SOME_ATTRIBUTES, MULTI_RECORD_ARRAY[0][HASH_ATTRIBUTE_NAME].toString()],
                 undefined, 'all arguments sent');
         });
 
@@ -117,6 +118,7 @@ describe('Test searchUtility module', ()=>{
         });
 
         after(async ()=>{
+            env.close();
             await fs.remove(BASE_TEST_PATH);
             global.lmdb_map = undefined;
         });
@@ -176,6 +178,7 @@ describe('Test searchUtility module', ()=>{
         });
 
         after(async ()=>{
+            env.close();
             await fs.remove(BASE_TEST_PATH);
             global.lmdb_map = undefined;
         });
@@ -234,6 +237,7 @@ describe('Test searchUtility module', ()=>{
         });
 
         after(async () => {
+            env.close();
             await fs.remove(BASE_TEST_PATH);
             global.lmdb_map = undefined;
         });
@@ -273,6 +277,7 @@ describe('Test searchUtility module', ()=>{
         });
 
         after(async () => {
+            env.close();
             await fs.remove(BASE_TEST_PATH);
             global.lmdb_map = undefined;
         });
@@ -310,6 +315,7 @@ describe('Test searchUtility module', ()=>{
         });
 
         after(async () => {
+            env.close();
             await fs.remove(BASE_TEST_PATH);
             global.lmdb_map = undefined;
         });
@@ -347,6 +353,7 @@ describe('Test searchUtility module', ()=>{
         });
 
         after(async () => {
+            env.close();
             await fs.remove(BASE_TEST_PATH);
             global.lmdb_map = undefined;
         });
@@ -375,6 +382,7 @@ describe('Test searchUtility module', ()=>{
         });
 
         after(async () => {
+            env.close();
             await fs.remove(BASE_TEST_PATH);
             global.lmdb_map = undefined;
         });
@@ -407,6 +415,7 @@ describe('Test searchUtility module', ()=>{
         });
 
         after(async () => {
+            env.close();
             await fs.remove(BASE_TEST_PATH);
             global.lmdb_map = undefined;
         });
@@ -483,6 +492,7 @@ describe('Test searchUtility module', ()=>{
         });
 
         after(async () => {
+            env.close();
             await fs.remove(BASE_TEST_PATH);
             global.lmdb_map = undefined;
         });
@@ -560,6 +570,7 @@ describe('Test searchUtility module', ()=>{
         });
 
         after(async () => {
+            env.close();
             await fs.remove(BASE_TEST_PATH);
             global.lmdb_map = undefined;
         });
@@ -653,6 +664,7 @@ describe('Test searchUtility module', ()=>{
         });
 
         after(async () => {
+            env.close();
             await fs.remove(BASE_TEST_PATH);
             global.lmdb_map = undefined;
         });
@@ -913,6 +925,7 @@ describe('Test searchUtility module', ()=>{
         });
 
         after(async () => {
+            env.close();
             await fs.remove(BASE_TEST_PATH);
             global.lmdb_map = undefined;
         });
@@ -1202,6 +1215,7 @@ describe('Test searchUtility module', ()=>{
         });
 
         after(async () => {
+            env.close();
             await fs.remove(BASE_TEST_PATH);
             global.lmdb_map = undefined;
         });
@@ -1492,6 +1506,7 @@ describe('Test searchUtility module', ()=>{
         });
 
         after(async () => {
+            env.close();
             await fs.remove(BASE_TEST_PATH);
             global.lmdb_map = undefined;
         });
@@ -1788,6 +1803,7 @@ describe('Test searchUtility module', ()=>{
         });
 
         after(async () => {
+            env.close();
             await fs.remove(BASE_TEST_PATH);
             global.lmdb_map = undefined;
         });
@@ -2073,6 +2089,7 @@ describe('Test searchUtility module', ()=>{
         });
 
         after(async () => {
+            env.close();
             await fs.remove(BASE_TEST_PATH);
             global.lmdb_map = undefined;
         });
@@ -2125,6 +2142,7 @@ describe('Test searchUtility module', ()=>{
         });
 
         after(async () => {
+            env.close();
             await fs.remove(BASE_TEST_PATH);
             global.lmdb_map = undefined;
         });

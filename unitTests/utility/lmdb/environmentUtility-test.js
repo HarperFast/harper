@@ -31,6 +31,7 @@ const get_dbi_definition = rw_lmdb_env_util.__get__('getDBIDefinition');
 describe("Test LMDB environmentUtility module", ()=>{
     let rw_env_util;
     before(async()=>{
+        await fs.remove(test_utils.getMockFSPath());
         rw_env_util = rw_lmdb_env_util.__set__('MAP_SIZE', 5*1024*1024*1024);
         await fs.mkdirp(BASE_TEST_PATH);
         global.lmdb_map = undefined;
@@ -97,6 +98,7 @@ describe("Test LMDB environmentUtility module", ()=>{
         });
 
         after(async()=>{
+            env.close();
             await fs.emptyDir(BASE_TEST_PATH);
             global.lmdb_map = undefined;
         });
@@ -147,7 +149,7 @@ describe("Test LMDB environmentUtility module", ()=>{
             //test to make sure the internal dbi exists
             await test_utils.assertErrorAsync(lmdb_env_util.openDBI, [env, lmdb_terms.INTERNAL_DBIS_NAME], undefined);
             assert.deepStrictEqual(env[lmdb_terms.ENVIRONMENT_NAME_KEY], 'lmdbTest.test');
-
+            env.close();
         });
 
         it('create existing environment', async ()=>{
@@ -211,14 +213,16 @@ describe("Test LMDB environmentUtility module", ()=>{
     });
 
     describe("Test copyEnvironment function", ()=> {
+        let env_orig;
         before(async () => {
             global.lmdb_map = undefined;
             await fs.mkdirp(BASE_TEST_PATH);
             await fs.mkdirp(BACKUP_TEST_ENV_PATH);
-            await lmdb_env_util.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
+            env_orig = await lmdb_env_util.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
         });
 
         after(async () => {
+            env_orig.close();
             await fs.remove(BASE_TEST_PATH);
             await fs.remove(BACKUP_PATH);
             test_utils.tearDownMockFS();
@@ -262,19 +266,22 @@ describe("Test LMDB environmentUtility module", ()=>{
 
             assert.deepStrictEqual(err, undefined);
             assert.deepStrictEqual(typeof env_copy, 'object');
+            env_copy.close();
         });
 
     });
 
     describe("Test deleteEnvironment function", ()=> {
+        let env_orig;
         before(async () => {
             global.lmdb_map = undefined;
             await fs.mkdirp(BASE_TEST_PATH);
 
-            await lmdb_env_util.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
+            env_orig = await lmdb_env_util.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
         });
 
         after(async () => {
+
             await fs.remove(BASE_TEST_PATH);
             test_utils.tearDownMockFS();
             global.lmdb_map = undefined;
@@ -321,6 +328,7 @@ describe("Test LMDB environmentUtility module", ()=>{
             });
 
             afterEach(async () => {
+                env.close();
                 await fs.remove(BASE_TEST_PATH);
                 test_utils.tearDownMockFS();
                 global.lmdb_map = undefined;
@@ -453,6 +461,7 @@ describe("Test LMDB environmentUtility module", ()=>{
             });
 
             after(async () => {
+                env.close();
                 await fs.remove(BASE_TEST_PATH);
                 test_utils.tearDownMockFS();
                 global.lmdb_map = undefined;
@@ -517,6 +526,8 @@ describe("Test LMDB environmentUtility module", ()=>{
             });
 
             after(async () => {
+                env.close();
+                env2.close();
                 await fs.remove(BASE_TEST_PATH);
                 test_utils.tearDownMockFS();
                 global.lmdb_map = undefined;
@@ -559,6 +570,8 @@ describe("Test LMDB environmentUtility module", ()=>{
         });
 
         after(async () => {
+            env.close();
+            env2.close();
             await fs.remove(BASE_TEST_PATH);
             test_utils.tearDownMockFS();
             global.lmdb_map = undefined;
@@ -591,6 +604,7 @@ describe("Test LMDB environmentUtility module", ()=>{
             });
 
             after(async () => {
+                env.close();
                 await fs.remove(BASE_TEST_PATH);
                 test_utils.tearDownMockFS();
                 global.lmdb_map = undefined;
@@ -635,6 +649,7 @@ describe("Test LMDB environmentUtility module", ()=>{
         });
 
         after(async () => {
+            env.close();
             await fs.remove(BASE_TEST_PATH);
             test_utils.tearDownMockFS();
             global.lmdb_map = undefined;
@@ -663,6 +678,7 @@ describe("Test LMDB environmentUtility module", ()=>{
             });
 
             after(async () => {
+                env.close();
                 await fs.remove(BASE_TEST_PATH);
                 test_utils.tearDownMockFS();
                 global.lmdb_map = undefined;
@@ -709,6 +725,7 @@ describe("Test LMDB environmentUtility module", ()=>{
         });
 
         after(async ()=>{
+            env.close();
             await fs.remove(BASE_TEST_PATH);
             global.lmdb_map = undefined;
         });
