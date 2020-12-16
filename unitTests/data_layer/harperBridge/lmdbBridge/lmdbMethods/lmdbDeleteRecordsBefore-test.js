@@ -8,6 +8,7 @@ const SYSTEM_FOLDER_NAME = 'system';
 const SCHEMA_NAME = 'schema';
 const BASE_PATH = test_utils.getMockFSPath();
 const BASE_SCHEMA_PATH = path.join(BASE_PATH, SCHEMA_NAME);
+const BASE_TXN_PATH = path.join(BASE_PATH, 'transactions');
 const SYSTEM_SCHEMA_PATH = path.join(BASE_SCHEMA_PATH, SYSTEM_FOLDER_NAME);
 const DEV_SCHEMA_PATH = path.join(BASE_SCHEMA_PATH, 'dev');
 
@@ -88,6 +89,9 @@ describe('test validateDropSchema module', ()=>{
 
     describe('test methods', ()=>{
         let timestamps = [];
+        let hdb_schema_env;
+        let hdb_table_env;
+        let hdb_attribute_env;
         before(async () => {
             timestamps = [];
             await fs.mkdirp(SYSTEM_SCHEMA_PATH);
@@ -116,13 +120,13 @@ describe('test validateDropSchema module', ()=>{
                 },
                 system: systemSchema};
 
-            let hdb_schema_env = await environment_utility.createEnvironment(SYSTEM_SCHEMA_PATH, systemSchema.hdb_schema.name);
+            hdb_schema_env = await environment_utility.createEnvironment(SYSTEM_SCHEMA_PATH, systemSchema.hdb_schema.name);
             environment_utility.createDBI(hdb_schema_env, systemSchema.hdb_schema.hash_attribute, false);
 
-            let hdb_table_env = await environment_utility.createEnvironment(SYSTEM_SCHEMA_PATH, systemSchema.hdb_table.name);
+            hdb_table_env = await environment_utility.createEnvironment(SYSTEM_SCHEMA_PATH, systemSchema.hdb_table.name);
             environment_utility.createDBI(hdb_table_env, systemSchema.hdb_table.hash_attribute, false);
 
-            let hdb_attribute_env = await environment_utility.createEnvironment(SYSTEM_SCHEMA_PATH, systemSchema.hdb_attribute.name);
+            hdb_attribute_env = await environment_utility.createEnvironment(SYSTEM_SCHEMA_PATH, systemSchema.hdb_attribute.name);
             environment_utility.createDBI(hdb_attribute_env, systemSchema.hdb_attribute.hash_attribute, false);
 
             await lmdb_create_schema(CREATE_SCHEMA_DEV);
@@ -165,6 +169,22 @@ describe('test validateDropSchema module', ()=>{
         });
 
         after(async () => {
+            let env1 = await environment_utility.openEnvironment(path.join(BASE_SCHEMA_PATH, CREATE_TABLE_OBJ_TEST_A.schema), CREATE_TABLE_OBJ_TEST_A.table);
+            env1.close();
+
+            let env2 = await environment_utility.openEnvironment(path.join(BASE_SCHEMA_PATH, CREATE_TABLE_OBJ_TEST_B.schema), CREATE_TABLE_OBJ_TEST_B.table);
+            env2.close();
+
+            let txn_env1 = await environment_utility.openEnvironment(path.join(BASE_TXN_PATH, CREATE_TABLE_OBJ_TEST_A.schema), CREATE_TABLE_OBJ_TEST_A.table, true);
+            txn_env1.close();
+
+            let txn_env2 = await environment_utility.openEnvironment(path.join(BASE_TXN_PATH, CREATE_TABLE_OBJ_TEST_B.schema), CREATE_TABLE_OBJ_TEST_B.table, true);
+            txn_env2.close();
+
+            hdb_table_env.close();
+            hdb_schema_env.close();
+            hdb_attribute_env.close();
+
             await fs.remove(BASE_PATH);
             global.lmdb_map = undefined;
         });

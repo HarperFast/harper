@@ -77,6 +77,7 @@ describe('Test deleteUtility', ()=>{
     });
 
     afterEach(async ()=>{
+        env.close();
         await fs.remove(BASE_TEST_PATH);
         global.lmdb_map = undefined;
     });

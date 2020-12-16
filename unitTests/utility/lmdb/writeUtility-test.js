@@ -79,7 +79,7 @@ describe("Test writeUtility module", ()=>{
         });
 
         after(async ()=>{
-
+            env.close();
             sandbox.restore();
             await fs.remove(BASE_TEST_PATH);
             global.lmdb_map = undefined;
@@ -125,6 +125,7 @@ describe("Test writeUtility module", ()=>{
         });
 
         afterEach(async ()=>{
+            env.close();
             date_stub.restore();
             await fs.remove(BASE_TEST_PATH);
             global.lmdb_map = undefined;
@@ -257,6 +258,7 @@ describe("Test writeUtility module", ()=>{
         });
 
         afterEach(async ()=>{
+            env.close();
             date_stub.restore();
             await fs.remove(BASE_TEST_PATH);
             global.lmdb_map = undefined;
@@ -417,7 +419,7 @@ describe("Test writeUtility module", ()=>{
             assert.deepStrictEqual(records,expected2);
             txn = new environment_utility.TransactionCursor(env, '__blob__');
             key = txn.cursor.goToKey(`text/${record.id}`);
-            assert.deepStrictEqual(key, null);
+            assert.deepStrictEqual(key, undefined);
             txn.close();
         });
 
@@ -436,7 +438,7 @@ describe("Test writeUtility module", ()=>{
             records.forEach(rec=>{
                 let record = test_utils.assignObjecttoNullObject(rec);
                 record.height = record.city = record.json = null;
-                delete  record.__blob__;
+                delete record.__blob__;
                 orig_records.push(record);
             });
             let expected_update_response = new UpdateRecordsResponseObject([1], [], TXN_TIMESTAMP, orig_records);
@@ -470,7 +472,7 @@ describe("Test writeUtility module", ()=>{
             assert.deepStrictEqual(records,expected2);
             txn = new environment_utility.TransactionCursor(env, '__blob__');
             key = txn.cursor.goToKey(`json/${record.id}`);
-            assert.deepStrictEqual(key, null);
+            assert.deepStrictEqual(key, undefined);
             txn.close();
         });
 
@@ -548,6 +550,7 @@ describe("Test writeUtility module", ()=>{
         });
 
         afterEach(async ()=>{
+            env.close();
             date_stub.restore();
             await fs.remove(BASE_TEST_PATH);
             global.lmdb_map = undefined;

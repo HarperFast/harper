@@ -54,6 +54,8 @@ describe('test lmdbDeleteTransactionLogsBefore module', ()=>{
         });
 
         afterEach(async ()=>{
+            let env1 = await environment_utility.openEnvironment(BASE_TRANSACTIONS_PATH, CREATE_TABLE_OBJ.table, true);
+            env1.close();
             await fs.remove(BASE_PATH);
             global.lmdb_map = undefined;
         });
@@ -154,6 +156,8 @@ describe('test lmdbDeleteTransactionLogsBefore module', ()=>{
         });
 
         afterEach(async ()=>{
+            let env1 = await environment_utility.openEnvironment(BASE_TRANSACTIONS_PATH, CREATE_TABLE_OBJ.table, true);
+            env1.close();
             await fs.remove(BASE_PATH);
             global.lmdb_map = undefined;
         });

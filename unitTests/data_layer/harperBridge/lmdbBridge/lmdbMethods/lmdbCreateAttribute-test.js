@@ -8,6 +8,7 @@ const LMDB_TEST_FOLDER_NAME = 'system';
 const SCHEMA_NAME = 'schema';
 const BASE_PATH = test_utils.getMockFSPath();
 const BASE_SCHEMA_PATH = path.join(BASE_PATH, SCHEMA_NAME);
+const BASE_TXN_PATH = path.join(BASE_PATH, 'transactions');
 const BASE_TEST_PATH = path.join(BASE_SCHEMA_PATH, LMDB_TEST_FOLDER_NAME);
 
 
@@ -104,6 +105,22 @@ describe("test lmdbCreateAttribute module", ()=>{
     });
 
     after(async ()=>{
+        let env1 = await environment_utility.openEnvironment(path.join(BASE_SCHEMA_PATH, CREATE_TABLE_OBJ_TEST_A.schema), CREATE_TABLE_OBJ_TEST_A.table);
+        env1.close();
+
+        let env2 = await environment_utility.openEnvironment(path.join(BASE_SCHEMA_PATH, CREATE_TABLE_OBJ_TEST_B.schema), CREATE_TABLE_OBJ_TEST_B.table);
+        env2.close();
+
+        let txn_env1 = await environment_utility.openEnvironment(path.join(BASE_TXN_PATH, CREATE_TABLE_OBJ_TEST_A.schema), CREATE_TABLE_OBJ_TEST_A.table, true);
+        txn_env1.close();
+
+        let txn_env2 = await environment_utility.openEnvironment(path.join(BASE_TXN_PATH, CREATE_TABLE_OBJ_TEST_B.schema), CREATE_TABLE_OBJ_TEST_B.table, true);
+        txn_env2.close();
+
+        hdb_table_env.close();
+        hdb_schema_env.close();
+        hdb_attribute_env.close();
+
         rw_env_util();
         delete global.hdb_schema;
         await fs.remove(BASE_PATH);

@@ -88,6 +88,7 @@ describe('Test lmdbReadTransactionLog module', ()=>{
         });
 
         afterEach(async ()=>{
+            txn_env.close();
             await fs.remove(BASE_PATH);
             global.lmdb_map = undefined;
         });
@@ -138,6 +139,7 @@ describe('Test lmdbReadTransactionLog module', ()=>{
         });
 
         afterEach(async ()=>{
+            txn_env.close();
             await fs.remove(BASE_PATH);
             global.lmdb_map = undefined;
         });
@@ -197,6 +199,7 @@ describe('Test lmdbReadTransactionLog module', ()=>{
         });
 
         afterEach(async ()=>{
+            txn_env.close();
             await fs.remove(BASE_PATH);
             global.lmdb_map = undefined;
         });
@@ -244,6 +247,7 @@ describe('Test lmdbReadTransactionLog module', ()=>{
     });
 
     describe('test readTransactionLog function', ()=>{
+        let txn_env;
         beforeEach(async ()=>{
             await fs.mkdirp(BASE_PATH);
             global.lmdb_map = undefined;
@@ -254,10 +258,11 @@ describe('Test lmdbReadTransactionLog module', ()=>{
                     }
                 }
             };
-            await lmdb_create_txn_envs(CREATE_TABLE_OBJ);
+            txn_env = await lmdb_create_txn_envs(CREATE_TABLE_OBJ);
         });
 
         afterEach(async ()=>{
+            txn_env.close();
             await fs.remove(BASE_PATH);
             global.lmdb_map = undefined;
             delete global.hdb_schema;

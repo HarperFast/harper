@@ -2,7 +2,7 @@
 
 const environment_utility= require('./environmentUtility');
 const TransactionCursor = environment_utility.TransactionCursor;
-const lmdb = require('node-lmdb');
+
 const log = require('../logging/harper_logger');
 const common = require('./commonUtility');
 const auto_cast = require('../common_utils').autoCast;
@@ -32,7 +32,7 @@ function iterateFullIndex(env, hash_attribute, attribute, eval_function){
     let txn = undefined;
     try {
         txn = new TransactionCursor(env, attribute);
-        for (let found = txn.cursor.goToFirst(); found !== null; found = txn.cursor.goToNext()) {
+        for (let found = txn.cursor.goToFirst(); found !== null && found !== undefined; found = txn.cursor.goToNext()) {
             let key_value = common.convertKeyValueFromSearch(found, txn.key_type);
             eval_function(key_value, txn, results, hash_attribute, attribute);
         }
@@ -65,7 +65,7 @@ function iterateFullIndexToMap(env, hash_attribute, attribute, eval_function){
     let txn = undefined;
     try {
         txn = new TransactionCursor(env, attribute);
-        for (let found = txn.cursor.goToFirst(); found !== null; found = txn.cursor.goToNext()) {
+        for (let found = txn.cursor.goToFirst(); found !== null && found !== undefined; found = txn.cursor.goToNext()) {
             let key_value = common.convertKeyValueFromSearch(found, txn.key_type);
             eval_function(key_value, txn, results, hash_attribute, attribute);
         }
@@ -109,7 +109,7 @@ function iterateRangeNext(env, hash_attribute, attribute, search_value, eval_fun
             found = txn.cursor.goToRange(search_value_converted);
         }
 
-        for (found; found !== null; found = txn.cursor.goToNext()) {
+        for (found; found !== null && found !== undefined; found = txn.cursor.goToNext()) {
             let key_value = common.convertKeyValueFromSearch(found, txn.key_type);
             eval_function(search_value, key_value, txn, results, hash_attribute, attribute);
         }
@@ -204,7 +204,7 @@ function iterateRangeBetween(env, hash_attribute, attribute, start_value, end_va
 
         let met_end_value = false;
 
-        for (let found = txn.cursor.goToRange(start_key); found !== null; found = txn.cursor.goToNext()) {
+        for (let found = txn.cursor.goToRange(start_key); found !== null && found !== undefined; found = txn.cursor.goToNext()) {
             let key_value = common.convertKeyValueFromSearch(found, txn.key_type);
             if (key_value === end_key_value) {
                 met_end_value = true;
@@ -267,7 +267,7 @@ function iterateLessThan(env, hash_attribute, attribute, search_value, eval_func
             found = txn.cursor.goToRange(search_value_converted);
         }
 
-        for (found; found !== null; found = txn.cursor.goToPrev()) {
+        for (found; found !== null && found !== undefined; found = txn.cursor.goToPrev()) {
             let key_value = common.convertKeyValueFromSearch(found, txn.key_type);
             eval_function(search_value, key_value, txn, results, hash_attribute, attribute);
         }
@@ -391,7 +391,7 @@ function equals(env, hash_attribute, attribute, search_value){
         let converted_search_value = common.convertKeyValueToWrite(search_value, txn.key_type);
 
         let results = Object.create(null);
-        for (let found = txn.cursor.goToKey(converted_search_value); found !== null; found = txn.cursor.goToNextDup()) {
+        for (let found = txn.cursor.goToKey(converted_search_value); found !== null && found !== undefined; found = txn.cursor.goToNextDup()) {
             let key_value = common.convertKeyValueFromSearch(found, txn.key_type);
             if(search_value.toString() !== key_value.toString()){
                 txn.cursor.goToLast();
@@ -429,7 +429,7 @@ function blobSearch(env, hash_attribute, attribute, search_value, search_type, r
     try{
         txn = new TransactionCursor(env, lmdb_terms.BLOB_DBI_NAME);
         let range_value = `${attribute}/`;
-        for(let found = txn.cursor.goToRange(range_value); found !== null; found = txn.cursor.goToNext()){
+        for(let found = txn.cursor.goToRange(range_value); found !== null && found !== undefined; found = txn.cursor.goToNext()){
             if(found.startsWith(range_value) === false){
                 txn.cursor.goToLast();
                 continue;

@@ -1,6 +1,6 @@
 'use strict';
 
-const environment_utility =  require('../../../../utility/lmdb/environmentUtility');
+const environment_utility = require('../../../../utility/lmdb/environmentUtility');
 const {getTransactionStorePath} = require('../lmdbUtility/initializePaths');
 const DeleteBeforeObject = require('../../../DeleteBeforeObject');
 const TransactionCursor = environment_utility.TransactionCursor;
@@ -66,7 +66,7 @@ function deleteTransactions(env, timestamp){
                         return results;
                 }
                 results.start_timestamp = found.readDoubleBE(0);
-                for (found; found !== null; found = txn.cursor.goToNext()) {
+                for (found; found !== null && found !== undefined; found = txn.cursor.goToNext()) {
                         let key_value = found.readDoubleBE(0);
 
                         if(key_value >= timestamp){

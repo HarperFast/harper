@@ -59,6 +59,8 @@ describe('test lmdbCreateTransactionsEnvironment module', ()=>{
             assert.deepStrictEqual(txn_dbis, expected_txn_dbis);
 
             assert.deepStrictEqual(global.lmdb_map[`txn.${CREATE_TABLE_OBJ.schema}.${CREATE_TABLE_OBJ.table}`], txn_env);
+
+            txn_env.close();
         });
     });
 

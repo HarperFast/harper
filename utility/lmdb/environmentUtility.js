@@ -1,6 +1,6 @@
 "use strict";
 
-const lmdb = require('node-lmdb');
+const lmdb = require('lmdb-store');
 const fs = require('fs-extra');
 const path = require('path');
 const common = require('./commonUtility');
@@ -290,7 +290,7 @@ function listDBIDefinitions(env){
 
         txn = new TransactionCursor(env, INTERNAL_DBIS_NAME);
 
-        for (let found = txn.cursor.goToFirst(); found !== null; found = txn.cursor.goToNext()) {
+        for (let found = txn.cursor.goToFirst(); found !== null && found !== undefined; found = txn.cursor.goToNext()) {
             if (found !== INTERNAL_DBIS_NAME) {
                 try {
                     dbis[found] = Object.assign(new DBIDefinition(), JSON.parse(txn.cursor.getCurrentString()));
@@ -324,7 +324,7 @@ function listDBIs(env){
 
         txn = new TransactionCursor(env, INTERNAL_DBIS_NAME);
 
-        for (let found = txn.cursor.goToFirst(); found !== null; found = txn.cursor.goToNext()) {
+        for (let found = txn.cursor.goToFirst(); found !== null && found !== undefined; found = txn.cursor.goToNext()) {
             if (found !== INTERNAL_DBIS_NAME) {
                 dbis.push(found);
             }

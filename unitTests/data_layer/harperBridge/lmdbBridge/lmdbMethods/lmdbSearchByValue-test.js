@@ -79,6 +79,7 @@ describe('test lmdbSearchByValue module', ()=>{
         });
 
         after(async () => {
+            env.close();
             await fs.remove(BASE_PATH);
             global.lmdb_map = undefined;
         });
