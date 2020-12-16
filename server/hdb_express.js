@@ -31,6 +31,7 @@ const promisify = util.promisify;
 const hdb_license = require('../utility/registration/hdb_license');
 const PermissionResponseObject = require('../security/data_objects/PermissionResponseObject');
 const check_jwt_tokens = require('../utility/install/checkJWTTokensExist');
+const {closeEnvironment} = require('../utility/lmdb/environmentUtility');
 
 const p_schema_to_global = promisify(global_schema.setSchemaDataToGlobal);
 
@@ -182,6 +183,14 @@ if (cluster.isMaster &&( num_workers >= 1 || DEBUG )) {
         global.clustering_on = env.get('CLUSTERING');
 
         await p_schema_to_global();
+
+        //we need to close all of the environments on the parent process & delete the references.
+        let keys = Object.keys(global.lmdb_map);
+        for(let x = 0, length = keys.length; x < length; x++){
+            closeEnvironment(global.lmdb_map[keys[x]]);
+        }
+        delete global.lmdb_map;
+
         await user_schema.setUsersToGlobal();
 
         harper_logger.notify(`HarperDB successfully started`);
@@ -227,7 +236,6 @@ if (cluster.isMaster &&( num_workers >= 1 || DEBUG )) {
     const bodyParser = require('body-parser');
     const auth = require('../security/auth');
     const p_authorize = promisify(auth.authorize);
-    const {closeEnvironment} = require('../utility/lmdb/environmentUtility');
     const passport = require('passport');
     const pjson = require(`${__dirname}/../package.json`);
     const server_utilities = require('./serverUtilities');
@@ -235,6 +243,8 @@ if (cluster.isMaster &&( num_workers >= 1 || DEBUG )) {
     const cors = require('cors');
     const compression = require('compression');
     const spawn_cluster_connection = require('./socketcluster/connector/spawnSCConnection');
+    const schema_describe = require('../data_layer/schemaDescribe');
+    const clean_lmdb = require('../utility/lmdb/cleanLMDBMap');
 
     const app = express();
 
@@ -335,68 +345,65 @@ if (cluster.isMaster &&( num_workers >= 1 || DEBUG )) {
         server_utilities.processLocalTransaction(req, res, operation_function, function () {});
     });
 
-    /**
-     * this function strips away the cached environments from global when a schema item is removed
-     * @param msg
-     */
-    function removeSchemaFromLMDBMap(msg){
+    async function syncSchemaMetadata(msg){
         try{
-            if(global.lmdb_map !== undefined && msg.operation !== undefined){
-                let keys = Object.keys(global.lmdb_map);
-                let cached_environment = undefined;
+            if(global.hdb_schema !== undefined && typeof global.hdb_schema === 'object' && msg.operation !== undefined){
+
                 switch (msg.operation.operation) {
                     case 'drop_schema':
-                        for(let x = 0; x < keys.length; x ++){
-                            let key = keys[x];
-                            if(key.startsWith(`${msg.operation.schema}.`) || key.startsWith(`txn.${msg.operation.schema}.`)){
-                                closeEnvironment(global.lmdb_map[key]);
-                                closeEnvironment(global.lmdb_map[`txn.${key}`]);
-                                delete global.lmdb_map[key];
-                                delete global.lmdb_map[`txn.${key}`];
-                            }
-                        }
+                        delete global.hdb_schema[msg.operation.schema];
                         break;
                     case 'drop_table':
-                        // eslint-disable-next-line no-case-declarations
-                        let schema_table_name = `${msg.operation.schema}.${msg.operation.table}`;
-                        // eslint-disable-next-line no-case-declarations
-                        let txn_schema_table_name = `txn.${schema_table_name}`;
-                        closeEnvironment(global.lmdb_map[schema_table_name]);
-                        closeEnvironment(global.lmdb_map[txn_schema_table_name]);
-                        delete global.lmdb_map[schema_table_name];
-                        delete global.lmdb_map[txn_schema_table_name];
-                        break;
-                    case 'drop_attribute':
-                        cached_environment = global.lmdb_map[`${msg.operation.schema}.${msg.operation.table}`];
-                        if(cached_environment !== undefined && typeof cached_environment.dbis === 'object' && cached_environment.dbis[`${msg.operation.attribute}`] !== undefined){
-                            delete cached_environment.dbis[`${msg.operation.attribute}`];
+                        if(global.hdb_schema[msg.operation.schema] !== undefined){
+                            delete global.hdb_schema[msg.operation.schema][msg.operation.table];
                         }
                         break;
+                    case 'create_schema':
+                        if(global.hdb_schema[msg.operation.schema] === undefined){
+                            global.hdb_schema[msg.operation.schema] = {};
+                        }
+                        break;
+                    case 'create_table':
+                    case 'create_attribute':
+                        if(global.hdb_schema[msg.operation.schema] === undefined){
+                            global.hdb_schema[msg.operation.schema] = {};
+                        }
+
+                        global.hdb_schema[msg.operation.schema][msg.operation.table] =
+                            await schema_describe.describeTable({schema: msg.operation.schema, table: msg.operation.table});
+                        break;
                     default:
+                        global_schema.schemaSignal((err) => {
+                            if (err) {
+                                harper_logger.error(err);
+                            }
+                        });
                         break;
                 }
+            } else{
+                global_schema.schemaSignal((err) => {
+                    if (err) {
+                        harper_logger.error(err);
+                    }
+                });
             }
         } catch(e){
             harper_logger.error(e);
         }
     }
 
-    process.on('message', (msg) => {
+    process.on('message', async (msg) => {
         switch (msg.type) {
             case 'schema':
-                removeSchemaFromLMDBMap(msg);
-                global_schema.schemaSignal((err) => {
-                    if (err) {
-                        harper_logger.error(err);
-                    }
-                });
+                clean_lmdb(msg);
+                await syncSchemaMetadata(msg);
                 break;
             case 'user':
-                user_schema.setUsersToGlobal((err) => {
-                    if (err) {
-                        harper_logger.error(err);
-                    }
-                });
+                try {
+                    await user_schema.setUsersToGlobal();
+                } catch(e){
+                    harper_logger.error(e);
+                }
                 break;
             case 'job':
                 job_runner.parseMessage(msg.runner_message).then((result) => {
