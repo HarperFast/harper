@@ -6,7 +6,9 @@ const terms = require('../hdbTerms');
 const lmdb_get_table_size = require('../../data_layer/harperBridge/lmdbBridge/lmdbUtility/lmdbGetTableSize');
 const schema_describe = require('../../data_layer/schemaDescribe');
 const env = require('./environmentManager');
-env.initSync();
+if(!env.isInitialized()){
+    env.initSync();
+}
 // eslint-disable-next-line no-unused-vars
 const SystemInformationOperation = require('./SystemInformationOperation');
 const SystemInformationObject = require('./SystemInformationObject');

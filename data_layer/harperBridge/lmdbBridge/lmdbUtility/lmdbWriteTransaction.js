@@ -12,7 +12,9 @@ const lmdb_utils = require('../../../../utility/lmdb/commonUtility');
 const hdb_util = require('../../../../utility/common_utils');
 const HDB_SETTINGS_NAMES = require('../../../../utility/hdbTerms').HDB_SETTINGS_NAMES;
 const env_mngr = require('../../../../utility/environment/environmentManager');
-env_mngr.initSync();
+if(!env_mngr.isInitialized()){
+    env_mngr.initSync();
+}
 
 const DISABLE_TRANSACTION_LOG = getDisableTxnLogSetting();
 

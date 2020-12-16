@@ -8,7 +8,9 @@ const log = require('../../../utility/logging/harper_logger');
 const utils = require('../../../utility/common_utils');
 
 const env = require('../../../utility/environment/environmentManager');
-env.initSync();
+if(!env.isInitialized()) {
+    env.initSync();
+}
 
 const SC_WORKER_NAME_PREFIX = 'worker_';
 

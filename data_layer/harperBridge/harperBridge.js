@@ -4,7 +4,9 @@ const LMDBBridge = require('./lmdbBridge/LMDBBridge');
 const BridgeMethods = require("./BridgeMethods");
 const terms = require('../../utility/hdbTerms');
 const env_mngr = require('../../utility/environment/environmentManager');
-env_mngr.initSync();
+if(!env_mngr.isInitialized()){
+    env_mngr.initSync();
+}
 
 
 let harper_bridge = undefined;

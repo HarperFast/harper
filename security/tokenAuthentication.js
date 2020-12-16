@@ -14,7 +14,9 @@ const update = require('../data_layer/insert').update;
 const UpdateObject = require('../data_layer/UpdateObject');
 const signalling = require('../utility/signalling');
 const env = require('../utility/environment/environmentManager');
-env.initSync();
+if(!env.isInitialized()){
+    env.initSync();
+}
 
 const path = require('path');
 const {JWTTokens, JWTRSAKeys, TOKEN_TYPE_ENUM} = require('./JWTObjects');

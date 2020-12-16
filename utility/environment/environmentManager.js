@@ -33,6 +33,7 @@ module.exports = {
     append: append,
     writeSettingsFileSync,
     initTestEnvironment : initTestEnvironment,
+    isInitialized: isInitialized,
     getDataStoreType
 };
 
@@ -62,6 +63,10 @@ function setPropsFilePath(path_value) {
         log.warn(`Path is invalid.`);
         return null;
     }
+}
+
+function isInitialized(){
+    return initialized;
 }
 
 /**
@@ -351,9 +356,6 @@ function getDataStoreType(){
 }
 
 function initSync() {
-    if (initialized) {
-        return;
-    }
     try {
         //if readPropsFile returns false, we are installing and don't need to read anything yet.
         if(readPropsFile()) {

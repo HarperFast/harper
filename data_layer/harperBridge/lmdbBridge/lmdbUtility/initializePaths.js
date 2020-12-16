@@ -2,8 +2,11 @@
 
 const hdb_terms = require('../../../../utility/hdbTerms');
 const env = require('../../../../utility/environment/environmentManager');
-env.initSync();
 const path = require('path');
+
+if(!env.isInitialized()){
+    env.initSync();
+}
 
 let BASE_SCHEMA_PATH = undefined;
 let SYSTEM_SCHEMA_PATH = undefined;

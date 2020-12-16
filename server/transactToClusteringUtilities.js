@@ -2,10 +2,12 @@
 
 const common_utils = require(`../utility/common_utils`);
 const env = require(`../utility/environment/environmentManager`);
-env.initSync();
 const terms = require('../utility/hdbTerms');
 const harper_logger = require('../utility/logging/harper_logger');
 const ClusteringOriginObject = require("./ClusteringOriginObject");
+if(!env.isInitialized()){
+    env.initSync();
+}
 
 module.exports = {
     concatSourceMessageHeader,

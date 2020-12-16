@@ -12,7 +12,9 @@ const terms = require('../utility/hdbTerms');
 const { handleHDBError, hdb_errors } = require('../utility/errors/hdbError');
 const { HDB_ERROR_MSGS, HTTP_STATUS_CODES } = hdb_errors;
 const env_mngr = require('../utility/environment/environmentManager');
-env_mngr.initSync();
+if(!env_mngr.isInitialized()){
+    env_mngr.initSync();
+}
 const lmdb_environment_utility = require('../utility/lmdb/environmentUtility');
 const lmdb_init_paths = require('../data_layer/harperBridge/lmdbBridge/lmdbUtility/initializePaths');
 
