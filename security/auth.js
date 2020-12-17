@@ -1,7 +1,5 @@
 'use strict';
 
-const express = require('express');
-const router = express.Router();
 const validation = require('../validation/check_permissions');
 const passport = require('passport');
 const LocalStrategy = require('passport-local').Strategy;

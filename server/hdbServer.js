@@ -38,7 +38,7 @@ if (node_env_value === undefined || node_env_value === null || node_env_value ==
 
 // decide if we are running from inside a repo (and executing server/hdbServer) rather than on an installed version.
 process.argv.forEach((arg) => {
-    if(arg.endsWith(REPO_RUNNING_PROCESS_NAME)) {
+    if (arg.endsWith(REPO_RUNNING_PROCESS_NAME)) {
         running_from_repo = true;
         global.running_from_repo = running_from_repo;
     }
@@ -54,21 +54,21 @@ let os_cpus = undefined;
 try {
     num_hdb_processes = env.get(terms.HDB_SETTINGS_NAMES.MAX_HDB_PROCESSES);
     os_cpus = os.cpus().length;
-    num_workers = ((num_hdb_processes && num_hdb_processes > 0) ? num_hdb_processes: os_cpus);
+    num_workers = ((num_hdb_processes && num_hdb_processes > 0) ? num_hdb_processes : os_cpus);
     // don't allow more processes than the machine has cores.
-    if(num_workers > os_cpus) {
+    if (num_workers > os_cpus) {
         num_workers = os_cpus;
         harper_logger.info(`${terms.HDB_SETTINGS_NAMES.MAX_HDB_PROCESSES} setting is higher than the number of cores on this machine (${os_cpus}).  Settings number of processes to ${os_cpus}`);
     }
-} catch(e){
+} catch(e) {
     num_workers = terms.HDB_SETTINGS_DEFAULT_VALUES.MAX_HDB_PROCESSES;
-    if(num_hdb_processes) {
+    if (num_hdb_processes) {
         num_workers = num_hdb_processes;
     }
     harper_logger.info(e);
 }
 
-if (DEBUG){
+if (DEBUG) {
     num_workers = 1;
 }
 
@@ -81,10 +81,15 @@ global.clustering_on = false;
 
 cluster.on('exit', handleClusterExit);
 
-if (cluster.isMaster &&( num_workers >= 1 || DEBUG )) {
-    serverParent(num_workers);
+//TODO - async handler will get updated when I am able to update my branch to Node 14 w/ top-level async
+if (cluster.isMaster && (num_workers >= 1)) {
+    (async function() {
+        await serverParent(num_workers);
+    }());
 } else {
-    serverChild();
+    (async function () {
+        await serverChild();
+    }());
 }
 
 function handleClusterExit(dead_worker, code, signal) {
@@ -98,7 +103,7 @@ function handleClusterExit(dead_worker, code, signal) {
         new_worker = cluster.fork();
         new_worker.on('message', cluster_utilities.clusterMessageHandler);
         harper_logger.info(`kicked off replacement worker with new pid=${new_worker.process.pid}`);
-    } catch (e) {
+    } catch(e) {
         harper_logger.fatal(`FATAL error trying to restart a dead_worker with pid ${dead_worker.process.pid}.  ${e}`);
         return;
     }
