@@ -680,7 +680,7 @@ function generateAPIMessage(msg_type_enum) {
     return generated_msg;
 }
 
-function getHTTPSOptsVals() {
+function getHTTPSCredentials() {
     return {
         key: "-----BEGIN RSA PRIVATE KEY-----\n" +
             "MIIEpQIBAAKCAQEA0rzroDdeK/p5vf79zGyrJk0/21wdR/FJufOj/V17T7gyyj0Q\n" +
@@ -832,7 +832,7 @@ module.exports = {
     testHDBError,
     generateHDBError,
     generateAPIMessage,
-    getHTTPSOptsVals,
+    getHTTPSCredentials,
     assertErrorSync,
     assertErrorAsync,
     assignObjecttoNullObject: assignObjectToNullObject,

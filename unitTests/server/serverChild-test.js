@@ -43,8 +43,8 @@ let chooseOp_stub;
 let serverChild_rw;
 
 const test_op_resp = "table 'dev.dogz' successfully created.";
-const test_cert_val = test_utils.getHTTPSOptsVals().cert;
-const test_key_val = test_utils.getHTTPSOptsVals().key;
+const test_cert_val = test_utils.getHTTPSCredentials().cert;
+const test_key_val = test_utils.getHTTPSCredentials().key;
 
 function setupServerTest() {
     serverChild_rw = rewire('../../server/serverChild');

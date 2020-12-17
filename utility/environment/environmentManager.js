@@ -410,7 +410,7 @@ function initTestEnvironment(test_config_obj = {}) {
 
         }
         if (server_timeout) {
-            setProperty(hdb_terms.HDB_SETTINGS_NAMES.PROPS_SERVER_TIMEOUT_KEY, server_timeout);
+            setProperty(hdb_terms.HDB_SETTINGS_NAMES.SERVER_TIMEOUT_KEY, server_timeout);
         }
         if (keep_alive_timeout) {
             setProperty(hdb_terms.HDB_SETTINGS_NAMES.SERVER_KEEP_ALIVE_TIMEOUT_KEY, keep_alive_timeout);

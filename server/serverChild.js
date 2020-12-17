@@ -42,16 +42,15 @@ const TRUE_COMPARE_VAL = 'TRUE';
 const { HDB_SETTINGS_NAMES, HDB_SETTINGS_DEFAULT_VALUES } = terms;
 const PROPS_CORS_KEY = HDB_SETTINGS_NAMES.CORS_ENABLED_KEY;
 const PROPS_CORS_WHITELIST_KEY = HDB_SETTINGS_NAMES.CORS_WHITELIST_KEY;
-const PROPS_SERVER_TIMEOUT_KEY = HDB_SETTINGS_NAMES.PROPS_SERVER_TIMEOUT_KEY;
+const PROPS_SERVER_TIMEOUT_KEY = HDB_SETTINGS_NAMES.SERVER_TIMEOUT_KEY;
 const PROPS_SERVER_KEEP_ALIVE_TIMEOUT_KEY = HDB_SETTINGS_NAMES.SERVER_KEEP_ALIVE_TIMEOUT_KEY;
 const PROPS_HEADER_TIMEOUT_KEY = HDB_SETTINGS_NAMES.SERVER_HEADERS_TIMEOUT_KEY;
 const PROPS_PRIVATE_KEY = HDB_SETTINGS_NAMES.PRIVATE_KEY_KEY;
-const  PROPS_CERT_KEY = HDB_SETTINGS_NAMES.CERT_KEY;
+const PROPS_CERT_KEY = HDB_SETTINGS_NAMES.CERT_KEY;
 const PROPS_HTTP_ON_KEY = HDB_SETTINGS_NAMES.HTTP_ENABLED_KEY;
 const PROPS_HTTP_SECURE_ON_KEY = HDB_SETTINGS_NAMES.HTTP_SECURE_ENABLED_KEY;
 const PROPS_HTTP_PORT_KEY = HDB_SETTINGS_NAMES.HTTP_PORT_KEY;
 const PROPS_HTTP_SECURE_PORT_KEY = HDB_SETTINGS_NAMES.HTTP_SECURE_PORT_KEY;
-
 
 const DEFAULT_SERVER_TIMEOUT = HDB_SETTINGS_DEFAULT_VALUES[PROPS_SERVER_TIMEOUT_KEY];
 const DEFAULT_KEEP_ALIVE_TIMEOUT = HDB_SETTINGS_DEFAULT_VALUES[PROPS_SERVER_KEEP_ALIVE_TIMEOUT_KEY];
@@ -62,7 +61,7 @@ let secureServer = undefined;
 let server_connections = {};
 
 async function childServer() {
-    harper_logger.info('In express' + process.cwd());
+    harper_logger.info('In Fastify server' + process.cwd());
     harper_logger.info(`Running with NODE_ENV set as: ${process.env.NODE_ENV}`);
 
     global.clustering_on = false;
@@ -71,7 +70,7 @@ async function childServer() {
 
     process.on('uncaughtException', handleServerUncaughtException);
 
-    //TODO - add this to the shutDown feature
+    //TODO - add this to the shutDown feature in follow-up JIRA for shutDown bug fix
     // process.on('close',() => {
     //     harper_logger.info(`Server close event received for process ${process.pid}`);
     // });
@@ -214,6 +213,7 @@ async function setUp(){
 }
 
 async function handlePostRequest(req, res) {
+    //TODO - auth feature will move to a plugin in follow-up JIRA
     let user;
     let operation_function;
     try {
