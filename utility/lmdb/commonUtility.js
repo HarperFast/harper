@@ -8,15 +8,13 @@ const microtime = require('microtime');
 
 /**
  * validates the env argument
- * @param env - environment object used thigh level to interact with all data in an environment
+ * @param {lmdb.RootDatabase} env - environment object used thigh level to interact with all data in an environment
  */
 function validateEnv(env){
-    if(!(env instanceof lmdb.Env)){
-
-        if(env === undefined){
-            throw new Error(LMDB_ERRORS.ENV_REQUIRED);
-        }
-
+    if(!env){
+        throw new Error(LMDB_ERRORS.ENV_REQUIRED);
+    }
+    if(!(env.constructor.name === 'LMDBStore')){
         throw new Error(LMDB_ERRORS.INVALID_ENVIRONMENT);
     }
 }
