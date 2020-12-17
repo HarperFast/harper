@@ -3,6 +3,7 @@
 const test_utils = require('../test_utils');
 
 const rewire = require('rewire');
+const process = require('process');
 const env = require('../../utility/environment/environmentManager');
 const fastify = require('fastify');
 const fs = require('fs-extra');
@@ -64,11 +65,6 @@ describe('Test serverChild.js', () => {
         chooseOp_stub = sandbox.stub(server_utilities, 'chooseOperation').callsFake(({}, callback) => callback(null, {}));
     })
 
-    beforeEach(() => {
-        setupServerTest();
-
-    })
-
     afterEach(async() => {
         test_utils.preTestPrep();
         const http = serverChild_rw.__get__('httpServer');
@@ -85,6 +81,11 @@ describe('Test serverChild.js', () => {
     })
 
     describe('exported serverChild method', () => {
+
+        beforeEach(() => {
+            setupServerTest();
+        })
+
         it('should build http and https server instances when env variables set to true', async() => {
             await serverChild_rw();
             const http_server = serverChild_rw.__get__('httpServer');
@@ -110,6 +111,29 @@ describe('Test serverChild.js', () => {
             expect(http_server[state_key].listening).to.be.true;
             expect(secure_server[state_key].started).to.be.true;
             expect(secure_server[state_key].listening).to.be.true;
+        })
+
+        it('should build http and https server instances with mixed cap boolean spellings', async() => {
+            const test_config_settings = {
+                http_enabled: 'True',
+                https_enabled: 'TRUe'
+            }
+
+            test_utils.preTestPrep(test_config_settings);
+            serverChild_rw = rewire('../../server/serverChild');
+
+            await serverChild_rw();
+            const http_server = serverChild_rw.__get__('httpServer');
+            const secure_server = serverChild_rw.__get__('secureServer');
+
+            expect(http_server).to.not.be.undefined;
+            expect(http_server.server.constructor.name).to.equal('Server');
+            expect(http_server.initialConfig.https).to.be.undefined;
+            expect(secure_server).to.not.be.undefined;
+            expect(secure_server.server.constructor.name).to.equal('Server');
+            expect(secure_server.server.key).to.be.instanceOf(Buffer);
+            expect(secure_server.server.cert).to.be.instanceOf(Buffer);
+            expect(secure_server.initialConfig.https).to.be.true;
         })
 
         it('should register 3 fastify plugins by default - fastify-helmet, fastify-compress, fastify-static', async() => {
@@ -206,6 +230,51 @@ describe('Test serverChild.js', () => {
             expect(http_server.server.headersTimeout).to.equal(test_config_settings.headers_timeout);
         })
 
+        it('should not register fastify-cors if cors is not enabled',async() => {
+            test_utils.preTestPrep();
+            await serverChild_rw();
+            const secure_server = serverChild_rw.__get__('secureServer');
+
+            const plugin_key = Object.getOwnPropertySymbols(secure_server).find((s => String(s) === "Symbol(fastify.pluginNameChain)"))
+
+            expect(secure_server[plugin_key].length).to.equal(3);
+            expect(secure_server[plugin_key]).to.deep.equal(['fastify-helmet', 'fastify-compress', 'fastify-static']);
+        })
+
+        it('should register fastify-cors if cors is enabled',async() => {
+            const test_config_settings = {
+                cors_enabled: true,
+                cors_whitelist: 'harperdb.io, sam-johnson.io'
+            }
+
+            test_utils.preTestPrep(test_config_settings);
+            await serverChild_rw();
+            const secure_server = serverChild_rw.__get__('secureServer');
+
+            const plugin_key = Object.getOwnPropertySymbols(secure_server).find((s => String(s) === "Symbol(fastify.pluginNameChain)"))
+
+            expect(secure_server[plugin_key].length).to.equal(4);
+            expect(secure_server[plugin_key]).to.deep.equal(['fastify-cors', ...DEFAULT_FASTIFY_PLUGIN_ARR]);
+        })
+
+        it('should register fastify-cors if cors is enabled boolean has mixed cap spelling',async() => {
+            const test_config_settings = {
+                cors_enabled: 'TRue',
+                cors_whitelist: 'harperdb.io, sam-johnson.io'
+            }
+
+            test_utils.preTestPrep(test_config_settings);
+            await serverChild_rw();
+            const secure_server = serverChild_rw.__get__('secureServer');
+
+            const plugin_key = Object.getOwnPropertySymbols(secure_server).find((s => String(s) === "Symbol(fastify.pluginNameChain)"))
+
+            expect(secure_server[plugin_key].length).to.equal(4);
+            expect(secure_server[plugin_key]).to.deep.equal(['fastify-cors', ...DEFAULT_FASTIFY_PLUGIN_ARR]);
+        })
+
+
+
         it('should call handlePostRequest on HTTP post request',async() => {
             test_utils.preTestPrep();
             await serverChild_rw();
@@ -290,31 +359,69 @@ describe('Test serverChild.js', () => {
             expect(test_response.statusCode).to.equal(200);
         })
 
-        it('should not register fastify-cors if cors is not enabled',async() => {
-            test_utils.preTestPrep();
+        it('should return 400 error for post request w/o body',async() => {
             await serverChild_rw();
             const secure_server = serverChild_rw.__get__('secureServer');
 
-            const plugin_key = Object.getOwnPropertySymbols(secure_server).find((s => String(s) === "Symbol(fastify.pluginNameChain)"))
+            const test_response = await secure_server.inject({
+                method: 'POST',
+                url:'/',
+                headers: test_req_options.headers
+            })
 
-            expect(secure_server[plugin_key].length).to.equal(3);
-            expect(secure_server[plugin_key]).to.deep.equal(['fastify-helmet', 'fastify-compress', 'fastify-static']);
+            expect(test_response.statusCode).to.equal(400);
+            expect(test_response.json().message).to.equal("Body cannot be empty when content-type is set to 'application/json'");
         })
 
-        it('should register fastify-cors if cors is enabled',async() => {
+        it('should return 500 error for request from origin not included in CORS whitelist',async() => {
             const test_config_settings = {
                 cors_enabled: true,
-                cors_whitelist: 'harperdb.io, sam-johnson.io'
+                cors_whitelist: 'https://harperdb.io'
             }
 
             test_utils.preTestPrep(test_config_settings);
+
             await serverChild_rw();
             const secure_server = serverChild_rw.__get__('secureServer');
 
-            const plugin_key = Object.getOwnPropertySymbols(secure_server).find((s => String(s) === "Symbol(fastify.pluginNameChain)"))
+            const test_headers = Object.assign({
+                origin: 'https://google.com'
+            }, test_req_options.headers);
 
-            expect(secure_server[plugin_key].length).to.equal(4);
-            expect(secure_server[plugin_key]).to.deep.equal(['fastify-cors', ...DEFAULT_FASTIFY_PLUGIN_ARR]);
+            const test_response = await secure_server.inject({
+                method: 'POST',
+                url:'/',
+                headers: test_headers,
+                body: test_req_options.body
+            })
+
+            expect(test_response.statusCode).to.equal(500);
+            expect(test_response.json().message).to.equal("domain https://google.com is not whitelisted");
+        })
+
+        it('should return resp with 200 for request from origin included in CORS whitelist',async() => {
+            const test_config_settings = {
+                cors_enabled: true,
+                cors_whitelist: 'https://harperdb.io'
+            }
+
+            test_utils.preTestPrep(test_config_settings);
+
+            await serverChild_rw();
+            const secure_server = serverChild_rw.__get__('secureServer');
+
+            const test_headers = Object.assign({
+                origin: 'https://harperdb.io'
+            }, test_req_options.headers);
+
+            const test_response = await secure_server.inject({
+                method: 'POST',
+                url:'/',
+                headers: test_headers,
+                body: test_req_options.body
+            })
+
+            expect(test_response.statusCode).to.equal(200);
         })
     })
 
@@ -405,6 +512,97 @@ describe('Test serverChild.js', () => {
 
             const test_results = getHeaderTimeoutConfig_rw();
             expect(test_results).to.equal(test_config_settings.headers_timeout);
+        })
+    })
+
+    describe('handleServerMessage() method',() => {
+        let clean_lmdb_stub;
+        let syncSchemaMetadata_stub;
+        let setUsersToGlobal_stub;
+        let job_runner_stub;
+        let shutDown_stub;
+        let handleServerMessage_rw;
+        const test_msg = (msg) => ({ type: msg })
+
+        beforeEach(() => {
+            serverChild_rw = rewire('../../server/serverChild');
+            clean_lmdb_stub = sandbox.stub().returns();
+            serverChild_rw.__set__('clean_lmdb', clean_lmdb_stub);
+
+            syncSchemaMetadata_stub = sandbox.stub().resolves();
+            serverChild_rw.__set__('syncSchemaMetadata', syncSchemaMetadata_stub);
+
+            setUsersToGlobal_stub = sandbox.stub().resolves();
+            const user_schema_rw = serverChild_rw.__get__('user_schema');
+            user_schema_rw.setUsersToGlobal = setUsersToGlobal_stub;
+            serverChild_rw.__set__('user_schema', user_schema_rw);
+
+            job_runner_stub = sandbox.stub().resolves({});
+            const job_runner_rw = serverChild_rw.__get__('job_runner');
+            job_runner_rw.parseMessage = job_runner_stub;
+            serverChild_rw.__set__('job_runner', job_runner_rw);
+
+            shutDown_stub = sandbox.stub().resolves();
+            serverChild_rw.__set__('shutDown', shutDown_stub);
+
+            handleServerMessage_rw = serverChild_rw.__get__('handleServerMessage');
+        })
+
+        it('should call clean_lmdb and syncSchemaMetadata methods on `schema` msg', async() => {
+            await handleServerMessage_rw(test_msg('schema'));
+
+            expect(clean_lmdb_stub.calledOnce).to.be.true;
+            expect(syncSchemaMetadata_stub.calledOnce).to.be.true;
+        })
+
+        it('should call user_schema.setUsersToGlobal method on `user` msg', async() => {
+            await handleServerMessage_rw(test_msg('user'));
+
+            expect(setUsersToGlobal_stub.calledOnce).to.be.true;
+        })
+
+        it('should call job_runner.parseMessage method on `job` msg', async() => {
+            await handleServerMessage_rw(test_msg('job'));
+
+            expect(job_runner_stub.calledOnce).to.be.true;
+        })
+
+        it('should call shutdown method w/ force = true on `restart` msg w/ no force_shutdown value', async() => {
+            const process_stub = sandbox.stub(process, 'exit').callsFake(() => {});
+            serverChild_rw.__set__('process', process);
+            handleServerMessage_rw = serverChild_rw.__get__('handleServerMessage');
+
+            await handleServerMessage_rw(test_msg('restart'));
+
+            expect(shutDown_stub.calledOnce).to.be.true;
+            expect(shutDown_stub.getCall(0).args[0]).to.be.true;
+            process_stub.restore();
+        })
+
+        it('should call shutdown method w/ force = false on `restart` msg w/ force_shutdown = false', async() => {
+            const process_stub = sandbox.stub(process, 'exit').callsFake(() => {});
+            serverChild_rw.__set__('process', process);
+            handleServerMessage_rw = serverChild_rw.__get__('handleServerMessage');
+
+            const test_msg_obj = Object.assign(test_msg('restart'), {force_shutdown: false});
+            await handleServerMessage_rw(test_msg_obj);
+
+            expect(shutDown_stub.calledOnce).to.be.true;
+            expect(shutDown_stub.getCall(0).args[0]).to.be.false;
+            process_stub.restore();
+        })
+
+        it('should call shutdown method w/ force = true on `restart` msg w/ force_shutdown = true', async() => {
+            const process_stub = sandbox.stub(process, 'exit').callsFake(() => {});
+            serverChild_rw.__set__('process', process);
+            handleServerMessage_rw = serverChild_rw.__get__('handleServerMessage');
+
+            const test_msg_obj = Object.assign(test_msg('restart'), {force_shutdown: true});
+            await handleServerMessage_rw(test_msg_obj);
+
+            expect(shutDown_stub.calledOnce).to.be.true;
+            expect(shutDown_stub.getCall(0).args[0]).to.be.true;
+            process_stub.restore();
         })
     })
 })

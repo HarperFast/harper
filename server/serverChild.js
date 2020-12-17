@@ -71,9 +71,10 @@ async function childServer() {
 
     process.on('uncaughtException', handleServerUncaughtException);
 
-    process.on('close',() => {
-        harper_logger.info(`Server close event received for process ${process.pid}`);
-    });
+    //TODO - add this to the shutDown feature
+    // process.on('close',() => {
+    //     harper_logger.info(`Server close event received for process ${process.pid}`);
+    // });
 
     global.isMaster = cluster.isMaster;
 
@@ -117,14 +118,15 @@ async function buildServer(is_https) {
         await handlePostRequest(req, res);
     });
 
-    app.server.on('connection', function(socket) {
-        let key = socket.remoteAddress + ':' + socket.remotePort;
-        server_connections[key] = socket;
-        socket.on('close', function() {
-            harper_logger.debug(`removing connection for ${key}`);
-            delete server_connections[key];
-        });
-    });
+    //TODO - revisit during shutDown story - this info may be available via Fastify instance
+    //app.server.on('connection', function(socket) {
+    //     let key = socket.remoteAddress + ':' + socket.remotePort;
+    //     server_connections[key] = socket;
+    //     socket.on('close', function() {
+    //         harper_logger.debug(`removing connection for ${key}`);
+    //         delete server_connections[key];
+    //     });
+    // });
 
     try {
         if (is_https) {
@@ -212,12 +214,6 @@ async function setUp(){
 }
 
 async function handlePostRequest(req, res) {
-    // Per the body-parser docs, any request which does not match the bodyParser.json middleware will be returned with
-    // an empty body object.
-    if (!req.body || Object.keys(req.body).length === 0) {
-        return res.status(hdb_errors.HTTP_STATUS_CODES.BAD_REQUEST).send({error: "Invalid JSON."});
-    }
-
     let user;
     let operation_function;
     try {
@@ -282,7 +278,7 @@ async function handleServerMessage(msg) {
             harper_logger.info(`Server close event received for process ${process.pid}`);
             harper_logger.debug(`calling shutdown`);
             let force = msg.force_shutdown === undefined ? true : msg.force_shutdown;
-            shutDown(force).then(() => {
+            await shutDown(force).then(() => {
                 harper_logger.info(`Completed shut down`);
                 process.exit(terms.RESTART_CODE_NUM);
             });
