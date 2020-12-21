@@ -5,7 +5,6 @@ const search_util = rewire('../../../utility/lmdb/searchUtility');
 const fs = require('fs-extra');
 const environment_utility = rewire('../../../utility/lmdb/environmentUtility');
 const write_utility = require('../../../utility/lmdb/writeUtility');
-const lmdb_terms = require('../../../utility/lmdb/terms');
 const test_utils = require('../../test_utils');
 const path = require('path');
 const assert = require('assert');
@@ -409,8 +408,8 @@ describe('Test searchUtility module', ()=>{
             await fs.mkdirp(BASE_TEST_PATH);
             global.lmdb_map = undefined;
             env = await environment_utility.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
-            await environment_utility.createDBI(env, 'id', false, lmdb_terms.DBI_KEY_TYPES.STRING, true);
-            await environment_utility.createDBI(env, 'age', true, lmdb_terms.DBI_KEY_TYPES.NUMBER, false);
+            await environment_utility.createDBI(env, 'id', false, true);
+            await environment_utility.createDBI(env, 'age', true, false);
             write_utility.insertRecords(env, HASH_ATTRIBUTE_NAME, test_utils.deepClone(All_ATTRIBUTES), MULTI_RECORD_ARRAY);
         });
 
@@ -487,7 +486,7 @@ describe('Test searchUtility module', ()=>{
             await fs.mkdirp(BASE_TEST_PATH);
             global.lmdb_map = undefined;
             env = await environment_utility.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
-            await environment_utility.createDBI(env, 'id', false, lmdb_terms.DBI_KEY_TYPES.STRING, true);
+            await environment_utility.createDBI(env, 'id', false, true);
             write_utility.insertRecords(env, HASH_ATTRIBUTE_NAME, test_utils.deepClone(All_ATTRIBUTES), MULTI_RECORD_ARRAY2);
         });
 
@@ -565,7 +564,7 @@ describe('Test searchUtility module', ()=>{
             await fs.mkdirp(BASE_TEST_PATH);
             global.lmdb_map = undefined;
             env = await environment_utility.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
-            await environment_utility.createDBI(env, 'id', false, lmdb_terms.DBI_KEY_TYPES.STRING, true);
+            await environment_utility.createDBI(env, 'id', false, true);
             write_utility.insertRecords(env, HASH_ATTRIBUTE_NAME, test_utils.deepClone(All_ATTRIBUTES), MULTI_RECORD_ARRAY2);
         });
 
@@ -654,11 +653,11 @@ describe('Test searchUtility module', ()=>{
             await fs.mkdirp(BASE_TEST_PATH);
             global.lmdb_map = undefined;
             env = await environment_utility.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
-            await environment_utility.createDBI(env, 'id', false, lmdb_terms.DBI_KEY_TYPES.STRING, true);
-            await environment_utility.createDBI(env, 'temperature', true, lmdb_terms.DBI_KEY_TYPES.NUMBER);
-            await environment_utility.createDBI(env, 'temperature_double', true, lmdb_terms.DBI_KEY_TYPES.NUMBER);
-            await environment_utility.createDBI(env, 'temperature_str', true, lmdb_terms.DBI_KEY_TYPES.STRING);
-            await environment_utility.createDBI(env, 'state', true, lmdb_terms.DBI_KEY_TYPES.STRING);
+            await environment_utility.createDBI(env, 'id', false, true);
+            await environment_utility.createDBI(env, 'temperature', true);
+            await environment_utility.createDBI(env, 'temperature_double', true);
+            await environment_utility.createDBI(env, 'temperature_str', true);
+            await environment_utility.createDBI(env, 'state', true);
 
             write_utility.insertRecords(env, HASH_ATTRIBUTE_NAME, ['id', 'temperature','temperature_double', 'temperature_str', 'state'], test_data);
         });
@@ -915,11 +914,11 @@ describe('Test searchUtility module', ()=>{
             await fs.mkdirp(BASE_TEST_PATH);
             global.lmdb_map = undefined;
             env = await environment_utility.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
-            await environment_utility.createDBI(env, 'id', false, lmdb_terms.DBI_KEY_TYPES.STRING, true);
-            await environment_utility.createDBI(env, 'temperature', true, lmdb_terms.DBI_KEY_TYPES.NUMBER);
-            await environment_utility.createDBI(env, 'temperature_double', true, lmdb_terms.DBI_KEY_TYPES.NUMBER);
-            await environment_utility.createDBI(env, 'temperature_str', true, lmdb_terms.DBI_KEY_TYPES.STRING);
-            await environment_utility.createDBI(env, 'state', true, lmdb_terms.DBI_KEY_TYPES.STRING);
+            await environment_utility.createDBI(env, 'id', false, true);
+            await environment_utility.createDBI(env, 'temperature', true);
+            await environment_utility.createDBI(env, 'temperature_double', true);
+            await environment_utility.createDBI(env, 'temperature_str', true);
+            await environment_utility.createDBI(env, 'state', true);
 
             write_utility.insertRecords(env, HASH_ATTRIBUTE_NAME, ['id', 'temperature', 'temperature_double', 'temperature_str', 'state'], test_data);
         });
@@ -1205,11 +1204,11 @@ describe('Test searchUtility module', ()=>{
             await fs.mkdirp(BASE_TEST_PATH);
             global.lmdb_map = undefined;
             env = await environment_utility.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
-            await environment_utility.createDBI(env, 'id', false, lmdb_terms.DBI_KEY_TYPES.STRING, true);
-            await environment_utility.createDBI(env, 'temperature', true, lmdb_terms.DBI_KEY_TYPES.NUMBER);
-            await environment_utility.createDBI(env, 'temperature_double', true, lmdb_terms.DBI_KEY_TYPES.NUMBER);
-            await environment_utility.createDBI(env, 'temperature_str', true, lmdb_terms.DBI_KEY_TYPES.NUMBER);
-            await environment_utility.createDBI(env, 'state', true, lmdb_terms.DBI_KEY_TYPES.STRING);
+            await environment_utility.createDBI(env, 'id', false, true);
+            await environment_utility.createDBI(env, 'temperature', true);
+            await environment_utility.createDBI(env, 'temperature_double', true);
+            await environment_utility.createDBI(env, 'temperature_str', true);
+            await environment_utility.createDBI(env, 'state', true);
 
             write_utility.insertRecords(env, HASH_ATTRIBUTE_NAME, ['id', 'temperature', 'temperature_double', 'temperature_str', 'state'], test_data);
         });
@@ -1496,11 +1495,11 @@ describe('Test searchUtility module', ()=>{
             await fs.mkdirp(BASE_TEST_PATH);
             global.lmdb_map = undefined;
             env = await environment_utility.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
-            await environment_utility.createDBI(env, 'id', false, lmdb_terms.DBI_KEY_TYPES.STRING, true);
-            await environment_utility.createDBI(env, 'temperature', true, lmdb_terms.DBI_KEY_TYPES.NUMBER);
-            await environment_utility.createDBI(env, 'temperature_double', true, lmdb_terms.DBI_KEY_TYPES.NUMBER);
-            await environment_utility.createDBI(env, 'temperature_str', true, lmdb_terms.DBI_KEY_TYPES.STRING);
-            await environment_utility.createDBI(env, 'state', true, lmdb_terms.DBI_KEY_TYPES.STRING);
+            await environment_utility.createDBI(env, 'id', false, true);
+            await environment_utility.createDBI(env, 'temperature', true);
+            await environment_utility.createDBI(env, 'temperature_double', true);
+            await environment_utility.createDBI(env, 'temperature_str', true);
+            await environment_utility.createDBI(env, 'state', true);
 
             write_utility.insertRecords(env, HASH_ATTRIBUTE_NAME, ['id', 'temperature', 'temperature_double', 'temperature_str', 'state'], test_data);
         });
@@ -1793,11 +1792,11 @@ describe('Test searchUtility module', ()=>{
             await fs.mkdirp(BASE_TEST_PATH);
             global.lmdb_map = undefined;
             env = await environment_utility.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
-            await environment_utility.createDBI(env, 'id', false, lmdb_terms.DBI_KEY_TYPES.STRING, true);
-            await environment_utility.createDBI(env, 'temperature', true, lmdb_terms.DBI_KEY_TYPES.NUMBER);
-            await environment_utility.createDBI(env, 'temperature_double', true, lmdb_terms.DBI_KEY_TYPES.NUMBER);
-            await environment_utility.createDBI(env, 'temperature_str', true, lmdb_terms.DBI_KEY_TYPES.STRING);
-            await environment_utility.createDBI(env, 'state', true, lmdb_terms.DBI_KEY_TYPES.STRING);
+            await environment_utility.createDBI(env, 'id', false, true);
+            await environment_utility.createDBI(env, 'temperature', true);
+            await environment_utility.createDBI(env, 'temperature_double', true);
+            await environment_utility.createDBI(env, 'temperature_str', true);
+            await environment_utility.createDBI(env, 'state', true);
 
             write_utility.insertRecords(env, HASH_ATTRIBUTE_NAME, ['id', 'temperature', 'temperature_double', 'temperature_str', 'state'], test_data);
         });

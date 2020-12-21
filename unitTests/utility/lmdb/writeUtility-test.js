@@ -132,18 +132,18 @@ describe("Test writeUtility module", ()=>{
         });
 
         it("test validation", ()=>{
-            test_utils.assertErrorSync(write_utility.insertRecords, [], LMDB_TEST_ERRORS.ENV_REQUIRED, "pass no args");
-            test_utils.assertErrorSync(write_utility.insertRecords, ['test'], LMDB_TEST_ERRORS.INVALID_ENVIRONMENT, "pass invalid env");
-            test_utils.assertErrorSync(write_utility.insertRecords, [env], LMDB_TEST_ERRORS.HASH_ATTRIBUTE_REQUIRED, "pass valid env, no other args");
-            test_utils.assertErrorSync(write_utility.insertRecords, [env, HASH_ATTRIBUTE_NAME], LMDB_TEST_ERRORS.WRITE_ATTRIBUTES_REQUIRED, "pass valid env hash_attribute");
-            test_utils.assertErrorSync(write_utility.insertRecords, [env, HASH_ATTRIBUTE_NAME, HASH_ATTRIBUTE_NAME], LMDB_TEST_ERRORS.WRITE_ATTRIBUTES_MUST_BE_ARRAY,
+            test_utils.assertErrorAsync(write_utility.insertRecords, [], LMDB_TEST_ERRORS.ENV_REQUIRED, "pass no args");
+            test_utils.assertErrorAsync(write_utility.insertRecords, ['test'], LMDB_TEST_ERRORS.INVALID_ENVIRONMENT, "pass invalid env");
+            test_utils.assertErrorAsync(write_utility.insertRecords, [env], LMDB_TEST_ERRORS.HASH_ATTRIBUTE_REQUIRED, "pass valid env, no other args");
+            test_utils.assertErrorAsync(write_utility.insertRecords, [env, HASH_ATTRIBUTE_NAME], LMDB_TEST_ERRORS.WRITE_ATTRIBUTES_REQUIRED, "pass valid env hash_attribute");
+            test_utils.assertErrorAsync(write_utility.insertRecords, [env, HASH_ATTRIBUTE_NAME, HASH_ATTRIBUTE_NAME], LMDB_TEST_ERRORS.WRITE_ATTRIBUTES_MUST_BE_ARRAY,
                 "pass valid env hash_attribute, invalid all_attributes");
-            test_utils.assertErrorSync(write_utility.insertRecords, [env, HASH_ATTRIBUTE_NAME, ALL_ATTRIBUTES], LMDB_TEST_ERRORS.RECORDS_REQUIRED,
+            test_utils.assertErrorAsync(write_utility.insertRecords, [env, HASH_ATTRIBUTE_NAME, ALL_ATTRIBUTES], LMDB_TEST_ERRORS.RECORDS_REQUIRED,
                 "pass valid env hash_attribute all_attributes");
             let record = test_utils.deepClone(ONE_RECORD_ARRAY[0]);
-            test_utils.assertErrorSync(write_utility.insertRecords, [env, HASH_ATTRIBUTE_NAME, ALL_ATTRIBUTES, record], LMDB_TEST_ERRORS.RECORDS_MUST_BE_ARRAY,
+            test_utils.assertErrorAsync(write_utility.insertRecords, [env, HASH_ATTRIBUTE_NAME, ALL_ATTRIBUTES, record], LMDB_TEST_ERRORS.RECORDS_MUST_BE_ARRAY,
                 "pass valid env hash_attribute all_attributes, invalid records");
-            test_utils.assertErrorSync(write_utility.insertRecords, [env, HASH_ATTRIBUTE_NAME, ALL_ATTRIBUTES, []], undefined,
+            test_utils.assertErrorAsync(write_utility.insertRecords, [env, HASH_ATTRIBUTE_NAME, ALL_ATTRIBUTES, []], undefined,
                 "pass valid env hash_attribute all_attributes records");
         });
 

@@ -13,7 +13,7 @@ module.exports = createTransactionsEnvironment;
 /**
  * Creates the environment to hold transactions
  * @param {CreateTableObject} table_create_obj
- * @returns {Promise<lmdb.Env>}
+ * @returns {Promise<lmdb.RootDatabase>}
  */
 async function createTransactionsEnvironment(table_create_obj){
     let env;
@@ -29,9 +29,9 @@ async function createTransactionsEnvironment(table_create_obj){
 
     try {
         //create dbis for transactions environment
-        environment_utility.createDBI(env, lmdb_terms.TRANSACTIONS_DBI_NAMES_ENUM.TIMESTAMP, false, lmdb_terms.DBI_KEY_TYPES.NUMBER, true);
-        environment_utility.createDBI(env, lmdb_terms.TRANSACTIONS_DBI_NAMES_ENUM.HASH_VALUE, true, lmdb_terms.DBI_KEY_TYPES.STRING, false);
-        environment_utility.createDBI(env, lmdb_terms.TRANSACTIONS_DBI_NAMES_ENUM.USER_NAME, true, lmdb_terms.DBI_KEY_TYPES.STRING, false);
+        environment_utility.createDBI(env, lmdb_terms.TRANSACTIONS_DBI_NAMES_ENUM.TIMESTAMP, false, true);
+        environment_utility.createDBI(env, lmdb_terms.TRANSACTIONS_DBI_NAMES_ENUM.HASH_VALUE, true, false);
+        environment_utility.createDBI(env, lmdb_terms.TRANSACTIONS_DBI_NAMES_ENUM.USER_NAME, true, false);
     }catch(e){
         e.message = `unable to create dbi for ${table_create_obj.schema}.${table_create_obj.table} due to: ${e.message}`;
         throw e;

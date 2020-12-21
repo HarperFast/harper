@@ -55,7 +55,7 @@ async function lmdbCreateAttribute(create_attribute_obj) {
     try {
         //create dbi into the environment for this table
         let env = await environment_utility.openEnvironment(path.join(getBaseSchemaPath(), create_attribute_obj.schema.toString()), create_attribute_obj.table);
-        environment_utility.createDBI(env, create_attribute_obj.attribute, create_attribute_obj.dup_sort, create_attribute_obj.key_type, create_attribute_obj.is_hash_attribute);
+        environment_utility.createDBI(env, create_attribute_obj.attribute, create_attribute_obj.dup_sort, create_attribute_obj.is_hash_attribute);
 
         let hdb_attribute_env = await environment_utility.openEnvironment(getSystemSchemaPath(), hdb_terms.SYSTEM_TABLE_NAMES.ATTRIBUTE_TABLE_NAME);
 

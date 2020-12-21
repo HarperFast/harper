@@ -248,9 +248,7 @@ function closeEnvironment(env){
     //make sure env is actually a reference to the lmdb environment class so we don't blow anything up
     common.validateEnv(env);
     //we need to close the environment to release the file from the process
-    setTimeout(()=> {
-        env.close();
-    }, 0);
+    env.close();
 
 }
 

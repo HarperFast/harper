@@ -20,72 +20,88 @@ const LMDB_MDB_NOTFOUND_CODE = -30798;
 
 /**
  * inserts records into LMDB
- * @param {lmdb.Env} env - lmdb environment object
+ * @param {lmdb.RootDatabase} env - lmdb environment object
  * @param {String} hash_attribute - name of the table's hash attribute
  * @param {Array.<String>} write_attributes - list of all attributes to write to the database
  * @param  {Array.<Object>} records - object array records to insert
  * @returns {InsertRecordsResponseObject}
  */
-function insertRecords(env, hash_attribute, write_attributes , records){
+async function insertRecords(env, hash_attribute, write_attributes , records){
     validateWrite(env, hash_attribute, write_attributes , records);
 
     let txn = undefined;
     try {
         txn = initializeTransaction(env, hash_attribute, write_attributes);
-
+        let primary_store = env.dbis[hash_attribute];
         let result = new InsertRecordsResponseObject();
 
         let remove_indices = [];
+        let promises = new Map();
         for(let index = 0; index < records.length; index++){
             let record = records[index];
             setTimestamps(record, true);
 
             let cast_hash_value = hdb_utils.autoCast(record[hash_attribute]);
-            let primary_key = record[hash_attribute].toString();
+            record[hash_attribute] = cast_hash_value;
 
-            for (let x = 0; x < write_attributes.length; x++){
-                let attribute = write_attributes[x];
+            let promise = primary_store.ifNoExists(cast_hash_value, ()=>{
+                for (let x = 0; x < write_attributes.length; x++){
+                    let attribute = write_attributes[x];
 
-                if(attribute === hash_attribute){
-                    continue;
-                }
+                    if(attribute === hash_attribute){
+                        continue;
+                    }
 
-                let value = record[attribute];
-                if(typeof value === 'function'){
-                    let value_results = value([[{}]]);
-                    if(Array.isArray(value_results)){
-                        value = value_results[0][hdb_terms.FUNC_VAL];
-                        record[attribute] = value;
+                    let value = record[attribute];
+                    if(typeof value === 'function'){
+                        let value_results = value([[{}]]);
+                        if(Array.isArray(value_results)){
+                            value = value_results[0][hdb_terms.FUNC_VAL];
+                        }
+                    }
+
+                    value = hdb_utils.autoCast(value);
+                    record[attribute] = value;
+                    if(value !== null) {
+                        //LMDB has a 254 byte limit for keys, so we return null if the byte size is larger than 254 to not index that value
+                        if(checkIsBlob(value)){
+                            let key = `${attribute}/${cast_hash_value}`;
+                            env.dbis[lmdb_terms.BLOB_DBI_NAME].put(key, value);
+                        }else {
+                            env.dbis[attribute].put(value, cast_hash_value);
+                        }
                     }
                 }
+                primary_store.put(cast_hash_value, record);
+            });
 
-                value = common.convertKeyValueToWrite(value, env.dbis[attribute][lmdb_terms.DBI_DEFINITION_NAME].key_type);
-                if(value !== null) {
-                    //LMDB has a 254 byte limit for keys, so we return null if the byte size is larger than 254 to not index that value
-                    if(checkIsBlob(value)){
-                        let key = `${attribute}/${primary_key}`;
-                        txn.putUtf8(env.dbis[lmdb_terms.BLOB_DBI_NAME], key, value);
-                    }else {
-                        txn.putUtf8(env.dbis[attribute], value, primary_key);
+            promises.set(cast_hash_value, promise);
+
+                // with the flag noOverwrite: true we can force lmdb to throw an error if the key already exists.
+                // this allows us to auto check if the row already exists
+                /*try {
+                    txn.putUtf8(env.dbis[hash_attribute], primary_key, JSON.stringify(record), {noOverwrite: true});
+                } catch(e) {
+                    if (e.message.startsWith('MDB_KEYEXIST') === true) {
+                        result.skipped_hashes.push(cast_hash_value);
+                        remove_indices.push(index);
+                        continue;
                     }
-                }
+
+                    throw e;
+                }*/
+
+
+        }
+        let promises_keys = promises.keys();
+        let promise_results = await Promise.all(promises.values());
+        for(let x = 0, length = promise_results.length; x < length; x++){
+            if(promise_results[x] === true){
+                result.written_hashes.push(promises_keys[x]);
+            } else {
+                result.skipped_hashes.push(promises_keys[x]);
+                remove_indices.push(x);
             }
-
-            // with the flag noOverwrite: true we can force lmdb to throw an error if the key already exists.
-            // this allows us to auto check if the row already exists
-            try {
-                txn.putUtf8(env.dbis[hash_attribute], primary_key, JSON.stringify(record), {noOverwrite: true});
-            } catch(e){
-                if(e.message.startsWith('MDB_KEYEXIST') === true){
-                    result.skipped_hashes.push(cast_hash_value);
-                    remove_indices.push(index);
-                    continue;
-                }
-
-                throw e;
-            }
-
-            result.written_hashes.push(cast_hash_value);
         }
 
         result.txn_time = common.getMicroTime();
@@ -94,9 +110,6 @@ function insertRecords(env, hash_attribute, write_attributes , records){
 
         return result;
     }catch(e){
-        if(txn !== undefined){
-            txn.abort();
-        }
         throw e;
     }
 }
@@ -134,7 +147,7 @@ function setTimestamps(record, is_insert){
 
 /**
  * makes sure all needed dbis are opened / created & starts the transaction
- * @param {lmdb.Env} env - lmdb environment object
+ * @param {lmdb.RootDatabase} env - lmdb environment object
  * @param {String} hash_attribute - name of the table's hash attribute
  * @param {Array.<String>} write_attributes - list of all attributes to write to the database
  * @returns {*}
@@ -155,12 +168,12 @@ function initializeTransaction(env, hash_attribute, write_attributes){
 
     environment_util.initializeDBIs(env, hash_attribute, write_attributes);
 
-    return env.beginTxn();
+    //return env.beginTxn();
 }
 
 /**
  * updates records into LMDB
- * @param {lmdb.Env} env - lmdb environment object
+ * @param {lmdb.RootDatabase} env - lmdb environment object
  * @param {String} hash_attribute - name of the table's hash attribute
  * @param {Array.<String>} write_attributes - list of all attributes to write to the database
  * @param  {Array.<Object>} records - object array records to update
@@ -213,7 +226,7 @@ function updateRecords(env, hash_attribute, write_attributes , records){
 
 /**
  * upserts records into LMDB
- * @param {lmdb.Env} env - lmdb environment object
+ * @param {lmdb.RootDatabase} env - lmdb environment object
  * @param {String} hash_attribute - name of the table's hash attribute
  * @param {Array.<String>} write_attributes - list of all attributes to write to the database
  * @param  {Array.<Object>} records - object array records to update
@@ -277,7 +290,7 @@ function upsertRecords(env, hash_attribute, write_attributes , records){
 
 /**
  * central function used by updateRecords & upsertRecords to write a row to lmdb
- * @param {lmdb.Env} env
+ * @param {lmdb.RootDatabase} env
  * @param txn - lmdb transaction object
  * @param {String} hash_attribute - name of the table's hash attribute
  * @param {{}} record - the record to process
@@ -358,12 +371,16 @@ function checkIsBlob(value){
         return true;
     }
 
+    if(typeof value === 'object' && Buffer.byteLength(JSON.stringify(value)) > MAX_BYTE_SIZE){
+        return true;
+    }
+
     return false;
 }
 
 /**
  * common validation function for env, hash_attribute & fetch_attributes
- * @param {lmdb.Env} env - lmdb environment object
+ * @param {lmdb.RootDatabase} env - lmdb environment object
  * @param {String} hash_attribute - name of the table's hash attribute
  * @param {Array.<String>} write_attributes - list of all attributes to write to the database
  */
@@ -385,7 +402,7 @@ function validateBasic(env, hash_attribute, write_attributes){
 
 /**
  * validates the parameters for LMDB
- * @param {lmdb.Env} env - lmdb environment object
+ * @param {lmdb.RootDatabase} env - lmdb environment object
  * @param {String} hash_attribute - name of the table's hash attribute
  * @param {Array.<String>} write_attributes - list of all attributes to write to the database
  * @param  {Array.<Object>} records - object array records to insert

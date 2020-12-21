@@ -14,7 +14,6 @@ const test_data = require('../../../../testData');
 
 const rewire = require('rewire');
 const environment_utility = rewire('../../../../../utility/lmdb/environmentUtility');
-const lmdb_terms = require('../../../../../utility/lmdb/terms');
 const write_utility = require('../../../../../utility/lmdb/writeUtility');
 const delete_utility = require('../../../../../utility/lmdb/deleteUtility');
 const SearchObject = require('../../../../../data_layer/SearchObject');
@@ -75,13 +74,13 @@ describe('test lmdbGetDataByValue module', ()=>{
 
             env = await environment_utility.createEnvironment(DEV_SCHEMA_PATH, 'test');
             await environment_utility.createDBI(env, 'id', false);
-            await environment_utility.createDBI(env, 'temperature', true, lmdb_terms.DBI_KEY_TYPES.NUMBER);
-            await environment_utility.createDBI(env, 'temperature_double', true, lmdb_terms.DBI_KEY_TYPES.NUMBER);
-            await environment_utility.createDBI(env, 'temperature_neg', true, lmdb_terms.DBI_KEY_TYPES.NUMBER);
-            await environment_utility.createDBI(env, 'temperature_pos', true, lmdb_terms.DBI_KEY_TYPES.NUMBER);
-            await environment_utility.createDBI(env, 'temperature_str', true, lmdb_terms.DBI_KEY_TYPES.STRING);
-            await environment_utility.createDBI(env, 'state', true, lmdb_terms.DBI_KEY_TYPES.STRING);
-            await environment_utility.createDBI(env, 'city', true, lmdb_terms.DBI_KEY_TYPES.STRING);
+            await environment_utility.createDBI(env, 'temperature', true);
+            await environment_utility.createDBI(env, 'temperature_double', true);
+            await environment_utility.createDBI(env, 'temperature_neg', true);
+            await environment_utility.createDBI(env, 'temperature_pos', true);
+            await environment_utility.createDBI(env, 'temperature_str', true);
+            await environment_utility.createDBI(env, 'state', true);
+            await environment_utility.createDBI(env, 'city', true);
 
             write_utility.insertRecords(env, 'id', ['id', 'temperature', 'temperature_str', 'state', 'city'], test_data);
         });
