@@ -51,30 +51,20 @@ function authorize(req, res, next) {
         token = split_auth_header[1];
     }
 
-    function handleResponse(err, user, info) {
+    function handleResponse(err, user) {
         if (err) {
             return next(err);
         }
         if (!user) {
             return next("User not found");
         }
-        if (req.logIn) {
-            req.logIn(user, function (err_login) {
-                if (err_login) {
-                    return next(err_login);
-                }
-                found_user = user;
-                return next(null, user);
-            });
-        } else {
-            found_user = user;
-            return next(null, user);
-        }
+        found_user = user;
+        return next(null, user);
     }
 
     switch (strategy) {
         case 'Basic':
-            passport.authenticate('basic', function (err, user, info) {
+            passport.authenticate('basic',{ session: false },function (err, user, info) {
                 handleResponse(err, user, info);
             })(req, res, next);
             break;
@@ -95,14 +85,13 @@ function authorize(req, res, next) {
             }
             break;
         default:
-            passport.authenticate('local', function (err, user, info) {
+            passport.authenticate('local', { session: false },function (err, user, info) {
                 handleResponse(err, user, info);
             })(req, res, next);
             break;
 
     }
-    return found_user;
-
+    // next(null, found_user);
 }
 
 function checkPermissions(check_permission_obj, callback) {

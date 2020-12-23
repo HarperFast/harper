@@ -121,33 +121,18 @@ module.exports = {
     UNAUTHORIZED_TEXT
 };
 
-/**
- * Wrapper for writing status, checks to see if the header is sent already.
- * @param res - the response object
- * @param status - the status object
- * @param msg - the response message.
- */
-// function setResponseStatus(res, status, msg) {
-//     try {
-//         if (!res._headerSent) {
-//             res.status(status).send(msg);
-//         }
-//     } catch(err) {
-//         harper_logger.info('Tried to set response status, but it has already been set.');
-//     }
-// }
-
-// TODO: This doesn't really need a callback, should simplify it to a return statement.
 function chooseOperation(json) {
+    //TODO - Is this still needed?  Not sure we should ever get to this point w/ new preValidation hook checking for JSON/op in body
     if (json === undefined || json === null) {
-        harper_logger.error(`invalid message body parameters found`);
-        throw 'Invalid operation';
+        harper_logger.error(`Invalid null or undefined message body parameter found`);
+        throw handleHDBError(new Error(), 'Invalid operation', hdb_errors.HTTP_STATUS_CODES.BAD_REQUEST);
     }
 
     let getOpResult;
     try {
         getOpResult = getOperationFunction(json);
     } catch(err) {
+        harper_logger.error(`Error when selecting operation function - ${err}`)
         throw err;
     }
 
@@ -163,7 +148,7 @@ function chooseOperation(json) {
             let ast_perm_check = sql.checkASTPermissions(json, parsed_sql_object);
             if (ast_perm_check) {
                 harper_logger.error(`${UNAUTH_RESPONSE} from operation ${json.search_operation}`);
-                throw ast_perm_check;
+                throw handleHDBError(new Error(), ast_perm_check, hdb_errors.HTTP_STATUS_CODES.FORBIDDEN);
             }
         //we need to bypass permission checks to allow the create_authorization_tokens
         } else if(json.operation !== terms.OPERATIONS_ENUM.CREATE_AUTHENTICATION_TOKENS){
@@ -177,18 +162,11 @@ function chooseOperation(json) {
 
             if (verify_perms_result) {
                 harper_logger.error(`${UNAUTH_RESPONSE} from operation ${json.operation}`);
-                throw verify_perms_result;
+                throw handleHDBError(new Error(), verify_perms_result, hdb_errors.HTTP_STATUS_CODES.FORBIDDEN);
             }
         }
-    } catch (e) {
-        // The below scenarios should catch all non auth related processing errors and return the message
-        if (e.http_resp_code) {
-            throw e;
-        }
-        // if (e.message === undefined) {
-        //     console.log('ERROR ERROR!', e)
-        // }
-        throw e;
+    } catch (err) {
+        throw handleHDBError(err, `There was an error when trying to choose an operation path`)
     }
     return operation_function;
 }

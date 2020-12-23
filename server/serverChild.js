@@ -230,10 +230,6 @@ async function setUp(){
 }
 
 function serverErrorHandler(error, req, resp) {
-    if (error instanceof PermissionResponseObject) {
-        return resp.code(hdb_errors.HTTP_STATUS_CODES.FORBIDDEN).send(error);
-    }
-
     if (error.http_resp_code) {
         if (typeof error.http_resp_msg === 'string') {
             return resp.code(error.http_resp_code).send({error: error.http_resp_msg});
@@ -287,26 +283,11 @@ function authHandler(req, resp, done) {
 async function handlePostRequest(req, res) {
     //TODO - auth feature will move to a plugin in follow-up JIRA
     let operation_function;
-    // try {
-    //     //create_authorization_tokens needs to not authorize
-    //     if (!req.body.operation || (req.body.operation && req.body.operation !== terms.OPERATIONS_ENUM.CREATE_AUTHENTICATION_TOKENS)) {
-    //         user = await p_authorize(req, res);
-    //     }
-    // } catch(err){
-    //     harper_logger.warn(err);
-    //     harper_logger.warn(`{"ip":"${req.socket.remoteAddress}", "error":"${err.stack}"`);
-    //     if (typeof err === 'string') {
-    //         return res.status(hdb_errors.HTTP_STATUS_CODES.UNAUTHORIZED).send({error: err});
-    //     }
-    //     return res.status(hdb_errors.HTTP_STATUS_CODES.UNAUTHORIZED).send({error:err.message});
-    // }
-    //
-    // req.body.hdb_user = user;
-    // req.body.hdb_auth_header = req.headers.authorization;
 
     try {
         operation_function = server_utilities.chooseOperation(req.body);
-        return await server_utilities.processLocalTransaction(req, res, operation_function);
+        const op_result = await server_utilities.processLocalTransaction(req, res, operation_function);
+        return op_result
     } catch (error) {
         harper_logger.error(error);
         throw error;
