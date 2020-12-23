@@ -50,6 +50,67 @@ const GLOBAL_SCHEMA_UPDATE_OPERATIONS_ENUM = {
 
 const OperationFunctionObject = require('./OperationFunctionObject');
 
+/**
+ * This will process a command message on this receiving node rather than sending it to a remote node.  NOTE: this function
+ * handles the response to the sender.
+ * @param req
+ * @param res
+ * @param operation_function
+ * @param callback
+ * @returns {*}
+ */
+async function processLocalTransaction(req, res, operation_function) {
+    try {
+        if (req.body.operation !== 'read_log') {
+            if(harper_logger.log_level === harper_logger.INFO ||
+                harper_logger.log_level === harper_logger.DEBUG ||
+                harper_logger.log_level === harper_logger.TRACE) {
+                // Need to remove auth variables, but we don't want to create an object unless
+                // the logging is actually going to happen.
+                // eslint-disable-next-line no-unused-vars
+                const { hdb_user, hdb_auth_header, password, ...clean_body } = req.body;
+                harper_logger.info(JSON.stringify(clean_body));
+            }
+        }
+    } catch (e) {
+        harper_logger.error(e);
+
+        // setResponseStatus(res, hdb_errors.HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR, e);
+        throw e;
+    }
+
+    let post_op_function = (terms.CLUSTER_OPERATIONS[req.body.operation] === undefined ? null : transact_to_clustering_utils.postOperationHandler);
+
+    try {
+        let data = await operation_function_caller.callOperationFunctionAsAwait(operation_function, req.body, post_op_function);
+
+        if (typeof data !== 'object') {
+            data = {"message": data};
+        }
+        if (data instanceof Error) {
+            throw data;
+        }
+
+        if (GLOBAL_SCHEMA_UPDATE_OPERATIONS_ENUM[req.body.operation]) {
+            global_schema.setSchemaDataToGlobal((err) => {
+                if (err) {
+                    harper_logger.error(err);
+                }
+            });
+        }
+
+        // setResponseStatus(res, hdb_errors.HTTP_STATUS_CODES.OK, data);
+        return data;
+    } catch(error) {
+        harper_logger.info(error);
+        if(error === UNAUTH_RESPONSE) {
+            // setResponseStatus(res, hdb_errors.HTTP_STATUS_CODES.FORBIDDEN, {error: UNAUTHORIZED_TEXT});
+            throw handleHDBError((error, UNAUTHORIZED_TEXT, hdb_errors.HTTP_STATUS_CODES.FORBIDDEN));
+        }
+        throw(error);
+    }
+}
+
 const OPERATION_FUNCTION_MAP = initializeOperationFunctionMap();
 
 module.exports = {
@@ -61,104 +122,33 @@ module.exports = {
 };
 
 /**
- * This will process a command message on this receiving node rather than sending it to a remote node.  NOTE: this function
- * handles the response to the sender.
- * @param req
- * @param res
- * @param operation_function
- * @param callback
- * @returns {*}
- */
-function processLocalTransaction(req, res, operation_function, callback) {
-    try {
-        if (req.body.operation !== 'read_log') {
-            if(harper_logger.log_level === harper_logger.INFO ||
-            harper_logger.log_level === harper_logger.DEBUG ||
-            harper_logger.log_level === harper_logger.TRACE) {
-                // Need to remove auth variables, but we don't want to create an object unless
-                // the logging is actually going to happen.
-                // eslint-disable-next-line no-unused-vars
-                const { hdb_user, hdb_auth_header, password, ...clean_body } = req.body;
-                harper_logger.info(JSON.stringify(clean_body));
-            }
-        }
-    } catch (e) {
-        harper_logger.error(e);
-
-        setResponseStatus(res, hdb_errors.HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR, e);
-        return callback(e);
-    }
-
-    let post_op_function = (terms.CLUSTER_OPERATIONS[req.body.operation] === undefined ? null : transact_to_clustering_utils.postOperationHandler);
-
-    operation_function_caller.callOperationFunctionAsAwait(operation_function, req.body, post_op_function)
-        .then((data) => {
-            if (typeof data !== 'object') {
-                data = {"message": data};
-            }
-            if(data instanceof Error) {
-                setResponseStatus(res, hdb_errors.HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR, {error: data.message});
-            }
-
-            if (GLOBAL_SCHEMA_UPDATE_OPERATIONS_ENUM[req.body.operation]) {
-                global_schema.setSchemaDataToGlobal((err) => {
-                    if (err) {
-                        harper_logger.error(err);
-                    }
-                });
-            }
-
-            setResponseStatus(res, hdb_errors.HTTP_STATUS_CODES.OK, data);
-            return callback(null, data);
-        })
-        .catch((error) => {
-            harper_logger.info(error);
-            if(error === UNAUTH_RESPONSE) {
-                setResponseStatus(res, hdb_errors.HTTP_STATUS_CODES.FORBIDDEN, {error: UNAUTHORIZED_TEXT});
-                return callback(error);
-            }
-            if(typeof error !== 'object') {
-                error = { message: error };
-            }
-
-            //This final response status and error msg evaluation is required while we transition to using the new error
-            // handling process with HDBError and the new properties set on the new error type
-            const http_resp_status = error.http_resp_code ? error.http_resp_code : hdb_errors.HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR;
-            const http_resp_msg = error.http_resp_msg ? error.http_resp_msg : error.message ? error.message : hdb_errors.DEFAULT_ERROR_RESP;
-            const error_msg = http_resp_msg.error ? http_resp_msg : { error: http_resp_msg};
-            setResponseStatus(res, http_resp_status, error_msg);
-            return callback(error);
-        });
-}
-
-/**
  * Wrapper for writing status, checks to see if the header is sent already.
  * @param res - the response object
  * @param status - the status object
  * @param msg - the response message.
  */
-function setResponseStatus(res, status, msg) {
-    try {
-        if (!res._headerSent) {
-            res.status(status).send(msg);
-        }
-    } catch(err) {
-        harper_logger.info('Tried to set response status, but it has already been set.');
-    }
-}
+// function setResponseStatus(res, status, msg) {
+//     try {
+//         if (!res._headerSent) {
+//             res.status(status).send(msg);
+//         }
+//     } catch(err) {
+//         harper_logger.info('Tried to set response status, but it has already been set.');
+//     }
+// }
 
 // TODO: This doesn't really need a callback, should simplify it to a return statement.
-function chooseOperation(json, callback) {
+function chooseOperation(json) {
     if (json === undefined || json === null) {
         harper_logger.error(`invalid message body parameters found`);
-        return nullOperation(json, callback);
+        throw 'Invalid operation';
     }
 
     let getOpResult;
     try {
         getOpResult = getOperationFunction(json);
     } catch(err) {
-        return callback(err, null);
+        throw err;
     }
 
     const { operation_function, job_operation_function } = getOpResult;
@@ -173,7 +163,7 @@ function chooseOperation(json, callback) {
             let ast_perm_check = sql.checkASTPermissions(json, parsed_sql_object);
             if (ast_perm_check) {
                 harper_logger.error(`${UNAUTH_RESPONSE} from operation ${json.search_operation}`);
-                return callback(ast_perm_check, null);
+                throw ast_perm_check;
             }
         //we need to bypass permission checks to allow the create_authorization_tokens
         } else if(json.operation !== terms.OPERATIONS_ENUM.CREATE_AUTHENTICATION_TOKENS){
@@ -187,17 +177,20 @@ function chooseOperation(json, callback) {
 
             if (verify_perms_result) {
                 harper_logger.error(`${UNAUTH_RESPONSE} from operation ${json.operation}`);
-                return callback(verify_perms_result, null);
+                throw verify_perms_result;
             }
         }
     } catch (e) {
         // The below scenarios should catch all non auth related processing errors and return the message
         if (e.http_resp_code) {
-            return callback(e, null);
+            throw e;
         }
-        return callback(e.message, null);
+        // if (e.message === undefined) {
+        //     console.log('ERROR ERROR!', e)
+        // }
+        throw e;
     }
-    return callback(null, operation_function);
+    return operation_function;
 }
 
 function getOperationFunction(json){

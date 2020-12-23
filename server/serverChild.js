@@ -16,7 +16,7 @@ const p_authorize = util.promisify(auth.authorize);
 
 const pjson = require(`${__dirname}/../package.json`);
 const server_utilities = require('./serverUtilities');
-const p_choose_operation = util.promisify(server_utilities.chooseOperation);
+// const p_choose_operation = util.promisify(server_utilities.chooseOperation);
 const fastify_cors = require('fastify-cors');
 const fastify_compress = require('fastify-compress');
 const fastify_static = require('fastify-static');
@@ -27,7 +27,7 @@ const clean_lmdb = require('../utility/lmdb/cleanLMDBMap');
 
 const signalling = require('../utility/signalling');
 const guidePath = require('path');
-const hdb_errors = require('../utility/errors/commonErrors');
+const { isHDBError, handleHDBError, hdb_errors } = require('../utility/errors/hdbError');
 const PermissionResponseObject = require('../security/data_objects/PermissionResponseObject');
 const global_schema = require('../utility/globalSchema');
 const user_schema = require('../security/user');
@@ -84,11 +84,19 @@ async function childServer() {
     const props_http_on = env.get(PROPS_HTTP_ON_KEY);
 
     if (props_http_secure_on && (props_http_secure_on === true || props_http_secure_on.toUpperCase() === TRUE_COMPARE_VAL)) {
-        secureServer = await buildServer(true);
+        try {
+            secureServer = await buildServer(true);
+        } catch(err) {
+            harper_logger.error(err);
+        }
     }
 
     if (props_http_on && (props_http_on === true || props_http_on.toUpperCase() === TRUE_COMPARE_VAL)) {
-        httpServer = await buildServer(false);
+        try {
+            httpServer = await buildServer(false);
+        } catch(err) {
+            harper_logger.error(err);
+        }
     }
 }
 
@@ -97,6 +105,9 @@ async function buildServer(is_https) {
     const app = fastify(server_opts);
     //Fastify does not set this property in the initial app construction
     app.server.headersTimeout = getHeaderTimeoutConfig();
+
+    //set top-level error handler for server
+    app.setErrorHandler(serverErrorHandler);
 
     const cors_options = getCORSOpts();
     if (cors_options) {
@@ -113,9 +124,14 @@ async function buildServer(is_https) {
         return res.sendFile('index.html');
     });
 
-    app.post('/', async function (req, res) {
-        await handlePostRequest(req, res);
-    });
+    app.post('/', {
+            preValidation: [reqBodyValidationHandler, authHandler]
+        },
+        async function (req, res) {
+            //if no error is thrown below, the response 'data' returned from the handler will be returned with 200/OK code
+            return await handlePostRequest(req, res);
+        }
+    );
 
     //TODO - revisit during shutDown story - this info may be available via Fastify instance
     //app.server.on('connection', function(socket) {
@@ -147,6 +163,7 @@ async function buildServer(is_https) {
         }
         return app;
     } catch(e) {
+        harper_logger.error(`Error configuring ${is_https ? 'HTTPS' : 'HTTP'} server`);
         harper_logger.error(e);
     }
 }
@@ -212,46 +229,88 @@ async function setUp(){
     }
 }
 
+function serverErrorHandler(error, req, resp) {
+    if (error instanceof PermissionResponseObject) {
+        return resp.code(hdb_errors.HTTP_STATUS_CODES.FORBIDDEN).send(error);
+    }
+
+    if (error.http_resp_code) {
+        if (typeof error.http_resp_msg === 'string') {
+            return resp.code(error.http_resp_code).send({error: error.http_resp_msg});
+        }
+        return resp.code(error.http_resp_code).send(error.http_resp_msg);
+    }
+    const statusCode = error.statusCode ? error.statusCode : hdb_errors.HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR;
+    if (typeof error === 'string') {
+        return resp.code(statusCode).send({error: error});
+    }
+    return resp.code(statusCode).send(error.message ? {error: error.message} : error);
+}
+
+function reqBodyValidationHandler(req, resp, done) {
+    if (!req.body || Object.keys(req.body).length === 0 || typeof req.body !== 'object') {
+        const validation_err = handleHDBError(new Error(), "Invalid JSON.", hdb_errors.HTTP_STATUS_CODES.BAD_REQUEST);
+        done(validation_err, null);
+    }
+    if (hdb_util.isEmpty(req.body.operation)) {
+        const validation_err = handleHDBError(new Error(), "Request body must include an 'operation' property.", hdb_errors.HTTP_STATUS_CODES.BAD_REQUEST);
+        done(validation_err, null);
+    }
+    done();
+}
+
+function authHandler(req, resp, done) {
+    let user;
+
+    //create_authorization_tokens needs to not authorize
+    if (!req.body.operation || (req.body.operation && req.body.operation !== terms.OPERATIONS_ENUM.CREATE_AUTHENTICATION_TOKENS)) {
+        p_authorize(req, resp)
+            .then(data => {
+                user = data;
+                req.body.hdb_user = user;
+                req.body.hdb_auth_header = req.headers.authorization;
+                done();
+            })
+            .catch(err => {
+                harper_logger.warn(err);
+                harper_logger.warn(`{"ip":"${req.socket.remoteAddress}", "error":"${err.stack}"`);
+                let err_msg = typeof err === 'string' ? { error: err } : { error:err.message };
+                done(handleHDBError(err, err_msg, hdb_errors.HTTP_STATUS_CODES.UNAUTHORIZED), null);
+            });
+    } else {
+        req.body.hdb_user = null;
+        req.body.hdb_auth_header = req.headers.authorization;
+        done();
+    }
+}
+
 async function handlePostRequest(req, res) {
     //TODO - auth feature will move to a plugin in follow-up JIRA
-    let user;
     let operation_function;
-    try {
-        //create_authorization_tokens needs to not authorize
-        if (!req.body.operation || (req.body.operation && req.body.operation !== terms.OPERATIONS_ENUM.CREATE_AUTHENTICATION_TOKENS)) {
-            user = await p_authorize(req, res);
-        }
-    } catch(err){
-        harper_logger.warn(err);
-        harper_logger.warn(`{"ip":"${req.socket.remoteAddress}", "error":"${err.stack}"`);
-        if (typeof err === 'string') {
-            return res.status(hdb_errors.HTTP_STATUS_CODES.UNAUTHORIZED).send({error: err});
-        }
-        return res.status(hdb_errors.HTTP_STATUS_CODES.UNAUTHORIZED).send({error:err.message});
-    }
+    // try {
+    //     //create_authorization_tokens needs to not authorize
+    //     if (!req.body.operation || (req.body.operation && req.body.operation !== terms.OPERATIONS_ENUM.CREATE_AUTHENTICATION_TOKENS)) {
+    //         user = await p_authorize(req, res);
+    //     }
+    // } catch(err){
+    //     harper_logger.warn(err);
+    //     harper_logger.warn(`{"ip":"${req.socket.remoteAddress}", "error":"${err.stack}"`);
+    //     if (typeof err === 'string') {
+    //         return res.status(hdb_errors.HTTP_STATUS_CODES.UNAUTHORIZED).send({error: err});
+    //     }
+    //     return res.status(hdb_errors.HTTP_STATUS_CODES.UNAUTHORIZED).send({error:err.message});
+    // }
+    //
+    // req.body.hdb_user = user;
+    // req.body.hdb_auth_header = req.headers.authorization;
 
-    req.body.hdb_user = user;
-    req.body.hdb_auth_header = req.headers.authorization;
-
     try {
-        operation_function = await p_choose_operation(req.body);
-    } catch(error){
+        operation_function = server_utilities.chooseOperation(req.body);
+        return await server_utilities.processLocalTransaction(req, res, operation_function);
+    } catch (error) {
         harper_logger.error(error);
-        if (error instanceof PermissionResponseObject) {
-            return res.status(hdb_errors.HTTP_STATUS_CODES.FORBIDDEN).send(error);
-        }
-        if (error.http_resp_code) {
-            if (typeof error.http_resp_msg === 'string') {
-                return res.status(error.http_resp_code).send({error: error.http_resp_msg});
-            }
-            return res.status(error.http_resp_code).send(error.http_resp_msg);
-        }
-        if (typeof error === 'string') {
-            return res.status(hdb_errors.HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR).send({error: error});
-        }
-        return res.status(hdb_errors.HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR).send(error);
+        throw error;
     }
-    server_utilities.processLocalTransaction(req, res, operation_function, function () {});
 }
 
 async function handleServerMessage(msg) {
@@ -298,7 +357,7 @@ function handleServerUncaughtException(err) {
 
 async function syncSchemaMetadata(msg){
     try{
-        if(global.hdb_schema !== undefined && typeof global.hdb_schema === 'object' && msg.operation !== undefined){
+        if(global.hdb_schema !== undefined && typeof global.hdb_schema === 'object' && msg.operation !== undefined) {
 
             switch (msg.operation.operation) {
                 case 'drop_schema':
