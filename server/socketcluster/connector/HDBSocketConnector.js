@@ -1,5 +1,5 @@
 const SocketConnector = require('./SocketConnector');
-const server_utilities = require('../../serverUtilities');
+const server_utilities = require('../../serverHelpers/serverUtilities');
 const transact_to_cluster_utilities = require('../../transactToClusteringUtilities');
 const log = require('../../../utility/logging/harper_logger');
 const terms = require('../../../utility/hdbTerms');

@@ -1,34 +1,34 @@
 "use strict";
 
-const search = require('../data_layer/search');
-const sql = require('../sqlTranslator/index');
-const bulkLoad = require('../data_layer/bulkLoad');
-const schema = require('../data_layer/schema');
-const schema_describe = require('../data_layer/schemaDescribe');
-const delete_ = require('../data_layer/delete');
-const read_transaction_log = require('../data_layer/readTransactionLog');
-const user = require('../security/user');
-const role = require('../security/role');
-const cluster_utilities = require('./clustering/clusterUtilities');
-const harper_logger = require('../utility/logging/harper_logger');
-const export_ = require('../data_layer/export');
-const op_auth = require('../utility/operation_authorization');
-const jobs = require('./jobs');
-const terms = require('../utility/hdbTerms');
-const { hdb_errors, handleHDBError } = require('../utility/errors/hdbError');
-const reg = require('../utility/registration/registrationHandler');
-const stop = require('../bin/stop');
+const search = require('../../data_layer/search');
+const sql = require('../../sqlTranslator/index');
+const bulkLoad = require('../../data_layer/bulkLoad');
+const schema = require('../../data_layer/schema');
+const schema_describe = require('../../data_layer/schemaDescribe');
+const delete_ = require('../../data_layer/delete');
+const read_transaction_log = require('../../data_layer/readTransactionLog');
+const user = require('../../security/user');
+const role = require('../../security/role');
+const cluster_utilities = require('./../clustering/clusterUtilities');
+const harper_logger = require('../../utility/logging/harper_logger');
+const export_ = require('../../data_layer/export');
+const op_auth = require('../../utility/operation_authorization');
+const jobs = require('./../jobs');
+const terms = require('../../utility/hdbTerms');
+const { hdb_errors, handleHDBError } = require('../../utility/errors/hdbError');
+const reg = require('../../utility/registration/registrationHandler');
+const stop = require('../../bin/stop');
 const util = require('util');
-const insert = require('../data_layer/insert');
-const global_schema = require('../utility/globalSchema');
-const system_information = require('../utility/environment/systemInformation');
-const transact_to_clustering_utils = require('./transactToClusteringUtilities');
-const job_runner = require('./jobRunner');
-const signal = require('../utility/signalling');
-const token_authentication = require('../security/tokenAuthentication');
-const configuration = require('../server/configuration');
+const insert = require('../../data_layer/insert');
+const global_schema = require('../../utility/globalSchema');
+const system_information = require('../../utility/environment/systemInformation');
+const transact_to_clustering_utils = require('./../transactToClusteringUtilities');
+const job_runner = require('./../jobRunner');
+const signal = require('../../utility/signalling');
+const token_authentication = require('../../security/tokenAuthentication');
+const configuration = require('../../server/configuration');
 
-const operation_function_caller = require(`../utility/OperationFunctionCaller`);
+const operation_function_caller = require(`../../utility/OperationFunctionCaller`);
 
 const UNAUTH_RESPONSE = 403;
 const UNAUTHORIZED_TEXT = 'You are not authorized to perform the operation specified';
@@ -132,7 +132,7 @@ function chooseOperation(json) {
     try {
         getOpResult = getOperationFunction(json);
     } catch(err) {
-        harper_logger.error(`Error when selecting operation function - ${err}`)
+        harper_logger.error(`Error when selecting operation function - ${err}`);
         throw err;
     }
 
@@ -166,7 +166,7 @@ function chooseOperation(json) {
             }
         }
     } catch (err) {
-        throw handleHDBError(err, `There was an error when trying to choose an operation path`)
+        throw handleHDBError(err, `There was an error when trying to choose an operation path`);
     }
     return operation_function;
 }

@@ -13,7 +13,7 @@
 // const DEFAULT_CONFIG = require('../../utility/hdbTerms').HDB_SETTINGS_DEFAULT_VALUES;
 //
 // const auth = require('../../security/auth');
-// const server_utilities = require('../../server/serverUtilities');
+// const server_utilities = require('../../server/serverHelpers/serverUtilities');
 // const OperationFunctionCaller = require('../../utility/OperationFunctionCaller');
 //
 // const KEYS_PATH = path.join(test_utils.getMockFSPath(), 'utility/keys');

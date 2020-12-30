@@ -6,7 +6,7 @@
 // const assert = require('assert');
 // const sinon = require('sinon');
 // const rewire = require('rewire');
-// const server_utilities = rewire('../server/serverUtilities');
+// const server_utilities = rewire('../server/serverHelpers/serverUtilities');
 //
 // async function test_func(test_valuse) {
 //     return true;

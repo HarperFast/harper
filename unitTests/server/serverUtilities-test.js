@@ -4,7 +4,7 @@ const test_utils = require('../test_utils');
 test_utils.preTestPrep();
 
 const assert = require('assert');
-const server_utilities = require('../../server/serverUtilities');
+const server_utilities = require('../../server/serverHelpers/serverUtilities');
 
 
 describe('test getOperationFunction', ()=>{
