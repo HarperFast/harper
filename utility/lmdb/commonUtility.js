@@ -1,10 +1,13 @@
 "use strict";
 
 const LMDB_ERRORS = require('../errors/commonErrors').LMDB_ERRORS_ENUM;
+// eslint-disable-next-line no-unused-vars
 const lmdb = require('lmdb-store');
 const lmdb_terms = require('./terms');
 const Buffer = require('buffer').Buffer;
 const microtime = require('microtime');
+
+const MAX_BYTE_SIZE = lmdb_terms.MAX_BYTE_SIZE;
 
 /**
  * validates the env argument
@@ -99,10 +102,26 @@ function getMicroTime(){
     return Number(full_micro.slice(0, pos) + '.' + full_micro.slice(pos));
 }
 
+/**
+ * checks if a value is a 'blob', meaning a string over 254 bytes
+ * @param {any} value
+ * @returns {boolean}
+ */
+function checkIsBlob(value){
+    if(typeof value === 'string' && Buffer.byteLength(value) > MAX_BYTE_SIZE){
+        return true;
+    }
+
+    return typeof value === 'object' && Buffer.byteLength(JSON.stringify(value)) > MAX_BYTE_SIZE;
+
+
+}
+
 module.exports = {
     validateEnv,
     stringifyData,
     convertKeyValueToWrite,
     convertKeyValueFromSearch,
-    getMicroTime
+    getMicroTime,
+    checkIsBlob
 };

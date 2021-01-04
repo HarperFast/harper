@@ -1,4 +1,4 @@
-"use strict"
+"use strict";
 /**
  * Test the common_utils_test module.
  */
@@ -235,6 +235,12 @@ describe(`Test isBoolean`, function(){
 describe(`Test autoCast`, function(){
     it(`Pass in null, expect null`, function(){
         assert.equal(cu.autoCast(null), null);
+    });
+
+    it(`Pass in 0.10056344792246819, expect 0.10056344792246819 as number`, function(){
+        let result = cu.autoCast("0.10056344792246819");
+        assert.deepStrictEqual(typeof result, 'number');
+        assert.deepStrictEqual(result, 0.10056344792246819);
     });
 
     it(`Pass in undefined, expect undefined`, function(){
