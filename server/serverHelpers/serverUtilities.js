@@ -16,6 +16,7 @@ const op_auth = require('../../utility/operation_authorization');
 const jobs = require('./../jobs');
 const terms = require('../../utility/hdbTerms');
 const { hdb_errors, handleHDBError } = require('../../utility/errors/hdbError');
+const { HTTP_STATUS_CODES } = hdb_errors;
 const reg = require('../../utility/registration/registrationHandler');
 const stop = require('../../bin/stop');
 const util = require('util');
@@ -30,7 +31,6 @@ const configuration = require('../../server/configuration');
 
 const operation_function_caller = require(`../../utility/OperationFunctionCaller`);
 
-const UNAUTH_RESPONSE = 403;
 const UNAUTHORIZED_TEXT = 'You are not authorized to perform the operation specified';
 
 const p_search_search_by_hash = util.promisify(search.searchByHash);
@@ -59,10 +59,10 @@ const OperationFunctionObject = require('./OperationFunctionObject');
  * @param callback
  * @returns {*}
  */
-async function processLocalTransaction(req, res, operation_function) {
+async function processLocalTransaction(req, operation_function) {
     try {
         if (req.body.operation !== 'read_log') {
-            if(harper_logger.log_level === harper_logger.INFO ||
+            if (harper_logger.log_level === harper_logger.INFO ||
                 harper_logger.log_level === harper_logger.DEBUG ||
                 harper_logger.log_level === harper_logger.TRACE) {
                 // Need to remove auth variables, but we don't want to create an object unless
@@ -74,8 +74,6 @@ async function processLocalTransaction(req, res, operation_function) {
         }
     } catch (e) {
         harper_logger.error(e);
-
-        // setResponseStatus(res, hdb_errors.HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR, e);
         throw e;
     }
 
@@ -92,22 +90,22 @@ async function processLocalTransaction(req, res, operation_function) {
         }
 
         if (GLOBAL_SCHEMA_UPDATE_OPERATIONS_ENUM[req.body.operation]) {
-            global_schema.setSchemaDataToGlobal((err) => {
+            global_schema.setSchemaDataToGlobal(err => {
                 if (err) {
                     harper_logger.error(err);
                 }
             });
         }
 
-        // setResponseStatus(res, hdb_errors.HTTP_STATUS_CODES.OK, data);
         return data;
     } catch(error) {
         harper_logger.info(error);
-        if(error === UNAUTH_RESPONSE) {
-            // setResponseStatus(res, hdb_errors.HTTP_STATUS_CODES.FORBIDDEN, {error: UNAUTHORIZED_TEXT});
+
+        if (error === HTTP_STATUS_CODES.FORBIDDEN) {
             throw handleHDBError((error, UNAUTHORIZED_TEXT, hdb_errors.HTTP_STATUS_CODES.FORBIDDEN));
         }
-        throw(error);
+
+        throw error;
     }
 }
 
@@ -117,7 +115,6 @@ module.exports = {
     chooseOperation,
     getOperationFunction,
     processLocalTransaction,
-    UNAUTH_RESPONSE,
     UNAUTHORIZED_TEXT
 };
 
@@ -147,7 +144,7 @@ function chooseOperation(json) {
             json.parsed_sql_object = parsed_sql_object;
             let ast_perm_check = sql.checkASTPermissions(json, parsed_sql_object);
             if (ast_perm_check) {
-                harper_logger.error(`${UNAUTH_RESPONSE} from operation ${json.search_operation}`);
+                harper_logger.error(`${HTTP_STATUS_CODES.FORBIDDEN} from operation ${json.search_operation}`);
                 throw handleHDBError(new Error(), ast_perm_check, hdb_errors.HTTP_STATUS_CODES.FORBIDDEN);
             }
         //we need to bypass permission checks to allow the create_authorization_tokens
@@ -161,7 +158,7 @@ function chooseOperation(json) {
             let verify_perms_result = op_auth.verifyPerms(operation_json, function_to_check);
 
             if (verify_perms_result) {
-                harper_logger.error(`${UNAUTH_RESPONSE} from operation ${json.operation}`);
+                harper_logger.error(`${HTTP_STATUS_CODES.FORBIDDEN} from operation ${json.operation}`);
                 throw handleHDBError(new Error(), verify_perms_result, hdb_errors.HTTP_STATUS_CODES.FORBIDDEN);
             }
         }
@@ -238,12 +235,11 @@ async function signalJob(json) {
         if (process.send !== undefined) {
             signal.signalJobAdded(job_signal_message);
         } else {
-            try {
-                // purposefully not waiting for await response as we want to callback immediately.
-                job_runner.parseMessage(job_signal_message.runner_message);
-            } catch (e) {
-                harper_logger.error(`Got an error trying to run a job with message ${job_runner_message}. ${e}`);
-            }
+            // purposefully not waiting for await response as we want to callback immediately.
+            job_runner.parseMessage(job_signal_message.runner_message)
+                .catch(e => {
+                    harper_logger.error(`Got an error trying to run a job with message ${job_runner_message}. ${e}`);
+                });
         }
         return `Starting job with id ${new_job_object.id}`;
     } catch (err) {

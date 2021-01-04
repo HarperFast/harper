@@ -64,8 +64,8 @@ function authorize(req, res, next) {
 
     switch (strategy) {
         case 'Basic':
-            passport.authenticate('basic',{ session: false },function (err, user, info) {
-                handleResponse(err, user, info);
+            passport.authenticate('basic',{ session: false },function (err, user) {
+                handleResponse(err, user);
             })(req, res, next);
             break;
         case 'Bearer':
@@ -85,8 +85,8 @@ function authorize(req, res, next) {
             }
             break;
         default:
-            passport.authenticate('local', { session: false },function (err, user, info) {
-                handleResponse(err, user, info);
+            passport.authenticate('local', { session: false },function (err, user) {
+                handleResponse(err, user);
             })(req, res, next);
             break;
 

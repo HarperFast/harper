@@ -3,7 +3,7 @@
 const terms = require('../../utility/hdbTerms');
 const hdb_util = require('../../utility/common_utils');
 const harper_logger = require('../../utility/logging/harper_logger');
-const { isHDBError, handleHDBError, hdb_errors } = require('../../utility/errors/hdbError');
+const { handleHDBError, hdb_errors } = require('../../utility/errors/hdbError');
 
 const os = require('os');
 const util = require('util');
@@ -51,7 +51,7 @@ function authHandler(req, resp, done) {
 
     //create_authorization_tokens needs to not authorize
     if (!req.body.operation || (req.body.operation && req.body.operation !== terms.OPERATIONS_ENUM.CREATE_AUTHENTICATION_TOKENS)) {
-        p_authorize``(req, resp)
+        p_authorize(req, resp)
             .then(data => {
                 user = data;
                 req.body.hdb_user = user;
@@ -71,13 +71,12 @@ function authHandler(req, resp, done) {
     }
 }
 
-async function handlePostRequest(req, res) {
-    //TODO - auth feature will move to a plugin in follow-up JIRA
+async function handlePostRequest(req) {
     let operation_function;
 
     try {
         operation_function = server_utilities.chooseOperation(req.body);
-        const op_result = await server_utilities.processLocalTransaction(req, res, operation_function);
+        const op_result = await server_utilities.processLocalTransaction(req, operation_function);
         return op_result;
     } catch (error) {
         harper_logger.error(error);

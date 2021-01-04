@@ -5,18 +5,13 @@ const env = require('../utility/environment/environmentManager');
 env.initSync();
 const terms = require('../utility/hdbTerms');
 const hdb_util = require('../utility/common_utils');
-// const os = require('os');
 const util = require('util');
 
 const harper_logger = require('../utility/logging/harper_logger');
 const fs = require('fs');
 const fastify = require('fastify');
-// const auth = require('../security/auth');
-// const p_authorize = util.promisify(auth.authorize);
 
 const pjson = require(`${__dirname}/../package.json`);
-// const server_utilities = require('./serverHelpers/serverUtilities.js');
-// const p_choose_operation = util.promisify(server_utilities.chooseOperation);
 const fastify_cors = require('fastify-cors');
 const fastify_compress = require('fastify-compress');
 const fastify_static = require('fastify-static');
@@ -27,8 +22,7 @@ const clean_lmdb = require('../utility/lmdb/cleanLMDBMap');
 
 const signalling = require('../utility/signalling');
 const guidePath = require('path');
-const { isHDBError, handleHDBError, hdb_errors } = require('../utility/errors/hdbError');
-const PermissionResponseObject = require('../security/data_objects/PermissionResponseObject');
+
 const global_schema = require('../utility/globalSchema');
 const user_schema = require('../security/user');
 const job_runner = require('./jobRunner');
@@ -137,7 +131,7 @@ async function buildServer(is_https) {
         },
         async function (req, res) {
             //if no error is thrown below, the response 'data' returned from the handler will be returned with 200/OK code
-            return await handlePostRequest(req, res);
+            return await handlePostRequest(req);
         }
     );
 
@@ -274,25 +268,25 @@ async function handleServerMessage(msg) {
 
 async function syncSchemaMetadata(msg){
     try{
-        if(global.hdb_schema !== undefined && typeof global.hdb_schema === 'object' && msg.operation !== undefined) {
+        if (global.hdb_schema !== undefined && typeof global.hdb_schema === 'object' && msg.operation !== undefined) {
 
             switch (msg.operation.operation) {
                 case 'drop_schema':
                     delete global.hdb_schema[msg.operation.schema];
                     break;
                 case 'drop_table':
-                    if(global.hdb_schema[msg.operation.schema] !== undefined){
+                    if (global.hdb_schema[msg.operation.schema] !== undefined) {
                         delete global.hdb_schema[msg.operation.schema][msg.operation.table];
                     }
                     break;
                 case 'create_schema':
-                    if(global.hdb_schema[msg.operation.schema] === undefined){
+                    if (global.hdb_schema[msg.operation.schema] === undefined) {
                         global.hdb_schema[msg.operation.schema] = {};
                     }
                     break;
                 case 'create_table':
                 case 'create_attribute':
-                    if(global.hdb_schema[msg.operation.schema] === undefined){
+                    if (global.hdb_schema[msg.operation.schema] === undefined) {
                         global.hdb_schema[msg.operation.schema] = {};
                     }
 
@@ -300,7 +294,7 @@ async function syncSchemaMetadata(msg){
                         await schema_describe.describeTable({schema: msg.operation.schema, table: msg.operation.table});
                     break;
                 default:
-                    global_schema.schemaSignal((err) => {
+                    global_schema.schemaSignal(err => {
                         if (err) {
                             harper_logger.error(err);
                         }
@@ -308,13 +302,13 @@ async function syncSchemaMetadata(msg){
                     break;
             }
         } else{
-            global_schema.schemaSignal((err) => {
+            global_schema.schemaSignal(err => {
                 if (err) {
                     harper_logger.error(err);
                 }
             });
         }
-    } catch(e){
+    } catch(e) {
         harper_logger.error(e);
     }
 }
