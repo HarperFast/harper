@@ -1,4 +1,4 @@
-"use strict";
+'use strict';
 
 const terms = require('../../utility/hdbTerms');
 const hdb_util = require('../../utility/common_utils');
@@ -12,9 +12,8 @@ const auth = require('../../security/auth');
 const p_authorize = util.promisify(auth.authorize);
 const server_utilities = require('./serverUtilities');
 
-
 function handleServerUncaughtException(err) {
-    let message = `Found an uncaught exception with message: os.EOL ${err.message}.  Stack: ${err.stack} ${os.EOL} Terminating HDB.`;
+    let message = `Found an uncaught exception with message: ${err.message}. ${os.EOL}Stack: ${err.stack} ${os.EOL}Terminating HDB.`;
     console.error(message);
     harper_logger.fatal(message);
     process.exit(1);
@@ -50,7 +49,8 @@ function authHandler(req, resp, done) {
     let user;
 
     //create_authorization_tokens needs to not authorize
-    if (!req.body.operation || (req.body.operation && req.body.operation !== terms.OPERATIONS_ENUM.CREATE_AUTHENTICATION_TOKENS)) {
+    // if (!req.body.operation || (req.body.operation && req.body.operation !== terms.OPERATIONS_ENUM.CREATE_AUTHENTICATION_TOKENS)) {
+    if (req.body.operation !== terms.OPERATIONS_ENUM.CREATE_AUTHENTICATION_TOKENS) {
         p_authorize(req, resp)
             .then(data => {
                 user = data;

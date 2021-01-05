@@ -7,7 +7,7 @@ const fs = require('fs-extra');
 const path = require('path');
 const DEFAULT_CONFIG = require('../../utility/hdbTerms').HDB_SETTINGS_DEFAULT_VALUES;
 
-const serverHandlers = require('../../server/serverHelpers/serverHandler');
+const serverHandlers = require('../../server/serverHelpers/serverHandlers');
 const server_utilities = require('../../server/serverHelpers/serverUtilities');
 const OperationFunctionCaller = require('../../utility/OperationFunctionCaller');
 

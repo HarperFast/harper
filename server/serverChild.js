@@ -36,7 +36,7 @@ const {
     handleServerUncaughtException,
     serverErrorHandler,
     reqBodyValidationHandler
-} = require('./serverHelpers/serverHandler.js');
+} = require('./serverHelpers/serverHandlers.js');
 
 const REQ_MAX_BODY_SIZE = 1024*1024*1024; //this is 1GB in bytes
 const TRUE_COMPARE_VAL = 'TRUE';
