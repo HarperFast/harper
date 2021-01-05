@@ -40,7 +40,7 @@ async function lmdbCreateTable(table_system_data, table_create_obj) {
             let hdb_table_env = await environment_utility.openEnvironment(getSystemSchemaPath(), hdb_terms.SYSTEM_TABLE_NAMES.TABLE_TABLE_NAME);
 
             //add the meta data to system.hdb_table
-            write_utility.insertRecords(hdb_table_env, HDB_TABLE_INFO.hash_attribute, hdb_table_attributes, [table_system_data]);
+            await write_utility.insertRecords(hdb_table_env, HDB_TABLE_INFO.hash_attribute, hdb_table_attributes, [table_system_data]);
             //create attributes for hash attribute created/updated time stamps
 
             await createAttribute(created_time_attr);

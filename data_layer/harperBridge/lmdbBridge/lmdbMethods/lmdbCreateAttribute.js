@@ -59,7 +59,7 @@ async function lmdbCreateAttribute(create_attribute_obj) {
 
         let hdb_attribute_env = await environment_utility.openEnvironment(getSystemSchemaPath(), hdb_terms.SYSTEM_TABLE_NAMES.ATTRIBUTE_TABLE_NAME);
 
-        let {written_hashes, skipped_hashes} = write_utility.insertRecords(hdb_attribute_env, HDB_TABLE_INFO.hash_attribute, hdb_attribute_attributes, [record]);
+        let {written_hashes, skipped_hashes} = await write_utility.insertRecords(hdb_attribute_env, HDB_TABLE_INFO.hash_attribute, hdb_attribute_attributes, [record]);
 
         return returnObject(ACTION, written_hashes, {records:[record]}, skipped_hashes);
     } catch(e){

@@ -8,7 +8,6 @@ const hdb_utils = require('../../../../utility/common_utils');
 const {getTransactionStorePath} = require('../lmdbUtility/initializePaths');
 const path = require('path');
 const search_utility = require('../../../../utility/lmdb/searchUtility');
-const {TransactionCursor} = require("../../../../utility/lmdb/environmentUtility");
 const LMDBTransactionObject = require('../lmdbUtility/LMDBTransactionObject');
 const log = require('../../../../utility/logging/harper_logger');
 
@@ -42,7 +41,7 @@ async function readTransactionLog(read_txn_log_obj){
 
 /**
  *
- * @param {lmdb.Env} env
+ * @param {lmdb.RootDatabase} env
  * @param {[number]} timestamps
  */
 function searchTransactionsByTimestamp(env, timestamps = [0, lmdb_utils.getMicroTime()]){
@@ -54,41 +53,30 @@ function searchTransactionsByTimestamp(env, timestamps = [0, lmdb_utils.getMicro
         timestamps[1] = lmdb_utils.getMicroTime();
     }
 
-    let txn = undefined;
     let results = [];
     try {
-        txn = new TransactionCursor(env, lmdb_terms.TRANSACTIONS_DBI_NAMES_ENUM.TIMESTAMP, false);
+        let timestamp_dbi = env.dbis[lmdb_terms.TRANSACTIONS_DBI_NAMES_ENUM.TIMESTAMP];
 
-        let found = txn.cursor.goToFirst();
-        if(!hdb_utils.isEmpty(found) && timestamps[0] > found.readDoubleBE(0)){
-            let search_value = lmdb_utils.convertKeyValueToWrite(timestamps[0], txn.key_type);
-            found = txn.cursor.goToRange(search_value);
-        }
-
-        for (found; found !== null && found !== undefined; found = txn.cursor.goToNext()) {
-            let key_value = found.readDoubleBE(0);
-
-            if(key_value > timestamps[1]){
-                break;
-            }
-            let txn_record = Object.assign(new LMDBTransactionObject(), JSON.parse(txn.cursor.getCurrentUtf8()));
+        for(let {key, value} of timestamp_dbi.getRange({start: timestamps[0], end: timestamps[1]})){
+            let txn_record = Object.assign(new LMDBTransactionObject(), value);
             results.push(txn_record);
         }
 
-        txn.close();
-        return results;
-    }catch(e) {
-        if (txn !== undefined) {
-            txn.close();
+        let value = timestamp_dbi.get(timestamps[1]);
+        if(value){
+            let txn_record = Object.assign(new LMDBTransactionObject(), value);
+            results.push(txn_record);
         }
 
+        return results;
+    }catch(e) {
         throw e;
     }
 }
 
 /**
  *
- * @param {lmdb.Env} env
+ * @param {lmdb.RootDatabase} env
  * @param {[string]} usernames
  */
 function searchTransactionsByUsername(env, usernames = []){
@@ -96,10 +84,10 @@ function searchTransactionsByUsername(env, usernames = []){
     let results = new Map();
     for(let x = 0; x < usernames.length; x++){
         let username = usernames[x];
-        let user_results = search_utility.equals(env, lmdb_terms.TRANSACTIONS_DBI_NAMES_ENUM.TIMESTAMP, lmdb_terms.TRANSACTIONS_DBI_NAMES_ENUM.USER_NAME, username);
+
         let ids = [];
-        for(let key in user_results){
-            ids.push(Number(key));
+        for(let value of env.dbis[lmdb_terms.TRANSACTIONS_DBI_NAMES_ENUM.USER_NAME].getValues(username)){
+            ids.push(value);
         }
 
         results.set(username, batchSearchTransactions(env, ids));
@@ -110,7 +98,7 @@ function searchTransactionsByUsername(env, usernames = []){
 
 /**
  *
- * @param {lmdb.Env} env
+ * @param {lmdb.RootDatabase} env
  * @param {[string]} hash_values
  * @param {string} hash_attribute
  */
@@ -193,35 +181,23 @@ function loopRecords(transaction, records_attribute, hash_attribute, hashes, res
  * @returns {[LMDBTransactionObject]}
  */
 function batchSearchTransactions(env, ids){
-    let txn = undefined;
     let results = [];
     try {
         //this sorts the ids numerically asc
-        ids.sort((a, b) => a - b);
-        txn = new TransactionCursor(env, lmdb_terms.TRANSACTIONS_DBI_NAMES_ENUM.TIMESTAMP, false);
-
+        let timestamp_dbi = env.dbis[lmdb_terms.TRANSACTIONS_DBI_NAMES_ENUM.TIMESTAMP];
         for(let x = 0; x < ids.length; x++){
             try {
-                let number_id = ids[x];
-                let binary_id = lmdb_utils.convertKeyValueToWrite(number_id, txn.key_type);
-
-                let binary_key = txn.cursor.goToKey(binary_id);
-                if(!hdb_utils.isEmpty(binary_key)){
-                    let txn_record = Object.assign(new LMDBTransactionObject(), JSON.parse(txn.cursor.getCurrentUtf8()));
+                let value = timestamp_dbi.get(ids[x]);
+                if(value){
+                    let txn_record = Object.assign(new LMDBTransactionObject(), value);
                     results.push(txn_record);
                 }
             }catch(e){
                 log.warn(e);
             }
         }
-
-        txn.close();
         return results;
     }catch(e) {
-        if (txn !== undefined) {
-            txn.close();
-        }
-
         throw e;
     }
 }

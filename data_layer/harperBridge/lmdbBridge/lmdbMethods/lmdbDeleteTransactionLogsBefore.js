@@ -2,8 +2,8 @@
 
 const environment_utility = require('../../../../utility/lmdb/environmentUtility');
 const {getTransactionStorePath} = require('../lmdbUtility/initializePaths');
+// eslint-disable-next-line no-unused-vars
 const DeleteBeforeObject = require('../../../DeleteBeforeObject');
-const TransactionCursor = environment_utility.TransactionCursor;
 const path = require('path');
 const lmdb_terms = require('../../../../utility/lmdb/terms');
 const hdb_utils = require('../../../../utility/common_utils');
@@ -30,7 +30,7 @@ async function deleteTransactionLogsBefore(delete_txn_logs_obj){
         let total_results = new DeleteTransactionsBeforeResults();
 
         do {
-                chunk_results = deleteTransactions(env, delete_txn_logs_obj.timestamp);
+                chunk_results = await deleteTransactions(env, delete_txn_logs_obj.timestamp);
                 if(total_results.start_timestamp === undefined){
                         total_results.start_timestamp = chunk_results.start_timestamp;
                 }
@@ -54,53 +54,46 @@ async function deleteTransactionLogsBefore(delete_txn_logs_obj){
  * @param {number} timestamp
  * @returns {DeleteTransactionsBeforeResults}
  */
-function deleteTransactions(env, timestamp){
-        let txn = undefined;
+async function deleteTransactions(env, timestamp){
         let results = new DeleteTransactionsBeforeResults();
         try {
-                txn = new TransactionCursor(env, lmdb_terms.TRANSACTIONS_DBI_NAMES_ENUM.TIMESTAMP, true);
+                let timestamp_dbi = env.dbis[lmdb_terms.TRANSACTIONS_DBI_NAMES_ENUM.TIMESTAMP];
 
-                let found = txn.cursor.goToFirst();
-                if(hdb_utils.isEmpty(found) || timestamp < found.readDoubleBE(0)){
-                        txn.close();
-                        return results;
-                }
-                results.start_timestamp = found.readDoubleBE(0);
-                for (found; found !== null && found !== undefined; found = txn.cursor.goToNext()) {
-                        let key_value = found.readDoubleBE(0);
-
-                        if(key_value >= timestamp){
+                let promise;
+                for(let {key, value: txn_record} of timestamp_dbi.getRange()){
+                        if(key >=timestamp){
                                 break;
                         }
-                        let txn_record = JSON.parse(txn.cursor.getCurrentUtf8());
+
+                        if(results.start_timestamp === undefined){
+                                results.start_timestamp = key;
+                        }
 
                         //delete the transaction record
-                        txn.txn.del(env.dbis[lmdb_terms.TRANSACTIONS_DBI_NAMES_ENUM.TIMESTAMP], found);
+                        promise = timestamp_dbi.remove(key);
 
                         //delete user index entry
                         let user_name = txn_record[lmdb_terms.TRANSACTIONS_DBI_NAMES_ENUM.USER_NAME];
-                        if(!hdb_utils.isEmpty(user_name)){
-                                txn.txn.del(env.dbis[lmdb_terms.TRANSACTIONS_DBI_NAMES_ENUM.USER_NAME], user_name, key_value.toString());
+                        if(!hdb_utils.isEmpty(user_name)) {
+                                promise = env.dbis[lmdb_terms.TRANSACTIONS_DBI_NAMES_ENUM.USER_NAME].remove(user_name, key);
                         }
 
                         //delete each hash value entry
                         for(let k = 0; k < txn_record.hash_values.length; k++){
-                                txn.txn.del(env.dbis[lmdb_terms.TRANSACTIONS_DBI_NAMES_ENUM.HASH_VALUE], txn_record.hash_values[k].toString(), key_value.toString());
+                                promise = env.dbis[lmdb_terms.TRANSACTIONS_DBI_NAMES_ENUM.HASH_VALUE].remove(txn_record.hash_values[k], key);
                         }
 
                         results.transactions_deleted++;
-                        results.end_timestamp = key_value;
+                        results.end_timestamp = key;
                         if(results.transactions_deleted > BATCH_SIZE){
                                 break;
                         }
                 }
+                // we wait for the last promise to finish
+                await promise;
 
-                txn.commit();
                 return results;
         }catch(e) {
-                if (txn !== undefined) {
-                        txn.close();
-                }
 
                 throw e;
         }

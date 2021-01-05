@@ -56,15 +56,15 @@ const HDB_USER = {
 };
 
 describe('test lmdbWriteTransaction module', ()=>{
-    let rw_env_util;
+    //let rw_env_util;
 
     before(async ()=>{
         await fs.remove(BASE_PATH);
-        rw_env_util = environment_utility.__set__('MAP_SIZE', 5*1024*1024*1024);
+       // rw_env_util = environment_utility.__set__('MAP_SIZE', 5*1024*1024*1024);
     });
 
     after(()=>{
-        rw_env_util();
+       // rw_env_util();
     });
 
     describe('test getDisableTxnLogSetting function', ()=>{
@@ -319,15 +319,15 @@ describe('test lmdbWriteTransaction module', ()=>{
             assert.deepStrictEqual(error, undefined);
             assert.notStrictEqual(txn_env, undefined);
 
-            let insert_txn_obj = new LMDBInsertTransactionObject(INSERT_RECORDS, undefined, insert_response.txn_time, INSERT_HASHES);
-            let expected_timestamp_results = test_utils.assignObjecttoNullObject({[insert_response.txn_time]: [JSON.stringify(insert_txn_obj)]});
+            let insert_txn_obj = Object.assign({}, new LMDBInsertTransactionObject(INSERT_RECORDS, undefined, insert_response.txn_time, INSERT_HASHES));
+            let expected_timestamp_results = test_utils.assignObjecttoNullObject({[insert_response.txn_time]: [insert_txn_obj]});
 
             let results = search_util.iterateDBI(txn_env, 'timestamp');
             assert.deepStrictEqual(results, expected_timestamp_results);
 
             let expected_hash_value_results = Object.create(null);
             INSERT_HASHES.forEach(hash=>{
-                expected_hash_value_results[hash] = [insert_response.txn_time.toString()];
+                expected_hash_value_results[hash] = [insert_response.txn_time];
             });
             results = search_util.iterateDBI(txn_env, 'hash_value');
             assert.deepStrictEqual(results, expected_hash_value_results);
@@ -399,21 +399,21 @@ describe('test lmdbWriteTransaction module', ()=>{
             assert.deepStrictEqual(error, undefined);
             assert.notStrictEqual(txn_env, undefined);
 
-            let insert_txn_obj = new LMDBInsertTransactionObject(INSERT_RECORDS, HDB_USER.username, insert_response.txn_time, INSERT_HASHES);
-            let expected_timestamp_results = test_utils.assignObjecttoNullObject({[insert_response.txn_time]: [JSON.stringify(insert_txn_obj)]});
+            let insert_txn_obj = Object.assign({}, new LMDBInsertTransactionObject(INSERT_RECORDS, HDB_USER.username, insert_response.txn_time, INSERT_HASHES));
+            let expected_timestamp_results = test_utils.assignObjecttoNullObject({[insert_response.txn_time]: [insert_txn_obj]});
 
             let results = search_util.iterateDBI(txn_env, 'timestamp');
             assert.deepStrictEqual(results, expected_timestamp_results);
 
             let expected_hash_value_results = Object.create(null);
             INSERT_HASHES.forEach(hash=>{
-                expected_hash_value_results[hash] = [insert_response.txn_time.toString()];
+                expected_hash_value_results[hash] = [insert_response.txn_time];
             });
             results = search_util.iterateDBI(txn_env, 'hash_value');
             assert.deepStrictEqual(results, expected_hash_value_results);
 
             let expected_username_results = Object.create(null);
-            expected_username_results[HDB_USER.username] = [insert_response.txn_time.toString()];
+            expected_username_results[HDB_USER.username] = [insert_response.txn_time];
 
             results = search_util.iterateDBI(txn_env, 'user_name');
             assert.deepStrictEqual(results, expected_username_results);
@@ -444,21 +444,21 @@ describe('test lmdbWriteTransaction module', ()=>{
             assert.deepStrictEqual(error, undefined);
             assert.notStrictEqual(txn_env, undefined);
 
-            let update_txn_obj = new LMDBUpdateTransactionObject(UPDATE_RECORDS, INSERT_RECORDS, HDB_USER.username, update_response.txn_time, INSERT_HASHES);
-            let expected_timestamp_results = test_utils.assignObjecttoNullObject({[update_response.txn_time]: [JSON.stringify(update_txn_obj)]});
+            let update_txn_obj = Object.assign({}, new LMDBUpdateTransactionObject(UPDATE_RECORDS, INSERT_RECORDS, HDB_USER.username, update_response.txn_time, INSERT_HASHES));
+            let expected_timestamp_results = test_utils.assignObjecttoNullObject({[update_response.txn_time]: [update_txn_obj]});
 
             let results = search_util.iterateDBI(txn_env, 'timestamp');
             assert.deepStrictEqual(results, expected_timestamp_results);
 
             let expected_hash_value_results = Object.create(null);
             INSERT_HASHES.forEach(hash=>{
-                expected_hash_value_results[hash] = [update_response.txn_time.toString()];
+                expected_hash_value_results[hash] = [update_response.txn_time];
             });
             results = search_util.iterateDBI(txn_env, 'hash_value');
             assert.deepStrictEqual(results, expected_hash_value_results);
 
             let expected_username_results = Object.create(null);
-            expected_username_results[HDB_USER.username] = [update_response.txn_time.toString()];
+            expected_username_results[HDB_USER.username] = [update_response.txn_time];
 
             results = search_util.iterateDBI(txn_env, 'user_name');
             assert.deepStrictEqual(results, expected_username_results);
@@ -489,21 +489,21 @@ describe('test lmdbWriteTransaction module', ()=>{
             assert.deepStrictEqual(error, undefined);
             assert.notStrictEqual(txn_env, undefined);
 
-            let upsert_txn_obj = new LMDBUpsertTransactionObject(UPSERT_RECORDS, UPDATE_RECORDS, HDB_USER.username, upsert_response.txn_time, INSERT_HASHES);
-            let expected_timestamp_results = test_utils.assignObjecttoNullObject({[upsert_response.txn_time]: [JSON.stringify(upsert_txn_obj)]});
+            let upsert_txn_obj = Object.assign({}, new LMDBUpsertTransactionObject(UPSERT_RECORDS, UPDATE_RECORDS, HDB_USER.username, upsert_response.txn_time, INSERT_HASHES));
+            let expected_timestamp_results = test_utils.assignObjecttoNullObject({[upsert_response.txn_time]: [upsert_txn_obj]});
 
             let results = search_util.iterateDBI(txn_env, 'timestamp');
             assert.deepStrictEqual(results, expected_timestamp_results);
 
             let expected_hash_value_results = Object.create(null);
             INSERT_HASHES.forEach(hash=>{
-                expected_hash_value_results[hash] = [upsert_response.txn_time.toString()];
+                expected_hash_value_results[hash] = [upsert_response.txn_time];
             });
             results = search_util.iterateDBI(txn_env, 'hash_value');
             assert.deepStrictEqual(results, expected_hash_value_results);
 
             let expected_username_results = Object.create(null);
-            expected_username_results[HDB_USER.username] = [upsert_response.txn_time.toString()];
+            expected_username_results[HDB_USER.username] = [upsert_response.txn_time];
 
             results = search_util.iterateDBI(txn_env, 'user_name');
             assert.deepStrictEqual(results, expected_username_results);
@@ -534,21 +534,21 @@ describe('test lmdbWriteTransaction module', ()=>{
             assert.deepStrictEqual(error, undefined);
             assert.notStrictEqual(txn_env, undefined);
 
-            let delete_txn_obj = new LMDBDeleteTransactionObject(INSERT_HASHES, UPDATE_RECORDS, HDB_USER.username, delete_response.txn_time);
-            let expected_timestamp_results = test_utils.assignObjecttoNullObject({[delete_response.txn_time]: [JSON.stringify(delete_txn_obj)]});
+            let delete_txn_obj = Object.assign({}, new LMDBDeleteTransactionObject(INSERT_HASHES, UPDATE_RECORDS, HDB_USER.username, delete_response.txn_time));
+            let expected_timestamp_results = test_utils.assignObjecttoNullObject({[delete_response.txn_time]: [delete_txn_obj]});
 
             let results = search_util.iterateDBI(txn_env, 'timestamp');
             assert.deepStrictEqual(results, expected_timestamp_results);
 
             let expected_hash_value_results = Object.create(null);
             INSERT_HASHES.forEach(hash=>{
-                expected_hash_value_results[hash] = [delete_response.txn_time.toString()];
+                expected_hash_value_results[hash] = [delete_response.txn_time];
             });
             results = search_util.iterateDBI(txn_env, 'hash_value');
             assert.deepStrictEqual(results, expected_hash_value_results);
 
             let expected_username_results = Object.create(null);
-            expected_username_results[HDB_USER.username] = [delete_response.txn_time.toString()];
+            expected_username_results[HDB_USER.username] = [delete_response.txn_time];
 
             results = search_util.iterateDBI(txn_env, 'user_name');
             assert.deepStrictEqual(results, expected_username_results);

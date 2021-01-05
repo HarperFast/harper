@@ -83,7 +83,7 @@ async function chunkDeletes(delete_obj, deletes, schema_table_hash){
         }
 
         try {
-            let result = delete_records(environment, schema_table_hash, ids);
+            let result = await delete_records(environment, schema_table_hash, ids);
             total_results.deleted_hashes = total_results.deleted_hashes.concat(result.deleted);
             total_results.skipped_hashes = total_results.skipped_hashes.concat(result.skipped);
         } catch(err) {

@@ -1,5 +1,6 @@
 'use strict';
 
+// eslint-disable-next-line no-unused-vars
 const UpsertObject = require('../../../data_objects/UpsertObject');
 const insert_update_validate = require('../../bridgeUtility/insertUpdateValidate');
 const lmdb_process_rows = require('../lmdbUtility/lmdbProcessRows');
@@ -19,7 +20,7 @@ module.exports = lmdbUpsertRecords;
 /**
  * Orchestrates the UPSERT of data in LMDB and the creation of new attributes/dbis
  * if they do not already exist.
- * @param {UpsertObject} update_obj
+ * @param {UpsertObject} upsert_obj
  * @returns {{ skipped_hashes: *, written_hashes: *, schema_table: *, new_attributes: *, txn_time: * }}
  */
 async function lmdbUpsertRecords(upsert_obj) {
@@ -47,7 +48,7 @@ async function lmdbUpsertRecords(upsert_obj) {
     let new_attributes = await lmdb_check_new_attributes(upsert_obj.hdb_auth_header, schema_table, attributes);
     let env_base_path = path.join(getBaseSchemaPath(), upsert_obj.schema.toString());
     let environment = await environment_utility.openEnvironment(env_base_path, upsert_obj.table);
-    let lmdb_response = lmdb_upsert_records(environment, schema_table.hash_attribute, attributes, upsert_obj.records);
+    let lmdb_response = await lmdb_upsert_records(environment, schema_table.hash_attribute, attributes, upsert_obj.records);
 
     try {
         await write_transaction(upsert_obj, lmdb_response);
