@@ -137,11 +137,20 @@ describe('Test serverHandlers.js module ', () => {
             assert.ok(test_result.status_code === 500, 'Resp status code should be 500');
             assert.ok(test_result.msg === test_error, 'Resp message should equal custom object');
         })
+
+        it('Should handle error passed as a string', () => {
+            const test_error = "Custom error message!";
+
+            const test_result = serverHandlers_rw.serverErrorHandler(test_error, {}, new TestMockResp());
+
+            assert.ok(test_result.status_code === 500, 'Resp status code should be 500');
+            assert.ok(test_result.msg.error === test_error, 'Resp error message should equal string value');
+        })
     })
 
     describe('reqBodyValidationHandler()',() => {
         it('Should not reject if request is valid',() => {
-            const test_req = {body: {operation: "add_schema"}};
+            const test_req = {body: {operation: "create_schema"}};
             let test_result;
 
             try {
@@ -182,7 +191,7 @@ describe('Test serverHandlers.js module ', () => {
         })
 
         it('Should throw error if request body is a string/not valid JSON',() => {
-            const test_req = { body: "Operation: add_schema" };
+            const test_req = { body: "Operation: create_schema" };
             let test_result;
 
             try {
@@ -239,7 +248,7 @@ describe('Test serverHandlers.js module ', () => {
                 authorization: "BASIC hashyhash"
             },
             body: {
-                operation: 'add_schema'
+                operation: 'create_schema'
             }
         }
         let auth_stub;
@@ -291,7 +300,7 @@ describe('Test serverHandlers.js module ', () => {
     describe('handlePostRequest()', () => {
         const test_op_result = "op result";
         const test_op = "chooseOperation";
-        const test_req = {body: {operation: "add_schema"}};
+        const test_req = {body: {operation: "create_schema"}};
 
         before(() => {
             choose_op_stub = sandbox.stub(serverUtilities, 'chooseOperation').returns(test_op);

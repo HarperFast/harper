@@ -74,7 +74,6 @@ async function processLocalTransaction(req, operation_function) {
         }
     } catch (e) {
         harper_logger.error(e);
-        throw e;
     }
 
     let post_op_function = (terms.CLUSTER_OPERATIONS[req.body.operation] === undefined ? null : transact_to_clustering_utils.postOperationHandler);
@@ -100,11 +99,6 @@ async function processLocalTransaction(req, operation_function) {
         return data;
     } catch(error) {
         harper_logger.info(error);
-
-        if (error === HTTP_STATUS_CODES.FORBIDDEN) {
-            throw handleHDBError((error, UNAUTHORIZED_TEXT, hdb_errors.HTTP_STATUS_CODES.FORBIDDEN));
-        }
-
         throw error;
     }
 }
@@ -119,12 +113,6 @@ module.exports = {
 };
 
 function chooseOperation(json) {
-    //TODO - Is this still needed?  Not sure we should ever get to this point w/ new preValidation hook checking for JSON/op in body
-    if (json === undefined || json === null) {
-        harper_logger.error(`Invalid null or undefined message body parameter found`);
-        throw handleHDBError(new Error(), 'Invalid operation', hdb_errors.HTTP_STATUS_CODES.BAD_REQUEST);
-    }
-
     let getOpResult;
     try {
         getOpResult = getOperationFunction(json);
@@ -214,14 +202,6 @@ async function catchup(req) {
             harper_logger.error(e);
         }
     }
-}
-
-function nullOperation(json, callback) {
-    callback('Invalid operation');
-}
-
-async function nullOperationAwait(json) {
-    throw new Error('Invalid operation');
 }
 
 async function signalJob(json) {

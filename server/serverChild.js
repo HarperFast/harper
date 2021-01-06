@@ -8,6 +8,7 @@ const hdb_util = require('../utility/common_utils');
 const util = require('util');
 
 const harper_logger = require('../utility/logging/harper_logger');
+const { hdb_errors, handleHDBError } = require('../utility/errors/hdbError');
 const fs = require('fs');
 const fastify = require('fastify');
 
@@ -165,8 +166,10 @@ async function buildServer(is_https) {
         }
         return app;
     } catch(e) {
+        const err_msg = `Error configuring ${is_https ? 'HTTPS' : 'HTTP'} server`;
         harper_logger.error(`Error configuring ${is_https ? 'HTTPS' : 'HTTP'} server`);
         harper_logger.error(e);
+        throw handleHDBError(e, err_msg);
     }
 }
 
