@@ -31,8 +31,6 @@ const configuration = require('../../server/configuration');
 
 const operation_function_caller = require(`../../utility/OperationFunctionCaller`);
 
-const UNAUTHORIZED_TEXT = 'You are not authorized to perform the operation specified';
-
 const p_search_search_by_hash = util.promisify(search.searchByHash);
 const p_search_search_by_value = util.promisify(search.searchByValue);
 const p_search_search = util.promisify(search.search);
@@ -108,8 +106,7 @@ const OPERATION_FUNCTION_MAP = initializeOperationFunctionMap();
 module.exports = {
     chooseOperation,
     getOperationFunction,
-    processLocalTransaction,
-    UNAUTHORIZED_TEXT
+    processLocalTransaction
 };
 
 function chooseOperation(json) {

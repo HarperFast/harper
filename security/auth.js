@@ -42,7 +42,6 @@ passport.deserializeUser(function (user, done) {
     });*/
 
 function authorize(req, res, next) {
-    let found_user = null;
     let strategy;
     let token;
     if (req.headers && req.headers.authorization) {
@@ -58,26 +57,25 @@ function authorize(req, res, next) {
         if (!user) {
             return next("User not found");
         }
-        found_user = user;
         return next(null, user);
     }
 
     switch (strategy) {
         case 'Basic':
-            passport.authenticate('basic',{ session: false },function (err, user) {
+            passport.authenticate('basic',{ session: false },(err, user) => {
                 handleResponse(err, user);
             })(req, res, next);
             break;
         case 'Bearer':
             if(req.body && req.body.operation && req.body.operation === hdb_terms.OPERATIONS_ENUM.REFRESH_OPERATION_TOKEN){
-                token_authentication.validateRefreshToken(token).then((user)=>{
+                token_authentication.validateRefreshToken(token).then(user => {
                     req.body.refresh_token = token;
                     next(null, user);
                 }).catch(e=>{
                     next(e);
                 });
             }else {
-                token_authentication.validateOperationToken(token).then((user) => {
+                token_authentication.validateOperationToken(token).then(user => {
                     next(null, user);
                 }).catch(e => {
                     next(e);
@@ -85,13 +83,11 @@ function authorize(req, res, next) {
             }
             break;
         default:
-            passport.authenticate('local', { session: false },function (err, user) {
+            passport.authenticate('local',{ session: false },function (err, user) {
                 handleResponse(err, user);
             })(req, res, next);
             break;
-
     }
-    // next(null, found_user);
 }
 
 function checkPermissions(check_permission_obj, callback) {

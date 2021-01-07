@@ -49,11 +49,10 @@ function authHandler(req, resp, done) {
     let user;
 
     //create_authorization_tokens needs to not authorize
-    // if (!req.body.operation || (req.body.operation && req.body.operation !== terms.OPERATIONS_ENUM.CREATE_AUTHENTICATION_TOKENS)) {
     if (req.body.operation !== terms.OPERATIONS_ENUM.CREATE_AUTHENTICATION_TOKENS) {
         p_authorize(req, resp)
-            .then(data => {
-                user = data;
+            .then(user_data => {
+                user = user_data;
                 req.body.hdb_user = user;
                 req.body.hdb_auth_header = req.headers.authorization;
                 done();
