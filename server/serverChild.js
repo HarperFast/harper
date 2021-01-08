@@ -50,17 +50,16 @@ const PROPS_SERVER_KEEP_ALIVE_TIMEOUT_KEY = HDB_SETTINGS_NAMES.SERVER_KEEP_ALIVE
 const PROPS_HEADER_TIMEOUT_KEY = HDB_SETTINGS_NAMES.SERVER_HEADERS_TIMEOUT_KEY;
 const PROPS_PRIVATE_KEY = HDB_SETTINGS_NAMES.PRIVATE_KEY_KEY;
 const PROPS_CERT_KEY = HDB_SETTINGS_NAMES.CERT_KEY;
-const PROPS_HTTP_ON_KEY = HDB_SETTINGS_NAMES.HTTP_ENABLED_KEY;
+// const PROPS_HTTP_ON_KEY = HDB_SETTINGS_NAMES.HTTP_ENABLED_KEY;
 const PROPS_HTTP_SECURE_ON_KEY = HDB_SETTINGS_NAMES.HTTP_SECURE_ENABLED_KEY;
-const PROPS_HTTP_PORT_KEY = HDB_SETTINGS_NAMES.HTTP_PORT_KEY;
-const PROPS_HTTP_SECURE_PORT_KEY = HDB_SETTINGS_NAMES.HTTP_SECURE_PORT_KEY;
+// const PROPS_HTTP_PORT_KEY = HDB_SETTINGS_NAMES.HTTP_PORT_KEY;
+const PROPS_SERVER_PORT_KEY = HDB_SETTINGS_NAMES.SERVER_PORT_KEY;
 
 const DEFAULT_SERVER_TIMEOUT = HDB_SETTINGS_DEFAULT_VALUES[PROPS_SERVER_TIMEOUT_KEY];
 const DEFAULT_KEEP_ALIVE_TIMEOUT = HDB_SETTINGS_DEFAULT_VALUES[PROPS_SERVER_KEEP_ALIVE_TIMEOUT_KEY];
 const DEFAULT_HEADER_TIMEOUT = HDB_SETTINGS_DEFAULT_VALUES[PROPS_HEADER_TIMEOUT_KEY];
 
-let httpServer = undefined;
-let secureServer = undefined;
+let hdbServer = undefined;
 let server_connections = {};
 
 async function childServer() {
@@ -84,22 +83,12 @@ async function childServer() {
     await setUp();
 
     const props_http_secure_on = env.get(PROPS_HTTP_SECURE_ON_KEY);
-    const props_http_on = env.get(PROPS_HTTP_ON_KEY);
+    const is_https = props_http_secure_on && (props_http_secure_on === true || props_http_secure_on.toUpperCase() === TRUE_COMPARE_VAL);
 
-    if (props_http_secure_on && (props_http_secure_on === true || props_http_secure_on.toUpperCase() === TRUE_COMPARE_VAL)) {
-        try {
-            secureServer = await buildServer(true);
-        } catch(err) {
-            harper_logger.error(err);
-        }
-    }
-
-    if (props_http_on && (props_http_on === true || props_http_on.toUpperCase() === TRUE_COMPARE_VAL)) {
-        try {
-            httpServer = await buildServer(false);
-        } catch(err) {
-            harper_logger.error(err);
-        }
+    try {
+        hdbServer = await buildServer(is_https);
+    } catch(err) {
+        harper_logger.error(err);
     }
 }
 
@@ -147,23 +136,13 @@ async function buildServer(is_https) {
     // });
 
     try {
-        if (is_https) {
-            harper_logger.debug(`child process starting up https server.`);
+        harper_logger.debug(`child process starting up ${is_https ? 'HTTPS' : 'HTTP'} server.`);
 
-            await app.listen(env.get(PROPS_HTTP_SECURE_PORT_KEY), '::')
-                .then(address => {
-                    harper_logger.info(`HarperDB ${pjson.version} HTTPS Server running on ${address}`);
-                    signalling.signalChildStarted();
-                });
-        } else {
-            harper_logger.debug(`child process starting up http server.`);
-
-            await app.listen(env.get(PROPS_HTTP_PORT_KEY), '::')
-                .then(address => {
-                    harper_logger.info(`HarperDB ${pjson.version} HTTP Server running on ${address}`);
-                    signalling.signalChildStarted();
-                });
-        }
+        await app.listen(env.get(PROPS_SERVER_PORT_KEY), '::')
+            .then(address => {
+                harper_logger.info(`HarperDB ${pjson.version} HTTPS Server running on ${address}`);
+                signalling.signalChildStarted();
+            });
         return app;
     } catch(e) {
         const err_msg = `Error configuring ${is_https ? 'HTTPS' : 'HTTP'} server`;
@@ -222,7 +201,7 @@ function getHeaderTimeoutConfig() {
     return env.get(PROPS_HEADER_TIMEOUT_KEY) ? env.get(PROPS_HEADER_TIMEOUT_KEY) : DEFAULT_HEADER_TIMEOUT;
 }
 
-async function setUp(){
+async function setUp() {
     try {
         harper_logger.trace('Configuring child process.');
         await p_schema_to_global();
@@ -269,7 +248,7 @@ async function handleServerMessage(msg) {
     }
 }
 
-async function syncSchemaMetadata(msg){
+async function syncSchemaMetadata(msg) {
     try{
         if (global.hdb_schema !== undefined && typeof global.hdb_schema === 'object' && msg.operation !== undefined) {
 
@@ -318,7 +297,7 @@ async function syncSchemaMetadata(msg){
 
 async function shutDown(force_bool) {
     harper_logger.debug(`Calling shutdown`);
-    if (httpServer || secureServer) {
+    if (hdbServer) {
         //TODO - continue digging on whether or not this is necessary w/ Fastify. It seems like connections are being
         // handled internally on fastify.close but need to do more research to confirm.  In old hdb_express, we were not
         // using the force_bool in the method so also dig more to understand what that might have been used for in past.
@@ -333,20 +312,12 @@ async function shutDown(force_bool) {
             harper_logger.info(`Timeout occurred during client disconnect.  Took longer than ${terms.RESTART_TIMEOUT_MS}ms.`);
             hdb_util.callProcessSend({type: terms.CLUSTER_MESSAGE_TYPE_ENUM.CHILD_STOPPED, pid: process.pid});
         }, terms.RESTART_TIMEOUT_MS);
-        if (httpServer) {
+        if (hdbServer) {
             try {
-                await httpServer.close();
-                harper_logger.debug(`Process pid:${process.pid} - http server closed`);
-            } catch(err) {
-                harper_logger.debug(`Process pid:${process.pid} - error closing http server - ${err}`);
-            }
-        }
-        if (secureServer) {
-            try {
-                await secureServer.close();
-                harper_logger.debug(`Process pid:${process.pid} - https server closed`);
+                await hdbServer.close();
+                harper_logger.debug(`Process pid:${process.pid} - server closed`);
             } catch (err) {
-                harper_logger.debug(`Process pid:${process.pid} - error closing https server - ${err}`);
+                harper_logger.debug(`Process pid:${process.pid} - error closing server - ${err}`);
             }
         }
         harper_logger.info(`Process pid:${process.pid} - Work completed, shutting down`);
