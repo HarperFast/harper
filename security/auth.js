@@ -42,7 +42,6 @@ passport.deserializeUser(function (user, done) {
     });*/
 
 function authorize(req, res, next) {
-    let found_user = null;
     let strategy;
     let token;
     if (req.headers && req.headers.authorization) {
@@ -51,43 +50,32 @@ function authorize(req, res, next) {
         token = split_auth_header[1];
     }
 
-    function handleResponse(err, user, info) {
+    function handleResponse(err, user) {
         if (err) {
             return next(err);
         }
         if (!user) {
             return next("User not found");
         }
-        if (req.logIn) {
-            req.logIn(user, function (err_login) {
-                if (err_login) {
-                    return next(err_login);
-                }
-                found_user = user;
-                return next(null, user);
-            });
-        } else {
-            found_user = user;
-            return next(null, user);
-        }
+        return next(null, user);
     }
 
     switch (strategy) {
         case 'Basic':
-            passport.authenticate('basic', function (err, user, info) {
-                handleResponse(err, user, info);
+            passport.authenticate('basic',{ session: false },(err, user) => {
+                handleResponse(err, user);
             })(req, res, next);
             break;
         case 'Bearer':
             if(req.body && req.body.operation && req.body.operation === hdb_terms.OPERATIONS_ENUM.REFRESH_OPERATION_TOKEN){
-                token_authentication.validateRefreshToken(token).then((user)=>{
+                token_authentication.validateRefreshToken(token).then(user => {
                     req.body.refresh_token = token;
                     next(null, user);
                 }).catch(e=>{
                     next(e);
                 });
             }else {
-                token_authentication.validateOperationToken(token).then((user) => {
+                token_authentication.validateOperationToken(token).then(user => {
                     next(null, user);
                 }).catch(e => {
                     next(e);
@@ -95,14 +83,11 @@ function authorize(req, res, next) {
             }
             break;
         default:
-            passport.authenticate('local', function (err, user, info) {
-                handleResponse(err, user, info);
+            passport.authenticate('local',{ session: false },function (err, user) {
+                handleResponse(err, user);
             })(req, res, next);
             break;
-
     }
-    return found_user;
-
 }
 
 function checkPermissions(check_permission_obj, callback) {

@@ -432,12 +432,98 @@ const TEST_NON_SU_ROLE = {
     "role": "test_role"
 };
 
+let TEST_JSON_NON_SU = {
+    "operation": "insert",
+    "schema": "dev",
+    "table": "dog",
+    "records": [
+        {
+            "name": "Harper",
+            "breed": "Mutt",
+            "id": "111",
+            "age": 5
+        },
+        {
+            "name": "Penny",
+            "breed": "Mutt",
+            "id": "333",
+            "age": 5
+        }
+    ],
+    "hdb_user": {
+        "active": true,
+        "role": {
+            "id": "9c9aae33-4d1d-40b5-a52e-bbbc1b2e2ba6",
+            "permission": {
+                "super_user": false,
+                "dev": {
+                    "tables": {
+                        "dog": {
+                            "read": true,
+                            "insert": true,
+                            "update": true,
+                            "delete": true,
+                            "attribute_permissions": []
+                        }
+                    }
+                }
+            },
+            "role": "no_perms"
+        },
+        "username": "bad_user_2"
+    }
+};
+
+let TEST_JSON_SUPER_USER = {
+    "operation": "insert",
+    "schema": "dev",
+    "table": "dog",
+    "records": [
+        {
+            "name": "Harper",
+            "breed": "Mutt",
+            "id": "111",
+            "age": 5
+        },
+        {
+            "name": "Penny",
+            "breed": "Mutt",
+            "id": "333",
+            "age": 5
+        }
+    ],
+    "hdb_user": {
+        "active": true,
+        "role": {
+            "id": "9c9aae33-4d1d-40b5-a52e-bbbc1b2e2ba6",
+            "permission": {
+                "super_user": true,
+                "dev": {
+                    "tables": {
+                        "dog": {
+                            "read": true,
+                            "insert": true,
+                            "update": true,
+                            "delete": true,
+                            "attribute_permissions": []
+                        }
+                    }
+                }
+            },
+            "role": "no_perms"
+        },
+        "username": "bad_user_2"
+    }
+}
+
 
 module.exports = {
     TEST_DATA_AGGR,
     TEST_DATA_CAT,
     TEST_DATA_DOG,
     TEST_DATA_LONGTEXT,
+    TEST_JSON_NON_SU,
+    TEST_JSON_SUPER_USER,
     TEST_NON_SU_ROLE,
     TEST_SCHEMA_DOG_BREED
 };

@@ -3,17 +3,12 @@
 const test_utils = require('../test_utils');
 
 const rewire = require('rewire');
-const process = require('process');
-const env = require('../../utility/environment/environmentManager');
-const fastify = require('fastify');
 const fs = require('fs-extra');
 const path = require('path');
-const token_auth = rewire('../../security/tokenAuthentication');
-const hdb_error = require('../../utility/errors/hdbError').handleHDBError;
 const DEFAULT_CONFIG = require('../../utility/hdbTerms').HDB_SETTINGS_DEFAULT_VALUES;
 
-const auth = require('../../security/auth');
-const server_utilities = require('../../server/serverUtilities');
+const serverHandlers = require('../../server/serverHelpers/serverHandlers');
+const server_utilities = require('../../server/serverHelpers/serverUtilities');
 const OperationFunctionCaller = require('../../utility/OperationFunctionCaller');
 
 const KEYS_PATH = path.join(test_utils.getMockFSPath(), 'utility/keys');
@@ -36,33 +31,28 @@ const { expect } = chai;
 const sinon = require('sinon');
 const sandbox = sinon.createSandbox();
 
+let serverChild_rw;
 let handlePostRequest_spy;
 let callOperation_stub;
 let auth_stub;
 let chooseOp_stub;
-let serverChild_rw;
 
 const test_op_resp = "table 'dev.dogz' successfully created.";
 const test_cert_val = test_utils.getHTTPSCredentials().cert;
 const test_key_val = test_utils.getHTTPSCredentials().key;
 
-function setupServerTest() {
-    serverChild_rw = rewire('../../server/serverChild');
-    const handlePostRequest_rw = serverChild_rw.__get__('handlePostRequest');
-    handlePostRequest_spy = sandbox.spy(handlePostRequest_rw);
-    serverChild_rw.__set__('handlePostRequest', handlePostRequest_spy);
-}
-
 describe('Test serverChild.js', () => {
     before(() => {
+        serverChild_rw = rewire('../../server/serverChild');
         test_utils.preTestPrep();
         fs.mkdirpSync(KEYS_PATH);
 
         fs.writeFileSync(PRIVATE_KEY_PATH, test_key_val);
         fs.writeFileSync(CERTIFICATE_PATH, test_cert_val);
+        handlePostRequest_spy = sandbox.spy(serverHandlers, 'handlePostRequest');
         callOperation_stub = sandbox.stub(OperationFunctionCaller, 'callOperationFunctionAsAwait').resolves(test_op_resp);
-        auth_stub = sandbox.stub(auth, 'authorize').callsFake((req, res, next) => next(null, {}));
-        chooseOp_stub = sandbox.stub(server_utilities, 'chooseOperation').callsFake(({}, callback) => callback(null, {}));
+        auth_stub = sandbox.stub(serverHandlers, 'authHandler').callsFake((req, res, done) => done());
+        chooseOp_stub = sandbox.stub(server_utilities, 'chooseOperation').callsFake(() => {});
     })
 
     afterEach(async() => {
@@ -82,9 +72,9 @@ describe('Test serverChild.js', () => {
 
     describe('exported serverChild method', () => {
 
-        beforeEach(() => {
-            setupServerTest();
-        })
+        // before(() => {
+        //     setupServerTest();
+        // })
 
         it('should build http and https server instances when env variables set to true', async() => {
             await serverChild_rw();
@@ -370,7 +360,7 @@ describe('Test serverChild.js', () => {
             })
 
             expect(test_response.statusCode).to.equal(400);
-            expect(test_response.json().message).to.equal("Body cannot be empty when content-type is set to 'application/json'");
+            expect(test_response.json().error).to.equal("Body cannot be empty when content-type is set to 'application/json'");
         })
 
         it('should return 500 error for request from origin not included in CORS whitelist',async() => {
@@ -396,7 +386,7 @@ describe('Test serverChild.js', () => {
             })
 
             expect(test_response.statusCode).to.equal(500);
-            expect(test_response.json().message).to.equal("domain https://google.com is not whitelisted");
+            expect(test_response.json().error).to.equal("domain https://google.com is not whitelisted");
         })
 
         it('should return resp with 200 for request from origin included in CORS whitelist',async() => {

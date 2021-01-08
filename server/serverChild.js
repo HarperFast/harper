@@ -5,18 +5,14 @@ const env = require('../utility/environment/environmentManager');
 env.initSync();
 const terms = require('../utility/hdbTerms');
 const hdb_util = require('../utility/common_utils');
-const os = require('os');
 const util = require('util');
 
 const harper_logger = require('../utility/logging/harper_logger');
+const { hdb_errors, handleHDBError } = require('../utility/errors/hdbError');
 const fs = require('fs');
 const fastify = require('fastify');
-const auth = require('../security/auth');
-const p_authorize = util.promisify(auth.authorize);
 
 const pjson = require(`${__dirname}/../package.json`);
-const server_utilities = require('./serverUtilities');
-const p_choose_operation = util.promisify(server_utilities.chooseOperation);
 const fastify_cors = require('fastify-cors');
 const fastify_compress = require('fastify-compress');
 const fastify_static = require('fastify-static');
@@ -27,14 +23,21 @@ const clean_lmdb = require('../utility/lmdb/cleanLMDBMap');
 
 const signalling = require('../utility/signalling');
 const guidePath = require('path');
-const hdb_errors = require('../utility/errors/commonErrors');
-const PermissionResponseObject = require('../security/data_objects/PermissionResponseObject');
+
 const global_schema = require('../utility/globalSchema');
 const user_schema = require('../security/user');
 const job_runner = require('./jobRunner');
 const hdb_license = require('../utility/registration/hdb_license');
 
 const p_schema_to_global = util.promisify(global_schema.setSchemaDataToGlobal);
+
+const {
+    authHandler,
+    handlePostRequest,
+    handleServerUncaughtException,
+    serverErrorHandler,
+    reqBodyValidationHandler
+} = require('./serverHelpers/serverHandlers.js');
 
 const REQ_MAX_BODY_SIZE = 1024*1024*1024; //this is 1GB in bytes
 const TRUE_COMPARE_VAL = 'TRUE';
@@ -84,11 +87,19 @@ async function childServer() {
     const props_http_on = env.get(PROPS_HTTP_ON_KEY);
 
     if (props_http_secure_on && (props_http_secure_on === true || props_http_secure_on.toUpperCase() === TRUE_COMPARE_VAL)) {
-        secureServer = await buildServer(true);
+        try {
+            secureServer = await buildServer(true);
+        } catch(err) {
+            harper_logger.error(err);
+        }
     }
 
     if (props_http_on && (props_http_on === true || props_http_on.toUpperCase() === TRUE_COMPARE_VAL)) {
-        httpServer = await buildServer(false);
+        try {
+            httpServer = await buildServer(false);
+        } catch(err) {
+            harper_logger.error(err);
+        }
     }
 }
 
@@ -97,6 +108,9 @@ async function buildServer(is_https) {
     const app = fastify(server_opts);
     //Fastify does not set this property in the initial app construction
     app.server.headersTimeout = getHeaderTimeoutConfig();
+
+    //set top-level error handler for server
+    app.setErrorHandler(serverErrorHandler);
 
     const cors_options = getCORSOpts();
     if (cors_options) {
@@ -113,9 +127,14 @@ async function buildServer(is_https) {
         return res.sendFile('index.html');
     });
 
-    app.post('/', async function (req, res) {
-        await handlePostRequest(req, res);
-    });
+    app.post('/', {
+            preValidation: [reqBodyValidationHandler, authHandler]
+        },
+        async function (req, res) {
+            //if no error is thrown below, the response 'data' returned from the handler will be returned with 200/OK code
+            return await handlePostRequest(req);
+        }
+    );
 
     //TODO - revisit during shutDown story - this info may be available via Fastify instance
     //app.server.on('connection', function(socket) {
@@ -147,7 +166,10 @@ async function buildServer(is_https) {
         }
         return app;
     } catch(e) {
+        const err_msg = `Error configuring ${is_https ? 'HTTPS' : 'HTTP'} server`;
+        harper_logger.error(`Error configuring ${is_https ? 'HTTPS' : 'HTTP'} server`);
         harper_logger.error(e);
+        throw handleHDBError(e, err_msg);
     }
 }
 
@@ -212,48 +234,6 @@ async function setUp(){
     }
 }
 
-async function handlePostRequest(req, res) {
-    //TODO - auth feature will move to a plugin in follow-up JIRA
-    let user;
-    let operation_function;
-    try {
-        //create_authorization_tokens needs to not authorize
-        if (!req.body.operation || (req.body.operation && req.body.operation !== terms.OPERATIONS_ENUM.CREATE_AUTHENTICATION_TOKENS)) {
-            user = await p_authorize(req, res);
-        }
-    } catch(err){
-        harper_logger.warn(err);
-        harper_logger.warn(`{"ip":"${req.socket.remoteAddress}", "error":"${err.stack}"`);
-        if (typeof err === 'string') {
-            return res.status(hdb_errors.HTTP_STATUS_CODES.UNAUTHORIZED).send({error: err});
-        }
-        return res.status(hdb_errors.HTTP_STATUS_CODES.UNAUTHORIZED).send({error:err.message});
-    }
-
-    req.body.hdb_user = user;
-    req.body.hdb_auth_header = req.headers.authorization;
-
-    try {
-        operation_function = await p_choose_operation(req.body);
-    } catch(error){
-        harper_logger.error(error);
-        if (error instanceof PermissionResponseObject) {
-            return res.status(hdb_errors.HTTP_STATUS_CODES.FORBIDDEN).send(error);
-        }
-        if (error.http_resp_code) {
-            if (typeof error.http_resp_msg === 'string') {
-                return res.status(error.http_resp_code).send({error: error.http_resp_msg});
-            }
-            return res.status(error.http_resp_code).send(error.http_resp_msg);
-        }
-        if (typeof error === 'string') {
-            return res.status(hdb_errors.HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR).send({error: error});
-        }
-        return res.status(hdb_errors.HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR).send(error);
-    }
-    server_utilities.processLocalTransaction(req, res, operation_function, function () {});
-}
-
 async function handleServerMessage(msg) {
     switch (msg.type) {
         case 'schema':
@@ -289,34 +269,27 @@ async function handleServerMessage(msg) {
     }
 }
 
-function handleServerUncaughtException(err) {
-    let message = `Found an uncaught exception with message: os.EOL ${err.message}.  Stack: ${err.stack} ${os.EOL} Terminating HDB.`;
-    console.error(message);
-    harper_logger.fatal(message);
-    process.exit(1);
-}
-
 async function syncSchemaMetadata(msg){
     try{
-        if(global.hdb_schema !== undefined && typeof global.hdb_schema === 'object' && msg.operation !== undefined){
+        if (global.hdb_schema !== undefined && typeof global.hdb_schema === 'object' && msg.operation !== undefined) {
 
             switch (msg.operation.operation) {
                 case 'drop_schema':
                     delete global.hdb_schema[msg.operation.schema];
                     break;
                 case 'drop_table':
-                    if(global.hdb_schema[msg.operation.schema] !== undefined){
+                    if (global.hdb_schema[msg.operation.schema] !== undefined) {
                         delete global.hdb_schema[msg.operation.schema][msg.operation.table];
                     }
                     break;
                 case 'create_schema':
-                    if(global.hdb_schema[msg.operation.schema] === undefined){
+                    if (global.hdb_schema[msg.operation.schema] === undefined) {
                         global.hdb_schema[msg.operation.schema] = {};
                     }
                     break;
                 case 'create_table':
                 case 'create_attribute':
-                    if(global.hdb_schema[msg.operation.schema] === undefined){
+                    if (global.hdb_schema[msg.operation.schema] === undefined) {
                         global.hdb_schema[msg.operation.schema] = {};
                     }
 
@@ -324,7 +297,7 @@ async function syncSchemaMetadata(msg){
                         await schema_describe.describeTable({schema: msg.operation.schema, table: msg.operation.table});
                     break;
                 default:
-                    global_schema.schemaSignal((err) => {
+                    global_schema.schemaSignal(err => {
                         if (err) {
                             harper_logger.error(err);
                         }
@@ -332,13 +305,13 @@ async function syncSchemaMetadata(msg){
                     break;
             }
         } else{
-            global_schema.schemaSignal((err) => {
+            global_schema.schemaSignal(err => {
                 if (err) {
                     harper_logger.error(err);
                 }
             });
         }
-    } catch(e){
+    } catch(e) {
         harper_logger.error(e);
     }
 }
