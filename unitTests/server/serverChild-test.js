@@ -57,10 +57,10 @@ describe('Test serverChild.js', () => {
 
     afterEach(async() => {
         test_utils.preTestPrep();
-        const http = serverChild_rw.__get__('httpServer');
-        if (http) await http.close();
-        const https = serverChild_rw.__get__('secureServer');
-        if (https) await https.close();
+        const server = serverChild_rw.__get__('hdbServer');
+        if (server) {
+            await server.close();
+        }
         sandbox.resetHistory();
     })
 
@@ -76,159 +76,165 @@ describe('Test serverChild.js', () => {
         //     setupServerTest();
         // })
 
-        it('should build http and https server instances when env variables set to true', async() => {
-            await serverChild_rw();
-            const http_server = serverChild_rw.__get__('httpServer');
-            const secure_server = serverChild_rw.__get__('secureServer');
-
-            expect(http_server).to.not.be.undefined;
-            expect(http_server.server.constructor.name).to.equal('Server');
-            expect(http_server.initialConfig.https).to.be.undefined;
-            expect(secure_server).to.not.be.undefined;
-            expect(secure_server.server.constructor.name).to.equal('Server');
-            expect(secure_server.server.key).to.be.instanceOf(Buffer);
-            expect(secure_server.server.cert).to.be.instanceOf(Buffer);
-            expect(secure_server.initialConfig.https).to.be.true;
-        })
-
-        it('should build http and https server instances with started and listening state equal to true', async() => {
-            await serverChild_rw();
-            const http_server = serverChild_rw.__get__('httpServer');
-            const secure_server = serverChild_rw.__get__('secureServer');
-
-            const state_key = Object.getOwnPropertySymbols(http_server).find((s => String(s) === "Symbol(fastify.state)"))
-            expect(http_server[state_key].started).to.be.true;
-            expect(http_server[state_key].listening).to.be.true;
-            expect(secure_server[state_key].started).to.be.true;
-            expect(secure_server[state_key].listening).to.be.true;
-        })
-
-        it('should build http and https server instances with mixed cap boolean spellings', async() => {
-            const test_config_settings = {
-                http_enabled: 'True',
-                https_enabled: 'TRUe'
-            }
-
+        it('should build HTTPS server when HTTPS_ON set to true', async() => {
+            const test_config_settings = { https_enabled: true }
             test_utils.preTestPrep(test_config_settings);
             serverChild_rw = rewire('../../server/serverChild');
 
             await serverChild_rw();
-            const http_server = serverChild_rw.__get__('httpServer');
-            const secure_server = serverChild_rw.__get__('secureServer');
+            const hdb_server = serverChild_rw.__get__('hdbServer');
 
-            expect(http_server).to.not.be.undefined;
-            expect(http_server.server.constructor.name).to.equal('Server');
-            expect(http_server.initialConfig.https).to.be.undefined;
-            expect(secure_server).to.not.be.undefined;
-            expect(secure_server.server.constructor.name).to.equal('Server');
-            expect(secure_server.server.key).to.be.instanceOf(Buffer);
-            expect(secure_server.server.cert).to.be.instanceOf(Buffer);
-            expect(secure_server.initialConfig.https).to.be.true;
+            expect(hdb_server).to.not.be.undefined;
+            expect(hdb_server.server.constructor.name).to.equal('Server');
+            expect(hdb_server.server.key).to.be.instanceOf(Buffer);
+            expect(hdb_server.server.cert).to.be.instanceOf(Buffer);
+            expect(hdb_server.initialConfig.https).to.be.true;
+        })
+
+        it('should build HTTP server when HTTPS_ON set to false', async() => {
+            const test_config_settings = { https_enabled: false }
+            test_utils.preTestPrep(test_config_settings);
+            serverChild_rw = rewire('../../server/serverChild');
+
+            await serverChild_rw();
+            const hdb_server = serverChild_rw.__get__('hdbServer');
+
+            expect(hdb_server).to.not.be.undefined;
+            expect(hdb_server.server.constructor.name).to.equal('Server');
+            expect(hdb_server.initialConfig.https).to.be.undefined;
+        })
+
+        it('should build HTTPS server instance with started and listening state equal to true', async() => {
+            const test_config_settings = { https_enabled: true }
+            test_utils.preTestPrep(test_config_settings);
+            serverChild_rw = rewire('../../server/serverChild');
+
+            await serverChild_rw();
+            const hdb_server = serverChild_rw.__get__('hdbServer');
+
+            const state_key = Object.getOwnPropertySymbols(hdb_server).find((s => String(s) === "Symbol(fastify.state)"))
+            expect(hdb_server[state_key].started).to.be.true;
+            expect(hdb_server[state_key].listening).to.be.true;
+        })
+
+        it('should build HTTP server instance with started and listening state equal to true', async() => {
+            const test_config_settings = { https_enabled: false }
+            test_utils.preTestPrep(test_config_settings);
+            serverChild_rw = rewire('../../server/serverChild');
+
+            await serverChild_rw();
+            const hdb_server = serverChild_rw.__get__('hdbServer');
+
+            const state_key = Object.getOwnPropertySymbols(hdb_server).find((s => String(s) === "Symbol(fastify.state)"))
+            expect(hdb_server[state_key].started).to.be.true;
+            expect(hdb_server[state_key].listening).to.be.true;
+        })
+
+        it('should build HTTPS server instances with mixed cap boolean spelling', async() => {
+            const test_config_settings = { https_enabled: 'TRUe' }
+            test_utils.preTestPrep(test_config_settings);
+            serverChild_rw = rewire('../../server/serverChild');
+
+            await serverChild_rw();
+            const hdb_server = serverChild_rw.__get__('hdbServer');
+
+            expect(hdb_server).to.not.be.undefined;
+            expect(hdb_server.server.constructor.name).to.equal('Server');
+            expect(hdb_server.server.key).to.be.instanceOf(Buffer);
+            expect(hdb_server.server.cert).to.be.instanceOf(Buffer);
+            expect(hdb_server.initialConfig.https).to.be.true;
+        })
+
+        it('should build HTTP server instances with mixed cap boolean spelling', async() => {
+            const test_config_settings = { https_enabled: 'FalsE' }
+            test_utils.preTestPrep(test_config_settings);
+            serverChild_rw = rewire('../../server/serverChild');
+
+            await serverChild_rw();
+            const hdb_server = serverChild_rw.__get__('hdbServer');
+
+            expect(hdb_server).to.not.be.undefined;
+            expect(hdb_server.server.constructor.name).to.equal('Server');
+            expect(hdb_server.initialConfig.https).to.be.undefined;
         })
 
         it('should register 3 fastify plugins by default - fastify-helmet, fastify-compress, fastify-static', async() => {
             await serverChild_rw();
-            const http_server = serverChild_rw.__get__('httpServer');
-            const secure_server = serverChild_rw.__get__('secureServer');
-            const plugin_key = Object.getOwnPropertySymbols(secure_server).find((s => String(s) === "Symbol(fastify.pluginNameChain)"))
+            const hdb_server = serverChild_rw.__get__('hdbServer');
+            const plugin_key = Object.getOwnPropertySymbols(hdb_server).find((s => String(s) === "Symbol(fastify.pluginNameChain)"))
 
-            expect(http_server[plugin_key]).to.deep.equal(DEFAULT_FASTIFY_PLUGIN_ARR);
-            expect(secure_server[plugin_key]).to.deep.equal(DEFAULT_FASTIFY_PLUGIN_ARR);
+            expect(hdb_server[plugin_key]).to.deep.equal(DEFAULT_FASTIFY_PLUGIN_ARR);
         })
 
-        it('should build http and https server instances with default config settings', async() => {
+        it('should build HTTPS server instance with default config settings', async() => {
             await serverChild_rw();
             const test_max_body_size = serverChild_rw.__get__('REQ_MAX_BODY_SIZE');
-            const http_server = serverChild_rw.__get__('httpServer');
-            const secure_server = serverChild_rw.__get__('secureServer');
+            const hdb_server = serverChild_rw.__get__('hdbServer');
 
-            expect(http_server.initialConfig.bodyLimit).to.equal(test_max_body_size);
-            expect(http_server.initialConfig.connectionTimeout).to.equal(DEFAULT_CONFIG.SERVER_TIMEOUT_MS);
-            expect(http_server.initialConfig.keepAliveTimeout).to.equal(DEFAULT_CONFIG.SERVER_KEEP_ALIVE_TIMEOUT);
-
-            expect(secure_server.initialConfig.bodyLimit).to.equal(test_max_body_size);
-            expect(secure_server.initialConfig.connectionTimeout).to.equal(DEFAULT_CONFIG.SERVER_TIMEOUT_MS);
-            expect(secure_server.initialConfig.keepAliveTimeout).to.equal(DEFAULT_CONFIG.SERVER_KEEP_ALIVE_TIMEOUT);
+            expect(hdb_server.initialConfig.bodyLimit).to.equal(test_max_body_size);
+            expect(hdb_server.initialConfig.connectionTimeout).to.equal(DEFAULT_CONFIG.SERVER_TIMEOUT_MS);
+            expect(hdb_server.initialConfig.keepAliveTimeout).to.equal(DEFAULT_CONFIG.SERVER_KEEP_ALIVE_TIMEOUT);
         })
 
-        it('should build http and https server instances with provided config settings', async() => {
-            const test_config_settings = {
-                server_timeout: 3333,
-                keep_alive_timeout: 2222,
-                headers_timeout: 1111
-            }
-
+        it('should build HTTP server instances with default config settings', async() => {
+            const test_config_settings = { https_enabled: false }
             test_utils.preTestPrep(test_config_settings);
             serverChild_rw = rewire('../../server/serverChild');
 
             await serverChild_rw();
-            const http_server = serverChild_rw.__get__('httpServer');
-            const secure_server = serverChild_rw.__get__('secureServer');
+            const test_max_body_size = serverChild_rw.__get__('REQ_MAX_BODY_SIZE');
+            const hdb_server = serverChild_rw.__get__('hdbServer');
 
-            expect(http_server.server.timeout).to.equal(test_config_settings.server_timeout);
-            expect(http_server.server.keepAliveTimeout).to.equal(test_config_settings.keep_alive_timeout);
-            expect(http_server.server.headersTimeout).to.equal(test_config_settings.headers_timeout);
-
-            expect(secure_server.server.timeout).to.equal(test_config_settings.server_timeout);
-            expect(secure_server.server.keepAliveTimeout).to.equal(test_config_settings.keep_alive_timeout);
-            expect(secure_server.server.headersTimeout).to.equal(test_config_settings.headers_timeout);
+            expect(hdb_server.initialConfig.bodyLimit).to.equal(test_max_body_size);
+            expect(hdb_server.initialConfig.connectionTimeout).to.equal(DEFAULT_CONFIG.SERVER_TIMEOUT_MS);
+            expect(hdb_server.initialConfig.keepAliveTimeout).to.equal(DEFAULT_CONFIG.SERVER_KEEP_ALIVE_TIMEOUT);
         })
 
-        it('should build only https server instance with provided config settings', async() => {
+        it('should build HTTPS server instances with provided config settings', async() => {
             const test_config_settings = {
-                http_enabled: false,
-                https_enabled: true,
+                https_on: true,
                 server_timeout: 3333,
                 keep_alive_timeout: 2222,
                 headers_timeout: 1111
             }
-
             test_utils.preTestPrep(test_config_settings);
             serverChild_rw = rewire('../../server/serverChild');
 
             await serverChild_rw();
-            const http_server = serverChild_rw.__get__('httpServer');
-            const secure_server = serverChild_rw.__get__('secureServer');
+            const hdb_server = serverChild_rw.__get__('hdbServer');
 
-            expect(http_server).to.be.undefined;
-
-            expect(secure_server.server.timeout).to.equal(test_config_settings.server_timeout);
-            expect(secure_server.server.keepAliveTimeout).to.equal(test_config_settings.keep_alive_timeout);
-            expect(secure_server.server.headersTimeout).to.equal(test_config_settings.headers_timeout);
+            expect(hdb_server.server.timeout).to.equal(test_config_settings.server_timeout);
+            expect(hdb_server.server.keepAliveTimeout).to.equal(test_config_settings.keep_alive_timeout);
+            expect(hdb_server.server.headersTimeout).to.equal(test_config_settings.headers_timeout);
         })
 
-        it('should build only http server instance with provided config settings', async() => {
+        it('should build HTTP server instances with provided config settings', async() => {
             const test_config_settings = {
-                http_enabled: true,
-                https_enabled: false,
+                https_on: false,
                 server_timeout: 3333,
                 keep_alive_timeout: 2222,
                 headers_timeout: 1111
             }
-
             test_utils.preTestPrep(test_config_settings);
             serverChild_rw = rewire('../../server/serverChild');
 
             await serverChild_rw();
-            const http_server = serverChild_rw.__get__('httpServer');
-            const secure_server = serverChild_rw.__get__('secureServer');
+            const hdb_server = serverChild_rw.__get__('hdbServer');
 
-            expect(secure_server).to.be.undefined;
-
-            expect(http_server.server.timeout).to.equal(test_config_settings.server_timeout);
-            expect(http_server.server.keepAliveTimeout).to.equal(test_config_settings.keep_alive_timeout);
-            expect(http_server.server.headersTimeout).to.equal(test_config_settings.headers_timeout);
+            expect(hdb_server.server.timeout).to.equal(test_config_settings.server_timeout);
+            expect(hdb_server.server.keepAliveTimeout).to.equal(test_config_settings.keep_alive_timeout);
+            expect(hdb_server.server.headersTimeout).to.equal(test_config_settings.headers_timeout);
         })
 
         it('should not register fastify-cors if cors is not enabled',async() => {
             test_utils.preTestPrep();
             await serverChild_rw();
-            const secure_server = serverChild_rw.__get__('secureServer');
+            const hdb_server = serverChild_rw.__get__('hdbServer');
 
-            const plugin_key = Object.getOwnPropertySymbols(secure_server).find((s => String(s) === "Symbol(fastify.pluginNameChain)"))
+            const plugin_key = Object.getOwnPropertySymbols(hdb_server).find((s => String(s) === "Symbol(fastify.pluginNameChain)"))
 
-            expect(secure_server[plugin_key].length).to.equal(3);
-            expect(secure_server[plugin_key]).to.deep.equal(['fastify-helmet', 'fastify-compress', 'fastify-static']);
+            expect(hdb_server[plugin_key].length).to.equal(3);
+            expect(hdb_server[plugin_key]).to.deep.equal(['fastify-helmet', 'fastify-compress', 'fastify-static']);
         })
 
         it('should register fastify-cors if cors is enabled',async() => {
@@ -236,15 +242,14 @@ describe('Test serverChild.js', () => {
                 cors_enabled: true,
                 cors_whitelist: 'harperdb.io, sam-johnson.io'
             }
-
             test_utils.preTestPrep(test_config_settings);
             await serverChild_rw();
-            const secure_server = serverChild_rw.__get__('secureServer');
+            const hdb_server = serverChild_rw.__get__('hdbServer');
 
-            const plugin_key = Object.getOwnPropertySymbols(secure_server).find((s => String(s) === "Symbol(fastify.pluginNameChain)"))
+            const plugin_key = Object.getOwnPropertySymbols(hdb_server).find((s => String(s) === "Symbol(fastify.pluginNameChain)"))
 
-            expect(secure_server[plugin_key].length).to.equal(4);
-            expect(secure_server[plugin_key]).to.deep.equal(['fastify-cors', ...DEFAULT_FASTIFY_PLUGIN_ARR]);
+            expect(hdb_server[plugin_key].length).to.equal(4);
+            expect(hdb_server[plugin_key]).to.deep.equal(['fastify-cors', ...DEFAULT_FASTIFY_PLUGIN_ARR]);
         })
 
         it('should register fastify-cors if cors is enabled boolean has mixed cap spelling',async() => {
@@ -252,25 +257,27 @@ describe('Test serverChild.js', () => {
                 cors_enabled: 'TRue',
                 cors_whitelist: 'harperdb.io, sam-johnson.io'
             }
-
             test_utils.preTestPrep(test_config_settings);
             await serverChild_rw();
-            const secure_server = serverChild_rw.__get__('secureServer');
+            const hdb_server = serverChild_rw.__get__('hdbServer');
 
-            const plugin_key = Object.getOwnPropertySymbols(secure_server).find((s => String(s) === "Symbol(fastify.pluginNameChain)"))
+            const plugin_key = Object.getOwnPropertySymbols(hdb_server).find((s => String(s) === "Symbol(fastify.pluginNameChain)"))
 
-            expect(secure_server[plugin_key].length).to.equal(4);
-            expect(secure_server[plugin_key]).to.deep.equal(['fastify-cors', ...DEFAULT_FASTIFY_PLUGIN_ARR]);
+            expect(hdb_server[plugin_key].length).to.equal(4);
+            expect(hdb_server[plugin_key]).to.deep.equal(['fastify-cors', ...DEFAULT_FASTIFY_PLUGIN_ARR]);
         })
 
 
 
         it('should call handlePostRequest on HTTP post request',async() => {
-            test_utils.preTestPrep();
-            await serverChild_rw();
-            const http_server = serverChild_rw.__get__('httpServer');
+            const test_config_settings = { https_on: false }
+            test_utils.preTestPrep(test_config_settings);
+            serverChild_rw = rewire('../../server/serverChild');
 
-            await http_server.inject({
+            await serverChild_rw();
+            const hdb_server = serverChild_rw.__get__('hdbServer');
+
+            await hdb_server.inject({
                 method: 'POST',
                 url:'/',
                 headers: test_req_options.headers,
@@ -281,10 +288,14 @@ describe('Test serverChild.js', () => {
         })
 
         it('should return docs html static file result w/ status 200 for valid HTTP get request',async() => {
-            await serverChild_rw();
-            const http_server = serverChild_rw.__get__('httpServer');
+            const test_config_settings = { https_on: false }
+            test_utils.preTestPrep(test_config_settings);
+            serverChild_rw = rewire('../../server/serverChild');
 
-            const test_response = await http_server.inject({
+            await serverChild_rw();
+            const hdb_server = serverChild_rw.__get__('hdbServer');
+
+            const test_response = await hdb_server.inject({
                 method: 'get',
                 url:'/'
             })
@@ -294,10 +305,14 @@ describe('Test serverChild.js', () => {
         })
 
         it('should return docs html static file result w/ status 200 for valid HTTPS get request',async() => {
-            await serverChild_rw();
-            const https_server = serverChild_rw.__get__('secureServer');
+            const test_config_settings = { https_on: true }
+            test_utils.preTestPrep(test_config_settings);
+            serverChild_rw = rewire('../../server/serverChild');
 
-            const test_response = await https_server.inject({
+            await serverChild_rw();
+            const hdb_server = serverChild_rw.__get__('hdbServer');
+
+            const test_response = await hdb_server.inject({
                 method: 'get',
                 url:'/'
             })
@@ -307,10 +322,13 @@ describe('Test serverChild.js', () => {
         })
 
         it('should return op result w/ status 200 for valid HTTP post request',async() => {
-            await serverChild_rw();
-            const http_server = serverChild_rw.__get__('httpServer');
+            const test_config_settings = { https_on: false }
+            test_utils.preTestPrep(test_config_settings);
+            serverChild_rw = rewire('../../server/serverChild');
+            await serverChild_rw()
+            const hdb_server = serverChild_rw.__get__('hdbServer');
 
-            const test_response = await http_server.inject({
+            const test_response = await hdb_server.inject({
                 method: 'POST',
                 url:'/',
                 headers: test_req_options.headers,
@@ -323,9 +341,9 @@ describe('Test serverChild.js', () => {
 
         it('should call handlePostRequest on HTTPS post request',async() => {
             await serverChild_rw();
-            const secure_server = serverChild_rw.__get__('secureServer');
+            const hdb_server = serverChild_rw.__get__('hdbServer');
 
-            await secure_server.inject({
+            await hdb_server.inject({
                 method: 'POST',
                 url:'/',
                 headers: test_req_options.headers,
@@ -337,9 +355,9 @@ describe('Test serverChild.js', () => {
 
         it('should return op result w/ status 200 for valid HTTPS post request',async() => {
             await serverChild_rw();
-            const secure_server = serverChild_rw.__get__('secureServer');
+            const hdb_server = serverChild_rw.__get__('hdbServer');
 
-            const test_response = await secure_server.inject({
+            const test_response = await hdb_server.inject({
                 method: 'POST',
                 url:'/',
                 headers: test_req_options.headers,
@@ -351,9 +369,9 @@ describe('Test serverChild.js', () => {
 
         it('should return 400 error for post request w/o body',async() => {
             await serverChild_rw();
-            const secure_server = serverChild_rw.__get__('secureServer');
+            const hdb_server = serverChild_rw.__get__('hdbServer');
 
-            const test_response = await secure_server.inject({
+            const test_response = await hdb_server.inject({
                 method: 'POST',
                 url:'/',
                 headers: test_req_options.headers
@@ -372,13 +390,13 @@ describe('Test serverChild.js', () => {
             test_utils.preTestPrep(test_config_settings);
 
             await serverChild_rw();
-            const secure_server = serverChild_rw.__get__('secureServer');
+            const hdb_server = serverChild_rw.__get__('hdbServer');
 
             const test_headers = Object.assign({
                 origin: 'https://google.com'
             }, test_req_options.headers);
 
-            const test_response = await secure_server.inject({
+            const test_response = await hdb_server.inject({
                 method: 'POST',
                 url:'/',
                 headers: test_headers,
@@ -398,13 +416,13 @@ describe('Test serverChild.js', () => {
             test_utils.preTestPrep(test_config_settings);
 
             await serverChild_rw();
-            const secure_server = serverChild_rw.__get__('secureServer');
+            const hdb_server = serverChild_rw.__get__('hdbServer');
 
             const test_headers = Object.assign({
                 origin: 'https://harperdb.io'
             }, test_req_options.headers);
 
-            const test_response = await secure_server.inject({
+            const test_response = await hdb_server.inject({
                 method: 'POST',
                 url:'/',
                 headers: test_headers,

@@ -285,18 +285,11 @@ function wizard(err, callback) {
                 default: (hri.random()),
                 required: false
             },
-            // HTTP_PORT: {
-            //     pattern: /^([0-9]{1,4}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5])$/,
-            //     description: colors.magenta(`[HTTP_PORT] Please enter an HTTP listening port for HarperDB`),
-            //     message: 'Invalid port.',
-            //     default: 9925,
-            //     required: false
-            // },
             SERVER_PORT: {
                 pattern: /^([0-9]{1,4}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5])$/,
                 description: colors.magenta(`[SERVER_PORT] Please enter a server listening port for HarperDB`),
                 message: 'Invalid port.',
-                default: 31283,
+                default: 9925,
                 required: false
             },
             CLUSTERING_PORT: {
@@ -613,8 +606,6 @@ function createSettingsFile(mount_status, callback) {
             `${HDB_SETTINGS_NAMES.PROJECT_DIR_KEY} = ${path_module.resolve(__dirname, '../../')}\n` +
             `   ;The directory selected during install where the database files reside.\n` +
             `${HDB_SETTINGS_NAMES.HDB_ROOT_KEY} = ${wizard_result.HDB_ROOT}\n` +
-            // `   ;The port the HarperDB REST interface will listen on.\n` +
-            // `${HDB_SETTINGS_NAMES.HTTP_PORT_KEY} = ${wizard_result.HTTP_PORT}\n` +
             `   ;The port the HarperDB REST interface will listen on.\n` +
             `${HDB_SETTINGS_NAMES.SERVER_PORT_KEY} = ${wizard_result.SERVER_PORT}\n` +
             `   ;The path to the SSL certificate used when running with HTTPS enabled.\n` +
@@ -623,8 +614,6 @@ function createSettingsFile(mount_status, callback) {
             `${HDB_SETTINGS_NAMES.PRIVATE_KEY_KEY} = ${wizard_result.HDB_ROOT}/keys/privateKey.pem\n` +
             `   ;Set to true to enable HTTPS on the HarperDB REST endpoint.  Requires a valid certificate and key.\n` +
             `${HDB_SETTINGS_NAMES.HTTP_SECURE_ENABLED_KEY} = TRUE\n` +
-            // `   ;Set to true to have HarperDB run using standard HTTP.\n` +
-            // `${HDB_SETTINGS_NAMES.HTTP_ENABLED_KEY} = TRUE \n` +
             `   ;Set to true to enable Cross Origin Resource Sharing, which allows requests across a domain.\n` +
             `${HDB_SETTINGS_NAMES.CORS_ENABLED_KEY} = TRUE\n` +
             `   ;Allows for setting allowable domains with CORS. Comma separated list.\n` +
