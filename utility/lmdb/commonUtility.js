@@ -8,7 +8,7 @@ const Buffer = require('buffer').Buffer;
 const microtime = require('microtime');
 
 const MAX_BYTE_SIZE = lmdb_terms.MAX_BYTE_SIZE;
-
+const PRIMITIVES = ['number', 'string', 'symbol', 'boolean', 'bigint'];
 /**
  * validates the env argument
  * @param {lmdb.RootDatabase} env - environment object used thigh level to interact with all data in an environment
@@ -44,52 +44,68 @@ function stringifyData(raw_value){
 }
 
 /**
- * takes a raw value and converts it to be written to LMDB. String is sonverted to string, while number is converted to a double written to a buffer. https://nodejs.org/dist/latest-v12.x/docs/api/buffer.html#buffer_buf_writedoublebe_value_offset
- * @param {*} raw_value - raw value which needs to be converted
- * @param {lmdb_terms.DBI_KEY_TYPES} key_type - determines how to convert the value for LMDB, defaults to STRING
- * @returns {String|Buffer}
+ * takes a raw value and converts it to be written to LMDB. lmdb-store accepts primitives ('number', 'string', 'symbol', 'boolean', 'bigint', buffer) and array of primitives as keys.
+ * if it is anything else we convert to string
+ * @param {*} key - raw value which needs to be converted
+ * @returns {*}
  */
-function convertKeyValueToWrite(raw_value, key_type){
-    let buf;
-    let value = null;
-    switch(key_type){
-        case lmdb_terms.DBI_KEY_TYPES.STRING:
-            value = stringifyData(raw_value);
-            break;
-        case lmdb_terms.DBI_KEY_TYPES.NUMBER:
-            if(isNaN(raw_value) === false) {
-                buf = Buffer.alloc(8);
-                buf.writeDoubleBE(raw_value, 0);
-                value = buf;
-            }
-            break;
-        default:
-            value = stringifyData(raw_value);
-            break;
+function convertKeyValueToWrite(key){
+    //if this is a primitive return the value
+    if(primitiveCheck(key)){
+        return key;
     }
-    return value;
+
+    if(key instanceof Date){
+        return key.valueOf();
+    }
+
+    //if this is an array, iterate the array and evalaute if it's contents are primitives. if they are return the array as is. if not we convert to string
+    if(Array.isArray(key)){
+        for(let x = 0, length = key.length; x < length; x++){
+            let array_entry = key[x];
+
+            if(array_entry === null){
+                continue;
+            }
+
+            if(!primitiveCheck(array_entry) || array_entry === undefined){
+                return JSON.stringify(key);
+            }
+        }
+        return key;
+    }
+
+    //object cannot be a key, always stringify
+    if(typeof key === 'object'){
+        return JSON.stringify(key);
+    }
+
+    return key;
 }
 
 /**
- * takes a raw value from LMDB and converts it to an expected format, primarily for number types since they are stored in LMDB as buffers
+ * checks is a value is a primitive type 'number', 'string', 'symbol', 'boolean', 'bigint', buffer
+ * @param value
+ * @returns {boolean}
+ */
+function primitiveCheck(value){
+    return PRIMITIVES.indexOf(typeof value) >= 0 || value instanceof Buffer;
+}
+
+/**
+ * takes a key from LMDB and if not of type string returns the key, otherwise it does a nominal check if the string has aspects of an object/array and attempts to JSON parse it
  * @param raw_value
- * @param {lmdb_terms.DBI_KEY_TYPES} key_type - determines how to convert the value for LMDB, defaults to STRING
  * @returns {*}
  */
-function convertKeyValueFromSearch(raw_value, key_type){
-    let value = null;
-    switch(key_type){
-        case lmdb_terms.DBI_KEY_TYPES.STRING:
-            value = raw_value;
-            break;
-        case lmdb_terms.DBI_KEY_TYPES.NUMBER:
-            value = raw_value.readDoubleBE(0);
-            break;
-        default:
-            value = raw_value;
-            break;
+function convertKeyValueFromSearch(raw_value){
+    if(typeof raw_value === 'string' && ((raw_value.startsWith('{') && raw_value.endsWith('}')) || (raw_value.startsWith('[') && raw_value.endsWith(']')))){
+        try{
+            raw_value = JSON.parse(raw_value);
+        } catch(e) {
+            //no-op
+        }
     }
-    return value;
+    return raw_value;
 }
 
 /**

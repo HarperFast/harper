@@ -32,14 +32,13 @@ const MULTI_RECORD_ARRAY = [
 ];
 
 const MULTI_RECORD_ARRAY_COMPARE = [
-    {id:1, name:'Kyle', age:46, city:'Denver', text:null},
-    {id:2, name:'Jerry', age:32, city:null, text: null},
-    {id:3, name: 'Hank', age: 57, city:null, text: null},
-    {id:4, name:'Joy', age: 44, city:'Denver', text: null},
-    {id:5, name:'Fran', age: 44, city:'Denvertown', text: null},
+    {id:1, name:'Kyle', age:46, city:'Denver'},
+    {id:2, name:'Jerry', age:32},
+    {id:3, name: 'Hank', age: 57},
+    {id:4, name:'Joy', age: 44, city:'Denver'},
+    {id:5, name:'Fran', age: 44, city:'Denvertown'},
     {
         id: 6,
-        name:null, age: null, city:null,
         text: 'Occupy messenger bag microdosing yr, kale chips neutra la croix VHS ugh wayfarers street art. Ethical cronut whatever, cold-pressed viral post-ironic man bun swag marfa green juice. Knausgaard gluten-free selvage ethical subway tile sartorial man bun butcher selfies raclette paleo. Fam brunch plaid woke authentic dreamcatcher hot chicken quinoa gochujang slow-carb selfies keytar PBR&B street art pinterest. Narwhal tote bag glossier paleo cronut salvia cloud bread craft beer butcher meditation fingerstache hella migas 8-bit messenger bag. Tattooed schlitz palo santo gluten-free, wayfarers tumeric squid. Hella keytar thundercats chambray, occupy iPhone paleo slow-carb jianbing everyday carry 90\'s distillery polaroid fanny pack. Kombucha cray PBR&B shoreditch 8-bit, adaptogen vinyl swag meditation 3 wolf moon. Selvage art party retro kitsch pour-over iPhone street art celiac etsy cred cliche gastropub. Kombucha migas marfa listicle cliche. Godard kombucha ennui lumbersexual, austin pop-up raclette retro. Man braid kale chips pitchfork, tote bag hoodie poke mumblecore. Bitters shoreditch tbh everyday carry keffiyeh raw denim kale chips.'
     }
 ];
@@ -133,10 +132,8 @@ describe('Test deleteUtility', ()=>{
             let some_ids = [2, 4];
             let some_record_compare = [{
                     "age": 32,
-                    "city": null,
                     "id": 2,
                     "name": "Jerry",
-                    text:null,
                     __createdtime__:TIMESTAMP,
                     __updatedtime__: TIMESTAMP
                 },
@@ -145,7 +142,6 @@ describe('Test deleteUtility', ()=>{
                     "city": "Denver",
                     "id": 4,
                     "name": "Joy",
-                    text:null,
                     __createdtime__:TIMESTAMP,
                     __updatedtime__: TIMESTAMP
                 }

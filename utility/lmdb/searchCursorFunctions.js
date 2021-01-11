@@ -1,6 +1,7 @@
 'use strict';
 
 const hdb_terms = require('../hdbTerms');
+const common = require('./commonUtility');
 
 function parseRow(original_object, attributes){
     let return_object = Object.create(null);
@@ -27,7 +28,7 @@ function parseRow(original_object, attributes){
  */
 function searchAll(attributes, key, value, results){
     let obj = parseRow(value, attributes);
-
+    key = common.convertKeyValueFromSearch(key);
     results[key] = obj;
 }
 
@@ -38,6 +39,7 @@ function searchAll(attributes, key, value, results){
  * @param {[]} results
  */
 function iterateDBI(key, value, results){
+    key = common.convertKeyValueFromSearch(key);
     if(results[key] === undefined){
         results[key] = [];
     }
@@ -53,6 +55,7 @@ function iterateDBI(key, value, results){
  * @param {String} attribute
  */
 function pushResults(key, value, results, hash_attribute, attribute){
+    key = common.convertKeyValueFromSearch(key);
     let new_object = Object.create(null);
     new_object[attribute] = key;
     let hash_value = undefined;

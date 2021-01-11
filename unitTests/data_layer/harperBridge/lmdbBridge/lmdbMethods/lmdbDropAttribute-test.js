@@ -67,15 +67,15 @@ const INSERT_OBJECT_TEST = {
 
 describe('test lmdbDropAttribute module', ()=>{
     let date_stub;
-    let rw_env_util;
+    //let rw_env_util;
     before(async ()=>{
         await fs.remove(BASE_PATH);
-        rw_env_util = environment_utility.__set__('MAP_SIZE', 5*1024*1024*1024);
+        //rw_env_util = environment_utility.__set__('MAP_SIZE', 5*1024*1024*1024);
         date_stub = sandbox.stub(Date, 'now').returns(TIMESTAMP);
     });
 
     after(()=>{
-        rw_env_util();
+        //rw_env_util();
         date_stub.restore();
     });
 
@@ -201,14 +201,14 @@ describe('test lmdbDropAttribute module', ()=>{
         it('test removing temperature_str, pass invalid hash attribute', async()=>{
             let drop_object = new DropAttributeObject('dev', 'test', 'temperature_str');
             let tbl_env = await environment_utility.openEnvironment(DEV_SCHEMA_PATH, 'test');
-            test_utils.assertErrorSync(remove_attribute_from_all_objects, [drop_object, tbl_env, 'faker'],
+            await test_utils.assertErrorAsync(remove_attribute_from_all_objects, [drop_object, tbl_env, 'faker'],
                 LMDB_ERRORS.DBI_DOES_NOT_EXIST);
         });
 
         it('test removing temperature_str', async()=>{
             let drop_object = new DropAttributeObject('dev', 'test', 'temperature_str');
             let tbl_env = await environment_utility.openEnvironment(DEV_SCHEMA_PATH, 'test');
-            test_utils.assertErrorSync(remove_attribute_from_all_objects, [drop_object, tbl_env, 'id'], undefined);
+            await test_utils.assertErrorAsync(remove_attribute_from_all_objects, [drop_object, tbl_env, 'id'], undefined);
 
             let search_results = search_utility.searchAll(tbl_env, 'id', ['id', 'temperature_str']);
             search_results.forEach(result =>{
@@ -239,13 +239,13 @@ describe('test lmdbDropAttribute module', ()=>{
                 system: systemSchema};
 
             hdb_schema_env = await environment_utility.createEnvironment(SYSTEM_SCHEMA_PATH, systemSchema.hdb_schema.name);
-            environment_utility.createDBI(hdb_schema_env, systemSchema.hdb_schema.hash_attribute, false);
+            environment_utility.createDBI(hdb_schema_env, systemSchema.hdb_schema.hash_attribute, false, true);
 
             hdb_table_env = await environment_utility.createEnvironment(SYSTEM_SCHEMA_PATH, systemSchema.hdb_table.name);
-            environment_utility.createDBI(hdb_table_env, systemSchema.hdb_table.hash_attribute, false);
+            environment_utility.createDBI(hdb_table_env, systemSchema.hdb_table.hash_attribute, false, true);
 
             hdb_attribute_env = await environment_utility.createEnvironment(SYSTEM_SCHEMA_PATH, systemSchema.hdb_attribute.name);
-            environment_utility.createDBI(hdb_attribute_env, systemSchema.hdb_attribute.hash_attribute, false);
+            environment_utility.createDBI(hdb_attribute_env, systemSchema.hdb_attribute.hash_attribute, false, true);
 
             await lmdb_create_schema(CREATE_SCHEMA_DEV);
 

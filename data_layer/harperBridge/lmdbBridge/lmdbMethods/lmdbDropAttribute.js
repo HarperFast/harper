@@ -37,7 +37,7 @@ async function lmdbDropAttribute(drop_attribute_obj, remove_data = true) {
 
         //in the scenario of drop table / schema we don't need to remove individual elements since we are removing entire environments
         if(remove_data === true) {
-            removeAttributeFromAllObjects(drop_attribute_obj, env, table_info.hash_attribute);
+            await removeAttributeFromAllObjects(drop_attribute_obj, env, table_info.hash_attribute);
         }
 
         environment_utility.dropDBI(env, drop_attribute_obj.attribute);
@@ -51,25 +51,19 @@ async function lmdbDropAttribute(drop_attribute_obj, remove_data = true) {
 /**
  * iterates the hash attribute dbi and removes the attribute dropped
  * @param {DropAttributeObject} drop_attribute_obj
- * @param {lmdb.Env} env
+ * @param {lmdb.RootDatabase} env
  * @param {String} hash_attribute
  */
-function removeAttributeFromAllObjects(drop_attribute_obj, env, hash_attribute){
-    let txn;
+async function removeAttributeFromAllObjects(drop_attribute_obj, env, hash_attribute){
     try {
-        txn = new environment_utility.TransactionCursor(env, hash_attribute, true);
-
-        for (let found = txn.cursor.goToFirst(); found !== null && found !== undefined; found = txn.cursor.goToNext()) {
-            let orig_object = JSON.parse(txn.cursor.getCurrentUtf8());
-            delete orig_object[drop_attribute_obj.attribute];
-            txn.txn.putUtf8(txn.dbi, found, JSON.stringify(orig_object));
+        let dbi = environment_utility.openDBI(env, hash_attribute);
+        let promise;
+        for(let {key, value} of dbi.getRange()){
+            delete value[drop_attribute_obj.attribute];
+            promise = env.dbis[hash_attribute].put(key, value);
         }
-        txn.commit();
+        await promise;
     }catch(e){
-        if(txn !== undefined){
-            txn.close();
-        }
-
         throw e;
     }
 }

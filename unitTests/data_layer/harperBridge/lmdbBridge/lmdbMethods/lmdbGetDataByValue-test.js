@@ -73,7 +73,7 @@ describe('test lmdbGetDataByValue module', ()=>{
                 system: systemSchema};
 
             env = await environment_utility.createEnvironment(DEV_SCHEMA_PATH, 'test');
-            await environment_utility.createDBI(env, 'id', false);
+            await environment_utility.createDBI(env, 'id', false, true);
             await environment_utility.createDBI(env, 'temperature', true);
             await environment_utility.createDBI(env, 'temperature_double', true);
             await environment_utility.createDBI(env, 'temperature_neg', true);
@@ -82,7 +82,7 @@ describe('test lmdbGetDataByValue module', ()=>{
             await environment_utility.createDBI(env, 'state', true);
             await environment_utility.createDBI(env, 'city', true);
 
-            write_utility.insertRecords(env, 'id', ['id', 'temperature', 'temperature_str', 'state', 'city'], test_data);
+            await write_utility.insertRecords(env, 'id', ['id', 'temperature', 'temperature_str', 'state', 'city'], test_data);
         });
 
         after(async () => {
@@ -229,7 +229,7 @@ describe('test lmdbGetDataByValue module', ()=>{
 
         it('test search value is json', async()=>{
             let record = {id:'jsontest', city:{cool:true}};
-            write_utility.insertRecords(env, 'id', ['id', 'city'], [test_utils.deepClone(record)]);
+            await write_utility.insertRecords(env, 'id', ['id', 'city'], [test_utils.deepClone(record)]);
 
             let search_object = new SearchObject('dev', 'test', 'city', record.city, 'id', ['id', 'city']);
             let results = await test_utils.assertErrorAsync(lmdb_search, [search_object], undefined);
@@ -238,12 +238,12 @@ describe('test lmdbGetDataByValue module', ()=>{
             };
             assert.deepEqual(results, expected);
 
-            delete_utility.deleteRecords(env, 'id', [record.id]);
+            await delete_utility.deleteRecords(env, 'id', [record.id]);
         });
 
         it('test search value is array', async()=>{
             let record = {id:'arraytest', city:['awesome', 'great']};
-            write_utility.insertRecords(env, 'id', ['id', 'city'], [test_utils.deepClone(record)]);
+            await write_utility.insertRecords(env, 'id', ['id', 'city'], [test_utils.deepClone(record)]);
 
             let search_object = new SearchObject('dev', 'test', 'city', record.city, 'id', ['id', 'city']);
             let results = await test_utils.assertErrorAsync(lmdb_search, [search_object], undefined);
@@ -252,7 +252,7 @@ describe('test lmdbGetDataByValue module', ()=>{
             };
             assert.deepEqual(results, expected);
 
-            delete_utility.deleteRecords(env, 'id', [record.id]);
+            await delete_utility.deleteRecords(env, 'id', [record.id]);
         });
 
         it('test searchall', async()=>{

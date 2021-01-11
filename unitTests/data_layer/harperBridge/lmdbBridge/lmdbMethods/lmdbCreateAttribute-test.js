@@ -89,13 +89,13 @@ describe("test lmdbCreateAttribute module", ()=>{
         global.lmdb_map = undefined;
 
         hdb_schema_env = await environment_utility.createEnvironment(BASE_TEST_PATH, systemSchema.hdb_schema.name);
-        environment_utility.createDBI(hdb_schema_env, systemSchema.hdb_schema.hash_attribute, false);
+        environment_utility.createDBI(hdb_schema_env, systemSchema.hdb_schema.hash_attribute, false, true);
 
         hdb_table_env = await environment_utility.createEnvironment(BASE_TEST_PATH, systemSchema.hdb_table.name);
-        environment_utility.createDBI(hdb_table_env, systemSchema.hdb_table.hash_attribute, false);
+        environment_utility.createDBI(hdb_table_env, systemSchema.hdb_table.hash_attribute, false, true);
 
         hdb_attribute_env = await environment_utility.createEnvironment(BASE_TEST_PATH, systemSchema.hdb_attribute.name);
-        environment_utility.createDBI(hdb_attribute_env, systemSchema.hdb_attribute.hash_attribute, false);
+        environment_utility.createDBI(hdb_attribute_env, systemSchema.hdb_attribute.hash_attribute, false, true);
 
         await lmdb_create_schema(CREATE_SCHEMA_DEV);
         await lmdb_create_schema(CREATE_SCHEMA_PROD);
@@ -150,14 +150,7 @@ describe("test lmdbCreateAttribute module", ()=>{
         assert.deepStrictEqual(attribute_record, expected_search_result);
     });
     it('Test that datastore is not created because it already exists', async () => {
-        let expected_result = {
-            message: 'inserted 0 of 1 records',
-            skipped_hashes: [MOCK_UUID_VALUE],
-            inserted_hashes: []
-        };
-
-        let results = await test_utils.assertErrorAsync(lmdb_create_attribute, [CREATE_ATTR_OBJ_TEST],undefined);
-        assert.deepStrictEqual(results, expected_result);
+        await test_utils.assertErrorAsync(lmdb_create_attribute, [CREATE_ATTR_OBJ_TEST], new Error("attribute 'another_attribute' already exists in dev.catsdrool"));
     });
 
     it('Test that validation error is thrown', async () => {

@@ -58,6 +58,7 @@ function iterateRangeNext(env, hash_attribute, attribute, search_value, eval_fun
 
     try {
         search_value = auto_cast(search_value);
+        search_value = common.convertKeyValueToWrite(search_value);
         let dbi = env.dbis[attribute];
 
         if(dbi[lmdb_terms.DBI_DEFINITION_NAME].is_hash_attribute){
@@ -104,6 +105,11 @@ function iterateRangeBetween(env, hash_attribute, attribute, start_value, end_va
         if (stat.entryCount === 0) {
             return results;
         }
+        start_value = auto_cast(start_value);
+        start_value = common.convertKeyValueToWrite(start_value);
+
+        end_value = auto_cast(end_value);
+        end_value = common.convertKeyValueToWrite(end_value);
 
         for(let {key, value} of env.dbis[attribute].getRange({start: start_value, end: end_value})){
             cursor_functions.pushResults(key, value, results, hash_attribute, attribute);
@@ -204,6 +210,7 @@ function equals(env, hash_attribute, attribute, search_value){
 
     try {
         search_value = auto_cast(search_value);
+        search_value = common.convertKeyValueToWrite(search_value);
 
         let results = Object.create(null);
         for (let value of dbi.getValues(search_value)) {
@@ -311,6 +318,7 @@ function startsWith(env, hash_attribute, attribute, search_value){
 
     //if the search is numeric we need to scan the entire index, if string we can just do a range
     search_value = auto_cast(search_value);
+    search_value = common.convertKeyValueToWrite(search_value);
     let string_search = true;
     if(typeof search_value === 'number'){
         string_search = false;
@@ -372,7 +380,8 @@ function contains(env, hash_attribute, attribute, search_value){
  */
 function greaterThan(env, hash_attribute, attribute, search_value){
     validateComparisonFunctions(env, attribute, search_value);
-
+    search_value = auto_cast(search_value);
+    search_value = common.convertKeyValueToWrite(search_value);
     return iterateRangeNext(env, hash_attribute, attribute, search_value, cursor_functions.greaterThanCompare);
 }
 
@@ -386,7 +395,8 @@ function greaterThan(env, hash_attribute, attribute, search_value){
  */
 function greaterThanEqual(env, hash_attribute, attribute, search_value){
     validateComparisonFunctions(env, attribute, search_value);
-
+    search_value = auto_cast(search_value);
+    search_value = common.convertKeyValueToWrite(search_value);
     return iterateRangeNext(env, hash_attribute, attribute, search_value, cursor_functions.greaterThanEqualCompare);
 }
 
@@ -400,7 +410,8 @@ function greaterThanEqual(env, hash_attribute, attribute, search_value){
  */
 function lessThan(env, hash_attribute, attribute, search_value){
     validateComparisonFunctions(env, attribute, search_value);
-
+    search_value = auto_cast(search_value);
+    search_value = common.convertKeyValueToWrite(search_value);
     return iterateRangeNext(env, hash_attribute, attribute, search_value, cursor_functions.lessThanCompare, true);
 }
 
@@ -414,7 +425,8 @@ function lessThan(env, hash_attribute, attribute, search_value){
  */
 function lessThanEqual(env, hash_attribute, attribute, search_value){
     validateComparisonFunctions(env, attribute, search_value);
-
+    search_value = auto_cast(search_value);
+    search_value = common.convertKeyValueToWrite(search_value);
     return iterateRangeNext(env, hash_attribute, attribute, search_value, cursor_functions.lessThanEqualCompare, true);
 }
 
@@ -443,8 +455,9 @@ function between(env, hash_attribute, attribute, start_value, end_value){
     }
 
     start_value = hdb_utils.autoCast(start_value);
+    start_value = common.convertKeyValueToWrite(start_value);
     end_value = hdb_utils.autoCast(end_value);
-
+    end_value = common.convertKeyValueToWrite(end_value);
     if (start_value >= end_value) {
         throw new Error(LMDB_ERRORS.END_VALUE_MUST_BE_GREATER_THAN_START_VALUE);
     }

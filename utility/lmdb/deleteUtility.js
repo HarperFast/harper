@@ -74,7 +74,8 @@ async function deleteRecords(env, hash_attribute, ids){
                                 env.dbis[lmdb_terms.BLOB_DBI_NAME].remove(`${attribute}/${cast_hash_value}`);
                             } else {
                                 try {
-                                    dbi.remove(value, cast_hash_value);
+                                    let converted_key = common.convertKeyValueToWrite(value);
+                                    dbi.remove(converted_key, cast_hash_value);
                                 }catch(e){
                                     log.warn(`cannot delete from attribute: ${attribute}, ${value}:${cast_hash_value}`);
                                 }

@@ -68,7 +68,8 @@ async function insertRecords(env, hash_attribute, write_attributes , records){
                             let key = `${attribute}/${cast_hash_value}`;
                             env.dbis[lmdb_terms.BLOB_DBI_NAME].put( key, value);
                         } else {
-                            env.dbis[attribute].put(value, cast_hash_value);
+                            let converted_key = common.convertKeyValueToWrite(value);
+                            env.dbis[attribute].put(converted_key, cast_hash_value);
                         }
                     }
                 }
@@ -317,7 +318,8 @@ function updateUpsertRecord(env, hash_attribute, record, existing_record, cast_h
                     let key_value = `${key}/${cast_hash_value}`;
                     env.dbis[lmdb_terms.BLOB_DBI_NAME].remove(key_value);
                 }else {
-                    dbi.remove(existing_value, cast_hash_value);
+                    let converted_key = common.convertKeyValueToWrite(existing_value);
+                    dbi.remove(converted_key, cast_hash_value);
                 }
             } catch (e) {
                 //this is the code for attempting to delete an entry that does not exist
@@ -333,7 +335,8 @@ function updateUpsertRecord(env, hash_attribute, record, existing_record, cast_h
                 let key_value = `${key}/${cast_hash_value}`;
                 env.dbis[lmdb_terms.BLOB_DBI_NAME].put(key_value, value);
             }else {
-                dbi.put(value, cast_hash_value);
+                let converted_key = common.convertKeyValueToWrite(value);
+                dbi.put(converted_key, cast_hash_value);
             }
         }
 

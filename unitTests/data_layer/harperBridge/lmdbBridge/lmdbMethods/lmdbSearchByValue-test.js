@@ -75,7 +75,7 @@ describe('test lmdbSearchByValue module', ()=>{
             await environment_utility.createDBI(env, 'state', true);
             await environment_utility.createDBI(env, 'city', true);
 
-            write_utility.insertRecords(env, 'id', ['id', 'temperature', 'temperature_str', 'state', 'city'], test_data);
+            await write_utility.insertRecords(env, 'id', ['id', 'temperature', 'temperature_str', 'state', 'city'], test_data);
         });
 
         after(async () => {
