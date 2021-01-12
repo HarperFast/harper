@@ -96,7 +96,7 @@
 								],
 								"body": {
 									"mode": "raw",
-									"raw": "{\n    \"operation\": \"add_node\",\n    \"name\": \"node2\",\n    \"host\": \"192.168.100.100\",\n    \"port\": 9925,\n    \"subscriptions\": [\n        {\n            \"channel\": \"dev:dog\",\n            \"subscribe\": false,\n            \"publish\": true\n        }\n    ]\n}"
+									"raw": "{\n    \"operation\": \"add_node\",\n    \"name\": \"node2\",\n    \"host\": \"192.168.100.100\",\n    \"port\": 31283,\n    \"subscriptions\": [\n        {\n            \"channel\": \"dev:dog\",\n            \"subscribe\": false,\n            \"publish\": true\n        }\n    ]\n}"
 								},
 								"url": {
 									"raw": "{{HDB_ENDPOINT}}",
@@ -228,7 +228,7 @@
 								],
 								"body": {
 									"mode": "raw",
-									"raw": "{\n    \"operation\": \"add_node\",\n    \"name\": \"node2\",\n    \"host\": \"192.168.100.100\",\n    \"port\": 9925,\n    \"subscriptions\": [\n        {\n            \"channel\": \"dev:dog\",\n            \"subscribe\": false,\n            \"publish\": true\n        }\n    ]\n}"
+									"raw": "{\n    \"operation\": \"add_node\",\n    \"name\": \"node2\",\n    \"host\": \"192.168.100.100\",\n    \"port\": 31283,\n    \"subscriptions\": [\n        {\n            \"channel\": \"dev:dog\",\n            \"subscribe\": false,\n            \"publish\": true\n        }\n    ]\n}"
 								},
 								"url": {
 									"raw": "{{HDB_ENDPOINT}}",
@@ -360,7 +360,7 @@
 								],
 								"body": {
 									"mode": "raw",
-									"raw": "{\n    \"operation\": \"add_node\",\n    \"name\": \"node2\",\n    \"host\": \"192.168.100.100\",\n    \"port\": 9925,\n    \"subscriptions\": [\n        {\n            \"channel\": \"dev:dog\",\n            \"subscribe\": false,\n            \"publish\": true\n        }\n    ]\n}"
+									"raw": "{\n    \"operation\": \"add_node\",\n    \"name\": \"node2\",\n    \"host\": \"192.168.100.100\",\n    \"port\": 31283,\n    \"subscriptions\": [\n        {\n            \"channel\": \"dev:dog\",\n            \"subscribe\": false,\n            \"publish\": true\n        }\n    ]\n}"
 								},
 								"url": {
 									"raw": "{{HDB_ENDPOINT}}",
@@ -630,12 +630,12 @@
 									"raw": "{\n  \"operation\":\"create_schema\",\n  \"schema\": \"dev\"\n}"
 								},
 								"url": {
-									"raw": "http://localhost:9925",
-									"protocol": "http",
+									"raw": "https://localhost:31283",
+									"protocol": "https",
 									"host": [
 										"localhost"
 									],
-									"port": "9925"
+									"port": "31283"
 								}
 							},
 							"status": "OK",
@@ -1183,12 +1183,12 @@
 									"raw": "{\n  \"operation\":\"create_table\",\n  \"schema\":\"dev\",\n  \"table\":\"dog\",\n  \"hash_attribute\": \"id\"\n}"
 								},
 								"url": {
-									"raw": "http://localhost:9925",
-									"protocol": "http",
+									"raw": "https://localhost:31283",
+									"protocol": "https",
 									"host": [
 										"localhost"
 									],
-									"port": "9925"
+									"port": "31283"
 								}
 							},
 							"status": "OK",
@@ -1311,12 +1311,12 @@
 									"raw": "{\n  \"operation\":\"create_table\",\n  \"schema\":\"dev\",\n  \"table\":\"dog\",\n  \"hash_attribute\": \"id\"\n}"
 								},
 								"url": {
-									"raw": "http://localhost:9925",
-									"protocol": "http",
+									"raw": "https://localhost:31283",
+									"protocol": "https",
 									"host": [
 										"localhost"
 									],
-									"port": "9925"
+									"port": "31283"
 								}
 							},
 							"status": "OK",
@@ -1439,12 +1439,12 @@
 									"raw": "{\n  \"operation\":\"create_table\",\n  \"schema\":\"dev\",\n  \"table\":\"dog\",\n  \"hash_attribute\": \"id\"\n}"
 								},
 								"url": {
-									"raw": "http://localhost:9925",
-									"protocol": "http",
+									"raw": "https://localhost:31283",
+									"protocol": "https",
 									"host": [
 										"localhost"
 									],
-									"port": "9925"
+									"port": "31283"
 								}
 							},
 							"status": "OK",
@@ -2046,12 +2046,12 @@
 									"raw": "{\n  \"operation\":\"create_schema\",\n  \"schema\": \"dev\"\n}"
 								},
 								"url": {
-									"raw": "http://localhost:9925",
-									"protocol": "http",
+									"raw": "https://localhost:31283",
+									"protocol": "https",
 									"host": [
 										"localhost"
 									],
-									"port": "9925"
+									"port": "31283"
 								}
 							},
 							"status": "OK",
@@ -2596,12 +2596,12 @@
 									"raw": "{\n  \"operation\":\"create_schema\",\n  \"schema\": \"dev\"\n}"
 								},
 								"url": {
-									"raw": "http://localhost:9925",
-									"protocol": "http",
+									"raw": "https://localhost:31283",
+									"protocol": "https",
 									"host": [
 										"localhost"
 									],
-									"port": "9925"
+									"port": "31283"
 								}
 							},
 							"status": "OK",
@@ -3143,12 +3143,12 @@
 									"raw": "{\n  \"operation\":\"create_schema\",\n  \"schema\": \"dev\"\n}"
 								},
 								"url": {
-									"raw": "http://localhost:9925",
-									"protocol": "http",
+									"raw": "https://localhost:31283",
+									"protocol": "https",
 									"host": [
 										"localhost"
 									],
-									"port": "9925"
+									"port": "31283"
 								}
 							},
 							"status": "OK",
@@ -3271,12 +3271,12 @@
 									"raw": "{\n  \"operation\":\"create_table\",\n  \"schema\":\"dev\",\n  \"table\":\"dog\",\n  \"hash_attribute\": \"id\"\n}"
 								},
 								"url": {
-									"raw": "http://localhost:9925",
-									"protocol": "http",
+									"raw": "https://localhost:31283",
+									"protocol": "https",
 									"host": [
 										"localhost"
 									],
-									"port": "9925"
+									"port": "31283"
 								}
 							},
 							"status": "OK",
@@ -3399,12 +3399,12 @@
 									"raw": "{\n  \"operation\":\"create_table\",\n  \"schema\":\"dev\",\n  \"table\":\"dog\",\n  \"hash_attribute\": \"id\"\n}"
 								},
 								"url": {
-									"raw": "http://localhost:9925",
-									"protocol": "http",
+									"raw": "https://localhost:31283",
+									"protocol": "https",
 									"host": [
 										"localhost"
 									],
-									"port": "9925"
+									"port": "31283"
 								}
 							},
 							"status": "OK",
@@ -3527,12 +3527,12 @@
 									"raw": "{\n  \"operation\":\"create_table\",\n  \"schema\":\"dev\",\n  \"table\":\"dog\",\n  \"hash_attribute\": \"id\"\n}"
 								},
 								"url": {
-									"raw": "http://localhost:9925",
-									"protocol": "http",
+									"raw": "https://localhost:31283",
+									"protocol": "https",
 									"host": [
 										"localhost"
 									],
-									"port": "9925"
+									"port": "31283"
 								}
 							},
 							"status": "OK",
@@ -3660,12 +3660,12 @@
 									"raw": "{\n\"operation\":\"insert\",\n\"schema\":\"dev\",\n\"table\":\"dog\",\n\"records\": [\n  {\n    \"name\":\"Harper\",\n    \"breed\":\"Mutt\",\n    \"id\":\"1\",\n    \"age\":5\n    \n  },\n  {\n    \"name\":\"Penny\",\n    \"breed\":\"Mutt\",\n    \"id\":\"3\",\n    \"age\":5\n    \n  }\n]\n\n}"
 								},
 								"url": {
-									"raw": "http://localhost:9925",
-									"protocol": "http",
+									"raw": "https://localhost:31283",
+									"protocol": "https",
 									"host": [
 										"localhost"
 									],
-									"port": "9925"
+									"port": "31283"
 								}
 							},
 							"status": "OK",
@@ -4215,12 +4215,12 @@
 									"raw": "{\n\"operation\":\"insert\",\n\"schema\":\"dev\",\n\"table\":\"dog\",\n\"records\": [\n  {\n    \"name\":\"Harper\",\n    \"breed\":\"Mutt\",\n    \"id\":\"1\",\n    \"age\":5\n    \n  },\n  {\n    \"name\":\"Penny\",\n    \"breed\":\"Mutt\",\n    \"id\":\"3\",\n    \"age\":5\n    \n  }\n]\n\n}"
 								},
 								"url": {
-									"raw": "http://localhost:9925",
-									"protocol": "http",
+									"raw": "https://localhost:31283",
+									"protocol": "https",
 									"host": [
 										"localhost"
 									],
-									"port": "9925"
+									"port": "31283"
 								}
 							},
 							"status": "OK",
@@ -4928,12 +4928,12 @@
 									"raw": "{\n\"operation\":\"insert\",\n\"schema\":\"dev\",\n\"table\":\"dog\",\n\"records\": [\n  {\n    \"name\":\"Harper\",\n    \"breed\":\"Mutt\",\n    \"id\":\"1\",\n    \"age\":5\n    \n  },\n  {\n    \"name\":\"Penny\",\n    \"breed\":\"Mutt\",\n    \"id\":\"3\",\n    \"age\":5\n    \n  }\n]\n\n}"
 								},
 								"url": {
-									"raw": "http://localhost:9925",
-									"protocol": "http",
+									"raw": "https://localhost:31283",
+									"protocol": "https",
 									"host": [
 										"localhost"
 									],
-									"port": "9925"
+									"port": "31283"
 								}
 							},
 							"status": "OK",
@@ -5359,12 +5359,12 @@
 									"raw": "{\n\"operation\":\"insert\",\n\"schema\":\"dev\",\n\"table\":\"dog\",\n\"records\": [\n  {\n    \"name\":\"Harper\",\n    \"breed\":\"Mutt\",\n    \"id\":\"1\",\n    \"age\":5\n    \n  },\n  {\n    \"name\":\"Penny\",\n    \"breed\":\"Mutt\",\n    \"id\":\"3\",\n    \"age\":5\n    \n  }\n]\n\n}"
 								},
 								"url": {
-									"raw": "http://localhost:9925",
-									"protocol": "http",
+									"raw": "https://localhost:31283",
+									"protocol": "https",
 									"host": [
 										"localhost"
 									],
-									"port": "9925"
+									"port": "31283"
 								}
 							},
 							"status": "OK",
@@ -7193,12 +7193,12 @@
 									"raw": "{\n\"operation\":\"insert\",\n\"schema\":\"dev\",\n\"table\":\"dog\",\n\"records\": [\n  {\n    \"name\":\"Harper\",\n    \"breed\":\"Mutt\",\n    \"id\":\"1\",\n    \"age\":5\n    \n  },\n  {\n    \"name\":\"Penny\",\n    \"breed\":\"Mutt\",\n    \"id\":\"3\",\n    \"age\":5\n    \n  }\n]\n\n}"
 								},
 								"url": {
-									"raw": "http://localhost:9925",
-									"protocol": "http",
+									"raw": "https://localhost:31283",
+									"protocol": "https",
 									"host": [
 										"localhost"
 									],
-									"port": "9925"
+									"port": "31283"
 								}
 							},
 							"status": "OK",
