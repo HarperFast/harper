@@ -372,12 +372,9 @@ function createDBI(env, dbi_name, dup_sort, is_hash_attribute= false){
     } catch(e) {
         //if not create it
         if(e.message === LMDB_ERRORS.DBI_DOES_NOT_EXIST) {
-            let dbi_init = new OpenDBIObject(true, dup_sort);
-            dbi_init.sharedStructureKey = Symbol.for('structures');
             //we version just the hash attribute index
-            if(is_hash_attribute === true){
-                dbi_init.useVersions = true;
-            }
+            let dbi_init = new OpenDBIObject(true, dup_sort, is_hash_attribute === true);
+            dbi_init.sharedStructureKey = Symbol.for('structures');
 
             let new_dbi = env.openDB(dbi_name, dbi_init);
 
@@ -416,7 +413,7 @@ function openDBI(env, dbi_name){
 
     let dbi;
     try {
-        let dbi_init = new OpenDBIObject(false, dbi_definition.dup_sort);
+        let dbi_init = new OpenDBIObject(false, dbi_definition.dup_sort, dbi_definition.useVersions);
         dbi = env.openDB(dbi_name, dbi_init);
     } catch(e){
         if(e.message.includes('MDB_NOTFOUND') === true){
