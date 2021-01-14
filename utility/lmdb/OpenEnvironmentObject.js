@@ -6,6 +6,7 @@ class OpenEnvironmentObject{
         this.mapSize = map_size;
         this.maxDbs = max_dbs;
         this.maxReaders = max_readers;
+        this.sharedStructuresKey = Symbol.for('structures');
     }
 }
 

@@ -29,8 +29,13 @@ function iterateFullIndex(env, hash_attribute, attribute, eval_function){
         return results;
     }
 
+    let dbi = environment_utility.openDBI(env, attribute);
+    if(dbi[lmdb_terms.DBI_DEFINITION_NAME].is_hash_attribute){
+        hash_attribute = attribute;
+    }
+
     try {
-        for(let {key, value} of env.dbis[attribute].getRange({})){
+        for(let {key, value} of dbi.getRange({})){
             eval_function(key, value, results, hash_attribute, attribute);
         }
         return results;
@@ -105,6 +110,12 @@ function iterateRangeBetween(env, hash_attribute, attribute, start_value, end_va
         if (stat.entryCount === 0) {
             return results;
         }
+
+        let dbi = environment_utility.openDBI(env, attribute);
+        if(dbi[lmdb_terms.DBI_DEFINITION_NAME].is_hash_attribute){
+            hash_attribute = attribute;
+        }
+
         start_value = auto_cast(start_value);
         start_value = common.convertKeyValueToWrite(start_value);
 
@@ -207,6 +218,10 @@ function equals(env, hash_attribute, attribute, search_value){
     validateComparisonFunctions(env, attribute, search_value);
 
     let dbi = environment_utility.openDBI(env, attribute);
+
+    if(dbi[lmdb_terms.DBI_DEFINITION_NAME].is_hash_attribute){
+        hash_attribute = attribute;
+    }
 
     try {
         search_value = auto_cast(search_value);
@@ -315,6 +330,10 @@ function startsWith(env, hash_attribute, attribute, search_value){
     }
 
     let dbi = environment_utility.openDBI(env, attribute);
+
+    if(dbi[lmdb_terms.DBI_DEFINITION_NAME].is_hash_attribute){
+        hash_attribute = attribute;
+    }
 
     //if the search is numeric we need to scan the entire index, if string we can just do a range
     search_value = auto_cast(search_value);

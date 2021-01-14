@@ -13,6 +13,7 @@ class OpenDBIObject{
         this.create = create;
         this.dupSort = dup_sort === true;
         this.useVersions = use_versions;
+        this.sharedStructuresKey = Symbol.for('structures');
     }
 }
 

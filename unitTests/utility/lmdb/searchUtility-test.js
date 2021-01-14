@@ -382,7 +382,7 @@ describe('Test searchUtility module', ()=>{
             await fs.mkdirp(BASE_TEST_PATH);
             global.lmdb_map = undefined;
             env = await environment_utility.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
-            await environment_utility.createDBI(env, 'id');
+            await environment_utility.createDBI(env, 'id', false, true);
             await write_utility.insertRecords(env, HASH_ATTRIBUTE_NAME, test_utils.deepClone(SOME_ATTRIBUTES), MULTI_RECORD_ARRAY);
         });
 
