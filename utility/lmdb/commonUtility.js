@@ -17,7 +17,7 @@ function validateEnv(env){
     if(!env){
         throw new Error(LMDB_ERRORS.ENV_REQUIRED);
     }
-    if(!(env.constructor.name === 'LMDBStore')){
+    if(env.constructor.name !== 'LMDBStore'){
         throw new Error(LMDB_ERRORS.INVALID_ENVIRONMENT);
     }
 }
