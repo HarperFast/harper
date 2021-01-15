@@ -24,7 +24,7 @@ const LMDB_MDB_NOTFOUND_CODE = -30798;
  * @param {String} hash_attribute - name of the table's hash attribute
  * @param {Array.<String>} write_attributes - list of all attributes to write to the database
  * @param  {Array.<Object>} records - object array records to insert
- * @returns {InsertRecordsResponseObject}
+ * @returns {Promise<InsertRecordsResponseObject>}
  */
 async function insertRecords(env, hash_attribute, write_attributes , records){
     validateWrite(env, hash_attribute, write_attributes , records);
@@ -147,7 +147,7 @@ function initializeTransaction(env, hash_attribute, write_attributes){
  * @param {String} hash_attribute - name of the table's hash attribute
  * @param {Array.<String>} write_attributes - list of all attributes to write to the database
  * @param  {Array.<Object>} records - object array records to update
- * @returns {UpdateRecordsResponseObject}
+ * @returns {Promise<UpdateRecordsResponseObject>}
  */
 async function updateRecords(env, hash_attribute, write_attributes , records){
     //validate
@@ -196,7 +196,7 @@ async function updateRecords(env, hash_attribute, write_attributes , records){
  * @param {String} hash_attribute - name of the table's hash attribute
  * @param {Array.<String>} write_attributes - list of all attributes to write to the database
  * @param  {Array.<Object>} records - object array records to update
- * @returns {UpdateRecordsResponseObject}
+ * @returns {Promise<UpdateRecordsResponseObject>}
  */
 async function upsertRecords(env, hash_attribute, write_attributes , records){
     //validate

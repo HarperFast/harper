@@ -52,7 +52,7 @@ async function deleteTransactionLogsBefore(delete_txn_logs_obj){
  *
  * @param env
  * @param {number} timestamp
- * @returns {DeleteTransactionsBeforeResults}
+ * @returns {Promise<DeleteTransactionsBeforeResults>}
  */
 async function deleteTransactions(env, timestamp){
         let results = new DeleteTransactionsBeforeResults();
