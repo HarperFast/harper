@@ -415,7 +415,7 @@ describe('Test configureCluster', () => {
     it(`Test nominal integer validation for HTTP Port`, async () => {
         let test_msg = {
             "operation": "configure_cluster",
-            "HTTP_PORT": "12345"
+            "SERVER_PORT": "12345"
         };
         let result = await cluster_utils.configureCluster(test_msg);
         assert.strictEqual(result, CONFIGURE_SUCCESS_RESPONSE, 'Expected success message');
@@ -423,7 +423,7 @@ describe('Test configureCluster', () => {
     it(`Test http port non integer`, async () => {
         let test_msg = {
             "operation": "configure_cluster",
-            "HTTP_PORT": "asdf"
+            "SERVER_PORT": "asdf"
         };
         let result = undefined;
         try {

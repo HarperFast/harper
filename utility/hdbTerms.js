@@ -24,7 +24,7 @@ const BASIC_LICENSE_MAX_NON_CU_ROLES = 1;
 const BASIC_LICENSE_MAX_CLUSTER_CONNS = 3;
 const BASIC_LICENSE_CLUSTER_CONNECTION_LIMIT_WS_ERROR_CODE = 4141;
 const HDB_SUPPORT_URL = 'https://harperdbhelp.zendesk.com/hc/en-us';
-const HDB_PRICING_URL = 'https://https://www.harperdb.io/product';
+const HDB_PRICING_URL = 'https://www.harperdb.io/product';
 const SUPPORT_HELP_MSG = `For support, please submit a support request at ${HDB_SUPPORT_URL} or contact ${HDB_SUPPORT_ADDRESS}`;
 const LICENSE_HELP_MSG = `For license support, please contact ${HDB_LICENSE_EMAIL_ADDRESS}`;
 const SEARCH_NOT_FOUND_MESSAGE = "None of the specified records were found.";
@@ -298,12 +298,10 @@ const GEO_CONVERSION_ENUM = {
 const HDB_SETTINGS_NAMES = {
     PROJECT_DIR_KEY: 'PROJECT_DIR',
     HDB_ROOT_KEY: 'HDB_ROOT',
-    HTTP_PORT_KEY: 'HTTP_PORT',
-    HTTP_SECURE_PORT_KEY: 'HTTPS_PORT',
+    SERVER_PORT_KEY: 'SERVER_PORT',
     CERT_KEY: 'CERTIFICATE',
     PRIVATE_KEY_KEY: 'PRIVATE_KEY',
     HTTP_SECURE_ENABLED_KEY: 'HTTPS_ON',
-    HTTP_ENABLED_KEY: 'HTTP_ON',
     CORS_ENABLED_KEY: 'CORS_ON',
     CORS_WHITELIST_KEY: 'CORS_WHITELIST',
     LOG_LEVEL_KEY: 'LOG_LEVEL',
@@ -336,10 +334,8 @@ const HDB_SETTINGS_NAMES_REVERSE_LOOKUP = _.invert(HDB_SETTINGS_NAMES);
 
 // Default values for the Settings, some do not have a default.
 const HDB_SETTINGS_DEFAULT_VALUES = {
-    HTTP_PORT: 9925,
-    HTTPS_PORT: 31283,
+    SERVER_PORT: 9925,
     HTTPS_ON: 'true',
-    HTTP_ON: 'false',
     CORS_ON: 'true',
     CORS_WHITELIST: '',
     SERVER_TIMEOUT_MS: 120000,

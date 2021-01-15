@@ -19,8 +19,8 @@ const p_sql_evaluate_sql = promisify(sql.evaluateSQL);
 const p_global_schema = promisify(global_schema.setSchemaDataToGlobal);
 env_mngr.initSync();
 
-const HTTP_PORT = 9925;//env_mngr.get('HTTP_PORT');
-const BASE_ROUTE = `http://localhost:${HTTP_PORT}`;
+const SERVER_PORT = 31283;//env_mngr.get('SERVER_PORT');
+const BASE_ROUTE = `https://localhost:${SERVER_PORT}`;
 const { BASIC_AUTH, FUNC_INPUT, REQUEST_JSON, TEST_DOG_RECORDS } = require('./testData');
 
 const USE_JWT = false;
