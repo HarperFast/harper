@@ -534,7 +534,7 @@ function clusterMessageHandler(msg) {
                         child_event_count = 0;
                         try {
                             kickOffEnterprise().then(() => {
-                                log.info('clustering initialized');
+                                log.info('HDB server clustering initialized');
                             });
                         } catch(e) {
                             log.error('clustering failed to start: ' + e);
@@ -581,7 +581,7 @@ function clusterMessageHandler(msg) {
                     if(global.forks[i]) {
                         try {
                             log.debug(`Sending ${terms.RESTART_CODE} signal to process with pid:${global.forks[i].process.pid}`);
-                            global.forks[i].send({type: terms.CLUSTER_MESSAGE_TYPE_ENUM.RESTART});
+                            global.forks[i].send(msg);
                         } catch(err) {
                             log.error(`Got an error trying to send ${terms.RESTART_CODE} to process ${global.forks[i].process.pid}.`);
                         }

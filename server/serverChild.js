@@ -70,11 +70,6 @@ async function childServer() {
 
     process.on('uncaughtException', handleServerUncaughtException);
 
-    //TODO - add this to the shutDown feature in follow-up JIRA for shutDown bug fix
-    // process.on('close',() => {
-    //     harper_logger.info(`Server close event received for process ${process.pid}`);
-    // });
-
     global.isMaster = cluster.isMaster;
 
     harper_logger.debug(`child process ${process.pid} starting up.`);
@@ -124,14 +119,14 @@ async function buildServer(is_https) {
     );
 
     //TODO - revisit during shutDown story - this info may be available via Fastify instance
-    //app.server.on('connection', function(socket) {
-    //     let key = socket.remoteAddress + ':' + socket.remotePort;
-    //     server_connections[key] = socket;
-    //     socket.on('close', function() {
-    //         harper_logger.debug(`removing connection for ${key}`);
-    //         delete server_connections[key];
-    //     });
-    // });
+    app.server.on('connection', function(socket) {
+        let key = socket.remoteAddress + ':' + socket.remotePort;
+        server_connections[key] = socket;
+        socket.on('close', function() {
+            harper_logger.debug(`removing connection for ${key}`);
+            delete server_connections[key];
+        });
+    });
 
     try {
         harper_logger.debug(`child process starting up ${is_https ? 'HTTPS' : 'HTTP'} server.`);
@@ -306,21 +301,22 @@ async function shutDown(force_bool) {
                 server_connections[conn].destroy();
             }
         }
+
         setTimeout(() => {
             harper_logger.info(`Timeout occurred during client disconnect.  Took longer than ${terms.RESTART_TIMEOUT_MS}ms.`);
             hdb_util.callProcessSend({type: terms.CLUSTER_MESSAGE_TYPE_ENUM.CHILD_STOPPED, pid: process.pid});
         }, terms.RESTART_TIMEOUT_MS);
-        if (hdbServer) {
-            try {
-                await hdbServer.close();
-                harper_logger.debug(`Process pid:${process.pid} - server closed`);
-            } catch (err) {
-                harper_logger.debug(`Process pid:${process.pid} - error closing server - ${err}`);
-            }
+
+        try {
+            await hdbServer.close();
+            hdbServer = null;
+            harper_logger.debug(`Process pid:${process.pid} - server closed`);
+        } catch (err) {
+            harper_logger.debug(`Process pid:${process.pid} - error closing server - ${err}`);
         }
-        harper_logger.info(`Process pid:${process.pid} - Work completed, shutting down`);
-        hdb_util.callProcessSend({type: terms.CLUSTER_MESSAGE_TYPE_ENUM.CHILD_STOPPED, pid: process.pid});
     }
+    harper_logger.info(`Process pid:${process.pid} - Work completed, shutting down`);
+    hdb_util.callProcessSend({type: terms.CLUSTER_MESSAGE_TYPE_ENUM.CHILD_STOPPED, pid: process.pid});
 }
 
 module.exports = childServer;

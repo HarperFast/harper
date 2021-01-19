@@ -35,7 +35,7 @@ async function serverParent(num_workers) {
     all_children_stopped_event.allChildrenStoppedEmitter.on(all_children_stopped_event.EVENT_NAME,(msg) => {
         harper_logger.info(`Got all children stopped event.`);
         try {
-            restart_event_tracker.express_connections_stopped = true;
+            restart_event_tracker.fastify_connections_stopped = true;
             if(restart_event_tracker.isReadyForRestart()) {
                 if(!restart_in_progress) {
                     restart_in_progress = true;
@@ -103,7 +103,9 @@ async function launch(num_workers) {
             });
             forked.on('disconnect',(err) => {
                 harper_logger.error('HDB child has been disconnected.');
-                harper_logger.error(err);
+                if (err) {
+                    harper_logger.error(err);
+                }
             });
             forked.on('listening',(address) => {
                 harper_logger.info(`HDB child process is listening`);
