@@ -20,9 +20,12 @@ const lmdb = require('lmdb-store');
  * @param {String} hash_attribute
  * @param {String} attribute
  * @param {Function} eval_function
+ * @param {boolean} reverse - defines if the iterator goes from last to first
+ * @param {number} limit - defines the max number of entries to iterate
+ * @param {number} offset - defines the entries to skip
  * @returns {[]}
  */
-function iterateFullIndex(env, hash_attribute, attribute, eval_function){
+function iterateFullIndex(env, hash_attribute, attribute, eval_function, reverse = false, limit = undefined, offset = undefined){
     let results = Object.create(null);
     let stat = environment_utility.statDBI(env, attribute);
     if(stat.entryCount === 0){
@@ -35,7 +38,7 @@ function iterateFullIndex(env, hash_attribute, attribute, eval_function){
     }
 
     try {
-        for(let {key, value} of dbi.getRange({})){
+        for(let {key, value} of dbi.getRange({limit: limit, offset: offset, reverse: reverse})){
             eval_function(key, value, results, hash_attribute, attribute);
         }
         return results;
@@ -51,10 +54,12 @@ function iterateFullIndex(env, hash_attribute, attribute, eval_function){
  * @param {String} attribute
  * @param {String|Number} search_value
  * @param {Function} eval_function
- * @param {Boolean} reverse
+ * @param {boolean} reverse - defines if the iterator goes from last to first
+ * @param {number} limit - defines the max number of entries to iterate
+ * @param {number} offset - defines the entries to skip
  * @returns {[]}
  */
-function iterateRangeNext(env, hash_attribute, attribute, search_value, eval_function, reverse = false){
+function iterateRangeNext(env, hash_attribute, attribute, search_value, eval_function, reverse = false, limit = undefined, offset = undefined){
     let results = Object.create(null);
     let stat = environment_utility.statDBI(env, attribute);
     if(stat.entryCount === 0){
@@ -77,7 +82,7 @@ function iterateRangeNext(env, hash_attribute, attribute, search_value, eval_fun
             }
         }
 
-        for(let {key, value} of dbi.getRange({start:search_value, reverse: reverse})){
+        for(let {key, value} of dbi.getRange({start:search_value, reverse, limit, offset})){
             eval_function(search_value, key, value, results, hash_attribute, attribute);
         }
 
@@ -100,9 +105,12 @@ function iterateRangeNext(env, hash_attribute, attribute, search_value, eval_fun
  * @param {String} attribute
  * @param {Number|String} start_value
  * @param {Number|String} end_value
+ * @param {boolean} reverse - defines if the iterator goes from last to first
+ * @param {number} limit - defines the max number of entries to iterate
+ * @param {number} offset - defines the entries to skip
  * @returns {[]}
  */
-function iterateRangeBetween(env, hash_attribute, attribute, start_value, end_value){
+function iterateRangeBetween(env, hash_attribute, attribute, start_value, end_value, reverse = false, limit = undefined, offset = undefined){
 
     try {
         let results = Object.create(null);
@@ -122,7 +130,7 @@ function iterateRangeBetween(env, hash_attribute, attribute, start_value, end_va
         end_value = auto_cast(end_value);
         end_value = common.convertKeyValueToWrite(end_value);
 
-        for(let {key, value} of env.dbis[attribute].getRange({start: start_value, end: end_value})){
+        for(let {key, value} of env.dbis[attribute].getRange({start: start_value, end: end_value, reverse, limit, offset})){
             cursor_functions.pushResults(key, value, results, hash_attribute, attribute);
         }
 
@@ -142,8 +150,11 @@ function iterateRangeBetween(env, hash_attribute, attribute, start_value, end_va
  * @param {String} hash_attribute - name of the hash_attribute for this environment
  * @param {Array.<String>} fetch_attributes - string array of attributes to pull from the object
  * @returns {Array.<Object>} - object array of fetched records
+ * @param {boolean} reverse - defines if the iterator goes from last to first
+ * @param {number} limit - defines the max number of entries to iterate
+ * @param {number} offset - defines the entries to skip
  */
-function searchAll(env, hash_attribute, fetch_attributes){
+function searchAll(env, hash_attribute, fetch_attributes, reverse = false, limit = undefined, offset = undefined){
     common.validateEnv(env);
 
     if(hash_attribute === undefined){
@@ -152,7 +163,7 @@ function searchAll(env, hash_attribute, fetch_attributes){
 
     validateFetchAttributes(fetch_attributes);
 
-    let results = iterateFullIndex(env, hash_attribute, hash_attribute, cursor_functions.searchAll.bind(null, fetch_attributes));
+    let results = iterateFullIndex(env, hash_attribute, hash_attribute, cursor_functions.searchAll.bind(null, fetch_attributes), reverse, limit, offset);
     return Object.values(results);
 }
 
@@ -161,9 +172,13 @@ function searchAll(env, hash_attribute, fetch_attributes){
 * @param {lmdb.RootDatabase} env - environment object used thigh level to interact with all data in an environment
 * @param {String} hash_attribute - name of the hash_attribute for this environment
 * @param {Array.<String>} fetch_attributes - string array of attributes to pull from the object
+ * @param {boolean} reverse - defines if the iterator goes from last to first
+ * @param {number} limit - defines the max number of entries to iterate
+ * @param {number} offset - defines the entries to skip
 * @returns {{String|Number, Object}} - object array of fetched records
+
 */
-function searchAllToMap(env, hash_attribute, fetch_attributes){
+function searchAllToMap(env, hash_attribute, fetch_attributes, reverse = false, limit = undefined, offset = undefined){
     common.validateEnv(env);
 
     if(hash_attribute === undefined){
@@ -171,22 +186,25 @@ function searchAllToMap(env, hash_attribute, fetch_attributes){
     }
 
     validateFetchAttributes(fetch_attributes);
-    return iterateFullIndex(env, hash_attribute, hash_attribute, cursor_functions.searchAll.bind(null, fetch_attributes));
+    return iterateFullIndex(env, hash_attribute, hash_attribute, cursor_functions.searchAll.bind(null, fetch_attributes), reverse, limit, offset);
 }
 
 /**
  * iterates a dbi and returns the key/value pairing for each entry
  * @param env
  * @param attribute
+ * @param {boolean} reverse - defines if the iterator goes from last to first
+ * @param {number} limit - defines the max number of entries to iterate
+ * @param {number} offset - defines the entries to skip
  * @returns {Array.<Array>}
  */
-function iterateDBI(env, attribute){
+function iterateDBI(env, attribute, reverse = false, limit = undefined, offset = undefined){
     common.validateEnv(env);
     if(attribute === undefined){
         throw new Error(LMDB_ERRORS.ATTRIBUTE_REQUIRED);
     }
 
-    return iterateFullIndex(env, attribute, attribute, cursor_functions.iterateDBI);
+    return iterateFullIndex(env, attribute, attribute, cursor_functions.iterateDBI, reverse, limit, offset);
 }
 
 /**
@@ -212,9 +230,12 @@ function countAll(env, hash_attribute){
  * @param {String} hash_attribute
  * @param {String} attribute - name of the attribute (dbi) to search
  * @param search_value - value to search
+ * @param {boolean} reverse - defines if the iterator goes from last to first
+ * @param {number} limit - defines the max number of entries to iterate
+ * @param {number} offset - defines the entries to skip
  * @returns {[]} - ids matching the search
  */
-function equals(env, hash_attribute, attribute, search_value){
+function equals(env, hash_attribute, attribute, search_value, reverse = false, limit = undefined, offset = undefined){
     validateComparisonFunctions(env, attribute, search_value);
 
     let dbi = environment_utility.openDBI(env, attribute);
@@ -228,7 +249,7 @@ function equals(env, hash_attribute, attribute, search_value){
         search_value = common.convertKeyValueToWrite(search_value);
 
         let results = Object.create(null);
-        for (let value of dbi.getValues(search_value)) {
+        for (let value of dbi.getValues(search_value, {reverse, limit, offset})) {
             cursor_functions.pushResults(search_value, value, results, hash_attribute, attribute);
         }
 
@@ -318,9 +339,12 @@ function addResultFromBlobSearch(hash_value, blob_value, hash_attribute, attribu
  * @param {String} hash_attribute
  * @param {String} attribute - name of the attribute (dbi) to search
  * @param search_value - value to search
+ * @param {boolean} reverse - defines if the iterator goes from last to first
+ * @param {number} limit - defines the max number of entries to iterate
+ * @param {number} offset - defines the entries to skip
  * @returns {[]} - ids matching the search
  */
-function startsWith(env, hash_attribute, attribute, search_value){
+function startsWith(env, hash_attribute, attribute, search_value, reverse = false, limit = undefined, offset = undefined){
     validateComparisonFunctions(env, attribute, search_value);
 
     let results = Object.create(null);
@@ -343,7 +367,7 @@ function startsWith(env, hash_attribute, attribute, search_value){
         string_search = false;
     }
 
-    for(let {key, value} of dbi.getRange({start: search_value})){
+    for(let {key, value} of dbi.getRange({start: search_value, reverse, limit, offset})){
         if(key.toString().startsWith(search_value)){
             cursor_functions.pushResults(key, value, results, hash_attribute, attribute);
         } else if(string_search === true){
@@ -361,12 +385,15 @@ function startsWith(env, hash_attribute, attribute, search_value){
  * @param {String} hash_attribute
  * @param {String} attribute - name of the attribute (dbi) to search
  * @param search_value - value to search
+ * @param {boolean} reverse - defines if the iterator goes from last to first
+ * @param {number} limit - defines the max number of entries to iterate
+ * @param {number} offset - defines the entries to skip
  * @returns {[]} - ids matching the search
  */
-function endsWith(env, hash_attribute, attribute, search_value){
+function endsWith(env, hash_attribute, attribute, search_value, reverse = false, limit = undefined, offset = undefined){
     validateComparisonFunctions(env, attribute, search_value);
 
-    let results = iterateFullIndex(env, hash_attribute, attribute, cursor_functions.endsWith.bind(null, search_value));
+    let results = iterateFullIndex(env, hash_attribute, attribute, cursor_functions.endsWith.bind(null, search_value), reverse, limit, offset);
     results = blobSearch(env, hash_attribute, attribute, search_value, lmdb_terms.SEARCH_TYPES.ENDS_WITH, results);
     return results;
 }
@@ -377,12 +404,15 @@ function endsWith(env, hash_attribute, attribute, search_value){
  * @param {String} hash_attribute
  * @param {String} attribute - name of the attribute (dbi) to search
  * @param {String|Number} search_value - value to search
+ * @param {boolean} reverse - defines if the iterator goes from last to first
+ * @param {number} limit - defines the max number of entries to iterate
+ * @param {number} offset - defines the entries to skip
  * @returns {[]} - ids matching the search
  */
-function contains(env, hash_attribute, attribute, search_value){
+function contains(env, hash_attribute, attribute, search_value, reverse = false, limit = undefined, offset = undefined){
     validateComparisonFunctions(env, attribute, search_value);
 
-    let results = iterateFullIndex(env, hash_attribute, attribute, cursor_functions.contains.bind(null, search_value));
+    let results = iterateFullIndex(env, hash_attribute, attribute, cursor_functions.contains.bind(null, search_value), reverse, limit, offset);
     results = blobSearch(env, hash_attribute, attribute, search_value, lmdb_terms.SEARCH_TYPES.CONTAINS, results);
     return results;
 }
@@ -395,13 +425,16 @@ function contains(env, hash_attribute, attribute, search_value){
  * @param {String} hash_attribute
  * @param {String} attribute
  * @param {String|Number} search_value
+ * @param {boolean} reverse - defines if the iterator goes from last to first
+ * @param {number} limit - defines the max number of entries to iterate
+ * @param {number} offset - defines the entries to skip
  * @returns {*[]}
  */
-function greaterThan(env, hash_attribute, attribute, search_value){
+function greaterThan(env, hash_attribute, attribute, search_value, reverse = false, limit = undefined, offset = undefined){
     validateComparisonFunctions(env, attribute, search_value);
     search_value = auto_cast(search_value);
     search_value = common.convertKeyValueToWrite(search_value);
-    return iterateRangeNext(env, hash_attribute, attribute, search_value, cursor_functions.greaterThanCompare);
+    return iterateRangeNext(env, hash_attribute, attribute, search_value, cursor_functions.greaterThanCompare, reverse, limit, offset);
 }
 
 /**
@@ -410,13 +443,16 @@ function greaterThan(env, hash_attribute, attribute, search_value){
  * @param {String} hash_attribute
  * @param {String} attribute
  * @param {String|Number} search_value
+ * @param {boolean} reverse - defines if the iterator goes from last to first
+ * @param {number} limit - defines the max number of entries to iterate
+ * @param {number} offset - defines the entries to skip
  * @returns {*[]}
  */
-function greaterThanEqual(env, hash_attribute, attribute, search_value){
+function greaterThanEqual(env, hash_attribute, attribute, search_value, reverse = false, limit = undefined, offset = undefined){
     validateComparisonFunctions(env, attribute, search_value);
     search_value = auto_cast(search_value);
     search_value = common.convertKeyValueToWrite(search_value);
-    return iterateRangeNext(env, hash_attribute, attribute, search_value, cursor_functions.greaterThanEqualCompare);
+    return iterateRangeNext(env, hash_attribute, attribute, search_value, cursor_functions.greaterThanEqualCompare, reverse, limit, offset);
 }
 
 /**
@@ -425,13 +461,16 @@ function greaterThanEqual(env, hash_attribute, attribute, search_value){
  * @param {String} hash_attribute
  * @param {String} attribute
  * @param {String|Number} search_value
+ * @param {boolean} reverse - defines if the iterator goes from last to first
+ * @param {number} limit - defines the max number of entries to iterate
+ * @param {number} offset - defines the entries to skip
  * @returns {*[]}
  */
-function lessThan(env, hash_attribute, attribute, search_value){
+function lessThan(env, hash_attribute, attribute, search_value, reverse = false, limit = undefined, offset = undefined){
     validateComparisonFunctions(env, attribute, search_value);
     search_value = auto_cast(search_value);
     search_value = common.convertKeyValueToWrite(search_value);
-    return iterateRangeNext(env, hash_attribute, attribute, search_value, cursor_functions.lessThanCompare, true);
+    return iterateRangeNext(env, hash_attribute, attribute, search_value, cursor_functions.lessThanCompare, true, limit, offset);
 }
 
 /**
@@ -440,13 +479,16 @@ function lessThan(env, hash_attribute, attribute, search_value){
  * @param {String} hash_attribute
  * @param {String} attribute
  * @param {String|Number} search_value
+ * @param {boolean} reverse - defines if the iterator goes from last to first
+ * @param {number} limit - defines the max number of entries to iterate
+ * @param {number} offset - defines the entries to skip
  * @returns {*[]}
  */
-function lessThanEqual(env, hash_attribute, attribute, search_value){
+function lessThanEqual(env, hash_attribute, attribute, search_value, reverse = false, limit = undefined, offset = undefined){
     validateComparisonFunctions(env, attribute, search_value);
     search_value = auto_cast(search_value);
     search_value = common.convertKeyValueToWrite(search_value);
-    return iterateRangeNext(env, hash_attribute, attribute, search_value, cursor_functions.lessThanEqualCompare, true);
+    return iterateRangeNext(env, hash_attribute, attribute, search_value, cursor_functions.lessThanEqualCompare, true, limit, offset);
 }
 
 /**
@@ -456,9 +498,12 @@ function lessThanEqual(env, hash_attribute, attribute, search_value){
  * @param {String} attribute
  * @param {String|Number} start_value
  * @param {String|Number}end_value
+ * @param {boolean} reverse - defines if the iterator goes from last to first
+ * @param {number} limit - defines the max number of entries to iterate
+ * @param {number} offset - defines the entries to skip
  * @returns {*[]}
  */
-function between(env, hash_attribute, attribute, start_value, end_value){
+function between(env, hash_attribute, attribute, start_value, end_value, reverse = false, limit = undefined, offset = undefined){
     common.validateEnv(env);
 
     if(attribute === undefined){
@@ -481,7 +526,7 @@ function between(env, hash_attribute, attribute, start_value, end_value){
         throw new Error(LMDB_ERRORS.END_VALUE_MUST_BE_GREATER_THAN_START_VALUE);
     }
 
-    return iterateRangeBetween(env, hash_attribute, attribute, start_value, end_value);
+    return iterateRangeBetween(env, hash_attribute, attribute, start_value, end_value, reverse, limit, offset);
 }
 
 /**
