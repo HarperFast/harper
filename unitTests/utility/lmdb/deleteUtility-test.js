@@ -51,17 +51,15 @@ const sandbox = sinon.createSandbox();
 
 describe('Test deleteUtility', ()=>{
     let env;
-    //let rw_env_util;
+
     let get_micro_time_stub;
     let date_stub;
     before(()=>{
-        //rw_env_util = environment_utility.__set__('MAP_SIZE', 5*1024*1024*1024);
         get_micro_time_stub = sandbox.stub(common, 'getMicroTime').returns(TXN_TIMESTAMP);
         date_stub = sandbox.stub(Date, 'now').returns(TIMESTAMP);
     });
 
     after(()=>{
-        //rw_env_util();
         get_micro_time_stub.restore();
         date_stub.restore();
     });

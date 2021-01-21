@@ -29,16 +29,13 @@ const get_dbi_definition = rw_lmdb_env_util.__get__('getDBIDefinition');
 
 
 describe("Test LMDB environmentUtility module", ()=>{
-    let rw_env_util;
     before(async()=>{
         await fs.remove(test_utils.getMockFSPath());
-       // rw_env_util = rw_lmdb_env_util.__set__('MAP_SIZE', 5*1024*1024*1024);
         await fs.mkdirp(BASE_TEST_PATH);
         global.lmdb_map = undefined;
     });
 
     after(async ()=>{
-        //rw_env_util();
         await fs.remove(BASE_TEST_PATH);
         global.lmdb_map = undefined;
     });

@@ -74,9 +74,7 @@ describe("test lmdbCreateTable module", ()=>{
     let hdb_table_env;
     let hdb_attribute_env;
     let date_stub;
-    let rw_env_util;
     before(async ()=>{
-        rw_env_util = environment_utility.__set__('MAP_SIZE', 5*1024*1024*1024);
         global.lmdb_map = undefined;
         global.hdb_schema = {system: systemSchema};
         date_stub = sandbox.stub(Date, 'now').returns(TIMESTAMP);
@@ -102,7 +100,6 @@ describe("test lmdbCreateTable module", ()=>{
         hdb_schema_env.close();
         hdb_attribute_env.close();
 
-        rw_env_util();
         date_stub.restore();
         delete global.hdb_schema;
         await fs.remove(BASE_PATH);

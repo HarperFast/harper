@@ -39,10 +39,9 @@ const MULTI_RECORD_ARRAY2 = [
 const TIMESTAMP = Date.now();
 
 describe('Test searchUtility module', ()=>{
-    //let rw_env_util;
     let date_stub;
     before(()=> {
-        //rw_env_util = environment_utility.__set__('MAP_SIZE', 5 * 1024 * 1024 * 1024);
+
         test_data.forEach(record=>{
             Object.keys(record).forEach(key=>{
                 record[key] = common_utils.autoCast(record[key]);
@@ -54,7 +53,6 @@ describe('Test searchUtility module', ()=>{
 
     after(()=> {
         date_stub.restore();
-        //rw_env_util();
     });
 
     describe('test searchByHash function', ()=>{

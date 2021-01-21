@@ -21,14 +21,11 @@ const CREATE_TABLE_OBJ = {
 };
 
 describe('test lmdbCreateTransactionsEnvironment module', ()=>{
-    let rw_env_util;
     before(async ()=>{
         await fs.remove(BASE_PATH);
-        rw_env_util = environment_utility.__set__('MAP_SIZE', 5*1024*1024*1024);
     });
 
     after(()=>{
-        rw_env_util();
     });
 
     describe('test lmdbCreateTransactionsEnvironment function', ()=>{
