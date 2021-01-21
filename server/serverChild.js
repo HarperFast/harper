@@ -58,7 +58,6 @@ const DEFAULT_KEEP_ALIVE_TIMEOUT = HDB_SETTINGS_DEFAULT_VALUES[PROPS_SERVER_KEEP
 const DEFAULT_HEADER_TIMEOUT = HDB_SETTINGS_DEFAULT_VALUES[PROPS_HEADER_TIMEOUT_KEY];
 
 let hdbServer = undefined;
-let server_connections = {};
 
 async function childServer() {
     harper_logger.info('In Fastify server' + process.cwd());
@@ -118,31 +117,22 @@ async function buildServer(is_https) {
         }
     );
 
-    //TODO - revisit during shutDown story - this info may be available via Fastify instance
-    app.server.on('connection', function(socket) {
-        let key = socket.remoteAddress + ':' + socket.remotePort;
-        server_connections[key] = socket;
-        socket.on('close', function() {
-            harper_logger.debug(`removing connection for ${key}`);
-            delete server_connections[key];
+    harper_logger.debug(`child process starting up ${is_https ? 'HTTPS' : 'HTTP'} server.`);
+
+    await app.listen(env.get(PROPS_SERVER_PORT_KEY), '::')
+        .then(address => {
+            harper_logger.info(`HarperDB ${pjson.version} HTTPS Server running on ${address}`);
+            signalling.signalChildStarted();
+        })
+        .catch(e => {
+            //TODO - do I also need to send a message to restart the process?
+            app.close();
+            const err_msg = `Error configuring ${is_https ? 'HTTPS' : 'HTTP'} server`;
+            harper_logger.error(`Error configuring ${is_https ? 'HTTPS' : 'HTTP'} server`);
+            harper_logger.error(e);
+            throw handleHDBError(e, err_msg);
         });
-    });
-
-    try {
-        harper_logger.debug(`child process starting up ${is_https ? 'HTTPS' : 'HTTP'} server.`);
-
-        await app.listen(env.get(PROPS_SERVER_PORT_KEY), '::')
-            .then(address => {
-                harper_logger.info(`HarperDB ${pjson.version} HTTPS Server running on ${address}`);
-                signalling.signalChildStarted();
-            });
-        return app;
-    } catch(e) {
-        const err_msg = `Error configuring ${is_https ? 'HTTPS' : 'HTTP'} server`;
-        harper_logger.error(`Error configuring ${is_https ? 'HTTPS' : 'HTTP'} server`);
-        harper_logger.error(e);
-        throw handleHDBError(e, err_msg);
-    }
+    return app;
 }
 
 function getServerOptions(is_https) {
@@ -229,8 +219,7 @@ async function handleServerMessage(msg) {
         case terms.CLUSTER_MESSAGE_TYPE_ENUM.RESTART:
             harper_logger.info(`Server close event received for process ${process.pid}`);
             harper_logger.debug(`calling shutdown`);
-            let force = msg.force_shutdown === undefined ? true : msg.force_shutdown;
-            await shutDown(force).then(() => {
+            await shutDown().then(() => {
                 harper_logger.info(`Completed shut down`);
                 process.exit(terms.RESTART_CODE_NUM);
             });
@@ -288,20 +277,9 @@ async function syncSchemaMetadata(msg) {
     }
 }
 
-async function shutDown(force_bool) {
+async function shutDown() {
     harper_logger.debug(`Calling shutdown`);
     if (hdbServer) {
-        //TODO - continue digging on whether or not this is necessary w/ Fastify. It seems like connections are being
-        // handled internally on fastify.close but need to do more research to confirm.  In old hdb_express, we were not
-        // using the force_bool in the method so also dig more to understand what that might have been used for in past.
-        if (force_bool) {
-            harper_logger.info(`Closing ${Object.keys(server_connections).length} server connections.`);
-            for (let conn of Object.keys(server_connections)) {
-                harper_logger.info(`Closing connection ${util.inspect(server_connections[conn])}`);
-                server_connections[conn].destroy();
-            }
-        }
-
         setTimeout(() => {
             harper_logger.info(`Timeout occurred during client disconnect.  Took longer than ${terms.RESTART_TIMEOUT_MS}ms.`);
             hdb_util.callProcessSend({type: terms.CLUSTER_MESSAGE_TYPE_ENUM.CHILD_STOPPED, pid: process.pid});

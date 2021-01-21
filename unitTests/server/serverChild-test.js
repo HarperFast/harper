@@ -10,6 +10,9 @@ const DEFAULT_CONFIG = require('../../utility/hdbTerms').HDB_SETTINGS_DEFAULT_VA
 const serverHandlers = require('../../server/serverHelpers/serverHandlers');
 const server_utilities = require('../../server/serverHelpers/serverUtilities');
 const OperationFunctionCaller = require('../../utility/OperationFunctionCaller');
+const harper_logger = require('../../utility/logging/harper_logger');
+const signalling = require('../../utility/signalling');
+const hdb_util = require('../../utility/common_utils');
 
 const KEYS_PATH = path.join(test_utils.getMockFSPath(), 'utility/keys');
 const PRIVATE_KEY_PATH = path.join(KEYS_PATH, 'privateKey.pem');
@@ -36,6 +39,9 @@ let handlePostRequest_spy;
 let callOperation_stub;
 let auth_stub;
 let chooseOp_stub;
+let logger_info_stub;
+let logger_debug_stub;
+const fake = () => {};
 
 const test_op_resp = "table 'dev.dogz' successfully created.";
 const test_cert_val = test_utils.getHTTPSCredentials().cert;
@@ -49,6 +55,8 @@ describe('Test serverChild.js', () => {
 
         fs.writeFileSync(PRIVATE_KEY_PATH, test_key_val);
         fs.writeFileSync(CERTIFICATE_PATH, test_cert_val);
+        logger_info_stub = sandbox.stub(harper_logger, 'info').callsFake(fake);
+        logger_debug_stub = sandbox.stub(harper_logger, 'debug').callsFake(fake);
         handlePostRequest_spy = sandbox.spy(serverHandlers, 'handlePostRequest');
         callOperation_stub = sandbox.stub(OperationFunctionCaller, 'callOperationFunctionAsAwait').resolves(test_op_resp);
         auth_stub = sandbox.stub(serverHandlers, 'authHandler').callsFake((req, res, done) => done());
@@ -71,10 +79,6 @@ describe('Test serverChild.js', () => {
     })
 
     describe('exported serverChild method', () => {
-
-        // before(() => {
-        //     setupServerTest();
-        // })
 
         it('should build HTTPS server when HTTPS_ON set to true', async() => {
             const test_config_settings = { https_enabled: true }
@@ -436,13 +440,20 @@ describe('Test serverChild.js', () => {
     describe('buildServer() method', () => {
         let buildServer_rw;
         let test_result;
+        let signalChildStarted_stub;
 
+        before(() => {
+            signalChildStarted_stub = sandbox.stub(signalling, "signalChildStarted")
+        })
         beforeEach(() => {
             buildServer_rw = serverChild_rw.__get__('buildServer');
         });
 
         afterEach(async() => {
-            await test_result.close();
+            if (test_result.server) {
+                await test_result.close();
+            }
+            test_result = undefined;
         })
 
         it('should return an http server', async() => {
@@ -459,6 +470,21 @@ describe('Test serverChild.js', () => {
 
             expect(test_result.server.constructor.name).to.equal('Server');
             expect(test_result.initialConfig.https).to.be.true;
+        })
+
+        it('should catch and log an error if thrown from app.listen()', async() => {
+            const test_err = "This is a test error."
+            signalChildStarted_stub.throws(test_err);
+            const test_is_https = true;
+            try {
+                test_result = await buildServer_rw(test_is_https);
+            } catch(err) {
+                test_result = err;
+            }
+
+            expect(test_result instanceof Error).to.be.true;
+            expect(test_result.http_resp_code).to.equal(500);
+            expect(test_result.http_resp_msg).to.equal("Error configuring HTTPS server");
         })
     })
 
@@ -575,42 +601,84 @@ describe('Test serverChild.js', () => {
             expect(job_runner_stub.calledOnce).to.be.true;
         })
 
-        it('should call shutdown method w/ force = true on `restart` msg w/ no force_shutdown value', async() => {
-            const process_stub = sandbox.stub(process, 'exit').callsFake(() => {});
-            serverChild_rw.__set__('process', process);
+        it('should call shutdown method', async() => {
+            const process_stub = sandbox.stub(process, 'exit').callsFake(fake);
             handleServerMessage_rw = serverChild_rw.__get__('handleServerMessage');
 
             await handleServerMessage_rw(test_msg('restart'));
 
             expect(shutDown_stub.calledOnce).to.be.true;
-            expect(shutDown_stub.getCall(0).args[0]).to.be.true;
+            expect(logger_info_stub.calledTwice).to.be.true;
+            expect(logger_info_stub.args[0][0]).to.include('Server close event received for process ');
+            expect(logger_info_stub.args[1][0]).to.equal(`Completed shut down`);
+            expect(process_stub.calledOnce).to.be.true;
+            expect(process_stub.args[0][0]).to.equal(24);
+            serverChild_rw = rewire('../../server/serverChild');
             process_stub.restore();
         })
+    })
 
-        it('should call shutdown method w/ force = false on `restart` msg w/ force_shutdown = false', async() => {
-            const process_stub = sandbox.stub(process, 'exit').callsFake(() => {});
-            serverChild_rw.__set__('process', process);
-            handleServerMessage_rw = serverChild_rw.__get__('handleServerMessage');
+    describe('shutDown() method',() => {
+        let serverClose_stub;
+        let hdbServer_stub;
+        let callProcessSend_stub;
+        let shutDown_rw;
+        let timeout_stub;
 
-            const test_msg_obj = Object.assign(test_msg('restart'), {force_shutdown: false});
-            await handleServerMessage_rw(test_msg_obj);
-
-            expect(shutDown_stub.calledOnce).to.be.true;
-            expect(shutDown_stub.getCall(0).args[0]).to.be.false;
-            process_stub.restore();
+        before(() => {
+            serverChild_rw = rewire('../../server/serverChild');
+            serverClose_stub = sandbox.stub().resolves();
+            hdbServer_stub = {
+                close: serverClose_stub
+            }
+            callProcessSend_stub = sandbox.stub(hdb_util, 'callProcessSend');
+            timeout_stub = sandbox.stub().callsFake(fake);
+            serverChild_rw.__set__('setTimeout', timeout_stub);
         })
 
-        it('should call shutdown method w/ force = true on `restart` msg w/ force_shutdown = true', async() => {
-            const process_stub = sandbox.stub(process, 'exit').callsFake(() => {});
-            serverChild_rw.__set__('process', process);
-            handleServerMessage_rw = serverChild_rw.__get__('handleServerMessage');
+        beforeEach(() => {
+            serverChild_rw.__set__('hdbServer', hdbServer_stub);
+            shutDown_rw = serverChild_rw.__get__('shutDown');
+        })
 
-            const test_msg_obj = Object.assign(test_msg('restart'), {force_shutdown: true});
-            await handleServerMessage_rw(test_msg_obj);
+        afterEach(() => {
+            sandbox.resetHistory();
+        })
+        after(() => {
+            sandbox.restore();
+        })
 
-            expect(shutDown_stub.calledOnce).to.be.true;
-            expect(shutDown_stub.getCall(0).args[0]).to.be.true;
-            process_stub.restore();
+        it('Should set hdbServer variable to null', async() => {
+            await shutDown_rw();
+
+            const test_server = serverChild_rw.__get__('hdbServer');
+            expect(test_server).to.be.null;
+        })
+
+        it('Should call .close() on server isntance', async() => {
+            await shutDown_rw();
+
+            expect(serverClose_stub.calledOnce).to.be.true;
+        })
+
+        it('Should call .callProcessSend() after server is closed', async() => {
+            await shutDown_rw();
+
+            expect(callProcessSend_stub.calledOnce).to.be.true;
+        })
+
+        it('Should call .callProcessSend() even if no hdbServer is set on process', async() => {
+            serverChild_rw.__set__('hdbServer', undefined);
+            await shutDown_rw();
+
+            expect(callProcessSend_stub.calledOnce).to.be.true;
+        })
+
+        it('Should not call .close() if there is no server instance set on process', async() => {
+            serverChild_rw.__set__('hdbServer', undefined);
+            await shutDown_rw();
+
+            expect(serverClose_stub.called).to.be.false;
         })
     })
 })
