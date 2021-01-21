@@ -41,39 +41,46 @@ async function insertRecords(env, hash_attribute, write_attributes , records){
             setTimestamps(record, true);
 
             let cast_hash_value = hdb_utils.autoCast(record[hash_attribute]);
-            let promise = env.dbis[hash_attribute].ifNoExists(cast_hash_value, ()=> {
-                for (let x = 0; x < write_attributes.length; x++) {
-                    let attribute = write_attributes[x];
 
-                    //we do not process the write to the hash attribute, blob as they are handled differently.  Also skip if the attribute does not exist on the object
-                    if (attribute === hash_attribute || attribute === lmdb_terms.BLOB_DBI_NAME || record.hasOwnProperty(attribute) === false) {
-                        continue;
-                    }
+            let put_values = [];
+            put_values.push([env.dbis[hash_attribute], cast_hash_value, record, 1]);
+            for (let x = 0; x < write_attributes.length; x++) {
+                let attribute = write_attributes[x];
 
-                    let value = record[attribute];
-                    if (typeof value === 'function') {
-                        let value_results = value([[{}]]);
-                        if (Array.isArray(value_results)) {
-                            value = value_results[0][hdb_terms.FUNC_VAL];
-                            record[attribute] = value;
-                        }
-                    }
+                //we do not process the write to the hash attribute, blob as they are handled differently.  Also skip if the attribute does not exist on the object
+                if (attribute === hash_attribute || attribute === lmdb_terms.BLOB_DBI_NAME || record.hasOwnProperty(attribute) === false) {
+                    continue;
+                }
 
-                    value = hdb_utils.autoCast(value);
-                    value = value === undefined ? null : value;
-                    record[attribute] = value;
-                    if (value !== null && value !== undefined) {
-                        //LMDB has a 254 byte limit for keys, so we return null if the byte size is larger than 254 to not index that value
-                        if (common.checkIsBlob(value)) {
-                            let key = `${attribute}/${cast_hash_value}`;
-                            env.dbis[lmdb_terms.BLOB_DBI_NAME].put( key, value);
-                        } else {
-                            let converted_key = common.convertKeyValueToWrite(value);
-                            env.dbis[attribute].put(converted_key, cast_hash_value);
-                        }
+                let value = record[attribute];
+                if (typeof value === 'function') {
+                    let value_results = value([[{}]]);
+                    if (Array.isArray(value_results)) {
+                        value = value_results[0][hdb_terms.FUNC_VAL];
+                        record[attribute] = value;
                     }
                 }
-                env.dbis[hash_attribute].put(cast_hash_value, record, 1);
+
+                value = hdb_utils.autoCast(value);
+                value = value === undefined ? null : value;
+                record[attribute] = value;
+                if (value !== null && value !== undefined) {
+                    //LMDB has a 254 byte limit for keys, so we return null if the byte size is larger than 254 to not index that value
+                    if (common.checkIsBlob(value)) {
+                        let key = `${attribute}/${cast_hash_value}`;
+                        put_values.push([env.dbis[lmdb_terms.BLOB_DBI_NAME], key, value]);
+                    } else {
+                        let converted_key = common.convertKeyValueToWrite(value);
+                        put_values.push([env.dbis[attribute], converted_key, cast_hash_value]);
+                    }
+                }
+            }
+
+            let promise = env.dbis[hash_attribute].ifNoExists(cast_hash_value, ()=> {
+                for(let x = 0, length = put_values.length; x < length; x++){
+                    let puts = put_values[x];
+                    puts[0].put(puts[1], puts[2], puts[3]);
+                }
             });
 
             puts.push(promise);
