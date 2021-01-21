@@ -529,18 +529,18 @@ function clusterMessageHandler(msg) {
                     child_event_count++;
                     log.info(`Received ${child_event_count} child started event(s).`);
                     started_forks[msg.pid] = true;
-                    if(Object.keys(started_forks).length === global.forks.length) {
+                    if (Object.keys(started_forks).length === global.forks.length) {
                         //all children are started, kick off enterprise.
                         child_event_count = 0;
-                        try {
-                            kickOffEnterprise().then(() => {
+                        kickOffEnterprise()
+                            .then(() => {
                                 log.info('HDB server clustering initialized');
+                            })
+                            .catch(e => {
+                                log.error('HDB server clustering failed to start: ' + e);
                             });
-                        } catch(e) {
-                            log.error('clustering failed to start: ' + e);
                         }
                     }
-                }
                 break;
             case terms.CLUSTER_MESSAGE_TYPE_ENUM.CHILD_STOPPED:
                 log.trace(`Got child stopped event`);
