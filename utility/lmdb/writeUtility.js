@@ -78,8 +78,8 @@ async function insertRecords(env, hash_attribute, write_attributes , records){
 
             let promise = env.dbis[hash_attribute].ifNoExists(cast_hash_value, ()=> {
                 for(let x = 0, length = put_values.length; x < length; x++){
-                    let puts = put_values[x];
-                    puts[0].put(puts[1], puts[2], puts[3]);
+                    let put_value = put_values[x];
+                    put_value[0].put(put_value[1], put_value[2], put_value[3]);
                 }
             });
 
