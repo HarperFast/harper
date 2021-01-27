@@ -10,6 +10,7 @@ const schema_validator = require('../../../../validation/schema_validator');
 const LMDBCreateAttributeObject = require('../lmdbUtility/LMDBCreateAttributeObject');
 const returnObject = require('../../bridgeUtility/insertUpdateReturnObj');
 const { handleHDBError, hdb_errors } = require('../../../../utility/errors/hdbError');
+const hdb_utils = require('../../../../utility/common_utils');
 
 const HDB_TABLE_INFO = system_schema.hdb_attribute;
 let hdb_attribute_attributes = [];
@@ -34,7 +35,7 @@ async function lmdbCreateAttribute(create_attribute_obj) {
 
     //the validator strings everything so we need to recast the booleans on create_attribute_obj
     create_attribute_obj.is_hash_attribute = create_attribute_obj.is_hash_attribute === "true";
-    create_attribute_obj.dup_sort = create_attribute_obj.dup_sort === "true";
+    create_attribute_obj.dup_sort = hdb_utils.isEmpty(create_attribute_obj.dup_sort) || create_attribute_obj.dup_sort === "true";
 
     let attributes_obj_array = [];
     //on initial creation of a table it will not exist in hdb_schema yet
