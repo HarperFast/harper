@@ -1,6 +1,5 @@
 "use strict";
 
-// const hdb_term = require('../utility/hdbTerms');
 const log = require('../utility/logging/harper_logger');
 
 /**

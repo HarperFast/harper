@@ -30,8 +30,8 @@ async function serverParent(num_workers) {
 
     let restart_event_tracker = new RestartEventObject();
     let restart_in_progress = false;
-    //TODO - WHAT CAUSES THIS - THIS IS MEANT AS A WAY TO INDICATE A USER IS TRYING TO STOP OR RESTART - DOES FASTIFY HAVE A BETTER WAY TO DO THIS?
-    // Consume AllChildrenStopped Event.
+
+    // Handles restart operation for all processes
     all_children_stopped_event.allChildrenStoppedEmitter.on(all_children_stopped_event.EVENT_NAME,(msg) => {
         harper_logger.info(`Got all children stopped event.`);
         try {
