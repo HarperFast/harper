@@ -63,10 +63,11 @@ async function serverParent(num_workers) {
         }
     });
 
-    await launch(num_workers)
-        .catch(e => {
-            harper_logger.error(e);
-        });
+    try {
+        await launch(num_workers);
+    } catch(e) {
+        harper_logger.error(e);
+    }
 }
 
 async function launch(num_workers) {

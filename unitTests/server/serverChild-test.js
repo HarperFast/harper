@@ -13,6 +13,7 @@ const OperationFunctionCaller = require('../../utility/OperationFunctionCaller')
 const harper_logger = require('../../utility/logging/harper_logger');
 const signalling = require('../../utility/signalling');
 const hdb_util = require('../../utility/common_utils');
+const user_schema = require('../../security/user');
 
 const KEYS_PATH = path.join(test_utils.getMockFSPath(), 'utility/keys');
 const PRIVATE_KEY_PATH = path.join(KEYS_PATH, 'privateKey.pem');
@@ -558,6 +559,10 @@ describe('Test serverChild.js', () => {
         let handleServerMessage_rw;
         const test_msg = (msg) => ({ type: msg })
 
+        before(() => {
+            setUsersToGlobal_stub = sandbox.stub(user_schema, 'setUsersToGlobal').resolves();
+        })
+
         beforeEach(() => {
             serverChild_rw = rewire('../../server/serverChild');
             clean_lmdb_stub = sandbox.stub().returns();
@@ -565,11 +570,6 @@ describe('Test serverChild.js', () => {
 
             syncSchemaMetadata_stub = sandbox.stub().resolves();
             serverChild_rw.__set__('syncSchemaMetadata', syncSchemaMetadata_stub);
-
-            setUsersToGlobal_stub = sandbox.stub().resolves();
-            const user_schema_rw = serverChild_rw.__get__('user_schema');
-            user_schema_rw.setUsersToGlobal = setUsersToGlobal_stub;
-            serverChild_rw.__set__('user_schema', user_schema_rw);
 
             job_runner_stub = sandbox.stub().resolves({});
             const job_runner_rw = serverChild_rw.__get__('job_runner');
