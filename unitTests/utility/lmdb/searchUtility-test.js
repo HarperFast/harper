@@ -5,15 +5,14 @@ const search_util = rewire('../../../utility/lmdb/searchUtility');
 const fs = require('fs-extra');
 const environment_utility = rewire('../../../utility/lmdb/environmentUtility');
 const write_utility = require('../../../utility/lmdb/writeUtility');
-const lmdb_terms = require('../../../utility/lmdb/terms');
 const test_utils = require('../../test_utils');
 const path = require('path');
 const assert = require('assert');
 const test_data = require('../../testData');
 const LMDB_TEST_ERRORS = require('../../commonTestErrors').LMDB_ERRORS_ENUM;
-const set_whole_row_flag = search_util.__get__('setGetWholeRowAttributes');
 const common_utils = require('../../../utility/common_utils');
-
+const sinon = require('sinon');
+const sandbox = sinon.createSandbox();
 const BASE_TEST_PATH = path.join(test_utils.getMockFSPath(), 'lmdbTest');
 const TEST_ENVIRONMENT_NAME = 'test';
 const HASH_ATTRIBUTE_NAME = 'id';
@@ -34,21 +33,28 @@ const MULTI_RECORD_ARRAY2 = [
     {id:3, name: 'Hank', age: 57},
     {id:4, name:'Joy', age: 44, city:'Denver'},
     {id:5, name:'Fran', age: 44, city:'Denvertown'},
+    {id:6, city:'Nowhere'},
 ];
 
+const TIMESTAMP = Date.now();
+
 describe('Test searchUtility module', ()=>{
-    let rw_env_util;
+    //let rw_env_util;
+    let date_stub;
     before(()=> {
-        rw_env_util = environment_utility.__set__('MAP_SIZE', 5 * 1024 * 1024 * 1024);
+        //rw_env_util = environment_utility.__set__('MAP_SIZE', 5 * 1024 * 1024 * 1024);
         test_data.forEach(record=>{
             Object.keys(record).forEach(key=>{
                 record[key] = common_utils.autoCast(record[key]);
             });
         });
+
+        date_stub = sandbox.stub(Date, 'now').returns(TIMESTAMP);
     });
 
     after(()=> {
-        rw_env_util();
+        date_stub.restore();
+        //rw_env_util();
     });
 
     describe('test searchByHash function', ()=>{
@@ -57,8 +63,8 @@ describe('Test searchUtility module', ()=>{
             await fs.mkdirp(BASE_TEST_PATH);
             global.lmdb_map = undefined;
             env = await environment_utility.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
-            await environment_utility.createDBI(env, 'id', false);
-            write_utility.insertRecords(env, HASH_ATTRIBUTE_NAME, test_utils.deepClone(SOME_ATTRIBUTES), MULTI_RECORD_ARRAY);
+            await environment_utility.createDBI(env, 'id', false, true);
+            await write_utility.insertRecords(env, HASH_ATTRIBUTE_NAME, test_utils.deepClone(SOME_ATTRIBUTES), MULTI_RECORD_ARRAY);
         });
 
         after(async ()=>{
@@ -78,7 +84,14 @@ describe('Test searchUtility module', ()=>{
                 undefined, 'all arguments sent');
         });
 
-        it("test select all attributes", ()=>{
+        it("test select all attributes *", ()=>{
+            let record = test_utils.assertErrorSync(search_util.searchByHash, [env, HASH_ATTRIBUTE_NAME, ['*'], "3"],
+                undefined, 'all arguments sent');
+            let expected = test_utils.assignObjecttoNullObject({"age": 57, "id": 3, "name": "Hank", __createdtime__: TIMESTAMP, __updatedtime__: TIMESTAMP});
+            assert.deepStrictEqual(record, expected);
+        });
+
+        it("test select some attributes", ()=>{
             let record = test_utils.assertErrorSync(search_util.searchByHash, [env, HASH_ATTRIBUTE_NAME, SOME_ATTRIBUTES, "3"],
                 undefined, 'all arguments sent');
 
@@ -114,7 +127,7 @@ describe('Test searchUtility module', ()=>{
             global.lmdb_map = undefined;
             env = await environment_utility.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
             await environment_utility.createDBI(env, 'id');
-            write_utility.insertRecords(env, HASH_ATTRIBUTE_NAME, test_utils.deepClone(SOME_ATTRIBUTES), MULTI_RECORD_ARRAY);
+            await write_utility.insertRecords(env, HASH_ATTRIBUTE_NAME, test_utils.deepClone(SOME_ATTRIBUTES), MULTI_RECORD_ARRAY);
         });
 
         after(async ()=>{
@@ -155,6 +168,17 @@ describe('Test searchUtility module', ()=>{
             assert.deepEqual(row, expected);
         });
 
+        it("test fetch multiple records, all attributes", ()=>{
+            let expected = [{id:1, name:'Kyle', age:46, city: "Denver", __createdtime__: TIMESTAMP, __updatedtime__: TIMESTAMP},
+                {id:2, name:'Jerry', age:32, __createdtime__: TIMESTAMP, __updatedtime__: TIMESTAMP},
+                {id:4, name:'Joy', age: 44, city: "Denver", __createdtime__: TIMESTAMP, __updatedtime__: TIMESTAMP}
+            ];
+            let row = test_utils.assertErrorSync(search_util.batchSearchByHash, [env, HASH_ATTRIBUTE_NAME, ['*'], ["1", "4", "2"]],
+                undefined, 'fetch multi rows');
+
+            assert.deepEqual(row, expected);
+        });
+
         it("test fetch multiple records some don't exist", ()=>{
             let expected = [{id:1, name:'Kyle', age:46},
                 {id:2, name:'Jerry', age:32},
@@ -174,7 +198,7 @@ describe('Test searchUtility module', ()=>{
             global.lmdb_map = undefined;
             env = await environment_utility.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
             await environment_utility.createDBI(env, 'id');
-            write_utility.insertRecords(env, HASH_ATTRIBUTE_NAME, test_utils.deepClone(SOME_ATTRIBUTES), MULTI_RECORD_ARRAY);
+            await write_utility.insertRecords(env, HASH_ATTRIBUTE_NAME, test_utils.deepClone(SOME_ATTRIBUTES), MULTI_RECORD_ARRAY);
         });
 
         after(async ()=>{
@@ -233,7 +257,7 @@ describe('Test searchUtility module', ()=>{
             global.lmdb_map = undefined;
             env = await environment_utility.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
             await environment_utility.createDBI(env, 'id');
-            write_utility.insertRecords(env, HASH_ATTRIBUTE_NAME, test_utils.deepClone(SOME_ATTRIBUTES), MULTI_RECORD_ARRAY);
+            await write_utility.insertRecords(env, HASH_ATTRIBUTE_NAME, test_utils.deepClone(SOME_ATTRIBUTES), MULTI_RECORD_ARRAY);
         });
 
         after(async () => {
@@ -273,7 +297,7 @@ describe('Test searchUtility module', ()=>{
             global.lmdb_map = undefined;
             env = await environment_utility.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
             await environment_utility.createDBI(env, 'id');
-            write_utility.insertRecords(env, HASH_ATTRIBUTE_NAME, test_utils.deepClone(SOME_ATTRIBUTES), MULTI_RECORD_ARRAY);
+            await write_utility.insertRecords(env, HASH_ATTRIBUTE_NAME, test_utils.deepClone(SOME_ATTRIBUTES), MULTI_RECORD_ARRAY);
         });
 
         after(async () => {
@@ -292,7 +316,6 @@ describe('Test searchUtility module', ()=>{
         });
 
         it("searchAll rows", ()=>{
-
             let rows = test_utils.assertErrorSync(search_util.searchAll, [env, HASH_ATTRIBUTE_NAME, All_ATTRIBUTES], undefined, 'search');
 
             let expected = [
@@ -300,6 +323,17 @@ describe('Test searchUtility module', ()=>{
                 {id: 2, name: 'Jerry', age: 32, city: null},
                 {id: 3, name: 'Hank', age: 57, city: null},
                 {id: 4, name: 'Joy', age: 44, city: 'Denver'}];
+            assert.deepEqual(rows, expected);
+        });
+
+        it("searchAll rows, attributes ['*']", ()=>{
+            let rows = test_utils.assertErrorSync(search_util.searchAll, [env, HASH_ATTRIBUTE_NAME, ['*']], undefined, 'search');
+
+            let expected = [
+                {id: 1, name: 'Kyle', age: 46, city: 'Denver', __createdtime__: TIMESTAMP, __updatedtime__: TIMESTAMP},
+                {id: 2, name: 'Jerry', age: 32, __createdtime__: TIMESTAMP, __updatedtime__: TIMESTAMP},
+                {id: 3, name: 'Hank', age: 57, __createdtime__: TIMESTAMP, __updatedtime__: TIMESTAMP},
+                {id: 4, name: 'Joy', age: 44, city: 'Denver', __createdtime__: TIMESTAMP, __updatedtime__: TIMESTAMP}];
             assert.deepEqual(rows, expected);
         });
     });
@@ -311,7 +345,7 @@ describe('Test searchUtility module', ()=>{
             global.lmdb_map = undefined;
             env = await environment_utility.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
             await environment_utility.createDBI(env, 'id');
-            write_utility.insertRecords(env, HASH_ATTRIBUTE_NAME, test_utils.deepClone(SOME_ATTRIBUTES), MULTI_RECORD_ARRAY);
+            await write_utility.insertRecords(env, HASH_ATTRIBUTE_NAME, test_utils.deepClone(SOME_ATTRIBUTES), MULTI_RECORD_ARRAY);
         });
 
         after(async () => {
@@ -348,8 +382,8 @@ describe('Test searchUtility module', ()=>{
             await fs.mkdirp(BASE_TEST_PATH);
             global.lmdb_map = undefined;
             env = await environment_utility.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
-            await environment_utility.createDBI(env, 'id');
-            write_utility.insertRecords(env, HASH_ATTRIBUTE_NAME, test_utils.deepClone(SOME_ATTRIBUTES), MULTI_RECORD_ARRAY);
+            await environment_utility.createDBI(env, 'id', false, true);
+            await write_utility.insertRecords(env, HASH_ATTRIBUTE_NAME, test_utils.deepClone(SOME_ATTRIBUTES), MULTI_RECORD_ARRAY);
         });
 
         after(async () => {
@@ -371,47 +405,15 @@ describe('Test searchUtility module', ()=>{
         });
     });
 
-    describe('test setGetWholeRowAttributes function', ()=> {
-        let env;
-        before(async () => {
-            await fs.mkdirp(BASE_TEST_PATH);
-            global.lmdb_map = undefined;
-            env = await environment_utility.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
-            await environment_utility.createDBI(env, 'id');
-            write_utility.insertRecords(env, HASH_ATTRIBUTE_NAME, test_utils.deepClone(SOME_ATTRIBUTES), MULTI_RECORD_ARRAY);
-        });
-
-        after(async () => {
-            env.close();
-            await fs.remove(BASE_TEST_PATH);
-            global.lmdb_map = undefined;
-        });
-
-        it("test just * in get_attributes", () => {
-            let attributes = test_utils.assertErrorSync(set_whole_row_flag, [env, ['*']], undefined, 'all arguments');
-            assert.deepStrictEqual(attributes, ["__createdtime__","__updatedtime__","age","id","name"]);
-        });
-
-        it("test just id in get_attributes", () => {
-            let attributes = test_utils.assertErrorSync(set_whole_row_flag, [env, ['id']], undefined, 'all arguments');
-            assert.deepStrictEqual(attributes, ['id']);
-        });
-
-        it("test just multiple attributes in get_attributes", () => {
-            let attributes = test_utils.assertErrorSync(set_whole_row_flag, [env, ['id','name','age']], undefined, 'all arguments');
-            assert.deepStrictEqual(attributes, ['id','name','age']);
-        });
-    });
-
     describe('test equals function', ()=> {
         let env;
         before(async () => {
             await fs.mkdirp(BASE_TEST_PATH);
             global.lmdb_map = undefined;
             env = await environment_utility.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
-            await environment_utility.createDBI(env, 'id', false, lmdb_terms.DBI_KEY_TYPES.STRING, true);
-            await environment_utility.createDBI(env, 'age', true, lmdb_terms.DBI_KEY_TYPES.NUMBER, false);
-            write_utility.insertRecords(env, HASH_ATTRIBUTE_NAME, test_utils.deepClone(All_ATTRIBUTES), MULTI_RECORD_ARRAY);
+            await environment_utility.createDBI(env, 'id', false, true);
+            await environment_utility.createDBI(env, 'age', true, false);
+            await write_utility.insertRecords(env, HASH_ATTRIBUTE_NAME, test_utils.deepClone(All_ATTRIBUTES), MULTI_RECORD_ARRAY);
         });
 
         after(async () => {
@@ -487,8 +489,21 @@ describe('Test searchUtility module', ()=>{
             await fs.mkdirp(BASE_TEST_PATH);
             global.lmdb_map = undefined;
             env = await environment_utility.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
-            await environment_utility.createDBI(env, 'id', false, lmdb_terms.DBI_KEY_TYPES.STRING, true);
-            write_utility.insertRecords(env, HASH_ATTRIBUTE_NAME, test_utils.deepClone(All_ATTRIBUTES), MULTI_RECORD_ARRAY2);
+            await environment_utility.createDBI(env, 'id', false, true);
+            await write_utility.insertRecords(env, HASH_ATTRIBUTE_NAME, test_utils.deepClone(All_ATTRIBUTES), MULTI_RECORD_ARRAY2);
+
+            let more_rows = [
+                {id:211, mush: 2},
+                {id:212, mush: 3},
+                {id:213, mush: 22},
+                {id:214, mush: 22.2},
+                {id:215, mush: '22flavors'},
+                {id:215, mush: 'flavors'},
+                {id:215, mush: '2flavors'},
+                {id:215, mush: '3flavors'},
+            ];
+
+            await write_utility.insertRecords(env, HASH_ATTRIBUTE_NAME, ['id', 'mush'], more_rows);
         });
 
         after(async () => {
@@ -557,6 +572,17 @@ describe('Test searchUtility module', ()=>{
             let results = test_utils.assertErrorSync(search_util.startsWith, [env, 'id','id', '1'], undefined);
             assert.deepStrictEqual(results, expected);
         });
+
+        it("test search on mush 2", () => {
+            let expected = Object.create(null);
+            expected['211'] = test_utils.assignObjecttoNullObject({"mush": 2,"id": 211});
+            expected['213'] = test_utils.assignObjecttoNullObject({"mush": 22,"id": 213});
+            expected['214'] = test_utils.assignObjecttoNullObject({"mush": 22.2,"id": 214});
+            expected['215'] = test_utils.assignObjecttoNullObject({"mush": "22flavors","id": 215});
+
+            let results = test_utils.assertErrorSync(search_util.startsWith, [env, 'id','mush', 2], undefined);
+            assert.deepStrictEqual(results, expected);
+        });
     });
 
     describe('test endsWith function', ()=> {
@@ -565,8 +591,8 @@ describe('Test searchUtility module', ()=>{
             await fs.mkdirp(BASE_TEST_PATH);
             global.lmdb_map = undefined;
             env = await environment_utility.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
-            await environment_utility.createDBI(env, 'id', false, lmdb_terms.DBI_KEY_TYPES.STRING, true);
-            write_utility.insertRecords(env, HASH_ATTRIBUTE_NAME, test_utils.deepClone(All_ATTRIBUTES), MULTI_RECORD_ARRAY2);
+            await environment_utility.createDBI(env, 'id', false, true);
+            await write_utility.insertRecords(env, HASH_ATTRIBUTE_NAME, test_utils.deepClone(All_ATTRIBUTES), MULTI_RECORD_ARRAY2);
         });
 
         after(async () => {
@@ -579,8 +605,8 @@ describe('Test searchUtility module', ()=>{
             test_utils.assertErrorSync(search_util.endsWith, [], LMDB_TEST_ERRORS.ENV_REQUIRED, 'test no args');
             test_utils.assertErrorSync(search_util.endsWith, [HASH_ATTRIBUTE_NAME], LMDB_TEST_ERRORS.INVALID_ENVIRONMENT, 'invalid env variable');
             test_utils.assertErrorSync(search_util.endsWith, [env], LMDB_TEST_ERRORS.ATTRIBUTE_REQUIRED, 'no hash attribute');
-            test_utils.assertErrorSync(search_util.endsWith, [env,'id',  'city'], LMDB_TEST_ERRORS.SEARCH_VALUE_REQUIRED, 'no search_value');
-            test_utils.assertErrorSync(search_util.endsWith, [env,'id',  'city', 'Denver'], undefined, 'all arguments');
+            test_utils.assertErrorSync(search_util.endsWith, [env,'id', 'city'], LMDB_TEST_ERRORS.SEARCH_VALUE_REQUIRED, 'no search_value');
+            test_utils.assertErrorSync(search_util.endsWith, [env,'id', 'city', 'Denver'], undefined, 'all arguments');
         });
 
         it("test search on city", () => {
@@ -654,13 +680,13 @@ describe('Test searchUtility module', ()=>{
             await fs.mkdirp(BASE_TEST_PATH);
             global.lmdb_map = undefined;
             env = await environment_utility.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
-            await environment_utility.createDBI(env, 'id', false, lmdb_terms.DBI_KEY_TYPES.STRING, true);
-            await environment_utility.createDBI(env, 'temperature', true, lmdb_terms.DBI_KEY_TYPES.NUMBER);
-            await environment_utility.createDBI(env, 'temperature_double', true, lmdb_terms.DBI_KEY_TYPES.NUMBER);
-            await environment_utility.createDBI(env, 'temperature_str', true, lmdb_terms.DBI_KEY_TYPES.STRING);
-            await environment_utility.createDBI(env, 'state', true, lmdb_terms.DBI_KEY_TYPES.STRING);
+            await environment_utility.createDBI(env, 'id', false, true);
+            await environment_utility.createDBI(env, 'temperature', true);
+            await environment_utility.createDBI(env, 'temperature_double', true);
+            await environment_utility.createDBI(env, 'temperature_str', true);
+            await environment_utility.createDBI(env, 'state', true);
 
-            write_utility.insertRecords(env, HASH_ATTRIBUTE_NAME, ['id', 'temperature','temperature_double', 'temperature_str', 'state'], test_data);
+            await write_utility.insertRecords(env, HASH_ATTRIBUTE_NAME, ['id', 'temperature','temperature_double', 'temperature_str', 'state'], test_data);
         });
 
         after(async () => {
@@ -673,9 +699,8 @@ describe('Test searchUtility module', ()=>{
             test_utils.assertErrorSync(search_util.greaterThan, [], LMDB_TEST_ERRORS.ENV_REQUIRED, 'test no args');
             test_utils.assertErrorSync(search_util.greaterThan, [HASH_ATTRIBUTE_NAME], LMDB_TEST_ERRORS.INVALID_ENVIRONMENT, 'invalid env variable');
             test_utils.assertErrorSync(search_util.greaterThan, [env], LMDB_TEST_ERRORS.ATTRIBUTE_REQUIRED, 'no hash attribute');
-            test_utils.assertErrorSync(search_util.greaterThan, [env,'id',  'temperature'], LMDB_TEST_ERRORS.SEARCH_VALUE_REQUIRED, 'no search_value');
-            test_utils.assertErrorSync(search_util.greaterThan, [env,'id',  'temperature_str', '11111111'], undefined, 'all arguments');
-            test_utils.assertErrorSync(search_util.greaterThan, [env,'id',  'temperature', 'tester'], LMDB_TEST_ERRORS.CANNOT_COMPARE_STRING_TO_NUMERIC_KEYS, 'bad key search');
+            test_utils.assertErrorSync(search_util.greaterThan, [env,'id', 'temperature'], LMDB_TEST_ERRORS.SEARCH_VALUE_REQUIRED, 'no search_value');
+            test_utils.assertErrorSync(search_util.greaterThan, [env,'id', 'temperature_str', '11111111'], undefined, 'all arguments');
         });
 
         /** TEST HASH ATTRIBUTE **/
@@ -915,13 +940,13 @@ describe('Test searchUtility module', ()=>{
             await fs.mkdirp(BASE_TEST_PATH);
             global.lmdb_map = undefined;
             env = await environment_utility.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
-            await environment_utility.createDBI(env, 'id', false, lmdb_terms.DBI_KEY_TYPES.STRING, true);
-            await environment_utility.createDBI(env, 'temperature', true, lmdb_terms.DBI_KEY_TYPES.NUMBER);
-            await environment_utility.createDBI(env, 'temperature_double', true, lmdb_terms.DBI_KEY_TYPES.NUMBER);
-            await environment_utility.createDBI(env, 'temperature_str', true, lmdb_terms.DBI_KEY_TYPES.STRING);
-            await environment_utility.createDBI(env, 'state', true, lmdb_terms.DBI_KEY_TYPES.STRING);
+            await environment_utility.createDBI(env, 'id', false, true);
+            await environment_utility.createDBI(env, 'temperature', true);
+            await environment_utility.createDBI(env, 'temperature_double', true);
+            await environment_utility.createDBI(env, 'temperature_str', true);
+            await environment_utility.createDBI(env, 'state', true);
 
-            write_utility.insertRecords(env, HASH_ATTRIBUTE_NAME, ['id', 'temperature', 'temperature_double', 'temperature_str', 'state'], test_data);
+            await write_utility.insertRecords(env, HASH_ATTRIBUTE_NAME, ['id', 'temperature', 'temperature_double', 'temperature_str', 'state'], test_data);
         });
 
         after(async () => {
@@ -934,9 +959,8 @@ describe('Test searchUtility module', ()=>{
             test_utils.assertErrorSync(search_util.greaterThanEqual, [], LMDB_TEST_ERRORS.ENV_REQUIRED, 'test no args');
             test_utils.assertErrorSync(search_util.greaterThanEqual, [HASH_ATTRIBUTE_NAME], LMDB_TEST_ERRORS.INVALID_ENVIRONMENT, 'invalid env variable');
             test_utils.assertErrorSync(search_util.greaterThanEqual, [env], LMDB_TEST_ERRORS.ATTRIBUTE_REQUIRED, 'no hash attribute');
-            test_utils.assertErrorSync(search_util.greaterThanEqual, [env,'id',  'temperature'], LMDB_TEST_ERRORS.SEARCH_VALUE_REQUIRED, 'no search_value');
-            test_utils.assertErrorSync(search_util.greaterThanEqual, [env,'id',  'temperature_str', '11111111'], undefined, 'all arguments');
-            test_utils.assertErrorSync(search_util.greaterThanEqual, [env,'id',  'temperature', 'tester'], LMDB_TEST_ERRORS.CANNOT_COMPARE_STRING_TO_NUMERIC_KEYS, 'bad key search');
+            test_utils.assertErrorSync(search_util.greaterThanEqual, [env,'id', 'temperature'], LMDB_TEST_ERRORS.SEARCH_VALUE_REQUIRED, 'no search_value');
+            test_utils.assertErrorSync(search_util.greaterThanEqual, [env,'id', 'temperature_str', '11111111'], undefined, 'all arguments');
         });
 
         /** TEST HASH ATTRIBUTE **/
@@ -1205,13 +1229,13 @@ describe('Test searchUtility module', ()=>{
             await fs.mkdirp(BASE_TEST_PATH);
             global.lmdb_map = undefined;
             env = await environment_utility.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
-            await environment_utility.createDBI(env, 'id', false, lmdb_terms.DBI_KEY_TYPES.STRING, true);
-            await environment_utility.createDBI(env, 'temperature', true, lmdb_terms.DBI_KEY_TYPES.NUMBER);
-            await environment_utility.createDBI(env, 'temperature_double', true, lmdb_terms.DBI_KEY_TYPES.NUMBER);
-            await environment_utility.createDBI(env, 'temperature_str', true, lmdb_terms.DBI_KEY_TYPES.NUMBER);
-            await environment_utility.createDBI(env, 'state', true, lmdb_terms.DBI_KEY_TYPES.STRING);
+            await environment_utility.createDBI(env, 'id', false, true);
+            await environment_utility.createDBI(env, 'temperature', true);
+            await environment_utility.createDBI(env, 'temperature_double', true);
+            await environment_utility.createDBI(env, 'temperature_str', true);
+            await environment_utility.createDBI(env, 'state', true);
 
-            write_utility.insertRecords(env, HASH_ATTRIBUTE_NAME, ['id', 'temperature', 'temperature_double', 'temperature_str', 'state'], test_data);
+            await write_utility.insertRecords(env, HASH_ATTRIBUTE_NAME, ['id', 'temperature', 'temperature_double', 'temperature_str', 'state'], test_data);
         });
 
         after(async () => {
@@ -1224,9 +1248,8 @@ describe('Test searchUtility module', ()=>{
             test_utils.assertErrorSync(search_util.lessThan, [], LMDB_TEST_ERRORS.ENV_REQUIRED, 'test no args');
             test_utils.assertErrorSync(search_util.lessThan, [HASH_ATTRIBUTE_NAME], LMDB_TEST_ERRORS.INVALID_ENVIRONMENT, 'invalid env variable');
             test_utils.assertErrorSync(search_util.lessThan, [env], LMDB_TEST_ERRORS.ATTRIBUTE_REQUIRED, 'no hash attribute');
-            test_utils.assertErrorSync(search_util.lessThan, [env,'id',  'temperature'], LMDB_TEST_ERRORS.SEARCH_VALUE_REQUIRED, 'no search_value');
-            test_utils.assertErrorSync(search_util.lessThan, [env,'id',  'temperature_str', '11111111'], undefined, 'all arguments');
-            test_utils.assertErrorSync(search_util.lessThan, [env,'id',  'temperature', 'tester'], LMDB_TEST_ERRORS.CANNOT_COMPARE_STRING_TO_NUMERIC_KEYS, 'bad key search');
+            test_utils.assertErrorSync(search_util.lessThan, [env,'id', 'temperature'], LMDB_TEST_ERRORS.SEARCH_VALUE_REQUIRED, 'no search_value');
+            test_utils.assertErrorSync(search_util.lessThan, [env,'id', 'temperature_str', '11111111'], undefined, 'all arguments');
         });
 
         /** TEST HASH ATTRIBUTE **/
@@ -1496,13 +1519,13 @@ describe('Test searchUtility module', ()=>{
             await fs.mkdirp(BASE_TEST_PATH);
             global.lmdb_map = undefined;
             env = await environment_utility.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
-            await environment_utility.createDBI(env, 'id', false, lmdb_terms.DBI_KEY_TYPES.STRING, true);
-            await environment_utility.createDBI(env, 'temperature', true, lmdb_terms.DBI_KEY_TYPES.NUMBER);
-            await environment_utility.createDBI(env, 'temperature_double', true, lmdb_terms.DBI_KEY_TYPES.NUMBER);
-            await environment_utility.createDBI(env, 'temperature_str', true, lmdb_terms.DBI_KEY_TYPES.STRING);
-            await environment_utility.createDBI(env, 'state', true, lmdb_terms.DBI_KEY_TYPES.STRING);
+            await environment_utility.createDBI(env, 'id', false, true);
+            await environment_utility.createDBI(env, 'temperature', true);
+            await environment_utility.createDBI(env, 'temperature_double', true);
+            await environment_utility.createDBI(env, 'temperature_str', true);
+            await environment_utility.createDBI(env, 'state', true);
 
-            write_utility.insertRecords(env, HASH_ATTRIBUTE_NAME, ['id', 'temperature', 'temperature_double', 'temperature_str', 'state'], test_data);
+            await write_utility.insertRecords(env, HASH_ATTRIBUTE_NAME, ['id', 'temperature', 'temperature_double', 'temperature_str', 'state'], test_data);
         });
 
         after(async () => {
@@ -1517,7 +1540,6 @@ describe('Test searchUtility module', ()=>{
             test_utils.assertErrorSync(search_util.lessThanEqual, [env], LMDB_TEST_ERRORS.ATTRIBUTE_REQUIRED, 'no hash attribute');
             test_utils.assertErrorSync(search_util.lessThanEqual, [env,'id', 'temperature'], LMDB_TEST_ERRORS.SEARCH_VALUE_REQUIRED, 'no search_value');
             test_utils.assertErrorSync(search_util.lessThanEqual, [env,'id', 'temperature_str', '11111111'], undefined, 'all arguments');
-            test_utils.assertErrorSync(search_util.lessThanEqual, [env,'id', 'temperature', 'tester'], LMDB_TEST_ERRORS.CANNOT_COMPARE_STRING_TO_NUMERIC_KEYS, 'bad key search');
         });
 
         /** TEST HASH ATTRIBUTE **/
@@ -1793,13 +1815,13 @@ describe('Test searchUtility module', ()=>{
             await fs.mkdirp(BASE_TEST_PATH);
             global.lmdb_map = undefined;
             env = await environment_utility.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
-            await environment_utility.createDBI(env, 'id', false, lmdb_terms.DBI_KEY_TYPES.STRING, true);
-            await environment_utility.createDBI(env, 'temperature', true, lmdb_terms.DBI_KEY_TYPES.NUMBER);
-            await environment_utility.createDBI(env, 'temperature_double', true, lmdb_terms.DBI_KEY_TYPES.NUMBER);
-            await environment_utility.createDBI(env, 'temperature_str', true, lmdb_terms.DBI_KEY_TYPES.STRING);
-            await environment_utility.createDBI(env, 'state', true, lmdb_terms.DBI_KEY_TYPES.STRING);
+            await environment_utility.createDBI(env, 'id', false, true);
+            await environment_utility.createDBI(env, 'temperature', true);
+            await environment_utility.createDBI(env, 'temperature_double', true);
+            await environment_utility.createDBI(env, 'temperature_str', true);
+            await environment_utility.createDBI(env, 'state', true);
 
-            write_utility.insertRecords(env, HASH_ATTRIBUTE_NAME, ['id', 'temperature', 'temperature_double', 'temperature_str', 'state'], test_data);
+            let rez =await write_utility.insertRecords(env, HASH_ATTRIBUTE_NAME, ['id', 'temperature', 'temperature_double', 'temperature_str', 'state'], test_data);
         });
 
         after(async () => {
@@ -1815,10 +1837,6 @@ describe('Test searchUtility module', ()=>{
             test_utils.assertErrorSync(search_util.between, [env,'id', 'temperature'], LMDB_TEST_ERRORS.START_VALUE_REQUIRED, 'no start value');
             test_utils.assertErrorSync(search_util.between, [env,'id', 'temperature', 11], LMDB_TEST_ERRORS.END_VALUE_REQUIRED, 'no end value');
             test_utils.assertErrorSync(search_util.between, [env,'id', 'temperature', 11, 1], LMDB_TEST_ERRORS.END_VALUE_MUST_BE_GREATER_THAN_START_VALUE, 'end less than start');
-            test_utils.assertErrorSync(search_util.between, [env,'id', 'temperature', 'tester', 'zzz'], LMDB_TEST_ERRORS.CANNOT_COMPARE_STRING_TO_NUMERIC_KEYS, 'bad key search');
-            test_utils.assertErrorSync(search_util.between, [env,'id', 'temperature', 1, 'zzz'], LMDB_TEST_ERRORS.CANNOT_COMPARE_STRING_TO_NUMERIC_KEYS, 'bad key search');
-
-            test_utils.assertErrorSync(search_util.between, [env,'id', 'temperature', 'tester', 11], LMDB_TEST_ERRORS.CANNOT_COMPARE_STRING_TO_NUMERIC_KEYS, 'bad key search');
             test_utils.assertErrorSync(search_util.between, [env,'id', 'temperature', 1, 11], undefined, 'allgood');
             test_utils.assertErrorSync(search_util.between, [env,'id', 'temperature_str', 'CC', 'A'], LMDB_TEST_ERRORS.END_VALUE_MUST_BE_GREATER_THAN_START_VALUE, 'end less than start');
             test_utils.assertErrorSync(search_util.between, [env,'id', 'temperature_str', 'A', 'CC'], undefined, 'end less than start');
@@ -1828,8 +1846,8 @@ describe('Test searchUtility module', ()=>{
 
         it("test between 11 & 100 on hash column", () => {
             let expected = createExpected('id', 11, 100);
-
             let results = test_utils.assertErrorSync(search_util.between, [env, 'id', 'id', '11', 100], undefined);
+
             assert.notDeepStrictEqual(results, Object.create(null));
             assert.deepStrictEqual(results, expected);
         });
@@ -2084,8 +2102,8 @@ describe('Test searchUtility module', ()=>{
             await fs.mkdirp(BASE_TEST_PATH);
             global.lmdb_map = undefined;
             env = await environment_utility.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
-            await environment_utility.createDBI(env, 'id');
-            write_utility.insertRecords(env, HASH_ATTRIBUTE_NAME, test_utils.deepClone(All_ATTRIBUTES), MULTI_RECORD_ARRAY2);
+            await environment_utility.createDBI(env, 'id', false, true);
+            await write_utility.insertRecords(env, HASH_ATTRIBUTE_NAME, test_utils.deepClone(All_ATTRIBUTES), MULTI_RECORD_ARRAY2);
         });
 
         after(async () => {
@@ -2137,8 +2155,8 @@ describe('Test searchUtility module', ()=>{
             await fs.mkdirp(BASE_TEST_PATH);
             global.lmdb_map = undefined;
             env = await environment_utility.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
-            await environment_utility.createDBI(env, 'id');
-            write_utility.insertRecords(env, HASH_ATTRIBUTE_NAME, test_utils.deepClone(All_ATTRIBUTES), MULTI_RECORD_ARRAY2);
+            await environment_utility.createDBI(env, 'id', false, true);
+            await write_utility.insertRecords(env, HASH_ATTRIBUTE_NAME, test_utils.deepClone(All_ATTRIBUTES), MULTI_RECORD_ARRAY2);
         });
 
         after(async () => {
@@ -2157,8 +2175,9 @@ describe('Test searchUtility module', ()=>{
         it("test iterate on city", () => {
             let results = test_utils.assertErrorSync(search_util.iterateDBI, [env, 'city'], undefined, 'city iterate');
             assert.deepEqual(results, {
-                'Denver': ['1', '4'],
-                'Denvertown': ['5']
+                'Denver': [1, 4],
+                'Denvertown': [5],
+                'Nowhere': [6],
             });
         });
 

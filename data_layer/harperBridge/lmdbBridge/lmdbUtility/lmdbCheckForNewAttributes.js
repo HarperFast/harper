@@ -6,7 +6,7 @@ const lmdbCreateAttribute = require('../lmdbMethods/lmdbCreateAttribute');
 const LMDBCreateAttributeObject = require('./LMDBCreateAttributeObject');
 const signalling = require('../../../../utility/signalling');
 
-const ATTRIBUTE_ALREADY_EXISTS = 'attribute already exists';
+const ATTRIBUTE_ALREADY_EXISTS = 'already exists in';
 
 module.exports = lmdbCheckForNewAttributes;
 

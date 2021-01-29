@@ -35,15 +35,15 @@ const HDB_USER = {
 };
 
 describe('test lmdbDeleteTransactionLogsBefore module', ()=>{
-    let rw_env_util;
+    //let rw_env_util;
 
     before(async ()=>{
         await fs.remove(BASE_PATH);
-        rw_env_util = environment_utility.__set__('MAP_SIZE', 5*1024*1024*1024);
+        //rw_env_util = environment_utility.__set__('MAP_SIZE', 5*1024*1024*1024);
     });
 
     after(()=>{
-        rw_env_util();
+        //rw_env_util();
     });
 
     describe('test deleteTransactions function', ()=>{
@@ -61,10 +61,12 @@ describe('test lmdbDeleteTransactionLogsBefore module', ()=>{
         });
 
         it('test deleting the first 1000 txns', async ()=>{
-            let m_times = await createTransactions(5000);
 
+            let m_times = await createTransactions(5000);
             let env = await environment_utility.openEnvironment(BASE_TRANSACTIONS_PATH, 'test', true);
-            let results = delete_txns_function(env, m_times[1000]);
+            let stat = environment_utility.statDBI(env, 'timestamp');
+            assert.deepStrictEqual(stat.entryCount, 5000);
+            let results = await delete_txns_function(env, m_times[1000]);
             let expected_results = new DeleteTransactionsBeforeResults(m_times[0], m_times[999], 1000);
             assert.deepStrictEqual(results, expected_results);
 
@@ -77,19 +79,19 @@ describe('test lmdbDeleteTransactionLogsBefore module', ()=>{
             iterate_results = search_util.iterateDBI(env, 'user_name');
             x = 1000;
             Object.values(iterate_results)[0].forEach(result=>{
-                assert.deepStrictEqual(result, m_times[x++].toString());
+                assert.deepStrictEqual(result, m_times[x++]);
             });
 
             iterate_results = search_util.iterateDBI(env, 'hash_value');
             x = 1000;
             Object.values(iterate_results)[0].forEach(result=>{
-                assert.deepStrictEqual(result, m_times[x++].toString());
+                assert.deepStrictEqual(result, m_times[x++]);
             });
         });
 
         it('test deleting when there are no txns', async ()=>{
             let env = await environment_utility.openEnvironment(BASE_TRANSACTIONS_PATH, 'test', true);
-            let results = delete_txns_function(env, common.getMicroTime());
+            let results = await delete_txns_function(env, common.getMicroTime());
             assert.deepStrictEqual(results, new DeleteTransactionsBeforeResults());
 
             let iterate_results = search_util.iterateDBI(env, 'timestamp');
@@ -106,7 +108,7 @@ describe('test lmdbDeleteTransactionLogsBefore module', ()=>{
             let m_times = await createTransactions(5000);
 
             let env = await environment_utility.openEnvironment(BASE_TRANSACTIONS_PATH, 'test', true);
-            let results = delete_txns_function(env, m_times[0] - 1);
+            let results = await delete_txns_function(env, m_times[0] - 1);
             let expected_results = new DeleteTransactionsBeforeResults(undefined, undefined, 0);
             assert.deepStrictEqual(results, expected_results);
 
@@ -119,13 +121,13 @@ describe('test lmdbDeleteTransactionLogsBefore module', ()=>{
             iterate_results = search_util.iterateDBI(env, 'user_name');
             x = 0;
             Object.values(iterate_results)[0].forEach(result=>{
-                assert.deepStrictEqual(result, m_times[x++].toString());
+                assert.deepStrictEqual(result, m_times[x++]);
             });
 
             iterate_results = search_util.iterateDBI(env, 'hash_value');
             x = 0;
             Object.values(iterate_results)[0].forEach(result=>{
-                assert.deepStrictEqual(result, m_times[x++].toString());
+                assert.deepStrictEqual(result, m_times[x++]);
             });
         });
 
@@ -133,7 +135,7 @@ describe('test lmdbDeleteTransactionLogsBefore module', ()=>{
             let m_times = await createTransactions(5000);
 
             let env = await environment_utility.openEnvironment(BASE_TRANSACTIONS_PATH, 'test', true);
-            let results = delete_txns_function(env, m_times[4999] + 1);
+            let results = await delete_txns_function(env, m_times[4999] + 1);
             let expected_results = new DeleteTransactionsBeforeResults(m_times[0], m_times[4999], 5000);
             assert.deepStrictEqual(results, expected_results);
 
@@ -179,13 +181,13 @@ describe('test lmdbDeleteTransactionLogsBefore module', ()=>{
             iterate_results = search_util.iterateDBI(env, 'user_name');
             x = 19000;
             Object.values(iterate_results)[0].forEach(result=>{
-                assert.deepStrictEqual(result, m_times[x++].toString());
+                assert.deepStrictEqual(result, m_times[x++]);
             });
 
             iterate_results = search_util.iterateDBI(env, 'hash_value');
             x = 19000;
             Object.values(iterate_results)[0].forEach(result=>{
-                assert.deepStrictEqual(result, m_times[x++].toString());
+                assert.deepStrictEqual(result, m_times[x++]);
             });
         }).timeout(5000);
     });
@@ -194,13 +196,15 @@ describe('test lmdbDeleteTransactionLogsBefore module', ()=>{
 async function createTransactions(count){
     let insert_obj = new InsertObject('dev', 'test', 'id', INSERT_RECORDS);
     insert_obj.hdb_user = HDB_USER;
-    let insert_response = new InsertRecordsResponseObject(INSERT_HASHES, []);
+
     let m_times = [];
+    let promises = [];
     for(let x = 0; x < count; x++){
+        let insert_response = new InsertRecordsResponseObject(INSERT_HASHES, []);
         m_times[x] = common.getMicroTime();
         insert_response.txn_time = m_times[x];
-        await lmdb_write_txn(insert_obj, insert_response);
+        promises.push(lmdb_write_txn(insert_obj, insert_response));
     }
-
+    await Promise.all(promises);
     return m_times;
 }

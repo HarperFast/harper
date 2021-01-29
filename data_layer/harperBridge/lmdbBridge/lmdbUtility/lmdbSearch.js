@@ -69,12 +69,6 @@ async function executeSearch(search_object, search_type, hash_attribute, return_
             hash_attribute_name = undefined;
         }
 
-        if(typeof search_object.search_value === 'object'){
-            search_object.search_value = JSON.stringify(search_object.search_value);
-        } else {
-            search_object.search_value = search_object.search_value.toString();
-        }
-
         switch (search_type) {
             case lmdb_terms.SEARCH_TYPES.EQUALS:
                 search_results = search_utility.equals(env, hash_attribute_name, search_object.search_attribute, search_object.search_value);

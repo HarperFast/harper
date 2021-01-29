@@ -44,25 +44,25 @@ const INSERT_OBJECT_TEST = {
         {
             name: "Harper",
             breed: "Mutt",
-            id: "8",
+            id: 8,
             age: 5
         },
         {
             name: "Penny",
             breed: "Mutt",
-            id: "9",
+            id: 9,
             age: 5,
             height: 145
         },
         {
             name: "David",
             breed: "Mutt",
-            id: "12"
+            id: 12
         },
         {
             name: "Rob",
             breed: "Mutt",
-            id: "10",
+            id: 10,
             age: 5,
             height: 145
         }
@@ -193,12 +193,12 @@ describe('Test lmdbUpdateRecords module', ()=>{
 
             let insert_txn_obj = new LMDBInsertTransactionObject(insert_obj.records, undefined, m_time, INSERT_HASHES);
             expected_timestamp_txn = test_utils.assignObjecttoNullObject({
-                [m_time]: [JSON.stringify(insert_txn_obj)]
+                [m_time]: [insert_txn_obj]
             });
 
             expected_hashes_txn = Object.create(null);
             insert_obj.records.forEach(record=>{
-                expected_hashes_txn[record[HASH_ATTRIBUTE_NAME]] = [m_time.toString()];
+                expected_hashes_txn[record[HASH_ATTRIBUTE_NAME]] = [m_time];
             });
 
             date_stub.restore();
@@ -256,7 +256,10 @@ describe('Test lmdbUpdateRecords module', ()=>{
             };
 
             //verify inserted txn
-            let copy_expected_timestamp_txn = test_utils.assignObjecttoNullObject(test_utils.deepClone(expected_timestamp_txn));
+            let copy_expected_timestamp_txn = Object.create(null);
+            for(let [key, value] of Object.entries(expected_timestamp_txn)){
+                copy_expected_timestamp_txn[key] = [Object.assign({}, value[0])];
+            }
             let copy_expected_hashes_txn = test_utils.assignObjecttoNullObject(test_utils.deepClone(expected_hashes_txn));
             await verify_txn(TXN_SCHEMA_PATH, INSERT_OBJECT_TEST.table, copy_expected_timestamp_txn, copy_expected_hashes_txn);
 
@@ -289,10 +292,10 @@ describe('Test lmdbUpdateRecords module', ()=>{
                 name: "Rob"
             };
 
-            let update_txn = new LMDBUpdateTransactionObject(update_obj.records, [orig_rec], undefined, m_time, [10]);
-            copy_expected_timestamp_txn[m_time] = [JSON.stringify(update_txn)];
+            let update_txn = Object.assign({}, new LMDBUpdateTransactionObject(update_obj.records, [orig_rec], undefined, m_time, [10]));
+            copy_expected_timestamp_txn[m_time] = [update_txn];
 
-            copy_expected_hashes_txn[10].push(m_time.toString());
+            copy_expected_hashes_txn[10].push(m_time);
             await verify_txn(TXN_SCHEMA_PATH, INSERT_OBJECT_TEST.table, copy_expected_timestamp_txn, copy_expected_hashes_txn);
         });
 
@@ -314,7 +317,10 @@ describe('Test lmdbUpdateRecords module', ()=>{
             let no_hash_error = new Error('a valid hash attribute must be provided with update record, check log for more info');
 
             //verify inserted txn
-            let copy_expected_timestamp_txn = test_utils.assignObjecttoNullObject(test_utils.deepClone(expected_timestamp_txn));
+            let copy_expected_timestamp_txn = Object.create(null);
+            for(let [key, value] of Object.entries(expected_timestamp_txn)){
+                copy_expected_timestamp_txn[key] = [Object.assign({}, value[0])];
+            }
             let copy_expected_hashes_txn = test_utils.assignObjecttoNullObject(test_utils.deepClone(expected_hashes_txn));
             await verify_txn(TXN_SCHEMA_PATH, INSERT_OBJECT_TEST.table, copy_expected_timestamp_txn, copy_expected_hashes_txn);
 
@@ -365,7 +371,10 @@ describe('Test lmdbUpdateRecords module', ()=>{
             };
 
             //verify inserted txn
-            let copy_expected_timestamp_txn = test_utils.assignObjecttoNullObject(test_utils.deepClone(expected_timestamp_txn));
+            let copy_expected_timestamp_txn = Object.create(null);
+            for(let [key, value] of Object.entries(expected_timestamp_txn)){
+                copy_expected_timestamp_txn[key] = [Object.assign({}, value[0])];
+            }
             let copy_expected_hashes_txn = test_utils.assignObjecttoNullObject(test_utils.deepClone(expected_hashes_txn));
             await verify_txn(TXN_SCHEMA_PATH, INSERT_OBJECT_TEST.table, copy_expected_timestamp_txn, copy_expected_hashes_txn);
 

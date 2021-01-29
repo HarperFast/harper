@@ -45,25 +45,25 @@ const INSERT_OBJECT_TEST = {
         {
             name: "Harper",
             breed: "Mutt",
-            id: "8",
+            id: 8,
             age: 5
         },
         {
             name: "Penny",
             breed: "Mutt",
-            id: "9",
+            id: 9,
             age: 5,
             height: 145
         },
         {
             name: "David",
             breed: "Mutt",
-            id: "12"
+            id: 12
         },
         {
             name: "Rob",
             breed: "Mutt",
-            id: "10",
+            id: 10,
             age: 5,
             height: 145
         }
@@ -107,14 +107,14 @@ const sandbox = sinon.createSandbox();
 describe('Test lmdbDeleteRecords module', ()=>{
     let date_stub;
 
-    let rw_env_util;
+    //let rw_env_util;
     before(()=>{
-        rw_env_util = environment_utility.__set__('MAP_SIZE', 5*1024*1024*1024);
+      //rw_env_util = environment_utility.__set__('MAP_SIZE', 5*1024*1024*1024);
         date_stub = sandbox.stub(Date, 'now').returns(TIMESTAMP);
     });
 
     after(()=>{
-        rw_env_util();
+        //rw_env_util();
         date_stub.restore();
         global.lmdb_map = undefined;
     });
@@ -149,13 +149,13 @@ describe('Test lmdbDeleteRecords module', ()=>{
             global.lmdb_map = undefined;
 
             hdb_schema_env = await environment_utility.createEnvironment(SYSTEM_SCHEMA_PATH, systemSchema.hdb_schema.name);
-            environment_utility.createDBI(hdb_schema_env, systemSchema.hdb_schema.hash_attribute, false);
+            environment_utility.createDBI(hdb_schema_env, systemSchema.hdb_schema.hash_attribute, false, true);
 
             hdb_table_env = await environment_utility.createEnvironment(SYSTEM_SCHEMA_PATH, systemSchema.hdb_table.name);
-            environment_utility.createDBI(hdb_table_env, systemSchema.hdb_table.hash_attribute, false);
+            environment_utility.createDBI(hdb_table_env, systemSchema.hdb_table.hash_attribute, false, true);
 
             hdb_attribute_env = await environment_utility.createEnvironment(SYSTEM_SCHEMA_PATH, systemSchema.hdb_attribute.name);
-            environment_utility.createDBI(hdb_attribute_env, systemSchema.hdb_attribute.hash_attribute, false);
+            environment_utility.createDBI(hdb_attribute_env, systemSchema.hdb_attribute.hash_attribute, false, true);
 
             await lmdb_create_schema(CREATE_SCHEMA_DEV);
 
@@ -170,12 +170,12 @@ describe('Test lmdbDeleteRecords module', ()=>{
 
             let insert_txn_obj = new LMDBInsertTransactionObject(insert_obj.records, undefined, m_time, INSERT_HASHES);
             expected_timestamp_txn = test_utils.assignObjecttoNullObject({
-                [m_time]: [JSON.stringify(insert_txn_obj)]
+                [m_time]: [insert_txn_obj]
             });
 
             expected_hashes_txn = Object.create(null);
             insert_obj.records.forEach(record=>{
-                expected_hashes_txn[record[HASH_ATTRIBUTE_NAME]] = [m_time.toString()];
+                expected_hashes_txn[record[HASH_ATTRIBUTE_NAME]] = [m_time];
             });
 
             date_stub.restore();
@@ -218,8 +218,12 @@ describe('Test lmdbDeleteRecords module', ()=>{
             };
 
             //verify inserted txn
-            let copy_expected_timestamp_txn = test_utils.assignObjecttoNullObject(test_utils.deepClone(expected_timestamp_txn));
+            let copy_expected_timestamp_txn = Object.create(null);
+            for(let [key, value] of Object.entries(expected_timestamp_txn)){
+                copy_expected_timestamp_txn[key] = [Object.assign({}, value[0])];
+            }
             let copy_expected_hashes_txn = test_utils.assignObjecttoNullObject(test_utils.deepClone(expected_hashes_txn));
+
             await verify_txn(TXN_SCHEMA_PATH, INSERT_OBJECT_TEST.table, copy_expected_timestamp_txn, copy_expected_hashes_txn);
 
             let results = await test_utils.assertErrorAsync(lmdb_delete_records, [delete_obj], undefined);
@@ -242,16 +246,16 @@ describe('Test lmdbDeleteRecords module', ()=>{
             let orig_rec ={
                 name: "Harper",
                 breed: "Mutt",
-                id: "8",
+                id: 8,
                 age: 5,
                 __updatedtime__: INSERT_TIMESTAMP,
                 __createdtime__:INSERT_TIMESTAMP
             };
 
-            let delete_txn = new LMDBDeleteTransactionObject([8], [orig_rec], undefined, m_time);
-            copy_expected_timestamp_txn[m_time] = [JSON.stringify(delete_txn)];
+            let delete_txn = Object.assign({}, new LMDBDeleteTransactionObject([8], [orig_rec], undefined, m_time));
+            copy_expected_timestamp_txn[m_time] = [delete_txn];
 
-            copy_expected_hashes_txn[8].push(m_time.toString());
+            copy_expected_hashes_txn[8].push(m_time);
             await verify_txn(TXN_SCHEMA_PATH, INSERT_OBJECT_TEST.table, copy_expected_timestamp_txn, copy_expected_hashes_txn);
         });
 
@@ -270,7 +274,10 @@ describe('Test lmdbDeleteRecords module', ()=>{
             };
 
             //verify inserted txn
-            let copy_expected_timestamp_txn = test_utils.assignObjecttoNullObject(test_utils.deepClone(expected_timestamp_txn));
+            let copy_expected_timestamp_txn = Object.create(null);
+            for(let [key, value] of Object.entries(expected_timestamp_txn)){
+                copy_expected_timestamp_txn[key] = [Object.assign({}, value[0])];
+            }
             let copy_expected_hashes_txn = test_utils.assignObjecttoNullObject(test_utils.deepClone(expected_hashes_txn));
             await verify_txn(TXN_SCHEMA_PATH, INSERT_OBJECT_TEST.table, copy_expected_timestamp_txn, copy_expected_hashes_txn);
 
@@ -294,16 +301,16 @@ describe('Test lmdbDeleteRecords module', ()=>{
             let orig_rec ={
                 name: "Harper",
                 breed: "Mutt",
-                id: "8",
+                id: 8,
                 age: 5,
                 __updatedtime__: INSERT_TIMESTAMP,
                 __createdtime__:INSERT_TIMESTAMP,
             };
 
-            let delete_txn = new LMDBDeleteTransactionObject([8], [orig_rec], undefined, m_time);
-            copy_expected_timestamp_txn[m_time] = [JSON.stringify(delete_txn)];
+            let delete_txn = Object.assign({}, new LMDBDeleteTransactionObject([8], [orig_rec], undefined, m_time));
+            copy_expected_timestamp_txn[m_time] = [delete_txn];
 
-            copy_expected_hashes_txn[8].push(m_time.toString());
+            copy_expected_hashes_txn[8].push(m_time);
             await verify_txn(TXN_SCHEMA_PATH, INSERT_OBJECT_TEST.table, copy_expected_timestamp_txn, copy_expected_hashes_txn);
         });
 
@@ -322,7 +329,10 @@ describe('Test lmdbDeleteRecords module', ()=>{
             };
 
             //verify inserted txn
-            let copy_expected_timestamp_txn = test_utils.assignObjecttoNullObject(test_utils.deepClone(expected_timestamp_txn));
+            let copy_expected_timestamp_txn = Object.create(null);
+            for(let [key, value] of Object.entries(expected_timestamp_txn)){
+                copy_expected_timestamp_txn[key] = [Object.assign({}, value[0])];
+            }
             let copy_expected_hashes_txn = test_utils.assignObjecttoNullObject(test_utils.deepClone(expected_hashes_txn));
             await verify_txn(TXN_SCHEMA_PATH, INSERT_OBJECT_TEST.table, copy_expected_timestamp_txn, copy_expected_hashes_txn);
 
@@ -348,7 +358,10 @@ describe('Test lmdbDeleteRecords module', ()=>{
             };
 
             //verify inserted txn
-            let copy_expected_timestamp_txn = test_utils.assignObjecttoNullObject(test_utils.deepClone(expected_timestamp_txn));
+            let copy_expected_timestamp_txn = Object.create(null);
+            for(let [key, value] of Object.entries(expected_timestamp_txn)){
+                copy_expected_timestamp_txn[key] = [Object.assign({}, value[0])];
+            }
             let copy_expected_hashes_txn = test_utils.assignObjecttoNullObject(test_utils.deepClone(expected_hashes_txn));
             await verify_txn(TXN_SCHEMA_PATH, INSERT_OBJECT_TEST.table, copy_expected_timestamp_txn, copy_expected_hashes_txn);
 
@@ -372,7 +385,7 @@ describe('Test lmdbDeleteRecords module', ()=>{
             let orig_recs = [{
                 name: "Rob",
                 breed: "Mutt",
-                id: "10",
+                id: 10,
                 age: 5,
                 height: 145,
                 __updatedtime__:INSERT_TIMESTAMP,
@@ -381,16 +394,16 @@ describe('Test lmdbDeleteRecords module', ()=>{
             {
                 name: "David",
                 breed: "Mutt",
-                id: "12",
+                id: 12,
                 __updatedtime__:INSERT_TIMESTAMP,
                 __createdtime__:INSERT_TIMESTAMP
             }];
 
-            let delete_txn = new LMDBDeleteTransactionObject([10,12], orig_recs, undefined, m_time);
-            copy_expected_timestamp_txn[m_time] = [JSON.stringify(delete_txn)];
+            let delete_txn = Object.assign({}, new LMDBDeleteTransactionObject([10,12], orig_recs, undefined, m_time));
+            copy_expected_timestamp_txn[m_time] = [delete_txn];
 
-            copy_expected_hashes_txn[10].push(m_time.toString());
-            copy_expected_hashes_txn[12].push(m_time.toString());
+            copy_expected_hashes_txn[10].push(m_time);
+            copy_expected_hashes_txn[12].push(m_time);
             await verify_txn(TXN_SCHEMA_PATH, INSERT_OBJECT_TEST.table, copy_expected_timestamp_txn, copy_expected_hashes_txn);
         });
 
@@ -445,7 +458,10 @@ describe('Test lmdbDeleteRecords module', ()=>{
             };
 
             //verify inserted txn
-            let copy_expected_timestamp_txn = test_utils.assignObjecttoNullObject(test_utils.deepClone(expected_timestamp_txn));
+            let copy_expected_timestamp_txn = Object.create(null);
+            for(let [key, value] of Object.entries(expected_timestamp_txn)){
+                copy_expected_timestamp_txn[key] = [Object.assign({}, value[0])];
+            }
             let copy_expected_hashes_txn = test_utils.assignObjecttoNullObject(test_utils.deepClone(expected_hashes_txn));
             await verify_txn(TXN_SCHEMA_PATH, INSERT_OBJECT_TEST.table, copy_expected_timestamp_txn, copy_expected_hashes_txn);
 
@@ -457,17 +473,17 @@ describe('Test lmdbDeleteRecords module', ()=>{
             let orig_recs = [{
                 name: "Rob",
                 breed: "Mutt",
-                id: "10",
+                id: 10,
                 age: 5,
                 height: 145,
                 __updatedtime__:INSERT_TIMESTAMP,
                 __createdtime__:INSERT_TIMESTAMP,
             }];
 
-            let delete_txn = new LMDBDeleteTransactionObject([10], orig_recs, undefined, m_time);
-            copy_expected_timestamp_txn[m_time] = [JSON.stringify(delete_txn)];
+            let delete_txn = Object.assign({}, new LMDBDeleteTransactionObject([10], orig_recs, undefined, m_time));
+            copy_expected_timestamp_txn[m_time] = [delete_txn];
 
-            copy_expected_hashes_txn[10].push(m_time.toString());
+            copy_expected_hashes_txn[10].push(m_time);
             await verify_txn(TXN_SCHEMA_PATH, INSERT_OBJECT_TEST.table, copy_expected_timestamp_txn, copy_expected_hashes_txn);
         });
 
