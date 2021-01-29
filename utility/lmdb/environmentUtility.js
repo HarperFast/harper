@@ -15,7 +15,7 @@ const promisify = require('util').promisify;
 // eslint-disable-next-line no-magic-numbers
 const MAP_SIZE = 200 * 1024 * 1024 * 1024;
 //allow up to 1,000 named data bases in an environment
-const MAX_DBS = 1000;
+const MAX_DBS = 10000;
 const MAX_READERS = 1000;
 const INTERNAL_DBIS_NAME = lmdb_terms.INTERNAL_DBIS_NAME;
 const DBI_DEFINITION_NAME = lmdb_terms.DBI_DEFINITION_NAME;
