@@ -128,6 +128,7 @@ describe("test lmdbCreateAttribute module", ()=>{
     });
 
     it('Test that a datastore is created and system schema updated with new attribute', async () => {
+        const test_create_attr_obj = Object.assign({}, CREATE_ATTR_OBJ_TEST);
         let expected_result = {
             message: 'inserted 1 of 1 records',
             skipped_hashes: [],
@@ -137,7 +138,7 @@ describe("test lmdbCreateAttribute module", ()=>{
         let expected_search_result = test_utils.assignObjecttoNullObject(
             {id: MOCK_UUID_VALUE, schema: CREATE_ATTR_OBJ_TEST.schema, table: CREATE_ATTR_OBJ_TEST.table, attribute: CREATE_ATTR_OBJ_TEST.attribute, schema_table: `${CREATE_ATTR_OBJ_TEST.schema}.${CREATE_ATTR_OBJ_TEST.table}`});
 
-        let results = await test_utils.assertErrorAsync(lmdb_create_attribute, [CREATE_ATTR_OBJ_TEST],undefined);
+        let results = await test_utils.assertErrorAsync(lmdb_create_attribute, [test_create_attr_obj],undefined);
         assert.deepStrictEqual(results, expected_result);
 
         let test_env = await test_utils.assertErrorAsync(environment_utility.openEnvironment, [path.join(BASE_SCHEMA_PATH, CREATE_ATTR_OBJ_TEST.schema), CREATE_ATTR_OBJ_TEST.table], undefined);
@@ -149,8 +150,42 @@ describe("test lmdbCreateAttribute module", ()=>{
             [hdb_attribute_env, systemSchema.hdb_attribute.hash_attribute, HDB_ATTRIBUTE_ATTRIBUTES, MOCK_UUID_VALUE], undefined);
         assert.deepStrictEqual(attribute_record, expected_search_result);
     });
+
+    it('Test that a datastore is created with dup_sort set to true when undefined in create_attribute_obj', async () => {
+        const test_create_attr_obj = Object.assign({}, CREATE_ATTR_OBJ_TEST);
+        assert.equal(test_create_attr_obj.dup_sort, undefined);
+
+        await lmdb_create_attribute(test_create_attr_obj);
+        assert.ok(test_create_attr_obj.dup_sort);
+    });
+
+    it('Test that a datastore is created with dup_sort set to true when null in create_attribute_obj', async () => {
+        const test_create_attr_obj = Object.assign({}, CREATE_ATTR_OBJ_TEST);
+        test_create_attr_obj.dup_sort = null;
+
+        await lmdb_create_attribute(test_create_attr_obj);
+        assert.ok(test_create_attr_obj.dup_sort);
+    });
+
+    it('Test that a datastore is created with dup_sort set to true when true boolean used in create_attribute_obj', async () => {
+        const test_create_attr_obj = Object.assign({}, CREATE_ATTR_OBJ_TEST);
+        test_create_attr_obj.dup_sort = true;
+
+        await lmdb_create_attribute(test_create_attr_obj);
+        assert.ok(test_create_attr_obj.dup_sort);
+    });
+
+    it('Test that a datastore is created with dup_sort set to false when false boolean used in create_attribute_obj', async () => {
+        const test_create_attr_obj = Object.assign({}, CREATE_ATTR_OBJ_TEST);
+        test_create_attr_obj.dup_sort = false;
+
+        await lmdb_create_attribute(test_create_attr_obj);
+        assert.equal(test_create_attr_obj.dup_sort, false);
+    });
+
     it('Test that datastore is not created because it already exists', async () => {
-        await test_utils.assertErrorAsync(lmdb_create_attribute, [CREATE_ATTR_OBJ_TEST], new Error("attribute 'another_attribute' already exists in dev.catsdrool"));
+        const test_create_attr_obj = Object.assign({}, CREATE_ATTR_OBJ_TEST);
+        await test_utils.assertErrorAsync(lmdb_create_attribute, [test_create_attr_obj], new Error("attribute 'another_attribute' already exists in dev.catsdrool"));
     });
 
     it('Test that validation error is thrown', async () => {
