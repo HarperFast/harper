@@ -175,7 +175,6 @@ async function copyEnvironment(base_path, env_name, destination_path, compact_en
 
         throw e;
     }
-   // let p_environment_copy = promisify(env.backup).bind(env);
 
     await env.backup(destination_path, compact_environment);
 }

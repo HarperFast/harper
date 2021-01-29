@@ -60,14 +60,17 @@ function searchTransactionsByTimestamp(env, timestamps = [0, lmdb_utils.getMicro
     try {
         let timestamp_dbi = env.dbis[lmdb_terms.TRANSACTIONS_DBI_NAMES_ENUM.TIMESTAMP];
 
-        for(let {value} of timestamp_dbi.getRange({start: timestamps[0], end: timestamps[1]})){
-            let txn_record = Object.assign(new LMDBTransactionObject(), value);
-            results.push(txn_record);
+        //advance the end_value by 1 key
+        let next_value;
+        for(let key of timestamp_dbi.getKeys({start:timestamps[1]})) {
+            if (key !== timestamps[1]) {
+                next_value = key;
+                break;
+            }
         }
 
-        let timestamp_value = timestamp_dbi.get(timestamps[1]);
-        if(timestamp_value){
-            let txn_record = Object.assign(new LMDBTransactionObject(), timestamp_value);
+        for(let {value} of timestamp_dbi.getRange({start: timestamps[0], end: next_value})){
+            let txn_record = Object.assign(new LMDBTransactionObject(), value);
             results.push(txn_record);
         }
 

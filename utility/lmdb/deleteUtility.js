@@ -63,7 +63,7 @@ async function deleteRecords(env, hash_attribute, ids){
                     //iterate & delete the non-hash attribute entries
                     for (let y = 0;y < all_dbis.length; y++) {
                         let attribute = all_dbis[y];
-                        if (attribute === hash_attribute || attribute === lmdb_terms.BLOB_DBI_NAME) {
+                        if (!record.hasOwnProperty(attribute) || attribute === hash_attribute || attribute === lmdb_terms.BLOB_DBI_NAME) {
                             continue;
                         }
 
