@@ -42,7 +42,10 @@ async function readTransactionLog(read_txn_log_obj){
 /**
  *
  * @param {lmdb.RootDatabase} env
- * @param {[number]} timestamps
+ * @param {[number]} timestamps - this must be undefined or a 1 or 2 element numeric array, representing a start timestamp & end end timestamp (element 1 must be less than element 2).
+ * If undefined or empty array is passed the function will iterate the entire transaction log.
+ * If only 1 element is supplied the second will be set to now UTC and the transaction log will be traversed from the designated start time until now.
+ * If 2 elements are supplied the transaction log will be read between the two timestamps
  */
 function searchTransactionsByTimestamp(env, timestamps = [0, lmdb_utils.getMicroTime()]){
     if(hdb_utils.isEmpty(timestamps[0])){
