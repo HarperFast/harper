@@ -9,10 +9,11 @@
 5. [Getting the HarperDB Version](#getting-the-harperdb-version)
 6. [Using the Built-In API](#using-the-built-in-api)
 7. [HarperDB Studio](#harperdb-studio)
-8. [Need Help?](#need-help)
+8. [Release Notes](#release-notes)
+9. [Need Help?](#need-help)
 
 ## Installing HarperDB
-**Prerequisites**
+Prerequisites
 1. Node.js 12.19.0
 2. GCC
 3. Make
@@ -71,13 +72,18 @@ Every Installation of HarperDB can be administered through HarperDB Studio. This
 * You’ll be able to manage any instance you can reach via your network connection
 * Even though the Studio is cloud-hosted, you can securely manage User-Installed instances on your private network
 
-## Need Help
+## Release Notes
+[Release Notes](https://harperdb.io/developers/release-notes/)
+
+## Need Help?
+[Documentation](https://harperdb.io/developers/documentation)
 
 support@harperdb.io
 
-[Support Portal](https://harperdbhelp.zendesk.com)
+[Submit a Support Ticket](https://harperdbhelp.zendesk.com/hc/en-us/requests/new)
 
-[Documentation](https://harperdb.io/developers/documentation)
+[Join Our Community Slack](https://harperdbcommunity.slack.com/join/shared_invite/zt-e8w6u1pu-2UFAXl_f4ZHo7F7DVkHIDA#)
+<br>
 
-**Thank You to Rajat Kumar rajat.io for allowing us to take over this package name.  Find his harperdb client at https://www.npmjs.com/package/harperdb-client**
+***
 
