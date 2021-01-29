@@ -8,7 +8,6 @@ const cluster_utilities = require('./clustering/clusterUtilities');
 const env = require('../utility/environment/environmentManager');
 const global_schema = require('../utility/globalSchema');
 const harper_logger = require('../utility/logging/harper_logger');
-const hdb_license = require('../utility/registration/hdb_license');
 const os = require('os');
 const RestartEventObject = require('./RestartEventObject');
 const sio_server_stopped_event = require('../events/SioServerStoppedEvent');
@@ -71,7 +70,6 @@ async function serverParent(num_workers) {
 }
 
 async function launch(num_workers) {
-    let license_values = hdb_license.licenseSearch();
     global.clustering_on = env.get('CLUSTERING');
 
     await p_schema_to_global();
@@ -95,7 +93,7 @@ async function launch(num_workers) {
     let forks = [];
     for (let i = 0; i < num_workers; i++) {
         try {
-            let forked = cluster.fork({hdb_license: JSON.stringify(license_values)});
+            let forked = cluster.fork();
             // assign handler for messages expected from child processes.
             forked.on('message', cluster_utilities.clusterMessageHandler);
             forked.on('error',(err) => {

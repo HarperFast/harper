@@ -10,7 +10,6 @@ test_utils.preTestPrep();
 const rewire = require('rewire');
 const cluster = require('cluster');
 const harper_logger = require('../../utility/logging/harper_logger');
-const hdb_license = require('../../utility/registration/hdb_license');
 const user_schema = require('../../security/user');
 
 let serverParent_rw;
@@ -19,7 +18,6 @@ let check_jwt_tokens_stub;
 let launch_stub;
 let cluster_stub;
 let fork_on_stub;
-let hdb_license_stub;
 let p_schema_to_global_stub;
 let closeEnv_stub;
 let setUsersToGlobal_stub
@@ -32,14 +30,6 @@ const fake = () => {};
 const test_error = new Error('This is a testy mctest error')
 
 const test_worker_num = 3;
-const test_license_values = {
-    "exp_date": 1643328000000,
-    "storage_type": "fs",
-    "api_call": 10000,
-    "ram_allocation": 8192,
-    "version": "2.2.0",
-    "enterprise": true
-}
 
 describe('Test serverParent.js', () => {
     before(() => {
@@ -97,8 +87,9 @@ describe('Test serverParent.js', () => {
             closeEnv_stub = sandbox.stub().callsFake(fake);
             serverParent_rw.__set__('closeEnvironment', closeEnv_stub);
             fork_on_stub = sandbox.stub().callsFake(fake);
+            p_schema_to_global_stub = sandbox.stub().resolves();
+            serverParent_rw.__set__('p_schema_to_global', p_schema_to_global_stub);
             cluster_stub = sandbox.stub(cluster, 'fork').returns({ on: fork_on_stub });
-            hdb_license_stub = sandbox.stub(hdb_license, 'getLicense').returns(test_license_values);
             setUsersToGlobal_stub = sandbox.stub(user_schema, 'setUsersToGlobal').resolves();
             launch_rw = serverParent_rw.__get__('launch');
         })
@@ -114,6 +105,7 @@ describe('Test serverParent.js', () => {
             expect(global.clustering_on).to.eql("TRUE");
             expect(global.lmdb_map).to.be.undefined;
             expect(setUsersToGlobal_stub.calledOnce).to.be.true;
+            expect(p_schema_to_global_stub.calledOnce).to.be.true;
             expect(global.forks.length).to.be.eql(3);
         })
 

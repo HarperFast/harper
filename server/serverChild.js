@@ -80,6 +80,7 @@ async function childServer() {
     try {
         hdbServer = await buildServer(is_https);
     } catch(err) {
+        harper_logger.error(`Failed to build server on ${process.pid}`);
         harper_logger.error(err);
     }
 }
@@ -108,6 +109,7 @@ async function buildServer(is_https) {
         return res.sendFile('index.html');
     });
 
+    // This handles all POST requests
     app.post('/', {
             preValidation: [reqBodyValidationHandler, authHandler]
         },
@@ -117,6 +119,8 @@ async function buildServer(is_https) {
         }
     );
 
+    await app.ready();
+
     harper_logger.debug(`child process starting up ${is_https ? 'HTTPS' : 'HTTP'} server.`);
 
     await app.listen(env.get(PROPS_SERVER_PORT_KEY), '::')
@@ -125,7 +129,6 @@ async function buildServer(is_https) {
             signalling.signalChildStarted();
         })
         .catch(e => {
-            //TODO - do I also need to send a message to restart the process?
             app.close();
             const err_msg = `Error configuring ${is_https ? 'HTTPS' : 'HTTP'} server`;
             harper_logger.error(`Error configuring ${is_https ? 'HTTPS' : 'HTTP'} server`);
