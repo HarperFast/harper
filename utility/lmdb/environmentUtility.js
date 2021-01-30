@@ -14,7 +14,7 @@ const lmdb_terms = require('./terms');
 // eslint-disable-next-line no-magic-numbers
 const MAP_SIZE = 1024 * 1024 * 1024;
 //allow up to 1,000 named data bases in an environment
-const MAX_DBS = 1000;
+const MAX_DBS = 10000;
 const MAX_READERS = 1000;
 const INTERNAL_DBIS_NAME = lmdb_terms.INTERNAL_DBIS_NAME;
 const DBI_DEFINITION_NAME = lmdb_terms.DBI_DEFINITION_NAME;
@@ -175,7 +175,6 @@ async function copyEnvironment(base_path, env_name, destination_path, compact_en
 
         throw e;
     }
-   // let p_environment_copy = promisify(env.backup).bind(env);
 
     await env.backup(destination_path, compact_environment);
 }
