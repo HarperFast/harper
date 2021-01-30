@@ -81,6 +81,7 @@ describe("test lmdbCreateAttribute module", ()=>{
     let hdb_table_env;
     let hdb_attribute_env;
     let rw_env_util;
+    let catsdrool_env;
     before(async ()=>{
         rw_env_util = environment_utility.__set__('MAP_SIZE', 5*1024*1024*1024);
         //uuid_stub = sandbox.stub(uuid, 'v4').returns(MOCK_UUID_VALUE);
@@ -101,7 +102,7 @@ describe("test lmdbCreateAttribute module", ()=>{
         await lmdb_create_schema(CREATE_SCHEMA_PROD);
         await lmdb_create_table(TABLE_SYSTEM_DATA_TEST_A, CREATE_TABLE_OBJ_TEST_A);
         await lmdb_create_table(TABLE_SYSTEM_DATA_TEST_B, CREATE_TABLE_OBJ_TEST_B);
-
+        catsdrool_env = await environment_utility.openEnvironment(path.join(BASE_SCHEMA_PATH, CREATE_TABLE_OBJ_TEST_A.schema), CREATE_TABLE_OBJ_TEST_A.table);
     });
 
     after(async ()=>{
@@ -153,34 +154,51 @@ describe("test lmdbCreateAttribute module", ()=>{
 
     it('Test that a datastore is created with dup_sort set to true when undefined in create_attribute_obj', async () => {
         const test_create_attr_obj = Object.assign({}, CREATE_ATTR_OBJ_TEST);
+        test_create_attr_obj.attribute = 'attr1';
+        delete test_create_attr_obj.id;
         assert.equal(test_create_attr_obj.dup_sort, undefined);
 
         await lmdb_create_attribute(test_create_attr_obj);
         assert.ok(test_create_attr_obj.dup_sort);
+
+        let dbi = environment_utility.openDBI(catsdrool_env, 'attr1');
+        assert.ok(dbi.dupSort);
     });
 
     it('Test that a datastore is created with dup_sort set to true when null in create_attribute_obj', async () => {
         const test_create_attr_obj = Object.assign({}, CREATE_ATTR_OBJ_TEST);
         test_create_attr_obj.dup_sort = null;
-
+        test_create_attr_obj.attribute = 'attr2';
+        delete test_create_attr_obj.id;
         await lmdb_create_attribute(test_create_attr_obj);
         assert.ok(test_create_attr_obj.dup_sort);
+
+        let dbi = environment_utility.openDBI(catsdrool_env, 'attr2');
+        assert.ok(dbi.dupSort);
     });
 
     it('Test that a datastore is created with dup_sort set to true when true boolean used in create_attribute_obj', async () => {
         const test_create_attr_obj = Object.assign({}, CREATE_ATTR_OBJ_TEST);
         test_create_attr_obj.dup_sort = true;
-
+        test_create_attr_obj.attribute = 'attr3';
+        delete test_create_attr_obj.id;
         await lmdb_create_attribute(test_create_attr_obj);
         assert.ok(test_create_attr_obj.dup_sort);
+
+        let dbi = environment_utility.openDBI(catsdrool_env, 'attr3');
+        assert.ok(dbi.dupSort);
     });
 
     it('Test that a datastore is created with dup_sort set to false when false boolean used in create_attribute_obj', async () => {
         const test_create_attr_obj = Object.assign({}, CREATE_ATTR_OBJ_TEST);
         test_create_attr_obj.dup_sort = false;
-
+        test_create_attr_obj.attribute = 'attr4';
+        delete test_create_attr_obj.id;
         await lmdb_create_attribute(test_create_attr_obj);
         assert.equal(test_create_attr_obj.dup_sort, false);
+
+        let dbi = environment_utility.openDBI(catsdrool_env, 'attr4');
+        assert.ok(!dbi.dupSort);
     });
 
     it('Test that datastore is not created because it already exists', async () => {
