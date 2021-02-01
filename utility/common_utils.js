@@ -544,15 +544,17 @@ function getClusterUser(users, cluster_user_name){
         return;
     }
 
-    if(isEmptyOrZeroLength(users)){
+    if(isEmpty(users) || isEmptyOrZeroLength(Object.keys(users))){
         log.warn('No users to search.');
         return;
     }
 
     let cluster_user = undefined;
     try {
-        for (let x = 0; x < users.length; x++) {
-            let user = users[x];
+        const usernames = Object.keys(users);
+        const usernames_length = usernames.length;
+        for (let x = 0; x < usernames_length; x++) {
+            let user = users[usernames[x]];
             if (user.username.toString() === cluster_user_name.toString() && user.role.permission.cluster_user === true && user.active === true) {
                 cluster_user = user;
                 break;

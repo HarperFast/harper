@@ -305,7 +305,7 @@ describe('Test alterUser', function () {
         signal_spy = sinon.spy(signalling, "signalUserChange");
         role_search_stub = sinon.stub().resolves([TEST_LIST_USER_ROLE_SEARCH_RESPONSE]);
         user.__set__('p_search_search_by_hash', role_search_stub);
-        global.hdb_users = [TEST_USER];
+        global.hdb_users = {[TEST_USER.username]: TEST_USER};
     });
     afterEach( function() {
         insert_stub.restore();
@@ -566,9 +566,10 @@ describe('Test list_users', function () {
         } catch(error) {
             let err = error;
         }
-        assert.ok(res[0].role !== undefined);
-        assert.equal(res[0].role.role, TEST_LIST_USER_ROLE_SEARCH_RESPONSE.role);
-        assert.equal(res[0].username, TEST_LIST_USER_SEARCH_RESPONSE.username);
+        const usernames = Object.keys(res);
+        assert.ok(res[usernames[0]].role !== undefined);
+        assert.equal(res[usernames[0]].role.role, TEST_LIST_USER_ROLE_SEARCH_RESPONSE.role);
+        assert.equal(res[usernames[0]].username, TEST_LIST_USER_SEARCH_RESPONSE.username);
     });
 
     it('bad role search result', async function () {
@@ -631,10 +632,11 @@ describe('Test listUsersExternal', function () {
         } catch(error) {
             err = error;
         }
-        assert.ok(res[0].role !== undefined);
-        assert.equal(res[0].role.role, TEST_LIST_USER_ROLE_SEARCH_RESPONSE.role);
-        assert.equal(res[0].username, TEST_LIST_USER_SEARCH_RESPONSE.username);
-        assert.equal(res[0].password, undefined);
+        const usernames = Object.keys(res);
+        assert.ok(res[usernames[0]].role !== undefined);
+        assert.equal(res[usernames[0]].role.role, TEST_LIST_USER_ROLE_SEARCH_RESPONSE.role);
+        assert.equal(res[usernames[0]].username, TEST_LIST_USER_SEARCH_RESPONSE.username);
+        assert.equal(res[usernames[0]].password, undefined);
     });
 
     it('bad role search result', async function () {
@@ -698,7 +700,7 @@ describe('Test nonEnterpriseFilter', function () {
         } catch(err) {
             error = err;
         }
-        assert.strictEqual(res.length, USER_SEARCH_RESULT.length-1, "expected nothing filtered");
+        assert.strictEqual(Object.keys(res).length, USER_SEARCH_RESULT.length-1, "expected nothing filtered");
     });
 
     it('Nominal test, expect filtered', () => {
@@ -709,7 +711,7 @@ describe('Test nonEnterpriseFilter', function () {
         } catch(err) {
             error = err;
         }
-        assert.strictEqual(res.length, USER_SEARCH_RESULT.length-1, "expected non su user filtered");
+        assert.strictEqual(Object.keys(res).length, USER_SEARCH_RESULT.length-1, "expected non su user filtered");
     });
 
     it('Invalid parameter, Expect empty array', () => {
