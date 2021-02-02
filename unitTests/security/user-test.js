@@ -11,57 +11,69 @@ const signalling = require('../../utility/signalling');
 const util = require('util');
 let license = require('../../utility/registration/hdb_license');
 
-let USER_SEARCH_RESULT = [
-    {
-        "active": true,
-        "hash": "blahbblah",
-        "password": "somepass",
-        "role": {
-            "id": "58aa0e11-b761-4ade-8a7d-e90f1d99d246",
-            "permission": {
-                "cluster_user": true
+let USER_SEARCH_RESULT = new Map([
+    [
+        "cluster_user",
+        {
+            "active": true,
+            "hash": "blahbblah",
+            "password": "somepass",
+            "role": {
+                "id": "58aa0e11-b761-4ade-8a7d-e90f1d99d246",
+                "permission": {
+                    "cluster_user": true
+                },
+                "role": "cluster_role"
             },
-            "role": "cluster_role"
-        },
-        "username": "cluster_user"
-    },
-    {
-        "active": true,
-        "password": "somepass",
-        "role": {
-            "id": "08fec166-bbfb-4822-ab3d-9cb4baeff86f",
-            "permission": {
-                "super_user": true
+            "username": "cluster_user"
+        }
+    ],
+    [
+        "su_1",
+        {
+            "active": true,
+            "password": "somepass",
+            "role": {
+                "id": "08fec166-bbfb-4822-ab3d-9cb4baeff86f",
+                "permission": {
+                    "super_user": true
+                },
+                "role": "super_user"
             },
-            "role": "super_user"
-        },
-        "username": "su_1"
-    },
-    {
-        "active": true,
-        "password": "somepass",
-        "role": {
-            "id": "08fec166-bbfb-4822-ab3d-9cb4baeff86f",
-            "permission": {
-                "super_user": true
+            "username": "su_1"
+        }
+    ],
+    [
+        "su_2",
+        {
+            "active": true,
+            "password": "somepass",
+            "role": {
+                "id": "08fec166-bbfb-4822-ab3d-9cb4baeff86f",
+                "permission": {
+                    "super_user": true
+                },
+                "role": "super_user"
             },
-            "role": "super_user"
-        },
-        "username": "su_2"
-    },
-    {
-        "active": true,
-        "password": "somepass",
-        "role": {
-            "id": "123a0e11-b761-4ade-8a7d-e90f1d99d246",
-            "permission": {
-                "super_user": false
+            "username": "su_2"
+        }
+    ],
+    [
+        "nonsu_1",
+        {
+            "active": true,
+            "password": "somepass",
+            "role": {
+                "id": "123a0e11-b761-4ade-8a7d-e90f1d99d246",
+                "permission": {
+                    "super_user": false
+                },
+                "role": "nonsu_role"
             },
-            "role": "nonsu_role"
-        },
-        "username": "nonsu_1"
-    }
-];
+            "username": "nonsu_1"
+        }
+    ]
+]);
 
 const TEST_USER = {
     "active": true,
@@ -305,7 +317,7 @@ describe('Test alterUser', function () {
         signal_spy = sinon.spy(signalling, "signalUserChange");
         role_search_stub = sinon.stub().resolves([TEST_LIST_USER_ROLE_SEARCH_RESPONSE]);
         user.__set__('p_search_search_by_hash', role_search_stub);
-        global.hdb_users = {[TEST_USER.username]: TEST_USER};
+        global.hdb_users = new Map([[TEST_USER.username, TEST_USER]]);
     });
     afterEach( function() {
         insert_stub.restore();
@@ -566,10 +578,10 @@ describe('Test list_users', function () {
         } catch(error) {
             let err = error;
         }
-        const usernames = Object.keys(res);
-        assert.ok(res[usernames[0]].role !== undefined);
-        assert.equal(res[usernames[0]].role.role, TEST_LIST_USER_ROLE_SEARCH_RESPONSE.role);
-        assert.equal(res[usernames[0]].username, TEST_LIST_USER_SEARCH_RESPONSE.username);
+        const usernames = Array.from(res.keys());
+        assert.ok(res.get(usernames[0]).role !== undefined);
+        assert.equal(res.get(usernames[0]).role.role, TEST_LIST_USER_ROLE_SEARCH_RESPONSE.role);
+        assert.equal(res.get(usernames[0]).username, TEST_LIST_USER_SEARCH_RESPONSE.username);
     });
 
     it('bad role search result', async function () {
@@ -632,11 +644,10 @@ describe('Test listUsersExternal', function () {
         } catch(error) {
             err = error;
         }
-        const usernames = Object.keys(res);
-        assert.ok(res[usernames[0]].role !== undefined);
-        assert.equal(res[usernames[0]].role.role, TEST_LIST_USER_ROLE_SEARCH_RESPONSE.role);
-        assert.equal(res[usernames[0]].username, TEST_LIST_USER_SEARCH_RESPONSE.username);
-        assert.equal(res[usernames[0]].password, undefined);
+        assert.ok(res[0].role !== undefined);
+        assert.equal(res[0].role.role, TEST_LIST_USER_ROLE_SEARCH_RESPONSE.role);
+        assert.equal(res[0].username, TEST_LIST_USER_SEARCH_RESPONSE.username);
+        assert.equal(res[0].password, undefined);
     });
 
     it('bad role search result', async function () {
@@ -696,22 +707,22 @@ describe('Test nonEnterpriseFilter', function () {
         let error, res;
         license_stub = sandbox.stub(license, "getLicense").resolves({enterprise: true});
         try {
-            res = nonEnterpriseFilter(USER_SEARCH_RESULT);
+            res = nonEnterpriseFilter(new Map(USER_SEARCH_RESULT));
         } catch(err) {
             error = err;
         }
-        assert.strictEqual(Object.keys(res).length, USER_SEARCH_RESULT.length-1, "expected nothing filtered");
+        assert.strictEqual(res.size, USER_SEARCH_RESULT.size-1, "expected nothing filtered");
     });
 
     it('Nominal test, expect filtered', () => {
         let error, res;
         license_stub = sandbox.stub(license, "getLicense").resolves({enterprise: false});
         try {
-            res = nonEnterpriseFilter(USER_SEARCH_RESULT);
+            res = nonEnterpriseFilter(new Map(USER_SEARCH_RESULT));
         } catch(err) {
             error = err;
         }
-        assert.strictEqual(Object.keys(res).length, USER_SEARCH_RESULT.length-1, "expected non su user filtered");
+        assert.strictEqual(res.size, USER_SEARCH_RESULT.size-1, "expected non su user filtered");
     });
 
     it('Invalid parameter, Expect empty array', () => {
@@ -722,7 +733,7 @@ describe('Test nonEnterpriseFilter', function () {
         } catch(err) {
             error = err;
         }
-        assert.strictEqual(res.length, 0, "expected empty array");
+        assert.strictEqual(res.size, 0, "expected empty array");
     });
 });
 

@@ -35,30 +35,36 @@ const CLUSTER_USER_INFO = {
         "hash":"1234567"
     };
 
-const GLOBAL_USERS = [
-    {
-        "active": true,
-        "role": {
-            "id": "09b16a62-0202-4328-b6ff-2b063e63b7f7",
-            "permission": {
-                "super_user": true
+const GLOBAL_USERS = new Map([
+    [
+        "HDB_ADMIN",
+        {
+            "active": true,
+            "role": {
+                "id": "09b16a62-0202-4328-b6ff-2b063e63b7f7",
+                "permission": {
+                    "super_user": true
+                },
+                "role": "super_user"
             },
-            "role": "super_user"
-        },
-        "username": "HDB_ADMIN"
-    },
-    {
-        "active": true,
-        "role": {
-            "id": "7237a0ec-417d-47a3-89bf-b7f1260e5654",
-            "permission": {
-                "cluster_user": true
+            "username": "HDB_ADMIN"
+        }
+    ],
+    [
+        "test_cluster_user",
+        {
+            "active": true,
+            "role": {
+                "id": "7237a0ec-417d-47a3-89bf-b7f1260e5654",
+                "permission": {
+                    "cluster_user": true
+                },
+                "role": "cluster_user"
             },
-            "role": "cluster_user"
-        },
-        "username": "test_cluster_user"
-    }
-];
+            "username": "test_cluster_user"
+        }
+    ]
+]);
 
 const SEARCH_RESULT_OBJECT = [
     {
