@@ -423,7 +423,7 @@ function startsWith(env, hash_attribute, attribute, search_value, reverse = fals
  * @param {boolean} reverse - defines if the iterator goes from last to first
  * @param {number} limit - defines the max number of entries to iterate
  * @param {number} offset - defines the entries to skip
- * @returns {[]} - ids matching the search
+ * @returns {{}} - ids matching the search
  */
 function endsWith(env, hash_attribute, attribute, search_value, reverse = false, limit = undefined, offset = undefined){
     validateComparisonFunctions(env, attribute, search_value);
@@ -439,33 +439,18 @@ function endsWith(env, hash_attribute, attribute, search_value, reverse = false,
     }
 
     try {
-        let offset_counter = offset === undefined ? 0 : offset;
-        let limit_counter = limit;
         //we iterate just the keys as it is faster (no access of the value & less iterations in dupsorted dbis)
-        for(let key of dbi.getKeys({reverse: reverse})){
+        for(let key of dbi.getKeys()){
             let key_str = common.convertKeyValueFromSearch(key).toString();
             if(key_str.endsWith(search_value)){
                 //if there is a match we iterate the values of the key
-                for(let value of dbi.getValues(key, {reverse: reverse})){
-                    if(offset_counter > 0) {
-                        offset_counter--;
-                        continue;
-                    }
-
+                for(let value of dbi.getValues(key)){
                     cursor_functions.pushResults(key, value, results, hash_attribute, attribute);
-                    //break out of the inner loop
-                    if(Number.isInteger(limit_counter) && --limit_counter === 0){
-                        break;
-                    }
-                }
-                //break out of the outer loop
-                if(Number.isInteger(limit_counter) && limit_counter === 0){
-                    break;
                 }
             }
         }
         results = blobSearch(env, hash_attribute, attribute, search_value, lmdb_terms.SEARCH_TYPES.ENDS_WITH, results);
-        return results;
+        return traverseResults(results, reverse, limit, offset);
     }catch(e){
         throw e;
     }
@@ -480,13 +465,72 @@ function endsWith(env, hash_attribute, attribute, search_value, reverse = false,
  * @param {boolean} reverse - defines if the iterator goes from last to first
  * @param {number} limit - defines the max number of entries to iterate
  * @param {number} offset - defines the entries to skip
- * @returns {[]} - ids matching the search
+ * @returns {{}} - ids matching the search
  */
 function contains(env, hash_attribute, attribute, search_value, reverse = false, limit = undefined, offset = undefined){
     validateComparisonFunctions(env, attribute, search_value);
 
-    let results = iterateFullIndex(env, hash_attribute, attribute, cursor_functions.contains.bind(null, search_value), reverse, limit, offset);
-    results = blobSearch(env, hash_attribute, attribute, search_value, lmdb_terms.SEARCH_TYPES.CONTAINS, results);
+    let results = Object.create(null);
+    let stat = environment_utility.statDBI(env, attribute);
+    if(stat.entryCount === 0){
+        return results;
+    }
+
+    let dbi = environment_utility.openDBI(env, attribute);
+    if(dbi[lmdb_terms.DBI_DEFINITION_NAME].is_hash_attribute){
+        hash_attribute = attribute;
+    }
+
+    try {
+        for(let key of dbi.getKeys()){
+            let found_str = key.toString();
+            if(found_str.includes(search_value)){
+                for(let value of dbi.getValues(key)){
+                    cursor_functions.pushResults(key, value, results, hash_attribute, attribute);
+                }
+            }
+        }
+        results = blobSearch(env, hash_attribute, attribute, search_value, lmdb_terms.SEARCH_TYPES.CONTAINS, results);
+
+        return traverseResults(results, reverse, limit, offset);
+
+    }catch(e){
+        throw e;
+    }
+
+}
+
+/**
+ * iterates a results set to limit the results further via offset, limit & reverse
+ * @param {{}}results
+ * @param {boolean} reverse
+ * @param {Number} limit
+ * @param {Number} offset
+ * @returns {{}}
+ */
+function traverseResults(results, reverse, limit, offset){
+    if(Number.isInteger(offset) || Number.isInteger(limit)){
+        let tmp_results = Object.create(null);
+        let keys = Object.keys(results);
+
+        let start;
+        let end;
+        if(reverse === true){
+            start = Number.isInteger(offset) ? keys.length - (offset + 1): 0;
+        }else {
+            start = Number.isInteger(offset) ? offset : 0;
+        }
+        end = Number.isInteger(limit) ? limit : keys.length;
+        let kept_keys = keys.splice(start, end);
+
+        for(let x = 0, length = kept_keys.length; x < length; x++){
+            let id = kept_keys[x];
+            tmp_results[id] = results[id];
+        }
+
+        return tmp_results;
+    }
+
     return results;
 }
 
@@ -502,7 +546,7 @@ function contains(env, hash_attribute, attribute, search_value, reverse = false,
  * @param {number} offset - defines the entries to skip
  * @returns {*[]}
  */
-function greaterThan(env, hash_attribute, attribute, search_value, limit = undefined, offset = undefined){
+function greaterThan(env, hash_attribute, attribute, search_value, reverse= false, limit = undefined, offset = undefined){
     validateComparisonFunctions(env, attribute, search_value);
     search_value = auto_cast(search_value);
     search_value = common.convertKeyValueToWrite(search_value);
@@ -510,6 +554,8 @@ function greaterThan(env, hash_attribute, attribute, search_value, limit = undef
     //we need to find the next value to start searching
     let next_value;
     let dbi = environment_utility.openDBI(env, attribute);
+
+    //if(reverse === )
     for(let key of dbi.getKeys({start:search_value})){
         if(key > search_value){
             next_value = key;
@@ -517,7 +563,7 @@ function greaterThan(env, hash_attribute, attribute, search_value, limit = undef
         }
     }
 
-    return iterateRangeNext(env, hash_attribute, attribute, next_value, cursor_functions.greaterThanEqualCompare, false, limit, offset);
+    return iterateRangeNext(env, hash_attribute, attribute, next_value, cursor_functions.greaterThanEqualCompare, reverse, limit, offset);
 }
 
 /**

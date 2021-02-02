@@ -128,16 +128,16 @@ describe('test lmdbSearch module', ()=>{
         });
 
         it('test contains on string limit 20', async()=>{
-            let expected = [{"id": 107,"temperature": 33,"temperature_str": 33,"state": "DE","city": "Albertville"},{"id": 122,"temperature": 24,"temperature_str": 24,"state": "CO","city": "Adelberthaven"},{"id": 966,"temperature": 38,"temperature_str": 38,"state": "AL","city": "Albertostad"}];
+            let expected = [{"id": 102,"temperature": 98,"temperature_str": 98,"state": "NM","city": "South Gilbert"},{"id": 107,"temperature": 33,"temperature_str": 33,"state": "DE","city": "Albertville"},{"id": 122,"temperature": 24,"temperature_str": 24,"state": "CO","city": "Adelberthaven"},{"id": 134,"temperature": 24,"temperature_str": 24,"state": "CO","city": "Gilbertstad"},{"id": 190,"temperature": 50,"temperature_str": 50,"state": "OH","city": "Gilbertview"},{"id": 239,"temperature": -1,"temperature_str": -1,"state": "NJ","city": "Dibbertview"},{"id": 688,"temperature": -1,"temperature_str": -1,"state": "AR","city": "Webertown"},{"id": 728,"temperature": 88,"temperature_str": 88,"state": "NC","city": "Dibberthaven"},{"id": 741,"temperature": 89,"temperature_str": 89,"state": "VT","city": "South Wilbertfort"},{"id": 765,"temperature": -4,"temperature_str": -4,"state": "AZ","city": "Lake Gilbertchester"},{"id": 923,"temperature": 34,"temperature_str": 34,"state": "SD","city": "North Filibertoland"},{"id": 966,"temperature": 38,"temperature_str": 38,"state": "AL","city": "Albertostad"}];
 
             let search_object = new SearchObject('dev', 'test', 'city', 'bert', 'id', ATTRIBUTES, undefined, false, 20);
             let results = await test_utils.assertErrorAsync(lmdb_search.executeSearch, [search_object, lmdb_terms.SEARCH_TYPES.CONTAINS, HASH_ATTRIBUTE_NAME], undefined);
-            assert.deepEqual(results.length, 3);
+            assert.deepEqual(results.length, 12);
             assert.deepEqual(results, expected);
         });
 
         it('test contains on string limit 1 offset 1', async()=>{
-            let expected = [{"id": 122,"temperature": 24,"temperature_str": 24,"state": "CO","city": "Adelberthaven"}];
+            let expected = [{"id": 107,"temperature": 33,"temperature_str": 33,"state": "DE","city": "Albertville"}];
 
             let search_object = new SearchObject('dev', 'test', 'city', 'bert', 'id', ATTRIBUTES, undefined, false, 1,1);
             let results = await test_utils.assertErrorAsync(lmdb_search.executeSearch, [search_object, lmdb_terms.SEARCH_TYPES.CONTAINS, HASH_ATTRIBUTE_NAME], undefined);
@@ -145,1126 +145,190 @@ describe('test lmdbSearch module', ()=>{
             assert.deepEqual(results, expected);
         });
 
-        it('test  contains on string return map', async()=>{
-
-            let expected = Object.create(null);
-            test_data.forEach(data=>{
-                if(data.city.includes('bert') === true){
-                    expected[data.id] = test_utils.assignObjecttoNullObject(data, TIMESTAMP_OBJECT);
-                }
-            });
-
-            let search_object = new SearchObject('dev', 'test', 'city', 'bert', 'id', ['*']);
-            let results = await test_utils.assertErrorAsync(lmdb_search.executeSearch, [search_object, lmdb_terms.SEARCH_TYPES.CONTAINS, HASH_ATTRIBUTE_NAME, true], undefined);
-            assert(Object.keys(results).length > 0);
-            assert.deepStrictEqual(results, expected);
-        });
-
-        it('test contains on number', async()=>{
+        it('test contains on string limit 1 offset 20', async()=>{
             let expected = [];
-            test_data.forEach(data=>{
-                if(data.temperature.toString().includes(0)){
-                    expected.push(test_utils.assignObjecttoNullObject(data));
-                }
-            });
 
-            let search_object = new SearchObject('dev', 'test', 'temperature', '0', 'id', ['*']);
+            let search_object = new SearchObject('dev', 'test', 'city', 'bert', 'id', ATTRIBUTES, undefined, false, 1,20);
             let results = await test_utils.assertErrorAsync(lmdb_search.executeSearch, [search_object, lmdb_terms.SEARCH_TYPES.CONTAINS, HASH_ATTRIBUTE_NAME], undefined);
-            assert.deepEqual(results.length, expected.length);
-
-            results.forEach(result=>{
-                expected.forEach(expect=>{
-                    if(result.id === expect.id){
-                        assert.deepStrictEqual(result, expect);
-                    }
-                });
-            });
-
-        });
-
-        it('test  contains on number return map', async()=>{
-
-            let expected = Object.create(null);
-            test_data.forEach(data=>{
-                if(data.temperature.toString().includes(0)){
-                    expected[data.id] = test_utils.assignObjecttoNullObject(data, TIMESTAMP_OBJECT);
-                }
-            });
-
-            let search_object = new SearchObject('dev', 'test', 'temperature', '0', 'id', ['*']);
-            let results = await test_utils.assertErrorAsync(lmdb_search.executeSearch, [search_object, lmdb_terms.SEARCH_TYPES.CONTAINS, HASH_ATTRIBUTE_NAME, true], undefined);
-            assert(Object.keys(results).length > 0);
-            assert.deepStrictEqual(results, expected);
-        });
-
-        it('test endswith on string', async()=>{
-            let expected = [];
-            test_data.forEach(data=>{
-                if(data.city.endsWith('land')){
-                    expected.push(test_utils.assignObjecttoNullObject(data));
-                }
-            });
-
-            let search_object = new SearchObject('dev', 'test', 'city', 'land', 'id', ['*']);
-            let results = await test_utils.assertErrorAsync(lmdb_search.executeSearch, [search_object, lmdb_terms.SEARCH_TYPES.ENDS_WITH, HASH_ATTRIBUTE_NAME], undefined);
-            assert.deepEqual(results.length, expected.length);
-
-            results.forEach(result=>{
-                expected.forEach(expect=>{
-                    if(result.id === expect.id){
-                        assert.deepStrictEqual(result, expect);
-                    }
-                });
-            });
-
-        });
-
-        it('test  endswith on string return map', async()=>{
-
-            let expected = Object.create(null);
-            test_data.forEach(data=>{
-                if(data.city.endsWith('land')){
-                    expected[data.id] = test_utils.assignObjecttoNullObject(data, TIMESTAMP_OBJECT);
-                }
-            });
-
-            let search_object = new SearchObject('dev', 'test', 'city', 'land', 'id', ['*']);
-            let results = await test_utils.assertErrorAsync(lmdb_search.executeSearch, [search_object, lmdb_terms.SEARCH_TYPES.ENDS_WITH, HASH_ATTRIBUTE_NAME, true], undefined);
-            assert(Object.keys(results).length > 0);
-            assert.deepStrictEqual(results, expected);
-        });
-
-        it('test endswith on number', async()=>{
-            let expected = [];
-            test_data.forEach(data=>{
-                if(data.temperature.toString().endsWith('2')){
-                    expected.push(test_utils.assignObjecttoNullObject(data));
-                }
-            });
-
-            let search_object = new SearchObject('dev', 'test', 'temperature', '2', 'id', ['*']);
-            let results = await test_utils.assertErrorAsync(lmdb_search.executeSearch, [search_object, lmdb_terms.SEARCH_TYPES.ENDS_WITH, HASH_ATTRIBUTE_NAME], undefined);
-            assert.deepEqual(results.length, expected.length);
-
-            results.forEach(result=>{
-                expected.forEach(expect=>{
-                    if(result.id === expect.id){
-                        assert.deepStrictEqual(result, expect);
-                    }
-                });
-            });
-
-        });
-
-        it('test endswith on number return map', async()=>{
-
-            let expected = Object.create(null);
-            test_data.forEach(data=>{
-                if(data.temperature.toString().endsWith('2')){
-                    expected[data.id] = test_utils.assignObjecttoNullObject(data, TIMESTAMP_OBJECT);
-                }
-            });
-
-            let search_object = new SearchObject('dev', 'test', 'temperature', '2', 'id', ['*']);
-            let results = await test_utils.assertErrorAsync(lmdb_search.executeSearch, [search_object, lmdb_terms.SEARCH_TYPES.ENDS_WITH, HASH_ATTRIBUTE_NAME, true], undefined);
-            assert(Object.keys(results).length > 0);
-            assert.deepStrictEqual(results, expected);
-        });
-
-        it('test startswith on string', async()=>{
-            let expected = [];
-            test_data.forEach(data=>{
-                if(data.city.startsWith('South')){
-                    expected.push(test_utils.assignObjecttoNullObject(data));
-                }
-            });
-
-            let search_object = new SearchObject('dev', 'test', 'city', 'South', 'id', ['*']);
-            let results = await test_utils.assertErrorAsync(lmdb_search.executeSearch, [search_object, lmdb_terms.SEARCH_TYPES.STARTS_WITH, HASH_ATTRIBUTE_NAME], undefined);
-            assert.deepEqual(results.length, expected.length);
-
-            results.forEach(result=>{
-                expected.forEach(expect=>{
-                    if(result.id === expect.id){
-                        assert.deepStrictEqual(result, expect);
-                    }
-                });
-            });
-
-        });
-
-        it('test startswith on string return map', async()=>{
-
-            let expected = Object.create(null);
-            test_data.forEach(data=>{
-                if(data.city.startsWith('South')){
-                    expected[data.id] = test_utils.assignObjecttoNullObject(data, TIMESTAMP_OBJECT);
-                }
-            });
-
-            let search_object = new SearchObject('dev', 'test', 'city', 'South', 'id', ['*']);
-            let results = await test_utils.assertErrorAsync(lmdb_search.executeSearch, [search_object, lmdb_terms.SEARCH_TYPES.STARTS_WITH, HASH_ATTRIBUTE_NAME, true], undefined);
-            assert(Object.keys(results).length > 0);
-            assert.deepStrictEqual(results, expected);
-        });
-
-        it('test startswith on number', async()=>{
-            let expected = [];
-            test_data.forEach(data=>{
-                if(data.temperature.toString().startsWith('10')){
-                    expected.push(test_utils.assignObjecttoNullObject(data));
-                }
-            });
-
-            let search_object = new SearchObject('dev', 'test', 'temperature', '10', 'id', ['*']);
-            let results = await test_utils.assertErrorAsync(lmdb_search.executeSearch, [search_object, lmdb_terms.SEARCH_TYPES.STARTS_WITH, HASH_ATTRIBUTE_NAME], undefined);
-            assert.deepEqual(results.length, expected.length);
-
-            results.forEach(result=>{
-                expected.forEach(expect=>{
-                    if(result.id === expect.id){
-                        assert.deepStrictEqual(result, expect);
-                    }
-                });
-            });
-
-        });
-
-        it('test startswith on number return map', async()=>{
-
-            let expected = Object.create(null);
-            test_data.forEach(data=>{
-                if(data.temperature.toString().startsWith('10')){
-                    expected[data.id] = test_utils.assignObjecttoNullObject(data, TIMESTAMP_OBJECT);
-                }
-            });
-
-            let search_object = new SearchObject('dev', 'test', 'temperature', '10', 'id', ['*']);
-            let results = await test_utils.assertErrorAsync(lmdb_search.executeSearch, [search_object, lmdb_terms.SEARCH_TYPES.STARTS_WITH, HASH_ATTRIBUTE_NAME, true], undefined);
-            assert(Object.keys(results).length > 0);
-            assert.deepStrictEqual(results, expected);
-        });
-
-        it('test searchall', async()=>{
-            let expected = [];
-            test_data.forEach(data=>{
-                expected.push(test_utils.assignObjecttoNullObject(data));
-            });
-
-            let search_object = new SearchObject('dev', 'test', 'temperature', '*', 'id', ['*']);
-            let results = await test_utils.assertErrorAsync(lmdb_search.executeSearch, [search_object, lmdb_terms.SEARCH_TYPES.SEARCH_ALL, HASH_ATTRIBUTE_NAME], undefined);
-            assert.deepEqual(results.length, expected.length);
-
-            results.forEach(result=>{
-                expected.forEach(expect=>{
-                    if(result.id === expect.id){
-                        assert.deepStrictEqual(result, expect);
-                    }
-                });
-            });
-
-        });
-
-        it('test searchall to map', async()=>{
-
-            let expected = Object.create(null);
-            test_data.forEach(data=>{
-
-                expected[data.id] = test_utils.assignObjecttoNullObject(data, TIMESTAMP_OBJECT);
-            });
-
-            let search_object = new SearchObject('dev', 'test', 'temperature', '10%', 'id', ['*']);
-            let results = await test_utils.assertErrorAsync(lmdb_search.executeSearch, [search_object, lmdb_terms.SEARCH_TYPES.SEARCH_ALL_TO_MAP, HASH_ATTRIBUTE_NAME, true], undefined);
-            assert(Object.keys(results).length > 0);
-            assert.deepStrictEqual(results, expected);
-        });
-
-        it('test greaterthan', async()=>{
-            let expected = [];
-            test_data.forEach(data=>{
-                if(data.temperature > 25){
-                    expected.push(test_utils.assignObjecttoNullObject(data));
-                }
-            });
-
-            let search_object = new SearchObject('dev', 'test', 'temperature', '25', 'id', ['*']);
-            let results = await test_utils.assertErrorAsync(lmdb_search.executeSearch, [search_object, lmdb_terms.SEARCH_TYPES.GREATER_THAN, HASH_ATTRIBUTE_NAME], undefined);
-            assert.deepEqual(results.length, expected.length);
-
-            results.forEach(result=>{
-                expected.forEach(expect=>{
-                    if(result.id === expect.id){
-                        assert.deepStrictEqual(result, expect);
-                    }
-                });
-            });
-
-        });
-
-        it('test greaterthan to map', async()=>{
-
-            let expected = Object.create(null);
-            test_data.forEach(data=>{
-                if(data.temperature > 25){
-                    expected[data.id] = test_utils.assignObjecttoNullObject(data, TIMESTAMP_OBJECT);
-                }
-            });
-
-            let search_object = new SearchObject('dev', 'test', 'temperature', '25', 'id', ['*']);
-            let results = await test_utils.assertErrorAsync(lmdb_search.executeSearch, [search_object, lmdb_terms.SEARCH_TYPES.GREATER_THAN, HASH_ATTRIBUTE_NAME, true], undefined);
-            assert(Object.keys(results).length > 0);
-            assert.deepStrictEqual(results, expected);
-        });
-
-        it('test greaterthanequal', async()=>{
-            let expected = [];
-            test_data.forEach(data=>{
-                if(data.temperature >= 40){
-                    expected.push(test_utils.assignObjecttoNullObject(data));
-                }
-            });
-
-            let search_object = new SearchObject('dev', 'test', 'temperature', '40', 'id', ['*']);
-            let results = await test_utils.assertErrorAsync(lmdb_search.executeSearch, [search_object, lmdb_terms.SEARCH_TYPES.GREATER_THAN_EQUAL, HASH_ATTRIBUTE_NAME], undefined);
-            assert.deepEqual(results.length, expected.length);
-
-            results.forEach(result=>{
-                expected.forEach(expect=>{
-                    if(result.id === expect.id){
-                        assert.deepStrictEqual(result, expect);
-                    }
-                });
-            });
-
-        });
-
-        it('test greaterthanequal to map', async()=>{
-
-            let expected = Object.create(null);
-            test_data.forEach(data=>{
-                // eslint-disable-next-line no-magic-numbers
-                if(data.temperature >= 40){
-                    expected[data.id] = test_utils.assignObjecttoNullObject(data, TIMESTAMP_OBJECT);
-                }
-            });
-
-            let search_object = new SearchObject('dev', 'test', 'temperature', '40', 'id', ['*']);
-            let results = await test_utils.assertErrorAsync(lmdb_search.executeSearch, [search_object, lmdb_terms.SEARCH_TYPES.GREATER_THAN_EQUAL, HASH_ATTRIBUTE_NAME, true], undefined);
-            assert(Object.keys(results).length > 0);
-            assert.deepStrictEqual(results, expected);
-        });
-
-        it('test lessthan', async()=>{
-            let expected = [];
-            test_data.forEach(data=>{
-                // eslint-disable-next-line no-magic-numbers
-                if(data.temperature < 25){
-                    expected.push(test_utils.assignObjecttoNullObject(data));
-                }
-            });
-
-            let search_object = new SearchObject('dev', 'test', 'temperature', '25', 'id', ['*']);
-            let results = await test_utils.assertErrorAsync(lmdb_search.executeSearch, [search_object, lmdb_terms.SEARCH_TYPES.LESS_THAN, HASH_ATTRIBUTE_NAME], undefined);
-            assert.deepEqual(results.length, expected.length);
-
-            results.forEach(result=>{
-                expected.forEach(expect=>{
-                    if(result.id === expect.id){
-                        assert.deepStrictEqual(result, expect);
-                    }
-                });
-            });
-
-        });
-
-        it('test lessthan to map', async()=>{
-
-            let expected = Object.create(null);
-            test_data.forEach(data=>{
-                // eslint-disable-next-line no-magic-numbers
-                if(data.temperature < 25){
-                    expected[data.id] = test_utils.assignObjecttoNullObject(data, TIMESTAMP_OBJECT);
-                }
-            });
-
-            let search_object = new SearchObject('dev', 'test', 'temperature', '25', 'id', ['*']);
-            let results = await test_utils.assertErrorAsync(lmdb_search.executeSearch, [search_object, lmdb_terms.SEARCH_TYPES.LESS_THAN, HASH_ATTRIBUTE_NAME, true], undefined);
-            assert(Object.keys(results).length > 0);
-            assert.deepStrictEqual(results, expected);
-        });
-
-        it('test lessthanequal', async()=>{
-            let expected = [];
-            test_data.forEach(data=>{
-                // eslint-disable-next-line no-magic-numbers
-                if(data.temperature <= 40){
-                    expected.push(test_utils.assignObjecttoNullObject(data));
-                }
-            });
-
-            let search_object = new SearchObject('dev', 'test', 'temperature', '40', 'id', ['*']);
-            let results = await test_utils.assertErrorAsync(lmdb_search.executeSearch, [search_object, lmdb_terms.SEARCH_TYPES.LESS_THAN_EQUAL, HASH_ATTRIBUTE_NAME], undefined);
-            assert.deepEqual(results.length, expected.length);
-
-            results.forEach(result=>{
-                expected.forEach(expect=>{
-                    if(result.id === expect.id){
-                        assert.deepStrictEqual(result, expect);
-                    }
-                });
-            });
-
-        });
-
-        it('test lessthanequal to map', async()=>{
-
-            let expected = Object.create(null);
-            test_data.forEach(data=>{
-                if(data.temperature <= 40){
-                    expected[data.id] = test_utils.assignObjecttoNullObject(data, TIMESTAMP_OBJECT);
-                }
-            });
-
-            let search_object = new SearchObject('dev', 'test', 'temperature', '40', 'id', ['*']);
-            let results = await test_utils.assertErrorAsync(lmdb_search.executeSearch, [search_object, lmdb_terms.SEARCH_TYPES.LESS_THAN_EQUAL, HASH_ATTRIBUTE_NAME, true], undefined);
-            assert(Object.keys(results).length > 0);
-            assert.deepStrictEqual(results, expected);
-        });
-
-        it('test between', async()=>{
-            let expected = [];
-            test_data.forEach(data=>{
-                if(data.temperature >= 40 && data.temperature <= 66){
-                    expected.push(test_utils.assignObjecttoNullObject(data));
-                }
-            });
-
-            let search_object = new SearchObject('dev', 'test', 'temperature', '40', 'id', ['*'], '66');
-            let results = await test_utils.assertErrorAsync(lmdb_search.executeSearch, [search_object, lmdb_terms.SEARCH_TYPES.BETWEEN, HASH_ATTRIBUTE_NAME], undefined);
-            assert.deepEqual(results.length, expected.length);
-
-            results.forEach(result=>{
-                expected.forEach(expect=>{
-                    if(result.id === expect.id){
-                        assert.deepStrictEqual(result, expect);
-                    }
-                });
-            });
-
-        });
-
-        it('test between to map', async()=>{
-
-            let expected = Object.create(null);
-            test_data.forEach(data=>{
-                if(data.temperature >= 40 && data.temperature <= 66){
-                    expected[data.id] = test_utils.assignObjecttoNullObject(data, TIMESTAMP_OBJECT);
-                }
-            });
-
-            let search_object = new SearchObject('dev', 'test', 'temperature', '40', 'id', ['*'], '66');
-            let results = await test_utils.assertErrorAsync(lmdb_search.executeSearch, [search_object, lmdb_terms.SEARCH_TYPES.BETWEEN, HASH_ATTRIBUTE_NAME, true], undefined);
-            assert(Object.keys(results).length > 0);
-            assert.deepStrictEqual(results, expected);
-        });
-    });
-
-    describe('test threadSearch function', ()=>{
-        let env;
-        let temp_env;
-        let rw_ts_path;
-        before(async () => {
-            test_data = require('../../../../testData');
-            rw_ts_path = lmdb_search.__set__('LMDB_THREAD_SEARCH_MODULE_PATH', path.join(__dirname, '_lmdbThreadSearch'));
-            await fs.mkdirp(SYSTEM_SCHEMA_PATH);
-            temp_env = await environment_utility.createEnvironment(SYSTEM_SCHEMA_PATH, 'hdb_temp');
-            environment_utility.createDBI(temp_env, 'id', false);
-
-            await fs.mkdirp(DEV_SCHEMA_PATH);
-            global.lmdb_map = undefined;
-
-            global.hdb_schema = {
-                dev: {
-                    test: {
-                        attributes: [{attribute: 'id'}, {attribute: 'temperature'}, {attribute: 'temperature_str'}, {attribute: 'state'}, {attribute: 'city'}],
-                        hash_attribute: 'id',
-                        schema: 'dev',
-                        name: 'test'
-                    }
-                },
-                system: systemSchema};
-
-            env = await environment_utility.createEnvironment(DEV_SCHEMA_PATH, 'test');
-            await environment_utility.createDBI(env, 'id', false);
-            await environment_utility.createDBI(env, 'temperature', true);
-            await environment_utility.createDBI(env, 'temperature_double', true);
-            await environment_utility.createDBI(env, 'temperature_neg', true);
-            await environment_utility.createDBI(env, 'temperature_pos', true);
-            await environment_utility.createDBI(env, 'temperature_str', true);
-            await environment_utility.createDBI(env, 'state', true);
-            await environment_utility.createDBI(env, 'city', true);
-
-            await write_utility.insertRecords(env, 'id', ['id', 'temperature', 'temperature_str', 'state', 'city'], test_data);
-        });
-
-        after(async () => {
-            env.close();
-            temp_env.close();
-            rw_ts_path();
-            await fs.remove(BASE_PATH);
-            global.lmdb_map = undefined;
-        });
-
-        it('test equals on string', async()=>{
-
-            let expected = [];
-            test_data.forEach(data=>{
-                if(data.state === 'CO'){
-                    expected.push(data);
-                }
-            });
-
-            let search_object = new SearchObject('dev', 'test', 'state', 'CO', 'id', ['*']);
-            let results = await test_utils.assertErrorAsync(thread_search_function, [search_object, lmdb_terms.SEARCH_TYPES.EQUALS, HASH_ATTRIBUTE_NAME], undefined);
-            assert.deepEqual(results.length, expected.length);
-
-            results.forEach(result=>{
-                expected.forEach(expect=>{
-                    if(result.id === expect.id){
-                        assert.deepEqual(result, expect);
-                    }
-                });
-            });
-
-        });
-
-        it('test equals on string return map', async()=>{
-
-            let expected = Object.create(null);
-            test_data.forEach(data=>{
-                if(data.state === 'CO'){
-                    expected[data.id] = data;
-                }
-            });
-
-            let search_object = new SearchObject('dev', 'test', 'state', 'CO', 'id', ['*']);
-            let results = await test_utils.assertErrorAsync(thread_search_function, [search_object, lmdb_terms.SEARCH_TYPES.EQUALS, HASH_ATTRIBUTE_NAME, true], undefined);
-            assert(Object.keys(results).length > 0);
+            assert.deepEqual(results.length, 0);
             assert.deepEqual(results, expected);
         });
 
-        it('test equals on number', async()=>{
-            let expected = [];
-            test_data.forEach(data=>{
-                if(parseInt(data.temperature) === 10){
-                    expected.push(data);
-                }
-            });
+        it('test contains on string reverse limit 1 offset 1', async()=>{
+            let expected = [{"id": 923,"temperature": 34,"temperature_str": 34,"state": "SD","city": "North Filibertoland"}];
 
-            let search_object = new SearchObject('dev', 'test', 'temperature', '10', 'id', ['*']);
-            let results = await test_utils.assertErrorAsync(thread_search_function, [search_object, lmdb_terms.SEARCH_TYPES.EQUALS, HASH_ATTRIBUTE_NAME], undefined);
-            assert.deepEqual(results.length, expected.length);
-
-            results.forEach(result=>{
-                expected.forEach(expect=>{
-                    if(result.id === expect.id){
-                        assert.deepStrictEqual(result, expect);
-                    }
-                });
-            });
-
+            let search_object = new SearchObject('dev', 'test', 'city', 'bert', 'id', ATTRIBUTES, undefined, true, 1,1);
+            let results = await test_utils.assertErrorAsync(lmdb_search.executeSearch, [search_object, lmdb_terms.SEARCH_TYPES.CONTAINS, HASH_ATTRIBUTE_NAME], undefined);
+            assert.deepEqual(results.length, 1);
+            assert.deepEqual(results, expected);
         });
 
-        it('test equals on number return map', async()=>{
+        it('test  contains on string return map limit 5', async()=>{
+            let expected = {"102": {"id": 102,"temperature": 98,"temperature_str": 98,"state": "NM","city": "South Gilbert"},"107": {"id": 107,"temperature": 33,"temperature_str": 33,"state": "DE","city": "Albertville"},"122": {"id": 122,"temperature": 24,"temperature_str": 24,"state": "CO","city": "Adelberthaven"},"134": {"id": 134,"temperature": 24,"temperature_str": 24,"state": "CO","city": "Gilbertstad"},"190": {"id": 190,"temperature": 50,"temperature_str": 50,"state": "OH","city": "Gilbertview"}};
 
-            let expected = {};
-            test_data.forEach(data=>{
-                if(parseInt(data.temperature) === 10){
-                    expected[data.id] = data;
-                }
-            });
-
-            let search_object = new SearchObject('dev', 'test', 'temperature', '10', 'id', ['*']);
-            let results = await test_utils.assertErrorAsync(thread_search_function, [search_object, lmdb_terms.SEARCH_TYPES.EQUALS, HASH_ATTRIBUTE_NAME, true], undefined);
-            assert(Object.keys(results).length > 0);
-            assert.deepStrictEqual(results, expected);
+            let search_object = new SearchObject('dev', 'test', 'city', 'bert', 'id', ATTRIBUTES, undefined, false, 5);
+            let results = await test_utils.assertErrorAsync(lmdb_search.executeSearch, [search_object, lmdb_terms.SEARCH_TYPES.CONTAINS, HASH_ATTRIBUTE_NAME, true], undefined);
+            assert.deepEqual(Object.keys(results).length, 5);
+            assert.deepEqual(results, expected);
         });
 
-        it('test equals on hash attribute', async()=>{
-            let expected = [];
-            test_data.forEach(data=>{
-                if(parseInt(data.id) === 10){
-                    expected.push(data);
-                }
-            });
+        it('test  contains on string return map limit 5 offset 5', async()=>{
+            let expected = {"239": {"id": 239,"temperature": -1,"temperature_str": -1,"state": "NJ","city": "Dibbertview"},"688": {"id": 688,"temperature": -1,"temperature_str": -1,"state": "AR","city": "Webertown"},"728": {"id": 728,"temperature": 88,"temperature_str": 88,"state": "NC","city": "Dibberthaven"},"741": {"id": 741,"temperature": 89,"temperature_str": 89,"state": "VT","city": "South Wilbertfort"},"765": {"id": 765,"temperature": -4,"temperature_str": -4,"state": "AZ","city": "Lake Gilbertchester"}};
 
-            let search_object = new SearchObject('dev', 'test', 'id', '10', 'id', ['*']);
-            let results = await test_utils.assertErrorAsync(thread_search_function, [search_object, lmdb_terms.SEARCH_TYPES.BATCH_SEARCH_BY_HASH, HASH_ATTRIBUTE_NAME], undefined);
-            assert.deepEqual(results.length, expected.length);
-
-            results.forEach(result=>{
-                expected.forEach(expect=>{
-                    if(result.id === expect.id){
-                        assert.deepStrictEqual(result, expect);
-                    }
-                });
-            });
-
+            let search_object = new SearchObject('dev', 'test', 'city', 'bert', 'id', ATTRIBUTES, undefined, false, 5, 5);
+            let results = await test_utils.assertErrorAsync(lmdb_search.executeSearch, [search_object, lmdb_terms.SEARCH_TYPES.CONTAINS, HASH_ATTRIBUTE_NAME, true], undefined);
+            assert.deepEqual(Object.keys(results).length, 5);
+            assert.deepEqual(results, expected);
         });
 
-        it('test  equals on hash attribute return map', async()=>{
+        it('test  contains on string return map reverse limit 5 offset 5', async()=>{
+            let expected = {"688": {"id": 688,"temperature": -1,"temperature_str": -1,"state": "AR","city": "Webertown"},"728": {"id": 728,"temperature": 88,"temperature_str": 88,"state": "NC","city": "Dibberthaven"},"741": {"id": 741,"temperature": 89,"temperature_str": 89,"state": "VT","city": "South Wilbertfort"},"765": {"id": 765,"temperature": -4,"temperature_str": -4,"state": "AZ","city": "Lake Gilbertchester"},"923": {"id": 923,"temperature": 34,"temperature_str": 34,"state": "SD","city": "North Filibertoland"}};
 
-            let expected = {};
-            test_data.forEach(data=>{
-                if(parseInt(data.id) === 10){
-                    expected[data.id] = data;
-                }
-            });
-
-            let search_object = new SearchObject('dev', 'test', 'id', '10', 'id', ['*']);
-            let results = await test_utils.assertErrorAsync(thread_search_function, [search_object, lmdb_terms.SEARCH_TYPES.BATCH_SEARCH_BY_HASH_TO_MAP, HASH_ATTRIBUTE_NAME, true], undefined);
-            assert(Object.keys(results).length > 0);
-            assert.deepStrictEqual(results, expected);
+            let search_object = new SearchObject('dev', 'test', 'city', 'bert', 'id', ATTRIBUTES, undefined, true, 5, 5);
+            let results = await test_utils.assertErrorAsync(lmdb_search.executeSearch, [search_object, lmdb_terms.SEARCH_TYPES.CONTAINS, HASH_ATTRIBUTE_NAME, true], undefined);
+            assert.deepEqual(Object.keys(results).length, 5);
+            assert.deepEqual(results, expected);
         });
 
-        it('test contains on string', async()=>{
-            let expected = [];
-            test_data.forEach(data=>{
-                if(data.city.includes('bert') === true){
-                    expected.push(data);
-                }
-            });
+        it('test endswith on string limit 10', async()=>{
+            let expected = [{"id": 15,"temperature": 4,"temperature_str": 4,"state": "SC","city": "Muellerland"},{"id": 49,"temperature": 19,"temperature_str": 19,"state": "MI","city": "New Jaquelinland"},{"id": 92,"temperature": 3,"temperature_str": 3,"state": "MO","city": "Schaeferland"},{"id": 93,"temperature": 107,"temperature_str": 107,"state": "CO","city": "Jackyland"},{"id": 175,"temperature": 61,"temperature_str": 61,"state": "NV","city": "Lake Mercedesland"},{"id": 201,"temperature": 67,"temperature_str": 67,"state": "KS","city": "Schuppeland"},{"id": 209,"temperature": 88,"temperature_str": 88,"state": "NC","city": "West Betteland"},{"id": 216,"temperature": 27,"temperature_str": 27,"state": "AZ","city": "Kundeland"},{"id": 264,"temperature": 30,"temperature_str": 30,"state": "MN","city": "Doyleland"},{"id": 287,"temperature": 47,"temperature_str": 47,"state": "CT","city": "Feeneyland"}];
 
-            let search_object = new SearchObject('dev', 'test', 'city', 'bert', 'id', ['*']);
-            let results = await test_utils.assertErrorAsync(thread_search_function, [search_object, lmdb_terms.SEARCH_TYPES.CONTAINS, HASH_ATTRIBUTE_NAME], undefined);
-            assert.deepEqual(results.length, expected.length);
-
-            results.forEach(result=>{
-                expected.forEach(expect=>{
-                    if(result.id === expect.id){
-                        assert.deepStrictEqual(result, expect);
-                    }
-                });
-            });
-
+            let search_object = new SearchObject('dev', 'test', 'city', 'land', 'id', ATTRIBUTES, undefined, false, 10);
+            let results = await test_utils.assertErrorAsync(lmdb_search.executeSearch, [search_object, lmdb_terms.SEARCH_TYPES.ENDS_WITH, HASH_ATTRIBUTE_NAME], undefined);
+            assert.deepEqual(Object.keys(results).length, 10);
+            assert.deepEqual(results, expected);
         });
 
-        it('test  contains on string return map', async()=>{
+        it('test endswith on string limit 10 offset 10', async()=>{
+            let expected = [{"id": 293,"temperature": 57,"temperature_str": 57,"state": "IN","city": "Jeromeland"},{"id": 310,"temperature": 10,"temperature_str": 10,"state": "CT","city": "Ernestland"},{"id": 323,"temperature": 7,"temperature_str": 7,"state": "VA","city": "Auerland"},{"id": 347,"temperature": 67,"temperature_str": 67,"state": "WA","city": "Marquardtland"},{"id": 357,"temperature": 35,"temperature_str": 35,"state": "MT","city": "Gaylordland"},{"id": 363,"temperature": 68,"temperature_str": 68,"state": "KS","city": "Keaganland"},{"id": 380,"temperature": 90,"temperature_str": 90,"state": "FL","city": "Port Tamialand"},{"id": 448,"temperature": 41,"temperature_str": 41,"state": "ID","city": "Travisland"},{"id": 513,"temperature": 39,"temperature_str": 39,"state": "IL","city": "West Ryleyland"},{"id": 545,"temperature": 47,"temperature_str": 47,"state": "PA","city": "West Lealand"}];
 
-            let expected = {};
-            test_data.forEach(data=>{
-                if(data.city.includes('bert') === true){
-                    expected[data.id] = data;
-                }
-            });
-
-            let search_object = new SearchObject('dev', 'test', 'city', 'bert', 'id', ['*']);
-            let results = await test_utils.assertErrorAsync(thread_search_function, [search_object, lmdb_terms.SEARCH_TYPES.CONTAINS, HASH_ATTRIBUTE_NAME, true], undefined);
-            assert(Object.keys(results).length > 0);
-            assert.deepStrictEqual(results, expected);
+            let search_object = new SearchObject('dev', 'test', 'city', 'land', 'id', ATTRIBUTES, undefined, false, 10, 10);
+            let results = await test_utils.assertErrorAsync(lmdb_search.executeSearch, [search_object, lmdb_terms.SEARCH_TYPES.ENDS_WITH, HASH_ATTRIBUTE_NAME], undefined);
+            assert.deepEqual(Object.keys(results).length, 10);
+            assert.deepEqual(results, expected);
         });
 
-        it('test contains on number', async()=>{
-            let expected = [];
-            test_data.forEach(data=>{
-                if(data.temperature.toString().includes(0)){
-                    expected.push(data);
-                }
-            });
+        it('test endswith on string reverse limit 10 offset 10', async()=>{
+            let expected = [{"id": 753,"temperature": 17,"temperature_str": 17,"state": "NH","city": "South Mollyland"},{"id": 754,"temperature": 6,"temperature_str": 6,"state": "VA","city": "Russelland"},{"id": 780,"temperature": 71,"temperature_str": 71,"state": "AL","city": "Howellland"},{"id": 801,"temperature": 19,"temperature_str": 19,"state": "ID","city": "Gutkowskiland"},{"id": 838,"temperature": 68,"temperature_str": 68,"state": "GA","city": "Loisland"},{"id": 854,"temperature": 14,"temperature_str": 14,"state": "MO","city": "Schillerland"},{"id": 884,"temperature": 14,"temperature_str": 14,"state": "VT","city": "Alannaland"},{"id": 907,"temperature": 56,"temperature_str": 56,"state": "IN","city": "West Rosendoland"},{"id": 914,"temperature": 108,"temperature_str": 108,"state": "NH","city": "Jacintheland"},{"id": 923,"temperature": 34,"temperature_str": 34,"state": "SD","city": "North Filibertoland"}];
 
-            let search_object = new SearchObject('dev', 'test', 'temperature', '0', 'id', ['*']);
-            let results = await test_utils.assertErrorAsync(thread_search_function, [search_object, lmdb_terms.SEARCH_TYPES.CONTAINS, HASH_ATTRIBUTE_NAME], undefined);
-            assert.deepEqual(results.length, expected.length);
-
-            results.forEach(result=>{
-                expected.forEach(expect=>{
-                    if(result.id === expect.id){
-                        assert.deepStrictEqual(result, expect);
-                    }
-                });
-            });
-
+            let search_object = new SearchObject('dev', 'test', 'city', 'land', 'id', ATTRIBUTES, undefined, true, 10, 10);
+            let results = await test_utils.assertErrorAsync(lmdb_search.executeSearch, [search_object, lmdb_terms.SEARCH_TYPES.ENDS_WITH, HASH_ATTRIBUTE_NAME], undefined);
+            assert.deepEqual(Object.keys(results).length, 10);
+            assert.deepEqual(results, expected);
         });
 
-        it('test  contains on number return map', async()=>{
+        it('test startswith on string limit 10', async()=>{
+            let expected = [{"id": 89,"temperature": 53,"temperature_str": 53,"state": "GA","city": "South Bridgette"},{"id": 179,"temperature": 58,"temperature_str": 58,"state": "KS","city": "South Boyd"},{"id": 186,"temperature": 43,"temperature_str": 43,"state": "SC","city": "South Ashleigh"},{"id": 259,"temperature": 78,"temperature_str": 78,"state": "NV","city": "South Aditya"},{"id": 374,"temperature": 60,"temperature_str": 60,"state": "AR","city": "South Aliyah"},{"id": 469,"temperature": 93,"temperature_str": 93,"state": "MO","city": "South Alec"},{"id": 558,"temperature": 11,"temperature_str": 11,"state": "WA","city": "South Alenefurt"},{"id": 686,"temperature": 44,"temperature_str": 44,"state": "AL","city": "South Camylle"},{"id": 689,"temperature": -8,"temperature_str": -8,"state": "OR","city": "South Bennett"},{"id": 996,"temperature": 0,"temperature_str": 0,"state": "AR","city": "South Carlo"}];
 
-            let expected = {};
-            test_data.forEach(data=>{
-                if(data.temperature.toString().includes(0)){
-                    expected[data.id] = data;
-                }
-            });
-
-            let search_object = new SearchObject('dev', 'test', 'temperature', '0', 'id', ['*']);
-            let results = await test_utils.assertErrorAsync(thread_search_function, [search_object, lmdb_terms.SEARCH_TYPES.CONTAINS, HASH_ATTRIBUTE_NAME, true], undefined);
-            assert(Object.keys(results).length > 0);
-            assert.deepStrictEqual(results, expected);
+            let search_object = new SearchObject('dev', 'test', 'city', 'South', 'id', ATTRIBUTES, undefined, false, 10);
+            let results = await test_utils.assertErrorAsync(lmdb_search.executeSearch, [search_object, lmdb_terms.SEARCH_TYPES.STARTS_WITH, HASH_ATTRIBUTE_NAME], undefined);
+            assert.deepEqual(results.length, 10);
+            assert.deepEqual(results, expected);
         });
 
-        it('test endswith on string', async()=>{
-            let expected = [];
-            test_data.forEach(data=>{
-                if(data.city.endsWith('land')){
-                    expected.push(data);
-                }
-            });
+        it('test startswith on string limit 10 offset 10', async()=>{
+            let expected = [{"id": 102,"temperature": 98,"temperature_str": 98,"state": "NM","city": "South Gilbert"},{"id": 108,"temperature": 34,"temperature_str": 34,"state": "AR","city": "South Clemens"},{"id": 343,"temperature": 59,"temperature_str": 59,"state": "ID","city": "South Christy"},{"id": 424,"temperature": 60,"temperature_str": 60,"state": "NJ","city": "South Eula"},{"id": 495,"temperature": 33,"temperature_str": 33,"state": "VA","city": "South Gisselle"},{"id": 674,"temperature": -10,"temperature_str": -10,"state": "FL","city": "South Cody"},{"id": 748,"temperature": 0,"temperature_str": 0,"state": "AR","city": "South Carmella"},{"id": 810,"temperature": 48,"temperature_str": 48,"state": "NH","city": "South Deangelobury"},{"id": 822,"temperature": 58,"temperature_str": 58,"state": "ME","city": "South Edwinaburgh"},{"id": 903,"temperature": 14,"temperature_str": 14,"state": "VA","city": "South Enrique"}];
 
-            let search_object = new SearchObject('dev', 'test', 'city', 'land', 'id', ['*']);
-            let results = await test_utils.assertErrorAsync(thread_search_function, [search_object, lmdb_terms.SEARCH_TYPES.ENDS_WITH, HASH_ATTRIBUTE_NAME], undefined);
-            assert.deepEqual(results.length, expected.length);
-
-            results.forEach(result=>{
-                expected.forEach(expect=>{
-                    if(result.id === expect.id){
-                        assert.deepStrictEqual(result, expect);
-                    }
-                });
-            });
-
+            let search_object = new SearchObject('dev', 'test', 'city', 'South', 'id', ATTRIBUTES, undefined, false, 10, 10);
+            let results = await test_utils.assertErrorAsync(lmdb_search.executeSearch, [search_object, lmdb_terms.SEARCH_TYPES.STARTS_WITH, HASH_ATTRIBUTE_NAME], undefined);
+            assert.deepEqual(results.length, 10);
+            assert.deepEqual(results, expected);
         });
 
-        it('test  endswith on string return map', async()=>{
+        it('test startswith on string reverse limit 10 offset 10', async()=>{
+            let expected = [{"id": 42,"temperature": 86,"temperature_str": 86,"state": "WA","city": "South Sadie"},{"id": 316,"temperature": 82,"temperature_str": 82,"state": "KS","city": "South Queeniefurt"},{"id": 467,"temperature": 44,"temperature_str": 44,"state": "MD","city": "South Norenestad"},{"id": 559,"temperature": 25,"temperature_str": 25,"state": "NM","city": "South Peter"},{"id": 625,"temperature": 22,"temperature_str": 22,"state": "KY","city": "South Price"},{"id": 646,"temperature": 26,"temperature_str": 26,"state": "MO","city": "South Nichole"},{"id": 834,"temperature": 11,"temperature_str": 11,"state": "OK","city": "South Nikobury"},{"id": 844,"temperature": 89,"temperature_str": 89,"state": "AK","city": "South Ofelia"},{"id": 904,"temperature": 66,"temperature_str": 66,"state": "MO","city": "South Sammy"},{"id": 905,"temperature": 83,"temperature_str": 83,"state": "NM","city": "South Rusty"}];
 
-            let expected = {};
-            test_data.forEach(data=>{
-                if(data.city.endsWith('land')){
-                    expected[data.id] = data;
-                }
-            });
-
-            let search_object = new SearchObject('dev', 'test', 'city', 'land', 'id', ['*']);
-            let results = await test_utils.assertErrorAsync(thread_search_function, [search_object, lmdb_terms.SEARCH_TYPES.ENDS_WITH, HASH_ATTRIBUTE_NAME, true], undefined);
-            assert(Object.keys(results).length > 0);
-            assert.deepStrictEqual(results, expected);
+            let search_object = new SearchObject('dev', 'test', 'city', 'South', 'id', ATTRIBUTES, undefined, true, 10, 10);
+            let results = await test_utils.assertErrorAsync(lmdb_search.executeSearch, [search_object, lmdb_terms.SEARCH_TYPES.STARTS_WITH, HASH_ATTRIBUTE_NAME], undefined);
+            assert.deepEqual(results.length, 10);
+            assert.deepEqual(results, expected);
         });
 
-        it('test endswith on number', async()=>{
-            let expected = [];
-            test_data.forEach(data=>{
-                if(data.temperature.toString().endsWith('2')){
-                    expected.push(data);
-                }
-            });
+        it('test greaterthan limit 10', async()=>{
+            let expected = [{"id": 4,"temperature": 27,"temperature_str": 27,"state": "MT","city": "Geovanniton"},{"id": 86,"temperature": 27,"temperature_str": 27,"state": "TN","city": "Thompsonchester"},{"id": 141,"temperature": 27,"temperature_str": 27,"state": "VT","city": "East Daisyfurt"},{"id": 158,"temperature": 27,"temperature_str": 27,"state": "IN","city": "Thomaschester"},{"id": 216,"temperature": 27,"temperature_str": 27,"state": "AZ","city": "Kundeland"},{"id": 298,"temperature": 26,"temperature_str": 26,"state": "CT","city": "Darioton"},{"id": 415,"temperature": 26,"temperature_str": 26,"state": "NH","city": "Kuvalismouth"},{"id": 454,"temperature": 26,"temperature_str": 26,"state": "TN","city": "Lake Xzavierview"},{"id": 646,"temperature": 26,"temperature_str": 26,"state": "MO","city": "South Nichole"},{"id": 667,"temperature": 26,"temperature_str": 26,"state": "AL","city": "West Adrianstad"}];
 
-            let search_object = new SearchObject('dev', 'test', 'temperature', '2', 'id', ['*']);
-            let results = await test_utils.assertErrorAsync(thread_search_function, [search_object, lmdb_terms.SEARCH_TYPES.ENDS_WITH, HASH_ATTRIBUTE_NAME], undefined);
-            assert.deepEqual(results.length, expected.length);
-
-            results.forEach(result=>{
-                expected.forEach(expect=>{
-                    if(result.id === expect.id){
-                        assert.deepStrictEqual(result, expect);
-                    }
-                });
-            });
-
+            let search_object = new SearchObject('dev', 'test', 'temperature', '25', 'id', ATTRIBUTES, undefined, false, 10);
+            let results = await test_utils.assertErrorAsync(lmdb_search.executeSearch, [search_object, lmdb_terms.SEARCH_TYPES.GREATER_THAN, HASH_ATTRIBUTE_NAME], undefined);
+            assert.deepEqual(results.length, 10);
+            assert.deepEqual(results, expected);
         });
 
-        it('test endswith on number return map', async()=>{
+        it('test greaterthan limit 10 offset 10', async()=>{
+            let expected = [{"id": 16,"temperature": 28,"temperature_str": 28,"state": "AZ","city": "New Donmouth"},{"id": 70,"temperature": 28,"temperature_str": 28,"state": "DC","city": "Considineside"},{"id": 126,"temperature": 28,"temperature_str": 28,"state": "PA","city": "Dickinsonchester"},{"id": 193,"temperature": 28,"temperature_str": 28,"state": "IL","city": "South Tony"},{"id": 245,"temperature": 27,"temperature_str": 27,"state": "SC","city": "Lake Deonte"},{"id": 309,"temperature": 27,"temperature_str": 27,"state": "HI","city": "Justynside"},{"id": 322,"temperature": 27,"temperature_str": 27,"state": "MA","city": "North Fritz"},{"id": 372,"temperature": 28,"temperature_str": 28,"state": "MN","city": "East Julio"},{"id": 622,"temperature": 27,"temperature_str": 27,"state": "CO","city": "Kalimouth"},{"id": 980,"temperature": 27,"temperature_str": 27,"state": "MT","city": "West Roselynchester"}];
 
-            let expected = {};
-            test_data.forEach(data=>{
-                if(data.temperature.toString().endsWith('2')){
-                    expected[data.id] = data;
-                }
-            });
-
-            let search_object = new SearchObject('dev', 'test', 'temperature', '2', 'id', ['*']);
-            let results = await test_utils.assertErrorAsync(thread_search_function, [search_object, lmdb_terms.SEARCH_TYPES.ENDS_WITH, HASH_ATTRIBUTE_NAME, true], undefined);
-            assert(Object.keys(results).length > 0);
-            assert.deepStrictEqual(results, expected);
+            let search_object = new SearchObject('dev', 'test', 'temperature', '25', 'id', ATTRIBUTES, undefined, false, 10, 10);
+            let results = await test_utils.assertErrorAsync(lmdb_search.executeSearch, [search_object, lmdb_terms.SEARCH_TYPES.GREATER_THAN, HASH_ATTRIBUTE_NAME], undefined);
+            assert.deepEqual(results.length, 10);
+            assert.deepEqual(results, expected);
         });
 
-        it('test startswith on string', async()=>{
-            let expected = [];
-            test_data.forEach(data=>{
-                if(data.city.startsWith('South')){
-                    expected.push(data);
-                }
-            });
+        it('test greaterthanequal limit 10', async()=>{
+            let expected = [{"id": 1,"temperature": 40,"temperature_str": 40,"state": "AL","city": "Lydiabury"},{"id": 12,"temperature": 40,"temperature_str": 40,"state": "IA","city": "Willchester"},{"id": 24,"temperature": 40,"temperature_str": 40,"state": "IA","city": "Lylafurt"},{"id": 138,"temperature": 40,"temperature_str": 40,"state": "GA","city": "West Rhettbury"},{"id": 235,"temperature": 40,"temperature_str": 40,"state": "IA","city": "Cameronmouth"},{"id": 288,"temperature": 40,"temperature_str": 40,"state": "MI","city": "Deontestad"},{"id": 465,"temperature": 40,"temperature_str": 40,"state": "OH","city": "Lake Candace"},{"id": 505,"temperature": 40,"temperature_str": 40,"state": "MN","city": "New Leonard"},{"id": 538,"temperature": 40,"temperature_str": 40,"state": "MO","city": "South Wavaborough"},{"id": 569,"temperature": 40,"temperature_str": 40,"state": "RI","city": "Josephland"}];
 
-            let search_object = new SearchObject('dev', 'test', 'city', 'South', 'id', ['*']);
-            let results = await test_utils.assertErrorAsync(thread_search_function, [search_object, lmdb_terms.SEARCH_TYPES.STARTS_WITH, HASH_ATTRIBUTE_NAME], undefined);
-            assert.deepEqual(results.length, expected.length);
-
-            results.forEach(result=>{
-                expected.forEach(expect=>{
-                    if(result.id === expect.id){
-                        assert.deepStrictEqual(result, expect);
-                    }
-                });
-            });
-
+            let search_object = new SearchObject('dev', 'test', 'temperature', '40', 'id', ATTRIBUTES, undefined, false, 10);
+            let results = await test_utils.assertErrorAsync(lmdb_search.executeSearch, [search_object, lmdb_terms.SEARCH_TYPES.GREATER_THAN_EQUAL, HASH_ATTRIBUTE_NAME], undefined);
+            assert.deepEqual(results.length, 10);
+            assert.deepEqual(results, expected);
         });
 
-        it('test startswith on string return map', async()=>{
+        it('test greaterthanequal limit 10 offset 10', async()=>{
+            let expected = [{"id": 55,"temperature": 41,"temperature_str": 41,"state": "MT","city": "East Audrey"},{"id": 250,"temperature": 41,"temperature_str": 41,"state": "WV","city": "Arielleburgh"},{"id": 308,"temperature": 41,"temperature_str": 41,"state": "GA","city": "Maudmouth"},{"id": 336,"temperature": 41,"temperature_str": 41,"state": "WI","city": "Nayelibury"},{"id": 412,"temperature": 41,"temperature_str": 41,"state": "NH","city": "Swiftbury"},{"id": 413,"temperature": 41,"temperature_str": 41,"state": "VT","city": "West Yoshiko"},{"id": 768,"temperature": 40,"temperature_str": 40,"state": "UT","city": "West Haleigh"},{"id": 774,"temperature": 40,"temperature_str": 40,"state": "ID","city": "Jaceyport"},{"id": 837,"temperature": 40,"temperature_str": 40,"state": "UT","city": "West Elwinburgh"},{"id": 859,"temperature": 40,"temperature_str": 40,"state": "GA","city": "North Anahiburgh"}];
 
-            let expected = {};
-            test_data.forEach(data=>{
-                if(data.city.startsWith('South')){
-                    expected[data.id] = data;
-                }
-            });
-
-            let search_object = new SearchObject('dev', 'test', 'city', 'South', 'id', ['*']);
-            let results = await test_utils.assertErrorAsync(thread_search_function, [search_object, lmdb_terms.SEARCH_TYPES.STARTS_WITH, HASH_ATTRIBUTE_NAME, true], undefined);
-            assert(Object.keys(results).length > 0);
-            assert.deepStrictEqual(results, expected);
+            let search_object = new SearchObject('dev', 'test', 'temperature', '40', 'id', ATTRIBUTES, undefined, false, 10, 10);
+            let results = await test_utils.assertErrorAsync(lmdb_search.executeSearch, [search_object, lmdb_terms.SEARCH_TYPES.GREATER_THAN_EQUAL, HASH_ATTRIBUTE_NAME], undefined);
+            assert.deepEqual(results.length, 10);
+            assert.deepEqual(results, expected);
         });
 
-        it('test startswith on number', async()=>{
-            let expected = [];
-            test_data.forEach(data=>{
-                if(data.temperature.toString().startsWith('10')){
-                    expected.push(data);
-                }
-            });
-
-            let search_object = new SearchObject('dev', 'test', 'temperature', '10', 'id', ['*']);
-            let results = await test_utils.assertErrorAsync(thread_search_function, [search_object, lmdb_terms.SEARCH_TYPES.STARTS_WITH, HASH_ATTRIBUTE_NAME], undefined);
-            assert.deepEqual(results.length, expected.length);
-
-            results.forEach(result=>{
-                expected.forEach(expect=>{
-                    if(result.id === expect.id){
-                        assert.deepStrictEqual(result, expect);
-                    }
-                });
-            });
-
+        it('test lessthan offset 10', async()=>{
+            let expected = [{"id": 122,"temperature": 24,"temperature_str": 24,"state": "CO","city": "Adelberthaven"},{"id": 134,"temperature": 24,"temperature_str": 24,"state": "CO","city": "Gilbertstad"},{"id": 242,"temperature": 24,"temperature_str": 24,"state": "NC","city": "Albinaport"},{"id": 451,"temperature": 24,"temperature_str": 24,"state": "SD","city": "New Simeonport"},{"id": 633,"temperature": 24,"temperature_str": 24,"state": "KY","city": "Lake Vernon"},{"id": 682,"temperature": 24,"temperature_str": 24,"state": "CO","city": "Lake Webster"},{"id": 691,"temperature": 23,"temperature_str": 23,"state": "MD","city": "Elsieberg"},{"id": 709,"temperature": 23,"temperature_str": 23,"state": "WI","city": "Adelemouth"},{"id": 784,"temperature": 23,"temperature_str": 23,"state": "ID","city": "Erinton"},{"id": 902,"temperature": 24,"temperature_str": 24,"state": "NV","city": "East Reynoldbury"}];
+            let search_object = new SearchObject('dev', 'test', 'temperature', '25', 'id', ATTRIBUTES, undefined, false, 10);
+            let results = await test_utils.assertErrorAsync(lmdb_search.executeSearch, [search_object, lmdb_terms.SEARCH_TYPES.LESS_THAN, HASH_ATTRIBUTE_NAME], undefined);
+            assert.deepEqual(results.length, 10);
+            assert.deepEqual(results, expected);
         });
 
-        it('test startswith on number return map', async()=>{
-
-            let expected = {};
-            test_data.forEach(data=>{
-                if(data.temperature.toString().startsWith('10')){
-                    expected[data.id] = data;
-                }
-            });
-
-            let search_object = new SearchObject('dev', 'test', 'temperature', '10', 'id', ['*']);
-            let results = await test_utils.assertErrorAsync(thread_search_function, [search_object, lmdb_terms.SEARCH_TYPES.STARTS_WITH, HASH_ATTRIBUTE_NAME, true], undefined);
-            assert(Object.keys(results).length > 0);
-            assert.deepStrictEqual(results, expected);
+        it('test lessthan offset 10 limit 10', async()=>{
+            let expected = [{"id": 99,"temperature": 22,"temperature_str": 22,"state": "MA","city": "Darefort"},{"id": 119,"temperature": 23,"temperature_str": 23,"state": "DC","city": "South Helga"},{"id": 170,"temperature": 23,"temperature_str": 23,"state": "TN","city": "Murielmouth"},{"id": 369,"temperature": 22,"temperature_str": 22,"state": "AR","city": "Lake Juston"},{"id": 396,"temperature": 23,"temperature_str": 23,"state": "FL","city": "Keeblerberg"},{"id": 610,"temperature": 22,"temperature_str": 22,"state": "AZ","city": "South Joannymouth"},{"id": 625,"temperature": 22,"temperature_str": 22,"state": "KY","city": "South Price"},{"id": 679,"temperature": 23,"temperature_str": 23,"state": "SD","city": "South Hattieport"},{"id": 715,"temperature": 22,"temperature_str": 22,"state": "IN","city": "Hipolitoberg"},{"id": 830,"temperature": 22,"temperature_str": 22,"state": "NH","city": "Deloresside"}];
+            let search_object = new SearchObject('dev', 'test', 'temperature', '25', 'id', ATTRIBUTES, undefined, false, 10, 10);
+            let results = await test_utils.assertErrorAsync(lmdb_search.executeSearch, [search_object, lmdb_terms.SEARCH_TYPES.LESS_THAN, HASH_ATTRIBUTE_NAME], undefined);
+            assert.deepEqual(results.length, 10);
+            assert.deepEqual(results, expected);
         });
 
-        it('test searchall', async()=>{
-            let expected = [];
-            test_data.forEach(data=>{
-                expected.push(data);
-            });
-
-            let search_object = new SearchObject('dev', 'test', 'temperature', '*', 'id', ['*']);
-            let results = await test_utils.assertErrorAsync(thread_search_function, [search_object, lmdb_terms.SEARCH_TYPES.SEARCH_ALL, HASH_ATTRIBUTE_NAME], undefined);
-            assert.deepEqual(results.length, expected.length);
-
-            results.forEach(result=>{
-                expected.forEach(expect=>{
-                    if(result.id === expect.id){
-                        assert.deepStrictEqual(result, expect);
-                    }
-                });
-            });
-
+        it('test lessthanequal limit 10', async()=>{
+            let expected = [{"id": 235,"temperature": 40,"temperature_str": 40,"state": "IA","city": "Cameronmouth"},{"id": 288,"temperature": 40,"temperature_str": 40,"state": "MI","city": "Deontestad"},{"id": 465,"temperature": 40,"temperature_str": 40,"state": "OH","city": "Lake Candace"},{"id": 505,"temperature": 40,"temperature_str": 40,"state": "MN","city": "New Leonard"},{"id": 538,"temperature": 40,"temperature_str": 40,"state": "MO","city": "South Wavaborough"},{"id": 569,"temperature": 40,"temperature_str": 40,"state": "RI","city": "Josephland"},{"id": 768,"temperature": 40,"temperature_str": 40,"state": "UT","city": "West Haleigh"},{"id": 774,"temperature": 40,"temperature_str": 40,"state": "ID","city": "Jaceyport"},{"id": 837,"temperature": 40,"temperature_str": 40,"state": "UT","city": "West Elwinburgh"},{"id": 859,"temperature": 40,"temperature_str": 40,"state": "GA","city": "North Anahiburgh"}];
+            let search_object = new SearchObject('dev', 'test', 'temperature', '40', 'id', ATTRIBUTES, undefined, false, 10);
+            let results = await test_utils.assertErrorAsync(lmdb_search.executeSearch, [search_object, lmdb_terms.SEARCH_TYPES.LESS_THAN_EQUAL, HASH_ATTRIBUTE_NAME], undefined);
+            assert.deepEqual(results.length, 10);
+            assert.deepEqual(results, expected);
         });
 
-        it('test searchall to map', async()=>{
-
-            let expected = {};
-            test_data.forEach(data=>{
-                expected[data.id] = data;
-            });
-
-            let search_object = new SearchObject('dev', 'test', 'temperature', '10%', 'id', ['*']);
-            let results = await test_utils.assertErrorAsync(thread_search_function, [search_object, lmdb_terms.SEARCH_TYPES.SEARCH_ALL_TO_MAP, HASH_ATTRIBUTE_NAME, true], undefined);
-            assert(Object.keys(results).length > 0);
-            assert.deepStrictEqual(results, expected);
+        it('test lessthanequal limit 10 offset 10', async()=>{
+            let expected = [{"id": 1,"temperature": 40,"temperature_str": 40,"state": "AL","city": "Lydiabury"},{"id": 12,"temperature": 40,"temperature_str": 40,"state": "IA","city": "Willchester"},{"id": 24,"temperature": 40,"temperature_str": 40,"state": "IA","city": "Lylafurt"},{"id": 117,"temperature": 39,"temperature_str": 39,"state": "GA","city": "North Brielle"},{"id": 138,"temperature": 40,"temperature_str": 40,"state": "GA","city": "West Rhettbury"},{"id": 253,"temperature": 39,"temperature_str": 39,"state": "MI","city": "Katlynnmouth"},{"id": 513,"temperature": 39,"temperature_str": 39,"state": "IL","city": "West Ryleyland"},{"id": 604,"temperature": 39,"temperature_str": 39,"state": "OR","city": "New Camylle"},{"id": 677,"temperature": 39,"temperature_str": 39,"state": "MA","city": "New Juvenal"},{"id": 935,"temperature": 39,"temperature_str": 39,"state": "NH","city": "Bennettview"}];
+            let search_object = new SearchObject('dev', 'test', 'temperature', '40', 'id', ATTRIBUTES, undefined, false, 10, 10);
+            let results = await test_utils.assertErrorAsync(lmdb_search.executeSearch, [search_object, lmdb_terms.SEARCH_TYPES.LESS_THAN_EQUAL, HASH_ATTRIBUTE_NAME], undefined);
+            assert.deepEqual(results.length, 10);
+            assert.deepEqual(results, expected);
         });
 
-        it('test greaterthan', async()=>{
-            let expected = [];
-            test_data.forEach(data=>{
-                if(data.temperature > 25){
-                    expected.push(data);
-                }
-            });
+        it('test between limit 10', async()=>{
+            let expected = [{"id": 1,"temperature": 40,"temperature_str": 40,"state": "AL","city": "Lydiabury"},{"id": 12,"temperature": 40,"temperature_str": 40,"state": "IA","city": "Willchester"},{"id": 24,"temperature": 40,"temperature_str": 40,"state": "IA","city": "Lylafurt"},{"id": 138,"temperature": 40,"temperature_str": 40,"state": "GA","city": "West Rhettbury"},{"id": 235,"temperature": 40,"temperature_str": 40,"state": "IA","city": "Cameronmouth"},{"id": 288,"temperature": 40,"temperature_str": 40,"state": "MI","city": "Deontestad"},{"id": 465,"temperature": 40,"temperature_str": 40,"state": "OH","city": "Lake Candace"},{"id": 505,"temperature": 40,"temperature_str": 40,"state": "MN","city": "New Leonard"},{"id": 538,"temperature": 40,"temperature_str": 40,"state": "MO","city": "South Wavaborough"},{"id": 569,"temperature": 40,"temperature_str": 40,"state": "RI","city": "Josephland"}];
 
-            let search_object = new SearchObject('dev', 'test', 'temperature', '25', 'id', ['*']);
-            let results = await test_utils.assertErrorAsync(thread_search_function, [search_object, lmdb_terms.SEARCH_TYPES.GREATER_THAN, HASH_ATTRIBUTE_NAME], undefined);
-            assert.deepEqual(results.length, expected.length);
-
-            results.forEach(result=>{
-                expected.forEach(expect=>{
-                    if(result.id === expect.id){
-                        assert.deepStrictEqual(result, expect);
-                    }
-                });
-            });
-
+            let search_object = new SearchObject('dev', 'test', 'temperature', '40', 'id', ATTRIBUTES, '66', false, 10);
+            let results = await test_utils.assertErrorAsync(lmdb_search.executeSearch, [search_object, lmdb_terms.SEARCH_TYPES.BETWEEN, HASH_ATTRIBUTE_NAME], undefined);
+            assert.deepEqual(results.length, 10);
+            assert.deepEqual(results, expected);
         });
 
-        it('test greaterthan to map', async()=>{
+        it('test between limit 10 offset 10', async()=>{
+            let expected = [{"id": 55,"temperature": 41,"temperature_str": 41,"state": "MT","city": "East Audrey"},{"id": 250,"temperature": 41,"temperature_str": 41,"state": "WV","city": "Arielleburgh"},{"id": 308,"temperature": 41,"temperature_str": 41,"state": "GA","city": "Maudmouth"},{"id": 336,"temperature": 41,"temperature_str": 41,"state": "WI","city": "Nayelibury"},{"id": 412,"temperature": 41,"temperature_str": 41,"state": "NH","city": "Swiftbury"},{"id": 413,"temperature": 41,"temperature_str": 41,"state": "VT","city": "West Yoshiko"},{"id": 768,"temperature": 40,"temperature_str": 40,"state": "UT","city": "West Haleigh"},{"id": 774,"temperature": 40,"temperature_str": 40,"state": "ID","city": "Jaceyport"},{"id": 837,"temperature": 40,"temperature_str": 40,"state": "UT","city": "West Elwinburgh"},{"id": 859,"temperature": 40,"temperature_str": 40,"state": "GA","city": "North Anahiburgh"}];
 
-            let expected = {};
-            test_data.forEach(data=>{
-                if(data.temperature > 25){
-                    expected[data.id] = data;
-                }
-            });
-
-            let search_object = new SearchObject('dev', 'test', 'temperature', '25', 'id', ['*']);
-            let results = await test_utils.assertErrorAsync(thread_search_function, [search_object, lmdb_terms.SEARCH_TYPES.GREATER_THAN, HASH_ATTRIBUTE_NAME, true], undefined);
-            assert(Object.keys(results).length > 0);
-            assert.deepStrictEqual(results, expected);
-        });
-
-        it('test greaterthanequal', async()=>{
-            let expected = [];
-            test_data.forEach(data=>{
-                if(data.temperature >= 40){
-                    expected.push(data);
-                }
-            });
-
-            let search_object = new SearchObject('dev', 'test', 'temperature', '40', 'id', ['*']);
-            let results = await test_utils.assertErrorAsync(thread_search_function, [search_object, lmdb_terms.SEARCH_TYPES.GREATER_THAN_EQUAL, HASH_ATTRIBUTE_NAME], undefined);
-            assert.deepEqual(results.length, expected.length);
-
-            results.forEach(result=>{
-                expected.forEach(expect=>{
-                    if(result.id === expect.id){
-                        assert.deepStrictEqual(result, expect);
-                    }
-                });
-            });
-
-        });
-
-        it('test greaterthanequal to map', async()=>{
-
-            let expected = {};
-            test_data.forEach(data=>{
-                if(data.temperature >= 40){
-                    expected[data.id] = data;
-                }
-            });
-
-            let search_object = new SearchObject('dev', 'test', 'temperature', '40', 'id', ['*']);
-            let results = await test_utils.assertErrorAsync(thread_search_function, [search_object, lmdb_terms.SEARCH_TYPES.GREATER_THAN_EQUAL, HASH_ATTRIBUTE_NAME, true], undefined);
-            assert(Object.keys(results).length > 0);
-            assert.deepStrictEqual(results, expected);
-        });
-
-        it('test lessthan', async()=>{
-            let expected = [];
-            test_data.forEach(data=>{
-                if(data.temperature < 25){
-                    expected.push(data);
-                }
-            });
-
-            let search_object = new SearchObject('dev', 'test', 'temperature', '25', 'id', ['*']);
-            let results = await test_utils.assertErrorAsync(thread_search_function, [search_object, lmdb_terms.SEARCH_TYPES.LESS_THAN, HASH_ATTRIBUTE_NAME], undefined);
-            assert.deepEqual(results.length, expected.length);
-
-            results.forEach(result=>{
-                expected.forEach(expect=>{
-                    if(result.id === expect.id){
-                        assert.deepStrictEqual(result, expect);
-                    }
-                });
-            });
-
-        });
-
-        it('test lessthan to map', async()=>{
-
-            let expected = {};
-            test_data.forEach(data=>{
-                if(data.temperature < 25){
-                    expected[data.id] = data;
-                }
-            });
-
-            let search_object = new SearchObject('dev', 'test', 'temperature', '25', 'id', ['*']);
-            let results = await test_utils.assertErrorAsync(thread_search_function, [search_object, lmdb_terms.SEARCH_TYPES.LESS_THAN, HASH_ATTRIBUTE_NAME, true], undefined);
-            assert(Object.keys(results).length > 0);
-            assert.deepStrictEqual(results, expected);
-        });
-
-        it('test lessthanequal', async()=>{
-            let expected = [];
-            test_data.forEach(data=>{
-                if(data.temperature <= 40){
-                    expected.push(data);
-                }
-            });
-
-            let search_object = new SearchObject('dev', 'test', 'temperature', '40', 'id', ['*']);
-            let results = await test_utils.assertErrorAsync(thread_search_function, [search_object, lmdb_terms.SEARCH_TYPES.LESS_THAN_EQUAL, HASH_ATTRIBUTE_NAME], undefined);
-            assert.deepEqual(results.length, expected.length);
-
-            results.forEach(result=>{
-                expected.forEach(expect=>{
-                    if(result.id === expect.id){
-                        assert.deepStrictEqual(result, expect);
-                    }
-                });
-            });
-
-        });
-
-        it('test lessthanequal to map', async()=>{
-
-            let expected = {};
-            test_data.forEach(data=>{
-                if(data.temperature <= 40){
-                    expected[data.id] = data;
-                }
-            });
-
-            let search_object = new SearchObject('dev', 'test', 'temperature', '40', 'id', ['*']);
-            let results = await test_utils.assertErrorAsync(thread_search_function, [search_object, lmdb_terms.SEARCH_TYPES.LESS_THAN_EQUAL, HASH_ATTRIBUTE_NAME, true], undefined);
-            assert(Object.keys(results).length > 0);
-            assert.deepStrictEqual(results, expected);
-        });
-
-        it('test between', async()=>{
-            let expected = [];
-            test_data.forEach(data=>{
-                if(data.temperature >= 40 && data.temperature <= 66){
-                    expected.push(data);
-                }
-            });
-
-            let search_object = new SearchObject('dev', 'test', 'temperature', '40', 'id', ['*'], '66');
-            let results = await test_utils.assertErrorAsync(thread_search_function, [search_object, lmdb_terms.SEARCH_TYPES.BETWEEN, HASH_ATTRIBUTE_NAME], undefined);
-            assert.deepEqual(results.length, expected.length);
-
-            results.forEach(result=>{
-                expected.forEach(expect=>{
-                    if(result.id === expect.id){
-                        assert.deepStrictEqual(result, expect);
-                    }
-                });
-            });
-
-        });
-
-        it('test between to map', async()=>{
-
-            let expected = {};
-            test_data.forEach(data=>{
-                if(data.temperature >= 40 && data.temperature <= 66){
-                    expected[data.id] = data;
-                }
-            });
-
-            let search_object = new SearchObject('dev', 'test', 'temperature', '40', 'id', ['*'], '66');
-            let results = await test_utils.assertErrorAsync(thread_search_function, [search_object, lmdb_terms.SEARCH_TYPES.BETWEEN, HASH_ATTRIBUTE_NAME, true], undefined);
-            assert(Object.keys(results).length > 0);
-            assert.deepStrictEqual(results, expected);
-        });
-
-        it('test multiple searches in flight', async()=>{
-            let between_search_object = new SearchObject('dev', 'test', 'temperature', '40', 'id', ['*'], '66');
-            let between_expected = [];
-            test_data.forEach(data=>{
-                if(data.temperature >= 40 && data.temperature <= 66){
-                    between_expected.push(data);
-                }
-            });
-
-            let less_equal_search_object = new SearchObject('dev', 'test', 'temperature', '40', 'id', ['*']);
-            let less_equal_expected = [];
-            test_data.forEach(data=>{
-                if(data.temperature <= 40){
-                    less_equal_expected.push(data);
-                }
-            });
-
-            let less_search_object = new SearchObject('dev', 'test', 'temperature', '25', 'id', ['*']);
-            let less_expected = [];
-            test_data.forEach(data=>{
-                if(data.temperature < 25){
-                    less_expected.push(data);
-                }
-            });
-
-            let greaterequal_search_object = new SearchObject('dev', 'test', 'temperature', '40', 'id', ['*']);
-            let greaterequal_expected = [];
-            test_data.forEach(data=>{
-                if(data.temperature >= 40){
-                    greaterequal_expected.push(data);
-                }
-            });
-
-            let contains_search_object = new SearchObject('dev', 'test', 'city', 'bert', 'id', ['*']);
-            let contains_expected = [];
-            test_data.forEach(data=>{
-                if(data.city.includes('bert') === true){
-                    contains_expected.push(data);
-                }
-            });
-
-            let [between_results, less_equal_results, less_results, greater_equal_results, contains_results] = await Promise.all([
-                thread_search_function(between_search_object, lmdb_terms.SEARCH_TYPES.BETWEEN, HASH_ATTRIBUTE_NAME),
-                thread_search_function(less_equal_search_object, lmdb_terms.SEARCH_TYPES.LESS_THAN_EQUAL, HASH_ATTRIBUTE_NAME),
-                thread_search_function(less_search_object, lmdb_terms.SEARCH_TYPES.LESS_THAN, HASH_ATTRIBUTE_NAME),
-                thread_search_function(greaterequal_search_object, lmdb_terms.SEARCH_TYPES.GREATER_THAN_EQUAL, HASH_ATTRIBUTE_NAME),
-                thread_search_function(contains_search_object, lmdb_terms.SEARCH_TYPES.CONTAINS, HASH_ATTRIBUTE_NAME)]);
-
-            assert.notDeepStrictEqual(between_results, undefined);
-            assert.notDeepStrictEqual(between_results.length, 0);
-            between_results.forEach(result=>{
-                between_expected.forEach(expect=>{
-                    if(result.id === expect.id){
-                        assert.deepStrictEqual(result, expect);
-                    }
-                });
-            });
-
-            assert.notDeepStrictEqual(less_equal_results, undefined);
-            assert.notDeepStrictEqual(less_equal_results.length, 0);
-            less_equal_results.forEach(result=>{
-                less_equal_expected.forEach(expect=>{
-                    if(result.id === expect.id){
-                        assert.deepStrictEqual(result, expect);
-                    }
-                });
-            });
-
-            assert.notDeepStrictEqual(less_results, undefined);
-            assert.notDeepStrictEqual(less_results.length, 0);
-            less_results.forEach(result=>{
-                less_expected.forEach(expect=>{
-                    if(result.id === expect.id){
-                        assert.deepStrictEqual(result, expect);
-                    }
-                });
-            });
-
-            assert.notDeepStrictEqual(greater_equal_results, undefined);
-            assert.notDeepStrictEqual(greater_equal_results.length, 0);
-            greater_equal_results.forEach(result=>{
-                greaterequal_expected.forEach(expect=>{
-                    if(result.id === expect.id){
-                        assert.deepStrictEqual(result, expect);
-                    }
-                });
-            });
-
-            assert.notDeepStrictEqual(contains_results, undefined);
-            assert.notDeepStrictEqual(contains_results.length, 0);
-            contains_results.forEach(result=>{
-                contains_expected.forEach(expect=>{
-                    if(result.id === expect.id){
-                        assert.deepStrictEqual(result, expect);
-                    }
-                });
-            });
-
+            let search_object = new SearchObject('dev', 'test', 'temperature', '40', 'id', ATTRIBUTES, '66', false, 10, 10);
+            let results = await test_utils.assertErrorAsync(lmdb_search.executeSearch, [search_object, lmdb_terms.SEARCH_TYPES.BETWEEN, HASH_ATTRIBUTE_NAME], undefined);
+            assert.deepEqual(results.length, 10);
+            assert.deepEqual(results, expected);
         });
     });
+
 });
