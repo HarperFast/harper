@@ -8,7 +8,6 @@ const cluster_utilities = require('./clustering/clusterUtilities');
 const env = require('../utility/environment/environmentManager');
 const global_schema = require('../utility/globalSchema');
 const harper_logger = require('../utility/logging/harper_logger');
-const hdb_license = require('../utility/registration/hdb_license');
 const os = require('os');
 const RestartEventObject = require('./RestartEventObject');
 const sio_server_stopped_event = require('../events/SioServerStoppedEvent');
@@ -30,12 +29,12 @@ async function serverParent(num_workers) {
 
     let restart_event_tracker = new RestartEventObject();
     let restart_in_progress = false;
-    //TODO - WHAT CAUSES THIS - THIS IS MEANT AS A WAY TO INDICATE A USER IS TRYING TO STOP OR RESTART - DOES FASTIFY HAVE A BETTER WAY TO DO THIS?
-    // Consume AllChildrenStopped Event.
+
+    // Handles restart operation for all processes
     all_children_stopped_event.allChildrenStoppedEmitter.on(all_children_stopped_event.EVENT_NAME,(msg) => {
         harper_logger.info(`Got all children stopped event.`);
         try {
-            restart_event_tracker.express_connections_stopped = true;
+            restart_event_tracker.fastify_connections_stopped = true;
             if(restart_event_tracker.isReadyForRestart()) {
                 if(!restart_in_progress) {
                     restart_in_progress = true;
@@ -63,14 +62,14 @@ async function serverParent(num_workers) {
         }
     });
 
-    await launch(num_workers)
-        .catch(e => {
-            harper_logger.error(e);
-        });
+    try {
+        await launch(num_workers);
+    } catch(e) {
+        harper_logger.error(e);
+    }
 }
 
 async function launch(num_workers) {
-    let license_values = hdb_license.licenseSearch();
     global.clustering_on = env.get('CLUSTERING');
 
     await p_schema_to_global();
@@ -94,7 +93,7 @@ async function launch(num_workers) {
     let forks = [];
     for (let i = 0; i < num_workers; i++) {
         try {
-            let forked = cluster.fork({hdb_license: JSON.stringify(license_values)});
+            let forked = cluster.fork();
             // assign handler for messages expected from child processes.
             forked.on('message', cluster_utilities.clusterMessageHandler);
             forked.on('error',(err) => {
@@ -103,7 +102,9 @@ async function launch(num_workers) {
             });
             forked.on('disconnect',(err) => {
                 harper_logger.error('HDB child has been disconnected.');
-                harper_logger.error(err);
+                if (err) {
+                    harper_logger.error(err);
+                }
             });
             forked.on('listening',(address) => {
                 harper_logger.info(`HDB child process is listening`);
