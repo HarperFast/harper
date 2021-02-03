@@ -28,7 +28,6 @@ const delete_ = require('../data_layer/delete');
 const password = require('../utility/password');
 const validation = require('../validation/user_validation');
 const search = require('../data_layer/search');
-// const harper_bridge = require('../data_layer/harperBridge/harperBridge');
 const signalling = require('../utility/signalling');
 const hdb_utility = require('../utility/common_utils');
 const validate = require('validate.js');
@@ -301,9 +300,14 @@ async function listUsersExternal() {
         throw new Error('there was an error massaging the user data');
     }
 
-    return Array.from(user_data.values());
+    return [...user_data.values()];
 }
 
+/**
+ * Queries system table for user records, adds role-based perms, scrubs list based on licensed role allowance and returns
+ * data in a Map with the username as the key for the entry
+ * @returns {Promise<Map<string, object>>}
+ */
 async function listUsers() {
     try {
         let role_search_obj = {
@@ -340,19 +344,19 @@ async function listUsers() {
                 throw err;
             });
 
-            const user_map = new Map();
+            const user_obj = new Map();
             for (let u in users) {
                 const user = users[u];
                 user.role = roleMapObj[users[u].role];
                 appendSystemTablesToRole(user.role);
-                user_map.set(user.username, user);
+                user_obj.set(user.username, user);
             }
             // No enterprise license limits roles to 2 (1 su, 1 cu).  If a license has expired, we need to allow the cluster role
             // and the role with the most users.
             if (!(await license.getLicense()).enterprise) {
-                return nonEnterpriseFilter(user_map);
+                return nonEnterpriseFilter(user_obj);
             }
-            return user_map;
+            return user_obj;
         }
     } catch(err) {
         logger.error('got an error listing users');
@@ -394,9 +398,9 @@ function appendSystemTablesToRole(user_role) {
 }
 
 /**
- * Should return array of users
+ * Should return Map of filtered users
  * @param search_results
- * @returns {Map}
+ * @returns {Map<string, object>}
  */
 function nonEnterpriseFilter(search_results) {
     try {
@@ -404,17 +408,17 @@ function nonEnterpriseFilter(search_results) {
         if(!search_results) {
             return new Map();
         }
-        let user_map = Object.create(null);
+        let user_obj = Object.create(null);
         let found_users = new Map();
         // bucket users by role.  We will pick the role with the most users to enable
         search_results.forEach((user, username) => {
             if (user.role.permission.cluster_user === undefined || user.role.permission.cluster_user === false) {
                 // only add super users
                 if (user.role.permission.super_user === true) {
-                    if (!user_map[user.role.id]) {
-                        user_map[user.role.id] = new Map();
+                    if (!user_obj[user.role.id]) {
+                        user_obj[user.role.id] = new Map();
                     }
-                    user_map[user.role.id].set(username, user);
+                    user_obj[user.role.id].set(username, user);
                 }
             } else {
                 found_users.set(username, user);
@@ -422,8 +426,8 @@ function nonEnterpriseFilter(search_results) {
         });
 
         let most_users_tuple = {role: undefined, count: 0};
-        Object.keys(user_map).forEach((role_id) => {
-            let curr_role = user_map[role_id];
+        Object.keys(user_obj).forEach((role_id) => {
+            let curr_role = user_obj[role_id];
             if (curr_role.size >= most_users_tuple.count) {
                 most_users_tuple.role = role_id;
                 most_users_tuple.count = curr_role.size;
@@ -434,7 +438,7 @@ function nonEnterpriseFilter(search_results) {
             return new Map();
         }
 
-        found_users = new Map([...found_users, ...user_map[most_users_tuple.role]]);
+        found_users = new Map([...found_users, ...user_obj[most_users_tuple.role]]);
         return found_users;
     } catch(err) {
         logger.error('error filtering users.');
@@ -466,14 +470,6 @@ async function findAndValidateUser(username, pw, validate_password = true) {
     }
 
     let user_tmp = global.hdb_users.get(username);
-
-    // for(let x = 0, length = global.hdb_users.length; x < length; x++){
-    //     let hdb_user = global.hdb_users[x];
-    //     if(hdb_user.username.toString() === username.toString()){
-    //         user_tmp = hdb_user;
-    //         break;
-    //     }
-    // }
 
     if (!user_tmp) {
         throw handleHDBError(new Error(), AUTHENTICATION_ERROR_MSGS.GENERIC_AUTH_FAIL, HTTP_STATUS_CODES.UNAUTHORIZED);

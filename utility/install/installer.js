@@ -245,7 +245,7 @@ function prepForReinstall(callback) {
                 winston.error(err);
                 return callback(err, null);
             }}).then(() => {
-                existing_users.push(...Array.from(global.hdb_users.keys()));
+                existing_users.push([...global.hdb_users.keys()]);
                 schema.setSchemaDataToGlobal(() => callback(null, true));
         });
     } else {
