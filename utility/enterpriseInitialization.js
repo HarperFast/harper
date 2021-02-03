@@ -51,7 +51,7 @@ async function kickOffEnterprise() {
         let sc_data_payload = {
             nodes: nodes,
             schema: schema,
-            users: users,
+            users: [...users.values()],
             cluster_user: cluster_user
         };
 
