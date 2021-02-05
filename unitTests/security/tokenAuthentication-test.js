@@ -411,8 +411,6 @@ describe('test validateOperationToken function', ()=>{
     let hdb_admin_tokens;
     let old_user_tokens;
     let non_user_tokens;
-    let token_timeout;
-    let expired_user_tokens;
     before(async ()=>{
         rw_get_tokens = token_auth.__set__('getJWTRSAKeys', async ()=>new JWTObjects.JWTRSAKeys(PUBLIC_KEY_VALUE, PRIVATE_KEY_VALUE, PASSPHRASE_VALUE));
 
@@ -430,10 +428,10 @@ describe('test validateOperationToken function', ()=>{
             }
         );
 
-        global.hdb_users = [
-            {username: 'HDB_ADMIN', active: true},
-            {username: 'old_user', active: false}
-        ];
+        global.hdb_users = new Map([
+            ['HDB_ADMIN', {username: 'HDB_ADMIN', active: true}],
+            ['old_user', {username: 'old_user', active: false}]
+        ]);
 
         token_timeout = token_auth.__set__('OPERATION_TOKEN_TIMEOUT', '-1');
         expired_user_tokens = await token_auth.createTokens({username: 'EXPIRED', password: 'cool'});
@@ -449,10 +447,8 @@ describe('test validateOperationToken function', ()=>{
         rw_update();
         rw_signalling();
     });
-
-    beforeEach(()=>{
-
-    });
+    let token_timeout;
+    let expired_user_tokens;
 
     afterEach(()=>{
         jwt_spy.resetHistory();
@@ -569,6 +565,7 @@ describe('test validateRefreshToken function', ()=>{
     let validate_refresh_token;
     let token_timeout;
     let expired_user_tokens;
+
     before(async ()=>{
         validate_refresh_token = token_auth.__get__('validateRefreshToken');
         rw_get_tokens = token_auth.__set__('getJWTRSAKeys', async ()=>new JWTObjects.JWTRSAKeys(PUBLIC_KEY_VALUE, PRIVATE_KEY_VALUE, PASSPHRASE_VALUE));
@@ -581,10 +578,10 @@ describe('test validateRefreshToken function', ()=>{
             signalUserChange: (obj)=>{}
         });
 
-        global.hdb_users = [
-            {username: 'HDB_ADMIN', active: true},
-            {username: 'old_user', active: false}
-        ];
+        global.hdb_users = new Map([
+            ['HDB_ADMIN', {username: 'HDB_ADMIN', active: true}],
+            ['old_user', {username: 'old_user', active: false}]
+        ]);
 
         rw_validate_user = token_auth.__set__('user_functions',
             {
@@ -602,17 +599,13 @@ describe('test validateRefreshToken function', ()=>{
         old_user_tokens = await token_auth.createTokens({username: 'old_user', password: 'notcool'});
         non_user_tokens = await token_auth.createTokens({username: 'non_user', password: 'notcool'});
 
-        global.hdb_users[0].refresh_token = password_function.hash(hdb_admin_tokens.refresh_token);
+        global.hdb_users.get('HDB_ADMIN').refresh_token = password_function.hash(hdb_admin_tokens.refresh_token);
 
         rw_validate_user();
         jwt_spy = sandbox.spy(jwt, 'verify');
         validate_user_spy = sandbox.spy(token_auth.__get__('user_functions'), 'findAndValidateUser');
         rw_update();
         rw_signalling();
-    });
-
-    beforeEach(()=>{
-
     });
 
     afterEach(()=>{
@@ -636,7 +629,7 @@ describe('test validateRefreshToken function', ()=>{
         }
 
         assert.deepStrictEqual(error, undefined);
-        assert.deepStrictEqual(user, {active: true, username: 'HDB_ADMIN', refresh_token: global.hdb_users[0].refresh_token});
+        assert.deepStrictEqual(user, {active: true, username: 'HDB_ADMIN', refresh_token: global.hdb_users.get('HDB_ADMIN').refresh_token});
         assert(jwt_spy.callCount === 1);
         assert(jwt_spy.threw() === false);
         assert(validate_user_spy.callCount === 1);
@@ -744,25 +737,21 @@ describe('test refreshOperationToken function', ()=>{
             }
         );
 
-        global.hdb_users = [
-            {username: 'HDB_ADMIN', active: true, role:{permission:{super_user: true}}},
-            {username: 'old_user', active: false}
-        ];
+        global.hdb_users = new Map([
+            ['HDB_ADMIN', {username: 'HDB_ADMIN', active: true, role:{permission:{super_user: true}}}],
+            ['old_user', {username: 'old_user', active: false}]
+        ]);
 
         hdb_admin_tokens = await token_auth.createTokens({username: 'HDB_ADMIN', password: 'cool'});
         old_user_tokens = await token_auth.createTokens({username: 'old_user', password: 'notcool'});
         non_user_tokens = await token_auth.createTokens({username: 'non_user', password: 'notcool'});
         rw_validate_user();
-        global.hdb_users[0].refresh_token = password_function.hash(hdb_admin_tokens.refresh_token);
+        global.hdb_users.get('HDB_ADMIN').refresh_token = password_function.hash(hdb_admin_tokens.refresh_token);
         jwt_spy = sandbox.spy(jwt, 'verify');
         validate_user_spy = sandbox.spy(token_auth.__get__('user_functions'), 'findAndValidateUser');
 
         rw_update();
         rw_signalling();
-    });
-
-    beforeEach(()=>{
-
     });
 
     afterEach(()=>{
