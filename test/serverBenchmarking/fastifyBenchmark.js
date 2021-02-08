@@ -16,10 +16,10 @@ const p_search_search_by_hash = promisify(search.searchByHash);
 const p_search_search_by_value = promisify(search.searchByValue);
 const p_sql_evaluate_sql = promisify(sql.evaluateSQL);
 
-const p_global_schema = promisify(global_schema.setSchemaDataToGlobal);
 env_mngr.initSync();
+const p_global_schema = promisify(global_schema.setSchemaDataToGlobal);
 
-const SERVER_PORT = 31283;//env_mngr.get('SERVER_PORT');
+const SERVER_PORT = 9925;//env_mngr.get('SERVER_PORT');
 const BASE_ROUTE = `https://localhost:${SERVER_PORT}`;
 const { BASIC_AUTH, FUNC_INPUT, REQUEST_JSON, TEST_DOG_RECORDS } = require('./testData');
 
@@ -38,7 +38,8 @@ const OP_FUNC_MAP = {
     SEARCH_BY_VAL: p_search_search_by_value,
     SEARCH_BY_HASH: p_search_search_by_hash,
     SQL_SIMPLE_SEARCH: p_sql_evaluate_sql,
-    SQL_SEARCH_WHERE_SORT: p_sql_evaluate_sql
+    SQL_SEARCH_WHERE_SORT: p_sql_evaluate_sql,
+    BIG_SQL: p_sql_evaluate_sql
 };
 
 instance.interceptors.request.use((config) => {
@@ -68,11 +69,12 @@ const benchmarkResults = {
     SEARCH_BY_VAL: benchmark(),
     SEARCH_BY_HASH: benchmark(),
     SQL_SIMPLE_SEARCH: benchmark(),
-    SQL_SEARCH_WHERE_SORT: benchmark()
+    SQL_SEARCH_WHERE_SORT: benchmark(),
+    BIG_SQL: benchmark()
 }
 
-function pause() {
-    return new Promise(resolve => setTimeout(resolve, 500));
+function pause(ms = 500) {
+    return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 async function setupBenchmarkData() {
@@ -133,10 +135,50 @@ async function setupBenchmarkData() {
                 }
             });
     } catch(e) {
-        console.log(colors.red('There was an error setting up benchmark table - ', e));
+        console.log(colors.red('There was an error setting up benchmark table `dog` - ', e));
+    }
+
+    try {
+        await instance.post(BASE_ROUTE,
+            {
+                operation: "create_table",
+                schema: "benchmarks",
+                table: "sensor",
+                hash_attribute: "id"
+            },
+            {
+                headers: {
+                    'X-Custom-Header': 'foobar',
+                    'Authorization': BASIC_AUTH,
+                    'Content-Type': 'application/json'
+                }
+            });
+    } catch(e) {
+        console.log(colors.red('There was an error setting up benchmark table `sensor` - ', e));
     }
 
     await pause();
+    try {
+        await instance.post(BASE_ROUTE,
+            {
+                "operation":"csv_file_load",
+                "action":"insert",
+                "schema":"benchmarks",
+                "table":"sensor",
+                "file_path":`${process.cwd()}/sensor_short.csv`
+            },
+            {
+                headers: {
+                    'X-Custom-Header': 'foobar',
+                    'Authorization': BASIC_AUTH,
+                    'Content-Type': 'application/json'
+                }
+            });
+    } catch(e) {
+        console.log(colors.red('There was an error inserting benchmark data - ', e));
+    }
+
+    await pause(4000);
     try {
         await instance.post(BASE_ROUTE,
             {
@@ -187,10 +229,10 @@ async function rawDataFunctionBenchmark() {
         const func_key = REQS_KEYS[y];
         const func = OP_FUNC_MAP[func_key];
         const input = FUNC_INPUT(REQUEST_JSON[func_key]);
-        let x = 6000;
+        let x = 100;
         let sum = 0;
         let times_run = 0;
-        while (x-- > 3000) {
+        while (x-- > 0) {
 
             try {
                 const start = lmdb_util.getMicroTime();
@@ -214,10 +256,10 @@ async function httpBenchmark() {
     for (let y = 0; y < REQS_LENGTH; y++) {
         const key = REQS_KEYS[y]
         const body_json = REQUEST_JSON[key];
-        let x = 6000;
+        let x = 100;
         let sum = 0;
         let times_run = 0;
-        while (x-- > 3000) {
+        while (x-- > 0) {
             try {
                 const response = await instance.post(BASE_ROUTE,
                     body_json,
@@ -264,5 +306,3 @@ async function run() {
 }
 
 run().then(()=>{});
-
-

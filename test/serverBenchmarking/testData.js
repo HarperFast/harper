@@ -19,6 +19,7 @@ const SEARCH_BY_HASH = {
 };
 const SQL_SIMPLE_SEARCH = {"operation": "sql", "sql": "SELECT * FROM benchmarks.dog"};
 const SQL_SEARCH_WHERE_SORT = {"operation": "sql", "sql": "SELECT * FROM benchmarks.dog WHERE id < 10 ORDER BY dog_name"};
+const BIG_SQL = {"operation": "sql", "sql": "SELECT * FROM benchmarks.sensor"};
 
 const REQUEST_JSON = {
     REG_INFO,
@@ -28,7 +29,8 @@ const REQUEST_JSON = {
     SEARCH_BY_VAL,
     SEARCH_BY_HASH,
     SQL_SIMPLE_SEARCH,
-    SQL_SEARCH_WHERE_SORT
+    SQL_SEARCH_WHERE_SORT,
+    BIG_SQL
 };
 
 const FUNC_INPUT = (data) => ({
