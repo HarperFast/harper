@@ -96,19 +96,19 @@ async function executeSearch(search_object, search_type, hash_attribute, return_
             case lmdb_terms.SEARCH_TYPES.SEARCH_ALL_TO_MAP:
                 return search_utility.searchAllToMap(env, hash_attribute, search_object.get_attributes, reverse, limit, offset);
             case lmdb_terms.SEARCH_TYPES.BETWEEN:
-                search_results = search_utility.between(env, hash_attribute_name, search_object.search_attribute, search_object.search_value, search_object.end_value, limit, offset);
+                search_results = search_utility.between(env, hash_attribute_name, search_object.search_attribute, search_object.search_value, search_object.end_value, reverse, limit, offset);
                 break;
             case lmdb_terms.SEARCH_TYPES.GREATER_THAN:
-                search_results = search_utility.greaterThan(env, hash_attribute_name, search_object.search_attribute, search_object.search_value, limit, offset);
+                search_results = search_utility.greaterThan(env, hash_attribute_name, search_object.search_attribute, search_object.search_value, reverse, limit, offset);
                 break;
             case lmdb_terms.SEARCH_TYPES.GREATER_THAN_EQUAL:
-                search_results = search_utility.greaterThanEqual(env, hash_attribute_name, search_object.search_attribute, search_object.search_value, limit, offset);
+                search_results = search_utility.greaterThanEqual(env, hash_attribute_name, search_object.search_attribute, search_object.search_value, reverse, limit, offset);
                 break;
             case lmdb_terms.SEARCH_TYPES.LESS_THAN:
-                search_results = search_utility.lessThan(env, hash_attribute_name, search_object.search_attribute, search_object.search_value, limit, offset);
+                search_results = search_utility.lessThan(env, hash_attribute_name, search_object.search_attribute, search_object.search_value, reverse, limit, offset);
                 break;
             case lmdb_terms.SEARCH_TYPES.LESS_THAN_EQUAL:
-                search_results = search_utility.lessThanEqual(env, hash_attribute_name, search_object.search_attribute, search_object.search_value, limit, offset);
+                search_results = search_utility.lessThanEqual(env, hash_attribute_name, search_object.search_attribute, search_object.search_value, reverse, limit, offset);
                 break;
             default:
                 return search_results;

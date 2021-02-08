@@ -2147,7 +2147,7 @@ describe('Test searchUtility module', ()=>{
         });
     });
 
-    describe('test iterateDBI function', ()=> {
+    describe('test iterateDBI function', () => {
         let env;
         before(async () => {
             await fs.mkdirp(BASE_TEST_PATH);
