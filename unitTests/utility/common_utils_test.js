@@ -20,41 +20,50 @@ const ps_list = require('../../utility/psList');
 const { expect } = chai;
 const ALL_SPACES = '     ';
 
-const USERS = [
-    {
-        "active": true,
-        "role": {
-            "id": "d2742e06-e7cc-4a90-9f10-205ac5fa5621",
-            "permission": {
-                "super_user": true
+const USERS = new Map([
+    [
+        "HDB_ADMIN",
+        {
+            "active": true,
+            "role": {
+                "id": "d2742e06-e7cc-4a90-9f10-205ac5fa5621",
+                "permission": {
+                    "super_user": true
+                },
+                "role": "super_user"
             },
-            "role": "super_user"
-        },
-        "username": "HDB_ADMIN"
-    },
-    {
-        "active": true,
-        "role": {
-            "id": "d2742e06-e7cc-4a90-9f10-205ac5fa5621",
-            "permission": {
-                "super_user": true
+            "username": "HDB_ADMIN"
+        }
+    ],
+    [
+        "sgoldberg",
+        {
+            "active": true,
+            "role": {
+                "id": "d2742e06-e7cc-4a90-9f10-205ac5fa5621",
+                "permission": {
+                    "super_user": true
+                },
+                "role": "super_user"
             },
-            "role": "super_user"
-        },
-        "username": "sgoldberg"
-    },
-    {
-        "active": true,
-        "role": {
-            "id": "916c9ce1-1411-4341-9c0a-7b7bd182a4c9",
-            "permission": {
-                "cluster_user": true
+            "username": "sgoldberg"
+        }
+    ],
+    [
+        "cluster_test",
+        {
+            "active": true,
+            "role": {
+                "id": "916c9ce1-1411-4341-9c0a-7b7bd182a4c9",
+                "permission": {
+                    "cluster_user": true
+                },
+                "role": "cluster_user3"
             },
-            "role": "cluster_user3"
-        },
-        "username": "cluster_test"
-    }
-];
+            "username": "cluster_test"
+        }
+    ]
+]);
 
 const PSLIST_HELIUM_RETURN = [
     {
@@ -594,7 +603,7 @@ describe('Test checkGlobalSchemaTable', function() {
 
 describe('Test getClusterUser', function() {
     it('Test nominal case of isClusterOperation', function() {
-        assert.equal(cu.getClusterUser(USERS, CLUSTER_USER_NAME), USERS[2], 'Expected user');
+        assert.equal(cu.getClusterUser(USERS, CLUSTER_USER_NAME), USERS.get(CLUSTER_USER_NAME), 'Expected user');
     });
     it('Test non-existent cluster_user', function() {
         assert.equal(cu.getClusterUser(USERS, CLUSTER_USER_NAME + 1), undefined, 'Expected true result');

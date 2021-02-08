@@ -88,20 +88,27 @@ const VALID_ROLE = {
     "role": "super_user"
 };
 
-global.hdb_users = [
-    {
-        username: 'nook',
-        active: true,
-        password: password_function.hash('1234!'),
-        role: VALID_ROLE
-    },
-    {
-        username: 'unactivenook',
-        active: false,
-        password: password_function.hash('1234!'),
-        role: VALID_ROLE
-    }
-];
+global.hdb_users = new Map([
+        [
+            'nook',
+            {
+                username: 'nook',
+                active: true,
+                password: password_function.hash('1234!'),
+                role: VALID_ROLE
+            }
+        ],
+        [
+            'unactivenook',
+            {
+                username: 'unactivenook',
+                active: false,
+                password: password_function.hash('1234!'),
+                role: VALID_ROLE
+            }
+        ]
+    ]
+);
 
 let active_basic_request = {
     headers: {
@@ -248,10 +255,10 @@ describe('test authorize function for JWT', ()=>{
             signalUserChange: (obj)=>{}
         });
 
-        global.hdb_users = [
-            {username: 'HDB_ADMIN', active: true},
-            {username: 'old_user', active: false}
-        ];
+        global.hdb_users = new Map([
+            ['HDB_ADMIN', { username: 'HDB_ADMIN', active: true }],
+            ['old_user', { username: 'old_user', active: false }]
+        ]);
 
         op_token_timeout = token_auth.__set__('OPERATION_TOKEN_TIMEOUT', '-1');
         r_token_timeout = token_auth.__set__('REFRESH_TOKEN_TIMEOUT', '-1');
@@ -264,7 +271,7 @@ describe('test authorize function for JWT', ()=>{
         hdb_admin_tokens = await token_auth.createTokens({username: 'HDB_ADMIN', password: 'cool'});
         old_user_tokens = await token_auth.createTokens({username: 'old_user', password: 'notcool'});
         non_user_tokens = await token_auth.createTokens({username: 'non_user', password: 'notcool'});
-        global.hdb_users[0].refresh_token = password_function.hash(hdb_admin_tokens.refresh_token);
+        global.hdb_users.get('HDB_ADMIN').refresh_token = password_function.hash(hdb_admin_tokens.refresh_token);
         rw_validate_user();
         rw_signalling();
         rw_update();

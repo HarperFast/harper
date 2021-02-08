@@ -545,19 +545,18 @@ function getClusterUser(users, cluster_user_name){
         return;
     }
 
-    if(isEmptyOrZeroLength(users)){
+    if(isEmpty(users) || isEmptyOrZeroLength(users)){
         log.warn('No users to search.');
         return;
     }
 
-    let cluster_user = undefined;
+    let cluster_user;
+
     try {
-        for (let x = 0; x < users.length; x++) {
-            let user = users[x];
-            if (user.username.toString() === cluster_user_name.toString() && user.role.permission.cluster_user === true && user.active === true) {
-                cluster_user = user;
-                break;
-            }
+        const temp_cluster_user = users.get(cluster_user_name);
+
+        if (temp_cluster_user && temp_cluster_user.role.permission.cluster_user === true && temp_cluster_user.active === true) {
+            cluster_user = temp_cluster_user;
         }
     } catch(e){
         log.error(`unable to find cluster_user due to: ${e.message}`);
