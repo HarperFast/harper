@@ -709,7 +709,7 @@ function lessThan(env, hash_attribute, attribute, search_value, reverse = false,
                 if (Number.isInteger(offset)) {
                     offset++;
                 } else {
-                    limit = limit === undefined ? undefined : ++limit;
+                    limit = limit === undefined ? undefined : limit +1;
                 }
             }
 
@@ -777,7 +777,7 @@ function lessThanEqual(env, hash_attribute, attribute, search_value, reverse = f
                 if (Number.isInteger(offset)) {
                     offset++;
                 } else {
-                    limit = limit === undefined ? undefined : ++limit;
+                    limit = limit === undefined ? undefined : limit + 1;
                 }
             //}
 
