@@ -666,9 +666,6 @@ function greaterThanEqual(env, hash_attribute, attribute, search_value, reverse 
     }catch(e){
         throw e;
     }
-
-
-    //return iterateRangeNext(env, hash_attribute, attribute, next_value, cursor_functions.greaterThanEqualCompare, reverse, limit, offset);
 }
 
 /**
@@ -772,14 +769,11 @@ function lessThanEqual(env, hash_attribute, attribute, search_value, reverse = f
         let end;
         if(reverse === true){
             //check if the search value exists, if it does we increment the limit & offset by 1 as we need to allow for skipping that entry
-            /*let value = dbi.get(search_value);
-            if (value !== undefined) {*/
-                if (Number.isInteger(offset)) {
-                    offset++;
-                } else {
-                    limit = limit === undefined ? undefined : limit + 1;
-                }
-            //}
+            if (Number.isInteger(offset)) {
+                offset++;
+            } else {
+                limit = limit === undefined ? undefined : limit + 1;
+            }
 
             end = undefined;
             start = next_value;
