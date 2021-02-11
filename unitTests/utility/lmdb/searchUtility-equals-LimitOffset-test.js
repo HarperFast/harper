@@ -16,10 +16,99 @@ const TEST_ENVIRONMENT_NAME = 'test';
 const HASH_ATTRIBUTE_NAME = 'id';
 
 const PERSON_ATTRIBUTES = ['id', 'first_name', 'state', 'age', 'alive', 'birth_month'];
+const All_ATTRIBUTES = ['id', 'name', 'age', 'city'];
+const LMDB_TEST_ERRORS = require('../../commonTestErrors').LMDB_ERRORS_ENUM;
+
+const MULTI_RECORD_ARRAY = [
+    {id:1, name:'Kyle', age:46, city:'Denver'},
+    {id:2, name:'Jerry', age:32},
+    {id:3, name: 'Hank', age: 57},
+    {id:4, name:'Joy', age: 44, city:'Denver'}
+];
 
 const TIMESTAMP = Date.now();
 
 describe('test equals function', ()=> {
+    let env;
+    before(async () => {
+        await fs.mkdirp(BASE_TEST_PATH);
+        global.lmdb_map = undefined;
+        env = await environment_utility.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
+        await environment_utility.createDBI(env, 'id', false, true);
+        await environment_utility.createDBI(env, 'age', true, false);
+        await write_utility.insertRecords(env, HASH_ATTRIBUTE_NAME, test_utils.deepClone(All_ATTRIBUTES), MULTI_RECORD_ARRAY);
+    });
+
+    after(async () => {
+        env.close();
+        await fs.remove(BASE_TEST_PATH);
+        global.lmdb_map = undefined;
+    });
+
+    it("test validation", () => {
+        test_utils.assertErrorSync(search_util.equals, [], LMDB_TEST_ERRORS.ENV_REQUIRED, 'test no args');
+        test_utils.assertErrorSync(search_util.equals, [HASH_ATTRIBUTE_NAME], LMDB_TEST_ERRORS.INVALID_ENVIRONMENT, 'invalid env variable');
+        test_utils.assertErrorSync(search_util.equals, [env], LMDB_TEST_ERRORS.ATTRIBUTE_REQUIRED, 'no hash attribute');
+        test_utils.assertErrorSync(search_util.equals, [env, 'id', 'city'], LMDB_TEST_ERRORS.SEARCH_VALUE_REQUIRED, 'no search_value');
+        test_utils.assertErrorSync(search_util.equals, [env, 'id', 'city', 'Denver'], undefined, 'all arguments');
+    });
+
+    it("test search on city", () => {
+        let expected = [[1,4],[{"city": "Denver","id": 1},{"city": "Denver","id": 4}]];
+
+        let results = test_utils.assertErrorSync(search_util.equals, [env, 'id', 'city', 'Denver'], undefined, 'all arguments');
+        assert.deepEqual(results[0].length, 2);
+        assert.deepEqual(results[1].length, 2);
+        assert.deepEqual(results, expected);
+    });
+
+    it("test search on city, no hash", () => {
+        let expected = [[1,4],[{"city": "Denver"},{"city": "Denver"}]];
+        let results = test_utils.assertErrorSync(search_util.equals, [env, undefined, 'city', 'Denver'], undefined, 'all arguments');
+        assert.deepEqual(results[0].length, 2);
+        assert.deepEqual(results[1].length, 2);
+        assert.deepEqual(results, expected);
+    });
+
+    it("test search on city with only partial value", () => {
+        let results = test_utils.assertErrorSync(search_util.equals, [env, 'id', 'city', 'Den'], undefined, 'all arguments');
+        assert.deepStrictEqual(results, [[],[]]);
+    });
+
+    it("test search on attribute no exist", () => {
+        let results = test_utils.assertErrorSync(search_util.equals, [env, 'id', 'fake', 'bad'], LMDB_TEST_ERRORS.DBI_DOES_NOT_EXIST);
+        assert.deepStrictEqual(results, undefined);
+    });
+
+    it("test search on age (number attribute)", () => {
+        let expected = [[1],[{"age": 46,"id": 1}]];
+
+        let results = test_utils.assertErrorSync(search_util.equals, [env, 'id', 'age', 46], undefined);
+        assert.deepEqual(results[0].length, 1);
+        assert.deepEqual(results[1].length, 1);
+        assert.deepEqual(results, expected);
+    });
+
+    it("test search on age (number attribute) value doesn't exist", () => {
+        let results = test_utils.assertErrorSync(search_util.equals, [env, 'id', 'age', 100], undefined);
+        assert.deepStrictEqual(results, [[],[]]);
+    });
+
+    it("test search on hash attribute (id)", () => {
+        let expected = [[1],[{"id": 1}]];
+        let results = test_utils.assertErrorSync(search_util.equals, [env, 'id','id', 1], undefined);
+        assert.deepEqual(results[0].length, 1);
+        assert.deepEqual(results[1].length, 1);
+        assert.deepEqual(results, expected);
+    });
+
+    it("test search on hash attribute (id), value doesn't exist", () => {
+        let results = test_utils.assertErrorSync(search_util.equals, [env, 'id', 'id', 10000], undefined);
+        assert.deepStrictEqual(results, [[],[]]);
+    });
+});
+
+describe('test equals function reverse limit offset', ()=> {
     let env;
     let date_stub;
     before(async () => {
@@ -87,7 +176,8 @@ describe('test equals function', ()=> {
         let expected = {"418":{"id":418,"state":"CO"},"481":{"id":481,"state":"CO"},"521":{"id":521,"state":"CO"},"611":{"id":611,"state":"CO"},"644":{"id":644,"state":"CO"},"658":{"id":658,"state":"CO"},"701":{"id":701,"state":"CO"},"943":{"id":943,"state":"CO"},"946":{"id":946,"state":"CO"},"967":{"id":967,"state":"CO"}};
 
         let results = test_utils.assertErrorSync(search_util.equals, [env, 'id', 'state', 'CO', true, 10], undefined, 'all arguments');
-        assert.deepEqual(Object.keys(results).length, 10);
+        assert.deepEqual(results[0].length, 10);
+        assert.deepEqual(results[1].length, 10);
         assert.deepEqual(results, expected);
     });
 
@@ -95,7 +185,8 @@ describe('test equals function', ()=> {
         let expected = { "58": { "state": "CO", "id": 58 }, "60": { "state": "CO", "id": 60 }, "83": { "state": "CO", "id": 83 }, "88": { "state": "CO", "id": 88 }, "172": { "state": "CO", "id": 172 }, "224": { "state": "CO", "id": 224 }, "229": { "state": "CO", "id": 229 }, "330": { "state": "CO", "id": 330 }, "384": { "state": "CO", "id": 384 } };
 
         let results = test_utils.assertErrorSync(search_util.equals, [env, 'id', 'state', 'CO', true, undefined, 10], undefined, 'all arguments');
-        assert.deepEqual(Object.keys(results).length, 9);
+        assert.deepEqual(results[0].length, 9);
+        assert.deepEqual(results[1].length, 9);
         assert.deepEqual(results, expected);
     });
 
@@ -103,7 +194,8 @@ describe('test equals function', ()=> {
         let expected = {"58":{"state":"CO"},"60":{"state":"CO"},"83":{"state":"CO"},"88":{"state":"CO"},"172":{"state":"CO"},"224":{"state":"CO"},"229":{"state":"CO"},"330":{"state":"CO"},"384":{"state":"CO"},"418":{"state":"CO"},"481":{"state":"CO"},"521":{"state":"CO"},"611":{"state":"CO"},"644":{"state":"CO"},"658":{"state":"CO"},"701":{"state":"CO"},"943":{"state":"CO"},"946":{"state":"CO"},"967":{"state":"CO"}};
 
         let results = test_utils.assertErrorSync(search_util.equals, [env, undefined, 'state', 'CO', true, 1000], undefined, 'all arguments');
-        assert.deepEqual(Object.keys(results).length, 19);
+        assert.deepEqual(results[0].length, 19);
+        assert.deepEqual(results[1].length, 19);
         assert.deepEqual(results, expected);
     });
 
@@ -111,7 +203,8 @@ describe('test equals function', ()=> {
         let expected = {"172":{"state":"CO"},"224":{"state":"CO"},"229":{"state":"CO"},"330":{"state":"CO"},"384":{"state":"CO"}};
 
         let results = test_utils.assertErrorSync(search_util.equals, [env, undefined, 'state', 'CO', true, 5, 10], undefined, 'all arguments');
-        assert.deepEqual(Object.keys(results).length, 5);
+        assert.deepEqual(results[0].length, 5);
+        assert.deepEqual(results[1].length, 5);
         assert.deepEqual(results, expected);
     });
 

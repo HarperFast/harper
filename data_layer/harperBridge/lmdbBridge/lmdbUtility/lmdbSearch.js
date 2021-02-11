@@ -117,10 +117,10 @@ async function executeSearch(search_object, search_type, hash_attribute, return_
         let fetch_more = checkToFetchMore(search_object, hash_attribute);
 
         if(fetch_more === false){
-            return return_map === true ? search_results : Object.values(search_results);
+            return return_map === true ? createMapFromArrays(search_results) : search_results[1];
         }
 
-        let ids = Object.keys(search_results);
+        let ids = search_results[0];
         if (return_map === true) {
             return search_utility.batchSearchByHashToMap(env, hash_attribute, search_object.get_attributes, ids);
         }
@@ -130,6 +130,19 @@ async function executeSearch(search_object, search_type, hash_attribute, return_
     }catch(e){
         throw e;
     }
+}
+
+/**
+ *
+ * @param {[[],[]]}arrays
+ */
+function createMapFromArrays(arrays){
+    let results = Object.create(null);
+
+    for(let x = 0, length = arrays[0].length; x < length; x++){
+        results[arrays[0][x]] = arrays[1][x];
+    }
+    return results;
 }
 
 /**

@@ -57,10 +57,10 @@ function iterateFullIndex(env, hash_attribute, attribute, eval_function, reverse
  * @param {boolean} reverse - defines if the iterator goes from last to first
  * @param {number} limit - defines the max number of entries to iterate
  * @param {number} offset - defines the entries to skip
- * @returns {[]}
+ * @returns {[[],[]]}
  */
 function iterateRangeNext(env, hash_attribute, attribute, search_value, eval_function, reverse = false, limit = undefined, offset = undefined){
-    let results = Object.create(null);
+    let results = [[],[]];
     let stat = environment_utility.statDBI(env, attribute);
     if(stat.entryCount === 0){
         return results;
@@ -102,12 +102,12 @@ function iterateRangeNext(env, hash_attribute, attribute, search_value, eval_fun
  * @param {boolean} reverse
  * @param {number} limit - defines the max number of entries to iterate
  * @param {number} offset - defines the entries to skip
- * @returns {[]}
+ * @returns {[[],[]]}
  */
 function iterateRangeBetween(env, hash_attribute, attribute, start_value, end_value, reverse = false, limit = undefined, offset = undefined){
 
     try {
-        let results = Object.create(null);
+        let results = [[],[]];
         let stat = environment_utility.statDBI(env, attribute);
         if (stat.entryCount === 0) {
             return results;
@@ -256,16 +256,12 @@ function countAll(env, hash_attribute){
  * @param {boolean} reverse - defines if the iterator goes from last to first
  * @param {number} limit - defines the max number of entries to iterate
  * @param {number} offset - defines the entries to skip
- * @returns {[]} - ids matching the search
+ * @returns {[[],[]]} - ids matching the search
  */
 function equals(env, hash_attribute, attribute, search_value, reverse = false, limit = undefined, offset = undefined){
     validateComparisonFunctions(env, attribute, search_value);
 
     let dbi = environment_utility.openDBI(env, attribute);
-
-    if(dbi[lmdb_terms.DBI_DEFINITION_NAME].is_hash_attribute){
-        hash_attribute = attribute;
-    }
 
     try {
         search_value = auto_cast(search_value);
@@ -343,7 +339,7 @@ function blobSearch(env, hash_attribute, attribute, search_value, search_type, r
  * @param {*} blob_value
  * @param {String} hash_attribute
  * @param {String} attribute
- * @param {Object} results
+ * @param {[]} results
  */
 function addResultFromBlobSearch(hash_value, blob_value, hash_attribute, attribute, results){
     let new_object = Object.create(null);
@@ -352,8 +348,8 @@ function addResultFromBlobSearch(hash_value, blob_value, hash_attribute, attribu
     if(hash_attribute !== undefined) {
         new_object[hash_attribute] = auto_cast(hash_value);
     }
-
-    results[hash_value] = new_object;
+    results[0].push(hash_value);
+    results[1].push(new_object);
 }
 
 /**
@@ -365,12 +361,12 @@ function addResultFromBlobSearch(hash_value, blob_value, hash_attribute, attribu
  * @param {boolean} reverse - defines if the iterator goes from last to first
  * @param {number} limit - defines the max number of entries to iterate
  * @param {number} offset - defines the entries to skip
- * @returns {[]} - ids matching the search
+ * @returns {[[],[]]} - ids matching the search
  */
 function startsWith(env, hash_attribute, attribute, search_value, reverse = false, limit = undefined, offset = undefined){
     validateComparisonFunctions(env, attribute, search_value);
 
-    let results = Object.create(null);
+    let results = [[],[]];
     let stat = environment_utility.statDBI(env, attribute);
     if(stat.entryCount === 0){
         return results;
@@ -408,8 +404,6 @@ function startsWith(env, hash_attribute, attribute, search_value, reverse = fals
             } else{
                 limit++;
             }
-
-            //limit++;
         }
 
 
@@ -447,11 +441,11 @@ function startsWith(env, hash_attribute, attribute, search_value, reverse = fals
  * @param {boolean} reverse - defines if the iterator goes from last to first
  * @param {number} limit - defines the max number of entries to iterate
  * @param {number} offset - defines the entries to skip
- * @returns {{}} - ids matching the search
+ * @returns {[[],[]]} - ids matching the search
  */
 function endsWith(env, hash_attribute, attribute, search_value, reverse = false, limit = undefined, offset = undefined){
     validateComparisonFunctions(env, attribute, search_value);
-    let results = Object.create(null);
+    let results = [[],[]];
     let stat = environment_utility.statDBI(env, attribute);
     if(stat.entryCount === 0){
         return results;
@@ -462,19 +456,46 @@ function endsWith(env, hash_attribute, attribute, search_value, reverse = false,
         hash_attribute = attribute;
     }
 
+    offset = Number.isInteger(offset) ? offset : 0;
+
     try {
         //we iterate just the keys as it is faster (no access of the value & less iterations in dupsorted dbis)
-        for(let key of dbi.getKeys()){
+        for(let key of dbi.getKeys({reverse})){
+            if(limit === 0){
+                break;
+            }
             let key_str = common.convertKeyValueFromSearch(key).toString();
             if(key_str.endsWith(search_value)){
-                //if there is a match we iterate the values of the key
-                for(let value of dbi.getValues(key)){
-                    cursor_functions.pushResults(key, value, results, hash_attribute, attribute);
+                if(dbi[lmdb_terms.DBI_DEFINITION_NAME].is_hash_attribute){
+                    if (offset > 0) {
+                        offset--;
+                        continue;
+                    }
+
+                    if (limit === 0) {
+                        break;
+                    }
+                    cursor_functions.pushResults(key, key, results, hash_attribute, attribute);
+                    limit--;
+                } else {
+                    //if there is a match we iterate the values of the key
+                    for (let value of dbi.getValues(key)) {
+                        if (offset > 0) {
+                            offset--;
+                            continue;
+                        }
+
+                        if (limit === 0) {
+                            break;
+                        }
+                        cursor_functions.pushResults(key, value, results, hash_attribute, attribute);
+                        limit--;
+                    }
                 }
             }
         }
         results = blobSearch(env, hash_attribute, attribute, search_value, lmdb_terms.SEARCH_TYPES.ENDS_WITH, results);
-        return traverseResults(results, reverse, limit, offset);
+        return results;
     }catch(e){
         throw e;
     }
@@ -489,12 +510,12 @@ function endsWith(env, hash_attribute, attribute, search_value, reverse = false,
  * @param {boolean} reverse - defines if the iterator goes from last to first
  * @param {number} limit - defines the max number of entries to iterate
  * @param {number} offset - defines the entries to skip
- * @returns {{}} - ids matching the search
+ * @returns {[[],[]]} - ids matching the search
  */
 function contains(env, hash_attribute, attribute, search_value, reverse = false, limit = undefined, offset = undefined){
     validateComparisonFunctions(env, attribute, search_value);
 
-    let results = Object.create(null);
+    let results = [[],[]];
     let stat = environment_utility.statDBI(env, attribute);
     if(stat.entryCount === 0){
         return results;
@@ -505,64 +526,51 @@ function contains(env, hash_attribute, attribute, search_value, reverse = false,
         hash_attribute = attribute;
     }
 
+    offset = Number.isInteger(offset) ? offset : 0;
+
     try {
-        for(let key of dbi.getKeys()){
+        for(let key of dbi.getKeys({reverse})){
+            if(limit === 0){
+                break;
+            }
+
             let found_str = key.toString();
             if(found_str.includes(search_value)){
-                for(let value of dbi.getValues(key)){
-                    cursor_functions.pushResults(key, value, results, hash_attribute, attribute);
+                if(dbi[lmdb_terms.DBI_DEFINITION_NAME].is_hash_attribute){
+                    if (offset > 0) {
+                        offset--;
+                        continue;
+                    }
+
+                    if (limit === 0) {
+                        break;
+                    }
+                    cursor_functions.pushResults(key, key, results, hash_attribute, attribute);
+                    limit--;
+                } else {
+                    for (let value of dbi.getValues(key)) {
+                        if (offset > 0) {
+                            offset--;
+                            continue;
+                        }
+
+                        if (limit === 0) {
+                            break;
+                        }
+
+                        cursor_functions.pushResults(key, value, results, hash_attribute, attribute);
+                        limit--;
+                    }
                 }
             }
         }
         results = blobSearch(env, hash_attribute, attribute, search_value, lmdb_terms.SEARCH_TYPES.CONTAINS, results);
-
-        return traverseResults(results, reverse, limit, offset);
+        return results;
 
     }catch(e){
         throw e;
     }
 
-}
-
-/**
- * iterates a results set to limit the results further via offset, limit & reverse
- * @param {{}}results
- * @param {boolean} reverse
- * @param {Number} limit
- * @param {Number} offset
- * @returns {{}}
- */
-function traverseResults(results, reverse, limit = undefined, offset = 0){
-    if(limit !== undefined || offset > 0){
-        let tmp_results = Object.create(null);
-        let keys = Object.keys(results);
-
-        limit = (limit === undefined) ? keys.length : limit;
-
-        if(reverse === true){
-            for(let x = (keys.length - offset) - 1; x >= 0; x--){
-                if(limit === 0){
-                    break;
-                }
-                let id = keys[x];
-                tmp_results[id] = results[id];
-                limit--;
-            }
-        }else {
-            for(let x = offset, length = keys.length; x < length; x++){
-                if(limit === 0){
-                    break;
-                }
-                let id = keys[x];
-                tmp_results[id] = results[id];
-                limit--;
-            }
-        }
-
-        return tmp_results;
-    }
-
-    return results;
 }
 
 /** RANGE FUNCTIONS **/
@@ -576,7 +584,7 @@ function traverseResults(results, reverse, limit = undefined, offset = 0){
  * @param {boolean} reverse - determines direction to iterate
  * @param {number} limit - defines the max number of entries to iterate
  * @param {number} offset - defines the entries to skip
- * @returns {*[]}
+ * @returns {*[[],[]]}
  */
 function greaterThan(env, hash_attribute, attribute, search_value, reverse= false, limit = undefined, offset = undefined){
     validateComparisonFunctions(env, attribute, search_value);
@@ -609,14 +617,14 @@ function greaterThan(env, hash_attribute, attribute, search_value, reverse= fals
  * @param {boolean} reverse - determines direction of iterator
  * @param {number} limit - defines the max number of entries to iterate
  * @param {number} offset - defines the entries to skip
- * @returns {*[]}
+ * @returns {[[],[]]}
  */
 function greaterThanEqual(env, hash_attribute, attribute, search_value, reverse = false, limit = undefined, offset = undefined){
     validateComparisonFunctions(env, attribute, search_value);
     search_value = auto_cast(search_value);
     search_value = common.convertKeyValueToWrite(search_value);
 
-    let results = Object.create(null);
+    let results = [[],[]];
     let stat = environment_utility.statDBI(env, attribute);
     if(stat.entryCount === 0){
         return results;
@@ -677,14 +685,14 @@ function greaterThanEqual(env, hash_attribute, attribute, search_value, reverse 
  * @param {boolean} reverse - determines direction of iterator
  * @param {number} limit - defines the max number of entries to iterate
  * @param {number} offset - defines the entries to skip
- * @returns {*[]}
+ * @returns {[[],[]]}
  */
 function lessThan(env, hash_attribute, attribute, search_value, reverse = false, limit = undefined, offset = undefined){
     validateComparisonFunctions(env, attribute, search_value);
     search_value = auto_cast(search_value);
     search_value = common.convertKeyValueToWrite(search_value);
 
-    let results = Object.create(null);
+    let results = [[],[]];
     let stat = environment_utility.statDBI(env, attribute);
     if(stat.entryCount === 0 || search_value === undefined || search_value === null){
         return results;
@@ -737,14 +745,14 @@ function lessThan(env, hash_attribute, attribute, search_value, reverse = false,
  * @param {boolean} reverse - defines the direction to iterate
  * @param {number} limit - defines the max number of entries to iterate
  * @param {number} offset - defines the entries to skip
- * @returns {*[]}
+ * @returns {[[],[]]}
  */
 function lessThanEqual(env, hash_attribute, attribute, search_value, reverse = false, limit = undefined, offset = undefined){
     validateComparisonFunctions(env, attribute, search_value);
     search_value = auto_cast(search_value);
     search_value = common.convertKeyValueToWrite(search_value);
 
-    let results = Object.create(null);
+    let results = [[],[]];
     let stat = environment_utility.statDBI(env, attribute);
     if(stat.entryCount === 0 || search_value === undefined || search_value === null){
         return results;

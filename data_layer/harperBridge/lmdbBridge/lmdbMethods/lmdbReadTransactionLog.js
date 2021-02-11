@@ -114,7 +114,8 @@ function searchTransactionsByHashValues(env, hash_values, hash_attribute){
         let hash_value = hash_values[x];
         let hash_results = search_utility.equals(env, lmdb_terms.TRANSACTIONS_DBI_NAMES_ENUM.TIMESTAMP, lmdb_terms.TRANSACTIONS_DBI_NAMES_ENUM.HASH_VALUE, hash_value);
 
-        for(let key in hash_results){
+        for(let x = 0, length = hash_results[0].length; x < length; x++){
+            let key = hash_results[0][x];
             let number_key = Number(key);
             if(timestamp_hash_map.has(number_key)){
                 let entry = timestamp_hash_map.get(number_key);
@@ -122,7 +123,6 @@ function searchTransactionsByHashValues(env, hash_values, hash_attribute){
             } else{
                 timestamp_hash_map.set(number_key, [hash_value.toString()]);
             }
-
         }
     }
     let ids = Array.from(timestamp_hash_map.keys());

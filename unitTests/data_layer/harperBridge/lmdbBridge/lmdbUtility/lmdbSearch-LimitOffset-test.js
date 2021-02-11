@@ -137,7 +137,7 @@ describe('test lmdbSearch module', ()=>{
         });
 
         it('test contains on string limit 1 offset 1', async()=>{
-            let expected = [{"id": 107,"temperature": 33,"temperature_str": 33,"state": "DE","city": "Albertville"}];
+            let expected = [{"id": 966,"temperature": 38,"temperature_str": 38,"state": "AL","city": "Albertostad"}];
 
             let search_object = new SearchObject('dev', 'test', 'city', 'bert', 'id', ATTRIBUTES, undefined, false, 1,1);
             let results = await test_utils.assertErrorAsync(lmdb_search.executeSearch, [search_object, lmdb_terms.SEARCH_TYPES.CONTAINS, HASH_ATTRIBUTE_NAME], undefined);
@@ -155,7 +155,7 @@ describe('test lmdbSearch module', ()=>{
         });
 
         it('test contains on string reverse limit 1 offset 1', async()=>{
-            let expected = [{"id": 923,"temperature": 34,"temperature_str": 34,"state": "SD","city": "North Filibertoland"}];
+            let expected = [{"id": 741,"temperature": 89,"temperature_str": 89,"state": "VT","city": "South Wilbertfort"}];
 
             let search_object = new SearchObject('dev', 'test', 'city', 'bert', 'id', ATTRIBUTES, undefined, true, 1,1);
             let results = await test_utils.assertErrorAsync(lmdb_search.executeSearch, [search_object, lmdb_terms.SEARCH_TYPES.CONTAINS, HASH_ATTRIBUTE_NAME], undefined);
@@ -164,7 +164,7 @@ describe('test lmdbSearch module', ()=>{
         });
 
         it('test  contains on string return map limit 5', async()=>{
-            let expected = {"102": {"id": 102,"temperature": 98,"temperature_str": 98,"state": "NM","city": "South Gilbert"},"107": {"id": 107,"temperature": 33,"temperature_str": 33,"state": "DE","city": "Albertville"},"122": {"id": 122,"temperature": 24,"temperature_str": 24,"state": "CO","city": "Adelberthaven"},"134": {"id": 134,"temperature": 24,"temperature_str": 24,"state": "CO","city": "Gilbertstad"},"190": {"id": 190,"temperature": 50,"temperature_str": 50,"state": "OH","city": "Gilbertview"}};
+            let expected = {"107": {"id": 107,"temperature": 33,"temperature_str": 33,"state": "DE","city": "Albertville"},"122": {"id": 122,"temperature": 24,"temperature_str": 24,"state": "CO","city": "Adelberthaven"},"239": {"id": 239,"temperature": -1,"temperature_str": -1,"state": "NJ","city": "Dibbertview"},"728": {"id": 728,"temperature": 88,"temperature_str": 88,"state": "NC","city": "Dibberthaven"},"966": {"id": 966,"temperature": 38,"temperature_str": 38,"state": "AL","city": "Albertostad"}};
 
             let search_object = new SearchObject('dev', 'test', 'city', 'bert', 'id', ATTRIBUTES, undefined, false, 5);
             let results = await test_utils.assertErrorAsync(lmdb_search.executeSearch, [search_object, lmdb_terms.SEARCH_TYPES.CONTAINS, HASH_ATTRIBUTE_NAME, true], undefined);
@@ -173,7 +173,7 @@ describe('test lmdbSearch module', ()=>{
         });
 
         it('test  contains on string return map limit 5 offset 5', async()=>{
-            let expected = {"239": {"id": 239,"temperature": -1,"temperature_str": -1,"state": "NJ","city": "Dibbertview"},"688": {"id": 688,"temperature": -1,"temperature_str": -1,"state": "AR","city": "Webertown"},"728": {"id": 728,"temperature": 88,"temperature_str": 88,"state": "NC","city": "Dibberthaven"},"741": {"id": 741,"temperature": 89,"temperature_str": 89,"state": "VT","city": "South Wilbertfort"},"765": {"id": 765,"temperature": -4,"temperature_str": -4,"state": "AZ","city": "Lake Gilbertchester"}};
+            let expected = {"102": {"id": 102,"temperature": 98,"temperature_str": 98,"state": "NM","city": "South Gilbert"},"134": {"id": 134,"temperature": 24,"temperature_str": 24,"state": "CO","city": "Gilbertstad"},"190": {"id": 190,"temperature": 50,"temperature_str": 50,"state": "OH","city": "Gilbertview"},"765": {"id": 765,"temperature": -4,"temperature_str": -4,"state": "AZ","city": "Lake Gilbertchester"},"923": {"id": 923,"temperature": 34,"temperature_str": 34,"state": "SD","city": "North Filibertoland"}};
 
             let search_object = new SearchObject('dev', 'test', 'city', 'bert', 'id', ATTRIBUTES, undefined, false, 5, 5);
             let results = await test_utils.assertErrorAsync(lmdb_search.executeSearch, [search_object, lmdb_terms.SEARCH_TYPES.CONTAINS, HASH_ATTRIBUTE_NAME, true], undefined);
@@ -182,7 +182,7 @@ describe('test lmdbSearch module', ()=>{
         });
 
         it('test  contains on string return map reverse limit 5 offset 5', async()=>{
-            let expected = { "122": { "id": 122, "temperature": 24, "temperature_str": 24, "state": "CO", "city": "Adelberthaven" }, "134": { "id": 134, "temperature": 24, "temperature_str": 24, "state": "CO", "city": "Gilbertstad" }, "190": { "id": 190, "temperature": 50, "temperature_str": 50, "state": "OH", "city": "Gilbertview" }, "239": { "id": 239, "temperature": -1, "temperature_str": -1, "state": "NJ", "city": "Dibbertview" }, "688": { "id": 688, "temperature": -1, "temperature_str": -1, "state": "AR", "city": "Webertown" } };
+            let expected = {"107": {"id": 107,"temperature": 33,"temperature_str": 33,"state": "DE","city": "Albertville"},"134": {"id": 134,"temperature": 24,"temperature_str": 24,"state": "CO","city": "Gilbertstad"},"190": {"id": 190,"temperature": 50,"temperature_str": 50,"state": "OH","city": "Gilbertview"},"239": {"id": 239,"temperature": -1,"temperature_str": -1,"state": "NJ","city": "Dibbertview"},"728": {"id": 728,"temperature": 88,"temperature_str": 88,"state": "NC","city": "Dibberthaven"}};
 
             let search_object = new SearchObject('dev', 'test', 'city', 'bert', 'id', ATTRIBUTES, undefined, true, 5, 5);
             let results = await test_utils.assertErrorAsync(lmdb_search.executeSearch, [search_object, lmdb_terms.SEARCH_TYPES.CONTAINS, HASH_ATTRIBUTE_NAME, true], undefined);
@@ -191,7 +191,7 @@ describe('test lmdbSearch module', ()=>{
         });
 
         it('test endswith on string limit 10', async()=>{
-            let expected = [{"id": 15,"temperature": 4,"temperature_str": 4,"state": "SC","city": "Muellerland"},{"id": 49,"temperature": 19,"temperature_str": 19,"state": "MI","city": "New Jaquelinland"},{"id": 92,"temperature": 3,"temperature_str": 3,"state": "MO","city": "Schaeferland"},{"id": 93,"temperature": 107,"temperature_str": 107,"state": "CO","city": "Jackyland"},{"id": 175,"temperature": 61,"temperature_str": 61,"state": "NV","city": "Lake Mercedesland"},{"id": 201,"temperature": 67,"temperature_str": 67,"state": "KS","city": "Schuppeland"},{"id": 209,"temperature": 88,"temperature_str": 88,"state": "NC","city": "West Betteland"},{"id": 216,"temperature": 27,"temperature_str": 27,"state": "AZ","city": "Kundeland"},{"id": 264,"temperature": 30,"temperature_str": 30,"state": "MN","city": "Doyleland"},{"id": 287,"temperature": 47,"temperature_str": 47,"state": "CT","city": "Feeneyland"}];
+            let expected = [{"id": 264,"temperature": 30,"temperature_str": 30,"state": "MN","city": "Doyleland"},{"id": 287,"temperature": 47,"temperature_str": 47,"state": "CT","city": "Feeneyland"},{"id": 310,"temperature": 10,"temperature_str": 10,"state": "CT","city": "Ernestland"},{"id": 323,"temperature": 7,"temperature_str": 7,"state": "VA","city": "Auerland"},{"id": 357,"temperature": 35,"temperature_str": 35,"state": "MT","city": "Gaylordland"},{"id": 597,"temperature": 53,"temperature_str": 53,"state": "OH","city": "East Gregorioland"},{"id": 780,"temperature": 71,"temperature_str": 71,"state": "AL","city": "Howellland"},{"id": 801,"temperature": 19,"temperature_str": 19,"state": "ID","city": "Gutkowskiland"},{"id": 884,"temperature": 14,"temperature_str": 14,"state": "VT","city": "Alannaland"},{"id": 914,"temperature": 108,"temperature_str": 108,"state": "NH","city": "Jacintheland"}];
 
             let search_object = new SearchObject('dev', 'test', 'city', 'land', 'id', ATTRIBUTES, undefined, false, 10);
             let results = await test_utils.assertErrorAsync(lmdb_search.executeSearch, [search_object, lmdb_terms.SEARCH_TYPES.ENDS_WITH, HASH_ATTRIBUTE_NAME], undefined);
@@ -200,7 +200,7 @@ describe('test lmdbSearch module', ()=>{
         });
 
         it('test endswith on string limit 10 offset 10', async()=>{
-            let expected = [{"id": 293,"temperature": 57,"temperature_str": 57,"state": "IN","city": "Jeromeland"},{"id": 310,"temperature": 10,"temperature_str": 10,"state": "CT","city": "Ernestland"},{"id": 323,"temperature": 7,"temperature_str": 7,"state": "VA","city": "Auerland"},{"id": 347,"temperature": 67,"temperature_str": 67,"state": "WA","city": "Marquardtland"},{"id": 357,"temperature": 35,"temperature_str": 35,"state": "MT","city": "Gaylordland"},{"id": 363,"temperature": 68,"temperature_str": 68,"state": "KS","city": "Keaganland"},{"id": 380,"temperature": 90,"temperature_str": 90,"state": "FL","city": "Port Tamialand"},{"id": 448,"temperature": 41,"temperature_str": 41,"state": "ID","city": "Travisland"},{"id": 513,"temperature": 39,"temperature_str": 39,"state": "IL","city": "West Ryleyland"},{"id": 545,"temperature": 47,"temperature_str": 47,"state": "PA","city": "West Lealand"}];
+            let expected = [{"id": 93,"temperature": 107,"temperature_str": 107,"state": "CO","city": "Jackyland"},{"id": 175,"temperature": 61,"temperature_str": 61,"state": "NV","city": "Lake Mercedesland"},{"id": 216,"temperature": 27,"temperature_str": 27,"state": "AZ","city": "Kundeland"},{"id": 293,"temperature": 57,"temperature_str": 57,"state": "IN","city": "Jeromeland"},{"id": 347,"temperature": 67,"temperature_str": 67,"state": "WA","city": "Marquardtland"},{"id": 363,"temperature": 68,"temperature_str": 68,"state": "KS","city": "Keaganland"},{"id": 569,"temperature": 40,"temperature_str": 40,"state": "RI","city": "Josephland"},{"id": 661,"temperature": 46,"temperature_str": 46,"state": "SD","city": "Javonteland"},{"id": 723,"temperature": 25,"temperature_str": 25,"state": "SD","city": "Kenyonland"},{"id": 838,"temperature": 68,"temperature_str": 68,"state": "GA","city": "Loisland"}];
 
             let search_object = new SearchObject('dev', 'test', 'city', 'land', 'id', ATTRIBUTES, undefined, false, 10, 10);
             let results = await test_utils.assertErrorAsync(lmdb_search.executeSearch, [search_object, lmdb_terms.SEARCH_TYPES.ENDS_WITH, HASH_ATTRIBUTE_NAME], undefined);
@@ -209,7 +209,7 @@ describe('test lmdbSearch module', ()=>{
         });
 
         it('test endswith on string reverse limit 10 offset 10', async()=>{
-            let expected = [ { "id": 448, "temperature": 41, "temperature_str": 41, "state": "ID", "city": "Travisland" }, { "id": 513, "temperature": 39, "temperature_str": 39, "state": "IL", "city": "West Ryleyland" }, { "id": 545, "temperature": 47, "temperature_str": 47, "state": "PA", "city": "West Lealand" }, { "id": 569, "temperature": 40, "temperature_str": 40, "state": "RI", "city": "Josephland" }, { "id": 597, "temperature": 53, "temperature_str": 53, "state": "OH", "city": "East Gregorioland" }, { "id": 602, "temperature": 89, "temperature_str": 89, "state": "NV", "city": "Parisianland" }, { "id": 661, "temperature": 46, "temperature_str": 46, "state": "SD", "city": "Javonteland" }, { "id": 723, "temperature": 25, "temperature_str": 25, "state": "SD", "city": "Kenyonland" }, { "id": 736, "temperature": 75, "temperature_str": 75, "state": "VT", "city": "West Imogeneland" }, { "id": 753, "temperature": 17, "temperature_str": 17, "state": "NH", "city": "South Mollyland" } ];
+            let expected = [{"id": 15,"temperature": 4,"temperature_str": 4,"state": "SC","city": "Muellerland"},{"id": 49,"temperature": 19,"temperature_str": 19,"state": "MI","city": "New Jaquelinland"},{"id": 92,"temperature": 3,"temperature_str": 3,"state": "MO","city": "Schaeferland"},{"id": 175,"temperature": 61,"temperature_str": 61,"state": "NV","city": "Lake Mercedesland"},{"id": 347,"temperature": 67,"temperature_str": 67,"state": "WA","city": "Marquardtland"},{"id": 380,"temperature": 90,"temperature_str": 90,"state": "FL","city": "Port Tamialand"},{"id": 602,"temperature": 89,"temperature_str": 89,"state": "NV","city": "Parisianland"},{"id": 754,"temperature": 6,"temperature_str": 6,"state": "VA","city": "Russelland"},{"id": 838,"temperature": 68,"temperature_str": 68,"state": "GA","city": "Loisland"},{"id": 923,"temperature": 34,"temperature_str": 34,"state": "SD","city": "North Filibertoland"}];
 
             let search_object = new SearchObject('dev', 'test', 'city', 'land', 'id', ATTRIBUTES, undefined, true, 10, 10);
             let results = await test_utils.assertErrorAsync(lmdb_search.executeSearch, [search_object, lmdb_terms.SEARCH_TYPES.ENDS_WITH, HASH_ATTRIBUTE_NAME], undefined);

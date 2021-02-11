@@ -131,7 +131,7 @@ describe("test lmdbCreateTable module", ()=>{
             [hdb_attribute_env, 'id','schema_table', `${TABLE_SYSTEM_DATA_TEST_A.schema}.${TABLE_SYSTEM_DATA_TEST_A.name}`], undefined);
 
         let attribute_records = test_utils.assertErrorSync(search_utility.batchSearchByHash,
-            [hdb_attribute_env, systemSchema.hdb_attribute.hash_attribute, HDB_ATTRIBUTE_ATTRIBUTES, Object.keys(attribute_ids)], undefined);
+            [hdb_attribute_env, systemSchema.hdb_attribute.hash_attribute, HDB_ATTRIBUTE_ATTRIBUTES, attribute_ids[0]], undefined);
         assert.deepStrictEqual(attribute_records.length, 3);
         attribute_records.forEach(record=>{
             assert(expected_attributes.indexOf(record.attribute) > -1);
@@ -176,7 +176,7 @@ describe("test lmdbCreateTable module", ()=>{
             [hdb_attribute_env, systemSchema.hdb_attribute.hash_attribute, 'schema_table', `${TABLE_SYSTEM_DATA_TEST_B.schema}.${TABLE_SYSTEM_DATA_TEST_B.name}`], undefined);
 
         let attribute_records = await test_utils.assertErrorAsync(search_utility.batchSearchByHash,
-            [hdb_attribute_env, systemSchema.hdb_attribute.hash_attribute, HDB_ATTRIBUTE_ATTRIBUTES, Object.keys(attribute_ids)], undefined);
+            [hdb_attribute_env, systemSchema.hdb_attribute.hash_attribute, HDB_ATTRIBUTE_ATTRIBUTES, attribute_ids[0]], undefined);
         assert.deepStrictEqual(attribute_records.length, 3);
         attribute_records.forEach(record=>{
             assert(expected_attributes.indexOf(record.attribute) > -1);
