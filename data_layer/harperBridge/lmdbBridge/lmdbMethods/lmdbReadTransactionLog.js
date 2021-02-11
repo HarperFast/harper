@@ -114,7 +114,7 @@ function searchTransactionsByHashValues(env, hash_values, hash_attribute){
         let hash_value = hash_values[x];
         let hash_results = search_utility.equals(env, lmdb_terms.TRANSACTIONS_DBI_NAMES_ENUM.TIMESTAMP, lmdb_terms.TRANSACTIONS_DBI_NAMES_ENUM.HASH_VALUE, hash_value);
 
-        for(let y = 0, length = hash_results[0].length; y < length; y++){
+        for(let y = 0, hr_length = hash_results[0].length; y < hr_length; y++){
             let key = hash_results[0][y];
             let number_key = Number(key);
             if(timestamp_hash_map.has(number_key)){
