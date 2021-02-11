@@ -267,9 +267,17 @@ function equals(env, hash_attribute, attribute, search_value, reverse = false, l
         search_value = auto_cast(search_value);
         search_value = common.convertKeyValueToWrite(search_value);
 
-        let results = Object.create(null);
-        for (let value of dbi.getValues(search_value, {reverse, limit, offset})) {
-            cursor_functions.pushResults(search_value, value, results, hash_attribute, attribute);
+        let results = [[],[]];
+        if(dbi[lmdb_terms.DBI_DEFINITION_NAME].is_hash_attribute){
+            hash_attribute = attribute;
+            let value = dbi.get(search_value);
+            if(value !== undefined) {
+                cursor_functions.pushResults(search_value, value, results, hash_attribute, attribute);
+            }
+        } else {
+            for (let value of dbi.getValues(search_value, {reverse, limit, offset})) {
+                cursor_functions.pushResults(search_value, value, results, hash_attribute, attribute);
+            }
         }
 
         if(Buffer.byteLength(search_value.toString()) > lmdb_terms.MAX_BYTE_SIZE) {
