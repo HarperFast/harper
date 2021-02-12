@@ -30,6 +30,10 @@ function searchByHash(search_object, callback){
 
 function searchByValue (search_object, callback) {
     try {
+        if(search_object.hasOwnProperty('desc') === true){
+            search_object.reverse = search_object.desc;
+        }
+
         c_search_by_value(search_object, (err, results) => {
             if (err) {
                 callback(err);

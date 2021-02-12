@@ -24,9 +24,21 @@ function parseRow(original_object, attributes){
  * @param {[String]} attributes
  * @param {String|Number} key
  * @param {*} value
- * @param {Object} results
+ * @param {[]} results
  */
 function searchAll(attributes, key, value, results){
+    let obj = parseRow(value, attributes);
+    results.push(obj);
+}
+
+/**
+ * The internal iterator function for searchAll
+ * @param {[String]} attributes
+ * @param {String|Number} key
+ * @param {*} value
+ * @param {Object} results
+ */
+function searchAllToMap(attributes, key, value, results){
     let obj = parseRow(value, attributes);
     key = common.convertKeyValueFromSearch(key);
     results[key] = obj;
@@ -167,6 +179,7 @@ function lessThanEqualCompare(compare_value, key, value, results, hash_attribute
 module.exports = {
     parseRow,
     searchAll,
+    searchAllToMap,
     iterateDBI,
     endsWith,
     contains,
