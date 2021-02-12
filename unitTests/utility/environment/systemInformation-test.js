@@ -158,7 +158,7 @@ const PROCESS_INFO = {
 };
 
 const EXPECTED_PROPERTIES = {
-    system: ["platform", "distro", "release", "codename", "kernel", "arch", "hostname", "node_version", "npm_version"],
+    system: ["platform", "distro", "release", "codename", "kernel", "arch", "hostname", "fqdn", "node_version", "npm_version"],
     time: ["current", "uptime", "timezone", "timezoneName"],
     cpu: [ "manufacturer", "brand", "vendor", "speed", "cores", "physicalCores", "processors", "cpu_speed", "current_load"],
         cpu_cpu_speed: ["min", "max", "avg", "cores"],
@@ -171,7 +171,7 @@ const EXPECTED_PROPERTIES = {
         disk_size: ["fs", "type", "size", "used", "use", "mount"],
     network: ['default_interface', 'latency', 'interfaces', 'stats', 'connections'],
         network_latency: ["url", "ok", "status", "ms"],
-        network_interfaces: ["iface","ifaceName","ip4","ip6","mac","operstate","type","duplex","speed","carrierChanges"],
+        network_interfaces: ["iface","ifaceName","ip4", "ip4subnet","ip6", "ip6subnet","mac","operstate","type","duplex","speed","carrierChanges"],
         network_stats: ["iface", "operstate", "rx_bytes", "rx_dropped", "rx_errors", "tx_bytes", "tx_dropped", "tx_errors"],
         network_connections: ["protocol", "localaddress", "localport", "peeraddress", "peerport", "state", "pid", "process"],
     harperdb_processes: ["core", "clustering"],
