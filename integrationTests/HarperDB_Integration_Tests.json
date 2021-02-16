@@ -42479,6 +42479,68 @@
 									"response": []
 								},
 								{
+									"name": "List Users does not return protected info",
+									"event": [
+										{
+											"listen": "test",
+											"script": {
+												"exec": [
+													"pm.test(\"Status code is 200\", function () {",
+													"    pm.response.to.have.status(200);",
+													"});",
+													"",
+													"var jsonResponse = pm.response.json();",
+													"",
+													"pm.test(\"Should not return password, hash, or refresh token data for users\", function() {",
+													"    jsonResponse.forEach(user => {",
+													"            pm.expect(user.password).to.be.undefined;",
+													"            pm.expect(user.hash).to.be.undefined;",
+													"            pm.expect(user.refresh_token).to.be.undefined;",
+													"    })",
+													"})"
+												],
+												"type": "text/javascript"
+											}
+										}
+									],
+									"request": {
+										"auth": {
+											"type": "basic",
+											"basic": [
+												{
+													"key": "username",
+													"value": "{{username}}",
+													"type": "string"
+												},
+												{
+													"key": "password",
+													"value": "{{password}}",
+													"type": "string"
+												}
+											]
+										},
+										"method": "POST",
+										"header": [
+											{
+												"key": "Content-Type",
+												"value": "application/json"
+											}
+										],
+										"body": {
+											"mode": "raw",
+											"raw": "{\n\t\"operation\":\"list_users\"\n}"
+										},
+										"url": {
+											"raw": "{{host}}:{{port}}",
+											"host": [
+												"{{host}}"
+											],
+											"port": "{{port}}"
+										}
+									},
+									"response": []
+								},
+								{
 									"name": "Drop test_user",
 									"event": [
 										{
@@ -51347,11 +51409,11 @@
 		},
 		{
 			"key": "operation_token",
-			"value": "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VybmFtZSI6ImFkbWluIiwic3VwZXJfdXNlciI6dHJ1ZSwiY2x1c3Rlcl91c2VyIjpmYWxzZSwiaWF0IjoxNjExNzgxNzY2LCJleHAiOjE2MTE4NjgxNjYsInN1YiI6Im9wZXJhdGlvbiJ9.Cx-YTcJwQ2gytT9iYolqrMTAXvAHrKTTYuXwkA5tnZCnU3WiTO2CkNFnAj3U06IYRLadNwapUDJIOZC6RdqqFPhmJpLH1U9Ko_F98O8lm3a8eN96yIprgO4d0FqCRPkXl-iv5gajf0lPQ5yTWLY2SUrwWWKPP7ezBjbctlm1qfnaMjzIKcKxV3gIYbO1iPrkkQk64WHoCRv0UZD970Spi_wYGyJS4o3X7pT5PBd4rnC5eqbsjqsY5UKsUGyclUqXSZZVYbq3GE0k8ReHoSkKx9gZW_znPliV1-sNSYFzQAXtDnOtAe_6I4UwKO6xTo30UK83OLHvlmhbEAsvEoFwHIP_1LKfMDem7zHPa-X_JXOin5rMkelyDOc_cRIbLqizyZ--7UCsehdBrmzmdYO0C8RuO9fzNzIS9ynweBZHKKG2nju4SQBCYwCDIjJtb9__2ovL_gBLs6ETCd1-JtaQgc3l86rs2rV9u1YGavaJl-7Ko0yAlix2oTD2vLvedcWEqYWoB1RPGNcks9ywz5S2cKV9cbYfodXb-969E20QcPkGVPePdlHgGl75Bf1a-EQAPFV1RIfo6NUqCOg6VGafWsZm02uMtmuCtYCuLwoQYHYn_6mr0gWFLC8vrDtrjvj2OmMjIIu4QsENGuR3z7w-9Waao8PnMw4ruz8tesujruw"
+			"value": "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VybmFtZSI6ImFkbWluIiwic3VwZXJfdXNlciI6dHJ1ZSwiY2x1c3Rlcl91c2VyIjpmYWxzZSwiaWF0IjoxNjEyMzk1MjYzLCJleHAiOjE2MTI0ODE2NjMsInN1YiI6Im9wZXJhdGlvbiJ9.Y0lgy8iOXCZVpKWxChOFfCZ1quLbgPAJ2VlO8Fw_ijWlZ_zoUZk6iO9rCx-HgKEHT_SOAhKIRok7mtZB1fq9e6BfNG_76mXjKjdlb20efAQ4IMtZJ6sSA_xvgSyE9zGda_WlIQ3wJuyXb4ldKjh_SyO4lNskYXxVl3ugpVClpIyD4BWf_gy3m2dWNPrEJ3A5qNjxcPViRByFQSqph8Sw1Ygi3FRTMy3Ei4K9LpsMNSrZ5GooLWA_HtCT1j4lOi1CiMJYmFvgclmN6bNmfMDh5rQ0lEYAZHY6sci5FX-66xLikDdH9Tsp6I6tH75tHrWESYJ_v9LPU1rnbb6R7bycoYY0e9uHlSK-0lFADRQomj3Z1PrHxiB7224bLUt4OHwQ62dLpM24T7uMEgn1tgz9iBrSaPMQNsW-2ix7_L0SUL9tsig-8CGTAEplSC9gXZrBF9HII6NhC53z3kwuHUVlKqVi_rmyrvqUjcYYlBaUIkHeW87MkHf_8hHFCCVUyLaTEZdO2lU4-WLVGjjbugGo2dHsOOeEXC2AmeiBDzrwbHQPD2XoIwRTpGy1yaqcJE0qSQ-HuV5iknwpIAyBT-JvbMRfKUORyjo_Zdci9nqxToyx7LhN0Nq1Bc_kojFxBYpoX2BMjfWHh2hMaEl6mgP5SyfxzBAx6chSNOYPkWA9eZk"
 		},
 		{
 			"key": "refresh_token",
-			"value": "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VybmFtZSI6ImFkbWluIiwic3VwZXJfdXNlciI6dHJ1ZSwiY2x1c3Rlcl91c2VyIjpmYWxzZSwiaWF0IjoxNjExNzgxNzY2LCJleHAiOjE2MTQzNzM3NjYsInN1YiI6InJlZnJlc2gifQ.Wbitk5lX1p8LpIjsREKZtqy73IWZ44WX4tBmZqj1lVKbJqJYzyh9RMe6Ej13Io2LECTCPpCedftHTHBlXSvaPWmgbYN0qh3Pps119G70eAL6hIOqA-vpz7QzqSVFkO3KjiV7fKOR-woiwZizfEwf18BCt1iMU8qm_hYy1DzTVcf9dJQ9H4uSaLT6gWWWOiJL0OhTzTYLVbAvUvg-vbst06Oecbg72ywJQvw3BHZ9p53AKng2QK_NtqNZ68l6xvDXM2wELoQ8_2LcDybxgTVx_X8aNCQtJIssyUjRWzJhPz-4vBJay8lpyn3yhvVreDXQvG-tZOW__HvIq7lwhGrbVY2wiAKCIse4n0GO9dbIbsA-3OOujUpnAydaEjEC_J8eVeaPPIx5Au3vudLpygo_GglgUYbyNIKzJ8nJmbyoc2LIrEVL_X8gPjiB8c2XxXGPs65YUXP8b7JUE8ND3D52EGo04ZBQsxhnJGBSxDV0sz-ANvgD08wHgHTdozLX8Y-W4Z40plFJzgfpksud3KcswqBBppb7udT2jnicR-rBwL1LBj_Zy-f8z72nKrKGTfrbsPxK-RXqqOfD_wS76N4DYahKyKHciw23EYUhDhjyzek8A8Th_Iu8jPs3PAzmhuxeYsH8Pg3cX0Xqpo8unoSnG-OpYg2kIp8xpHcH3rwebbA"
+			"value": "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VybmFtZSI6ImFkbWluIiwic3VwZXJfdXNlciI6dHJ1ZSwiY2x1c3Rlcl91c2VyIjpmYWxzZSwiaWF0IjoxNjEyMzk1MjYzLCJleHAiOjE2MTQ5ODcyNjMsInN1YiI6InJlZnJlc2gifQ.ghMPm582dPE-Osk-iL2BgZRvewp5ilmF37XhRtATBLKtH4Xa09D1J3kVNu2ruQPTjYh98ZmLbln4TveleYdKygFGJ-yY1PW0Ot-DmZWSOK_ozoBAu8R9v6ddTQpFvzq5bhrgihzOuAjdbrkDyDPK1Cj48xIJ1nuxlED7dCZqlcf-3B7qtdSGeFABrzQqhyK54qMnE0wKwiZ1Mx3IntGGJetCqsg98liHs1HAHPOaNvL4U_mkKKqQ_IVIDnewMCXVRhLKravw2tP-ohLwHiH94i3-EpVRicO9kadubCXsbjv7bgsKGz4r-7aMO73VH7amIL17Avqueq5Xv08xrym9p1De8D_bBVUAcuTrm8eeEXwnQ6uvUibKJsanPPUrWFr4DF_soiGDwLMEJYSHTvtINlyvJQmia8iTeDxRMFuxExSlE3sIsbihmlyPvaOKQjhgQBnlQfGM-NMg4PHkrQfCR4d5cTZrgPYm3awA746KtijePnhXA9zIuKu5kbtuRON9XuTgn_r08RNZTgN-7jwRqjUHfAs1VreJmxojybsni3DQ3tMPdV3PQ64HotW8DzwVPAB5tn1ftJKqDfu69l4WXDZui3YtcoSv2ASarhs26CEvkZWNN0WD8oNNJhyGJZB4EQoIY-MsY3BXCtfhuQJnMbGLZFxbUIaYmnB8dWivWho"
 		}
 	]
 }

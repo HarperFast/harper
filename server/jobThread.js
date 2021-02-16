@@ -1,7 +1,7 @@
 'use strict';
 
 const global_schema = require('../utility/globalSchema');
-const user_schema = require('../utility/user_schema');
+const user = require('../security/user');
 const promisify = require('util').promisify;
 const p_schema_to_global = promisify(global_schema.setSchemaDataToGlobal);
 const server_utils = require('../server/serverHelpers/serverUtilities');
@@ -21,7 +21,7 @@ process.on('message', thread);
 async function thread(argument){
     try {
         await p_schema_to_global();
-        await user_schema.setUsersToGlobal();
+        await user.setUsersToGlobal();
         spawn_cluster_connection(false);
         await waitForSocketToConnect();
         let operation = server_utils.getOperationFunction(argument);

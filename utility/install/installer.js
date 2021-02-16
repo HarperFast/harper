@@ -13,7 +13,7 @@ const fs = require('fs-extra');
 const colors = require("colors/safe");
 const winston = require('winston');
 const async = require('async');
-const optimist = require('optimist');
+const minimist = require('minimist');
 const forge = require('node-forge');
 const hri = require('human-readable-ids').hri;
 const terms_address = 'http://legal.harperdb.io/Software+License+Subscription+Agreement+110317.pdf';
@@ -25,7 +25,6 @@ const hdb_terms = require('../hdbTerms');
 const hdbInfoController = require('../../data_layer/hdbInfoController');
 const version = require('../../bin/version');
 const LOG_LOCATION = ('../install_log.log');
-const minimist = require('minimist');
 const check_jwt_tokens = require('./checkJWTTokensExist');
 
 module.exports = {
@@ -67,8 +66,7 @@ function run_install(callback) {
         console.log(msg);
         return callback(msg, null);
     }
-
-    prompt.override = optimist.argv;
+    prompt.override = minimist(process.argv);
     prompt.start();
     winston.info('starting install');
     checkInstall(function (err, keepGoing) {
@@ -245,9 +243,7 @@ function prepForReinstall(callback) {
                 winston.error(err);
                 return callback(err, null);
             }}).then(() => {
-                for (let i = 0; i < global.hdb_users.length; i++) {
-                    existing_users.push(global.hdb_users[i].username);
-                }
+                existing_users.push([...global.hdb_users.keys()]);
                 schema.setSchemaDataToGlobal(() => callback(null, true));
         });
     } else {

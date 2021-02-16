@@ -7,12 +7,12 @@ const EMPTY_ROLE = 'If role is specified, it cannot be empty.';
 const ACTIVE_BOOLEAN = 'active must be true or false';
 
 module.exports = {
-    addUser: addUser,
-    alterUser:alterUser,
-    dropUser: dropUser,
-    userInfo: userInfo,
-    listUsers: listUsers,
-    listUsersExternal : listUsersExternal,
+    addUser,
+    alterUser,
+    dropUser,
+    userInfo,
+    listUsers,
+    listUsersExternal,
     setUsersToGlobal,
     findAndValidateUser,
     USERNAME_REQUIRED,
@@ -38,7 +38,7 @@ const terms = require('../utility/hdbTerms');
 const env = require('../utility/environment/environmentManager');
 const license = require('../utility/registration/hdb_license');
 const systemSchema = require('../json/systemSchema');
-const {handleHDBError, hdb_errors} = require('../utility/errors/hdbError');
+const { handleHDBError, hdb_errors } = require('../utility/errors/hdbError');
 const { HTTP_STATUS_CODES, AUTHENTICATION_ERROR_MSGS} = hdb_errors;
 const clone = require('clone');
 
@@ -206,19 +206,15 @@ async function alterUser(json_message) {
 }
 
 function isClusterUser(username){
-    // get user's current role
     let is_cluster_user = false;
-    for(let x = 0; x < global.hdb_users.length; x++){
-        let tmp_user = global.hdb_users[x];
-        if(tmp_user.username === username && tmp_user.role.permission.cluster_user === true){
-            is_cluster_user = true;
-            break;
-        }
+    const user_role = global.hdb_users.get(username);
+
+    if (user_role && user_role.role.permission.cluster_user === true) {
+        is_cluster_user = true;
     }
 
     return is_cluster_user;
 }
-
 
 async function dropUser(user) {
     try {
@@ -295,16 +291,23 @@ async function listUsersExternal() {
        throw err;
     });
     try {
-        for (let u in user_data) {
-            delete user_data[u].password;
-            delete user_data[u].hash;
-        }
+        user_data.forEach(user => {
+            delete user.password;
+            delete user.hash;
+            delete user.refresh_token;
+        });
     } catch (e) {
         throw new Error('there was an error massaging the user data');
     }
-    return user_data;
+
+    return [...user_data.values()];
 }
 
+/**
+ * Queries system table for user records, adds role-based perms, scrubs list based on licensed role allowance and returns
+ * data in a Map with the username as the key for the entry
+ * @returns {Promise<Map<string, object>>}
+ */
 async function listUsers() {
     try {
         let role_search_obj = {
@@ -341,16 +344,19 @@ async function listUsers() {
                 throw err;
             });
 
+            const user_obj = new Map();
             for (let u in users) {
-                users[u].role = roleMapObj[users[u].role];
-                appendSystemTablesToRole(users[u].role);
+                const user = users[u];
+                user.role = roleMapObj[users[u].role];
+                appendSystemTablesToRole(user.role);
+                user_obj.set(user.username, user);
             }
             // No enterprise license limits roles to 2 (1 su, 1 cu).  If a license has expired, we need to allow the cluster role
             // and the role with the most users.
             if (!(await license.getLicense()).enterprise) {
-                return nonEnterpriseFilter(users);
+                return nonEnterpriseFilter(user_obj);
             }
-            return users;
+            return user_obj;
         }
     } catch(err) {
         logger.error('got an error listing users');
@@ -392,54 +398,52 @@ function appendSystemTablesToRole(user_role) {
 }
 
 /**
- * Should return array of users
+ * Should return Map of filtered users
  * @param search_results
- * @returns {Array}
+ * @returns {Map<string, object>}
  */
 function nonEnterpriseFilter(search_results) {
     try {
         logger.info('No enterprise license found.  System is limited to 1 clustering role and 1 user role');
         if(!search_results) {
-            return [];
+            return new Map();
         }
-        let user_map = Object.create(null);
-        let found_users = [];
-        let cluster_users = [];
+        let user_obj = Object.create(null);
+        let found_users = new Map();
         // bucket users by role.  We will pick the role with the most users to enable
-        Object.keys(search_results).forEach((user_id) => {
-            let user = search_results[user_id];
-            if (user.role.permission.cluster_user === undefined) {
+        search_results.forEach((user, username) => {
+            if (user.role.permission.cluster_user === undefined || user.role.permission.cluster_user === false) {
                 // only add super users
                 if (user.role.permission.super_user === true) {
-                    if (!user_map[user.role.id]) {
-                        user_map[user.role.id] = {};
-                        user_map[user.role.id].users = [];
+                    if (!user_obj[user.role.id]) {
+                        user_obj[user.role.id] = new Map();
                     }
-                    user_map[user.role.id].users.push(user);
+                    user_obj[user.role.id].set(username, user);
                 }
             } else {
-                cluster_users.push(user);
+                found_users.set(username, user);
             }
         });
 
         let most_users_tuple = {role: undefined, count: 0};
-        Object.keys(user_map).forEach((role_id) => {
-            let curr_role = user_map[role_id];
-            if (curr_role.users.length >= most_users_tuple.count) {
+        Object.keys(user_obj).forEach((role_id) => {
+            let curr_role = user_obj[role_id];
+            if (curr_role.size >= most_users_tuple.count) {
                 most_users_tuple.role = role_id;
-                most_users_tuple.count = curr_role.users.length;
+                most_users_tuple.count = curr_role.size;
             }
         });
         if (most_users_tuple.role === undefined) {
             logger.error('No roles found with active users.  This is bad.');
-            return found_users;
+            return new Map();
         }
-        found_users = user_map[most_users_tuple.role].users.concat(cluster_users);
+
+        found_users = new Map([...found_users, ...user_obj[most_users_tuple.role]]);
         return found_users;
     } catch(err) {
         logger.error('error filtering users.');
         logger.error(err);
-        return [];
+        return new Map();
     }
 }
 
@@ -465,15 +469,7 @@ async function findAndValidateUser(username, pw, validate_password = true) {
         await setUsersToGlobal();
     }
 
-    let user_tmp = undefined;
-
-    for(let x = 0, length = global.hdb_users.length; x < length; x++){
-        let hdb_user = global.hdb_users[x];
-        if(hdb_user.username.toString() === username.toString()){
-            user_tmp = hdb_user;
-            break;
-        }
-    }
+    let user_tmp = global.hdb_users.get(username);
 
     if (!user_tmp) {
         throw handleHDBError(new Error(), AUTHENTICATION_ERROR_MSGS.GENERIC_AUTH_FAIL, HTTP_STATUS_CODES.UNAUTHORIZED);

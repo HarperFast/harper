@@ -215,8 +215,7 @@ function requestAndHandleLogin(socket, hdb_users){
 function handleLoginResponse(socket, credentials, hdb_users) {
     log.trace('handleLoginResponse');
     try {
-        let users = Object.values(hdb_users);
-        let found_user = get_cluster_user(users, credentials.username);
+        let found_user = hdb_users[credentials.username];
 
         if (found_user === undefined || !password_utility.validate(found_user.password, credentials.password)) {
             socket.destroy();
