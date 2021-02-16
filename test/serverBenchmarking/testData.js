@@ -19,6 +19,7 @@ const SEARCH_BY_HASH = {
 };
 const SQL_SIMPLE_SEARCH = {"operation": "sql", "sql": "SELECT * FROM benchmarks.dog"};
 const SQL_SEARCH_WHERE_SORT = {"operation": "sql", "sql": "SELECT * FROM benchmarks.dog WHERE id < 10 ORDER BY dog_name"};
+const MED_SQL = {"operation": "sql", "sql": "SELECT * FROM benchmarks.sensor LIMIT 1200"};
 const BIG_SQL = {"operation": "sql", "sql": "SELECT * FROM benchmarks.sensor"};
 
 const REQUEST_JSON = {
@@ -30,6 +31,7 @@ const REQUEST_JSON = {
     SEARCH_BY_HASH,
     SQL_SIMPLE_SEARCH,
     SQL_SEARCH_WHERE_SORT,
+    MED_SQL,
     BIG_SQL
 };
 
@@ -162,6 +164,390 @@ const TEST_DOG_RECORDS = [
         "owner_name": "David",
         "age": 2,
         "breed_id": 346
+    },
+    {
+        "adorable": true,
+        "weight_lbs": 38,
+        "dog_name": "Penny",
+        "owner_name": "Kyle",
+        "age": 7,
+        "breed_id": 154
+    },
+    {
+        "adorable": true,
+        "weight_lbs": 55,
+        "dog_name": "Harper",
+        "owner_name": "Stephen",
+        "age": 7,
+        "breed_id": 346
+    },
+    {
+        "adorable": true,
+        "weight_lbs": 84,
+        "dog_name": "Alby",
+        "owner_name": "Kaylan",
+        "age": 7,
+        "breed_id": 348
+    },
+    {
+        "adorable": true,
+        "weight_lbs": 60,
+        "dog_name": "Billy",
+        "owner_name": "Zach",
+        "age": 6,
+        "breed_id": 347
+    },
+    {
+        "adorable": true,
+        "weight_lbs": 15,
+        "dog_name": "Rose Merry",
+        "owner_name": "Zach",
+        "age": 8,
+        "breed_id": 348
+    },
+    {
+        "adorable": true,
+        "weight_lbs": 32,
+        "dog_name": "Kato",
+        "owner_name": "Kyle",
+        "age": 6,
+        "breed_id": 154
+    },
+    {
+        "adorable": true,
+        "weight_lbs": 35,
+        "dog_name": "Simon",
+        "owner_name": "Fred",
+        "age": 3,
+        "breed_id": 349
+    },
+    {
+        "adorable": true,
+        "weight_lbs": 55,
+        "dog_name": "Gemma",
+        "owner_name": "Stephen",
+        "age": 5,
+        "breed_id": 250
+    },
+    {
+        "adorable": true,
+        "weight_lbs": 60,
+        "dog_name": "Yeti",
+        "owner_name": "Jaxon",
+        "age": 12,
+        "breed_id": 200
+    },
+    {
+        "adorable": true,
+        "weight_lbs": 35,
+        "dog_name": "Monk",
+        "owner_name": "Aron",
+        "age": 7,
+        "breed_id": 271
+    },
+    {
+        "adorable": true,
+        "weight_lbs": 75,
+        "dog_name": "Bode",
+        "owner_name": "Margo",
+        "age": 8,
+        "breed_id": 104
+    },
+    {
+        "adorable": true,
+        "weight_lbs": 60,
+        "dog_name": "Tucker",
+        "owner_name": "David",
+        "age": 2,
+        "breed_id": 346
+    },
+    {
+        "adorable": true,
+        "weight_lbs": 38,
+        "dog_name": "Penny",
+        "owner_name": "Kyle",
+        "age": 7,
+        "breed_id": 154
+    },
+    {
+        "adorable": true,
+        "weight_lbs": 55,
+        "dog_name": "Harper",
+        "owner_name": "Stephen",
+        "age": 7,
+        "breed_id": 346
+    },
+    {
+        "adorable": true,
+        "weight_lbs": 84,
+        "dog_name": "Alby",
+        "owner_name": "Kaylan",
+        "age": 7,
+        "breed_id": 348
+    },
+    {
+        "adorable": true,
+        "weight_lbs": 60,
+        "dog_name": "Billy",
+        "owner_name": "Zach",
+        "age": 6,
+        "breed_id": 347
+    },
+    {
+        "adorable": true,
+        "weight_lbs": 15,
+        "dog_name": "Rose Merry",
+        "owner_name": "Zach",
+        "age": 8,
+        "breed_id": 348
+    },
+    {
+        "adorable": true,
+        "weight_lbs": 32,
+        "dog_name": "Kato",
+        "owner_name": "Kyle",
+        "age": 6,
+        "breed_id": 154
+    },
+    {
+        "adorable": true,
+        "weight_lbs": 35,
+        "dog_name": "Simon",
+        "owner_name": "Fred",
+        "age": 3,
+        "breed_id": 349
+    },
+    {
+        "adorable": true,
+        "weight_lbs": 55,
+        "dog_name": "Gemma",
+        "owner_name": "Stephen",
+        "age": 5,
+        "breed_id": 250
+    },
+    {
+        "adorable": true,
+        "weight_lbs": 60,
+        "dog_name": "Yeti",
+        "owner_name": "Jaxon",
+        "age": 12,
+        "breed_id": 200
+    },
+    {
+        "adorable": true,
+        "weight_lbs": 35,
+        "dog_name": "Monk",
+        "owner_name": "Aron",
+        "age": 7,
+        "breed_id": 271
+    },
+    {
+        "adorable": true,
+        "weight_lbs": 75,
+        "dog_name": "Bode",
+        "owner_name": "Margo",
+        "age": 8,
+        "breed_id": 104
+    },
+    {
+        "adorable": true,
+        "weight_lbs": 60,
+        "dog_name": "Tucker",
+        "owner_name": "David",
+        "age": 2,
+        "breed_id": 346
+    },
+    {
+        "adorable": true,
+        "weight_lbs": 38,
+        "dog_name": "Penny",
+        "owner_name": "Kyle",
+        "age": 7,
+        "breed_id": 154
+    },
+    {
+        "adorable": true,
+        "weight_lbs": 55,
+        "dog_name": "Harper",
+        "owner_name": "Stephen",
+        "age": 7,
+        "breed_id": 346
+    },
+    {
+        "adorable": true,
+        "weight_lbs": 84,
+        "dog_name": "Alby",
+        "owner_name": "Kaylan",
+        "age": 7,
+        "breed_id": 348
+    },
+    {
+        "adorable": true,
+        "weight_lbs": 60,
+        "dog_name": "Billy",
+        "owner_name": "Zach",
+        "age": 6,
+        "breed_id": 347
+    },
+    {
+        "adorable": true,
+        "weight_lbs": 15,
+        "dog_name": "Rose Merry",
+        "owner_name": "Zach",
+        "age": 8,
+        "breed_id": 348
+    },
+    {
+        "adorable": true,
+        "weight_lbs": 32,
+        "dog_name": "Kato",
+        "owner_name": "Kyle",
+        "age": 6,
+        "breed_id": 154
+    },
+    {
+        "adorable": true,
+        "weight_lbs": 35,
+        "dog_name": "Simon",
+        "owner_name": "Fred",
+        "age": 3,
+        "breed_id": 349
+    },
+    {
+        "adorable": true,
+        "weight_lbs": 55,
+        "dog_name": "Gemma",
+        "owner_name": "Stephen",
+        "age": 5,
+        "breed_id": 250
+    },
+    {
+        "adorable": true,
+        "weight_lbs": 60,
+        "dog_name": "Yeti",
+        "owner_name": "Jaxon",
+        "age": 12,
+        "breed_id": 200
+    },
+    {
+        "adorable": true,
+        "weight_lbs": 35,
+        "dog_name": "Monk",
+        "owner_name": "Aron",
+        "age": 7,
+        "breed_id": 271
+    },
+    {
+        "adorable": true,
+        "weight_lbs": 75,
+        "dog_name": "Bode",
+        "owner_name": "Margo",
+        "age": 8,
+        "breed_id": 104
+    },
+    {
+        "adorable": true,
+        "weight_lbs": 60,
+        "dog_name": "Tucker",
+        "owner_name": "David",
+        "age": 2,
+        "breed_id": 346
+    },
+    {
+        "adorable": true,
+        "weight_lbs": 38,
+        "dog_name": "Penny",
+        "owner_name": "Kyle",
+        "age": 7,
+        "breed_id": 154
+    },
+    {
+        "adorable": true,
+        "weight_lbs": 55,
+        "dog_name": "Harper",
+        "owner_name": "Stephen",
+        "age": 7,
+        "breed_id": 346
+    },
+    {
+        "adorable": true,
+        "weight_lbs": 84,
+        "dog_name": "Alby",
+        "owner_name": "Kaylan",
+        "age": 7,
+        "breed_id": 348
+    },
+    {
+        "adorable": true,
+        "weight_lbs": 60,
+        "dog_name": "Billy",
+        "owner_name": "Zach",
+        "age": 6,
+        "breed_id": 347
+    },
+    {
+        "adorable": true,
+        "weight_lbs": 15,
+        "dog_name": "Rose Merry",
+        "owner_name": "Zach",
+        "age": 8,
+        "breed_id": 348
+    },
+    {
+        "adorable": true,
+        "weight_lbs": 32,
+        "dog_name": "Kato",
+        "owner_name": "Kyle",
+        "age": 6,
+        "breed_id": 154
+    },
+    {
+        "adorable": true,
+        "weight_lbs": 35,
+        "dog_name": "Simon",
+        "owner_name": "Fred",
+        "age": 3,
+        "breed_id": 349
+    },
+    {
+        "adorable": true,
+        "weight_lbs": 55,
+        "dog_name": "Gemma",
+        "owner_name": "Stephen",
+        "age": 5,
+        "breed_id": 250
+    },
+    {
+        "adorable": true,
+        "weight_lbs": 60,
+        "dog_name": "Yeti",
+        "owner_name": "Jaxon",
+        "age": 12,
+        "breed_id": 200
+    },
+    {
+        "adorable": true,
+        "weight_lbs": 35,
+        "dog_name": "Monk",
+        "owner_name": "Aron",
+        "age": 7,
+        "breed_id": 271
+    },
+    {
+        "adorable": true,
+        "weight_lbs": 75,
+        "dog_name": "Bode",
+        "owner_name": "Margo",
+        "age": 8,
+        "breed_id": 104
+    },
+    {
+        "adorable": true,
+        "weight_lbs": 60,
+        "dog_name": "Tucker",
+        "owner_name": "David",
+        "age": 2,
+        "breed_id": 346
     }
 ]
 
@@ -172,3 +558,4 @@ module.exports = {
     REQUEST_JSON,
     TEST_DOG_RECORDS
 };
+
