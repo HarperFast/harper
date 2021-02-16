@@ -50,7 +50,7 @@ function iterateDBI(key, value, results){
  * internal function used to add hash value to results, in the scenario of a hash_attribute dbi we just need to add the found key, otherwise we get the value
  * @param {*} key
  * @param {*} value
- * @param {Object} results
+ * @param {[[],[]]} results
  * @param {String} hash_attribute
  * @param {String} attribute
  */
@@ -68,8 +68,8 @@ function pushResults(key, value, results, hash_attribute, attribute){
             new_object[hash_attribute] = hash_value;
         }
     }
-
-    results[hash_value] = new_object;
+    results[0].push(hash_value);
+    results[1].push(new_object);
 }
 
 /**
@@ -123,7 +123,7 @@ function greaterThanCompare(compare_value, key, value, results, hash_attribute, 
  * The internal iterator function for greater than equal, used for string keyed dbis and a sring compare_value
  * @param {*} key
  * @param {*} value
- * @param {Object} results
+ * @param {[[],[]]} results
  * @param {*} compare_value
  * @param {String} hash_attribute
  * @param {String} attribute
@@ -153,7 +153,7 @@ function lessThanCompare(compare_value, key, value, results, hash_attribute, att
  * The internal iterator function for less than equal, used for string keyed dbis and a string compare_value
  * @param {*} key
  * @param {*} value
- * @param {[]} results
+ * @param {[[],[]]} results
  * @param {*} compare_value
  * @param {String} hash_attribute
  * @param {String} attribute

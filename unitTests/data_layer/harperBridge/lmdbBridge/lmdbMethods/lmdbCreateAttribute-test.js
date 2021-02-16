@@ -83,7 +83,6 @@ describe("test lmdbCreateAttribute module", ()=>{
     let rw_env_util;
     let catsdrool_env;
     before(async ()=>{
-        rw_env_util = environment_utility.__set__('MAP_SIZE', 5*1024*1024*1024);
         //uuid_stub = sandbox.stub(uuid, 'v4').returns(MOCK_UUID_VALUE);
         global.hdb_schema = {system: systemSchema};
         await fs.mkdirp(BASE_TEST_PATH);
@@ -122,7 +121,6 @@ describe("test lmdbCreateAttribute module", ()=>{
         hdb_schema_env.close();
         hdb_attribute_env.close();
 
-        rw_env_util();
         delete global.hdb_schema;
         await fs.remove(BASE_PATH);
         global.lmdb_map = undefined;

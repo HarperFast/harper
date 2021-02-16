@@ -69,41 +69,46 @@ async function executeSearch(search_object, search_type, hash_attribute, return_
             hash_attribute_name = undefined;
         }
 
+        let {reverse, limit, offset} = search_object;
+        reverse = typeof reverse === 'boolean' ? reverse : false;
+        limit = Number.isInteger(limit) ? limit : undefined;
+        offset = Number.isInteger(offset) ? offset : undefined;
+
         switch (search_type) {
             case lmdb_terms.SEARCH_TYPES.EQUALS:
-                search_results = search_utility.equals(env, hash_attribute_name, search_object.search_attribute, search_object.search_value);
+                search_results = search_utility.equals(env, hash_attribute_name, search_object.search_attribute, search_object.search_value, reverse, limit, offset);
                 break;
             case lmdb_terms.SEARCH_TYPES.CONTAINS:
-                search_results = search_utility.contains(env, hash_attribute_name, search_object.search_attribute, search_object.search_value);
+                search_results = search_utility.contains(env, hash_attribute_name, search_object.search_attribute, search_object.search_value, reverse, limit, offset);
                 break;
             case lmdb_terms.SEARCH_TYPES.ENDS_WITH:
-                search_results = search_utility.endsWith(env, hash_attribute_name, search_object.search_attribute, search_object.search_value);
+                search_results = search_utility.endsWith(env, hash_attribute_name, search_object.search_attribute, search_object.search_value, reverse, limit, offset);
                 break;
             case lmdb_terms.SEARCH_TYPES.STARTS_WITH:
-                search_results = search_utility.startsWith(env, hash_attribute_name, search_object.search_attribute, search_object.search_value);
+                search_results = search_utility.startsWith(env, hash_attribute_name, search_object.search_attribute, search_object.search_value, reverse, limit, offset);
                 break;
             case lmdb_terms.SEARCH_TYPES.BATCH_SEARCH_BY_HASH:
                 return search_utility.batchSearchByHash(env, search_object.search_attribute, search_object.get_attributes, [search_object.search_value]);
             case lmdb_terms.SEARCH_TYPES.BATCH_SEARCH_BY_HASH_TO_MAP:
                 return search_utility.batchSearchByHashToMap(env, search_object.search_attribute, search_object.get_attributes, [search_object.search_value]);
             case lmdb_terms.SEARCH_TYPES.SEARCH_ALL:
-                return search_utility.searchAll(env, hash_attribute, search_object.get_attributes);
+                return search_utility.searchAll(env, hash_attribute, search_object.get_attributes, reverse, limit, offset);
             case lmdb_terms.SEARCH_TYPES.SEARCH_ALL_TO_MAP:
-                return search_utility.searchAllToMap(env, hash_attribute, search_object.get_attributes);
+                return search_utility.searchAllToMap(env, hash_attribute, search_object.get_attributes, reverse, limit, offset);
             case lmdb_terms.SEARCH_TYPES.BETWEEN:
-                search_results = search_utility.between(env, hash_attribute_name, search_object.search_attribute, search_object.search_value, search_object.end_value);
+                search_results = search_utility.between(env, hash_attribute_name, search_object.search_attribute, search_object.search_value, search_object.end_value, reverse, limit, offset);
                 break;
             case lmdb_terms.SEARCH_TYPES.GREATER_THAN:
-                search_results = search_utility.greaterThan(env, hash_attribute_name, search_object.search_attribute, search_object.search_value);
+                search_results = search_utility.greaterThan(env, hash_attribute_name, search_object.search_attribute, search_object.search_value, reverse, limit, offset);
                 break;
             case lmdb_terms.SEARCH_TYPES.GREATER_THAN_EQUAL:
-                search_results = search_utility.greaterThanEqual(env, hash_attribute_name, search_object.search_attribute, search_object.search_value);
+                search_results = search_utility.greaterThanEqual(env, hash_attribute_name, search_object.search_attribute, search_object.search_value, reverse, limit, offset);
                 break;
             case lmdb_terms.SEARCH_TYPES.LESS_THAN:
-                search_results = search_utility.lessThan(env, hash_attribute_name, search_object.search_attribute, search_object.search_value);
+                search_results = search_utility.lessThan(env, hash_attribute_name, search_object.search_attribute, search_object.search_value, reverse, limit, offset);
                 break;
             case lmdb_terms.SEARCH_TYPES.LESS_THAN_EQUAL:
-                search_results = search_utility.lessThanEqual(env, hash_attribute_name, search_object.search_attribute, search_object.search_value);
+                search_results = search_utility.lessThanEqual(env, hash_attribute_name, search_object.search_attribute, search_object.search_value, reverse, limit, offset);
                 break;
             default:
                 return search_results;
@@ -112,10 +117,10 @@ async function executeSearch(search_object, search_type, hash_attribute, return_
         let fetch_more = checkToFetchMore(search_object, hash_attribute);
 
         if(fetch_more === false){
-            return return_map === true ? search_results : Object.values(search_results);
+            return return_map === true ? createMapFromArrays(search_results) : search_results[1];
         }
 
-        let ids = Object.keys(search_results);
+        let ids = search_results[0];
         if (return_map === true) {
             return search_utility.batchSearchByHashToMap(env, hash_attribute, search_object.get_attributes, ids);
         }
@@ -125,6 +130,19 @@ async function executeSearch(search_object, search_type, hash_attribute, return_
     }catch(e){
         throw e;
     }
+}
+
+/**
+ *
+ * @param {[[],[]]}arrays
+ */
+function createMapFromArrays(arrays){
+    let results = Object.create(null);
+
+    for(let x = 0, length = arrays[0].length; x < length; x++){
+        results[arrays[0][x]] = arrays[1][x];
+    }
+    return results;
 }
 
 /**

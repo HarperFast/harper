@@ -16,7 +16,7 @@ module.exports = readTransactionLog;
 /**
  * function execute the read_transaction_log operation
  * @param {ReadTransactionLogObject} read_txn_log_obj
- * @returns {Promise<void>}
+ * @returns {Promise<[]>}
  */
 async function readTransactionLog(read_txn_log_obj){
     let base_path = path.join(getTransactionStorePath(), read_txn_log_obj.schema);
@@ -24,13 +24,13 @@ async function readTransactionLog(read_txn_log_obj){
     let all_dbis = environment_utility.listDBIs(env);
 
     environment_utility.initializeDBIs(env, lmdb_terms.TRANSACTIONS_DBI_NAMES_ENUM.TIMESTAMP, all_dbis);
-
+    let hash_attribute;
     switch(read_txn_log_obj.search_type){
         case hdb_terms.READ_TRANSACTION_LOG_SEARCH_TYPES_ENUM.TIMESTAMP:
             return searchTransactionsByTimestamp(env, read_txn_log_obj.search_values);
         case hdb_terms.READ_TRANSACTION_LOG_SEARCH_TYPES_ENUM.HASH_VALUE:
             //get the hash attribute
-            let hash_attribute = global.hdb_schema[read_txn_log_obj.schema][read_txn_log_obj.table].hash_attribute;
+            hash_attribute = global.hdb_schema[read_txn_log_obj.schema][read_txn_log_obj.table].hash_attribute;
             return searchTransactionsByHashValues(env, read_txn_log_obj.search_values, hash_attribute);
         case hdb_terms.READ_TRANSACTION_LOG_SEARCH_TYPES_ENUM.USERNAME:
             return searchTransactionsByUsername(env, read_txn_log_obj.search_values);
@@ -110,11 +110,12 @@ function searchTransactionsByUsername(env, usernames = []){
  */
 function searchTransactionsByHashValues(env, hash_values, hash_attribute){
     let timestamp_hash_map = new Map();
-    for(let x = 0; x < hash_values.length; x++){
+    for(let x = 0, length = hash_values.length; x < length; x++){
         let hash_value = hash_values[x];
         let hash_results = search_utility.equals(env, lmdb_terms.TRANSACTIONS_DBI_NAMES_ENUM.TIMESTAMP, lmdb_terms.TRANSACTIONS_DBI_NAMES_ENUM.HASH_VALUE, hash_value);
 
-        for(let key in hash_results){
+        for(let y = 0, hr_length = hash_results[0].length; y < hr_length; y++){
+            let key = hash_results[0][y];
             let number_key = Number(key);
             if(timestamp_hash_map.has(number_key)){
                 let entry = timestamp_hash_map.get(number_key);
@@ -122,7 +123,6 @@ function searchTransactionsByHashValues(env, hash_values, hash_attribute){
             } else{
                 timestamp_hash_map.set(number_key, [hash_value.toString()]);
             }
-
         }
     }
     let ids = Array.from(timestamp_hash_map.keys());

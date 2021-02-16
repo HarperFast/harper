@@ -24,11 +24,6 @@ const SEARCH_TYPES = {
 
 const TIMESTAMP_NAMES = ['__createdtime__', '__updatedtime__'];
 
-const DBI_KEY_TYPES = {
-    STRING: 'string',
-    NUMBER: 'number'
-};
-
 const TRANSACTIONS_DBI_NAMES_ENUM = {
   TIMESTAMP: 'timestamp',
   HASH_VALUE: 'hash_value',
@@ -41,7 +36,6 @@ module.exports = {
   INTERNAL_DBIS_NAME,
   DBI_DEFINITION_NAME,
   SEARCH_TYPES,
-  DBI_KEY_TYPES,
   TIMESTAMP_NAMES,
   BLOB_DBI_NAME,
   MAX_BYTE_SIZE,

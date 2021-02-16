@@ -36,7 +36,6 @@ const TIMESTAMP_OBJECT = {
 
 describe('test lmdbGetDataByValue module', ()=>{
     let date_stub;
-    let rw_env_util;
     before(()=>{
         test_data.forEach(record=>{
             Object.keys(record).forEach(key=>{
@@ -44,13 +43,10 @@ describe('test lmdbGetDataByValue module', ()=>{
             });
         });
 
-
-        rw_env_util = environment_utility.__set__('MAP_SIZE', 5*1024*1024*1024);
         date_stub = sandbox.stub(Date, 'now').returns(TIMESTAMP);
     });
 
     after(()=>{
-        rw_env_util();
         date_stub.restore();
     });
 
