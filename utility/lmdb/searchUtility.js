@@ -186,8 +186,22 @@ function searchAll(env, hash_attribute, fetch_attributes, reverse = false, limit
 
     validateFetchAttributes(fetch_attributes);
 
-    let results = iterateFullIndex(env, hash_attribute, hash_attribute, cursor_functions.searchAll.bind(null, fetch_attributes), reverse, limit, offset);
-    return Object.values(results);
+    let results = [];
+    let stat = environment_utility.statDBI(env, hash_attribute);
+    if(stat.entryCount === 0){
+        return results;
+    }
+
+    let dbi = environment_utility.openDBI(env, hash_attribute);
+
+    try {
+        for(let {key, value} of dbi.getRange({limit: limit, offset: offset, reverse: reverse})){
+            cursor_functions.searchAll(fetch_attributes, key, value, results);
+        }
+        return results;
+    }catch(e){
+        throw e;
+    }
 }
 
 /**
@@ -209,7 +223,7 @@ function searchAllToMap(env, hash_attribute, fetch_attributes, reverse = false, 
     }
 
     validateFetchAttributes(fetch_attributes);
-    return iterateFullIndex(env, hash_attribute, hash_attribute, cursor_functions.searchAll.bind(null, fetch_attributes), reverse, limit, offset);
+    return iterateFullIndex(env, hash_attribute, hash_attribute, cursor_functions.searchAllToMap.bind(null, fetch_attributes), reverse, limit, offset);
 }
 
 /**
@@ -592,7 +606,7 @@ function contains(env, hash_attribute, attribute, search_value, reverse = false,
  * @param {boolean} reverse - determines direction to iterate
  * @param {number} limit - defines the max number of entries to iterate
  * @param {number} offset - defines the entries to skip
- * @returns {*[[],[]]}
+ * @returns {[[],[]]}
  */
 function greaterThan(env, hash_attribute, attribute, search_value, reverse= false, limit = undefined, offset = undefined){
     validateComparisonFunctions(env, attribute, search_value);
