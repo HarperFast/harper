@@ -8,7 +8,6 @@ const hdb_util = require('../utility/common_utils');
 const util = require('util');
 const harper_logger = require('../utility/logging/harper_logger');
 
-const { hdb_errors, handleHDBError } = require('../utility/errors/hdbError');
 const fs = require('fs');
 const fastify = require('fastify');
 
@@ -85,16 +84,15 @@ async function childServer() {
                 harper_logger.info(`HarperDB ${pjson.version} HTTPS Server running on ${address}`);
                 signalling.signalChildStarted();
             })
-            .catch(e => {
+            .catch(err => {
                 hdbServer.close();
-                const err_msg = `Error configuring ${is_https ? 'HTTPS' : 'HTTP'} server`;
                 harper_logger.error(`Error configuring ${is_https ? 'HTTPS' : 'HTTP'} server`);
-                harper_logger.error(e);
-                throw handleHDBError(e, err_msg);
+                throw err;
             });
     } catch(err) {
         harper_logger.error(`Failed to build server on ${process.pid}`);
-        harper_logger.error(err);
+        harper_logger.fatal(err);
+        process.exit(1);
     }
 }
 

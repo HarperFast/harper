@@ -39,9 +39,12 @@ let serverChild_rw;
 let handlePostRequest_spy;
 let callOperation_stub;
 let auth_stub;
+let setup_stub;
 let chooseOp_stub;
 let logger_info_stub;
 let logger_debug_stub;
+let logger_error_spy;
+let logger_fatal_spy;
 const fake = () => {};
 
 const test_op_resp = "table 'dev.dogz' successfully created.";
@@ -49,19 +52,27 @@ const test_cert_val = test_utils.getHTTPSCredentials().cert;
 const test_key_val = test_utils.getHTTPSCredentials().key;
 
 describe('Test serverChild.js', () => {
+    let signalChildStarted_stub;
+
     before(() => {
+        logger_info_stub = sandbox.stub(harper_logger, 'info').callsFake(fake);
+        logger_debug_stub = sandbox.stub(harper_logger, 'debug').callsFake(fake);
+        logger_error_spy = sandbox.stub(harper_logger, 'error').callsFake(fake);
+        logger_fatal_spy = sandbox.stub(harper_logger, 'fatal').callsFake(fake);
+        callOperation_stub = sandbox.stub(OperationFunctionCaller, 'callOperationFunctionAsAwait').resolves(test_op_resp);
+        auth_stub = sandbox.stub(serverHandlers, 'authHandler').callsFake((req, resp, done) => done());
+        handlePostRequest_spy = sandbox.spy(serverHandlers, 'handlePostRequest');
+        chooseOp_stub = sandbox.stub(server_utilities, 'chooseOperation').callsFake(fake);
+        signalChildStarted_stub = sandbox.stub(signalling, "signalChildStarted").callsFake(fake);
+        setup_stub = sandbox.stub().callsFake(fake);
+
         serverChild_rw = rewire('../../server/serverChild');
+        serverChild_rw.__set__('setUp', setup_stub);
         test_utils.preTestPrep();
         fs.mkdirpSync(KEYS_PATH);
 
         fs.writeFileSync(PRIVATE_KEY_PATH, test_key_val);
         fs.writeFileSync(CERTIFICATE_PATH, test_cert_val);
-        logger_info_stub = sandbox.stub(harper_logger, 'info').callsFake(fake);
-        logger_debug_stub = sandbox.stub(harper_logger, 'debug').callsFake(fake);
-        handlePostRequest_spy = sandbox.spy(serverHandlers, 'handlePostRequest');
-        callOperation_stub = sandbox.stub(OperationFunctionCaller, 'callOperationFunctionAsAwait').resolves(test_op_resp);
-        auth_stub = sandbox.stub(serverHandlers, 'authHandler').callsFake((req, res, done) => done());
-        chooseOp_stub = sandbox.stub(server_utilities, 'chooseOperation').callsFake(() => {});
     })
 
     afterEach(async() => {
@@ -84,7 +95,6 @@ describe('Test serverChild.js', () => {
         it('should build HTTPS server when HTTPS_ON set to true', async() => {
             const test_config_settings = { https_enabled: true }
             test_utils.preTestPrep(test_config_settings);
-            serverChild_rw = rewire('../../server/serverChild');
 
             await serverChild_rw();
             const hdb_server = serverChild_rw.__get__('hdbServer');
@@ -99,7 +109,6 @@ describe('Test serverChild.js', () => {
         it('should build HTTP server when HTTPS_ON set to false', async() => {
             const test_config_settings = { https_enabled: false }
             test_utils.preTestPrep(test_config_settings);
-            serverChild_rw = rewire('../../server/serverChild');
 
             await serverChild_rw();
             const hdb_server = serverChild_rw.__get__('hdbServer');
@@ -112,7 +121,6 @@ describe('Test serverChild.js', () => {
         it('should build HTTPS server instance with started and listening state equal to true', async() => {
             const test_config_settings = { https_enabled: true }
             test_utils.preTestPrep(test_config_settings);
-            serverChild_rw = rewire('../../server/serverChild');
 
             await serverChild_rw();
             const hdb_server = serverChild_rw.__get__('hdbServer');
@@ -125,7 +133,6 @@ describe('Test serverChild.js', () => {
         it('should build HTTP server instance with started and listening state equal to true', async() => {
             const test_config_settings = { https_enabled: false }
             test_utils.preTestPrep(test_config_settings);
-            serverChild_rw = rewire('../../server/serverChild');
 
             await serverChild_rw();
             const hdb_server = serverChild_rw.__get__('hdbServer');
@@ -138,7 +145,6 @@ describe('Test serverChild.js', () => {
         it('should build HTTPS server instances with mixed cap boolean spelling', async() => {
             const test_config_settings = { https_enabled: 'TRUe' }
             test_utils.preTestPrep(test_config_settings);
-            serverChild_rw = rewire('../../server/serverChild');
 
             await serverChild_rw();
             const hdb_server = serverChild_rw.__get__('hdbServer');
@@ -153,7 +159,6 @@ describe('Test serverChild.js', () => {
         it('should build HTTP server instances with mixed cap boolean spelling', async() => {
             const test_config_settings = { https_enabled: 'FalsE' }
             test_utils.preTestPrep(test_config_settings);
-            serverChild_rw = rewire('../../server/serverChild');
 
             await serverChild_rw();
             const hdb_server = serverChild_rw.__get__('hdbServer');
@@ -184,7 +189,6 @@ describe('Test serverChild.js', () => {
         it('should build HTTP server instances with default config settings', async() => {
             const test_config_settings = { https_enabled: false }
             test_utils.preTestPrep(test_config_settings);
-            serverChild_rw = rewire('../../server/serverChild');
 
             await serverChild_rw();
             const test_max_body_size = serverChild_rw.__get__('REQ_MAX_BODY_SIZE');
@@ -203,7 +207,6 @@ describe('Test serverChild.js', () => {
                 headers_timeout: 1111
             }
             test_utils.preTestPrep(test_config_settings);
-            serverChild_rw = rewire('../../server/serverChild');
 
             await serverChild_rw();
             const hdb_server = serverChild_rw.__get__('hdbServer');
@@ -221,7 +224,6 @@ describe('Test serverChild.js', () => {
                 headers_timeout: 1111
             }
             test_utils.preTestPrep(test_config_settings);
-            serverChild_rw = rewire('../../server/serverChild');
 
             await serverChild_rw();
             const hdb_server = serverChild_rw.__get__('hdbServer');
@@ -277,7 +279,6 @@ describe('Test serverChild.js', () => {
         it('should call handlePostRequest on HTTP post request',async() => {
             const test_config_settings = { https_on: false }
             test_utils.preTestPrep(test_config_settings);
-            serverChild_rw = rewire('../../server/serverChild');
 
             await serverChild_rw();
             const hdb_server = serverChild_rw.__get__('hdbServer');
@@ -295,7 +296,6 @@ describe('Test serverChild.js', () => {
         it('should return docs html static file result w/ status 200 for valid HTTP get request',async() => {
             const test_config_settings = { https_on: false }
             test_utils.preTestPrep(test_config_settings);
-            serverChild_rw = rewire('../../server/serverChild');
 
             await serverChild_rw();
             const hdb_server = serverChild_rw.__get__('hdbServer');
@@ -312,7 +312,6 @@ describe('Test serverChild.js', () => {
         it('should return docs html static file result w/ status 200 for valid HTTPS get request',async() => {
             const test_config_settings = { https_on: true }
             test_utils.preTestPrep(test_config_settings);
-            serverChild_rw = rewire('../../server/serverChild');
 
             await serverChild_rw();
             const hdb_server = serverChild_rw.__get__('hdbServer');
@@ -329,7 +328,7 @@ describe('Test serverChild.js', () => {
         it('should return op result w/ status 200 for valid HTTP post request',async() => {
             const test_config_settings = { https_on: false }
             test_utils.preTestPrep(test_config_settings);
-            serverChild_rw = rewire('../../server/serverChild');
+
             await serverChild_rw()
             const hdb_server = serverChild_rw.__get__('hdbServer');
 
@@ -436,16 +435,33 @@ describe('Test serverChild.js', () => {
 
             expect(test_response.statusCode).to.equal(200);
         })
+
+        it('should catch and log an error and exit process if thrown from app.listen()', async() => {
+            const process_stub = sandbox.stub(process, "exit").callsFake(fake);
+            const test_err = "This is a test error.";
+            signalChildStarted_stub.throws(new Error(test_err));
+
+            test_utils.preTestPrep();
+            await serverChild_rw();
+
+            expect(logger_error_spy.calledTwice).to.be.true;
+            expect(logger_error_spy.args[0][0]).to.equal("Error configuring HTTPS server");
+            expect(logger_error_spy.args[1][0]).to.equal(`Failed to build server on ${process.pid}`);
+
+            expect(logger_fatal_spy.calledOnce).to.be.true;
+            expect(logger_fatal_spy.args[0][0].message).to.equal(test_err);
+
+            expect(process_stub.calledOnce).to.be.true;
+            expect(process_stub.args[0][0]).to.equal(1);
+
+            process_stub.restore();
+        })
     })
 
     describe('buildServer() method', () => {
         let buildServer_rw;
         let test_result;
-        let signalChildStarted_stub;
 
-        before(() => {
-            signalChildStarted_stub = sandbox.stub(signalling, "signalChildStarted")
-        })
         beforeEach(() => {
             buildServer_rw = serverChild_rw.__get__('buildServer');
         });
@@ -471,21 +487,6 @@ describe('Test serverChild.js', () => {
 
             expect(test_result.server.constructor.name).to.equal('Server');
             expect(test_result.initialConfig.https).to.be.true;
-        })
-
-        it('should catch and log an error if thrown from app.listen()', async() => {
-            const test_err = "This is a test error."
-            signalChildStarted_stub.throws(test_err);
-            const test_is_https = true;
-            try {
-                test_result = await buildServer_rw(test_is_https);
-            } catch(err) {
-                test_result = err;
-            }
-
-            expect(test_result instanceof Error).to.be.true;
-            expect(test_result.http_resp_code).to.equal(500);
-            expect(test_result.http_resp_msg).to.equal("Error configuring HTTPS server");
         })
     })
 
@@ -602,7 +603,7 @@ describe('Test serverChild.js', () => {
         })
 
         it('should call shutdown method', async() => {
-            const process_stub = sandbox.stub(process, 'exit').callsFake(fake);
+            const process_stub = sandbox.stub(process, "exit").callsFake(fake);
             handleServerMessage_rw = serverChild_rw.__get__('handleServerMessage');
 
             await handleServerMessage_rw(test_msg('restart'));
