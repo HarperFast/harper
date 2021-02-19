@@ -73,22 +73,23 @@ async function childServer() {
         await setUp();
 
         const props_http_secure_on = env.get(PROPS_HTTP_SECURE_ON_KEY);
+        const props_server_port = env.get(PROPS_SERVER_PORT_KEY);
         const is_https = props_http_secure_on && (props_http_secure_on === true || props_http_secure_on.toUpperCase() === TRUE_COMPARE_VAL);
 
         hdbServer = buildServer(is_https);
 
         await hdbServer.ready();
 
-        await hdbServer.listen(env.get(PROPS_SERVER_PORT_KEY), '::')
-            .then(address => {
-                harper_logger.info(`HarperDB ${pjson.version} HTTPS Server running on ${address}`);
-                signalling.signalChildStarted();
-            })
-            .catch(err => {
-                hdbServer.close();
-                harper_logger.error(`Error configuring ${is_https ? 'HTTPS' : 'HTTP'} server`);
-                throw err;
-            });
+        const server_type = is_https ? 'HTTPS' : 'HTTP';
+        try {
+            await hdbServer.listen(props_server_port, '::');
+            harper_logger.info(`HarperDB ${pjson.version} ${server_type} Server running on port ${props_server_port}`);
+            signalling.signalChildStarted();
+        } catch(err) {
+            hdbServer.close();
+            harper_logger.error(`Error configuring ${server_type} server`);
+            throw err;
+        }
     } catch(err) {
         harper_logger.error(`Failed to build server on ${process.pid}`);
         harper_logger.fatal(err);
