@@ -39,7 +39,7 @@ const env = require('../utility/environment/environmentManager');
 const license = require('../utility/registration/hdb_license');
 const systemSchema = require('../json/systemSchema');
 const { handleHDBError, hdb_errors } = require('../utility/errors/hdbError');
-const { HTTP_STATUS_CODES, AUTHENTICATION_ERROR_MSGS} = hdb_errors;
+const { HTTP_STATUS_CODES, AUTHENTICATION_ERROR_MSGS, HDB_ERROR_MSGS } = hdb_errors;
 const clone = require('clone');
 
 const USER_ATTRIBUTE_WHITELIST = {
@@ -64,18 +64,21 @@ async function addUser(user) {
     let search_obj = {
         schema: 'system',
         table: 'hdb_role',
-        hash_values: [clean_user.role],
-        hash_attribute: 'id',
+        search_attribute: 'role',
+        search_value: clean_user.role,
         get_attributes: ['id', 'permission', 'role']
     };
 
-    let search_role = await p_search_search_by_hash(search_obj).catch((err) => {
+    let search_role = await p_search_search_by_value(search_obj).catch((err) => {
         logger.error('There was an error searching for a role in add user');
         logger.error(err);
         throw err;
     });
     if (!search_role || search_role.length < 1) {
-        throw new Error('Role not found.');
+        throw handleHDBError(new Error(), HDB_ERROR_MSGS.ROLE_NAME_NOT_FOUND(clean_user.role), HTTP_STATUS_CODES.NOT_FOUND);
+    }
+    if (search_role.length > 1) {
+        throw handleHDBError(new Error(), HDB_ERROR_MSGS.DUP_ROLES_FOUND(clean_user.role), HTTP_STATUS_CODES.CONFLICT);
     }
 
     if (search_role[0].permission.cluster_user === true) {
@@ -84,11 +87,12 @@ async function addUser(user) {
 
     clean_user.password = password.hash(clean_user.password);
 
+    clean_user.role = search_role[0].id;
+
     let insert_object = {
         operation: 'insert',
         schema: 'system',
         table: 'hdb_user',
-        hash_attribute: 'username',
         records: [clean_user]
     };
 
@@ -162,27 +166,35 @@ async function alterUser(json_message) {
         let role_search_obj = {
             schema: 'system',
             table: 'hdb_role',
-            hash_attribute: 'id',
-            hash_values: [json_message.role],
+            search_attribute: 'role',
+            search_value: clean_user.role,
             get_attributes: ['*']
         };
-        let role_data = await p_search_search_by_hash(role_search_obj).catch((err) => {
+        let role_data = await p_search_search_by_value(role_search_obj).catch((err) => {
             logger.error('Got an error searching for a role.');
             logger.error(err);
             throw err;
         });
+
         if (!role_data || role_data.length === 0) {
-            let msg = `Update failed.  Requested role id ${clean_user.role} not found.`;
+            const msg = HDB_ERROR_MSGS.ALTER_USER_ROLE_NOT_FOUND(clean_user.role);
             logger.error(msg);
-            throw new Error(msg);
+            throw handleHDBError(new Error(), msg, HTTP_STATUS_CODES.NOT_FOUND);
         }
+
+        if (role_data.length > 1) {
+            const msg = HDB_ERROR_MSGS.ALTER_USER_DUP_ROLES(clean_user.role);
+            logger.error(msg);
+            throw handleHDBError(new Error(), msg, HTTP_STATUS_CODES.CONFLICT);
+        }
+
+        clean_user.role = role_data[0].id;
     }
 
     let update_object = {
         operation:'update',
         schema :  'system',
         table:'hdb_user',
-        hash_attribute: 'username',
         records: [clean_user]
     };
 
@@ -261,7 +273,6 @@ async function userInfo(body) {
         let search_obj = {};
         search_obj.schema = 'system';
         search_obj.table = 'hdb_role';
-        search_obj.hash_attribute = 'id';
         search_obj.hash_values = [user.role.id];
         search_obj.get_attributes = ['*'];
         let role_data = await p_search_search_by_hash(search_obj).catch((err) => {
@@ -313,7 +324,6 @@ async function listUsers() {
         let role_search_obj = {
             schema: 'system',
             table: 'hdb_role',
-            hash_attribute: 'id',
             search_value: '*',
             search_attribute: 'role',
             get_attributes: ['*']
@@ -334,7 +344,6 @@ async function listUsers() {
             let user_search_obj = {};
             user_search_obj.schema = 'system';
             user_search_obj.table = 'hdb_user';
-            user_search_obj.hash_attribute = 'username';
             user_search_obj.search_value = '*';
             user_search_obj.search_attribute = 'username';
             user_search_obj.get_attributes = ['*'];

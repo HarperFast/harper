@@ -500,7 +500,7 @@ function createAdminUser(role, admin_user, callback) {
 
                     prompt.get(role_schema, function (prompt_err, selected_role) {
                         // account for the offset
-                        admin_user.role = res[selected_role.ROLE - 1].id;
+                        admin_user.role = res[selected_role.ROLE - 1].role;
 
                         cb_user_add_user(admin_user, (add_user_err) => {
                             if (add_user_err) {
@@ -513,7 +513,7 @@ function createAdminUser(role, admin_user, callback) {
                     });
 
                 } else {
-                    admin_user.role = res[0].id;
+                    admin_user.role = res[0].role;
 
                     cb_user_add_user(admin_user, (add_user_err) => {
                         if (add_user_err) {
@@ -538,7 +538,7 @@ function createAdminUser(role, admin_user, callback) {
                     return callback(null);
                 }
 
-                admin_user.role = res.id;
+                admin_user.role = res.role;
 
                 cb_user_add_user(admin_user, (add_user_err) => {
                     if (add_user_err) {
