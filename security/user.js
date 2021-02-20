@@ -112,13 +112,15 @@ async function addUser(user) {
     if(success.skipped_hashes.length === 1) {
         return `User ${clean_user.username} already exists.`;
     }
-    clean_user.role = search_role[0];
+
+    const new_user = Object.assign({}, clean_user);
+    new_user.role = search_role[0];
     let add_user_msg = new terms.ClusterMessageObjects.HdbCoreClusterAddUserRequestMessage();
-    add_user_msg.user = clean_user;
+    add_user_msg.user = new_user;
     // TODO: Check if this should be removed, postOperation
     hdb_utility.sendTransactionToSocketCluster(terms.INTERNAL_SC_CHANNELS.ADD_USER, add_user_msg, env.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY));
     signalling.signalUserChange({type: 'user'});
-    return `${clean_user.username} successfully added`;
+    return `${new_user.username} successfully added`;
 }
 
 async function alterUser(json_message) {

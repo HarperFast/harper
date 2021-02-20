@@ -10,6 +10,7 @@ const validation = require('../../validation/user_validation');
 const signalling = require('../../utility/signalling');
 const util = require('util');
 let license = require('../../utility/registration/hdb_license');
+const { TEST_USER_ERROR_MSGS } = require('../commonTestErrors');
 
 let USER_SEARCH_RESULT = new Map([
     [
@@ -89,7 +90,7 @@ const TEST_USER = {
 
 const TEST_ADD_USER_JSON = {
     "operation": "add_user",
-    "role": "057540eb-3e93-4fab-8397-a4545f850b18",
+    "role": "test_role",
     "username": "test_user",
     "password": "test1234!",
     "active": "true"
@@ -97,7 +98,7 @@ const TEST_ADD_USER_JSON = {
 
 const TEST_ALTER_USER_JSON = {
     "operation": "alter_user",
-    "role": "057540eb-3e93-4fab-8397-a4545f850b18",
+    "role": "test_role",
     "username": "test_user",
     "password": "test1234!",
 };
@@ -231,6 +232,7 @@ let search_hash_stub = undefined;
 let search_value_stub = undefined;
 let search_val_orig = user.__get__('p_search_search_by_value');
 let insert_stub = undefined;
+let update_stub = undefined;
 let validate_stub = undefined;
 let signal_spy = undefined;
 let search_orig = user.__get__('p_search_search_by_hash');
@@ -262,16 +264,47 @@ describe('Test addUser', function () {
         assert.equal(signal_spy.called, true);
     });
 
-    it('Test bad role', async function () {
-        // inject a failed role search
+    it('Nominal path, user role updated with id value before being passed to insert', async function () {
+        await user.addUser(TEST_ADD_USER_JSON);
+
+        let cleaned_user_role = insert_stub.args[0][0].records[0].role;
+        let expected_role_id = TEST_USER_INFO_SEARCH_RESPONSE[0].id;
+        assert.equal(cleaned_user_role, expected_role_id, 'Expected role value to be updated with id.');
+    });
+
+    it('Test error thrown if no role exists', async function () {
         search_value_stub.resolves(null);
         let err = undefined;
         try {
-            let res = await user.addUser(TEST_ADD_USER_JSON);
+            await user.addUser(TEST_ADD_USER_JSON);
         } catch(error) {
             err = error;
         }
-        assert.equal(err.message, BAD_ROLE_SEARCH_RESULT, 'Expected success result not returned.');
+        assert.equal(err.message, TEST_USER_ERROR_MSGS.ROLE_NAME_NOT_FOUND(TEST_ADD_USER_JSON.role), 'Expected success result not returned.');
+        assert.equal(signal_spy.called, false);
+    });
+
+    it('Test error thrown if no role exists', async function () {
+        search_value_stub.resolves([]);
+        let err = undefined;
+        try {
+            await user.addUser(TEST_ADD_USER_JSON);
+        } catch(error) {
+            err = error;
+        }
+        assert.equal(err.message, TEST_USER_ERROR_MSGS.ROLE_NAME_NOT_FOUND(TEST_ADD_USER_JSON.role), 'Expected success result not returned.');
+        assert.equal(signal_spy.called, false);
+    });
+
+    it('Test error thrown if more than 1 of same role exists', async function () {
+        search_value_stub.resolves([ {}, {} ]);
+        let err = undefined;
+        try {
+            await user.addUser(TEST_ADD_USER_JSON);
+        } catch(error) {
+            err = error;
+        }
+        assert.equal(err.message, TEST_USER_ERROR_MSGS.DUP_ROLES_FOUND(TEST_ADD_USER_JSON.role), 'Expected success result not returned.');
         assert.equal(signal_spy.called, false);
     });
 
@@ -311,19 +344,17 @@ describe('Test alterUser', function () {
     let signal_spy = undefined;
     let search_orig = user.__get__('p_search_search_by_hash');
     beforeEach( function() {
-
-        // We are not testing these other functions, so we stub them.
-        insert_stub = sinon.stub(insert, "update").resolves(TEST_UPDATE_RESPONSE);
+        update_stub = sinon.stub(insert, "update").resolves(TEST_UPDATE_RESPONSE);
         validate_stub = sinon.stub(validation, "alterUserValidation").callsFake(function() {
             return null;
         });
         signal_spy = sinon.spy(signalling, "signalUserChange");
         role_search_stub = sinon.stub().resolves([TEST_LIST_USER_ROLE_SEARCH_RESPONSE]);
-        user.__set__('p_search_search_by_hash', role_search_stub);
+        user.__set__('p_search_search_by_value', role_search_stub);
         global.hdb_users = new Map([[TEST_USER.username, TEST_USER]]);
     });
     afterEach( function() {
-        insert_stub.restore();
+        update_stub.restore();
         validate_stub.restore();
         signal_spy.restore();
         global.hdb_users = undefined;
@@ -333,6 +364,14 @@ describe('Test alterUser', function () {
         let res = await user.alterUser(TEST_ALTER_USER_JSON);
         assert.equal(res, TEST_UPDATE_RESPONSE, 'Expected success result not returned.');
         assert.equal(signal_spy.called, true);
+    });
+
+    it('Nominal path, user role updated with id value before being passed to update', async function () {
+        await user.alterUser(TEST_ALTER_USER_JSON);
+
+        let cleaned_user_role = update_stub.args[0][0].records[0].role;
+        let expected_role_id = TEST_LIST_USER_ROLE_SEARCH_RESPONSE.id;
+        assert.equal(cleaned_user_role, expected_role_id, 'Expected role value to be updated with id.');
     });
 
     it('Test failed validation no username', async function () {
@@ -425,16 +464,42 @@ describe('Test alterUser', function () {
         assert.equal(signal_spy.called, false);
     });
 
+    it('Test null role found', async function () {
+        role_search_stub = sinon.stub().resolves(null);
+        user.__set__('p_search_search_by_value', role_search_stub);
+        let err = undefined;
+        try {
+            await user.alterUser(TEST_ALTER_USER_JSON);
+        } catch(error) {
+            err = error;
+        }
+        assert.equal(err.message, TEST_USER_ERROR_MSGS.ALTER_USER_ROLE_NOT_FOUND(TEST_ALTER_USER_JSON.role), 'Expected success result not returned.');
+        assert.equal(signal_spy.called, false);
+    });
+
     it('Test no role found', async function () {
         role_search_stub = sinon.stub().resolves([]);
         user.__set__('p_search_search_by_value', role_search_stub);
         let err = undefined;
         try {
-            let res = await user.alterUser(TEST_ALTER_USER_JSON);
+            await user.alterUser(TEST_ALTER_USER_JSON);
         } catch(error) {
             err = error;
         }
-        assert.equal(err.message, `Update failed.  Requested '${TEST_ALTER_USER_NO_USERNAME_JSON.role}' role not found.`, 'Expected success result not returned.');
+        assert.equal(err.message, TEST_USER_ERROR_MSGS.ALTER_USER_ROLE_NOT_FOUND(TEST_ALTER_USER_JSON.role), 'Expected success result not returned.');
+        assert.equal(signal_spy.called, false);
+    });
+
+    it('Test multiple roles found', async function () {
+        role_search_stub = sinon.stub().resolves([{}, {}]);
+        user.__set__('p_search_search_by_value', role_search_stub);
+        let err = undefined;
+        try {
+            await user.alterUser(TEST_ALTER_USER_JSON);
+        } catch(error) {
+            err = error;
+        }
+        assert.equal(err.message, TEST_USER_ERROR_MSGS.ALTER_USER_DUP_ROLES(TEST_ALTER_USER_JSON.role), 'Expected success result not returned.');
         assert.equal(signal_spy.called, false);
     });
 
