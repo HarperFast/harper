@@ -112,6 +112,13 @@ const TEST_DEFAULT_ERROR_MSGS = {
 
 const TEST_DEFAULT_ERROR_RESP = TEST_DEFAULT_ERROR_MSGS[HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR];
 
+const TEST_USER_ERROR_MSGS ={
+    ALTER_USER_DUP_ROLES: (role) => `Update failed.  There are duplicates for the '${role}' role which is not allowed. Update your roles and try again.`,
+    ALTER_USER_ROLE_NOT_FOUND: (role) => `Update failed.  Requested '${role}' role not found.`,
+    DUP_ROLES_FOUND: (role) => `Multiple ${role} roles found.  Roles must have unique 'role' value. Please update and try again.`,
+    ROLE_NAME_NOT_FOUND: (role) => `${role} role not found`
+};
+
 module.exports = {
     CHECK_LOGS_WRAPPER,
     LMDB_ERRORS_ENUM,
@@ -122,5 +129,6 @@ module.exports = {
     TEST_OPERATION_AUTH_ERROR,
     TEST_SCHEMA_OP_ERROR,
     HTTP_STATUS_CODES,
+    TEST_USER_ERROR_MSGS,
     isHDBError
 };
