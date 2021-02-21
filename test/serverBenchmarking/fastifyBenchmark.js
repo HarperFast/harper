@@ -19,9 +19,11 @@ const p_sql_evaluate_sql = promisify(sql.evaluateSQL);
 env_mngr.initSync();
 const p_global_schema = promisify(global_schema.setSchemaDataToGlobal);
 
-const SERVER_PORT = 9925;//env_mngr.get('SERVER_PORT');
-const BASE_ROUTE = `https://localhost:${SERVER_PORT}`;
+const SERVER_PORT = env_mngr.get('SERVER_PORT');
+const BASE_ROUTE = `http://localhost:${SERVER_PORT}`;
 const { BASIC_AUTH, FUNC_INPUT, REQUEST_JSON, TEST_DOG_RECORDS } = require('./testData');
+
+const TEST_NUMBER = 300;
 
 const USE_JWT = false;
 //this value will get updated below if USE_JWT is set to true
@@ -39,6 +41,7 @@ const OP_FUNC_MAP = {
     SEARCH_BY_HASH: p_search_search_by_hash,
     SQL_SIMPLE_SEARCH: p_sql_evaluate_sql,
     SQL_SEARCH_WHERE_SORT: p_sql_evaluate_sql,
+    MED_SQL: p_sql_evaluate_sql,
     BIG_SQL: p_sql_evaluate_sql
 };
 
@@ -61,17 +64,10 @@ const benchmark = () => ({
     data: null
 });
 
-const benchmarkResults = {
-    REG_INFO: benchmark(),
-    DESCRIBE_ALL: benchmark(),
-    DESCRIBE_SCHEMA: benchmark(),
-    DESCRIBE_TABLE: benchmark(),
-    SEARCH_BY_VAL: benchmark(),
-    SEARCH_BY_HASH: benchmark(),
-    SQL_SIMPLE_SEARCH: benchmark(),
-    SQL_SEARCH_WHERE_SORT: benchmark(),
-    BIG_SQL: benchmark()
-}
+const benchmarkResults = REQS_KEYS.reduce((acc, key) => {
+    acc[key] = benchmark();
+    return acc;
+}, {})
 
 function pause(ms = 500) {
     return new Promise(resolve => setTimeout(resolve, ms));
@@ -229,7 +225,7 @@ async function rawDataFunctionBenchmark() {
         const func_key = REQS_KEYS[y];
         const func = OP_FUNC_MAP[func_key];
         const input = FUNC_INPUT(REQUEST_JSON[func_key]);
-        let x = 100;
+        let x = TEST_NUMBER;
         let sum = 0;
         let times_run = 0;
         while (x-- > 0) {
@@ -256,7 +252,7 @@ async function httpBenchmark() {
     for (let y = 0; y < REQS_LENGTH; y++) {
         const key = REQS_KEYS[y]
         const body_json = REQUEST_JSON[key];
-        let x = 100;
+        let x = TEST_NUMBER;
         let sum = 0;
         let times_run = 0;
         while (x-- > 0) {
@@ -302,7 +298,7 @@ async function run() {
     await rawDataFunctionBenchmark();
     await httpBenchmark();
     evalBenchmarks();
-    await dropBenchmarkData();
+    // await dropBenchmarkData();
 }
 
 run().then(()=>{});

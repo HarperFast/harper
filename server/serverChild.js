@@ -6,9 +6,8 @@ env.initSync();
 const terms = require('../utility/hdbTerms');
 const hdb_util = require('../utility/common_utils');
 const util = require('util');
-
 const harper_logger = require('../utility/logging/harper_logger');
-const { hdb_errors, handleHDBError } = require('../utility/errors/hdbError');
+
 const fs = require('fs');
 const fastify = require('fastify');
 
@@ -60,32 +59,46 @@ const DEFAULT_HEADER_TIMEOUT = HDB_SETTINGS_DEFAULT_VALUES[PROPS_HEADER_TIMEOUT_
 let hdbServer = undefined;
 
 async function childServer() {
-    harper_logger.info('In Fastify server' + process.cwd());
-    harper_logger.info(`Running with NODE_ENV set as: ${process.env.NODE_ENV}`);
-
-    global.clustering_on = false;
-
-    process.on('message', handleServerMessage);
-
-    process.on('uncaughtException', handleServerUncaughtException);
-
-    global.isMaster = cluster.isMaster;
-
-    harper_logger.debug(`child process ${process.pid} starting up.`);
-    await setUp();
-
-    const props_http_secure_on = env.get(PROPS_HTTP_SECURE_ON_KEY);
-    const is_https = props_http_secure_on && (props_http_secure_on === true || props_http_secure_on.toUpperCase() === TRUE_COMPARE_VAL);
-
     try {
-        hdbServer = await buildServer(is_https);
+        harper_logger.info('In Fastify server' + process.cwd());
+        harper_logger.info(`Running with NODE_ENV set as: ${process.env.NODE_ENV}`);
+        harper_logger.debug(`Child server process ${process.pid} starting up.`);
+
+        global.clustering_on = false;
+        global.isMaster = cluster.isMaster;
+
+        process.on('message', handleServerMessage);
+        process.on('uncaughtException', handleServerUncaughtException);
+
+        await setUp();
+
+        const props_http_secure_on = env.get(PROPS_HTTP_SECURE_ON_KEY);
+        const props_server_port = env.get(PROPS_SERVER_PORT_KEY);
+        const is_https = props_http_secure_on && (props_http_secure_on === true || props_http_secure_on.toUpperCase() === TRUE_COMPARE_VAL);
+
+        hdbServer = buildServer(is_https);
+
+        await hdbServer.ready();
+
+        const server_type = is_https ? 'HTTPS' : 'HTTP';
+        try {
+            await hdbServer.listen(props_server_port, '::');
+            harper_logger.info(`HarperDB ${pjson.version} ${server_type} Server running on port ${props_server_port}`);
+            signalling.signalChildStarted();
+        } catch(err) {
+            hdbServer.close();
+            harper_logger.error(`Error configuring ${server_type} server`);
+            throw err;
+        }
     } catch(err) {
         harper_logger.error(`Failed to build server on ${process.pid}`);
-        harper_logger.error(err);
+        harper_logger.fatal(err);
+        process.exit(1);
     }
 }
 
-async function buildServer(is_https) {
+function buildServer(is_https) {
+    harper_logger.debug(`Child process starting to build ${is_https ? 'HTTPS' : 'HTTP'} server.`);
     let server_opts = getServerOptions(is_https);
     const app = fastify(server_opts);
     //Fastify does not set this property in the initial app construction
@@ -96,15 +109,15 @@ async function buildServer(is_https) {
 
     const cors_options = getCORSOpts();
     if (cors_options) {
-        await app.register(fastify_cors, cors_options);
+        app.register(fastify_cors, cors_options);
     }
 
     //Register security headers for Fastify instance - https://helmetjs.github.io/
-    await app.register(fastify_helmet);
+    app.register(fastify_helmet);
 
     // This handles all get requests for the studio
-    await app.register(fastify_compress);
-    await app.register(fastify_static, {root: guidePath.join(__dirname,'../docs')});
+    app.register(fastify_compress);
+    app.register(fastify_static, {root: guidePath.join(__dirname,'../docs')});
     app.get('/', function(req, res) {
         return res.sendFile('index.html');
     });
@@ -119,22 +132,8 @@ async function buildServer(is_https) {
         }
     );
 
-    await app.ready();
+    harper_logger.debug(`Child process starting up ${is_https ? 'HTTPS' : 'HTTP'} server listener.`);
 
-    harper_logger.debug(`child process starting up ${is_https ? 'HTTPS' : 'HTTP'} server.`);
-
-    await app.listen(env.get(PROPS_SERVER_PORT_KEY), '::')
-        .then(address => {
-            harper_logger.info(`HarperDB ${pjson.version} HTTPS Server running on ${address}`);
-            signalling.signalChildStarted();
-        })
-        .catch(e => {
-            app.close();
-            const err_msg = `Error configuring ${is_https ? 'HTTPS' : 'HTTP'} server`;
-            harper_logger.error(`Error configuring ${is_https ? 'HTTPS' : 'HTTP'} server`);
-            harper_logger.error(e);
-            throw handleHDBError(e, err_msg);
-        });
     return app;
 }
 
@@ -301,3 +300,4 @@ async function shutDown() {
 }
 
 module.exports = childServer;
+

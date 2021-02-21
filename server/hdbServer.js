@@ -81,15 +81,10 @@ global.clustering_on = false;
 
 cluster.on('exit', handleClusterExit);
 
-//TODO - async handler will get updated when I am able to update my branch to Node 14 w/ top-level async
 if (cluster.isMaster && (num_workers >= 1)) {
-    (async function() {
-        await serverParent(num_workers);
-    }());
+    serverParent(num_workers);
 } else {
-    (async function () {
-        await serverChild();
-    }());
+    serverChild();
 }
 
 function handleClusterExit(dead_worker, code, signal) {
