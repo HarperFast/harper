@@ -51,6 +51,7 @@
     "graceful-fs": "^4.1.15",
     "human-readable-ids": "^1.0.4",
     "is-number": "^7.0.0",
+    "joi": "^17.4.0",
     "jsonata": "^1.8.3",
     "jsonwebtoken": "^8.5.1",
     "lmdb-store": "^1.1.4",

@@ -1,3 +1,5 @@
+'use strict';
+
 /**
  * validationWrapper.js
  *
@@ -10,6 +12,7 @@
  */
 
 const validate = require('validate.js');
+const Joi = require('joi');
 
 //This validator is added here b/c we are still on version 0.11.1 that does not include this build in functionality.  When
 // we do update, we can remove.  The reason we have not is related to a breaking change on the "presence" validator rule
@@ -48,7 +51,8 @@ validate.validators.hasValidFileExt = function(value, options) {
 
 module.exports = {
     validateObject,
-    validateObjectAsync
+    validateObjectAsync,
+    validateBySchema
 };
 
 function validateObject(object, file_constraints) {
@@ -81,4 +85,18 @@ async function validateObjectAsync(object, file_constraints) {
     }
     // If no error, just return null so this will behave as the non async version.
     return null;
+}
+
+/**
+ *
+ * @param {{}} object
+ * @param {Joi.ObjectSchema} schema
+ * @returns {*}
+ */
+function validateBySchema(object, schema){
+    let result = schema.validate(object, {allowUnknown:true, abortEarly:false});
+
+    if(result.error){
+        return new Error(result.error.message);
+    }
 }

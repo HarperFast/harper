@@ -82,9 +82,11 @@ async function executeSearch(search_object, search_type, hash_attribute, return_
                 search_results = search_utility.contains(env, hash_attribute_name, search_object.search_attribute, search_object.search_value, reverse, limit, offset);
                 break;
             case lmdb_terms.SEARCH_TYPES.ENDS_WITH:
+            case lmdb_terms.SEARCH_TYPES._ENDS_WITH:
                 search_results = search_utility.endsWith(env, hash_attribute_name, search_object.search_attribute, search_object.search_value, reverse, limit, offset);
                 break;
             case lmdb_terms.SEARCH_TYPES.STARTS_WITH:
+            case lmdb_terms.SEARCH_TYPES._STARTS_WITH:
                 search_results = search_utility.startsWith(env, hash_attribute_name, search_object.search_attribute, search_object.search_value, reverse, limit, offset);
                 break;
             case lmdb_terms.SEARCH_TYPES.BATCH_SEARCH_BY_HASH:
@@ -99,15 +101,19 @@ async function executeSearch(search_object, search_type, hash_attribute, return_
                 search_results = search_utility.between(env, hash_attribute_name, search_object.search_attribute, search_object.search_value, search_object.end_value, reverse, limit, offset);
                 break;
             case lmdb_terms.SEARCH_TYPES.GREATER_THAN:
+            case lmdb_terms.SEARCH_TYPES._GREATER_THAN:
                 search_results = search_utility.greaterThan(env, hash_attribute_name, search_object.search_attribute, search_object.search_value, reverse, limit, offset);
                 break;
             case lmdb_terms.SEARCH_TYPES.GREATER_THAN_EQUAL:
+            case lmdb_terms.SEARCH_TYPES._GREATER_THAN_EQUAL:
                 search_results = search_utility.greaterThanEqual(env, hash_attribute_name, search_object.search_attribute, search_object.search_value, reverse, limit, offset);
                 break;
             case lmdb_terms.SEARCH_TYPES.LESS_THAN:
+            case lmdb_terms.SEARCH_TYPES._LESS_THAN:
                 search_results = search_utility.lessThan(env, hash_attribute_name, search_object.search_attribute, search_object.search_value, reverse, limit, offset);
                 break;
             case lmdb_terms.SEARCH_TYPES.LESS_THAN_EQUAL:
+            case lmdb_terms.SEARCH_TYPES._LESS_THAN_EQUAL:
                 search_results = search_utility.lessThanEqual(env, hash_attribute_name, search_object.search_attribute, search_object.search_value, reverse, limit, offset);
                 break;
             default:
@@ -254,7 +260,7 @@ function threadSearch(search_object, search_type, hash_attribute, return_map){
         const forked = fork(LMDB_THREAD_SEARCH_MODULE_PATH);
         let thread_search_object = new ThreadSearchObject(search_object, search_type, hash_attribute, return_map);
         forked.send(thread_search_object);
-        forked.on('message', async data=>{
+        forked.on('message', data=>{
             forked.kill("SIGINT");
             if(data.error !== undefined){
                 reject(Object.assign(new Error(), data));

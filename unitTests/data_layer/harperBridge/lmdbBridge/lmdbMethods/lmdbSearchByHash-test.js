@@ -91,7 +91,7 @@ const TABLE_SYSTEM_DATA_TEST_A = {
 
 const sandbox = sinon.createSandbox();
 
-describe('Test lmdbGetDataByHash module', ()=>{
+describe('Test lmdbSearchDataByHash module', ()=>{
     let date_stub;
     let hdb_schema_env;
     let hdb_table_env;
@@ -157,34 +157,34 @@ describe('Test lmdbGetDataByHash module', ()=>{
 
         it('test validation', async()=>{
             await test_utils.assertErrorAsync(lmdb_search_by_hash, [{}],
-                new Error("Schema can't be blank,Table can't be blank,Hash values can't be blank,Get attributes can't be blank"));
+                new Error('"schema" is required. "table" is required. "hash_values" is required. "get_attributes" is required'));
 
             let search_obj = new SearchByHashObject('dev');
             await test_utils.assertErrorAsync(lmdb_search_by_hash, [search_obj],
-                new Error("Table can't be blank,Hash values can't be blank,Get attributes can't be blank"));
+                new Error('"table" is required. "hash_values" is required. "get_attributes" is required'));
 
             search_obj = new SearchByHashObject('dev', 'dog');
             await test_utils.assertErrorAsync(lmdb_search_by_hash, [search_obj],
-                new Error("Hash values can't be blank,Get attributes can't be blank"));
+                new Error('"hash_values" is required. "get_attributes" is required'));
 
             search_obj = new SearchByHashObject('dev', 'dog',[8]);
             await test_utils.assertErrorAsync(lmdb_search_by_hash, [search_obj],
-                new Error("Get attributes can't be blank"));
+                new Error('"get_attributes" is required'));
 
             search_obj = new SearchByHashObject('dev', 'dog', [8], ALL_FETCH_ATTRIBUTES);
             await test_utils.assertErrorAsync(lmdb_search_by_hash, [search_obj], undefined);
 
             search_obj = new SearchByHashObject('dev', 'dog', 8, ALL_FETCH_ATTRIBUTES);
-            await test_utils.assertErrorAsync(lmdb_search_by_hash, [search_obj], new Error('hash_values must be an array'));
+            await test_utils.assertErrorAsync(lmdb_search_by_hash, [search_obj], new Error('"hash_values" must be an array'));
 
             search_obj = new SearchByHashObject('dev', 'dog', [8], 'test');
-            await test_utils.assertErrorAsync(lmdb_search_by_hash, [search_obj], new Error('get_attributes must be an array'));
+            await test_utils.assertErrorAsync(lmdb_search_by_hash, [search_obj], new Error('"get_attributes" must be an array'));
 
             search_obj = new SearchByHashObject('dev', 'dog', [], ALL_FETCH_ATTRIBUTES);
-            await test_utils.assertErrorAsync(lmdb_search_by_hash, [search_obj], new Error('Hash values can\'t be blank'));
+            await test_utils.assertErrorAsync(lmdb_search_by_hash, [search_obj], new Error('"hash_values" must contain at least 1 items'));
 
             search_obj = new SearchByHashObject('dev', 'dog', [8], []);
-            await test_utils.assertErrorAsync(lmdb_search_by_hash, [search_obj], new Error('Get attributes can\'t be blank'));
+            await test_utils.assertErrorAsync(lmdb_search_by_hash, [search_obj], new Error('"get_attributes" does not contain 1 required value(s). "get_attributes" must contain at least 1 items'));
         });
 
         it('test finding 1 row', async()=>{
