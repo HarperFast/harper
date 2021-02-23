@@ -128,7 +128,7 @@ function buildServer(is_https) {
         },
         async function (req, res) {
             //if no error is thrown below, the response 'data' returned from the handler will be returned with 200/OK code
-            return await handlePostRequest(req);
+            return handlePostRequest(req);
         }
     );
 
@@ -260,22 +260,20 @@ async function syncSchemaMetadata(msg) {
                         await schema_describe.describeTable({schema: msg.operation.schema, table: msg.operation.table});
                     break;
                 default:
-                    global_schema.schemaSignal(err => {
-                        if (err) {
-                            harper_logger.error(err);
-                        }
-                    });
+                    global_schema.schemaSignal(handleErrorCallback);
                     break;
             }
         } else{
-            global_schema.schemaSignal(err => {
-                if (err) {
-                    harper_logger.error(err);
-                }
-            });
+            global_schema.schemaSignal(handleErrorCallback);
         }
     } catch(e) {
         harper_logger.error(e);
+    }
+}
+
+function handleErrorCallback(err) {
+    if (err) {
+        harper_logger.error(err);
     }
 }
 

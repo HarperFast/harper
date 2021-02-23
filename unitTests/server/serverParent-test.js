@@ -11,6 +11,10 @@ const rewire = require('rewire');
 const cluster = require('cluster');
 const harper_logger = require('../../utility/logging/harper_logger');
 const user_schema = require('../../security/user');
+const all_children_stopped_event = require('../../events/AllChildrenStoppedEvent');
+const sio_server_stopped_event = require('../../events/SioServerStoppedEvent');
+const cluster_utilities = require('../../server/clustering/clusterUtilities');
+const RestartEventObject = require('../../server/RestartEventObject');
 
 let serverParent_rw;
 let launch_rw;
@@ -26,12 +30,18 @@ let logger_info_stub;
 let logger_debug_stub;
 let logger_fatal_stub;
 let logger_error_stub;
+let console_error_stub;
+let process_exit_stub;
+let restart_stub;
+let RestartEventObject_stub;
+let restart_ready_stub;
 const fake = () => {};
 const test_error = new Error('This is a testy mctest error')
 
 const test_worker_num = 3;
 
 describe('Test serverParent.js', () => {
+
     before(() => {
         serverParent_rw = rewire('../../server/serverParent');
         logger_notify_stub = sandbox.stub(harper_logger, 'notify').callsFake(fake);
@@ -39,13 +49,19 @@ describe('Test serverParent.js', () => {
         logger_debug_stub = sandbox.stub(harper_logger, 'debug').callsFake(fake);
         logger_fatal_stub = sandbox.stub(harper_logger, 'fatal').callsFake(fake);
         logger_error_stub = sandbox.stub(harper_logger, 'error').callsFake(fake);
-        check_jwt_tokens_stub = sandbox.stub().callsFake(fake);
+        check_jwt_tokens_stub = sandbox.stub().callsFake();
         serverParent_rw.__set__('check_jwt_tokens', check_jwt_tokens_stub);
         launch_stub = sandbox.stub().resolves();
         serverParent_rw.__set__('launch', launch_stub);
+        console_error_stub = sandbox.stub(console, 'error').callsFake(fake);
+        process_exit_stub = sandbox.stub(process, 'exit');
+        restart_stub = sandbox.stub(cluster_utilities, 'restartHDB').callsFake(fake);
+        restart_ready_stub = sandbox.stub().returns(true);
+        RestartEventObject_stub = sandbox.stub(RestartEventObject.prototype, 'isReadyForRestart')
+            .callsFake(restart_ready_stub);
     })
 
-    afterEach(async() => {
+    afterEach(() => {
         sandbox.resetHistory();
     })
 
@@ -55,6 +71,14 @@ describe('Test serverParent.js', () => {
     })
 
     describe('exported serverParent method', () => {
+        afterEach(() => {
+            const serverException = process.listeners('uncaughtException').pop()
+            if (serverException.name === '') {
+                process.removeListener('uncaughtException', serverException);
+            }
+            all_children_stopped_event.allChildrenStoppedEmitter.removeAllListeners();
+            sio_server_stopped_event.sioServerStoppedEmitter.removeAllListeners();
+        })
 
         it('should launch parent process', async() => {
             await serverParent_rw(test_worker_num);
@@ -64,7 +88,47 @@ describe('Test serverParent.js', () => {
             expect(launch_stub.args[0][0]).to.eql(test_worker_num);
         })
 
-        it('should catch and log error form launch()', async() => {
+        //Test event handlers set in serverParent()
+        it('should catch uncaughtException to log error and exit process', async function() {
+            const originalException = process.listeners('uncaughtException').pop()
+            process.removeListener('uncaughtException', originalException);
+            process_exit_stub.callsFake(fake);
+            const test_error = "Test exception";
+
+            await serverParent_rw(test_worker_num);
+
+            process.emit('uncaughtException', new Error(test_error));
+
+            expect(logger_fatal_stub.calledOnce).to.be.true;
+            expect(process_exit_stub.calledOnce).to.be.true;
+            expect(process_exit_stub.args[0][0]).to.eql(1);
+
+            process_exit_stub.resetBehavior();
+        })
+
+        it('should catch allChildrenStoppedEmitter event', async function() {
+            const test_msg = "Test msg";
+            await serverParent_rw(test_worker_num);
+
+            all_children_stopped_event.allChildrenStoppedEmitter.emit(all_children_stopped_event.EVENT_NAME, test_msg);
+
+            expect(logger_info_stub.calledOnce).to.be.true;
+            expect(logger_info_stub.args[0][0]).to.eql('Got all children stopped event.');
+            expect(restart_stub.calledOnce).to.be.true;
+        })
+
+        it('should catch sioServerStoppedEmitter event', async function() {
+            const test_msg = "Test msg";
+            await serverParent_rw(test_worker_num);
+
+            sio_server_stopped_event.sioServerStoppedEmitter.emit(sio_server_stopped_event.EVENT_NAME, test_msg);
+
+            expect(logger_info_stub.calledOnce).to.be.true;
+            expect(logger_info_stub.args[0][0]).to.eql('Got sio server stopped event.');
+            expect(restart_stub.calledOnce).to.be.true;
+        })
+
+        it('should catch and log error thrown from launch()', async() => {
             launch_stub.throws(test_error);
             await serverParent_rw(test_worker_num);
 

@@ -75,8 +75,7 @@ async function handlePostRequest(req) {
 
     try {
         operation_function = server_utilities.chooseOperation(req.body);
-        const op_result = await server_utilities.processLocalTransaction(req, operation_function);
-        return op_result;
+        return server_utilities.processLocalTransaction(req, operation_function);
     } catch (error) {
         harper_logger.error(error);
         throw error;

@@ -82,6 +82,14 @@ describe('Test serverChild.js', () => {
             await server.close();
         }
         sandbox.resetHistory();
+
+        //remove listener added by serverChild component
+        const exceptionListeners = process.listeners('uncaughtException');
+        exceptionListeners.forEach(listener => {
+            if (listener.name === 'handleServerUncaughtException') {
+                process.removeListener('uncaughtException', listener);
+            }
+        })
     })
 
     after(() => {
