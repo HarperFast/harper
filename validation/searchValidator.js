@@ -35,18 +35,21 @@ const search_by_conditions_schema = Joi.object({
     operator: Joi.string().allow('and', 'or').default('and'),
     offset: Joi.number().integer().min(0),
     limit: Joi.number().integer().min(1),
-    desc: Joi.bool(),
     get_attributes: Joi.array().min(1).items(schema_joi).required(),
+    sort_attributes: Joi.array().min(1).items(Joi.object({
+        attribute: schema_joi,
+        desc: Joi.boolean()
+    })),
     conditions: Joi.array().min(1).items(Joi.object({
         search_attribute: schema_joi,
         search_type: Joi.string().valid("equals", "contains", "starts_with", "ends_with", "greater_than", "greater_than_equal", "less_than", "less_than_equal", "between").required(),
         search_value: Joi.when('search_type', {
             switch: [
-                { is: 'equals', then: Joi.any().required() },
-                { is: 'between', then: Joi.array().items(Joi.alternatives([Joi.string(), Joi.number()])).length(2).required() }
+                { is: 'equals', then: Joi.any() },
+                { is: 'between', then: Joi.array().items(Joi.alternatives([Joi.string(), Joi.number()])).length(2) }
             ],
             otherwise: Joi.alternatives(Joi.string(), Joi.number())
-        })
+        }).required()
     })).required()
 });
 
@@ -85,8 +88,15 @@ module.exports = function (search_object, type) {
 
             if(type === 'conditions'){
                 for(let x = 0, length = search_object.conditions.length; x < length; x++){
-                    let condition = search_object.conditions;
+                    let condition = search_object.conditions[x];
                     check_attributes.push(condition.search_attribute);
+                }
+
+                if(Array.isArray(search_object.sort_attributes)) {
+                    for (let x = 0, length = search_object.sort_attributes.length; x < length; x++) {
+                        let sort = search_object.sort_attributes[x];
+                        check_attributes.push(sort.attribute);
+                    }
                 }
             }
 
