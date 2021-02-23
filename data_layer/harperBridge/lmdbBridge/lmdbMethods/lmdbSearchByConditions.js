@@ -100,6 +100,7 @@ async function executeConditionSearches(env, search_object, hash_attribute, sort
         let promise = lmdb_search.searchByType(env, search, search_type, hash_attribute);
         promises.push(promise);
     }
-//get all promise results
-    return await Promise.all(promises);
+//get all promise results, this intentionally has no await as node always wraps a return in await
+
+    return Promise.all(promises);
 }
