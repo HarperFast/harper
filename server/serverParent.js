@@ -28,7 +28,6 @@ async function serverParent(num_workers) {
     });
 
     let restart_event_tracker = new RestartEventObject();
-    let restart_in_progress = false;
 
     // Handles restart operation for all processes
     all_children_stopped_event.allChildrenStoppedEmitter.on(all_children_stopped_event.EVENT_NAME,(msg) => {
@@ -36,10 +35,7 @@ async function serverParent(num_workers) {
         try {
             restart_event_tracker.fastify_connections_stopped = true;
             if(restart_event_tracker.isReadyForRestart()) {
-                if(!restart_in_progress) {
-                    restart_in_progress = true;
-                    cluster_utilities.restartHDB();
-                }
+                cluster_utilities.restartHDB();
             }
         } catch(err) {
             harper_logger.error(`Error tracking allchildrenstopped event.`);
@@ -52,10 +48,7 @@ async function serverParent(num_workers) {
         try {
             restart_event_tracker.sio_connections_stopped = true;
             if(restart_event_tracker.isReadyForRestart()) {
-                if(!restart_in_progress) {
-                    restart_in_progress = true;
-                    cluster_utilities.restartHDB();
-                }
+                cluster_utilities.restartHDB();
             }
         } catch(err) {
             harper_logger.error(`Error tracking sio server stopped event.`);

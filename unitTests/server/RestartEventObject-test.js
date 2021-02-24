@@ -30,14 +30,36 @@ describe('Test RestartEventObject Class', () => {
 
         expect(test_result.sio_connections_stopped).to.be.false;
         expect(test_result.fastify_connections_stopped).to.be.false;
+        expect(test_result.restart_in_progress).to.be.false;
     })
 
     it('isReadyForRestart() should return true if fastify connections closed and clustering off',() => {
         const test_obj = new RestartEventObject();
-        test_obj.fastify_connections_stopped = true
+        test_obj.fastify_connections_stopped = true;
 
         const test_result = test_obj.isReadyForRestart();
         expect(test_result).to.be.true;
+    })
+
+    it('isReadyForRestart() should return false if fastify connections closed and clustering off BUT restart has already begun',() => {
+        const test_obj = new RestartEventObject();
+        test_obj.fastify_connections_stopped = true;
+        test_obj.restart_in_progress = true;
+
+        const test_result = test_obj.isReadyForRestart();
+        expect(test_result).to.be.false;
+    })
+
+    it('isReadyForRestart() should return false if fastify and clustering connections closed and clustering off BUT restart has already begun',() => {
+        const test_obj = new RestartEventObject();
+        test_obj.fastify_connections_stopped = true;
+        test_obj.sio_connections_stopped = true;
+        test_obj.restart_in_progress = true;
+        global.cluster_server = { server: "cluster server data" };
+
+        const test_result = test_obj.isReadyForRestart();
+        expect(test_result).to.be.false;
+        delete global.cluster_server;
     })
 
     it('isReadyForRestart() should return false if fastify connections are still active',() => {
@@ -54,6 +76,7 @@ describe('Test RestartEventObject Class', () => {
 
         const test_result = test_obj.isReadyForRestart();
         expect(test_result).to.be.false;
+        delete global.cluster_server;
     })
 
     it('isReadyForRestart() should log values tracked before returning true boolean',() => {
