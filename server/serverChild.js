@@ -58,6 +58,12 @@ const DEFAULT_HEADER_TIMEOUT = HDB_SETTINGS_DEFAULT_VALUES[PROPS_HEADER_TIMEOUT_
 
 let hdbServer = undefined;
 
+/**
+ * Function called to start up server instance on a forked process - this method is called from hdbServer after process is
+ * forked in the serverParent module
+ *
+ * @returns {Promise<void>}
+ */
 async function childServer() {
     try {
         harper_logger.info('In Fastify server' + process.cwd());
@@ -67,6 +73,7 @@ async function childServer() {
         global.clustering_on = false;
         global.isMaster = cluster.isMaster;
 
+        //this message handler allows all forked processes to communicate with one another0
         process.on('message', handleServerMessage);
         process.on('uncaughtException', handleServerUncaughtException);
 
@@ -76,14 +83,18 @@ async function childServer() {
         const props_server_port = env.get(PROPS_SERVER_PORT_KEY);
         const is_https = props_http_secure_on && (props_http_secure_on === true || props_http_secure_on.toUpperCase() === TRUE_COMPARE_VAL);
 
+        //generate a Fastify server instance
         hdbServer = buildServer(is_https);
 
+        //make sure the process waits for the server to be fully instantiated before moving forward
         await hdbServer.ready();
 
         const server_type = is_https ? 'HTTPS' : 'HTTP';
         try {
+            //now that server is fully loaded/ready, start listening on port provided in config settings
             await hdbServer.listen(props_server_port, '::');
             harper_logger.info(`HarperDB ${pjson.version} ${server_type} Server running on port ${props_server_port}`);
+            //signal to parent process that server has started on child process
             signalling.signalChildStarted();
         } catch(err) {
             hdbServer.close();
@@ -97,6 +108,28 @@ async function childServer() {
     }
 }
 
+/**
+ * Makes sure global values are set and that clustering connections are set/ready before server starts.
+ * @returns {Promise<void>}
+ */
+async function setUp() {
+    try {
+        harper_logger.trace('Configuring child process.');
+        await p_schema_to_global();
+        await user_schema.setUsersToGlobal();
+        spawn_cluster_connection(true);
+        await hdb_license.getLicense();
+    } catch(e) {
+        harper_logger.error(e);
+    }
+}
+
+/**
+ * This method configures and returns a Fastify server - for either HTTP or HTTPS  - based on the provided config settings
+ *
+ * @param is_https - <boolean> - type of communication protocol to build server for
+ * @returns {FastifyInstance}
+ */
 function buildServer(is_https) {
     harper_logger.debug(`Child process starting to build ${is_https ? 'HTTPS' : 'HTTP'} server.`);
     let server_opts = getServerOptions(is_https);
@@ -104,7 +137,8 @@ function buildServer(is_https) {
     //Fastify does not set this property in the initial app construction
     app.server.headersTimeout = getHeaderTimeoutConfig();
 
-    //set top-level error handler for server
+    //set top-level error handler for server - all errors caught/thrown within the API will bubble up to this handler so they
+    // can be handled in a coordinated way
     app.setErrorHandler(serverErrorHandler);
 
     const cors_options = getCORSOpts();
@@ -128,7 +162,7 @@ function buildServer(is_https) {
         },
         async function (req, res) {
             //if no error is thrown below, the response 'data' returned from the handler will be returned with 200/OK code
-            return await handlePostRequest(req);
+            return handlePostRequest(req);
         }
     );
 
@@ -137,6 +171,12 @@ function buildServer(is_https) {
     return app;
 }
 
+/**
+ * Builds server options object to pass to Fastify when using server factory.
+ *
+ * @param is_https
+ * @returns {{keepAliveTimeout: *, bodyLimit: number, connectionTimeout: *}}
+ */
 function getServerOptions(is_https) {
     const server_timeout = env.get(PROPS_SERVER_TIMEOUT_KEY) ? env.get(PROPS_SERVER_TIMEOUT_KEY) : DEFAULT_SERVER_TIMEOUT;
     const keep_alive_timeout = env.get(PROPS_SERVER_KEEP_ALIVE_TIMEOUT_KEY) ?
@@ -158,6 +198,11 @@ function getServerOptions(is_https) {
     return server_opts;
 }
 
+/**
+ * Builds CORS options object to pass to cors plugin when/if it needs to be registered with Fastify
+ *
+ * @returns {{credentials: boolean, origin: boolean, allowedHeaders: [string, string]}}
+ */
 function getCORSOpts() {
     let props_cors = env.get(PROPS_CORS_KEY);
     let props_cors_whitelist = env.get(PROPS_CORS_WHITELIST_KEY);
@@ -182,22 +227,21 @@ function getCORSOpts() {
     return cors_options;
 }
 
+/**
+ * Returns header timeout value from config file or, if not entered, the default value
+ *
+ * @returns {*}
+ */
 function getHeaderTimeoutConfig() {
     return env.get(PROPS_HEADER_TIMEOUT_KEY) ? env.get(PROPS_HEADER_TIMEOUT_KEY) : DEFAULT_HEADER_TIMEOUT;
 }
 
-async function setUp() {
-    try {
-        harper_logger.trace('Configuring child process.');
-        await p_schema_to_global();
-        await user_schema.setUsersToGlobal();
-        spawn_cluster_connection(true);
-        await hdb_license.getLicense();
-    } catch(e) {
-        harper_logger.error(e);
-    }
-}
-
+/**
+ * Switch statement for handling messages from other forked processes
+ *
+ * @param msg - msg object passed from another forked process
+ * @returns {Promise<void>}
+ */
 async function handleServerMessage(msg) {
     switch (msg.type) {
         case 'schema':
@@ -232,6 +276,13 @@ async function handleServerMessage(msg) {
     }
 }
 
+/**
+ * Switch statement to handle schema-related messages from other forked processes - i.e. if another process completes an
+ * operation that updates schema and, therefore, requires that we update the global schema value for the process
+ *
+ * @param msg
+ * @returns {Promise<void>}
+ */
 async function syncSchemaMetadata(msg) {
     try{
         if (global.hdb_schema !== undefined && typeof global.hdb_schema === 'object' && msg.operation !== undefined) {
@@ -260,25 +311,29 @@ async function syncSchemaMetadata(msg) {
                         await schema_describe.describeTable({schema: msg.operation.schema, table: msg.operation.table});
                     break;
                 default:
-                    global_schema.schemaSignal(err => {
-                        if (err) {
-                            harper_logger.error(err);
-                        }
-                    });
+                    global_schema.setSchemaDataToGlobal(handleErrorCallback);
                     break;
             }
         } else{
-            global_schema.schemaSignal(err => {
-                if (err) {
-                    harper_logger.error(err);
-                }
-            });
+            global_schema.setSchemaDataToGlobal(handleErrorCallback);
         }
     } catch(e) {
         harper_logger.error(e);
     }
 }
 
+function handleErrorCallback(err) {
+    if (err) {
+        harper_logger.error(err);
+    }
+}
+
+/**
+ * This method is used for soft/graceful server shutdowns - i.e. when we want to allow existing API requests/operations to
+ * complete/be returned before exiting the process and restarting the server.
+ *
+ * @returns {Promise<void>}
+ */
 async function shutDown() {
     harper_logger.debug(`Calling shutdown`);
     if (hdbServer) {

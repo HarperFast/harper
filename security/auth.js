@@ -31,16 +31,6 @@ passport.deserializeUser(function (user, done) {
     done(null, user);
 });
 
-
-//TODO - from Kyle - I don't believe we need this - will revisit when refactoring serverChild module
-/*router.post('/',
-    passport.authenticate('basic', {session: false}),
-    function (req, res) {
-        // If this function gets called, authentication was successful.
-        // `req.user` contains the authenticated user.
-        res.status(hdb_errors.HTTP_STATUS_CODES.OK).send(req.user.username);
-    });*/
-
 function authorize(req, res, next) {
     let strategy;
     let token;

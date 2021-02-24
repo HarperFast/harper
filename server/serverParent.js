@@ -16,19 +16,25 @@ const util = require('util');
 
 const p_schema_to_global = util.promisify(global_schema.setSchemaDataToGlobal);
 
+/**
+ * Function called to start up HDB server clustering process - this method is called from hdbServer as the "parent" process
+ * that creates/manages the forked child processes and ensures all processes are communicating with one another
+ *
+ * @param num_workers - the number of processes to fork - this represents the number of server instances that will be built
+ * @returns {Promise<void>}
+ */
 async function serverParent(num_workers) {
     check_jwt_tokens();
     global.isMaster = cluster.isMaster;
 
     process.on('uncaughtException', function (err) {
-        let message = `Found an uncaught exception with message: os.EOL ${err.message}.  Stack: ${err.stack} ${os.EOL} Terminating HDB.`;
+        let message = `Found an uncaught exception with message: ${err.message}${os.EOL}Stack: ${err.stack}${os.EOL}Terminating HDB.`;
         console.error(message);
         harper_logger.fatal(message);
         process.exit(1);
     });
 
     let restart_event_tracker = new RestartEventObject();
-    let restart_in_progress = false;
 
     // Handles restart operation for all processes
     all_children_stopped_event.allChildrenStoppedEmitter.on(all_children_stopped_event.EVENT_NAME,(msg) => {
@@ -36,26 +42,20 @@ async function serverParent(num_workers) {
         try {
             restart_event_tracker.fastify_connections_stopped = true;
             if(restart_event_tracker.isReadyForRestart()) {
-                if(!restart_in_progress) {
-                    restart_in_progress = true;
-                    cluster_utilities.restartHDB();
-                }
+                cluster_utilities.restartHDB();
             }
         } catch(err) {
             harper_logger.error(`Error tracking allchildrenstopped event.`);
         }
     });
 
-    // Consume SocketIOServerStopped event.
+    // Consume SocketIOServerStopped events
     sio_server_stopped_event.sioServerStoppedEmitter.on(sio_server_stopped_event.EVENT_NAME, (msg) => {
         harper_logger.info(`Got sio server stopped event.`);
         try {
             restart_event_tracker.sio_connections_stopped = true;
             if(restart_event_tracker.isReadyForRestart()) {
-                if(!restart_in_progress) {
-                    restart_in_progress = true;
-                    cluster_utilities.restartHDB();
-                }
+                cluster_utilities.restartHDB();
             }
         } catch(err) {
             harper_logger.error(`Error tracking sio server stopped event.`);
@@ -63,12 +63,22 @@ async function serverParent(num_workers) {
     });
 
     try {
+        //Launch child server processes
         await launch(num_workers);
     } catch(e) {
         harper_logger.error(e);
     }
 }
 
+/**
+ * Forks the process (to build child processes that will run servers) and sets the forked processes to a global value for
+ * to allow parent process to effectively manage all child processes.
+ *
+ * Also ensures other important global values - e.g. schema, users - are updated/set
+ *
+ * @param num_workers
+ * @returns {Promise<void>}
+ */
 async function launch(num_workers) {
     global.clustering_on = env.get('CLUSTERING');
 
@@ -94,7 +104,7 @@ async function launch(num_workers) {
     for (let i = 0; i < num_workers; i++) {
         try {
             let forked = cluster.fork();
-            // assign handler for messages expected from child processes.
+            // assign handler for messages sent from child processes to the parent process
             forked.on('message', cluster_utilities.clusterMessageHandler);
             forked.on('error',(err) => {
                 harper_logger.fatal('There was an error starting the HDB Child process.');
