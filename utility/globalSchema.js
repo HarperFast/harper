@@ -6,7 +6,6 @@ const {callbackify} = require('util');
 module.exports = {
     setSchemaDataToGlobal: setSchemaDataToGlobal,
     getTableSchema: getTableSchema,
-    schemaSignal: schemaSignal,
     getSystemSchema: getSystemSchema
 };
 
@@ -94,16 +93,6 @@ function setTableDataToGlobal(schema_name, table, callback){
         global.hdb_schema[schema_name][table] = table_info;
         callback();
     });
-}
-
-function schemaSignal(callback){
-    setSchemaDataToGlobal(callback);
-    // setSchemaDataToGlobal((err)=>{
-    //     if(err){
-    //        return logger.error(err);
-    //     }
-    //     callback();
-    // });
 }
 
 function getSystemSchema(){

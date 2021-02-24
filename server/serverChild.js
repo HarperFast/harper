@@ -260,11 +260,11 @@ async function syncSchemaMetadata(msg) {
                         await schema_describe.describeTable({schema: msg.operation.schema, table: msg.operation.table});
                     break;
                 default:
-                    global_schema.schemaSignal(handleErrorCallback);
+                    global_schema.setSchemaDataToGlobal(handleErrorCallback);
                     break;
             }
         } else{
-            global_schema.schemaSignal(handleErrorCallback);
+            global_schema.setSchemaDataToGlobal(handleErrorCallback);
         }
     } catch(e) {
         harper_logger.error(e);

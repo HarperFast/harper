@@ -50,6 +50,7 @@ let logger_error_spy;
 let logger_fatal_spy;
 let logger_trace_spy;
 let setUsersToGlobal_stub;
+let setSchemaGlobal_stub;
 const fake = () => {};
 
 const test_op_resp = "table 'dev.dogz' successfully created.";
@@ -72,6 +73,7 @@ describe('Test serverChild.js', () => {
         signalChildStarted_stub = sandbox.stub(signalling, "signalChildStarted").callsFake(fake);
         setup_stub = sandbox.stub().callsFake(fake);
         setUsersToGlobal_stub = sandbox.stub(user_schema, 'setUsersToGlobal').resolves();
+        setSchemaGlobal_stub = sandbox.stub(global_schema, 'setSchemaDataToGlobal').callsArg(0);
 
         serverChild_rw = rewire('../../server/serverChild');
         serverChild_rw.__set__('setUp', setup_stub);
@@ -568,13 +570,11 @@ describe('Test serverChild.js', () => {
 
     describe('setUp() method', () => {
         let spawn_cluster_conns_stub;
-        let setSchemaGlobal_stub;
         let getLicense_stub;
         let setUp_rw;
 
         before(() => {
             spawn_cluster_conns_stub = sandbox.stub().callsFake(fake);
-            setSchemaGlobal_stub = sandbox.stub(global_schema, 'setSchemaDataToGlobal').callsArg(0);
             getLicense_stub = sandbox.stub(hdb_license, 'getLicense').resolves();
             serverChild_rw = rewire('../../server/serverChild');
             serverChild_rw.__set__('spawn_cluster_connection', spawn_cluster_conns_stub);
@@ -677,7 +677,6 @@ describe('Test serverChild.js', () => {
     describe('syncSchemaMetadata() method',() => {
         let syncSchemaMetadata_rw;
         let describeTable_stub;
-        let schemaSignal_stub;
         let handleErrorCallback_rw;
         let handleErrorCallback_stub;
         const test_schema = 'test_schema';
@@ -704,7 +703,6 @@ describe('Test serverChild.js', () => {
 
         before(() => {
             describeTable_stub = sandbox.stub(schema_describe, 'describeTable').resolves(test_table_data);
-            schemaSignal_stub = sandbox.stub(global_schema, 'schemaSignal').resolves();
             serverChild_rw = rewire('../../server/serverChild');
             syncSchemaMetadata_rw = serverChild_rw.__get__('syncSchemaMetadata');
             handleErrorCallback_rw = serverChild_rw.__get__('handleErrorCallback');
@@ -783,34 +781,34 @@ describe('Test serverChild.js', () => {
             expect(global.hdb_schema[test_schema][test_table]).to.eql(test_table_data);
         })
 
-        it('should call schemaSignal if unrecognized op is passed in message', async() => {
+        it('should call setSchemaDataToGlobal if unrecognized op is passed in message', async() => {
             const test_rando_op = test_msg('rando_op');
             await syncSchemaMetadata_rw(test_rando_op);
 
-            expect(schemaSignal_stub.calledOnce).to.be.true;
+            expect(setSchemaGlobal_stub.calledOnce).to.be.true;
         })
 
-        it('should call schemaSignal if hdb_schema has not been set to global', async() => {
+        it('should call setSchemaDataToGlobal if hdb_schema has not been set to global', async() => {
             global.hdb_schema = undefined;
             await syncSchemaMetadata_rw({});
 
-            expect(schemaSignal_stub.calledOnce).to.be.true;
+            expect(setSchemaGlobal_stub.calledOnce).to.be.true;
         })
 
-        it('should call schemaSignal if msg arg is not an object', async() => {
+        it('should call setSchemaDataToGlobal if msg arg is not an object', async() => {
             await syncSchemaMetadata_rw("Testing 123");
 
-            expect(schemaSignal_stub.calledOnce).to.be.true;
+            expect(setSchemaGlobal_stub.calledOnce).to.be.true;
         })
 
-        it('should call schemaSignal if msg arg does not include an operation value', async() => {
+        it('should call setSchemaDataToGlobal if msg arg does not include an operation value', async() => {
             await syncSchemaMetadata_rw({});
 
-            expect(schemaSignal_stub.calledOnce).to.be.true;
+            expect(setSchemaGlobal_stub.calledOnce).to.be.true;
         })
 
-        it('should log error if thrown from schemaSignal', async() => {
-            schemaSignal_stub.callsArgWithAsync(0, [test_err])
+        it('should log error if thrown from setSchemaDataToGlobal', async() => {
+            setSchemaGlobal_stub.callsArgWithAsync(0, [test_err])
             await syncSchemaMetadata_rw({});
 
             expect(handleErrorCallback_stub.calledOnce).to.be.true;
