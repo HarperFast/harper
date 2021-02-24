@@ -14,6 +14,9 @@ const harper_logger = require('../../utility/logging/harper_logger');
 const signalling = require('../../utility/signalling');
 const hdb_util = require('../../utility/common_utils');
 const user_schema = require('../../security/user');
+const global_schema = require('../../utility/globalSchema');
+const schema_describe = require('../../data_layer/schemaDescribe')
+const hdb_license = require('../../utility/registration/hdb_license');
 
 const KEYS_PATH = path.join(test_utils.getMockFSPath(), 'utility/keys');
 const PRIVATE_KEY_PATH = path.join(KEYS_PATH, 'privateKey.pem');
@@ -45,6 +48,8 @@ let logger_info_stub;
 let logger_debug_stub;
 let logger_error_spy;
 let logger_fatal_spy;
+let logger_trace_spy;
+let setUsersToGlobal_stub;
 const fake = () => {};
 
 const test_op_resp = "table 'dev.dogz' successfully created.";
@@ -59,12 +64,14 @@ describe('Test serverChild.js', () => {
         logger_debug_stub = sandbox.stub(harper_logger, 'debug').callsFake(fake);
         logger_error_spy = sandbox.stub(harper_logger, 'error').callsFake(fake);
         logger_fatal_spy = sandbox.stub(harper_logger, 'fatal').callsFake(fake);
+        logger_trace_spy = sandbox.stub(harper_logger, 'trace').callsFake(fake);
         callOperation_stub = sandbox.stub(OperationFunctionCaller, 'callOperationFunctionAsAwait').resolves(test_op_resp);
         auth_stub = sandbox.stub(serverHandlers, 'authHandler').callsFake((req, resp, done) => done());
         handlePostRequest_spy = sandbox.spy(serverHandlers, 'handlePostRequest');
         chooseOp_stub = sandbox.stub(server_utilities, 'chooseOperation').callsFake(fake);
         signalChildStarted_stub = sandbox.stub(signalling, "signalChildStarted").callsFake(fake);
         setup_stub = sandbox.stub().callsFake(fake);
+        setUsersToGlobal_stub = sandbox.stub(user_schema, 'setUsersToGlobal').resolves();
 
         serverChild_rw = rewire('../../server/serverChild');
         serverChild_rw.__set__('setUp', setup_stub);
@@ -559,18 +566,58 @@ describe('Test serverChild.js', () => {
         })
     })
 
+    describe('setUp() method', () => {
+        let spawn_cluster_conns_stub;
+        let setSchemaGlobal_stub;
+        let getLicense_stub;
+        let setUp_rw;
+
+        before(() => {
+            spawn_cluster_conns_stub = sandbox.stub().callsFake(fake);
+            setSchemaGlobal_stub = sandbox.stub(global_schema, 'setSchemaDataToGlobal').callsArg(0);
+            getLicense_stub = sandbox.stub(hdb_license, 'getLicense').resolves();
+            serverChild_rw = rewire('../../server/serverChild');
+            serverChild_rw.__set__('spawn_cluster_connection', spawn_cluster_conns_stub);
+            setUp_rw = serverChild_rw.__get__('setUp');
+        })
+
+        afterEach(() => {
+            sandbox.resetHistory();
+        })
+
+        it('NOMINAL - should call initial setup methods', async() => {
+            await setUp_rw();
+
+            expect(setSchemaGlobal_stub.calledOnce).to.be.true;
+            expect(setUsersToGlobal_stub.calledOnce).to.be.true;
+            expect(spawn_cluster_conns_stub.calledOnce).to.be.true;
+            expect(getLicense_stub.calledOnce).to.be.true;
+        })
+
+        it('should catch error thrown within method and log', async() => {
+            const test_err = 'test error!'
+
+            getLicense_stub.throws(new Error(test_err));
+            await setUp_rw();
+
+            expect(logger_error_spy.calledOnce).to.be.true;
+            expect(logger_error_spy.args[0][0].message).to.eql(test_err);
+        })
+
+    })
+
     describe('handleServerMessage() method',() => {
         let clean_lmdb_stub;
         let syncSchemaMetadata_stub;
-        let setUsersToGlobal_stub;
+        // let setUsersToGlobal_stub;
         let job_runner_stub;
         let shutDown_stub;
         let handleServerMessage_rw;
         const test_msg = (msg) => ({ type: msg })
 
-        before(() => {
-            setUsersToGlobal_stub = sandbox.stub(user_schema, 'setUsersToGlobal').resolves();
-        })
+        // before(() => {
+        //     setUsersToGlobal_stub = sandbox.stub(user_schema, 'setUsersToGlobal').resolves();
+        // })
 
         beforeEach(() => {
             serverChild_rw = rewire('../../server/serverChild');
@@ -624,6 +671,158 @@ describe('Test serverChild.js', () => {
             expect(process_stub.args[0][0]).to.equal(24);
             serverChild_rw = rewire('../../server/serverChild');
             process_stub.restore();
+        })
+    })
+
+    describe('syncSchemaMetadata() method',() => {
+        let syncSchemaMetadata_rw;
+        let describeTable_stub;
+        let schemaSignal_stub;
+        let handleErrorCallback_rw;
+        let handleErrorCallback_stub;
+        const test_schema = 'test_schema';
+        const test_table = 'test_table';
+        const test_err = 'test error';
+        const test_msg = (op, schema, table) => {
+            const msg = {
+                operation: op
+            }
+            if (schema) {
+                msg.schema = schema
+            }
+            if (table) {
+                msg.table = table
+            }
+            return { operation: msg }
+        };
+        const test_global_schema = {
+            [test_schema]: {
+                [test_table]: 'testy test test'
+            }
+        };
+        const test_table_data = "test table data";
+
+        before(() => {
+            describeTable_stub = sandbox.stub(schema_describe, 'describeTable').resolves(test_table_data);
+            schemaSignal_stub = sandbox.stub(global_schema, 'schemaSignal').resolves();
+            serverChild_rw = rewire('../../server/serverChild');
+            syncSchemaMetadata_rw = serverChild_rw.__get__('syncSchemaMetadata');
+            handleErrorCallback_rw = serverChild_rw.__get__('handleErrorCallback');
+            handleErrorCallback_stub = sandbox.stub().callsFake(fake);
+            serverChild_rw.__set__('handleErrorCallback', handleErrorCallback_stub);
+        })
+
+        beforeEach(() => {
+            global.hdb_schema = Object.assign({}, test_global_schema);
+        })
+
+        afterEach(() => {
+            sandbox.resetHistory();
+        })
+
+        it('drop_schema op msg - should delete schema from global schema', async() => {
+            const test_drop_schema = test_msg('drop_schema', test_schema)
+            await syncSchemaMetadata_rw(test_drop_schema);
+
+            expect(global.hdb_schema[test_schema]).to.be.undefined;
+        })
+
+        it('drop_table op msg - should delete table from global schema', async() => {
+            const test_drop_table = test_msg('drop_table', test_schema, test_table)
+            await syncSchemaMetadata_rw(test_drop_table);
+
+            expect(global.hdb_schema[test_schema]).to.eql({});
+        })
+
+        it('create_schema op msg - should do nothing if schema exists in global schema', async() => {
+            const test_create_schema = test_msg('create_schema', test_schema)
+            await syncSchemaMetadata_rw(test_create_schema);
+
+            expect(global.hdb_schema).to.eql(test_global_schema);
+        })
+
+        it('create_schema op msg - should add schema to global if not present in global schema', async() => {
+            global.hdb_schema = {};
+            const test_create_schema = test_msg('create_schema', test_schema)
+            await syncSchemaMetadata_rw(test_create_schema);
+
+            expect(global.hdb_schema[test_schema]).to.eql({});
+        })
+
+        it('create_table op msg - should call describeTable', async() => {
+            const test_create_table = test_msg('create_table', test_schema, test_table);
+            await syncSchemaMetadata_rw(test_create_table);
+
+            expect(describeTable_stub.calledOnce).to.be.true;
+            expect(global.hdb_schema[test_schema][test_table]).to.eql(test_table_data);
+        })
+
+        it('create_table op msg - should add schema and table to global schema and call describeTable', async() => {
+            global.hdb_schema = {};
+            const test_create_table = test_msg('create_table', test_schema, test_table);
+            await syncSchemaMetadata_rw(test_create_table);
+
+            expect(describeTable_stub.calledOnce).to.be.true;
+            expect(global.hdb_schema[test_schema][test_table]).to.eql(test_table_data);
+        })
+
+        it('create_attribute op msg - should call describeTable', async() => {
+            const test_create_attr = test_msg('create_attribute', test_schema, test_table);
+            await syncSchemaMetadata_rw(test_create_attr);
+
+            expect(describeTable_stub.calledOnce).to.be.true;
+            expect(global.hdb_schema[test_schema][test_table]).to.eql(test_table_data);
+        })
+
+        it('create_attribute op msg - should add schema and table to global schema and call describeTable', async() => {
+            global.hdb_schema = {};
+            const test_create_attr = test_msg('create_attribute', test_schema, test_table);
+            await syncSchemaMetadata_rw(test_create_attr);
+
+            expect(describeTable_stub.calledOnce).to.be.true;
+            expect(global.hdb_schema[test_schema][test_table]).to.eql(test_table_data);
+        })
+
+        it('should call schemaSignal if unrecognized op is passed in message', async() => {
+            const test_rando_op = test_msg('rando_op');
+            await syncSchemaMetadata_rw(test_rando_op);
+
+            expect(schemaSignal_stub.calledOnce).to.be.true;
+        })
+
+        it('should call schemaSignal if hdb_schema has not been set to global', async() => {
+            global.hdb_schema = undefined;
+            await syncSchemaMetadata_rw({});
+
+            expect(schemaSignal_stub.calledOnce).to.be.true;
+        })
+
+        it('should call schemaSignal if msg arg is not an object', async() => {
+            await syncSchemaMetadata_rw("Testing 123");
+
+            expect(schemaSignal_stub.calledOnce).to.be.true;
+        })
+
+        it('should call schemaSignal if msg arg does not include an operation value', async() => {
+            await syncSchemaMetadata_rw({});
+
+            expect(schemaSignal_stub.calledOnce).to.be.true;
+        })
+
+        it('should log error if thrown from schemaSignal', async() => {
+            schemaSignal_stub.callsArgWithAsync(0, [test_err])
+            await syncSchemaMetadata_rw({});
+
+            expect(handleErrorCallback_stub.calledOnce).to.be.true;
+        })
+
+        it('should catch and log error if thrown somewhere in method', async() => {
+            describeTable_stub.throws(test_err);
+
+            const test_create_attr = test_msg('create_attribute', test_schema, test_table);
+            await syncSchemaMetadata_rw(test_create_attr);
+
+            expect(logger_error_spy.calledOnce).to.be.true;
         })
     })
 

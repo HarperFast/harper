@@ -97,12 +97,13 @@ function setTableDataToGlobal(schema_name, table, callback){
 }
 
 function schemaSignal(callback){
-    setSchemaDataToGlobal((err)=>{
-        if(err){
-           return logger.error(err);
-        }
-        callback();
-    });
+    setSchemaDataToGlobal(callback);
+    // setSchemaDataToGlobal((err)=>{
+    //     if(err){
+    //        return logger.error(err);
+    //     }
+    //     callback();
+    // });
 }
 
 function getSystemSchema(){
