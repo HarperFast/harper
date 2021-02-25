@@ -10,6 +10,8 @@ const _ = require('lodash');
 const {getBaseSchemaPath} = require('../lmdbUtility/initializePaths');
 const path = require('path');
 const environment_utility = require('../../../../utility/lmdb/environmentUtility');
+const { handleHDBError, hdb_errors } = require('../../../../utility/errors/hdbError');
+const { HTTP_STATUS_CODES } = hdb_errors
 
 module.exports = lmdbSearchByConditions;
 
@@ -22,7 +24,7 @@ async function lmdbSearchByConditions(search_object) {
     try {
         let validation_error = search_validator(search_object, 'conditions');
         if (validation_error) {
-            throw validation_error;
+            throw handleHDBError(validation_error, validation_error.message, HTTP_STATUS_CODES.BAD_REQUEST);
         }
 
         let schema_path = path.join(getBaseSchemaPath(), search_object.schema.toString());
@@ -62,8 +64,8 @@ async function lmdbSearchByConditions(search_object) {
         }
 
         return records;
-    }catch(e){
-        throw e;
+    } catch(e){
+        throw handleHDBError(e);
     }
 }
 
