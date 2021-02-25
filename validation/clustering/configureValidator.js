@@ -40,16 +40,7 @@ const constraints = {
         },
         doesPathExist
     },
-    HTTP_PORT: {
-        presence: false,
-        numericality: {
-            onlyInteger: true,
-            greaterThan: 1000,
-            lessThanOrEqualTo: 65534,
-            message: 'must specify a valid port integer greater than 1000 and less than 65,354.'
-        }
-    },
-    HTTPS_PORT: {
+    SERVER_PORT: {
         presence: false,
         numericality: {
             onlyInteger: true,
@@ -83,13 +74,6 @@ const constraints = {
         doesPathExist
     },
     HTTPS_ON: {
-        presence: false,
-        inclusion: {
-            within: [true, false, "true", "false"],
-            message: "must be true or false."
-        }
-    },
-    HTTP_ON: {
         presence: false,
         inclusion: {
             within: [true, false, "true", "false"],

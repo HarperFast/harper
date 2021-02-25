@@ -6,7 +6,7 @@
 const assert = require('assert');
 const op_func_caller = require('../../utility/OperationFunctionCaller');
 const sinon = require('sinon');
-const {promisify} = require('util');
+const { promisify } = require('util');
 
 class TestInputObject {
     constructor() {
@@ -26,90 +26,6 @@ async function followup_function(input) {
     input.followup_run = true;
     return input;
 }
-
-describe(`Test callOperationFunctionAsCallback`, function () {
-    it('Nominal with no followup function, expect pass', function (done) {
-        let test_input = new TestInputObject();
-        op_func_caller.callOperationFunctionAsCallback(test_function_as_callback, test_input, null).then((result) => {
-            assert.strictEqual(result.was_run, true);
-            done();
-        });
-    });
-
-    it('Nominal with followup function, expect pass', function () {
-        let test_input = new TestInputObject();
-        op_func_caller.callOperationFunctionAsCallback(test_function_as_callback, test_input, followup_function).then((result) => {
-            assert.strictEqual(result.was_run, true);
-            assert.strictEqual(result.followup_run, true);
-        });
-    });
-
-    it('Error in test function, expect exception & followup not run', function (done) {
-        let test_func_exception = function (input, callback) {
-            throw new Error('This is bad!');
-        };
-        let test_input = new TestInputObject();
-        let res = undefined;
-        op_func_caller.callOperationFunctionAsCallback(test_func_exception, test_input, followup_function).then((result) => {
-            res = result;
-        }).catch((err) => {
-            res = err;
-        }).finally(() => {
-            assert.strictEqual((res instanceof Error), true);
-            assert.strictEqual(test_input.followup_run, false);
-            done();
-        });
-    });
-
-    it('Error in followup function, expect exception & was_run to be true', function (done) {
-        let followup_func_exception = async function (input) {
-            throw new Error('This is bad!');
-        };
-        let test_input = new TestInputObject();
-        let res = undefined;
-        op_func_caller.callOperationFunctionAsCallback(test_function_as_callback, test_input, followup_func_exception).then((result) => {
-            res = result;
-        }).catch((err) => {
-            res = err;
-        }).finally(() => {
-            assert.strictEqual((res instanceof Error), true);
-            assert.strictEqual(test_input.followup_run, false);
-            assert.strictEqual(test_input.was_run, true);
-            done();
-        });
-    });
-
-    it('Pass invalid function, expect exception', function (done) {
-        let test_input = new TestInputObject();
-        let res = undefined;
-        op_func_caller.callOperationFunctionAsCallback(null, test_input, null).then((result) => {
-            res = result;
-        }).catch((err) => {
-            res = err;
-        }).finally(() => {
-            assert.strictEqual((res instanceof Error), true);
-            assert.strictEqual(test_input.followup_run, false);
-            assert.strictEqual(test_input.was_run, false);
-            done();
-        });
-    });
-
-    it('Pass variable instead of function, expect exception', function (done) {
-        let not_a_function = 'blah blah';
-        let test_input = new TestInputObject();
-        let res = undefined;
-        op_func_caller.callOperationFunctionAsCallback(not_a_function, test_input, null).then((result) => {
-            res = result;
-        }).catch((err) => {
-            res = err;
-        }).finally(() => {
-            assert.strictEqual((res instanceof Error), true);
-            assert.strictEqual(test_input.followup_run, false);
-            assert.strictEqual(test_input.was_run, false);
-            done();
-        });
-    });
-});
 
 describe(`Test callOperationFunctionAsAwait`, function () {
     it('Nominal with no followup function, expect pass', async function () {

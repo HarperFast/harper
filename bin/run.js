@@ -77,11 +77,11 @@ async function run() {
         await checkTransactionLogEnvironmentsExist();
 
         console.log('Upgrade complete.  Starting HarperDB.');
-        let is_in_use = await arePortsInUse();
+        let is_in_use = await isPortInUse();
         if(!is_in_use) {
             await startHarper();
         } else {
-            console.log(`Can't start HarperDB.  Ports: ${env.get(terms.HDB_SETTINGS_NAMES.HTTP_PORT_KEY)} or ${env.get(terms.HDB_SETTINGS_NAMES.HTTP_SECURE_PORT_KEY)} in use.`);
+            console.log(`Can't start HarperDB.  Port ${env.get(terms.HDB_SETTINGS_NAMES.SERVER_PORT_KEY)} is in use.`);
         }
     } catch(err) {
         console.log(err);
@@ -170,56 +170,31 @@ async function forceUpdate(update_json) {
     }
 }
 
-async function arePortsInUse() {
-    let httpsecure_port;
-    let http_port;
-    let httpsecure_on;
-    let http_on;
+async function isPortInUse() {
+    let server_port;
+
     // If this fails to find the boot props file, this must be a new install.  This will fall through,
     // pass the process and port check, and then hit the install portion of startHarper().
     try {
-        httpsecure_on = env.get(terms.HDB_SETTINGS_NAMES.HTTP_SECURE_ENABLED_KEY);
-        http_on = env.get(terms.HDB_SETTINGS_NAMES.HTTP_ENABLED_KEY);
-        http_port = env.get(terms.HDB_SETTINGS_NAMES.HTTP_PORT_KEY);
-        httpsecure_port = env.get(terms.HDB_SETTINGS_NAMES.HTTP_SECURE_PORT_KEY);
+        server_port = env.get(terms.HDB_SETTINGS_NAMES.SERVER_PORT_KEY);
     } catch (e) {
         logger.info('hdb_boot_props file not found.');
         return;
     }
 
-    if (http_on === 'FALSE' && httpsecure_on === 'FALSE') {
-        let flag_err = 'http and https flags are both disabled.  Please check your settings file.';
-        logger.error(flag_err);
-        throw new Error(flag_err);
-    }
-
-    if (!http_port && !httpsecure_port) {
-        let port_err = 'http and https ports are both undefined.  Please check your settings file.';
+    if (!server_port) {
+        let port_err = 'server port is undefined.  Please check your settings file.';
         logger.error(port_err);
         await startHarper();
     }
 
-    //let port_taken = undefined;
-    if (http_port && http_on === 'TRUE') {
-        try {
-            let is_port_taken = await isPortTaken(http_port);
-            if(is_port_taken) {
-                return true;
-            }
-        } catch(err) {
-            console.error(`error checking for port ${http_port}`);
+    try {
+        let is_port_taken = await isPortTaken(server_port);
+        if(is_port_taken) {
+            return true;
         }
-    }
-
-    if (httpsecure_port && httpsecure_on === 'TRUE') {
-        try {
-            let is_port_taken = await isPortTaken(httpsecure_port);
-            if(is_port_taken) {
-                return true;
-            }
-        } catch(err) {
-            console.error(`error checking for port ${http_port}`);
-        }
+    } catch(err) {
+        console.error(`error checking for port ${server_port}`);
     }
 }
 
@@ -284,7 +259,7 @@ async function startHarper() {
 async function completeRun() {
     try {
         await checkPermission();
-        let result = await kickOffExpress();
+        let result = await kickOffHDBServer();
         if (result === SUCCESS_CODE) {
             foregroundHandler();
         } else {
@@ -356,7 +331,7 @@ async function checkPermission() {
     return SUCCESS_CODE;
 }
 
-async function kickOffExpress() {
+async function kickOffHDBServer() {
     try {
         let license = hdb_license.licenseSearch();
 

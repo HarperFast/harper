@@ -1,11 +1,9 @@
 PROJECT_DIR = /blah/someuser/blah
 HDB_ROOT= /blah/someuser/blah
-HTTP_PORT = 9925
-HTTPS_PORT = 31283
+SERVER_PORT = 9925
 CERTIFICATE = /blah/someuser/blah/keys/certificate.pem
 PRIVATE_KEY = /blah/someuser/blah/keys/privateKey.pem
 HTTPS_ON = FALSE
-HTTP_ON = TRUE
 CORS_ON=TRUE
 CORS_WHITELIST=
 LOG_LEVEL = trace
