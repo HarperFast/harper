@@ -10,7 +10,7 @@ const JAVASCRIPT_EXTENSION = 'js';
 const CODE_EXTENSION = process.env.HDB_COMPILED === 'true' ? COMPILED_EXTENSION : JAVASCRIPT_EXTENSION;
 
  // Name of the HDB process
-const HDB_PROC_NAME = `hdb_express.${CODE_EXTENSION}`;
+const HDB_PROC_NAME = `hdbServer.${CODE_EXTENSION}`;
 const SC_PROC_NAME = `Server.${CODE_EXTENSION}`;
 
 
@@ -24,7 +24,7 @@ const BASIC_LICENSE_MAX_NON_CU_ROLES = 1;
 const BASIC_LICENSE_MAX_CLUSTER_CONNS = 3;
 const BASIC_LICENSE_CLUSTER_CONNECTION_LIMIT_WS_ERROR_CODE = 4141;
 const HDB_SUPPORT_URL = 'https://harperdbhelp.zendesk.com/hc/en-us';
-const HDB_PRICING_URL = 'https://https://www.harperdb.io/product';
+const HDB_PRICING_URL = 'https://www.harperdb.io/product';
 const SUPPORT_HELP_MSG = `For support, please submit a support request at ${HDB_SUPPORT_URL} or contact ${HDB_SUPPORT_ADDRESS}`;
 const LICENSE_HELP_MSG = `For license support, please contact ${HDB_LICENSE_EMAIL_ADDRESS}`;
 const SEARCH_NOT_FOUND_MESSAGE = "None of the specified records were found.";
@@ -298,15 +298,12 @@ const GEO_CONVERSION_ENUM = {
 const HDB_SETTINGS_NAMES = {
     PROJECT_DIR_KEY: 'PROJECT_DIR',
     HDB_ROOT_KEY: 'HDB_ROOT',
-    HTTP_PORT_KEY: 'HTTP_PORT',
-    HTTP_SECURE_PORT_KEY: 'HTTPS_PORT',
+    SERVER_PORT_KEY: 'SERVER_PORT',
     CERT_KEY: 'CERTIFICATE',
     PRIVATE_KEY_KEY: 'PRIVATE_KEY',
     HTTP_SECURE_ENABLED_KEY: 'HTTPS_ON',
-    HTTP_ENABLED_KEY: 'HTTP_ON',
     CORS_ENABLED_KEY: 'CORS_ON',
     CORS_WHITELIST_KEY: 'CORS_WHITELIST',
-    PROPS_SERVER_TIMEOUT_KEY: 'SERVER_TIMEOUT_MS',
     LOG_LEVEL_KEY: 'LOG_LEVEL',
     LOGGER_KEY: 'LOGGER',
     LOG_PATH_KEY: 'LOG_PATH',
@@ -321,6 +318,7 @@ const HDB_SETTINGS_NAMES = {
     MAX_HDB_PROCESSES: 'MAX_HDB_PROCESSES',
     INSTALL_USER: 'install_user',
     CLUSTERING_USER_KEY: 'CLUSTERING_USER',
+    SERVER_TIMEOUT_KEY: 'SERVER_TIMEOUT_MS',
     SERVER_KEEP_ALIVE_TIMEOUT_KEY: 'SERVER_KEEP_ALIVE_TIMEOUT',
     SERVER_HEADERS_TIMEOUT_KEY: 'SERVER_HEADERS_TIMEOUT',
     DISABLE_TRANSACTION_LOG_KEY: 'DISABLE_TRANSACTION_LOG',
@@ -336,13 +334,13 @@ const HDB_SETTINGS_NAMES_REVERSE_LOOKUP = _.invert(HDB_SETTINGS_NAMES);
 
 // Default values for the Settings, some do not have a default.
 const HDB_SETTINGS_DEFAULT_VALUES = {
-    HTTP_PORT: '9925',
-    HTTPS_PORT: '31283',
+    SERVER_PORT: 9925,
     HTTPS_ON: 'true',
-    HTTP_ON: 'false',
     CORS_ON: 'true',
     CORS_WHITELIST: '',
-    SERVER_TIMEOUT_MS: '120000',
+    SERVER_TIMEOUT_MS: 120000,
+    SERVER_KEEP_ALIVE_TIMEOUT: 5000,
+    SERVER_HEADERS_TIMEOUT: 60000,
     LOG_LEVEL: 'error',
     LOGGER: '1',
     LOG_PATH: './harper_log.log',
