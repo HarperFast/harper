@@ -49,7 +49,7 @@ async function lmdbSearchByConditions(search_object) {
         for(let x = 0, length = results.length; x < length; x++){
             ids.push(results[x][0]);
         }
-        if(!search_object.operator || search_object.operator === 'and'){
+        if(!search_object.operator || search_object.operator.toLowerCase() === 'and'){
             merged_ids = _.intersection(...ids);
         } else{
             merged_ids = _.union(...ids);
