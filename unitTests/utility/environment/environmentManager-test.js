@@ -492,7 +492,7 @@ describe('Test initSync', () => {
         } catch(e) {
             throw e;
         }
-        let prop1 = env_rw.getProperty(terms.HDB_SETTINGS_NAMES.HTTP_PORT_KEY);
+        let prop1 = env_rw.getProperty(terms.HDB_SETTINGS_NAMES.SERVER_PORT_KEY);
         let prop2 = env_rw.getProperty(terms.HDB_SETTINGS_NAMES.LOG_LEVEL_KEY);
         let prop3 = env_rw.getProperty(terms.HDB_SETTINGS_NAMES.LOGGER_KEY);
         assert.equal(prop1, 9925);

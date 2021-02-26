@@ -7,7 +7,7 @@ const { expect } = chai;
 
 describe('Test ps_list', () => {
     let execFunc = async () => {
-        return {stdout:'PID COMM\n 280 /harperdb/server/hdb_express.js\n'};
+        return {stdout:'PID COMM\n 280 /harperdb/server/hdbServer.js\n'};
     };
 
     afterEach(() => {
@@ -27,7 +27,7 @@ describe('Test ps_list', () => {
         expect(result[0]).to.have.property('memory');
     });
 
-    it('should return hdb_express process', async () => {
+    it('should return hdbServer process', async () => {
         find_ps.__set__('exec_file', execFunc);
         let result = await find_ps.findPs('');
         expect(result).to.be.a('array');
@@ -37,7 +37,7 @@ describe('Test ps_list', () => {
         expect(result[0]).to.have.property('cmd');
         expect(result[0]).to.have.property('pid').equal(280);
         expect(result[0]).to.have.property('pid').not.equal(28);
-        expect(result[0]).to.have.property('name').equal('hdb_express.js');
-        expect(result[0]).to.have.property('cmd').equal('/harperdb/server/hdb_express.js');
+        expect(result[0]).to.have.property('name').equal('hdbServer.js');
+        expect(result[0]).to.have.property('cmd').equal('/harperdb/server/hdbServer.js');
     });
 });

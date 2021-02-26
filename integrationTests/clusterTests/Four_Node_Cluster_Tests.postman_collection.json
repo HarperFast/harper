@@ -70,7 +70,8 @@
 							}
 						},
 						"url": {
-							"raw": "{{NODE1_HOST}}:{{SERVER_HDB_PORT}}",
+							"raw": "https://{{NODE1_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "https",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -96,7 +97,7 @@
 								],
 								"body": {
 									"mode": "raw",
-									"raw": "{\n    \"operation\": \"add_node\",\n    \"name\": \"node2\",\n    \"host\": \"192.168.100.100\",\n    \"port\": 9925,\n    \"subscriptions\": [\n        {\n            \"channel\": \"dev:dog\",\n            \"subscribe\": false,\n            \"publish\": true\n        }\n    ]\n}"
+									"raw": "{\n    \"operation\": \"add_node\",\n    \"name\": \"node2\",\n    \"host\": \"192.168.100.100\",\n    \"port\": 31283,\n    \"subscriptions\": [\n        {\n            \"channel\": \"dev:dog\",\n            \"subscribe\": false,\n            \"publish\": true\n        }\n    ]\n}"
 								},
 								"url": {
 									"raw": "{{HDB_ENDPOINT}}",
@@ -202,7 +203,8 @@
 							}
 						},
 						"url": {
-							"raw": "{{NODE1_HOST}}:{{SERVER_HDB_PORT}}",
+							"raw": "https://{{NODE1_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "https",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -228,7 +230,7 @@
 								],
 								"body": {
 									"mode": "raw",
-									"raw": "{\n    \"operation\": \"add_node\",\n    \"name\": \"node2\",\n    \"host\": \"192.168.100.100\",\n    \"port\": 9925,\n    \"subscriptions\": [\n        {\n            \"channel\": \"dev:dog\",\n            \"subscribe\": false,\n            \"publish\": true\n        }\n    ]\n}"
+									"raw": "{\n    \"operation\": \"add_node\",\n    \"name\": \"node2\",\n    \"host\": \"192.168.100.100\",\n    \"port\": 31283,\n    \"subscriptions\": [\n        {\n            \"channel\": \"dev:dog\",\n            \"subscribe\": false,\n            \"publish\": true\n        }\n    ]\n}"
 								},
 								"url": {
 									"raw": "{{HDB_ENDPOINT}}",
@@ -334,7 +336,8 @@
 							}
 						},
 						"url": {
-							"raw": "{{NODE1_HOST}}:{{SERVER_HDB_PORT}}",
+							"raw": "https://{{NODE1_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "https",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -360,7 +363,7 @@
 								],
 								"body": {
 									"mode": "raw",
-									"raw": "{\n    \"operation\": \"add_node\",\n    \"name\": \"node2\",\n    \"host\": \"192.168.100.100\",\n    \"port\": 9925,\n    \"subscriptions\": [\n        {\n            \"channel\": \"dev:dog\",\n            \"subscribe\": false,\n            \"publish\": true\n        }\n    ]\n}"
+									"raw": "{\n    \"operation\": \"add_node\",\n    \"name\": \"node2\",\n    \"host\": \"192.168.100.100\",\n    \"port\": 31283,\n    \"subscriptions\": [\n        {\n            \"channel\": \"dev:dog\",\n            \"subscribe\": false,\n            \"publish\": true\n        }\n    ]\n}"
 								},
 								"url": {
 									"raw": "{{HDB_ENDPOINT}}",
@@ -467,7 +470,8 @@
 							"raw": "{\n\t\"operation\":\"cluster_status\"\n}"
 						},
 						"url": {
-							"raw": "{{NODE1_HOST}}:{{SERVER_HDB_PORT}}",
+							"raw": "https://{{NODE1_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "https",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -601,7 +605,8 @@
 							}
 						},
 						"url": {
-							"raw": "{{NODE2_HOST}}:{{SERVER_HDB_PORT}}",
+							"raw": "https://{{NODE2_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "https",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -630,12 +635,12 @@
 									"raw": "{\n  \"operation\":\"create_schema\",\n  \"schema\": \"dev\"\n}"
 								},
 								"url": {
-									"raw": "http://localhost:9925",
-									"protocol": "http",
+									"raw": "https://localhost:31283",
+									"protocol": "https",
 									"host": [
 										"localhost"
 									],
-									"port": "9925"
+									"port": "31283"
 								}
 							},
 							"status": "OK",
@@ -750,7 +755,8 @@
 							"raw": "{\n\t\"operation\":\"describe_all\"\n}"
 						},
 						"url": {
-							"raw": "{{NODE1_HOST}}:{{SERVER_HDB_PORT}}",
+							"raw": "https://{{NODE1_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "https",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -887,7 +893,8 @@
 							"raw": "{\n\t\"operation\":\"describe_all\"\n}"
 						},
 						"url": {
-							"raw": "{{NODE3_HOST}}:{{SERVER_HDB_PORT}}",
+							"raw": "https://{{NODE3_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "https",
 							"host": [
 								"{{NODE3_HOST}}"
 							],
@@ -1025,7 +1032,8 @@
 							"raw": "{\n\t\"operation\":\"describe_all\"\n}"
 						},
 						"url": {
-							"raw": "{{NODE4_HOST}}:{{SERVER_HDB_PORT}}",
+							"raw": "https://{{NODE4_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "https",
 							"host": [
 								"{{NODE4_HOST}}"
 							],
@@ -1154,7 +1162,8 @@
 							}
 						},
 						"url": {
-							"raw": "{{NODE2_HOST}}:{{SERVER_HDB_PORT}}",
+							"raw": "https://{{NODE2_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "https",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -1183,12 +1192,12 @@
 									"raw": "{\n  \"operation\":\"create_table\",\n  \"schema\":\"dev\",\n  \"table\":\"dog\",\n  \"hash_attribute\": \"id\"\n}"
 								},
 								"url": {
-									"raw": "http://localhost:9925",
-									"protocol": "http",
+									"raw": "https://localhost:31283",
+									"protocol": "https",
 									"host": [
 										"localhost"
 									],
-									"port": "9925"
+									"port": "31283"
 								}
 							},
 							"status": "OK",
@@ -1282,7 +1291,8 @@
 							"raw": "{\n  \"operation\":\"create_table\",\n  \"schema\":\"dev\",\n  \"table\":\"breeds\",\n  \"hash_attribute\": \"id\"\n}"
 						},
 						"url": {
-							"raw": "{{NODE2_HOST}}:{{SERVER_HDB_PORT}}",
+							"raw": "https://{{NODE2_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "https",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -1311,12 +1321,12 @@
 									"raw": "{\n  \"operation\":\"create_table\",\n  \"schema\":\"dev\",\n  \"table\":\"dog\",\n  \"hash_attribute\": \"id\"\n}"
 								},
 								"url": {
-									"raw": "http://localhost:9925",
-									"protocol": "http",
+									"raw": "https://localhost:31283",
+									"protocol": "https",
 									"host": [
 										"localhost"
 									],
-									"port": "9925"
+									"port": "31283"
 								}
 							},
 							"status": "OK",
@@ -1410,7 +1420,8 @@
 							"raw": "{\n  \"operation\":\"create_table\",\n  \"schema\":\"dev\",\n  \"table\":\"owners\",\n  \"hash_attribute\": \"id\"\n}"
 						},
 						"url": {
-							"raw": "{{NODE2_HOST}}:{{SERVER_HDB_PORT}}",
+							"raw": "https://{{NODE2_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "https",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -1439,12 +1450,12 @@
 									"raw": "{\n  \"operation\":\"create_table\",\n  \"schema\":\"dev\",\n  \"table\":\"dog\",\n  \"hash_attribute\": \"id\"\n}"
 								},
 								"url": {
-									"raw": "http://localhost:9925",
-									"protocol": "http",
+									"raw": "https://localhost:31283",
+									"protocol": "https",
 									"host": [
 										"localhost"
 									],
-									"port": "9925"
+									"port": "31283"
 								}
 							},
 							"status": "OK",
@@ -1573,7 +1584,8 @@
 							}
 						},
 						"url": {
-							"raw": "{{NODE1_HOST}}:{{SERVER_HDB_PORT}}",
+							"raw": "https://{{NODE1_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "https",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -1725,7 +1737,8 @@
 							}
 						},
 						"url": {
-							"raw": "{{NODE3_HOST}}:{{SERVER_HDB_PORT}}",
+							"raw": "https://{{NODE3_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "https",
 							"host": [
 								"{{NODE3_HOST}}"
 							],
@@ -1877,7 +1890,8 @@
 							}
 						},
 						"url": {
-							"raw": "{{NODE4_HOST}}:{{SERVER_HDB_PORT}}",
+							"raw": "https://{{NODE4_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "https",
 							"host": [
 								"{{NODE4_HOST}}"
 							],
@@ -2017,7 +2031,8 @@
 							"raw": "{\n  \"operation\":\"drop_table\",\n  \"schema\": \"dev\",\n  \"table\": \"dog\"\n}"
 						},
 						"url": {
-							"raw": "{{NODE1_HOST}}:{{SERVER_HDB_PORT}}",
+							"raw": "https://{{NODE1_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "https",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -2046,12 +2061,12 @@
 									"raw": "{\n  \"operation\":\"create_schema\",\n  \"schema\": \"dev\"\n}"
 								},
 								"url": {
-									"raw": "http://localhost:9925",
-									"protocol": "http",
+									"raw": "https://localhost:31283",
+									"protocol": "https",
 									"host": [
 										"localhost"
 									],
-									"port": "9925"
+									"port": "31283"
 								}
 							},
 							"status": "OK",
@@ -2155,7 +2170,8 @@
 							"raw": "{\n\t\"operation\":\"describe_all\"\n}"
 						},
 						"url": {
-							"raw": "{{NODE2_HOST}}:{{SERVER_HDB_PORT}}",
+							"raw": "https://{{NODE2_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "https",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -2291,7 +2307,8 @@
 							"raw": "{\n\t\"operation\":\"describe_all\"\n}"
 						},
 						"url": {
-							"raw": "{{NODE3_HOST}}:{{SERVER_HDB_PORT}}",
+							"raw": "https://{{NODE3_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "https",
 							"host": [
 								"{{NODE3_HOST}}"
 							],
@@ -2427,7 +2444,8 @@
 							"raw": "{\n\t\"operation\":\"describe_all\"\n}"
 						},
 						"url": {
-							"raw": "{{NODE4_HOST}}:{{SERVER_HDB_PORT}}",
+							"raw": "https://{{NODE4_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "https",
 							"host": [
 								"{{NODE4_HOST}}"
 							],
@@ -2567,7 +2585,8 @@
 							"raw": "{\n  \"operation\":\"drop_schema\",\n  \"schema\": \"dev\"\n}"
 						},
 						"url": {
-							"raw": "{{NODE1_HOST}}:{{SERVER_HDB_PORT}}",
+							"raw": "https://{{NODE1_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "https",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -2596,12 +2615,12 @@
 									"raw": "{\n  \"operation\":\"create_schema\",\n  \"schema\": \"dev\"\n}"
 								},
 								"url": {
-									"raw": "http://localhost:9925",
-									"protocol": "http",
+									"raw": "https://localhost:31283",
+									"protocol": "https",
 									"host": [
 										"localhost"
 									],
-									"port": "9925"
+									"port": "31283"
 								}
 							},
 							"status": "OK",
@@ -2705,7 +2724,8 @@
 							"raw": "{\n\t\"operation\":\"describe_all\"\n}"
 						},
 						"url": {
-							"raw": "{{NODE2_HOST}}:{{SERVER_HDB_PORT}}",
+							"raw": "https://{{NODE2_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "https",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -2841,7 +2861,8 @@
 							"raw": "{\n\t\"operation\":\"describe_all\"\n}"
 						},
 						"url": {
-							"raw": "{{NODE3_HOST}}:{{SERVER_HDB_PORT}}",
+							"raw": "https://{{NODE3_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "https",
 							"host": [
 								"{{NODE3_HOST}}"
 							],
@@ -2977,7 +2998,8 @@
 							"raw": "{\n\t\"operation\":\"describe_all\"\n}"
 						},
 						"url": {
-							"raw": "{{NODE4_HOST}}:{{SERVER_HDB_PORT}}",
+							"raw": "https://{{NODE4_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "https",
 							"host": [
 								"{{NODE4_HOST}}"
 							],
@@ -3114,7 +3136,8 @@
 							"raw": "{\n  \"operation\":\"create_schema\",\n  \"schema\": \"dev\"\n}"
 						},
 						"url": {
-							"raw": "{{NODE1_HOST}}:{{SERVER_HDB_PORT}}",
+							"raw": "https://{{NODE1_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "https",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -3143,12 +3166,12 @@
 									"raw": "{\n  \"operation\":\"create_schema\",\n  \"schema\": \"dev\"\n}"
 								},
 								"url": {
-									"raw": "http://localhost:9925",
-									"protocol": "http",
+									"raw": "https://localhost:31283",
+									"protocol": "https",
 									"host": [
 										"localhost"
 									],
-									"port": "9925"
+									"port": "31283"
 								}
 							},
 							"status": "OK",
@@ -3242,7 +3265,8 @@
 							"raw": "{\n  \"operation\":\"create_table\",\n  \"schema\":\"dev\",\n  \"table\":\"dog\",\n  \"hash_attribute\": \"id\"\n}"
 						},
 						"url": {
-							"raw": "{{NODE1_HOST}}:{{SERVER_HDB_PORT}}",
+							"raw": "https://{{NODE1_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "https",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -3271,12 +3295,12 @@
 									"raw": "{\n  \"operation\":\"create_table\",\n  \"schema\":\"dev\",\n  \"table\":\"dog\",\n  \"hash_attribute\": \"id\"\n}"
 								},
 								"url": {
-									"raw": "http://localhost:9925",
-									"protocol": "http",
+									"raw": "https://localhost:31283",
+									"protocol": "https",
 									"host": [
 										"localhost"
 									],
-									"port": "9925"
+									"port": "31283"
 								}
 							},
 							"status": "OK",
@@ -3370,7 +3394,8 @@
 							"raw": "{\n  \"operation\":\"create_table\",\n  \"schema\":\"dev\",\n  \"table\":\"breeds\",\n  \"hash_attribute\": \"id\"\n}"
 						},
 						"url": {
-							"raw": "{{NODE1_HOST}}:{{SERVER_HDB_PORT}}",
+							"raw": "https://{{NODE1_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "https",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -3399,12 +3424,12 @@
 									"raw": "{\n  \"operation\":\"create_table\",\n  \"schema\":\"dev\",\n  \"table\":\"dog\",\n  \"hash_attribute\": \"id\"\n}"
 								},
 								"url": {
-									"raw": "http://localhost:9925",
-									"protocol": "http",
+									"raw": "https://localhost:31283",
+									"protocol": "https",
 									"host": [
 										"localhost"
 									],
-									"port": "9925"
+									"port": "31283"
 								}
 							},
 							"status": "OK",
@@ -3498,7 +3523,8 @@
 							"raw": "{\n  \"operation\":\"create_table\",\n  \"schema\":\"dev\",\n  \"table\":\"owners\",\n  \"hash_attribute\": \"id\"\n}"
 						},
 						"url": {
-							"raw": "{{NODE1_HOST}}:{{SERVER_HDB_PORT}}",
+							"raw": "https://{{NODE1_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "https",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -3527,12 +3553,12 @@
 									"raw": "{\n  \"operation\":\"create_table\",\n  \"schema\":\"dev\",\n  \"table\":\"dog\",\n  \"hash_attribute\": \"id\"\n}"
 								},
 								"url": {
-									"raw": "http://localhost:9925",
-									"protocol": "http",
+									"raw": "https://localhost:31283",
+									"protocol": "https",
 									"host": [
 										"localhost"
 									],
-									"port": "9925"
+									"port": "31283"
 								}
 							},
 							"status": "OK",
@@ -3631,7 +3657,8 @@
 							}
 						},
 						"url": {
-							"raw": "{{NODE4_HOST}}:{{SERVER_HDB_PORT}}",
+							"raw": "https://{{NODE4_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "https",
 							"host": [
 								"{{NODE4_HOST}}"
 							],
@@ -3660,12 +3687,12 @@
 									"raw": "{\n\"operation\":\"insert\",\n\"schema\":\"dev\",\n\"table\":\"dog\",\n\"records\": [\n  {\n    \"name\":\"Harper\",\n    \"breed\":\"Mutt\",\n    \"id\":\"1\",\n    \"age\":5\n    \n  },\n  {\n    \"name\":\"Penny\",\n    \"breed\":\"Mutt\",\n    \"id\":\"3\",\n    \"age\":5\n    \n  }\n]\n\n}"
 								},
 								"url": {
-									"raw": "http://localhost:9925",
-									"protocol": "http",
+									"raw": "https://localhost:31283",
+									"protocol": "https",
 									"host": [
 										"localhost"
 									],
-									"port": "9925"
+									"port": "31283"
 								}
 							},
 							"status": "OK",
@@ -3775,7 +3802,8 @@
 							"raw": "{\n\t\"operation\":\"describe_all\"\n}"
 						},
 						"url": {
-							"raw": "{{NODE1_HOST}}:{{SERVER_HDB_PORT}}",
+							"raw": "https://{{NODE1_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "https",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -3917,7 +3945,8 @@
 							"raw": "{\n\t\"operation\":\"describe_all\"\n}"
 						},
 						"url": {
-							"raw": "{{NODE2_HOST}}:{{SERVER_HDB_PORT}}",
+							"raw": "https://{{NODE2_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "https",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -4058,7 +4087,8 @@
 							"raw": "{\n\t\"operation\":\"describe_all\"\n}"
 						},
 						"url": {
-							"raw": "{{NODE3_HOST}}:{{SERVER_HDB_PORT}}",
+							"raw": "https://{{NODE3_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "https",
 							"host": [
 								"{{NODE3_HOST}}"
 							],
@@ -4186,7 +4216,8 @@
 							"raw": "{\n    \"operation\": \"upsert\",\n    \"schema\": \"dev\",\n    \"table\": \"dog\",\n    \"records\": [\n        {\n            \"nickname\": \"Hey you...\",\n            \"id\": \"1\"\n        },\n        {\n            \"name\":\"Jimmy\",\n            \"breed\":\"Mix\",\n            \"age\": \"?\",\n            \"gender\": \"female\"\n        }\n    ]\n}"
 						},
 						"url": {
-							"raw": "{{NODE1_HOST}}:{{SERVER_HDB_PORT}}",
+							"raw": "https://{{NODE1_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "https",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -4215,12 +4246,12 @@
 									"raw": "{\n\"operation\":\"insert\",\n\"schema\":\"dev\",\n\"table\":\"dog\",\n\"records\": [\n  {\n    \"name\":\"Harper\",\n    \"breed\":\"Mutt\",\n    \"id\":\"1\",\n    \"age\":5\n    \n  },\n  {\n    \"name\":\"Penny\",\n    \"breed\":\"Mutt\",\n    \"id\":\"3\",\n    \"age\":5\n    \n  }\n]\n\n}"
 								},
 								"url": {
-									"raw": "http://localhost:9925",
-									"protocol": "http",
+									"raw": "https://localhost:31283",
+									"protocol": "https",
 									"host": [
 										"localhost"
 									],
-									"port": "9925"
+									"port": "31283"
 								}
 							},
 							"status": "OK",
@@ -4330,7 +4361,8 @@
 							"raw": "{\n\t\"operation\":\"describe_all\"\n}"
 						},
 						"url": {
-							"raw": "{{NODE1_HOST}}:{{SERVER_HDB_PORT}}",
+							"raw": "https://{{NODE1_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "https",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -4476,7 +4508,8 @@
 							}
 						},
 						"url": {
-							"raw": "{{NODE4_HOST}}:{{SERVER_HDB_PORT}}",
+							"raw": "https://{{NODE4_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "https",
 							"host": [
 								"{{NODE4_HOST}}"
 							],
@@ -4622,7 +4655,8 @@
 							}
 						},
 						"url": {
-							"raw": "{{NODE2_HOST}}:{{SERVER_HDB_PORT}}",
+							"raw": "https://{{NODE2_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "https",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -4767,7 +4801,8 @@
 							}
 						},
 						"url": {
-							"raw": "{{NODE3_HOST}}:{{SERVER_HDB_PORT}}",
+							"raw": "https://{{NODE3_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "https",
 							"host": [
 								"{{NODE3_HOST}}"
 							],
@@ -4899,7 +4934,8 @@
 							"raw": "{\n\"operation\":\"insert\",\n\"schema\":\"dev\",\n\"table\":\"dog\",\n\"records\": [\n  {\n    \"name\":\"Harper\",\n    \"breed\":\"Pog\",\n    \"id\":\"1\",\n    \"age\":5\n    \n  },\n  {\n    \"name\":\"Penny\",\n    \"breed\":\"Pit Bull\",\n    \"id\":\"2\",\n    \"age\":20\n  }\n]\n\n}"
 						},
 						"url": {
-							"raw": "{{NODE2_HOST}}:{{SERVER_HDB_PORT}}",
+							"raw": "https://{{NODE2_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "https",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -4928,12 +4964,12 @@
 									"raw": "{\n\"operation\":\"insert\",\n\"schema\":\"dev\",\n\"table\":\"dog\",\n\"records\": [\n  {\n    \"name\":\"Harper\",\n    \"breed\":\"Mutt\",\n    \"id\":\"1\",\n    \"age\":5\n    \n  },\n  {\n    \"name\":\"Penny\",\n    \"breed\":\"Mutt\",\n    \"id\":\"3\",\n    \"age\":5\n    \n  }\n]\n\n}"
 								},
 								"url": {
-									"raw": "http://localhost:9925",
-									"protocol": "http",
+									"raw": "https://localhost:31283",
+									"protocol": "https",
 									"host": [
 										"localhost"
 									],
-									"port": "9925"
+									"port": "31283"
 								}
 							},
 							"status": "OK",
@@ -5055,7 +5091,8 @@
 							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog\",\n\t\"search_attribute\":\"id\",\n\t\"search_value\":\"*\",\n\t\"get_attributes\":[\"*\"]\n}"
 						},
 						"url": {
-							"raw": "{{NODE1_HOST}}:{{SERVER_HDB_PORT}}",
+							"raw": "https://{{NODE1_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "https",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -5204,7 +5241,8 @@
 							}
 						},
 						"url": {
-							"raw": "{{NODE4_HOST}}:{{SERVER_HDB_PORT}}",
+							"raw": "https://{{NODE4_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "https",
 							"host": [
 								"{{NODE4_HOST}}"
 							],
@@ -5330,7 +5368,8 @@
 							"raw": "{\n\t\"operation\":\"sql\",\n\t\"sql\": \"INSERT INTO dev.dog (name, breed, id, age) VALUES('Sammy', 'Mix', 3, 25), ('Sarah', 'Poddle', 4, 45)\"\n}"
 						},
 						"url": {
-							"raw": "{{NODE3_HOST}}:{{SERVER_HDB_PORT}}",
+							"raw": "https://{{NODE3_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "https",
 							"host": [
 								"{{NODE3_HOST}}"
 							],
@@ -5359,12 +5398,12 @@
 									"raw": "{\n\"operation\":\"insert\",\n\"schema\":\"dev\",\n\"table\":\"dog\",\n\"records\": [\n  {\n    \"name\":\"Harper\",\n    \"breed\":\"Mutt\",\n    \"id\":\"1\",\n    \"age\":5\n    \n  },\n  {\n    \"name\":\"Penny\",\n    \"breed\":\"Mutt\",\n    \"id\":\"3\",\n    \"age\":5\n    \n  }\n]\n\n}"
 								},
 								"url": {
-									"raw": "http://localhost:9925",
-									"protocol": "http",
+									"raw": "https://localhost:31283",
+									"protocol": "https",
 									"host": [
 										"localhost"
 									],
-									"port": "9925"
+									"port": "31283"
 								}
 							},
 							"status": "OK",
@@ -5485,7 +5524,8 @@
 							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog\",\n\t\"search_attribute\":\"id\",\n\t\"search_value\":\"*\",\n\t\"get_attributes\":[\"*\"]\n}"
 						},
 						"url": {
-							"raw": "{{NODE1_HOST}}:{{SERVER_HDB_PORT}}",
+							"raw": "https://{{NODE1_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "https",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -5632,7 +5672,8 @@
 							}
 						},
 						"url": {
-							"raw": "{{NODE4_HOST}}:{{SERVER_HDB_PORT}}",
+							"raw": "https://{{NODE4_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "https",
 							"host": [
 								"{{NODE4_HOST}}"
 							],
@@ -5774,7 +5815,8 @@
 							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog\",\n\t\"search_attribute\":\"id\",\n\t\"search_value\":\"*\",\n\t\"get_attributes\":[\"*\"]\n}"
 						},
 						"url": {
-							"raw": "{{NODE2_HOST}}:{{SERVER_HDB_PORT}}",
+							"raw": "https://{{NODE2_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "https",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -5906,7 +5948,8 @@
 							"raw": "{\n\t\"operation\":\"update\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog\",\n\t\"records\": [\n\t  {\n\t    \"id\": 1,\n\t    \"weight_lbs\": 55\n\t  },\n\t  {\n\t    \"id\": 4,\n\t    \"owner\": \"Kyle\",\n\t    \"weight_lbs\": 35\n\t  }\n\t]\n}"
 						},
 						"url": {
-							"raw": "{{NODE2_HOST}}:{{SERVER_HDB_PORT}}",
+							"raw": "https://{{NODE2_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "https",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -6056,7 +6099,8 @@
 							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog\",\n\t\"search_attribute\":\"id\",\n\t\"search_value\":\"*\",\n\t\"get_attributes\":[\"*\"]\n}"
 						},
 						"url": {
-							"raw": "{{NODE2_HOST}}:{{SERVER_HDB_PORT}}",
+							"raw": "https://{{NODE2_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "https",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -6197,7 +6241,8 @@
 							}
 						},
 						"url": {
-							"raw": "{{NODE1_HOST}}:{{SERVER_HDB_PORT}}",
+							"raw": "https://{{NODE1_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "https",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -6338,7 +6383,8 @@
 							}
 						},
 						"url": {
-							"raw": "{{NODE4_HOST}}:{{SERVER_HDB_PORT}}",
+							"raw": "https://{{NODE4_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "https",
 							"host": [
 								"{{NODE4_HOST}}"
 							],
@@ -6474,7 +6520,8 @@
 							}
 						},
 						"url": {
-							"raw": "{{NODE3_HOST}}:{{SERVER_HDB_PORT}}",
+							"raw": "https://{{NODE3_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "https",
 							"host": [
 								"{{NODE3_HOST}}"
 							],
@@ -6601,7 +6648,8 @@
 							"raw": "{\n\t\"operation\":\"sql\",\n\t\"sql\":\"UPDATE dev.dog SET owner='Sam', weight_lbs=35 WHERE id=2\"\n}"
 						},
 						"url": {
-							"raw": "{{NODE2_HOST}}:{{SERVER_HDB_PORT}}",
+							"raw": "https://{{NODE2_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "https",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -6756,7 +6804,8 @@
 							}
 						},
 						"url": {
-							"raw": "{{NODE1_HOST}}:{{SERVER_HDB_PORT}}",
+							"raw": "https://{{NODE1_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "https",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -6902,7 +6951,8 @@
 							}
 						},
 						"url": {
-							"raw": "{{NODE4_HOST}}:{{SERVER_HDB_PORT}}",
+							"raw": "https://{{NODE4_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "https",
 							"host": [
 								"{{NODE4_HOST}}"
 							],
@@ -7038,7 +7088,8 @@
 							}
 						},
 						"url": {
-							"raw": "{{NODE3_HOST}}:{{SERVER_HDB_PORT}}",
+							"raw": "https://{{NODE3_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "https",
 							"host": [
 								"{{NODE3_HOST}}"
 							],
@@ -7164,7 +7215,8 @@
 							"raw": "{\n\"operation\":\"insert\",\n\"schema\":\"dev\",\n\"table\":\"dog\",\n\"records\": [\n    {\n        \"name\": \"Sammy Jr\",\n        \"age\": 25,\n        \"breed\": \"Mix\",\n        \"id\": 3\n    },\n    {\n        \"name\": \"Sarah Sarah\",\n        \"age\": 45,\n        \"breed\": \"Poddle\",\n        \"id\": 4\n    }\n]\n}"
 						},
 						"url": {
-							"raw": "{{NODE2_HOST}}:{{SERVER_HDB_PORT}}",
+							"raw": "https://{{NODE2_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "https",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -7193,12 +7245,12 @@
 									"raw": "{\n\"operation\":\"insert\",\n\"schema\":\"dev\",\n\"table\":\"dog\",\n\"records\": [\n  {\n    \"name\":\"Harper\",\n    \"breed\":\"Mutt\",\n    \"id\":\"1\",\n    \"age\":5\n    \n  },\n  {\n    \"name\":\"Penny\",\n    \"breed\":\"Mutt\",\n    \"id\":\"3\",\n    \"age\":5\n    \n  }\n]\n\n}"
 								},
 								"url": {
-									"raw": "http://localhost:9925",
-									"protocol": "http",
+									"raw": "https://localhost:31283",
+									"protocol": "https",
 									"host": [
 										"localhost"
 									],
-									"port": "9925"
+									"port": "31283"
 								}
 							},
 							"status": "OK",
@@ -7319,7 +7371,8 @@
 							}
 						},
 						"url": {
-							"raw": "{{NODE2_HOST}}:{{SERVER_HDB_PORT}}",
+							"raw": "https://{{NODE2_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "https",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -7459,7 +7512,8 @@
 							}
 						},
 						"url": {
-							"raw": "{{NODE1_HOST}}:{{SERVER_HDB_PORT}}",
+							"raw": "https://{{NODE1_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "https",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -7599,7 +7653,8 @@
 							}
 						},
 						"url": {
-							"raw": "{{NODE3_HOST}}:{{SERVER_HDB_PORT}}",
+							"raw": "https://{{NODE3_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "https",
 							"host": [
 								"{{NODE3_HOST}}"
 							],
@@ -7739,7 +7794,8 @@
 							}
 						},
 						"url": {
-							"raw": "{{NODE4_HOST}}:{{SERVER_HDB_PORT}}",
+							"raw": "https://{{NODE4_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "https",
 							"host": [
 								"{{NODE4_HOST}}"
 							],
@@ -7868,7 +7924,8 @@
 							"raw": "{\n\t\"operation\":\"upsert\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog\",\n\t\"records\": [\n\t  {\n\t    \"id\": 1,\n\t    \"weight_lbs\": null\n\t  },\n\t  {\n\t    \"id\": 4,\n\t    \"weight_lbs\": 1\n\t  },\n      {\n\t    \"id\": 119911,\n\t    \"owner\": \"Samalama\",\n\t    \"weight_lbs\": 105\n\t  }\n\t]\n}"
 						},
 						"url": {
-							"raw": "{{NODE2_HOST}}:{{SERVER_HDB_PORT}}",
+							"raw": "https://{{NODE2_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "https",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -8024,7 +8081,8 @@
 							}
 						},
 						"url": {
-							"raw": "{{NODE2_HOST}}:{{SERVER_HDB_PORT}}",
+							"raw": "https://{{NODE2_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "https",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -8171,7 +8229,8 @@
 							}
 						},
 						"url": {
-							"raw": "{{NODE1_HOST}}:{{SERVER_HDB_PORT}}",
+							"raw": "https://{{NODE1_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "https",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -8318,7 +8377,8 @@
 							}
 						},
 						"url": {
-							"raw": "{{NODE4_HOST}}:{{SERVER_HDB_PORT}}",
+							"raw": "https://{{NODE4_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "https",
 							"host": [
 								"{{NODE4_HOST}}"
 							],
@@ -8454,7 +8514,8 @@
 							}
 						},
 						"url": {
-							"raw": "{{NODE3_HOST}}:{{SERVER_HDB_PORT}}",
+							"raw": "https://{{NODE3_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "https",
 							"host": [
 								"{{NODE3_HOST}}"
 							],
@@ -8600,7 +8661,8 @@
 							"raw": "{\n\t\"operation\":\"csv_file_load\",\n\t\"action\": \"insert\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog\",\n\t\"transact_to_cluster\":true,\n\t\"file_path\":\"{{CSV_BASE_PATH}}/clusteringCsvs/dog_data.csv\"\n}"
 						},
 						"url": {
-							"raw": "{{NODE1_HOST}}:{{SERVER_HDB_PORT}}",
+							"raw": "https://{{NODE1_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "https",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -8735,7 +8797,8 @@
 							"raw": "{\n\t\"operation\":\"get_job\",\n\t\"id\": \"{{job_id}}\"\n}"
 						},
 						"url": {
-							"raw": "{{NODE1_HOST}}:{{SERVER_HDB_PORT}}",
+							"raw": "https://{{NODE1_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "https",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -8886,7 +8949,8 @@
 							}
 						},
 						"url": {
-							"raw": "{{NODE1_HOST}}:{{SERVER_HDB_PORT}}",
+							"raw": "https://{{NODE1_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "https",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -9034,7 +9098,8 @@
 							}
 						},
 						"url": {
-							"raw": "{{NODE4_HOST}}:{{SERVER_HDB_PORT}}",
+							"raw": "https://{{NODE4_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "https",
 							"host": [
 								"{{NODE4_HOST}}"
 							],
@@ -9169,7 +9234,8 @@
 							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog\",\n\t\"search_attribute\":\"id\",\n\t\"search_value\":\"*\",\n\t\"get_attributes\":[\"*\"]\n}"
 						},
 						"url": {
-							"raw": "{{NODE3_HOST}}:{{SERVER_HDB_PORT}}",
+							"raw": "https://{{NODE3_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "https",
 							"host": [
 								"{{NODE3_HOST}}"
 							],
@@ -9311,7 +9377,8 @@
 							}
 						},
 						"url": {
-							"raw": "{{NODE2_HOST}}:{{SERVER_HDB_PORT}}",
+							"raw": "https://{{NODE2_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "https",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -9451,7 +9518,8 @@
 							"raw": "{\n\t\"operation\":\"csv_file_load\",\n\t\"action\": \"update\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog\",\n\t\"transact_to_cluster\":true,\n\t\"file_path\":\"{{CSV_BASE_PATH}}/clusteringCsvs/dog_blob_data.csv\"\n}"
 						},
 						"url": {
-							"raw": "{{NODE4_HOST}}:{{SERVER_HDB_PORT}}",
+							"raw": "https://{{NODE4_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "https",
 							"host": [
 								"{{NODE4_HOST}}"
 							],
@@ -9589,7 +9657,8 @@
 							}
 						},
 						"url": {
-							"raw": "{{NODE4_HOST}}:{{SERVER_HDB_PORT}}",
+							"raw": "https://{{NODE4_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "https",
 							"host": [
 								"{{NODE4_HOST}}"
 							],
@@ -9734,7 +9803,8 @@
 							}
 						},
 						"url": {
-							"raw": "{{NODE4_HOST}}:{{SERVER_HDB_PORT}}",
+							"raw": "https://{{NODE4_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "https",
 							"host": [
 								"{{NODE4_HOST}}"
 							],
@@ -9879,7 +9949,8 @@
 							}
 						},
 						"url": {
-							"raw": "{{NODE1_HOST}}:{{SERVER_HDB_PORT}}",
+							"raw": "https://{{NODE1_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "https",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -10014,7 +10085,8 @@
 							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog\",\n\t\"search_attribute\":\"id\",\n\t\"search_value\":\"*\",\n\t\"get_attributes\":[\"*\"]\n}"
 						},
 						"url": {
-							"raw": "{{NODE3_HOST}}:{{SERVER_HDB_PORT}}",
+							"raw": "https://{{NODE3_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "https",
 							"host": [
 								"{{NODE3_HOST}}"
 							],
@@ -10155,7 +10227,8 @@
 							}
 						},
 						"url": {
-							"raw": "{{NODE2_HOST}}:{{SERVER_HDB_PORT}}",
+							"raw": "https://{{NODE2_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "https",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -10295,7 +10368,8 @@
 							"raw": "{\n\t\"operation\":\"csv_file_load\",\n\t\"action\": \"update\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog\",\n\t\"transact_to_cluster\":true,\n\t\"file_path\":\"{{CSV_BASE_PATH}}/clusteringCsvs/dog_owner_data.csv\"\n}"
 						},
 						"url": {
-							"raw": "{{NODE4_HOST}}:{{SERVER_HDB_PORT}}",
+							"raw": "https://{{NODE4_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "https",
 							"host": [
 								"{{NODE4_HOST}}"
 							],
@@ -10430,7 +10504,8 @@
 							"raw": "{\n\t\"operation\":\"get_job\",\n\t\"id\": \"{{job_id}}\"\n}"
 						},
 						"url": {
-							"raw": "{{NODE4_HOST}}:{{SERVER_HDB_PORT}}",
+							"raw": "https://{{NODE4_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "https",
 							"host": [
 								"{{NODE4_HOST}}"
 							],
@@ -10582,7 +10657,8 @@
 							}
 						},
 						"url": {
-							"raw": "{{NODE4_HOST}}:{{SERVER_HDB_PORT}}",
+							"raw": "https://{{NODE4_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "https",
 							"host": [
 								"{{NODE4_HOST}}"
 							],
@@ -10734,7 +10810,8 @@
 							}
 						},
 						"url": {
-							"raw": "{{NODE1_HOST}}:{{SERVER_HDB_PORT}}",
+							"raw": "https://{{NODE1_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "https",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -10866,7 +10943,8 @@
 							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog\",\n\t\"search_attribute\":\"id\",\n\t\"search_value\":\"*\",\n\t\"get_attributes\":[\"*\"]\n}"
 						},
 						"url": {
-							"raw": "{{NODE3_HOST}}:{{SERVER_HDB_PORT}}",
+							"raw": "https://{{NODE3_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "https",
 							"host": [
 								"{{NODE3_HOST}}"
 							],
@@ -11005,7 +11083,8 @@
 							}
 						},
 						"url": {
-							"raw": "{{NODE2_HOST}}:{{SERVER_HDB_PORT}}",
+							"raw": "https://{{NODE2_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "https",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -11145,7 +11224,8 @@
 							"raw": "{\n\t\"operation\":\"csv_file_load\",\n\t\"action\": \"upsert\",\n\t\"schema\":\"dev\",\n\t\"table\":\"breeds\",\n\t\"transact_to_cluster\":true,\n\t\"file_path\":\"{{CSV_BASE_PATH}}/breeds.csv\"\n}"
 						},
 						"url": {
-							"raw": "{{NODE3_HOST}}:{{SERVER_HDB_PORT}}",
+							"raw": "https://{{NODE3_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "https",
 							"host": [
 								"{{NODE3_HOST}}"
 							],
@@ -11280,7 +11360,8 @@
 							"raw": "{\n\t\"operation\":\"get_job\",\n\t\"id\": \"{{job_id}}\"\n}"
 						},
 						"url": {
-							"raw": "{{NODE3_HOST}}:{{SERVER_HDB_PORT}}",
+							"raw": "https://{{NODE3_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "https",
 							"host": [
 								"{{NODE3_HOST}}"
 							],
@@ -11417,7 +11498,8 @@
 							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"dev\",\n\t\"table\":\"breeds\",\n\t\"search_attribute\":\"id\",\n\t\"search_value\":\"*\",\n\t\"get_attributes\":[\"*\"]\n}"
 						},
 						"url": {
-							"raw": "{{NODE3_HOST}}:{{SERVER_HDB_PORT}}",
+							"raw": "https://{{NODE3_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "https",
 							"host": [
 								"{{NODE3_HOST}}"
 							],
@@ -11563,7 +11645,8 @@
 							}
 						},
 						"url": {
-							"raw": "{{NODE1_HOST}}:{{SERVER_HDB_PORT}}",
+							"raw": "https://{{NODE1_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "https",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -11709,7 +11792,8 @@
 							}
 						},
 						"url": {
-							"raw": "{{NODE4_HOST}}:{{SERVER_HDB_PORT}}",
+							"raw": "https://{{NODE4_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "https",
 							"host": [
 								"{{NODE4_HOST}}"
 							],
@@ -11837,7 +11921,8 @@
 							}
 						},
 						"url": {
-							"raw": "{{NODE2_HOST}}:{{SERVER_HDB_PORT}}",
+							"raw": "https://{{NODE2_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "https",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -11977,7 +12062,8 @@
 							"raw": "{\n\t\"operation\":\"csv_file_load\",\n\t\"action\": \"upsert\",\n\t\"schema\":\"dev\",\n\t\"table\":\"breeds\",\n\t\"transact_to_cluster\":true,\n\t\"file_path\":\"{{CSV_BASE_PATH}}/breeds.csv\"\n}"
 						},
 						"url": {
-							"raw": "{{NODE2_HOST}}:{{SERVER_HDB_PORT}}",
+							"raw": "https://{{NODE2_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "https",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -12113,7 +12199,8 @@
 							"raw": "{\n\t\"operation\":\"get_job\",\n\t\"id\": \"{{job_id}}\"\n}"
 						},
 						"url": {
-							"raw": "{{NODE2_HOST}}:{{SERVER_HDB_PORT}}",
+							"raw": "https://{{NODE2_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "https",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -12251,7 +12338,8 @@
 							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"dev\",\n\t\"table\":\"breeds\",\n\t\"search_attribute\":\"id\",\n\t\"search_value\":\"*\",\n\t\"get_attributes\":[\"*\"]\n}"
 						},
 						"url": {
-							"raw": "{{NODE2_HOST}}:{{SERVER_HDB_PORT}}",
+							"raw": "https://{{NODE2_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "https",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -12388,7 +12476,8 @@
 							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"dev\",\n\t\"table\":\"breeds\",\n\t\"search_attribute\":\"id\",\n\t\"search_value\":\"*\",\n\t\"get_attributes\":[\"*\"]\n}"
 						},
 						"url": {
-							"raw": "{{NODE1_HOST}}:{{SERVER_HDB_PORT}}",
+							"raw": "https://{{NODE1_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "https",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -12525,7 +12614,8 @@
 							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"dev\",\n\t\"table\":\"breeds\",\n\t\"search_attribute\":\"id\",\n\t\"search_value\":\"*\",\n\t\"get_attributes\":[\"*\"]\n}"
 						},
 						"url": {
-							"raw": "{{NODE4_HOST}}:{{SERVER_HDB_PORT}}",
+							"raw": "https://{{NODE4_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "https",
 							"host": [
 								"{{NODE4_HOST}}"
 							],
@@ -12659,7 +12749,8 @@
 							}
 						},
 						"url": {
-							"raw": "{{NODE3_HOST}}:{{SERVER_HDB_PORT}}",
+							"raw": "https://{{NODE3_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "https",
 							"host": [
 								"{{NODE3_HOST}}"
 							],
@@ -12831,7 +12922,8 @@
 							"raw": "{\n\t\"operation\":\"get_job\",\n\t\"id\": \"{{job_id}}\"\n}"
 						},
 						"url": {
-							"raw": "{{CSV_NODE_HOST}}:{{SERVER_HDB_PORT}}",
+							"raw": "https://{{CSV_NODE_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "https",
 							"host": [
 								"{{CSV_NODE_HOST}}"
 							],
@@ -12913,7 +13005,8 @@
 							"raw": "{\n\t\"operation\":\"delete\",\n\t\"table\":\"dog\",\n\t\"schema\":\"dev\",\n\t\"hash_values\":[1]\n}"
 						},
 						"url": {
-							"raw": "{{NODE1_HOST}}:{{SERVER_HDB_PORT}}",
+							"raw": "https://{{NODE1_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "https",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -13052,7 +13145,8 @@
 							"raw": "{\n\t\"operation\":\"search_by_hash\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog\",\n\t\"hash_values\":[1],\n\t\"get_attributes\":[\"*\"]\n}"
 						},
 						"url": {
-							"raw": "{{NODE4_HOST}}:{{SERVER_HDB_PORT}}",
+							"raw": "https://{{NODE4_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "https",
 							"host": [
 								"{{NODE4_HOST}}"
 							],
@@ -13186,7 +13280,8 @@
 							"raw": "{\n\t\"operation\":\"search_by_hash\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog\",\n\t\"hash_values\":[1],\n\t\"get_attributes\":[\"*\"]\n}"
 						},
 						"url": {
-							"raw": "{{NODE2_HOST}}:{{SERVER_HDB_PORT}}",
+							"raw": "https://{{NODE2_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "https",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -13313,7 +13408,8 @@
 							"raw": "{\n\t\"operation\":\"delete\",\n\t\"table\":\"dog\",\n\t\"schema\":\"dev\",\n\t\"hash_values\":[1,2,3,4]\n}"
 						},
 						"url": {
-							"raw": "{{NODE2_HOST}}:{{SERVER_HDB_PORT}}",
+							"raw": "https://{{NODE2_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "https",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -13452,7 +13548,8 @@
 							"raw": "{\n\t\"operation\":\"search_by_hash\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog\",\n\t\"hash_values\":[1,2,3,4],\n\t\"get_attributes\":[\"*\"]\n}"
 						},
 						"url": {
-							"raw": "{{NODE2_HOST}}:{{SERVER_HDB_PORT}}",
+							"raw": "https://{{NODE2_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "https",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -13586,7 +13683,8 @@
 							"raw": "{\n\t\"operation\":\"search_by_hash\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog\",\n\t\"hash_values\":[3,4],\n\t\"get_attributes\":[\"*\"]\n}"
 						},
 						"url": {
-							"raw": "{{NODE3_HOST}}:{{SERVER_HDB_PORT}}",
+							"raw": "https://{{NODE3_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "https",
 							"host": [
 								"{{NODE3_HOST}}"
 							],
@@ -13725,7 +13823,8 @@
 							"raw": "{\n\t\"operation\":\"search_by_hash\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog\",\n\t\"hash_values\":[3,4],\n\t\"get_attributes\":[\"*\"]\n}"
 						},
 						"url": {
-							"raw": "{{NODE1_HOST}}:{{SERVER_HDB_PORT}}",
+							"raw": "https://{{NODE1_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "https",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -13864,7 +13963,8 @@
 							"raw": "{\n\t\"operation\":\"search_by_hash\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog\",\n\t\"hash_values\":[3,4],\n\t\"get_attributes\":[\"*\"]\n}"
 						},
 						"url": {
-							"raw": "{{NODE4_HOST}}:{{SERVER_HDB_PORT}}",
+							"raw": "https://{{NODE4_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "https",
 							"host": [
 								"{{NODE4_HOST}}"
 							],
@@ -14014,7 +14114,8 @@
 							}
 						},
 						"url": {
-							"raw": "{{NODE1_HOST}}:{{SERVER_HDB_PORT}}",
+							"raw": "https://{{NODE1_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "https",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -14145,7 +14246,8 @@
 							}
 						},
 						"url": {
-							"raw": "{{NODE1_HOST}}:{{SERVER_HDB_PORT}}",
+							"raw": "https://{{NODE1_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "https",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -14276,7 +14378,8 @@
 							}
 						},
 						"url": {
-							"raw": "{{NODE1_HOST}}:{{SERVER_HDB_PORT}}",
+							"raw": "https://{{NODE1_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "https",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -14390,7 +14493,8 @@
 							}
 						},
 						"url": {
-							"raw": "{{NODE1_HOST}}:{{SERVER_HDB_PORT}}",
+							"raw": "https://{{NODE1_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "https",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -14517,7 +14621,8 @@
 							}
 						},
 						"url": {
-							"raw": "{{NODE2_HOST}}:{{SERVER_HDB_PORT}}",
+							"raw": "https://{{NODE2_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "https",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -14644,7 +14749,8 @@
 							}
 						},
 						"url": {
-							"raw": "{{NODE3_HOST}}:{{SERVER_HDB_PORT}}",
+							"raw": "https://{{NODE3_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "https",
 							"host": [
 								"{{NODE3_HOST}}"
 							],
@@ -14771,7 +14877,8 @@
 							}
 						},
 						"url": {
-							"raw": "{{NODE4_HOST}}:{{SERVER_HDB_PORT}}",
+							"raw": "https://{{NODE4_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "https",
 							"host": [
 								"{{NODE4_HOST}}"
 							],

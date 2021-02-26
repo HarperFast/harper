@@ -3949,81 +3949,7 @@
 									"port": "{{port}}"
 								}
 							},
-							"response": [
-								{
-									"name": "Select",
-									"originalRequest": {
-										"method": "POST",
-										"header": [
-											{
-												"key": "Content-Type",
-												"value": "application/json"
-											},
-											{
-												"key": "Authorization",
-												"type": "text",
-												"name": "Authorization",
-												"value": "Basic SERCX0FETUlOOjE0MDA="
-											}
-										],
-										"body": {
-											"mode": "raw",
-											"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"SELECT d.id, d.dog_name, d.owner_name, b.name, b.section FROM dev.dog AS d INNER JOIN dev.breed AS b ON d.breed_id = b.id WHERE d.owner_name IN ('Kyle', 'Zach', 'Stephen') AND b.section = 'Mutt' ORDER BY d.dog_name\"\n}"
-										},
-										"url": {
-											"raw": "http://{{host}}:9925",
-											"protocol": "http",
-											"host": [
-												"{{host}}"
-											],
-											"port": "9925"
-										}
-									},
-									"status": "OK",
-									"code": 200,
-									"_postman_previewlanguage": "json",
-									"header": [
-										{
-											"key": "connection",
-											"value": "keep-alive",
-											"name": "connection",
-											"description": ""
-										},
-										{
-											"key": "content-length",
-											"value": "389",
-											"name": "content-length",
-											"description": ""
-										},
-										{
-											"key": "content-type",
-											"value": "application/json; charset=utf-8",
-											"name": "content-type",
-											"description": ""
-										},
-										{
-											"key": "date",
-											"value": "Fri, 01 Sep 2017 17:55:45 GMT",
-											"name": "date",
-											"description": ""
-										},
-										{
-											"key": "etag",
-											"value": "W/\"185-edwDBNLCreSo/YY1IIyzPmR72ec\"",
-											"name": "etag",
-											"description": ""
-										},
-										{
-											"key": "x-powered-by",
-											"value": "HarperDB",
-											"name": "x-powered-by",
-											"description": ""
-										}
-									],
-									"cookie": [],
-									"body": ""
-								}
-							]
+							"response": []
 						},
 						{
 							"name": "Create CSV data table empty",
@@ -13932,13 +13858,13 @@
 							"listen": "test",
 							"script": {
 								"exec": [
-									"pm.test(\"Status code is 500\", function () {",
-									"    pm.response.to.have.status(500);",
+									"pm.test(\"Status code is 400\", function () {",
+									"    pm.response.to.have.status(400);",
 									"});",
 									"",
 									"pm.test(\"that error message is returned\", function () {",
 									"    var jsonData = pm.response.json();",
-									"    pm.expect(jsonData.error).to.eql(\"sql parameter is missing\")",
+									"    pm.expect(jsonData.error).to.eql(\"The 'sql' parameter is missing from the request body\")",
 									"});",
 									""
 								],
@@ -21633,7 +21559,7 @@
 								],
 								"body": {
 									"mode": "raw",
-									"raw": "{\n    \"operation\": \"add_user\",\n    \"role\": \"{{role_id}}\",\n    \"username\": \"bulk_load_user\",\n    \"password\": \"{{password}}\",\n    \"active\": true\n}"
+									"raw": "{\n    \"operation\": \"add_user\",\n    \"role\": \"bulk_load_role\",\n    \"username\": \"bulk_load_user\",\n    \"password\": \"{{password}}\",\n    \"active\": true\n}"
 								},
 								"url": {
 									"raw": "{{host}}:{{port}}",
@@ -24248,12 +24174,12 @@
 						{
 							"listen": "test",
 							"script": {
-								"type": "text/javascript",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {",
 									"    pm.response.to.have.status(200);",
 									"});"
-								]
+								],
+								"type": "text/javascript"
 							}
 						}
 					],
@@ -24291,7 +24217,7 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\"operation\":\"add_user\",\n\"role\":\"{{role_id}}\",\n\"username\":\"test_user\",\n\"password\":\"{{password}}\", \n\"active\":true\n\n}"
+							"raw": "{\n\t\"operation\": \"add_user\",\n\t\"role\": \"developer_test_5\",\n\t\"username\": \"test_user\",\n\t\"password\": \"{{password}}\",\n\t\"active\": true\n}"
 						},
 						"url": {
 							"raw": "{{host}}:{{port}}",
@@ -28023,7 +27949,7 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\"operation\":\"add_user\",\n\"role\":\"{{cluster_user_role_id}}\",\n\"username\":\"test_cluster_user\",\n\"password\":\"{{password}}\", \n\"active\":true\n}"
+							"raw": "{\n\"operation\":\"add_user\",\n\"role\":\"test_cluster_user_role\",\n\"username\":\"test_cluster_user\",\n\"password\":\"{{password}}\", \n\"active\":true\n}"
 						},
 						"url": {
 							"raw": "{{host}}:{{port}}",
@@ -28159,7 +28085,7 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\"operation\":\"alter_user\",\n\"username\":\"test_cluster_user\",\n\"role\":\"{{role_id}}\"\n}"
+							"raw": "{\n\"operation\":\"alter_user\",\n\"username\":\"test_cluster_user\",\n\"role\":\"test_user_role\"\n}"
 						},
 						"url": {
 							"raw": "{{host}}:{{port}}",
@@ -28383,12 +28309,12 @@
 						{
 							"listen": "test",
 							"script": {
-								"type": "text/javascript",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {",
 									"    pm.response.to.have.status(200);",
 									"});"
-								]
+								],
+								"type": "text/javascript"
 							}
 						}
 					],
@@ -28426,7 +28352,7 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\"operation\":\"add_user\",\n\"role\":\"{{role_id}}\",\n\"username\":\"test_user\",\n\"password\":\"{{password}}\", \n\"active\":true\n\n}"
+							"raw": "{\n\"operation\":\"add_user\",\n\"role\":\"developer_test_5\",\n\"username\":\"test_user\",\n\"password\":\"{{password}}\", \n\"active\":true\n\n}"
 						},
 						"url": {
 							"raw": "{{host}}:{{port}}",
@@ -28519,8 +28445,14 @@
 							"listen": "test",
 							"script": {
 								"exec": [
-									"pm.test(\"Status code is 500\", function () {",
-									"    pm.response.to.have.status(500);",
+									"pm.test(\"Status code is 404\", function () {",
+									"    pm.response.to.have.status(404);",
+									"});",
+									"",
+									"var jsonData = pm.response.json();",
+									"",
+									"pm.test(\"Check error message\", function () {",
+									"    pm.expect(jsonData.error).to.eql(\"Update failed.  Requested 'blahblah' role not found.\");",
 									"});"
 								],
 								"type": "text/javascript"
@@ -28565,7 +28497,7 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\"operation\":\"alter_user\",\n\"role\":\"blahblah\",\n\"username\":\"test_user\"\n\n}"
+							"raw": "{\n\t\"operation\": \"alter_user\",\n\t\"role\": \"blahblah\",\n\t\"username\": \"test_user\"\n}"
 						},
 						"url": {
 							"raw": "{{host}}:{{port}}",
@@ -30052,14 +29984,11 @@
 							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"select shipperid from {{schema}}.{{ship_tb}} WHERE (phone IS NOT NULL AND shipperid = 0) OR companyname IS NOT NULL\"\n}"
 						},
 						"url": {
-							"raw": "{{host}}:9925/",
+							"raw": "{{host}}:{{port}}",
 							"host": [
 								"{{host}}"
 							],
-							"port": "9925",
-							"path": [
-								""
-							]
+							"port": "{{port}}"
 						}
 					},
 					"response": []
@@ -33653,12 +33582,12 @@
 						{
 							"listen": "test",
 							"script": {
-								"type": "text/javascript",
 								"exec": [
 									"pm.test(\"Status code is 200\", function () {",
 									"    pm.response.to.have.status(200);",
 									"});"
-								]
+								],
+								"type": "text/javascript"
 							}
 						}
 					],
@@ -33696,7 +33625,7 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\"operation\":\"add_user\",\n\"role\":\"{{role_id}}\",\n\"username\":\"test_user\",\n\"password\":\"{{password}}\", \n\"active\":true\n\n}"
+							"raw": "{\n\"operation\":\"add_user\",\n\"role\":\"developer_test_5\",\n\"username\":\"test_user\",\n\"password\":\"{{password}}\", \n\"active\":true\n\n}"
 						},
 						"url": {
 							"raw": "{{host}}:{{port}}",
@@ -42157,7 +42086,7 @@
 										],
 										"body": {
 											"mode": "raw",
-											"raw": "{\n   \"operation\":\"add_role\",\n   \"role\":\"test_dev_role\",\n   \"permission\":{\n   \"super_user\": false,\n   \"northnwd\":{\n         \"tables\": {\n            \"region\": {\n               \"read\":true,\n               \"insert\":true,\n               \"update\":false,\n               \"delete\":false,\n               \"attribute_permissions\":[{\n                     \"attribute_name\": \"regiondescription\",\n                     \"read\":true,\n                     \"insert\":true,\n                     \"update\":false\n                  }]\n            },\n            \"territories\": {\n               \"read\":true,\n               \"insert\":false,\n               \"update\":false,\n               \"delete\":false,\n               \"attribute_permissions\":[]\n            },\n            \"categories\": {\n               \"read\":false,\n               \"insert\":false,\n               \"update\":true,\n               \"delete\":true,\n               \"attribute_permissions\":[\n                  {\n                     \"attribute_name\": \"description\",\n                     \"read\":false,\n                     \"insert\":false,\n                     \"update\":false,\n                     \"delete\":true\n                  }\n               ]\n            },\n            \"products\": {\n               \"read\":false,\n               \"insert\":false,\n               \"update\":false,\n               \"delete\":false,\n               \"attribute_permissions\":[\n                  {\n                     \"attribute_name\": \"discontinued\",\n                     \"read\":false,\n                     \"insert\":false,\n                     \"update\":false\n                  }\n               ]\n            }\n         }\n      },\n       \"other\": {\n         \"tables\": {\n            \"owner\": {\n               \"read\": true,\n               \"insert\": false,\n               \"update\": true,\n               \"delete\": false,\n               \"attribute_permissions\": [\n                  {\n                     \"attribute_name\": \"name\",\n                     \"read\":false,\n                     \"insert\":false,\n                     \"update\":true\n                  }\n               ]\n            }\n         }\n      },\n      \"another\": {\n         \"tables\": {\n            \"breed\": {\n               \"read\": true,\n               \"insert\": true,\n               \"update\": true,\n               \"delete\": true,\n               \"attribute_permissions\": [\n                  {\n                     \"attribute_name\": \"name\",\n                     \"read\":false,\n                     \"insert\":false,\n                     \"update\":false\n                  }\n               ]\n            }\n         }\n      }\n   }\n}"
+											"raw": "{\n\t\"operation\": \"add_role\",\n\t\"role\": \"test_dev_role\",\n\t\"permission\": {\n\t\t\"super_user\": false,\n\t\t\"northnwd\": {\n\t\t\t\"tables\": {\n\t\t\t\t\"region\": {\n\t\t\t\t\t\"read\": true,\n\t\t\t\t\t\"insert\": true,\n\t\t\t\t\t\"update\": false,\n\t\t\t\t\t\"delete\": false,\n\t\t\t\t\t\"attribute_permissions\": [\n\t\t\t\t\t\t{\n\t\t\t\t\t\t\t\"attribute_name\": \"regiondescription\",\n\t\t\t\t\t\t\t\"read\": true,\n\t\t\t\t\t\t\t\"insert\": true,\n\t\t\t\t\t\t\t\"update\": false\n\t\t\t\t\t\t}\n\t\t\t\t\t]\n\t\t\t\t},\n\t\t\t\t\"territories\": {\n\t\t\t\t\t\"read\": true,\n\t\t\t\t\t\"insert\": false,\n\t\t\t\t\t\"update\": false,\n\t\t\t\t\t\"delete\": false,\n\t\t\t\t\t\"attribute_permissions\": []\n\t\t\t\t},\n\t\t\t\t\"categories\": {\n\t\t\t\t\t\"read\": false,\n\t\t\t\t\t\"insert\": false,\n\t\t\t\t\t\"update\": true,\n\t\t\t\t\t\"delete\": true,\n\t\t\t\t\t\"attribute_permissions\": [\n\t\t\t\t\t\t{\n\t\t\t\t\t\t\t\"attribute_name\": \"description\",\n\t\t\t\t\t\t\t\"read\": false,\n\t\t\t\t\t\t\t\"insert\": false,\n\t\t\t\t\t\t\t\"update\": false,\n\t\t\t\t\t\t\t\"delete\": true\n\t\t\t\t\t\t}\n\t\t\t\t\t]\n\t\t\t\t},\n\t\t\t\t\"products\": {\n\t\t\t\t\t\"read\": false,\n\t\t\t\t\t\"insert\": false,\n\t\t\t\t\t\"update\": false,\n\t\t\t\t\t\"delete\": false,\n\t\t\t\t\t\"attribute_permissions\": [\n\t\t\t\t\t\t{\n\t\t\t\t\t\t\t\"attribute_name\": \"discontinued\",\n\t\t\t\t\t\t\t\"read\": false,\n\t\t\t\t\t\t\t\"insert\": false,\n\t\t\t\t\t\t\t\"update\": false\n\t\t\t\t\t\t}\n\t\t\t\t\t]\n\t\t\t\t}\n\t\t\t}\n\t\t},\n\t\t\"other\": {\n\t\t\t\"tables\": {\n\t\t\t\t\"owner\": {\n\t\t\t\t\t\"read\": true,\n\t\t\t\t\t\"insert\": false,\n\t\t\t\t\t\"update\": true,\n\t\t\t\t\t\"delete\": false,\n\t\t\t\t\t\"attribute_permissions\": [\n\t\t\t\t\t\t{\n\t\t\t\t\t\t\t\"attribute_name\": \"name\",\n\t\t\t\t\t\t\t\"read\": false,\n\t\t\t\t\t\t\t\"insert\": false,\n\t\t\t\t\t\t\t\"update\": true\n\t\t\t\t\t\t}\n\t\t\t\t\t]\n\t\t\t\t}\n\t\t\t}\n\t\t},\n\t\t\"another\": {\n\t\t\t\"tables\": {\n\t\t\t\t\"breed\": {\n\t\t\t\t\t\"read\": true,\n\t\t\t\t\t\"insert\": true,\n\t\t\t\t\t\"update\": true,\n\t\t\t\t\t\"delete\": true,\n\t\t\t\t\t\"attribute_permissions\": [\n\t\t\t\t\t\t{\n\t\t\t\t\t\t\t\"attribute_name\": \"name\",\n\t\t\t\t\t\t\t\"read\": false,\n\t\t\t\t\t\t\t\"insert\": false,\n\t\t\t\t\t\t\t\"update\": false\n\t\t\t\t\t\t}\n\t\t\t\t\t]\n\t\t\t\t}\n\t\t\t}\n\t\t}\n\t}\n}"
 										},
 										"url": {
 											"raw": "{{host}}:{{port}}",
@@ -42175,12 +42104,12 @@
 										{
 											"listen": "test",
 											"script": {
-												"type": "text/javascript",
 												"exec": [
 													"pm.test(\"Status code is 200\", function () {",
 													"    pm.response.to.have.status(200);",
 													"});"
-												]
+												],
+												"type": "text/javascript"
 											}
 										}
 									],
@@ -42218,7 +42147,7 @@
 										],
 										"body": {
 											"mode": "raw",
-											"raw": "{\n\"operation\":\"add_user\",\n\"role\":\"{{role_id}}\",\n\"username\":\"test_user\",\n\"password\":\"{{password}}\", \n\"active\":true\n\n}"
+											"raw": "{\n\t\"operation\": \"add_user\",\n\t\"role\": \"test_dev_role\",\n\t\"username\": \"test_user\",\n\t\"password\": \"{{password}}\",\n\t\"active\": true\n}"
 										},
 										"url": {
 											"raw": "{{host}}:{{port}}",
@@ -43418,7 +43347,7 @@
 										],
 										"body": {
 											"mode": "raw",
-											"raw": "{\n\"operation\":\"add_user\",\n\"role\":\"{{role_id}}\",\n\"username\":\"no_perms_user\",\n\"password\":\"{{password}}\", \n\"active\":true\n\n}"
+											"raw": "{\n\"operation\":\"add_user\",\n\"role\":\"developer_test_no_perms\",\n\"username\":\"no_perms_user\",\n\"password\":\"{{password}}\", \n\"active\":true\n\n}"
 										},
 										"url": {
 											"raw": "{{host}}:{{port}}",
@@ -44094,7 +44023,7 @@
 										],
 										"body": {
 											"mode": "raw",
-											"raw": "{\n\"operation\":\"add_user\",\n\"role\":\"{{role_id}}\",\n\"username\":\"one_perm_user\",\n\"password\":\"{{password}}\", \n\"active\":true\n\n}"
+											"raw": "{\n\t\"operation\": \"add_user\",\n\t\"role\": \"developer_test_one_perm\",\n\t\"username\": \"one_perm_user\",\n\t\"password\": \"{{password}}\",\n\t\"active\": true\n}"
 										},
 										"url": {
 											"raw": "{{host}}:{{port}}",
@@ -46045,12 +45974,12 @@
 								{
 									"listen": "test",
 									"script": {
-										"type": "text/javascript",
 										"exec": [
 											"pm.test(\"Status code is 200\", function () {",
 											"    pm.response.to.have.status(200);",
 											"});"
-										]
+										],
+										"type": "text/javascript"
 									}
 								}
 							],
@@ -46088,7 +46017,7 @@
 								],
 								"body": {
 									"mode": "raw",
-									"raw": "{\n\"operation\":\"add_user\",\n\"role\":\"{{role_id}}\",\n\"username\":\"test_user\",\n\"password\":\"{{password}}\", \n\"active\":true\n\n}"
+									"raw": "{\n\"operation\":\"add_user\",\n\"role\":\"test_dev_role\",\n\"username\":\"test_user\",\n\"password\":\"{{password}}\", \n\"active\":true\n\n}"
 								},
 								"url": {
 									"raw": "{{host}}:{{port}}",
@@ -46180,92 +46109,7 @@
 								},
 								"description": "We first need to create a Schema.  A Schema can be thought of as a container of tables that are independent from tables in other schemas.  An example might be the Schema dev with a table called dog.  The Schema prod may also have a table dog. \n\nNote that if you see the error response \"Cannot complete request: User 'admin' not found\", you need to set the basic auth to the user and password you entered during the install process.  What the heck is basic auth?  Read our article on it here: https://harperdbhelp.zendesk.com/hc/en-us/articles/115010250207-Basic-Auth-with-Postman"
 							},
-							"response": [
-								{
-									"name": "Create Schema",
-									"originalRequest": {
-										"method": "POST",
-										"header": [
-											{
-												"key": "Content-Type",
-												"value": "application/json"
-											},
-											{
-												"key": "Authorization",
-												"type": "text",
-												"name": "Authorization",
-												"value": "Basic ZWxpOnBhc3M="
-											}
-										],
-										"body": {
-											"mode": "raw",
-											"raw": "{\n\"operation\":\"create_schema\",\n\"schema\":\"dev\"\n}"
-										},
-										"url": {
-											"raw": "{{host}}:{{port}}",
-											"host": [
-												"{{host}}"
-											],
-											"port": "{{port}}"
-										}
-									},
-									"status": "OK",
-									"code": 200,
-									"_postman_previewlanguage": "json",
-									"header": [
-										{
-											"key": "access-control-allow-origin",
-											"value": "chrome-extension://fhbjgbiflinjbdggehcddcbncdddomop",
-											"name": "access-control-allow-origin",
-											"description": ""
-										},
-										{
-											"key": "connection",
-											"value": "keep-alive",
-											"name": "connection",
-											"description": ""
-										},
-										{
-											"key": "content-length",
-											"value": "45",
-											"name": "content-length",
-											"description": ""
-										},
-										{
-											"key": "content-type",
-											"value": "application/json; charset=utf-8",
-											"name": "content-type",
-											"description": ""
-										},
-										{
-											"key": "date",
-											"value": "Fri, 13 Oct 2017 21:14:04 GMT",
-											"name": "date",
-											"description": ""
-										},
-										{
-											"key": "etag",
-											"value": "W/\"2d-GPJz4Nu7aSF7N/KODFK3o/TNPUw\"",
-											"name": "etag",
-											"description": ""
-										},
-										{
-											"key": "vary",
-											"value": "Origin",
-											"name": "vary",
-											"description": ""
-										},
-										{
-											"key": "x-powered-by",
-											"value": "HarperDB",
-											"name": "x-powered-by",
-											"description": ""
-										}
-									],
-									"cookie": [],
-									"body": "{\"message\":\"schema dev successfully created\"}"
-								}
-							]
+							"response": []
 						},
 						{
 							"name": "Drop test_user",
@@ -46478,12 +46322,12 @@
 								{
 									"listen": "test",
 									"script": {
-										"type": "text/javascript",
 										"exec": [
 											"pm.test(\"Status code is 200\", function () {",
 											"    pm.response.to.have.status(200);",
 											"});"
-										]
+										],
+										"type": "text/javascript"
 									}
 								}
 							],
@@ -46521,7 +46365,7 @@
 								],
 								"body": {
 									"mode": "raw",
-									"raw": "{\n\"operation\":\"add_user\",\n\"role\":\"{{role_id}}\",\n\"username\":\"test_user\",\n\"password\":\"{{password}}\", \n\"active\":true\n\n}"
+									"raw": "{\n\"operation\":\"add_user\",\n\"role\":\"test_dev_role\",\n\"username\":\"test_user\",\n\"password\":\"{{password}}\", \n\"active\":true\n\n}"
 								},
 								"url": {
 									"raw": "{{host}}:{{port}}",
@@ -47580,7 +47424,7 @@
 								],
 								"body": {
 									"mode": "raw",
-									"raw": "{\n    \"operation\": \"add_user\",\n    \"role\": \"{{role_id}}\",\n    \"username\": \"test_user\",\n    \"password\": \"{{password}}\",\n    \"active\": true\n}"
+									"raw": "{\n    \"operation\": \"add_user\",\n    \"role\": \"test_schema_user\",\n    \"username\": \"test_user\",\n    \"password\": \"{{password}}\",\n    \"active\": true\n}"
 								},
 								"url": {
 									"raw": "{{host}}:{{port}}",
@@ -49047,17 +48891,24 @@
 					"response": []
 				},
 				{
-					"name": "Add User with new Role",
+					"name": "Add User with new Role id - expect fail",
 					"event": [
 						{
 							"listen": "test",
 							"script": {
-								"type": "text/javascript",
 								"exec": [
-									"pm.test(\"Status code is 200\", function () {",
-									"    pm.response.to.have.status(200);",
+									"pm.test(\"Status code is 404\", function () {",
+									"    pm.response.to.have.status(404);",
+									"});",
+									"",
+									"var jsonData = pm.response.json();",
+									"",
+									"pm.test(\"Error message included\", function () {",
+									"\tconst role_id = pm.variables.get('role_id');",
+									"    pm.expect(jsonData.error).to.eql(`${role_id} role not found`);",
 									"});"
-								]
+								],
+								"type": "text/javascript"
 							}
 						}
 					],
@@ -49095,7 +48946,69 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\"operation\":\"add_user\",\n\"role\":\"{{role_id}}\",\n\"username\":\"test_user\",\n\"password\":\"{{password}}\", \n\"active\":true\n\n}"
+							"raw": "{\n\t\"operation\": \"add_user\",\n\t\"role\": \"{{role_id}}\",\n\t\"username\": \"test_user\",\n\t\"password\": \"{{password}}\",\n\t\"active\": true\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						},
+						"description": "Method for adding users.  Users can be assigned roles which provide granular access at a table, operation, and attirbute level.  \n\n<ul>\n<li><b>operation </b> <i>(required) </i> - must always be 'add_user'</li>\n\n<li><b>role </b><i>(required) </i>- id of the role you wish to assign to the user.  See add_role for more detail.  </li>\n\n<li><b>username </b> <i>(required)</i> - username assigned to the user.  It can not be altered after adding the user.  It serves as the hash. </li>\n\n<li><b>password </b> <i>(required) </i>- clear text for password.  HarperDB will encrypt the password upon reciept. </li>\n\n</ul>"
+					},
+					"response": []
+				},
+				{
+					"name": "Add User with new Role",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic c2dvbGRiZXJnOnRlc3QxMjM0IQ=="
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\"operation\":\"add_user\",\n\"role\":\"developer_test_5\",\n\"username\":\"test_user\",\n\"password\":\"{{password}}\", \n\"active\":true\n\n}"
 						},
 						"url": {
 							"raw": "{{host}}:{{port}}",
@@ -49799,80 +49712,7 @@
 						},
 						"description": "Method for describing a table. This will return all attributes under the specified table.\n\n<ul>\n<li>\n<b>operation</b> <i> (required) </i> - must always be 'describe_table'\n</li>\n\n<li>\n<b>table</b> <i>(required)</i> - table you wish to describe\n</li>\n\n<li>\n<b>schema </b><i>(required)</i> -schema where the table you wish to describe lives\n</li>\n\n\n</ul>"
 					},
-					"response": [
-						{
-							"name": "Describe dev.dog Table",
-							"originalRequest": {
-								"method": "POST",
-								"header": [
-									{
-										"key": "Content-Type",
-										"value": "application/json"
-									},
-									{
-										"key": "Authorization",
-										"type": "text",
-										"name": "Authorization",
-										"value": "Basic SERCX0FETUlOOjE0MDA="
-									}
-								],
-								"body": {
-									"mode": "raw",
-									"raw": "{\n\"operation\":\"describe_table\",\n\"table\":\"dog\",\n\"schema\":\"dev\"\n}"
-								},
-								"url": {
-									"raw": "{{host}}:9925",
-									"host": [
-										"{{host}}"
-									],
-									"port": "9925"
-								}
-							},
-							"status": "OK",
-							"code": 200,
-							"_postman_previewlanguage": "json",
-							"header": [
-								{
-									"key": "connection",
-									"value": "keep-alive",
-									"name": "connection",
-									"description": ""
-								},
-								{
-									"key": "content-length",
-									"value": "298",
-									"name": "content-length",
-									"description": ""
-								},
-								{
-									"key": "content-type",
-									"value": "application/json; charset=utf-8",
-									"name": "content-type",
-									"description": ""
-								},
-								{
-									"key": "date",
-									"value": "Fri, 01 Sep 2017 17:06:12 GMT",
-									"name": "date",
-									"description": ""
-								},
-								{
-									"key": "etag",
-									"value": "W/\"12a-UwcyoEDwkVEWSNeo7dsNBD12Vcg\"",
-									"name": "etag",
-									"description": ""
-								},
-								{
-									"key": "x-powered-by",
-									"value": "HarperDB",
-									"name": "x-powered-by",
-									"description": ""
-								}
-							],
-							"cookie": [],
-							"body": "{\"hash_attribute\":\"id\",\"name\":\"dog\",\"id\":\"125ab5c9-f8ac-4197-a348-dd716b0f11ed\",\"schema\":\"dev\",\"attributes\":[{\"attribute\":\"adorable\"},{\"attribute\":\"weight_lbs\"},{\"attribute\":\"owner_name\"},{\"attribute\":\"doc\"},{\"attribute\":\"id\"},{\"attribute\":\"dog_name\"},{\"attribute\":\"age\"},{\"attribute\":\"breed_id\"}]}"
-						}
-					]
+					"response": []
 				},
 				{
 					"name": "Create Attribute",
@@ -49943,92 +49783,7 @@
 						},
 						"description": "We first need to create a Schema.  A Schema can be thought of as a container of tables that are independent from tables in other schemas.  An example might be the Schema dev with a table called dog.  The Schema prod may also have a table dog. \n\nNote that if you see the error response \"Cannot complete request: User 'admin' not found\", you need to set the basic auth to the user and password you entered during the install process.  What the heck is basic auth?  Read our article on it here: https://harperdbhelp.zendesk.com/hc/en-us/articles/115010250207-Basic-Auth-with-Postman"
 					},
-					"response": [
-						{
-							"name": "Create Schema",
-							"originalRequest": {
-								"method": "POST",
-								"header": [
-									{
-										"key": "Content-Type",
-										"value": "application/json"
-									},
-									{
-										"key": "Authorization",
-										"type": "text",
-										"name": "Authorization",
-										"value": "Basic ZWxpOnBhc3M="
-									}
-								],
-								"body": {
-									"mode": "raw",
-									"raw": "{\n\"operation\":\"create_schema\",\n\"schema\":\"dev\"\n}"
-								},
-								"url": {
-									"raw": "{{host}}:{{port}}",
-									"host": [
-										"{{host}}"
-									],
-									"port": "{{port}}"
-								}
-							},
-							"status": "OK",
-							"code": 200,
-							"_postman_previewlanguage": "json",
-							"header": [
-								{
-									"key": "access-control-allow-origin",
-									"value": "chrome-extension://fhbjgbiflinjbdggehcddcbncdddomop",
-									"name": "access-control-allow-origin",
-									"description": ""
-								},
-								{
-									"key": "connection",
-									"value": "keep-alive",
-									"name": "connection",
-									"description": ""
-								},
-								{
-									"key": "content-length",
-									"value": "45",
-									"name": "content-length",
-									"description": ""
-								},
-								{
-									"key": "content-type",
-									"value": "application/json; charset=utf-8",
-									"name": "content-type",
-									"description": ""
-								},
-								{
-									"key": "date",
-									"value": "Fri, 13 Oct 2017 21:14:04 GMT",
-									"name": "date",
-									"description": ""
-								},
-								{
-									"key": "etag",
-									"value": "W/\"2d-GPJz4Nu7aSF7N/KODFK3o/TNPUw\"",
-									"name": "etag",
-									"description": ""
-								},
-								{
-									"key": "vary",
-									"value": "Origin",
-									"name": "vary",
-									"description": ""
-								},
-								{
-									"key": "x-powered-by",
-									"value": "HarperDB",
-									"name": "x-powered-by",
-									"description": ""
-								}
-							],
-							"cookie": [],
-							"body": "{\"message\":\"schema dev successfully created\"}"
-						}
-					]
+					"response": []
 				},
 				{
 					"name": "Confirm created attribute",
@@ -50099,93 +49854,7 @@
 						},
 						"description": "We first need to create a Schema.  A Schema can be thought of as a container of tables that are independent from tables in other schemas.  An example might be the Schema dev with a table called dog.  The Schema prod may also have a table dog. \n\nNote that if you see the error response \"Cannot complete request: User 'admin' not found\", you need to set the basic auth to the user and password you entered during the install process.  What the heck is basic auth?  Read our article on it here: https://harperdbhelp.zendesk.com/hc/en-us/articles/115010250207-Basic-Auth-with-Postman"
 					},
-					"response": [
-						{
-							"name": "Create Schema",
-							"originalRequest": {
-								"method": "POST",
-								"header": [
-									{
-										"key": "Content-Type",
-										"value": "application/json"
-									},
-									{
-										"key": "Authorization",
-										"type": "text",
-										"name": "Authorization",
-										"value": "Basic ZWxpOnBhc3M="
-									}
-								],
-								"body": {
-									"mode": "raw",
-									"raw": "{\n\"operation\":\"create_schema\",\n\"schema\":\"dev\"\n}"
-								},
-								"url": {
-									"raw": "http://{{host}}:9925",
-									"protocol": "http",
-									"host": [
-										"{{host}}"
-									],
-									"port": "9925"
-								}
-							},
-							"status": "OK",
-							"code": 200,
-							"_postman_previewlanguage": "json",
-							"header": [
-								{
-									"key": "access-control-allow-origin",
-									"value": "chrome-extension://fhbjgbiflinjbdggehcddcbncdddomop",
-									"name": "access-control-allow-origin",
-									"description": ""
-								},
-								{
-									"key": "connection",
-									"value": "keep-alive",
-									"name": "connection",
-									"description": ""
-								},
-								{
-									"key": "content-length",
-									"value": "45",
-									"name": "content-length",
-									"description": ""
-								},
-								{
-									"key": "content-type",
-									"value": "application/json; charset=utf-8",
-									"name": "content-type",
-									"description": ""
-								},
-								{
-									"key": "date",
-									"value": "Fri, 13 Oct 2017 21:14:04 GMT",
-									"name": "date",
-									"description": ""
-								},
-								{
-									"key": "etag",
-									"value": "W/\"2d-GPJz4Nu7aSF7N/KODFK3o/TNPUw\"",
-									"name": "etag",
-									"description": ""
-								},
-								{
-									"key": "vary",
-									"value": "Origin",
-									"name": "vary",
-									"description": ""
-								},
-								{
-									"key": "x-powered-by",
-									"value": "HarperDB",
-									"name": "x-powered-by",
-									"description": ""
-								}
-							],
-							"cookie": [],
-							"body": "{\"message\":\"schema dev successfully created\"}"
-						}
-					]
+					"response": []
 				},
 				{
 					"name": "Create existing attribute",
@@ -50266,92 +49935,7 @@
 						},
 						"description": "We first need to create a Schema.  A Schema can be thought of as a container of tables that are independent from tables in other schemas.  An example might be the Schema dev with a table called dog.  The Schema prod may also have a table dog. \n\nNote that if you see the error response \"Cannot complete request: User 'admin' not found\", you need to set the basic auth to the user and password you entered during the install process.  What the heck is basic auth?  Read our article on it here: https://harperdbhelp.zendesk.com/hc/en-us/articles/115010250207-Basic-Auth-with-Postman"
 					},
-					"response": [
-						{
-							"name": "Create Schema",
-							"originalRequest": {
-								"method": "POST",
-								"header": [
-									{
-										"key": "Content-Type",
-										"value": "application/json"
-									},
-									{
-										"key": "Authorization",
-										"type": "text",
-										"name": "Authorization",
-										"value": "Basic ZWxpOnBhc3M="
-									}
-								],
-								"body": {
-									"mode": "raw",
-									"raw": "{\n\"operation\":\"create_schema\",\n\"schema\":\"dev\"\n}"
-								},
-								"url": {
-									"raw": "{{host}}:{{port}}",
-									"host": [
-										"{{host}}"
-									],
-									"port": "{{port}}"
-								}
-							},
-							"status": "OK",
-							"code": 200,
-							"_postman_previewlanguage": "json",
-							"header": [
-								{
-									"key": "access-control-allow-origin",
-									"value": "chrome-extension://fhbjgbiflinjbdggehcddcbncdddomop",
-									"name": "access-control-allow-origin",
-									"description": ""
-								},
-								{
-									"key": "connection",
-									"value": "keep-alive",
-									"name": "connection",
-									"description": ""
-								},
-								{
-									"key": "content-length",
-									"value": "45",
-									"name": "content-length",
-									"description": ""
-								},
-								{
-									"key": "content-type",
-									"value": "application/json; charset=utf-8",
-									"name": "content-type",
-									"description": ""
-								},
-								{
-									"key": "date",
-									"value": "Fri, 13 Oct 2017 21:14:04 GMT",
-									"name": "date",
-									"description": ""
-								},
-								{
-									"key": "etag",
-									"value": "W/\"2d-GPJz4Nu7aSF7N/KODFK3o/TNPUw\"",
-									"name": "etag",
-									"description": ""
-								},
-								{
-									"key": "vary",
-									"value": "Origin",
-									"name": "vary",
-									"description": ""
-								},
-								{
-									"key": "x-powered-by",
-									"value": "HarperDB",
-									"name": "x-powered-by",
-									"description": ""
-								}
-							],
-							"cookie": [],
-							"body": "{\"message\":\"schema dev successfully created\"}"
-						}
-					]
+					"response": []
 				},
 				{
 					"name": "Drop Attribute",
@@ -50422,92 +50006,7 @@
 						},
 						"description": "We first need to create a Schema.  A Schema can be thought of as a container of tables that are independent from tables in other schemas.  An example might be the Schema dev with a table called dog.  The Schema prod may also have a table dog. \n\nNote that if you see the error response \"Cannot complete request: User 'admin' not found\", you need to set the basic auth to the user and password you entered during the install process.  What the heck is basic auth?  Read our article on it here: https://harperdbhelp.zendesk.com/hc/en-us/articles/115010250207-Basic-Auth-with-Postman"
 					},
-					"response": [
-						{
-							"name": "Create Schema",
-							"originalRequest": {
-								"method": "POST",
-								"header": [
-									{
-										"key": "Content-Type",
-										"value": "application/json"
-									},
-									{
-										"key": "Authorization",
-										"type": "text",
-										"name": "Authorization",
-										"value": "Basic ZWxpOnBhc3M="
-									}
-								],
-								"body": {
-									"mode": "raw",
-									"raw": "{\n\"operation\":\"create_schema\",\n\"schema\":\"dev\"\n}"
-								},
-								"url": {
-									"raw": "{{host}}:{{port}}",
-									"host": [
-										"{{host}}"
-									],
-									"port": "{{port}}"
-								}
-							},
-							"status": "OK",
-							"code": 200,
-							"_postman_previewlanguage": "json",
-							"header": [
-								{
-									"key": "access-control-allow-origin",
-									"value": "chrome-extension://fhbjgbiflinjbdggehcddcbncdddomop",
-									"name": "access-control-allow-origin",
-									"description": ""
-								},
-								{
-									"key": "connection",
-									"value": "keep-alive",
-									"name": "connection",
-									"description": ""
-								},
-								{
-									"key": "content-length",
-									"value": "45",
-									"name": "content-length",
-									"description": ""
-								},
-								{
-									"key": "content-type",
-									"value": "application/json; charset=utf-8",
-									"name": "content-type",
-									"description": ""
-								},
-								{
-									"key": "date",
-									"value": "Fri, 13 Oct 2017 21:14:04 GMT",
-									"name": "date",
-									"description": ""
-								},
-								{
-									"key": "etag",
-									"value": "W/\"2d-GPJz4Nu7aSF7N/KODFK3o/TNPUw\"",
-									"name": "etag",
-									"description": ""
-								},
-								{
-									"key": "vary",
-									"value": "Origin",
-									"name": "vary",
-									"description": ""
-								},
-								{
-									"key": "x-powered-by",
-									"value": "HarperDB",
-									"name": "x-powered-by",
-									"description": ""
-								}
-							],
-							"cookie": [],
-							"body": "{\"message\":\"schema dev successfully created\"}"
-						}
-					]
+					"response": []
 				},
 				{
 					"name": "Describe table DropAttributeTest",
@@ -50578,80 +50077,7 @@
 						},
 						"description": "Method for describing a table. This will return all attributes under the specified table.\n\n<ul>\n<li>\n<b>operation</b> <i> (required) </i> - must always be 'describe_table'\n</li>\n\n<li>\n<b>table</b> <i>(required)</i> - table you wish to describe\n</li>\n\n<li>\n<b>schema </b><i>(required)</i> -schema where the table you wish to describe lives\n</li>\n\n\n</ul>"
 					},
-					"response": [
-						{
-							"name": "Describe dev.dog Table",
-							"originalRequest": {
-								"method": "POST",
-								"header": [
-									{
-										"key": "Content-Type",
-										"value": "application/json"
-									},
-									{
-										"key": "Authorization",
-										"type": "text",
-										"name": "Authorization",
-										"value": "Basic SERCX0FETUlOOjE0MDA="
-									}
-								],
-								"body": {
-									"mode": "raw",
-									"raw": "{\n\"operation\":\"describe_table\",\n\"table\":\"dog\",\n\"schema\":\"dev\"\n}"
-								},
-								"url": {
-									"raw": "{{host}}:{{port}}",
-									"host": [
-										"{{host}}"
-									],
-									"port": "{{port}}"
-								}
-							},
-							"status": "OK",
-							"code": 200,
-							"_postman_previewlanguage": "json",
-							"header": [
-								{
-									"key": "connection",
-									"value": "keep-alive",
-									"name": "connection",
-									"description": ""
-								},
-								{
-									"key": "content-length",
-									"value": "298",
-									"name": "content-length",
-									"description": ""
-								},
-								{
-									"key": "content-type",
-									"value": "application/json; charset=utf-8",
-									"name": "content-type",
-									"description": ""
-								},
-								{
-									"key": "date",
-									"value": "Fri, 01 Sep 2017 17:06:12 GMT",
-									"name": "date",
-									"description": ""
-								},
-								{
-									"key": "etag",
-									"value": "W/\"12a-UwcyoEDwkVEWSNeo7dsNBD12Vcg\"",
-									"name": "etag",
-									"description": ""
-								},
-								{
-									"key": "x-powered-by",
-									"value": "HarperDB",
-									"name": "x-powered-by",
-									"description": ""
-								}
-							],
-							"cookie": [],
-							"body": "{\"hash_attribute\":\"id\",\"name\":\"dog\",\"id\":\"125ab5c9-f8ac-4197-a348-dd716b0f11ed\",\"schema\":\"dev\",\"attributes\":[{\"attribute\":\"adorable\"},{\"attribute\":\"weight_lbs\"},{\"attribute\":\"owner_name\"},{\"attribute\":\"doc\"},{\"attribute\":\"id\"},{\"attribute\":\"dog_name\"},{\"attribute\":\"age\"},{\"attribute\":\"breed_id\"}]}"
-						}
-					]
+					"response": []
 				},
 				{
 					"name": "Get Fingerprint",
@@ -50722,92 +50148,7 @@
 						},
 						"description": "We first need to create a Schema.  A Schema can be thought of as a container of tables that are independent from tables in other schemas.  An example might be the Schema dev with a table called dog.  The Schema prod may also have a table dog. \n\nNote that if you see the error response \"Cannot complete request: User 'admin' not found\", you need to set the basic auth to the user and password you entered during the install process.  What the heck is basic auth?  Read our article on it here: https://harperdbhelp.zendesk.com/hc/en-us/articles/115010250207-Basic-Auth-with-Postman"
 					},
-					"response": [
-						{
-							"name": "Create Schema",
-							"originalRequest": {
-								"method": "POST",
-								"header": [
-									{
-										"key": "Content-Type",
-										"value": "application/json"
-									},
-									{
-										"key": "Authorization",
-										"type": "text",
-										"name": "Authorization",
-										"value": "Basic ZWxpOnBhc3M="
-									}
-								],
-								"body": {
-									"mode": "raw",
-									"raw": "{\n\"operation\":\"create_schema\",\n\"schema\":\"dev\"\n}"
-								},
-								"url": {
-									"raw": "{{host}}:{{port}}",
-									"host": [
-										"{{host}}"
-									],
-									"port": "{{port}}"
-								}
-							},
-							"status": "OK",
-							"code": 200,
-							"_postman_previewlanguage": "json",
-							"header": [
-								{
-									"key": "access-control-allow-origin",
-									"value": "chrome-extension://fhbjgbiflinjbdggehcddcbncdddomop",
-									"name": "access-control-allow-origin",
-									"description": ""
-								},
-								{
-									"key": "connection",
-									"value": "keep-alive",
-									"name": "connection",
-									"description": ""
-								},
-								{
-									"key": "content-length",
-									"value": "45",
-									"name": "content-length",
-									"description": ""
-								},
-								{
-									"key": "content-type",
-									"value": "application/json; charset=utf-8",
-									"name": "content-type",
-									"description": ""
-								},
-								{
-									"key": "date",
-									"value": "Fri, 13 Oct 2017 21:14:04 GMT",
-									"name": "date",
-									"description": ""
-								},
-								{
-									"key": "etag",
-									"value": "W/\"2d-GPJz4Nu7aSF7N/KODFK3o/TNPUw\"",
-									"name": "etag",
-									"description": ""
-								},
-								{
-									"key": "vary",
-									"value": "Origin",
-									"name": "vary",
-									"description": ""
-								},
-								{
-									"key": "x-powered-by",
-									"value": "HarperDB",
-									"name": "x-powered-by",
-									"description": ""
-								}
-							],
-							"cookie": [],
-							"body": "{\"message\":\"schema dev successfully created\"}"
-						}
-					]
+					"response": []
 				},
 				{
 					"name": "Set License",
@@ -50878,92 +50219,7 @@
 						},
 						"description": "We first need to create a Schema.  A Schema can be thought of as a container of tables that are independent from tables in other schemas.  An example might be the Schema dev with a table called dog.  The Schema prod may also have a table dog. \n\nNote that if you see the error response \"Cannot complete request: User 'admin' not found\", you need to set the basic auth to the user and password you entered during the install process.  What the heck is basic auth?  Read our article on it here: https://harperdbhelp.zendesk.com/hc/en-us/articles/115010250207-Basic-Auth-with-Postman"
 					},
-					"response": [
-						{
-							"name": "Create Schema",
-							"originalRequest": {
-								"method": "POST",
-								"header": [
-									{
-										"key": "Content-Type",
-										"value": "application/json"
-									},
-									{
-										"key": "Authorization",
-										"type": "text",
-										"name": "Authorization",
-										"value": "Basic ZWxpOnBhc3M="
-									}
-								],
-								"body": {
-									"mode": "raw",
-									"raw": "{\n\"operation\":\"create_schema\",\n\"schema\":\"dev\"\n}"
-								},
-								"url": {
-									"raw": "{{host}}:{{port}}",
-									"host": [
-										"{{host}}"
-									],
-									"port": "{{port}}"
-								}
-							},
-							"status": "OK",
-							"code": 200,
-							"_postman_previewlanguage": "json",
-							"header": [
-								{
-									"key": "access-control-allow-origin",
-									"value": "chrome-extension://fhbjgbiflinjbdggehcddcbncdddomop",
-									"name": "access-control-allow-origin",
-									"description": ""
-								},
-								{
-									"key": "connection",
-									"value": "keep-alive",
-									"name": "connection",
-									"description": ""
-								},
-								{
-									"key": "content-length",
-									"value": "45",
-									"name": "content-length",
-									"description": ""
-								},
-								{
-									"key": "content-type",
-									"value": "application/json; charset=utf-8",
-									"name": "content-type",
-									"description": ""
-								},
-								{
-									"key": "date",
-									"value": "Fri, 13 Oct 2017 21:14:04 GMT",
-									"name": "date",
-									"description": ""
-								},
-								{
-									"key": "etag",
-									"value": "W/\"2d-GPJz4Nu7aSF7N/KODFK3o/TNPUw\"",
-									"name": "etag",
-									"description": ""
-								},
-								{
-									"key": "vary",
-									"value": "Origin",
-									"name": "vary",
-									"description": ""
-								},
-								{
-									"key": "x-powered-by",
-									"value": "HarperDB",
-									"name": "x-powered-by",
-									"description": ""
-								}
-							],
-							"cookie": [],
-							"body": "{\"message\":\"schema dev successfully created\"}"
-						}
-					]
+					"response": []
 				},
 				{
 					"name": "Get Registration Info",
@@ -51106,92 +50362,7 @@
 						},
 						"description": "We first need to create a Schema.  A Schema can be thought of as a container of tables that are independent from tables in other schemas.  An example might be the Schema dev with a table called dog.  The Schema prod may also have a table dog. \n\nNote that if you see the error response \"Cannot complete request: User 'admin' not found\", you need to set the basic auth to the user and password you entered during the install process.  What the heck is basic auth?  Read our article on it here: https://harperdbhelp.zendesk.com/hc/en-us/articles/115010250207-Basic-Auth-with-Postman"
 					},
-					"response": [
-						{
-							"name": "Create Schema",
-							"originalRequest": {
-								"method": "POST",
-								"header": [
-									{
-										"key": "Content-Type",
-										"value": "application/json"
-									},
-									{
-										"key": "Authorization",
-										"type": "text",
-										"name": "Authorization",
-										"value": "Basic ZWxpOnBhc3M="
-									}
-								],
-								"body": {
-									"mode": "raw",
-									"raw": "{\n\"operation\":\"create_schema\",\n\"schema\":\"dev\"\n}"
-								},
-								"url": {
-									"raw": "{{host}}:{{port}}",
-									"host": [
-										"{{host}}"
-									],
-									"port": "{{port}}"
-								}
-							},
-							"status": "OK",
-							"code": 200,
-							"_postman_previewlanguage": "json",
-							"header": [
-								{
-									"key": "access-control-allow-origin",
-									"value": "chrome-extension://fhbjgbiflinjbdggehcddcbncdddomop",
-									"name": "access-control-allow-origin",
-									"description": ""
-								},
-								{
-									"key": "connection",
-									"value": "keep-alive",
-									"name": "connection",
-									"description": ""
-								},
-								{
-									"key": "content-length",
-									"value": "45",
-									"name": "content-length",
-									"description": ""
-								},
-								{
-									"key": "content-type",
-									"value": "application/json; charset=utf-8",
-									"name": "content-type",
-									"description": ""
-								},
-								{
-									"key": "date",
-									"value": "Fri, 13 Oct 2017 21:14:04 GMT",
-									"name": "date",
-									"description": ""
-								},
-								{
-									"key": "etag",
-									"value": "W/\"2d-GPJz4Nu7aSF7N/KODFK3o/TNPUw\"",
-									"name": "etag",
-									"description": ""
-								},
-								{
-									"key": "vary",
-									"value": "Origin",
-									"name": "vary",
-									"description": ""
-								},
-								{
-									"key": "x-powered-by",
-									"value": "HarperDB",
-									"name": "x-powered-by",
-									"description": ""
-								}
-							],
-							"cookie": [],
-							"body": "{\"message\":\"schema dev successfully created\"}"
-						}
-					]
+					"response": []
 				},
 				{
 					"name": "Configure Cluster",
@@ -51257,92 +50428,7 @@
 						},
 						"description": "We first need to create a Schema.  A Schema can be thought of as a container of tables that are independent from tables in other schemas.  An example might be the Schema dev with a table called dog.  The Schema prod may also have a table dog. \n\nNote that if you see the error response \"Cannot complete request: User 'admin' not found\", you need to set the basic auth to the user and password you entered during the install process.  What the heck is basic auth?  Read our article on it here: https://harperdbhelp.zendesk.com/hc/en-us/articles/115010250207-Basic-Auth-with-Postman"
 					},
-					"response": [
-						{
-							"name": "Create Schema",
-							"originalRequest": {
-								"method": "POST",
-								"header": [
-									{
-										"key": "Content-Type",
-										"value": "application/json"
-									},
-									{
-										"key": "Authorization",
-										"type": "text",
-										"name": "Authorization",
-										"value": "Basic ZWxpOnBhc3M="
-									}
-								],
-								"body": {
-									"mode": "raw",
-									"raw": "{\n\"operation\":\"create_schema\",\n\"schema\":\"dev\"\n}"
-								},
-								"url": {
-									"raw": "{{host}}:{{port}}",
-									"host": [
-										"{{host}}"
-									],
-									"port": "{{port}}"
-								}
-							},
-							"status": "OK",
-							"code": 200,
-							"_postman_previewlanguage": "json",
-							"header": [
-								{
-									"key": "access-control-allow-origin",
-									"value": "chrome-extension://fhbjgbiflinjbdggehcddcbncdddomop",
-									"name": "access-control-allow-origin",
-									"description": ""
-								},
-								{
-									"key": "connection",
-									"value": "keep-alive",
-									"name": "connection",
-									"description": ""
-								},
-								{
-									"key": "content-length",
-									"value": "45",
-									"name": "content-length",
-									"description": ""
-								},
-								{
-									"key": "content-type",
-									"value": "application/json; charset=utf-8",
-									"name": "content-type",
-									"description": ""
-								},
-								{
-									"key": "date",
-									"value": "Fri, 13 Oct 2017 21:14:04 GMT",
-									"name": "date",
-									"description": ""
-								},
-								{
-									"key": "etag",
-									"value": "W/\"2d-GPJz4Nu7aSF7N/KODFK3o/TNPUw\"",
-									"name": "etag",
-									"description": ""
-								},
-								{
-									"key": "vary",
-									"value": "Origin",
-									"name": "vary",
-									"description": ""
-								},
-								{
-									"key": "x-powered-by",
-									"value": "HarperDB",
-									"name": "x-powered-by",
-									"description": ""
-								}
-							],
-							"cookie": [],
-							"body": "{\"message\":\"schema dev successfully created\"}"
-						}
-					]
+					"response": []
 				},
 				{
 					"name": "Configure Cluster bad port",
@@ -51410,92 +50496,7 @@
 						},
 						"description": "We first need to create a Schema.  A Schema can be thought of as a container of tables that are independent from tables in other schemas.  An example might be the Schema dev with a table called dog.  The Schema prod may also have a table dog. \n\nNote that if you see the error response \"Cannot complete request: User 'admin' not found\", you need to set the basic auth to the user and password you entered during the install process.  What the heck is basic auth?  Read our article on it here: https://harperdbhelp.zendesk.com/hc/en-us/articles/115010250207-Basic-Auth-with-Postman"
 					},
-					"response": [
-						{
-							"name": "Create Schema",
-							"originalRequest": {
-								"method": "POST",
-								"header": [
-									{
-										"key": "Content-Type",
-										"value": "application/json"
-									},
-									{
-										"key": "Authorization",
-										"type": "text",
-										"name": "Authorization",
-										"value": "Basic ZWxpOnBhc3M="
-									}
-								],
-								"body": {
-									"mode": "raw",
-									"raw": "{\n\"operation\":\"create_schema\",\n\"schema\":\"dev\"\n}"
-								},
-								"url": {
-									"raw": "{{host}}:{{port}}",
-									"host": [
-										"{{host}}"
-									],
-									"port": "{{port}}"
-								}
-							},
-							"status": "OK",
-							"code": 200,
-							"_postman_previewlanguage": "json",
-							"header": [
-								{
-									"key": "access-control-allow-origin",
-									"value": "chrome-extension://fhbjgbiflinjbdggehcddcbncdddomop",
-									"name": "access-control-allow-origin",
-									"description": ""
-								},
-								{
-									"key": "connection",
-									"value": "keep-alive",
-									"name": "connection",
-									"description": ""
-								},
-								{
-									"key": "content-length",
-									"value": "45",
-									"name": "content-length",
-									"description": ""
-								},
-								{
-									"key": "content-type",
-									"value": "application/json; charset=utf-8",
-									"name": "content-type",
-									"description": ""
-								},
-								{
-									"key": "date",
-									"value": "Fri, 13 Oct 2017 21:14:04 GMT",
-									"name": "date",
-									"description": ""
-								},
-								{
-									"key": "etag",
-									"value": "W/\"2d-GPJz4Nu7aSF7N/KODFK3o/TNPUw\"",
-									"name": "etag",
-									"description": ""
-								},
-								{
-									"key": "vary",
-									"value": "Origin",
-									"name": "vary",
-									"description": ""
-								},
-								{
-									"key": "x-powered-by",
-									"value": "HarperDB",
-									"name": "x-powered-by",
-									"description": ""
-								}
-							],
-							"cookie": [],
-							"body": "{\"message\":\"schema dev successfully created\"}"
-						}
-					]
+					"response": []
 				},
 				{
 					"name": "Get Configuration",
@@ -51573,92 +50574,7 @@
 						},
 						"description": "We first need to create a Schema.  A Schema can be thought of as a container of tables that are independent from tables in other schemas.  An example might be the Schema dev with a table called dog.  The Schema prod may also have a table dog. \n\nNote that if you see the error response \"Cannot complete request: User 'admin' not found\", you need to set the basic auth to the user and password you entered during the install process.  What the heck is basic auth?  Read our article on it here: https://harperdbhelp.zendesk.com/hc/en-us/articles/115010250207-Basic-Auth-with-Postman"
 					},
-					"response": [
-						{
-							"name": "Create Schema",
-							"originalRequest": {
-								"method": "POST",
-								"header": [
-									{
-										"key": "Content-Type",
-										"value": "application/json"
-									},
-									{
-										"key": "Authorization",
-										"type": "text",
-										"name": "Authorization",
-										"value": "Basic ZWxpOnBhc3M="
-									}
-								],
-								"body": {
-									"mode": "raw",
-									"raw": "{\n\"operation\":\"create_schema\",\n\"schema\":\"dev\"\n}"
-								},
-								"url": {
-									"raw": "{{host}}:{{port}}",
-									"host": [
-										"{{host}}"
-									],
-									"port": "{{port}}"
-								}
-							},
-							"status": "OK",
-							"code": 200,
-							"_postman_previewlanguage": "json",
-							"header": [
-								{
-									"key": "access-control-allow-origin",
-									"value": "chrome-extension://fhbjgbiflinjbdggehcddcbncdddomop",
-									"name": "access-control-allow-origin",
-									"description": ""
-								},
-								{
-									"key": "connection",
-									"value": "keep-alive",
-									"name": "connection",
-									"description": ""
-								},
-								{
-									"key": "content-length",
-									"value": "45",
-									"name": "content-length",
-									"description": ""
-								},
-								{
-									"key": "content-type",
-									"value": "application/json; charset=utf-8",
-									"name": "content-type",
-									"description": ""
-								},
-								{
-									"key": "date",
-									"value": "Fri, 13 Oct 2017 21:14:04 GMT",
-									"name": "date",
-									"description": ""
-								},
-								{
-									"key": "etag",
-									"value": "W/\"2d-GPJz4Nu7aSF7N/KODFK3o/TNPUw\"",
-									"name": "etag",
-									"description": ""
-								},
-								{
-									"key": "vary",
-									"value": "Origin",
-									"name": "vary",
-									"description": ""
-								},
-								{
-									"key": "x-powered-by",
-									"value": "HarperDB",
-									"name": "x-powered-by",
-									"description": ""
-								}
-							],
-							"cookie": [],
-							"body": "{\"message\":\"schema dev successfully created\"}"
-						}
-					]
+					"response": []
 				}
 			],
 			"event": [
@@ -51759,92 +50675,7 @@
 						},
 						"description": "We first need to create a Schema.  A Schema can be thought of as a container of tables that are independent from tables in other schemas.  An example might be the Schema dev with a table called dog.  The Schema prod may also have a table dog. \n\nNote that if you see the error response \"Cannot complete request: User 'admin' not found\", you need to set the basic auth to the user and password you entered during the install process.  What the heck is basic auth?  Read our article on it here: https://harperdbhelp.zendesk.com/hc/en-us/articles/115010250207-Basic-Auth-with-Postman"
 					},
-					"response": [
-						{
-							"name": "Create Schema",
-							"originalRequest": {
-								"method": "POST",
-								"header": [
-									{
-										"key": "Content-Type",
-										"value": "application/json"
-									},
-									{
-										"key": "Authorization",
-										"type": "text",
-										"name": "Authorization",
-										"value": "Basic ZWxpOnBhc3M="
-									}
-								],
-								"body": {
-									"mode": "raw",
-									"raw": "{\n\"operation\":\"create_schema\",\n\"schema\":\"dev\"\n}"
-								},
-								"url": {
-									"raw": "{{host}}:{{port}}",
-									"host": [
-										"{{host}}"
-									],
-									"port": "{{port}}"
-								}
-							},
-							"status": "OK",
-							"code": 200,
-							"_postman_previewlanguage": "json",
-							"header": [
-								{
-									"key": "access-control-allow-origin",
-									"value": "chrome-extension://fhbjgbiflinjbdggehcddcbncdddomop",
-									"name": "access-control-allow-origin",
-									"description": ""
-								},
-								{
-									"key": "connection",
-									"value": "keep-alive",
-									"name": "connection",
-									"description": ""
-								},
-								{
-									"key": "content-length",
-									"value": "45",
-									"name": "content-length",
-									"description": ""
-								},
-								{
-									"key": "content-type",
-									"value": "application/json; charset=utf-8",
-									"name": "content-type",
-									"description": ""
-								},
-								{
-									"key": "date",
-									"value": "Fri, 13 Oct 2017 21:14:04 GMT",
-									"name": "date",
-									"description": ""
-								},
-								{
-									"key": "etag",
-									"value": "W/\"2d-GPJz4Nu7aSF7N/KODFK3o/TNPUw\"",
-									"name": "etag",
-									"description": ""
-								},
-								{
-									"key": "vary",
-									"value": "Origin",
-									"name": "vary",
-									"description": ""
-								},
-								{
-									"key": "x-powered-by",
-									"value": "HarperDB",
-									"name": "x-powered-by",
-									"description": ""
-								}
-							],
-							"cookie": [],
-							"body": "{\"message\":\"schema dev successfully created\"}"
-						}
-					]
+					"response": []
 				},
 				{
 					"name": "Get some System Information (time, memory)",
@@ -51923,92 +50754,7 @@
 						},
 						"description": "We first need to create a Schema.  A Schema can be thought of as a container of tables that are independent from tables in other schemas.  An example might be the Schema dev with a table called dog.  The Schema prod may also have a table dog. \n\nNote that if you see the error response \"Cannot complete request: User 'admin' not found\", you need to set the basic auth to the user and password you entered during the install process.  What the heck is basic auth?  Read our article on it here: https://harperdbhelp.zendesk.com/hc/en-us/articles/115010250207-Basic-Auth-with-Postman"
 					},
-					"response": [
-						{
-							"name": "Create Schema",
-							"originalRequest": {
-								"method": "POST",
-								"header": [
-									{
-										"key": "Content-Type",
-										"value": "application/json"
-									},
-									{
-										"key": "Authorization",
-										"type": "text",
-										"name": "Authorization",
-										"value": "Basic ZWxpOnBhc3M="
-									}
-								],
-								"body": {
-									"mode": "raw",
-									"raw": "{\n\"operation\":\"create_schema\",\n\"schema\":\"dev\"\n}"
-								},
-								"url": {
-									"raw": "{{host}}:{{port}}",
-									"host": [
-										"{{host}}"
-									],
-									"port": "{{port}}"
-								}
-							},
-							"status": "OK",
-							"code": 200,
-							"_postman_previewlanguage": "json",
-							"header": [
-								{
-									"key": "access-control-allow-origin",
-									"value": "chrome-extension://fhbjgbiflinjbdggehcddcbncdddomop",
-									"name": "access-control-allow-origin",
-									"description": ""
-								},
-								{
-									"key": "connection",
-									"value": "keep-alive",
-									"name": "connection",
-									"description": ""
-								},
-								{
-									"key": "content-length",
-									"value": "45",
-									"name": "content-length",
-									"description": ""
-								},
-								{
-									"key": "content-type",
-									"value": "application/json; charset=utf-8",
-									"name": "content-type",
-									"description": ""
-								},
-								{
-									"key": "date",
-									"value": "Fri, 13 Oct 2017 21:14:04 GMT",
-									"name": "date",
-									"description": ""
-								},
-								{
-									"key": "etag",
-									"value": "W/\"2d-GPJz4Nu7aSF7N/KODFK3o/TNPUw\"",
-									"name": "etag",
-									"description": ""
-								},
-								{
-									"key": "vary",
-									"value": "Origin",
-									"name": "vary",
-									"description": ""
-								},
-								{
-									"key": "x-powered-by",
-									"value": "HarperDB",
-									"name": "x-powered-by",
-									"description": ""
-								}
-							],
-							"cookie": [],
-							"body": "{\"message\":\"schema dev successfully created\"}"
-						}
-					]
+					"response": []
 				}
 			]
 		},
@@ -52064,92 +50810,7 @@
 						},
 						"description": "We first need to create a Schema.  A Schema can be thought of as a container of tables that are independent from tables in other schemas.  An example might be the Schema dev with a table called dog.  The Schema prod may also have a table dog. \n\nNote that if you see the error response \"Cannot complete request: User 'admin' not found\", you need to set the basic auth to the user and password you entered during the install process.  What the heck is basic auth?  Read our article on it here: https://harperdbhelp.zendesk.com/hc/en-us/articles/115010250207-Basic-Auth-with-Postman"
 					},
-					"response": [
-						{
-							"name": "Create Schema",
-							"originalRequest": {
-								"method": "POST",
-								"header": [
-									{
-										"key": "Content-Type",
-										"value": "application/json"
-									},
-									{
-										"key": "Authorization",
-										"type": "text",
-										"name": "Authorization",
-										"value": "Basic ZWxpOnBhc3M="
-									}
-								],
-								"body": {
-									"mode": "raw",
-									"raw": "{\n\"operation\":\"create_schema\",\n\"schema\":\"dev\"\n}"
-								},
-								"url": {
-									"raw": "{{host}}:{{port}}",
-									"host": [
-										"{{host}}"
-									],
-									"port": "{{port}}"
-								}
-							},
-							"status": "OK",
-							"code": 200,
-							"_postman_previewlanguage": "json",
-							"header": [
-								{
-									"key": "access-control-allow-origin",
-									"value": "chrome-extension://fhbjgbiflinjbdggehcddcbncdddomop",
-									"name": "access-control-allow-origin",
-									"description": ""
-								},
-								{
-									"key": "connection",
-									"value": "keep-alive",
-									"name": "connection",
-									"description": ""
-								},
-								{
-									"key": "content-length",
-									"value": "45",
-									"name": "content-length",
-									"description": ""
-								},
-								{
-									"key": "content-type",
-									"value": "application/json; charset=utf-8",
-									"name": "content-type",
-									"description": ""
-								},
-								{
-									"key": "date",
-									"value": "Fri, 13 Oct 2017 21:14:04 GMT",
-									"name": "date",
-									"description": ""
-								},
-								{
-									"key": "etag",
-									"value": "W/\"2d-GPJz4Nu7aSF7N/KODFK3o/TNPUw\"",
-									"name": "etag",
-									"description": ""
-								},
-								{
-									"key": "vary",
-									"value": "Origin",
-									"name": "vary",
-									"description": ""
-								},
-								{
-									"key": "x-powered-by",
-									"value": "HarperDB",
-									"name": "x-powered-by",
-									"description": ""
-								}
-							],
-							"cookie": [],
-							"body": "{\"message\":\"schema dev successfully created\"}"
-						}
-					]
+					"response": []
 				},
 				{
 					"name": "Call create_authentication_tokens no pw",
@@ -52200,92 +50861,7 @@
 						},
 						"description": "We first need to create a Schema.  A Schema can be thought of as a container of tables that are independent from tables in other schemas.  An example might be the Schema dev with a table called dog.  The Schema prod may also have a table dog. \n\nNote that if you see the error response \"Cannot complete request: User 'admin' not found\", you need to set the basic auth to the user and password you entered during the install process.  What the heck is basic auth?  Read our article on it here: https://harperdbhelp.zendesk.com/hc/en-us/articles/115010250207-Basic-Auth-with-Postman"
 					},
-					"response": [
-						{
-							"name": "Create Schema",
-							"originalRequest": {
-								"method": "POST",
-								"header": [
-									{
-										"key": "Content-Type",
-										"value": "application/json"
-									},
-									{
-										"key": "Authorization",
-										"type": "text",
-										"name": "Authorization",
-										"value": "Basic ZWxpOnBhc3M="
-									}
-								],
-								"body": {
-									"mode": "raw",
-									"raw": "{\n\"operation\":\"create_schema\",\n\"schema\":\"dev\"\n}"
-								},
-								"url": {
-									"raw": "{{host}}:{{port}}",
-									"host": [
-										"{{host}}"
-									],
-									"port": "{{port}}"
-								}
-							},
-							"status": "OK",
-							"code": 200,
-							"_postman_previewlanguage": "json",
-							"header": [
-								{
-									"key": "access-control-allow-origin",
-									"value": "chrome-extension://fhbjgbiflinjbdggehcddcbncdddomop",
-									"name": "access-control-allow-origin",
-									"description": ""
-								},
-								{
-									"key": "connection",
-									"value": "keep-alive",
-									"name": "connection",
-									"description": ""
-								},
-								{
-									"key": "content-length",
-									"value": "45",
-									"name": "content-length",
-									"description": ""
-								},
-								{
-									"key": "content-type",
-									"value": "application/json; charset=utf-8",
-									"name": "content-type",
-									"description": ""
-								},
-								{
-									"key": "date",
-									"value": "Fri, 13 Oct 2017 21:14:04 GMT",
-									"name": "date",
-									"description": ""
-								},
-								{
-									"key": "etag",
-									"value": "W/\"2d-GPJz4Nu7aSF7N/KODFK3o/TNPUw\"",
-									"name": "etag",
-									"description": ""
-								},
-								{
-									"key": "vary",
-									"value": "Origin",
-									"name": "vary",
-									"description": ""
-								},
-								{
-									"key": "x-powered-by",
-									"value": "HarperDB",
-									"name": "x-powered-by",
-									"description": ""
-								}
-							],
-							"cookie": [],
-							"body": "{\"message\":\"schema dev successfully created\"}"
-						}
-					]
+					"response": []
 				},
 				{
 					"name": "Call create_authentication_tokens bad credentials",
@@ -52336,92 +50912,7 @@
 						},
 						"description": "We first need to create a Schema.  A Schema can be thought of as a container of tables that are independent from tables in other schemas.  An example might be the Schema dev with a table called dog.  The Schema prod may also have a table dog. \n\nNote that if you see the error response \"Cannot complete request: User 'admin' not found\", you need to set the basic auth to the user and password you entered during the install process.  What the heck is basic auth?  Read our article on it here: https://harperdbhelp.zendesk.com/hc/en-us/articles/115010250207-Basic-Auth-with-Postman"
 					},
-					"response": [
-						{
-							"name": "Create Schema",
-							"originalRequest": {
-								"method": "POST",
-								"header": [
-									{
-										"key": "Content-Type",
-										"value": "application/json"
-									},
-									{
-										"key": "Authorization",
-										"type": "text",
-										"name": "Authorization",
-										"value": "Basic ZWxpOnBhc3M="
-									}
-								],
-								"body": {
-									"mode": "raw",
-									"raw": "{\n\"operation\":\"create_schema\",\n\"schema\":\"dev\"\n}"
-								},
-								"url": {
-									"raw": "{{host}}:{{port}}",
-									"host": [
-										"{{host}}"
-									],
-									"port": "{{port}}"
-								}
-							},
-							"status": "OK",
-							"code": 200,
-							"_postman_previewlanguage": "json",
-							"header": [
-								{
-									"key": "access-control-allow-origin",
-									"value": "chrome-extension://fhbjgbiflinjbdggehcddcbncdddomop",
-									"name": "access-control-allow-origin",
-									"description": ""
-								},
-								{
-									"key": "connection",
-									"value": "keep-alive",
-									"name": "connection",
-									"description": ""
-								},
-								{
-									"key": "content-length",
-									"value": "45",
-									"name": "content-length",
-									"description": ""
-								},
-								{
-									"key": "content-type",
-									"value": "application/json; charset=utf-8",
-									"name": "content-type",
-									"description": ""
-								},
-								{
-									"key": "date",
-									"value": "Fri, 13 Oct 2017 21:14:04 GMT",
-									"name": "date",
-									"description": ""
-								},
-								{
-									"key": "etag",
-									"value": "W/\"2d-GPJz4Nu7aSF7N/KODFK3o/TNPUw\"",
-									"name": "etag",
-									"description": ""
-								},
-								{
-									"key": "vary",
-									"value": "Origin",
-									"name": "vary",
-									"description": ""
-								},
-								{
-									"key": "x-powered-by",
-									"value": "HarperDB",
-									"name": "x-powered-by",
-									"description": ""
-								}
-							],
-							"cookie": [],
-							"body": "{\"message\":\"schema dev successfully created\"}"
-						}
-					]
+					"response": []
 				},
 				{
 					"name": "Call create_authentication_tokens happy path",
@@ -52480,92 +50971,7 @@
 						},
 						"description": "We first need to create a Schema.  A Schema can be thought of as a container of tables that are independent from tables in other schemas.  An example might be the Schema dev with a table called dog.  The Schema prod may also have a table dog. \n\nNote that if you see the error response \"Cannot complete request: User 'admin' not found\", you need to set the basic auth to the user and password you entered during the install process.  What the heck is basic auth?  Read our article on it here: https://harperdbhelp.zendesk.com/hc/en-us/articles/115010250207-Basic-Auth-with-Postman"
 					},
-					"response": [
-						{
-							"name": "Create Schema",
-							"originalRequest": {
-								"method": "POST",
-								"header": [
-									{
-										"key": "Content-Type",
-										"value": "application/json"
-									},
-									{
-										"key": "Authorization",
-										"type": "text",
-										"name": "Authorization",
-										"value": "Basic ZWxpOnBhc3M="
-									}
-								],
-								"body": {
-									"mode": "raw",
-									"raw": "{\n\"operation\":\"create_schema\",\n\"schema\":\"dev\"\n}"
-								},
-								"url": {
-									"raw": "{{host}}:{{port}}",
-									"host": [
-										"{{host}}"
-									],
-									"port": "{{port}}"
-								}
-							},
-							"status": "OK",
-							"code": 200,
-							"_postman_previewlanguage": "json",
-							"header": [
-								{
-									"key": "access-control-allow-origin",
-									"value": "chrome-extension://fhbjgbiflinjbdggehcddcbncdddomop",
-									"name": "access-control-allow-origin",
-									"description": ""
-								},
-								{
-									"key": "connection",
-									"value": "keep-alive",
-									"name": "connection",
-									"description": ""
-								},
-								{
-									"key": "content-length",
-									"value": "45",
-									"name": "content-length",
-									"description": ""
-								},
-								{
-									"key": "content-type",
-									"value": "application/json; charset=utf-8",
-									"name": "content-type",
-									"description": ""
-								},
-								{
-									"key": "date",
-									"value": "Fri, 13 Oct 2017 21:14:04 GMT",
-									"name": "date",
-									"description": ""
-								},
-								{
-									"key": "etag",
-									"value": "W/\"2d-GPJz4Nu7aSF7N/KODFK3o/TNPUw\"",
-									"name": "etag",
-									"description": ""
-								},
-								{
-									"key": "vary",
-									"value": "Origin",
-									"name": "vary",
-									"description": ""
-								},
-								{
-									"key": "x-powered-by",
-									"value": "HarperDB",
-									"name": "x-powered-by",
-									"description": ""
-								}
-							],
-							"cookie": [],
-							"body": "{\"message\":\"schema dev successfully created\"}"
-						}
-					]
+					"response": []
 				},
 				{
 					"name": "test search_by_hash with valid jwt",
@@ -52635,92 +51041,7 @@
 						},
 						"description": "We first need to create a Schema.  A Schema can be thought of as a container of tables that are independent from tables in other schemas.  An example might be the Schema dev with a table called dog.  The Schema prod may also have a table dog. \n\nNote that if you see the error response \"Cannot complete request: User 'admin' not found\", you need to set the basic auth to the user and password you entered during the install process.  What the heck is basic auth?  Read our article on it here: https://harperdbhelp.zendesk.com/hc/en-us/articles/115010250207-Basic-Auth-with-Postman"
 					},
-					"response": [
-						{
-							"name": "Create Schema",
-							"originalRequest": {
-								"method": "POST",
-								"header": [
-									{
-										"key": "Content-Type",
-										"value": "application/json"
-									},
-									{
-										"key": "Authorization",
-										"type": "text",
-										"name": "Authorization",
-										"value": "Basic ZWxpOnBhc3M="
-									}
-								],
-								"body": {
-									"mode": "raw",
-									"raw": "{\n\"operation\":\"create_schema\",\n\"schema\":\"dev\"\n}"
-								},
-								"url": {
-									"raw": "{{host}}:{{port}}",
-									"host": [
-										"{{host}}"
-									],
-									"port": "{{port}}"
-								}
-							},
-							"status": "OK",
-							"code": 200,
-							"_postman_previewlanguage": "json",
-							"header": [
-								{
-									"key": "access-control-allow-origin",
-									"value": "chrome-extension://fhbjgbiflinjbdggehcddcbncdddomop",
-									"name": "access-control-allow-origin",
-									"description": ""
-								},
-								{
-									"key": "connection",
-									"value": "keep-alive",
-									"name": "connection",
-									"description": ""
-								},
-								{
-									"key": "content-length",
-									"value": "45",
-									"name": "content-length",
-									"description": ""
-								},
-								{
-									"key": "content-type",
-									"value": "application/json; charset=utf-8",
-									"name": "content-type",
-									"description": ""
-								},
-								{
-									"key": "date",
-									"value": "Fri, 13 Oct 2017 21:14:04 GMT",
-									"name": "date",
-									"description": ""
-								},
-								{
-									"key": "etag",
-									"value": "W/\"2d-GPJz4Nu7aSF7N/KODFK3o/TNPUw\"",
-									"name": "etag",
-									"description": ""
-								},
-								{
-									"key": "vary",
-									"value": "Origin",
-									"name": "vary",
-									"description": ""
-								},
-								{
-									"key": "x-powered-by",
-									"value": "HarperDB",
-									"name": "x-powered-by",
-									"description": ""
-								}
-							],
-							"cookie": [],
-							"body": "{\"message\":\"schema dev successfully created\"}"
-						}
-					]
+					"response": []
 				},
 				{
 					"name": "test search_by_hash with invalid jwt",
@@ -52785,92 +51106,7 @@
 						},
 						"description": "We first need to create a Schema.  A Schema can be thought of as a container of tables that are independent from tables in other schemas.  An example might be the Schema dev with a table called dog.  The Schema prod may also have a table dog. \n\nNote that if you see the error response \"Cannot complete request: User 'admin' not found\", you need to set the basic auth to the user and password you entered during the install process.  What the heck is basic auth?  Read our article on it here: https://harperdbhelp.zendesk.com/hc/en-us/articles/115010250207-Basic-Auth-with-Postman"
 					},
-					"response": [
-						{
-							"name": "Create Schema",
-							"originalRequest": {
-								"method": "POST",
-								"header": [
-									{
-										"key": "Content-Type",
-										"value": "application/json"
-									},
-									{
-										"key": "Authorization",
-										"type": "text",
-										"name": "Authorization",
-										"value": "Basic ZWxpOnBhc3M="
-									}
-								],
-								"body": {
-									"mode": "raw",
-									"raw": "{\n\"operation\":\"create_schema\",\n\"schema\":\"dev\"\n}"
-								},
-								"url": {
-									"raw": "{{host}}:{{port}}",
-									"host": [
-										"{{host}}"
-									],
-									"port": "{{port}}"
-								}
-							},
-							"status": "OK",
-							"code": 200,
-							"_postman_previewlanguage": "json",
-							"header": [
-								{
-									"key": "access-control-allow-origin",
-									"value": "chrome-extension://fhbjgbiflinjbdggehcddcbncdddomop",
-									"name": "access-control-allow-origin",
-									"description": ""
-								},
-								{
-									"key": "connection",
-									"value": "keep-alive",
-									"name": "connection",
-									"description": ""
-								},
-								{
-									"key": "content-length",
-									"value": "45",
-									"name": "content-length",
-									"description": ""
-								},
-								{
-									"key": "content-type",
-									"value": "application/json; charset=utf-8",
-									"name": "content-type",
-									"description": ""
-								},
-								{
-									"key": "date",
-									"value": "Fri, 13 Oct 2017 21:14:04 GMT",
-									"name": "date",
-									"description": ""
-								},
-								{
-									"key": "etag",
-									"value": "W/\"2d-GPJz4Nu7aSF7N/KODFK3o/TNPUw\"",
-									"name": "etag",
-									"description": ""
-								},
-								{
-									"key": "vary",
-									"value": "Origin",
-									"name": "vary",
-									"description": ""
-								},
-								{
-									"key": "x-powered-by",
-									"value": "HarperDB",
-									"name": "x-powered-by",
-									"description": ""
-								}
-							],
-							"cookie": [],
-							"body": "{\"message\":\"schema dev successfully created\"}"
-						}
-					]
+					"response": []
 				},
 				{
 					"name": "test refresh_operation_token with correct token",
@@ -52938,92 +51174,7 @@
 						},
 						"description": "We first need to create a Schema.  A Schema can be thought of as a container of tables that are independent from tables in other schemas.  An example might be the Schema dev with a table called dog.  The Schema prod may also have a table dog. \n\nNote that if you see the error response \"Cannot complete request: User 'admin' not found\", you need to set the basic auth to the user and password you entered during the install process.  What the heck is basic auth?  Read our article on it here: https://harperdbhelp.zendesk.com/hc/en-us/articles/115010250207-Basic-Auth-with-Postman"
 					},
-					"response": [
-						{
-							"name": "Create Schema",
-							"originalRequest": {
-								"method": "POST",
-								"header": [
-									{
-										"key": "Content-Type",
-										"value": "application/json"
-									},
-									{
-										"key": "Authorization",
-										"type": "text",
-										"name": "Authorization",
-										"value": "Basic ZWxpOnBhc3M="
-									}
-								],
-								"body": {
-									"mode": "raw",
-									"raw": "{\n\"operation\":\"create_schema\",\n\"schema\":\"dev\"\n}"
-								},
-								"url": {
-									"raw": "{{host}}:{{port}}",
-									"host": [
-										"{{host}}"
-									],
-									"port": "{{port}}"
-								}
-							},
-							"status": "OK",
-							"code": 200,
-							"_postman_previewlanguage": "json",
-							"header": [
-								{
-									"key": "access-control-allow-origin",
-									"value": "chrome-extension://fhbjgbiflinjbdggehcddcbncdddomop",
-									"name": "access-control-allow-origin",
-									"description": ""
-								},
-								{
-									"key": "connection",
-									"value": "keep-alive",
-									"name": "connection",
-									"description": ""
-								},
-								{
-									"key": "content-length",
-									"value": "45",
-									"name": "content-length",
-									"description": ""
-								},
-								{
-									"key": "content-type",
-									"value": "application/json; charset=utf-8",
-									"name": "content-type",
-									"description": ""
-								},
-								{
-									"key": "date",
-									"value": "Fri, 13 Oct 2017 21:14:04 GMT",
-									"name": "date",
-									"description": ""
-								},
-								{
-									"key": "etag",
-									"value": "W/\"2d-GPJz4Nu7aSF7N/KODFK3o/TNPUw\"",
-									"name": "etag",
-									"description": ""
-								},
-								{
-									"key": "vary",
-									"value": "Origin",
-									"name": "vary",
-									"description": ""
-								},
-								{
-									"key": "x-powered-by",
-									"value": "HarperDB",
-									"name": "x-powered-by",
-									"description": ""
-								}
-							],
-							"cookie": [],
-							"body": "{\"message\":\"schema dev successfully created\"}"
-						}
-					]
+					"response": []
 				},
 				{
 					"name": "test refresh_operation_token with incorrect token",
@@ -53086,92 +51237,7 @@
 						},
 						"description": "We first need to create a Schema.  A Schema can be thought of as a container of tables that are independent from tables in other schemas.  An example might be the Schema dev with a table called dog.  The Schema prod may also have a table dog. \n\nNote that if you see the error response \"Cannot complete request: User 'admin' not found\", you need to set the basic auth to the user and password you entered during the install process.  What the heck is basic auth?  Read our article on it here: https://harperdbhelp.zendesk.com/hc/en-us/articles/115010250207-Basic-Auth-with-Postman"
 					},
-					"response": [
-						{
-							"name": "Create Schema",
-							"originalRequest": {
-								"method": "POST",
-								"header": [
-									{
-										"key": "Content-Type",
-										"value": "application/json"
-									},
-									{
-										"key": "Authorization",
-										"type": "text",
-										"name": "Authorization",
-										"value": "Basic ZWxpOnBhc3M="
-									}
-								],
-								"body": {
-									"mode": "raw",
-									"raw": "{\n\"operation\":\"create_schema\",\n\"schema\":\"dev\"\n}"
-								},
-								"url": {
-									"raw": "{{host}}:{{port}}",
-									"host": [
-										"{{host}}"
-									],
-									"port": "{{port}}"
-								}
-							},
-							"status": "OK",
-							"code": 200,
-							"_postman_previewlanguage": "json",
-							"header": [
-								{
-									"key": "access-control-allow-origin",
-									"value": "chrome-extension://fhbjgbiflinjbdggehcddcbncdddomop",
-									"name": "access-control-allow-origin",
-									"description": ""
-								},
-								{
-									"key": "connection",
-									"value": "keep-alive",
-									"name": "connection",
-									"description": ""
-								},
-								{
-									"key": "content-length",
-									"value": "45",
-									"name": "content-length",
-									"description": ""
-								},
-								{
-									"key": "content-type",
-									"value": "application/json; charset=utf-8",
-									"name": "content-type",
-									"description": ""
-								},
-								{
-									"key": "date",
-									"value": "Fri, 13 Oct 2017 21:14:04 GMT",
-									"name": "date",
-									"description": ""
-								},
-								{
-									"key": "etag",
-									"value": "W/\"2d-GPJz4Nu7aSF7N/KODFK3o/TNPUw\"",
-									"name": "etag",
-									"description": ""
-								},
-								{
-									"key": "vary",
-									"value": "Origin",
-									"name": "vary",
-									"description": ""
-								},
-								{
-									"key": "x-powered-by",
-									"value": "HarperDB",
-									"name": "x-powered-by",
-									"description": ""
-								}
-							],
-							"cookie": [],
-							"body": "{\"message\":\"schema dev successfully created\"}"
-						}
-					]
+					"response": []
 				}
 			]
 		},
@@ -53883,11 +51949,11 @@
 		},
 		{
 			"key": "operation_token",
-			"value": "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VybmFtZSI6ImFkbWluIiwic3VwZXJfdXNlciI6dHJ1ZSwiY2x1c3Rlcl91c2VyIjpmYWxzZSwiaWF0IjoxNjEyMzk1MjYzLCJleHAiOjE2MTI0ODE2NjMsInN1YiI6Im9wZXJhdGlvbiJ9.Y0lgy8iOXCZVpKWxChOFfCZ1quLbgPAJ2VlO8Fw_ijWlZ_zoUZk6iO9rCx-HgKEHT_SOAhKIRok7mtZB1fq9e6BfNG_76mXjKjdlb20efAQ4IMtZJ6sSA_xvgSyE9zGda_WlIQ3wJuyXb4ldKjh_SyO4lNskYXxVl3ugpVClpIyD4BWf_gy3m2dWNPrEJ3A5qNjxcPViRByFQSqph8Sw1Ygi3FRTMy3Ei4K9LpsMNSrZ5GooLWA_HtCT1j4lOi1CiMJYmFvgclmN6bNmfMDh5rQ0lEYAZHY6sci5FX-66xLikDdH9Tsp6I6tH75tHrWESYJ_v9LPU1rnbb6R7bycoYY0e9uHlSK-0lFADRQomj3Z1PrHxiB7224bLUt4OHwQ62dLpM24T7uMEgn1tgz9iBrSaPMQNsW-2ix7_L0SUL9tsig-8CGTAEplSC9gXZrBF9HII6NhC53z3kwuHUVlKqVi_rmyrvqUjcYYlBaUIkHeW87MkHf_8hHFCCVUyLaTEZdO2lU4-WLVGjjbugGo2dHsOOeEXC2AmeiBDzrwbHQPD2XoIwRTpGy1yaqcJE0qSQ-HuV5iknwpIAyBT-JvbMRfKUORyjo_Zdci9nqxToyx7LhN0Nq1Bc_kojFxBYpoX2BMjfWHh2hMaEl6mgP5SyfxzBAx6chSNOYPkWA9eZk"
+			"value": "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VybmFtZSI6ImFkbWluIiwic3VwZXJfdXNlciI6dHJ1ZSwiY2x1c3Rlcl91c2VyIjpmYWxzZSwiaWF0IjoxNjEzNzcyODk4LCJleHAiOjE2MTM4NTkyOTgsInN1YiI6Im9wZXJhdGlvbiJ9.n_rL2YeUKh4sdy0VmDgpl1SSdNTFqCI97uCaLOn3m-MZ3ehvFOzUCvb72jv0MtkFtZhZreEx50AdFraYKz75EJw4DhDRW2DHLYc0l2qmJLlJtvBOIE_pM3wEg4GTTskhzB_F-9cDxhTHgMzd6BIDDxIjDB-bpWm8LQVzS0FIS4M-7szAmtFW6JOwLx36fQDk5qy2seTeWUB7CdEPxJuvoI5uDRvMLWda0Fb8maxDtmNGWjFrYv0Hpkie2udTd4zTzFkL1hPFa1yWHOsH4tUX6yrdX2ykP0cy10sd0vTNgwcyedDpWhSs-q9-9TekeyLh78IAINGfCtM3iu9wGW0rXOUtQRrlxUx03LVtNqDMgA5FofwjZuNeAM2y4QiB8Em9rLXo5RFjd0jGsVQC5RjaoaEjuB8ZMiWhCrR9ODJRaN8XC0GNfDeXYGxMA0OJMAe7evB_9ysTyVH4e7_bC4TVQxebc2CmoY-HXawvOTFpU3N-OmU6G1zeI6JWiHJ1yGvizfQbb_qQ1ef3FzrJS0MePNc9ZNE2m2Bez7EWa81ccexsWdO73_iMMFccYu7gOXSKTI_ExEHk9JPpbj23OXuL-BpPS0G44yTzs3urQOm7Yk2hFPdYhsKimNQmXMtjTXVbsN0i0ysmuUOLkVCwEMyvQW5OoYE0sCC7A9urNrcgM9k"
 		},
 		{
 			"key": "refresh_token",
-			"value": "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VybmFtZSI6ImFkbWluIiwic3VwZXJfdXNlciI6dHJ1ZSwiY2x1c3Rlcl91c2VyIjpmYWxzZSwiaWF0IjoxNjEyMzk1MjYzLCJleHAiOjE2MTQ5ODcyNjMsInN1YiI6InJlZnJlc2gifQ.ghMPm582dPE-Osk-iL2BgZRvewp5ilmF37XhRtATBLKtH4Xa09D1J3kVNu2ruQPTjYh98ZmLbln4TveleYdKygFGJ-yY1PW0Ot-DmZWSOK_ozoBAu8R9v6ddTQpFvzq5bhrgihzOuAjdbrkDyDPK1Cj48xIJ1nuxlED7dCZqlcf-3B7qtdSGeFABrzQqhyK54qMnE0wKwiZ1Mx3IntGGJetCqsg98liHs1HAHPOaNvL4U_mkKKqQ_IVIDnewMCXVRhLKravw2tP-ohLwHiH94i3-EpVRicO9kadubCXsbjv7bgsKGz4r-7aMO73VH7amIL17Avqueq5Xv08xrym9p1De8D_bBVUAcuTrm8eeEXwnQ6uvUibKJsanPPUrWFr4DF_soiGDwLMEJYSHTvtINlyvJQmia8iTeDxRMFuxExSlE3sIsbihmlyPvaOKQjhgQBnlQfGM-NMg4PHkrQfCR4d5cTZrgPYm3awA746KtijePnhXA9zIuKu5kbtuRON9XuTgn_r08RNZTgN-7jwRqjUHfAs1VreJmxojybsni3DQ3tMPdV3PQ64HotW8DzwVPAB5tn1ftJKqDfu69l4WXDZui3YtcoSv2ASarhs26CEvkZWNN0WD8oNNJhyGJZB4EQoIY-MsY3BXCtfhuQJnMbGLZFxbUIaYmnB8dWivWho"
+			"value": "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VybmFtZSI6ImFkbWluIiwic3VwZXJfdXNlciI6dHJ1ZSwiY2x1c3Rlcl91c2VyIjpmYWxzZSwiaWF0IjoxNjEzNzcyODk4LCJleHAiOjE2MTYzNjQ4OTgsInN1YiI6InJlZnJlc2gifQ.neMaezdypJrtpuMFCijNvgTye9dAVMkY4nAyBrp2GpZk7tcnZjUycLGgVo1_YoEQA-MtBOrTaohajuf_wJj4sh4W3OYIlp5BhDF_JXwqoe6XOQKK2jPAT31yw9vDLzzUpwDctzQ2M9txlYdSlCpaciLBiYToXmuVqt6oOyqEuMX_9VX1smJe-qDQRTgZaGEAlczV8OZ1WjWU_OJOOUppqKhRk243OSVqWQ__u0QGr826cwECHGHarjzm5_QJO5-4ROrPZsLi1gyWlu5_RGJWAH7TXDAuE1B9LRi7QhkirjRP8C0iKqQsTNRrkp6N_JCJ3f23b-82zGu9qX5tT8xEdKpYEYDpKFQuW7UMsXxA0s1oFRI9bIBZmxRFPd6VrJOd5cNhDk5kIiw5_VHpuOSuwMn4ulBHOtNkdaYz5lS5loIcjX3pIeNA_j9Lpp69KHC0oPRAplNknSKn_2sPK_zn__0QMXlFJqLdiLSgkVYL6NGaJ4mVKTS2sl0yzf_xNJ5vMWzsSrsJ_8qYEkA8RHF1IqVB2eL2nagZ9_PpgspYq--EmFCpCFCtNRU3JrGZgbXhxfR-IpZom1tugmMrj-4x3ggNi6hnM5JH7OhVK_ux-46DqGZa8PmD8D8OiNEiac8d8fOwQW_1I14hn3xO9GBODxCyV7BAayHu6XKdYrCAj9s"
 		}
 	]
 }
