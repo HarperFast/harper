@@ -161,19 +161,27 @@ const SQL_ERROR_MSGS = {
     OUTER_JOIN_TRANSLATION_ERROR: "There was an error translating the final SQL outer join data."
 };
 
-// All error messages should be added to the HDB_ERROR_MSGS ENUM for export - this helps to organize all error messages
-//into a single export while still allowing us to group them here in a more readable/searchable way
-const HDB_ERROR_MSGS = {
-    ...COMMON_ERROR_MSGS,
-    ...BULK_LOAD_ERROR_MSGS,
-    ...WRITE_OPS_ERROR_MSGS,
-    ...OPERATION_AUTH_ERROR_MSGS,
-    ...ROLE_PERMS_ERROR_MSGS,
-    ...SQL_ERROR_MSGS,
-    ...SCHEMA_OP_ERROR_MSGS,
-    ...AUTHENTICATION_ERROR_MSGS
+const USER_ERROR_MSGS ={
+    ALTER_USER_DUP_ROLES: (role) => `Update failed.  There are duplicates for the '${role}' role which is not allowed. Update your roles and try again.`,
+    ALTER_USER_ROLE_NOT_FOUND: (role) => `Update failed.  Requested '${role}' role not found.`,
+    DUP_ROLES_FOUND: (role) => `Multiple ${role} roles found.  Roles must have unique 'role' value. Please update and try again.`,
+    ROLE_NAME_NOT_FOUND: (role) => `${role} role not found`
 };
 
+//into a single export while still allowing us to group them here in a more readable/searchable way
+const HDB_ERROR_MSGS = {
+    ...AUTHENTICATION_ERROR_MSGS,
+    ...BULK_LOAD_ERROR_MSGS,
+    ...COMMON_ERROR_MSGS,
+    ...OPERATION_AUTH_ERROR_MSGS,
+    ...ROLE_PERMS_ERROR_MSGS,
+    ...SCHEMA_OP_ERROR_MSGS,
+    ...SQL_ERROR_MSGS,
+    ...USER_ERROR_MSGS,
+    ...WRITE_OPS_ERROR_MSGS
+};
+
+// All error messages should be added to the HDB_ERROR_MSGS ENUM for export - this helps to organize all error messages
 module.exports = {
     CHECK_LOGS_WRAPPER,
     HDB_ERROR_MSGS,

@@ -21,10 +21,10 @@ const PermissionTableResponseObject = require('../../security/data_objects/Permi
 const PermissionAttributeResponseObject = require('../../security/data_objects/PermissionAttributeResponseObject');
 const { TEST_SCHEMA_OP_ERROR, TEST_OPERATION_AUTH_ERROR } = require('../commonTestErrors');
 
-const serverUtilities_rw = rewire('../../server/serverUtilities');
+const serverUtilities_rw = rewire('../../server/serverHelpers/serverUtilities');
 const initializeOperationFunctionMap_rw = serverUtilities_rw.__get__('initializeOperationFunctionMap');
 const OPERATION_MAP = initializeOperationFunctionMap_rw();
-rewire('../../server/serverUtilities');
+rewire('../../server/serverHelpers/serverUtilities');
 
 const test_terms = test_utils.COMMON_TEST_TERMS
 const crud_keys = test_terms.TEST_CRUD_PERM_KEYS;

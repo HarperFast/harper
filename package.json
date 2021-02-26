@@ -1,6 +1,6 @@
 {
   "name": "harperdb",
-  "version": "2.0.000",
+  "version": "3.0.0",
   "description": "",
   "main": "harperdb.js",
   "bin": {
@@ -45,10 +45,13 @@
     "compression": "^1.7.4",
     "cors": "^2.8.5",
     "enquirer": "^2.3.0",
-    "express": "^4.17.1",
+    "fastify": "^3.8.0",
+    "fastify-compress": "^3.4.0",
+    "fastify-cors": "^5.0.0",
+    "fastify-helmet": "^5.0.3",
+    "fastify-static": "^3.3.0",
     "fill-range": "^4.0.0",
     "fs-extra": "^7.0.1",
-    "graceful-fs": "^4.1.15",
     "human-readable-ids": "^1.0.4",
     "is-number": "^7.0.0",
     "jsonata": "^1.8.3",
@@ -84,6 +87,7 @@
     "winston-daily-rotate-file": "^3.9.0"
   },
   "devDependencies": {
+    "axios": "^0.21.0",
     "chai": "^4.2.0",
     "eslint": "^5.16.0",
     "minimist": "^1.2.5",

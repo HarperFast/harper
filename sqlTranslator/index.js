@@ -20,6 +20,8 @@ const logger = require('../utility/logging/harper_logger');
 const alasql_function_importer = require('./alasqlFunctionImporter');
 const hdb_utils = require('../utility/common_utils');
 const terms = require('../utility/hdbTerms');
+const { hdb_errors, handleHDBError } = require('../utility/errors/hdbError');
+const { HTTP_STATUS_CODES } = hdb_errors;
 const transact_to_clustering_utilities = require('../server/transactToClusteringUtilities');
 
 //here we call to define and import custom functions to alasql
@@ -90,7 +92,7 @@ function checkASTPermissions(json_message, parsed_sql_object) {
 function convertSQLToAST(sql) {
     let ast_response = new ParsedSQLObject();
     if (!sql) {
-        throw new Error('sql parameter is missing');
+        throw handleHDBError(new Error(),"The 'sql' parameter is missing from the request body", HTTP_STATUS_CODES.BAD_REQUEST);
     }
     try {
         let trimmed_sql = sql.trim();

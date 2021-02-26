@@ -1,37 +1,35 @@
 "use strict";
 
-const search = require('../data_layer/search');
-const sql = require('../sqlTranslator/index');
-const bulkLoad = require('../data_layer/bulkLoad');
-const schema = require('../data_layer/schema');
-const schema_describe = require('../data_layer/schemaDescribe');
-const delete_ = require('../data_layer/delete');
-const read_transaction_log = require('../data_layer/readTransactionLog');
-const user = require('../security/user');
-const role = require('../security/role');
-const cluster_utilities = require('./clustering/clusterUtilities');
-const harper_logger = require('../utility/logging/harper_logger');
-const export_ = require('../data_layer/export');
-const op_auth = require('../utility/operation_authorization');
-const jobs = require('./jobs');
-const terms = require('../utility/hdbTerms');
-const { hdb_errors, handleHDBError } = require('../utility/errors/hdbError');
-const reg = require('../utility/registration/registrationHandler');
-const stop = require('../bin/stop');
+const search = require('../../data_layer/search');
+const sql = require('../../sqlTranslator/index');
+const bulkLoad = require('../../data_layer/bulkLoad');
+const schema = require('../../data_layer/schema');
+const schema_describe = require('../../data_layer/schemaDescribe');
+const delete_ = require('../../data_layer/delete');
+const read_transaction_log = require('../../data_layer/readTransactionLog');
+const user = require('../../security/user');
+const role = require('../../security/role');
+const cluster_utilities = require('./../clustering/clusterUtilities');
+const harper_logger = require('../../utility/logging/harper_logger');
+const export_ = require('../../data_layer/export');
+const op_auth = require('../../utility/operation_authorization');
+const jobs = require('./../jobs');
+const terms = require('../../utility/hdbTerms');
+const { hdb_errors, handleHDBError } = require('../../utility/errors/hdbError');
+const { HTTP_STATUS_CODES } = hdb_errors;
+const reg = require('../../utility/registration/registrationHandler');
+const stop = require('../../bin/stop');
 const util = require('util');
-const insert = require('../data_layer/insert');
-const global_schema = require('../utility/globalSchema');
-const system_information = require('../utility/environment/systemInformation');
-const transact_to_clustering_utils = require('./transactToClusteringUtilities');
-const job_runner = require('./jobRunner');
-const signal = require('../utility/signalling');
-const token_authentication = require('../security/tokenAuthentication');
-const configuration = require('../server/configuration');
+const insert = require('../../data_layer/insert');
+const global_schema = require('../../utility/globalSchema');
+const system_information = require('../../utility/environment/systemInformation');
+const transact_to_clustering_utils = require('./../transactToClusteringUtilities');
+const job_runner = require('./../jobRunner');
+const signal = require('../../utility/signalling');
+const token_authentication = require('../../security/tokenAuthentication');
+const configuration = require('../../server/configuration');
 
-const operation_function_caller = require(`../utility/OperationFunctionCaller`);
-
-const UNAUTH_RESPONSE = 403;
-const UNAUTHORIZED_TEXT = 'You are not authorized to perform the operation specified';
+const operation_function_caller = require(`../../utility/OperationFunctionCaller`);
 
 const p_search_search_by_hash = util.promisify(search.searchByHash);
 const p_search_search_by_value = util.promisify(search.searchByValue);
@@ -50,16 +48,6 @@ const GLOBAL_SCHEMA_UPDATE_OPERATIONS_ENUM = {
 
 const OperationFunctionObject = require('./OperationFunctionObject');
 
-const OPERATION_FUNCTION_MAP = initializeOperationFunctionMap();
-
-module.exports = {
-    chooseOperation,
-    getOperationFunction,
-    processLocalTransaction,
-    UNAUTH_RESPONSE,
-    UNAUTHORIZED_TEXT
-};
-
 /**
  * This will process a command message on this receiving node rather than sending it to a remote node.  NOTE: this function
  * handles the response to the sender.
@@ -69,12 +57,12 @@ module.exports = {
  * @param callback
  * @returns {*}
  */
-function processLocalTransaction(req, res, operation_function, callback) {
+async function processLocalTransaction(req, operation_function) {
     try {
         if (req.body.operation !== 'read_log') {
-            if(harper_logger.log_level === harper_logger.INFO ||
-            harper_logger.log_level === harper_logger.DEBUG ||
-            harper_logger.log_level === harper_logger.TRACE) {
+            if (harper_logger.log_level === harper_logger.INFO ||
+                harper_logger.log_level === harper_logger.DEBUG ||
+                harper_logger.log_level === harper_logger.TRACE) {
                 // Need to remove auth variables, but we don't want to create an object unless
                 // the logging is actually going to happen.
                 // eslint-disable-next-line no-unused-vars
@@ -84,81 +72,50 @@ function processLocalTransaction(req, res, operation_function, callback) {
         }
     } catch (e) {
         harper_logger.error(e);
-
-        setResponseStatus(res, hdb_errors.HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR, e);
-        return callback(e);
     }
 
     let post_op_function = (terms.CLUSTER_OPERATIONS[req.body.operation] === undefined ? null : transact_to_clustering_utils.postOperationHandler);
 
-    operation_function_caller.callOperationFunctionAsAwait(operation_function, req.body, post_op_function)
-        .then((data) => {
-            if (typeof data !== 'object') {
-                data = {"message": data};
-            }
-            if(data instanceof Error) {
-                setResponseStatus(res, hdb_errors.HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR, {error: data.message});
-            }
-
-            if (GLOBAL_SCHEMA_UPDATE_OPERATIONS_ENUM[req.body.operation]) {
-                global_schema.setSchemaDataToGlobal((err) => {
-                    if (err) {
-                        harper_logger.error(err);
-                    }
-                });
-            }
-
-            setResponseStatus(res, hdb_errors.HTTP_STATUS_CODES.OK, data);
-            return callback(null, data);
-        })
-        .catch((error) => {
-            harper_logger.info(error);
-            if(error === UNAUTH_RESPONSE) {
-                setResponseStatus(res, hdb_errors.HTTP_STATUS_CODES.FORBIDDEN, {error: UNAUTHORIZED_TEXT});
-                return callback(error);
-            }
-            if(typeof error !== 'object') {
-                error = { message: error };
-            }
-
-            //This final response status and error msg evaluation is required while we transition to using the new error
-            // handling process with HDBError and the new properties set on the new error type
-            const http_resp_status = error.http_resp_code ? error.http_resp_code : hdb_errors.HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR;
-            const http_resp_msg = error.http_resp_msg ? error.http_resp_msg : error.message ? error.message : hdb_errors.DEFAULT_ERROR_RESP;
-            const error_msg = http_resp_msg.error ? http_resp_msg : { error: http_resp_msg};
-            setResponseStatus(res, http_resp_status, error_msg);
-            return callback(error);
-        });
-}
-
-/**
- * Wrapper for writing status, checks to see if the header is sent already.
- * @param res - the response object
- * @param status - the status object
- * @param msg - the response message.
- */
-function setResponseStatus(res, status, msg) {
     try {
-        if(!res._headerSent) {
-            res.status(status).json(msg);
+        let data = await operation_function_caller.callOperationFunctionAsAwait(operation_function, req.body, post_op_function);
+
+        if (typeof data !== 'object') {
+            data = {"message": data};
         }
-    } catch(err) {
-        harper_logger.info('Tried to set response status, but it has already been set.');
+        if (data instanceof Error) {
+            throw data;
+        }
+
+        if (GLOBAL_SCHEMA_UPDATE_OPERATIONS_ENUM[req.body.operation]) {
+            global_schema.setSchemaDataToGlobal(err => {
+                if (err) {
+                    harper_logger.error(err);
+                }
+            });
+        }
+
+        return data;
+    } catch(error) {
+        harper_logger.info(error);
+        throw error;
     }
 }
 
-// TODO: This doesn't really need a callback, should simplify it to a return statement.
-function chooseOperation(json, callback) {
-    if (json === undefined || json === null) {
-        harper_logger.error(`invalid message body parameters found`);
-        return nullOperation(json, callback);
-    }
+const OPERATION_FUNCTION_MAP = initializeOperationFunctionMap();
 
+module.exports = {
+    chooseOperation,
+    getOperationFunction,
+    processLocalTransaction
+};
+
+function chooseOperation(json) {
     let getOpResult;
     try {
         getOpResult = getOperationFunction(json);
     } catch(err) {
-        return callback(err, null);
+        harper_logger.error(`Error when selecting operation function - ${err}`);
+        throw err;
     }
 
     const { operation_function, job_operation_function } = getOpResult;
@@ -172,8 +129,8 @@ function chooseOperation(json, callback) {
             json.parsed_sql_object = parsed_sql_object;
             let ast_perm_check = sql.checkASTPermissions(json, parsed_sql_object);
             if (ast_perm_check) {
-                harper_logger.error(`${UNAUTH_RESPONSE} from operation ${json.search_operation}`);
-                return callback(ast_perm_check, null);
+                harper_logger.error(`${HTTP_STATUS_CODES.FORBIDDEN} from operation ${json.search_operation}`);
+                throw handleHDBError(new Error(), ast_perm_check, hdb_errors.HTTP_STATUS_CODES.FORBIDDEN);
             }
         //we need to bypass permission checks to allow the create_authorization_tokens
         } else if(json.operation !== terms.OPERATIONS_ENUM.CREATE_AUTHENTICATION_TOKENS){
@@ -186,18 +143,14 @@ function chooseOperation(json, callback) {
             let verify_perms_result = op_auth.verifyPerms(operation_json, function_to_check);
 
             if (verify_perms_result) {
-                harper_logger.error(`${UNAUTH_RESPONSE} from operation ${json.operation}`);
-                return callback(verify_perms_result, null);
+                harper_logger.error(`${HTTP_STATUS_CODES.FORBIDDEN} from operation ${json.operation}`);
+                throw handleHDBError(new Error(), verify_perms_result, hdb_errors.HTTP_STATUS_CODES.FORBIDDEN);
             }
         }
-    } catch (e) {
-        // The below scenarios should catch all non auth related processing errors and return the message
-        if (e.http_resp_code) {
-            return callback(e, null);
-        }
-        return callback(e.message, null);
+    } catch (err) {
+        throw handleHDBError(err, `There was an error when trying to choose an operation path`);
     }
-    return callback(null, operation_function);
+    return operation_function;
 }
 
 function getOperationFunction(json){
@@ -248,14 +201,6 @@ async function catchup(req) {
     }
 }
 
-function nullOperation(json, callback) {
-    callback('Invalid operation');
-}
-
-async function nullOperationAwait(json) {
-    throw new Error('Invalid operation');
-}
-
 async function signalJob(json) {
     let new_job_object = undefined;
     let result = undefined;
@@ -267,12 +212,11 @@ async function signalJob(json) {
         if (process.send !== undefined) {
             signal.signalJobAdded(job_signal_message);
         } else {
-            try {
-                // purposefully not waiting for await response as we want to callback immediately.
-                job_runner.parseMessage(job_signal_message.runner_message);
-            } catch (e) {
-                harper_logger.error(`Got an error trying to run a job with message ${job_runner_message}. ${e}`);
-            }
+            // purposefully not waiting for await response as we want to callback immediately.
+            job_runner.parseMessage(job_signal_message.runner_message)
+                .catch(e => {
+                    harper_logger.error(`Got an error trying to run a job with message ${job_runner_message}. ${e}`);
+                });
         }
         return `Starting job with id ${new_job_object.id}`;
     } catch (err) {

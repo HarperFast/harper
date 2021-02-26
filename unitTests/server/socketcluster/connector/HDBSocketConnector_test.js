@@ -10,7 +10,7 @@ const existing_test_schema = global.hdb_schema;
 const global_schema = require('../../../../utility/globalSchema');
 const SocketConnector = require('../../../../server/socketcluster/connector/SocketConnector');
 const schema = require('../../../../data_layer/schema');
-const server_utils = require('../../../../server/serverUtilities');
+const server_utils = require('../../../../server/serverHelpers/serverUtilities');
 const terms = require('../../../../utility/hdbTerms');
 const {promisify} = require('util');
 
