@@ -11,7 +11,7 @@ const {getBaseSchemaPath} = require('../lmdbUtility/initializePaths');
 const path = require('path');
 const environment_utility = require('../../../../utility/lmdb/environmentUtility');
 const { handleHDBError, hdb_errors } = require('../../../../utility/errors/hdbError');
-const { HTTP_STATUS_CODES } = hdb_errors
+const { HTTP_STATUS_CODES } = hdb_errors;
 
 module.exports = lmdbSearchByConditions;
 
