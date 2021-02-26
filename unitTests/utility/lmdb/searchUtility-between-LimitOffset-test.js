@@ -79,6 +79,14 @@ describe('test between function', ()=> {
         assert.deepEqual(results, expected);
     });
 
+    it("test between 11 & 11 on hash column", () => {
+        let expected = [[11],[{"id": 11}]];
+        let results = test_utils.assertErrorSync(search_util.between, [env, 'id', 'id', '11', 11], undefined);
+        assert.deepEqual(results[0].length, 1);
+        assert.deepEqual(results[1].length, 1);
+        assert.deepEqual(results, expected);
+    });
+
     it("test between 0 and 111 on hash column", () => {
         let expected = [[0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,65,66,67,68,69,70,71,72,73,74,75,76,77,78,79,80,81,82,83,84,85,86,87,88,89,90,91,92,93,94,95,96,97,98,99,100,101,102,103,104,105,106,107,108,109,110,111],[{"id": 0},{"id": 1},{"id": 2},{"id": 3},{"id": 4},{"id": 5},{"id": 6},{"id": 7},{"id": 8},{"id": 9},{"id": 10},{"id": 11},{"id": 12},{"id": 13},{"id": 14},{"id": 15},{"id": 16},{"id": 17},{"id": 18},{"id": 19},{"id": 20},{"id": 21},{"id": 22},{"id": 23},{"id": 24},{"id": 25},{"id": 26},{"id": 27},{"id": 28},{"id": 29},{"id": 30},{"id": 31},{"id": 32},{"id": 33},{"id": 34},{"id": 35},{"id": 36},{"id": 37},{"id": 38},{"id": 39},{"id": 40},{"id": 41},{"id": 42},{"id": 43},{"id": 44},{"id": 45},{"id": 46},{"id": 47},{"id": 48},{"id": 49},{"id": 50},{"id": 51},{"id": 52},{"id": 53},{"id": 54},{"id": 55},{"id": 56},{"id": 57},{"id": 58},{"id": 59},{"id": 60},{"id": 61},{"id": 62},{"id": 63},{"id": 64},{"id": 65},{"id": 66},{"id": 67},{"id": 68},{"id": 69},{"id": 70},{"id": 71},{"id": 72},{"id": 73},{"id": 74},{"id": 75},{"id": 76},{"id": 77},{"id": 78},{"id": 79},{"id": 80},{"id": 81},{"id": 82},{"id": 83},{"id": 84},{"id": 85},{"id": 86},{"id": 87},{"id": 88},{"id": 89},{"id": 90},{"id": 91},{"id": 92},{"id": 93},{"id": 94},{"id": 95},{"id": 96},{"id": 97},{"id": 98},{"id": 99},{"id": 100},{"id": 101},{"id": 102},{"id": 103},{"id": 104},{"id": 105},{"id": 106},{"id": 107},{"id": 108},{"id": 109},{"id": 110},{"id": 111}]];
 
@@ -216,6 +224,15 @@ describe('test between function', ()=> {
         let results = test_utils.assertErrorSync(search_util.between, [env, 'id', 'temperature', '11', 100], undefined);
         assert.deepEqual(results[0].length, 759);
         assert.deepEqual(results[1].length, 759);
+        assert.deepEqual(results, expected);
+    });
+
+    it("test between 11 & 11 on int key column", () => {
+        let expected = [[9,69,247,311,405,543,558,834],[{"temperature": 11,"id": 9},{"temperature": 11,"id": 69},{"temperature": 11,"id": 247},{"temperature": 11,"id": 311},{"temperature": 11,"id": 405},{"temperature": 11,"id": 543},{"temperature": 11,"id": 558},{"temperature": 11,"id": 834}]];
+
+        let results = test_utils.assertErrorSync(search_util.between, [env, 'id', 'temperature', '11', 11], undefined);
+        assert.deepEqual(results[0].length, 8);
+        assert.deepEqual(results[1].length, 8);
         assert.deepEqual(results, expected);
     });
 

@@ -854,7 +854,7 @@ function between(env, hash_attribute, attribute, start_value, end_value, reverse
     start_value = common.convertKeyValueToWrite(start_value);
     end_value = hdb_utils.autoCast(end_value);
     end_value = common.convertKeyValueToWrite(end_value);
-    if (start_value >= end_value) {
+    if (start_value > end_value) {
         throw new Error(LMDB_ERRORS.END_VALUE_MUST_BE_GREATER_THAN_START_VALUE);
     }
 
