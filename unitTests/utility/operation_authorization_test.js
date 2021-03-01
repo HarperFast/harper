@@ -155,6 +155,44 @@ let TEST_ACTION_JSON = {
     }
 };
 
+let TEST_CONDITIONS_JSON = {
+    "operation": "search_by_conditions",
+    "schema": "dev",
+    "table": "dog",
+    "get_attributes": ["id", "age", "name", "adorable", "location"],
+    "conditions": [
+        {
+            "search_attribute": "location",
+            "search_type": "contains",
+            "search_value": "NC"
+        },
+        {
+            "search_attribute": "location",
+            "search_type": "contains",
+            "search_value": "CO"
+        }
+    ],
+    "sort_attributes": [
+        {
+            "attribute": "age",
+            "desc": false
+        },
+        {
+            "attribute": "owner_name",
+            "desc": true
+        }
+    ],
+}
+
+let TEST_SEARCH_BY_VAL_JSON = {
+    "operation": "search_by_value",
+    "schema": "dev",
+    "table": "dog",
+    "get_attributes": ["id", "name", "adorable", "location"],
+    "search_attribute": "age",
+    "search_value": 10
+}
+
 let TEST_JSON_SUPER_USER = {
     "operation": "insert",
     "schema": "dev",
@@ -811,6 +849,40 @@ describe('Test operation_authorization', function() {
             req_json.records = null;
             let result = getRecordAttributes(req_json);
             assert.equal(result.size, 0);
+        });
+
+        it('Nominal case, valid JSON for search_by_conditions',function() {
+            let expected_attrs = ["id", "age", "name", "adorable", "location", "owner_name"]
+            let getRecordAttributes = op_auth_rewire.__get__('getRecordAttributes');
+            let req_json = clone(TEST_CONDITIONS_JSON);
+            let result = getRecordAttributes(req_json);
+            assert.equal(result.size, expected_attrs.length);
+            expected_attrs.forEach(attr => {
+                assert.ok(result.has(attr));
+            })
+        });
+
+        it('Nominal case, valid JSON for search_by_conditions  w/o sort',function() {
+            let expected_attrs = ["id", "age", "name", "adorable", "location"]
+            let getRecordAttributes = op_auth_rewire.__get__('getRecordAttributes');
+            let req_json = clone(TEST_CONDITIONS_JSON);
+            delete req_json.sort_attributes;
+            let result = getRecordAttributes(req_json);
+            assert.equal(result.size, expected_attrs.length);
+            expected_attrs.forEach(attr => {
+                assert.ok(result.has(attr));
+            })
+        });
+
+        it('Nominal case, valid JSON for search_by_value',function() {
+            let expected_attrs = ["id", "age", "name", "adorable", "location"]
+            let getRecordAttributes = op_auth_rewire.__get__('getRecordAttributes');
+            let req_json = clone(TEST_SEARCH_BY_VAL_JSON);
+            let result = getRecordAttributes(req_json);
+            assert.equal(result.size, expected_attrs.length);
+            expected_attrs.forEach(attr => {
+                assert.ok(result.has(attr));
+            })
         });
     });
 

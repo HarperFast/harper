@@ -263,7 +263,7 @@ describe('Tests for the file system bridge class', () => {
             expect(log_error_spy).to.have.been.calledOnce;
         });
     });
-    
+
     context('Test dropSchema method', () => {
         let fs_drop_schema_stub = sandbox.stub();
         let fs_drop_schema_rw;
@@ -466,5 +466,18 @@ describe('Tests for the file system bridge class', () => {
             expect(log_error_spy).to.have.been.calledOnce;
         });
 
+    });
+
+    context('Test searchByCondition method', () => {
+        it('Test searchByCondition method returns an error', async () => {
+            let err_result;
+            try {
+                await fsBridge.searchByConditions({ operation: "search_by_conditions"});
+            } catch(err) {
+                err_result = err;
+            }
+                expect(err_result.http_resp_code).to.eql(400);
+                expect(err_result.http_resp_msg).to.eql("search_by_conditions is not available for this instance because it uses the File System data store.");
+        });
     });
 });

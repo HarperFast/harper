@@ -16,12 +16,7 @@ const c_search_by_value = util.callbackify(harperBridge.searchByValue);
 const SQLSearch = require('./SQLSearch');
 
 async function searchByConditions(search_object) {
-    try {
-        const search_results = await harperBridge.searchByConditions(search_object);
-        return search_results;
-    } catch(err) {
-        throw err;
-    }
+    return harperBridge.searchByConditions(search_object);
 }
 
 function searchByHash(search_object, callback){

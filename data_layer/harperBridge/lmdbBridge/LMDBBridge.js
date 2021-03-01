@@ -26,8 +26,9 @@ class LMDBBridge extends BridgeMethods {
 
     async searchByConditions(search_object) {
         try {
-            return await lmdbSearchByConditions(search_object);
+            return lmdbSearchByConditions(search_object);
         } catch(err) {
+            log.error(err);
             throw err;
         }
     }

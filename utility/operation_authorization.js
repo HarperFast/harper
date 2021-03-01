@@ -526,7 +526,8 @@ function getRecordAttributes(json) {
             json.conditions.forEach(condition => {
                 affected_attributes.add(condition.search_attribute);
             });
-            if (json.sort_attributes && json.sort_attributes.length > 0) {
+
+            if (json.sort_attributes) {
                 json.sort_attributes.forEach(sort_attr => {
                     affected_attributes.add(sort_attr.attribute);
                 });
@@ -543,18 +544,14 @@ function getRecordAttributes(json) {
             }
 
             for (let record = 0; record < json.get_attributes.length; record++) {
-                // if (!affected_attributes.has(json.get_attributes[record])) {
-                    affected_attributes.add(json.get_attributes[record]);
-                // }
+                affected_attributes.add(json.get_attributes[record]);
             }
         } else {
             // get unique affected_attributes
             for (let record = 0; record < json.records.length; record++) {
                 let keys = Object.keys(json.records[record]);
                 for (let att = 0; att < keys.length; att++) {
-                    // if (!affected_attributes.has(keys[att])) {
-                        affected_attributes.add(keys[att]);
-                    // }
+                    affected_attributes.add(keys[att]);
                 }
             }
         }
