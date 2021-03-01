@@ -88,28 +88,28 @@ describe('test lmdbSearchByValue module', ()=>{
         });
 
         it('test validation', async()=>{
-            await test_utils.assertErrorAsync(lmdb_search, [{}], new Error('"schema" is required. "table" is required. "get_attributes" is required. "conditions" is required'));
-            await test_utils.assertErrorAsync(lmdb_search, [{schema:'dev'}], new Error('"table" is required. "get_attributes" is required. "conditions" is required'));
-            await test_utils.assertErrorAsync(lmdb_search, [{schema:'dev', table:'test'}], new Error('"get_attributes" is required. "conditions" is required'));
-            await test_utils.assertErrorAsync(lmdb_search, [{schema:'dev', table:'test', get_attributes:['*']}], new Error('"conditions" is required'));
+            await test_utils.assertErrorAsync(lmdb_search, [{}], test_utils.generateHDBError('"schema" is required. "table" is required. "get_attributes" is required. "conditions" is required', 400));
+            await test_utils.assertErrorAsync(lmdb_search, [{schema:'dev'}], test_utils.generateHDBError('"table" is required. "get_attributes" is required. "conditions" is required', 400));
+            await test_utils.assertErrorAsync(lmdb_search, [{schema:'dev', table:'test'}], test_utils.generateHDBError('"get_attributes" is required. "conditions" is required', 400));
+            await test_utils.assertErrorAsync(lmdb_search, [{schema:'dev', table:'test', get_attributes:['*']}], test_utils.generateHDBError('"conditions" is required', 400));
             await test_utils.assertErrorAsync(lmdb_search, [{schema:'dev', table:'test', get_attributes:['*'], conditions:[{}]}],
-                new Error('"conditions[0].search_attribute" is required. "conditions[0].search_type" is required. "conditions[0].search_value" is required'));
+                test_utils.generateHDBError('"conditions[0].search_attribute" is required. "conditions[0].search_type" is required. "conditions[0].search_value" is required', 400));
             await test_utils.assertErrorAsync(lmdb_search, [{schema:'dev', table:'test', get_attributes:['*'], conditions:[{search_attribute: 'city'}]}],
-                new Error('"conditions[0].search_type" is required. "conditions[0].search_value" is required'));
+                test_utils.generateHDBError('"conditions[0].search_type" is required. "conditions[0].search_value" is required', 400));
             await test_utils.assertErrorAsync(lmdb_search, [{schema:'dev', table:'test', get_attributes:['*'], conditions:[{search_attribute: 'city', search_type: 'equals'}]}],
-                new Error('"conditions[0].search_value" is required'));
+                test_utils.generateHDBError('"conditions[0].search_value" is required', 400));
             await test_utils.assertErrorAsync(lmdb_search, [{schema:'dev', table:'test', get_attributes:['*'], conditions:[{search_attribute: 'city', search_type: 'equals', search_value: 'test'}],
                     sort_attributes:[]}],
-                new Error('"sort_attributes" must contain at least 1 items'));
+                test_utils.generateHDBError('"sort_attributes" must contain at least 1 items', 400));
 
             await test_utils.assertErrorAsync(lmdb_search, [{schema:'dev/sss', table:'test`e`r', get_attributes:['id', 'tem/p'], conditions:[{search_attribute: 'ci`/ty', search_type: 'equals', search_value: 'test'}],
                 sort_attributes:[{attribute:'tes`'}]}],
-                new Error('"schema" names cannot include backticks or forward slashes. "table" names cannot include backticks or forward slashes. "get_attributes[1]" names cannot include backticks or forward slashes. ' +
-                    '"sort_attributes[0].attribute" names cannot include backticks or forward slashes. "conditions[0].search_attribute" names cannot include backticks or forward slashes'));
+                test_utils.generateHDBError('"schema" names cannot include backticks or forward slashes. "table" names cannot include backticks or forward slashes. "get_attributes[1]" names cannot include backticks or forward slashes. ' +
+                    '"sort_attributes[0].attribute" names cannot include backticks or forward slashes. "conditions[0].search_attribute" names cannot include backticks or forward slashes', 400));
 
             await test_utils.assertErrorAsync(lmdb_search, [{schema:'dev', table:'test', get_attributes:['*'], conditions:[{search_attribute: 'city', search_type: 'dddd', search_value: 'test'}],
                     sort_attributes:[{attribute:'temperature', desc:3}]}],
-                new Error('"sort_attributes[0].desc" must be a boolean. "conditions[0].search_type" must be one of [equals, contains, starts_with, ends_with, greater_than, greater_than_equal, less_than, less_than_equal, between]'));
+                test_utils.generateHDBError('"sort_attributes[0].desc" must be a boolean. "conditions[0].search_type" must be one of [equals, contains, starts_with, ends_with, greater_than, greater_than_equal, less_than, less_than_equal, between]', 400));
 
             await test_utils.assertErrorAsync(lmdb_search, [{schema:'dev2', table:'test', get_attributes:['*'], conditions:[{search_attribute: 'city', search_type: 'equals', search_value: 'Denver'}]}],
                 handleHDBError(new Error(), "Schema 'dev2' does not exist", 404));
@@ -118,11 +118,11 @@ describe('test lmdbSearchByValue module', ()=>{
                 handleHDBError(new Error(), "Table 'dev.test2' does not exist", 404));
 
             await test_utils.assertErrorAsync(lmdb_search, [{schema:'dev', table:'test', get_attributes:['*'], conditions:[{search_attribute: 'cityz', search_type: 'equals', search_value: 'Denver'}]}],
-                new Error("unknown attribute 'cityz'"));
+                test_utils.generateHDBError("unknown attribute 'cityz'", 400));
 
             await test_utils.assertErrorAsync(lmdb_search, [{schema:'dev', table:'test', get_attributes:['*'], conditions:[{search_attribute: 'city', search_type: 'equals', search_value: 'Denver'}],
                 sort_attributes:[{attribute:'id'},{attribute:'sddf'}]}],
-                new Error("unknown attribute 'sddf'"));
+                test_utils.generateHDBError("unknown attribute 'sddf'", 400));
 
         });
 
