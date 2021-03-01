@@ -304,7 +304,7 @@ function verifyPerms(request_json, operation) {
         return null;
     }
 
-    //For a NoSQL search op with `get_attributes: '*'` - as long as the role has permissions READ permissions on the table,
+    //For a NoSQL search op with `get_attributes: '*'` - as long as the role has READ permissions on the table,
     //we will convert the * to the specific attributes the user has READ permissions for via their role.
     if (!is_super_user && request_json.get_attributes && terms.SEARCH_WILDCARDS.includes(request_json.get_attributes[0])) {
         let final_get_attrs = [];
@@ -522,28 +522,39 @@ function getRecordAttributes(json) {
         if (json.action) {
             return affected_attributes;
         }
+        if (json.operation === terms.OPERATIONS_ENUM.SEARCH_BY_CONDITIONS) {
+            json.conditions.forEach(condition => {
+                affected_attributes.add(condition.search_attribute);
+            });
+            if (json.sort_attributes && json.sort_attributes.length > 0) {
+                json.sort_attributes.forEach(sort_attr => {
+                    affected_attributes.add(sort_attr.attribute);
+                });
+            }
+        }
+
         if (json && json.search_attribute) {
             affected_attributes.add(json.search_attribute);
         }
+
         if (!json.records || json.records.length === 0) {
             if (!json.get_attributes || !json.get_attributes.length === 0) {
                 return affected_attributes;
             }
 
             for (let record = 0; record < json.get_attributes.length; record++) {
-                if (!affected_attributes.has(json.get_attributes[record])) {
+                // if (!affected_attributes.has(json.get_attributes[record])) {
                     affected_attributes.add(json.get_attributes[record]);
-                }
+                // }
             }
-
         } else {
             // get unique affected_attributes
             for (let record = 0; record < json.records.length; record++) {
                 let keys = Object.keys(json.records[record]);
                 for (let att = 0; att < keys.length; att++) {
-                    if (!affected_attributes.has(keys[att])) {
+                    // if (!affected_attributes.has(keys[att])) {
                         affected_attributes.add(keys[att]);
-                    }
+                    // }
                 }
             }
         }
