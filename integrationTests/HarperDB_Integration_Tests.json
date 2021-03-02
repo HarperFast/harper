@@ -22807,7 +22807,7 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\t\"operation\":\"search_by_conditions\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog_conditions\",\n\t\"get_attributes\": [\"*\"],\n\t\"operator\": \"OR\",\n\t\"conditions\": [{\n\t\t\"search_attribute\": \"location\",\n\t\t\"search_type\": \"contains\",\n\t\t\"search_value\": \"NC\"\n\t},\n\t{\n\t\t\"search_attribute\": \"location\",\n\t\t\"search_type\": \"contains\",\n\t\t\"search_value\": \"CO\"\n\t}\n\t]\n}"
+							"raw": "{\n\t\"operation\": \"search_by_conditions\",\n\t\"schema\": \"dev\",\n\t\"table\": \"dog_conditions\",\n\t\"get_attributes\": [\n\t\t\"*\"\n\t],\n\t\"operator\": \"OR\",\n\t\"conditions\": [\n\t\t{\n\t\t\t\"search_attribute\": \"location\",\n\t\t\t\"search_type\": \"contains\",\n\t\t\t\"search_value\": \"NC\"\n\t\t},\n\t\t{\n\t\t\t\"search_attribute\": \"location\",\n\t\t\t\"search_type\": \"contains\",\n\t\t\t\"search_value\": \"CO\"\n\t\t}\n\t]\n}"
 						},
 						"url": {
 							"raw": "{{host}}:{{port}}",
@@ -25897,7 +25897,7 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n    \"operation\": \"add_role\",\n    \"role\": \"developer_test_5\",\n    \"permission\": {\n        \"super_user\": false,\n        \"northnwd\": {\n            \"tables\": {\n                \"customers\": {\n                    \"read\": true,\n                    \"insert\": true,\n                    \"update\": true,\n                    \"delete\": true,\n                    \"attribute_permissions\": []\n                },\n                \"suppliers\": {\n                    \"read\": false,\n                    \"insert\": false,\n                    \"update\": false,\n                    \"delete\": false,\n                    \"attribute_permissions\": []\n                },\n                \"region\": {\n                    \"read\": true,\n                    \"insert\": false,\n                    \"update\": false,\n                    \"delete\": false,\n                    \"attribute_permissions\": [\n                        {\n                            \"attribute_name\": \"regiondescription\",\n                            \"read\": true,\n                            \"insert\": false,\n                            \"update\": false,\n                            \"delete\": false\n                        }\n                    ]\n                },\n                \"territories\": {\n                    \"read\": true,\n                    \"insert\": true,\n                    \"update\": false,\n                    \"delete\": false,\n                    \"attribute_permissions\": [\n                        {\n                            \"attribute_name\": \"territorydescription\",\n                            \"read\": true,\n                            \"insert\": true,\n                            \"update\": false,\n                            \"delete\": false\n                        }\n                    ]\n                },\n                \"categories\": {\n                    \"read\": true,\n                    \"insert\": true,\n                    \"update\": true,\n                    \"delete\": false,\n                    \"attribute_permissions\": [\n                        {\n                            \"attribute_name\": \"description\",\n                            \"read\": true,\n                            \"insert\": true,\n                            \"update\": true,\n                            \"delete\": false\n                        }\n                    ]\n                },\n                \"shippers\": {\n                    \"read\": true,\n                    \"insert\": true,\n                    \"update\": true,\n                    \"delete\": true,\n                    \"attribute_permissions\": [\n                        {\n                            \"attribute_name\": \"companyname\",\n                            \"read\": false,\n                            \"insert\": false,\n                            \"update\": false,\n                            \"delete\": false\n                        }\n                    ]\n                }\n            }\n        },\n        \"dev\": {\n            \"tables\": {\n                \"dog\": {\n                    \"read\": true,\n                    \"insert\": true,\n                    \"update\": true,\n                    \"delete\": true,\n                    \"attribute_permissions\": [\n                        {\n                            \"attribute_name\": \"__createdtime__\",\n                            \"read\": true,\n                            \"insert\": true,\n                            \"update\": true\n                        },\n                        {\n                            \"attribute_name\": \"__updatedtime__\",\n                            \"read\": true,\n                            \"insert\": true,\n                            \"update\": true\n                        },\n                        {\n                            \"attribute_name\": \"age\",\n                            \"read\": true,\n                            \"insert\": true,\n                            \"update\": false\n                        },\n                        {\n                            \"attribute_name\": \"dog_name\",\n                            \"read\": true,\n                            \"insert\": false,\n                            \"update\": true\n                        },\n                        {\n                            \"attribute_name\": \"adorable\",\n                            \"read\": true,\n                            \"insert\": true,\n                            \"update\": true\n                        },\n                        {\n                            \"attribute_name\": \"owner_id\",\n                            \"read\": false,\n                            \"insert\": true,\n                            \"update\": true\n                        }\n                    ]\n                },\n                \"breed\": {\n                    \"read\": true,\n                    \"insert\": true,\n                    \"update\": true,\n                    \"delete\": true,\n                    \"attribute_permissions\": [\n                        {\n                            \"attribute_name\": \"__createdtime__\",\n                            \"read\": false,\n                            \"insert\": false,\n                            \"update\": true\n                        },\n                        {\n                            \"attribute_name\": \"__updatedtime__\",\n                            \"read\": false,\n                            \"insert\": true,\n                            \"update\": true\n                        }\n                    ]\n                }\n            }\n        }\n    }\n}"
+							"raw": "{\n\t\"operation\": \"add_role\",\n\t\"role\": \"developer_test_5\",\n\t\"permission\": {\n\t\t\"super_user\": false,\n\t\t\"northnwd\": {\n\t\t\t\"tables\": {\n\t\t\t\t\"customers\": {\n\t\t\t\t\t\"read\": true,\n\t\t\t\t\t\"insert\": true,\n\t\t\t\t\t\"update\": true,\n\t\t\t\t\t\"delete\": true,\n\t\t\t\t\t\"attribute_permissions\": []\n\t\t\t\t},\n\t\t\t\t\"suppliers\": {\n\t\t\t\t\t\"read\": false,\n\t\t\t\t\t\"insert\": false,\n\t\t\t\t\t\"update\": false,\n\t\t\t\t\t\"delete\": false,\n\t\t\t\t\t\"attribute_permissions\": []\n\t\t\t\t},\n\t\t\t\t\"region\": {\n\t\t\t\t\t\"read\": true,\n\t\t\t\t\t\"insert\": false,\n\t\t\t\t\t\"update\": false,\n\t\t\t\t\t\"delete\": false,\n\t\t\t\t\t\"attribute_permissions\": [\n\t\t\t\t\t\t{\n\t\t\t\t\t\t\t\"attribute_name\": \"regiondescription\",\n\t\t\t\t\t\t\t\"read\": true,\n\t\t\t\t\t\t\t\"insert\": false,\n\t\t\t\t\t\t\t\"update\": false,\n\t\t\t\t\t\t\t\"delete\": false\n\t\t\t\t\t\t}\n\t\t\t\t\t]\n\t\t\t\t},\n\t\t\t\t\"territories\": {\n\t\t\t\t\t\"read\": true,\n\t\t\t\t\t\"insert\": true,\n\t\t\t\t\t\"update\": false,\n\t\t\t\t\t\"delete\": false,\n\t\t\t\t\t\"attribute_permissions\": [\n\t\t\t\t\t\t{\n\t\t\t\t\t\t\t\"attribute_name\": \"territorydescription\",\n\t\t\t\t\t\t\t\"read\": true,\n\t\t\t\t\t\t\t\"insert\": true,\n\t\t\t\t\t\t\t\"update\": false,\n\t\t\t\t\t\t\t\"delete\": false\n\t\t\t\t\t\t}\n\t\t\t\t\t]\n\t\t\t\t},\n\t\t\t\t\"categories\": {\n\t\t\t\t\t\"read\": true,\n\t\t\t\t\t\"insert\": true,\n\t\t\t\t\t\"update\": true,\n\t\t\t\t\t\"delete\": false,\n\t\t\t\t\t\"attribute_permissions\": [\n\t\t\t\t\t\t{\n\t\t\t\t\t\t\t\"attribute_name\": \"description\",\n\t\t\t\t\t\t\t\"read\": true,\n\t\t\t\t\t\t\t\"insert\": true,\n\t\t\t\t\t\t\t\"update\": true,\n\t\t\t\t\t\t\t\"delete\": false\n\t\t\t\t\t\t}\n\t\t\t\t\t]\n\t\t\t\t},\n\t\t\t\t\"shippers\": {\n\t\t\t\t\t\"read\": true,\n\t\t\t\t\t\"insert\": true,\n\t\t\t\t\t\"update\": true,\n\t\t\t\t\t\"delete\": true,\n\t\t\t\t\t\"attribute_permissions\": [\n\t\t\t\t\t\t{\n\t\t\t\t\t\t\t\"attribute_name\": \"companyname\",\n\t\t\t\t\t\t\t\"read\": false,\n\t\t\t\t\t\t\t\"insert\": false,\n\t\t\t\t\t\t\t\"update\": false,\n\t\t\t\t\t\t\t\"delete\": false\n\t\t\t\t\t\t}\n\t\t\t\t\t]\n\t\t\t\t}\n\t\t\t}\n\t\t},\n\t\t\"dev\": {\n\t\t\t\"tables\": {\n\t\t\t\t\"dog\": {\n\t\t\t\t\t\"read\": true,\n\t\t\t\t\t\"insert\": true,\n\t\t\t\t\t\"update\": true,\n\t\t\t\t\t\"delete\": true,\n\t\t\t\t\t\"attribute_permissions\": [\n\t\t\t\t\t\t{\n\t\t\t\t\t\t\t\"attribute_name\": \"__createdtime__\",\n\t\t\t\t\t\t\t\"read\": true,\n\t\t\t\t\t\t\t\"insert\": true,\n\t\t\t\t\t\t\t\"update\": true\n\t\t\t\t\t\t},\n\t\t\t\t\t\t{\n\t\t\t\t\t\t\t\"attribute_name\": \"__updatedtime__\",\n\t\t\t\t\t\t\t\"read\": true,\n\t\t\t\t\t\t\t\"insert\": true,\n\t\t\t\t\t\t\t\"update\": true\n\t\t\t\t\t\t},\n\t\t\t\t\t\t{\n\t\t\t\t\t\t\t\"attribute_name\": \"age\",\n\t\t\t\t\t\t\t\"read\": true,\n\t\t\t\t\t\t\t\"insert\": true,\n\t\t\t\t\t\t\t\"update\": false\n\t\t\t\t\t\t},\n\t\t\t\t\t\t{\n\t\t\t\t\t\t\t\"attribute_name\": \"dog_name\",\n\t\t\t\t\t\t\t\"read\": true,\n\t\t\t\t\t\t\t\"insert\": false,\n\t\t\t\t\t\t\t\"update\": true\n\t\t\t\t\t\t},\n\t\t\t\t\t\t{\n\t\t\t\t\t\t\t\"attribute_name\": \"adorable\",\n\t\t\t\t\t\t\t\"read\": true,\n\t\t\t\t\t\t\t\"insert\": true,\n\t\t\t\t\t\t\t\"update\": true\n\t\t\t\t\t\t},\n\t\t\t\t\t\t{\n\t\t\t\t\t\t\t\"attribute_name\": \"owner_id\",\n\t\t\t\t\t\t\t\"read\": false,\n\t\t\t\t\t\t\t\"insert\": true,\n\t\t\t\t\t\t\t\"update\": true\n\t\t\t\t\t\t}\n\t\t\t\t\t]\n\t\t\t\t},\n\t\t\t\t\"breed\": {\n\t\t\t\t\t\"read\": true,\n\t\t\t\t\t\"insert\": true,\n\t\t\t\t\t\"update\": true,\n\t\t\t\t\t\"delete\": true,\n\t\t\t\t\t\"attribute_permissions\": [\n\t\t\t\t\t\t{\n\t\t\t\t\t\t\t\"attribute_name\": \"__createdtime__\",\n\t\t\t\t\t\t\t\"read\": false,\n\t\t\t\t\t\t\t\"insert\": false,\n\t\t\t\t\t\t\t\"update\": true\n\t\t\t\t\t\t},\n\t\t\t\t\t\t{\n\t\t\t\t\t\t\t\"attribute_name\": \"__updatedtime__\",\n\t\t\t\t\t\t\t\"read\": false,\n\t\t\t\t\t\t\t\"insert\": true,\n\t\t\t\t\t\t\t\"update\": true\n\t\t\t\t\t\t}\n\t\t\t\t\t]\n\t\t\t\t},\n\t\t\t\t\"dog_conditions\": {\n\t\t\t\t\t\"read\": true,\n\t\t\t\t\t\"insert\": true,\n\t\t\t\t\t\"update\": false,\n\t\t\t\t\t\"delete\": false,\n\t\t\t\t\t\"attribute_permissions\": [\n\t\t\t\t\t\t{\n\t\t\t\t\t\t\t\"attribute_name\": \"age\",\n\t\t\t\t\t\t\t\"read\": true,\n\t\t\t\t\t\t\t\"insert\": false,\n\t\t\t\t\t\t\t\"update\": false\n\t\t\t\t\t\t},\n\t\t\t\t\t\t{\n\t\t\t\t\t\t\t\"attribute_name\": \"group\",\n\t\t\t\t\t\t\t\"read\": true,\n\t\t\t\t\t\t\t\"insert\": false,\n\t\t\t\t\t\t\t\"update\": false\n\t\t\t\t\t\t},\n\t\t\t\t\t\t{\n\t\t\t\t\t\t\t\"attribute_name\": \"breed_id\",\n\t\t\t\t\t\t\t\"read\": false,\n\t\t\t\t\t\t\t\"insert\": true,\n\t\t\t\t\t\t\t\"update\": false\n\t\t\t\t\t\t},\n\t\t\t\t\t\t{\n\t\t\t\t\t\t\t\"attribute_name\": \"dog_name\",\n\t\t\t\t\t\t\t\"read\": true,\n\t\t\t\t\t\t\t\"insert\": false,\n\t\t\t\t\t\t\t\"update\": false\n\t\t\t\t\t\t},\n\t\t\t\t\t\t{\n\t\t\t\t\t\t\t\"attribute_name\": \"id\",\n\t\t\t\t\t\t\t\"read\": true,\n\t\t\t\t\t\t\t\"insert\": true,\n\t\t\t\t\t\t\t\"update\": false\n\t\t\t\t\t\t},\n\t\t\t\t\t\t{\n\t\t\t\t\t\t\t\"attribute_name\": \"location\",\n\t\t\t\t\t\t\t\"read\": false,\n\t\t\t\t\t\t\t\"insert\": false,\n\t\t\t\t\t\t\t\"update\": false\n\t\t\t\t\t\t}\n\t\t\t\t\t]\n\t\t\t\t}\n\t\t\t}\n\t\t}\n\t}\n}"
 						},
 						"url": {
 							"raw": "{{host}}:{{port}}",
@@ -29305,6 +29305,848 @@
 					"response": []
 				},
 				{
+					"name": "search by conditions - equals - allowed attr",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"search by condition returns two rows with permitted attrs\", function () {",
+									"    const jsonData = pm.response.json();",
+									"    pm.expect(jsonData.length).to.eql(2);",
+									"\tjsonData.forEach(row => {",
+									"\t\tpm.expect([1,2].includes(row.id)).to.be.true;",
+									"\t\tpm.expect(row.location).to.be.undefined;",
+									"\t\tpm.expect(row.breed_id).to.be.undefined;",
+									"\t})",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{test_user_name}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"search_by_conditions\",\n\t\"schema\":\"dev\",\n\t\"table\": \"dog_conditions\",\n\t\"get_attributes\": [\"*\"],\n\t\"conditions\": [{\n\t\t\"search_attribute\": \"age\",\n\t\t\"search_type\": \"equals\",\n\t\t\"search_value\": 5\n\t}]\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "search by conditions - ends_with - allowed attr",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"search by condition returns 4 rows with dog names ending w/ 'y' and only permitted attrs\", function () {",
+									"    const jsonData = pm.response.json();",
+									"    pm.expect(jsonData.length).to.eql(4);",
+									"\tjsonData.forEach(row => {",
+									"\t\tpm.expect([...row.dog_name].pop()).to.equal('y');",
+									"\t\tpm.expect(row.location).to.be.undefined;",
+									"\t\tpm.expect(row.breed_id).to.be.undefined;",
+									"\t})",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{test_user_name}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"search_by_conditions\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog_conditions\",\n\t\"get_attributes\": [\"*\"],\n\t\"conditions\": [{\n\t\t\"search_attribute\": \"dog_name\",\n\t\t\"search_type\": \"ends_with\",\n\t\t\"search_value\": \"y\"\n\t}]\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "search by conditions - equals - restricted attr",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 403\", function () {",
+									"    pm.response.to.have.status(403);",
+									"});",
+									"",
+									"var jsonData = pm.response.json();",
+									"",
+									"pm.test(\"Op auth error message\", function () {",
+									"    pm.expect(jsonData.error).to.eql(\"This operation is not authorized due to role restrictions and/or invalid schema items\");",
+									"});",
+									"",
+									"pm.test(\"invalid_schema_items is not empty\", function () {",
+									"    pm.expect(jsonData.invalid_schema_items.length).to.eql(1);",
+									"    pm.expect(jsonData.invalid_schema_items[0]).to.eql(\"Attribute 'location' does not exist on 'dev.dog_conditions'\");",
+									"});",
+									"",
+									"pm.test(\"unauthorized_access is empty\", function () {",
+									"    pm.expect(jsonData.unauthorized_access.length).to.eql(0);",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{test_user_name}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"search_by_conditions\",\n\t\"schema\":\"dev\",\n\t\"table\": \"dog_conditions\",\n\t\"get_attributes\": [\"*\"],\n\t\"conditions\": [{\n\t\t\"search_attribute\": \"location\",\n\t\t\"search_type\": \"equals\",\n\t\t\"search_value\": \"Denver, CO\"\n\t}]\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "search by conditions - contains - restricted attr",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 403\", function () {",
+									"    pm.response.to.have.status(403);",
+									"});",
+									"",
+									"var jsonData = pm.response.json();",
+									"",
+									"pm.test(\"Op auth error message\", function () {",
+									"    pm.expect(jsonData.error).to.eql(\"This operation is not authorized due to role restrictions and/or invalid schema items\");",
+									"});",
+									"",
+									"pm.test(\"invalid_schema_items is not empty\", function () {",
+									"    pm.expect(jsonData.invalid_schema_items.length).to.eql(1);",
+									"    pm.expect(jsonData.invalid_schema_items[0]).to.eql(\"Attribute 'location' does not exist on 'dev.dog_conditions'\");",
+									"});",
+									"",
+									"pm.test(\"unauthorized_access is empty\", function () {",
+									"    pm.expect(jsonData.unauthorized_access.length).to.eql(0);",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{test_user_name}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"search_by_conditions\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog_conditions\",\n\t\"get_attributes\": [\"*\"],\n\t\"conditions\": [\n\t\t{\n\t\t\"search_attribute\": \"location\",\n\t\t\"search_type\": \"contains\",\n\t\t\"search_value\": \"Denver\"\n\t}\n\t]\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "search by conditions - starts_with - non-existent attr",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 403\", function () {",
+									"    pm.response.to.have.status(403);",
+									"});",
+									"",
+									"var jsonData = pm.response.json();",
+									"",
+									"pm.test(\"Op auth error message\", function () {",
+									"    pm.expect(jsonData.error).to.eql(\"This operation is not authorized due to role restrictions and/or invalid schema items\");",
+									"});",
+									"",
+									"pm.test(\"invalid_schema_items is not empty\", function () {",
+									"    pm.expect(jsonData.invalid_schema_items.length).to.eql(1);",
+									"    pm.expect(jsonData.invalid_schema_items[0]).to.eql(\"Attribute 'random_attr' does not exist on 'dev.dog_conditions'\");",
+									"});",
+									"",
+									"pm.test(\"unauthorized_access is empty\", function () {",
+									"    pm.expect(jsonData.unauthorized_access.length).to.eql(0);",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{test_user_name}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"search_by_conditions\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog_conditions\",\n\t\"get_attributes\": [\"*\"],\n\t\"conditions\": [{\n\t\t\"search_attribute\": \"random_attr\",\n\t\t\"search_type\": \"starts_with\",\n\t\t\"search_value\": 1\n\t}]\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "search by conditions - starts_with - unauth'd attr",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 403\", function () {",
+									"    pm.response.to.have.status(403);",
+									"});",
+									"",
+									"var jsonData = pm.response.json();",
+									"",
+									"pm.test(\"Op auth error message\", function () {",
+									"    pm.expect(jsonData.error).to.eql(\"This operation is not authorized due to role restrictions and/or invalid schema items\");",
+									"});",
+									"",
+									"pm.test(\"invalid_schema_items is empty\", function () {",
+									"    pm.expect(jsonData.invalid_schema_items.length).to.eql(0);",
+									"});",
+									"",
+									"pm.test(\"unauthorized_access is NOT empty\", function () {",
+									"    pm.expect(jsonData.unauthorized_access.length).to.eql(1);",
+									"\tpm.expect(jsonData.unauthorized_access[0].schema).to.eql(\"dev\");",
+									"\tpm.expect(jsonData.unauthorized_access[0].table).to.eql(\"dog_conditions\");",
+									"\tpm.expect(jsonData.unauthorized_access[0].required_attribute_permissions.length).to.eql(1);",
+									"\tpm.expect(jsonData.unauthorized_access[0].required_attribute_permissions[0].attribute_name).to.eql(\"breed_id\");",
+									"\tpm.expect(jsonData.unauthorized_access[0].required_attribute_permissions[0].required_permissions[0]).to.eql(\"read\");",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{test_user_name}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"search_by_conditions\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog_conditions\",\n\t\"get_attributes\": [\"*\"],\n\t\"conditions\": [{\n\t\t\"search_attribute\": \"breed_id\",\n\t\t\"search_type\": \"starts_with\",\n\t\t\"search_value\": 1\n\t}]\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "search by conditions - starts_with - unauth'd attrs in get/search",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 403\", function () {",
+									"    pm.response.to.have.status(403);",
+									"});",
+									"",
+									"var jsonData = pm.response.json();",
+									"",
+									"pm.test(\"Op auth error message\", function () {",
+									"    pm.expect(jsonData.error).to.eql(\"This operation is not authorized due to role restrictions and/or invalid schema items\");",
+									"});",
+									"",
+									"pm.test(\"invalid_schema_items is not empty\", function () {",
+									"    pm.expect(jsonData.invalid_schema_items.length).to.eql(1);",
+									"    pm.expect(jsonData.invalid_schema_items[0]).to.eql(\"Attribute 'location' does not exist on 'dev.dog_conditions'\");",
+									"});",
+									"",
+									"pm.test(\"unauthorized_access is NOT empty\", function () {",
+									"    pm.expect(jsonData.unauthorized_access.length).to.eql(1);",
+									"\tpm.expect(jsonData.unauthorized_access[0].schema).to.eql(\"dev\");",
+									"\tpm.expect(jsonData.unauthorized_access[0].table).to.eql(\"dog_conditions\");",
+									"\tpm.expect(jsonData.unauthorized_access[0].required_attribute_permissions.length).to.eql(1);",
+									"\tpm.expect(jsonData.unauthorized_access[0].required_attribute_permissions[0].attribute_name).to.eql(\"breed_id\");",
+									"\tpm.expect(jsonData.unauthorized_access[0].required_attribute_permissions[0].required_permissions[0]).to.eql(\"read\");",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{test_user_name}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"search_by_conditions\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog_conditions\",\n\t\"get_attributes\": [\"id\", \"dog_name\", \"location\"],\n\t\"conditions\": [{\n\t\t\"search_attribute\": \"breed_id\",\n\t\t\"search_type\": \"starts_with\",\n\t\t\"search_value\": 1\n\t}]\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "search by conditions - equals & contains - restricted attr",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 403\", function () {",
+									"    pm.response.to.have.status(403);",
+									"});",
+									"",
+									"var jsonData = pm.response.json();",
+									"",
+									"pm.test(\"Op auth error message\", function () {",
+									"    pm.expect(jsonData.error).to.eql(\"This operation is not authorized due to role restrictions and/or invalid schema items\");",
+									"});",
+									"",
+									"pm.test(\"invalid_schema_items is not empty\", function () {",
+									"    pm.expect(jsonData.invalid_schema_items.length).to.eql(1);",
+									"    pm.expect(jsonData.invalid_schema_items[0]).to.eql(\"Attribute 'location' does not exist on 'dev.dog_conditions'\");",
+									"});",
+									"",
+									"pm.test(\"unauthorized_access is empty\", function () {",
+									"    pm.expect(jsonData.unauthorized_access.length).to.eql(0);",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{test_user_name}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\": \"search_by_conditions\",\n\t\"schema\": \"dev\",\n\t\"table\": \"dog_conditions\",\n\t\"get_attributes\": [\n\t\t\"*\"\n\t],\n\t\"conditions\": [\n\t\t{\n\t\t\t\"search_attribute\": \"group\",\n\t\t\t\"search_type\": \"equals\",\n\t\t\t\"search_value\": \"A\"\n\t\t},\n\t\t{\n\t\t\t\"search_attribute\": \"location\",\n\t\t\t\"search_type\": \"contains\",\n\t\t\t\"search_value\": \"CO\"\n\t\t}\n\t]\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "search by conditions - starts_with & between w/ sort",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 403\", function () {",
+									"    pm.response.to.have.status(403);",
+									"});",
+									"",
+									"var jsonData = pm.response.json();",
+									"",
+									"pm.test(\"Op auth error message\", function () {",
+									"    pm.expect(jsonData.error).to.eql(\"This operation is not authorized due to role restrictions and/or invalid schema items\");",
+									"});",
+									"",
+									"pm.test(\"invalid_schema_items is not empty\", function () {",
+									"    pm.expect(jsonData.invalid_schema_items.length).to.eql(1);",
+									"    pm.expect(jsonData.invalid_schema_items[0]).to.eql(\"Attribute 'location' does not exist on 'dev.dog_conditions'\");",
+									"});",
+									"",
+									"pm.test(\"unauthorized_access is empty\", function () {",
+									"    pm.expect(jsonData.unauthorized_access.length).to.eql(0);",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{test_user_name}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\": \"search_by_conditions\",\n\t\"schema\": \"dev\",\n\t\"table\": \"dog_conditions\",\n\t\"get_attributes\": [\n\t\t\"*\"\n\t],\n\t\"sort_attributes\": [\n\t\t{\n\t\t\t\"attribute\": \"age\",\n\t\t\t\"desc\": false\n\t\t},\n\t\t{\n\t\t\t\"attribute\": \"location\",\n\t\t\t\"desc\": true\n\t\t}\n\t],\n\t\"conditions\": [\n\t\t{\n\t\t\t\"search_attribute\": \"group\",\n\t\t\t\"search_type\": \"between\",\n\t\t\t\"search_value\": [\n\t\t\t\t\"A\",\n\t\t\t\t\"C\"\n\t\t\t]\n\t\t},\n\t\t{\n\t\t\t\"search_attribute\": \"location\",\n\t\t\t\"search_type\": \"starts_with\",\n\t\t\t\"search_value\": \"Denver\"\n\t\t}\n\t]\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "search by conditions - between & ends_with w/ sort - restricted attrs",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 403\", function () {",
+									"    pm.response.to.have.status(403);",
+									"});",
+									"",
+									"var jsonData = pm.response.json();",
+									"",
+									"pm.test(\"Op auth error message\", function () {",
+									"    pm.expect(jsonData.error).to.eql(\"This operation is not authorized due to role restrictions and/or invalid schema items\");",
+									"});",
+									"",
+									"pm.test(\"invalid_schema_items is not empty\", function () {",
+									"    pm.expect(jsonData.invalid_schema_items.length).to.eql(2);",
+									"    pm.expect(jsonData.invalid_schema_items[0]).to.eql(\"Attribute 'group_id' does not exist on 'dev.dog_conditions'\");",
+									"\tpm.expect(jsonData.invalid_schema_items[1]).to.eql(\"Attribute 'location' does not exist on 'dev.dog_conditions'\");",
+									"});",
+									"",
+									"pm.test(\"unauthorized_access is empty\", function () {",
+									"    pm.expect(jsonData.unauthorized_access.length).to.eql(0);",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{test_user_name}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\": \"search_by_conditions\",\n\t\"schema\": \"dev\",\n\t\"table\": \"dog_conditions\",\n\t\"get_attributes\": [\n\t\t\"*\"\n\t],\n\t\"sort_attributes\": [\n\t\t{\n\t\t\t\"attribute\": \"age\",\n\t\t\t\"desc\": false\n\t\t},\n\t\t{\n\t\t\t\"attribute\": \"location\",\n\t\t\t\"desc\": true\n\t\t}\n\t],\n\t\"conditions\": [\n\t\t{\n\t\t\t\"search_attribute\": \"group_id\",\n\t\t\t\"search_type\": \"between\",\n\t\t\t\"search_value\": [\n\t\t\t\t0,\n\t\t\t\t100\n\t\t\t]\n\t\t},\n\t\t{\n\t\t\t\"search_attribute\": \"dog_name\",\n\t\t\t\"search_type\": \"ends_with\",\n\t\t\t\"search_value\": \"y\"\n\t\t}\n\t]\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "search by conditions - between & equals w/ sort - restricted/unauth'd attrs",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 403\", function () {",
+									"    pm.response.to.have.status(403);",
+									"});",
+									"",
+									"var jsonData = pm.response.json();",
+									"",
+									"pm.test(\"Op auth error message\", function () {",
+									"    pm.expect(jsonData.error).to.eql(\"This operation is not authorized due to role restrictions and/or invalid schema items\");",
+									"});",
+									"",
+									"pm.test(\"invalid_schema_items is not empty\", function () {",
+									"    pm.expect(jsonData.invalid_schema_items.length).to.eql(2);",
+									"    pm.expect(jsonData.invalid_schema_items[0]).to.eql(\"Attribute 'group_id' does not exist on 'dev.dog_conditions'\");",
+									"\tpm.expect(jsonData.invalid_schema_items[1]).to.eql(\"Attribute 'location' does not exist on 'dev.dog_conditions'\");",
+									"});",
+									"",
+									"pm.test(\"unauthorized_access is NOT empty\", function () {",
+									"    pm.expect(jsonData.unauthorized_access.length).to.eql(1);",
+									"\tpm.expect(jsonData.unauthorized_access[0].schema).to.eql(\"dev\");",
+									"\tpm.expect(jsonData.unauthorized_access[0].table).to.eql(\"dog_conditions\");",
+									"\tpm.expect(jsonData.unauthorized_access[0].required_attribute_permissions.length).to.eql(1);",
+									"\tpm.expect(jsonData.unauthorized_access[0].required_attribute_permissions[0].attribute_name).to.eql(\"breed_id\");",
+									"\tpm.expect(jsonData.unauthorized_access[0].required_attribute_permissions[0].required_permissions[0]).to.eql(\"read\");",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{test_user_name}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\": \"search_by_conditions\",\n\t\"schema\": \"dev\",\n\t\"table\": \"dog_conditions\",\n\t\"get_attributes\": [\n\t\t\"*\"\n\t],\n\t\"sort_attributes\": [\n\t\t{\n\t\t\t\"attribute\": \"age\",\n\t\t\t\"desc\": false\n\t\t},\n\t\t{\n\t\t\t\"attribute\": \"location\",\n\t\t\t\"desc\": true\n\t\t}\n\t],\n\t\"conditions\": [\n\t\t{\n\t\t\t\"search_attribute\": \"group_id\",\n\t\t\t\"search_type\": \"between\",\n\t\t\t\"search_value\": [\n\t\t\t\t0,\n\t\t\t\t100\n\t\t\t]\n\t\t},\n\t\t{\n\t\t\t\"search_attribute\": \"breed_id\",\n\t\t\t\"search_type\": \"equals\",\n\t\t\t\"search_value\": 5\n\t\t}\n\t]\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
 					"name": "NoSQL Alter non-SU role",
 					"event": [
 						{
@@ -29315,8 +30157,8 @@
 									"    pm.response.to.have.status(200);",
 									"});",
 									"",
-									"responseData = JSON.parse(responseBody);",
-									"postman.setEnvironmentVariable(\"role_id\", responseData.id)"
+									"// responseData = JSON.parse(responseBody);",
+									"// postman.setEnvironmentVariable(\"role_id\", responseData.id)"
 								],
 								"type": "text/javascript"
 							}
@@ -53690,11 +54532,11 @@
 		},
 		{
 			"key": "operation_token",
-			"value": "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VybmFtZSI6ImFkbWluIiwic3VwZXJfdXNlciI6dHJ1ZSwiY2x1c3Rlcl91c2VyIjpmYWxzZSwiaWF0IjoxNjE0Mzc5MjIyLCJleHAiOjE2MTQ0NjU2MjIsInN1YiI6Im9wZXJhdGlvbiJ9.1eU2LkDKe1lYYXjxqJp1XV5jJg1eK8OwB4XpJ55y9HdGB1iECnDNtsYB_QGEejBUbcA1OYaEs45anYVpgyTNjHfXkl0Yf4k_40rC47A6pwAcwq7GrS3SXK5nrio91xGjUlTdmOb1xQic8Df34Pn_JZKdc6g1OCa2qgpARIK2zBDBIFmY86D0O1GYFIQzTYC36dTYemqNVXGPeyKGoED85mGwp5DSC7kHuUPUVglP1acoFl7e5kgh7H9Kga0EbG4WEAn9j_-NxD4Ldckc87_wl4HNwCHqfg9cRn4AbOyrB5GRs8fCauBNkoPcojhZQL87vSBUp8njkg3Tl9eFrBfu0mE5rwLENhqTPRx8F6y0U78Cn5tN5PRX87adA2sb4pmHquivG_yZAB5KXHZb1gJ7z2cL58C7PMufeubc2YDjoLAtq6FjcRcyvqO9b7gZq0k87v3KxDUL_RFaycnvtFJqS1yZqnyxEGs9JOOWl26tRL57j31FzfyZFKg6r69LCNWv1WX0w5V2XPadWiCLK5vZqK4SHUdSe0jdCdO5YTaha1NbiBM4TFuCw8jlqsvySm89gLqJMU7UhpPhr0hdLgFIxVdY0_VIaRORm8BKFvxg5QeGXpRyUCI0RZc19hBChyMCj3y1i7MaAg0hesTC4sttRuzV8CGOtFhHXBC1WaL2GCQ"
+			"value": "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VybmFtZSI6ImFkbWluIiwic3VwZXJfdXNlciI6dHJ1ZSwiY2x1c3Rlcl91c2VyIjpmYWxzZSwiaWF0IjoxNjE0NjQ2MjY1LCJleHAiOjE2MTQ3MzI2NjUsInN1YiI6Im9wZXJhdGlvbiJ9.and5cI5OzJWfr4vj8_kaF8ZpiB-3B1WWcdA3xQLdxjQ64J8oWwbLUGhzxPIyEBDCuFqVH7NGA-5mgJN7DVVyKZlSx2Wj8vlDx9p4LNZt1Zgf3IrQG8H3tfllG8NEUVGJo6zLOP0DTzj7QiY3tdjSHZhw0qZXxsjmK_tEfOxsssbspvelYn3ZkyiC2KpPHuD8i3awlBFniQ494YHTozbI7wNjuG6tv71Fz0sWorjYBQzdj5QtLG8-sztCwYpZdT3XxDQmtrGx-Mi265BhCtMbDVt7lem8wAWha617Tg1e4ep5FusElrfNF_ttGcPnXj8Fnk1oiw13nf-eUqeah-i1yiK31Gn8rd_KBLxkBGnA8FmsIf7pkpi6jbtLdS0ah7bD3G_Jva-wmDCemh11slf3fS2hDPsyGLU2YzCN3hSwDWk5P-aaiSCdomkyHD6_JCUbAklOzVGa4GA-Cb6E9gXbNyazw946VKImFJg-08wrU8G5zNp4Srnt_9J3LXVlSEUMCBHsvAhF3R1Yb5Oi-W_89lLkCZzjFjnrGuQjMO_bc9vdCmewyRYntRFHCmuEk6SJOY5O-SnWqQGnYli1L9sVBtAKS-BikoDQ627ko4Pe5zh-VRaEatYQzsHVVCgbz-cx1y2o_EovzfEWR7fB1YMqyGNV3f1dxM9SA9EmEcRVLx8"
 		},
 		{
 			"key": "refresh_token",
-			"value": "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VybmFtZSI6ImFkbWluIiwic3VwZXJfdXNlciI6dHJ1ZSwiY2x1c3Rlcl91c2VyIjpmYWxzZSwiaWF0IjoxNjE0Mzc5MjIyLCJleHAiOjE2MTY5NzEyMjIsInN1YiI6InJlZnJlc2gifQ.KaVvPm07b6ZSynH9tP7696Z8bIxuwAXJL1KLtCab1p0JKvqXbWtmNXlvDOMQVqZhJpV3MFECVID03lhS7_y2Ob0bL1KpjzdaN-K3qUa64cHdybv0OSA_nADIPjoc14fV5jrIwpsNhRLZmp3feBI1vcBfEwtul0wDCg4W_ozVlkEFqc58umiz3rd-d8oqy8b5hU5ii9Jb2yzi8RrYcLQIHyqIMPtpHqUyc7Oj3Yyn2ynZmZCT8Jf8ZQ1IPiVFFiBibDwUWhESD3XTi-UUa3qUIReMnBAr24PEo7CRaBfteKQikG1yDTGWFnQYEPDuvutl4M3456DYhBxxZWjnD16X7a3S5ACc2M6jddzezvrby3xA3VSuAojZIZMHy5eH_YJFxrkVZUTDb5iGEq9LjY0O11oGTbjQGOMdsMPteglCEANXMbfbEm0rnSdHOzMD9EueMTcXgDv6HcgEYfXgSsMjB8IDTj1U9K-UQljbXvIqj4Os9A12fRnMBT5TKeHUqMaQvpRl3Cmm-eM59MLJVYz3vhXtNALsjfo6zuzIaZRHlEdIoLhIs55dKsske0xTPhV2lMKcCS4WZhrGqGs67cduE2mzjuvna58Nlqm0crtNfWxr9SI21oXIMUD4KedFg2an_8OY1XefdydrlxmwdA6om7DyDThOKT2EB-nLBk0G8TI"
+			"value": "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VybmFtZSI6ImFkbWluIiwic3VwZXJfdXNlciI6dHJ1ZSwiY2x1c3Rlcl91c2VyIjpmYWxzZSwiaWF0IjoxNjE0NjQ2MjY1LCJleHAiOjE2MTcyMzgyNjUsInN1YiI6InJlZnJlc2gifQ.EvJ3LaKhCrfAN7HLVdoMxQOHIpV_6vN5OhDddXpaVjTt0QZSEs1e-lI12lKQSE_BFtbB8btrJVT8st8VdRxxx9n65kPR9-3-8Djib19tk4bpZIRRHWk6S8C3VFZd_h-ag0iXFwBLkv8iX6Tpiut4tC3vdL82T43pVqcbpYX_pPkEM_2PlN5l15VqENHYTpZkFabuvT8gbttfc6MGNdrzATiXfItfv9kBWrC1ju4VQneYiUc46b_Jel3JZgofE8J7USfisX0pHhFo3DfJDAdA7-Its_01ApiUFvjlt6ZmMxAzTLYqku2WiSxYktE4xqCYfjz0wATbVL9w0yByRvhmUUvz_nxQiVgctzUMXLfMTdYKc9uNbvCN1-wC13U5bFjwxJwEZim8jJo613Xicm9Krn-LNd4Ffl_gLFj2iCogn7Pm2SPKE8IQuDW_E6kI2oTPwqxZRGIgFYULtqBdIeCIWm8_pklrN3Yq2QUkT9LBbbgqTu9wWaa8s1hj5A8OehtmG8GlbKSagunGdx-3evLtZ6nY7smtjMdH6Lr_P-EX_Bjfhr6hrZMZoflwHyXYcNst6ctETJfGHk-yiD5TtNmcYItkSy6cs0sMFoMFeguvKV2v4w6fotb8Rb-qrxFmAlOFoaa6ZiiwxtCboCnXgrCim1ladsU29CD0GkhgZPZr4kE"
 		}
 	]
 }
