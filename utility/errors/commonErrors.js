@@ -168,6 +168,10 @@ const USER_ERROR_MSGS ={
     ROLE_NAME_NOT_FOUND: (role) => `${role} role not found`
 };
 
+const VALIDATION_ERROR_MSGS = {
+    SEARCH_CONDITIONS_INVALID_SORT_ATTRIBUTE: (attribute) => `invalid sort attribute '${attribute}', the attribute must either be the table's hash attribute or an attribute used in conditions.`
+};
+
 //into a single export while still allowing us to group them here in a more readable/searchable way
 const HDB_ERROR_MSGS = {
     ...AUTHENTICATION_ERROR_MSGS,
@@ -178,7 +182,8 @@ const HDB_ERROR_MSGS = {
     ...SCHEMA_OP_ERROR_MSGS,
     ...SQL_ERROR_MSGS,
     ...USER_ERROR_MSGS,
-    ...WRITE_OPS_ERROR_MSGS
+    ...WRITE_OPS_ERROR_MSGS,
+    ...VALIDATION_ERROR_MSGS
 };
 
 // All error messages should be added to the HDB_ERROR_MSGS ENUM for export - this helps to organize all error messages
@@ -189,5 +194,6 @@ module.exports = {
     DEFAULT_ERROR_RESP,
     HTTP_STATUS_CODES,
     LMDB_ERRORS_ENUM,
-    AUTHENTICATION_ERROR_MSGS
+    AUTHENTICATION_ERROR_MSGS,
+    VALIDATION_ERROR_MSGS
 };

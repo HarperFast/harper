@@ -4,7 +4,7 @@ const Joi = require('joi');
 const hdb_terms = require('../utility/common_utils');
 const { common_validators, schema_regex } = require('./common_validators');
 const { handleHDBError, hdb_errors } = require('../utility/errors/hdbError');
-const { HTTP_STATUS_CODES } = hdb_errors;
+const { HTTP_STATUS_CODES, VALIDATION_ERROR_MSGS } = hdb_errors;
 
 const schema_joi = Joi.alternatives(
         Joi.string().min(1).max(common_validators.schema_length.maximum).pattern(schema_regex)
@@ -77,7 +77,8 @@ module.exports = function (search_object, type) {
                 return handleHDBError(new Error(), check_schema_table, HTTP_STATUS_CODES.NOT_FOUND);
             }
 
-            let all_table_attributes = global.hdb_schema[search_object.schema][search_object.table].attributes;
+            let table_schema = global.hdb_schema[search_object.schema][search_object.table];
+            let all_table_attributes = table_schema.attributes;
 
             //this clones the get_attributes array
             let check_attributes = [...search_object.get_attributes];
@@ -87,14 +88,24 @@ module.exports = function (search_object, type) {
             }
 
             if(type === 'conditions'){
+                //this is used to validate sort attributes are in the conditions array
+                let condition_attributes = [];
                 for(let x = 0, length = search_object.conditions.length; x < length; x++){
                     let condition = search_object.conditions[x];
+                    condition_attributes.push(condition.search_attribute.toString());
                     check_attributes.push(condition.search_attribute);
                 }
 
                 if(Array.isArray(search_object.sort_attributes)) {
                     for (let x = 0, length = search_object.sort_attributes.length; x < length; x++) {
                         let sort = search_object.sort_attributes[x];
+
+                        //compare the sort attribute to the condition attributes, if it is not a hash attribute / or in the conditions we throw an error.
+                        let sort_attr_str = sort.attribute.toString();
+                        if(sort_attr_str !== table_schema.hash_attribute.toString() && condition_attributes.indexOf(sort_attr_str) < 0){
+                            return handleHDBError(new Error(), VALIDATION_ERROR_MSGS.SEARCH_CONDITIONS_INVALID_SORT_ATTRIBUTE(sort_attr_str), HTTP_STATUS_CODES.BAD_REQUEST);
+                        }
+
                         check_attributes.push(sort.attribute);
                     }
                 }
