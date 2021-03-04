@@ -108,7 +108,7 @@ function run_install(callback) {
 function updateHdbInfo(callback) {
     let vers = version.version();
     if(vers) {
-        hdbInfoController.updateHdbInfo(vers)
+        hdbInfoController.updateHdbInstallInfo(vers)
             .then((err, res) => {
                 if(err) {
                     winston.error('Error inserting product info');

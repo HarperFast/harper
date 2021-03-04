@@ -18,6 +18,7 @@ const upgrade_prompt = require('../utility/userInterface/upgradePrompt');
 const upgrade = require('./upgrade');
 const version = require('./version');
 const hdb_license = require('../utility/registration/hdb_license');
+const hdbInfoController = require('../data_layer/hdbInfoController');
 
 const SYSTEM_SCHEMA = require('../json/systemSchema.json');
 const schema_describe = require('../data_layer/schemaDescribe');
@@ -60,18 +61,22 @@ async function run() {
 
     try {
         // Check to see if an upgrade file exists in $HOME/.harperdb.  If it exists, we need to force the user to upgrade.
-        let home_hdb_path = path.join(os.homedir(), terms.HDB_HOME_DIR_NAME, terms.UPDATE_FILE_NAME);
-        if(fs.existsSync(home_hdb_path)) {
-            try {
-                let update_json = JSON.parse(fs.readFileSync(home_hdb_path), 'utf8');
-                let upgrade_result = await forceUpdate(update_json);
-                if(upgrade_result) {
-                    fs.unlinkSync(home_hdb_path);
-                }
-            } catch(err) {
-                console.error(`Got an error trying to read ${home_hdb_path}, please check the file is readable and try again.  Exiting HarperDB.`);
-                process.exit(1);
+        //TODO - instead of checking for setting file in .harperdb, we can just do the eval done in postInstall here and
+        // generate the update_obj here, if there is a diff.
+         try {
+            const update_obj = await hdbInfoController.getVersionUpdateJson();
+            if (update_obj === undefined) {
+                return;
             }
+            const upgrade_vers = update_obj[terms.UPGRADE_JSON_FIELD_NAMES_ENUM.UPGRADE_VERSION];
+
+            let upgrade_result = await forceUpdate(update_obj);
+            if (upgrade_result) {
+                await hdbInfoController.updateHdbUpgradeInfo(upgrade_vers)
+            }
+        } catch(err) {
+            console.error(`Got an error while trying to upgrade your HarperDB instance to version ${upgrade_vers}.  Exiting HarperDB.`);
+            process.exit(1);
         }
 
         await checkTransactionLogEnvironmentsExist();
@@ -132,25 +137,29 @@ async function openCreateTransactionEnvironment(schema, table_name){
 
 /**
  * Force the user to perform an upgrade by running the upgrade scripts.  If they cancel, process will term.
- * @param update_json - JSON read in from the .harperdb/.updateConfig.json file.
+ * @param update_obj - version data returned from the hdb_info system table
  * @returns {Promise<boolean>}
  */
-async function forceUpdate(update_json) {
-    let old_version = update_json[terms.UPGRADE_JSON_FIELD_NAMES_ENUM.CURRENT_VERSION];
-    let new_version = update_json[terms.UPGRADE_JSON_FIELD_NAMES_ENUM.UPGRADE_VERSION];
+async function forceUpdate(update_obj) {
+    let old_version = update_obj[terms.UPGRADE_JSON_FIELD_NAMES_ENUM.CURRENT_VERSION];
+    let new_version = update_obj[terms.UPGRADE_JSON_FIELD_NAMES_ENUM.UPGRADE_VERSION];
+    //TODO - do we need these checks for version values anymore?
     if(!old_version) {
         console.log('Current Version field missing from the config file.  Cannot continue with upgrade.  Please contact support@harperdb.io');
-        logger.notify('Missing current version field from upgradeconfig');
+        logger.notify('Missing current version field from upgrade config');
         process.exit(1);
     }
     if(!new_version) {
         new_version = version.version();
         if(!new_version) {
             console.log('Current Version field missing from the config file.  Cannot continue with upgrade.  Please contact support@harperdb.io');
-            logger.notify('Missing new version field from upgradeconfig');
+            logger.notify('Missing new version field from upgrade config');
             process.exit(1);
         }
     }
+
+    //TODO - before prompt, make sure there is actually an upgrade script that is required to run
+
     let start_upgrade = await upgrade_prompt.forceUpdatePrompt(old_version, new_version);
     if(!start_upgrade) {
         console.log('Cancelled upgrade, closing HarperDB');
