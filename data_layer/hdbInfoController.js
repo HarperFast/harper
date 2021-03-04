@@ -31,7 +31,7 @@ const FAILURE = 1;
  * @returns {Promise<void>}
  * @throws
  */
-async function updateHdbInstallInfo(new_version_string) {
+async function updateHdbInstallInfo(new_version_string, old_instance) {
     let info_table_insert_object = undefined;
     let version_data = await searchInfo();
 
@@ -46,8 +46,11 @@ async function updateHdbInstallInfo(new_version_string) {
         // get the largest
         let latest_id = Math.max.apply(null, vals.keys());
         const new_id = latest_id + 1;
-        const current_data_version = vals.get(latest_id).data_version_num;
-        const new_data_version = current_data_version ? current_data_version : new_version_string;
+        const current_info_record = vals.get(latest_id);
+        const current_data_version = current_info_record.data_version_num;
+        //if there is no info record stored BUT we are installing over an old instance and keeping data, we need to set
+        // the data_version value to null so we know to still run the 3.0 upgrade
+        const new_data_version = current_data_version ? current_data_version : old_instance ? null : new_version_string;
         info_table_insert_object = new BinObjects.HdbInfoInsertObject(new_id, new_data_version, new_version_string);
     } catch(err) {
         throw err;
@@ -136,8 +139,14 @@ async function searchInfo() {
 
 async function getLatestHdbInfoRecord() {
     let version_data = await searchInfo();
-    let current_info_record;
 
+    //This scenario means that new software has been downloaded but harperdb install has not been run so
+    // we need to run the upgrade for 3.0
+    if (version_data.length === 0) {
+        return;
+    }
+
+    let current_info_record;
     try {
         // always have a 0 in case the search returned nothing.  That way we will have an entry at 1 if there are no rows returned due to table
         // not existing (upgrade from old install).
@@ -158,40 +167,39 @@ async function getLatestHdbInfoRecord() {
 
 async function getVersionUpdateJson() {
     log.info('Checking if HDB software has been updated');
-    const homedir = os.homedir();
-    if(!homedir) {
-        throw new Error('Could not determine this users home directory.  Please set your $HOME environment variable')
+
+    const new_version = version.version();
+    const latest_info_record = await getLatestHdbInfoRecord();
+
+    //if no record is returned, it means we have an old instance that needs to be upgraded bc new installs will
+    // always result in a record being inserted into the hdb_info table
+    if (latest_info_record === undefined) {
+        return new UpgradeObject(null, new_version);
     }
-    // If there is no hdb_boot_props file, then assume this is a new install.
-    //TODO - not sure if this is needed in run - probably just look for older version to check if an upgrade is needed
-    const boot_props_path = path.join(homedir, hdb_terms.HDB_HOME_DIR_NAME, hdb_terms.BOOT_PROPS_FILE_NAME);
-    if (!fs.existsSync(boot_props_path)) {
-        console.log(`${boot_props_path} not found.  This seems to be a new install.`);
-        console.log(`Finished downloading HarperDB.  Complete the installation by running 'harperdb' if you installed globally.`);
+
+    const { data_version_num, hdb_version_num } = latest_info_record;
+
+    if (new_version === data_version_num) {
+        //TODO - should we also check to make sure the data_version_num is the same and, if not, insert new one or
+        // is that not even possible?
+        //versions are up to date so nothing to do here
         return;
     }
 
-    const curr_version = version.version();
-    const { data_version_num, hdb_version_num } = await getLatestHdbInfoRecord();
-
-    if (curr_version === data_version_num) {
-        // versions are up to date so nothing to do here
-        return;
-    }
-
-    if (curr_version !== hdb_version_num) {
-        //TODO - add more handling here - should this exit the process w/ a fail?
+    if (new_version !== hdb_version_num) {
+        //TODO - is this possible?  If so, is it an error or do we just insert a new record?  Or can we ignore since a new
+        // record will get inserted anyways after the upgrade completes?
         throw new Error('There is an issue w/ versions!')
     }
 
 
-    if (compareVersions(data_version_num, curr_version) < 0) {
+    if (compareVersions(data_version_num, new_version) < 0) {
         //TODO - add more handling here - should this exit the process w/ a fail?
         console.error(`You have installed a version lower than version that your data was created on.  This may cause issues.  ${terms.SUPPORT_HELP_MSG}`);
         throw new Error('Trying to downgrade HDB versions is not supported.')
     }
 
-    return new UpgradeObject(data_version_num, curr_version);
+    return new UpgradeObject(data_version_num, new_version);
 }
 
 
