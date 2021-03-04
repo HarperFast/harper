@@ -11,20 +11,17 @@ class SearchByConditionsObject {
      * @param {String} table
      * @param {[]} get_attributes
      * @param {[SearchCondition]} conditions
-     * @param {[SortAttribute]} sort_attributes
-     * @param {boolean} reverse
      * @param {Number} limit
      * @param {Number} offset
      * @param {string} operator
      */
-    constructor(schema, table, get_attributes, conditions, sort_attributes, limit = undefined, offset = undefined, operator = 'and') {
+    constructor(schema, table, get_attributes, conditions, limit = undefined, offset = undefined, operator = 'and') {
             this.schema = schema;
             this.table = table;
             this.get_attributes = get_attributes;
             this.limit = limit;
             this.offset = offset;
             this.conditions = conditions;
-            this.sort_attributes = sort_attributes;
             this.operator = operator;
     }
 }
@@ -34,7 +31,7 @@ class SearchCondition {
      *
      * @param {String|Number} search_attribute
      * @param {lmdb_terms.SEARCH_TYPES} search_type
-     * @param {} search_value
+     * @param {*} search_value
      */
     constructor(search_attribute, search_type, search_value) {
         this.search_attribute = search_attribute;

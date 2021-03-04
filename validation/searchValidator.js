@@ -36,10 +36,6 @@ const search_by_conditions_schema = Joi.object({
     offset: Joi.number().integer().min(0),
     limit: Joi.number().integer().min(1),
     get_attributes: Joi.array().min(1).items(schema_joi).required(),
-    sort_attributes: Joi.array().min(1).items(Joi.object({
-        attribute: schema_joi,
-        desc: Joi.boolean()
-    })),
     conditions: Joi.array().min(1).items(Joi.object({
         search_attribute: schema_joi,
         search_type: Joi.string().valid("equals", "contains", "starts_with", "ends_with", "greater_than", "greater_than_equal", "less_than", "less_than_equal", "between").required(),
@@ -94,20 +90,6 @@ module.exports = function (search_object, type) {
                     let condition = search_object.conditions[x];
                     condition_attributes.push(condition.search_attribute.toString());
                     check_attributes.push(condition.search_attribute);
-                }
-
-                if(Array.isArray(search_object.sort_attributes)) {
-                    for (let x = 0, length = search_object.sort_attributes.length; x < length; x++) {
-                        let sort = search_object.sort_attributes[x];
-
-                        //compare the sort attribute to the condition attributes, if it is not a hash attribute / or in the conditions we throw an error.
-                        let sort_attr_str = sort.attribute.toString();
-                        if(sort_attr_str !== table_schema.hash_attribute.toString() && condition_attributes.indexOf(sort_attr_str) < 0){
-                            return handleHDBError(new Error(), VALIDATION_ERROR_MSGS.SEARCH_CONDITIONS_INVALID_SORT_ATTRIBUTE(sort_attr_str), HTTP_STATUS_CODES.BAD_REQUEST);
-                        }
-
-                        check_attributes.push(sort.attribute);
-                    }
                 }
             }
 

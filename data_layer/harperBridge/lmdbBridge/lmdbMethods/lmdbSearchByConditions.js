@@ -25,21 +25,14 @@ async function lmdbSearchByConditions(search_object) {
             throw validation_error;
         }
 
+        search_object.offset = Number.isInteger(search_object.offset) ? search_object.offset : 0;
+
         let schema_path = path.join(getBaseSchemaPath(), search_object.schema.toString());
         let env = await environment_utility.openEnvironment(schema_path, search_object.table);
 
         const table_info = global.hdb_schema[search_object.schema][search_object.table];
 
-        //convert sort to a map for later use
-        let sort_map = Object.create(null);
-        if(Array.isArray(search_object.sort_attributes)) {
-            for (let x = 0, length = search_object.sort_attributes.length; x < length; x++) {
-                let sort = search_object.sort_attributes[x];
-                sort_map[sort.attribute] = sort.desc === true ? 'desc' : 'asc';
-            }
-        }
-
-        let results = await executeConditionSearches(env, search_object, table_info.hash_attribute, sort_map);
+        let results = await executeConditionSearches(env, search_object, table_info.hash_attribute);
 
         //get the intersection/union of ids from all condition searches
         let merged_ids = [];
@@ -53,20 +46,31 @@ async function lmdbSearchByConditions(search_object) {
             merged_ids = _.union(...ids);
         }
 
+        let limit = Number.isInteger(search_object.limit) ? search_object.limit : merged_ids.length;
+        merged_ids = merged_ids.sort(sorter).splice(search_object.offset, limit);
+
+
         //perform records search by id
-        let records = search_utility.batchSearchByHash(env, table_info.hash_attribute, search_object.get_attributes, merged_ids);
-
-        //sort the records
-        if(Array.isArray(search_object.sort_attributes)){
-            records = _.orderBy(records, Object.keys(sort_map), Object.values(sort_map));
-        }
-
-        return records;
+        return search_utility.batchSearchByHash(env, table_info.hash_attribute, search_object.get_attributes, merged_ids);
     }catch(e){
         throw e;
     }
 }
 
+
+function sorter(a, b) {
+    if(isNaN(a) || isNaN(b)){
+        a = a.toString();
+        b = b.toString();
+    }
+
+    if (a > b) {
+        return 1;
+    } else if (b > a) {
+        return -1;
+    }
+    return 0;
+}
 /**
  *
  * @param env
@@ -75,10 +79,17 @@ async function lmdbSearchByConditions(search_object) {
  * @param {{}}sort_map
  * @returns {Promise<unknown[]>}
  */
-async function executeConditionSearches(env, search_object, hash_attribute, sort_map){
+// eslint-disable-next-line require-await
+async function executeConditionSearches(env, search_object, hash_attribute){
     //build a prototype object for search
+
+    let limit = undefined;
+    if(search_object.limit){
+        limit = search_object.limit + search_object.offset;
+    }
+
     let proto_search = new SearchObject(search_object.schema, search_object.table, undefined, undefined,
-        hash_attribute, search_object.get_attributes, undefined, undefined, search_object.limit, search_object.offset);
+        hash_attribute, search_object.get_attributes, undefined, undefined, limit);
 
     //execute conditional searches
     let promises = [];
@@ -88,8 +99,6 @@ async function executeConditionSearches(env, search_object, hash_attribute, sort
         let condition = search_object.conditions[x];
         let search_type = condition.search_type;
         search.search_attribute = condition.search_attribute;
-
-        search.reverse = sort_map[search.search_attribute] === 'desc';
 
         if (search_type === lmdb_terms.SEARCH_TYPES.BETWEEN) {
             search.search_value = condition.search_value[0];
