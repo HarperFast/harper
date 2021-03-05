@@ -34,7 +34,7 @@ const LMDB_ERRORS_ENUM = {
     START_VALUE_REQUIRED: new Error('start_value is required'),
     END_VALUE_REQUIRED: new Error('end_value is required'),
     CANNOT_COMPARE_STRING_TO_NUMERIC_KEYS: new Error('cannot compare a string to numeric keys'),
-    END_VALUE_MUST_BE_GREATER_THAN_START_VALUE: new Error('end_value must be greater than start_value'),
+    END_VALUE_MUST_BE_GREATER_THAN_START_VALUE: new Error('end_value must be greater than or equal to start_value'),
     UNKNOWN_SEARCH_TYPE: new Error('unknown search type'),
     CANNOT_DROP_TABLE_HASH_ATTRIBUTE: new Error('cannot drop a table\'s hash attribute')
 };

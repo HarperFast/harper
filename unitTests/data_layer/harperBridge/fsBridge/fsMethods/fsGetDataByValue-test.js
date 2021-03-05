@@ -38,11 +38,13 @@ const TEST_SEARCH_OBJ = {
 };
 
 const ERR_MSGS = {
-    SCHEMA: "Schema can't be blank",
-    TABLE: "Table can't be blank",
-    S_ATTR: "Search attribute can't be blank",
+    SCHEMA: '"schema" is not allowed to be empty',
+    TABLE: '"table" is not allowed to be empty',
+    S_ATTR: '"search_attribute" is not allowed to be empty',
+    S_ATTR_STR: '"search_attribute" must be one of [string, number]',
     S_VAL: "Search value can't be blank",
-    GET_ATTR: "Get attributes can't be blank"
+    GET_ATTR: '"get_attributes" must be an array',
+    GET_ATTR_2: '"get_attributes" does not contain 1 required value(s). "get_attributes" must contain at least 1 items'
 };
 
 function setupTestData() {
@@ -123,7 +125,7 @@ describe('fsGetDataByValue', () => {
             err = e;
         }
 
-        expect(err.message).to.equal("Schema can't be blank,Table can't be blank,Search attribute can't be blank,Get attributes can't be blank");
+        expect(err.message).to.equal('"schema" is required. "table" is required. "search_attribute" is required. "search_value" is required. "get_attributes" is required');
     }));
 
     it('Should return error if empty string is passed in for schema', mochaAsyncWrapper(async () => {
@@ -179,7 +181,7 @@ describe('fsGetDataByValue', () => {
             err = e;
         }
 
-        expect(err.message).to.equal(ERR_MSGS.S_ATTR);
+        expect(err.message).to.equal(ERR_MSGS.S_ATTR_STR);
     }));
 
     it('Should NOT return error if empty string is passed in for search value', mochaAsyncWrapper(async () => {
@@ -235,7 +237,7 @@ describe('fsGetDataByValue', () => {
             err = e;
         }
 
-        expect(err.message).to.equal(ERR_MSGS.GET_ATTR);
+        expect(err.message).to.equal(ERR_MSGS.GET_ATTR_2);
     }));
 
     it('test search value is json', async()=>{

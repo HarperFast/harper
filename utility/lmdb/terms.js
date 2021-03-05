@@ -9,16 +9,22 @@ const MAX_BYTE_SIZE = 254;
 const SEARCH_TYPES = {
   EQUALS: 'equals',
   STARTS_WITH: 'startsWith',
+  _STARTS_WITH: 'starts_with',
   ENDS_WITH: 'endsWith',
+  _ENDS_WITH: 'ends_with',
   CONTAINS: 'contains',
   SEARCH_ALL: 'searchAll',
   SEARCH_ALL_TO_MAP: 'searchAllToMap',
   BATCH_SEARCH_BY_HASH: 'batchSearchByHash',
   BATCH_SEARCH_BY_HASH_TO_MAP: 'batchSearchByHashToMap',
   GREATER_THAN: 'greaterThan',
+  _GREATER_THAN: 'greater_than',
   GREATER_THAN_EQUAL: 'greaterThanEqual',
+  _GREATER_THAN_EQUAL: 'greater_than_equal',
   LESS_THAN: 'lessThan',
+  _LESS_THAN: 'less_than',
   LESS_THAN_EQUAL: 'lessThanEqual',
+  _LESS_THAN_EQUAL: 'less_than_equal',
   BETWEEN: 'between'
 };
 

@@ -1,101 +1,65 @@
 const _ = require('lodash'),
     validator = require('./validationWrapper');
+const Joi = require('joi');
 const hdb_terms = require('../utility/common_utils');
 const { common_validators, schema_regex } = require('./common_validators');
 const { handleHDBError, hdb_errors } = require('../utility/errors/hdbError');
 const { HTTP_STATUS_CODES } = hdb_errors;
 
-let search_by_hash_constraints = {
-    schema: {
-        presence: true,
-        format: common_validators.schema_format,
-        length: common_validators.schema_length
-    },
-    table: {
-        presence: true,
-        format: common_validators.schema_format,
-        length: common_validators.schema_length
-    },
-    hash_attribute: {
-        presence: true,
-        format: schema_regex
-    },
-    hash_value: {
-        presence: true
-    },
-    get_attributes: {
-        presence: true
-    }
-};
+const schema_joi = Joi.alternatives(
+        Joi.string().min(1).max(common_validators.schema_length.maximum).pattern(schema_regex)
+            .messages({'string.pattern.base': '{:#label} ' + common_validators.schema_format.message}),
+        Joi.number()).required();
 
-let search_by_hashes_constraints = {
-    schema: {
-        presence: true,
-        format: common_validators.schema_format,
-        length: common_validators.schema_length
-    },
-    table: {
-        presence: true,
-        format: common_validators.schema_format,
-        length: common_validators.schema_length
-    },
-    hash_values: {
-        presence: true
-    },
-    get_attributes: {
-        presence: true
-    }
-};
+const search_by_hashes_schema = Joi.object({
+    schema: schema_joi,
+    table: schema_joi,
+    hash_values: Joi.array().min(1).items(Joi.alternatives(Joi.string(), Joi.number())).required(),
+    get_attributes:Joi.array().min(1).items(schema_joi).required()
+});
 
-let search_by_value_constraints = {
-    schema: {
-        presence: true,
-        format: common_validators.schema_format,
-        length: common_validators.schema_length
-    },
-    table: {
-        presence: true,
-        format: common_validators.schema_format,
-        length: common_validators.schema_length
-    },
-    search_attribute: {
-        presence: true
-    },
-    get_attributes: {
-        presence: true
-    }
-};
+const search_by_value_schema = Joi.object({
+    schema: schema_joi,
+    table: schema_joi,
+    search_attribute: schema_joi,
+    search_value: Joi.any().required(),
+    get_attributes: Joi.array().min(1).items(schema_joi).required(),
+    desc: Joi.bool(),
+    limit: Joi.number().integer().min(1),
+    offset: Joi.number().integer().min(0),
+});
 
-let search_by_conditions = {
-    schema: {
-        presence: true,
-        format: common_validators.schema_format,
-        length: common_validators.schema_length
-    },
-    table: {
-        presence: true,
-        format: common_validators.schema_format,
-        length: common_validators.schema_length
-    },
-    conditions: {
-        presence: true
-    }
-};
+const search_by_conditions_schema = Joi.object({
+    schema: schema_joi,
+    table: schema_joi,
+    operator: Joi.string().valid('and', 'or').default('and').lowercase(),
+    offset: Joi.number().integer().min(0),
+    limit: Joi.number().integer().min(1),
+    get_attributes: Joi.array().min(1).items(schema_joi).required(),
+    conditions: Joi.array().min(1).items(Joi.object({
+        search_attribute: schema_joi,
+        search_type: Joi.string().valid("equals", "contains", "starts_with", "ends_with", "greater_than", "greater_than_equal", "less_than", "less_than_equal", "between").required(),
+        search_value: Joi.when('search_type', {
+            switch: [
+                { is: 'equals', then: Joi.any() },
+                { is: 'between', then: Joi.array().items(Joi.alternatives([Joi.string(), Joi.number()])).length(2) }
+            ],
+            otherwise: Joi.alternatives(Joi.string(), Joi.number())
+        }).required()
+    })).required()
+});
 
 module.exports = function (search_object, type) {
     let validation_error = null;
     switch (type) {
-        case 'hash':
-            validation_error = validator.validateObject(search_object, search_by_hash_constraints);
-            break;
         case 'value':
-            validation_error = validator.validateObject(search_object, search_by_value_constraints);
+            validation_error = validator.validateBySchema(search_object, search_by_value_schema);
             break;
         case 'hashes':
-            validation_error = validator.validateObject(search_object, search_by_hashes_constraints);
+            validation_error = validator.validateBySchema(search_object, search_by_hashes_schema);
             break;
         case 'conditions':
-            validation_error = validator.validateObject(search_object, search_by_conditions);
+            validation_error = validator.validateBySchema(search_object, search_by_conditions_schema);
             break;
         default:
             throw new Error(`Error validating search, unknown type: ${type}`);
@@ -103,27 +67,30 @@ module.exports = function (search_object, type) {
 
     // validate table and attribute if format validation is valid
     if (!validation_error) {
-        if (!hdb_terms.isEmpty(search_object.hash_values) && !Array.isArray(search_object.hash_values)) {
-            return new Error('hash_values must be an array');
-        }
-
-        if (!hdb_terms.isEmpty(search_object.get_attributes) && !Array.isArray(search_object.get_attributes)) {
-            return new Error('get_attributes must be an array');
-        }
-
         if (search_object.schema !== 'system') { // skip validation for system schema
+            //check if schema.table does not exist throw error
             let check_schema_table = hdb_terms.checkGlobalSchemaTable(search_object.schema, search_object.table);
             if (check_schema_table) {
                 return handleHDBError(new Error(), check_schema_table, HTTP_STATUS_CODES.NOT_FOUND);
             }
 
-            let all_table_attributes = global.hdb_schema[search_object.schema][search_object.table].attributes;
+            let table_schema = global.hdb_schema[search_object.schema][search_object.table];
+            let all_table_attributes = table_schema.attributes;
 
             //this clones the get_attributes array
             let check_attributes = [...search_object.get_attributes];
 
             if(type === 'value'){
                 check_attributes.push(search_object.search_attribute);
+            }
+
+            //if search type is conditions add conditions fields to see if the fields exist
+            if(type === 'conditions'){
+                //this is used to validate condition attributes exist in the schema
+                for(let x = 0, length = search_object.conditions.length; x < length; x++){
+                    let condition = search_object.conditions[x];
+                    check_attributes.push(condition.search_attribute);
+                }
             }
 
             let unknown_attributes = _.filter(check_attributes, (attribute) => attribute !== '*' && attribute.attribute !== '*' && // skip check for asterik attribute
