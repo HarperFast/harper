@@ -48,9 +48,14 @@ async function lmdbSearchByConditions(search_object) {
         } else{
             merged_ids = _.union(...ids);
         }
+        //sort the ids to get the records in correct order
+        merged_ids = merged_ids.sort(sorter);
 
-        let limit = Number.isInteger(search_object.limit) ? search_object.limit : merged_ids.length;
-        merged_ids = merged_ids.sort(sorter).splice(search_object.offset, limit);
+        // if limit or offset are gt 0 we execute the slice, note i confirmed null & undefined values for offset/limit will not evaluate to true as expected
+        if(search_object.limit > 0 || search_object.offset > 0){
+            let limit = Number.isInteger(search_object.limit) ? search_object.limit : merged_ids.length;
+            merged_ids = merged_ids.splice(search_object.offset, limit);
+        }
 
 
         //perform records search by id
@@ -60,7 +65,12 @@ async function lmdbSearchByConditions(search_object) {
     }
 }
 
-
+/**
+ * This function sorts an array ascending, the sort checks if either element is not a number.  if not a number they are both set to strings to compare them properly as a string will not compare to a number natively
+ * @param a
+ * @param b
+ * @returns {number}
+ */
 function sorter(a, b) {
     if(isNaN(a) || isNaN(b)){
         a = a.toString();
