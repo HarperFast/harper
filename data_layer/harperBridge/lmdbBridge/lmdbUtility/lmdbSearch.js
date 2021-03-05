@@ -63,6 +63,7 @@ async function executeSearch(search_object, search_type, hash_attribute, return_
         let env = await environment_utility.openEnvironment(schema_path, search_object.table);
         let search_results = searchByType(env, search_object, search_type, hash_attribute);
 
+        //if we execute a search all / search by hash type call there is no need to perform further evaluation as the records have been fetched
         if([lmdb_terms.SEARCH_TYPES.BATCH_SEARCH_BY_HASH, lmdb_terms.SEARCH_TYPES.BATCH_SEARCH_BY_HASH_TO_MAP, lmdb_terms.SEARCH_TYPES.SEARCH_ALL, lmdb_terms.SEARCH_TYPES.SEARCH_ALL_TO_MAP].indexOf(search_type) >= 0){
             return search_results;
         }
