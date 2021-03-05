@@ -25,6 +25,9 @@ async function lmdbSearchByConditions(search_object) {
             throw validation_error;
         }
 
+        //set the operator to always be lowercase for later evaluations
+        search_object.operator = search_object.operator ? search_object.operator.toLowerCase() : undefined;
+
         search_object.offset = Number.isInteger(search_object.offset) ? search_object.offset : 0;
 
         let schema_path = path.join(getBaseSchemaPath(), search_object.schema.toString());
@@ -76,17 +79,13 @@ function sorter(a, b) {
  * @param env
  * @param {SearchByConditionsObject} search_object
  * @param {String} hash_attribute
- * @param {{}}sort_map
  * @returns {Promise<unknown[]>}
  */
 // eslint-disable-next-line require-await
 async function executeConditionSearches(env, search_object, hash_attribute){
     //build a prototype object for search
 
-    let limit = undefined;
-    if(search_object.limit){
-        limit = search_object.limit + search_object.offset;
-    }
+    let limit = search_object.limit ? search_object.limit + search_object.offset : undefined;
 
     let proto_search = new SearchObject(search_object.schema, search_object.table, undefined, undefined,
         hash_attribute, search_object.get_attributes, undefined, undefined, limit);

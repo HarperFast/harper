@@ -40,7 +40,7 @@ const TIMESTAMP_OBJECT = {
 
 const All_ATTRIBUTES = ['id', 'city', 'temperature', 'state'];
 
-describe('test lmdbSearchByValue module', ()=>{
+describe('test lmdbSearchByConditions module', ()=>{
     let date_stub;
     before(()=>{
         date_stub = sandbox.stub(Date, 'now').returns(TIMESTAMP);
@@ -117,6 +117,27 @@ describe('test lmdbSearchByValue module', ()=>{
             await test_utils.assertErrorAsync(lmdb_search, [{schema:'dev', table:'test', get_attributes:['*'], conditions:[{search_attribute: 'cityz', search_type: 'equals', search_value: 'Denver'}]}],
                 new Error("unknown attribute 'cityz'"));
 
+            //test operator validation
+            let search_object = new SearchByConditionsObject('dev', 'test', ['*'],
+                [{search_attribute: 'city', search_type: 'equals', search_value: 'Denver'}, {search_attribute: 'city', search_type: 'equals', search_value: 'Fort Collins'}], undefined, undefined, 'zzz');
+            await test_utils.assertErrorAsync(lmdb_search, [search_object], new Error('"operator" must be one of [and, or]'));
+            search_object.operator = 'AND';
+            await test_utils.assertErrorAsync(lmdb_search, [search_object], undefined);
+            search_object.operator = 'OR';
+            await test_utils.assertErrorAsync(lmdb_search, [search_object], undefined);
+
+            //test limit offset validation
+            search_object.limit = 'aaaa';
+            search_object.offset = 'zzz';
+            await test_utils.assertErrorAsync(lmdb_search, [search_object], new Error('"offset" must be a number. "limit" must be a number'));
+
+            search_object.limit = 1.1;
+            search_object.offset = 22.4;
+            await test_utils.assertErrorAsync(lmdb_search, [search_object], new Error('"offset" must be an integer. "limit" must be an integer'));
+
+            search_object.limit = 0;
+            search_object.offset = -2;
+            await test_utils.assertErrorAsync(lmdb_search, [search_object], new Error('"offset" must be greater than or equal to 0. "limit" must be greater than or equal to 1'));
         });
 
         it('test equals on single condition', async()=>{

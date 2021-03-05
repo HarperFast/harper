@@ -4,7 +4,7 @@ const Joi = require('joi');
 const hdb_terms = require('../utility/common_utils');
 const { common_validators, schema_regex } = require('./common_validators');
 const { handleHDBError, hdb_errors } = require('../utility/errors/hdbError');
-const { HTTP_STATUS_CODES, VALIDATION_ERROR_MSGS } = hdb_errors;
+const { HTTP_STATUS_CODES } = hdb_errors;
 
 const schema_joi = Joi.alternatives(
         Joi.string().min(1).max(common_validators.schema_length.maximum).pattern(schema_regex)
@@ -32,7 +32,7 @@ const search_by_value_schema = Joi.object({
 const search_by_conditions_schema = Joi.object({
     schema: schema_joi,
     table: schema_joi,
-    operator: Joi.string().allow('and', 'or').default('and'),
+    operator: Joi.string().valid('and', 'or').default('and').lowercase(),
     offset: Joi.number().integer().min(0),
     limit: Joi.number().integer().min(1),
     get_attributes: Joi.array().min(1).items(schema_joi).required(),
@@ -68,6 +68,7 @@ module.exports = function (search_object, type) {
     // validate table and attribute if format validation is valid
     if (!validation_error) {
         if (search_object.schema !== 'system') { // skip validation for system schema
+            //check if schema.table does not exist throw error
             let check_schema_table = hdb_terms.checkGlobalSchemaTable(search_object.schema, search_object.table);
             if (check_schema_table) {
                 return handleHDBError(new Error(), check_schema_table, HTTP_STATUS_CODES.NOT_FOUND);
@@ -83,12 +84,11 @@ module.exports = function (search_object, type) {
                 check_attributes.push(search_object.search_attribute);
             }
 
+            //if search type is conditions add conditions fields to see if the fields exist
             if(type === 'conditions'){
-                //this is used to validate sort attributes are in the conditions array
-                let condition_attributes = [];
+                //this is used to validate condition attributes exist in the schema
                 for(let x = 0, length = search_object.conditions.length; x < length; x++){
                     let condition = search_object.conditions[x];
-                    condition_attributes.push(condition.search_attribute.toString());
                     check_attributes.push(condition.search_attribute);
                 }
             }
