@@ -97,7 +97,11 @@ function sorter(a, b) {
 async function executeConditionSearches(env, search_object, hash_attribute){
     //build a prototype object for search
 
-    let limit = search_object.limit ? search_object.limit + search_object.offset : undefined;
+    let limit;
+
+    if (search_object.operator && search_object.operator.toLowerCase() === "or" || search_object.conditions.length === 1) {
+        limit = search_object.limit ? search_object.limit + search_object.offset : undefined;
+    }
 
     let proto_search = new SearchObject(search_object.schema, search_object.table, undefined, undefined,
         hash_attribute, search_object.get_attributes, undefined, undefined, limit);

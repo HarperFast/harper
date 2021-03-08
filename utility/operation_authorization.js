@@ -526,12 +526,6 @@ function getRecordAttributes(json) {
             json.conditions.forEach(condition => {
                 affected_attributes.add(condition.search_attribute);
             });
-
-            if (json.sort_attributes) {
-                json.sort_attributes.forEach(sort_attr => {
-                    affected_attributes.add(sort_attr.attribute);
-                });
-            }
         }
 
         if (json && json.search_attribute) {
