@@ -63,16 +63,16 @@ async function run() {
         // Check to see if an upgrade file exists in $HOME/.harperdb.  If it exists, we need to force the user to upgrade.
         //TODO - instead of checking for setting file in .harperdb, we can just do the eval done in postInstall here and
         // generate the update_obj here, if there is a diff.
-         try {
-            const update_obj = await hdbInfoController.getVersionUpdateJson();
-            if (update_obj === undefined) {
-                return;
-            }
-            const upgrade_vers = update_obj[terms.UPGRADE_JSON_FIELD_NAMES_ENUM.UPGRADE_VERSION];
+        let upgrade_vers;
+        try {
+            const update_obj = await hdbInfoController.getVersionUpdateInfo();
+            if (update_obj !== undefined) {
+                upgrade_vers = update_obj[terms.UPGRADE_JSON_FIELD_NAMES_ENUM.UPGRADE_VERSION];
 
-            let upgrade_result = await forceUpdate(update_obj);
-            if (upgrade_result) {
-                await hdbInfoController.updateHdbUpgradeInfo(upgrade_vers)
+                let upgrade_result = await forceUpdate(update_obj);
+                if (upgrade_result) {
+                    await hdbInfoController.updateHdbUpgradeInfo(upgrade_vers);
+                }
             }
         } catch(err) {
             console.error(`Got an error while trying to upgrade your HarperDB instance to version ${upgrade_vers}.  Exiting HarperDB.`);

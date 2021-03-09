@@ -89,8 +89,8 @@ async function updateHdbUpgradeInfo(new_version_string) {
 
         }
         // get the largest
-        const latest_id = Math.max.apply(null, vals.keys());
-        current_info_record = vals.get(latest_id)
+        const latest_id = Math.max.apply(null, [...vals.keys()]);
+        current_info_record = vals.get(latest_id);
         //TODO - do we assume the data version is updated to the most recently inserted hdb version or
         // do we use the value passed and just create a new record?
         current_info_record.data_version_num = current_info_record.hdb_version_num;
@@ -157,7 +157,7 @@ async function getLatestHdbInfoRecord() {
         // get the largest which will be the most recent
         const latest_id = Math.max.apply(null, version_map.keys());
 
-        current_info_record =  version_map.get(latest_id)
+        current_info_record =  version_map.get(latest_id);
     } catch(err) {
         console.log(err);
     }
@@ -165,46 +165,48 @@ async function getLatestHdbInfoRecord() {
     return current_info_record;
 }
 
-async function getVersionUpdateJson() {
+/**
+ * ADD CODE COMMENT
+ * @returns {Promise<UpgradeObject>}
+ */
+async function getVersionUpdateInfo() {
     log.info('Checking if HDB software has been updated');
+    try {
+        const current_version = version.version();
+        const latest_info_record = await getLatestHdbInfoRecord();
 
-    const new_version = version.version();
-    const latest_info_record = await getLatestHdbInfoRecord();
+        //if no record is returned, it means we have an old instance that needs to be upgraded bc new installs will
+        // always result in a record being inserted into the hdb_info table
+        if (latest_info_record === undefined) {
+            return new UpgradeObject(null, current_version);
+        }
 
-    //if no record is returned, it means we have an old instance that needs to be upgraded bc new installs will
-    // always result in a record being inserted into the hdb_info table
-    if (latest_info_record === undefined) {
-        return new UpgradeObject(null, new_version);
+        const { data_version_num, hdb_version_num } = latest_info_record;
+
+        if (current_version === data_version_num) {
+            //TODO - should we also check to make sure the hdb_version_num is the same and, if not, insert new one or
+            // is that not even possible?
+            //versions are up to date so nothing to do here
+            return;
+        }
+
+        if (compareVersions(data_version_num, current_version) > 0) {
+            //TODO - add more handling here - should this exit the process w/ a fail?
+            console.error(`You have installed a version lower than version that your data was created on.  This may cause issues.  ${hdb_terms.SUPPORT_HELP_MSG}`);
+            throw new Error('Trying to downgrade HDB versions is not supported.');
+        }
+
+        return new UpgradeObject(data_version_num, current_version);
+    } catch(err) {
+        log.fatal('Error while trying to evaluate the state of hdb data and the installed hdb version');
+        log.fatal(err);
+        throw err;
     }
-
-    const { data_version_num, hdb_version_num } = latest_info_record;
-
-    if (new_version === data_version_num) {
-        //TODO - should we also check to make sure the data_version_num is the same and, if not, insert new one or
-        // is that not even possible?
-        //versions are up to date so nothing to do here
-        return;
-    }
-
-    if (new_version !== hdb_version_num) {
-        //TODO - is this possible?  If so, is it an error or do we just insert a new record?  Or can we ignore since a new
-        // record will get inserted anyways after the upgrade completes?
-        throw new Error('There is an issue w/ versions!')
-    }
-
-
-    if (compareVersions(data_version_num, new_version) < 0) {
-        //TODO - add more handling here - should this exit the process w/ a fail?
-        console.error(`You have installed a version lower than version that your data was created on.  This may cause issues.  ${terms.SUPPORT_HELP_MSG}`);
-        throw new Error('Trying to downgrade HDB versions is not supported.')
-    }
-
-    return new UpgradeObject(data_version_num, new_version);
 }
 
 
 module.exports = {
     updateHdbInstallInfo,
     updateHdbUpgradeInfo,
-    getVersionUpdateJson
+    getVersionUpdateInfo
 };
