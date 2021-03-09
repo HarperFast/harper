@@ -4,12 +4,12 @@
 	"values": [
 		{
 			"key": "host",
-			"value": "https://localhost",
+			"value": "http://localhost",
 			"enabled": true
 		},
 		{
 			"key": "port",
-			"value": "31283",
+			"value": "9925",
 			"enabled": true
 		},
 		{
