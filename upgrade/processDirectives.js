@@ -47,7 +47,7 @@ try {
  */
 function getDirectiveChangeDescriptions(curr_version, upgrade_version) {
     let change_descriptions = [];
-    let loaded_directives = directive_manager.filterInvalidVersions(curr_version);
+    let loaded_directives = directive_manager.filterInvalidVersions(curr_version, upgrade_version);
     let upgrade_directives = getVersionsToInstall(curr_version, loaded_directives);
     for(let vers of upgrade_directives) {
         let new_description = {};
@@ -70,9 +70,10 @@ function getDirectiveChangeDescriptions(curr_version, upgrade_version) {
  * @param upgrade_version - The desired upgrade version
  */
 function processDirectives(curr_version, upgrade_version) {
+    //TODO - update code comment below w/ update that we now do run the directives only to the point of the upgrade version
     // Currently we only support upgrading to latest which will be the largest version in the directive manager.  We
     // could support upgrading to a specific version later by allowing the filter function to accept a specific version;
-    let loaded_directives = directive_manager.filterInvalidVersions(curr_version);
+    let loaded_directives = directive_manager.filterInvalidVersions(curr_version, upgrade_version);
     if(hdb_util.isEmptyOrZeroLength(curr_version)) {
         log.info('Invalid value for curr_version');
     }
@@ -82,7 +83,7 @@ function processDirectives(curr_version, upgrade_version) {
     let upgrade_directives = getVersionsToInstall(curr_version, loaded_directives);
     let variable_comments = undefined;
     let func_responses = [];
-    for(let vers of upgrade_directives) {
+    for (let vers of upgrade_directives) {
         let notify_msg = `Starting upgrade to version ${vers.version}`;
         log.notify(notify_msg);
         console.log(notify_msg);

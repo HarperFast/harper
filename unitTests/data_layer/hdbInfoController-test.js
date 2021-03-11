@@ -51,6 +51,10 @@ describe('Test hdbInfoController module - ', function() {
         sandbox.resetHistory();
     });
 
+    after(() => {
+        sandbox.restore();
+    })
+
     describe('Test updateHdbUpgradeInfo() ', () => {
         it('test update nominal case', async function() {
             try {

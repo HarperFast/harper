@@ -72,16 +72,20 @@ async function run() {
                 let upgrade_result = await forceUpdate(update_obj);
                 if (upgrade_result) {
                     await hdbInfoController.updateHdbUpgradeInfo(upgrade_vers);
+                    console.log('Upgrade complete.  Starting HarperDB.');
                 }
             }
         } catch(err) {
-            console.error(`Got an error while trying to upgrade your HarperDB instance to version ${upgrade_vers}.  Exiting HarperDB.`);
+            if (upgrade_vers) {
+                console.error(`Got an error while trying to upgrade your HarperDB instance to version ${upgrade_vers}.  Exiting HarperDB.`);
+            } else {
+                console.error(`Got an error while trying to upgrade your HarperDB instance.  Exiting HarperDB.`);
+            }
             process.exit(1);
         }
 
         await checkTransactionLogEnvironmentsExist();
 
-        console.log('Upgrade complete.  Starting HarperDB.');
         let is_in_use = await isPortInUse();
         if(!is_in_use) {
             await startHarper();
@@ -141,14 +145,16 @@ async function openCreateTransactionEnvironment(schema, table_name){
  * @returns {Promise<boolean>}
  */
 async function forceUpdate(update_obj) {
-    let old_version = update_obj[terms.UPGRADE_JSON_FIELD_NAMES_ENUM.CURRENT_VERSION];
+    //TODO - set old version to 2.9 dummy value to make sure 3.0 and any additional upgrades run?  Should we automate this
+    // to take a `lowest supported version` const and subtracts .1 to make sure all upgrades for supported versions run?
+    let old_version = update_obj[terms.UPGRADE_JSON_FIELD_NAMES_ENUM.CURRENT_VERSION] ? update_obj[terms.UPGRADE_JSON_FIELD_NAMES_ENUM.CURRENT_VERSION] : '2.9';
     let new_version = update_obj[terms.UPGRADE_JSON_FIELD_NAMES_ENUM.UPGRADE_VERSION];
     //TODO - do we need these checks for version values anymore?
-    if(!old_version) {
-        console.log('Current Version field missing from the config file.  Cannot continue with upgrade.  Please contact support@harperdb.io');
-        logger.notify('Missing current version field from upgrade config');
-        process.exit(1);
-    }
+    // if(!old_version) {
+    //     console.log('Current Version field missing from the config file.  Cannot continue with upgrade.  Please contact support@harperdb.io');
+    //     logger.notify('Missing current version field from upgrade config');
+    //     process.exit(1);
+    // }
     if(!new_version) {
         new_version = version.version();
         if(!new_version) {

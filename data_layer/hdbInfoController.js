@@ -18,8 +18,10 @@ const version = require('../bin/version');
 const log = require('../utility/logging/harper_logger');
 const hdb_comm = require('../utility/common_utils');
 const { compareVersions } = hdb_comm;
+const global_schema = require('../utility/globalSchema');
 
 let p_search_search_by_value = util.promisify(search.searchByValue);
+let p_setSchemaDataToGlobal = util.promisify(global_schema.setSchemaDataToGlobal);
 
 const HDB_INFO_SEARCH_ATTRIBUTE = 'info_id';
 const SUCCESS = 0;
@@ -33,14 +35,14 @@ const FAILURE = 1;
  */
 async function updateHdbInstallInfo(new_version_string, old_instance) {
     let info_table_insert_object = undefined;
-    let version_data = await searchInfo();
+    let current_version_data = await searchInfo();
 
     try {
         // always have a 0 in case the search returned nothing.  That way we will have an entry at 1 if there are no rows returned due to table
         // not existing (upgrade from old install).
         let vals = new Map([[0, {}]]);
-        for (let i=0; i < version_data.length; i++){
-            vals.set(version_data[i].info_id, version_data[i]);
+        for (let i=0; i < current_version_data.length; i++){
+            vals.set(current_version_data[i].info_id, current_version_data[i]);
 
         }
         // get the largest
@@ -65,19 +67,25 @@ async function updateHdbInstallInfo(new_version_string, old_instance) {
     let insert_object = new DataLayerObjects.InsertObject(hdb_terms.OPERATIONS_ENUM.INSERT,
         hdb_terms.SYSTEM_SCHEMA_NAME,
         hdb_terms.SYSTEM_TABLE_NAMES.INFO_TABLE_NAME,
-        // This could be called outside of harperdb where global is not instantiated, so we have to hard code it.
         hdb_terms.SYSTEM_TABLE_HASH_ATTRIBUTES.INFO_TABLE_ATTRIBUTE,
         [info_table_insert_object]);
 
     try {
+        await p_setSchemaDataToGlobal();
         await insert.insert(insert_object);
     } catch(err) {
         throw err;
     }
 }
 
+//TODO - these transactions may not be logged b/c the checkTransactionLogEnvironmentsExist() is run after the update - is that a problem?
+/**
+ * ADD CODE COMMENTS
+ * @param new_version_string
+ * @returns {Promise<void>}
+ */
 async function updateHdbUpgradeInfo(new_version_string) {
-    let current_info_record;
+    let new_info_record;
     let version_data = await searchInfo();
 
     try {
@@ -90,24 +98,30 @@ async function updateHdbUpgradeInfo(new_version_string) {
         }
         // get the largest
         const latest_id = Math.max.apply(null, [...vals.keys()]);
-        current_info_record = vals.get(latest_id);
+        // current_info_record = vals.get(latest_id);
         //TODO - do we assume the data version is updated to the most recently inserted hdb version or
         // do we use the value passed and just create a new record?
-        current_info_record.data_version_num = current_info_record.hdb_version_num;
+        // if (current_info_record.hdb_version_num) {
+        //     current_info_record.data_version_num = current_info_record.hdb_version_num;
+        // } else {
+        const new_id = latest_id + 1;
+        new_info_record = new BinObjects.HdbInfoInsertObject(new_id, new_version_string, new_version_string)
+        // }
     } catch(err) {
         throw err;
     }
 
-    //Update the most recent record with the new data version in the hdb_info table.
-    let update_object = new DataLayerObjects.InsertObject(hdb_terms.OPERATIONS_ENUM.UPDATE,
+    //Insert the most recent record with the new data version in the hdb_info table.
+    let insert_object = new DataLayerObjects.InsertObject(hdb_terms.OPERATIONS_ENUM.INSERT,
         hdb_terms.SYSTEM_SCHEMA_NAME,
         hdb_terms.SYSTEM_TABLE_NAMES.INFO_TABLE_NAME,
         // This could be called outside of harperdb where global is not instantiated, so we have to hard code it.
         hdb_terms.SYSTEM_TABLE_HASH_ATTRIBUTES.INFO_TABLE_ATTRIBUTE,
-        [current_info_record]);
+        [new_info_record]);
 
     try {
-        await insert.update(update_object);
+        await p_setSchemaDataToGlobal();
+        await insert.insert(insert_object);
     } catch(err) {
         throw err;
     }
@@ -155,7 +169,7 @@ async function getLatestHdbInfoRecord() {
             version_map.set(version_data[i].info_id, version_data[i]);
         }
         // get the largest which will be the most recent
-        const latest_id = Math.max.apply(null, version_map.keys());
+        const latest_id = Math.max.apply(null, [...version_map.keys()]);
 
         current_info_record =  version_map.get(latest_id);
     } catch(err) {
@@ -183,16 +197,16 @@ async function getVersionUpdateInfo() {
 
         const { data_version_num, hdb_version_num } = latest_info_record;
 
-        if (current_version === data_version_num) {
+        if (current_version.toString() === data_version_num.toString()) {
             //TODO - should we also check to make sure the hdb_version_num is the same and, if not, insert new one or
             // is that not even possible?
             //versions are up to date so nothing to do here
             return;
         }
 
-        if (compareVersions(data_version_num, current_version) > 0) {
+        if (compareVersions(data_version_num.toString(), current_version.toString()) > 0) {
             //TODO - add more handling here - should this exit the process w/ a fail?
-            console.error(`You have installed a version lower than version that your data was created on.  This may cause issues.  ${hdb_terms.SUPPORT_HELP_MSG}`);
+            console.error(`You have installed a version lower than version that your data was created on.  This may cause issues and is not supported.  ${hdb_terms.SUPPORT_HELP_MSG}`);
             throw new Error('Trying to downgrade HDB versions is not supported.');
         }
 
