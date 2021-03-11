@@ -198,6 +198,7 @@ const OPERATIONS_ENUM = {
     EXPORT_TO_S3: 'export_to_s3',
     IMPORT_FROM_S3: 'import_from_s3',
     DELETE_FILES_BEFORE: 'delete_files_before',
+    DELETE_RECORDS_BEFORE: 'delete_records_before',
     EXPORT_LOCAL: 'export_local',
     SEARCH_JOBS_BY_START_DATE: 'search_jobs_by_start_date',
     GET_JOB: 'get_job',
