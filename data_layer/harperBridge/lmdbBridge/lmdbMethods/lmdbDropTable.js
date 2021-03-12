@@ -6,6 +6,7 @@ const search_by_value = require('./lmdbSearchByValue');
 const delete_records = require('./lmdbDeleteRecords');
 const drop_all_attributes = require('../lmdbUtility/lmdbDropAllAttributes');
 const hdb_terms = require('../../../../utility/hdbTerms');
+const hdb_utils = require('../../../../utility/common_utils');
 const environment_utility = require('../../../../utility/lmdb/environmentUtility');
 const {getBaseSchemaPath, getTransactionStorePath} = require('../lmdbUtility/initializePaths');
 const path = require('path');
@@ -66,7 +67,7 @@ async function dropTableFromSystem(drop_table_obj) {
     // Data found by the search function should match the drop_table_object
     for(let x = 0; x < search_result.length; x++){
         let item = search_result[x];
-        if (item.name === drop_table_obj.table && item.schema === drop_table_obj.schema) {
+        if (item.name === hdb_utils.autoCast(drop_table_obj.table) && item.schema === hdb_utils.autoCast(drop_table_obj.schema)) {
             delete_table = item;
         }
     }

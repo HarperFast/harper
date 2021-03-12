@@ -145,10 +145,10 @@ describe('test lmdbSearch module', ()=>{
             assert.deepStrictEqual(search_type, lmdb_terms.SEARCH_TYPES.STARTS_WITH);
         });
 
-        it('test for unknown search_type', ()=>{
+        it('test for wildcard in middle of value is equals', ()=>{
             let search_object = new SearchObject('dev', 'dog', 'name', 'Ky*le', 'id', ['id', 'name']);
-            let search_type =test_utils.assertErrorSync(create_search_type_function, [search_object, 'id'], LMDB_ERRORS.UNKNOWN_SEARCH_TYPE);
-            assert.deepStrictEqual(search_type, undefined);
+            let search_type =test_utils.assertErrorSync(create_search_type_function, [search_object, 'id'], undefined);
+            assert.deepStrictEqual(search_type, lmdb_terms.SEARCH_TYPES.EQUALS);
         });
 
         it('test for > comparator is GREATER_THAN', ()=>{
