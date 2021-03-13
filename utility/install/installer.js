@@ -107,20 +107,21 @@ function run_install(callback) {
  */
 function updateHdbInfo(callback) {
     let vers = version.version();
-    if(vers) {
+    if (vers) {
         //If we are installing over an existing instance and keeping the data, we may need to handle the HDB info differently
         // the first time an install runs on or after 3.0 if there are no info records tracked yet
         const old_instance = keep_data;
         hdbInfoController.updateHdbInstallInfo(vers, old_instance)
-            .then((err, res) => {
-                if(err) {
-                    winston.error('Error inserting product info');
-                    return callback(err, null);
-                } else {
-                    return callback(null, res);
-                }
-
+            .then(res => {
+                return callback(null, res);
+            })
+            .catch(err => {
+                winston.error('Error inserting product info');
+                return callback(err, null);
             });
+    } else {
+        //DO SOMETHING HERE?
+        console.log('The version is missing/removed from package.json - do we need to exit out of the process here or just keep going/ignore?');
     }
 }
 

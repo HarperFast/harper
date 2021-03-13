@@ -49,11 +49,10 @@ async function updateHdbInstallInfo(new_version_string, old_instance) {
         let latest_id = Math.max.apply(null, vals.keys());
         const new_id = latest_id + 1;
         const current_info_record = vals.get(latest_id);
-        const current_data_version = current_info_record.data_version_num;
         //if there is no info record stored BUT we are installing over an old instance and keeping data, we need to set
         // the data_version value to null so we know to still run the 3.0 upgrade
-        const new_data_version = current_data_version ? current_data_version : old_instance ? null : new_version_string;
-        info_table_insert_object = new BinObjects.HdbInfoInsertObject(new_id, new_data_version, new_version_string);
+        const current_data_version = current_info_record && current_info_record.data_version_num ? current_info_record.data_version_num : old_instance ? null : new_version_string;
+        info_table_insert_object = new BinObjects.HdbInfoInsertObject(new_id, current_data_version, new_version_string);
     } catch(err) {
         throw err;
     }
@@ -72,7 +71,7 @@ async function updateHdbInstallInfo(new_version_string, old_instance) {
 
     try {
         await p_setSchemaDataToGlobal();
-        await insert.insert(insert_object);
+        return insert.insert(insert_object);
     } catch(err) {
         throw err;
     }
@@ -105,7 +104,7 @@ async function updateHdbUpgradeInfo(new_version_string) {
         //     current_info_record.data_version_num = current_info_record.hdb_version_num;
         // } else {
         const new_id = latest_id + 1;
-        new_info_record = new BinObjects.HdbInfoInsertObject(new_id, new_version_string, new_version_string)
+        new_info_record = new BinObjects.HdbInfoInsertObject(new_id, new_version_string, new_version_string);
         // }
     } catch(err) {
         throw err;
@@ -145,7 +144,6 @@ async function searchInfo() {
     } catch(err) {
         // search may fail during a new install as the table doesn't exist yet (we haven't done an insert).  This is ok,
         // we will assume an id of 0 below.
-        console.error(err);
         log.info(err);
     }
     return version_data;
