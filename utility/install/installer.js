@@ -613,9 +613,9 @@ function createSettingsFile(mount_status, callback) {
             `   ;The path to the SSL private key used when running with HTTPS enabled.\n` +
             `${HDB_SETTINGS_NAMES.PRIVATE_KEY_KEY} = ${wizard_result.HDB_ROOT}/keys/privateKey.pem\n` +
             `   ;Set to true to enable HTTPS on the HarperDB REST endpoint.  Requires a valid certificate and key.\n` +
-            `${HDB_SETTINGS_NAMES.HTTP_SECURE_ENABLED_KEY} = TRUE\n` +
+            `${HDB_SETTINGS_NAMES.HTTP_SECURE_ENABLED_KEY} = false\n` +
             `   ;Set to true to enable Cross Origin Resource Sharing, which allows requests across a domain.\n` +
-            `${HDB_SETTINGS_NAMES.CORS_ENABLED_KEY} = TRUE\n` +
+            `${HDB_SETTINGS_NAMES.CORS_ENABLED_KEY} = true\n` +
             `   ;Allows for setting allowable domains with CORS. Comma separated list.\n` +
             `${HDB_SETTINGS_NAMES.CORS_WHITELIST_KEY} =\n` +
             `   ;Length of time in milliseconds after which a request will timeout.  Defaults to 120,000 ms (2 minutes).\n` +
@@ -632,7 +632,7 @@ function createSettingsFile(mount_status, callback) {
             `   ;The path where log files will be written. If there is no file name included in the path, the log file will be created by default as 'hdb_log.log' \n` +
             `${HDB_SETTINGS_NAMES.LOG_PATH_KEY} = ${wizard_result.HDB_ROOT}/log/hdb_log.log\n` +
             `   ;Set to true to enable daily log file rotations - each log file name will be prepended with YYYY-MM-DD (for WINSTON logger only).\n` +
-            `${HDB_SETTINGS_NAMES.LOG_DAILY_ROTATE_KEY} = FALSE\n` +
+            `${HDB_SETTINGS_NAMES.LOG_DAILY_ROTATE_KEY} = false\n` +
             `   ;Set the number of daily log files to maintain when LOG_DAILY_ROTATE is enabled. If no integer value is set, no limit will be set for\n` +
             `   ;daily log files which may consume a large amount of storage depending on your log settings.\n` +
             `${HDB_SETTINGS_NAMES.LOG_MAX_DAILY_FILES_KEY} =\n` +
