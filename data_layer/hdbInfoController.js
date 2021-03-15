@@ -41,10 +41,10 @@ async function updateHdbInstallInfo(new_version_string, old_instance) {
         // always have a 0 in case the search returned nothing.  That way we will have an entry at 1 if there are no rows returned due to table
         // not existing (upgrade from old install).
         let vals = new Map([[0, {}]]);
-        for (let i=0; i < current_version_data.length; i++){
-            vals.set(current_version_data[i].info_id, current_version_data[i]);
-
+        for (const version of current_version_data) {
+            vals.set(version.info_id, version);
         }
+
         // get the largest
         let latest_id = Math.max.apply(null, vals.keys());
         const new_id = latest_id + 1;
@@ -91,10 +91,10 @@ async function updateHdbUpgradeInfo(new_version_string) {
         // always have a 0 in case the search returned nothing.  That way we will have an entry at 1 if there are no rows returned due to table
         // not existing (upgrade from old install).
         let vals = new Map([[0, {}]]);
-        for (let i=0; i < version_data.length; i++){
-            vals.set(version_data[i].info_id, version_data[i]);
-
+        for (const version of version_data) {
+            vals.set(version.info_id, version);
         }
+
         // get the largest
         const latest_id = Math.max.apply(null, [...vals.keys()]);
         // current_info_record = vals.get(latest_id);
@@ -163,9 +163,10 @@ async function getLatestHdbInfoRecord() {
         // always have a 0 in case the search returned nothing.  That way we will have an entry at 1 if there are no rows returned due to table
         // not existing (upgrade from old install).
         let version_map = new Map();
-        for (let i=0; i < version_data.length; i++){
-            version_map.set(version_data[i].info_id, version_data[i]);
+        for (const version of version_data) {
+            version_map.set(version.info_id, version);
         }
+
         // get the largest which will be the most recent
         const latest_id = Math.max.apply(null, [...version_map.keys()]);
 
