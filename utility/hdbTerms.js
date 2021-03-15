@@ -497,6 +497,8 @@ const JWT_ENUM = {
     JWT_PASSPHRASE_NAME: '.jwtPass'
 };
 
+const INVALID_ATTRIBUTE_NAMES = ['undefined', 'null'];
+
 module.exports = {
     LOCAL_HARPERDB_OPERATIONS,
     HDB_SUPPORT_ADDRESS,
@@ -594,5 +596,6 @@ module.exports = {
     SEARCH_WILDCARDS,
     FUNC_VAL,
     READ_TRANSACTION_LOG_SEARCH_TYPES_ENUM,
-    JWT_ENUM
+    JWT_ENUM,
+    INVALID_ATTRIBUTE_NAMES
 };

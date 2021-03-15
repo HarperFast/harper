@@ -94,7 +94,7 @@ async function validateObjectAsync(object, file_constraints) {
  * @returns {*}
  */
 function validateBySchema(object, schema){
-    let result = schema.validate(object, {allowUnknown:true, abortEarly:false});
+    let result = schema.validate(object, {allowUnknown:true, abortEarly:false, debug: true});
 
     if(result.error){
         return new Error(result.error.message);

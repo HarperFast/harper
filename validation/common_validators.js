@@ -1,4 +1,5 @@
 const schema_regex = /^[\x20-\x2E|\x30-\x5F|\x61-\x7E]*$/;
+const Joi = require('joi');
 
 const common_validators = {
     schema_format: {
@@ -11,7 +12,13 @@ const common_validators = {
     }
 };
 
+const schema_joi = Joi.alternatives(
+    Joi.string().min(1).max(common_validators.schema_length.maximum).pattern(schema_regex)
+        .messages({'string.pattern.base': '{:#label} ' + common_validators.schema_format.message}),
+    Joi.number()).required();
+
 module.exports = {
     common_validators,
-    schema_regex
+    schema_regex,
+    schema_joi
 };

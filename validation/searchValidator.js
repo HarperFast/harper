@@ -2,14 +2,9 @@ const _ = require('lodash'),
     validator = require('./validationWrapper');
 const Joi = require('joi');
 const hdb_terms = require('../utility/common_utils');
-const { common_validators, schema_regex } = require('./common_validators');
+const { schema_joi } = require('./common_validators');
 const { handleHDBError, hdb_errors } = require('../utility/errors/hdbError');
 const { HTTP_STATUS_CODES } = hdb_errors;
-
-const schema_joi = Joi.alternatives(
-        Joi.string().min(1).max(common_validators.schema_length.maximum).pattern(schema_regex)
-            .messages({'string.pattern.base': '{:#label} ' + common_validators.schema_format.message}),
-        Joi.number()).required();
 
 const search_by_hashes_schema = Joi.object({
     schema: schema_joi,
