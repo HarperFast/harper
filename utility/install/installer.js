@@ -79,7 +79,7 @@ function run_install(callback) {
                 createSuperUser,
                 createClusterUser,
                 generateKeys,
-                updateHdbInfo,
+                insertHdbInfo,
                 () => {
                     check_jwt_tokens();
 
@@ -105,23 +105,21 @@ function run_install(callback) {
  * as we can't make the installer async until we pick a new CLI base.
  * @param callback
  */
-function updateHdbInfo(callback) {
+function insertHdbInfo(callback) {
     let vers = version.version();
     if (vers) {
-        //If we are installing over an existing instance and keeping the data, we may need to handle the HDB info differently
-        // the first time an install runs on or after 3.0 if there are no info records tracked yet
-        const old_instance = keep_data;
-        hdbInfoController.updateHdbInstallInfo(vers, old_instance)
+        hdbInfoController.insertHdbInstallInfo(vers)
             .then(res => {
                 return callback(null, res);
             })
             .catch(err => {
-                winston.error('Error inserting product info');
+                winston.error('Error inserting product version info');
                 return callback(err, null);
             });
     } else {
-        //DO SOMETHING HERE?
-        console.log('The version is missing/removed from package.json - do we need to exit out of the process here or just keep going/ignore?');
+        const err_msg = 'The version is missing/removed from package.json';
+        console.log(err_msg);
+        return callback(err_msg, null);
     }
 }
 

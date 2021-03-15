@@ -10,6 +10,7 @@ const hdb_info_controller_rw = rewire('../../data_layer/hdbInfoController');
 const SystemSchema = require('../../json/systemSchema');
 const insert = require('../../data_layer/insert');
 const version = require('../../bin/version');
+const harper_logger = require('../../utility/logging/harper_logger');
 const hdb_terms = require('../../utility/hdbTerms');
 
 describe('Test hdbInfoController module - ', function() {
@@ -19,11 +20,13 @@ describe('Test hdbInfoController module - ', function() {
     let version_stub;
     let getLatestHdbInfoRecord_stub;
     let consoleError_stub;
-    const INFO_SEARCH_RESULT = [{
-        info_id: 1,
-        data_version_num: "1.2.0001",
-        hdb_version_num: "1.2.0001"
-    },
+    let log_info_stub;
+    const INFO_SEARCH_RESULT = [
+        {
+            info_id: 1,
+            data_version_num: "1.2.0001",
+            hdb_version_num: "1.2.0001"
+        },
         {
             info_id: 2,
             data_version_num: "1.3.0001",
@@ -33,16 +36,14 @@ describe('Test hdbInfoController module - ', function() {
 
     before(() => {
         sandbox = sinon.createSandbox();
-        insert_stub = sandbox.stub(insert, 'insert').resolves('');
-        consoleError_stub = sandbox.stub(console, 'error').returns('');
+        search_stub = sandbox.stub().resolves(INFO_SEARCH_RESULT);
+        hdb_info_controller_rw.__set__('p_search_search_by_value', search_stub);
+        insert_stub = sandbox.stub(insert, 'insert').resolves();
+        consoleError_stub = sandbox.stub(console, 'error').returns();
+        log_info_stub = sandbox.stub(harper_logger, 'info').returns();
         global.hdb_schema = undefined;
         global['hdb_schema'] = {system: {}};
         global['hdb_schema']['system'] = SystemSchema;
-    });
-
-    beforeEach(() => {
-        search_stub = sandbox.stub().resolves(INFO_SEARCH_RESULT);
-        hdb_info_controller_rw.__set__('p_search_search_by_value', search_stub);
     });
 
     afterEach(() => {
@@ -51,11 +52,39 @@ describe('Test hdbInfoController module - ', function() {
 
     after(() => {
         sandbox.restore();
+        rewire('../../data_layer/hdbInfoController');
     })
 
-    describe('Test updateHdbUpgradeInfo() ', () => {
+    describe('Test insertHdbInstallInfo() ', () => {
+        it('test insert install info - nominal case', async function() {
+            const test_vers = '2.0.0';
+            await hdb_info_controller_rw.insertHdbInstallInfo(test_vers);
+
+            assert.equal(insert_stub.called, true, 'expected insert to be called');
+            assert.equal(insert_stub.args[0][0].records[0].info_id, 1, 'expected info object to have id = 1');
+            assert.equal(insert_stub.args[0][0].records[0].data_version_num, test_vers, 'expected info object to have data version set to 2.0.0');
+            assert.equal(insert_stub.args[0][0].records[0].hdb_version_num, test_vers, 'expected info object to have hdb version set to 2.0.0');
+        });
+
+        it('test insert install info - throws exception', async function() {
+            const test_err = new Error("Insert error");
+            insert_stub.throws(test_err);
+
+            let result = undefined;
+            try {
+                await hdb_info_controller_rw.insertHdbUpgradeInfo('2.0.0');
+            } catch(err) {
+                result = err;
+            }
+
+            assert.deepEqual(result, test_err, 'Did not get expected exception');
+            insert_stub.reset();
+        });
+    })
+
+    describe('Test insertHdbUpgradeInfo() ', () => {
         it('test insert nominal case', async function() {
-            await hdb_info_controller_rw.updateHdbUpgradeInfo('2.0.0');
+            await hdb_info_controller_rw.insertHdbUpgradeInfo('2.0.0');
 
             assert.equal(search_stub.called, true, 'expected search to be called');
             assert.equal(insert_stub.called, true, 'expected insert to be called');
@@ -63,11 +92,10 @@ describe('Test hdbInfoController module - ', function() {
 
         it('test insert - search throws exception', async function() {
             search_stub.throws(new Error("Search error"));
-            hdb_info_controller_rw.__set__('p_search_search_by_value', search_stub);
 
             let result = undefined;
             try {
-                await hdb_info_controller_rw.updateHdbUpgradeInfo('2.0.0');
+                await hdb_info_controller_rw.insertHdbUpgradeInfo('2.0.0');
             } catch(err) {
                 result = err;
             }
@@ -79,11 +107,10 @@ describe('Test hdbInfoController module - ', function() {
 
         it('test insert - search returns no errors, still expect to run', async function() {
             search_stub.resolves([]);
-            hdb_info_controller_rw.__set__('p_search_search_by_value', search_stub);
 
             let result = undefined;
             try {
-                await hdb_info_controller_rw.updateHdbUpgradeInfo('2.0.0');
+                await hdb_info_controller_rw.insertHdbUpgradeInfo('2.0.0');
             } catch(err) {
                 result = err;
             }
@@ -95,12 +122,11 @@ describe('Test hdbInfoController module - ', function() {
 
         it('test insert - insert throws exception', async function() {
             search_stub.resolves(INFO_SEARCH_RESULT);
-            hdb_info_controller_rw.__set__('p_search_search_by_value', search_stub);
             insert_stub.throws(new Error('Insert Error'));
 
             let result = undefined;
             try {
-                await hdb_info_controller_rw.updateHdbUpgradeInfo('2.0.0');
+                await hdb_info_controller_rw.insertHdbUpgradeInfo('2.0.0');
             } catch(err) {
                 result = err;
             }
@@ -111,20 +137,61 @@ describe('Test hdbInfoController module - ', function() {
         });
     })
 
-    describe('Test getVersionUpdateInfo() ', () => {
-        const INFO_SEARCH_RESULT = [
-            {
-                info_id: 1,
-                data_version_num: "1.2.0001",
-                hdb_version_num: "1.2.0001"
-            },
-            {
-                info_id: 2,
-                data_version_num: "1.3.0001",
-                hdb_version_num: "1.3.0001"
-            }
-        ];
+    describe('Test searchInfo() ', () => {
+        let searchInfo_rw;
 
+        before(() => {
+            searchInfo_rw = hdb_info_controller_rw.__get__('searchInfo');
+        })
+
+        it('Should return the results from the hdb_info table search - nominal case', async function() {
+            const result = await searchInfo_rw();
+
+            assert.deepEqual(result, INFO_SEARCH_RESULT, 'expected results from search call');
+            assert.equal(result.length, INFO_SEARCH_RESULT.length, 'results should be returned as an array w/ length = 2');
+        });
+
+        it('Should log error if thrown from search function and return []', async function() {
+            const test_err = new Error("Search ERROR!");
+            search_stub.throws(test_err);
+            searchInfo_rw = hdb_info_controller_rw.__get__('searchInfo');
+
+            let result;
+            try {
+                result = await searchInfo_rw();
+            } catch(err) {
+                result = err;
+            }
+
+            assert.equal(log_info_stub.calledOnce, true, 'expected error to be logged');
+            assert.equal(log_info_stub.args[0][0].message, test_err.message, 'expected error message to be logged');
+            assert.deepEqual(result, [], 'expected an empty array to be returned');
+        });
+    })
+
+    describe('Test getLatestHdbInfoRecord() ', () => {
+        let getLatestHdbInfoRecord_rw;
+
+        before(() => {
+            search_stub.resolves(INFO_SEARCH_RESULT);
+            getLatestHdbInfoRecord_rw = hdb_info_controller_rw.__get__('getLatestHdbInfoRecord');
+        })
+
+        it('It should return the most recent info record', async function() {
+            const result = await getLatestHdbInfoRecord_rw();
+
+            assert.deepEqual(result, INFO_SEARCH_RESULT[1], 'expected a different record in result');
+        });
+
+        it('It should return undefined if search returns no records', async function() {
+            search_stub.resolves([]);
+            const result = await getLatestHdbInfoRecord_rw();
+
+            assert.equal(result, undefined, 'expected return value to be undefined');
+        });
+    })
+
+    describe('Test getVersionUpdateInfo() ', () => {
         before(() => {
             getLatestHdbInfoRecord_stub = sandbox.stub().resolves(INFO_SEARCH_RESULT[1]);
             hdb_info_controller_rw.__set__('getLatestHdbInfoRecord', getLatestHdbInfoRecord_stub);

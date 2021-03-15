@@ -24,57 +24,24 @@ let p_search_search_by_value = util.promisify(search.searchByValue);
 let p_setSchemaDataToGlobal = util.promisify(global_schema.setSchemaDataToGlobal);
 
 const HDB_INFO_SEARCH_ATTRIBUTE = 'info_id';
-const SUCCESS = 0;
-const FAILURE = 1;
 
 /**
- * Insert a row into hdb_info with the new version.
- * @param new_version_string - The version of this install/upgrade
+ * Insert a row into hdb_info with the initial version data at install.
+ * @param new_version_string - The version of this install
  * @returns {Promise<void>}
  * @throws
  */
-async function updateHdbInstallInfo(new_version_string, old_instance) {
-    let info_table_insert_object = undefined;
-    let current_version_data = await searchInfo();
+async function insertHdbInstallInfo(new_version_string) {
+    const info_table_insert_object = new BinObjects.HdbInfoInsertObject(1, new_version_string, new_version_string);
 
-    try {
-        // always have a 0 in case the search returned nothing.  That way we will have an entry at 1 if there are no rows returned due to table
-        // not existing (upgrade from old install).
-        let vals = new Map([[0, {}]]);
-        for (const version of current_version_data) {
-            vals.set(version.info_id, version);
-        }
-
-        // get the largest
-        let latest_id = Math.max.apply(null, vals.keys());
-        const new_id = latest_id + 1;
-        const current_info_record = vals.get(latest_id);
-        //if there is no info record stored BUT we are installing over an old instance and keeping data, we need to set
-        // the data_version value to null so we know to still run the 3.0 upgrade
-        const current_data_version = current_info_record && current_info_record.data_version_num ? current_info_record.data_version_num : old_instance ? null : new_version_string;
-        info_table_insert_object = new BinObjects.HdbInfoInsertObject(new_id, current_data_version, new_version_string);
-    } catch(err) {
-        throw err;
-    }
-
-    if(!info_table_insert_object.info_id) {
-        // This should never be a thing, but just in case we will set it an unlikely to already exist id
-        info_table_insert_object.info_id = 99;
-    }
-
-    //Insert the new version into the hdb_info table.
+    //Insert the initial version record into the hdb_info table.
     let insert_object = new DataLayerObjects.InsertObject(hdb_terms.OPERATIONS_ENUM.INSERT,
         hdb_terms.SYSTEM_SCHEMA_NAME,
         hdb_terms.SYSTEM_TABLE_NAMES.INFO_TABLE_NAME,
         hdb_terms.SYSTEM_TABLE_HASH_ATTRIBUTES.INFO_TABLE_ATTRIBUTE,
         [info_table_insert_object]);
-
-    try {
-        await p_setSchemaDataToGlobal();
-        return insert.insert(insert_object);
-    } catch(err) {
-        throw err;
-    }
+    await p_setSchemaDataToGlobal();
+    return insert.insert(insert_object);
 }
 
 //TODO - these transactions may not be logged b/c the checkTransactionLogEnvironmentsExist() is run after the update - is that a problem?
@@ -83,32 +50,21 @@ async function updateHdbInstallInfo(new_version_string, old_instance) {
  * @param new_version_string
  * @returns {Promise<void>}
  */
-async function updateHdbUpgradeInfo(new_version_string) {
+async function insertHdbUpgradeInfo(new_version_string) {
     let new_info_record;
     let version_data = await searchInfo();
 
-    try {
-        // always have a 0 in case the search returned nothing.  That way we will have an entry at 1 if there are no rows returned due to table
-        // not existing (upgrade from old install).
-        let vals = new Map([[0, {}]]);
-        for (const version of version_data) {
-            vals.set(version.info_id, version);
-        }
-
-        // get the largest
-        const latest_id = Math.max.apply(null, [...vals.keys()]);
-        // current_info_record = vals.get(latest_id);
-        //TODO - do we assume the data version is updated to the most recently inserted hdb version or
-        // do we use the value passed and just create a new record?
-        // if (current_info_record.hdb_version_num) {
-        //     current_info_record.data_version_num = current_info_record.hdb_version_num;
-        // } else {
-        const new_id = latest_id + 1;
-        new_info_record = new BinObjects.HdbInfoInsertObject(new_id, new_version_string, new_version_string);
-        // }
-    } catch(err) {
-        throw err;
+    // always have a 0 in case the search returned nothing.  That way we will have an entry at 1 if there are no rows returned due to table
+    // not existing (upgrade from old install).
+    let vals = new Map([[0, {}]]);
+    for (const vers of version_data) {
+        vals.set(vers.info_id, vers);
     }
+
+    // get the largest
+    const latest_id = Math.max.apply(null, [...vals.keys()]);
+    const new_id = latest_id + 1;
+    new_info_record = new BinObjects.HdbInfoInsertObject(new_id, new_version_string, new_version_string);
 
     //Insert the most recent record with the new data version in the hdb_info table.
     let insert_object = new DataLayerObjects.InsertObject(hdb_terms.OPERATIONS_ENUM.INSERT,
@@ -118,12 +74,8 @@ async function updateHdbUpgradeInfo(new_version_string) {
         hdb_terms.SYSTEM_TABLE_HASH_ATTRIBUTES.INFO_TABLE_ATTRIBUTE,
         [new_info_record]);
 
-    try {
-        await p_setSchemaDataToGlobal();
-        await insert.insert(insert_object);
-    } catch(err) {
-        throw err;
-    }
+    await p_setSchemaDataToGlobal();
+    await insert.insert(insert_object);
 }
 
 async function searchInfo() {
@@ -140,7 +92,6 @@ async function searchInfo() {
     let version_data = [];
     try {
         version_data = await p_search_search_by_value(search_obj);
-        // version_data = await lmdbGetDataByValue(search_obj);
     } catch(err) {
         // search may fail during a new install as the table doesn't exist yet (we haven't done an insert).  This is ok,
         // we will assume an id of 0 below.
@@ -149,6 +100,10 @@ async function searchInfo() {
     return version_data;
 }
 
+/**
+ * TODO - ADD CODE COMMENT
+ * @returns {Promise<*>}
+ */
 async function getLatestHdbInfoRecord() {
     let version_data = await searchInfo();
 
@@ -159,21 +114,16 @@ async function getLatestHdbInfoRecord() {
     }
 
     let current_info_record;
-    try {
-        // always have a 0 in case the search returned nothing.  That way we will have an entry at 1 if there are no rows returned due to table
-        // not existing (upgrade from old install).
-        let version_map = new Map();
-        for (const version of version_data) {
-            version_map.set(version.info_id, version);
-        }
-
-        // get the largest which will be the most recent
-        const latest_id = Math.max.apply(null, [...version_map.keys()]);
-
-        current_info_record =  version_map.get(latest_id);
-    } catch(err) {
-        console.log(err);
+    // always have a 0 in case the search returned nothing.  That way we will have an entry at 1 if there are no rows returned due to table
+    // not existing (upgrade from old install).
+    let version_map = new Map();
+    for (const vers of version_data) {
+        version_map.set(vers.info_id, vers);
     }
+
+    // get the largest which will be the most recent
+    const latest_id = Math.max.apply(null, [...version_map.keys()]);
+    current_info_record =  version_map.get(latest_id);
 
     return current_info_record;
 }
@@ -219,7 +169,7 @@ async function getVersionUpdateInfo() {
 
 
 module.exports = {
-    updateHdbInstallInfo,
-    updateHdbUpgradeInfo,
+    insertHdbInstallInfo,
+    insertHdbUpgradeInfo,
     getVersionUpdateInfo
 };

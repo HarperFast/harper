@@ -249,7 +249,8 @@ async function startUpgrade() {
     postInstallCleanUp();
     version.refresh();
     try {
-        await hdbInfoController.updateHdbInfo(version.version());
+        const current_version = version.version();
+        await hdbInfoController.insertHdbUpgradeInfo(current_version);
     } catch(err) {
         log.error('Error updating the hdbInfo version table.');
         log.error(err);
