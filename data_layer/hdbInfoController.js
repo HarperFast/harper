@@ -144,11 +144,9 @@ async function getVersionUpdateInfo() {
             return new UpgradeObject(null, current_version);
         }
 
-        const { data_version_num, hdb_version_num } = latest_info_record;
+        const { data_version_num } = latest_info_record;
 
         if (current_version.toString() === data_version_num.toString()) {
-            //TODO - should we also check to make sure the hdb_version_num is the same and, if not, insert new one or
-            // is that not even possible?
             //versions are up to date so nothing to do here
             return;
         }
