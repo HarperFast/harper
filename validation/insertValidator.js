@@ -6,19 +6,32 @@ const INVALID_ATTRIBUTE_NAMES = {
     "null":"null"
 };
 
-const records_customer_val = (value, helpers) => {
-    const attribute = Object.keys(value)[0];
-    if (!attribute || attribute.length === 0 || INVALID_ATTRIBUTE_NAMES[attribute] !== undefined) {
-        return helpers.message(`Invalid attribute name: '${attribute}'`);
+const custom_records_val = (value, helpers) => {
+    const attributes = Object.keys(value);
+    const attributes_length = attributes.length;
+    let error_msg = undefined;
+    for (let i = 0; i < attributes_length; i++) {
+        const attribute = attributes[i];
+        if (!attribute || attribute.length === 0 || INVALID_ATTRIBUTE_NAMES[attribute] !== undefined) {
+            if (error_msg === undefined) {
+                error_msg = `Invalid attribute name: '${attribute}'`;
+            } else {
+                error_msg += `. Invalid attribute name: '${attribute}'`;
+            }
+        }
     }
 
-    return attribute;
+    if (error_msg) {
+        return helpers.message(error_msg);
+    }
+
+    return value;
 };
 
 const insert_schema = Joi.object({
     schema: schema_joi,
     table: schema_joi,
-    records: Joi.array().items(Joi.object().custom(records_customer_val, 'customer val'))
+    records: Joi.array().items(Joi.object().custom(custom_records_val)).min(1).required()
 });
 
 module.exports = function (insert_object) {
