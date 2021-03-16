@@ -31,7 +31,15 @@ const custom_records_val = (value, helpers) => {
 const insert_schema = Joi.object({
     schema: schema_joi,
     table: schema_joi,
-    records: Joi.array().items(Joi.object().custom(custom_records_val)).min(1).required()
+    records: Joi.array()
+    .items(Joi.object()
+        .custom(custom_records_val)
+        .min(1)
+        .messages({
+            'object.min': `'records' must contain at least one record`
+        })
+    ).min(1)
+    .required()
 });
 
 module.exports = function (insert_object) {
