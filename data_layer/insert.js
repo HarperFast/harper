@@ -6,7 +6,7 @@
  * This module is used to validate and insert or update data.  Note insert.update should be used over the update module,
  * as the update module is meant to be used in more specific circumstances.
  */
-const insert_validator = require('../validation/insertValidator');
+const insertValidator = require('../validation/insertValidator');
 const hdb_utils = require('../utility/common_utils');
 const util = require('util');
 // Leave this unused signalling import here. Due to circular dependencies we bring it in early to load it before the bridge
@@ -55,7 +55,7 @@ async function validation(write_object){
     let schema_table = await p_global_schema(write_object.schema, write_object.table);
 
     //validate insert_object for required attributes
-    let validator = insert_validator(write_object);
+    let validator = insertValidator(write_object);
     if (validator) {
         throw validator;
     }
@@ -121,9 +121,14 @@ async function insertData(insert_object){
         throw new Error('invalid operation, must be insert');
     }
 
+    let validator = insertValidator(insert_object);
+    if (validator) {
+        throw handleHDBError(new Error(), validator.message, HTTP_STATUS_CODES.BAD_REQUEST);
+    }
+
     let invalid_schema_table_msg = hdb_utils.checkSchemaTableExist(insert_object.schema, insert_object.table);
     if (invalid_schema_table_msg) {
-        throw new Error(invalid_schema_table_msg);
+        throw handleHDBError(new Error(), invalid_schema_table_msg, HTTP_STATUS_CODES.BAD_REQUEST);
     }
 
     try {
@@ -145,9 +150,14 @@ async function updateData(update_object) {
         throw new Error('invalid operation, must be update');
     }
 
+    let validator = insertValidator(update_object);
+    if (validator) {
+        throw handleHDBError(new Error(), validator.message, HTTP_STATUS_CODES.BAD_REQUEST);
+    }
+
     let invalid_schema_table_msg = hdb_utils.checkSchemaTableExist(update_object.schema, update_object.table);
     if (invalid_schema_table_msg) {
-        throw new Error(invalid_schema_table_msg);
+        throw handleHDBError(new Error(), invalid_schema_table_msg, HTTP_STATUS_CODES.BAD_REQUEST);
     }
 
     try {
@@ -169,6 +179,11 @@ async function updateData(update_object) {
 async function upsertData(upsert_object) {
     if (upsert_object.operation !== 'upsert') {
         throw handleHDBError(new Error(), 'invalid operation, must be upsert', HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR);
+    }
+
+    let validator = insertValidator(upsert_object);
+    if (validator) {
+        throw handleHDBError(new Error(), validator.message, HTTP_STATUS_CODES.BAD_REQUEST);
     }
 
     let invalid_schema_table_msg = hdb_utils.checkSchemaTableExist(upsert_object.schema, upsert_object.table);
