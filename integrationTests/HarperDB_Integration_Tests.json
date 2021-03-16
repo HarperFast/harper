@@ -19191,7 +19191,7 @@
 									"",
 									"pm.test(\"verify proper error message is given\", function () {",
 									"    var jsonData = pm.response.json();",
-									"    pm.expect(jsonData.error).to.eql('\"hash_values\" must be an array');",
+									"    pm.expect(jsonData.error).to.eql(\"hash_values must be an array\");",
 									"});",
 									""
 								],
@@ -19258,7 +19258,7 @@
 									"",
 									"pm.test(\"verify proper error message is given\", function () {",
 									"    var jsonData = pm.response.json();",
-									"    pm.expect(jsonData.error).to.eql('\"get_attributes\" must be an array');",
+									"    pm.expect(jsonData.error).to.eql(\"get_attributes must be an array\");",
 									"});",
 									""
 								],
