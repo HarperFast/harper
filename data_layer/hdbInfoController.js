@@ -4,8 +4,6 @@
  * Module meant as an intermediary between the hdb_info table and the upgrade/install processes.
  */
 
-const fs = require('fs');
-const os = require('os');
 const util = require('util');
 
 const insert = require('./insert');
@@ -27,6 +25,7 @@ const HDB_INFO_SEARCH_ATTRIBUTE = 'info_id';
 
 /**
  * Insert a row into hdb_info with the initial version data at install.
+ *
  * @param new_version_string - The version of this install
  * @returns {Promise<void>}
  * @throws
@@ -46,7 +45,9 @@ async function insertHdbInstallInfo(new_version_string) {
 
 //TODO - these transactions may not be logged b/c the checkTransactionLogEnvironmentsExist() is run after the update - is that a problem?
 /**
- * ADD CODE COMMENTS
+ * This method inserts the new hdb info record after the upgrade process has completed with the new version value for the
+ * hdb version and data version.
+ *
  * @param new_version_string
  * @returns {Promise<void>}
  */
@@ -97,12 +98,14 @@ async function searchInfo() {
         // we will assume an id of 0 below.
         log.info(err);
     }
+
     return version_data;
 }
 
 /**
- * TODO - ADD CODE COMMENT
- * @returns {Promise<*>}
+ * This method grabs all rows from the hbd_info table and returns the most recent record
+ *
+ * @returns {Promise<*>} - the most recent record OR undefined (if no records exist in the table)
  */
 async function getLatestHdbInfoRecord() {
     let version_data = await searchInfo();
@@ -129,7 +132,10 @@ async function getLatestHdbInfoRecord() {
 }
 
 /**
- * ADD CODE COMMENT
+ * This method is used in bin/run.js to evaluate if an upgrade is required for the HDB instance.  If one is needed,
+ * the method returns an UpgradeObject w/ the version number of the hdb software/instance and the older version number that
+ * the data is on.
+ *
  * @returns {Promise<UpgradeObject>}
  */
 async function getVersionUpdateInfo() {
@@ -152,7 +158,6 @@ async function getVersionUpdateInfo() {
         }
 
         if (compareVersions(data_version_num.toString(), current_version.toString()) > 0) {
-            //TODO - add more handling here - should this exit the process w/ a fail?
             console.error(`You have installed a version lower than version that your data was created on.  This may cause issues and is not supported.  ${hdb_terms.SUPPORT_HELP_MSG}`);
             throw new Error('Trying to downgrade HDB versions is not supported.');
         }

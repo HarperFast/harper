@@ -1,6 +1,8 @@
 "use strict";
+
 const env = require('../utility/environment/environmentManager');
 env.initSync();
+
 const fs = require('fs-extra');
 const path = require('path');
 const net = require('net');
@@ -13,7 +15,6 @@ const install_user_permission = require('../utility/install_user_permission');
 const { isHarperRunning } = require('../utility/common_utils');
 const { promisify } = require('util');
 const stop = require('./stop');
-const os = require('os');
 const upgrade_prompt = require('../utility/userInterface/upgradePrompt');
 const upgrade = require('./upgrade');
 const version = require('./version');
@@ -60,9 +61,7 @@ async function run() {
     }
 
     try {
-        // Check to see if an upgrade file exists in $HOME/.harperdb.  If it exists, we need to force the user to upgrade.
-        //TODO - instead of checking for setting file in .harperdb, we can just do the eval done in postInstall here and
-        // generate the update_obj here, if there is a diff.
+        // Check to see if an upgrade is needed based on existing hdb_info data.  If so, we need to force the user to upgrade.
         let upgrade_vers;
         try {
             const update_obj = await hdbInfoController.getVersionUpdateInfo();
@@ -145,21 +144,14 @@ async function openCreateTransactionEnvironment(schema, table_name){
  * @returns {Promise<boolean>}
  */
 async function forceUpdate(update_obj) {
-    //TODO - set old version to 2.9 dummy value to make sure 3.0 and any additional upgrades run?  Should we automate this
-    // to take a `lowest supported version` const and subtracts .1 to make sure all upgrades for supported versions run?
     let old_version = update_obj[terms.UPGRADE_JSON_FIELD_NAMES_ENUM.CURRENT_VERSION] ? update_obj[terms.UPGRADE_JSON_FIELD_NAMES_ENUM.CURRENT_VERSION] : '2.9';
     let new_version = update_obj[terms.UPGRADE_JSON_FIELD_NAMES_ENUM.UPGRADE_VERSION];
-    //TODO - do we need these checks for version values anymore?
-    // if(!old_version) {
-    //     console.log('Current Version field missing from the config file.  Cannot continue with upgrade.  Please contact support@harperdb.io');
-    //     logger.notify('Missing current version field from upgrade config');
-    //     process.exit(1);
-    // }
+
     if(!new_version) {
         new_version = version.version();
         if(!new_version) {
-            console.log('Current Version field missing from the config file.  Cannot continue with upgrade.  Please contact support@harperdb.io');
-            logger.notify('Missing new version field from upgrade config');
+            console.log('Current Version field missing from the package.json file.  Cannot continue with upgrade.  If you need support, please contact support@harperdb.io');
+            logger.notify('Missing new version field from upgrade info object');
             process.exit(1);
         }
     }
@@ -176,7 +168,7 @@ async function forceUpdate(update_obj) {
         upgrade_result.forEach((result) => {
            logger.info(result);
         });
-        // success, remove the upgrade file.
+
         return true;
     } catch(err) {
         console.log('There was an error during the data upgrade.  Please check the logs.');
