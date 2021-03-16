@@ -88,25 +88,25 @@ describe('test lmdbSearchByConditions module', ()=>{
         });
 
         it('test validation', async()=>{
-            await test_utils.assertErrorAsync(lmdb_search, [{}], new Error('"schema" is required. "table" is required. "get_attributes" is required. "conditions" is required'));
-            await test_utils.assertErrorAsync(lmdb_search, [{schema:'dev'}], new Error('"table" is required. "get_attributes" is required. "conditions" is required'));
-            await test_utils.assertErrorAsync(lmdb_search, [{schema:'dev', table:'test'}], new Error('"get_attributes" is required. "conditions" is required'));
-            await test_utils.assertErrorAsync(lmdb_search, [{schema:'dev', table:'test', get_attributes:['*']}], new Error('"conditions" is required'));
+            await test_utils.assertErrorAsync(lmdb_search, [{}], new Error("'schema' is required. 'table' is required. 'get_attributes' is required. 'conditions' is required"));
+            await test_utils.assertErrorAsync(lmdb_search, [{schema:'dev'}], new Error("'table' is required. 'get_attributes' is required. 'conditions' is required"));
+            await test_utils.assertErrorAsync(lmdb_search, [{schema:'dev', table:'test'}], new Error("'get_attributes' is required. 'conditions' is required"));
+            await test_utils.assertErrorAsync(lmdb_search, [{schema:'dev', table:'test', get_attributes:['*']}], new Error("'conditions' is required"));
             await test_utils.assertErrorAsync(lmdb_search, [{schema:'dev', table:'test', get_attributes:['*'], conditions:[{}]}],
-                new Error('"conditions[0].search_attribute" is required. "conditions[0].search_type" is required. "conditions[0].search_value" is required'));
+                new Error("'conditions[0].search_attribute' is required. 'conditions[0].search_type' is required. 'conditions[0].search_value' is required"));
             await test_utils.assertErrorAsync(lmdb_search, [{schema:'dev', table:'test', get_attributes:['*'], conditions:[{search_attribute: 'city'}]}],
-                new Error('"conditions[0].search_type" is required. "conditions[0].search_value" is required'));
+                new Error("'conditions[0].search_type' is required. 'conditions[0].search_value' is required"));
             await test_utils.assertErrorAsync(lmdb_search, [{schema:'dev', table:'test', get_attributes:['*'], conditions:[{search_attribute: 'city', search_type: 'equals'}]}],
-                new Error('"conditions[0].search_value" is required'));
+                new Error("'conditions[0].search_value' is required"));
             await test_utils.assertErrorAsync(lmdb_search, [{schema:'dev', table:'test', get_attributes:['*'], conditions:[{search_attribute: 'city', search_type: 'equals', search_value: 'test'}]}],
                 undefined);
 
             await test_utils.assertErrorAsync(lmdb_search, [{schema:'dev/sss', table:'test`e`r', get_attributes:['id', 'tem/p'], conditions:[{search_attribute: 'ci`/ty', search_type: 'equals', search_value: 'test'}]}],
-                new Error('"schema" names cannot include backticks or forward slashes. "table" names cannot include backticks or forward slashes. "get_attributes[1]" names cannot include backticks or forward slashes. ' +
-                    '"conditions[0].search_attribute" names cannot include backticks or forward slashes'));
+                new Error("'schema' names cannot include backticks or forward slashes. 'table' names cannot include backticks or forward slashes. 'get_attributes[1]' names cannot include backticks or forward slashes. " +
+                    "'conditions[0].search_attribute' names cannot include backticks or forward slashes"));
 
             await test_utils.assertErrorAsync(lmdb_search, [{schema:'dev', table:'test', get_attributes:['*'], conditions:[{search_attribute: 'city', search_type: 'dddd', search_value: 'test'}]}],
-                new Error('"conditions[0].search_type" must be one of [equals, contains, starts_with, ends_with, greater_than, greater_than_equal, less_than, less_than_equal, between]'));
+                new Error("'conditions[0].search_type' must be one of [equals, contains, starts_with, ends_with, greater_than, greater_than_equal, less_than, less_than_equal, between]"));
 
             await test_utils.assertErrorAsync(lmdb_search, [{schema:'dev2', table:'test', get_attributes:['*'], conditions:[{search_attribute: 'city', search_type: 'equals', search_value: 'Denver'}]}],
                 handleHDBError(new Error(), "Schema 'dev2' does not exist", 404));
@@ -120,7 +120,7 @@ describe('test lmdbSearchByConditions module', ()=>{
             //test operator validation
             let search_object = new SearchByConditionsObject('dev', 'test', ['*'],
                 [{search_attribute: 'city', search_type: 'equals', search_value: 'Denver'}, {search_attribute: 'city', search_type: 'equals', search_value: 'Fort Collins'}], undefined, undefined, 'zzz');
-            await test_utils.assertErrorAsync(lmdb_search, [search_object], new Error('"operator" must be one of [and, or]'));
+            await test_utils.assertErrorAsync(lmdb_search, [search_object], new Error("'operator' must be one of [and, or]"));
             search_object.operator = 'AND';
             await test_utils.assertErrorAsync(lmdb_search, [search_object], undefined);
             search_object.operator = 'OR';
@@ -129,15 +129,15 @@ describe('test lmdbSearchByConditions module', ()=>{
             //test limit offset validation
             search_object.limit = 'aaaa';
             search_object.offset = 'zzz';
-            await test_utils.assertErrorAsync(lmdb_search, [search_object], new Error('"offset" must be a number. "limit" must be a number'));
+            await test_utils.assertErrorAsync(lmdb_search, [search_object], new Error("'offset' must be a number. 'limit' must be a number"));
 
             search_object.limit = 1.1;
             search_object.offset = 22.4;
-            await test_utils.assertErrorAsync(lmdb_search, [search_object], new Error('"offset" must be an integer. "limit" must be an integer'));
+            await test_utils.assertErrorAsync(lmdb_search, [search_object], new Error("'offset' must be an integer. 'limit' must be an integer"));
 
             search_object.limit = 0;
             search_object.offset = -2;
-            await test_utils.assertErrorAsync(lmdb_search, [search_object], new Error('"offset" must be greater than or equal to 0. "limit" must be greater than or equal to 1'));
+            await test_utils.assertErrorAsync(lmdb_search, [search_object], new Error("'offset' must be greater than or equal to 0. 'limit' must be greater than or equal to 1"));
         });
 
         it('test equals on single condition', async()=>{

@@ -33,12 +33,12 @@ const TEST_SEARCH_OBJ = {
 };
 
 const ERR_MSGS = {
-    SCHEMA: '"schema" is not allowed to be empty',
-    TABLE: '"table" is not allowed to be empty',
-    HASHES: '"hash_values" must be an array',
-    HASHES_2: '"hash_values" must contain at least 1 items',
-    GET_ATTR: '"get_attributes" must be an array',
-    GET_ATTR_2: '"get_attributes" does not contain 1 required value(s). "get_attributes" must contain at least 1 items'
+    SCHEMA: "'schema' is not allowed to be empty",
+    TABLE: "'table' is not allowed to be empty",
+    HASHES: "'hash_values' must be an array",
+    HASHES_2: "'hash_values' must contain at least 1 items",
+    GET_ATTR: "'get_attributes' must be an array",
+    GET_ATTR_2: "'get_attributes' does not contain 1 required value(s). 'get_attributes' must contain at least 1 items"
 };
 
 function setupTestData() {
@@ -112,7 +112,7 @@ describe('fsGetDataByHash', () => {
             err = e;
         }
 
-        expect(err.message).to.equal('"schema" is required. "table" is required. "hash_values" is required. "get_attributes" is required');
+        expect(err.message).to.equal("'schema' is required. 'table' is required. 'hash_values' is required. 'get_attributes' is required");
     }));
 
     it('Should return error if empty string is passed in for schema', mochaAsyncWrapper(async () => {
