@@ -62,7 +62,7 @@ describe('Test searchUtility module', ()=>{
             global.lmdb_map = undefined;
             env = await environment_utility.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
             await environment_utility.createDBI(env, 'id', false, true);
-            await write_utility.insertRecords(env, HASH_ATTRIBUTE_NAME, test_utils.deepClone(SOME_ATTRIBUTES), MULTI_RECORD_ARRAY);
+            await write_utility.insertRecords(env, HASH_ATTRIBUTE_NAME, test_utils.deepClone(All_ATTRIBUTES), MULTI_RECORD_ARRAY);
         });
 
         after(async ()=>{
@@ -85,7 +85,7 @@ describe('Test searchUtility module', ()=>{
         it("test select all attributes *", ()=>{
             let record = test_utils.assertErrorSync(search_util.searchByHash, [env, HASH_ATTRIBUTE_NAME, ['*'], "3"],
                 undefined, 'all arguments sent');
-            let expected = test_utils.assignObjecttoNullObject({"age": 57, "id": 3, "name": "Hank", __createdtime__: TIMESTAMP, __updatedtime__: TIMESTAMP});
+            let expected = test_utils.assignObjecttoNullObject({"age": 57, city: null, "id": 3, "name": "Hank", __createdtime__: TIMESTAMP, __updatedtime__: TIMESTAMP});
             assert.deepStrictEqual(record, expected);
         });
 
@@ -125,7 +125,7 @@ describe('Test searchUtility module', ()=>{
             global.lmdb_map = undefined;
             env = await environment_utility.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
             await environment_utility.createDBI(env, 'id');
-            await write_utility.insertRecords(env, HASH_ATTRIBUTE_NAME, test_utils.deepClone(SOME_ATTRIBUTES), MULTI_RECORD_ARRAY);
+            await write_utility.insertRecords(env, HASH_ATTRIBUTE_NAME, test_utils.deepClone(All_ATTRIBUTES), MULTI_RECORD_ARRAY);
         });
 
         after(async ()=>{
@@ -168,7 +168,7 @@ describe('Test searchUtility module', ()=>{
 
         it("test fetch multiple records, all attributes", ()=>{
             let expected = [{id:1, name:'Kyle', age:46, city: "Denver", __createdtime__: TIMESTAMP, __updatedtime__: TIMESTAMP},
-                {id:2, name:'Jerry', age:32, __createdtime__: TIMESTAMP, __updatedtime__: TIMESTAMP},
+                {id:2, name:'Jerry', age:32, city: null, __createdtime__: TIMESTAMP, __updatedtime__: TIMESTAMP},
                 {id:4, name:'Joy', age: 44, city: "Denver", __createdtime__: TIMESTAMP, __updatedtime__: TIMESTAMP}
             ];
             let row = test_utils.assertErrorSync(search_util.batchSearchByHash, [env, HASH_ATTRIBUTE_NAME, ['*'], ["1", "4", "2"]],
@@ -295,7 +295,7 @@ describe('Test searchUtility module', ()=>{
             global.lmdb_map = undefined;
             env = await environment_utility.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
             await environment_utility.createDBI(env, 'id');
-            await write_utility.insertRecords(env, HASH_ATTRIBUTE_NAME, test_utils.deepClone(SOME_ATTRIBUTES), MULTI_RECORD_ARRAY);
+            await write_utility.insertRecords(env, HASH_ATTRIBUTE_NAME, test_utils.deepClone(All_ATTRIBUTES), MULTI_RECORD_ARRAY);
         });
 
         after(async () => {
@@ -329,8 +329,8 @@ describe('Test searchUtility module', ()=>{
 
             let expected = [
                 {id: 1, name: 'Kyle', age: 46, city: 'Denver', __createdtime__: TIMESTAMP, __updatedtime__: TIMESTAMP},
-                {id: 2, name: 'Jerry', age: 32, __createdtime__: TIMESTAMP, __updatedtime__: TIMESTAMP},
-                {id: 3, name: 'Hank', age: 57, __createdtime__: TIMESTAMP, __updatedtime__: TIMESTAMP},
+                {id: 2, name: 'Jerry', age: 32, city: null, __createdtime__: TIMESTAMP, __updatedtime__: TIMESTAMP},
+                {id: 3, name: 'Hank', age: 57, city: null, __createdtime__: TIMESTAMP, __updatedtime__: TIMESTAMP},
                 {id: 4, name: 'Joy', age: 44, city: 'Denver', __createdtime__: TIMESTAMP, __updatedtime__: TIMESTAMP}];
             assert.deepEqual(rows, expected);
         });
