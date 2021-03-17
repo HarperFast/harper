@@ -79,7 +79,7 @@ function run_install(callback) {
                 createSuperUser,
                 createClusterUser,
                 generateKeys,
-                updateHdbInfo,
+                insertHdbInfo,
                 () => {
                     check_jwt_tokens();
 
@@ -105,19 +105,21 @@ function run_install(callback) {
  * as we can't make the installer async until we pick a new CLI base.
  * @param callback
  */
-function updateHdbInfo(callback) {
+function insertHdbInfo(callback) {
     let vers = version.version();
-    if(vers) {
-        hdbInfoController.updateHdbInfo(vers)
-            .then((err, res) => {
-                if(err) {
-                    winston.error('Error inserting product info');
-                    return callback(err, null);
-                } else {
-                    return callback(null, res);
-                }
-
+    if (vers) {
+        hdbInfoController.insertHdbInstallInfo(vers)
+            .then(res => {
+                return callback(null, res);
+            })
+            .catch(err => {
+                winston.error('Error inserting product version info');
+                return callback(err, null);
             });
+    } else {
+        const err_msg = 'The version is missing/removed from package.json';
+        console.log(err_msg);
+        return callback(err_msg, null);
     }
 }
 

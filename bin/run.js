@@ -1,6 +1,8 @@
 "use strict";
+
 const env = require('../utility/environment/environmentManager');
 env.initSync();
+
 const fs = require('fs-extra');
 const path = require('path');
 const net = require('net');
@@ -13,11 +15,11 @@ const install_user_permission = require('../utility/install_user_permission');
 const { isHarperRunning } = require('../utility/common_utils');
 const { promisify } = require('util');
 const stop = require('./stop');
-const os = require('os');
 const upgrade_prompt = require('../utility/userInterface/upgradePrompt');
 const upgrade = require('./upgrade');
 const version = require('./version');
 const hdb_license = require('../utility/registration/hdb_license');
+const hdbInfoController = require('../data_layer/hdbInfoController');
 
 const SYSTEM_SCHEMA = require('../json/systemSchema.json');
 const schema_describe = require('../data_layer/schemaDescribe');
@@ -59,24 +61,30 @@ async function run() {
     }
 
     try {
-        // Check to see if an upgrade file exists in $HOME/.harperdb.  If it exists, we need to force the user to upgrade.
-        let home_hdb_path = path.join(os.homedir(), terms.HDB_HOME_DIR_NAME, terms.UPDATE_FILE_NAME);
-        if(fs.existsSync(home_hdb_path)) {
-            try {
-                let update_json = JSON.parse(fs.readFileSync(home_hdb_path), 'utf8');
-                let upgrade_result = await forceUpdate(update_json);
-                if(upgrade_result) {
-                    fs.unlinkSync(home_hdb_path);
+        // Check to see if an upgrade is needed based on existing hdb_info data.  If so, we need to force the user to upgrade.
+        let upgrade_vers;
+        try {
+            const update_obj = await hdbInfoController.getVersionUpdateInfo();
+            if (update_obj !== undefined) {
+                upgrade_vers = update_obj[terms.UPGRADE_JSON_FIELD_NAMES_ENUM.UPGRADE_VERSION];
+
+                let upgrade_result = await forceUpdate(update_obj);
+                if (upgrade_result) {
+                    await hdbInfoController.updateHdbUpgradeInfo(upgrade_vers);
+                    console.log('Upgrade complete.  Starting HarperDB.');
                 }
-            } catch(err) {
-                console.error(`Got an error trying to read ${home_hdb_path}, please check the file is readable and try again.  Exiting HarperDB.`);
-                process.exit(1);
             }
+        } catch(err) {
+            if (upgrade_vers) {
+                console.error(`Got an error while trying to upgrade your HarperDB instance to version ${upgrade_vers}.  Exiting HarperDB.`);
+            } else {
+                console.error(`Got an error while trying to upgrade your HarperDB instance.  Exiting HarperDB.`);
+            }
+            process.exit(1);
         }
 
         await checkTransactionLogEnvironmentsExist();
 
-        console.log('Upgrade complete.  Starting HarperDB.');
         let is_in_use = await isPortInUse();
         if(!is_in_use) {
             await startHarper();
@@ -132,25 +140,24 @@ async function openCreateTransactionEnvironment(schema, table_name){
 
 /**
  * Force the user to perform an upgrade by running the upgrade scripts.  If they cancel, process will term.
- * @param update_json - JSON read in from the .harperdb/.updateConfig.json file.
+ * @param update_obj - version data returned from the hdb_info system table
  * @returns {Promise<boolean>}
  */
-async function forceUpdate(update_json) {
-    let old_version = update_json[terms.UPGRADE_JSON_FIELD_NAMES_ENUM.CURRENT_VERSION];
-    let new_version = update_json[terms.UPGRADE_JSON_FIELD_NAMES_ENUM.UPGRADE_VERSION];
-    if(!old_version) {
-        console.log('Current Version field missing from the config file.  Cannot continue with upgrade.  Please contact support@harperdb.io');
-        logger.notify('Missing current version field from upgradeconfig');
-        process.exit(1);
-    }
+async function forceUpdate(update_obj) {
+    let old_version = update_obj[terms.UPGRADE_JSON_FIELD_NAMES_ENUM.CURRENT_VERSION] ? update_obj[terms.UPGRADE_JSON_FIELD_NAMES_ENUM.CURRENT_VERSION] : '2.9';
+    let new_version = update_obj[terms.UPGRADE_JSON_FIELD_NAMES_ENUM.UPGRADE_VERSION];
+
     if(!new_version) {
         new_version = version.version();
         if(!new_version) {
-            console.log('Current Version field missing from the config file.  Cannot continue with upgrade.  Please contact support@harperdb.io');
-            logger.notify('Missing new version field from upgradeconfig');
+            console.log('Current Version field missing from the package.json file.  Cannot continue with upgrade.  If you need support, please contact support@harperdb.io');
+            logger.notify('Missing new version field from upgrade info object');
             process.exit(1);
         }
     }
+
+    //TODO - before prompt, make sure there is actually an upgrade script that is required to run
+
     let start_upgrade = await upgrade_prompt.forceUpdatePrompt(old_version, new_version);
     if(!start_upgrade) {
         console.log('Cancelled upgrade, closing HarperDB');
@@ -161,7 +168,7 @@ async function forceUpdate(update_json) {
         upgrade_result.forEach((result) => {
            logger.info(result);
         });
-        // success, remove the upgrade file.
+
         return true;
     } catch(err) {
         console.log('There was an error during the data upgrade.  Please check the logs.');

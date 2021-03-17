@@ -43,15 +43,19 @@ function getSortedVersions() {
     return sorted_keys;
 }
 
-function filterInvalidVersions(curr_version) {
-    if(hdb_utils.isEmptyOrZeroLength(curr_version)) {
-        return [];
-    }
+function filterInvalidVersions(curr_version, new_version) {
+    // TODO - do we still need these checks?
+    // if(hdb_utils.isEmptyOrZeroLength(curr_version)) {
+    //     return [];
+    // }
     if(!versions.has(curr_version)) {
         return [];
     }
+    if(!versions.has(new_version)) {
+        new_version = "99";
+    }
     let filtered_keys = [...versions.keys()].sort(hdb_utils.compareVersions).filter( function(this_version) {
-        return this_version > curr_version;
+        return this_version > curr_version && this_version <= new_version;
     });
     return filtered_keys;
 }

@@ -80,26 +80,29 @@ describe('test filterInvalidVersion', function() {
     test_map.set(test_vers2_1_0.version, test_vers2_1_0);
     beforeEach(function () {
         directive_manager_rw.__set__('versions', test_map);
-
     });
 
     afterEach(function () {
         directive_manager_rw.__set__('versions', orig_versions);
     });
     it('Test nominal case filterInvalidVersions', () => {
-        let valid_versions = filterInvalidVersions(test_vers1_1_0.version);
+        let valid_versions = filterInvalidVersions(test_vers1_1_0.version, test_vers2_1_0.version);
         assert.equal(valid_versions.length, 2, 'Expected 2 directives returned');
     });
-    it('Test getModuleByVersion with invalid version, expect empty array', () => {
-        let valid_versions = filterInvalidVersions('1-1-0-1');
+    it('Test filterInvalidVersions with non-existent new_version, expect 2 directives returned', () => {
+        let curr_version = filterInvalidVersions(test_vers1_1_0.version, '1.0.1.1.1');
+        assert.equal(curr_version.length, 2, 'Expected 2 directives returned');
+    });
+    it('Test filterInvalidVersions with invalid version, expect empty array', () => {
+        let valid_versions = filterInvalidVersions('1-1-0-1', test_vers2_1_0.version);
         assert.equal(valid_versions.length, 0, 'Expected empty version array returned');
     });
-    it('Test getModuleByVersion with latest version, expect empty array', () => {
-        let curr_version = filterInvalidVersions(test_vers2_1_0.version.version);
+    it('Test filterInvalidVersions with latest version, expect empty array', () => {
+        let curr_version = filterInvalidVersions(test_vers2_1_0.version.version, test_vers2_1_0.version);
         assert.equal(curr_version.length, 0, 'Expected empty version array returned');
     });
-    it('Test getModuleByVersion with null version, expect empty array', () => {
-        let curr_version = filterInvalidVersions(null);
+    it('Test filterInvalidVersions with null version, expect empty array', () => {
+        let curr_version = filterInvalidVersions(null, null);
         assert.equal(curr_version.length, 0, 'Expected empty version array returned');
     });
 });

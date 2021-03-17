@@ -372,7 +372,7 @@ describe('Test getVersionsToInstall', function() {
 
     beforeEach( function() {
         process_directive_rw.__set__('hdb_base', BASE + '/../');
-        loaded_directives = filterInvalidVersions('1.1.0');
+        loaded_directives = filterInvalidVersions('1.1.0', '2.1.0');
     });
     afterEach(function() {
        loaded_directives = null;
