@@ -1,6 +1,6 @@
 {
 	"info": {
-		"name": "HarperDB Integration Tests Copy",
+		"name": "HarperDB Integration Tests",
 		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
 	},
 	"item": [
@@ -23195,7 +23195,6 @@
 									"\tconst jsonData = pm.response.json();",
 									"    pm.expect(jsonData.length).to.eql(expected_hash_order.length);",
 									"\tjsonData.forEach((row, i) => {",
-									"\t\tpm.expect([\"A\", \"B\", \"C\"].includes(row.group)).to.be.true;",
 									"\t\tpm.expect(row.location.split(',')[0]).to.equal('Denver');",
 									"\t\tpm.expect(row.id).to.equal(expected_hash_order[i]);",
 									"\t})",
@@ -23262,12 +23261,11 @@
 									"    pm.response.to.have.status(200);",
 									"});",
 									"",
-									"pm.test(\"search by condition returns 3 sorted rows with Denver in location and in group A-C\", function () {",
+									"pm.test(\"search by condition returns 3 sorted rows with location that starts with Denver\", function () {",
 									"    const expected_hash_order = [7,8,11];",
 									"\tconst jsonData = pm.response.json();",
 									"    pm.expect(jsonData.length).to.eql(3);",
 									"\tjsonData.forEach((row, i) => {",
-									"\t\tpm.expect([\"A\", \"B\", \"C\"].includes(row.group)).to.be.true;",
 									"\t\tpm.expect(row.location.split(',')[0]).to.equal('Denver');",
 									"\t\tpm.expect(row.id).to.equal(expected_hash_order[i]);",
 									"\t})",
@@ -23312,6 +23310,77 @@
 						"body": {
 							"mode": "raw",
 							"raw": "{\n\t\"operation\": \"search_by_conditions\",\n\t\"schema\": \"dev\",\n\t\"table\": \"dog_conditions\",\n\t\"get_attributes\": [\n\t\t\"id\", \"age\", \"location\", \"group\"\n\t],\n\t\"offset\": 3,\n\t\"limit\": 10,\n\t\"conditions\": [\n\t\t{\n\t\t\t\"search_attribute\": \"location\",\n\t\t\t\"search_type\": \"starts_with\",\n\t\t\t\"search_value\": \"Denver\"\n\t\t}\n\t]\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "search by conditions - ends_with condition, offset, limit of 2",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"search by condition returns 3 sorted rows with a location that ends with CO\", function () {",
+									"    const expected_hash_order = [7,9,10];",
+									"\tconst jsonData = pm.response.json();",
+									"    pm.expect(jsonData.length).to.eql(expected_hash_order.length);",
+									"\tjsonData.forEach((row, i) => {",
+									"\t\tpm.expect(row.location.split(', ')[1]).to.equal('CO');",
+									"\t\tpm.expect(row.id).to.equal(expected_hash_order[i]);",
+									"\t})",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\": \"search_by_conditions\",\n\t\"schema\": \"dev\",\n\t\"table\": \"dog_conditions\",\n\t\"get_attributes\": [\n\t\t\"id\", \"age\", \"location\", \"group\"\n\t],\n\t\"offset\": 3,\n\t\"limit\": 3,\n\t\"conditions\": [\n\t\t{\n\t\t\t\"search_attribute\": \"location\",\n\t\t\t\"search_type\": \"ends_with\",\n\t\t\t\"search_value\": \"CO\"\n\t\t}\n\t]\n}"
 						},
 						"url": {
 							"raw": "{{host}}:{{port}}",
@@ -54676,11 +54745,11 @@
 		},
 		{
 			"key": "operation_token",
-			"value": "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VybmFtZSI6ImFkbWluIiwic3VwZXJfdXNlciI6dHJ1ZSwiY2x1c3Rlcl91c2VyIjpmYWxzZSwiaWF0IjoxNjE1MjM4MjIwLCJleHAiOjE2MTUzMjQ2MjAsInN1YiI6Im9wZXJhdGlvbiJ9.YUaEVOKqtZCY7ZzwoDHUIW8eLVca14prGOkjZSZlTFj-MQcTCSuEXRDEyPmhn1pk52TV35CG9iNo_y0liaeGFbIxNW0nrwipUbikNZKGIJc-wP6EJWbQnrfHw-yI8Hv3QuExUX57edZeufsYOUiyKRNOXW8lAVFUfe-n-SENDLxt_ylQfYz0IssRdtt3ky7jAFI9PSvRvNIhwrMdPrMVO8Kd7yiPLIkapn-RNrPKnKwPJBo0AptaOX2_oRIRjnrNLXnB4cP2kzaMznkPAM-Tg-d-VMUmIVkwjMOE5HdjNFU_ta_YryUfJe-Ek4ODK9gklBpy9kgXiAL0wnY2bvZuWAqgwyk8mxG_G9dqtNEToQglTVjbKnvZC_kYNfEf-gxgEE1SFM8A3zF-8zPKSHO1MaJawQmfDOGKfme76sVEaziG9G0FyL5Lv9DDj3Hvd3nAdFYuQ6T3uO9Mius6UttZjmE8CBX3rRyCpKVQTcLOMraVe4wtfPcyAiObibx2xqOhc33gvgKKG55W0hS6jvnehHK18a1fMteF4X7EwoxHPsdrzxIZFMlY_CDz2W0JofNCnt6NQQbSoANvIMpRTvALhwDXHq7o6wcOutc6Yx_OwLQXMjWEDAg8XZqIPhtKn_tYBk2xNaK6MslNvzdNmXNnPuDpcNzrBA7v6YKntNoC5Cs"
+			"value": "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VybmFtZSI6ImFkbWluIiwic3VwZXJfdXNlciI6dHJ1ZSwiY2x1c3Rlcl91c2VyIjpmYWxzZSwiaWF0IjoxNjE2MDA4NjMwLCJleHAiOjE2MTYwOTUwMzAsInN1YiI6Im9wZXJhdGlvbiJ9.nZ2pk5ixPyzzhpI1LQJ0bF61ZFjHcCyq5geDBnPhW_763GgLQ7-dXhzn6yVVq890q1i8fDp0CWWvaE8ynz0_2oX0cHF1wPKein1rXVGZbR-Oo5LIUVXVW4GcZj6pnI7JFAhsmzMvfm_RmjyS7NefpJibCwP6wIrXGj3cY_L_e6aBc7QaXQ-TY5-040bjqzsJqHA_wrP-Ogt8UvnXrGwAhkReyz5dMhZW8Pp6oRVrm8iVrWQeb5XPwCFytFjlzHfRDGRXvbfOul9OOW08AwUhlYkF0C1-LQVXCrFyla25abVUbVoYIBdn5wnA0dZ3wYBtsskOP3niTTSWMDxp29zQ9wb3Urr5fqqlgPRNWEy5wt8K3p208aiQ2Haba7y2S9VEEYcqdoRzwOYWkVaYJAaTbrGTy5AU4y-a7QE_k3d-fll-DWVGQ5frKSGB1T8NmlT4kuIJI1_2v-pvcFKjpdq3eOhOYqhyCfoKf30Np1HOFhIiVw2PwLwpworvVg347ZtTeu7wAMu-Ayu9o4OwTGWBOYdBrJq66LpwpZWy565L916uo7UKWbVT-d-TsS7YGNos9FJ-5GY8H5_x6R3eQt96maNGckJWfl1ECrQ32zuzw6UzLH6Js9-87jBnYTUjtfY1OrJMkixi1aeua2e3Oi95JmSwPZoqsIAyy1GxdNmIOg8"
 		},
 		{
 			"key": "refresh_token",
-			"value": "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VybmFtZSI6ImFkbWluIiwic3VwZXJfdXNlciI6dHJ1ZSwiY2x1c3Rlcl91c2VyIjpmYWxzZSwiaWF0IjoxNjE1MjM4MjIwLCJleHAiOjE2MTc4MzAyMjAsInN1YiI6InJlZnJlc2gifQ.cyUWCD5lwydsGLlPzhYQJ9bHPO5N7Oa6900bqwv9NYmeO39cWARjWoEHzyYM5bAPOewgGTEDdA_QnPRsadfoU3aUcMrDrPZ3gibrUs1LJqn2uFKRnS14SPPrU9kwccTFNAz1ewcnsHw7fHCcVePWzlfCxVVKyiHWYp7XDha106icjDTkNJp889YAkIC_0QyendoD825EHx5v1S7DTguqdLmudDCtfLgT5LgqWEw1J0nsc6Uk52CNhpQACQpC3GbF-cxiV6CuxXoYqiVeeRzWtjddBqdfnY7SLNdFpAAxREkPFhmRKeEVAytJIYd2YMZXlXF0man1oejEIxJP5JrK1m_DShM9K_1iyx1Rud0P9dr0XophhLSWBkWf7MCTZ5X17qNL4JYlUuuXeGFxFrzkMMTu04AK5amzyNswnCcIyTqGAbixwkw_56JamBh6c-Xk1IPAdjAmE9wOjxd_I3zIWhkRUreTaQ7olN4mh_l3cPsKVLjARKXtwMm60SkHVEttLcVttaefLEd4dXOWgMder11mwtCN37_jOGsPicWyT7mVtWvwkpPan2p1camPKUmaTGzSmOFtsfmZzrBYpt6I8QNgDxI4C4ui993DwAWxSM-R83lGUcWqVyem0DrGFWjiIDLd6XOtcCDzHcuhcNnYhVxvvJ176ZKOgKTh-aIMeA0"
+			"value": "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VybmFtZSI6ImFkbWluIiwic3VwZXJfdXNlciI6dHJ1ZSwiY2x1c3Rlcl91c2VyIjpmYWxzZSwiaWF0IjoxNjE2MDA4NjI5LCJleHAiOjE2MTg2MDA2MjksInN1YiI6InJlZnJlc2gifQ.lVZ6fNSfXKNrA34eocOEZt5WgqGyGXaxVQvrf61r8cE_DoIH2MKaG2li4sAoNUjW3OeXw60IkHYVNwXVXVvSR8BJW22yGGAl3cTSsSXuO2hNjEdptQJBMLpcghXkJmhftyDBq37ZXBjVb2n1kg_dGElr2e-ZoZOfBC2qrN7Lx3OKN1e5hdjNu5wbNhH9_MsgZl4jCLkHweyn57IYysLpI5-6zn9R_YyfUUJPwLxznYVJl5-xyW9s_gFiZEhH9ds89nTmUSC76rM4pVdivxuRX_IzAlCSFoMa3upQNolmr7jesFqcj-4PVyOFWhDHvE96oT4JXBrG3V602LB7l16uFiZUeCt2swi4OOnvp2hr5Ua0Atsh7Y1tZ3Ru7tR_EUzU1ky_KDQ-QL-cYC9mmjwwKj3ROK-tHjGZsR2J6Wz3kZiLYpmkaIcX2JsUGnK25xZrbumb0N2ZjOaWS103hbUl98viXDQan8bjg7DcVI9wyVWYFbUrctQ9--mFrzLyqI8k2i2MIXFoW6vAWKzz-YaWj47trJ5tS6zmU_Q9unxAdFvKqqvfUBBYBIWNBvvhXGNwFrdZFjyH8A2unuTG3T09jhoczWyWNuKYs_Vf1PgFhv3yjeO4MpXYIDGLayyEcj86kkkQmJkFd72zXpF_DOzFDhjmE1D341D3HYYDTImxooc"
 		}
 	]
 }
