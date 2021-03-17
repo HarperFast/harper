@@ -125,18 +125,6 @@ describe('Test insertValidator', () => {
         expect(result.message).to.be.equal("'schema' is not allowed to be empty. 'table' is not allowed to be empty");
     });
 
-    it('Test validator returns records must contain item message', () => {
-        const test_insert_obj = {
-            "operation": "insert",
-            "schema": "test-schema",
-            "table": "test-table",
-            "records": []
-        };
-        const result = insertValidator(test_insert_obj);
-
-        expect(result.message).to.be.equal("'records' must contain at least 1 items");
-    });
-
     it('Test validator returns too long message', () => {
         const test_insert_obj = {
             "operation": "insert",
@@ -194,19 +182,5 @@ describe('Test insertValidator', () => {
         const result = insertValidator(test_insert_obj);
 
         expect(result.message).to.be.equal("Invalid attribute name: 'undefined'. Invalid attribute name: 'null'");
-    });
-
-    it('Test validator returns at least one record message', () => {
-        const test_insert_obj = {
-            "operation": "insert",
-            "schema": "test-schema",
-            "table": "test-table",
-            "records": [
-                {}
-            ]
-        };
-        const result = insertValidator(test_insert_obj);
-
-        expect(result.message).to.be.equal("'records' must contain at least one record");
     });
 });

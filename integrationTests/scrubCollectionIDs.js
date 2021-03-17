@@ -4,7 +4,7 @@ const fs = require('fs');
 here you define the path to the postman collection you wish to scrub out the ids.  this must be done for anytime a change to our
 integration tests are changed and to be committed.  the id changes make it near impossible to track changes in a PR
  */
-const POSTMAN_COLLECTION_FILE_PATH = './hdb.json';
+const POSTMAN_COLLECTION_FILE_PATH = '/Users/davidcockerill/Desktop/harperdb/integrationTests/tisone.json';
 
 // This script deletes the `id` field in postman-collection.json that is changed without reason
 // see https://github.com/postmanlabs/postman-app-support/issues/2906
