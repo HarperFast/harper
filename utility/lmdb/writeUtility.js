@@ -41,7 +41,7 @@ async function insertRecords(env, hash_attribute, write_attributes , records){
             setTimestamps(record, true);
 
             let cast_hash_value = hdb_utils.autoCast(record[hash_attribute]);
-
+            record[hash_attribute] = cast_hash_value;
             let put_values = [];
             put_values.push([env.dbis[hash_attribute], cast_hash_value, record, 1]);
             for (let x = 0; x < write_attributes.length; x++) {

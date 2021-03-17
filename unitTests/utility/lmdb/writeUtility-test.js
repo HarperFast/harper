@@ -27,7 +27,7 @@ const TEST_ENVIRONMENT_NAME = 'test';
 const HASH_ATTRIBUTE_NAME = 'id';
 const ALL_ATTRIBUTES = ['id', 'name', 'age', '__createdtime__', '__updatedtime__', '__blob__'];
 const ONE_RECORD_ARRAY = [
-    {id:1, name:'Kyle', age:'46'}
+    {id:"1", name:'Kyle', age:'46'}
 ];
 
 const ONE_RECORD_ARRAY_EXPECTED = [

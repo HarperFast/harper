@@ -8,6 +8,7 @@ const auto_cast = require('../common_utils').autoCast;
 const lmdb_terms = require('./terms');
 const LMDB_ERRORS = require('../errors/commonErrors').LMDB_ERRORS_ENUM;
 const hdb_utils = require('../common_utils');
+const hdb_terms = require('../hdbTerms');
 const cursor_functions = require('./searchCursorFunctions');
 // eslint-disable-next-line no-unused-vars
 const lmdb = require('lmdb-store');
@@ -185,6 +186,7 @@ function searchAll(env, hash_attribute, fetch_attributes, reverse = false, limit
     }
 
     validateFetchAttributes(fetch_attributes);
+    fetch_attributes = setGetWholeRowAttributes(env, fetch_attributes);
 
     let results = [];
     let stat = environment_utility.statDBI(env, hash_attribute);
@@ -223,6 +225,7 @@ function searchAllToMap(env, hash_attribute, fetch_attributes, reverse = false, 
     }
 
     validateFetchAttributes(fetch_attributes);
+    fetch_attributes = setGetWholeRowAttributes(env, fetch_attributes);
     return iterateFullIndex(env, hash_attribute, hash_attribute, cursor_functions.searchAllToMap.bind(null, fetch_attributes), reverse, limit, offset);
 }
 
@@ -877,7 +880,7 @@ function searchByHash(env, hash_attribute, fetch_attributes, id) {
     }
 
     validateFetchAttributes(fetch_attributes);
-
+    fetch_attributes = setGetWholeRowAttributes(env, fetch_attributes);
     if(id === undefined){
         throw new Error(LMDB_ERRORS.ID_REQUIRED);
     }
@@ -972,6 +975,8 @@ function batchSearchByHashToMap(env, hash_attribute, fetch_attributes, ids, not_
  * @returns {Object}
  */
 function batchHashSearch(env, hash_attribute, fetch_attributes, ids, not_found = []){
+    fetch_attributes = setGetWholeRowAttributes(env, fetch_attributes);
+
     let results = Object.create(null);
 
     for(let x = 0; x < ids.length; x++){
@@ -1053,6 +1058,24 @@ function validateComparisonFunctions(env, attribute, search_value){
     if(search_value === undefined){
         throw new Error(LMDB_ERRORS.SEARCH_VALUE_REQUIRED);
     }
+}
+
+/**
+ * determines if the intent is to return the whole row based on fetch_attributes having 1 entry that is wildcard * or %
+ * @param env
+ * @param fetch_attributes
+ * @returns {Array}
+ */
+function setGetWholeRowAttributes(env, fetch_attributes){
+    if(fetch_attributes.length === 1 && hdb_terms.SEARCH_WILDCARDS.indexOf(fetch_attributes[0]) >= 0){
+        fetch_attributes = environment_utility.listDBIs(env);
+        let blob_index = fetch_attributes.indexOf(lmdb_terms.BLOB_DBI_NAME);
+        if(blob_index >= 0){
+            fetch_attributes.splice(blob_index, 1);
+        }
+    }
+
+    return fetch_attributes;
 }
 
 module.exports = {
