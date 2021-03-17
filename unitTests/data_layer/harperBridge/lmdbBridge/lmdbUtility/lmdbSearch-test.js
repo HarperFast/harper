@@ -151,6 +151,12 @@ describe('test lmdbSearch module', ()=>{
             assert.deepStrictEqual(search_type, lmdb_terms.SEARCH_TYPES.EQUALS);
         });
 
+        it('test for percent wildcard in middle of value is equals', ()=>{
+            let search_object = new SearchObject('dev', 'd%og', 'name', 'Kyle', 'id', ['id', 'name']);
+            let search_type =test_utils.assertErrorSync(create_search_type_function, [search_object, 'id'], undefined);
+            assert.deepStrictEqual(search_type, lmdb_terms.SEARCH_TYPES.EQUALS);
+        });
+
         it('test for > comparator is GREATER_THAN', ()=>{
             let search_object = new SearchObject('dev', 'dog', 'age', '1', 'id', ['id', 'name']);
             let search_type =test_utils.assertErrorSync(create_search_type_function, [search_object, 'id', false, hdb_terms.VALUE_SEARCH_COMPARATORS.GREATER], undefined);

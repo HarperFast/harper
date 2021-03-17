@@ -87,6 +87,13 @@ describe('Test insert module',() => {
             const expected_err = test_utils.generateHDBError(test_err_msg, 400);
             await test_utils.assertErrorAsync(insert_rw.upsert, [UPSERT_OBJECT_TEST], expected_err);
         });
+
+        it('Should return HdbError if insertValidator returns error',async ()=>{
+            const upsert_obj = test_utils.deepClone(UPSERT_OBJECT_TEST);
+            upsert_obj.schema = 'schem/a';
+            const expected_err = test_utils.generateHDBError("'schema' names cannot include backticks or forward slashes", 400);
+            await test_utils.assertErrorAsync(insert_rw.upsert, [upsert_obj], expected_err);
+        });
     });
 
     describe('Test returnObject method', () => {
