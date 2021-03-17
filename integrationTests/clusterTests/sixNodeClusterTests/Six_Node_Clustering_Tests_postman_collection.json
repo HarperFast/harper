@@ -69,8 +69,8 @@
 							"raw": "{\n    \"operation\": \"add_node\",\n    \"name\": \"{{node4_name}}\",\n    \"host\": \"{{node4_host}}\",\n    \"port\": \"{{clustering_port}}\",\n    \"subscriptions\": [\n        {\n            \"channel\": \"{{bear_schema}}:{{temp_table}}\",\n            \"subscribe\": false,\n            \"publish\": true\n        }\n    ]\n}"
 						},
 						"url": {
-							"raw": "https://{{node1_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node1_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node1_host}}"
 							],
@@ -141,8 +141,8 @@
 							"raw": "{\n\t\"operation\":\"cluster_status\"\n}\n"
 						},
 						"url": {
-							"raw": "https://{{node1_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node1_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node1_host}}"
 							],
@@ -212,8 +212,8 @@
 							"raw": "{\n    \"operation\": \"add_node\",\n    \"name\": \"{{node4_name}}\",\n    \"host\": \"{{node4_host}}\",\n    \"port\": \"{{clustering_port}}\",\n    \"subscriptions\": [\n        {\n            \"channel\": \"{{bear_schema}}:{{press_table}}\",\n            \"subscribe\": false,\n            \"publish\": true\n        }\n    ]\n}"
 						},
 						"url": {
-							"raw": "https://{{node2_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node2_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node2_host}}"
 							],
@@ -283,8 +283,8 @@
 							"raw": "{\n\t\"operation\":\"cluster_status\"\n}\n"
 						},
 						"url": {
-							"raw": "https://{{node2_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node2_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node2_host}}"
 							],
@@ -354,8 +354,8 @@
 							"raw": "{\n    \"operation\": \"add_node\",\n    \"name\": \"{{node4_name}}\",\n    \"host\": \"{{node4_host}}\",\n    \"port\": \"{{clustering_port}}\",\n    \"subscriptions\": [\n        {\n            \"channel\": \"{{bear_schema}}:{{rpm_table}}\",\n            \"subscribe\": false,\n            \"publish\": true\n        }\n    ]\n}"
 						},
 						"url": {
-							"raw": "https://{{node3_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node3_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node3_host}}"
 							],
@@ -425,8 +425,8 @@
 							"raw": "{\n\t\"operation\":\"cluster_status\"\n}\n"
 						},
 						"url": {
-							"raw": "https://{{node3_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node3_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node3_host}}"
 							],
@@ -496,8 +496,8 @@
 							"raw": "{\n    \"operation\": \"add_node\",\n    \"name\": \"{{node6_name}}\",\n    \"host\": \"{{node6_host}}\",\n    \"port\": \"{{clustering_port}}\",\n    \"subscriptions\": [\n        {\n            \"channel\": \"{{bear_schema}}:{{temp_table}}\",\n            \"subscribe\": false,\n            \"publish\": true\n        },\n        {\n            \"channel\": \"{{bear_schema}}:{{press_table}}\",\n            \"subscribe\": false,\n            \"publish\": true\n        },\n        {\n            \"channel\": \"{{bear_schema}}:{{rpm_table}}\",\n            \"subscribe\": false,\n            \"publish\": true\n        }\n    ]\n}"
 						},
 						"url": {
-							"raw": "https://{{node4_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node4_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node4_host}}"
 							],
@@ -567,8 +567,8 @@
 							"raw": "{\n    \"operation\": \"add_node\",\n    \"name\": \"{{node5_name}}\",\n    \"host\": \"{{node5_host}}\",\n    \"port\": \"{{clustering_port}}\",\n    \"subscriptions\": [\n        {\n            \"channel\": \"{{con_schema}}:{{con_rpm_table}}\",\n            \"subscribe\": true,\n            \"publish\": true\n        }\n    ]\n}"
 						},
 						"url": {
-							"raw": "https://{{node4_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node4_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node4_host}}"
 							],
@@ -638,8 +638,8 @@
 							"raw": "{\n    \"operation\": \"add_node\",\n    \"name\": \"{{node3_name}}\",\n    \"host\": \"{{node3_host}}\",\n    \"port\": \"{{clustering_port}}\",\n    \"subscriptions\": [\n        {\n            \"channel\": \"{{con_schema}}:{{con_rpm_table}}\",\n            \"subscribe\": true,\n            \"publish\": false\n        }\n    ]\n}"
 						},
 						"url": {
-							"raw": "https://{{node5_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node5_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node5_host}}"
 							],
@@ -714,8 +714,8 @@
 							"raw": "{\n  \"operation\":\"create_schema\",\n  \"schema\": \"{{bear_schema}}\"\n}"
 						},
 						"url": {
-							"raw": "https://{{node1_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node1_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node1_host}}"
 							],
@@ -784,8 +784,8 @@
 							"raw": "{\n\t\"operation\":\"describe_all\"\n}"
 						},
 						"url": {
-							"raw": "https://{{node1_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node1_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node1_host}}"
 							],
@@ -863,8 +863,8 @@
 							"raw": "{\n\t\"operation\":\"describe_all\"\n}"
 						},
 						"url": {
-							"raw": "https://{{node2_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node2_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node2_host}}"
 							],
@@ -941,8 +941,8 @@
 							"raw": "{\n\t\"operation\":\"describe_all\"\n}"
 						},
 						"url": {
-							"raw": "https://{{node3_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node3_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node3_host}}"
 							],
@@ -1019,8 +1019,8 @@
 							"raw": "{\n\t\"operation\":\"describe_all\"\n}"
 						},
 						"url": {
-							"raw": "https://{{node4_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node4_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node4_host}}"
 							],
@@ -1097,8 +1097,8 @@
 							"raw": "{\n\t\"operation\":\"describe_all\"\n}"
 						},
 						"url": {
-							"raw": "https://{{node5_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node5_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node5_host}}"
 							],
@@ -1175,8 +1175,8 @@
 							"raw": "{\n\t\"operation\":\"describe_all\"\n}"
 						},
 						"url": {
-							"raw": "https://{{node6_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node6_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node6_host}}"
 							],
@@ -1245,8 +1245,8 @@
 							"raw": "{\n\t\"operation\":\"create_table\",\n\t\"schema\":\"{{bear_schema}}\",\n\t\"table\":\"{{temp_table}}\",\n\t\"hash_attribute\": \"id\"\n}"
 						},
 						"url": {
-							"raw": "https://{{node1_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node1_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node1_host}}"
 							],
@@ -1315,8 +1315,8 @@
 							"raw": "{\n\t\"operation\":\"create_table\",\n\t\"schema\":\"{{bear_schema}}\",\n\t\"table\":\"{{press_table}}\",\n\t\"hash_attribute\": \"id\"\n}"
 						},
 						"url": {
-							"raw": "https://{{node2_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node2_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node2_host}}"
 							],
@@ -1385,8 +1385,8 @@
 							"raw": "{\n\t\"operation\":\"create_table\",\n\t\"schema\":\"{{bear_schema}}\",\n\t\"table\":\"{{rpm_table}}\",\n\t\"hash_attribute\": \"id\"\n}"
 						},
 						"url": {
-							"raw": "https://{{node3_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node3_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node3_host}}"
 							],
@@ -1457,8 +1457,8 @@
 							"raw": "{\n\t\"operation\":\"describe_all\"\n}"
 						},
 						"url": {
-							"raw": "https://{{node4_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node4_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node4_host}}"
 							],
@@ -1527,8 +1527,8 @@
 							"raw": "{\n  \"operation\":\"create_schema\",\n  \"schema\": \"{{con_schema}}\"\n}"
 						},
 						"url": {
-							"raw": "https://{{node5_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node5_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node5_host}}"
 							],
@@ -1597,8 +1597,8 @@
 							"raw": "{\n\t\"operation\":\"describe_all\"\n}"
 						},
 						"url": {
-							"raw": "https://{{node4_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node4_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node4_host}}"
 							],
@@ -1667,8 +1667,8 @@
 							"raw": "{\n\t\"operation\":\"create_table\",\n\t\"schema\":\"{{con_schema}}\",\n\t\"table\":\"{{con_rpm_table}}\",\n\t\"hash_attribute\": \"rpm\"\n}"
 						},
 						"url": {
-							"raw": "https://{{node5_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node5_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node5_host}}"
 							],
@@ -1765,8 +1765,8 @@
 							"raw": "{\n\t\"operation\":\"insert\",\n\t\"schema\":\"{{bear_schema}}\",\n\t\"table\":\"{{temp_table}}\",\n\t\"records\": [\n\t  {\n\t  \t\"id\": 1,\n\t  \t\"sensorData1\": 34,\n\t  \t\"sensorData2\": 54\n\t  },\n\t  {\n\t  \t\"id\": 2,\n\t  \t\"sensorData1\": 25,\n\t  \t\"sensorData2\": 77\n\t  },\n\t  {\n\t  \t\"id\": 3,\n\t  \t\"sensorData1\": 90,\n\t  \t\"sensorData2\": 78\n\t  },\n\t  {\n\t  \t\"id\": 4,\n\t  \t\"sensorData1\": 33,\n\t  \t\"sensorData2\": 54\n\t  },\n\t  {\n\t  \t\"id\": 5,\n\t  \t\"sensorData1\": 76,\n\t  \t\"sensorData2\": 12\n\t  },\n\t  {\n\t  \t\"id\": 6,\n\t  \t\"sensorData1\": 11,\n\t  \t\"sensorData2\": 12\n\t  }\n\t]\n}"
 						},
 						"url": {
-							"raw": "https://{{node1_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node1_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node1_host}}"
 							],
@@ -1835,8 +1835,8 @@
 							"raw": "{\n\t\"operation\":\"sql\",\n\t\"sql\":\"select count(*) from {{bear_schema}}.{{temp_table}}\"\n}"
 						},
 						"url": {
-							"raw": "https://{{node1_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node1_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node1_host}}"
 							],
@@ -1914,8 +1914,8 @@
 							"raw": "{\n\t\"operation\":\"sql\",\n\t\"sql\":\"select count(*) from {{bear_schema}}.{{temp_table}}\"\n}"
 						},
 						"url": {
-							"raw": "https://{{node4_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node4_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node4_host}}"
 							],
@@ -1993,8 +1993,8 @@
 							"raw": "{\n\t\"operation\":\"sql\",\n\t\"sql\":\"select count(*) from {{bear_schema}}.{{temp_table}}\"\n}"
 						},
 						"url": {
-							"raw": "https://{{node6_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node6_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node6_host}}"
 							],
@@ -2072,8 +2072,8 @@
 							"raw": "{\n\t\"operation\":\"sql\",\n\t\"sql\":\"select count(*) from {{bear_schema}}.{{temp_table}}\"\n}"
 						},
 						"url": {
-							"raw": "https://{{node5_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node5_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node5_host}}"
 							],
@@ -2159,8 +2159,8 @@
 							"raw": "{\n\t\"operation\":\"describe_all\"\n}"
 						},
 						"url": {
-							"raw": "https://{{node2_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node2_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node2_host}}"
 							],
@@ -2246,8 +2246,8 @@
 							"raw": "{\n\t\"operation\":\"describe_all\"\n}"
 						},
 						"url": {
-							"raw": "https://{{node3_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node3_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node3_host}}"
 							],
@@ -2333,8 +2333,8 @@
 							"raw": "{\n\t\"operation\":\"describe_all\"\n}"
 						},
 						"url": {
-							"raw": "https://{{node4_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node4_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node4_host}}"
 							],
@@ -2420,8 +2420,8 @@
 							"raw": "{\n\t\"operation\":\"describe_all\"\n}"
 						},
 						"url": {
-							"raw": "https://{{node5_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node5_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node5_host}}"
 							],
@@ -2507,8 +2507,8 @@
 							"raw": "{\n\t\"operation\":\"describe_all\"\n}"
 						},
 						"url": {
-							"raw": "https://{{node6_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node6_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node6_host}}"
 							],
@@ -2577,8 +2577,8 @@
 							"raw": "{\n\t\"operation\":\"insert\",\n\t\"schema\":\"{{bear_schema}}\",\n\t\"table\":\"{{temp_table}}\",\n\t\"records\": [\n\t  {\n\t  \t\"id\": 34,\n\t  \t\"sensorData1\": 34,\n\t  \t\"sensorData2\": 54\n\t  },\n\t  {\n\t  \t\"id\": 35,\n\t  \t\"sensorData1\": 25,\n\t  \t\"sensorData2\": 77\n\t  },\n\t  {\n\t  \t\"id\": 36,\n\t  \t\"sensorData1\": 90,\n\t  \t\"sensorData2\": 78\n\t  }\n\t]\n}"
 						},
 						"url": {
-							"raw": "https://{{node4_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node4_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node4_host}}"
 							],
@@ -2656,8 +2656,8 @@
 							"raw": "{\n\t\"operation\":\"sql\",\n\t\"sql\":\"select count(*) from {{bear_schema}}.{{temp_table}}\"\n}"
 						},
 						"url": {
-							"raw": "https://{{node1_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node1_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node1_host}}"
 							],
@@ -2726,8 +2726,8 @@
 							"raw": "{\n\t\"operation\":\"sql\",\n\t\"sql\":\"select count(*) from {{bear_schema}}.{{temp_table}}\"\n}"
 						},
 						"url": {
-							"raw": "https://{{node4_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node4_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node4_host}}"
 							],
@@ -2805,8 +2805,8 @@
 							"raw": "{\n\t\"operation\":\"sql\",\n\t\"sql\":\"select count(*) from {{bear_schema}}.{{temp_table}}\"\n}"
 						},
 						"url": {
-							"raw": "https://{{node4_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node4_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node4_host}}"
 							],
@@ -2884,8 +2884,8 @@
 							"raw": "{\n\t\"operation\":\"sql\",\n\t\"sql\":\"select count(*) from {{bear_schema}}.{{temp_table}}\"\n}"
 						},
 						"url": {
-							"raw": "https://{{node5_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node5_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node5_host}}"
 							],
@@ -2954,8 +2954,8 @@
 							"raw": "{\n\t\"operation\":\"sql\",\n\t\"sql\": \"INSERT INTO {{bear_schema}}.{{press_table}} (id, psi) VALUES(11, '123'), (22, '145'), (44, '208'), (55, '310'), (88, '333')\"\n}"
 						},
 						"url": {
-							"raw": "https://{{node2_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node2_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node2_host}}"
 							],
@@ -3024,8 +3024,8 @@
 							"raw": "{\n\t\"operation\":\"sql\",\n\t\"sql\":\"select count(*) from {{bear_schema}}.{{press_table}}\"\n}"
 						},
 						"url": {
-							"raw": "https://{{node2_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node2_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node2_host}}"
 							],
@@ -3103,8 +3103,8 @@
 							"raw": "{\n\t\"operation\":\"sql\",\n\t\"sql\":\"select count(*) from {{bear_schema}}.{{press_table}}\"\n}"
 						},
 						"url": {
-							"raw": "https://{{node4_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node4_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node4_host}}"
 							],
@@ -3182,8 +3182,8 @@
 							"raw": "{\n\t\"operation\":\"sql\",\n\t\"sql\":\"select count(*) from {{bear_schema}}.{{press_table}}\"\n}"
 						},
 						"url": {
-							"raw": "https://{{node6_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node6_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node6_host}}"
 							],
@@ -3261,8 +3261,8 @@
 							"raw": "{\n\t\"operation\":\"sql\",\n\t\"sql\":\"select count(*) from {{bear_schema}}.{{press_table}}\"\n}"
 						},
 						"url": {
-							"raw": "https://{{node3_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node3_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node3_host}}"
 							],
@@ -3348,8 +3348,8 @@
 							"raw": "{\n\t\"operation\":\"describe_all\"\n}"
 						},
 						"url": {
-							"raw": "https://{{node1_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node1_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node1_host}}"
 							],
@@ -3435,8 +3435,8 @@
 							"raw": "{\n\t\"operation\":\"describe_all\"\n}"
 						},
 						"url": {
-							"raw": "https://{{node2_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node2_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node2_host}}"
 							],
@@ -3522,8 +3522,8 @@
 							"raw": "{\n\t\"operation\":\"describe_all\"\n}"
 						},
 						"url": {
-							"raw": "https://{{node3_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node3_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node3_host}}"
 							],
@@ -3609,8 +3609,8 @@
 							"raw": "{\n\t\"operation\":\"describe_all\"\n}"
 						},
 						"url": {
-							"raw": "https://{{node4_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node4_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node4_host}}"
 							],
@@ -3696,8 +3696,8 @@
 							"raw": "{\n\t\"operation\":\"describe_all\"\n}"
 						},
 						"url": {
-							"raw": "https://{{node5_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node5_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node5_host}}"
 							],
@@ -3783,8 +3783,8 @@
 							"raw": "{\n\t\"operation\":\"describe_all\"\n}"
 						},
 						"url": {
-							"raw": "https://{{node6_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node6_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node6_host}}"
 							],
@@ -3856,8 +3856,8 @@
 							"raw": "{\n\t\"operation\":\"csv_data_load\",\n\t\"schema\":\"{{bear_schema}}\",\n\t\"action\": \"insert\",\n\t\"table\":\"{{rpm_table}}\",\n\t\"transact_to_cluster\": true,\n\t\"data\":\"id,inner_race, outer_race\\n1, 1234, 800\\n2, 1456, 834\\n3, 1241, 799\\n4, 1314, 788\\n6, 1234, 810\\n8, 1233, 679\\n9, 1321, 788\\n10, 1234, 756\\n11, 1222, 844\\n12, 1231, 801\\n18, 1134, 808\\n19, 1266, 889\\n20, 1888 879\\n21, 1998, 899\\n\"\n}"
 						},
 						"url": {
-							"raw": "https://{{node3_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node3_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node3_host}}"
 							],
@@ -3962,8 +3962,8 @@
 							"raw": "{\n\t\"operation\":\"get_job\",\n\t\"id\": \"{{job_id_ct}}\"\n}"
 						},
 						"url": {
-							"raw": "https://{{node3_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node3_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node3_host}}"
 							],
@@ -4041,8 +4041,8 @@
 							"raw": "{\n\t\"operation\":\"sql\",\n\t\"sql\":\"select count(*) from {{bear_schema}}.{{rpm_table}}\"\n}"
 						},
 						"url": {
-							"raw": "https://{{node3_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node3_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node3_host}}"
 							],
@@ -4120,8 +4120,8 @@
 							"raw": "{\n\t\"operation\":\"sql\",\n\t\"sql\":\"select count(*) from {{bear_schema}}.{{rpm_table}}\"\n}"
 						},
 						"url": {
-							"raw": "https://{{node3_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node3_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node3_host}}"
 							],
@@ -4199,8 +4199,8 @@
 							"raw": "{\n\t\"operation\":\"sql\",\n\t\"sql\":\"select count(*) from {{bear_schema}}.{{rpm_table}}\"\n}"
 						},
 						"url": {
-							"raw": "https://{{node6_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node6_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node6_host}}"
 							],
@@ -4279,8 +4279,8 @@
 							"raw": "{\n\t\"operation\":\"sql\",\n\t\"sql\":\"select count(*) from {{bear_schema}}.{{rpm_table}}\"\n}"
 						},
 						"url": {
-							"raw": "https://{{node5_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node5_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node5_host}}"
 							],
@@ -4352,8 +4352,8 @@
 							"raw": "{\n\t\"operation\":\"csv_file_load\",\n\t\"action\": \"insert\",\n\t\"schema\":\"{{con_schema}}\",\n\t\"table\":\"{{con_rpm_table}}\",\n\t\"transact_to_cluster\": true,\n\t\"file_path\":\"{{con_rpm_csv_file}}\"\n}"
 						},
 						"url": {
-							"raw": "https://{{node5_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node5_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node5_host}}"
 							],
@@ -4459,8 +4459,8 @@
 							"raw": "{\n\t\"operation\":\"get_job\",\n\t\"id\": \"{{job_id_ct}}\"\n}"
 						},
 						"url": {
-							"raw": "https://{{node5_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node5_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node5_host}}"
 							],
@@ -4538,8 +4538,8 @@
 							"raw": "{\n\t\"operation\":\"sql\",\n\t\"sql\":\"select count(*) from {{con_schema}}.{{con_rpm_table}}\"\n}"
 						},
 						"url": {
-							"raw": "https://{{node5_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node5_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node5_host}}"
 							],
@@ -4617,8 +4617,8 @@
 							"raw": "{\n\t\"operation\":\"sql\",\n\t\"sql\":\"select count(*) from {{con_schema}}.{{con_rpm_table}}\"\n}"
 						},
 						"url": {
-							"raw": "https://{{node3_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node3_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node3_host}}"
 							],
@@ -4696,8 +4696,8 @@
 							"raw": "{\n\t\"operation\":\"sql\",\n\t\"sql\":\"select count(*) from {{con_schema}}.{{con_rpm_table}}\"\n}"
 						},
 						"url": {
-							"raw": "https://{{node4_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node4_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node4_host}}"
 							],
@@ -4775,8 +4775,8 @@
 							"raw": "{\n\t\"operation\":\"sql\",\n\t\"sql\":\"select count(*) from {{con_schema}}.{{con_rpm_table}}\"\n}"
 						},
 						"url": {
-							"raw": "https://{{node6_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node6_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node6_host}}"
 							],
@@ -4845,8 +4845,8 @@
 							"raw": "{\n\t\"operation\":\"insert\",\n\t\"schema\":\"{{con_schema}}\",\n\t\"table\":\"{{con_rpm_table}}\",\n\t\"records\": [\n\t  {\n\t  \t\"rpm\": 11,\n\t  \t\"rad_hr\": \"undefined\",\n\t  \t\"hz\": \"Test\"\n\t  },\n\t  {\n\t  \t\"rpm\": 21,\n\t  \t\"hz\": \"null\",\n\t  \t\"rad_hr\": 199\n\t  }\n\t]\n}"
 						},
 						"url": {
-							"raw": "https://{{node3_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node3_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node3_host}}"
 							],
@@ -4936,8 +4936,8 @@
 							"raw": "{\n\t\"operation\":\"sql\",\n\t\"sql\":\"select * from {{con_schema}}.{{con_rpm_table}}\"\n}"
 						},
 						"url": {
-							"raw": "https://{{node3_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node3_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node3_host}}"
 							],
@@ -5035,8 +5035,8 @@
 							"raw": "{\n\t\"operation\":\"sql\",\n\t\"sql\":\"select * from {{con_schema}}.{{con_rpm_table}} where rpm = 11 or rpm = 21\"\n}"
 						},
 						"url": {
-							"raw": "https://{{node5_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node5_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node5_host}}"
 							],
@@ -5134,8 +5134,8 @@
 							"raw": "{\n\t\"operation\":\"sql\",\n\t\"sql\":\"select * from {{con_schema}}.{{con_rpm_table}} where rpm = 11 or rpm = 21\"\n}"
 						},
 						"url": {
-							"raw": "https://{{node4_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node4_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node4_host}}"
 							],
@@ -5255,8 +5255,8 @@
 							"raw": "{\n\t\"operation\":\"update\",\n\t\"schema\":\"{{bear_schema}}\",\n\t\"table\":\"{{temp_table}}\",\n\t\"records\": [\n\t  {\n\t    \"id\": 1,\n\t\t\"sensorData1\": 122,\n\t  \t\"sensorData2\": \"test\"\n\t  },\n\t\t{\n\t    \"id\": 3,\n\t    \"sensorData1\": \"null\",\n\t    \"sensorData2\": 351,\n\t    \"extraAttribute\": \"harper\"\n\t  }\n\t]\n}\n\n"
 						},
 						"url": {
-							"raw": "https://{{node1_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node1_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node1_host}}"
 							],
@@ -5338,8 +5338,8 @@
 							"raw": "{\n\t\"operation\":\"search_by_hash\",\n\t\"schema\": \"{{bear_schema}}\",\n\t\"table\": \"{{temp_table}}\",\n\t\"hash_values\":[1,3],\n\t\"get_attributes\": [\"id\", \"sensorData1\", \"sensorData2\"]\n}"
 						},
 						"url": {
-							"raw": "https://{{node1_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node1_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node1_host}}"
 							],
@@ -5430,8 +5430,8 @@
 							"raw": "{\n\t\"operation\":\"search_by_hash\",\n\t\"schema\": \"{{bear_schema}}\",\n\t\"table\": \"{{temp_table}}\",\n\t\"hash_values\":[1,3],\n\t\"get_attributes\": [\"id\", \"sensorData1\", \"sensorData2\"]\n}"
 						},
 						"url": {
-							"raw": "https://{{node1_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node1_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node1_host}}"
 							],
@@ -5517,8 +5517,8 @@
 							"raw": "{\n\t\"operation\":\"describe_all\"\n}"
 						},
 						"url": {
-							"raw": "https://{{node1_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node1_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node1_host}}"
 							],
@@ -5604,8 +5604,8 @@
 							"raw": "{\n\t\"operation\":\"describe_all\"\n}"
 						},
 						"url": {
-							"raw": "https://{{node2_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node2_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node2_host}}"
 							],
@@ -5691,8 +5691,8 @@
 							"raw": "{\n\t\"operation\":\"describe_all\"\n}"
 						},
 						"url": {
-							"raw": "https://{{node3_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node3_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node3_host}}"
 							],
@@ -5778,8 +5778,8 @@
 							"raw": "{\n\t\"operation\":\"describe_all\"\n}"
 						},
 						"url": {
-							"raw": "https://{{node4_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node4_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node4_host}}"
 							],
@@ -5865,8 +5865,8 @@
 							"raw": "{\n\t\"operation\":\"describe_all\"\n}"
 						},
 						"url": {
-							"raw": "https://{{node5_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node5_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node5_host}}"
 							],
@@ -5952,8 +5952,8 @@
 							"raw": "{\n\t\"operation\":\"describe_all\"\n}"
 						},
 						"url": {
-							"raw": "https://{{node6_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node6_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node6_host}}"
 							],
@@ -6030,8 +6030,8 @@
 							"raw": "{\n\t\"operation\":\"sql\",\n\t\"sql\":\"update {{bear_schema}}.{{press_table}} set psiUPDATE = 'fault' where id = 22\"\n}\n"
 						},
 						"url": {
-							"raw": "https://{{node2_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node2_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node2_host}}"
 							],
@@ -6112,8 +6112,8 @@
 							"raw": "{\n\t\"operation\":\"sql\",\n\t\"sql\":\"select * from {{bear_schema}}.{{press_table}} where id = 22\"\n}"
 						},
 						"url": {
-							"raw": "https://{{node2_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node2_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node2_host}}"
 							],
@@ -6202,8 +6202,8 @@
 							"raw": "{\n\t\"operation\":\"sql\",\n\t\"sql\":\"select * from {{bear_schema}}.{{press_table}} where id = 22\"\n}"
 						},
 						"url": {
-							"raw": "https://{{node4_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node4_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node4_host}}"
 							],
@@ -6292,8 +6292,8 @@
 							"raw": "{\n\t\"operation\":\"sql\",\n\t\"sql\":\"select * from {{bear_schema}}.{{press_table}} where id = 22\"\n}"
 						},
 						"url": {
-							"raw": "https://{{node6_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node6_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node6_host}}"
 							],
@@ -6379,8 +6379,8 @@
 							"raw": "{\n\t\"operation\":\"describe_all\"\n}"
 						},
 						"url": {
-							"raw": "https://{{node1_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node1_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node1_host}}"
 							],
@@ -6466,8 +6466,8 @@
 							"raw": "{\n\t\"operation\":\"describe_all\"\n}"
 						},
 						"url": {
-							"raw": "https://{{node2_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node2_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node2_host}}"
 							],
@@ -6553,8 +6553,8 @@
 							"raw": "{\n\t\"operation\":\"describe_all\"\n}"
 						},
 						"url": {
-							"raw": "https://{{node3_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node3_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node3_host}}"
 							],
@@ -6640,8 +6640,8 @@
 							"raw": "{\n\t\"operation\":\"describe_all\"\n}"
 						},
 						"url": {
-							"raw": "https://{{node4_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node4_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node4_host}}"
 							],
@@ -6727,8 +6727,8 @@
 							"raw": "{\n\t\"operation\":\"describe_all\"\n}"
 						},
 						"url": {
-							"raw": "https://{{node5_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node5_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node5_host}}"
 							],
@@ -6814,8 +6814,8 @@
 							"raw": "{\n\t\"operation\":\"describe_all\"\n}"
 						},
 						"url": {
-							"raw": "https://{{node6_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node6_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node6_host}}"
 							],
@@ -6893,8 +6893,8 @@
 							"raw": "{\n\t\"operation\":\"update\",\n\t\"schema\":\"{{con_schema}}\",\n\t\"table\":\"{{con_rpm_table}}\",\n\t\"records\": [\n\t  {\n\t    \"rpm\": 11,\n\t    \"hz\": \"update\"\n\n\t  },\n\t  {\n\t    \"rpm\": 21,\n\t    \"hz\": \"update\"\n\t  }\n\t]\n}\n"
 						},
 						"url": {
-							"raw": "https://{{node3_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node3_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node3_host}}"
 							],
@@ -6983,8 +6983,8 @@
 							"raw": "{\n\t\"operation\":\"search_by_hash\",\n\t\"schema\": \"{{con_schema}}\",\n\t\"table\": \"{{con_rpm_table}}\",\n\t\"hash_values\":[11,21],\n\t\"get_attributes\": [\"rpm\", \"hz\"]\n}\n"
 						},
 						"url": {
-							"raw": "https://{{node3_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node3_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node3_host}}"
 							],
@@ -7073,8 +7073,8 @@
 							"raw": "{\n\t\"operation\":\"search_by_hash\",\n\t\"schema\": \"{{con_schema}}\",\n\t\"table\": \"{{con_rpm_table}}\",\n\t\"hash_values\":[11,21],\n\t\"get_attributes\": [\"rpm\", \"hz\"]\n}\n"
 						},
 						"url": {
-							"raw": "https://{{node4_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node4_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node4_host}}"
 							],
@@ -7163,8 +7163,8 @@
 							"raw": "{\n\t\"operation\":\"search_by_hash\",\n\t\"schema\": \"{{con_schema}}\",\n\t\"table\": \"{{con_rpm_table}}\",\n\t\"hash_values\":[11,21],\n\t\"get_attributes\": [\"rpm\", \"hz\"]\n}\n"
 						},
 						"url": {
-							"raw": "https://{{node5_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node5_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node5_host}}"
 							],
@@ -7242,8 +7242,8 @@
 							"raw": "{\n\t\"operation\":\"update\",\n\t\"schema\":\"{{con_schema}}\",\n\t\"table\":\"{{con_rpm_table}}\",\n\t\"records\": [\n\t  {\n\t    \"rpm\": 11,\n\t    \"hz\": \"harper\"\n\n\t  },\n\t  {\n\t    \"rpm\": 21,\n\t    \"hz\": \"alby\"\n\t  }\n\t]\n}\n\n"
 						},
 						"url": {
-							"raw": "https://{{node4_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node4_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node4_host}}"
 							],
@@ -7332,8 +7332,8 @@
 							"raw": "{\n\t\"operation\":\"search_by_hash\",\n\t\"schema\": \"{{con_schema}}\",\n\t\"table\": \"{{con_rpm_table}}\",\n\t\"hash_values\":[11,21],\n\t\"get_attributes\": [\"rpm\", \"hz\"]\n}\n"
 						},
 						"url": {
-							"raw": "https://{{node4_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node4_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node4_host}}"
 							],
@@ -7422,8 +7422,8 @@
 							"raw": "{\n\t\"operation\":\"search_by_hash\",\n\t\"schema\": \"{{con_schema}}\",\n\t\"table\": \"{{con_rpm_table}}\",\n\t\"hash_values\":[11,21],\n\t\"get_attributes\": [\"rpm\", \"hz\"]\n}\n"
 						},
 						"url": {
-							"raw": "https://{{node5_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node5_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node5_host}}"
 							],
@@ -7512,8 +7512,8 @@
 							"raw": "{\n\t\"operation\":\"search_by_hash\",\n\t\"schema\": \"{{con_schema}}\",\n\t\"table\": \"{{con_rpm_table}}\",\n\t\"hash_values\":[11,21],\n\t\"get_attributes\": [\"rpm\", \"hz\"]\n}\n"
 						},
 						"url": {
-							"raw": "https://{{node3_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node3_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node3_host}}"
 							],
@@ -7597,8 +7597,8 @@
 							"raw": "{\n\t\"operation\":\"delete\",\n\t\"schema\":\"{{bear_schema}}\",\n\t\"table\":\"{{temp_table}}\",\n\t\"hash_values\":[1,2]\n}\n"
 						},
 						"url": {
-							"raw": "https://{{node1_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node1_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node1_host}}"
 							],
@@ -7667,8 +7667,8 @@
 							"raw": "{\n\t\"operation\":\"sql\",\n\t\"sql\":\"select count(*) from {{bear_schema}}.{{temp_table}}\"\n}"
 						},
 						"url": {
-							"raw": "https://{{node1_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node1_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node1_host}}"
 							],
@@ -7746,8 +7746,8 @@
 							"raw": "{\n\t\"operation\":\"sql\",\n\t\"sql\":\"select count(*) from {{bear_schema}}.{{temp_table}}\"\n}"
 						},
 						"url": {
-							"raw": "https://{{node4_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node4_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node4_host}}"
 							],
@@ -7825,8 +7825,8 @@
 							"raw": "{\n\t\"operation\":\"sql\",\n\t\"sql\":\"select count(*) from {{bear_schema}}.{{temp_table}}\"\n}"
 						},
 						"url": {
-							"raw": "https://{{node6_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node6_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node6_host}}"
 							],
@@ -7904,8 +7904,8 @@
 							"raw": "{\n\t\"operation\":\"delete\",\n\t\"schema\":\"{{bear_schema}}\",\n\t\"table\":\"{{temp_table}}\",\n\t\"hash_values\":[34, 35]\n}\n"
 						},
 						"url": {
-							"raw": "https://{{node6_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node6_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node6_host}}"
 							],
@@ -7974,8 +7974,8 @@
 							"raw": "{\n\t\"operation\":\"sql\",\n\t\"sql\":\"select count(*) from {{bear_schema}}.{{temp_table}}\"\n}"
 						},
 						"url": {
-							"raw": "https://{{node6_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node6_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node6_host}}"
 							],
@@ -8053,8 +8053,8 @@
 							"raw": "{\n\t\"operation\":\"sql\",\n\t\"sql\":\"select count(*) from {{bear_schema}}.{{temp_table}}\"\n}"
 						},
 						"url": {
-							"raw": "https://{{node4_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node4_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node4_host}}"
 							],
@@ -8132,8 +8132,8 @@
 							"raw": "{\n\t\"operation\":\"sql\",\n\t\"sql\":\"select count(*) from {{bear_schema}}.{{temp_table}}\"\n}"
 						},
 						"url": {
-							"raw": "https://{{node1_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node1_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node1_host}}"
 							],
@@ -8210,8 +8210,8 @@
 							"raw": "{\n\t\"operation\":\"sql\",\n\t\"sql\":\"DELETE FROM {{con_schema}}.{{con_rpm_table}} WHERE rpm = 11\"\n}\n"
 						},
 						"url": {
-							"raw": "https://{{node3_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node3_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node3_host}}"
 							],
@@ -8289,8 +8289,8 @@
 							"raw": "{\n\t\"operation\":\"sql\",\n\t\"sql\":\"select count(*) from {{con_schema}}.{{con_rpm_table}}\"\n}"
 						},
 						"url": {
-							"raw": "https://{{node3_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node3_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node3_host}}"
 							],
@@ -8368,8 +8368,8 @@
 							"raw": "{\n\t\"operation\":\"sql\",\n\t\"sql\":\"select count(*) from {{con_schema}}.{{con_rpm_table}}\"\n}"
 						},
 						"url": {
-							"raw": "https://{{node5_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node5_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node5_host}}"
 							],
@@ -8447,8 +8447,8 @@
 							"raw": "{\n\t\"operation\":\"sql\",\n\t\"sql\":\"select count(*) from {{con_schema}}.{{con_rpm_table}}\"\n}"
 						},
 						"url": {
-							"raw": "https://{{node6_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node6_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node6_host}}"
 							],
@@ -8524,8 +8524,8 @@
 							"raw": "{\n\t\"operation\":\"remove_node\",\n\t\"name\":\"{{node4_name}}\"\n}"
 						},
 						"url": {
-							"raw": "https://{{node1_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node1_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node1_host}}"
 							],
@@ -8595,8 +8595,8 @@
 							"raw": "{\n\t\"operation\":\"remove_node\",\n\t\"name\":\"{{node4_name}}\"\n}"
 						},
 						"url": {
-							"raw": "https://{{node2_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node2_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node2_host}}"
 							],
@@ -8666,8 +8666,8 @@
 							"raw": "{\n\t\"operation\":\"remove_node\",\n\t\"name\":\"{{node4_name}}\"\n}"
 						},
 						"url": {
-							"raw": "https://{{node3_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node3_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node3_host}}"
 							],
@@ -8737,8 +8737,8 @@
 							"raw": "{\n\t\"operation\":\"remove_node\",\n\t\"name\":\"{{node6_name}}\"\n}"
 						},
 						"url": {
-							"raw": "https://{{node4_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node4_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node4_host}}"
 							],
@@ -8808,8 +8808,8 @@
 							"raw": "{\n\t\"operation\":\"remove_node\",\n\t\"name\":\"{{node5_name}}\"\n}"
 						},
 						"url": {
-							"raw": "https://{{node4_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node4_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node4_host}}"
 							],
@@ -8879,8 +8879,8 @@
 							"raw": "{\n\t\"operation\":\"remove_node\",\n\t\"name\":\"{{node3_name}}\"\n}"
 						},
 						"url": {
-							"raw": "https://{{node5_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node5_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node5_host}}"
 							],
@@ -8977,8 +8977,8 @@
 							"raw": "{\n\t\"operation\":\"drop_table\",\n\t\"schema\":\"{{bear_schema}}\",\n\t\"table\": \"{{temp_table}}\"\n}"
 						},
 						"url": {
-							"raw": "https://{{node1_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node1_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node1_host}}"
 							],
@@ -9047,8 +9047,8 @@
 							"raw": "{\n\t\"operation\":\"drop_table\",\n\t\"schema\":\"{{bear_schema}}\",\n\t\"table\": \"{{temp_table}}\"\n}"
 						},
 						"url": {
-							"raw": "https://{{node2_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node2_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node2_host}}"
 							],
@@ -9117,8 +9117,8 @@
 							"raw": "{\n\t\"operation\":\"drop_table\",\n\t\"schema\":\"{{bear_schema}}\",\n\t\"table\": \"{{temp_table}}\"\n}"
 						},
 						"url": {
-							"raw": "https://{{node3_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node3_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node3_host}}"
 							],
@@ -9187,8 +9187,8 @@
 							"raw": "{\n\t\"operation\":\"drop_table\",\n\t\"schema\":\"{{bear_schema}}\",\n\t\"table\": \"{{temp_table}}\"\n}"
 						},
 						"url": {
-							"raw": "https://{{node4_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node4_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node4_host}}"
 							],
@@ -9257,8 +9257,8 @@
 							"raw": "{\n\t\"operation\":\"drop_table\",\n\t\"schema\":\"{{bear_schema}}\",\n\t\"table\": \"{{temp_table}}\"\n}"
 						},
 						"url": {
-							"raw": "https://{{node5_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node5_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node5_host}}"
 							],
@@ -9327,8 +9327,8 @@
 							"raw": "{\n\t\"operation\":\"drop_table\",\n\t\"schema\":\"{{bear_schema}}\",\n\t\"table\": \"{{temp_table}}\"\n}"
 						},
 						"url": {
-							"raw": "https://{{node6_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node6_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node6_host}}"
 							],
@@ -9397,8 +9397,8 @@
 							"raw": "{\n\t\"operation\":\"drop_table\",\n\t\"schema\":\"{{bear_schema}}\",\n\t\"table\": \"{{press_table}}\"\n}"
 						},
 						"url": {
-							"raw": "https://{{node1_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node1_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node1_host}}"
 							],
@@ -9467,8 +9467,8 @@
 							"raw": "{\n\t\"operation\":\"drop_table\",\n\t\"schema\":\"{{bear_schema}}\",\n\t\"table\": \"{{press_table}}\"\n}"
 						},
 						"url": {
-							"raw": "https://{{node2_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node2_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node2_host}}"
 							],
@@ -9537,8 +9537,8 @@
 							"raw": "{\n\t\"operation\":\"drop_table\",\n\t\"schema\":\"{{bear_schema}}\",\n\t\"table\": \"{{press_table}}\"\n}"
 						},
 						"url": {
-							"raw": "https://{{node3_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node3_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node3_host}}"
 							],
@@ -9607,8 +9607,8 @@
 							"raw": "{\n\t\"operation\":\"drop_table\",\n\t\"schema\":\"{{bear_schema}}\",\n\t\"table\": \"{{press_table}}\"\n}"
 						},
 						"url": {
-							"raw": "https://{{node4_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node4_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node4_host}}"
 							],
@@ -9677,8 +9677,8 @@
 							"raw": "{\n\t\"operation\":\"drop_table\",\n\t\"schema\":\"{{bear_schema}}\",\n\t\"table\": \"{{press_table}}\"\n}"
 						},
 						"url": {
-							"raw": "https://{{node5_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node5_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node5_host}}"
 							],
@@ -9747,8 +9747,8 @@
 							"raw": "{\n\t\"operation\":\"drop_table\",\n\t\"schema\":\"{{bear_schema}}\",\n\t\"table\": \"{{press_table}}\"\n}"
 						},
 						"url": {
-							"raw": "https://{{node6_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node6_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node6_host}}"
 							],
@@ -9817,8 +9817,8 @@
 							"raw": "{\n\t\"operation\":\"drop_table\",\n\t\"schema\":\"{{bear_schema}}\",\n\t\"table\": \"{{rpm_table}}\"\n}"
 						},
 						"url": {
-							"raw": "https://{{node1_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node1_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node1_host}}"
 							],
@@ -9887,8 +9887,8 @@
 							"raw": "{\n\t\"operation\":\"drop_table\",\n\t\"schema\":\"{{bear_schema}}\",\n\t\"table\": \"{{rpm_table}}\"\n}"
 						},
 						"url": {
-							"raw": "https://{{node2_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node2_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node2_host}}"
 							],
@@ -9957,8 +9957,8 @@
 							"raw": "{\n\t\"operation\":\"drop_table\",\n\t\"schema\":\"{{bear_schema}}\",\n\t\"table\": \"{{rpm_table}}\"\n}"
 						},
 						"url": {
-							"raw": "https://{{node3_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node3_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node3_host}}"
 							],
@@ -10027,8 +10027,8 @@
 							"raw": "{\n\t\"operation\":\"drop_table\",\n\t\"schema\":\"{{bear_schema}}\",\n\t\"table\": \"{{rpm_table}}\"\n}"
 						},
 						"url": {
-							"raw": "https://{{node4_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node4_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node4_host}}"
 							],
@@ -10097,8 +10097,8 @@
 							"raw": "{\n\t\"operation\":\"drop_table\",\n\t\"schema\":\"{{bear_schema}}\",\n\t\"table\": \"{{rpm_table}}\"\n}"
 						},
 						"url": {
-							"raw": "https://{{node5_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node5_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node5_host}}"
 							],
@@ -10167,8 +10167,8 @@
 							"raw": "{\n\t\"operation\":\"drop_table\",\n\t\"schema\":\"{{bear_schema}}\",\n\t\"table\": \"{{rpm_table}}\"\n}"
 						},
 						"url": {
-							"raw": "https://{{node6_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node6_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node6_host}}"
 							],
@@ -10237,8 +10237,8 @@
 							"raw": "{\n\t\"operation\":\"drop_table\",\n\t\"schema\":\"{{con_schema}}\",\n\t\"table\": \"{{con_rpm_table}}\"\n}"
 						},
 						"url": {
-							"raw": "https://{{node1_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node1_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node1_host}}"
 							],
@@ -10307,8 +10307,8 @@
 							"raw": "{\n\t\"operation\":\"drop_table\",\n\t\"schema\":\"{{con_schema}}\",\n\t\"table\": \"{{con_rpm_table}}\"\n}"
 						},
 						"url": {
-							"raw": "https://{{node2_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node2_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node2_host}}"
 							],
@@ -10377,8 +10377,8 @@
 							"raw": "{\n\t\"operation\":\"drop_table\",\n\t\"schema\":\"{{con_schema}}\",\n\t\"table\": \"{{con_rpm_table}}\"\n}"
 						},
 						"url": {
-							"raw": "https://{{node3_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node3_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node3_host}}"
 							],
@@ -10447,8 +10447,8 @@
 							"raw": "{\n\t\"operation\":\"drop_table\",\n\t\"schema\":\"{{con_schema}}\",\n\t\"table\": \"{{con_rpm_table}}\"\n}"
 						},
 						"url": {
-							"raw": "https://{{node4_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node4_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node4_host}}"
 							],
@@ -10517,8 +10517,8 @@
 							"raw": "{\n\t\"operation\":\"drop_table\",\n\t\"schema\":\"{{con_schema}}\",\n\t\"table\": \"{{con_rpm_table}}\"\n}"
 						},
 						"url": {
-							"raw": "https://{{node5_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node5_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node5_host}}"
 							],
@@ -10587,8 +10587,8 @@
 							"raw": "{\n\t\"operation\":\"drop_table\",\n\t\"schema\":\"{{con_schema}}\",\n\t\"table\": \"{{con_rpm_table}}\"\n}"
 						},
 						"url": {
-							"raw": "https://{{node6_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node6_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node6_host}}"
 							],
@@ -10657,8 +10657,8 @@
 							"raw": "{\n\t\"operation\":\"drop_schema\",\n\t\"schema\":\"{{bear_schema}}\"\n}"
 						},
 						"url": {
-							"raw": "https://{{node1_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node1_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node1_host}}"
 							],
@@ -10727,8 +10727,8 @@
 							"raw": "{\n\t\"operation\":\"describe_all\"\n}"
 						},
 						"url": {
-							"raw": "https://{{node1_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node1_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node1_host}}"
 							],
@@ -10797,8 +10797,8 @@
 							"raw": "{\n\t\"operation\":\"drop_schema\",\n\t\"schema\":\"{{bear_schema}}\"\n}"
 						},
 						"url": {
-							"raw": "https://{{node2_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node2_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node2_host}}"
 							],
@@ -10867,8 +10867,8 @@
 							"raw": "{\n\t\"operation\":\"describe_all\"\n}"
 						},
 						"url": {
-							"raw": "https://{{node2_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node2_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node2_host}}"
 							],
@@ -10937,8 +10937,8 @@
 							"raw": "{\n\t\"operation\":\"drop_schema\",\n\t\"schema\":\"{{bear_schema}}\"\n}"
 						},
 						"url": {
-							"raw": "https://{{node3_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node3_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node3_host}}"
 							],
@@ -11007,8 +11007,8 @@
 							"raw": "{\n\t\"operation\":\"describe_all\"\n}"
 						},
 						"url": {
-							"raw": "https://{{node3_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node3_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node3_host}}"
 							],
@@ -11077,8 +11077,8 @@
 							"raw": "{\n\t\"operation\":\"drop_schema\",\n\t\"schema\":\"{{bear_schema}}\"\n}"
 						},
 						"url": {
-							"raw": "https://{{node4_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node4_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node4_host}}"
 							],
@@ -11147,8 +11147,8 @@
 							"raw": "{\n\t\"operation\":\"describe_all\"\n}"
 						},
 						"url": {
-							"raw": "https://{{node4_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node4_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node4_host}}"
 							],
@@ -11217,8 +11217,8 @@
 							"raw": "{\n\t\"operation\":\"drop_schema\",\n\t\"schema\":\"{{bear_schema}}\"\n}"
 						},
 						"url": {
-							"raw": "https://{{node5_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node5_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node5_host}}"
 							],
@@ -11287,8 +11287,8 @@
 							"raw": "{\n\t\"operation\":\"describe_all\"\n}"
 						},
 						"url": {
-							"raw": "https://{{node5_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node5_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node5_host}}"
 							],
@@ -11357,8 +11357,8 @@
 							"raw": "{\n\t\"operation\":\"drop_schema\",\n\t\"schema\":\"{{bear_schema}}\"\n}"
 						},
 						"url": {
-							"raw": "https://{{node6_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node6_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node6_host}}"
 							],
@@ -11427,8 +11427,8 @@
 							"raw": "{\n\t\"operation\":\"describe_all\"\n}"
 						},
 						"url": {
-							"raw": "https://{{node6_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node6_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node6_host}}"
 							],
@@ -11497,8 +11497,8 @@
 							"raw": "{\n\t\"operation\":\"drop_schema\",\n\t\"schema\":\"{{con_schema}}\"\n}"
 						},
 						"url": {
-							"raw": "https://{{node1_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node1_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node1_host}}"
 							],
@@ -11567,8 +11567,8 @@
 							"raw": "{\n\t\"operation\":\"drop_schema\",\n\t\"schema\":\"{{con_schema}}\"\n}"
 						},
 						"url": {
-							"raw": "https://{{node2_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node2_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node2_host}}"
 							],
@@ -11637,8 +11637,8 @@
 							"raw": "{\n\t\"operation\":\"drop_schema\",\n\t\"schema\":\"{{con_schema}}\"\n}"
 						},
 						"url": {
-							"raw": "https://{{node3_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node3_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node3_host}}"
 							],
@@ -11707,8 +11707,8 @@
 							"raw": "{\n\t\"operation\":\"drop_schema\",\n\t\"schema\":\"{{con_schema}}\"\n}"
 						},
 						"url": {
-							"raw": "https://{{node4_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node4_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node4_host}}"
 							],
@@ -11777,8 +11777,8 @@
 							"raw": "{\n\t\"operation\":\"drop_schema\",\n\t\"schema\":\"{{con_schema}}\"\n}"
 						},
 						"url": {
-							"raw": "https://{{node5_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node5_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node5_host}}"
 							],
@@ -11847,8 +11847,8 @@
 							"raw": "{\n\t\"operation\":\"drop_schema\",\n\t\"schema\":\"{{con_schema}}\"\n}"
 						},
 						"url": {
-							"raw": "https://{{node6_host}}:{{node_port}}",
-							"protocol": "https",
+							"raw": "http://{{node6_host}}:{{node_port}}",
+							"protocol": "http",
 							"host": [
 								"{{node6_host}}"
 							],

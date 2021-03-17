@@ -73,14 +73,14 @@
 							"raw": "{\n\t\"operation\":\"get_fingerprint\"\n}"
 						},
 						"url": {
-							"raw": "https://{{SERVER_HOST}}:{{SERVER_HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{SERVER_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{SERVER_HOST}}"
 							],
 							"port": "{{SERVER_HDB_PORT}}"
 						},
-						"description": "We first need to create a Schema.  A Schema can be thought of as a container of tables that are independent from tables in other schemas.  An example might be the Schema dev with a table called dog.  The Schema prod may also have a table dog. \n\nNote that if you see the error response \"Cannot complete request: User 'admin' not found\", you need to set the basic auth to the user and password you entered during the install process.  What the heck is basic auth?  Read our article on it here: https://harperdbhelp.zendesk.com/hc/en-us/articles/115010250207-Basic-Auth-with-Postman"
+						"description": "We first need to create a Schema.  A Schema can be thought of as a container of tables that are independent from tables in other schemas.  An example might be the Schema dev with a table called dog.  The Schema prod may also have a table dog. \n\nNote that if you see the error response \"Cannot complete request: User 'admin' not found\", you need to set the basic auth to the user and password you entered during the install process.  What the heck is basic auth?  Read our article on it here: http://harperdbhelp.zendesk.com/hc/en-us/articles/115010250207-Basic-Auth-with-Postman"
 					},
 					"response": [
 						{
@@ -104,12 +104,12 @@
 									"raw": "{\n\"operation\":\"create_schema\",\n\"schema\":\"dev\"\n}"
 								},
 								"url": {
-									"raw": "https://localhost:31283",
-									"protocol": "https",
+									"raw": "http://localhost:9925",
+									"protocol": "http",
 									"host": [
 										"localhost"
 									],
-									"port": "31283"
+									"port": "9925"
 								}
 							},
 							"status": "OK",
@@ -231,13 +231,13 @@
 							"raw": "{\n\t\"fingerprint\": \"{{fingerprint}}\",\n\t\"company\":\"{{COMPANY}}\",\n\t\"exp_date\":\"2040-09-11\"\n}"
 						},
 						"url": {
-							"raw": "https://{{LMS_HOST}}",
-							"protocol": "https",
+							"raw": "http://{{LMS_HOST}}",
+							"protocol": "http",
 							"host": [
 								"{{LMS_HOST}}"
 							]
 						},
-						"description": "We first need to create a Schema.  A Schema can be thought of as a container of tables that are independent from tables in other schemas.  An example might be the Schema dev with a table called dog.  The Schema prod may also have a table dog. \n\nNote that if you see the error response \"Cannot complete request: User 'admin' not found\", you need to set the basic auth to the user and password you entered during the install process.  What the heck is basic auth?  Read our article on it here: https://harperdbhelp.zendesk.com/hc/en-us/articles/115010250207-Basic-Auth-with-Postman"
+						"description": "We first need to create a Schema.  A Schema can be thought of as a container of tables that are independent from tables in other schemas.  An example might be the Schema dev with a table called dog.  The Schema prod may also have a table dog. \n\nNote that if you see the error response \"Cannot complete request: User 'admin' not found\", you need to set the basic auth to the user and password you entered during the install process.  What the heck is basic auth?  Read our article on it here: http://harperdbhelp.zendesk.com/hc/en-us/articles/115010250207-Basic-Auth-with-Postman"
 					},
 					"response": [
 						{
@@ -261,12 +261,12 @@
 									"raw": "{\n\"operation\":\"create_schema\",\n\"schema\":\"dev\"\n}"
 								},
 								"url": {
-									"raw": "https://localhost:31283",
-									"protocol": "https",
+									"raw": "http://localhost:9925",
+									"protocol": "http",
 									"host": [
 										"localhost"
 									],
-									"port": "31283"
+									"port": "9925"
 								}
 							},
 							"status": "OK",
@@ -389,14 +389,14 @@
 							"raw": "{\n\"operation\":\"set_license\",\n\"key\":\"{{license}}\",\n\"company\": \"{{COMPANY}}\"\n}"
 						},
 						"url": {
-							"raw": "https://{{SERVER_HOST}}:{{SERVER_HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{SERVER_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{SERVER_HOST}}"
 							],
 							"port": "{{SERVER_HDB_PORT}}"
 						},
-						"description": "We first need to create a Schema.  A Schema can be thought of as a container of tables that are independent from tables in other schemas.  An example might be the Schema dev with a table called dog.  The Schema prod may also have a table dog. \n\nNote that if you see the error response \"Cannot complete request: User 'admin' not found\", you need to set the basic auth to the user and password you entered during the install process.  What the heck is basic auth?  Read our article on it here: https://harperdbhelp.zendesk.com/hc/en-us/articles/115010250207-Basic-Auth-with-Postman"
+						"description": "We first need to create a Schema.  A Schema can be thought of as a container of tables that are independent from tables in other schemas.  An example might be the Schema dev with a table called dog.  The Schema prod may also have a table dog. \n\nNote that if you see the error response \"Cannot complete request: User 'admin' not found\", you need to set the basic auth to the user and password you entered during the install process.  What the heck is basic auth?  Read our article on it here: http://harperdbhelp.zendesk.com/hc/en-us/articles/115010250207-Basic-Auth-with-Postman"
 					},
 					"response": [
 						{
@@ -420,12 +420,12 @@
 									"raw": "{\n\"operation\":\"create_schema\",\n\"schema\":\"dev\"\n}"
 								},
 								"url": {
-									"raw": "https://localhost:31283",
-									"protocol": "https",
+									"raw": "http://localhost:9925",
+									"protocol": "http",
 									"host": [
 										"localhost"
 									],
-									"port": "31283"
+									"port": "9925"
 								}
 							},
 							"status": "OK",
@@ -543,14 +543,14 @@
 							"raw": "{\n\t\"operation\": \"configure_cluster\",\n\t\"clustering_enabled\": \"true\",\n\t\"clustering_port\": \"12345\",\n\t\"clustering_node_name\":\"{{SERVER_NAME}}\"\n}"
 						},
 						"url": {
-							"raw": "https://{{SERVER_HOST}}:{{SERVER_HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{SERVER_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{SERVER_HOST}}"
 							],
 							"port": "{{SERVER_HDB_PORT}}"
 						},
-						"description": "We first need to create a Schema.  A Schema can be thought of as a container of tables that are independent from tables in other schemas.  An example might be the Schema dev with a table called dog.  The Schema prod may also have a table dog. \n\nNote that if you see the error response \"Cannot complete request: User 'admin' not found\", you need to set the basic auth to the user and password you entered during the install process.  What the heck is basic auth?  Read our article on it here: https://harperdbhelp.zendesk.com/hc/en-us/articles/115010250207-Basic-Auth-with-Postman"
+						"description": "We first need to create a Schema.  A Schema can be thought of as a container of tables that are independent from tables in other schemas.  An example might be the Schema dev with a table called dog.  The Schema prod may also have a table dog. \n\nNote that if you see the error response \"Cannot complete request: User 'admin' not found\", you need to set the basic auth to the user and password you entered during the install process.  What the heck is basic auth?  Read our article on it here: http://harperdbhelp.zendesk.com/hc/en-us/articles/115010250207-Basic-Auth-with-Postman"
 					},
 					"response": [
 						{
@@ -574,12 +574,12 @@
 									"raw": "{\n\"operation\":\"create_schema\",\n\"schema\":\"dev\"\n}"
 								},
 								"url": {
-									"raw": "https://localhost:31283",
-									"protocol": "https",
+									"raw": "http://localhost:9925",
+									"protocol": "http",
 									"host": [
 										"localhost"
 									],
-									"port": "31283"
+									"port": "9925"
 								}
 							},
 							"status": "OK",
@@ -731,14 +731,14 @@
 							"raw": "{\n\t\"operation\":\"get_fingerprint\"\n}"
 						},
 						"url": {
-							"raw": "https://{{TRUCK_1_HOST}}:{{TRUCK_1_HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{TRUCK_1_HOST}}:{{TRUCK_1_HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{TRUCK_1_HOST}}"
 							],
 							"port": "{{TRUCK_1_HDB_PORT}}"
 						},
-						"description": "We first need to create a Schema.  A Schema can be thought of as a container of tables that are independent from tables in other schemas.  An example might be the Schema dev with a table called dog.  The Schema prod may also have a table dog. \n\nNote that if you see the error response \"Cannot complete request: User 'admin' not found\", you need to set the basic auth to the user and password you entered during the install process.  What the heck is basic auth?  Read our article on it here: https://harperdbhelp.zendesk.com/hc/en-us/articles/115010250207-Basic-Auth-with-Postman"
+						"description": "We first need to create a Schema.  A Schema can be thought of as a container of tables that are independent from tables in other schemas.  An example might be the Schema dev with a table called dog.  The Schema prod may also have a table dog. \n\nNote that if you see the error response \"Cannot complete request: User 'admin' not found\", you need to set the basic auth to the user and password you entered during the install process.  What the heck is basic auth?  Read our article on it here: http://harperdbhelp.zendesk.com/hc/en-us/articles/115010250207-Basic-Auth-with-Postman"
 					},
 					"response": [
 						{
@@ -762,12 +762,12 @@
 									"raw": "{\n\"operation\":\"create_schema\",\n\"schema\":\"dev\"\n}"
 								},
 								"url": {
-									"raw": "https://localhost:31283",
-									"protocol": "https",
+									"raw": "http://localhost:9925",
+									"protocol": "http",
 									"host": [
 										"localhost"
 									],
-									"port": "31283"
+									"port": "9925"
 								}
 							},
 							"status": "OK",
@@ -889,13 +889,13 @@
 							"raw": "{\n\t\"fingerprint\": \"{{fingerprint}}\",\n\t\"company\":\"harperdb.io\",\n\t\"exp_date\":\"2040-09-11\"\n}\n"
 						},
 						"url": {
-							"raw": "https://{{LMS_HOST}}",
-							"protocol": "https",
+							"raw": "http://{{LMS_HOST}}",
+							"protocol": "http",
 							"host": [
 								"{{LMS_HOST}}"
 							]
 						},
-						"description": "We first need to create a Schema.  A Schema can be thought of as a container of tables that are independent from tables in other schemas.  An example might be the Schema dev with a table called dog.  The Schema prod may also have a table dog. \n\nNote that if you see the error response \"Cannot complete request: User 'admin' not found\", you need to set the basic auth to the user and password you entered during the install process.  What the heck is basic auth?  Read our article on it here: https://harperdbhelp.zendesk.com/hc/en-us/articles/115010250207-Basic-Auth-with-Postman"
+						"description": "We first need to create a Schema.  A Schema can be thought of as a container of tables that are independent from tables in other schemas.  An example might be the Schema dev with a table called dog.  The Schema prod may also have a table dog. \n\nNote that if you see the error response \"Cannot complete request: User 'admin' not found\", you need to set the basic auth to the user and password you entered during the install process.  What the heck is basic auth?  Read our article on it here: http://harperdbhelp.zendesk.com/hc/en-us/articles/115010250207-Basic-Auth-with-Postman"
 					},
 					"response": [
 						{
@@ -919,12 +919,12 @@
 									"raw": "{\n\"operation\":\"create_schema\",\n\"schema\":\"dev\"\n}"
 								},
 								"url": {
-									"raw": "https://localhost:31283",
-									"protocol": "https",
+									"raw": "http://localhost:9925",
+									"protocol": "http",
 									"host": [
 										"localhost"
 									],
-									"port": "31283"
+									"port": "9925"
 								}
 							},
 							"status": "OK",
@@ -1047,14 +1047,14 @@
 							"raw": "{\n\"operation\":\"set_license\",\n\"key\":\"{{license}}\",\n\"company\":\"{{COMPANY}}\"\n}"
 						},
 						"url": {
-							"raw": "https://{{TRUCK_1_HOST}}:{{TRUCK_1_HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{TRUCK_1_HOST}}:{{TRUCK_1_HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{TRUCK_1_HOST}}"
 							],
 							"port": "{{TRUCK_1_HDB_PORT}}"
 						},
-						"description": "We first need to create a Schema.  A Schema can be thought of as a container of tables that are independent from tables in other schemas.  An example might be the Schema dev with a table called dog.  The Schema prod may also have a table dog. \n\nNote that if you see the error response \"Cannot complete request: User 'admin' not found\", you need to set the basic auth to the user and password you entered during the install process.  What the heck is basic auth?  Read our article on it here: https://harperdbhelp.zendesk.com/hc/en-us/articles/115010250207-Basic-Auth-with-Postman"
+						"description": "We first need to create a Schema.  A Schema can be thought of as a container of tables that are independent from tables in other schemas.  An example might be the Schema dev with a table called dog.  The Schema prod may also have a table dog. \n\nNote that if you see the error response \"Cannot complete request: User 'admin' not found\", you need to set the basic auth to the user and password you entered during the install process.  What the heck is basic auth?  Read our article on it here: http://harperdbhelp.zendesk.com/hc/en-us/articles/115010250207-Basic-Auth-with-Postman"
 					},
 					"response": [
 						{
@@ -1078,12 +1078,12 @@
 									"raw": "{\n\"operation\":\"create_schema\",\n\"schema\":\"dev\"\n}"
 								},
 								"url": {
-									"raw": "https://localhost:31283",
-									"protocol": "https",
+									"raw": "http://localhost:9925",
+									"protocol": "http",
 									"host": [
 										"localhost"
 									],
-									"port": "31283"
+									"port": "9925"
 								}
 							},
 							"status": "OK",
@@ -1201,14 +1201,14 @@
 							"raw": "{\n\t\"operation\": \"configure_cluster\",\n\t\"clustering_enabled\": \"true\",\n\t\"clustering_port\": \"12345\",\n\t\"clustering_node_name\":\"{{TRUCK_1_NAME}}\"\n}"
 						},
 						"url": {
-							"raw": "https://{{TRUCK_1_HOST}}:{{TRUCK_1_HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{TRUCK_1_HOST}}:{{TRUCK_1_HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{TRUCK_1_HOST}}"
 							],
 							"port": "{{TRUCK_1_HDB_PORT}}"
 						},
-						"description": "We first need to create a Schema.  A Schema can be thought of as a container of tables that are independent from tables in other schemas.  An example might be the Schema dev with a table called dog.  The Schema prod may also have a table dog. \n\nNote that if you see the error response \"Cannot complete request: User 'admin' not found\", you need to set the basic auth to the user and password you entered during the install process.  What the heck is basic auth?  Read our article on it here: https://harperdbhelp.zendesk.com/hc/en-us/articles/115010250207-Basic-Auth-with-Postman"
+						"description": "We first need to create a Schema.  A Schema can be thought of as a container of tables that are independent from tables in other schemas.  An example might be the Schema dev with a table called dog.  The Schema prod may also have a table dog. \n\nNote that if you see the error response \"Cannot complete request: User 'admin' not found\", you need to set the basic auth to the user and password you entered during the install process.  What the heck is basic auth?  Read our article on it here: http://harperdbhelp.zendesk.com/hc/en-us/articles/115010250207-Basic-Auth-with-Postman"
 					},
 					"response": [
 						{
@@ -1232,12 +1232,12 @@
 									"raw": "{\n\"operation\":\"create_schema\",\n\"schema\":\"dev\"\n}"
 								},
 								"url": {
-									"raw": "https://localhost:31283",
-									"protocol": "https",
+									"raw": "http://localhost:9925",
+									"protocol": "http",
 									"host": [
 										"localhost"
 									],
-									"port": "31283"
+									"port": "9925"
 								}
 							},
 							"status": "OK",
@@ -1389,14 +1389,14 @@
 							"raw": "{\n\t\"operation\":\"get_fingerprint\"\n}"
 						},
 						"url": {
-							"raw": "https://{{TRUCK_2_HOST}}:{{TRUCK_2_HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{TRUCK_2_HOST}}:{{TRUCK_2_HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{TRUCK_2_HOST}}"
 							],
 							"port": "{{TRUCK_2_HDB_PORT}}"
 						},
-						"description": "We first need to create a Schema.  A Schema can be thought of as a container of tables that are independent from tables in other schemas.  An example might be the Schema dev with a table called dog.  The Schema prod may also have a table dog. \n\nNote that if you see the error response \"Cannot complete request: User 'admin' not found\", you need to set the basic auth to the user and password you entered during the install process.  What the heck is basic auth?  Read our article on it here: https://harperdbhelp.zendesk.com/hc/en-us/articles/115010250207-Basic-Auth-with-Postman"
+						"description": "We first need to create a Schema.  A Schema can be thought of as a container of tables that are independent from tables in other schemas.  An example might be the Schema dev with a table called dog.  The Schema prod may also have a table dog. \n\nNote that if you see the error response \"Cannot complete request: User 'admin' not found\", you need to set the basic auth to the user and password you entered during the install process.  What the heck is basic auth?  Read our article on it here: http://harperdbhelp.zendesk.com/hc/en-us/articles/115010250207-Basic-Auth-with-Postman"
 					},
 					"response": [
 						{
@@ -1420,12 +1420,12 @@
 									"raw": "{\n\"operation\":\"create_schema\",\n\"schema\":\"dev\"\n}"
 								},
 								"url": {
-									"raw": "https://localhost:31283",
-									"protocol": "https",
+									"raw": "http://localhost:9925",
+									"protocol": "http",
 									"host": [
 										"localhost"
 									],
-									"port": "31283"
+									"port": "9925"
 								}
 							},
 							"status": "OK",
@@ -1547,13 +1547,13 @@
 							"raw": "{\n\t\"fingerprint\": \"{{fingerprint}}\",\n\t\"company\":\"harperdb.io\",\n\t\"exp_date\":\"2040-09-11\"\n}\n"
 						},
 						"url": {
-							"raw": "https://{{LMS_HOST}}",
-							"protocol": "https",
+							"raw": "http://{{LMS_HOST}}",
+							"protocol": "http",
 							"host": [
 								"{{LMS_HOST}}"
 							]
 						},
-						"description": "We first need to create a Schema.  A Schema can be thought of as a container of tables that are independent from tables in other schemas.  An example might be the Schema dev with a table called dog.  The Schema prod may also have a table dog. \n\nNote that if you see the error response \"Cannot complete request: User 'admin' not found\", you need to set the basic auth to the user and password you entered during the install process.  What the heck is basic auth?  Read our article on it here: https://harperdbhelp.zendesk.com/hc/en-us/articles/115010250207-Basic-Auth-with-Postman"
+						"description": "We first need to create a Schema.  A Schema can be thought of as a container of tables that are independent from tables in other schemas.  An example might be the Schema dev with a table called dog.  The Schema prod may also have a table dog. \n\nNote that if you see the error response \"Cannot complete request: User 'admin' not found\", you need to set the basic auth to the user and password you entered during the install process.  What the heck is basic auth?  Read our article on it here: http://harperdbhelp.zendesk.com/hc/en-us/articles/115010250207-Basic-Auth-with-Postman"
 					},
 					"response": [
 						{
@@ -1577,12 +1577,12 @@
 									"raw": "{\n\"operation\":\"create_schema\",\n\"schema\":\"dev\"\n}"
 								},
 								"url": {
-									"raw": "https://localhost:31283",
-									"protocol": "https",
+									"raw": "http://localhost:9925",
+									"protocol": "http",
 									"host": [
 										"localhost"
 									],
-									"port": "31283"
+									"port": "9925"
 								}
 							},
 							"status": "OK",
@@ -1705,14 +1705,14 @@
 							"raw": "{\n\"operation\":\"set_license\",\n\"key\":\"{{license}}\",\n\"company\":\"{{COMPANY}}\"\n}"
 						},
 						"url": {
-							"raw": "https://{{TRUCK_2_HOST}}:{{TRUCK_2_HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{TRUCK_2_HOST}}:{{TRUCK_2_HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{TRUCK_2_HOST}}"
 							],
 							"port": "{{TRUCK_2_HDB_PORT}}"
 						},
-						"description": "We first need to create a Schema.  A Schema can be thought of as a container of tables that are independent from tables in other schemas.  An example might be the Schema dev with a table called dog.  The Schema prod may also have a table dog. \n\nNote that if you see the error response \"Cannot complete request: User 'admin' not found\", you need to set the basic auth to the user and password you entered during the install process.  What the heck is basic auth?  Read our article on it here: https://harperdbhelp.zendesk.com/hc/en-us/articles/115010250207-Basic-Auth-with-Postman"
+						"description": "We first need to create a Schema.  A Schema can be thought of as a container of tables that are independent from tables in other schemas.  An example might be the Schema dev with a table called dog.  The Schema prod may also have a table dog. \n\nNote that if you see the error response \"Cannot complete request: User 'admin' not found\", you need to set the basic auth to the user and password you entered during the install process.  What the heck is basic auth?  Read our article on it here: http://harperdbhelp.zendesk.com/hc/en-us/articles/115010250207-Basic-Auth-with-Postman"
 					},
 					"response": [
 						{
@@ -1736,12 +1736,12 @@
 									"raw": "{\n\"operation\":\"create_schema\",\n\"schema\":\"dev\"\n}"
 								},
 								"url": {
-									"raw": "https://localhost:31283",
-									"protocol": "https",
+									"raw": "http://localhost:9925",
+									"protocol": "http",
 									"host": [
 										"localhost"
 									],
-									"port": "31283"
+									"port": "9925"
 								}
 							},
 							"status": "OK",
@@ -1859,14 +1859,14 @@
 							"raw": "{\n\t\"operation\": \"configure_cluster\",\n\t\"clustering_enabled\": \"true\",\n\t\"clustering_port\": \"12345\",\n\t\"clustering_node_name\":\"{{TRUCK_2_NAME}}\"\n}"
 						},
 						"url": {
-							"raw": "https://{{TRUCK_2_HOST}}:{{TRUCK_2_HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{TRUCK_2_HOST}}:{{TRUCK_2_HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{TRUCK_2_HOST}}"
 							],
 							"port": "{{TRUCK_2_HDB_PORT}}"
 						},
-						"description": "We first need to create a Schema.  A Schema can be thought of as a container of tables that are independent from tables in other schemas.  An example might be the Schema dev with a table called dog.  The Schema prod may also have a table dog. \n\nNote that if you see the error response \"Cannot complete request: User 'admin' not found\", you need to set the basic auth to the user and password you entered during the install process.  What the heck is basic auth?  Read our article on it here: https://harperdbhelp.zendesk.com/hc/en-us/articles/115010250207-Basic-Auth-with-Postman"
+						"description": "We first need to create a Schema.  A Schema can be thought of as a container of tables that are independent from tables in other schemas.  An example might be the Schema dev with a table called dog.  The Schema prod may also have a table dog. \n\nNote that if you see the error response \"Cannot complete request: User 'admin' not found\", you need to set the basic auth to the user and password you entered during the install process.  What the heck is basic auth?  Read our article on it here: http://harperdbhelp.zendesk.com/hc/en-us/articles/115010250207-Basic-Auth-with-Postman"
 					},
 					"response": [
 						{
@@ -1890,12 +1890,12 @@
 									"raw": "{\n\"operation\":\"create_schema\",\n\"schema\":\"dev\"\n}"
 								},
 								"url": {
-									"raw": "https://localhost:31283",
-									"protocol": "https",
+									"raw": "http://localhost:9925",
+									"protocol": "http",
 									"host": [
 										"localhost"
 									],
-									"port": "31283"
+									"port": "9925"
 								}
 							},
 							"status": "OK",
@@ -2047,14 +2047,14 @@
 							"raw": "{\n\t\"operation\":\"get_fingerprint\"\n}"
 						},
 						"url": {
-							"raw": "https://{{TRUCK_3_HOST}}:{{TRUCK_3_HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{TRUCK_3_HOST}}:{{TRUCK_3_HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{TRUCK_3_HOST}}"
 							],
 							"port": "{{TRUCK_3_HDB_PORT}}"
 						},
-						"description": "We first need to create a Schema.  A Schema can be thought of as a container of tables that are independent from tables in other schemas.  An example might be the Schema dev with a table called dog.  The Schema prod may also have a table dog. \n\nNote that if you see the error response \"Cannot complete request: User 'admin' not found\", you need to set the basic auth to the user and password you entered during the install process.  What the heck is basic auth?  Read our article on it here: https://harperdbhelp.zendesk.com/hc/en-us/articles/115010250207-Basic-Auth-with-Postman"
+						"description": "We first need to create a Schema.  A Schema can be thought of as a container of tables that are independent from tables in other schemas.  An example might be the Schema dev with a table called dog.  The Schema prod may also have a table dog. \n\nNote that if you see the error response \"Cannot complete request: User 'admin' not found\", you need to set the basic auth to the user and password you entered during the install process.  What the heck is basic auth?  Read our article on it here: http://harperdbhelp.zendesk.com/hc/en-us/articles/115010250207-Basic-Auth-with-Postman"
 					},
 					"response": [
 						{
@@ -2078,12 +2078,12 @@
 									"raw": "{\n\"operation\":\"create_schema\",\n\"schema\":\"dev\"\n}"
 								},
 								"url": {
-									"raw": "https://localhost:31283",
-									"protocol": "https",
+									"raw": "http://localhost:9925",
+									"protocol": "http",
 									"host": [
 										"localhost"
 									],
-									"port": "31283"
+									"port": "9925"
 								}
 							},
 							"status": "OK",
@@ -2205,13 +2205,13 @@
 							"raw": "{\n\t\"fingerprint\": \"{{fingerprint}}\",\n\t\"company\":\"harperdb.io\",\n\t\"exp_date\":\"2040-09-11\"\n}\n"
 						},
 						"url": {
-							"raw": "https://{{LMS_HOST}}",
-							"protocol": "https",
+							"raw": "http://{{LMS_HOST}}",
+							"protocol": "http",
 							"host": [
 								"{{LMS_HOST}}"
 							]
 						},
-						"description": "We first need to create a Schema.  A Schema can be thought of as a container of tables that are independent from tables in other schemas.  An example might be the Schema dev with a table called dog.  The Schema prod may also have a table dog. \n\nNote that if you see the error response \"Cannot complete request: User 'admin' not found\", you need to set the basic auth to the user and password you entered during the install process.  What the heck is basic auth?  Read our article on it here: https://harperdbhelp.zendesk.com/hc/en-us/articles/115010250207-Basic-Auth-with-Postman"
+						"description": "We first need to create a Schema.  A Schema can be thought of as a container of tables that are independent from tables in other schemas.  An example might be the Schema dev with a table called dog.  The Schema prod may also have a table dog. \n\nNote that if you see the error response \"Cannot complete request: User 'admin' not found\", you need to set the basic auth to the user and password you entered during the install process.  What the heck is basic auth?  Read our article on it here: http://harperdbhelp.zendesk.com/hc/en-us/articles/115010250207-Basic-Auth-with-Postman"
 					},
 					"response": [
 						{
@@ -2235,12 +2235,12 @@
 									"raw": "{\n\"operation\":\"create_schema\",\n\"schema\":\"dev\"\n}"
 								},
 								"url": {
-									"raw": "https://localhost:31283",
-									"protocol": "https",
+									"raw": "http://localhost:9925",
+									"protocol": "http",
 									"host": [
 										"localhost"
 									],
-									"port": "31283"
+									"port": "9925"
 								}
 							},
 							"status": "OK",
@@ -2363,14 +2363,14 @@
 							"raw": "{\n\"operation\":\"set_license\",\n\"key\":\"{{license}}\",\n\"company\":\"{{COMPANY}}\"\n}"
 						},
 						"url": {
-							"raw": "https://{{TRUCK_3_HOST}}:{{TRUCK_3_HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{TRUCK_3_HOST}}:{{TRUCK_3_HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{TRUCK_3_HOST}}"
 							],
 							"port": "{{TRUCK_3_HDB_PORT}}"
 						},
-						"description": "We first need to create a Schema.  A Schema can be thought of as a container of tables that are independent from tables in other schemas.  An example might be the Schema dev with a table called dog.  The Schema prod may also have a table dog. \n\nNote that if you see the error response \"Cannot complete request: User 'admin' not found\", you need to set the basic auth to the user and password you entered during the install process.  What the heck is basic auth?  Read our article on it here: https://harperdbhelp.zendesk.com/hc/en-us/articles/115010250207-Basic-Auth-with-Postman"
+						"description": "We first need to create a Schema.  A Schema can be thought of as a container of tables that are independent from tables in other schemas.  An example might be the Schema dev with a table called dog.  The Schema prod may also have a table dog. \n\nNote that if you see the error response \"Cannot complete request: User 'admin' not found\", you need to set the basic auth to the user and password you entered during the install process.  What the heck is basic auth?  Read our article on it here: http://harperdbhelp.zendesk.com/hc/en-us/articles/115010250207-Basic-Auth-with-Postman"
 					},
 					"response": [
 						{
@@ -2394,12 +2394,12 @@
 									"raw": "{\n\"operation\":\"create_schema\",\n\"schema\":\"dev\"\n}"
 								},
 								"url": {
-									"raw": "https://localhost:31283",
-									"protocol": "https",
+									"raw": "http://localhost:9925",
+									"protocol": "http",
 									"host": [
 										"localhost"
 									],
-									"port": "31283"
+									"port": "9925"
 								}
 							},
 							"status": "OK",
@@ -2517,14 +2517,14 @@
 							"raw": "{\n\t\"operation\": \"configure_cluster\",\n\t\"clustering_enabled\": \"true\",\n\t\"clustering_port\": \"12345\",\n\t\"clustering_node_name\":\"{{TRUCK_3_NAME}}\"\n}"
 						},
 						"url": {
-							"raw": "https://{{TRUCK_3_HOST}}:{{TRUCK_3_HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{TRUCK_3_HOST}}:{{TRUCK_3_HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{TRUCK_3_HOST}}"
 							],
 							"port": "{{TRUCK_3_HDB_PORT}}"
 						},
-						"description": "We first need to create a Schema.  A Schema can be thought of as a container of tables that are independent from tables in other schemas.  An example might be the Schema dev with a table called dog.  The Schema prod may also have a table dog. \n\nNote that if you see the error response \"Cannot complete request: User 'admin' not found\", you need to set the basic auth to the user and password you entered during the install process.  What the heck is basic auth?  Read our article on it here: https://harperdbhelp.zendesk.com/hc/en-us/articles/115010250207-Basic-Auth-with-Postman"
+						"description": "We first need to create a Schema.  A Schema can be thought of as a container of tables that are independent from tables in other schemas.  An example might be the Schema dev with a table called dog.  The Schema prod may also have a table dog. \n\nNote that if you see the error response \"Cannot complete request: User 'admin' not found\", you need to set the basic auth to the user and password you entered during the install process.  What the heck is basic auth?  Read our article on it here: http://harperdbhelp.zendesk.com/hc/en-us/articles/115010250207-Basic-Auth-with-Postman"
 					},
 					"response": [
 						{
@@ -2548,12 +2548,12 @@
 									"raw": "{\n\"operation\":\"create_schema\",\n\"schema\":\"dev\"\n}"
 								},
 								"url": {
-									"raw": "https://localhost:31283",
-									"protocol": "https",
+									"raw": "http://localhost:9925",
+									"protocol": "http",
 									"host": [
 										"localhost"
 									],
-									"port": "31283"
+									"port": "9925"
 								}
 							},
 							"status": "OK",
@@ -2698,8 +2698,8 @@
 							"raw": "{\n\t\"operation\":\"add_node\",\n\t\"name\":\"{{TRUCK_1_NAME}}\" ,\n\t\"port\": \"{{TRUCK_1_CLUSTER_PORT}}\",\n\t\"host\":\"{{TRUCK_1_HOST}}\"\n}"
 						},
 						"url": {
-							"raw": "https://{{SERVER_HOST}}:{{SERVER_HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{SERVER_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{SERVER_HOST}}"
 							],
@@ -2765,8 +2765,8 @@
 							"raw": "{\n\t\"operation\":\"add_node\",\n\t\"name\":\"{{SERVER_NAME}}\" ,\n\t\"port\": \"{{SERVER_CLUSTER_PORT}}\",\n\t\"host\":\"{{SERVER_HOST}}\"\n}"
 						},
 						"url": {
-							"raw": "https://{{TRUCK_1_HOST}}:{{TRUCK_1_HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{TRUCK_1_HOST}}:{{TRUCK_1_HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{TRUCK_1_HOST}}"
 							],
@@ -2859,14 +2859,14 @@
 							"raw": "{\n\t\"operation\":\"add_node\",\n\t\"name\":\"{{SERVER_NAME}}\" ,\n\t\"port\": \"{{SERVER_CLUSTER_PORT}}\",\n\t\"host\":\"{{SERVER_HOST}}\"\n}"
 						},
 						"url": {
-							"raw": "https://{{TRUCK_2_HOST}}:{{TRUCK_2_HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{TRUCK_2_HOST}}:{{TRUCK_2_HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{TRUCK_2_HOST}}"
 							],
 							"port": "{{TRUCK_2_HDB_PORT}}"
 						},
-						"description": "Method for registering a node for HarperDB Clustering.  Each node must be aware of all other nodes. <b><i> This is a HarperDB Enterprise version only feature </i></b>\n<p>\n<a href=\"https://harperdbhelp.zendesk.com/hc/en-us/articles/115003583194\">See this article for more info</a>\n</p>\n<ul>\n<li>\n<b>operation</b> <i> (required) </i> - must always be 'add_node'\n</li>\n<li>\n<b>name</b> <i> (required) </i> - The name of the node you are registering with this node.  Must match exactly. \n</li>\n<li>\n<b>port</b> <i> (required) </i> - The clustering port for the node you are registering with this node.  Not to be confused with HTTP/S PORTS.\n</li>\n<li>\n<b>host</b> <i> (required) </i> - the uri where the node you are adding to the cluster resides. \n</li>\n\n\n\n\n</ul>"
+						"description": "Method for registering a node for HarperDB Clustering.  Each node must be aware of all other nodes. <b><i> This is a HarperDB Enterprise version only feature </i></b>\n<p>\n<a href=\"http://harperdbhelp.zendesk.com/hc/en-us/articles/115003583194\">See this article for more info</a>\n</p>\n<ul>\n<li>\n<b>operation</b> <i> (required) </i> - must always be 'add_node'\n</li>\n<li>\n<b>name</b> <i> (required) </i> - The name of the node you are registering with this node.  Must match exactly. \n</li>\n<li>\n<b>port</b> <i> (required) </i> - The clustering port for the node you are registering with this node.  Not to be confused with HTTP/S PORTS.\n</li>\n<li>\n<b>host</b> <i> (required) </i> - the uri where the node you are adding to the cluster resides. \n</li>\n\n\n\n\n</ul>"
 					},
 					"response": []
 				}
@@ -2954,8 +2954,8 @@
 							"raw": "{\n\t\"operation\":\"add_node\",\n\t\"name\":\"{{TRUCK_3_NAME}}\" ,\n\t\"port\": \"{{TRUCK_3_CLUSTER_PORT}}\",\n\t\"host\":\"{{TRUCK_3_HOST}}\"\n}"
 						},
 						"url": {
-							"raw": "https://{{SERVER_HOST}}:{{SERVER_HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{SERVER_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{SERVER_HOST}}"
 							],
@@ -3050,8 +3050,8 @@
 							"raw": "{\r\n  \"operation\":\"create_schema\",\r\n  \"schema\": \"{{TRUCK_1_SCHEMA}}\"\r\n}\r\n"
 						},
 						"url": {
-							"raw": "https://{{TRUCK_1_HOST}}:{{TRUCK_1_HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{TRUCK_1_HOST}}:{{TRUCK_1_HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{TRUCK_1_HOST}}"
 							],
@@ -3122,8 +3122,8 @@
 							"raw": "{\r\n  \"operation\":\"describe_schema\",\r\n  \"schema\": \"{{TRUCK_1_SCHEMA}}\"\r\n}\r\n"
 						},
 						"url": {
-							"raw": "https://{{TRUCK_1_HOST}}:{{TRUCK_1_HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{TRUCK_1_HOST}}:{{TRUCK_1_HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{TRUCK_1_HOST}}"
 							],
@@ -3193,8 +3193,8 @@
 							"raw": "{\r\n  \"operation\":\"describe_schema\",\r\n  \"schema\": \"{{TRUCK_1_SCHEMA}}\"\r\n}\r\n"
 						},
 						"url": {
-							"raw": "https://{{SERVER_HOST}}:{{SERVER_HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{SERVER_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{SERVER_HOST}}"
 							],
@@ -3260,8 +3260,8 @@
 							"raw": "{\r\n\"operation\":\"create_table\",\r\n\"schema\":\"{{TRUCK_1_SCHEMA}}\",\r\n\"table\":\"{{TRUCK_1_TABLE}}\",\r\n\"hash_attribute\": \"id\",\r\n\"residence\":[\"*\"]\r\n}\r\n"
 						},
 						"url": {
-							"raw": "https://{{TRUCK_1_HOST}}:{{TRUCK_1_HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{TRUCK_1_HOST}}:{{TRUCK_1_HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{TRUCK_1_HOST}}"
 							],
@@ -3332,8 +3332,8 @@
 							"raw": "{\r\n  \"operation\":\"describe_schema\",\r\n  \"schema\": \"{{TRUCK_1_SCHEMA}}\"\r\n}\r\n"
 						},
 						"url": {
-							"raw": "https://{{SERVER_HOST}}:{{SERVER_HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{SERVER_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{SERVER_HOST}}"
 							],
@@ -3403,8 +3403,8 @@
 							"raw": "{\r\n  \"operation\":\"describe_schema\",\r\n  \"schema\": \"{{TRUCK_1_SCHEMA}}\"\r\n}\r\n"
 						},
 						"url": {
-							"raw": "https://{{TRUCK_1_HOST}}:{{TRUCK_1_HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{TRUCK_1_HOST}}:{{TRUCK_1_HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{TRUCK_1_HOST}}"
 							],
@@ -3470,8 +3470,8 @@
 							"raw": "{\n\"operation\":\"insert\",\n\"schema\":\"{{TRUCK_1_SCHEMA}}\",\n\"table\":\"{{TRUCK_1_TABLE}}\",\n\"records\": [\n  {\n  \t\"id\":\"{{$guid}}\",\n  \t\"temperature\":{{$randomInt}},\n  \t\"timestamp\":{{$timestamp}}\n  }\n]\n}"
 						},
 						"url": {
-							"raw": "https://{{SERVER_HOST}}:{{SERVER_HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{SERVER_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{SERVER_HOST}}"
 							],
@@ -3567,8 +3567,8 @@
 							"raw": "{\r\n  \"operation\":\"create_schema\",\r\n  \"schema\": \"{{TRUCK_2_SCHEMA}}\"\r\n}\r\n"
 						},
 						"url": {
-							"raw": "https://{{TRUCK_2_HOST}}:{{TRUCK_2_HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{TRUCK_2_HOST}}:{{TRUCK_2_HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{TRUCK_2_HOST}}"
 							],
@@ -3639,8 +3639,8 @@
 							"raw": "{\r\n  \"operation\":\"describe_schema\",\r\n  \"schema\": \"{{TRUCK_2_SCHEMA}}\"\r\n}\r\n"
 						},
 						"url": {
-							"raw": "https://{{TRUCK_2_HOST}}:{{TRUCK_2_HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{TRUCK_2_HOST}}:{{TRUCK_2_HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{TRUCK_2_HOST}}"
 							],
@@ -3710,8 +3710,8 @@
 							"raw": "{\r\n  \"operation\":\"describe_schema\",\r\n  \"schema\": \"{{TRUCK_2_SCHEMA}}\"\r\n}\r\n"
 						},
 						"url": {
-							"raw": "https://{{SERVER_HOST}}:{{SERVER_HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{SERVER_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{SERVER_HOST}}"
 							],
@@ -3777,8 +3777,8 @@
 							"raw": "{\r\n\"operation\":\"create_table\",\r\n\"schema\":\"{{TRUCK_2_SCHEMA}}\",\r\n\"table\":\"{{TRUCK_2_TABLE}}\",\r\n\"hash_attribute\": \"id\",\r\n\"residence\":[\"*\"]\r\n}\r\n"
 						},
 						"url": {
-							"raw": "https://{{TRUCK_2_HOST}}:{{TRUCK_2_HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{TRUCK_2_HOST}}:{{TRUCK_2_HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{TRUCK_2_HOST}}"
 							],
@@ -3849,8 +3849,8 @@
 							"raw": "{\r\n  \"operation\":\"describe_schema\",\r\n  \"schema\": \"{{TRUCK_2_SCHEMA}}\"\r\n}\r\n"
 						},
 						"url": {
-							"raw": "https://{{SERVER_HOST}}:{{SERVER_HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{SERVER_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{SERVER_HOST}}"
 							],
@@ -3920,8 +3920,8 @@
 							"raw": "{\r\n  \"operation\":\"describe_schema\",\r\n  \"schema\": \"{{TRUCK_2_SCHEMA}}\"\r\n}\r\n"
 						},
 						"url": {
-							"raw": "https://{{TRUCK_2_HOST}}:{{TRUCK_2_HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{TRUCK_2_HOST}}:{{TRUCK_2_HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{TRUCK_2_HOST}}"
 							],
@@ -3987,8 +3987,8 @@
 							"raw": "{\n\"operation\":\"insert\",\n\"schema\":\"{{TRUCK_2_SCHEMA}}\",\n\"table\":\"{{TRUCK_2_TABLE}}\",\n\"records\": [\n  {\n  \t\"id\":\"{{$guid}}\",\n  \t\"temperature\":{{$randomInt}},\n  \t\"timestamp\":{{$timestamp}}\n  }\n]\n}"
 						},
 						"url": {
-							"raw": "https://{{TRUCK_2_HOST}}:{{TRUCK_2_HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{TRUCK_2_HOST}}:{{TRUCK_2_HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{TRUCK_2_HOST}}"
 							],
@@ -4084,8 +4084,8 @@
 							"raw": "{\r\n  \"operation\":\"create_schema\",\r\n  \"schema\": \"{{TRUCK_3_SCHEMA}}\"\r\n}\r\n"
 						},
 						"url": {
-							"raw": "https://{{SERVER_HOST}}:{{SERVER_HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{SERVER_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{SERVER_HOST}}"
 							],
@@ -4156,8 +4156,8 @@
 							"raw": "{\r\n  \"operation\":\"describe_schema\",\r\n  \"schema\": \"{{TRUCK_3_SCHEMA}}\"\r\n}\r\n"
 						},
 						"url": {
-							"raw": "https://{{SERVER_HOST}}:{{SERVER_HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{SERVER_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{SERVER_HOST}}"
 							],
@@ -4223,8 +4223,8 @@
 							"raw": "{\r\n\"operation\":\"create_table\",\r\n\"schema\":\"{{TRUCK_3_SCHEMA}}\",\r\n\"table\":\"{{TRUCK_3_TABLE}}\",\r\n\"hash_attribute\": \"id\",\r\n\"residence\":[\"*\"]\r\n}\r\n"
 						},
 						"url": {
-							"raw": "https://{{SERVER_HOST}}:{{SERVER_HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{SERVER_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{SERVER_HOST}}"
 							],
@@ -4295,8 +4295,8 @@
 							"raw": "{\r\n  \"operation\":\"describe_schema\",\r\n  \"schema\": \"{{TRUCK_3_SCHEMA}}\"\r\n}\r\n"
 						},
 						"url": {
-							"raw": "https://{{SERVER_HOST}}:{{SERVER_HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{SERVER_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{SERVER_HOST}}"
 							],
@@ -4366,8 +4366,8 @@
 							"raw": "{\r\n  \"operation\":\"describe_schema\",\r\n  \"schema\": \"{{TRUCK_3_SCHEMA}}\"\r\n}\r\n"
 						},
 						"url": {
-							"raw": "https://{{TRUCK_3_HOST}}:{{TRUCK_3_HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{TRUCK_3_HOST}}:{{TRUCK_3_HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{TRUCK_3_HOST}}"
 							],
@@ -4433,8 +4433,8 @@
 							"raw": "{\n\"operation\":\"insert\",\n\"schema\":\"{{TRUCK_3_SCHEMA}}\",\n\"table\":\"{{TRUCK_3_TABLE}}\",\n\"records\": [\n  {\n  \t\"id\":\"{{$guid}}\",\n  \t\"temperature\":{{$randomInt}},\n  \t\"timestamp\":{{$timestamp}}\n  }\n]\n}"
 						},
 						"url": {
-							"raw": "https://{{SERVER_HOST}}:{{SERVER_HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{SERVER_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{SERVER_HOST}}"
 							],
@@ -4527,8 +4527,8 @@
 							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"{{TRUCK_1_SCHEMA}}\",\n\t\"table\":\"{{TRUCK_1_TABLE}}\",\n\t\"search_attribute\":\"id\",\n\t\"search_value\":\"*\",\n\t\"get_attributes\":[\"*\"]\n}"
 						},
 						"url": {
-							"raw": "https://{{SERVER_HOST}}:{{SERVER_HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{SERVER_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{SERVER_HOST}}"
 							],
@@ -4594,8 +4594,8 @@
 							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"{{TRUCK_1_SCHEMA}}\",\n\t\"table\":\"{{TRUCK_1_TABLE}}\",\n\t\"search_attribute\":\"id\",\n\t\"search_value\":\"*\",\n\t\"get_attributes\":[\"*\"]\n}"
 						},
 						"url": {
-							"raw": "https://{{TRUCK_1_HOST}}:{{TRUCK_1_HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{TRUCK_1_HOST}}:{{TRUCK_1_HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{TRUCK_1_HOST}}"
 							],
@@ -4661,8 +4661,8 @@
 							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"{{TRUCK_2_SCHEMA}}\",\n\t\"table\":\"{{TRUCK_2_TABLE}}\",\n\t\"search_attribute\":\"id\",\n\t\"search_value\":\"*\",\n\t\"get_attributes\":[\"*\"]\n}"
 						},
 						"url": {
-							"raw": "https://{{SERVER_HOST}}:{{SERVER_HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{SERVER_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{SERVER_HOST}}"
 							],
@@ -4728,8 +4728,8 @@
 							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"{{TRUCK_3_SCHEMA}}\",\n\t\"table\":\"{{TRUCK_3_TABLE}}\",\n\t\"search_attribute\":\"id\",\n\t\"search_value\":\"*\",\n\t\"get_attributes\":[\"*\"]\n}"
 						},
 						"url": {
-							"raw": "https://{{TRUCK_3_HOST}}:{{TRUCK_3_HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{TRUCK_3_HOST}}:{{TRUCK_3_HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{TRUCK_3_HOST}}"
 							],
@@ -4837,14 +4837,14 @@
 							"raw": "{\n\t\"operation\":\"cluster_status\"\n}"
 						},
 						"url": {
-							"raw": "https://{{SERVER_HOST}}:{{SERVER_HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{SERVER_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{SERVER_HOST}}"
 							],
 							"port": "{{SERVER_HDB_PORT}}"
 						},
-						"description": "Asks for status from a cluster node.  The response will return with an array of inbound, outbound, and bidirectional connections.  The data direction is in relation to the node in question.\n\n<b><i> This is a HarperDB Enterprise version only feature </i></b>\n<p>\n<a href=\"https://harperdbhelp.zendesk.com/hc/en-us/articles/115003583194\">See this article for more info</a>\n</p>\n<ul>\n<li>\n<b>operation</b> <i> (required) </i> - must always be 'add_node'\n</li>\n<li>\n<b>name</b> <i> (required) </i> - The name of the node you are registering with this node.  Must match exactly. \n</li>\n<li>\n<b>port</b> <i> (required) </i> - The clustering port for the node you are registering with this node.  Not to be confused with HTTP/S PORTS.\n</li>\n<li>\n<b>host</b> <i> (required) </i> - the uri where the node you are adding to the cluster resides. \n</li>\n\n\n\n\n</ul>"
+						"description": "Asks for status from a cluster node.  The response will return with an array of inbound, outbound, and bidirectional connections.  The data direction is in relation to the node in question.\n\n<b><i> This is a HarperDB Enterprise version only feature </i></b>\n<p>\n<a href=\"http://harperdbhelp.zendesk.com/hc/en-us/articles/115003583194\">See this article for more info</a>\n</p>\n<ul>\n<li>\n<b>operation</b> <i> (required) </i> - must always be 'add_node'\n</li>\n<li>\n<b>name</b> <i> (required) </i> - The name of the node you are registering with this node.  Must match exactly. \n</li>\n<li>\n<b>port</b> <i> (required) </i> - The clustering port for the node you are registering with this node.  Not to be confused with HTTP/S PORTS.\n</li>\n<li>\n<b>host</b> <i> (required) </i> - the uri where the node you are adding to the cluster resides. \n</li>\n\n\n\n\n</ul>"
 					},
 					"response": []
 				},
@@ -4910,14 +4910,14 @@
 							"raw": "{\n\t\"operation\":\"cluster_status\"\n}"
 						},
 						"url": {
-							"raw": "https://{{TRUCK_1_HOST}}:{{TRUCK_1_HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{TRUCK_1_HOST}}:{{TRUCK_1_HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{TRUCK_1_HOST}}"
 							],
 							"port": "{{TRUCK_1_HDB_PORT}}"
 						},
-						"description": "Asks for status from a cluster node.  The response will return with an array of inbound, outbound, and bidirectional connections.  The data direction is in relation to the node in question.\n\n<b><i> This is a HarperDB Enterprise version only feature </i></b>\n<p>\n<a href=\"https://harperdbhelp.zendesk.com/hc/en-us/articles/115003583194\">See this article for more info</a>\n</p>\n<ul>\n<li>\n<b>operation</b> <i> (required) </i> - must always be 'add_node'\n</li>\n<li>\n<b>name</b> <i> (required) </i> - The name of the node you are registering with this node.  Must match exactly. \n</li>\n<li>\n<b>port</b> <i> (required) </i> - The clustering port for the node you are registering with this node.  Not to be confused with HTTP/S PORTS.\n</li>\n<li>\n<b>host</b> <i> (required) </i> - the uri where the node you are adding to the cluster resides. \n</li>\n\n\n\n\n</ul>"
+						"description": "Asks for status from a cluster node.  The response will return with an array of inbound, outbound, and bidirectional connections.  The data direction is in relation to the node in question.\n\n<b><i> This is a HarperDB Enterprise version only feature </i></b>\n<p>\n<a href=\"http://harperdbhelp.zendesk.com/hc/en-us/articles/115003583194\">See this article for more info</a>\n</p>\n<ul>\n<li>\n<b>operation</b> <i> (required) </i> - must always be 'add_node'\n</li>\n<li>\n<b>name</b> <i> (required) </i> - The name of the node you are registering with this node.  Must match exactly. \n</li>\n<li>\n<b>port</b> <i> (required) </i> - The clustering port for the node you are registering with this node.  Not to be confused with HTTP/S PORTS.\n</li>\n<li>\n<b>host</b> <i> (required) </i> - the uri where the node you are adding to the cluster resides. \n</li>\n\n\n\n\n</ul>"
 					},
 					"response": []
 				},
@@ -4983,14 +4983,14 @@
 							"raw": "{\n\t\"operation\":\"cluster_status\"\n}"
 						},
 						"url": {
-							"raw": "https://{{TRUCK_2_HOST}}:{{TRUCK_2_HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{TRUCK_2_HOST}}:{{TRUCK_2_HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{TRUCK_2_HOST}}"
 							],
 							"port": "{{TRUCK_2_HDB_PORT}}"
 						},
-						"description": "Asks for status from a cluster node.  The response will return with an array of inbound, outbound, and bidirectional connections.  The data direction is in relation to the node in question.\n\n<b><i> This is a HarperDB Enterprise version only feature </i></b>\n<p>\n<a href=\"https://harperdbhelp.zendesk.com/hc/en-us/articles/115003583194\">See this article for more info</a>\n</p>\n<ul>\n<li>\n<b>operation</b> <i> (required) </i> - must always be 'add_node'\n</li>\n<li>\n<b>name</b> <i> (required) </i> - The name of the node you are registering with this node.  Must match exactly. \n</li>\n<li>\n<b>port</b> <i> (required) </i> - The clustering port for the node you are registering with this node.  Not to be confused with HTTP/S PORTS.\n</li>\n<li>\n<b>host</b> <i> (required) </i> - the uri where the node you are adding to the cluster resides. \n</li>\n\n\n\n\n</ul>"
+						"description": "Asks for status from a cluster node.  The response will return with an array of inbound, outbound, and bidirectional connections.  The data direction is in relation to the node in question.\n\n<b><i> This is a HarperDB Enterprise version only feature </i></b>\n<p>\n<a href=\"http://harperdbhelp.zendesk.com/hc/en-us/articles/115003583194\">See this article for more info</a>\n</p>\n<ul>\n<li>\n<b>operation</b> <i> (required) </i> - must always be 'add_node'\n</li>\n<li>\n<b>name</b> <i> (required) </i> - The name of the node you are registering with this node.  Must match exactly. \n</li>\n<li>\n<b>port</b> <i> (required) </i> - The clustering port for the node you are registering with this node.  Not to be confused with HTTP/S PORTS.\n</li>\n<li>\n<b>host</b> <i> (required) </i> - the uri where the node you are adding to the cluster resides. \n</li>\n\n\n\n\n</ul>"
 					},
 					"response": []
 				},
@@ -5056,14 +5056,14 @@
 							"raw": "{\n\t\"operation\":\"cluster_status\"\n}"
 						},
 						"url": {
-							"raw": "https://{{TRUCK_3_HOST}}:{{TRUCK_3_HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{TRUCK_3_HOST}}:{{TRUCK_3_HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{TRUCK_3_HOST}}"
 							],
 							"port": "{{TRUCK_3_HDB_PORT}}"
 						},
-						"description": "Asks for status from a cluster node.  The response will return with an array of inbound, outbound, and bidirectional connections.  The data direction is in relation to the node in question.\n\n<b><i> This is a HarperDB Enterprise version only feature </i></b>\n<p>\n<a href=\"https://harperdbhelp.zendesk.com/hc/en-us/articles/115003583194\">See this article for more info</a>\n</p>\n<ul>\n<li>\n<b>operation</b> <i> (required) </i> - must always be 'add_node'\n</li>\n<li>\n<b>name</b> <i> (required) </i> - The name of the node you are registering with this node.  Must match exactly. \n</li>\n<li>\n<b>port</b> <i> (required) </i> - The clustering port for the node you are registering with this node.  Not to be confused with HTTP/S PORTS.\n</li>\n<li>\n<b>host</b> <i> (required) </i> - the uri where the node you are adding to the cluster resides. \n</li>\n\n\n\n\n</ul>"
+						"description": "Asks for status from a cluster node.  The response will return with an array of inbound, outbound, and bidirectional connections.  The data direction is in relation to the node in question.\n\n<b><i> This is a HarperDB Enterprise version only feature </i></b>\n<p>\n<a href=\"http://harperdbhelp.zendesk.com/hc/en-us/articles/115003583194\">See this article for more info</a>\n</p>\n<ul>\n<li>\n<b>operation</b> <i> (required) </i> - must always be 'add_node'\n</li>\n<li>\n<b>name</b> <i> (required) </i> - The name of the node you are registering with this node.  Must match exactly. \n</li>\n<li>\n<b>port</b> <i> (required) </i> - The clustering port for the node you are registering with this node.  Not to be confused with HTTP/S PORTS.\n</li>\n<li>\n<b>host</b> <i> (required) </i> - the uri where the node you are adding to the cluster resides. \n</li>\n\n\n\n\n</ul>"
 					},
 					"response": []
 				}
@@ -5137,8 +5137,8 @@
 							"raw": "{\n\t\"operation\":\"drop_schema\",\n\t\"schema\":\"{{TRUCK_1_SCHEMA}}\"\n}"
 						},
 						"url": {
-							"raw": "https://{{SERVER_HOST}}:{{SERVER_HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{SERVER_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{SERVER_HOST}}"
 							],
@@ -5168,12 +5168,12 @@
 									"raw": "{\n\"operation\":\"drop_schema\",\n\"schema\":\"dev\"\n}"
 								},
 								"url": {
-									"raw": "https://localhost:31283",
-									"protocol": "https",
+									"raw": "http://localhost:9925",
+									"protocol": "http",
 									"host": [
 										"localhost"
 									],
-									"port": "31283"
+									"port": "9925"
 								}
 							},
 							"status": "OK",
@@ -5265,8 +5265,8 @@
 							"raw": "{\n\t\"operation\":\"drop_schema\",\n\t\"schema\":\"{{TRUCK_2_SCHEMA}}\"\n}"
 						},
 						"url": {
-							"raw": "https://{{SERVER_HOST}}:{{SERVER_HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{SERVER_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{SERVER_HOST}}"
 							],
@@ -5296,12 +5296,12 @@
 									"raw": "{\n\"operation\":\"drop_schema\",\n\"schema\":\"dev\"\n}"
 								},
 								"url": {
-									"raw": "https://localhost:31283",
-									"protocol": "https",
+									"raw": "http://localhost:9925",
+									"protocol": "http",
 									"host": [
 										"localhost"
 									],
-									"port": "31283"
+									"port": "9925"
 								}
 							},
 							"status": "OK",
@@ -5393,8 +5393,8 @@
 							"raw": "{\n\t\"operation\":\"drop_schema\",\n\t\"schema\":\"{{TRUCK_3_SCHEMA}}\"\n}"
 						},
 						"url": {
-							"raw": "https://{{SERVER_HOST}}:{{SERVER_HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{SERVER_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{SERVER_HOST}}"
 							],
@@ -5424,12 +5424,12 @@
 									"raw": "{\n\"operation\":\"drop_schema\",\n\"schema\":\"dev\"\n}"
 								},
 								"url": {
-									"raw": "https://localhost:31283",
-									"protocol": "https",
+									"raw": "http://localhost:9925",
+									"protocol": "http",
 									"host": [
 										"localhost"
 									],
-									"port": "31283"
+									"port": "9925"
 								}
 							},
 							"status": "OK",
@@ -5521,8 +5521,8 @@
 							"raw": "{\n\t\"operation\":\"drop_schema\",\n\t\"schema\":\"{{TRUCK_1_SCHEMA}}\"\n}"
 						},
 						"url": {
-							"raw": "https://{{TRUCK_1_HOST}}:{{TRUCK_1_HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{TRUCK_1_HOST}}:{{TRUCK_1_HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{TRUCK_1_HOST}}"
 							],
@@ -5552,12 +5552,12 @@
 									"raw": "{\n\"operation\":\"drop_schema\",\n\"schema\":\"dev\"\n}"
 								},
 								"url": {
-									"raw": "https://localhost:31283",
-									"protocol": "https",
+									"raw": "http://localhost:9925",
+									"protocol": "http",
 									"host": [
 										"localhost"
 									],
-									"port": "31283"
+									"port": "9925"
 								}
 							},
 							"status": "OK",
@@ -5649,8 +5649,8 @@
 							"raw": "{\n\t\"operation\":\"drop_schema\",\n\t\"schema\":\"{{TRUCK_2_SCHEMA}}\"\n}"
 						},
 						"url": {
-							"raw": "https://{{TRUCK_2_HOST}}:{{TRUCK_2_HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{TRUCK_2_HOST}}:{{TRUCK_2_HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{TRUCK_2_HOST}}"
 							],
@@ -5680,12 +5680,12 @@
 									"raw": "{\n\"operation\":\"drop_schema\",\n\"schema\":\"dev\"\n}"
 								},
 								"url": {
-									"raw": "https://localhost:31283",
-									"protocol": "https",
+									"raw": "http://localhost:9925",
+									"protocol": "http",
 									"host": [
 										"localhost"
 									],
-									"port": "31283"
+									"port": "9925"
 								}
 							},
 							"status": "OK",
@@ -5777,8 +5777,8 @@
 							"raw": "{\n\t\"operation\":\"drop_schema\",\n\t\"schema\":\"{{TRUCK_3_SCHEMA}}\"\n}"
 						},
 						"url": {
-							"raw": "https://{{TRUCK_3_HOST}}:{{TRUCK_3_HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{TRUCK_3_HOST}}:{{TRUCK_3_HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{TRUCK_3_HOST}}"
 							],
@@ -5808,12 +5808,12 @@
 									"raw": "{\n\"operation\":\"drop_schema\",\n\"schema\":\"dev\"\n}"
 								},
 								"url": {
-									"raw": "https://localhost:31283",
-									"protocol": "https",
+									"raw": "http://localhost:9925",
+									"protocol": "http",
 									"host": [
 										"localhost"
 									],
-									"port": "31283"
+									"port": "9925"
 								}
 							},
 							"status": "OK",
@@ -5905,14 +5905,14 @@
 							"raw": "{\n\t\"operation\":\"remove_node\",\n\t\"name\":\"{{TRUCK_1_NAME}}\"\n}"
 						},
 						"url": {
-							"raw": "https://{{SERVER_HOST}}:{{SERVER_HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{SERVER_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{SERVER_HOST}}"
 							],
 							"port": "{{SERVER_HDB_PORT}}"
 						},
-						"description": "Method for registering a node for HarperDB Clustering.  Each node must be aware of all other nodes. <b><i> This is a HarperDB Enterprise version only feature </i></b>\n<p>\n<a href=\"https://harperdbhelp.zendesk.com/hc/en-us/articles/115003583194\">See this article for more info</a>\n</p>\n<ul>\n<li>\n<b>operation</b> <i> (required) </i> - must always be 'add_node'\n</li>\n<li>\n<b>name</b> <i> (required) </i> - The name of the node you are registering with this node.  Must match exactly. \n</li>\n<li>\n<b>port</b> <i> (required) </i> - The clustering port for the node you are registering with this node.  Not to be confused with HTTP/S PORTS.\n</li>\n<li>\n<b>host</b> <i> (required) </i> - the uri where the node you are adding to the cluster resides. \n</li>\n\n\n\n\n</ul>"
+						"description": "Method for registering a node for HarperDB Clustering.  Each node must be aware of all other nodes. <b><i> This is a HarperDB Enterprise version only feature </i></b>\n<p>\n<a href=\"http://harperdbhelp.zendesk.com/hc/en-us/articles/115003583194\">See this article for more info</a>\n</p>\n<ul>\n<li>\n<b>operation</b> <i> (required) </i> - must always be 'add_node'\n</li>\n<li>\n<b>name</b> <i> (required) </i> - The name of the node you are registering with this node.  Must match exactly. \n</li>\n<li>\n<b>port</b> <i> (required) </i> - The clustering port for the node you are registering with this node.  Not to be confused with HTTP/S PORTS.\n</li>\n<li>\n<b>host</b> <i> (required) </i> - the uri where the node you are adding to the cluster resides. \n</li>\n\n\n\n\n</ul>"
 					},
 					"response": []
 				},
@@ -5959,8 +5959,8 @@
 							"raw": "{\n\t\"operation\":\"remove_node\",\n\t\"name\":\"{{SERVER_NAME}}\"\n}"
 						},
 						"url": {
-							"raw": "https://{{TRUCK_1_HOST}}:{{TRUCK_1_HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{TRUCK_1_HOST}}:{{TRUCK_1_HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{TRUCK_1_HOST}}"
 							],
@@ -6012,8 +6012,8 @@
 							"raw": "{\n\t\"operation\":\"remove_node\",\n\t\"name\":\"{{SERVER_NAME}}\"\n}"
 						},
 						"url": {
-							"raw": "https://{{TRUCK_2_HOST}}:{{TRUCK_2_HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{TRUCK_2_HOST}}:{{TRUCK_2_HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{TRUCK_2_HOST}}"
 							],
@@ -6065,8 +6065,8 @@
 							"raw": "{\n\t\"operation\":\"remove_node\",\n\t\"name\":\"{{TRUCK_3_NAME}}\"\n}"
 						},
 						"url": {
-							"raw": "https://{{SERVER_HOST}}:{{SERVER_HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{SERVER_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{SERVER_HOST}}"
 							],
