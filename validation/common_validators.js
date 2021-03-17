@@ -12,7 +12,8 @@ const common_validators = {
     }
 };
 
-const schema_joi = Joi.alternatives(
+// A Joi schema that can be used to validate hdb schemas and tables.
+const hdb_schema_table = Joi.alternatives(
     Joi.string().min(1).max(common_validators.schema_length.maximum).pattern(schema_regex)
         .messages({'string.pattern.base': '{:#label} ' + common_validators.schema_format.message}),
     Joi.number()).required();
@@ -20,5 +21,5 @@ const schema_joi = Joi.alternatives(
 module.exports = {
     common_validators,
     schema_regex,
-    schema_joi
+    hdb_schema_table
 };

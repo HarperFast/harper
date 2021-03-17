@@ -9,7 +9,6 @@ const delete_records = require('./lmdbDeleteRecords');
 const get_data_by_hash = require('./lmdbGetDataByHash');
 const search_data_by_value = require('./lmdbSearchByValue');
 const hdb_terms = require('../../../../utility/hdbTerms');
-const hdb_utils = require('../../../../utility/common_utils');
 const path = require('path');
 const {getBaseSchemaPath} = require('../lmdbUtility/initializePaths');
 const { handleHDBError, hdb_errors } = require('../../../../utility/errors/hdbError');
