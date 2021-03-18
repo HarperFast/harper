@@ -45,6 +45,10 @@ class BridgeMethods {
         throw new Error("dropAttribute bridge method is not defined");
     }
 
+    searchByConditions() {
+        throw new Error("searchByConditions bridge method is not defined");
+    }
+
     searchByHash() {
         throw new Error("searchByHash bridge method is not defined");
     }

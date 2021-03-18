@@ -167,6 +167,7 @@ const OPERATIONS_ENUM = {
     INSERT: 'insert',
     UPDATE: 'update',
     UPSERT: 'upsert',
+    SEARCH_BY_CONDITIONS: 'search_by_conditions',
     SEARCH_BY_HASH: 'search_by_hash',
     SEARCH_BY_VALUE: 'search_by_value',
     SEARCH: 'search',

@@ -3,9 +3,10 @@
 const SelectValidator = require('../sqlTranslator/SelectValidator');
 
 module.exports = {
-    searchByValue:searchByValue,
-    searchByHash:searchByHash,
-    search: search
+    searchByConditions,
+    searchByHash,
+    searchByValue,
+    search
 };
 
 const harperBridge = require('./harperBridge/harperBridge');
@@ -13,6 +14,10 @@ const util = require('util');
 const c_search_by_hash = util.callbackify(harperBridge.searchByHash);
 const c_search_by_value = util.callbackify(harperBridge.searchByValue);
 const SQLSearch = require('./SQLSearch');
+
+async function searchByConditions(search_object) {
+    return harperBridge.searchByConditions(search_object);
+}
 
 function searchByHash(search_object, callback){
     try {
