@@ -10,6 +10,8 @@ const _ = require('lodash');
 const {getBaseSchemaPath} = require('../lmdbUtility/initializePaths');
 const path = require('path');
 const environment_utility = require('../../../../utility/lmdb/environmentUtility');
+const { handleHDBError, hdb_errors } = require('../../../../utility/errors/hdbError');
+const { HTTP_STATUS_CODES } = hdb_errors;
 
 module.exports = lmdbSearchByConditions;
 
@@ -22,7 +24,7 @@ async function lmdbSearchByConditions(search_object) {
     try {
         let validation_error = search_validator(search_object, 'conditions');
         if (validation_error) {
-            throw validation_error;
+            throw handleHDBError(validation_error, validation_error.message, HTTP_STATUS_CODES.BAD_REQUEST);
         }
 
         //set the operator to always be lowercase for later evaluations
@@ -43,7 +45,7 @@ async function lmdbSearchByConditions(search_object) {
         for(let x = 0, length = results.length; x < length; x++){
             ids.push(results[x][0]);
         }
-        if(!search_object.operator || search_object.operator === 'and'){
+        if(!search_object.operator || search_object.operator.toLowerCase() === 'and'){
             merged_ids = _.intersection(...ids);
         } else{
             merged_ids = _.union(...ids);
@@ -61,7 +63,7 @@ async function lmdbSearchByConditions(search_object) {
         //perform records search by id
         return search_utility.batchSearchByHash(env, table_info.hash_attribute, search_object.get_attributes, merged_ids);
     }catch(e){
-        throw e;
+        throw handleHDBError(e);
     }
 }
 
@@ -94,11 +96,8 @@ function sorter(a, b) {
 // eslint-disable-next-line require-await
 async function executeConditionSearches(env, search_object, hash_attribute){
     //build a prototype object for search
-
-    let limit = search_object.limit ? search_object.limit + search_object.offset : undefined;
-
     let proto_search = new SearchObject(search_object.schema, search_object.table, undefined, undefined,
-        hash_attribute, search_object.get_attributes, undefined, undefined, limit);
+        hash_attribute, search_object.get_attributes);
 
     //execute conditional searches
     let promises = [];

@@ -103,9 +103,9 @@ function convertSQLToAST(sql) {
     } catch(e) {
         let split_error = e.message.split('\n');
         if (split_error[1]) {
-            throw new Error(`Invalid SQL at: ${split_error[1]}. Please ensure your SQL is valid. Try adding backticks to reserved words and schema table references.`);
+            throw handleHDBError(e, `Invalid SQL at: ${split_error[1]}. Please ensure your SQL is valid. Try adding backticks to reserved words and schema table references.`, HTTP_STATUS_CODES.BAD_REQUEST);
         } else {
-            throw new Error(`We had trouble parsing your request. Please ensure your SQL is valid. Try adding backticks to reserved words and schema table references.`);
+            throw handleHDBError(e, `We had trouble parsing your request. Please ensure your SQL is valid. Try adding backticks to reserved words and schema table references.`, HTTP_STATUS_CODES.BAD_REQUEST);
         }
     }
 

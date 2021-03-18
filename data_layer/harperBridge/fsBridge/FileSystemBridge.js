@@ -21,6 +21,10 @@ const fsDropAttribute = require('./fsMethods/fsDropAttribute');
 
 class FileSystemBridge extends BridgeMethods {
 
+    async searchByConditions(search_object) {
+        throw handleHDBError(new Error(), HDB_ERROR_MSGS.OP_NOT_SUPPORTED_FOR_FS(search_object.operation), HTTP_STATUS_CODES.BAD_REQUEST);
+    }
+
     async getDataByHash(search_object) {
         try {
             return await fsGetDataByHash(search_object);
