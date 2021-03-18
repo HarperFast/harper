@@ -2454,6 +2454,74 @@
 						}
 					},
 					"response": []
+				},
+				{
+					"name": "create_table for conditions tests",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"tests[\"Create Table\"] = responseBody.has(\"successfully created.\");"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"value": true,
+									"type": "boolean"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3Q="
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"create_table\",\n  \"schema\":\"dev\",\n  \"table\":\"dog_conditions\",\n  \"hash_attribute\": \"id\"\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
 				}
 			]
 		},
@@ -7004,6 +7072,74 @@
 						"description": "These records will be used to test updates with invalid attribute names."
 					},
 					"response": []
+				},
+				{
+					"name": "Upsert dog data for conditions search tests",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"Insert validate\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.upserted_hashes.length).to.eql(11);",
+									"    pm.expect(jsonData.skipped_hashes).to.eql(undefined);",
+									"    pm.expect(jsonData.message).to.eql(\"upserted 11 of 11 records\");",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\": \"upsert\",\n\t\"schema\": \"dev\",\n\t\"table\": \"dog_conditions\",\n\t\"records\": [\n\t\t{\n\t\t\t\"id\": 1,\n\t\t\t\"breed_id\": 154,\n\t\t\t\"weight_lbs\": 35,\n\t\t\t\"dog_name\": \"Penny\",\n\t\t\t\"age\": 5,\n\t\t\t\"adorable\": true,\n\t\t\t\"owner_id\": 2,\n\t\t\t\"group\": \"A\",\n\t\t\t\"location\": \"Denver, NC\"\n\t\t},\n\t\t{\n\t\t\t\"id\": 2,\n\t\t\t\"breed_id\": 346,\n\t\t\t\"weight_lbs\": 55,\n\t\t\t\"dog_name\": \"Harper\",\n\t\t\t\"age\": 5,\n\t\t\t\"adorable\": true,\n\t\t\t\"owner_id\": 3,\n\t\t\t\"group\": \"A\",\n\t\t\t\"location\": \"Denver, CO\"\n\t\t},\n\t\t{\n\t\t\t\"id\": 3,\n\t\t\t\"breed_id\": 348,\n\t\t\t\"weight_lbs\": 84,\n\t\t\t\"dog_name\": \"Alby\",\n\t\t\t\"age\": 8,\n\t\t\t\"adorable\": true,\n\t\t\t\"owner_id\": 4,\n\t\t\t\"group\": \"A\",\n\t\t\t\"location\": \"Portland, OR\"\n\t\t},\n\t\t{\n\t\t\t\"id\": 4,\n\t\t\t\"breed_id\": 347,\n\t\t\t\"weight_lbs\": 60,\n\t\t\t\"dog_name\": \"Billy\",\n\t\t\t\"age\": 4,\n\t\t\t\"adorable\": true,\n\t\t\t\"owner_id\": 1,\n\t\t\t\"group\": \"B\",\n\t\t\t\"location\": \"Evergreen, CO\"\n\t\t},\n\t\t{\n\t\t\t\"id\": 5,\n\t\t\t\"breed_id\": 348,\n\t\t\t\"weight_lbs\": 15,\n\t\t\t\"dog_name\": \"Rose Merry\",\n\t\t\t\"age\": 6,\n\t\t\t\"adorable\": true,\n\t\t\t\"owner_id\": 2,\n\t\t\t\"group\": \"B\",\n\t\t\t\"location\": \"Denver, CO\"\n\t\t},\n\t\t{\n\t\t\t\"id\": 6,\n\t\t\t\"breed_id\": 351,\n\t\t\t\"weight_lbs\": 28,\n\t\t\t\"dog_name\": \"Kato\",\n\t\t\t\"age\": 4,\n\t\t\t\"adorable\": true,\n\t\t\t\"owner_id\": 3,\n\t\t\t\"group\": \"A\",\n\t\t\t\"location\": \"Charlotte, NC\"\n\t\t},\n\t\t{\n\t\t\t\"id\": 7,\n\t\t\t\"breed_id\": 349,\n\t\t\t\"weight_lbs\": 35,\n\t\t\t\"dog_name\": \"Simon\",\n\t\t\t\"age\": 1,\n\t\t\t\"adorable\": true,\n\t\t\t\"owner_id\": 4,\n\t\t\t\"group\": \"C\",\n\t\t\t\"location\": \"Denver, CO\"\n\t\t},\n\t\t{\n\t\t\t\"id\": 8,\n\t\t\t\"breed_id\": 250,\n\t\t\t\"weight_lbs\": 55,\n\t\t\t\"dog_name\": \"Gemma\",\n\t\t\t\"age\": 3,\n\t\t\t\"adorable\": true,\n\t\t\t\"owner_id\": 1,\n\t\t\t\"group\": \"A\",\n\t\t\t\"location\": \"Denver, NC\"\n\t\t},\n\t\t{\n\t\t\t\"id\": 9,\n\t\t\t\"breed_id\": 104,\n\t\t\t\"weight_lbs\": 75,\n\t\t\t\"dog_name\": \"Bode\",\n\t\t\t\"age\": 9,\n\t\t\t\"adorable\": true,\n\t\t\t\"owner_id\": null,\n\t\t\t\"group\": \"C\",\n\t\t\t\"location\": \"Boulder, CO\"\n\t\t},\n\t\t{\n\t\t\t\"id\": 10,\n\t\t\t\"breed_id\": null,\n\t\t\t\"weight_lbs\": null,\n\t\t\t\"dog_name\": null,\n\t\t\t\"age\": 7,\n\t\t\t\"adorable\": null,\n\t\t\t\"owner_id\": null,\n\t\t\t\"group\": \"D\",\n\t\t\t\"location\": \"Boulder, CO\"\n\t\t},\n\t\t{\n\t\t\t\"id\": 11,\n\t\t\t\"breed_id\": null,\n\t\t\t\"weight_lbs\": null,\n\t\t\t\"dog_name\": null,\n\t\t\t\"age\": null,\n\t\t\t\"adorable\": null,\n\t\t\t\"owner_id\": null,\n\t\t\t\"group\": \"C\",\n\t\t\t\"location\": \"Denver, CO\"\n\t\t}\n\t]\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
 				}
 			]
 		},
@@ -11054,12 +11190,12 @@
 						{
 							"listen": "test",
 							"script": {
-								"type": "text/javascript",
 								"exec": [
 									"pm.test(\"test bad response\", function () {",
-									"    pm.response.to.have.status(500);",
+									"    pm.response.to.have.status(400);",
 									"});"
-								]
+								],
+								"type": "text/javascript"
 							}
 						}
 					],
@@ -21437,6 +21573,1824 @@
 						"description": "Confirm employee table has been updated with specific value."
 					},
 					"response": []
+				},
+				{
+					"name": "search by conditions - equals",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"search by condition returns two rows\", function () {",
+									"    const jsonData = pm.response.json();",
+									"    pm.expect(jsonData.length).to.eql(2);",
+									"\tjsonData.forEach(row => {",
+									"\t\tpm.expect([1,2].includes(row.id)).to.be.true;",
+									"\t})",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"search_by_conditions\",\n\t\"schema\":\"dev\",\n\t\"table\": \"dog_conditions\",\n\t\"get_attributes\": [\"*\"],\n\t\"conditions\": [{\n\t\t\"search_attribute\": \"age\",\n\t\t\"search_type\": \"equals\",\n\t\t\"search_value\": 5\n\t}]\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "search by conditions - contains",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"search by condition returns 6 rows with Denver in location\", function () {",
+									"    const jsonData = pm.response.json();",
+									"    pm.expect(jsonData.length).to.eql(6);",
+									"\tjsonData.forEach(row => {",
+									"\t\tpm.expect(row.location.includes('Denver')).to.be.true;",
+									"\t})",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"search_by_conditions\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog_conditions\",\n\t\"get_attributes\": [\"*\"],\n\t\"conditions\": [{\n\t\t\"search_attribute\": \"location\",\n\t\t\"search_type\": \"contains\",\n\t\t\"search_value\": \"Denver\"\n\t}]\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "search by conditions - starts_with",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"search by condition returns 2 rows with breed_ids that start with 1\", function () {",
+									"    const jsonData = pm.response.json();",
+									"    pm.expect(jsonData.length).to.eql(2);",
+									"\tjsonData.forEach(row => {",
+									"\t\tpm.expect([...Number(row.breed_id).toString()][0]).to.equal('1');",
+									"\t})",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"search_by_conditions\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog_conditions\",\n\t\"get_attributes\": [\"*\"],\n\t\"conditions\": [{\n\t\t\"search_attribute\": \"breed_id\",\n\t\t\"search_type\": \"starts_with\",\n\t\t\"search_value\": 1\n\t}]\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "search by conditions - ends_with",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"search by condition returns 4 rows with dog names ending w/ 'y'\", function () {",
+									"    const jsonData = pm.response.json();",
+									"    pm.expect(jsonData.length).to.eql(4);",
+									"\tjsonData.forEach(row => {",
+									"\t\tpm.expect([...row.dog_name].pop()).to.equal('y');",
+									"\t})",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"search_by_conditions\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog_conditions\",\n\t\"get_attributes\": [\"*\"],\n\t\"conditions\": [{\n\t\t\"search_attribute\": \"dog_name\",\n\t\t\"search_type\": \"ends_with\",\n\t\t\"search_value\": \"y\"\n\t}]\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "search by conditions - greater_than",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"search by condition returns 6 rows with age greater than 4\", function () {",
+									"    const jsonData = pm.response.json();",
+									"    pm.expect(jsonData.length).to.eql(6);",
+									"\tjsonData.forEach(row => {",
+									"\t\tpm.expect(row.age > 4).to.be.true;",
+									"\t})",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"search_by_conditions\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog_conditions\",\n\t\"get_attributes\": [\"*\"],\n\t\"conditions\": [{\n\t\t\"search_attribute\": \"age\",\n\t\t\"search_type\": \"greater_than\",\n\t\t\"search_value\": 4\n\t}]\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "search by conditions - greater_than_equal",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"search by condition returns 8 rows with age greater than or equal to 4\", function () {",
+									"    const jsonData = pm.response.json();",
+									"    pm.expect(jsonData.length).to.eql(8);",
+									"\tjsonData.forEach(row => {",
+									"\t\tpm.expect(row.age >= 4).to.be.true;",
+									"\t})",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"search_by_conditions\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog_conditions\",\n\t\"get_attributes\": [\"*\"],\n\t\"conditions\": [{\n\t\t\"search_attribute\": \"age\",\n\t\t\"search_type\": \"greater_than_equal\",\n\t\t\"search_value\": 4\n\t}]\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "search by conditions - less_than",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"search by condition returns 2 rows with age less than 4\", function () {",
+									"    const jsonData = pm.response.json();",
+									"    pm.expect(jsonData.length).to.eql(2);",
+									"\tjsonData.forEach(row => {",
+									"\t\tpm.expect(row.age < 4).to.be.true;",
+									"\t})",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"search_by_conditions\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog_conditions\",\n\t\"get_attributes\": [\"*\"],\n\t\"conditions\": [{\n\t\t\"search_attribute\": \"age\",\n\t\t\"search_type\": \"less_than\",\n\t\t\"search_value\": 4\n\t}]\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "search by conditions - less_than_equal",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"search by condition returns 4 rows with age less than or equal to 4\", function () {",
+									"    const jsonData = pm.response.json();",
+									"    pm.expect(jsonData.length).to.eql(4);",
+									"\tjsonData.forEach(row => {",
+									"\t\tpm.expect(row.age <= 4).to.be.true;",
+									"\t})",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"search_by_conditions\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog_conditions\",\n\t\"get_attributes\": [\"*\"],\n\t\"conditions\": [{\n\t\t\"search_attribute\": \"age\",\n\t\t\"search_type\": \"less_than_equal\",\n\t\t\"search_value\": 4\n\t}]\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "search by conditions - between",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"search by condition returns 5 rows with age between 2 & 5\", function () {",
+									"    const jsonData = pm.response.json();",
+									"    pm.expect(jsonData.length).to.eql(5);",
+									"\tjsonData.forEach(row => {",
+									"\t\tpm.expect(row.age <= 5 && row.age >= 2).to.be.true;",
+									"\t})",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"search_by_conditions\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog_conditions\",\n\t\"get_attributes\": [\"*\"],\n\t\"conditions\": [{\n\t\t\"search_attribute\": \"age\",\n\t\t\"search_type\": \"between\",\n\t\t\"search_value\": [2,5]\n\t}]\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "search by conditions - between using same value",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"search by condition returns 2 rows with age equal to 5\", function () {",
+									"    const jsonData = pm.response.json();",
+									"    pm.expect(jsonData.length).to.eql(2);",
+									"\tjsonData.forEach(row => {",
+									"\t\tpm.expect(row.age).to.equal(5);",
+									"\t})",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"search_by_conditions\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog_conditions\",\n\t\"get_attributes\": [\"*\"],\n\t\"conditions\": [{\n\t\t\"search_attribute\": \"age\",\n\t\t\"search_type\": \"between\",\n\t\t\"search_value\": [5,5]\n\t}]\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "search by conditions - between w/ alpha",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"search by condition returns 7 rows with group A or B\", function () {",
+									"    const jsonData = pm.response.json();",
+									"    pm.expect(jsonData.length).to.eql(7);",
+									"\tjsonData.forEach(row => {",
+									"\t\tpm.expect([\"A\", \"B\"].includes(row.group)).to.be.true;",
+									"\t})",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"search_by_conditions\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog_conditions\",\n\t\"get_attributes\": [\"*\"],\n\t\"conditions\": [{\n\t\t\"search_attribute\": \"group\",\n\t\t\"search_type\": \"between\",\n\t\t\"search_value\": [\"A\", \"B\"]\n\t}]\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "search by conditions - equals & equals",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"search by condition returns 2 rows group A and age equal to 5\", function () {",
+									"    const jsonData = pm.response.json();",
+									"    pm.expect(jsonData.length).to.eql(2);",
+									"\tjsonData.forEach(row => {",
+									"\t\tpm.expect(row.age === 5 && row.group === \"A\").to.be.true;",
+									"\t})",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\": \"search_by_conditions\",\n\t\"schema\": \"dev\",\n\t\"table\": \"dog_conditions\",\n\t\"get_attributes\": [\n\t\t\"*\"\n\t],\n\t\"conditions\": [\n\t\t{\n\t\t\t\"search_attribute\": \"group\",\n\t\t\t\"search_type\": \"equals\",\n\t\t\t\"search_value\": \"A\"\n\t\t},\n\t\t{\n\t\t\t\"search_attribute\": \"age\",\n\t\t\t\"search_type\": \"equals\",\n\t\t\t\"search_value\": \"5\"\n\t\t}\n\t]\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "search by conditions - equals || equals",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"search by condition returns 7 rows with group A or B\", function () {",
+									"    const jsonData = pm.response.json();",
+									"    pm.expect(jsonData.length).to.eql(7);",
+									"\tjsonData.forEach(row => {",
+									"\t\tpm.expect([\"A\", \"B\"].includes(row.group)).to.be.true;",
+									"\t})",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\": \"search_by_conditions\",\n\t\"schema\": \"dev\",\n\t\"table\": \"dog_conditions\",\n\t\"get_attributes\": [\n\t\t\"*\"\n\t],\n\t\"operator\": \"OR\",\n\t\"conditions\": [\n\t\t{\n\t\t\t\"search_attribute\": \"group\",\n\t\t\t\"search_type\": \"equals\",\n\t\t\t\"search_value\": \"A\"\n\t\t},\n\t\t{\n\t\t\t\"search_attribute\": \"group\",\n\t\t\t\"search_type\": \"equals\",\n\t\t\t\"search_value\": \"B\"\n\t\t}\n\t]\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "search by conditions - equals & contains",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"search by condition returns 2 rows group B and CO in location\", function () {",
+									"    const jsonData = pm.response.json();",
+									"    pm.expect(jsonData.length).to.eql(2);",
+									"\tjsonData.forEach(row => {",
+									"\t\tpm.expect(row.group).to.equal(\"B\");",
+									"\t\tpm.expect(row.location.includes('CO')).to.be.true; ",
+									"\t})",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"search_by_conditions\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog_conditions\",\n\t\"get_attributes\": [\"*\"],\n\t\"conditions\": [{\n\t\t\"search_attribute\": \"location\",\n\t\t\"search_type\": \"contains\",\n\t\t\"search_value\": \"CO\"\n\t},\n\t{\n\t\t\"search_attribute\": \"group\",\n\t\t\"search_type\": \"equals\",\n\t\t\"search_value\": \"B\"\n\t}\n\t]\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "search by conditions - equals & ends_with",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"search by condition returns 2 rows group B and CO in location\", function () {",
+									"    const jsonData = pm.response.json();",
+									"    pm.expect(jsonData.length).to.eql(2);",
+									"\tjsonData.forEach(row => {",
+									"\t\tpm.expect(row.group).to.equal(\"B\");",
+									"\t\tpm.expect(row.location.split(', ')[1]).to.equal('CO'); ",
+									"\t})",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"search_by_conditions\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog_conditions\",\n\t\"get_attributes\": [\"*\"],\n\t\"conditions\": [{\n\t\t\"search_attribute\": \"location\",\n\t\t\"search_type\": \"ends_with\",\n\t\t\"search_value\": \"CO\"\n\t},\n\t{\n\t\t\"search_attribute\": \"group\",\n\t\t\"search_type\": \"equals\",\n\t\t\"search_value\": \"B\"\n\t}\n\t]\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "search by conditions - greater_than_equal & starts_with",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"search by condition returns 3 with Denver in location and age >= 5\", function () {",
+									"    const jsonData = pm.response.json();",
+									"    pm.expect(jsonData.length).to.eql(3);",
+									"\tjsonData.forEach(row => {",
+									"\t\tpm.expect(row.age).to.be.gte(5);",
+									"\t\tpm.expect(row.location.split(',')[0]).to.equal('Denver'); ",
+									"\t})",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"search_by_conditions\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog_conditions\",\n\t\"get_attributes\": [\"*\"],\n\t\"conditions\": [{\n\t\t\"search_attribute\": \"location\",\n\t\t\"search_type\": \"starts_with\",\n\t\t\"search_value\": \"Denver\"\n\t},\n\t{\n\t\t\"search_attribute\": \"age\",\n\t\t\"search_type\": \"greater_than_equal\",\n\t\t\"search_value\": 5\n\t}\n\t]\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "search by conditions - less_than_equal ||  greater_than",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"search by condition returns 8 with age <= 4 or > 5\", function () {",
+									"    const jsonData = pm.response.json();",
+									"    pm.expect(jsonData.length).to.eql(8);",
+									"\tjsonData.forEach(row => {",
+									"\t\tpm.expect(row.age <=4 || row.age > 5).to.be.true;",
+									"\t})",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"search_by_conditions\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog_conditions\",\n\t\"get_attributes\": [\"*\"],\n\t\"operator\": \"OR\",\n\t\"conditions\": [{\n\t\t\"search_attribute\": \"age\",\n\t\t\"search_type\": \"less_than_equal\",\n\t\t\"search_value\": 4\n\t},\n\t{\n\t\t\"search_attribute\": \"age\",\n\t\t\"search_type\": \"greater_than\",\n\t\t\"search_value\": 5\n\t}\n\t]\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "search by conditions - contains || contains",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"search by condition returns 10 with NC or CO in location\", function () {",
+									"    const jsonData = pm.response.json();",
+									"    pm.expect(jsonData.length).to.eql(10);",
+									"\tjsonData.forEach(row => {",
+									"\t\tpm.expect(row.location.includes('CO') || row.location.includes('NC')).to.be.true;",
+									"\t})",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\": \"search_by_conditions\",\n\t\"schema\": \"dev\",\n\t\"table\": \"dog_conditions\",\n\t\"get_attributes\": [\n\t\t\"*\"\n\t],\n\t\"operator\": \"OR\",\n\t\"conditions\": [\n\t\t{\n\t\t\t\"search_attribute\": \"location\",\n\t\t\t\"search_type\": \"contains\",\n\t\t\t\"search_value\": \"NC\"\n\t\t},\n\t\t{\n\t\t\t\"search_attribute\": \"location\",\n\t\t\t\"search_type\": \"contains\",\n\t\t\t\"search_value\": \"CO\"\n\t\t}\n\t]\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "search by conditions - contains & between",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"search by condition returns 6 sorted rows with Denver in location and in group A-C\", function () {",
+									"    const expected_hash_order = [1,2,5,7,8,11];",
+									"\tconst jsonData = pm.response.json();",
+									"    pm.expect(jsonData.length).to.eql(6);",
+									"\tjsonData.forEach((row, i) => {",
+									"\t\tpm.expect([\"A\", \"B\", \"C\"].includes(row.group)).to.be.true;",
+									"\t\tpm.expect(row.location.split(',')[0]).to.equal('Denver');",
+									"\t\tpm.expect(row.id).to.equal(expected_hash_order[i]);",
+									"\t})",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\": \"search_by_conditions\",\n\t\"schema\": \"dev\",\n\t\"table\": \"dog_conditions\",\n\t\"get_attributes\": [\n\t\t\"id\", \"age\", \"group\", \"location\"\n\t],\n\t\"conditions\": [\n\t\t{\n\t\t\t\"search_attribute\": \"group\",\n\t\t\t\"search_type\": \"between\",\n\t\t\t\"search_value\": [\n\t\t\t\t\"A\",\n\t\t\t\t\"C\"\n\t\t\t]\n\t\t},\n\t\t{\n\t\t\t\"search_attribute\": \"location\",\n\t\t\t\"search_type\": \"contains\",\n\t\t\t\"search_value\": \"Denver\"\n\t\t}\n\t]\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "search by conditions - starts_with 'AND' between",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"search by condition returns 6 sorted rows with Denver in location and in group A-C\", function () {",
+									"    const expected_hash_order = [1,2,5,7,8,11];",
+									"\tconst jsonData = pm.response.json();",
+									"    pm.expect(jsonData.length).to.eql(6);",
+									"\tjsonData.forEach((row, i) => {",
+									"\t\tpm.expect([\"A\", \"B\", \"C\"].includes(row.group)).to.be.true;",
+									"\t\tpm.expect(row.location.split(',')[0]).to.equal('Denver');",
+									"\t\tpm.expect(row.id).to.equal(expected_hash_order[i]);",
+									"\t})",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\": \"search_by_conditions\",\n\t\"schema\": \"dev\",\n\t\"table\": \"dog_conditions\",\n\t\"get_attributes\": [\n\t\t\"id\", \"age\", \"location\", \"group\"\n\t],\n\t\"operator\": \"AND\",\n\t\"conditions\": [\n\t\t{\n\t\t\t\"search_attribute\": \"group\",\n\t\t\t\"search_type\": \"between\",\n\t\t\t\"search_value\": [\n\t\t\t\t\"A\",\n\t\t\t\t\"C\"\n\t\t\t]\n\t\t},\n\t\t{\n\t\t\t\"search_attribute\": \"location\",\n\t\t\t\"search_type\": \"starts_with\",\n\t\t\t\"search_value\": \"Denver\"\n\t\t}\n\t]\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "search by conditions - starts_with & between w/ offset",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"search by condition returns 5 sorted rows with Denver in location and in group A-C\", function () {",
+									"    const expected_hash_order = [2,5,7,8,11];",
+									"\tconst jsonData = pm.response.json();",
+									"    pm.expect(jsonData.length).to.eql(5);",
+									"\tjsonData.forEach((row, i) => {",
+									"\t\tpm.expect([\"A\", \"B\", \"C\"].includes(row.group)).to.be.true;",
+									"\t\tpm.expect(row.location.split(',')[0]).to.equal('Denver');",
+									"\t\tpm.expect(row.id).to.equal(expected_hash_order[i]);",
+									"\t})",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\": \"search_by_conditions\",\n\t\"schema\": \"dev\",\n\t\"table\": \"dog_conditions\",\n\t\"get_attributes\": [\n\t\t\"id\", \"age\", \"location\", \"group\"\n\t],\n\t\"offset\": 1,\n\t\"conditions\": [\n\t\t{\n\t\t\t\"search_attribute\": \"group\",\n\t\t\t\"search_type\": \"between\",\n\t\t\t\"search_value\": [\n\t\t\t\t\"A\",\n\t\t\t\t\"C\"\n\t\t\t]\n\t\t},\n\t\t{\n\t\t\t\"search_attribute\": \"location\",\n\t\t\t\"search_type\": \"starts_with\",\n\t\t\t\"search_value\": \"Denver\"\n\t\t}\n\t]\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "search by conditions - starts_with & between limit",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"search by condition returns 4 sorted rows with Denver in location and in group A-C\", function () {",
+									"    const expected_hash_order = [1,2,5,7];",
+									"\tconst jsonData = pm.response.json();",
+									"    pm.expect(jsonData.length).to.eql(4);",
+									"\tjsonData.forEach((row, i) => {",
+									"\t\tpm.expect([\"A\", \"B\", \"C\"].includes(row.group)).to.be.true;",
+									"\t\tpm.expect(row.location.split(',')[0]).to.equal('Denver');",
+									"\t\tpm.expect(row.id).to.equal(expected_hash_order[i]);",
+									"\t})",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\": \"search_by_conditions\",\n\t\"schema\": \"dev\",\n\t\"table\": \"dog_conditions\",\n\t\"get_attributes\": [\n\t\t\"id\", \"age\", \"location\", \"group\"\n\t],\n\t\"limit\": 4,\n\t\"conditions\": [\n\t\t{\n\t\t\t\"search_attribute\": \"group\",\n\t\t\t\"search_type\": \"between\",\n\t\t\t\"search_value\": [\n\t\t\t\t\"A\",\n\t\t\t\t\"C\"\n\t\t\t]\n\t\t},\n\t\t{\n\t\t\t\"search_attribute\": \"location\",\n\t\t\t\"search_type\": \"starts_with\",\n\t\t\t\"search_value\": \"Denver\"\n\t\t}\n\t]\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "search by conditions - starts_with & between offset, limit",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"search by condition returns 3 sorted rows with Denver in location and in group A-C\", function () {",
+									"    const expected_hash_order = [2,5,7];",
+									"\tconst jsonData = pm.response.json();",
+									"    pm.expect(jsonData.length).to.eql(expected_hash_order.length);",
+									"\tjsonData.forEach((row, i) => {",
+									"\t\tpm.expect([\"A\", \"B\", \"C\"].includes(row.group)).to.be.true;",
+									"\t\tpm.expect(row.location.split(',')[0]).to.equal('Denver');",
+									"\t\tpm.expect(row.id).to.equal(expected_hash_order[i]);",
+									"\t})",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\": \"search_by_conditions\",\n\t\"schema\": \"dev\",\n\t\"table\": \"dog_conditions\",\n\t\"get_attributes\": [\n\t\t\"id\", \"age\", \"location\", \"group\"\n\t],\n\t\"offset\": 1,\n\t\"limit\": 3,\n\t\"conditions\": [\n\t\t{\n\t\t\t\"search_attribute\": \"group\",\n\t\t\t\"search_type\": \"between\",\n\t\t\t\"search_value\": [\n\t\t\t\t\"A\",\n\t\t\t\t\"C\"\n\t\t\t]\n\t\t},\n\t\t{\n\t\t\t\"search_attribute\": \"location\",\n\t\t\t\"search_type\": \"starts_with\",\n\t\t\t\"search_value\": \"Denver\"\n\t\t}\n\t]\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "search by conditions - starts_with condition, offset, limit of 2",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"search by condition returns 3 sorted rows with Denver in location and in group A-C\", function () {",
+									"    const expected_hash_order = [7,8];",
+									"\tconst jsonData = pm.response.json();",
+									"    pm.expect(jsonData.length).to.eql(expected_hash_order.length);",
+									"\tjsonData.forEach((row, i) => {",
+									"\t\tpm.expect(row.location.split(',')[0]).to.equal('Denver');",
+									"\t\tpm.expect(row.id).to.equal(expected_hash_order[i]);",
+									"\t})",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\": \"search_by_conditions\",\n\t\"schema\": \"dev\",\n\t\"table\": \"dog_conditions\",\n\t\"get_attributes\": [\n\t\t\"id\", \"age\", \"location\", \"group\"\n\t],\n\t\"offset\": 3,\n\t\"limit\": 2,\n\t\"conditions\": [\n\t\t{\n\t\t\t\"search_attribute\": \"location\",\n\t\t\t\"search_type\": \"starts_with\",\n\t\t\t\"search_value\": \"Denver\"\n\t\t}\n\t]\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "search by conditions - starts_with condition, offset, limit of 10",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"search by condition returns 3 sorted rows with location that starts with Denver\", function () {",
+									"    const expected_hash_order = [7,8,11];",
+									"\tconst jsonData = pm.response.json();",
+									"    pm.expect(jsonData.length).to.eql(3);",
+									"\tjsonData.forEach((row, i) => {",
+									"\t\tpm.expect(row.location.split(',')[0]).to.equal('Denver');",
+									"\t\tpm.expect(row.id).to.equal(expected_hash_order[i]);",
+									"\t})",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\": \"search_by_conditions\",\n\t\"schema\": \"dev\",\n\t\"table\": \"dog_conditions\",\n\t\"get_attributes\": [\n\t\t\"id\", \"age\", \"location\", \"group\"\n\t],\n\t\"offset\": 3,\n\t\"limit\": 10,\n\t\"conditions\": [\n\t\t{\n\t\t\t\"search_attribute\": \"location\",\n\t\t\t\"search_type\": \"starts_with\",\n\t\t\t\"search_value\": \"Denver\"\n\t\t}\n\t]\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "search by conditions - ends_with condition, offset, limit of 2",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"search by condition returns 3 sorted rows with a location that ends with CO\", function () {",
+									"    const expected_hash_order = [7,9,10];",
+									"\tconst jsonData = pm.response.json();",
+									"    pm.expect(jsonData.length).to.eql(expected_hash_order.length);",
+									"\tjsonData.forEach((row, i) => {",
+									"\t\tpm.expect(row.location.split(', ')[1]).to.equal('CO');",
+									"\t\tpm.expect(row.id).to.equal(expected_hash_order[i]);",
+									"\t})",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\": \"search_by_conditions\",\n\t\"schema\": \"dev\",\n\t\"table\": \"dog_conditions\",\n\t\"get_attributes\": [\n\t\t\"id\", \"age\", \"location\", \"group\"\n\t],\n\t\"offset\": 3,\n\t\"limit\": 3,\n\t\"conditions\": [\n\t\t{\n\t\t\t\"search_attribute\": \"location\",\n\t\t\t\"search_type\": \"ends_with\",\n\t\t\t\"search_value\": \"CO\"\n\t\t}\n\t]\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
 				}
 			]
 		},
@@ -24156,7 +26110,7 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n    \"operation\": \"add_role\",\n    \"role\": \"developer_test_5\",\n    \"permission\": {\n        \"super_user\": false,\n        \"northnwd\": {\n            \"tables\": {\n                \"customers\": {\n                    \"read\": true,\n                    \"insert\": true,\n                    \"update\": true,\n                    \"delete\": true,\n                    \"attribute_permissions\": []\n                },\n                \"suppliers\": {\n                    \"read\": false,\n                    \"insert\": false,\n                    \"update\": false,\n                    \"delete\": false,\n                    \"attribute_permissions\": []\n                },\n                \"region\": {\n                    \"read\": true,\n                    \"insert\": false,\n                    \"update\": false,\n                    \"delete\": false,\n                    \"attribute_permissions\": [\n                        {\n                            \"attribute_name\": \"regiondescription\",\n                            \"read\": true,\n                            \"insert\": false,\n                            \"update\": false,\n                            \"delete\": false\n                        }\n                    ]\n                },\n                \"territories\": {\n                    \"read\": true,\n                    \"insert\": true,\n                    \"update\": false,\n                    \"delete\": false,\n                    \"attribute_permissions\": [\n                        {\n                            \"attribute_name\": \"territorydescription\",\n                            \"read\": true,\n                            \"insert\": true,\n                            \"update\": false,\n                            \"delete\": false\n                        }\n                    ]\n                },\n                \"categories\": {\n                    \"read\": true,\n                    \"insert\": true,\n                    \"update\": true,\n                    \"delete\": false,\n                    \"attribute_permissions\": [\n                        {\n                            \"attribute_name\": \"description\",\n                            \"read\": true,\n                            \"insert\": true,\n                            \"update\": true,\n                            \"delete\": false\n                        }\n                    ]\n                },\n                \"shippers\": {\n                    \"read\": true,\n                    \"insert\": true,\n                    \"update\": true,\n                    \"delete\": true,\n                    \"attribute_permissions\": [\n                        {\n                            \"attribute_name\": \"companyname\",\n                            \"read\": false,\n                            \"insert\": false,\n                            \"update\": false,\n                            \"delete\": false\n                        }\n                    ]\n                }\n            }\n        },\n        \"dev\": {\n            \"tables\": {\n                \"dog\": {\n                    \"read\": true,\n                    \"insert\": true,\n                    \"update\": true,\n                    \"delete\": true,\n                    \"attribute_permissions\": [\n                        {\n                            \"attribute_name\": \"__createdtime__\",\n                            \"read\": true,\n                            \"insert\": true,\n                            \"update\": true\n                        },\n                        {\n                            \"attribute_name\": \"__updatedtime__\",\n                            \"read\": true,\n                            \"insert\": true,\n                            \"update\": true\n                        },\n                        {\n                            \"attribute_name\": \"age\",\n                            \"read\": true,\n                            \"insert\": true,\n                            \"update\": false\n                        },\n                        {\n                            \"attribute_name\": \"dog_name\",\n                            \"read\": true,\n                            \"insert\": false,\n                            \"update\": true\n                        },\n                        {\n                            \"attribute_name\": \"adorable\",\n                            \"read\": true,\n                            \"insert\": true,\n                            \"update\": true\n                        },\n                        {\n                            \"attribute_name\": \"owner_id\",\n                            \"read\": false,\n                            \"insert\": true,\n                            \"update\": true\n                        }\n                    ]\n                },\n                \"breed\": {\n                    \"read\": true,\n                    \"insert\": true,\n                    \"update\": true,\n                    \"delete\": true,\n                    \"attribute_permissions\": [\n                        {\n                            \"attribute_name\": \"__createdtime__\",\n                            \"read\": false,\n                            \"insert\": false,\n                            \"update\": true\n                        },\n                        {\n                            \"attribute_name\": \"__updatedtime__\",\n                            \"read\": false,\n                            \"insert\": true,\n                            \"update\": true\n                        }\n                    ]\n                }\n            }\n        }\n    }\n}"
+							"raw": "{\n\t\"operation\": \"add_role\",\n\t\"role\": \"developer_test_5\",\n\t\"permission\": {\n\t\t\"super_user\": false,\n\t\t\"northnwd\": {\n\t\t\t\"tables\": {\n\t\t\t\t\"customers\": {\n\t\t\t\t\t\"read\": true,\n\t\t\t\t\t\"insert\": true,\n\t\t\t\t\t\"update\": true,\n\t\t\t\t\t\"delete\": true,\n\t\t\t\t\t\"attribute_permissions\": []\n\t\t\t\t},\n\t\t\t\t\"suppliers\": {\n\t\t\t\t\t\"read\": false,\n\t\t\t\t\t\"insert\": false,\n\t\t\t\t\t\"update\": false,\n\t\t\t\t\t\"delete\": false,\n\t\t\t\t\t\"attribute_permissions\": []\n\t\t\t\t},\n\t\t\t\t\"region\": {\n\t\t\t\t\t\"read\": true,\n\t\t\t\t\t\"insert\": false,\n\t\t\t\t\t\"update\": false,\n\t\t\t\t\t\"delete\": false,\n\t\t\t\t\t\"attribute_permissions\": [\n\t\t\t\t\t\t{\n\t\t\t\t\t\t\t\"attribute_name\": \"regiondescription\",\n\t\t\t\t\t\t\t\"read\": true,\n\t\t\t\t\t\t\t\"insert\": false,\n\t\t\t\t\t\t\t\"update\": false,\n\t\t\t\t\t\t\t\"delete\": false\n\t\t\t\t\t\t}\n\t\t\t\t\t]\n\t\t\t\t},\n\t\t\t\t\"territories\": {\n\t\t\t\t\t\"read\": true,\n\t\t\t\t\t\"insert\": true,\n\t\t\t\t\t\"update\": false,\n\t\t\t\t\t\"delete\": false,\n\t\t\t\t\t\"attribute_permissions\": [\n\t\t\t\t\t\t{\n\t\t\t\t\t\t\t\"attribute_name\": \"territorydescription\",\n\t\t\t\t\t\t\t\"read\": true,\n\t\t\t\t\t\t\t\"insert\": true,\n\t\t\t\t\t\t\t\"update\": false,\n\t\t\t\t\t\t\t\"delete\": false\n\t\t\t\t\t\t}\n\t\t\t\t\t]\n\t\t\t\t},\n\t\t\t\t\"categories\": {\n\t\t\t\t\t\"read\": true,\n\t\t\t\t\t\"insert\": true,\n\t\t\t\t\t\"update\": true,\n\t\t\t\t\t\"delete\": false,\n\t\t\t\t\t\"attribute_permissions\": [\n\t\t\t\t\t\t{\n\t\t\t\t\t\t\t\"attribute_name\": \"description\",\n\t\t\t\t\t\t\t\"read\": true,\n\t\t\t\t\t\t\t\"insert\": true,\n\t\t\t\t\t\t\t\"update\": true,\n\t\t\t\t\t\t\t\"delete\": false\n\t\t\t\t\t\t}\n\t\t\t\t\t]\n\t\t\t\t},\n\t\t\t\t\"shippers\": {\n\t\t\t\t\t\"read\": true,\n\t\t\t\t\t\"insert\": true,\n\t\t\t\t\t\"update\": true,\n\t\t\t\t\t\"delete\": true,\n\t\t\t\t\t\"attribute_permissions\": [\n\t\t\t\t\t\t{\n\t\t\t\t\t\t\t\"attribute_name\": \"companyname\",\n\t\t\t\t\t\t\t\"read\": false,\n\t\t\t\t\t\t\t\"insert\": false,\n\t\t\t\t\t\t\t\"update\": false,\n\t\t\t\t\t\t\t\"delete\": false\n\t\t\t\t\t\t}\n\t\t\t\t\t]\n\t\t\t\t}\n\t\t\t}\n\t\t},\n\t\t\"dev\": {\n\t\t\t\"tables\": {\n\t\t\t\t\"dog\": {\n\t\t\t\t\t\"read\": true,\n\t\t\t\t\t\"insert\": true,\n\t\t\t\t\t\"update\": true,\n\t\t\t\t\t\"delete\": true,\n\t\t\t\t\t\"attribute_permissions\": [\n\t\t\t\t\t\t{\n\t\t\t\t\t\t\t\"attribute_name\": \"__createdtime__\",\n\t\t\t\t\t\t\t\"read\": true,\n\t\t\t\t\t\t\t\"insert\": true,\n\t\t\t\t\t\t\t\"update\": true\n\t\t\t\t\t\t},\n\t\t\t\t\t\t{\n\t\t\t\t\t\t\t\"attribute_name\": \"__updatedtime__\",\n\t\t\t\t\t\t\t\"read\": true,\n\t\t\t\t\t\t\t\"insert\": true,\n\t\t\t\t\t\t\t\"update\": true\n\t\t\t\t\t\t},\n\t\t\t\t\t\t{\n\t\t\t\t\t\t\t\"attribute_name\": \"age\",\n\t\t\t\t\t\t\t\"read\": true,\n\t\t\t\t\t\t\t\"insert\": true,\n\t\t\t\t\t\t\t\"update\": false\n\t\t\t\t\t\t},\n\t\t\t\t\t\t{\n\t\t\t\t\t\t\t\"attribute_name\": \"dog_name\",\n\t\t\t\t\t\t\t\"read\": true,\n\t\t\t\t\t\t\t\"insert\": false,\n\t\t\t\t\t\t\t\"update\": true\n\t\t\t\t\t\t},\n\t\t\t\t\t\t{\n\t\t\t\t\t\t\t\"attribute_name\": \"adorable\",\n\t\t\t\t\t\t\t\"read\": true,\n\t\t\t\t\t\t\t\"insert\": true,\n\t\t\t\t\t\t\t\"update\": true\n\t\t\t\t\t\t},\n\t\t\t\t\t\t{\n\t\t\t\t\t\t\t\"attribute_name\": \"owner_id\",\n\t\t\t\t\t\t\t\"read\": false,\n\t\t\t\t\t\t\t\"insert\": true,\n\t\t\t\t\t\t\t\"update\": true\n\t\t\t\t\t\t}\n\t\t\t\t\t]\n\t\t\t\t},\n\t\t\t\t\"breed\": {\n\t\t\t\t\t\"read\": true,\n\t\t\t\t\t\"insert\": true,\n\t\t\t\t\t\"update\": true,\n\t\t\t\t\t\"delete\": true,\n\t\t\t\t\t\"attribute_permissions\": [\n\t\t\t\t\t\t{\n\t\t\t\t\t\t\t\"attribute_name\": \"__createdtime__\",\n\t\t\t\t\t\t\t\"read\": false,\n\t\t\t\t\t\t\t\"insert\": false,\n\t\t\t\t\t\t\t\"update\": true\n\t\t\t\t\t\t},\n\t\t\t\t\t\t{\n\t\t\t\t\t\t\t\"attribute_name\": \"__updatedtime__\",\n\t\t\t\t\t\t\t\"read\": false,\n\t\t\t\t\t\t\t\"insert\": true,\n\t\t\t\t\t\t\t\"update\": true\n\t\t\t\t\t\t}\n\t\t\t\t\t]\n\t\t\t\t},\n\t\t\t\t\"dog_conditions\": {\n\t\t\t\t\t\"read\": true,\n\t\t\t\t\t\"insert\": true,\n\t\t\t\t\t\"update\": false,\n\t\t\t\t\t\"delete\": false,\n\t\t\t\t\t\"attribute_permissions\": [\n\t\t\t\t\t\t{\n\t\t\t\t\t\t\t\"attribute_name\": \"age\",\n\t\t\t\t\t\t\t\"read\": true,\n\t\t\t\t\t\t\t\"insert\": false,\n\t\t\t\t\t\t\t\"update\": false\n\t\t\t\t\t\t},\n\t\t\t\t\t\t{\n\t\t\t\t\t\t\t\"attribute_name\": \"group\",\n\t\t\t\t\t\t\t\"read\": true,\n\t\t\t\t\t\t\t\"insert\": false,\n\t\t\t\t\t\t\t\"update\": false\n\t\t\t\t\t\t},\n\t\t\t\t\t\t{\n\t\t\t\t\t\t\t\"attribute_name\": \"breed_id\",\n\t\t\t\t\t\t\t\"read\": false,\n\t\t\t\t\t\t\t\"insert\": true,\n\t\t\t\t\t\t\t\"update\": false\n\t\t\t\t\t\t},\n\t\t\t\t\t\t{\n\t\t\t\t\t\t\t\"attribute_name\": \"dog_name\",\n\t\t\t\t\t\t\t\"read\": true,\n\t\t\t\t\t\t\t\"insert\": false,\n\t\t\t\t\t\t\t\"update\": false\n\t\t\t\t\t\t},\n\t\t\t\t\t\t{\n\t\t\t\t\t\t\t\"attribute_name\": \"id\",\n\t\t\t\t\t\t\t\"read\": true,\n\t\t\t\t\t\t\t\"insert\": true,\n\t\t\t\t\t\t\t\"update\": false\n\t\t\t\t\t\t},\n\t\t\t\t\t\t{\n\t\t\t\t\t\t\t\"attribute_name\": \"location\",\n\t\t\t\t\t\t\t\"read\": false,\n\t\t\t\t\t\t\t\"insert\": false,\n\t\t\t\t\t\t\t\"update\": false\n\t\t\t\t\t\t}\n\t\t\t\t\t]\n\t\t\t\t}\n\t\t\t}\n\t\t}\n\t}\n}"
 						},
 						"url": {
 							"raw": "{{host}}:{{port}}",
@@ -27564,6 +29518,848 @@
 					"response": []
 				},
 				{
+					"name": "search by conditions - equals - allowed attr",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"search by condition returns two rows with permitted attrs\", function () {",
+									"    const jsonData = pm.response.json();",
+									"    pm.expect(jsonData.length).to.eql(2);",
+									"\tjsonData.forEach(row => {",
+									"\t\tpm.expect([1,2].includes(row.id)).to.be.true;",
+									"\t\tpm.expect(row.location).to.be.undefined;",
+									"\t\tpm.expect(row.breed_id).to.be.undefined;",
+									"\t})",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{test_user_name}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"search_by_conditions\",\n\t\"schema\":\"dev\",\n\t\"table\": \"dog_conditions\",\n\t\"get_attributes\": [\"*\"],\n\t\"conditions\": [{\n\t\t\"search_attribute\": \"age\",\n\t\t\"search_type\": \"equals\",\n\t\t\"search_value\": 5\n\t}]\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "search by conditions - ends_with - allowed attr",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"search by condition returns 4 rows with dog names ending w/ 'y' and only permitted attrs\", function () {",
+									"    const jsonData = pm.response.json();",
+									"    pm.expect(jsonData.length).to.eql(4);",
+									"\tjsonData.forEach(row => {",
+									"\t\tpm.expect([...row.dog_name].pop()).to.equal('y');",
+									"\t\tpm.expect(row.location).to.be.undefined;",
+									"\t\tpm.expect(row.breed_id).to.be.undefined;",
+									"\t})",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{test_user_name}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"search_by_conditions\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog_conditions\",\n\t\"get_attributes\": [\"*\"],\n\t\"conditions\": [{\n\t\t\"search_attribute\": \"dog_name\",\n\t\t\"search_type\": \"ends_with\",\n\t\t\"search_value\": \"y\"\n\t}]\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "search by conditions - equals - restricted attr",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 403\", function () {",
+									"    pm.response.to.have.status(403);",
+									"});",
+									"",
+									"var jsonData = pm.response.json();",
+									"",
+									"pm.test(\"Op auth error message\", function () {",
+									"    pm.expect(jsonData.error).to.eql(\"This operation is not authorized due to role restrictions and/or invalid schema items\");",
+									"});",
+									"",
+									"pm.test(\"invalid_schema_items is not empty\", function () {",
+									"    pm.expect(jsonData.invalid_schema_items.length).to.eql(1);",
+									"    pm.expect(jsonData.invalid_schema_items[0]).to.eql(\"Attribute 'location' does not exist on 'dev.dog_conditions'\");",
+									"});",
+									"",
+									"pm.test(\"unauthorized_access is empty\", function () {",
+									"    pm.expect(jsonData.unauthorized_access.length).to.eql(0);",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{test_user_name}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"search_by_conditions\",\n\t\"schema\":\"dev\",\n\t\"table\": \"dog_conditions\",\n\t\"get_attributes\": [\"*\"],\n\t\"conditions\": [{\n\t\t\"search_attribute\": \"location\",\n\t\t\"search_type\": \"equals\",\n\t\t\"search_value\": \"Denver, CO\"\n\t}]\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "search by conditions - contains - restricted attr",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 403\", function () {",
+									"    pm.response.to.have.status(403);",
+									"});",
+									"",
+									"var jsonData = pm.response.json();",
+									"",
+									"pm.test(\"Op auth error message\", function () {",
+									"    pm.expect(jsonData.error).to.eql(\"This operation is not authorized due to role restrictions and/or invalid schema items\");",
+									"});",
+									"",
+									"pm.test(\"invalid_schema_items is not empty\", function () {",
+									"    pm.expect(jsonData.invalid_schema_items.length).to.eql(1);",
+									"    pm.expect(jsonData.invalid_schema_items[0]).to.eql(\"Attribute 'location' does not exist on 'dev.dog_conditions'\");",
+									"});",
+									"",
+									"pm.test(\"unauthorized_access is empty\", function () {",
+									"    pm.expect(jsonData.unauthorized_access.length).to.eql(0);",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{test_user_name}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"search_by_conditions\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog_conditions\",\n\t\"get_attributes\": [\"*\"],\n\t\"conditions\": [\n\t\t{\n\t\t\"search_attribute\": \"location\",\n\t\t\"search_type\": \"contains\",\n\t\t\"search_value\": \"Denver\"\n\t}\n\t]\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "search by conditions - starts_with - non-existent attr",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 403\", function () {",
+									"    pm.response.to.have.status(403);",
+									"});",
+									"",
+									"var jsonData = pm.response.json();",
+									"",
+									"pm.test(\"Op auth error message\", function () {",
+									"    pm.expect(jsonData.error).to.eql(\"This operation is not authorized due to role restrictions and/or invalid schema items\");",
+									"});",
+									"",
+									"pm.test(\"invalid_schema_items is not empty\", function () {",
+									"    pm.expect(jsonData.invalid_schema_items.length).to.eql(1);",
+									"    pm.expect(jsonData.invalid_schema_items[0]).to.eql(\"Attribute 'random_attr' does not exist on 'dev.dog_conditions'\");",
+									"});",
+									"",
+									"pm.test(\"unauthorized_access is empty\", function () {",
+									"    pm.expect(jsonData.unauthorized_access.length).to.eql(0);",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{test_user_name}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"search_by_conditions\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog_conditions\",\n\t\"get_attributes\": [\"*\"],\n\t\"conditions\": [{\n\t\t\"search_attribute\": \"random_attr\",\n\t\t\"search_type\": \"starts_with\",\n\t\t\"search_value\": 1\n\t}]\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "search by conditions - starts_with - unauth'd attr",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 403\", function () {",
+									"    pm.response.to.have.status(403);",
+									"});",
+									"",
+									"var jsonData = pm.response.json();",
+									"",
+									"pm.test(\"Op auth error message\", function () {",
+									"    pm.expect(jsonData.error).to.eql(\"This operation is not authorized due to role restrictions and/or invalid schema items\");",
+									"});",
+									"",
+									"pm.test(\"invalid_schema_items is empty\", function () {",
+									"    pm.expect(jsonData.invalid_schema_items.length).to.eql(0);",
+									"});",
+									"",
+									"pm.test(\"unauthorized_access is NOT empty\", function () {",
+									"    pm.expect(jsonData.unauthorized_access.length).to.eql(1);",
+									"\tpm.expect(jsonData.unauthorized_access[0].schema).to.eql(\"dev\");",
+									"\tpm.expect(jsonData.unauthorized_access[0].table).to.eql(\"dog_conditions\");",
+									"\tpm.expect(jsonData.unauthorized_access[0].required_attribute_permissions.length).to.eql(1);",
+									"\tpm.expect(jsonData.unauthorized_access[0].required_attribute_permissions[0].attribute_name).to.eql(\"breed_id\");",
+									"\tpm.expect(jsonData.unauthorized_access[0].required_attribute_permissions[0].required_permissions[0]).to.eql(\"read\");",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{test_user_name}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"search_by_conditions\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog_conditions\",\n\t\"get_attributes\": [\"*\"],\n\t\"conditions\": [{\n\t\t\"search_attribute\": \"breed_id\",\n\t\t\"search_type\": \"starts_with\",\n\t\t\"search_value\": 1\n\t}]\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "search by conditions - starts_with - unauth'd attrs in get/search",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 403\", function () {",
+									"    pm.response.to.have.status(403);",
+									"});",
+									"",
+									"var jsonData = pm.response.json();",
+									"",
+									"pm.test(\"Op auth error message\", function () {",
+									"    pm.expect(jsonData.error).to.eql(\"This operation is not authorized due to role restrictions and/or invalid schema items\");",
+									"});",
+									"",
+									"pm.test(\"invalid_schema_items is not empty\", function () {",
+									"    pm.expect(jsonData.invalid_schema_items.length).to.eql(1);",
+									"    pm.expect(jsonData.invalid_schema_items[0]).to.eql(\"Attribute 'location' does not exist on 'dev.dog_conditions'\");",
+									"});",
+									"",
+									"pm.test(\"unauthorized_access is NOT empty\", function () {",
+									"    pm.expect(jsonData.unauthorized_access.length).to.eql(1);",
+									"\tpm.expect(jsonData.unauthorized_access[0].schema).to.eql(\"dev\");",
+									"\tpm.expect(jsonData.unauthorized_access[0].table).to.eql(\"dog_conditions\");",
+									"\tpm.expect(jsonData.unauthorized_access[0].required_attribute_permissions.length).to.eql(1);",
+									"\tpm.expect(jsonData.unauthorized_access[0].required_attribute_permissions[0].attribute_name).to.eql(\"breed_id\");",
+									"\tpm.expect(jsonData.unauthorized_access[0].required_attribute_permissions[0].required_permissions[0]).to.eql(\"read\");",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{test_user_name}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"search_by_conditions\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog_conditions\",\n\t\"get_attributes\": [\"id\", \"dog_name\", \"location\"],\n\t\"conditions\": [{\n\t\t\"search_attribute\": \"breed_id\",\n\t\t\"search_type\": \"starts_with\",\n\t\t\"search_value\": 1\n\t}]\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "search by conditions - equals & contains - restricted attr",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 403\", function () {",
+									"    pm.response.to.have.status(403);",
+									"});",
+									"",
+									"var jsonData = pm.response.json();",
+									"",
+									"pm.test(\"Op auth error message\", function () {",
+									"    pm.expect(jsonData.error).to.eql(\"This operation is not authorized due to role restrictions and/or invalid schema items\");",
+									"});",
+									"",
+									"pm.test(\"invalid_schema_items is not empty\", function () {",
+									"    pm.expect(jsonData.invalid_schema_items.length).to.eql(1);",
+									"    pm.expect(jsonData.invalid_schema_items[0]).to.eql(\"Attribute 'location' does not exist on 'dev.dog_conditions'\");",
+									"});",
+									"",
+									"pm.test(\"unauthorized_access is empty\", function () {",
+									"    pm.expect(jsonData.unauthorized_access.length).to.eql(0);",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{test_user_name}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\": \"search_by_conditions\",\n\t\"schema\": \"dev\",\n\t\"table\": \"dog_conditions\",\n\t\"get_attributes\": [\n\t\t\"*\"\n\t],\n\t\"conditions\": [\n\t\t{\n\t\t\t\"search_attribute\": \"group\",\n\t\t\t\"search_type\": \"equals\",\n\t\t\t\"search_value\": \"A\"\n\t\t},\n\t\t{\n\t\t\t\"search_attribute\": \"location\",\n\t\t\t\"search_type\": \"contains\",\n\t\t\t\"search_value\": \"CO\"\n\t\t}\n\t]\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "search by conditions - starts_with & between w/ sort",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 403\", function () {",
+									"    pm.response.to.have.status(403);",
+									"});",
+									"",
+									"var jsonData = pm.response.json();",
+									"",
+									"pm.test(\"Op auth error message\", function () {",
+									"    pm.expect(jsonData.error).to.eql(\"This operation is not authorized due to role restrictions and/or invalid schema items\");",
+									"});",
+									"",
+									"pm.test(\"invalid_schema_items is not empty\", function () {",
+									"    pm.expect(jsonData.invalid_schema_items.length).to.eql(1);",
+									"    pm.expect(jsonData.invalid_schema_items[0]).to.eql(\"Attribute 'location' does not exist on 'dev.dog_conditions'\");",
+									"});",
+									"",
+									"pm.test(\"unauthorized_access is empty\", function () {",
+									"    pm.expect(jsonData.unauthorized_access.length).to.eql(0);",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{test_user_name}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\": \"search_by_conditions\",\n\t\"schema\": \"dev\",\n\t\"table\": \"dog_conditions\",\n\t\"get_attributes\": [\n\t\t\"*\"\n\t],\n\t\"sort_attributes\": [\n\t\t{\n\t\t\t\"attribute\": \"age\",\n\t\t\t\"desc\": false\n\t\t},\n\t\t{\n\t\t\t\"attribute\": \"location\",\n\t\t\t\"desc\": true\n\t\t}\n\t],\n\t\"conditions\": [\n\t\t{\n\t\t\t\"search_attribute\": \"group\",\n\t\t\t\"search_type\": \"between\",\n\t\t\t\"search_value\": [\n\t\t\t\t\"A\",\n\t\t\t\t\"C\"\n\t\t\t]\n\t\t},\n\t\t{\n\t\t\t\"search_attribute\": \"location\",\n\t\t\t\"search_type\": \"starts_with\",\n\t\t\t\"search_value\": \"Denver\"\n\t\t}\n\t]\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "search by conditions - 4 conditions - restricted attrs",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 403\", function () {",
+									"    pm.response.to.have.status(403);",
+									"});",
+									"",
+									"var jsonData = pm.response.json();",
+									"",
+									"pm.test(\"Op auth error message\", function () {",
+									"    pm.expect(jsonData.error).to.eql(\"This operation is not authorized due to role restrictions and/or invalid schema items\");",
+									"});",
+									"",
+									"pm.test(\"invalid_schema_items is not empty\", function () {",
+									"    pm.expect(jsonData.invalid_schema_items.length).to.eql(2);",
+									"    pm.expect(jsonData.invalid_schema_items[0]).to.eql(\"Attribute 'group_id' does not exist on 'dev.dog_conditions'\");",
+									"\tpm.expect(jsonData.invalid_schema_items[1]).to.eql(\"Attribute 'location' does not exist on 'dev.dog_conditions'\");",
+									"});",
+									"",
+									"pm.test(\"unauthorized_access is empty\", function () {",
+									"    pm.expect(jsonData.unauthorized_access.length).to.eql(0);",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{test_user_name}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\": \"search_by_conditions\",\n\t\"schema\": \"dev\",\n\t\"table\": \"dog_conditions\",\n\t\"get_attributes\": [\n\t\t\"*\"\n\t],\n\t\"conditions\": [\n\t\t{\n\t\t\t\"search_attribute\": \"group_id\",\n\t\t\t\"search_type\": \"between\",\n\t\t\t\"search_value\": [\n\t\t\t\t0,\n\t\t\t\t100\n\t\t\t]\n\t\t},\n\t\t{\n\t\t\t\"search_attribute\": \"dog_name\",\n\t\t\t\"search_type\": \"ends_with\",\n\t\t\t\"search_value\": \"y\"\n\t\t},\n\t\t{\n\t\t\t\"search_attribute\": \"location\",\n\t\t\t\"search_type\": \"contains\",\n\t\t\t\"search_value\": \"enve\"\n\t\t},\n\t\t{\n\t\t\t\"search_attribute\": \"age\",\n\t\t\t\"search_type\": \"greater_than\",\n\t\t\t\"search_value\": 1\n\t\t}\n\t]\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "search by conditions - 4 conditions - restricted/unauth'd attrs",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 403\", function () {",
+									"    pm.response.to.have.status(403);",
+									"});",
+									"",
+									"var jsonData = pm.response.json();",
+									"",
+									"pm.test(\"Op auth error message\", function () {",
+									"    pm.expect(jsonData.error).to.eql(\"This operation is not authorized due to role restrictions and/or invalid schema items\");",
+									"});",
+									"",
+									"pm.test(\"invalid_schema_items is not empty\", function () {",
+									"    pm.expect(jsonData.invalid_schema_items.length).to.eql(2);",
+									"    pm.expect(jsonData.invalid_schema_items[0]).to.eql(\"Attribute 'group_id' does not exist on 'dev.dog_conditions'\");",
+									"\tpm.expect(jsonData.invalid_schema_items[1]).to.eql(\"Attribute 'location' does not exist on 'dev.dog_conditions'\");",
+									"});",
+									"",
+									"pm.test(\"unauthorized_access is NOT empty\", function () {",
+									"    pm.expect(jsonData.unauthorized_access.length).to.eql(1);",
+									"\tpm.expect(jsonData.unauthorized_access[0].schema).to.eql(\"dev\");",
+									"\tpm.expect(jsonData.unauthorized_access[0].table).to.eql(\"dog_conditions\");",
+									"\tpm.expect(jsonData.unauthorized_access[0].required_attribute_permissions.length).to.eql(1);",
+									"\tpm.expect(jsonData.unauthorized_access[0].required_attribute_permissions[0].attribute_name).to.eql(\"breed_id\");",
+									"\tpm.expect(jsonData.unauthorized_access[0].required_attribute_permissions[0].required_permissions[0]).to.eql(\"read\");",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{test_user_name}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\": \"search_by_conditions\",\n\t\"schema\": \"dev\",\n\t\"table\": \"dog_conditions\",\n\t\"get_attributes\": [\n\t\t\"*\"\n\t],\n\t\"conditions\": [\n\t\t{\n\t\t\t\"search_attribute\": \"group_id\",\n\t\t\t\"search_type\": \"between\",\n\t\t\t\"search_value\": [\n\t\t\t\t0,\n\t\t\t\t100\n\t\t\t]\n\t\t},\n\t\t{\n\t\t\t\"search_attribute\": \"breed_id\",\n\t\t\t\"search_type\": \"equals\",\n\t\t\t\"search_value\": 5\n\t\t},\n\t\t{\n\t\t\t\"search_attribute\": \"age\",\n\t\t\t\"search_type\": \"less_than\",\n\t\t\t\"search_value\": 100\n\t\t},\n\t\t{\n\t\t\t\"search_attribute\": \"location\",\n\t\t\t\"search_type\": \"contains\",\n\t\t\t\"search_value\": \"enver,\"\n\t\t}\n\t]\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
 					"name": "NoSQL Alter non-SU role",
 					"event": [
 						{
@@ -27574,8 +30370,8 @@
 									"    pm.response.to.have.status(200);",
 									"});",
 									"",
-									"responseData = JSON.parse(responseBody);",
-									"postman.setEnvironmentVariable(\"role_id\", responseData.id)"
+									"// responseData = JSON.parse(responseBody);",
+									"// postman.setEnvironmentVariable(\"role_id\", responseData.id)"
 								],
 								"type": "text/javascript"
 							}
@@ -51949,11 +54745,11 @@
 		},
 		{
 			"key": "operation_token",
-			"value": "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VybmFtZSI6ImFkbWluIiwic3VwZXJfdXNlciI6dHJ1ZSwiY2x1c3Rlcl91c2VyIjpmYWxzZSwiaWF0IjoxNjEzNzcyODk4LCJleHAiOjE2MTM4NTkyOTgsInN1YiI6Im9wZXJhdGlvbiJ9.n_rL2YeUKh4sdy0VmDgpl1SSdNTFqCI97uCaLOn3m-MZ3ehvFOzUCvb72jv0MtkFtZhZreEx50AdFraYKz75EJw4DhDRW2DHLYc0l2qmJLlJtvBOIE_pM3wEg4GTTskhzB_F-9cDxhTHgMzd6BIDDxIjDB-bpWm8LQVzS0FIS4M-7szAmtFW6JOwLx36fQDk5qy2seTeWUB7CdEPxJuvoI5uDRvMLWda0Fb8maxDtmNGWjFrYv0Hpkie2udTd4zTzFkL1hPFa1yWHOsH4tUX6yrdX2ykP0cy10sd0vTNgwcyedDpWhSs-q9-9TekeyLh78IAINGfCtM3iu9wGW0rXOUtQRrlxUx03LVtNqDMgA5FofwjZuNeAM2y4QiB8Em9rLXo5RFjd0jGsVQC5RjaoaEjuB8ZMiWhCrR9ODJRaN8XC0GNfDeXYGxMA0OJMAe7evB_9ysTyVH4e7_bC4TVQxebc2CmoY-HXawvOTFpU3N-OmU6G1zeI6JWiHJ1yGvizfQbb_qQ1ef3FzrJS0MePNc9ZNE2m2Bez7EWa81ccexsWdO73_iMMFccYu7gOXSKTI_ExEHk9JPpbj23OXuL-BpPS0G44yTzs3urQOm7Yk2hFPdYhsKimNQmXMtjTXVbsN0i0ysmuUOLkVCwEMyvQW5OoYE0sCC7A9urNrcgM9k"
+			"value": "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VybmFtZSI6ImFkbWluIiwic3VwZXJfdXNlciI6dHJ1ZSwiY2x1c3Rlcl91c2VyIjpmYWxzZSwiaWF0IjoxNjE2MDA4NjMwLCJleHAiOjE2MTYwOTUwMzAsInN1YiI6Im9wZXJhdGlvbiJ9.nZ2pk5ixPyzzhpI1LQJ0bF61ZFjHcCyq5geDBnPhW_763GgLQ7-dXhzn6yVVq890q1i8fDp0CWWvaE8ynz0_2oX0cHF1wPKein1rXVGZbR-Oo5LIUVXVW4GcZj6pnI7JFAhsmzMvfm_RmjyS7NefpJibCwP6wIrXGj3cY_L_e6aBc7QaXQ-TY5-040bjqzsJqHA_wrP-Ogt8UvnXrGwAhkReyz5dMhZW8Pp6oRVrm8iVrWQeb5XPwCFytFjlzHfRDGRXvbfOul9OOW08AwUhlYkF0C1-LQVXCrFyla25abVUbVoYIBdn5wnA0dZ3wYBtsskOP3niTTSWMDxp29zQ9wb3Urr5fqqlgPRNWEy5wt8K3p208aiQ2Haba7y2S9VEEYcqdoRzwOYWkVaYJAaTbrGTy5AU4y-a7QE_k3d-fll-DWVGQ5frKSGB1T8NmlT4kuIJI1_2v-pvcFKjpdq3eOhOYqhyCfoKf30Np1HOFhIiVw2PwLwpworvVg347ZtTeu7wAMu-Ayu9o4OwTGWBOYdBrJq66LpwpZWy565L916uo7UKWbVT-d-TsS7YGNos9FJ-5GY8H5_x6R3eQt96maNGckJWfl1ECrQ32zuzw6UzLH6Js9-87jBnYTUjtfY1OrJMkixi1aeua2e3Oi95JmSwPZoqsIAyy1GxdNmIOg8"
 		},
 		{
 			"key": "refresh_token",
-			"value": "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VybmFtZSI6ImFkbWluIiwic3VwZXJfdXNlciI6dHJ1ZSwiY2x1c3Rlcl91c2VyIjpmYWxzZSwiaWF0IjoxNjEzNzcyODk4LCJleHAiOjE2MTYzNjQ4OTgsInN1YiI6InJlZnJlc2gifQ.neMaezdypJrtpuMFCijNvgTye9dAVMkY4nAyBrp2GpZk7tcnZjUycLGgVo1_YoEQA-MtBOrTaohajuf_wJj4sh4W3OYIlp5BhDF_JXwqoe6XOQKK2jPAT31yw9vDLzzUpwDctzQ2M9txlYdSlCpaciLBiYToXmuVqt6oOyqEuMX_9VX1smJe-qDQRTgZaGEAlczV8OZ1WjWU_OJOOUppqKhRk243OSVqWQ__u0QGr826cwECHGHarjzm5_QJO5-4ROrPZsLi1gyWlu5_RGJWAH7TXDAuE1B9LRi7QhkirjRP8C0iKqQsTNRrkp6N_JCJ3f23b-82zGu9qX5tT8xEdKpYEYDpKFQuW7UMsXxA0s1oFRI9bIBZmxRFPd6VrJOd5cNhDk5kIiw5_VHpuOSuwMn4ulBHOtNkdaYz5lS5loIcjX3pIeNA_j9Lpp69KHC0oPRAplNknSKn_2sPK_zn__0QMXlFJqLdiLSgkVYL6NGaJ4mVKTS2sl0yzf_xNJ5vMWzsSrsJ_8qYEkA8RHF1IqVB2eL2nagZ9_PpgspYq--EmFCpCFCtNRU3JrGZgbXhxfR-IpZom1tugmMrj-4x3ggNi6hnM5JH7OhVK_ux-46DqGZa8PmD8D8OiNEiac8d8fOwQW_1I14hn3xO9GBODxCyV7BAayHu6XKdYrCAj9s"
+			"value": "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VybmFtZSI6ImFkbWluIiwic3VwZXJfdXNlciI6dHJ1ZSwiY2x1c3Rlcl91c2VyIjpmYWxzZSwiaWF0IjoxNjE2MDA4NjI5LCJleHAiOjE2MTg2MDA2MjksInN1YiI6InJlZnJlc2gifQ.lVZ6fNSfXKNrA34eocOEZt5WgqGyGXaxVQvrf61r8cE_DoIH2MKaG2li4sAoNUjW3OeXw60IkHYVNwXVXVvSR8BJW22yGGAl3cTSsSXuO2hNjEdptQJBMLpcghXkJmhftyDBq37ZXBjVb2n1kg_dGElr2e-ZoZOfBC2qrN7Lx3OKN1e5hdjNu5wbNhH9_MsgZl4jCLkHweyn57IYysLpI5-6zn9R_YyfUUJPwLxznYVJl5-xyW9s_gFiZEhH9ds89nTmUSC76rM4pVdivxuRX_IzAlCSFoMa3upQNolmr7jesFqcj-4PVyOFWhDHvE96oT4JXBrG3V602LB7l16uFiZUeCt2swi4OOnvp2hr5Ua0Atsh7Y1tZ3Ru7tR_EUzU1ky_KDQ-QL-cYC9mmjwwKj3ROK-tHjGZsR2J6Wz3kZiLYpmkaIcX2JsUGnK25xZrbumb0N2ZjOaWS103hbUl98viXDQan8bjg7DcVI9wyVWYFbUrctQ9--mFrzLyqI8k2i2MIXFoW6vAWKzz-YaWj47trJ5tS6zmU_Q9unxAdFvKqqvfUBBYBIWNBvvhXGNwFrdZFjyH8A2unuTG3T09jhoczWyWNuKYs_Vf1PgFhv3yjeO4MpXYIDGLayyEcj86kkkQmJkFd72zXpF_DOzFDhjmE1D341D3HYYDTImxooc"
 		}
 	]
 }
