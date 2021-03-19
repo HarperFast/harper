@@ -89,8 +89,8 @@ const INSERT_MODULE_ENUM = {
 };
 
 const UPGRADE_JSON_FIELD_NAMES_ENUM = {
-    CURRENT_VERSION: 'currentVersion',
-    UPGRADE_VERSION: 'upgradeVersion'
+    DATA_VERSION: 'data_version',
+    UPGRADE_VERSION: 'upgrade_version'
 };
 
 const SYSTEM_TABLE_NAMES = {
@@ -281,8 +281,7 @@ const SERVICE_ACTIONS_ENUM = {
     STOP:'stop',
     RESTART:'restart',
     VERSION: 'version',
-    UPGRADE:'upgrade',
-    UPGRADE_EXTERN: 'upgrade_external'
+    UPGRADE:'upgrade'
 };
 
 //describes the Geo Conversion types

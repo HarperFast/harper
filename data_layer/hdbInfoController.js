@@ -136,7 +136,7 @@ async function getLatestHdbInfoRecord() {
  * the method returns an UpgradeObject w/ the version number of the hdb software/instance and the older version number that
  * the data is on.
  *
- * @returns {Promise<UpgradeObject>}
+ * @returns {Promise<UpgradeObject> || undefined} - returns an UpgradeObject (if an upgrade is required) OR undefined (if not)
  */
 async function getVersionUpdateInfo() {
     log.info('Checking if HDB software has been updated');
@@ -174,5 +174,6 @@ async function getVersionUpdateInfo() {
 module.exports = {
     insertHdbInstallInfo,
     insertHdbUpgradeInfo,
-    getVersionUpdateInfo
+    getVersionUpdateInfo,
+    searchInfo
 };

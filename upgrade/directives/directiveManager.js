@@ -7,33 +7,17 @@
  * Any time a directive file is added to the project, it must be required in this manager.
  */
 const hdb_utils = require('../../utility/common_utils');
+const hdb_terms = require('../../utility/hdbTerms');
+const { DATA_VERSION, UPGRADE_VERSION } = hdb_terms.UPGRADE_JSON_FIELD_NAMES_ENUM;
 
 // VERSIONS
-const version_1_1 = require('./1-1');
-const version_1_2 = require('./1-2');
-const version_1_3 = require('./1-3');
-const version_2_0 = require('./2-0');
+const version_3_0_0 = require('./3-0-0');
 
 let versions = new Map();
 
 //TODO:  ALL NEW DIRECTIVES MUST BE ADDED TO VERSIONS
-if(version_1_1) {
-    version_1_1.forEach((version) => {
-        versions.set(version.version, version);
-    });
-}
-if(version_1_2) {
-    version_1_2.forEach((version) => {
-        versions.set(version.version, version);
-    });
-}
-if(version_1_3) {
-    version_1_3.forEach((version) => {
-        versions.set(version.version, version);
-    });
-}
-if(version_2_0) {
-    version_2_0.forEach((version) => {
+if(version_3_0_0) {
+    version_3_0_0.forEach((version) => {
         versions.set(version.version, version);
     });
 }
@@ -43,11 +27,13 @@ function getSortedVersions() {
     return sorted_keys;
 }
 
-function filterInvalidVersions(curr_version, new_version) {
-    // TODO - do we still need these checks?
-    // if(hdb_utils.isEmptyOrZeroLength(curr_version)) {
-    //     return [];
-    // }
+function filterInvalidVersions(upgrade_obj) {
+    let curr_version = upgrade_obj[DATA_VERSION];
+    let new_version = upgrade_obj[UPGRADE_VERSION];
+
+    if (hdb_utils.isEmptyOrZeroLength(curr_version)) {
+        return [];
+    }
     if(!versions.has(curr_version)) {
         return [];
     }

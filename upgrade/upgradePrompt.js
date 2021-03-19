@@ -1,22 +1,21 @@
 "use strict";
 
-const log = require('../logging/harper_logger');
+const log = require('../utility/logging/harper_logger');
 const { Select } = require('enquirer');
 const os = require('os');
-const upgrade = require('../../bin/upgrade');
+const upgrade = require('../bin/upgrade');
 
 const UPGRADE_PROCEED = 'Yes, proceed';
 const UPGRADE_CANCEL = 'No, cancel the upgrade';
 
 /**
  * Prompt the user that they need to run the upgrade scripts, typically after upgrading via a package manager.
- * @param old_version_string - The previously installed version number
- * @param new_version_string - The newly installed version number.
+ * @param upgrade_object - {UpgradeObject} Object includes the versions the data and current install are on
  * @returns {Promise<boolean>}
  */
-async function forceUpdatePrompt(old_version_string, new_version_string) {
+async function forceUpdatePrompt(upgrade_obj) {
     // pull directive changes
-    let changes = upgrade.listDirectiveChanges(old_version_string, new_version_string);
+    let changes = upgrade.listDirectiveChanges(upgrade_obj);
     let counter = 1;
     let message = 'HarperDB has been recently updated, we need to complete the update process.  If a backup of your data has not been created, cancel this process and backup.  The following data will be affected:';
     message = message + os.EOL;

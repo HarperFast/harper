@@ -11,6 +11,16 @@ const path = require('path');
 const PropertiesReader = require('properties-reader');
 const directive_manager = require('./directives/directiveManager');
 const terms = require('../utility/hdbTerms');
+const { DATA_VERSION, UPGRADE_VERSION } = terms.UPGRADE_JSON_FIELD_NAMES_ENUM.DATA_VERSION
+
+const Config = require('conf-cfg-ini');
+const config = new Config({
+    lineEnding: os.EOL,
+    defaultValue: '',
+    assignIdentifier: "=",
+    commentIdentifiers: [";"],
+    trimLines: true
+})
 
 module.exports = {
     writeEnvVariables,
@@ -25,6 +35,11 @@ try {
     // We still use the PropertiesReader here as we need to write out comments during directives.
     hdb_boot_properties = PropertiesReader(env.BOOT_PROPS_FILE_PATH);
     hdb_properties = PropertiesReader(hdb_boot_properties.get('settings_path'));
+
+    const raw = fs.readFileSync(hdb_boot_properties.get('settings_path'));
+    const configObject = config.decode(raw);
+    console.log(configObject)
+
 } catch(e) {
     log.info(`Couldn't read settings files.`);
 }
@@ -45,10 +60,10 @@ try {
  * @param curr_version
  * @param upgrade_version
  */
-function getDirectiveChangeDescriptions(curr_version, upgrade_version) {
+function getDirectiveChangeDescriptions(upgrade_obj) {
     let change_descriptions = [];
-    let loaded_directives = directive_manager.filterInvalidVersions(curr_version, upgrade_version);
-    let upgrade_directives = getVersionsToInstall(curr_version, loaded_directives);
+    let loaded_directives = directive_manager.filterInvalidVersions(upgrade_obj);
+    let upgrade_directives = getVersionsToInstall(upgrade_obj[DATA_VERSION], loaded_directives);
     for(let vers of upgrade_directives) {
         let new_description = {};
         if(vers.change_description) {
@@ -69,18 +84,22 @@ function getDirectiveChangeDescriptions(curr_version, upgrade_version) {
  * @param curr_version - The version of HDB at this point.
  * @param upgrade_version - The desired upgrade version
  */
-function processDirectives(curr_version, upgrade_version) {
+function processDirectives(upgrade_obj) {
     //TODO - update code comment below w/ update that we now do run the directives only to the point of the upgrade version
     // Currently we only support upgrading to latest which will be the largest version in the directive manager.  We
     // could support upgrading to a specific version later by allowing the filter function to accept a specific version;
-    let loaded_directives = directive_manager.filterInvalidVersions(curr_version, upgrade_version);
-    if(hdb_util.isEmptyOrZeroLength(curr_version)) {
-        log.info('Invalid value for curr_version');
+    let loaded_directives = directive_manager.filterInvalidVersions(upgrade_obj);
+
+    const data_version = upgrade_obj[DATA_VERSION];
+    const upgrade_version = upgrade_obj[UPGRADE_VERSION];
+
+    if(hdb_util.isEmptyOrZeroLength(data_version)) {
+        log.info(`Invalid value for '${DATA_VERSION}'`);
     }
     if(hdb_util.isEmptyOrZeroLength(upgrade_version)) {
-        log.info('Invalid value for curr_version');
+        log.info(`Invalid value for '${UPGRADE_VERSION}'`);
     }
-    let upgrade_directives = getVersionsToInstall(curr_version, loaded_directives);
+    let upgrade_directives = getVersionsToInstall(data_version, loaded_directives);
     let variable_comments = undefined;
     let func_responses = [];
     for (let vers of upgrade_directives) {
