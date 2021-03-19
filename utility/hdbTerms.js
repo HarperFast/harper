@@ -360,6 +360,7 @@ const JOB_TYPE_ENUM = {
     csv_data_load: OPERATIONS_ENUM.CSV_DATA_LOAD,
     csv_url_load: OPERATIONS_ENUM.CSV_URL_LOAD,
     delete_files_before: 'delete_files_before',
+    delete_records_before: 'delete_records_before',
     delete_transaction_logs_before: 'delete_transaction_logs_before',
     empty_trash: 'empty_trash',
     export_local: 'export_local',
