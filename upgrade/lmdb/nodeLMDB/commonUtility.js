@@ -1,6 +1,6 @@
 "use strict";
 
-const LMDB_ERRORS = require('../errors/commonErrors').LMDB_ERRORS_ENUM;
+const LMDB_ERRORS = require('./commonErrors');
 const lmdb = require('node-lmdb');
 const lmdb_terms = require('./terms');
 const Buffer = require('buffer').Buffer;

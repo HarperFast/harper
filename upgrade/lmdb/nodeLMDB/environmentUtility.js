@@ -4,7 +4,8 @@ const lmdb = require('node-lmdb');
 const fs = require('fs-extra');
 const path = require('path');
 const common = require('./commonUtility');
-const LMDB_ERRORS = require('../errors/commonErrors').LMDB_ERRORS_ENUM;
+const log = require('../../../utility/logging/harper_logger');
+const LMDB_ERRORS = require('./commonErrors');
 const DBIDefinition = require('./DBIDefinition');
 const OpenDBIObject = require('./OpenDBIObject');
 const OpenEnvironmentObject = require('./OpenEnvironmentObject');
@@ -195,14 +196,6 @@ async function openEnvironment(base_path, env_name, is_txn = false){
     env_name = env_name.toString();
     let full_name = getCachedEnvironmentName(base_path, env_name, is_txn);
 
-    if(global.lmdb_map === undefined) {
-        global.lmdb_map = Object.create(null);
-    }
-
-    if(global.lmdb_map[full_name] !== undefined){
-        return global.lmdb_map[full_name];
-    }
-
     await validateEnvironmentPath(base_path, env_name);
 
     let env = new lmdb.Env();
@@ -217,7 +210,6 @@ async function openEnvironment(base_path, env_name, is_txn = false){
         openDBI(env, dbis[x]);
     }
     env[lmdb_terms.ENVIRONMENT_NAME_KEY] = full_name;
-    global.lmdb_map[full_name] = env;
 
     return env;
 }
