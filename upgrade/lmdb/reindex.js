@@ -20,7 +20,6 @@ const schema_path = path.join(base_path, 'schema');
 
 async function getTables(){
 
-
     let schema_list = await fs.readdir(schema_path);
     console.log(schema_list);
     let tables = [];
@@ -41,8 +40,6 @@ async function getTables(){
 
     }
 
-
-    //return tables;
 }
 
 async function processTable(schema, table, the_schema_path){
@@ -100,8 +97,6 @@ async function processTable(schema, table, the_schema_path){
 
         throw e;
     }
-
-
 
     old_environment_utility.closeEnvironment(old_env);
     //console.log(new_environment_utility.statDBI(new_env, hash));
