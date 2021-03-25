@@ -12363,13 +12363,13 @@
 						{
 							"listen": "test",
 							"script": {
-								"type": "text/javascript",
 								"exec": [
 									"pm.test(\"sql select count where age > 30 group by last_name order by age asc\", function () {",
 									"    var jsonData = pm.response.json();",
-									"    pm.expect(jsonData[0].productname) ===\"C\\ufffdte de Blaye\";",
+									"    pm.expect(jsonData[0].productname).to.equal(\"C\\ufffdte de Blaye\");",
 									"});"
-								]
+								],
+								"type": "text/javascript"
 							}
 						}
 					],
@@ -12430,13 +12430,13 @@
 						{
 							"listen": "test",
 							"script": {
-								"type": "text/javascript",
 								"exec": [
 									"pm.test(\"sql select count min max avg sum\", function () {",
 									"    var jsonData = pm.response.json();",
-									"    pm.expect(jsonData[0].allproducts)===77;",
+									"    pm.expect(jsonData[0].allproducts).to.equal(77);",
 									"});"
-								]
+								],
+								"type": "text/javascript"
 							}
 						}
 					],
@@ -12570,13 +12570,13 @@
 						{
 							"listen": "test",
 							"script": {
-								"type": "text/javascript",
 								"exec": [
 									"pm.test(\"sql select where (like) and (unitprice>100)\", function () {",
 									"    var jsonData = pm.response.json();",
-									"    pm.expect(jsonData[0].unitprice)>100;",
+									"    pm.expect(jsonData[0].unitprice > 100).to.be.true;",
 									"});"
-								]
+								],
+								"type": "text/javascript"
 							}
 						}
 					],
@@ -12641,7 +12641,7 @@
 									"pm.test(\"sql select - where attr < comparator\", function () {",
 									"    var jsonData = pm.response.json();",
 									"    jsonData.forEach((record)=>{",
-									"        pm.expect(record.unitprice)<81;",
+									"        pm.expect(record.unitprice < 81).to.be.true;",
 									"    });",
 									"});"
 								],
@@ -12710,7 +12710,7 @@
 									"pm.test(\"sql select - where attr <= comparator\", function () {",
 									"    var jsonData = pm.response.json();",
 									"    jsonData.forEach((record)=>{",
-									"        pm.expect(record.unitprice)<=81;",
+									"        pm.expect(record.unitprice <= 81).to.be.true;",
 									"    });",
 									"});"
 								],
@@ -12779,7 +12779,7 @@
 									"pm.test(\"sql select - where attr > comparator\", function () {",
 									"    var jsonData = pm.response.json();",
 									"    jsonData.forEach((record)=>{",
-									"        pm.expect(record.unitprice) > 81;",
+									"        pm.expect(record.unitprice > 81).to.be.true;",
 									"    });",
 									"});"
 								],
@@ -12848,7 +12848,7 @@
 									"pm.test(\"sql select - where attr >= comparator\", function () {",
 									"    var jsonData = pm.response.json();",
 									"    jsonData.forEach((record)=>{",
-									"        pm.expect(record.unitprice) >= 81;",
+									"        pm.expect(record.unitprice >= 81).to.be.true;",
 									"    });",
 									"});"
 								],
@@ -12917,8 +12917,8 @@
 									"pm.test(\"sql select - where attr w/ multiple comparators\", function () {",
 									"    var jsonData = pm.response.json();",
 									"    jsonData.forEach((record)=>{",
-									"        pm.expect(record.unitprice) > 20;",
-									"        pm.expect(record.unitprice) <= 81;",
+									"        pm.expect(record.unitprice > 20).to.be.true;",
+									"        pm.expect(record.unitprice <= 81).to.be.true;",
 									"    });",
 									"});"
 								],
@@ -12987,8 +12987,8 @@
 									"pm.test(\"sql select - where w/ multiple attr comparators\", function () {",
 									"    var jsonData = pm.response.json();",
 									"    jsonData.forEach((record)=>{",
-									"        pm.expect(record.unitprice) > 10;",
-									"        pm.expect(record.unitprice) <= 81;",
+									"        pm.expect(record.unitprice > 10).to.be.true;",
+									"        pm.expect(record.unitprice <= 81).to.be.true;",
 									"        pm.expect(record.unitsinstock).to.eql(0);",
 									"    });",
 									"});"
@@ -13058,9 +13058,9 @@
 									"pm.test(\"sql select - where w/ multiple comparators for multiple attrs\", function () {",
 									"    var jsonData = pm.response.json();",
 									"    jsonData.forEach((record)=>{",
-									"        pm.expect(record.unitprice) > 10;",
-									"        pm.expect(record.unitprice) <= 81;",
-									"        pm.expect(record.unitsinstock) > 10;",
+									"        pm.expect(record.unitprice > 10).to.be.true;",
+									"        pm.expect(record.unitprice <= 81).to.be.true;",
+									"        pm.expect(record.unitsinstock > 10).to.be.true;",
 									"    });",
 									"});"
 								],
@@ -13129,9 +13129,9 @@
 									"pm.test(\"sql select - where w/ IN() and multiple of comparators for multiple attrs\", function () {",
 									"    var jsonData = pm.response.json();",
 									"    jsonData.forEach((record)=>{",
-									"        pm.expect(record.unitprice) > 10;",
-									"        pm.expect(record.unitprice) <= 81;",
-									"        pm.expect(record.unitsinstock) > 10;",
+									"        pm.expect(record.unitprice > 10).to.be.true;",
+									"        pm.expect(record.unitprice <= 81).to.be.true;",
+									"        pm.expect(record.unitsinstock > 10).to.be.true;",
 									"        pm.expect(record.supplierid).to.be.oneOf([1,2,3,4]);",
 									"    });",
 									"});"
@@ -39104,7 +39104,7 @@
 									"//we want to test that the returned result is an empty array\"",
 									"pm.test(\"Verify records deleted\", function(){",
 									"    let jsonData = pm.response.json();",
-									"    pm.expect(Array.isArray(jsonData) && jsonData.length === 0);",
+									"    pm.expect(Array.isArray(jsonData) && jsonData.length === 0).to.be.true;",
 									"});",
 									"",
 									"pm.test(\"Status code is 200\", function () {",
@@ -39242,18 +39242,18 @@
 						{
 							"listen": "test",
 							"script": {
-								"type": "text/javascript",
 								"exec": [
 									"//we want to test that the returned result is an empty array\"",
 									"pm.test(\"Verify records deleted\", function(){",
 									"    let jsonData = pm.response.json();",
-									"    pm.expect(Array.isArray(jsonData) && jsonData.length === 0);",
+									"    pm.expect(Array.isArray(jsonData) && jsonData.length === 0).to.be.true;",
 									"});",
 									"",
 									"pm.test(\"Status code is 200\", function () {",
 									"    pm.response.to.have.status(200);",
 									"});"
-								]
+								],
+								"type": "text/javascript"
 							}
 						}
 					],
@@ -49352,7 +49352,7 @@
 											"",
 											"pm.test(\"create attribute successful\", function () {",
 											"    var jsonData = pm.response.json();",
-											"    pm.expect(jsonData.message === \"inserted 1 of 1 records\");",
+											"    pm.expect(jsonData.message).to.equal(\"attribute 'dev.create_attr_test.owner_id' successfully created.\");",
 											"});"
 										],
 										"type": "text/javascript"
@@ -49567,8 +49567,7 @@
 									"",
 									"pm.test(\"attribute another_attribute exists\", function () {",
 									"    var jsonData = pm.response.json();",
-									"    //pm.expect(jsonData[\"another_attribute\"] === undefined);",
-									"        pm.expect(jsonData.another_attribute).to.eql(undefined);",
+									"    pm.expect(jsonData.another_attribute).to.eql(undefined);",
 									"});"
 								],
 								"type": "text/javascript"
@@ -49639,7 +49638,7 @@
 									"",
 									"pm.test(\"create attribute successful\", function () {",
 									"    var jsonData = pm.response.json();",
-									"    pm.expect(jsonData.message === \"inserted 1 of 1 records\");",
+									"    pm.expect(jsonData.message).to.equal(\"attribute 'dev.AttributeDropTest.created_attribute' successfully created.\");",
 									"});"
 								],
 								"type": "text/javascript"
@@ -49709,8 +49708,15 @@
 									"});",
 									"",
 									"pm.test(\"attribute created_attribute exists\", function () {",
-									"    var jsonData = pm.response.json();",
-									"    pm.expect(jsonData[\"created_attribute\"] === true);",
+									"    let jsonData = pm.response.json();",
+									"    let found = false;",
+									"    jsonData.attributes.forEach((attr) => {",
+									"        if (attr.attribute === 'created_attribute') {",
+									"            found = true;",
+									"        }",
+									"    });",
+									"",
+									"    pm.expect(found).to.be.true;",
 									"});"
 								],
 								"type": "text/javascript"
@@ -49781,7 +49787,7 @@
 									"",
 									"pm.test(\"create attribute successful\", function () {",
 									"    var jsonData = pm.response.json();",
-									"    pm.expect(jsonData.error === \"attribute 'created_attribute' already exists in dev.AttributeDropTest\");",
+									"    pm.expect(jsonData.error).to.equal(\"attribute 'created_attribute' already exists in dev.AttributeDropTest\");",
 									"});",
 									""
 								],
@@ -49862,7 +49868,7 @@
 									"",
 									"pm.test(\"remove successful\", function () {",
 									"    var jsonData = pm.response.json();",
-									"    pm.expect(jsonData.message === \"records successfully deleted\");",
+									"    pm.expect(jsonData.message).to.equal(\"successfully deleted attribute 'another_attribute'\");",
 									"});"
 								],
 								"type": "text/javascript"
@@ -49932,8 +49938,15 @@
 									"});",
 									"",
 									"pm.test(\"attribute another_attribute exists\", function () {",
-									"    var jsonData = pm.response.json();",
-									"    pm.expect(jsonData[\"another_attribute\"] === undefined);",
+									"    let jsonData = pm.response.json();",
+									"    let found = false;",
+									"    jsonData.attributes.forEach((attr) => {",
+									"        if (attr.attribute === 'another_attribute') {",
+									"            found = true;",
+									"        }",
+									"    });",
+									"",
+									"    pm.expect(found).to.be.false;",
 									"});"
 								],
 								"type": "text/javascript"
@@ -50004,7 +50017,8 @@
 									"",
 									"pm.test(\"test fingerprint returned\", function () {",
 									"    var jsonData = pm.response.json();",
-									"    pm.expect(jsonData['fingerprint'] !== undefined);",
+									"    pm.expect(jsonData).to.haveOwnProperty('message');",
+									"    pm.expect(jsonData.message).to.not.be.null;",
 									"});"
 								],
 								"type": "text/javascript"
@@ -50075,7 +50089,7 @@
 									"",
 									"pm.test(\"test fingerprint returned\", function () {",
 									"    var jsonData = pm.response.json();",
-									"    pm.expect(jsonData['error'] === \"There was an parsing the license key.\");",
+									"    pm.expect(jsonData['error']).to.equal(\"There was an error parsing the license key.\");",
 									"});"
 								],
 								"type": "text/javascript"
@@ -50218,7 +50232,7 @@
 									"",
 									"pm.test(\"test fingerprint returned\", function () {",
 									"    var jsonData = pm.response.json();",
-									"    pm.expect(jsonData['message'] === \"Invalid key specified for license file.\");",
+									"    pm.expect(jsonData['error']).to.equal(\"Invalid key or company specified for license file.\");",
 									"});"
 								],
 								"type": "text/javascript"
@@ -50422,12 +50436,13 @@
 									"});",
 									"",
 									"pm.test(\"test attributes exist\", ()=>{",
-									"    let attrs = [\"PROJECT_DIR\", \"HDB_ROOT\", \"HTTP_PORT\", \"HTTPS_PORT\", \"CERTIFICATE\", \"PRIVATE_KEY\", \"HTTPS_ON\", \"HTTP_ON\", \"CORS_ON\", \"CORS_WHITELIST\", \"SERVER_TIMEOUT_MS\", \"LOG_LEVEL\", \"LOGGER\", \"LOG_PATH\", \"LOG_DAILY_ROTATE\", \"LOG_MAX_DAILY_FILES\", \"NODE_ENV\", \"settings_path\", \"CLUSTERING_PORT\", \"NODE_NAME\", \"CLUSTERING\", \"ALLOW_SELF_SIGNED_SSL_CERTS\", \"MAX_HDB_PROCESSES\", \"install_user\", \"CLUSTERING_USER\", \"SERVER_KEEP_ALIVE_TIMEOUT\", \"SERVER_HEADERS_TIMEOUT\", \"DISABLE_TRANSACTION_LOG\", \"OPERATION_TOKEN_TIMEOUT\", \"REFRESH_TOKEN_TIMEOUT\"];",
+									"    let attrs = [ \"PROJECT_DIR\", \"HDB_ROOT\", \"SERVER_PORT\", \"CERTIFICATE\", \"PRIVATE_KEY\", \"HTTPS_ON\", \"CORS_ON\", \"CORS_WHITELIST\", \"LOG_LEVEL\",",
+									"    \"LOGGER\", \"LOG_PATH\", \"LOG_DAILY_ROTATE\", \"LOG_MAX_DAILY_FILES\", \"NODE_ENV\", \"settings_path\", \"CLUSTERING_PORT\", \"NODE_NAME\", \"CLUSTERING\",\"ALLOW_SELF_SIGNED_SSL_CERTS\", \"MAX_HDB_PROCESSES\", \"install_user\", \"CLUSTERING_USER\", \"SERVER_TIMEOUT_MS\", \"SERVER_KEEP_ALIVE_TIMEOUT\",\"SERVER_HEADERS_TIMEOUT\", \"DISABLE_TRANSACTION_LOG\", \"OPERATION_TOKEN_TIMEOUT\", \"REFRESH_TOKEN_TIMEOUT\"];",
 									"",
 									"    var jsonData = pm.response.json();",
 									"    let keys = Object.keys(jsonData);",
 									"    for(let x = 0, length = attrs.length; x < length; x++){",
-									"        pm.expect(jsonData.hasOwnProperty(attrs[x]) === true, `${attrs[x]} exists`);",
+									"        pm.expect(jsonData.hasOwnProperty(attrs[x])).to.equal(true, `${attrs[x]} exists`);",
 									"    }",
 									"});"
 								],
@@ -50603,14 +50618,26 @@
 									"pm.test(\"create system info has some attributes\", function () {",
 									"    var results = pm.response.json();",
 									"    ",
-									"    pm.expect(results.time !== undefined);",
-									"    pm.expect(results.memory !== undefined);",
-									"    pm.expect(results.system === undefined);",
-									"    pm.expect(results.cpu === undefined);",
-									"    pm.expect(results.disk === undefined);",
-									"    pm.expect(results.network === undefined);",
-									"    pm.expect(results.harperdb_processes === undefined);",
-									"    pm.expect(results.table_size === undefined);",
+									"    pm.expect(results.system).to.be.undefined;",
+									"    pm.expect(results.cpu).to.be.undefined;",
+									"    pm.expect(results.disk).to.be.undefined;",
+									"    pm.expect(results.network).to.be.undefined;",
+									"    pm.expect(results.harperdb_processes).to.be.undefined;",
+									"    pm.expect(results.table_size).to.be.undefined;",
+									"    pm.expect(results).to.haveOwnProperty('time');",
+									"    pm.expect(results).to.haveOwnProperty('memory');",
+									"    pm.expect(results.time).to.haveOwnProperty('current');",
+									"    pm.expect(results.time).to.haveOwnProperty('uptime');",
+									"    pm.expect(results.time).to.haveOwnProperty('timezone');",
+									"    pm.expect(results.time).to.haveOwnProperty('timezoneName');",
+									"    pm.expect(results.memory).to.haveOwnProperty('total');",
+									"    pm.expect(results.memory).to.haveOwnProperty('free');",
+									"    pm.expect(results.memory).to.haveOwnProperty('used');",
+									"    pm.expect(results.memory).to.haveOwnProperty('active');",
+									"    pm.expect(results.memory).to.haveOwnProperty('swaptotal');",
+									"    pm.expect(results.memory).to.haveOwnProperty('swapused');",
+									"    pm.expect(results.memory).to.haveOwnProperty('swapfree');",
+									"    pm.expect(results.memory).to.haveOwnProperty('available');",
 									"});"
 								],
 								"type": "text/javascript"
