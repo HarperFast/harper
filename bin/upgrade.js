@@ -16,7 +16,6 @@
  */
 const os = require('os');
 const fs = require('fs');
-const tar = require('tar-fs');
 const CLI = require('clui');
 // const request = require("request");
 // const request_promise = require("request-promise-native");
@@ -27,7 +26,7 @@ const hdb_terms = require('../utility/hdbTerms');
 const { promisify } = require('util');
 const version = require('./version');
 const process_directives = require('../upgrade/processDirectives');
-const {spawn} = require('child_process');
+const { spawn } = require('child_process');
 const path = require('path');
 const fs_extra = require('fs-extra');
 const { isHarperRunning } = require('../utility/common_utils');

@@ -13,15 +13,6 @@ const directive_manager = require('./directives/directiveManager');
 const terms = require('../utility/hdbTerms');
 const { DATA_VERSION, UPGRADE_VERSION } = terms.UPGRADE_JSON_FIELD_NAMES_ENUM.DATA_VERSION
 
-const Config = require('conf-cfg-ini');
-const config = new Config({
-    lineEnding: os.EOL,
-    defaultValue: '',
-    assignIdentifier: "=",
-    commentIdentifiers: [";"],
-    trimLines: true
-})
-
 module.exports = {
     writeEnvVariables,
     processDirectives,
@@ -35,11 +26,6 @@ try {
     // We still use the PropertiesReader here as we need to write out comments during directives.
     hdb_boot_properties = PropertiesReader(env.BOOT_PROPS_FILE_PATH);
     hdb_properties = PropertiesReader(hdb_boot_properties.get('settings_path'));
-
-    const raw = fs.readFileSync(hdb_boot_properties.get('settings_path'));
-    const configObject = config.decode(raw);
-    console.log(configObject)
-
 } catch(e) {
     log.info(`Couldn't read settings files.`);
 }

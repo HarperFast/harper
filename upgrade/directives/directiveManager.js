@@ -16,7 +16,7 @@ const version_3_0_0 = require('./3-0-0');
 let versions = new Map();
 
 //TODO:  ALL NEW DIRECTIVES MUST BE ADDED TO VERSIONS
-if(version_3_0_0) {
+if (version_3_0_0) {
     version_3_0_0.forEach((version) => {
         versions.set(version.version, version);
     });
