@@ -12,7 +12,6 @@
  */
 
 const validate = require('validate.js');
-const Joi = require('joi');
 
 //This validator is added here b/c we are still on version 0.11.1 that does not include this build in functionality.  When
 // we do update, we can remove.  The reason we have not is related to a breaking change on the "presence" validator rule
@@ -94,7 +93,7 @@ async function validateObjectAsync(object, file_constraints) {
  * @returns {*}
  */
 function validateBySchema(object, schema){
-    let result = schema.validate(object, {allowUnknown:true, abortEarly:false});
+    let result = schema.validate(object, { allowUnknown:true, abortEarly:false, errors: { wrap: { label:"'" } } });
 
     if(result.error){
         return new Error(result.error.message);

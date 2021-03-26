@@ -247,6 +247,10 @@ function createSearchTypeFromSearchObject(search_object, hash_attribute, return_
             return lmdb_terms.SEARCH_TYPES.STARTS_WITH;
         }
 
+        if (search_value.includes(WILDCARDS[0]) || search_value.includes(WILDCARDS[1])) {
+            return lmdb_terms.SEARCH_TYPES.EQUALS;
+        }
+
         throw new Error(LMDB_ERRORS.UNKNOWN_SEARCH_TYPE);
     } else{
         switch (comparator) {
