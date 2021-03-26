@@ -23,6 +23,13 @@ let p_setSchemaDataToGlobal = util.promisify(global_schema.setSchemaDataToGlobal
 
 const HDB_INFO_SEARCH_ATTRIBUTE = 'info_id';
 
+//IMPORTANT - this is the value we use to set a default/stubbed 'data version' number for HDB instances installed before
+// version 3.0.0 inorder to allow our version comparison functions to evaluate correctly.  B/c most/all older versions
+// will NOT have a hdb_info record from their previous install, we need to stub this data so that the 3.0.0 upgrade
+// directives - and any additional upgrade directives that may be added later (if they do not upgrade right away) - are
+// identified and run when the upgrade eventually happens.
+const DEFAULT_DATA_VERSION_NUM = '2.9.9';
+
 /**
  * Insert a row into hdb_info with the initial version data at install.
  *
@@ -141,13 +148,17 @@ async function getLatestHdbInfoRecord() {
 async function getVersionUpdateInfo() {
     log.info('Checking if HDB software has been updated');
     try {
+        //TODO - do check that 2.0.0 settings values are present.  If not, throw error and tell them to do a fresh install.
+
         const current_version = version.version();
         const latest_info_record = await getLatestHdbInfoRecord();
 
-        //if no record is returned, it means we have an old instance that needs to be upgraded bc new installs will
-        // always result in a record being inserted into the hdb_info table
+        //If no record is returned, it means we have an old instance that needs to be upgraded bc new installs will
+        // always result in a record being inserted into the hdb_info table.  When this happens, we use the default data
+        // version number value to make sure all upgrades starting at 3.0.0 run and, when that's completed, a new, complete
+        // hdb_info record will be inserted
         if (latest_info_record === undefined) {
-            return new UpgradeObject(null, current_version);
+            return new UpgradeObject(DEFAULT_DATA_VERSION_NUM, current_version);
         }
 
         const { data_version_num } = latest_info_record;

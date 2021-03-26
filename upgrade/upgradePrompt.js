@@ -3,7 +3,8 @@
 const log = require('../utility/logging/harper_logger');
 const { Select } = require('enquirer');
 const os = require('os');
-const upgrade = require('../bin/upgrade');
+const process_directives = require('./processDirectives');
+// const upgrade = require('../bin/upgrade');
 
 const UPGRADE_PROCEED = 'Yes, proceed';
 const UPGRADE_CANCEL = 'No, cancel the upgrade';
@@ -15,9 +16,10 @@ const UPGRADE_CANCEL = 'No, cancel the upgrade';
  */
 async function forceUpdatePrompt(upgrade_obj) {
     // pull directive changes
-    let changes = upgrade.listDirectiveChanges(upgrade_obj);
+    // let changes = upgrade.listDirectiveChanges(upgrade_obj);
+    let changes = listDirectiveChanges(upgrade_obj);
     let counter = 1;
-    let message = 'HarperDB has been recently updated, we need to complete the update process.  If a backup of your data has not been created, cancel this process and backup.  The following data will be affected:';
+    let message = 'HarperDB has been recently updated, we need to complete an update process.  If a backup of your data has not been created, cancel this process and backup.  The following data will be affected:';
     message = message + os.EOL;
     /*
         Should create a message to the user that describes the changes specified in the directives as a numbered list.
@@ -26,7 +28,7 @@ async function forceUpdatePrompt(upgrade_obj) {
        if(change.change_description) {
            message = `${message} ${counter}. ${change.change_description} ${os.EOL}`;
            counter++;
-           if(change.affected_paths.length > 0) {
+           if (change.affected_paths && change.affected_paths.length > 0) {
                change.affected_paths.forEach((path) => {
                    message = `${message} \t - ${path} ${os.EOL}`;
                });
@@ -53,6 +55,16 @@ async function forceUpdatePrompt(upgrade_obj) {
     }
 
     return response === UPGRADE_PROCEED;
+}
+
+function listDirectiveChanges(upgrade_obj) {
+    let directive_change_descriptions = [];
+    try {
+        directive_change_descriptions = process_directives.getDirectiveChangeDescriptions(upgrade_obj);
+    } catch(e) {
+        throw e;
+    }
+    return directive_change_descriptions;
 }
 
 module.exports = {

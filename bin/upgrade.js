@@ -34,7 +34,7 @@ const hdbInfoController = require('../data_layer/hdbInfoController');
 const global_schema = require('../utility/globalSchema');
 const upgradePrompt = require('../upgrade/upgradePrompt');
 
-const { UPGRADE_VERSION } = hdb_terms.UPGRADE_JSON_FIELD_NAMES_ENUM
+const { UPGRADE_VERSION } = hdb_terms.UPGRADE_JSON_FIELD_NAMES_ENUM;
 
 const UPGRADE_DIR_NAME= 'hdb_upgrade';
 // const TAR_FILE_NAME = 'hdb-latest.tar';
@@ -58,7 +58,7 @@ let p_set_schema_global = promisify(global_schema.setSchemaDataToGlobal);
 module.exports = {
     upgrade,
     startUpgrade,
-    startUpgradeDirectives,
+    // runUpgradeDirectives,
     listDirectiveChanges
 };
 
@@ -86,48 +86,52 @@ function checkIfRunning() {
  * @returns {Promise<*>}
  */
 async function upgrade(upgrade_obj) {
-    log.setLogLevel(log.INFO);
-    printToLogAndConsole(`This version of HarperDB is ${version.version()}`);
-    if (hdb_util.isEmptyOrZeroLength(env) ) {
-        const hdb_not_found_msg = 'The hdb_boot_properties file was not found.  Please install HDB.'
-        printToLogAndConsole(hdb_not_found_msg, log.ERR);
-        process.exit(1);
-    }
-
-    let hdb_upgrade_info = upgrade_obj;
-    if (!hdb_upgrade_info) {
-        const hdb_upgrade_info = hdbInfoController.getVersionUpdateInfo();
-        if (!hdb_upgrade_info) {
-            console.log("HarperDB version is current");
-            process.exit(0);
-        }
-    }
-
-    let current_hdb_version = hdb_upgrade_info[UPGRADE_VERSION] ? hdb_upgrade_info[UPGRADE_VERSION] : version.version();
-    if(!current_hdb_version) {
-        console.log('Current Version field missing from the package.json file.  Cannot continue with upgrade.  If you need support, please contact support@harperdb.io');
-        logger.notify('Missing new version field from upgrade info object');
-        process.exit(1);
-    }
-
-    // check if already running, ends process if error caught.
     try {
-        await checkIfRunning();
-    } catch(e) {
-        console.log(e.message);
-        throw e;
-    }
+        log.setLogLevel(log.INFO);
+        printToLogAndConsole(`This version of HarperDB is ${version.version()}`);
+        if (hdb_util.isEmptyOrZeroLength(env) ) {
+            const hdb_not_found_msg = 'The hdb_boot_properties file was not found.  Please install HDB.';
+            printToLogAndConsole(hdb_not_found_msg, log.ERR);
+            process.exit(1);
+        }
 
-    let start_upgrade = await upgradePrompt.forceUpdatePrompt(upgrade_obj);
-    if(!start_upgrade) {
-        console.log('Cancelled upgrade, closing HarperDB');
-        process.exit(1);
-    }
+        let hdb_upgrade_info = upgrade_obj;
+        if (!hdb_upgrade_info) {
+            hdb_upgrade_info = await hdbInfoController.getVersionUpdateInfo();
+            if (!hdb_upgrade_info) {
+                console.log("HarperDB version is current");
+                process.exit(0);
+            }
+        }
 
-    countdown.message(`Starting upgrade to version ${current_hdb_version}`);
-    countdown.start();
-    log.info(`Starting upgrade to version ${current_hdb_version}`);
-    startUpgrade(hdb_upgrade_info);
+        let current_hdb_version = hdb_upgrade_info[UPGRADE_VERSION] ? hdb_upgrade_info[UPGRADE_VERSION] : version.version();
+        if(!current_hdb_version) {
+            console.log('Current Version field missing from the package.json file.  Cannot continue with upgrade.  If you need support, please contact support@harperdb.io');
+            log.notify('Missing new version field from upgrade info object');
+            process.exit(1);
+        }
+
+        // check if already running, ends process if error caught.
+        try {
+            await checkIfRunning();
+        } catch(e) {
+            console.log(e.message);
+            throw e;
+        }
+
+        let start_upgrade = await upgradePrompt.forceUpdatePrompt(hdb_upgrade_info);
+        if(!start_upgrade) {
+            console.log('Cancelled upgrade, closing HarperDB');
+            process.exit(1);
+        }
+
+        countdown.message(`Starting upgrade to version ${current_hdb_version}`);
+        countdown.start();
+        log.info(`Starting upgrade to version ${current_hdb_version}`);
+        startUpgrade(hdb_upgrade_info);
+    } catch(err) {
+        throw err;
+    }
 }
 
 /**
@@ -140,10 +144,7 @@ async function upgrade(upgrade_obj) {
 async function startUpgrade(upgrade_obj) {
 
     try {
-        let upgrade_result = await startUpgradeDirectives(upgrade_obj);
-        upgrade_result.forEach((result) => {
-            logger.info(result);
-        });
+        await runUpgradeDirectives(upgrade_obj);
     } catch(err) {
         printToLogAndConsole('There was an error during the data upgrade.  Please check the logs.', log.error);
         throw(err);
@@ -289,7 +290,7 @@ async function startUpgrade(upgrade_obj) {
  * @param new_version_number - The latest version being upgraded to.
  * @returns {Array}
  */
-function startUpgradeDirectives(upgrade_obj) {
+function runUpgradeDirectives(upgrade_obj) {
     let directive_results = [];
     try {
         directive_results = process_directives.processDirectives(upgrade_obj);

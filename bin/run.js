@@ -138,8 +138,6 @@ async function openCreateTransactionEnvironment(schema, table_name){
     }
 }
 
-
-
 async function isPortInUse() {
     let server_port;
 

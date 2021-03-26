@@ -32,14 +32,15 @@ function filterInvalidVersions(upgrade_obj) {
     let new_version = upgrade_obj[UPGRADE_VERSION];
 
     if (hdb_utils.isEmptyOrZeroLength(curr_version)) {
-        return [];
+        //TODO - this scenario should return ALL b/c it means it's an old install that hasn't been updated
+        // return [];
     }
-    if(!versions.has(curr_version)) {
-        return [];
-    }
-    if(!versions.has(new_version)) {
-        new_version = "99";
-    }
+    // if(!versions.has(curr_version)) {
+    //     return [];
+    // }
+    // if(!versions.has(new_version)) {
+    //     new_version = "99";
+    // }
     let filtered_keys = [...versions.keys()].sort(hdb_utils.compareVersions).filter( function(this_version) {
         return this_version > curr_version && this_version <= new_version;
     });

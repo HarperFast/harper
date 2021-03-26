@@ -101,7 +101,7 @@ function harperDBService() {
                 break;
             case hdb_terms.SERVICE_ACTIONS_ENUM.UPGRADE:
                 logger.setLogLevel(logger.INFO);
-                p_upgrade()
+                p_upgrade(null)
                     .then(() => {
                         // all done, no-op
                         console.log(`Your instance of HDB is up to date!`);

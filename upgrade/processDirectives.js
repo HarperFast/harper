@@ -11,7 +11,7 @@ const path = require('path');
 const PropertiesReader = require('properties-reader');
 const directive_manager = require('./directives/directiveManager');
 const terms = require('../utility/hdbTerms');
-const { DATA_VERSION, UPGRADE_VERSION } = terms.UPGRADE_JSON_FIELD_NAMES_ENUM.DATA_VERSION
+const { DATA_VERSION, UPGRADE_VERSION } = terms.UPGRADE_JSON_FIELD_NAMES_ENUM;
 
 module.exports = {
     writeEnvVariables,
@@ -52,13 +52,13 @@ function getDirectiveChangeDescriptions(upgrade_obj) {
     let upgrade_directives = getVersionsToInstall(upgrade_obj[DATA_VERSION], loaded_directives);
     for(let vers of upgrade_directives) {
         let new_description = {};
-        if(vers.change_description) {
+        if (vers.change_description) {
             new_description['change_description'] = vers.change_description;
         }
-        if(vers.affected_file_paths.length > 0) {
+        if (vers.affected_file_paths && vers.affected_file_paths.length > 0) {
             new_description['affected_paths'] = vers.affected_file_paths;
         }
-        if(Object.keys(new_description).length > 0) {
+        if (Object.keys(new_description).length > 0) {
             change_descriptions.push(new_description);
         }
     }
@@ -86,30 +86,42 @@ function processDirectives(upgrade_obj) {
         log.info(`Invalid value for '${UPGRADE_VERSION}'`);
     }
     let upgrade_directives = getVersionsToInstall(data_version, loaded_directives);
-    let variable_comments = undefined;
+    // let variable_comments = undefined;
+    let settings_func_response = [];
     let func_responses = [];
     for (let vers of upgrade_directives) {
         let notify_msg = `Starting upgrade to version ${vers.version}`;
         log.notify(notify_msg);
         console.log(notify_msg);
         // Create Directories
-        let directories_to_create = vers.relative_directory_paths;
-        let explicit_directories_to_create = vers.explicit_directory_paths;
+        // let directories_to_create = vers.relative_directory_paths;
+        // let explicit_directories_to_create = vers.explicit_directory_paths;
+        // try {
+        //     createRelativeDirectories(directories_to_create);
+        //     createExplicitDirectories(explicit_directories_to_create);
+        // } catch(e) {
+        //     log.error('Error creating directories in process Directives' + e);
+        //     throw e;
+        // }
+        // // Update Environment variables
+        // try {
+        //     variable_comments = updateEnvironmentVariable(vers.environment_variables);
+        // } catch(e) {
+        //     log.error('Error updating environment variables in process Directives' + e);
+        //     throw e;
+        // }
+        // Run settings file update
         try {
-            createRelativeDirectories(directories_to_create);
-            createExplicitDirectories(explicit_directories_to_create);
+            settings_func_response = runFunctions(vers.settings_file_functions);
         } catch(e) {
-            log.error('Error creating directories in process Directives' + e);
+            log.error('running settings func in process Directives' + e);
             throw e;
         }
-        // Update Environment variables
-        try {
-            variable_comments = updateEnvironmentVariable(vers.environment_variables);
-        } catch(e) {
-            log.error('Error updating environment variables in process Directives' + e);
-            throw e;
+        for(let i of settings_func_response) {
+            log.info(i);
         }
-        // Run Functions
+
+        // Run upgrade functions/scripts
         try {
             func_responses = runFunctions(vers.functions);
         } catch(e) {
@@ -117,16 +129,18 @@ function processDirectives(upgrade_obj) {
             throw e;
         }
     }
-    try {
-        writeEnvVariables(variable_comments);
-    } catch(e) {
-        log.error('Error writing environment variables in process Directives' + e);
-        throw e;
-    }
+
     for(let i of func_responses) {
         log.info(i);
     }
-    return func_responses;
+    // try {
+    //     writeEnvVariables(variable_comments);
+    // } catch(e) {
+    //     log.error('Error writing environment variables in process Directives' + e);
+    //     throw e;
+    // }
+
+    return [...settings_func_response, ...func_responses];
 }
 
 /**
@@ -334,12 +348,12 @@ function makeDirectory(targetDir, {isRelativeToScript = false} = {}) {
  * @returns {Array}
  */
 function getVersionsToInstall(curr_version_num, loaded_directives) {
-    if(hdb_util.isEmptyOrZeroLength(curr_version_num)) {
-        return [];
-    }
-    if(hdb_util.isEmptyOrZeroLength(loaded_directives)) {
-        return [];
-    }
+    // if(hdb_util.isEmptyOrZeroLength(curr_version_num)) {
+    //     return [];
+    // }
+    // if(hdb_util.isEmptyOrZeroLength(loaded_directives)) {
+    //     return [];
+    // }
     let version_modules_to_run = [];
     for(let vers of loaded_directives) {
         let module = directive_manager.getModuleByVersion(vers);
