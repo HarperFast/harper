@@ -67,15 +67,12 @@ const HDB_USER_3 = {
 };
 
 describe('Test lmdbReadTransactionLog module', ()=>{
-    let rw_env_util;
 
     before(async ()=>{
         await fs.remove(BASE_PATH);
-        rw_env_util = environment_utility.__set__('MAP_SIZE', 5*1024*1024*1024);
     });
 
     after(()=>{
-        rw_env_util();
     });
 
     describe('test searchTransactionsByUsername function', ()=>{
@@ -88,6 +85,7 @@ describe('Test lmdbReadTransactionLog module', ()=>{
         });
 
         afterEach(async ()=>{
+            txn_env.close();
             await fs.remove(BASE_PATH);
             global.lmdb_map = undefined;
         });
@@ -138,6 +136,7 @@ describe('Test lmdbReadTransactionLog module', ()=>{
         });
 
         afterEach(async ()=>{
+            txn_env.close();
             await fs.remove(BASE_PATH);
             global.lmdb_map = undefined;
         });
@@ -197,6 +196,7 @@ describe('Test lmdbReadTransactionLog module', ()=>{
         });
 
         afterEach(async ()=>{
+            txn_env.close();
             await fs.remove(BASE_PATH);
             global.lmdb_map = undefined;
         });
@@ -244,6 +244,7 @@ describe('Test lmdbReadTransactionLog module', ()=>{
     });
 
     describe('test readTransactionLog function', ()=>{
+        let txn_env;
         beforeEach(async ()=>{
             await fs.mkdirp(BASE_PATH);
             global.lmdb_map = undefined;
@@ -254,10 +255,11 @@ describe('Test lmdbReadTransactionLog module', ()=>{
                     }
                 }
             };
-            await lmdb_create_txn_envs(CREATE_TABLE_OBJ);
+            txn_env = await lmdb_create_txn_envs(CREATE_TABLE_OBJ);
         });
 
         afterEach(async ()=>{
+            txn_env.close();
             await fs.remove(BASE_PATH);
             global.lmdb_map = undefined;
             delete global.hdb_schema;

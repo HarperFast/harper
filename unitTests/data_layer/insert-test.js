@@ -44,27 +44,34 @@ const EXPECTED_UPSERT_RESP = {
 const sandbox = sinon.createSandbox();
 
 describe('Test insert module',() => {
+    let check_schema_stub = sandbox.stub().returns(null);
+    let is_empty_stub = sandbox.stub().returns(false);
+
+    beforeEach(() => {
+        check_schema_stub.returns(null);
+    });
+
+    before(() => {
+        insert_rw.__set__('hdb_utils', { checkSchemaTableExist: check_schema_stub, isEmpty: is_empty_stub });
+    });
+
+    after(() => {
+        rewire('../../data_layer/insert');
+    });
 
     describe('Test upsert method', () => {
         let bridge_upsert_stub;
-        let check_schema_stub;
 
         before(()=>{
             bridge_upsert_stub = sandbox.stub().returns(TEST_BRIDGE_UPSERT_RESP);
-            check_schema_stub = sandbox.stub().returns(null);
         });
 
         beforeEach(() => {
             insert_rw.__set__('harperBridge', { upsertRecords: bridge_upsert_stub});
-            insert_rw.__set__('hdb_utils', { checkSchemaTableExist: check_schema_stub});
-        })
+        });
 
         afterEach(async ()=>{
             sandbox.restore();
-        });
-
-        after(() => {
-            rewire('../../data_layer/insert');
         });
 
         it('NOMINAL - should return upsert response with upserted_hashes value',async () => {
@@ -82,10 +89,15 @@ describe('Test insert module',() => {
         it('Should return HdbError if there is a schema validation error',async ()=>{
             const test_err_msg = 'Schema error!';
             check_schema_stub.returns(test_err_msg);
-            insert_rw.__set__('hdb_utils', { checkSchemaTableExist: check_schema_stub});
-
             const expected_err = test_utils.generateHDBError(test_err_msg, 400);
             await test_utils.assertErrorAsync(insert_rw.upsert, [UPSERT_OBJECT_TEST], expected_err);
+        });
+
+        it('Should return HdbError if insertValidator returns error',async ()=>{
+            const upsert_obj = test_utils.deepClone(UPSERT_OBJECT_TEST);
+            upsert_obj.schema = 'schem/a';
+            const expected_err = test_utils.generateHDBError("'schema' names cannot include backticks or forward slashes", 400);
+            await test_utils.assertErrorAsync(insert_rw.upsert, [upsert_obj], expected_err);
         });
     });
 
@@ -126,6 +138,156 @@ describe('Test insert module',() => {
             assert.equal(result.message, EXPECTED_MESSAGE(ACTION_ENUM.UPSERT, 2,2));
 
         });
+    });
 
+    describe('Test insertData method', () => {
+        const insert_object_test = test_utils.deepClone(UPSERT_OBJECT_TEST);
+        insert_object_test.operation = 'insert';
+        const bridge_insert_resp_test = {
+            written_hashes: ['123d2', '312312'],
+            skipped_hashes: ['123fd2'],
+            new_attributes: ['height', 'age'],
+            txn_time: 12345
+        };
+        let bridge_insert_stub = sandbox.stub().resolves(bridge_insert_resp_test);
+
+        before(() => {
+            insert_rw.__set__('harperBridge', { createRecords: bridge_insert_stub });
+        });
+
+        after(() => {
+            sandbox.restore();
+        });
+
+        it('NOMINAL - should return insert response with inserted_hashes value',async () => {
+            const expected_insert_resp = {
+                "message": "inserted 2 of 3 records",
+                "new_attributes": [
+                    "height",
+                    "age"
+                ],
+                "txn_time": 12345,
+                "inserted_hashes": [
+                    "123d2",
+                    "312312"
+                ],
+                "skipped_hashes": [
+                    "123fd2"
+                ]
+            };
+            const results = await test_utils.assertErrorAsync(insert_rw.insert, [insert_object_test], undefined);
+            assert.deepStrictEqual(results, expected_insert_resp);
+        });
+
+        it('Should return HdbError if operation is not insert',async () => {
+            const insert_obj = test_utils.deepClone(insert_object_test);
+            insert_obj.operation = 'upsert';
+            await test_utils.assertErrorAsync(insert_rw.insert, [insert_obj], new Error('invalid operation, must be insert'));
+        });
+
+        it('Should return HdbError if insertValidator returns error',async ()=>{
+            const insert_obj = test_utils.deepClone(insert_object_test);
+            insert_obj.schema = 'schem`a';
+            const expected_err = test_utils.generateHDBError("'schema' names cannot include backticks or forward slashes", 400);
+            await test_utils.assertErrorAsync(insert_rw.insert, [insert_obj], expected_err);
+        });
+
+        it('Should return HdbError if schema table does not exist', async () => {
+            const test_err_msg = 'Table does not exist';
+            check_schema_stub.returns(test_err_msg);
+            const expected_err = test_utils.generateHDBError(test_err_msg, 400);
+            await test_utils.assertErrorAsync(insert_rw.insert, [insert_object_test], expected_err);
+        });
+    });
+
+    describe('Test updateData method', () => {
+        const update_object_test = test_utils.deepClone(UPSERT_OBJECT_TEST);
+        update_object_test.operation = 'update';
+        let bridge_update_stub = sandbox.stub();
+
+        const bridge_update_resp_test = {
+            written_hashes: ['123d2', '312312'],
+            skipped_hashes: ['123fd2'],
+            new_attributes: ['height', 'age'],
+            txn_time: 12345
+        };
+
+        before(() => {
+            insert_rw.__set__('harperBridge', { updateRecords: bridge_update_stub });
+        });
+
+        after(() => {
+            sandbox.restore();
+        });
+
+        it('NOMINAL - should return update response with updated_hashes value with existing rows',async () => {
+            bridge_update_stub.resolves({
+                update_action: 'update',
+                hashes: ['123d2', '312312'],
+                existing_rows: ['35tff'],
+                txn_time: 12345
+            });
+            const expected_update_resp = {
+                "message": "update 0 of 2 records",
+                "new_attributes": undefined,
+                "txn_time": 12345,
+                "update_hashes": [],
+                "skipped_hashes": [
+                    "123d2",
+                    "312312"
+                ]
+            };
+
+            const results = await test_utils.assertErrorAsync(insert_rw.update, [update_object_test], undefined);
+            assert.deepStrictEqual(results, expected_update_resp);
+        });
+
+        it('NOMINAL - should return update response with updated_hashes value with out existing rows',async () => {
+            bridge_update_stub.resolves({
+                update_action: 'update',
+                written_hashes: ['123d2', '312312'],
+                skipped_hashes: ['35tff'],
+                new_attributes: ['age'],
+                txn_time: 12345
+            });
+            is_empty_stub.returns(true);
+            const expected_update_resp = {
+                "message": "updated 2 of 3 records",
+                "new_attributes": [
+                    "age"
+                ],
+                "txn_time": 12345,
+                "update_hashes": [
+                    "123d2",
+                    "312312"
+                ],
+                "skipped_hashes": [
+                    "35tff"
+                ]
+            };
+
+            const results = await test_utils.assertErrorAsync(insert_rw.update, [update_object_test], undefined);
+            assert.deepStrictEqual(results, expected_update_resp);
+        });
+
+        it('Should return HdbError if operation is not update',async () => {
+            const update_obj = test_utils.deepClone(update_object_test);
+            update_obj.operation = 'upsert';
+            await test_utils.assertErrorAsync(insert_rw.update, [update_obj], new Error('invalid operation, must be update'));
+        });
+
+        it('Should return HdbError if insertValidator returns error',async ()=>{
+            const update_obj = test_utils.deepClone(update_object_test);
+            update_obj.schema = '';
+            const expected_err = test_utils.generateHDBError("'schema' is not allowed to be empty", 400);
+            await test_utils.assertErrorAsync(insert_rw.update, [update_obj], expected_err);
+        });
+
+        it('Should return HdbError if schema table does not exist', async () => {
+            const test_err_msg = 'Table does not exist';
+            check_schema_stub.returns(test_err_msg);
+            const expected_err = test_utils.generateHDBError(test_err_msg, 400);
+            await test_utils.assertErrorAsync(insert_rw.update, [update_object_test], expected_err);
+        });
     });
 });

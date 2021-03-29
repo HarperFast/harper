@@ -8,6 +8,7 @@ const LMDB_TEST_FOLDER_NAME = 'system';
 const SCHEMA_NAME = 'schema';
 const BASE_PATH = test_utils.getMockFSPath();
 const BASE_SCHEMA_PATH = path.join(BASE_PATH, SCHEMA_NAME);
+const BASE_TXN_PATH = path.join(BASE_PATH, 'transactions');
 const BASE_TEST_PATH = path.join(BASE_SCHEMA_PATH, LMDB_TEST_FOLDER_NAME);
 
 
@@ -80,31 +81,46 @@ describe("test lmdbCreateAttribute module", ()=>{
     let hdb_table_env;
     let hdb_attribute_env;
     let rw_env_util;
+    let catsdrool_env;
     before(async ()=>{
-        rw_env_util = environment_utility.__set__('MAP_SIZE', 5*1024*1024*1024);
         //uuid_stub = sandbox.stub(uuid, 'v4').returns(MOCK_UUID_VALUE);
         global.hdb_schema = {system: systemSchema};
         await fs.mkdirp(BASE_TEST_PATH);
         global.lmdb_map = undefined;
 
         hdb_schema_env = await environment_utility.createEnvironment(BASE_TEST_PATH, systemSchema.hdb_schema.name);
-        environment_utility.createDBI(hdb_schema_env, systemSchema.hdb_schema.hash_attribute, false);
+        environment_utility.createDBI(hdb_schema_env, systemSchema.hdb_schema.hash_attribute, false, true);
 
         hdb_table_env = await environment_utility.createEnvironment(BASE_TEST_PATH, systemSchema.hdb_table.name);
-        environment_utility.createDBI(hdb_table_env, systemSchema.hdb_table.hash_attribute, false);
+        environment_utility.createDBI(hdb_table_env, systemSchema.hdb_table.hash_attribute, false, true);
 
         hdb_attribute_env = await environment_utility.createEnvironment(BASE_TEST_PATH, systemSchema.hdb_attribute.name);
-        environment_utility.createDBI(hdb_attribute_env, systemSchema.hdb_attribute.hash_attribute, false);
+        environment_utility.createDBI(hdb_attribute_env, systemSchema.hdb_attribute.hash_attribute, false, true);
 
         await lmdb_create_schema(CREATE_SCHEMA_DEV);
         await lmdb_create_schema(CREATE_SCHEMA_PROD);
         await lmdb_create_table(TABLE_SYSTEM_DATA_TEST_A, CREATE_TABLE_OBJ_TEST_A);
         await lmdb_create_table(TABLE_SYSTEM_DATA_TEST_B, CREATE_TABLE_OBJ_TEST_B);
-
+        catsdrool_env = await environment_utility.openEnvironment(path.join(BASE_SCHEMA_PATH, CREATE_TABLE_OBJ_TEST_A.schema), CREATE_TABLE_OBJ_TEST_A.table);
     });
 
     after(async ()=>{
-        rw_env_util();
+        let env1 = await environment_utility.openEnvironment(path.join(BASE_SCHEMA_PATH, CREATE_TABLE_OBJ_TEST_A.schema), CREATE_TABLE_OBJ_TEST_A.table);
+        env1.close();
+
+        let env2 = await environment_utility.openEnvironment(path.join(BASE_SCHEMA_PATH, CREATE_TABLE_OBJ_TEST_B.schema), CREATE_TABLE_OBJ_TEST_B.table);
+        env2.close();
+
+        let txn_env1 = await environment_utility.openEnvironment(path.join(BASE_TXN_PATH, CREATE_TABLE_OBJ_TEST_A.schema), CREATE_TABLE_OBJ_TEST_A.table, true);
+        txn_env1.close();
+
+        let txn_env2 = await environment_utility.openEnvironment(path.join(BASE_TXN_PATH, CREATE_TABLE_OBJ_TEST_B.schema), CREATE_TABLE_OBJ_TEST_B.table, true);
+        txn_env2.close();
+
+        hdb_table_env.close();
+        hdb_schema_env.close();
+        hdb_attribute_env.close();
+
         delete global.hdb_schema;
         await fs.remove(BASE_PATH);
         global.lmdb_map = undefined;
@@ -136,46 +152,56 @@ describe("test lmdbCreateAttribute module", ()=>{
 
     it('Test that a datastore is created with dup_sort set to true when undefined in create_attribute_obj', async () => {
         const test_create_attr_obj = Object.assign({}, CREATE_ATTR_OBJ_TEST);
+        test_create_attr_obj.attribute = 'attr1';
+        delete test_create_attr_obj.id;
         assert.equal(test_create_attr_obj.dup_sort, undefined);
 
         await lmdb_create_attribute(test_create_attr_obj);
         assert.ok(test_create_attr_obj.dup_sort);
+
+        let dbi = environment_utility.openDBI(catsdrool_env, 'attr1');
+        assert.ok(dbi.dupSort);
     });
 
     it('Test that a datastore is created with dup_sort set to true when null in create_attribute_obj', async () => {
         const test_create_attr_obj = Object.assign({}, CREATE_ATTR_OBJ_TEST);
         test_create_attr_obj.dup_sort = null;
-
+        test_create_attr_obj.attribute = 'attr2';
+        delete test_create_attr_obj.id;
         await lmdb_create_attribute(test_create_attr_obj);
         assert.ok(test_create_attr_obj.dup_sort);
+
+        let dbi = environment_utility.openDBI(catsdrool_env, 'attr2');
+        assert.ok(dbi.dupSort);
     });
 
     it('Test that a datastore is created with dup_sort set to true when true boolean used in create_attribute_obj', async () => {
         const test_create_attr_obj = Object.assign({}, CREATE_ATTR_OBJ_TEST);
         test_create_attr_obj.dup_sort = true;
-
+        test_create_attr_obj.attribute = 'attr3';
+        delete test_create_attr_obj.id;
         await lmdb_create_attribute(test_create_attr_obj);
         assert.ok(test_create_attr_obj.dup_sort);
+
+        let dbi = environment_utility.openDBI(catsdrool_env, 'attr3');
+        assert.ok(dbi.dupSort);
     });
 
     it('Test that a datastore is created with dup_sort set to false when false boolean used in create_attribute_obj', async () => {
         const test_create_attr_obj = Object.assign({}, CREATE_ATTR_OBJ_TEST);
         test_create_attr_obj.dup_sort = false;
-
+        test_create_attr_obj.attribute = 'attr4';
+        delete test_create_attr_obj.id;
         await lmdb_create_attribute(test_create_attr_obj);
         assert.equal(test_create_attr_obj.dup_sort, false);
+
+        let dbi = environment_utility.openDBI(catsdrool_env, 'attr4');
+        assert.ok(!dbi.dupSort);
     });
 
     it('Test that datastore is not created because it already exists', async () => {
         const test_create_attr_obj = Object.assign({}, CREATE_ATTR_OBJ_TEST);
-        let expected_result = {
-            message: 'inserted 0 of 1 records',
-            skipped_hashes: [MOCK_UUID_VALUE],
-            inserted_hashes: []
-        };
-
-        let results = await test_utils.assertErrorAsync(lmdb_create_attribute, [test_create_attr_obj],undefined);
-        assert.deepStrictEqual(results, expected_result);
+        await test_utils.assertErrorAsync(lmdb_create_attribute, [test_create_attr_obj], new Error("attribute 'another_attribute' already exists in dev.catsdrool"));
     });
 
     it('Test that validation error is thrown', async () => {

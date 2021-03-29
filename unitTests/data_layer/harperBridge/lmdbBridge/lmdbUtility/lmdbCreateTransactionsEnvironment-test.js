@@ -21,14 +21,11 @@ const CREATE_TABLE_OBJ = {
 };
 
 describe('test lmdbCreateTransactionsEnvironment module', ()=>{
-    let rw_env_util;
     before(async ()=>{
         await fs.remove(BASE_PATH);
-        rw_env_util = environment_utility.__set__('MAP_SIZE', 5*1024*1024*1024);
     });
 
     after(()=>{
-        rw_env_util();
     });
 
     describe('test lmdbCreateTransactionsEnvironment function', ()=>{
@@ -59,6 +56,8 @@ describe('test lmdbCreateTransactionsEnvironment module', ()=>{
             assert.deepStrictEqual(txn_dbis, expected_txn_dbis);
 
             assert.deepStrictEqual(global.lmdb_map[`txn.${CREATE_TABLE_OBJ.schema}.${CREATE_TABLE_OBJ.table}`], txn_env);
+
+            txn_env.close();
         });
     });
 

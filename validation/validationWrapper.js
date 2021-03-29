@@ -1,3 +1,5 @@
+'use strict';
+
 /**
  * validationWrapper.js
  *
@@ -48,7 +50,8 @@ validate.validators.hasValidFileExt = function(value, options) {
 
 module.exports = {
     validateObject,
-    validateObjectAsync
+    validateObjectAsync,
+    validateBySchema
 };
 
 function validateObject(object, file_constraints) {
@@ -81,4 +84,18 @@ async function validateObjectAsync(object, file_constraints) {
     }
     // If no error, just return null so this will behave as the non async version.
     return null;
+}
+
+/**
+ *
+ * @param {{}} object
+ * @param {Joi.ObjectSchema} schema
+ * @returns {*}
+ */
+function validateBySchema(object, schema){
+    let result = schema.validate(object, { allowUnknown:true, abortEarly:false, errors: { wrap: { label:"'" } } });
+
+    if(result.error){
+        return new Error(result.error.message);
+    }
 }

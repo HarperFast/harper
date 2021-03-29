@@ -1,125 +1,88 @@
 'use strict';
 
 const environment_utility= require('./environmentUtility');
-const TransactionCursor = environment_utility.TransactionCursor;
-const lmdb = require('node-lmdb');
+
 const log = require('../logging/harper_logger');
 const common = require('./commonUtility');
 const auto_cast = require('../common_utils').autoCast;
 const lmdb_terms = require('./terms');
-const hdb_terms = require('../hdbTerms');
 const LMDB_ERRORS = require('../errors/commonErrors').LMDB_ERRORS_ENUM;
 const hdb_utils = require('../common_utils');
+const hdb_terms = require('../hdbTerms');
 const cursor_functions = require('./searchCursorFunctions');
+// eslint-disable-next-line no-unused-vars
+const lmdb = require('lmdb-store');
 
 /** UTILITY CURSOR FUNCTIONS **/
 
 /**
  * Creates the basis for a full iteration of a dbi with an evaluation function used to determine the logic inside the iteration
- * @param {lmdb.Env} env
+ * @param {lmdb.RootDatabase} env
  * @param {String} hash_attribute
  * @param {String} attribute
  * @param {Function} eval_function
+ * @param {boolean} reverse - defines if the iterator goes from last to first
+ * @param {number} limit - defines the max number of entries to iterate
+ * @param {number} offset - defines the entries to skip
  * @returns {[]}
  */
-function iterateFullIndex(env, hash_attribute, attribute, eval_function){
+function iterateFullIndex(env, hash_attribute, attribute, eval_function, reverse = false, limit = undefined, offset = undefined){
     let results = Object.create(null);
     let stat = environment_utility.statDBI(env, attribute);
     if(stat.entryCount === 0){
         return results;
     }
 
-    let txn = undefined;
+    let dbi = environment_utility.openDBI(env, attribute);
+    if(dbi[lmdb_terms.DBI_DEFINITION_NAME].is_hash_attribute){
+        hash_attribute = attribute;
+    }
+
     try {
-        txn = new TransactionCursor(env, attribute);
-        for (let found = txn.cursor.goToFirst(); found !== null; found = txn.cursor.goToNext()) {
-            let key_value = common.convertKeyValueFromSearch(found, txn.key_type);
-            eval_function(key_value, txn, results, hash_attribute, attribute);
+        for(let {key, value} of dbi.getRange({limit: limit, offset: offset, reverse: reverse})){
+            eval_function(key, value, results, hash_attribute, attribute);
         }
-        txn.close();
         return results;
     }catch(e){
-        if(txn !== undefined){
-            txn.close();
-        }
-
         throw e;
     }
 }
 
 /**
- * Creates the basis for a full iteration of a dbi with an evaluation function used to determine the logic inside the iteration
- * @param {lmdb.Env} env
- * @param {String} hash_attribute
- * @param {String} attribute
- * @param {Function} eval_function
- * @returns {[]}
- */
-function iterateFullIndexToMap(env, hash_attribute, attribute, eval_function){
-    let results = Object.create(null);
-
-    let stat = environment_utility.statDBI(env, attribute);
-    if(stat.entryCount === 0){
-        return results;
-    }
-    let txn = undefined;
-    try {
-        txn = new TransactionCursor(env, attribute);
-        for (let found = txn.cursor.goToFirst(); found !== null; found = txn.cursor.goToNext()) {
-            let key_value = common.convertKeyValueFromSearch(found, txn.key_type);
-            eval_function(key_value, txn, results, hash_attribute, attribute);
-        }
-        txn.close();
-        return results;
-    }catch(e){
-        if(txn !== undefined){
-            txn.close();
-        }
-
-        throw e;
-    }
-}
-
-/**
- * Creates the basis for a forward range search of a dbi with an evaluation function used to determine the logic inside the iteration
- * @param {lmdb.Env} env
+ * Creates the basis for a forward/reverse range search of a dbi with an evaluation function used to determine the logic inside the iteration
+ * @param {lmdb.RootDatabase} env
  * @param {String} hash_attribute
  * @param {String} attribute
  * @param {String|Number} search_value
  * @param {Function} eval_function
- * @returns {[]}
+ * @param {boolean} reverse - defines if the iterator goes from last to first
+ * @param {number} limit - defines the max number of entries to iterate
+ * @param {number} offset - defines the entries to skip
+ * @returns {[[],[]]}
  */
-function iterateRangeNext(env, hash_attribute, attribute, search_value, eval_function){
-    let results = Object.create(null);
+function iterateRangeNext(env, hash_attribute, attribute, search_value, eval_function, reverse = false, limit = undefined, offset = undefined){
+    let results = [[],[]];
     let stat = environment_utility.statDBI(env, attribute);
     if(stat.entryCount === 0){
         return results;
     }
 
-    let txn = undefined;
     try {
-        txn = new TransactionCursor(env, attribute);
-
-        //if the first value in the dbi is less than the search value then we seek to the value, otherwise we keep the cursor at the first item
-        let found = txn.cursor.goToFirst();
-        let found_converted = common.convertKeyValueFromSearch(found, txn.key_type);
-
-        if ((isNaN(found_converted) === true && found_converted.toString() < search_value.toString()) || (isNaN(found_converted) === false && Number(found_converted) < search_value)) {
-            let search_value_converted = common.convertKeyValueToWrite(search_value, txn.key_type);
-            found = txn.cursor.goToRange(search_value_converted);
+        let dbi = env.dbis[attribute];
+        if(dbi[lmdb_terms.DBI_DEFINITION_NAME].is_hash_attribute){
+            hash_attribute = attribute;
         }
 
-        for (found; found !== null; found = txn.cursor.goToNext()) {
-            let key_value = common.convertKeyValueFromSearch(found, txn.key_type);
-            eval_function(search_value, key_value, txn, results, hash_attribute, attribute);
+        //because reversing only returns 1 entry from a dup sorted key we get all entries for the search value
+        let start_value = reverse === true ? undefined : search_value;
+        let end_value = reverse === true ? search_value : undefined;
+
+        for(let {key, value} of dbi.getRange({start:start_value, end: end_value, reverse, limit, offset})){
+            eval_function(search_value, key, value, results, hash_attribute, attribute);
         }
-        txn.close();
+
         return results;
     }catch(e){
-        if(txn !== undefined){
-            txn.close();
-        }
-
         throw e;
     }
 }
@@ -132,181 +95,90 @@ function iterateRangeNext(env, hash_attribute, attribute, search_value, eval_fun
  * another important point to remember is the search is always iterating forward.  this makes sense for positive number searches,
  * but get wonky for negative number searches and especially for a range of between -4 & 6.  the reason is we will start the iterator at 0, move forward to 6,
  * then we need to jump forward to the highest negative number and stop at the start of our range (-4).
- * @param {lmdb.Env} env
+ * @param {lmdb.RootDatabase} env
  * @param {String} hash_attribute
  * @param {String} attribute
- * @param {Number} start_value
- * @param {Number} end_value
- * @returns {[]}
+ * @param {Number|String} start_value
+ * @param {Number|String} end_value
+ * @param {boolean} reverse
+ * @param {number} limit - defines the max number of entries to iterate
+ * @param {number} offset - defines the entries to skip
+ * @returns {[[],[]]}
  */
-function iterateRangeBetween(env, hash_attribute, attribute, start_value, end_value){
-    let txn = undefined;
+function iterateRangeBetween(env, hash_attribute, attribute, start_value, end_value, reverse = false, limit = undefined, offset = undefined){
+
     try {
-        let results = Object.create(null);
+        let results = [[],[]];
         let stat = environment_utility.statDBI(env, attribute);
         if (stat.entryCount === 0) {
             return results;
         }
 
-        txn = new TransactionCursor(env, attribute);
-        let first_key = txn.cursor.goToFirst();
-        let last_key = txn.cursor.goToLast();
-        let first_key_value = first_key.readDoubleBE(0);
-        let last_key_value = last_key.readDoubleBE(0);
-        let find_max_converted = common.convertKeyValueToWrite(Number.MIN_VALUE * -1, txn.key_type);
-        let min_value;
-        let max_value;
-        if (first_key_value < 0 && last_key_value < 0) {
-            min_value = last_key;
-            max_value = first_key;
-        } else if (first_key_value > 0 && last_key_value > 0) {
-            min_value = first_key;
-            max_value = last_key;
-        } else {
-            min_value = last_key;
-
-            txn.cursor.goToRange(find_max_converted);
-            max_value = txn.cursor.goToPrev();
+        let dbi = environment_utility.openDBI(env, attribute);
+        if(dbi[lmdb_terms.DBI_DEFINITION_NAME].is_hash_attribute){
+            hash_attribute = attribute;
         }
 
-        let start_value_converted = common.convertKeyValueToWrite(start_value, txn.key_type);
-        let end_value_converted = common.convertKeyValueToWrite(end_value, txn.key_type);
+        start_value = auto_cast(start_value);
+        start_value = common.convertKeyValueToWrite(start_value);
 
-        //determine the maximum key we need to iterate towards
-        let end_key = txn.cursor.goToRange(end_value_converted);
-        if (end_key === null) {
-            end_key = max_value;
-        }
-        if (end_value >= 0 && end_key.readDoubleBE(0) < 0) {
-            end_key = max_value;
-        }
+        end_value = auto_cast(end_value);
+        end_value = common.convertKeyValueToWrite(end_value);
 
-        //determine the starting point for the iterator.
-        let start_key;
-        //if end_value is a positive and  start_value is negative we will start at the beginning of the lowest positive number which is the beginning of the iterator,
-        // otherwise we jump the iterator to the start value, that would be when the values are both positive or both negative
-        if (end_value >= 0 && start_value < 0) {
-            start_key = txn.cursor.goToFirst();
-        } else {
-            start_key = txn.cursor.goToRange(start_value_converted);
+        //get last key
+        let last;
+        for(let key of dbi.getKeys({reverse: true, limit: 1})){
+            last = key;
+        }
+        if(end_value >= last){
+            end_value = undefined;
         }
 
-        if (start_key === null) {
-            start_key = min_value;
+        //get first key
+        let first;
+        for(let key of dbi.getKeys({limit: 1})){
+            first = key;
+        }
+        if(start_value <= first){
+            start_value = undefined;
         }
 
-        //in the scenario where both values are negative we need to swap them, this is because negative numbers are ordered highest to lowest.  i.e. -1,-2,-3,...-1000.  our end point then is actually based on our start_value
-        if (start_value < 0 && end_value < 0) {
-            [start_key, end_key] = [end_key, start_key];
-        }
 
-        let end_key_value = end_key.readDoubleBE(0);
-
-        let met_end_value = false;
-
-        for (let found = txn.cursor.goToRange(start_key); found !== null; found = txn.cursor.goToNext()) {
-            let key_value = common.convertKeyValueFromSearch(found, txn.key_type);
-            if (key_value === end_key_value) {
-                met_end_value = true;
-            }
-
-            if (met_end_value === true && key_value !== end_key_value) {
-                if (end_key_value >= 0 && start_value < 0) {
-                    //when we have a scenario where end_value is positive and start_value is negative we first search all the positive numbers from the beginning of the iterator.
-                    // we then need to jump ahead to search negative values. and we change the end_key_value to be the start_key.
-                    txn.cursor.goToRange(find_max_converted);
-                    txn.cursor.goToPrev();
-                    met_end_value = false;
-                    end_key_value = start_key.readDoubleBE(0);
-                    continue;
+        //advance the end_value by 1 key
+        let end;
+        let start_search = reverse === true ? start_value : end_value;
+        if(start_search !== undefined && start_search !== null){
+            for(let key of dbi.getKeys({start:start_search, reverse})){
+                if(key !== start_search){
+                    end = key;
+                    break;
                 }
-
-                txn.cursor.goToLast();
-            }
-
-            if (key_value >= start_value && key_value <= end_value) {
-                cursor_functions.pushResults(key_value, txn, results, hash_attribute, attribute);
             }
         }
-        txn.close();
+
+        let start = reverse === true ? end_value : start_value;
+
+        for(let {key, value} of env.dbis[attribute].getRange({start, end, reverse, limit, offset})){
+            cursor_functions.pushResults(key, value, results, hash_attribute, attribute);
+        }
         return results;
     } catch(e){
-        if(txn !== undefined){
-            txn.close();
-        }
 
         throw e;
     }
-}
-
-/**
- * Creates the basis for a previous range search of a dbi with an evaluation function used to determine the logic inside the iteration
- * @param {lmdb.Env} env
- * @param {String} hash_attribute
- * @param {String} attribute
- * @param {String|Number} search_value
- * @param {Function} eval_function
- * @returns {[]}
- */
-function iterateLessThan(env, hash_attribute, attribute, search_value, eval_function){
-    let txn = undefined;
-    try {
-        txn = new TransactionCursor(env, attribute);
-        let results = Object.create(null);
-        let stat = environment_utility.statDBI(env, attribute);
-        if(stat.entryCount === 0){
-            return results;
-        }
-
-        //if the last value in the dbi is greater than the search value then we seek to the value, otherwise we keep the cursor at the last item
-        let found = txn.cursor.goToLast();
-        let found_converted = common.convertKeyValueFromSearch(found, txn.key_type);
-
-        if (found_converted > search_value) {
-            let search_value_converted = common.convertKeyValueToWrite(search_value, txn.key_type);
-            found = txn.cursor.goToRange(search_value_converted);
-        }
-
-        for (found; found !== null; found = txn.cursor.goToPrev()) {
-            let key_value = common.convertKeyValueFromSearch(found, txn.key_type);
-            eval_function(search_value, key_value, txn, results, hash_attribute, attribute);
-        }
-        txn.close();
-        return results;
-    }catch(e) {
-        if(txn !== undefined){
-            txn.close();
-        }
-        throw e;
-    }
-}
-
-/**
- * determines if the intent is to return the whole row based on fetch_attributes having 1 entry that is wildcard * or %
- * @param env
- * @param fetch_attributes
- * @returns {Array}
- */
-function setGetWholeRowAttributes(env, fetch_attributes){
-    if(fetch_attributes.length === 1 && hdb_terms.SEARCH_WILDCARDS.indexOf(fetch_attributes[0]) >= 0){
-        fetch_attributes = environment_utility.listDBIs(env);
-        let blob_index = fetch_attributes.indexOf(lmdb_terms.BLOB_DBI_NAME);
-        if(blob_index >= 0){
-            fetch_attributes.splice(blob_index, 1);
-        }
-    }
-
-    return fetch_attributes;
 }
 
 /**
  * iterates the entire  hash_attribute dbi and returns all objects back
- * @param {lmdb.Env} env - environment object used thigh level to interact with all data in an environment
+ * @param {lmdb.RootDatabase} env - environment object used thigh level to interact with all data in an environment
  * @param {String} hash_attribute - name of the hash_attribute for this environment
  * @param {Array.<String>} fetch_attributes - string array of attributes to pull from the object
  * @returns {Array.<Object>} - object array of fetched records
+ * @param {boolean} reverse - defines if the iterator goes from last to first
+ * @param {number} limit - defines the max number of entries to iterate
+ * @param {number} offset - defines the entries to skip
  */
-function searchAll(env, hash_attribute, fetch_attributes){
+function searchAll(env, hash_attribute, fetch_attributes, reverse = false, limit = undefined, offset = undefined){
     common.validateEnv(env);
 
     if(hash_attribute === undefined){
@@ -314,21 +186,38 @@ function searchAll(env, hash_attribute, fetch_attributes){
     }
 
     validateFetchAttributes(fetch_attributes);
-
     fetch_attributes = setGetWholeRowAttributes(env, fetch_attributes);
 
-    let results = iterateFullIndex(env, hash_attribute, hash_attribute, cursor_functions.searchAll.bind(null, fetch_attributes));
-    return Object.values(results);
+    let results = [];
+    let stat = environment_utility.statDBI(env, hash_attribute);
+    if(stat.entryCount === 0){
+        return results;
+    }
+
+    let dbi = environment_utility.openDBI(env, hash_attribute);
+
+    try {
+        for(let {key, value} of dbi.getRange({limit: limit, offset: offset, reverse: reverse})){
+            cursor_functions.searchAll(fetch_attributes, key, value, results);
+        }
+        return results;
+    }catch(e){
+        throw e;
+    }
 }
 
 /**
 * iterates the entire  hash_attribute dbi and returns all objects back in a map
-* @param {lmdb.Env} env - environment object used thigh level to interact with all data in an environment
+* @param {lmdb.RootDatabase} env - environment object used thigh level to interact with all data in an environment
 * @param {String} hash_attribute - name of the hash_attribute for this environment
 * @param {Array.<String>} fetch_attributes - string array of attributes to pull from the object
+ * @param {boolean} reverse - defines if the iterator goes from last to first
+ * @param {number} limit - defines the max number of entries to iterate
+ * @param {number} offset - defines the entries to skip
 * @returns {{String|Number, Object}} - object array of fetched records
+
 */
-function searchAllToMap(env, hash_attribute, fetch_attributes){
+function searchAllToMap(env, hash_attribute, fetch_attributes, reverse = false, limit = undefined, offset = undefined){
     common.validateEnv(env);
 
     if(hash_attribute === undefined){
@@ -336,29 +225,31 @@ function searchAllToMap(env, hash_attribute, fetch_attributes){
     }
 
     validateFetchAttributes(fetch_attributes);
-
     fetch_attributes = setGetWholeRowAttributes(env, fetch_attributes);
-    return iterateFullIndexToMap(env,hash_attribute, hash_attribute, cursor_functions.searchAllToMap.bind(null, fetch_attributes));
+    return iterateFullIndex(env, hash_attribute, hash_attribute, cursor_functions.searchAllToMap.bind(null, fetch_attributes), reverse, limit, offset);
 }
 
 /**
  * iterates a dbi and returns the key/value pairing for each entry
  * @param env
  * @param attribute
+ * @param {boolean} reverse - defines if the iterator goes from last to first
+ * @param {number} limit - defines the max number of entries to iterate
+ * @param {number} offset - defines the entries to skip
  * @returns {Array.<Array>}
  */
-function iterateDBI(env, attribute){
+function iterateDBI(env, attribute, reverse = false, limit = undefined, offset = undefined){
     common.validateEnv(env);
     if(attribute === undefined){
         throw new Error(LMDB_ERRORS.ATTRIBUTE_REQUIRED);
     }
 
-    return iterateFullIndex(env, attribute, attribute, cursor_functions.iterateDBI);
+    return iterateFullIndex(env, attribute, attribute, cursor_functions.iterateDBI, reverse, limit, offset);
 }
 
 /**
  * counts all records in an environment based on the count from stating the hash_attribute  dbi
- * @param {lmdb.Env} env - environment object used thigh level to interact with all data in an environment
+ * @param {lmdb.RootDatabase} env - environment object used thigh level to interact with all data in an environment
  * @param {String} hash_attribute - name of the hash_attribute for this environment
  * @returns {number} - number of records in the environment
  */
@@ -375,41 +266,42 @@ function countAll(env, hash_attribute){
 
 /**
  * performs an equal search on the key of a named dbi, returns a list of ids where their keys literally match the search_value
- * @param {lmdb.Env} env - environment object used thigh level to interact with all data in an environment
+ * @param {lmdb.RootDatabase} env - environment object used thigh level to interact with all data in an environment
  * @param {String} hash_attribute
  * @param {String} attribute - name of the attribute (dbi) to search
  * @param search_value - value to search
- * @returns {[]} - ids matching the search
+ * @param {boolean} reverse - defines if the iterator goes from last to first
+ * @param {number} limit - defines the max number of entries to iterate
+ * @param {number} offset - defines the entries to skip
+ * @returns {[[],[]]} - ids matching the search
  */
-function equals(env, hash_attribute, attribute, search_value){
+function equals(env, hash_attribute, attribute, search_value, reverse = false, limit = undefined, offset = undefined){
     validateComparisonFunctions(env, attribute, search_value);
 
-    let txn = undefined;
+    let dbi = environment_utility.openDBI(env, attribute);
+
     try {
-        txn = new TransactionCursor(env, attribute);
+        search_value = auto_cast(search_value);
+        search_value = common.convertKeyValueToWrite(search_value);
 
-        let converted_search_value = common.convertKeyValueToWrite(search_value, txn.key_type);
-
-        let results = Object.create(null);
-        for (let found = txn.cursor.goToKey(converted_search_value); found !== null; found = txn.cursor.goToNextDup()) {
-            let key_value = common.convertKeyValueFromSearch(found, txn.key_type);
-            if(search_value.toString() !== key_value.toString()){
-                txn.cursor.goToLast();
-                continue;
+        let results = [[],[]];
+        if(dbi[lmdb_terms.DBI_DEFINITION_NAME].is_hash_attribute){
+            hash_attribute = attribute;
+            let value = dbi.get(search_value);
+            if(value !== undefined) {
+                cursor_functions.pushResults(search_value, value, results, hash_attribute, attribute);
             }
-            cursor_functions.pushResults(key_value, txn, results, hash_attribute, attribute);
+        } else {
+            for (let value of dbi.getValues(search_value, {reverse, limit, offset})) {
+                cursor_functions.pushResults(search_value, value, results, hash_attribute, attribute);
+            }
         }
-        txn.close();
 
         if(Buffer.byteLength(search_value.toString()) > lmdb_terms.MAX_BYTE_SIZE) {
-            blobSearch(env, hash_attribute, attribute, search_value.toString(), lmdb_terms.SEARCH_TYPES.EQUALS, results);
+            blobSearch(env, hash_attribute, attribute, search_value, lmdb_terms.SEARCH_TYPES.EQUALS, results);
         }
         return results;
     }catch(e){
-        if(txn !== undefined){
-            txn.close();
-        }
-
         throw e;
     }
 }
@@ -422,53 +314,46 @@ function equals(env, hash_attribute, attribute, search_value){
  * @param search_value
  * @param search_type
  * @param results
- * @returns {*{}}
+ * @returns {{}}
  */
 function blobSearch(env, hash_attribute, attribute, search_value, search_type, results = []){
-    let txn = undefined;
     try{
-        txn = new TransactionCursor(env, lmdb_terms.BLOB_DBI_NAME);
         let range_value = `${attribute}/`;
-        for(let found = txn.cursor.goToRange(range_value); found !== null; found = txn.cursor.goToNext()){
-            if(found.startsWith(range_value) === false){
-                txn.cursor.goToLast();
-                continue;
+
+        for(let {key, value} of env.dbis[lmdb_terms.BLOB_DBI_NAME].getRange({start: range_value})){
+            if(key.startsWith(range_value) === false){
+                break;
             }
 
-            let text = txn.cursor.getCurrentString();
-            let hash_value = found.replace(range_value, '');
+            let hash_value = key.replace(range_value, '');
             switch(search_type){
                 case lmdb_terms.SEARCH_TYPES.EQUALS:
-                    if(text === search_value){
-                        addResultFromBlobSearch(hash_value, text, hash_attribute, attribute, results);
+                    if(value === search_value){
+                        addResultFromBlobSearch(hash_value, value, hash_attribute, attribute, results);
                     }
                     break;
                 case lmdb_terms.SEARCH_TYPES.STARTS_WITH:
-                    if(text.startsWith(search_value) === true){
-                        addResultFromBlobSearch(hash_value, text, hash_attribute, attribute, results);
+                    if(value.startsWith(search_value) === true){
+                        addResultFromBlobSearch(hash_value, value, hash_attribute, attribute, results);
                     }
                     break;
                 case lmdb_terms.SEARCH_TYPES.ENDS_WITH:
-                    if(text.endsWith(search_value) === true){
-                        addResultFromBlobSearch(hash_value, text, hash_attribute, attribute, results);
+                    if(value.endsWith(search_value) === true){
+                        addResultFromBlobSearch(hash_value, value, hash_attribute, attribute, results);
                     }
                     break;
                 case lmdb_terms.SEARCH_TYPES.CONTAINS:
-                    if(text.indexOf(search_value) >= 0){
-                        addResultFromBlobSearch(hash_value, text, hash_attribute, attribute, results);
+                    if(value.indexOf(search_value) >= 0){
+                        addResultFromBlobSearch(hash_value, value, hash_attribute, attribute, results);
                     }
                     break;
                 default:
                     break;
             }
         }
-        txn.close();
+
         return results;
     }catch(e){
-        if(txn !== undefined){
-            txn.close();
-        }
-
         throw e;
     }
 }
@@ -479,7 +364,7 @@ function blobSearch(env, hash_attribute, attribute, search_value, search_type, r
  * @param {*} blob_value
  * @param {String} hash_attribute
  * @param {String} attribute
- * @param {Object} results
+ * @param {[]} results
  */
 function addResultFromBlobSearch(hash_value, blob_value, hash_attribute, attribute, results){
     let new_object = Object.create(null);
@@ -488,192 +373,472 @@ function addResultFromBlobSearch(hash_value, blob_value, hash_attribute, attribu
     if(hash_attribute !== undefined) {
         new_object[hash_attribute] = auto_cast(hash_value);
     }
-
-    results[hash_value] = new_object;
+    results[0].push(hash_value);
+    results[1].push(new_object);
 }
 
 /**
  * performs an startsWith search on the key of a named dbi, returns a list of ids where their keys begin with the search_value
- * @param {lmdb.Env} env - environment object used thigh level to interact with all data in an environment
+ * @param {lmdb.RootDatabase} env - environment object used thigh level to interact with all data in an environment
  * @param {String} hash_attribute
  * @param {String} attribute - name of the attribute (dbi) to search
  * @param search_value - value to search
- * @returns {[]} - ids matching the search
+ * @param {boolean} reverse - defines if the iterator goes from last to first
+ * @param {number} limit - defines the max number of entries to iterate
+ * @param {number} offset - defines the entries to skip
+ * @returns {[[],[]]} - ids matching the search
  */
-function startsWith(env, hash_attribute, attribute, search_value){
+function startsWith(env, hash_attribute, attribute, search_value, reverse = false, limit = undefined, offset = undefined){
     validateComparisonFunctions(env, attribute, search_value);
+
+    let results = [[],[]];
+    let stat = environment_utility.statDBI(env, attribute);
+    if(stat.entryCount === 0){
+        return results;
+    }
+
     let dbi = environment_utility.openDBI(env, attribute);
-    let results = iterateRangeNext(env, hash_attribute, attribute, search_value, cursor_functions.startsWith.bind(null, dbi[lmdb_terms.DBI_DEFINITION_NAME].key_type));
+
+    if(dbi[lmdb_terms.DBI_DEFINITION_NAME].is_hash_attribute){
+        hash_attribute = attribute;
+    }
+
+    //if the search is numeric we need to scan the entire index, if string we can just do a range
+    search_value = auto_cast(search_value);
+    search_value = common.convertKeyValueToWrite(search_value);
+    let string_search = true;
+    if(typeof search_value === 'number'){
+        string_search = false;
+    }
+
+    //if we are reversing we need to get the key after the one we want to search on so we can start there and iterate to the front
+    if(reverse === true){
+        let next_key;
+        //iterate based on the search_value until the key no longer starts with the search_value, this is the key we need to start with in the search
+        for(let key of dbi.getKeys({start: search_value})){
+            if(!key.startsWith(search_value)){
+                next_key = key;
+                break;
+            }
+        }
+
+        //with the new search value we iterate
+        if(next_key !== undefined){
+            if(Number.isInteger(offset)){
+                offset++;
+            } else{
+                limit++;
+            }
+        }
+
+
+        for(let {key, value} of dbi.getRange({start: next_key, end: undefined, reverse, limit, offset})){
+            if(key === next_key){
+                continue;
+            }
+
+            if(key.toString().startsWith(search_value)){
+                cursor_functions.pushResults(key, value, results, hash_attribute, attribute);
+            } else if(string_search === true){
+                break;
+            }
+        }
+    }else {
+        for (let {key, value} of dbi.getRange({start: search_value, reverse, limit, offset})) {
+            if (key.toString().startsWith(search_value)) {
+                cursor_functions.pushResults(key, value, results, hash_attribute, attribute);
+            } else if (string_search === true) {
+                break;
+            }
+        }
+    }
+
     results = blobSearch(env, hash_attribute, attribute, search_value, lmdb_terms.SEARCH_TYPES.STARTS_WITH, results);
     return results;
 }
 
 /**
  * performs an endsWith search on the key of a named dbi, returns a list of ids where their keys end with search_value
- * @param {lmdb.Env} env - environment object used thigh level to interact with all data in an environment
+ * @param {lmdb.RootDatabase} env - environment object used thigh level to interact with all data in an environment
  * @param {String} hash_attribute
  * @param {String} attribute - name of the attribute (dbi) to search
  * @param search_value - value to search
- * @returns {[]} - ids matching the search
+ * @param {boolean} reverse - defines if the iterator goes from last to first
+ * @param {number} limit - defines the max number of entries to iterate
+ * @param {number} offset - defines the entries to skip
+ * @returns {[[],[]]} - ids matching the search
  */
-function endsWith(env, hash_attribute, attribute, search_value){
+function endsWith(env, hash_attribute, attribute, search_value, reverse = false, limit = undefined, offset = undefined){
     validateComparisonFunctions(env, attribute, search_value);
+    let results = [[],[]];
+    let stat = environment_utility.statDBI(env, attribute);
+    if(stat.entryCount === 0){
+        return results;
+    }
 
-    let results = iterateFullIndex(env, hash_attribute, attribute, cursor_functions.endsWith.bind(null, search_value));
-    results = blobSearch(env, hash_attribute, attribute, search_value, lmdb_terms.SEARCH_TYPES.ENDS_WITH, results);
-    return results;
+    let dbi = environment_utility.openDBI(env, attribute);
+    if(dbi[lmdb_terms.DBI_DEFINITION_NAME].is_hash_attribute){
+        hash_attribute = attribute;
+    }
+
+    offset = Number.isInteger(offset) ? offset : 0;
+
+    try {
+        //we iterate just the keys as it is faster (no access of the value & less iterations in dupsorted dbis)
+        for(let key of dbi.getKeys({reverse})){
+            if(limit === 0){
+                break;
+            }
+            let key_str = common.convertKeyValueFromSearch(key).toString();
+            if(key_str.endsWith(search_value)){
+                if(dbi[lmdb_terms.DBI_DEFINITION_NAME].is_hash_attribute){
+                    if (offset > 0) {
+                        offset--;
+                        continue;
+                    }
+
+                    if (limit === 0) {
+                        break;
+                    }
+                    cursor_functions.pushResults(key, key, results, hash_attribute, attribute);
+                    limit--;
+                } else {
+                    //if there is a match we iterate the values of the key
+                    for (let value of dbi.getValues(key)) {
+                        if (offset > 0) {
+                            offset--;
+                            continue;
+                        }
+
+                        if (limit === 0) {
+                            break;
+                        }
+                        cursor_functions.pushResults(key, value, results, hash_attribute, attribute);
+                        limit--;
+                    }
+                }
+            }
+        }
+        results = blobSearch(env, hash_attribute, attribute, search_value, lmdb_terms.SEARCH_TYPES.ENDS_WITH, results);
+        return results;
+    }catch(e){
+        throw e;
+    }
 }
 
 /**
- * performs a cotains search on the key of a named dbi, returns a list of ids where their keys contain the search_value
- * @param {lmdb.Env} env - environment object used thigh level to interact with all data in an environment
+ * performs a contains search on the key of a named dbi, returns a list of ids where their keys contain the search_value
+ * @param {lmdb.RootDatabase} env - environment object used thigh level to interact with all data in an environment
  * @param {String} hash_attribute
  * @param {String} attribute - name of the attribute (dbi) to search
  * @param {String|Number} search_value - value to search
- * @returns {[]} - ids matching the search
+ * @param {boolean} reverse - defines if the iterator goes from last to first
+ * @param {number} limit - defines the max number of entries to iterate
+ * @param {number} offset - defines the entries to skip
+ * @returns {[[],[]]} - ids matching the search
  */
-function contains(env, hash_attribute, attribute, search_value){
+function contains(env, hash_attribute, attribute, search_value, reverse = false, limit = undefined, offset = undefined){
     validateComparisonFunctions(env, attribute, search_value);
 
-    let results = iterateFullIndex(env, hash_attribute, attribute, cursor_functions.contains.bind(null, search_value));
-    results = blobSearch(env, hash_attribute, attribute, search_value, lmdb_terms.SEARCH_TYPES.CONTAINS, results);
-    return results;
+    let results = [[],[]];
+    let stat = environment_utility.statDBI(env, attribute);
+    if(stat.entryCount === 0){
+        return results;
+    }
+
+    let dbi = environment_utility.openDBI(env, attribute);
+    if(dbi[lmdb_terms.DBI_DEFINITION_NAME].is_hash_attribute){
+        hash_attribute = attribute;
+    }
+
+    offset = Number.isInteger(offset) ? offset : 0;
+
+    try {
+        for(let key of dbi.getKeys({reverse})){
+            if(limit === 0){
+                break;
+            }
+
+            let found_str = key.toString();
+            if(found_str.includes(search_value)){
+                if(dbi[lmdb_terms.DBI_DEFINITION_NAME].is_hash_attribute){
+                    if (offset > 0) {
+                        offset--;
+                        continue;
+                    }
+
+                    if (limit === 0) {
+                        break;
+                    }
+                    cursor_functions.pushResults(key, key, results, hash_attribute, attribute);
+                    limit--;
+                } else {
+                    for (let value of dbi.getValues(key)) {
+                        if (offset > 0) {
+                            offset--;
+                            continue;
+                        }
+
+                        if (limit === 0) {
+                            break;
+                        }
+
+                        cursor_functions.pushResults(key, value, results, hash_attribute, attribute);
+                        limit--;
+                    }
+                }
+            }
+        }
+        results = blobSearch(env, hash_attribute, attribute, search_value, lmdb_terms.SEARCH_TYPES.CONTAINS, results);
+        return results;
+
+    }catch(e){
+        throw e;
+    }
+
 }
 
 /** RANGE FUNCTIONS **/
 
 /**
- * performs standard validation on range functions
- * @param {lmdb.Env} env
- * @param {String} attribute
- * @param {String|Number} search_value
- * @returns {{}}
- */
-function initializeRangeFunction(env, attribute, search_value){
-    validateComparisonFunctions(env, attribute, search_value);
-
-    let dbi = environment_utility.openDBI(env, attribute);
-    let search_info = new Object(null);
-    search_info.search_value_is_numeric = isNaN(search_value) === false;
-    search_info.dbi_numeric_key = dbi[lmdb_terms.DBI_DEFINITION_NAME].key_type === lmdb_terms.DBI_KEY_TYPES.NUMBER;
-
-
-    //if we are trying to compare a non-numeric value to numeric keys we throw an error
-    if(search_info.search_value_is_numeric === false && search_info.dbi_numeric_key === true){
-        throw new Error(LMDB_ERRORS.CANNOT_COMPARE_STRING_TO_NUMERIC_KEYS);
-    }
-
-    return search_info;
-}
-
-/**
  * performs a greater than search for string / numeric search value
- * @param {lmdb.Env} env
+ * @param {lmdb.RootDatabase} env
  * @param {String} hash_attribute
  * @param {String} attribute
  * @param {String|Number} search_value
- * @returns {*[]}
+ * @param {boolean} reverse - determines direction to iterate
+ * @param {number} limit - defines the max number of entries to iterate
+ * @param {number} offset - defines the entries to skip
+ * @returns {[[],[]]}
  */
-function greaterThan(env, hash_attribute, attribute, search_value){
-    let search_info = initializeRangeFunction(env, attribute, search_value);
+function greaterThan(env, hash_attribute, attribute, search_value, reverse= false, limit = undefined, offset = undefined){
+    validateComparisonFunctions(env, attribute, search_value);
+    search_value = auto_cast(search_value);
+    search_value = common.convertKeyValueToWrite(search_value);
 
-    if(search_info.search_value_is_numeric === false){
-        return iterateFullIndex(env, hash_attribute, attribute, cursor_functions.greaterThanStringCompare.bind(null, search_value));
+    //if reverse = false we need to find the next value to start searching
+    let next_value;
+    if(reverse === true){
+        next_value = search_value;
+    } else{
+        let dbi = environment_utility.openDBI(env, attribute);
+        for (let key of dbi.getKeys({start: search_value})) {
+            if (key > search_value) {
+                next_value = key;
+                break;
+            }
+        }
     }
 
-    if(search_info.search_value_is_numeric === true && search_info.dbi_numeric_key === false){
-        return iterateFullIndex(env, hash_attribute, attribute, cursor_functions.greaterThanStringToNumberCompare.bind(null, Number(search_value)));
-    }
-
-    if(search_info.search_value_is_numeric === true && search_info.dbi_numeric_key === true){
-        //add 1 to the search value because we want everything greater than the search value & the key is an int
-        return iterateRangeNext(env, hash_attribute, attribute, Number(search_value), cursor_functions.greaterThanNumericCompare);
-    }
+    return iterateRangeNext(env, hash_attribute, attribute, next_value, cursor_functions.greaterThanEqualCompare, reverse, limit, offset);
 }
 
 /**
  * performs a greater than equal search for string / numeric search value
- * @param {lmdb.Env} env
+ * @param {lmdb.RootDatabase} env
  * @param {String} hash_attribute
  * @param {String} attribute
  * @param {String|Number} search_value
- * @returns {*[]}
+ * @param {boolean} reverse - determines direction of iterator
+ * @param {number} limit - defines the max number of entries to iterate
+ * @param {number} offset - defines the entries to skip
+ * @returns {[[],[]]}
  */
-function greaterThanEqual(env, hash_attribute, attribute, search_value){
-    let search_info = initializeRangeFunction(env, attribute, search_value);
+function greaterThanEqual(env, hash_attribute, attribute, search_value, reverse = false, limit = undefined, offset = undefined){
+    validateComparisonFunctions(env, attribute, search_value);
+    search_value = auto_cast(search_value);
+    search_value = common.convertKeyValueToWrite(search_value);
 
-    if(search_info.search_value_is_numeric === false){
-        return iterateFullIndex(env, hash_attribute, attribute, cursor_functions.greaterThanEqualStringCompare.bind(null, search_value));
+    let results = [[],[]];
+    let stat = environment_utility.statDBI(env, attribute);
+    if(stat.entryCount === 0){
+        return results;
     }
 
-    if(search_info.search_value_is_numeric === true && search_info.dbi_numeric_key === false){
-        return iterateFullIndex(env, hash_attribute, attribute, cursor_functions.greaterThanEqualStringToNumberCompare.bind(null, Number(search_value)));
+    //if reverse = true we need to find the prev value to the search
+    let next_value;
+    if(reverse === false){
+        next_value = search_value;
+    } else{
+        let dbi = environment_utility.openDBI(env, attribute);
+
+        //get the first key
+        let first;
+        for(let key of dbi.getKeys({limit:1})){
+            first = key;
+        }
+
+        //if search equal or is less than the first key we set next value to be undefined, this will have the iterator go to the very first element
+        if(first >= search_value){
+            next_value = undefined;
+        } else {
+            for (let key of dbi.getKeys({start: search_value, reverse})) {
+                if (key < search_value) {
+                    next_value = key;
+                    break;
+                }
+            }
+        }
     }
 
-    if(search_info.search_value_is_numeric === true && search_info.dbi_numeric_key === true){
-        return iterateRangeNext(env, hash_attribute, attribute, Number(search_value), cursor_functions.greaterThaEqualNumericCompare);
+    try {
+        let dbi = env.dbis[attribute];
+        if(dbi[lmdb_terms.DBI_DEFINITION_NAME].is_hash_attribute){
+            hash_attribute = attribute;
+        }
+
+        //because reversing only returns 1 entry from a dup sorted key we get all entries for the search value
+        let start_value = reverse === true ? undefined : next_value;
+        let end_value = reverse === true ? next_value : undefined;
+
+        for(let {key, value} of dbi.getRange({start:start_value, end: end_value, reverse, limit, offset})){
+            cursor_functions.greaterThanEqualCompare(search_value, key, value, results, hash_attribute, attribute);
+        }
+
+        return results;
+    }catch(e){
+        throw e;
     }
 }
 
 /**
  * performs a less than search for string / numeric search value
- * @param {lmdb.Env} env
+ * @param {lmdb.RootDatabase} env
  * @param {String} hash_attribute
  * @param {String} attribute
  * @param {String|Number} search_value
- * @returns {*[]}
+ * @param {boolean} reverse - determines direction of iterator
+ * @param {number} limit - defines the max number of entries to iterate
+ * @param {number} offset - defines the entries to skip
+ * @returns {[[],[]]}
  */
-function lessThan(env, hash_attribute, attribute, search_value){
-    let search_info = initializeRangeFunction(env, attribute, search_value);
+function lessThan(env, hash_attribute, attribute, search_value, reverse = false, limit = undefined, offset = undefined){
+    validateComparisonFunctions(env, attribute, search_value);
+    search_value = auto_cast(search_value);
+    search_value = common.convertKeyValueToWrite(search_value);
 
-    if(search_info.search_value_is_numeric === false){
-        return iterateFullIndex(env, hash_attribute, attribute, cursor_functions.lessThanStringCompare.bind(null, search_value));
+    let results = [[],[]];
+    let stat = environment_utility.statDBI(env, attribute);
+    if(stat.entryCount === 0 || search_value === undefined || search_value === null){
+        return results;
     }
 
-    if(search_info.search_value_is_numeric === true && search_info.dbi_numeric_key === false){
-        return iterateFullIndex(env, hash_attribute, attribute, cursor_functions.lessThanStringToNumberCompare.bind(null, Number(search_value)));
-    }
+    try {
+        let dbi = env.dbis[attribute];
 
-    if(search_info.search_value_is_numeric === true && search_info.dbi_numeric_key === true){
-        return iterateLessThan(env, hash_attribute, attribute, Number(search_value), cursor_functions.lessThanNumericCompare);
+        if(dbi[lmdb_terms.DBI_DEFINITION_NAME].is_hash_attribute){
+            hash_attribute = attribute;
+        }
+
+        let start;
+        let end;
+        if(reverse === true){
+            //check if the search value exists, if it does we increment the limit & offset by 1 as we need to allow for skipping that entry
+            let value = dbi.get(search_value);
+            if (value !== undefined) {
+                if (Number.isInteger(offset)) {
+                    offset++;
+                } else {
+                    limit = limit === undefined ? undefined : limit +1;
+                }
+            }
+
+             end = undefined;
+             start = search_value;
+        }else {
+
+            start = undefined;
+            end = search_value;
+        }
+
+        for(let {key, value} of dbi.getRange({start, end, reverse, limit, offset})){
+            cursor_functions.lessThanCompare(search_value, key, value, results, hash_attribute, attribute);
+        }
+
+        return results;
+    }catch(e){
+        throw e;
     }
 }
 
 /**
  * performs a less than equal search for string / numeric search value
- * @param {lmdb.Env} env
+ * @param {lmdb.RootDatabase} env
  * @param {String} hash_attribute
  * @param {String} attribute
  * @param {String|Number} search_value
- * @returns {*[]}
+ * @param {boolean} reverse - defines the direction to iterate
+ * @param {number} limit - defines the max number of entries to iterate
+ * @param {number} offset - defines the entries to skip
+ * @returns {[[],[]]}
  */
-function lessThanEqual(env, hash_attribute, attribute, search_value){
-    let search_info = initializeRangeFunction(env, attribute, search_value);
+function lessThanEqual(env, hash_attribute, attribute, search_value, reverse = false, limit = undefined, offset = undefined){
+    validateComparisonFunctions(env, attribute, search_value);
+    search_value = auto_cast(search_value);
+    search_value = common.convertKeyValueToWrite(search_value);
 
-    if(search_info.search_value_is_numeric === false){
-        return iterateFullIndex(env, hash_attribute, attribute, cursor_functions.lessThanEqualStringCompare.bind(null, search_value));
+    let results = [[],[]];
+    let stat = environment_utility.statDBI(env, attribute);
+    if(stat.entryCount === 0 || search_value === undefined || search_value === null){
+        return results;
     }
 
-    if(search_info.search_value_is_numeric === true && search_info.dbi_numeric_key === false){
-        return iterateFullIndex(env, hash_attribute, attribute, cursor_functions.lessThanEqualStringToNumberCompare.bind(null, Number(search_value)));
-    }
+    try {
+        let dbi = env.dbis[attribute];
 
-    if(search_info.search_value_is_numeric === true && search_info.dbi_numeric_key === true){
-        //need to add 1 to the value other wise when prev is called it skips all but the first entry of the search_value
-        return iterateLessThan(env, hash_attribute, attribute, Number(search_value), cursor_functions.lessThanEqualNumericCompare);
+        if(dbi[lmdb_terms.DBI_DEFINITION_NAME].is_hash_attribute){
+            hash_attribute = attribute;
+        }
+
+        let next_value;
+        for(let key of dbi.getKeys({start:search_value})){
+            if(key > search_value){
+                next_value = key;
+                break;
+            }
+        }
+
+        let start;
+        let end;
+        if(reverse === true){
+            //check if the search value exists, if it does we increment the limit & offset by 1 as we need to allow for skipping that entry
+            if (Number.isInteger(offset)) {
+                offset++;
+            } else {
+                limit = limit === undefined ? undefined : limit + 1;
+            }
+
+            end = undefined;
+            start = next_value;
+        }else {
+
+            start = undefined;
+            end = next_value;
+        }
+
+        for(let {key, value} of dbi.getRange({start, end, reverse, limit, offset})){
+            cursor_functions.lessThanEqualCompare(search_value, key, value, results, hash_attribute, attribute);
+        }
+
+        return results;
+    }catch(e){
+        throw e;
     }
 }
 
 /**
  * performs a between search for string / numeric search value
- * @param {lmdb.Env} env
+ * @param {lmdb.RootDatabase} env
  * @param {String} hash_attribute
  * @param {String} attribute
  * @param {String|Number} start_value
  * @param {String|Number}end_value
+ * @param {boolean} reverse - defines if the iterator goes from last to first
+ * @param {number} limit - defines the max number of entries to iterate
+ * @param {number} offset - defines the entries to skip
  * @returns {*[]}
  */
-function between(env, hash_attribute, attribute, start_value, end_value){
+function between(env, hash_attribute, attribute, start_value, end_value, reverse = false, limit = undefined, offset = undefined){
     common.validateEnv(env);
 
     if(attribute === undefined){
@@ -688,38 +853,20 @@ function between(env, hash_attribute, attribute, start_value, end_value){
         throw new Error(LMDB_ERRORS.END_VALUE_REQUIRED);
     }
 
-    let dbi = environment_utility.openDBI(env, attribute);
-    let key_type = dbi[lmdb_terms.DBI_DEFINITION_NAME].key_type;
-
-    if(key_type === lmdb_terms.DBI_KEY_TYPES.NUMBER){
-        [start_value, end_value] = [Number(start_value), Number(end_value)];
-    }
-
-    if (start_value >= end_value) {
+    start_value = hdb_utils.autoCast(start_value);
+    start_value = common.convertKeyValueToWrite(start_value);
+    end_value = hdb_utils.autoCast(end_value);
+    end_value = common.convertKeyValueToWrite(end_value);
+    if (start_value > end_value) {
         throw new Error(LMDB_ERRORS.END_VALUE_MUST_BE_GREATER_THAN_START_VALUE);
     }
 
-    let dbi_int_key = (key_type === lmdb_terms.DBI_KEY_TYPES.NUMBER);
-
-    //if we are trying to compare a non-numeric value to numeric keys we throw an error
-    if((isNaN(start_value) === true || isNaN(end_value) === true) && dbi_int_key === true){
-        throw new Error(LMDB_ERRORS.CANNOT_COMPARE_STRING_TO_NUMERIC_KEYS);
-    }
-
-    if(dbi_int_key === false && (isNaN(start_value) === true || isNaN(end_value) === true)){
-        return iterateFullIndex(env, hash_attribute, attribute, cursor_functions.betweenStringCompare.bind(null, start_value.toString(), end_value.toString()));
-    }
-
-    if(dbi_int_key === false && isNaN(start_value) === false && isNaN(end_value) === false){
-        return iterateFullIndex(env, hash_attribute, attribute, cursor_functions.betweenStringToNumberCompare.bind(null, Number(start_value), Number(end_value)));
-    }
-
-    return iterateRangeBetween(env, hash_attribute, attribute, Number(start_value), Number(end_value));
+    return iterateRangeBetween(env, hash_attribute, attribute, start_value, end_value, reverse, limit, offset);
 }
 
 /**
  * finds a single record based on the id passed
- * @param {lmdb.Env} env - environment object used thigh level to interact with all data in an environment
+ * @param {lmdb.RootDatabase} env - environment object used thigh level to interact with all data in an environment
  * @param {String} hash_attribute - name of the hash_attribute for this environment
  * @param {Array.<String>} fetch_attributes - string array of attributes to pull from the object
  * @param {String} id - id value to search
@@ -733,35 +880,29 @@ function searchByHash(env, hash_attribute, fetch_attributes, id) {
     }
 
     validateFetchAttributes(fetch_attributes);
-
+    fetch_attributes = setGetWholeRowAttributes(env, fetch_attributes);
     if(id === undefined){
         throw new Error(LMDB_ERRORS.ID_REQUIRED);
     }
 
-    fetch_attributes = setGetWholeRowAttributes(env, fetch_attributes);
-    let txn = undefined;
-    try {
-        txn = new TransactionCursor(env, hash_attribute);
+    id = auto_cast(id);
 
+    try {
         let obj = null;
-        let found = txn.cursor.goToKey(id);
-        if (found === id) {
-            obj = cursor_functions.parseRow(txn, fetch_attributes);
+        let object = env.dbis[hash_attribute].get(id);
+
+        if (object) {
+            obj = cursor_functions.parseRow(object, fetch_attributes);
         }
-        txn.close();
         return obj;
     }catch(e){
-        if(txn !== undefined){
-            txn.close();
-        }
-
         throw e;
     }
 }
 
 /**
  * checks if a hash value exists based on the id passed
- * @param {lmdb.Env} env - environment object used thigh level to interact with all data in an environment
+ * @param {lmdb.RootDatabase} env - environment object used thigh level to interact with all data in an environment
  * @param {String} hash_attribute - name of the hash_attribute for this environment
  * @param {String|Number} id - id value to check exists
  * @returns {boolean} - whether the hash exists (true) or not (false)
@@ -777,33 +918,24 @@ function checkHashExists(env, hash_attribute, id) {
         throw new Error(LMDB_ERRORS.ID_REQUIRED);
     }
 
-    let txn = undefined;
     try {
+        id = auto_cast(id);
         let found_key = true;
-        txn = new TransactionCursor(env, hash_attribute);
 
-        id = common.convertKeyValueToWrite(id, txn.key_type);
+        let value = env.dbis[hash_attribute].get(id);
 
-        let key = txn.cursor.goToKey(id);
-
-        if (key !== id) {
+        if (value === undefined) {
             found_key = false;
         }
-
-        txn.close();
         return found_key;
     }catch(e){
-        if(txn !== undefined){
-            txn.close();
-        }
-
         throw e;
     }
 }
 
 /**
  * finds an array of records based on the ids passed
- * @param {lmdb.Env} env - environment object used thigh level to interact with all data in an environment
+ * @param {lmdb.RootDatabase} env - environment object used thigh level to interact with all data in an environment
  * @param {String} hash_attribute - name of the hash_attribute for this environment
  * @param {Array.<String>} fetch_attributes - string array of attributes to pull from the object
  * @param {Array.<String>} ids - list of ids to search
@@ -811,33 +943,16 @@ function checkHashExists(env, hash_attribute, id) {
  * @returns {Array.<Object>} - object array of records found
  */
 function batchSearchByHash(env, hash_attribute, fetch_attributes, ids, not_found = []) {
-    let txn = initializeBatchSearchByHash(env, hash_attribute, fetch_attributes, ids, not_found);
+    initializeBatchSearchByHash(env, hash_attribute, fetch_attributes, ids, not_found);
 
-    fetch_attributes = setGetWholeRowAttributes(env, fetch_attributes);
-    let results = {};
-
-    for(let x = 0; x < ids.length; x++){
-        let id = ids[x];
-        try {
-            let key = txn.cursor.goToKey(id);
-            if(key === id) {
-                cursor_functions.searchAll(fetch_attributes, key, txn, results);
-            }else {
-                not_found.push(hdb_utils.autoCast(id));
-            }
-        }catch(e){
-            log.warn(e);
-        }
-    }
-
-    txn.close();
+    let results = batchHashSearch(env, hash_attribute, fetch_attributes, ids, not_found);
 
     return Object.values(results);
 }
 
 /**
  * finds an array of records based on the ids passed and returns a map of the results
- * @param {lmdb.Env} env - environment object used thigh level to interact with all data in an environment
+ * @param {lmdb.RootDatabase} env - environment object used thigh level to interact with all data in an environment
  * @param {String} hash_attribute - name of the hash_attribute for this environment
  * @param {Array.<String>} fetch_attributes - string array of attributes to pull from the object
  * @param {Array.<String>} ids - list of ids to search
@@ -845,35 +960,46 @@ function batchSearchByHash(env, hash_attribute, fetch_attributes, ids, not_found
  * @returns {{}} - object array of records found
  */
 function batchSearchByHashToMap(env, hash_attribute, fetch_attributes, ids, not_found = []) {
-    let txn = initializeBatchSearchByHash(env, hash_attribute, fetch_attributes, ids, not_found);
+    initializeBatchSearchByHash(env, hash_attribute, fetch_attributes, ids, not_found);
+
+    return batchHashSearch(env, hash_attribute, fetch_attributes, ids, not_found);
+}
+
+/**
+ * finds an array of records based on the ids passed and returns a map of the results
+ * @param {lmdb.RootDatabase} env - environment object used thigh level to interact with all data in an environment
+ * @param {String} hash_attribute - name of the hash_attribute for this environment
+ * @param {Array.<String>} fetch_attributes - string array of attributes to pull from the object
+ * @param {Array.<String>} ids - list of ids to search
+ * @param {[]} [not_found] - optional, meant to be an array passed by reference so that skipped ids can be aggregated.
+ * @returns {Object}
+ */
+function batchHashSearch(env, hash_attribute, fetch_attributes, ids, not_found = []){
+    fetch_attributes = setGetWholeRowAttributes(env, fetch_attributes);
 
     let results = Object.create(null);
 
-    fetch_attributes = setGetWholeRowAttributes(env, fetch_attributes);
-
     for(let x = 0; x < ids.length; x++){
-        let id = ids[x];
+        let id = auto_cast(ids[x]);
         try {
-            let key = txn.cursor.goToKey(id);
-            if(key === id) {
-                let obj = cursor_functions.parseRow(txn, fetch_attributes);
+            let object = env.dbis[hash_attribute].get(id);
+            if(object) {
+                let obj = cursor_functions.parseRow(object, fetch_attributes);
                 results[id] = obj;
             }else {
-                not_found.push(hdb_utils.autoCast(id));
+                not_found.push(id);
             }
         }catch(e){
             log.warn(e);
         }
     }
 
-    txn.close();
-
     return results;
 }
 
 /**
  * function used to intialize the batchSearchByHash functions
- * @param {lmdb.Env} env - environment object used thigh level to interact with all data in an environment
+ * @param {lmdb.RootDatabase} env - environment object used thigh level to interact with all data in an environment
  * @param {String} hash_attribute - name of the hash_attribute for this environment
  * @param {Array.<String>} fetch_attributes - string array of attributes to pull from the object
  * @param {Array.<String>} ids - list of ids to search
@@ -900,8 +1026,6 @@ function initializeBatchSearchByHash(env, hash_attribute, fetch_attributes, ids,
     if(!Array.isArray(not_found)){
         not_found = [];
     }
-
-    return new TransactionCursor(env, hash_attribute);
 }
 
 /**
@@ -921,7 +1045,7 @@ function validateFetchAttributes(fetch_attributes){
 
 /**
  * common validation function for all of the comparison searches (equals, startsWith, endsWith, contains)
- * @param {lmdb.Env} env - environment object used thigh level to interact with all data in an environment
+ * @param {lmdb.RootDatabase} env - environment object used thigh level to interact with all data in an environment
  * @param attribute - name of the attribute (dbi) to search
  * @param search_value - value to search
  */
@@ -934,6 +1058,24 @@ function validateComparisonFunctions(env, attribute, search_value){
     if(search_value === undefined){
         throw new Error(LMDB_ERRORS.SEARCH_VALUE_REQUIRED);
     }
+}
+
+/**
+ * determines if the intent is to return the whole row based on fetch_attributes having 1 entry that is wildcard * or %
+ * @param env
+ * @param fetch_attributes
+ * @returns {Array}
+ */
+function setGetWholeRowAttributes(env, fetch_attributes){
+    if(fetch_attributes.length === 1 && hdb_terms.SEARCH_WILDCARDS.indexOf(fetch_attributes[0]) >= 0){
+        fetch_attributes = environment_utility.listDBIs(env);
+        let blob_index = fetch_attributes.indexOf(lmdb_terms.BLOB_DBI_NAME);
+        if(blob_index >= 0){
+            fetch_attributes.splice(blob_index, 1);
+        }
+    }
+
+    return fetch_attributes;
 }
 
 module.exports = {
