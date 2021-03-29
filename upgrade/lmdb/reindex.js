@@ -17,22 +17,19 @@ if(!env_mngr.isInitialized()) {
 
 const base_path = env_mngr.getHdbBasePath();
 const schema_path = path.join(base_path, 'schema');
+const tmp_path = path.join(base_path, 'tmp');
 
 async function getTables(){
-
+    //get list of schema folders
     let schema_list = await fs.readdir(schema_path);
-    console.log(schema_list);
-    let tables = [];
     for(let x = 0, length = schema_list.length; x < length; x++){
         let schema_name = schema_list[x];
-
         let the_schema_path = path.join(schema_path, schema_name);
+        //get list of table folders
         let table_list = await fs.readdir(the_schema_path);
         for(let y = 0, table_length = table_list.length; y < table_length; y++){
             try {
                 await processTable(schema_name, table_list[y], the_schema_path);
-
-               // tables.push(table_obj);
             }catch(e){
                 console.error(e, the_schema_path, table_list[y]);
             }
@@ -43,37 +40,31 @@ async function getTables(){
 }
 
 async function processTable(schema, table, the_schema_path){
+    //open the existing environment with the "old" environment utility
     let old_env = await old_environment_utility.openEnvironment(the_schema_path, table);
+    //find the name of the hash attribute
     let hash = getHashDBI(old_env.dbis);
     let all_dbi_names = Object.keys(old_env.dbis);
+    //stat the hash attribute dbi
     let stats = old_environment_utility.statDBI(old_env, hash);
 
-    let table_obj = {
-        schema: schema,
-        table: table,
-        rows: stats.entryCount,
-        status: 'PENDING',
-        rows_processed: 0
-    };
-
+    //initialize the progress bar for this table
     let bar = new progress.SingleBar({
-        format: `${schema}.${table} |{bar}| {percentage}% || {value}/{total} Chunks || Speed: {speed}`,
+        format: `${schema}.${table} |{bar}| {percentage}% || {value}/{total} records`,
         barCompleteChar: '\u2588',
         barIncompleteChar: '\u2591',
         hideCursor: true,
         clearOnComplete: false
     });
-
-    bar.start(stats.entryCount, 0, {
-        speed: "N/A"
-    });
+    bar.start(stats.entryCount, 0, {});
 
     //create temp folder
-    let tmp_path = path.join(the_schema_path, table_obj.table, 'tmp');
-    await fs.remove(tmp_path);
-    await fs.mkdirp(tmp_path);
+    let tmp_schema_path = path.join(tmp_path, schema);
+    await fs.remove(path.join(tmp_schema_path, table));
+    await fs.mkdirp(tmp_schema_path);
+
     //create lmdb-store env
-    let new_env = await new_environment_utility.createEnvironment(tmp_path, table_obj.table, false);
+    let new_env = await new_environment_utility.createEnvironment(tmp_schema_path, table, false);
     //create hash attribute
     new_environment_utility.createDBI(new_env, hash, false, true);
 
@@ -83,9 +74,12 @@ async function processTable(schema, table, the_schema_path){
         txn = new old_environment_utility.TransactionCursor(old_env, hash);
         for (let found = txn.cursor.goToFirst(); found !== null; found = txn.cursor.goToNext()) {
             let record = JSON.parse(txn.cursor.getCurrentString());
+            let hash_value = hdb_common.autoCast(record[hash]);
             let results = await insertRecords(new_env, hash, all_dbi_names, [record], false);
             //validate indices for the row
+            assert(results.written_hashes.indexOf(hash_value) > -1);
             validateIndices(new_env, hash, record[hash]);
+            //increment the progress bar by 1
             bar.increment();
         }
         txn.close();
@@ -97,12 +91,26 @@ async function processTable(schema, table, the_schema_path){
 
         throw e;
     }
+    bar.stop();
+    //stat old & new envs to make sure they both have the same number of rows
+    let old_stats = old_environment_utility.statDBI(old_env, hash);
+    let new_stats = new_environment_utility.statDBI(new_env, hash);
+    assert.deepStrictEqual(old_stats.entryCount, new_stats.entryCount);
 
+    //close old & new environments, manually delete the global reference to the new env
     old_environment_utility.closeEnvironment(old_env);
-    //console.log(new_environment_utility.statDBI(new_env, hash));
     new_environment_utility.closeEnvironment(new_env);
+    delete global.lmdb_map[`${schema}.${table}`];
 
-    //move environment
+    //move environment to correct location
+    let table_path = path.join(the_schema_path, table);
+    await fs.move(path.join(tmp_schema_path, table), table_path, {overwrite: true});
+
+    //stat the moved env & make sure stats match from before
+    let env = await new_environment_utility.openEnvironment(the_schema_path, table);
+    let stat = new_environment_utility.statDBI(env, hash);
+    assert.deepStrictEqual(stat, new_stats);
+    new_environment_utility.closeEnvironment(env);
 }
 
 function validateIndices(env, hash, hash_value){
@@ -120,12 +128,7 @@ function validateIndices(env, hash, hash_value){
                     found = entry !== undefined;
                 } else {
                     let find_value = lmdb_common.convertKeyValueToWrite(value);
-                    for (let val of env.dbis[key].getValues(find_value)) {
-                        if (val === hash_value) {
-                            found = true;
-                            break;
-                        }
-                    }
+                    found = env.dbis[key].doesExist(find_value, hash_value);
                 }
                 assert.deepStrictEqual(found, true);
             }catch(e){
@@ -134,9 +137,6 @@ function validateIndices(env, hash, hash_value){
         }
     }
 }
-
-
-getTables().then(d=>{});
 
 function getHashDBI(dbis){
     let hash_attribute;
@@ -148,3 +148,6 @@ function getHashDBI(dbis){
     }
     return hash_attribute;
 }
+
+
+getTables().then(d=>{});

@@ -149,12 +149,12 @@ async function createEnvironment(base_path, env_name, is_txn = false) {
             createDBI(env, lmdb_terms.BLOB_DBI_NAME, false, lmdb_terms.DBI_KEY_TYPES.STRING, false);
 
             //add environment to global variable to cache reference to environment & named databases
-            if(global.lmdb_map === undefined) {
-                global.lmdb_map = Object.create(null);
+            if(global.old_lmdb_map === undefined) {
+                global.old_lmdb_map = Object.create(null);
             }
             let full_name = getCachedEnvironmentName(base_path, env_name, is_txn);
             env[lmdb_terms.ENVIRONMENT_NAME_KEY] = full_name;
-            global.lmdb_map[full_name] = env;
+            global.old_lmdb_map[full_name] = env;
 
             return env;
         }
@@ -196,6 +196,14 @@ async function openEnvironment(base_path, env_name, is_txn = false){
     env_name = env_name.toString();
     let full_name = getCachedEnvironmentName(base_path, env_name, is_txn);
 
+    if(global.old_lmdb_map === undefined) {
+        global.old_lmdb_map = Object.create(null);
+    }
+
+    if(global.old_lmdb_map[full_name] !== undefined){
+        return global.old_lmdb_map[full_name];
+    }
+
     await validateEnvironmentPath(base_path, env_name);
 
     let env = new lmdb.Env();
@@ -210,6 +218,7 @@ async function openEnvironment(base_path, env_name, is_txn = false){
         openDBI(env, dbis[x]);
     }
     env[lmdb_terms.ENVIRONMENT_NAME_KEY] = full_name;
+    global.old_lmdb_map[full_name] = env;
 
     return env;
 }
@@ -226,12 +235,12 @@ async function deleteEnvironment(base_path, env_name, is_txn = false) {
     await validateEnvironmentPath(base_path, env_name);
 
     await fs.remove(path.join(base_path, env_name));
-    if(global.lmdb_map !== undefined) {
+    if(global.old_lmdb_map !== undefined) {
         let full_name = getCachedEnvironmentName(base_path, env_name, is_txn);
-        if(global.lmdb_map[full_name]){
-            let env = global.lmdb_map[full_name];
+        if(global.old_lmdb_map[full_name]){
+            let env = global.old_lmdb_map[full_name];
             closeEnvironment(env);
-            delete global.lmdb_map[full_name];
+            delete global.old_lmdb_map[full_name];
         }
     }
 }
