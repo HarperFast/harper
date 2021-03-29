@@ -13649,13 +13649,13 @@
 						{
 							"listen": "test",
 							"script": {
-								"type": "text/javascript",
 								"exec": [
 									"pm.test(\"sql select count where age > 30 group by last_name order by age asc\", function () {",
 									"    var jsonData = pm.response.json();",
-									"    pm.expect(jsonData[0].productname) ===\"C\\ufffdte de Blaye\";",
+									"    pm.expect(jsonData[0].productname).to.equal(\"C\\ufffdte de Blaye\");",
 									"});"
-								]
+								],
+								"type": "text/javascript"
 							}
 						}
 					],
@@ -13716,13 +13716,13 @@
 						{
 							"listen": "test",
 							"script": {
-								"type": "text/javascript",
 								"exec": [
 									"pm.test(\"sql select count min max avg sum\", function () {",
 									"    var jsonData = pm.response.json();",
-									"    pm.expect(jsonData[0].allproducts)===77;",
+									"    pm.expect(jsonData[0].allproducts).to.equal(77);",
 									"});"
-								]
+								],
+								"type": "text/javascript"
 							}
 						}
 					],
@@ -13856,13 +13856,13 @@
 						{
 							"listen": "test",
 							"script": {
-								"type": "text/javascript",
 								"exec": [
 									"pm.test(\"sql select where (like) and (unitprice>100)\", function () {",
 									"    var jsonData = pm.response.json();",
-									"    pm.expect(jsonData[0].unitprice)>100;",
+									"    pm.expect(jsonData[0].unitprice > 100).to.be.true;",
 									"});"
-								]
+								],
+								"type": "text/javascript"
 							}
 						}
 					],
@@ -13927,7 +13927,7 @@
 									"pm.test(\"sql select - where attr < comparator\", function () {",
 									"    var jsonData = pm.response.json();",
 									"    jsonData.forEach((record)=>{",
-									"        pm.expect(record.unitprice)<81;",
+									"        pm.expect(record.unitprice < 81).to.be.true;",
 									"    });",
 									"});"
 								],
@@ -13996,7 +13996,7 @@
 									"pm.test(\"sql select - where attr <= comparator\", function () {",
 									"    var jsonData = pm.response.json();",
 									"    jsonData.forEach((record)=>{",
-									"        pm.expect(record.unitprice)<=81;",
+									"        pm.expect(record.unitprice <= 81).to.be.true;",
 									"    });",
 									"});"
 								],
@@ -14065,7 +14065,7 @@
 									"pm.test(\"sql select - where attr > comparator\", function () {",
 									"    var jsonData = pm.response.json();",
 									"    jsonData.forEach((record)=>{",
-									"        pm.expect(record.unitprice) > 81;",
+									"        pm.expect(record.unitprice > 81).to.be.true;",
 									"    });",
 									"});"
 								],
@@ -14134,7 +14134,7 @@
 									"pm.test(\"sql select - where attr >= comparator\", function () {",
 									"    var jsonData = pm.response.json();",
 									"    jsonData.forEach((record)=>{",
-									"        pm.expect(record.unitprice) >= 81;",
+									"        pm.expect(record.unitprice >= 81).to.be.true;",
 									"    });",
 									"});"
 								],
@@ -14203,8 +14203,8 @@
 									"pm.test(\"sql select - where attr w/ multiple comparators\", function () {",
 									"    var jsonData = pm.response.json();",
 									"    jsonData.forEach((record)=>{",
-									"        pm.expect(record.unitprice) > 20;",
-									"        pm.expect(record.unitprice) <= 81;",
+									"        pm.expect(record.unitprice > 20).to.be.true;",
+									"        pm.expect(record.unitprice <= 81).to.be.true;",
 									"    });",
 									"});"
 								],
@@ -14273,8 +14273,8 @@
 									"pm.test(\"sql select - where w/ multiple attr comparators\", function () {",
 									"    var jsonData = pm.response.json();",
 									"    jsonData.forEach((record)=>{",
-									"        pm.expect(record.unitprice) > 10;",
-									"        pm.expect(record.unitprice) <= 81;",
+									"        pm.expect(record.unitprice > 10).to.be.true;",
+									"        pm.expect(record.unitprice <= 81).to.be.true;",
 									"        pm.expect(record.unitsinstock).to.eql(0);",
 									"    });",
 									"});"
@@ -14344,9 +14344,9 @@
 									"pm.test(\"sql select - where w/ multiple comparators for multiple attrs\", function () {",
 									"    var jsonData = pm.response.json();",
 									"    jsonData.forEach((record)=>{",
-									"        pm.expect(record.unitprice) > 10;",
-									"        pm.expect(record.unitprice) <= 81;",
-									"        pm.expect(record.unitsinstock) > 10;",
+									"        pm.expect(record.unitprice > 10).to.be.true;",
+									"        pm.expect(record.unitprice <= 81).to.be.true;",
+									"        pm.expect(record.unitsinstock > 10).to.be.true;",
 									"    });",
 									"});"
 								],
@@ -14415,9 +14415,9 @@
 									"pm.test(\"sql select - where w/ IN() and multiple of comparators for multiple attrs\", function () {",
 									"    var jsonData = pm.response.json();",
 									"    jsonData.forEach((record)=>{",
-									"        pm.expect(record.unitprice) > 10;",
-									"        pm.expect(record.unitprice) <= 81;",
-									"        pm.expect(record.unitsinstock) > 10;",
+									"        pm.expect(record.unitprice > 10).to.be.true;",
+									"        pm.expect(record.unitprice <= 81).to.be.true;",
+									"        pm.expect(record.unitsinstock > 10).to.be.true;",
 									"        pm.expect(record.supplierid).to.be.oneOf([1,2,3,4]);",
 									"    });",
 									"});"
@@ -39953,6 +39953,468 @@
 					]
 				},
 				{
+					"name": "Delete Records Before Alias Tests",
+					"item": [
+						{
+							"name": "Insert new records",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"pm.test(\"Check inserted_hashed array length\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData.inserted_hashes.length).to.eql(6);",
+											"});",
+											"",
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"setTimeout(()=>{}, 1000);"
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"exec": [
+											"",
+											""
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\"operation\":\"insert\",\n\"schema\":\"test_delete_before\",\n\"table\":\"address\",\n\"records\": [\n  {\n    \"id\": \"1a\",\n    \"address\": \"24 South st\"\n  },\n  {\n    \"id\": \"2a\",\n    \"address\": \"6 Truck Lane\"\n  },\n  {\n    \"id\": \"3a\",\n    \"address\": \"19 Broadway\"\n  },\n  {\n    \"id\": \"4a\",\n    \"address\": \"34A Mountain View\"\n  },\n  {\n    \"id\": \"5a\",\n    \"address\": \"234 Curtis St\"\n  },\n  {\n    \"id\": \"6a\",\n    \"address\": \"115 Way Rd\"\n  }\n]\n\n}"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "Insert additional new records",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"pm.test(\"Check inserted_hashed array length\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData.inserted_hashes.length).to.eql(3);",
+											"});",
+											"",
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"exec": [
+											"pm.environment.set(\"insert_timestamp\", new Date().toISOString());",
+											""
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\"operation\":\"insert\",\n\"schema\":\"test_delete_before\",\n\"table\":\"address\",\n\"records\": [\n  {\n    \"id\": \"11a\",\n    \"address\": \"24 South st\"\n  },\n  {\n    \"id\": \"12a\",\n    \"address\": \"6 Truck Lane\"\n  },\n  {\n    \"id\": \"13a\",\n    \"address\": \"19 Broadway\"\n  }\n]\n\n}"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "Delete records before",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"pm.test(\"Check for job message\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData.message.indexOf('Starting job')).to.eql(0);",
+											"    ",
+											"    eval(pm.globals.get(\"function:getJobIdDeleteA\"))(jsonData, null);",
+											"});",
+											"",
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"exec": [
+											""
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\t\"operation\":\"delete_files_before\",\n\t\"date\":\"{{insert_timestamp}}\",\n\t\"schema\":\"test_delete_before\",\n\t\"table\":\"address\"\n}\n"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "Check Delete Records Before Alias Job Completed",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"",
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"test Job Found\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData.length).to.eql(1);",
+											"    ",
+											"    pm.expect(jsonData[0]).to.have.property('status');",
+											"    ",
+											"    let status = jsonData[0].status;",
+											"    ",
+											"    switch(status){",
+											"        case 'ERROR':",
+											"            console.log(jsonData[0]);",
+											"            if(pm.environment.get(\"next_request\")){",
+											"                postman.setNextRequest(pm.environment.get(\"next_request\"));",
+											"            }",
+											"            pm.expect(status).to.not.eql('ERROR');",
+											"            break;",
+											"        case 'COMPLETE':",
+											"            console.log(jsonData[0]);",
+											"            if(pm.environment.get(\"next_request\")){",
+											"                postman.setNextRequest(pm.environment.get(\"next_request\"));",
+											"            }",
+											"            pm.expect(status).to.be.oneOf(['COMPLETE', 'ERROR']);",
+											"            break;",
+											"        case '0':",
+											"        case 0:",
+											"        case 'IN_PROGRESS':",
+											"            console.log('in progress, checking again');",
+											"            postman.setNextRequest('Check Delete Records Before Alias Job Completed');",
+											"            pm.expect(status).to.be.oneOf(['IN_PROGRESS', 0, '0']);",
+											"            break;",
+											"        default:",
+											"            postman.setNextRequest('Check Delete Records Before Alias Job Completed');",
+											"            pm.expect(status).to.be.oneOf(['IN_PROGRESS', 0, '0', 'ERROR', 'COMPLETE']);",
+											"            break;",
+											"    }",
+											"});",
+											""
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"exec": [
+											"setTimeout(()=>{}, 200);",
+											"console.log(\"Checking Job \" + pm.environment.get(\"job_id\"));"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "saveHelperData",
+											"type": "any"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\t\"operation\":\"get_job\",\n\t\"id\": \"{{job_id}}\"\n}"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "Search by hash confirm",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"verify correct number of records returned\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData.length).to.eql(3);",
+											"});",
+											"",
+											"pm.test(\"verify correct records are returned\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    var ids = [];",
+											"    jsonData.forEach((record) => {",
+											"        ids.push(record.id)",
+											"    })",
+											"    ",
+											"    pm.expect(ids.includes(\"11a\")).to.be.true;",
+											"    pm.expect(ids.includes(\"12a\")).to.be.true;",
+											"    pm.expect(ids.includes(\"13a\")).to.be.true;",
+											"    ",
+											"    pm.expect(ids.includes(\"1a\")).to.be.false;",
+											"    pm.expect(ids.includes(\"2a\")).to.be.false;",
+											"    pm.expect(ids.includes(\"3a\")).to.be.false;",
+											"    pm.expect(ids.includes(\"4a\")).to.be.false;",
+											"    pm.expect(ids.includes(\"5a\")).to.be.false;",
+											"    pm.expect(ids.includes(\"6a\")).to.be.false;",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"exec": [
+											""
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\t\"operation\":\"search_by_hash\",\n\t\"schema\":\"test_delete_before\",\n\t\"table\":\"address\",\n\t\"hash_attribute\": \"id\",\n\t\"hash_values\":[\"1a\", \"2a\", \"3a\", \"4a\", \"5a\", \"6a\", \"11a\", \"12a\", \"13a\"],\n\t\"get_attributes\": [\"id\", \"address\"]\n}\n"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						}
+					],
+					"event": [
+						{
+							"listen": "prerequest",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									""
+								]
+							}
+						},
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"postman.setGlobalVariable(\"function:getJobIdDeleteA\", (jsonData, next_req)=>{",
+									"    let id_index = jsonData.message.indexOf('id ');",
+									"    let parsedId = jsonData.message.substr(id_index + 3, jsonData.message.length);",
+									"    pm.environment.set(\"job_id\", parsedId);",
+									"    pm.environment.set(\"next_request\", next_req);",
+									"    postman.setNextRequest(\"Check Delete Records Before Alias Job Completed\");",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
 					"name": "Drop schema tests",
 					"item": [
 						{
@@ -41156,7 +41618,7 @@
 									"//we want to test that the returned result is an empty array\"",
 									"pm.test(\"Verify records deleted\", function(){",
 									"    let jsonData = pm.response.json();",
-									"    pm.expect(Array.isArray(jsonData) && jsonData.length === 0);",
+									"    pm.expect(Array.isArray(jsonData) && jsonData.length === 0).to.be.true;",
 									"});",
 									"",
 									"pm.test(\"Status code is 200\", function () {",
@@ -41294,18 +41756,18 @@
 						{
 							"listen": "test",
 							"script": {
-								"type": "text/javascript",
 								"exec": [
 									"//we want to test that the returned result is an empty array\"",
 									"pm.test(\"Verify records deleted\", function(){",
 									"    let jsonData = pm.response.json();",
-									"    pm.expect(Array.isArray(jsonData) && jsonData.length === 0);",
+									"    pm.expect(Array.isArray(jsonData) && jsonData.length === 0).to.be.true;",
 									"});",
 									"",
 									"pm.test(\"Status code is 200\", function () {",
 									"    pm.response.to.have.status(200);",
 									"});"
-								]
+								],
+								"type": "text/javascript"
 							}
 						}
 					],
@@ -51410,7 +51872,7 @@
 											"",
 											"pm.test(\"create attribute successful\", function () {",
 											"    var jsonData = pm.response.json();",
-											"    pm.expect(jsonData.message === \"inserted 1 of 1 records\");",
+											"    pm.expect(jsonData.message).to.equal(\"attribute 'dev.create_attr_test.owner_id' successfully created.\");",
 											"});"
 										],
 										"type": "text/javascript"
@@ -51625,8 +52087,7 @@
 									"",
 									"pm.test(\"attribute another_attribute exists\", function () {",
 									"    var jsonData = pm.response.json();",
-									"    //pm.expect(jsonData[\"another_attribute\"] === undefined);",
-									"        pm.expect(jsonData.another_attribute).to.eql(undefined);",
+									"    pm.expect(jsonData.another_attribute).to.eql(undefined);",
 									"});"
 								],
 								"type": "text/javascript"
@@ -51697,7 +52158,7 @@
 									"",
 									"pm.test(\"create attribute successful\", function () {",
 									"    var jsonData = pm.response.json();",
-									"    pm.expect(jsonData.message === \"inserted 1 of 1 records\");",
+									"    pm.expect(jsonData.message).to.equal(\"attribute 'dev.AttributeDropTest.created_attribute' successfully created.\");",
 									"});"
 								],
 								"type": "text/javascript"
@@ -51767,8 +52228,15 @@
 									"});",
 									"",
 									"pm.test(\"attribute created_attribute exists\", function () {",
-									"    var jsonData = pm.response.json();",
-									"    pm.expect(jsonData[\"created_attribute\"] === true);",
+									"    let jsonData = pm.response.json();",
+									"    let found = false;",
+									"    jsonData.attributes.forEach((attr) => {",
+									"        if (attr.attribute === 'created_attribute') {",
+									"            found = true;",
+									"        }",
+									"    });",
+									"",
+									"    pm.expect(found).to.be.true;",
 									"});"
 								],
 								"type": "text/javascript"
@@ -51839,7 +52307,7 @@
 									"",
 									"pm.test(\"create attribute successful\", function () {",
 									"    var jsonData = pm.response.json();",
-									"    pm.expect(jsonData.error === \"attribute 'created_attribute' already exists in dev.AttributeDropTest\");",
+									"    pm.expect(jsonData.error).to.equal(\"attribute 'created_attribute' already exists in dev.AttributeDropTest\");",
 									"});",
 									""
 								],
@@ -51920,7 +52388,7 @@
 									"",
 									"pm.test(\"remove successful\", function () {",
 									"    var jsonData = pm.response.json();",
-									"    pm.expect(jsonData.message === \"records successfully deleted\");",
+									"    pm.expect(jsonData.message).to.equal(\"successfully deleted attribute 'another_attribute'\");",
 									"});"
 								],
 								"type": "text/javascript"
@@ -51990,8 +52458,15 @@
 									"});",
 									"",
 									"pm.test(\"attribute another_attribute exists\", function () {",
-									"    var jsonData = pm.response.json();",
-									"    pm.expect(jsonData[\"another_attribute\"] === undefined);",
+									"    let jsonData = pm.response.json();",
+									"    let found = false;",
+									"    jsonData.attributes.forEach((attr) => {",
+									"        if (attr.attribute === 'another_attribute') {",
+									"            found = true;",
+									"        }",
+									"    });",
+									"",
+									"    pm.expect(found).to.be.false;",
 									"});"
 								],
 								"type": "text/javascript"
@@ -52062,7 +52537,8 @@
 									"",
 									"pm.test(\"test fingerprint returned\", function () {",
 									"    var jsonData = pm.response.json();",
-									"    pm.expect(jsonData['fingerprint'] !== undefined);",
+									"    pm.expect(jsonData).to.haveOwnProperty('message');",
+									"    pm.expect(jsonData.message).to.not.be.null;",
 									"});"
 								],
 								"type": "text/javascript"
@@ -52133,7 +52609,7 @@
 									"",
 									"pm.test(\"test fingerprint returned\", function () {",
 									"    var jsonData = pm.response.json();",
-									"    pm.expect(jsonData['error'] === \"There was an parsing the license key.\");",
+									"    pm.expect(jsonData['error']).to.equal(\"There was an error parsing the license key.\");",
 									"});"
 								],
 								"type": "text/javascript"
@@ -52276,7 +52752,7 @@
 									"",
 									"pm.test(\"test fingerprint returned\", function () {",
 									"    var jsonData = pm.response.json();",
-									"    pm.expect(jsonData['message'] === \"Invalid key specified for license file.\");",
+									"    pm.expect(jsonData['error']).to.equal(\"Invalid key or company specified for license file.\");",
 									"});"
 								],
 								"type": "text/javascript"
@@ -52480,12 +52956,13 @@
 									"});",
 									"",
 									"pm.test(\"test attributes exist\", ()=>{",
-									"    let attrs = [\"PROJECT_DIR\", \"HDB_ROOT\", \"HTTP_PORT\", \"HTTPS_PORT\", \"CERTIFICATE\", \"PRIVATE_KEY\", \"HTTPS_ON\", \"HTTP_ON\", \"CORS_ON\", \"CORS_WHITELIST\", \"SERVER_TIMEOUT_MS\", \"LOG_LEVEL\", \"LOGGER\", \"LOG_PATH\", \"LOG_DAILY_ROTATE\", \"LOG_MAX_DAILY_FILES\", \"NODE_ENV\", \"settings_path\", \"CLUSTERING_PORT\", \"NODE_NAME\", \"CLUSTERING\", \"ALLOW_SELF_SIGNED_SSL_CERTS\", \"MAX_HDB_PROCESSES\", \"install_user\", \"CLUSTERING_USER\", \"SERVER_KEEP_ALIVE_TIMEOUT\", \"SERVER_HEADERS_TIMEOUT\", \"DISABLE_TRANSACTION_LOG\", \"OPERATION_TOKEN_TIMEOUT\", \"REFRESH_TOKEN_TIMEOUT\"];",
+									"    let attrs = [ \"PROJECT_DIR\", \"HDB_ROOT\", \"SERVER_PORT\", \"CERTIFICATE\", \"PRIVATE_KEY\", \"HTTPS_ON\", \"CORS_ON\", \"CORS_WHITELIST\", \"LOG_LEVEL\",",
+									"    \"LOGGER\", \"LOG_PATH\", \"LOG_DAILY_ROTATE\", \"LOG_MAX_DAILY_FILES\", \"NODE_ENV\", \"settings_path\", \"CLUSTERING_PORT\", \"NODE_NAME\", \"CLUSTERING\",\"ALLOW_SELF_SIGNED_SSL_CERTS\", \"MAX_HDB_PROCESSES\", \"install_user\", \"CLUSTERING_USER\", \"SERVER_TIMEOUT_MS\", \"SERVER_KEEP_ALIVE_TIMEOUT\",\"SERVER_HEADERS_TIMEOUT\", \"DISABLE_TRANSACTION_LOG\", \"OPERATION_TOKEN_TIMEOUT\", \"REFRESH_TOKEN_TIMEOUT\"];",
 									"",
 									"    var jsonData = pm.response.json();",
 									"    let keys = Object.keys(jsonData);",
 									"    for(let x = 0, length = attrs.length; x < length; x++){",
-									"        pm.expect(jsonData.hasOwnProperty(attrs[x]) === true, `${attrs[x]} exists`);",
+									"        pm.expect(jsonData.hasOwnProperty(attrs[x])).to.equal(true, `${attrs[x]} exists`);",
 									"    }",
 									"});"
 								],
@@ -52661,14 +53138,26 @@
 									"pm.test(\"create system info has some attributes\", function () {",
 									"    var results = pm.response.json();",
 									"    ",
-									"    pm.expect(results.time !== undefined);",
-									"    pm.expect(results.memory !== undefined);",
-									"    pm.expect(results.system === undefined);",
-									"    pm.expect(results.cpu === undefined);",
-									"    pm.expect(results.disk === undefined);",
-									"    pm.expect(results.network === undefined);",
-									"    pm.expect(results.harperdb_processes === undefined);",
-									"    pm.expect(results.table_size === undefined);",
+									"    pm.expect(results.system).to.be.undefined;",
+									"    pm.expect(results.cpu).to.be.undefined;",
+									"    pm.expect(results.disk).to.be.undefined;",
+									"    pm.expect(results.network).to.be.undefined;",
+									"    pm.expect(results.harperdb_processes).to.be.undefined;",
+									"    pm.expect(results.table_size).to.be.undefined;",
+									"    pm.expect(results).to.haveOwnProperty('time');",
+									"    pm.expect(results).to.haveOwnProperty('memory');",
+									"    pm.expect(results.time).to.haveOwnProperty('current');",
+									"    pm.expect(results.time).to.haveOwnProperty('uptime');",
+									"    pm.expect(results.time).to.haveOwnProperty('timezone');",
+									"    pm.expect(results.time).to.haveOwnProperty('timezoneName');",
+									"    pm.expect(results.memory).to.haveOwnProperty('total');",
+									"    pm.expect(results.memory).to.haveOwnProperty('free');",
+									"    pm.expect(results.memory).to.haveOwnProperty('used');",
+									"    pm.expect(results.memory).to.haveOwnProperty('active');",
+									"    pm.expect(results.memory).to.haveOwnProperty('swaptotal');",
+									"    pm.expect(results.memory).to.haveOwnProperty('swapused');",
+									"    pm.expect(results.memory).to.haveOwnProperty('swapfree');",
+									"    pm.expect(results.memory).to.haveOwnProperty('available');",
 									"});"
 								],
 								"type": "text/javascript"

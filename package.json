@@ -1,13 +1,23 @@
 {
   "name": "harperdb",
   "version": "3.0.0",
-  "description": "",
+  "description": "HarperDB no-SQL SQL database written in node.js",
+  "keywords": [
+    "database",
+    "no-sql",
+    "nosql",
+    "SQL",
+    "sequel",
+    "node.js",
+    "datastore",
+    "documentstore"
+  ],
   "main": "harperdb.js",
   "bin": {
     "harperdb": "./bin/harperdb.js"
   },
   "engines": {
-    "node": ">=10.16.x <11.x.x"
+    "node": "12.19.0"
   },
   "homepage": "https://www.harperdb.io/",
   "bugs": "support@harperdb.io",
@@ -15,6 +25,7 @@
     "name": "HarperDB",
     "email": "support@harperdb.io"
   },
+  "license": "See License in ./license/Community+Edition+and+Evaluation+End+User+License+Agreement.pdf",
   "scripts": {
     "build": "eslint -c ./.eslintbuild bin/ data_layer/ events/ lib/ security/ server/ sqlTranslator/ upgrade/ utility/ validation/",
     "test": "npm run build && node utility/devops/register.js --reset_license --storage_type=fs && cd bin/ && nyc --reporter=lcov ../node_modules/mocha/bin/_mocha '../unitTests/**/*.js' --config '../unitTests/.mocharc.json'&& node ../utility/devops/register.js --reset_license --storage_type=fs",
@@ -23,7 +34,6 @@
     "prebuild": "date",
     "coverage": "nyc --reporter=lcov npm test"
   },
-  "license": "ISC",
   "dependencies": {
     "@turf/area": "^6.0.1",
     "@turf/boolean-contains": "^6.0.1",
