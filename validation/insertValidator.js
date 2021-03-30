@@ -1,34 +1,39 @@
-const { common_validators } = require('./common_validators');
+const { hdb_schema_table } = require('./common_validators');
 const validator = require('./validationWrapper');
+const Joi = require('joi');
 const INVALID_ATTRIBUTE_NAMES = {
     "undefined":"undefined",
     "null":"null"
 };
 
-const constraints = {
-    schema: {
-        presence: true,
-        format: common_validators.schema_format,
-        length: common_validators.schema_length
-    },
-    table: {
-        presence: true,
-        format: common_validators.schema_format,
-        length: common_validators.schema_length
-    },
-    records: function(value, attributes, attributeName, options, constraints) {
-            for (let record of attributes.records) {
-                for (let attribute_name of Object.keys(record)) {
-                    if (!attribute_name || attribute_name.length === 0 || INVALID_ATTRIBUTE_NAMES[attribute_name] !== undefined) {
-                        return {format: {message: `Invalid attribute name: '${attribute_name}'`}};
-                    }
-                }
+const custom_records_val = (value, helpers) => {
+    const attributes = Object.keys(value);
+    const attributes_length = attributes.length;
+    let error_msg = undefined;
+    for (let i = 0; i < attributes_length; i++) {
+        const attribute = attributes[i];
+        if (!attribute || attribute.length === 0 || INVALID_ATTRIBUTE_NAMES[attribute] !== undefined) {
+            if (error_msg === undefined) {
+                error_msg = `Invalid attribute name: '${attribute}'`;
+            } else {
+                error_msg += `. Invalid attribute name: '${attribute}'`;
             }
-            return null;
         }
+    }
+
+    if (error_msg) {
+        return helpers.message(error_msg);
+    }
+
+    return value;
 };
+
+const insert_schema = Joi.object({
+    schema: hdb_schema_table,
+    table: hdb_schema_table,
+    records: Joi.array().items(Joi.object().custom(custom_records_val)).required()
+});
 
 module.exports = function (insert_object) {
-    return validator.validateObject(insert_object, constraints);
+    return validator.validateBySchema(insert_object, insert_schema);
 };
-

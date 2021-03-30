@@ -157,34 +157,34 @@ describe('Test lmdbGetDataByHash module', ()=>{
 
         it('test validation', async()=>{
             await test_utils.assertErrorAsync(lmdb_get_data_by_hash, [{}],
-                new Error('"schema" is required. "table" is required. "hash_values" is required. "get_attributes" is required'));
+                new Error("'schema' is required. 'table' is required. 'hash_values' is required. 'get_attributes' is required"));
 
             let search_obj = new SearchByHashObject('dev');
             await test_utils.assertErrorAsync(lmdb_get_data_by_hash, [search_obj],
-                new Error('"table" is required. "hash_values" is required. "get_attributes" is required'));
+                new Error("'table' is required. 'hash_values' is required. 'get_attributes' is required"));
 
             search_obj = new SearchByHashObject('dev', 'dog');
             await test_utils.assertErrorAsync(lmdb_get_data_by_hash, [search_obj],
-                new Error('"hash_values" is required. "get_attributes" is required'));
+                new Error("'hash_values' is required. 'get_attributes' is required"));
 
             search_obj = new SearchByHashObject('dev', 'dog',[8]);
             await test_utils.assertErrorAsync(lmdb_get_data_by_hash, [search_obj],
-                new Error('"get_attributes" is required'));
+                new Error("'get_attributes' is required"));
 
             search_obj = new SearchByHashObject('dev', 'dog', [8], ALL_FETCH_ATTRIBUTES);
             await test_utils.assertErrorAsync(lmdb_get_data_by_hash, [search_obj], undefined);
 
             search_obj = new SearchByHashObject('dev', 'dog', 8, ALL_FETCH_ATTRIBUTES);
-            await test_utils.assertErrorAsync(lmdb_get_data_by_hash, [search_obj], new Error('"hash_values" must be an array'));
+            await test_utils.assertErrorAsync(lmdb_get_data_by_hash, [search_obj], new Error("'hash_values' must be an array"));
 
             search_obj = new SearchByHashObject('dev', 'dog', [8], 'test');
-            await test_utils.assertErrorAsync(lmdb_get_data_by_hash, [search_obj], new Error('"get_attributes" must be an array'));
+            await test_utils.assertErrorAsync(lmdb_get_data_by_hash, [search_obj], new Error("'get_attributes' must be an array"));
 
             search_obj = new SearchByHashObject('dev', 'dog', [], ALL_FETCH_ATTRIBUTES);
-            await test_utils.assertErrorAsync(lmdb_get_data_by_hash, [search_obj], new Error('"hash_values" must contain at least 1 items'));
+            await test_utils.assertErrorAsync(lmdb_get_data_by_hash, [search_obj], new Error("'hash_values' must contain at least 1 items"));
 
             search_obj = new SearchByHashObject('dev', 'dog', [8], []);
-            await test_utils.assertErrorAsync(lmdb_get_data_by_hash, [search_obj], new Error('"get_attributes" does not contain 1 required value(s). "get_attributes" must contain at least 1 items'));
+            await test_utils.assertErrorAsync(lmdb_get_data_by_hash, [search_obj], new Error("'get_attributes' does not contain 1 required value(s). 'get_attributes' must contain at least 1 items"));
         });
 
         it('test finding 1 row', async()=>{

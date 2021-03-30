@@ -238,15 +238,14 @@ async function createAttribute(create_attribute_object) {
         throw handleHDBError(new Error(), HDB_ERROR_MSGS.TABLE_NOT_FOUND(create_attribute_object.schema, create_attribute_object.table), HTTP_STATUS_CODES.NOT_FOUND);
     }
 
-    let attribute_structure;
     try {
-        attribute_structure = await harperBridge.createAttribute(create_attribute_object);
+        await harperBridge.createAttribute(create_attribute_object);
 
         let create_attribute_message = Object.assign({}, signalling.SCHEMA_CHANGE_MESSAGE);
         create_attribute_message.operation = create_attribute_object;
         signalling.signalSchemaChange(create_attribute_message);
 
-        return attribute_structure;
+        return `attribute '${create_attribute_object.schema}.${create_attribute_object.table}.${create_attribute_object.attribute}' successfully created.`;
     } catch(err) {
         logger.error(err);
         throw err;

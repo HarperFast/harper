@@ -396,6 +396,132 @@
 					"response": []
 				},
 				{
+					"name": "create_schema_number",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {\r",
+									"    pm.response.to.have.status(200);\r",
+									"});\r",
+									"\r",
+									"tests[\"Create Schema\"] = responseBody.has(\"successfully created\");\r",
+									"\r",
+									"\r",
+									""
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"create_schema\",\n  \"schema\": \"123\"\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						},
+						"description": "This method is used to create a schema.  It like all other functions requires basic auth.  \n\nAttributes:\n\noperation (required) - must always be create_schema\n\nschema (required) - name of the schema you are creating"
+					},
+					"response": []
+				},
+				{
+					"name": "create_schema_number_number",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {\r",
+									"    pm.response.to.have.status(200);\r",
+									"});\r",
+									"\r",
+									"tests[\"Create Schema\"] = responseBody.has(\"successfully created\");\r",
+									"\r",
+									"\r",
+									""
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"create_schema\",\n  \"schema\": 1123\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						},
+						"description": "This method is used to create a schema.  It like all other functions requires basic auth.  \n\nAttributes:\n\noperation (required) - must always be create_schema\n\nschema (required) - name of the schema you are creating"
+					},
+					"response": []
+				},
+				{
 					"name": "Validation Check NO Schema.",
 					"event": [
 						{
@@ -2444,6 +2570,263 @@
 						"body": {
 							"mode": "raw",
 							"raw": "{\n\t\"operation\":\"create_table\",\n\t\"schema\":\"dev\",\n\t\"table\":\"leading_zero\",\n\t\"hash_attribute\": \"id\"\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "create_table_number",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"tests[\"Create Table\"] = responseBody.has(\"successfully created.\");"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"type": "text",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"create_table\",\n\t\"schema\":\"123\",\n\t\"table\":\"4\",\n\t\"hash_attribute\": \"id\"\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "create_table_number_number",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"tests[\"Create Table\"] = responseBody.has(\"successfully created.\");"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"type": "text",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"create_table\",\n\t\"schema\":1123,\n\t\"table\":1,\n\t\"hash_attribute\": \"id\"\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "describe_schema_number",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"Number schema is described\", function() {",
+									"    let json_data = pm.response.json();",
+									"",
+									"    pm.expect(json_data).to.haveOwnProperty(\"4\");",
+									"    pm.expect(json_data['4'].schema).to.equal(123);",
+									"    pm.expect(json_data['4'].name).to.equal(4);",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"value": true,
+									"type": "boolean"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3Q="
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"describe_schema\",\n  \"schema\":\"123\"\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "describe_table_number",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"Number table is described\", function() {",
+									"    let json_data = pm.response.json();",
+									"",
+									"    pm.expect(json_data.schema).to.equal(123);",
+									"    pm.expect(json_data.name).to.equal(4);",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"value": true,
+									"type": "boolean"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3Q="
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"describe_table\",\n  \"schema\":\"123\",\n  \"table\": \"4\"\n}"
 						},
 						"url": {
 							"raw": "{{host}}:{{port}}",
@@ -6384,8 +6767,8 @@
 							"listen": "test",
 							"script": {
 								"exec": [
-									"pm.test(\"Status code is 500\", function () {",
-									"    pm.response.to.have.status(500);",
+									"pm.test(\"Status code is 400\", function () {",
+									"    pm.response.to.have.status(400);",
 									"});",
 									"",
 									"pm.test(\"insert non existent schema\", function () {",
@@ -6447,8 +6830,8 @@
 							"listen": "test",
 							"script": {
 								"exec": [
-									"pm.test(\"Status code is 500\", function () {",
-									"    pm.response.to.have.status(500);",
+									"pm.test(\"Status code is 400\", function () {",
+									"    pm.response.to.have.status(400);",
 									"});",
 									"",
 									"pm.test(\"insert non existent table\", function () {",
@@ -6509,8 +6892,8 @@
 							"listen": "test",
 							"script": {
 								"exec": [
-									"pm.test(\"Status code is 500\", function () {",
-									"    pm.response.to.have.status(500);",
+									"pm.test(\"Status code is 400\", function () {",
+									"    pm.response.to.have.status(400);",
 									"});",
 									"",
 									"pm.test(\"insert non existent schema\", function () {",
@@ -6572,8 +6955,8 @@
 							"listen": "test",
 							"script": {
 								"exec": [
-									"pm.test(\"Status code is 500\", function () {",
-									"    pm.response.to.have.status(500);",
+									"pm.test(\"Status code is 400\", function () {",
+									"    pm.response.to.have.status(400);",
 									"});",
 									"",
 									"pm.test(\"insert non existent table\", function () {",
@@ -7138,6 +7521,773 @@
 							],
 							"port": "{{port}}"
 						}
+					},
+					"response": []
+				},
+				{
+					"name": "Insert test records into 123.4",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"inserted 4 records in number schema table\", function () {",
+									"    const respMsg = pm.response.json().message;",
+									"    pm.expect(respMsg).to.contain('inserted 4');",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"type": "text",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"operation\":\"insert\",\n    \"schema\": \"123\",\n    \"table\": \"4\",\n    \"records\": [\n    \t{\n        \"id\" : 987654321,\n        \"name\" : \"Cool Dawg\"\n      },\n      {\n        \"id\" : 987654322,\n        \"name\" : \"The Coolest Dawg\"\n      },\n      {\n        \"id\" : 987654323,\n        \"name\" : \"Sup Dawg\"\n      },\n      {\n        \"id\" : 987654324,\n        \"name\" : \"Snoop Dawg\"\n      }\n    ]\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						},
+						"description": "These records will be used to test updates with invalid attribute names."
+					},
+					"response": []
+				},
+				{
+					"name": "Insert records into 123.4 number schema table",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"Inserted records when schema table are numbers\", function () {",
+									"    const respMsg = pm.response.json().message;",
+									"    pm.expect(respMsg).to.contain('inserted 1');",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"type": "text",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"operation\":\"insert\",\n    \"schema\": 123,\n    \"table\": 4,\n    \"records\": [\n    \t{\n        \"name\" : \"Hot Dawg\"\n      }\n    ]\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						},
+						"description": "These records will be used to test updates with invalid attribute names."
+					},
+					"response": []
+				},
+				{
+					"name": "Update test records in 123.4",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"update 1 record in number schema table\", function () {",
+									"    const respMsg = pm.response.json().message;",
+									"    pm.expect(respMsg).to.contain('updated 1');",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"type": "text",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"operation\":\"update\",\n    \"schema\": \"123\",\n    \"table\": \"4\",\n    \"records\": [\n    \t{\n        \"id\" : 987654321,\n        \"name\" : \"Hot Dawg\"\n      }\n    ]\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						},
+						"description": "These records will be used to test updates with invalid attribute names."
+					},
+					"response": []
+				},
+				{
+					"name": "Update records in 123.4 number schema table",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"update 1 record in number schema table\", function () {",
+									"    const respMsg = pm.response.json().message;",
+									"    pm.expect(respMsg).to.contain('updated 1');",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"type": "text",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"operation\":\"update\",\n    \"schema\": 123,\n    \"table\": 4,\n    \"records\": [\n    \t{\n        \"id\" : 987654321,\n        \"name\" : \"Hot Diddy Dawg\"\n      }\n    ]\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						},
+						"description": "These records will be used to test updates with invalid attribute names."
+					},
+					"response": []
+				},
+				{
+					"name": "Insert records missing schema",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 400\", function () {",
+									"    pm.response.to.have.status(400);",
+									"});",
+									"",
+									"pm.test(\"schema required error is returned\", function () {",
+									"    const respMsg = pm.response.json();",
+									"    pm.expect(respMsg.error).to.equal(\"'schema' is required\");",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"type": "text",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"operation\":\"insert\",\n    \"table\": \"4\",\n    \"records\": [\n    \t{\n        \"id\" : 987654321,\n        \"name\" : \"Cool Dawg\"\n      },\n      {\n        \"id\" : 987654322,\n        \"name\" : \"The Coolest Dawg\"\n      },\n      {\n        \"id\" : 987654323,\n        \"name\" : \"Sup Dawg\"\n      },\n      {\n        \"id\" : 987654324,\n        \"name\" : \"Snoop Dawg\"\n      }\n    ]\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						},
+						"description": "These records will be used to test updates with invalid attribute names."
+					},
+					"response": []
+				},
+				{
+					"name": "Insert records missing table",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 400\", function () {",
+									"    pm.response.to.have.status(400);",
+									"});",
+									"",
+									"pm.test(\"table required error is returned\", function () {",
+									"    const respMsg = pm.response.json();",
+									"    pm.expect(respMsg.error).to.equal(\"'table' is required\");",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"type": "text",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"operation\":\"insert\",\n    \"schema\": \"123\",\n    \"records\": [\n    \t{\n        \"id\" : 987654321,\n        \"name\" : \"Cool Dawg\"\n      },\n      {\n        \"id\" : 987654322,\n        \"name\" : \"The Coolest Dawg\"\n      },\n      {\n        \"id\" : 987654323,\n        \"name\" : \"Sup Dawg\"\n      },\n      {\n        \"id\" : 987654324,\n        \"name\" : \"Snoop Dawg\"\n      }\n    ]\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						},
+						"description": "These records will be used to test updates with invalid attribute names."
+					},
+					"response": []
+				},
+				{
+					"name": "Insert records missing records",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 400\", function () {",
+									"    pm.response.to.have.status(400);",
+									"});",
+									"",
+									"pm.test(\"records required error is returned\", function () {",
+									"    const respMsg = pm.response.json();",
+									"    pm.expect(respMsg.error).to.equal(\"'records' is required\");",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"type": "text",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"operation\":\"insert\",\n    \"schema\": \"123\",\n    \"table\": \"4\"\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						},
+						"description": "These records will be used to test updates with invalid attribute names."
+					},
+					"response": []
+				},
+				{
+					"name": "Upsert records missing schema",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 400\", function () {",
+									"    pm.response.to.have.status(400);",
+									"});",
+									"",
+									"pm.test(\"schema required error is returned\", function () {",
+									"    const respMsg = pm.response.json();",
+									"    pm.expect(respMsg.error).to.equal(\"'schema' is required\");",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"type": "text",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"operation\":\"upsert\",\n    \"table\": \"4\",\n    \"records\": [\n    \t{\n        \"id\" : 987654321,\n        \"name\" : \"Cool Dawg\"\n      },\n      {\n        \"id\" : 987654322,\n        \"name\" : \"The Coolest Dawg\"\n      },\n      {\n        \"id\" : 987654323,\n        \"name\" : \"Sup Dawg\"\n      },\n      {\n        \"id\" : 987654324,\n        \"name\" : \"Snoop Dawg\"\n      }\n    ]\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						},
+						"description": "These records will be used to test updates with invalid attribute names."
+					},
+					"response": []
+				},
+				{
+					"name": "Upsert records missing table",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 400\", function () {",
+									"    pm.response.to.have.status(400);",
+									"});",
+									"",
+									"pm.test(\"table required error is returned\", function () {",
+									"    const respMsg = pm.response.json();",
+									"    pm.expect(respMsg.error).to.equal(\"'table' is required\");",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"type": "text",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"operation\":\"upsert\",\n    \"schema\": \"123\",\n    \"records\": [\n    \t{\n        \"id\" : 987654321,\n        \"name\" : \"Cool Dawg\"\n      },\n      {\n        \"id\" : 987654322,\n        \"name\" : \"The Coolest Dawg\"\n      },\n      {\n        \"id\" : 987654323,\n        \"name\" : \"Sup Dawg\"\n      },\n      {\n        \"id\" : 987654324,\n        \"name\" : \"Snoop Dawg\"\n      }\n    ]\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						},
+						"description": "These records will be used to test updates with invalid attribute names."
+					},
+					"response": []
+				},
+				{
+					"name": "Upsert records missing records",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 400\", function () {",
+									"    pm.response.to.have.status(400);",
+									"});",
+									"",
+									"pm.test(\"records required error is returned\", function () {",
+									"    const respMsg = pm.response.json();",
+									"    pm.expect(respMsg.error).to.equal(\"'records' is required\");",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"type": "text",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"operation\":\"upsert\",\n    \"schema\": \"123\",\n    \"table\": \"4\"\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						},
+						"description": "These records will be used to test updates with invalid attribute names."
+					},
+					"response": []
+				},
+				{
+					"name": "Update records missing schema",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 400\", function () {",
+									"    pm.response.to.have.status(400);",
+									"});",
+									"",
+									"pm.test(\"schema required error is returned\", function () {",
+									"    const respMsg = pm.response.json();",
+									"    pm.expect(respMsg.error).to.equal(\"'schema' is required\");",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"type": "text",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"operation\":\"update\",\n    \"table\": \"4\",\n    \"records\": [\n    \t{\n        \"id\" : 987654321,\n        \"name\" : \"Cool Dawg\"\n      },\n      {\n        \"id\" : 987654322,\n        \"name\" : \"The Coolest Dawg\"\n      },\n      {\n        \"id\" : 987654323,\n        \"name\" : \"Sup Dawg\"\n      },\n      {\n        \"id\" : 987654324,\n        \"name\" : \"Snoop Dawg\"\n      }\n    ]\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						},
+						"description": "These records will be used to test updates with invalid attribute names."
+					},
+					"response": []
+				},
+				{
+					"name": "Update records missing table",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 400\", function () {",
+									"    pm.response.to.have.status(400);",
+									"});",
+									"",
+									"pm.test(\"table required error is returned\", function () {",
+									"    const respMsg = pm.response.json();",
+									"    pm.expect(respMsg.error).to.equal(\"'table' is required\");",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"type": "text",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"operation\":\"update\",\n    \"schema\": \"123\",\n    \"records\": [\n    \t{\n        \"id\" : 987654321,\n        \"name\" : \"Cool Dawg\"\n      },\n      {\n        \"id\" : 987654322,\n        \"name\" : \"The Coolest Dawg\"\n      },\n      {\n        \"id\" : 987654323,\n        \"name\" : \"Sup Dawg\"\n      },\n      {\n        \"id\" : 987654324,\n        \"name\" : \"Snoop Dawg\"\n      }\n    ]\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						},
+						"description": "These records will be used to test updates with invalid attribute names."
+					},
+					"response": []
+				},
+				{
+					"name": "Update records missing records",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 400\", function () {",
+									"    pm.response.to.have.status(400);",
+									"});",
+									"",
+									"pm.test(\"records required error is returned\", function () {",
+									"    const respMsg = pm.response.json();",
+									"    pm.expect(respMsg.error).to.equal(\"'records' is required\");",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"type": "text",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"operation\":\"upsert\",\n    \"schema\": \"123\",\n    \"table\": \"4\"\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						},
+						"description": "These records will be used to test updates with invalid attribute names."
 					},
 					"response": []
 				}
@@ -12499,13 +13649,13 @@
 						{
 							"listen": "test",
 							"script": {
-								"type": "text/javascript",
 								"exec": [
 									"pm.test(\"sql select count where age > 30 group by last_name order by age asc\", function () {",
 									"    var jsonData = pm.response.json();",
-									"    pm.expect(jsonData[0].productname) ===\"C\\ufffdte de Blaye\";",
+									"    pm.expect(jsonData[0].productname).to.equal(\"C\\ufffdte de Blaye\");",
 									"});"
-								]
+								],
+								"type": "text/javascript"
 							}
 						}
 					],
@@ -12566,13 +13716,13 @@
 						{
 							"listen": "test",
 							"script": {
-								"type": "text/javascript",
 								"exec": [
 									"pm.test(\"sql select count min max avg sum\", function () {",
 									"    var jsonData = pm.response.json();",
-									"    pm.expect(jsonData[0].allproducts)===77;",
+									"    pm.expect(jsonData[0].allproducts).to.equal(77);",
 									"});"
-								]
+								],
+								"type": "text/javascript"
 							}
 						}
 					],
@@ -12706,13 +13856,13 @@
 						{
 							"listen": "test",
 							"script": {
-								"type": "text/javascript",
 								"exec": [
 									"pm.test(\"sql select where (like) and (unitprice>100)\", function () {",
 									"    var jsonData = pm.response.json();",
-									"    pm.expect(jsonData[0].unitprice)>100;",
+									"    pm.expect(jsonData[0].unitprice > 100).to.be.true;",
 									"});"
-								]
+								],
+								"type": "text/javascript"
 							}
 						}
 					],
@@ -12777,7 +13927,7 @@
 									"pm.test(\"sql select - where attr < comparator\", function () {",
 									"    var jsonData = pm.response.json();",
 									"    jsonData.forEach((record)=>{",
-									"        pm.expect(record.unitprice)<81;",
+									"        pm.expect(record.unitprice < 81).to.be.true;",
 									"    });",
 									"});"
 								],
@@ -12846,7 +13996,7 @@
 									"pm.test(\"sql select - where attr <= comparator\", function () {",
 									"    var jsonData = pm.response.json();",
 									"    jsonData.forEach((record)=>{",
-									"        pm.expect(record.unitprice)<=81;",
+									"        pm.expect(record.unitprice <= 81).to.be.true;",
 									"    });",
 									"});"
 								],
@@ -12915,7 +14065,7 @@
 									"pm.test(\"sql select - where attr > comparator\", function () {",
 									"    var jsonData = pm.response.json();",
 									"    jsonData.forEach((record)=>{",
-									"        pm.expect(record.unitprice) > 81;",
+									"        pm.expect(record.unitprice > 81).to.be.true;",
 									"    });",
 									"});"
 								],
@@ -12984,7 +14134,7 @@
 									"pm.test(\"sql select - where attr >= comparator\", function () {",
 									"    var jsonData = pm.response.json();",
 									"    jsonData.forEach((record)=>{",
-									"        pm.expect(record.unitprice) >= 81;",
+									"        pm.expect(record.unitprice >= 81).to.be.true;",
 									"    });",
 									"});"
 								],
@@ -13053,8 +14203,8 @@
 									"pm.test(\"sql select - where attr w/ multiple comparators\", function () {",
 									"    var jsonData = pm.response.json();",
 									"    jsonData.forEach((record)=>{",
-									"        pm.expect(record.unitprice) > 20;",
-									"        pm.expect(record.unitprice) <= 81;",
+									"        pm.expect(record.unitprice > 20).to.be.true;",
+									"        pm.expect(record.unitprice <= 81).to.be.true;",
 									"    });",
 									"});"
 								],
@@ -13123,8 +14273,8 @@
 									"pm.test(\"sql select - where w/ multiple attr comparators\", function () {",
 									"    var jsonData = pm.response.json();",
 									"    jsonData.forEach((record)=>{",
-									"        pm.expect(record.unitprice) > 10;",
-									"        pm.expect(record.unitprice) <= 81;",
+									"        pm.expect(record.unitprice > 10).to.be.true;",
+									"        pm.expect(record.unitprice <= 81).to.be.true;",
 									"        pm.expect(record.unitsinstock).to.eql(0);",
 									"    });",
 									"});"
@@ -13194,9 +14344,9 @@
 									"pm.test(\"sql select - where w/ multiple comparators for multiple attrs\", function () {",
 									"    var jsonData = pm.response.json();",
 									"    jsonData.forEach((record)=>{",
-									"        pm.expect(record.unitprice) > 10;",
-									"        pm.expect(record.unitprice) <= 81;",
-									"        pm.expect(record.unitsinstock) > 10;",
+									"        pm.expect(record.unitprice > 10).to.be.true;",
+									"        pm.expect(record.unitprice <= 81).to.be.true;",
+									"        pm.expect(record.unitsinstock > 10).to.be.true;",
 									"    });",
 									"});"
 								],
@@ -13265,9 +14415,9 @@
 									"pm.test(\"sql select - where w/ IN() and multiple of comparators for multiple attrs\", function () {",
 									"    var jsonData = pm.response.json();",
 									"    jsonData.forEach((record)=>{",
-									"        pm.expect(record.unitprice) > 10;",
-									"        pm.expect(record.unitprice) <= 81;",
-									"        pm.expect(record.unitsinstock) > 10;",
+									"        pm.expect(record.unitprice > 10).to.be.true;",
+									"        pm.expect(record.unitprice <= 81).to.be.true;",
+									"        pm.expect(record.unitsinstock > 10).to.be.true;",
 									"        pm.expect(record.supplierid).to.be.oneOf([1,2,3,4]);",
 									"    });",
 									"});"
@@ -18944,7 +20094,7 @@
 									"",
 									"pm.test(\"verify proper error message is given\", function () {",
 									"    var jsonData = pm.response.json();",
-									"    pm.expect(jsonData.error).to.eql('\"hash_values\" must be an array');",
+									"    pm.expect(jsonData.error).to.eql(\"'hash_values' must be an array\");",
 									"});",
 									""
 								],
@@ -19011,7 +20161,7 @@
 									"",
 									"pm.test(\"verify proper error message is given\", function () {",
 									"    var jsonData = pm.response.json();",
-									"    pm.expect(jsonData.error).to.eql('\"get_attributes\" must be an array');",
+									"    pm.expect(jsonData.error).to.eql(\"'get_attributes' must be an array\");",
 									"});",
 									""
 								],
@@ -21562,6 +22712,207 @@
 						"body": {
 							"mode": "raw",
 							"raw": "{\n\t\"operation\":\"delete\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog\",\n\t\"hash_values\": [1111,2222]\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						},
+						"description": "Confirm employee table has been updated with specific value."
+					},
+					"response": []
+				},
+				{
+					"name": "Search by value 123.4",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"search by value number schema/table successful reponse\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData).to.eql([{id: 987654321, name: \"Hot Diddy Dawg\"}]);",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"123\",\n\t\"table\":\"4\",\n\t\"search_attribute\": \"name\",\n\t\"search_value\": \"Hot Diddy Dawg\",\n\t\"get_attributes\": [\"id\", \"name\"]\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						},
+						"description": "Confirm employee table has been updated with specific value."
+					},
+					"response": []
+				},
+				{
+					"name": "Search by hash 123.4",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"search by hash number schema/table successful reponse\", function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData).to.eql([{name: \"Hot Diddy Dawg\"}]);",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"search_by_hash\",\n  \"schema\":\"123\",\n  \"table\":\"4\",\n  \"hash_values\":[ 987654321 ],\n  \"get_attributes\": [\"name\"]\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						},
+						"description": "Confirm employee table has been updated with specific value."
+					},
+					"response": []
+				},
+				{
+					"name": "Delete 123.4 record",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"One record is delete from number schema/table\", function () {",
+									"    let jsonData = pm.response.json();",
+									"    pm.expect(jsonData.message).to.eql(\"1 of 1 record successfully deleted\");",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"delete\",\n\t\"schema\":\"123\",\n\t\"table\":\"4\",\n\t\"hash_values\": [987654321]\n}"
 						},
 						"url": {
 							"raw": "{{host}}:{{port}}",
@@ -38370,7 +39721,7 @@
 							"response": []
 						},
 						{
-							"name": "Check Delete Job Completed",
+							"name": "Check Delete Records Before Job Completed",
 							"event": [
 								{
 									"listen": "test",
@@ -38408,11 +39759,11 @@
 											"        case 0:",
 											"        case 'IN_PROGRESS':",
 											"            console.log('in progress, checking again');",
-											"            postman.setNextRequest('Check Delete Job Completed');",
+											"            postman.setNextRequest('Check Delete Records Before Job Completed');",
 											"            pm.expect(status).to.be.oneOf(['IN_PROGRESS', 0, '0']);",
 											"            break;",
 											"        default:",
-											"            postman.setNextRequest('Check Delete Job Completed');",
+											"            postman.setNextRequest('Check Delete Records Before Job Completed');",
 											"            pm.expect(status).to.be.oneOf(['IN_PROGRESS', 0, '0', 'ERROR', 'COMPLETE']);",
 											"            break;",
 											"    }",
@@ -38594,7 +39945,7 @@
 									"    let parsedId = jsonData.message.substr(id_index + 3, jsonData.message.length);",
 									"    pm.environment.set(\"job_id\", parsedId);",
 									"    pm.environment.set(\"next_request\", next_req);",
-									"    postman.setNextRequest(\"Check Delete Job Completed\");",
+									"    postman.setNextRequest(\"Check Delete Records Before Job Completed\");",
 									"});"
 								]
 							}
@@ -38602,78 +39953,8 @@
 					]
 				},
 				{
-					"name": "Delete Transaction Logs Before Tests",
+					"name": "Delete Records Before Alias Tests",
 					"item": [
-						{
-							"name": "create test table",
-							"event": [
-								{
-									"listen": "test",
-									"script": {
-										"exec": [
-											"pm.test(\"Status code is 200\", function () {",
-											"    pm.response.to.have.status(200);",
-											"});",
-											"",
-											"tests[\"Create Table\"] = responseBody.has(\"successfully created.\");",
-											"",
-											"setTimeout(()=>{}, 500);"
-										],
-										"type": "text/javascript"
-									}
-								}
-							],
-							"request": {
-								"auth": {
-									"type": "basic",
-									"basic": [
-										{
-											"key": "username",
-											"value": "{{username}}",
-											"type": "string"
-										},
-										{
-											"key": "password",
-											"value": "{{password}}",
-											"type": "string"
-										},
-										{
-											"key": "saveHelperData",
-											"value": true,
-											"type": "boolean"
-										},
-										{
-											"key": "showPassword",
-											"value": false,
-											"type": "boolean"
-										}
-									]
-								},
-								"method": "POST",
-								"header": [
-									{
-										"key": "Content-Type",
-										"value": "application/json"
-									},
-									{
-										"key": "Authorization",
-										"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
-									}
-								],
-								"body": {
-									"mode": "raw",
-									"raw": "{\n  \"operation\":\"create_table\",\n  \"schema\":\"test_delete_before\",\n  \"table\":\"testerama\",\n  \"hash_attribute\": \"id\"\n}"
-								},
-								"url": {
-									"raw": "{{host}}:{{port}}",
-									"host": [
-										"{{host}}"
-									],
-									"port": "{{port}}"
-								}
-							},
-							"response": []
-						},
 						{
 							"name": "Insert new records",
 							"event": [
@@ -38699,6 +39980,7 @@
 									"listen": "prerequest",
 									"script": {
 										"exec": [
+											"",
 											""
 										],
 										"type": "text/javascript"
@@ -38739,7 +40021,7 @@
 								],
 								"body": {
 									"mode": "raw",
-									"raw": "{\n\"operation\":\"insert\",\n\"schema\":\"test_delete_before\",\n\"table\":\"testerama\",\n\"records\": [\n  {\n    \"id\": 1,\n    \"address\": \"24 South st\"\n  },\n  {\n    \"id\": 2,\n    \"address\": \"6 Truck Lane\"\n  },\n  {\n    \"id\": 3,\n    \"address\": \"19 Broadway\"\n  },\n  {\n    \"id\": 4,\n    \"address\": \"34A Mountain View\"\n  },\n  {\n    \"id\": 5,\n    \"address\": \"234 Curtis St\"\n  },\n  {\n    \"id\": 6,\n    \"address\": \"115 Way Rd\"\n  }\n]\n\n}"
+									"raw": "{\n\"operation\":\"insert\",\n\"schema\":\"test_delete_before\",\n\"table\":\"address\",\n\"records\": [\n  {\n    \"id\": \"1a\",\n    \"address\": \"24 South st\"\n  },\n  {\n    \"id\": \"2a\",\n    \"address\": \"6 Truck Lane\"\n  },\n  {\n    \"id\": \"3a\",\n    \"address\": \"19 Broadway\"\n  },\n  {\n    \"id\": \"4a\",\n    \"address\": \"34A Mountain View\"\n  },\n  {\n    \"id\": \"5a\",\n    \"address\": \"234 Curtis St\"\n  },\n  {\n    \"id\": \"6a\",\n    \"address\": \"115 Way Rd\"\n  }\n]\n\n}"
 								},
 								"url": {
 									"raw": "{{host}}:{{port}}",
@@ -38774,7 +40056,7 @@
 									"listen": "prerequest",
 									"script": {
 										"exec": [
-											"pm.environment.set(\"insert_timestamp\", Date.now());",
+											"pm.environment.set(\"insert_timestamp\", new Date().toISOString());",
 											""
 										],
 										"type": "text/javascript"
@@ -38815,7 +40097,7 @@
 								],
 								"body": {
 									"mode": "raw",
-									"raw": "{\n\"operation\":\"insert\",\n\"schema\":\"test_delete_before\",\n\"table\":\"testerama\",\n\"records\": [\n  {\n    \"id\": 11,\n    \"address\": \"24 South st\"\n  },\n  {\n    \"id\": 12,\n    \"address\": \"6 Truck Lane\"\n  },\n  {\n    \"id\": 13,\n    \"address\": \"19 Broadway\"\n  }\n]\n\n}"
+									"raw": "{\n\"operation\":\"insert\",\n\"schema\":\"test_delete_before\",\n\"table\":\"address\",\n\"records\": [\n  {\n    \"id\": \"11a\",\n    \"address\": \"24 South st\"\n  },\n  {\n    \"id\": \"12a\",\n    \"address\": \"6 Truck Lane\"\n  },\n  {\n    \"id\": \"13a\",\n    \"address\": \"19 Broadway\"\n  }\n]\n\n}"
 								},
 								"url": {
 									"raw": "{{host}}:{{port}}",
@@ -38838,7 +40120,7 @@
 											"    var jsonData = pm.response.json();",
 											"    pm.expect(jsonData.message.indexOf('Starting job')).to.eql(0);",
 											"    ",
-											"    eval(pm.globals.get(\"function:getJobIdDelete\"))(jsonData, null);",
+											"    eval(pm.globals.get(\"function:getJobIdDeleteA\"))(jsonData, null);",
 											"});",
 											"",
 											"pm.test(\"Status code is 200\", function () {",
@@ -38888,7 +40170,7 @@
 								],
 								"body": {
 									"mode": "raw",
-									"raw": "{\n\t\"operation\":\"delete_transaction_logs_before\",\n\t\"timestamp\":\"{{insert_timestamp}}\",\n\t\"schema\":\"test_delete_before\",\n\t\"table\":\"testerama\"\n}\n"
+									"raw": "{\n\t\"operation\":\"delete_files_before\",\n\t\"date\":\"{{insert_timestamp}}\",\n\t\"schema\":\"test_delete_before\",\n\t\"table\":\"address\"\n}\n"
 								},
 								"url": {
 									"raw": "{{host}}:{{port}}",
@@ -38901,7 +40183,7 @@
 							"response": []
 						},
 						{
-							"name": "Check Delete Job Completed",
+							"name": "Check Delete Records Before Alias Job Completed",
 							"event": [
 								{
 									"listen": "test",
@@ -38939,11 +40221,11 @@
 											"        case 0:",
 											"        case 'IN_PROGRESS':",
 											"            console.log('in progress, checking again');",
-											"            postman.setNextRequest('Check Delete Job Completed');",
+											"            postman.setNextRequest('Check Delete Records Before Alias Job Completed');",
 											"            pm.expect(status).to.be.oneOf(['IN_PROGRESS', 0, '0']);",
 											"            break;",
 											"        default:",
-											"            postman.setNextRequest('Check Delete Job Completed');",
+											"            postman.setNextRequest('Check Delete Records Before Alias Job Completed');",
 											"            pm.expect(status).to.be.oneOf(['IN_PROGRESS', 0, '0', 'ERROR', 'COMPLETE']);",
 											"            break;",
 											"    }",
@@ -39009,6 +40291,100 @@
 								}
 							},
 							"response": []
+						},
+						{
+							"name": "Search by hash confirm",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"verify correct number of records returned\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData.length).to.eql(3);",
+											"});",
+											"",
+											"pm.test(\"verify correct records are returned\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    var ids = [];",
+											"    jsonData.forEach((record) => {",
+											"        ids.push(record.id)",
+											"    })",
+											"    ",
+											"    pm.expect(ids.includes(\"11a\")).to.be.true;",
+											"    pm.expect(ids.includes(\"12a\")).to.be.true;",
+											"    pm.expect(ids.includes(\"13a\")).to.be.true;",
+											"    ",
+											"    pm.expect(ids.includes(\"1a\")).to.be.false;",
+											"    pm.expect(ids.includes(\"2a\")).to.be.false;",
+											"    pm.expect(ids.includes(\"3a\")).to.be.false;",
+											"    pm.expect(ids.includes(\"4a\")).to.be.false;",
+											"    pm.expect(ids.includes(\"5a\")).to.be.false;",
+											"    pm.expect(ids.includes(\"6a\")).to.be.false;",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"exec": [
+											""
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\t\"operation\":\"search_by_hash\",\n\t\"schema\":\"test_delete_before\",\n\t\"table\":\"address\",\n\t\"hash_attribute\": \"id\",\n\t\"hash_values\":[\"1a\", \"2a\", \"3a\", \"4a\", \"5a\", \"6a\", \"11a\", \"12a\", \"13a\"],\n\t\"get_attributes\": [\"id\", \"address\"]\n}\n"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
 						}
 					],
 					"event": [
@@ -39026,12 +40402,12 @@
 							"script": {
 								"type": "text/javascript",
 								"exec": [
-									"postman.setGlobalVariable(\"function:getJobIdDelete\", (jsonData, next_req)=>{",
+									"postman.setGlobalVariable(\"function:getJobIdDeleteA\", (jsonData, next_req)=>{",
 									"    let id_index = jsonData.message.indexOf('id ');",
 									"    let parsedId = jsonData.message.substr(id_index + 3, jsonData.message.length);",
 									"    pm.environment.set(\"job_id\", parsedId);",
 									"    pm.environment.set(\"next_request\", next_req);",
-									"    postman.setNextRequest(\"Check Delete Job Completed\");",
+									"    postman.setNextRequest(\"Check Delete Records Before Alias Job Completed\");",
 									"});"
 								]
 							}
@@ -39340,1235 +40716,13 @@
 									"listen": "test",
 									"script": {
 										"exec": [
-											"// This code loops through the response from describe all and compares ",
-											"// the attributes to expected result variable below. ",
-											"// If you create tests that modify schema/table/attributes you should update ‘expected_result’",
-											"let expected_result = {",
-											"    \"dev\": {",
-											"        \"time_functions\": {",
-											"            \"__createdtime__\": 1592596204301,",
-											"            \"__updatedtime__\": 1592596204301,",
-											"            \"hash_attribute\": \"id\",",
-											"            \"id\": \"079c4677-fc50-4a6c-bd00-21646f09ece1\",",
-											"            \"name\": \"time_functions\",",
-											"            \"residence\": null,",
-											"            \"schema\": \"dev\",",
-											"            \"attributes\": [",
-											"                {",
-											"                    \"attribute\": \"getdate\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"__updatedtime__\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"now\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"__createdtime__\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"today\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"tomorrow_epoch\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"server_time\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"c_timestamp\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"c_time\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"id\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"sub_3_years\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"add_day\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"offset_utc\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"c_date\"",
-											"                }",
-											"            ],",
-											"            \"record_count\": 2",
-											"        },",
-											"        \"owner\": {",
-											"            \"__createdtime__\": 1592596204432,",
-											"            \"__updatedtime__\": 1592596204432,",
-											"            \"hash_attribute\": \"id\",",
-											"            \"id\": \"162d1334-54b3-42e9-95e9-bf33d4c50522\",",
-											"            \"name\": \"owner\",",
-											"            \"residence\": null,",
-											"            \"schema\": \"dev\",",
-											"            \"attributes\": [",
-											"                {",
-											"                    \"attribute\": \"__createdtime__\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"name\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"__updatedtime__\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"id\"",
-											"                }",
-											"            ],",
-											"            \"record_count\": 4",
-											"        },",
-											"        \"long_text\": {",
-											"            \"__createdtime__\": 1592596203947,",
-											"            \"__updatedtime__\": 1592596203947,",
-											"            \"hash_attribute\": \"id\",",
-											"            \"id\": \"18638a1e-566a-4747-9272-9f5834b63e72\",",
-											"            \"name\": \"long_text\",",
-											"            \"residence\": null,",
-											"            \"schema\": \"dev\",",
-											"            \"attributes\": [",
-											"                {",
-											"                    \"attribute\": \"__createdtime__\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"id\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"__updatedtime__\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"remarks\"",
-											"                }",
-											"            ],",
-											"            \"record_count\": 25",
-											"        },",
-											"        \"AttributeDropTest\": {",
-											"            \"__createdtime__\": 1592596204025,",
-											"            \"__updatedtime__\": 1592596204025,",
-											"            \"hash_attribute\": \"hashid\",",
-											"            \"id\": \"21508c60-a072-455b-abfa-5d0bbbb1ba3d\",",
-											"            \"name\": \"AttributeDropTest\",",
-											"            \"residence\": null,",
-											"            \"schema\": \"dev\",",
-											"            \"attributes\": [",
-											"                {",
-											"                    \"attribute\": \"another_attribute\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"hashid\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"__updatedtime__\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"some_attribute\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"__createdtime__\"",
-											"                }",
-											"            ],",
-											"            \"record_count\": 2",
-											"        },",
-											"        \"invalid_attribute\": {",
-											"            \"__createdtime__\": 1592596204120,",
-											"            \"__updatedtime__\": 1592596204120,",
-											"            \"hash_attribute\": \"id\",",
-											"            \"id\": \"3703db05-107f-4162-9781-4432a479e260\",",
-											"            \"name\": \"invalid_attribute\",",
-											"            \"residence\": null,",
-											"            \"schema\": \"dev\",",
-											"            \"attributes\": [",
-											"                {",
-											"                    \"attribute\": \"some_attribute2\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"some_attribute\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"some_attribute4\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"id\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"$ome-attribute3\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"some-attribute3\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"some_attribute1\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"another_attribute\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"__updatedtime__\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"__createdtime__\"",
-											"                }",
-											"            ],",
-											"            \"record_count\": 2",
-											"        },",
-											"        \"remarks_blob\": {",
-											"            \"__createdtime__\": 1592596204161,",
-											"            \"__updatedtime__\": 1592596204161,",
-											"            \"hash_attribute\": \"id\",",
-											"            \"id\": \"84837373-a661-4f70-b4a0-e524cc5bc19e\",",
-											"            \"name\": \"remarks_blob\",",
-											"            \"residence\": null,",
-											"            \"schema\": \"dev\",",
-											"            \"attributes\": [",
-											"                {",
-											"                    \"attribute\": \"id\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"__createdtime__\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"__updatedtime__\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"length\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"remarks\"",
-											"                }",
-											"            ],",
-											"            \"record_count\": 11",
-											"        },",
-											"        \"rando\": {",
-											"            \"__createdtime__\": 1592596204559,",
-											"            \"__updatedtime__\": 1592596204559,",
-											"            \"hash_attribute\": \"id\",",
-											"            \"id\": \"92fab46a-8eda-4855-bd9e-931728605837\",",
-											"            \"name\": \"rando\",",
-											"            \"residence\": null,",
-											"            \"schema\": \"dev\",",
-											"            \"attributes\": [",
-											"                {",
-											"                    \"attribute\": \"__updatedtime__\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"active\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"id\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"name\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"__createdtime__\"",
-											"                }",
-											"            ],",
-											"            \"record_count\": 4",
-											"        },",
-											"        \"dog\": {",
-											"            \"__createdtime__\": 1592596204346,",
-											"            \"__updatedtime__\": 1592596204346,",
-											"            \"hash_attribute\": \"id\",",
-											"            \"id\": \"a74b18a8-2f6d-43f0-a92e-871eee9fed92\",",
-											"            \"name\": \"dog\",",
-											"            \"residence\": null,",
-											"            \"schema\": \"dev\",",
-											"            \"attributes\": [",
-											"                {",
-											"                    \"attribute\": \"breed_id\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"__createdtime__\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"__updatedtime__\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"owner_id\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"adorable\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"age\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"weight_lbs\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"id\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"dog_name\"",
-											"                }",
-											"            ],",
-											"            \"record_count\": 9",
-											"        },",
-											"        \"credits\": {",
-											"            \"__createdtime__\": 1592596204517,",
-											"            \"__updatedtime__\": 1592596204517,",
-											"            \"hash_attribute\": \"movie_id\",",
-											"            \"id\": \"ae36101c-cfbe-4500-aade-37f84a2e819e\",",
-											"            \"name\": \"credits\",",
-											"            \"residence\": null,",
-											"            \"schema\": \"dev\",",
-											"            \"attributes\": [",
-											"                {",
-											"                    \"attribute\": \"crew\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"__updatedtime__\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"__createdtime__\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"movie_id\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"cast\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"title\"",
-											"                }",
-											"            ],",
-											"            \"record_count\": 4803",
-											"        },",
-											"        \"movie\": {",
-											"            \"__createdtime__\": 1592596204475,",
-											"            \"__updatedtime__\": 1592596204475,",
-											"            \"hash_attribute\": \"id\",",
-											"            \"id\": \"d626b6d1-9fac-4b51-b66e-a5b01c202f80\",",
-											"            \"name\": \"movie\",",
-											"            \"residence\": null,",
-											"            \"schema\": \"dev\",",
-											"            \"attributes\": [",
-											"                {",
-											"                    \"attribute\": \"vote_average\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"title\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"original_title\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"production_countries\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"vote_count\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"budget\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"popularity\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"id\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"__updatedtime__\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"spoken_languages\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"overview\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"revenue\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"keywords\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"homepage\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"production_companies\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"runtime\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"original_language\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"genres\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"release_date\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"__createdtime__\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"status\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"tagline\"",
-											"                }",
-											"            ],",
-											"            \"record_count\": 4803",
-											"        },",
-											"        \"sql_function\": {",
-											"            \"__createdtime__\": 1592596204693,",
-											"            \"__updatedtime__\": 1592596204693,",
-											"            \"hash_attribute\": \"id\",",
-											"            \"id\": \"d9ba16fe-f6e2-4547-be8f-a36b72d07143\",",
-											"            \"name\": \"sql_function\",",
-											"            \"residence\": null,",
-											"            \"schema\": \"dev\",",
-											"            \"attributes\": [",
-											"                {",
-											"                    \"attribute\": \"rando\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"week_day\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"id\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"__updatedtime__\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"upper_week_day\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"__createdtime__\"",
-											"                }",
-											"            ],",
-											"            \"record_count\": 2",
-											"        },",
-											"        \"books\": {",
-											"            \"__createdtime__\": 1592596204204,",
-											"            \"__updatedtime__\": 1592596204204,",
-											"            \"hash_attribute\": \"id\",",
-											"            \"id\": \"e661164b-fd70-4267-833a-34511a2d0260\",",
-											"            \"name\": \"books\",",
-											"            \"residence\": null,",
-											"            \"schema\": \"dev\",",
-											"            \"attributes\": [",
-											"                {",
-											"                    \"attribute\": \"original_publication_year\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"authors\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"original_title\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"small_image_url\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"image_url\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"ratings_1\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"language_code\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"ratings_count\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"ratings_2\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"ratings_5\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"work_text_reviews_count\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"books_count\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"average_rating\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"__createdtime__\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"ratings_3\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"__updatedtime__\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"nytimes_best_seller\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"id\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"ratings_4\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"work_ratings_count\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"title\"",
-											"                }",
-											"            ],",
-											"            \"record_count\": 50",
-											"        },",
-											"        \"breed\": {",
-											"            \"__createdtime__\": 1592596204391,",
-											"            \"__updatedtime__\": 1592596204391,",
-											"            \"hash_attribute\": \"id\",",
-											"            \"id\": \"e79574ee-aff9-442b-8286-eafde771259f\",",
-											"            \"name\": \"breed\",",
-											"            \"residence\": null,",
-											"            \"schema\": \"dev\",",
-											"            \"attributes\": [",
-											"                {",
-											"                    \"attribute\": \"id\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"name\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"__updatedtime__\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"image\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"__createdtime__\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"section\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"country\"",
-											"                }",
-											"            ],",
-											"            \"record_count\": 350",
-											"        },",
-											"        \"ratings\": {",
-											"            \"__createdtime__\": 1592596204258,",
-											"            \"__updatedtime__\": 1592596204258,",
-											"            \"hash_attribute\": \"id\",",
-											"            \"id\": \"ebc43530-fcab-4e5a-a168-eddf07257df7\",",
-											"            \"name\": \"ratings\",",
-											"            \"residence\": null,",
-											"            \"schema\": \"dev\",",
-											"            \"attributes\": [",
-											"                {",
-											"                    \"attribute\": \"id\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"rating\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"book_id\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"__createdtime__\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"user_id\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"__updatedtime__\"",
-											"                }",
-											"            ],",
-											"            \"record_count\": 5000",
-											"        }",
-											"    },",
-											"    \"northnwd\": {",
-											"        \"url_csv_data\": {",
-											"            \"__createdtime__\": 1592596240984,",
-											"            \"__updatedtime__\": 1592596240984,",
-											"            \"hash_attribute\": \"id\",",
-											"            \"id\": \"07f45132-af85-4738-8cbb-cc0dfb2b6eac\",",
-											"            \"name\": \"url_csv_data\",",
-											"            \"residence\": null,",
-											"            \"schema\": \"northnwd\",",
-											"            \"attributes\": [",
-											"                {",
-											"                    \"attribute\": \"section\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"id\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"image\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"__updatedtime__\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"country\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"name\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"__createdtime__\"",
-											"                }",
-											"            ],",
-											"            \"record_count\": 350",
-											"        },",
-											"        \"suppliers\": {",
-											"            \"__createdtime__\": 1592596203524,",
-											"            \"__updatedtime__\": 1592596203524,",
-											"            \"hash_attribute\": \"supplierid\",",
-											"            \"id\": \"143fc67f-a08b-4582-a953-6b17b65ea6a1\",",
-											"            \"name\": \"suppliers\",",
-											"            \"residence\": null,",
-											"            \"schema\": \"northnwd\",",
-											"            \"attributes\": [",
-											"                {",
-											"                    \"attribute\": \"country\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"postalcode\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"__createdtime__\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"fax\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"address\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"supplierid\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"contacttitle\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"contactname\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"city\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"__updatedtime__\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"companyname\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"homepage\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"phone\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"region\"",
-											"                }",
-											"            ],",
-											"            \"record_count\": 29",
-											"        },",
-											"        \"employeeterritories\": {",
-											"            \"__createdtime__\": 1592596203830,",
-											"            \"__updatedtime__\": 1592596203830,",
-											"            \"hash_attribute\": \"employeeid\",",
-											"            \"id\": \"2d96d532-aff5-400c-9ed5-f2515ee79366\",",
-											"            \"name\": \"employeeterritories\",",
-											"            \"residence\": null,",
-											"            \"schema\": \"northnwd\",",
-											"            \"attributes\": [",
-											"                {",
-											"                    \"attribute\": \"__createdtime__\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"employeeid\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"skip\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"__updatedtime__\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"territoryid\"",
-											"                }",
-											"            ],",
-											"            \"record_count\": 9",
-											"        },",
-											"        \"customers\": {",
-											"            \"__createdtime__\": 1592596203364,",
-											"            \"__updatedtime__\": 1592596203364,",
-											"            \"hash_attribute\": \"customerid\",",
-											"            \"id\": \"39331e86-bf9a-4089-9ee7-6fe4aa3753e8\",",
-											"            \"name\": \"customers\",",
-											"            \"residence\": null,",
-											"            \"schema\": \"northnwd\",",
-											"            \"attributes\": [",
-											"                {",
-											"                    \"attribute\": \"array\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"fax\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"companyname\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"phone\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"country\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"__createdtime__\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"object\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"__updatedtime__\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"city\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"postalcode\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"contacttitle\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"customerid\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"address\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"region\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"contactmame\"",
-											"                }",
-											"            ],",
-											"            \"record_count\": 95",
-											"        },",
-											"        \"order_details\": {",
-											"            \"__createdtime__\": 1592596203867,",
-											"            \"__updatedtime__\": 1592596203867,",
-											"            \"hash_attribute\": \"orderdetailid\",",
-											"            \"id\": \"40a4cf2c-663a-43f9-9e96-2b731bb02cd2\",",
-											"            \"name\": \"order_details\",",
-											"            \"residence\": null,",
-											"            \"schema\": \"northnwd\",",
-											"            \"attributes\": [",
-											"                {",
-											"                    \"attribute\": \"__createdtime__\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"orderid\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"orderdetailid\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"__updatedtime__\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"unitprice\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"discount\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"productid\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"quantity\"",
-											"                }",
-											"            ],",
-											"            \"record_count\": 2155",
-											"        },",
-											"        \"url_csv_no_data\": {",
-											"            \"__createdtime__\": 1592596244007,",
-											"            \"__updatedtime__\": 1592596244007,",
-											"            \"hash_attribute\": \"id\",",
-											"            \"id\": \"542a0a6b-9ddd-494d-bc83-bf6dda72a6b1\",",
-											"            \"name\": \"url_csv_no_data\",",
-											"            \"residence\": null,",
-											"            \"schema\": \"northnwd\",",
-											"            \"attributes\": [",
-											"                {",
-											"                    \"attribute\": \"id\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"__createdtime__\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"__updatedtime__\"",
-											"                }",
-											"            ],",
-											"            \"record_count\": 0",
-											"        },",
-											"        \"products\": {",
-											"            \"__createdtime__\": 1592596203905,",
-											"            \"__updatedtime__\": 1592596203905,",
-											"            \"hash_attribute\": \"productid\",",
-											"            \"id\": \"5fee5f0a-52f7-40a3-ac1b-a6554b7e99a9\",",
-											"            \"name\": \"products\",",
-											"            \"residence\": null,",
-											"            \"schema\": \"northnwd\",",
-											"            \"attributes\": [",
-											"                {",
-											"                    \"attribute\": \"__updatedtime__\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"productid\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"unitsnnorder\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"productname\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"discontinued\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"__createdtime__\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"reorderlevel\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"supplierid\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"quantityperunit\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"unitsinstock\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"unitprice\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"categoryid\"",
-											"                }",
-											"            ],",
-											"            \"record_count\": 77",
-											"        },",
-											"        \"orders\": {",
-											"            \"__createdtime__\": 1592596203663,",
-											"            \"__updatedtime__\": 1592596203663,",
-											"            \"hash_attribute\": \"orderid\",",
-											"            \"id\": \"793135d4-a7f7-452b-a474-f154b0299a05\",",
-											"            \"name\": \"orders\",",
-											"            \"residence\": null,",
-											"            \"schema\": \"northnwd\",",
-											"            \"attributes\": [",
-											"                {",
-											"                    \"attribute\": \"shipvia\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"shipregion\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"shipcountry\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"orderid\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"__createdtime__\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"shipname\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"shipaddress\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"__updatedtime__\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"orderdate\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"shippeddate\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"employeeid\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"freight\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"requireddate\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"shipPostalcode\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"customerid\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"shipcity\"",
-											"                }",
-											"            ],",
-											"            \"record_count\": 830",
-											"        },",
-											"        \"employees\": {",
-											"            \"__createdtime__\": 1592596203623,",
-											"            \"__updatedtime__\": 1592596203623,",
-											"            \"hash_attribute\": \"employeeid\",",
-											"            \"id\": \"8f0c8beb-9f60-4431-a086-d0ff04a8ef56\",",
-											"            \"name\": \"employees\",",
-											"            \"residence\": null,",
-											"            \"schema\": \"northnwd\",",
-											"            \"attributes\": [",
-											"                {",
-											"                    \"attribute\": \"city\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"photopath\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"birthdate\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"test_record\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"skip\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"reportsto\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"employeeid\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"firstname\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"notes\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"__updatedtime__\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"address\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"lastname\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"postalCode\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"homephone\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"region\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"extension\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": 4289",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"__createdtime__\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"country\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"hireDate\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"title\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"titleofcourtesy\"",
-											"                }",
-											"            ],",
-											"            \"record_count\": 13",
-											"        },",
-											"        \"shippers\": {",
-											"            \"__createdtime__\": 1592596203789,",
-											"            \"__updatedtime__\": 1592596203789,",
-											"            \"hash_attribute\": \"shipperid\",",
-											"            \"id\": \"a30b9fb8-b433-4e10-94f7-b65718b0a066\",",
-											"            \"name\": \"shippers\",",
-											"            \"residence\": null,",
-											"            \"schema\": \"northnwd\",",
-											"            \"attributes\": [",
-											"                {",
-											"                    \"attribute\": \"shipperid\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"phone\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"__updatedtime__\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"__createdtime__\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"companyname\"",
-											"                }",
-											"            ],",
-											"            \"record_count\": 3",
-											"        },",
-											"        \"territories\": {",
-											"            \"__createdtime__\": 1592596203709,",
-											"            \"__updatedtime__\": 1592596203709,",
-											"            \"hash_attribute\": \"territoryid\",",
-											"            \"id\": \"aebd9ccb-2c2f-47d9-b0d7-b29e4bc93810\",",
-											"            \"name\": \"territories\",",
-											"            \"residence\": null,",
-											"            \"schema\": \"northnwd\",",
-											"            \"attributes\": [",
-											"                {",
-											"                    \"attribute\": \"territorydescription\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"__createdtime__\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"territoryid\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"regionid\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"__updatedtime__\"",
-											"                }",
-											"            ],",
-											"            \"record_count\": 56",
-											"        },",
-											"        \"region\": {",
-											"            \"__createdtime__\": 1592596203565,",
-											"            \"__updatedtime__\": 1592596203565,",
-											"            \"hash_attribute\": \"regionid\",",
-											"            \"id\": \"e1bb4a56-79e9-4219-abe1-58f6dbd63f03\",",
-											"            \"name\": \"region\",",
-											"            \"residence\": null,",
-											"            \"schema\": \"northnwd\",",
-											"            \"attributes\": [",
-											"                {",
-											"                    \"attribute\": \"__createdtime__\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"regionid\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"regiondescription\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \" regiondescription\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"__updatedtime__\"",
-											"                }",
-											"            ],",
-											"            \"record_count\": 6",
-											"        },",
-											"        \"categories\": {",
-											"            \"__createdtime__\": 1592596203750,",
-											"            \"__updatedtime__\": 1592596203750,",
-											"            \"hash_attribute\": \"categoryid\",",
-											"            \"id\": \"e613fd24-77bf-46b3-b7ec-28082ff7e3bf\",",
-											"            \"name\": \"categories\",",
-											"            \"residence\": null,",
-											"            \"schema\": \"northnwd\",",
-											"            \"attributes\": [",
-											"                {",
-											"                    \"attribute\": \"__updatedtime__\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"__createdtime__\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"categoryname\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"picture\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"description\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"categoryid\"",
-											"                }",
-											"            ],",
-											"            \"record_count\": 6",
-											"        }",
-											"    },",
-											"    \"test_delete_before\": {",
-											"        \"address\": {",
-											"            \"__createdtime__\": 1592596373941,",
-											"            \"__updatedtime__\": 1592596373941,",
-											"            \"hash_attribute\": \"id\",",
-											"            \"id\": \"70399c96-528d-4ac5-8134-2a25f2d3bd22\",",
-											"            \"name\": \"address\",",
-											"            \"residence\": null,",
-											"            \"schema\": \"test_delete_before\",",
-											"            \"attributes\": [",
-											"                {",
-											"                    \"attribute\": \"__createdtime__\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"__updatedtime__\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"id\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"address\"",
-											"                }",
-											"            ],",
-											"            \"record_count\": 3",
-											"        }",
-											"    },",
-											"    \"another\": {",
-											"        \"breed\": {",
-											"            \"__createdtime__\": 1592596204649,",
-											"            \"__updatedtime__\": 1592596204649,",
-											"            \"hash_attribute\": \"id\",",
-											"            \"id\": \"898c6c6c-7b50-40f3-bbc3-1e90b79440ff\",",
-											"            \"name\": \"breed\",",
-											"            \"residence\": null,",
-											"            \"schema\": \"another\",",
-											"            \"attributes\": [",
-											"                {",
-											"                    \"attribute\": \"__createdtime__\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"section\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"country\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"id\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"name\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"image\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"__updatedtime__\"",
-											"                }",
-											"            ],",
-											"            \"record_count\": 350",
-											"        }",
-											"    },",
-											"    \"call\": {",
-											"        \"aggr\": {",
-											"            \"__createdtime__\": 1592596203986,",
-											"            \"__updatedtime__\": 1592596203986,",
-											"            \"hash_attribute\": \"all\",",
-											"            \"id\": \"a2089ab5-92dd-4def-ba2e-c10cb0893f4d\",",
-											"            \"name\": \"aggr\",",
-											"            \"residence\": null,",
-											"            \"schema\": \"call\",",
-											"            \"attributes\": [",
-											"                {",
-											"                    \"attribute\": \"breed_id\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"age\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"__createdtime__\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"adorable\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"all\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"dog_name\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"owner_name\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"weight_lbs\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"__updatedtime__\"",
-											"                }",
-											"            ],",
-											"            \"record_count\": 11",
-											"        }",
-											"    },",
-											"    \"other\": {",
-											"        \"owner\": {",
-											"            \"__createdtime__\": 1592596204604,",
-											"            \"__updatedtime__\": 1592596204604,",
-											"            \"hash_attribute\": \"id\",",
-											"            \"id\": \"cc68da26-fdb6-4c35-bf6b-dcfcc014b4bf\",",
-											"            \"name\": \"owner\",",
-											"            \"residence\": null,",
-											"            \"schema\": \"other\",",
-											"            \"attributes\": [",
-											"                {",
-											"                    \"attribute\": \"__createdtime__\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"name\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"id\"",
-											"                },",
-											"                {",
-											"                    \"attribute\": \"__updatedtime__\"",
-											"                }",
-											"            ],",
-											"            \"record_count\": 4",
-											"        }",
-											"    }",
-											"}",
-											"",
-											"let json_data = pm.response.json();",
-											"let attribute_found = true;",
-											"let schema_exists = false;",
-											"let schema_name = pm.environment.get(\"drop_schema\")",
-											"for (let schema in expected_result) {",
-											"    if (schema === schema_name) {",
-											"        schema_exists = true;",
-											"        break;",
-											"    }",
-											"    for (let table in expected_result[schema]) {",
-											"        let json_data_attr_array = json_data[schema][table][\"attributes\"].map(obj => obj.attribute);",
-											"        expected_result[schema][table].attributes.forEach((value) => {",
-											"            if (!json_data_attr_array.includes(value.attribute)) {",
-											"                attribute_found = false;",
-											"                console.log(value.attribute);",
-											"            }",
-											"        });",
-											"    }",
-											"}",
-											"",
-											"pm.test(\"Test schema does not exist\", function () {",
-											"    pm.expect(schema_exists).to.eql(false);",
+											"pm.test(\"Status code is 404\", function () {",
+											"    pm.response.to.have.status(404);",
 											"});",
 											"",
-											"pm.test(\"Test attributes are as expected\", function () {",
-											"    pm.expect(attribute_found).to.eql(true)",
+											"pm.test(\"Schema does not exist error returned\", () =>{",
+											"     var jsonData = pm.response.json();",
+											"     pm.expect(jsonData.error).to.eql(\"Schema 'drop_schema' does not exist\");",
 											"});"
 										],
 										"type": "text/javascript"
@@ -40609,7 +40763,7 @@
 								],
 								"body": {
 									"mode": "raw",
-									"raw": "{\n\t\"operation\":\"describe_all\"\n}"
+									"raw": "{\n\t\"operation\":\"describe_schema\",\n    \"schema\": \"{{drop_schema}}\"\n}"
 								},
 								"url": {
 									"raw": "{{host}}:{{port}}",
@@ -40645,7 +40799,7 @@
 									"listen": "prerequest",
 									"script": {
 										"exec": [
-											"setTimeout(()=>{}, 200);"
+											"setTimeout(()=>{}, 1000);"
 										],
 										"type": "text/javascript"
 									}
@@ -40778,951 +40932,25 @@
 									"listen": "test",
 									"script": {
 										"exec": [
-											"// This code loops through the response from describe all and compares ",
-											"// the attributes to expected result variable below. ",
-											"// If you create tests that modify schema/table/attributes you should update ‘expected_result’",
-											"let expected_result = {",
-											"    \"dev\": {",
-											"        \"time_functions\": {",
-											"            \"__createdtime__\": 1592596204301,",
-											"            \"__updatedtime__\": 1592596204301,",
-											"            \"hash_attribute\": \"id\",",
-											"            \"id\": \"079c4677-fc50-4a6c-bd00-21646f09ece1\",",
-											"            \"name\": \"time_functions\",",
-											"            \"residence\": null,",
-											"            \"schema\": \"dev\",",
-											"            \"attributes\": [{",
-											"                \"attribute\": \"getdate\"",
-											"            }, {",
-											"                \"attribute\": \"__updatedtime__\"",
-											"            }, {",
-											"                \"attribute\": \"now\"",
-											"            }, {",
-											"                \"attribute\": \"__createdtime__\"",
-											"            }, {",
-											"                \"attribute\": \"today\"",
-											"            }, {",
-											"                \"attribute\": \"tomorrow_epoch\"",
-											"            }, {",
-											"                \"attribute\": \"server_time\"",
-											"            }, {",
-											"                \"attribute\": \"c_timestamp\"",
-											"            }, {",
-											"                \"attribute\": \"c_time\"",
-											"            }, {",
-											"                \"attribute\": \"id\"",
-											"            }, {",
-											"                \"attribute\": \"sub_3_years\"",
-											"            }, {",
-											"                \"attribute\": \"add_day\"",
-											"            }, {",
-											"                \"attribute\": \"offset_utc\"",
-											"            }, {",
-											"                \"attribute\": \"c_date\"",
-											"            }],",
-											"            \"record_count\": 2",
-											"        },",
-											"        \"owner\": {",
-											"            \"__createdtime__\": 1592596204432,",
-											"            \"__updatedtime__\": 1592596204432,",
-											"            \"hash_attribute\": \"id\",",
-											"            \"id\": \"162d1334-54b3-42e9-95e9-bf33d4c50522\",",
-											"            \"name\": \"owner\",",
-											"            \"residence\": null,",
-											"            \"schema\": \"dev\",",
-											"            \"attributes\": [{",
-											"                \"attribute\": \"__createdtime__\"",
-											"            }, {",
-											"                \"attribute\": \"name\"",
-											"            }, {",
-											"                \"attribute\": \"__updatedtime__\"",
-											"            }, {",
-											"                \"attribute\": \"id\"",
-											"            }],",
-											"            \"record_count\": 4",
-											"        },",
-											"        \"long_text\": {",
-											"            \"__createdtime__\": 1592596203947,",
-											"            \"__updatedtime__\": 1592596203947,",
-											"            \"hash_attribute\": \"id\",",
-											"            \"id\": \"18638a1e-566a-4747-9272-9f5834b63e72\",",
-											"            \"name\": \"long_text\",",
-											"            \"residence\": null,",
-											"            \"schema\": \"dev\",",
-											"            \"attributes\": [{",
-											"                \"attribute\": \"__createdtime__\"",
-											"            }, {",
-											"                \"attribute\": \"id\"",
-											"            }, {",
-											"                \"attribute\": \"__updatedtime__\"",
-											"            }, {",
-											"                \"attribute\": \"remarks\"",
-											"            }],",
-											"            \"record_count\": 25",
-											"        },",
-											"        \"AttributeDropTest\": {",
-											"            \"__createdtime__\": 1592596204025,",
-											"            \"__updatedtime__\": 1592596204025,",
-											"            \"hash_attribute\": \"hashid\",",
-											"            \"id\": \"21508c60-a072-455b-abfa-5d0bbbb1ba3d\",",
-											"            \"name\": \"AttributeDropTest\",",
-											"            \"residence\": null,",
-											"            \"schema\": \"dev\",",
-											"            \"attributes\": [{",
-											"                \"attribute\": \"another_attribute\"",
-											"            }, {",
-											"                \"attribute\": \"hashid\"",
-											"            }, {",
-											"                \"attribute\": \"__updatedtime__\"",
-											"            }, {",
-											"                \"attribute\": \"some_attribute\"",
-											"            }, {",
-											"                \"attribute\": \"__createdtime__\"",
-											"            }],",
-											"            \"record_count\": 2",
-											"        },",
-											"        \"invalid_attribute\": {",
-											"            \"__createdtime__\": 1592596204120,",
-											"            \"__updatedtime__\": 1592596204120,",
-											"            \"hash_attribute\": \"id\",",
-											"            \"id\": \"3703db05-107f-4162-9781-4432a479e260\",",
-											"            \"name\": \"invalid_attribute\",",
-											"            \"residence\": null,",
-											"            \"schema\": \"dev\",",
-											"            \"attributes\": [{",
-											"                \"attribute\": \"some_attribute2\"",
-											"            }, {",
-											"                \"attribute\": \"some_attribute\"",
-											"            }, {",
-											"                \"attribute\": \"some_attribute4\"",
-											"            }, {",
-											"                \"attribute\": \"id\"",
-											"            }, {",
-											"                \"attribute\": \"$ome-attribute3\"",
-											"            }, {",
-											"                \"attribute\": \"some-attribute3\"",
-											"            }, {",
-											"                \"attribute\": \"some_attribute1\"",
-											"            }, {",
-											"                \"attribute\": \"another_attribute\"",
-											"            }, {",
-											"                \"attribute\": \"__updatedtime__\"",
-											"            }, {",
-											"                \"attribute\": \"__createdtime__\"",
-											"            }],",
-											"            \"record_count\": 2",
-											"        },",
-											"        \"remarks_blob\": {",
-											"            \"__createdtime__\": 1592596204161,",
-											"            \"__updatedtime__\": 1592596204161,",
-											"            \"hash_attribute\": \"id\",",
-											"            \"id\": \"84837373-a661-4f70-b4a0-e524cc5bc19e\",",
-											"            \"name\": \"remarks_blob\",",
-											"            \"residence\": null,",
-											"            \"schema\": \"dev\",",
-											"            \"attributes\": [{",
-											"                \"attribute\": \"id\"",
-											"            }, {",
-											"                \"attribute\": \"__createdtime__\"",
-											"            }, {",
-											"                \"attribute\": \"__updatedtime__\"",
-											"            }, {",
-											"                \"attribute\": \"length\"",
-											"            }, {",
-											"                \"attribute\": \"remarks\"",
-											"            }],",
-											"            \"record_count\": 11",
-											"        },",
-											"        \"rando\": {",
-											"            \"__createdtime__\": 1592596204559,",
-											"            \"__updatedtime__\": 1592596204559,",
-											"            \"hash_attribute\": \"id\",",
-											"            \"id\": \"92fab46a-8eda-4855-bd9e-931728605837\",",
-											"            \"name\": \"rando\",",
-											"            \"residence\": null,",
-											"            \"schema\": \"dev\",",
-											"            \"attributes\": [{",
-											"                \"attribute\": \"__updatedtime__\"",
-											"            }, {",
-											"                \"attribute\": \"active\"",
-											"            }, {",
-											"                \"attribute\": \"id\"",
-											"            }, {",
-											"                \"attribute\": \"name\"",
-											"            }, {",
-											"                \"attribute\": \"__createdtime__\"",
-											"            }],",
-											"            \"record_count\": 4",
-											"        },",
-											"        \"dog\": {",
-											"            \"__createdtime__\": 1592596204346,",
-											"            \"__updatedtime__\": 1592596204346,",
-											"            \"hash_attribute\": \"id\",",
-											"            \"id\": \"a74b18a8-2f6d-43f0-a92e-871eee9fed92\",",
-											"            \"name\": \"dog\",",
-											"            \"residence\": null,",
-											"            \"schema\": \"dev\",",
-											"            \"attributes\": [{",
-											"                \"attribute\": \"breed_id\"",
-											"            }, {",
-											"                \"attribute\": \"__createdtime__\"",
-											"            }, {",
-											"                \"attribute\": \"__updatedtime__\"",
-											"            }, {",
-											"                \"attribute\": \"owner_id\"",
-											"            }, {",
-											"                \"attribute\": \"adorable\"",
-											"            }, {",
-											"                \"attribute\": \"age\"",
-											"            }, {",
-											"                \"attribute\": \"weight_lbs\"",
-											"            }, {",
-											"                \"attribute\": \"id\"",
-											"            }, {",
-											"                \"attribute\": \"dog_name\"",
-											"            }],",
-											"            \"record_count\": 9",
-											"        },",
-											"        \"credits\": {",
-											"            \"__createdtime__\": 1592596204517,",
-											"            \"__updatedtime__\": 1592596204517,",
-											"            \"hash_attribute\": \"movie_id\",",
-											"            \"id\": \"ae36101c-cfbe-4500-aade-37f84a2e819e\",",
-											"            \"name\": \"credits\",",
-											"            \"residence\": null,",
-											"            \"schema\": \"dev\",",
-											"            \"attributes\": [{",
-											"                \"attribute\": \"crew\"",
-											"            }, {",
-											"                \"attribute\": \"__updatedtime__\"",
-											"            }, {",
-											"                \"attribute\": \"__createdtime__\"",
-											"            }, {",
-											"                \"attribute\": \"movie_id\"",
-											"            }, {",
-											"                \"attribute\": \"cast\"",
-											"            }, {",
-											"                \"attribute\": \"title\"",
-											"            }],",
-											"            \"record_count\": 4803",
-											"        },",
-											"        \"movie\": {",
-											"            \"__createdtime__\": 1592596204475,",
-											"            \"__updatedtime__\": 1592596204475,",
-											"            \"hash_attribute\": \"id\",",
-											"            \"id\": \"d626b6d1-9fac-4b51-b66e-a5b01c202f80\",",
-											"            \"name\": \"movie\",",
-											"            \"residence\": null,",
-											"            \"schema\": \"dev\",",
-											"            \"attributes\": [{",
-											"                \"attribute\": \"vote_average\"",
-											"            }, {",
-											"                \"attribute\": \"title\"",
-											"            }, {",
-											"                \"attribute\": \"original_title\"",
-											"            }, {",
-											"                \"attribute\": \"production_countries\"",
-											"            }, {",
-											"                \"attribute\": \"vote_count\"",
-											"            }, {",
-											"                \"attribute\": \"budget\"",
-											"            }, {",
-											"                \"attribute\": \"popularity\"",
-											"            }, {",
-											"                \"attribute\": \"id\"",
-											"            }, {",
-											"                \"attribute\": \"__updatedtime__\"",
-											"            }, {",
-											"                \"attribute\": \"spoken_languages\"",
-											"            }, {",
-											"                \"attribute\": \"overview\"",
-											"            }, {",
-											"                \"attribute\": \"revenue\"",
-											"            }, {",
-											"                \"attribute\": \"keywords\"",
-											"            }, {",
-											"                \"attribute\": \"homepage\"",
-											"            }, {",
-											"                \"attribute\": \"production_companies\"",
-											"            }, {",
-											"                \"attribute\": \"runtime\"",
-											"            }, {",
-											"                \"attribute\": \"original_language\"",
-											"            }, {",
-											"                \"attribute\": \"genres\"",
-											"            }, {",
-											"                \"attribute\": \"release_date\"",
-											"            }, {",
-											"                \"attribute\": \"__createdtime__\"",
-											"            }, {",
-											"                \"attribute\": \"status\"",
-											"            }, {",
-											"                \"attribute\": \"tagline\"",
-											"            }],",
-											"            \"record_count\": 4803",
-											"        },",
-											"        \"sql_function\": {",
-											"            \"__createdtime__\": 1592596204693,",
-											"            \"__updatedtime__\": 1592596204693,",
-											"            \"hash_attribute\": \"id\",",
-											"            \"id\": \"d9ba16fe-f6e2-4547-be8f-a36b72d07143\",",
-											"            \"name\": \"sql_function\",",
-											"            \"residence\": null,",
-											"            \"schema\": \"dev\",",
-											"            \"attributes\": [{",
-											"                \"attribute\": \"rando\"",
-											"            }, {",
-											"                \"attribute\": \"week_day\"",
-											"            }, {",
-											"                \"attribute\": \"id\"",
-											"            }, {",
-											"                \"attribute\": \"__updatedtime__\"",
-											"            }, {",
-											"                \"attribute\": \"upper_week_day\"",
-											"            }, {",
-											"                \"attribute\": \"__createdtime__\"",
-											"            }],",
-											"            \"record_count\": 2",
-											"        },",
-											"        \"books\": {",
-											"            \"__createdtime__\": 1592596204204,",
-											"            \"__updatedtime__\": 1592596204204,",
-											"            \"hash_attribute\": \"id\",",
-											"            \"id\": \"e661164b-fd70-4267-833a-34511a2d0260\",",
-											"            \"name\": \"books\",",
-											"            \"residence\": null,",
-											"            \"schema\": \"dev\",",
-											"            \"attributes\": [{",
-											"                \"attribute\": \"original_publication_year\"",
-											"            }, {",
-											"                \"attribute\": \"authors\"",
-											"            }, {",
-											"                \"attribute\": \"original_title\"",
-											"            }, {",
-											"                \"attribute\": \"small_image_url\"",
-											"            }, {",
-											"                \"attribute\": \"image_url\"",
-											"            }, {",
-											"                \"attribute\": \"ratings_1\"",
-											"            }, {",
-											"                \"attribute\": \"language_code\"",
-											"            }, {",
-											"                \"attribute\": \"ratings_count\"",
-											"            }, {",
-											"                \"attribute\": \"ratings_2\"",
-											"            }, {",
-											"                \"attribute\": \"ratings_5\"",
-											"            }, {",
-											"                \"attribute\": \"work_text_reviews_count\"",
-											"            }, {",
-											"                \"attribute\": \"books_count\"",
-											"            }, {",
-											"                \"attribute\": \"average_rating\"",
-											"            }, {",
-											"                \"attribute\": \"__createdtime__\"",
-											"            }, {",
-											"                \"attribute\": \"ratings_3\"",
-											"            }, {",
-											"                \"attribute\": \"__updatedtime__\"",
-											"            }, {",
-											"                \"attribute\": \"nytimes_best_seller\"",
-											"            }, {",
-											"                \"attribute\": \"id\"",
-											"            }, {",
-											"                \"attribute\": \"ratings_4\"",
-											"            }, {",
-											"                \"attribute\": \"work_ratings_count\"",
-											"            }, {",
-											"                \"attribute\": \"title\"",
-											"            }],",
-											"            \"record_count\": 50",
-											"        },",
-											"        \"breed\": {",
-											"            \"__createdtime__\": 1592596204391,",
-											"            \"__updatedtime__\": 1592596204391,",
-											"            \"hash_attribute\": \"id\",",
-											"            \"id\": \"e79574ee-aff9-442b-8286-eafde771259f\",",
-											"            \"name\": \"breed\",",
-											"            \"residence\": null,",
-											"            \"schema\": \"dev\",",
-											"            \"attributes\": [{",
-											"                \"attribute\": \"id\"",
-											"            }, {",
-											"                \"attribute\": \"name\"",
-											"            }, {",
-											"                \"attribute\": \"__updatedtime__\"",
-											"            }, {",
-											"                \"attribute\": \"image\"",
-											"            }, {",
-											"                \"attribute\": \"__createdtime__\"",
-											"            }, {",
-											"                \"attribute\": \"section\"",
-											"            }, {",
-											"                \"attribute\": \"country\"",
-											"            }],",
-											"            \"record_count\": 350",
-											"        },",
-											"        \"ratings\": {",
-											"            \"__createdtime__\": 1592596204258,",
-											"            \"__updatedtime__\": 1592596204258,",
-											"            \"hash_attribute\": \"id\",",
-											"            \"id\": \"ebc43530-fcab-4e5a-a168-eddf07257df7\",",
-											"            \"name\": \"ratings\",",
-											"            \"residence\": null,",
-											"            \"schema\": \"dev\",",
-											"            \"attributes\": [{",
-											"                \"attribute\": \"id\"",
-											"            }, {",
-											"                \"attribute\": \"rating\"",
-											"            }, {",
-											"                \"attribute\": \"book_id\"",
-											"            }, {",
-											"                \"attribute\": \"__createdtime__\"",
-											"            }, {",
-											"                \"attribute\": \"user_id\"",
-											"            }, {",
-											"                \"attribute\": \"__updatedtime__\"",
-											"            }],",
-											"            \"record_count\": 5000",
-											"        }",
-											"    },",
-											"    \"northnwd\": {",
-											"        \"url_csv_data\": {",
-											"            \"__createdtime__\": 1592596240984,",
-											"            \"__updatedtime__\": 1592596240984,",
-											"            \"hash_attribute\": \"id\",",
-											"            \"id\": \"07f45132-af85-4738-8cbb-cc0dfb2b6eac\",",
-											"            \"name\": \"url_csv_data\",",
-											"            \"residence\": null,",
-											"            \"schema\": \"northnwd\",",
-											"            \"attributes\": [{",
-											"                \"attribute\": \"section\"",
-											"            }, {",
-											"                \"attribute\": \"id\"",
-											"            }, {",
-											"                \"attribute\": \"image\"",
-											"            }, {",
-											"                \"attribute\": \"__updatedtime__\"",
-											"            }, {",
-											"                \"attribute\": \"country\"",
-											"            }, {",
-											"                \"attribute\": \"name\"",
-											"            }, {",
-											"                \"attribute\": \"__createdtime__\"",
-											"            }],",
-											"            \"record_count\": 350",
-											"        },",
-											"        \"suppliers\": {",
-											"            \"__createdtime__\": 1592596203524,",
-											"            \"__updatedtime__\": 1592596203524,",
-											"            \"hash_attribute\": \"supplierid\",",
-											"            \"id\": \"143fc67f-a08b-4582-a953-6b17b65ea6a1\",",
-											"            \"name\": \"suppliers\",",
-											"            \"residence\": null,",
-											"            \"schema\": \"northnwd\",",
-											"            \"attributes\": [{",
-											"                \"attribute\": \"country\"",
-											"            }, {",
-											"                \"attribute\": \"postalcode\"",
-											"            }, {",
-											"                \"attribute\": \"__createdtime__\"",
-											"            }, {",
-											"                \"attribute\": \"fax\"",
-											"            }, {",
-											"                \"attribute\": \"address\"",
-											"            }, {",
-											"                \"attribute\": \"supplierid\"",
-											"            }, {",
-											"                \"attribute\": \"contacttitle\"",
-											"            }, {",
-											"                \"attribute\": \"contactname\"",
-											"            }, {",
-											"                \"attribute\": \"city\"",
-											"            }, {",
-											"                \"attribute\": \"__updatedtime__\"",
-											"            }, {",
-											"                \"attribute\": \"companyname\"",
-											"            }, {",
-											"                \"attribute\": \"homepage\"",
-											"            }, {",
-											"                \"attribute\": \"phone\"",
-											"            }, {",
-											"                \"attribute\": \"region\"",
-											"            }],",
-											"            \"record_count\": 29",
-											"        },",
-											"        \"employeeterritories\": {",
-											"            \"__createdtime__\": 1592596203830,",
-											"            \"__updatedtime__\": 1592596203830,",
-											"            \"hash_attribute\": \"employeeid\",",
-											"            \"id\": \"2d96d532-aff5-400c-9ed5-f2515ee79366\",",
-											"            \"name\": \"employeeterritories\",",
-											"            \"residence\": null,",
-											"            \"schema\": \"northnwd\",",
-											"            \"attributes\": [{",
-											"                \"attribute\": \"__createdtime__\"",
-											"            }, {",
-											"                \"attribute\": \"employeeid\"",
-											"            }, {",
-											"                \"attribute\": \"skip\"",
-											"            }, {",
-											"                \"attribute\": \"__updatedtime__\"",
-											"            }, {",
-											"                \"attribute\": \"territoryid\"",
-											"            }],",
-											"            \"record_count\": 9",
-											"        },",
-											"        \"customers\": {",
-											"            \"__createdtime__\": 1592596203364,",
-											"            \"__updatedtime__\": 1592596203364,",
-											"            \"hash_attribute\": \"customerid\",",
-											"            \"id\": \"39331e86-bf9a-4089-9ee7-6fe4aa3753e8\",",
-											"            \"name\": \"customers\",",
-											"            \"residence\": null,",
-											"            \"schema\": \"northnwd\",",
-											"            \"attributes\": [{",
-											"                \"attribute\": \"array\"",
-											"            }, {",
-											"                \"attribute\": \"fax\"",
-											"            }, {",
-											"                \"attribute\": \"companyname\"",
-											"            }, {",
-											"                \"attribute\": \"phone\"",
-											"            }, {",
-											"                \"attribute\": \"country\"",
-											"            }, {",
-											"                \"attribute\": \"__createdtime__\"",
-											"            }, {",
-											"                \"attribute\": \"object\"",
-											"            }, {",
-											"                \"attribute\": \"__updatedtime__\"",
-											"            }, {",
-											"                \"attribute\": \"city\"",
-											"            }, {",
-											"                \"attribute\": \"postalcode\"",
-											"            }, {",
-											"                \"attribute\": \"contacttitle\"",
-											"            }, {",
-											"                \"attribute\": \"customerid\"",
-											"            }, {",
-											"                \"attribute\": \"address\"",
-											"            }, {",
-											"                \"attribute\": \"region\"",
-											"            }, {",
-											"                \"attribute\": \"contactmame\"",
-											"            }],",
-											"            \"record_count\": 95",
-											"        },",
-											"        \"order_details\": {",
-											"            \"__createdtime__\": 1592596203867,",
-											"            \"__updatedtime__\": 1592596203867,",
-											"            \"hash_attribute\": \"orderdetailid\",",
-											"            \"id\": \"40a4cf2c-663a-43f9-9e96-2b731bb02cd2\",",
-											"            \"name\": \"order_details\",",
-											"            \"residence\": null,",
-											"            \"schema\": \"northnwd\",",
-											"            \"attributes\": [{",
-											"                \"attribute\": \"__createdtime__\"",
-											"            }, {",
-											"                \"attribute\": \"orderid\"",
-											"            }, {",
-											"                \"attribute\": \"orderdetailid\"",
-											"            }, {",
-											"                \"attribute\": \"__updatedtime__\"",
-											"            }, {",
-											"                \"attribute\": \"unitprice\"",
-											"            }, {",
-											"                \"attribute\": \"discount\"",
-											"            }, {",
-											"                \"attribute\": \"productid\"",
-											"            }, {",
-											"                \"attribute\": \"quantity\"",
-											"            }],",
-											"            \"record_count\": 2155",
-											"        },",
-											"        \"url_csv_no_data\": {",
-											"            \"__createdtime__\": 1592596244007,",
-											"            \"__updatedtime__\": 1592596244007,",
-											"            \"hash_attribute\": \"id\",",
-											"            \"id\": \"542a0a6b-9ddd-494d-bc83-bf6dda72a6b1\",",
-											"            \"name\": \"url_csv_no_data\",",
-											"            \"residence\": null,",
-											"            \"schema\": \"northnwd\",",
-											"            \"attributes\": [{",
-											"                \"attribute\": \"id\"",
-											"            }, {",
-											"                \"attribute\": \"__createdtime__\"",
-											"            }, {",
-											"                \"attribute\": \"__updatedtime__\"",
-											"            }],",
-											"            \"record_count\": 0",
-											"        },",
-											"        \"products\": {",
-											"            \"__createdtime__\": 1592596203905,",
-											"            \"__updatedtime__\": 1592596203905,",
-											"            \"hash_attribute\": \"productid\",",
-											"            \"id\": \"5fee5f0a-52f7-40a3-ac1b-a6554b7e99a9\",",
-											"            \"name\": \"products\",",
-											"            \"residence\": null,",
-											"            \"schema\": \"northnwd\",",
-											"            \"attributes\": [{",
-											"                \"attribute\": \"__updatedtime__\"",
-											"            }, {",
-											"                \"attribute\": \"productid\"",
-											"            }, {",
-											"                \"attribute\": \"unitsnnorder\"",
-											"            }, {",
-											"                \"attribute\": \"productname\"",
-											"            }, {",
-											"                \"attribute\": \"discontinued\"",
-											"            }, {",
-											"                \"attribute\": \"__createdtime__\"",
-											"            }, {",
-											"                \"attribute\": \"reorderlevel\"",
-											"            }, {",
-											"                \"attribute\": \"supplierid\"",
-											"            }, {",
-											"                \"attribute\": \"quantityperunit\"",
-											"            }, {",
-											"                \"attribute\": \"unitsinstock\"",
-											"            }, {",
-											"                \"attribute\": \"unitprice\"",
-											"            }, {",
-											"                \"attribute\": \"categoryid\"",
-											"            }],",
-											"            \"record_count\": 77",
-											"        },",
-											"        \"orders\": {",
-											"            \"__createdtime__\": 1592596203663,",
-											"            \"__updatedtime__\": 1592596203663,",
-											"            \"hash_attribute\": \"orderid\",",
-											"            \"id\": \"793135d4-a7f7-452b-a474-f154b0299a05\",",
-											"            \"name\": \"orders\",",
-											"            \"residence\": null,",
-											"            \"schema\": \"northnwd\",",
-											"            \"attributes\": [{",
-											"                \"attribute\": \"shipvia\"",
-											"            }, {",
-											"                \"attribute\": \"shipregion\"",
-											"            }, {",
-											"                \"attribute\": \"shipcountry\"",
-											"            }, {",
-											"                \"attribute\": \"orderid\"",
-											"            }, {",
-											"                \"attribute\": \"__createdtime__\"",
-											"            }, {",
-											"                \"attribute\": \"shipname\"",
-											"            }, {",
-											"                \"attribute\": \"shipaddress\"",
-											"            }, {",
-											"                \"attribute\": \"__updatedtime__\"",
-											"            }, {",
-											"                \"attribute\": \"orderdate\"",
-											"            }, {",
-											"                \"attribute\": \"shippeddate\"",
-											"            }, {",
-											"                \"attribute\": \"employeeid\"",
-											"            }, {",
-											"                \"attribute\": \"freight\"",
-											"            }, {",
-											"                \"attribute\": \"requireddate\"",
-											"            }, {",
-											"                \"attribute\": \"shipPostalcode\"",
-											"            }, {",
-											"                \"attribute\": \"customerid\"",
-											"            }, {",
-											"                \"attribute\": \"shipcity\"",
-											"            }],",
-											"            \"record_count\": 830",
-											"        },",
-											"        \"employees\": {",
-											"            \"__createdtime__\": 1592596203623,",
-											"            \"__updatedtime__\": 1592596203623,",
-											"            \"hash_attribute\": \"employeeid\",",
-											"            \"id\": \"8f0c8beb-9f60-4431-a086-d0ff04a8ef56\",",
-											"            \"name\": \"employees\",",
-											"            \"residence\": null,",
-											"            \"schema\": \"northnwd\",",
-											"            \"attributes\": [{",
-											"                \"attribute\": \"city\"",
-											"            }, {",
-											"                \"attribute\": \"photopath\"",
-											"            }, {",
-											"                \"attribute\": \"birthdate\"",
-											"            }, {",
-											"                \"attribute\": \"test_record\"",
-											"            }, {",
-											"                \"attribute\": \"skip\"",
-											"            }, {",
-											"                \"attribute\": \"reportsto\"",
-											"            }, {",
-											"                \"attribute\": \"employeeid\"",
-											"            }, {",
-											"                \"attribute\": \"firstname\"",
-											"            }, {",
-											"                \"attribute\": \"notes\"",
-											"            }, {",
-											"                \"attribute\": \"__updatedtime__\"",
-											"            }, {",
-											"                \"attribute\": \"address\"",
-											"            }, {",
-											"                \"attribute\": \"lastname\"",
-											"            }, {",
-											"                \"attribute\": \"postalCode\"",
-											"            }, {",
-											"                \"attribute\": \"homephone\"",
-											"            }, {",
-											"                \"attribute\": \"region\"",
-											"            }, {",
-											"                \"attribute\": \"extension\"",
-											"            }, {",
-											"                \"attribute\": 4289",
-											"            }, {",
-											"                \"attribute\": \"__createdtime__\"",
-											"            }, {",
-											"                \"attribute\": \"country\"",
-											"            }, {",
-											"                \"attribute\": \"hireDate\"",
-											"            }, {",
-											"                \"attribute\": \"title\"",
-											"            }, {",
-											"                \"attribute\": \"titleofcourtesy\"",
-											"            }],",
-											"            \"record_count\": 13",
-											"        },",
-											"        \"shippers\": {",
-											"            \"__createdtime__\": 1592596203789,",
-											"            \"__updatedtime__\": 1592596203789,",
-											"            \"hash_attribute\": \"shipperid\",",
-											"            \"id\": \"a30b9fb8-b433-4e10-94f7-b65718b0a066\",",
-											"            \"name\": \"shippers\",",
-											"            \"residence\": null,",
-											"            \"schema\": \"northnwd\",",
-											"            \"attributes\": [{",
-											"                \"attribute\": \"shipperid\"",
-											"            }, {",
-											"                \"attribute\": \"phone\"",
-											"            }, {",
-											"                \"attribute\": \"__updatedtime__\"",
-											"            }, {",
-											"                \"attribute\": \"__createdtime__\"",
-											"            }, {",
-											"                \"attribute\": \"companyname\"",
-											"            }],",
-											"            \"record_count\": 3",
-											"        },",
-											"        \"territories\": {",
-											"            \"__createdtime__\": 1592596203709,",
-											"            \"__updatedtime__\": 1592596203709,",
-											"            \"hash_attribute\": \"territoryid\",",
-											"            \"id\": \"aebd9ccb-2c2f-47d9-b0d7-b29e4bc93810\",",
-											"            \"name\": \"territories\",",
-											"            \"residence\": null,",
-											"            \"schema\": \"northnwd\",",
-											"            \"attributes\": [{",
-											"                \"attribute\": \"territorydescription\"",
-											"            }, {",
-											"                \"attribute\": \"__createdtime__\"",
-											"            }, {",
-											"                \"attribute\": \"territoryid\"",
-											"            }, {",
-											"                \"attribute\": \"regionid\"",
-											"            }, {",
-											"                \"attribute\": \"__updatedtime__\"",
-											"            }],",
-											"            \"record_count\": 56",
-											"        },",
-											"        \"region\": {",
-											"            \"__createdtime__\": 1592596203565,",
-											"            \"__updatedtime__\": 1592596203565,",
-											"            \"hash_attribute\": \"regionid\",",
-											"            \"id\": \"e1bb4a56-79e9-4219-abe1-58f6dbd63f03\",",
-											"            \"name\": \"region\",",
-											"            \"residence\": null,",
-											"            \"schema\": \"northnwd\",",
-											"            \"attributes\": [{",
-											"                \"attribute\": \"__createdtime__\"",
-											"            }, {",
-											"                \"attribute\": \"regionid\"",
-											"            }, {",
-											"                \"attribute\": \"regiondescription\"",
-											"            }, {",
-											"                \"attribute\": \" regiondescription\"",
-											"            }, {",
-											"                \"attribute\": \"__updatedtime__\"",
-											"            }],",
-											"            \"record_count\": 6",
-											"        },",
-											"        \"categories\": {",
-											"            \"__createdtime__\": 1592596203750,",
-											"            \"__updatedtime__\": 1592596203750,",
-											"            \"hash_attribute\": \"categoryid\",",
-											"            \"id\": \"e613fd24-77bf-46b3-b7ec-28082ff7e3bf\",",
-											"            \"name\": \"categories\",",
-											"            \"residence\": null,",
-											"            \"schema\": \"northnwd\",",
-											"            \"attributes\": [{",
-											"                \"attribute\": \"__updatedtime__\"",
-											"            }, {",
-											"                \"attribute\": \"__createdtime__\"",
-											"            }, {",
-											"                \"attribute\": \"categoryname\"",
-											"            }, {",
-											"                \"attribute\": \"picture\"",
-											"            }, {",
-											"                \"attribute\": \"description\"",
-											"            }, {",
-											"                \"attribute\": \"categoryid\"",
-											"            }],",
-											"            \"record_count\": 6",
-											"        }",
-											"    },",
-											"    \"test_delete_before\": {",
-											"        \"address\": {",
-											"            \"__createdtime__\": 1592596373941,",
-											"            \"__updatedtime__\": 1592596373941,",
-											"            \"hash_attribute\": \"id\",",
-											"            \"id\": \"70399c96-528d-4ac5-8134-2a25f2d3bd22\",",
-											"            \"name\": \"address\",",
-											"            \"residence\": null,",
-											"            \"schema\": \"test_delete_before\",",
-											"            \"attributes\": [{",
-											"                \"attribute\": \"__createdtime__\"",
-											"            }, {",
-											"                \"attribute\": \"__updatedtime__\"",
-											"            }, {",
-											"                \"attribute\": \"id\"",
-											"            }, {",
-											"                \"attribute\": \"address\"",
-											"            }],",
-											"            \"record_count\": 3",
-											"        }",
-											"    },",
-											"    \"another\": {",
-											"        \"breed\": {",
-											"            \"__createdtime__\": 1592596204649,",
-											"            \"__updatedtime__\": 1592596204649,",
-											"            \"hash_attribute\": \"id\",",
-											"            \"id\": \"898c6c6c-7b50-40f3-bbc3-1e90b79440ff\",",
-											"            \"name\": \"breed\",",
-											"            \"residence\": null,",
-											"            \"schema\": \"another\",",
-											"            \"attributes\": [{",
-											"                \"attribute\": \"__createdtime__\"",
-											"            }, {",
-											"                \"attribute\": \"section\"",
-											"            }, {",
-											"                \"attribute\": \"country\"",
-											"            }, {",
-											"                \"attribute\": \"id\"",
-											"            }, {",
-											"                \"attribute\": \"name\"",
-											"            }, {",
-											"                \"attribute\": \"image\"",
-											"            }, {",
-											"                \"attribute\": \"__updatedtime__\"",
-											"            }],",
-											"            \"record_count\": 350",
-											"        }",
-											"    },",
-											"    \"call\": {",
-											"        \"aggr\": {",
-											"            \"__createdtime__\": 1592596203986,",
-											"            \"__updatedtime__\": 1592596203986,",
-											"            \"hash_attribute\": \"all\",",
-											"            \"id\": \"a2089ab5-92dd-4def-ba2e-c10cb0893f4d\",",
-											"            \"name\": \"aggr\",",
-											"            \"residence\": null,",
-											"            \"schema\": \"call\",",
-											"            \"attributes\": [{",
-											"                \"attribute\": \"breed_id\"",
-											"            }, {",
-											"                \"attribute\": \"age\"",
-											"            }, {",
-											"                \"attribute\": \"__createdtime__\"",
-											"            }, {",
-											"                \"attribute\": \"adorable\"",
-											"            }, {",
-											"                \"attribute\": \"all\"",
-											"            }, {",
-											"                \"attribute\": \"dog_name\"",
-											"            }, {",
-											"                \"attribute\": \"owner_name\"",
-											"            }, {",
-											"                \"attribute\": \"weight_lbs\"",
-											"            }, {",
-											"                \"attribute\": \"__updatedtime__\"",
-											"            }],",
-											"            \"record_count\": 11",
-											"        }",
-											"    },",
-											"    \"other\": {",
-											"        \"owner\": {",
-											"            \"__createdtime__\": 1592596204604,",
-											"            \"__updatedtime__\": 1592596204604,",
-											"            \"hash_attribute\": \"id\",",
-											"            \"id\": \"cc68da26-fdb6-4c35-bf6b-dcfcc014b4bf\",",
-											"            \"name\": \"owner\",",
-											"            \"residence\": null,",
-											"            \"schema\": \"other\",",
-											"            \"attributes\": [{",
-											"                \"attribute\": \"__createdtime__\"",
-											"            }, {",
-											"                \"attribute\": \"name\"",
-											"            }, {",
-											"                \"attribute\": \"id\"",
-											"            }, {",
-											"                \"attribute\": \"__updatedtime__\"",
-											"            }],",
-											"            \"record_count\": 4",
-											"        }",
-											"    },",
-											"    \"drop_schema\": {",
-											"        \"drop_table\": {",
-											"            \"__createdtime__\": 1592596516112,",
-											"            \"__updatedtime__\": 1592596516112,",
-											"            \"hash_attribute\": \"id\",",
-											"            \"id\": \"f4f7f2ae-de40-4238-9c87-f76036227dd8\",",
-											"            \"name\": \"drop_table\",",
-											"            \"residence\": null,",
-											"            \"schema\": \"drop_schema\",",
-											"            \"attributes\": [{",
-											"                \"attribute\": \"__updatedtime__\"",
-											"            }, {",
-											"                \"attribute\": \"__createdtime__\"",
-											"            }, {",
-											"                \"attribute\": \"id\"",
-											"            }],",
-											"            \"record_count\": 0",
-											"        }",
-											"    }",
-											"}",
-											"",
-											"let json_data = pm.response.json();",
-											"let attribute_found = true;",
-											"let schema_exists = false;",
-											"let schema_name = pm.environment.get(\"drop_schema\")",
-											"for (let schema in expected_result) {",
-											"    if (schema === schema_name) {",
-											"        schema_exists = true;",
-											"    }",
-											"    for (let table in expected_result[schema]) {",
-											"        let json_data_attr_array = json_data[schema][table][\"attributes\"].map(obj => obj.attribute);",
-											"        expected_result[schema][table].attributes.forEach((value) => {",
-											"            if (!json_data_attr_array.includes(value.attribute)) {",
-											"                attribute_found = false;",
-											"                console.log(value.attribute);",
-											"            }",
-											"        });",
-											"    }",
-											"}",
-											"",
-											"pm.test(\"Test schema does exist\", function () {",
-											"    pm.expect(schema_exists).to.eql(true);",
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
 											"});",
 											"",
-											"pm.test(\"Test attributes are as expected\", function () {",
-											"    pm.expect(attribute_found).to.eql(true)",
+											"pm.test(\"Correct attributes are present\", () =>{",
+											"     let jsonData = pm.response.json();",
+											"     let expected_attributes = [",
+											"        {",
+											"            \"attribute\": \"__createdtime__\"",
+											"        },",
+											"        {",
+											"            \"attribute\": \"__updatedtime__\"",
+											"        },",
+											"        {",
+											"            \"attribute\": \"id\"",
+											"        }",
+											"    ]",
+											"",
+											"     pm.expect(jsonData.attributes).to.have.deep.members(expected_attributes);",
 											"});"
 										],
 										"type": "text/javascript"
@@ -41763,7 +40991,7 @@
 								],
 								"body": {
 									"mode": "raw",
-									"raw": "{\n\t\"operation\":\"describe_all\"\n}"
+									"raw": "{\n\t\"operation\":\"describe_table\",\n    \"schema\": \"{{drop_schema}}\",\n    \"table\": \"{{drop_table}}\"\n}"
 								},
 								"url": {
 									"raw": "{{host}}:{{port}}",
@@ -41831,6 +41059,414 @@
 								"body": {
 									"mode": "raw",
 									"raw": "{\n\t\"operation\":\"drop_schema\",\n\t\"schema\":\"{{drop_schema}}\"\n}\n"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "Create schema for wildcard test",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"pm.test(\"Status code is 200\", function () {\r",
+											"    pm.response.to.have.status(200);\r",
+											"});\r",
+											"\r",
+											"pm.test(\"Response from create schema is correct\", () =>{\r",
+											"     var jsonData = pm.response.json();\r",
+											"     pm.expect(jsonData.message).to.eql(\"schema 'h*rper%1' successfully created\")\r",
+											"});\r",
+											""
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"exec": [
+											"setTimeout(()=>{}, 200);"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"operation\":\"create_schema\",\n  \"schema\": \"h*rper%1\"\n}"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								},
+								"description": "This method is used to create a schema.  It like all other functions requires basic auth.  \n\nAttributes:\n\noperation (required) - must always be create_schema\n\nschema (required) - name of the schema you are creating"
+							},
+							"response": []
+						},
+						{
+							"name": "Drop wildcard schema",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"Response from drop table is correct\", () =>{",
+											"     var jsonData = pm.response.json();",
+											"     pm.expect(jsonData.message).to.eql(\"successfully deleted schema 'h*rper%1'\");",
+											"});",
+											""
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\t\"operation\":\"drop_schema\",\n\t\"schema\":\"h*rper%1\"\n}\n"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "Drop number table",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"Response from drop number table is correct\", () =>{",
+											"     var jsonData = pm.response.json();",
+											"     pm.expect(jsonData.message).to.eql(\"successfully deleted table '123.4'\");",
+											"});",
+											""
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\t\"operation\":\"drop_table\",\n\t\"schema\": \"123\",\n    \"table\": \"4\"\n}\n"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "Drop number number table",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"Response from drop number number table is correct\", () =>{",
+											"     var jsonData = pm.response.json();",
+											"     pm.expect(jsonData.message).to.eql(\"successfully deleted table '1123.1'\");",
+											"});",
+											""
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\t\"operation\":\"drop_table\",\n\t\"schema\": 1123,\n    \"table\": 1\n}\n"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "Drop number schema",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"Response from drop number schema is correct\", () =>{",
+											"     var jsonData = pm.response.json();",
+											"     pm.expect(jsonData.message).to.eql(\"successfully deleted schema '123'\");",
+											"});",
+											""
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\t\"operation\":\"drop_schema\",\n\t\"schema\":\"123\"\n}\n"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "Drop number number schema",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"Response from drop number number schema is correct\", () =>{",
+											"     var jsonData = pm.response.json();",
+											"     pm.expect(jsonData.message).to.eql(\"successfully deleted schema '1123'\");",
+											"});",
+											""
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\t\"operation\":\"drop_schema\",\n\t\"schema\":1123\n}\n"
 								},
 								"url": {
 									"raw": "{{host}}:{{port}}",
@@ -41982,7 +41618,7 @@
 									"//we want to test that the returned result is an empty array\"",
 									"pm.test(\"Verify records deleted\", function(){",
 									"    let jsonData = pm.response.json();",
-									"    pm.expect(Array.isArray(jsonData) && jsonData.length === 0);",
+									"    pm.expect(Array.isArray(jsonData) && jsonData.length === 0).to.be.true;",
 									"});",
 									"",
 									"pm.test(\"Status code is 200\", function () {",
@@ -42120,18 +41756,18 @@
 						{
 							"listen": "test",
 							"script": {
-								"type": "text/javascript",
 								"exec": [
 									"//we want to test that the returned result is an empty array\"",
 									"pm.test(\"Verify records deleted\", function(){",
 									"    let jsonData = pm.response.json();",
-									"    pm.expect(Array.isArray(jsonData) && jsonData.length === 0);",
+									"    pm.expect(Array.isArray(jsonData) && jsonData.length === 0).to.be.true;",
 									"});",
 									"",
 									"pm.test(\"Status code is 200\", function () {",
 									"    pm.response.to.have.status(200);",
 									"});"
-								]
+								],
+								"type": "text/javascript"
 							}
 						}
 					],
@@ -42823,7 +42459,7 @@
 							"response": []
 						},
 						{
-							"name": "Check Delete Job Completed",
+							"name": "Check Delete Transaction Logs Job Completed",
 							"event": [
 								{
 									"listen": "test",
@@ -42861,11 +42497,11 @@
 											"        case 0:",
 											"        case 'IN_PROGRESS':",
 											"            console.log('in progress, checking again');",
-											"            postman.setNextRequest('Check Delete Job Completed');",
+											"            postman.setNextRequest('Check Delete Transaction Logs Job Completed');",
 											"            pm.expect(status).to.be.oneOf(['IN_PROGRESS', 0, '0']);",
 											"            break;",
 											"        default:",
-											"            postman.setNextRequest('Check Delete Job Completed');",
+											"            postman.setNextRequest('Check Delete Transaction Logs Job Completed');",
 											"            pm.expect(status).to.be.oneOf(['IN_PROGRESS', 0, '0', 'ERROR', 'COMPLETE']);",
 											"            break;",
 											"    }",
@@ -42953,7 +42589,7 @@
 									"    let parsedId = jsonData.message.substr(id_index + 3, jsonData.message.length);",
 									"    pm.environment.set(\"job_id\", parsedId);",
 									"    pm.environment.set(\"next_request\", next_req);",
-									"    postman.setNextRequest(\"Check Delete Job Completed\");",
+									"    postman.setNextRequest(\"Check Delete Transaction Logs Job Completed\");",
 									"});"
 								]
 							}
@@ -52236,7 +51872,7 @@
 											"",
 											"pm.test(\"create attribute successful\", function () {",
 											"    var jsonData = pm.response.json();",
-											"    pm.expect(jsonData.message === \"inserted 1 of 1 records\");",
+											"    pm.expect(jsonData.message).to.equal(\"attribute 'dev.create_attr_test.owner_id' successfully created.\");",
 											"});"
 										],
 										"type": "text/javascript"
@@ -52451,8 +52087,7 @@
 									"",
 									"pm.test(\"attribute another_attribute exists\", function () {",
 									"    var jsonData = pm.response.json();",
-									"    //pm.expect(jsonData[\"another_attribute\"] === undefined);",
-									"        pm.expect(jsonData.another_attribute).to.eql(undefined);",
+									"    pm.expect(jsonData.another_attribute).to.eql(undefined);",
 									"});"
 								],
 								"type": "text/javascript"
@@ -52523,7 +52158,7 @@
 									"",
 									"pm.test(\"create attribute successful\", function () {",
 									"    var jsonData = pm.response.json();",
-									"    pm.expect(jsonData.message === \"inserted 1 of 1 records\");",
+									"    pm.expect(jsonData.message).to.equal(\"attribute 'dev.AttributeDropTest.created_attribute' successfully created.\");",
 									"});"
 								],
 								"type": "text/javascript"
@@ -52593,8 +52228,15 @@
 									"});",
 									"",
 									"pm.test(\"attribute created_attribute exists\", function () {",
-									"    var jsonData = pm.response.json();",
-									"    pm.expect(jsonData[\"created_attribute\"] === true);",
+									"    let jsonData = pm.response.json();",
+									"    let found = false;",
+									"    jsonData.attributes.forEach((attr) => {",
+									"        if (attr.attribute === 'created_attribute') {",
+									"            found = true;",
+									"        }",
+									"    });",
+									"",
+									"    pm.expect(found).to.be.true;",
 									"});"
 								],
 								"type": "text/javascript"
@@ -52665,7 +52307,7 @@
 									"",
 									"pm.test(\"create attribute successful\", function () {",
 									"    var jsonData = pm.response.json();",
-									"    pm.expect(jsonData.error === \"attribute 'created_attribute' already exists in dev.AttributeDropTest\");",
+									"    pm.expect(jsonData.error).to.equal(\"attribute 'created_attribute' already exists in dev.AttributeDropTest\");",
 									"});",
 									""
 								],
@@ -52746,7 +52388,7 @@
 									"",
 									"pm.test(\"remove successful\", function () {",
 									"    var jsonData = pm.response.json();",
-									"    pm.expect(jsonData.message === \"records successfully deleted\");",
+									"    pm.expect(jsonData.message).to.equal(\"successfully deleted attribute 'another_attribute'\");",
 									"});"
 								],
 								"type": "text/javascript"
@@ -52816,8 +52458,15 @@
 									"});",
 									"",
 									"pm.test(\"attribute another_attribute exists\", function () {",
-									"    var jsonData = pm.response.json();",
-									"    pm.expect(jsonData[\"another_attribute\"] === undefined);",
+									"    let jsonData = pm.response.json();",
+									"    let found = false;",
+									"    jsonData.attributes.forEach((attr) => {",
+									"        if (attr.attribute === 'another_attribute') {",
+									"            found = true;",
+									"        }",
+									"    });",
+									"",
+									"    pm.expect(found).to.be.false;",
 									"});"
 								],
 								"type": "text/javascript"
@@ -52888,7 +52537,8 @@
 									"",
 									"pm.test(\"test fingerprint returned\", function () {",
 									"    var jsonData = pm.response.json();",
-									"    pm.expect(jsonData['fingerprint'] !== undefined);",
+									"    pm.expect(jsonData).to.haveOwnProperty('message');",
+									"    pm.expect(jsonData.message).to.not.be.null;",
 									"});"
 								],
 								"type": "text/javascript"
@@ -52959,7 +52609,7 @@
 									"",
 									"pm.test(\"test fingerprint returned\", function () {",
 									"    var jsonData = pm.response.json();",
-									"    pm.expect(jsonData['error'] === \"There was an parsing the license key.\");",
+									"    pm.expect(jsonData['error']).to.equal(\"There was an error parsing the license key.\");",
 									"});"
 								],
 								"type": "text/javascript"
@@ -53102,7 +52752,7 @@
 									"",
 									"pm.test(\"test fingerprint returned\", function () {",
 									"    var jsonData = pm.response.json();",
-									"    pm.expect(jsonData['message'] === \"Invalid key specified for license file.\");",
+									"    pm.expect(jsonData['error']).to.equal(\"Invalid key or company specified for license file.\");",
 									"});"
 								],
 								"type": "text/javascript"
@@ -53306,12 +52956,13 @@
 									"});",
 									"",
 									"pm.test(\"test attributes exist\", ()=>{",
-									"    let attrs = [\"PROJECT_DIR\", \"HDB_ROOT\", \"HTTP_PORT\", \"HTTPS_PORT\", \"CERTIFICATE\", \"PRIVATE_KEY\", \"HTTPS_ON\", \"HTTP_ON\", \"CORS_ON\", \"CORS_WHITELIST\", \"SERVER_TIMEOUT_MS\", \"LOG_LEVEL\", \"LOGGER\", \"LOG_PATH\", \"LOG_DAILY_ROTATE\", \"LOG_MAX_DAILY_FILES\", \"NODE_ENV\", \"settings_path\", \"CLUSTERING_PORT\", \"NODE_NAME\", \"CLUSTERING\", \"ALLOW_SELF_SIGNED_SSL_CERTS\", \"MAX_HDB_PROCESSES\", \"install_user\", \"CLUSTERING_USER\", \"SERVER_KEEP_ALIVE_TIMEOUT\", \"SERVER_HEADERS_TIMEOUT\", \"DISABLE_TRANSACTION_LOG\", \"OPERATION_TOKEN_TIMEOUT\", \"REFRESH_TOKEN_TIMEOUT\"];",
+									"    let attrs = [ \"PROJECT_DIR\", \"HDB_ROOT\", \"SERVER_PORT\", \"CERTIFICATE\", \"PRIVATE_KEY\", \"HTTPS_ON\", \"CORS_ON\", \"CORS_WHITELIST\", \"LOG_LEVEL\",",
+									"    \"LOGGER\", \"LOG_PATH\", \"LOG_DAILY_ROTATE\", \"LOG_MAX_DAILY_FILES\", \"NODE_ENV\", \"settings_path\", \"CLUSTERING_PORT\", \"NODE_NAME\", \"CLUSTERING\",\"ALLOW_SELF_SIGNED_SSL_CERTS\", \"MAX_HDB_PROCESSES\", \"install_user\", \"CLUSTERING_USER\", \"SERVER_TIMEOUT_MS\", \"SERVER_KEEP_ALIVE_TIMEOUT\",\"SERVER_HEADERS_TIMEOUT\", \"DISABLE_TRANSACTION_LOG\", \"OPERATION_TOKEN_TIMEOUT\", \"REFRESH_TOKEN_TIMEOUT\"];",
 									"",
 									"    var jsonData = pm.response.json();",
 									"    let keys = Object.keys(jsonData);",
 									"    for(let x = 0, length = attrs.length; x < length; x++){",
-									"        pm.expect(jsonData.hasOwnProperty(attrs[x]) === true, `${attrs[x]} exists`);",
+									"        pm.expect(jsonData.hasOwnProperty(attrs[x])).to.equal(true, `${attrs[x]} exists`);",
 									"    }",
 									"});"
 								],
@@ -53487,14 +53138,26 @@
 									"pm.test(\"create system info has some attributes\", function () {",
 									"    var results = pm.response.json();",
 									"    ",
-									"    pm.expect(results.time !== undefined);",
-									"    pm.expect(results.memory !== undefined);",
-									"    pm.expect(results.system === undefined);",
-									"    pm.expect(results.cpu === undefined);",
-									"    pm.expect(results.disk === undefined);",
-									"    pm.expect(results.network === undefined);",
-									"    pm.expect(results.harperdb_processes === undefined);",
-									"    pm.expect(results.table_size === undefined);",
+									"    pm.expect(results.system).to.be.undefined;",
+									"    pm.expect(results.cpu).to.be.undefined;",
+									"    pm.expect(results.disk).to.be.undefined;",
+									"    pm.expect(results.network).to.be.undefined;",
+									"    pm.expect(results.harperdb_processes).to.be.undefined;",
+									"    pm.expect(results.table_size).to.be.undefined;",
+									"    pm.expect(results).to.haveOwnProperty('time');",
+									"    pm.expect(results).to.haveOwnProperty('memory');",
+									"    pm.expect(results.time).to.haveOwnProperty('current');",
+									"    pm.expect(results.time).to.haveOwnProperty('uptime');",
+									"    pm.expect(results.time).to.haveOwnProperty('timezone');",
+									"    pm.expect(results.time).to.haveOwnProperty('timezoneName');",
+									"    pm.expect(results.memory).to.haveOwnProperty('total');",
+									"    pm.expect(results.memory).to.haveOwnProperty('free');",
+									"    pm.expect(results.memory).to.haveOwnProperty('used');",
+									"    pm.expect(results.memory).to.haveOwnProperty('active');",
+									"    pm.expect(results.memory).to.haveOwnProperty('swaptotal');",
+									"    pm.expect(results.memory).to.haveOwnProperty('swapused');",
+									"    pm.expect(results.memory).to.haveOwnProperty('swapfree');",
+									"    pm.expect(results.memory).to.haveOwnProperty('available');",
 									"});"
 								],
 								"type": "text/javascript"

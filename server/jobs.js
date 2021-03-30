@@ -124,6 +124,7 @@ async function addJob(json_body) {
     }
 
     let new_job = new JobObject();
+    new_job.type = json_body.operation === hdb_terms.OPERATIONS_ENUM.DELETE_RECORDS_BEFORE ? hdb_terms.OPERATIONS_ENUM.DELETE_FILES_BEFORE : json_body.operation;
     new_job.type = json_body.operation;
     new_job.user = json_body.hdb_user.username;
 	let search_obj = new Search_Object(hdb_terms.SYSTEM_SCHEMA_NAME, hdb_terms.SYSTEM_TABLE_NAMES.JOB_TABLE_NAME, 'id', new_job.id, 'id', ['id']);

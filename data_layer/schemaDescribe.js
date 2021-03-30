@@ -182,9 +182,11 @@ async function descTable(describe_table_object, attr_perms) {
             describe_table_object.table), HTTP_STATUS_CODES.NOT_FOUND);
     }
 
+    let describe_table_obj_schema = hdb_utils.autoCast(describe_table_object.schema);
+
     for await (let table1 of tables) {
         try {
-            if (table1.schema !== describe_table_object.schema) {
+            if (table1.schema !== describe_table_obj_schema) {
                 continue;
             }
             table_result = table1;

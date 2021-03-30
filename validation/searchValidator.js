@@ -2,42 +2,37 @@ const _ = require('lodash'),
     validator = require('./validationWrapper');
 const Joi = require('joi');
 const hdb_terms = require('../utility/common_utils');
-const { common_validators, schema_regex } = require('./common_validators');
+const { hdb_schema_table } = require('./common_validators');
 const { handleHDBError, hdb_errors } = require('../utility/errors/hdbError');
 const { HTTP_STATUS_CODES } = hdb_errors;
 
-const schema_joi = Joi.alternatives(
-        Joi.string().min(1).max(common_validators.schema_length.maximum).pattern(schema_regex)
-            .messages({'string.pattern.base': '{:#label} ' + common_validators.schema_format.message}),
-        Joi.number()).required();
-
 const search_by_hashes_schema = Joi.object({
-    schema: schema_joi,
-    table: schema_joi,
+    schema: hdb_schema_table,
+    table: hdb_schema_table,
     hash_values: Joi.array().min(1).items(Joi.alternatives(Joi.string(), Joi.number())).required(),
-    get_attributes:Joi.array().min(1).items(schema_joi).required()
+    get_attributes:Joi.array().min(1).items(hdb_schema_table).required()
 });
 
 const search_by_value_schema = Joi.object({
-    schema: schema_joi,
-    table: schema_joi,
-    search_attribute: schema_joi,
+    schema: hdb_schema_table,
+    table: hdb_schema_table,
+    search_attribute: hdb_schema_table,
     search_value: Joi.any().required(),
-    get_attributes: Joi.array().min(1).items(schema_joi).required(),
+    get_attributes: Joi.array().min(1).items(hdb_schema_table).required(),
     desc: Joi.bool(),
     limit: Joi.number().integer().min(1),
     offset: Joi.number().integer().min(0),
 });
 
 const search_by_conditions_schema = Joi.object({
-    schema: schema_joi,
-    table: schema_joi,
+    schema: hdb_schema_table,
+    table: hdb_schema_table,
     operator: Joi.string().valid('and', 'or').default('and').lowercase(),
     offset: Joi.number().integer().min(0),
     limit: Joi.number().integer().min(1),
-    get_attributes: Joi.array().min(1).items(schema_joi).required(),
+    get_attributes: Joi.array().min(1).items(hdb_schema_table).required(),
     conditions: Joi.array().min(1).items(Joi.object({
-        search_attribute: schema_joi,
+        search_attribute: hdb_schema_table,
         search_type: Joi.string().valid("equals", "contains", "starts_with", "ends_with", "greater_than", "greater_than_equal", "less_than", "less_than_equal", "between").required(),
         search_value: Joi.when('search_type', {
             switch: [

@@ -268,6 +268,7 @@ function initializeOperationFunctionMap(){
     op_func_map.set(terms.OPERATIONS_ENUM.CLUSTER_STATUS, new OperationFunctionObject(cluster_utilities.clusterStatus));
     op_func_map.set(terms.OPERATIONS_ENUM.EXPORT_TO_S3, new OperationFunctionObject(signalJob, export_.export_to_s3));
     op_func_map.set(terms.OPERATIONS_ENUM.DELETE_FILES_BEFORE, new OperationFunctionObject(signalJob, delete_.deleteFilesBefore));
+    op_func_map.set(terms.OPERATIONS_ENUM.DELETE_RECORDS_BEFORE, new OperationFunctionObject(signalJob, delete_.deleteFilesBefore));
     op_func_map.set(terms.OPERATIONS_ENUM.EXPORT_LOCAL, new OperationFunctionObject(signalJob, export_.export_local));
     op_func_map.set(terms.OPERATIONS_ENUM.SEARCH_JOBS_BY_START_DATE, new OperationFunctionObject(jobs.handleGetJobsByStartDate));
     op_func_map.set(terms.OPERATIONS_ENUM.GET_JOB, new OperationFunctionObject(jobs.handleGetJob));
