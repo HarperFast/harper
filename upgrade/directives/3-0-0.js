@@ -12,27 +12,17 @@ const env = require('../../utility/environment/environmentManager');
 let directive3_0_0 = new upgrade_directive('3.0.0');
 let directives = [];
 
-// const UPGRADE_LOG_LOCATION = ('../3.0.0_upgrade_log.log');
+//We need these here b/c they are no longer
 const OLD_SETTINGS_KEYS = {
     HTTP_ENABLED_KEY: 'HTTP_ON',
     HTTP_PORT_KEY: 'HTTP_PORT',
     HTTP_SECURE_ENABLED_KEY: 'HTTPS_ON',
     HTTP_SECURE_PORT_KEY: 'HTTPS_PORT'
-}
+};
 
-directive3_0_0.settings_file_function = () => {
-    // winston.configure({
-    //     transports: [
-    //         new (winston.transports.File)({
-    //             filename: UPGRADE_LOG_LOCATION,
-    //             level: 'verbose',
-    //             handleExceptions: true,
-    //             prettyPrint: true
-    //         })
-    //     ],
-    //     exitOnError: false
-    // });
+directive3_0_0.change_description = "Placeholder for change descriptions for 3.0.0";
 
+directive3_0_0.settings_file_function.push(function updateSettingsFile_3_0_0() {
     env.initSync();
 
     const hdb_boot_properties = PropertiesReader(env.BOOT_PROPS_FILE_PATH);
@@ -46,10 +36,9 @@ directive3_0_0.settings_file_function = () => {
     const http_secure_enabled_new = http_secure_enabled_old.toString().toLowerCase() === 'true';
     const server_port_new = http_secure_enabled_new ? http_secure_port_old : http_port_old;
 
-    //TODO - move text to terms file and confirm this is the right place to put this.
     if (http_enabled_old && http_secure_enabled_old) {
-        console.log("HarperDB 3.0 does not allow HTTP and HTTPS to be enabled at the same time. This upgrade has enabled " +
-            "HTTPS and disabled HTTP. You can modify this in your settings.js file.")
+        console.log("HarperDB 3.0.0 does not allow HTTP and HTTPS to be enabled at the same time. This upgrade has enabled " +
+            "HTTPS and disabled HTTP. You can modify this in your settings.js file.");
     }
 
     let new_hdb_settings_vals = `   ;Settings for the HarperDB process.\n` +
@@ -116,15 +105,13 @@ directive3_0_0.settings_file_function = () => {
     const settings_dir = path.dirname(settings_path);
 
     try {
-        //update existing settings file w/ tmp in file name
+        //create backup of old settings file
         const settings_backup_path =  path.join(settings_dir, '3_0_0_upgrade_settings.js.back');
         hdb_log.info(`Backing up old settings file to: ${settings_backup_path}`);
         fs.copySync(settings_path, settings_backup_path);
 
     } catch(err) {
-        console.error('There was a problem writing the backup for the old settings file.  Please check the upgrade log for details.');
-        hdb_log.error(err);
-        //TODO - do we want to abort here?
+        console.error('There was a problem writing the backup for the old settings file.  Please check the log for details.');
         throw err;
     }
 
@@ -133,18 +120,19 @@ directive3_0_0.settings_file_function = () => {
         hdb_log.info(`Creating new/upgraded settings file at '${settings_path}'`);
 
         fs.writeFileSync(settings_path, new_hdb_settings_vals);
+        hdb_log.info('Updating env variables with new settings values');
         // load new props into env
         env.initSync();
-
-        hdb_log.info('New settings file for 3.0.0 upgrade successfully created');
     } catch(err) {
-        console.error('There was a problem writing the new settings file.  Please check the upgrade log for details.');
-        hdb_log.error(err);
-        //TODO - how are we handling this scenario? Do we want to abort here?
+        console.error('There was a problem writing the new settings file.  Please check the log for details.');
         throw err;
     }
 
-};
+    const upgrade_success_msg = 'New settings file for 3.0.0 upgrade successfully created.';
+    hdb_log.info(upgrade_success_msg);
+
+    return upgrade_success_msg;
+});
 
 directive3_0_0.functions.push(() => {
     // TODO - Kyle's indexing script is imported to this file and added here.

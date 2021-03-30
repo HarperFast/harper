@@ -12,6 +12,7 @@ const insert = require('../../data_layer/insert');
 const version = require('../../bin/version');
 const harper_logger = require('../../utility/logging/harper_logger');
 const hdb_terms = require('../../utility/hdbTerms');
+const directiveManager = require('../../upgrade/directives/directiveManager');
 
 describe('Test hdbInfoController module - ', function() {
     let sandbox = undefined;
@@ -19,18 +20,23 @@ describe('Test hdbInfoController module - ', function() {
     let insert_stub;
     let version_stub;
     let getLatestHdbInfoRecord_stub;
+    let filterInvalidVersions_stub;
+    let checkIfInstallIsSupported_stub;
     let consoleError_stub;
     let log_info_stub;
+    const FULL_ARRAY = [1,2,3];
+    const EMPTY_ARRAY = [];
+    const OLD_VERSION_NUM = "2.0.1";
     const INFO_SEARCH_RESULT = [
         {
             info_id: 1,
-            data_version_num: "1.2.0001",
-            hdb_version_num: "1.2.0001"
+            data_version_num: "3.0.0",
+            hdb_version_num: "3.0.0"
         },
         {
             info_id: 2,
-            data_version_num: "1.3.0001",
-            hdb_version_num: "1.3.0001"
+            data_version_num: "3.0.1",
+            hdb_version_num: "3.0.1"
         }
     ];
 
@@ -195,11 +201,13 @@ describe('Test hdbInfoController module - ', function() {
         before(() => {
             getLatestHdbInfoRecord_stub = sandbox.stub().resolves(INFO_SEARCH_RESULT[1]);
             hdb_info_controller_rw.__set__('getLatestHdbInfoRecord', getLatestHdbInfoRecord_stub);
-            version_stub = sandbox.stub(version, 'version').returns('3.0.0');
+            version_stub = sandbox.stub(version, 'version').returns('3.0.2');
+            filterInvalidVersions_stub = sandbox.stub(directiveManager, 'filterInvalidVersions').returns(FULL_ARRAY);
+            checkIfInstallIsSupported_stub = sandbox.stub().returns();
         })
 
         it('getVersionUpdateInfo nominal test', async () => {
-            const expected_result = { "currentVersion": "1.3.0001", "upgradeVersion": "3.0.0" };
+            const expected_result = { "data_version": "3.0.1", "upgrade_version": "3.0.2" };
 
             let result;
             try {
@@ -240,6 +248,14 @@ describe('Test hdbInfoController module - ', function() {
             assert.equal(result.message, expected_err_msg, 'Expected error message result not returned');
             assert.ok(consoleError_stub.calledOnce, 'Error message was not logged to console');
             assert.equal(consoleError_stub.args[0][0], `You have installed a version lower than version that your data was created on.  This may cause issues and is not supported.  ${hdb_terms.SUPPORT_HELP_MSG}`,'Console message not correct');
+        });
+
+        it('getVersionUpdateInfo - current version is before 3.0.0 so no upgrade required', async () => {
+            version_stub.returns(OLD_VERSION_NUM);
+
+            let result = await hdb_info_controller_rw.getVersionUpdateInfo();
+
+            assert.equal(result, undefined, 'Expected undefined to be returned from function');
         });
 
         it('test getVersionUpdateInfo - version throws exception', async function() {

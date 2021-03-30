@@ -17,6 +17,8 @@ const log = require('../utility/logging/harper_logger');
 const hdb_comm = require('../utility/common_utils');
 const { compareVersions } = hdb_comm;
 const global_schema = require('../utility/globalSchema');
+const env = require('../utility/environment/environmentManager');
+const directiveManager = require('../upgrade/directives/directiveManager');
 
 let p_search_search_by_value = util.promisify(search.searchByValue);
 let p_setSchemaDataToGlobal = util.promisify(global_schema.setSchemaDataToGlobal);
@@ -148,11 +150,20 @@ async function getLatestHdbInfoRecord() {
 async function getVersionUpdateInfo() {
     log.info('Checking if HDB software has been updated');
     try {
-        //TODO - do check that 2.0.0 settings values are present.  If not, throw error and tell them to do a fresh install.
-
         const current_version = version.version();
-        const latest_info_record = await getLatestHdbInfoRecord();
+        //if the current version is below the default version number we are tracking, we do not need to consider any
+        // updates for the instance and can just skip the upgrade step
+        if (current_version < DEFAULT_DATA_VERSION_NUM) {
+            return;
+        }
 
+        //if the current_version of the software is over the supported version number, we need to check that the current
+        // instance is running on at least the 2.0 release (when we last ran upgrade directives) - if it has not, the
+        // upgrade will fail because we are no longer supporting the 2.0 upgrade directive so we need to throw an error
+        // to the user and stop this process until they downgrade to their old version OR do a new, fresh install.
+        checkIfInstallIsSupported(current_version);
+
+        const latest_info_record = await getLatestHdbInfoRecord();
         //If no record is returned, it means we have an old instance that needs to be upgraded bc new installs will
         // always result in a record being inserted into the hdb_info table.  When this happens, we use the default data
         // version number value to make sure all upgrades starting at 3.0.0 run and, when that's completed, a new, complete
@@ -173,11 +184,31 @@ async function getVersionUpdateInfo() {
             throw new Error('Trying to downgrade HDB versions is not supported.');
         }
 
-        return new UpgradeObject(data_version_num, current_version);
+        const newUpgradeObj = new UpgradeObject(data_version_num, current_version);
+        //we only want to prompt for a reinstall if there are updates that need to be made.  If there are no new version
+        // update directives between the two versions, we can skip by returning undefined
+        const upgradeRequired = directiveManager.filterInvalidVersions(newUpgradeObj).length > 0;
+        if (upgradeRequired) {
+            return newUpgradeObj;
+        } else {
+            return;
+        }
     } catch(err) {
         log.fatal('Error while trying to evaluate the state of hdb data and the installed hdb version');
         log.fatal(err);
         throw err;
+    }
+}
+
+function checkIfInstallIsSupported() {
+    try {
+        env.getProperty(hdb_terms.HDB_SETTINGS_NAMES.CLUSTERING_USER_KEY);
+    } catch(err) {
+        const err_msg = 'You are attempting to upgrade from a very old instance of HDB that is no longer supported. ' +
+            'In order to upgrade to this version of HDB, you must do a fresh install. If you need support, ' +
+            'please contact support@harperdb.io';
+        console.log(err_msg);
+        throw new Error(err_msg);
     }
 }
 

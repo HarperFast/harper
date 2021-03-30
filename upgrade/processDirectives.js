@@ -1,20 +1,14 @@
 'use strict';
-/**
- * These classes define the data types used to define the necessary items for an upgrade.
- */
+
 const env = require('../utility/environment/environmentManager');
 const hdb_util = require('../utility/common_utils');
 const log = require('../utility/logging/harper_logger');
-const os = require('os');
-const fs = require('fs');
-const path = require('path');
 const PropertiesReader = require('properties-reader');
 const directive_manager = require('./directives/directiveManager');
 const terms = require('../utility/hdbTerms');
 const { DATA_VERSION, UPGRADE_VERSION } = terms.UPGRADE_JSON_FIELD_NAMES_ENUM;
 
 module.exports = {
-    writeEnvVariables,
     processDirectives,
     getDirectiveChangeDescriptions
 };
@@ -42,38 +36,36 @@ try {
 }
 
 /**
- * Create an object containing change descriptor objects.
- * @param curr_version
- * @param upgrade_version
+ * Create an array containing change descriptor objects.
+ *
+ * @param upgrade_obj {UpgradeObject}
+ * @returns {[]} - Array of change descriptions to display to the user before confirming/starting the upgrade process
  */
 function getDirectiveChangeDescriptions(upgrade_obj) {
     let change_descriptions = [];
     let loaded_directives = directive_manager.filterInvalidVersions(upgrade_obj);
     let upgrade_directives = getVersionsToInstall(upgrade_obj[DATA_VERSION], loaded_directives);
+
     for(let vers of upgrade_directives) {
         let new_description = {};
         if (vers.change_description) {
             new_description['change_description'] = vers.change_description;
         }
-        if (vers.affected_file_paths && vers.affected_file_paths.length > 0) {
-            new_description['affected_paths'] = vers.affected_file_paths;
-        }
         if (Object.keys(new_description).length > 0) {
             change_descriptions.push(new_description);
         }
     }
+
     return change_descriptions;
 }
 
 /**
  * Iterates through the directives files to find uninstalled updates and runs the files.
- * @param curr_version - The version of HDB at this point.
- * @param upgrade_version - The desired upgrade version
+ *
+ * @param upgrade_obj {UpgradeObject}
+ * @returns {*[]}
  */
 function processDirectives(upgrade_obj) {
-    //TODO - update code comment below w/ update that we now do run the directives only to the point of the upgrade version
-    // Currently we only support upgrading to latest which will be the largest version in the directive manager.  We
-    // could support upgrading to a specific version later by allowing the filter function to accept a specific version;
     let loaded_directives = directive_manager.filterInvalidVersions(upgrade_obj);
 
     const data_version = upgrade_obj[DATA_VERSION];
@@ -86,33 +78,16 @@ function processDirectives(upgrade_obj) {
         log.info(`Invalid value for '${UPGRADE_VERSION}'`);
     }
     let upgrade_directives = getVersionsToInstall(data_version, loaded_directives);
-    // let variable_comments = undefined;
     let settings_func_response = [];
     let func_responses = [];
     for (let vers of upgrade_directives) {
         let notify_msg = `Starting upgrade to version ${vers.version}`;
         log.notify(notify_msg);
         console.log(notify_msg);
-        // Create Directories
-        // let directories_to_create = vers.relative_directory_paths;
-        // let explicit_directories_to_create = vers.explicit_directory_paths;
-        // try {
-        //     createRelativeDirectories(directories_to_create);
-        //     createExplicitDirectories(explicit_directories_to_create);
-        // } catch(e) {
-        //     log.error('Error creating directories in process Directives' + e);
-        //     throw e;
-        // }
-        // // Update Environment variables
-        // try {
-        //     variable_comments = updateEnvironmentVariable(vers.environment_variables);
-        // } catch(e) {
-        //     log.error('Error updating environment variables in process Directives' + e);
-        //     throw e;
-        // }
+
         // Run settings file update
         try {
-            settings_func_response = runFunctions(vers.settings_file_functions);
+            settings_func_response = runFunctions(vers.settings_file_function);
         } catch(e) {
             log.error('running settings func in process Directives' + e);
             throw e;
@@ -133,79 +108,13 @@ function processDirectives(upgrade_obj) {
     for(let i of func_responses) {
         log.info(i);
     }
-    // try {
-    //     writeEnvVariables(variable_comments);
-    // } catch(e) {
-    //     log.error('Error writing environment variables in process Directives' + e);
-    //     throw e;
-    // }
 
     return [...settings_func_response, ...func_responses];
 }
 
 /**
- * Creates all directories specified in a directive file.
- * @param directive_paths
- */
-function createRelativeDirectories(directive_paths) {
-    if(hdb_util.isEmptyOrZeroLength(directive_paths)) {
-        log.info('No upgrade directories to create.');
-        return;
-    }
-    for(let dir_path of directive_paths) {
-        // This is synchronous
-        let new_dir_path = path.join(hdb_base, dir_path);
-        log.info(`Creating directory ${new_dir_path}`);
-        makeDirectory(new_dir_path);
-    }
-}
-
-function createExplicitDirectories(directive_paths) {
-    if(hdb_util.isEmptyOrZeroLength(directive_paths)) {
-        log.info('No upgrade directories to create.');
-        return;
-    }
-    for(let dir_path of directive_paths) {
-        // This is synchronous
-        try {
-            log.info(`Creating directory ${dir_path}`);
-            makeDirectory(dir_path);
-        } catch(err) {
-            log.error(`Error Creating path ${dir_path}.`);
-            log.error(err);
-            continue;
-        }
-    }
-}
-
-/**
- * Update the properties reader object with env variables specified in the directives
- * @param directive_variables - Variables from a directives object
- * @returns array of variable comments in the form comments[key] = [values]
- */
-function updateEnvironmentVariable(directive_variables) {
-    let comments = [];
-    if(hdb_util.isEmptyOrZeroLength(directive_variables)) {
-        log.info('No upgrade environment variables were found.');
-        return comments;
-    }
-    for(let dir_var of directive_variables) {
-        let found_var = hdb_properties.get(dir_var.name);
-        if( found_var === null || dir_var.force_value_update) {
-            log.info(`Updating settings variable: ${dir_var.name} to value: ${dir_var.value}`);
-            hdb_properties.set(dir_var.name, dir_var.value);
-        }
-        if(!hdb_util.isEmptyOrZeroLength(dir_var.comments)) {
-            comments[dir_var.name] = dir_var.comments;
-        }
-    }
-    return comments;
-}
-
-// TODO: The functions data member may need to be a map with a function as a key and
-// arguments as the value.  For now, don't allow values passed into functions.
-/**
- * Runs the functions specified in a directive object.
+ * Runs functions specified in a directive object.
+ *
  * @param directive_functions - Array of functions to run
  * @returns - Array of responses from function calls
  */
@@ -239,121 +148,19 @@ function runFunctions(directive_functions) {
 }
 
 /**
- * Write the environment variables updated in the
- * @param - comments - Object with key,value describing comments that should be placed above a variable in the settings file.
- * The key is the variable name (PROJECT_DIR) and the value will be the string comment.
- */
-function writeEnvVariables(comments) {
-    if(hdb_util.isEmptyOrZeroLength(settings_file_path)) {
-        let err_msg = 'In process directives, the settings file path is not set';
-        log.warn(err_msg);
-        throw new Error(err_msg);
-    }
-    try {
-        log.info(`Writing config values to ${settings_file_path}`);
-        fs.writeFileSync(settings_file_path, stringifyProps(hdb_properties, comments));
-    } catch (e) {
-        console.error('There was a problem writing the settings file.  Please check the install log for details.');
-        log.error(e);
-        throw e;
-    }
-
-    // reload written props
-    try {
-        log.info(`Reloading config values from ${settings_file_path}`);
-        hdb_properties = PropertiesReader(hdb_boot_properties.get('settings_path'));
-    } catch (e) {
-        log.trace('there was a problem reloading new properties file.');
-        throw e;
-    }
-}
-
-/**
- * Takes a PropertiesReader object and converts it to a string so it can be printed to a file.
- * @param prop_reader_object - An object of type properties-reader containing properties stored in settings.js
- * @param comments - Object with key,value describing comments that should be placed above a variable in the settings file.
- * The key is the variable name (PROJECT_DIR) and the value will be the string comment.
- * @returns {string}
- */
-function stringifyProps(prop_reader_object, comments) {
-    if(hdb_util.isEmpty(prop_reader_object)) {
-        log.info('Properties object is null');
-        return '';
-    }
-    let lines = '';
-    let section = null;
-    prop_reader_object.each(function (key, value) {
-        try {
-            let tokens = key.split('.');
-            if (tokens && tokens.length > 1) {
-                if (section !== tokens[0]) {
-                    section = tokens[0];
-                    lines += ('\t' + section + os.EOL);
-                }
-                key = tokens.slice(1).join('.');
-            } else {
-                section = null;
-            }
-            if (comments && comments[key]) {
-                let curr_comments = comments[key];
-                for (let comm of curr_comments) {
-                    lines += (';' + comm + os.EOL);
-                }
-            }
-            if(!hdb_util.isEmptyOrZeroLength(key) ) {
-                lines += key + '=' + value + os.EOL;
-            }
-        } catch(e) {
-            log.error(`Found bad property during upgrade with key ${key} and value: ${value}`);
-        }
-    });
-    return lines;
-}
-
-//This is synchronous to ensure everything runs in order.
-/**
- * Recursively create directory specified.
- * @param targetDir - Directory to create
- * @param isRelativeToScript - Defaults to false, if true will use curr directory as the base path
- */
-function makeDirectory(targetDir, {isRelativeToScript = false} = {}) {
-    if(hdb_util.isEmptyOrZeroLength(targetDir)) {
-        log.info('Invalid directory path.');
-        return;
-    }
-    const sep = path.sep;
-    const initDir = path.isAbsolute(targetDir) ? sep : '';
-    const baseDir = isRelativeToScript ? __dirname : '.';
-
-    targetDir.split(sep).reduce((parentDir, childDir) => {
-        const curDir = path.resolve(baseDir, parentDir, childDir);
-        try {
-            if(curDir && curDir !== '/') {
-                fs.mkdirSync(curDir, {mode: terms.HDB_FILE_PERMISSIONS});
-                log.info(`Directory ${curDir} created`);
-            }
-        } catch (err) {
-            if (err.code !== 'EEXIST') {
-                throw err;
-            }
-        }
-        return curDir;
-    }, initDir);
-}
-
-/**
  * Based on the current version, find all upgrade directives that need to be installed to make this installation current.
  * Returns the install directives array sorted from lowest to highest version number.
- * @param curr_version_num - The current versrion of HDB.
+ *
+ * @param curr_version_num - The current version of HDB.
  * @returns {Array}
  */
 function getVersionsToInstall(curr_version_num, loaded_directives) {
-    // if(hdb_util.isEmptyOrZeroLength(curr_version_num)) {
-    //     return [];
-    // }
-    // if(hdb_util.isEmptyOrZeroLength(loaded_directives)) {
-    //     return [];
-    // }
+    if(hdb_util.isEmptyOrZeroLength(curr_version_num)) {
+        return [];
+    }
+    if(hdb_util.isEmptyOrZeroLength(loaded_directives)) {
+        return [];
+    }
     let version_modules_to_run = [];
     for(let vers of loaded_directives) {
         let module = directive_manager.getModuleByVersion(vers);

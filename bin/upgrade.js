@@ -14,56 +14,27 @@
  * stored in the new versions, swap the /bin/harperdb with /upgrade/harperdb by moving /bin/harperdb to <install_path>/trash.
  *
  */
-const os = require('os');
-const fs = require('fs');
 const CLI = require('clui');
-// const request = require("request");
-// const request_promise = require("request-promise-native");
 const env = require('../utility/environment/environmentManager');
 const log = require('../utility/logging/harper_logger');
 const hdb_util = require('../utility/common_utils');
 const hdb_terms = require('../utility/hdbTerms');
-const { promisify } = require('util');
 const version = require('./version');
 const process_directives = require('../upgrade/processDirectives');
-const { spawn } = require('child_process');
-const path = require('path');
-const fs_extra = require('fs-extra');
 const { isHarperRunning } = require('../utility/common_utils');
 const hdbInfoController = require('../data_layer/hdbInfoController');
-const global_schema = require('../utility/globalSchema');
 const upgradePrompt = require('../upgrade/upgradePrompt');
 
 const { UPGRADE_VERSION } = hdb_terms.UPGRADE_JSON_FIELD_NAMES_ENUM;
 
-const UPGRADE_DIR_NAME= 'hdb_upgrade';
-// const TAR_FILE_NAME = 'hdb-latest.tar';
-const EXE_COPY_NAME = 'hdb';
-const EXE_NAME = 'harperdb';
-
-// This will be set to the path of the upgrade directory.
-let UPGRADE_DIR_PATH = path.join(__dirname, '../', UPGRADE_DIR_NAME);
-
-//Promisified functions
-const p_fs_readdir = promisify(fs.readdir);
-const p_fs_copyfile = promisify(fs.copyFile);
-const p_fs_chmod = promisify(fs.chmod);
-
-// const VERSIONS_URL = 'http://products.harperdb.io/api/latestVersion?os=';
-// const DOWNLOAD_URL = 'http://products.harperdb.io/api/update?os=';
-
 let Spinner = CLI.Spinner;
 let countdown = new Spinner(`Upgrading HarperDB `, ['⣾', '⣽', '⣻', '⢿', '⡿', '⣟', '⣯', '⣷']);
-let p_set_schema_global = promisify(global_schema.setSchemaDataToGlobal);
+
 module.exports = {
     upgrade,
     startUpgrade,
-    // runUpgradeDirectives,
     listDirectiveChanges
 };
-
-let UPGRADE_VERSION_NUM = undefined;
-let CURRENT_VERSION_NUM = undefined;
 
 /**
  * Check to see if an instance of HDB is running. Throws an error if running, otherwise it will just return to resolve the promise.
@@ -128,7 +99,7 @@ async function upgrade(upgrade_obj) {
         countdown.message(`Starting upgrade to version ${current_hdb_version}`);
         countdown.start();
         log.info(`Starting upgrade to version ${current_hdb_version}`);
-        startUpgrade(hdb_upgrade_info);
+        await startUpgrade(hdb_upgrade_info);
     } catch(err) {
         throw err;
     }
@@ -161,134 +132,11 @@ async function startUpgrade(upgrade_obj) {
 }
 
 /**
- * Clean up files that were created during the upgrade process.
- */
-// function postInstallCleanUp() {
-//     let temp_exe_path = path.join(process.cwd(), EXE_COPY_NAME);
-//     try {
-//         fs_extra.emptyDirSync(UPGRADE_DIR_PATH);
-//         fs_extra.removeSync(temp_exe_path);
-//     } catch(e) {
-//         let msg = `There was a problem cleaning up the upgrade files.  These can be manually removed from ${UPGRADE_DIR_PATH}`;
-//         console.error(msg);
-//         log.error(msg);
-//     }
-// }
-
-/**
- * Call the getLatest API to get the most recent release version of HDB.
- * @param opers
- * @returns {Promise<*>}
- */
-// async function getLatestVersion(opers) {
-//     let options = {
-//         method: 'GET',
-//         url: VERSIONS_URL + opers,
-//         headers:
-//             {
-//                 'cache-control': 'no-cache',
-//                 'content-type': 'application/json',
-//                 'Accept': 'application/json'
-//             }
-//     };
-//     let res = undefined;
-//     try {
-//         res = await request_promise(options);
-//     } catch (e) {
-//         log.error(`There was an error with the request to get the latest HDB Build: ${e}`);
-//         throw new Error("Error getting latest build");
-//     }
-//     res = JSON.parse(res);
-//     return res[0].product_version;
-// }
-
-/**
- * Downloads the latest version of HDB and attempts to install it.
- * @param opers
- * @returns {Promise<void>}
- */
-// async function getBuild(opers) {
-//     let options = {
-//         method: 'GET',
-//         url: DOWNLOAD_URL + opers,
-//         headers:
-//             {
-//                 'cache-control': 'no-cache',
-//                 'content-type': 'application/json',
-//                 'Accept': 'application/json'
-//             }
-//     };
-//     let res = undefined;
-//     try {
-//         // The request-promise repo recommends using plain old request when piping needs to happen.
-//         res = await request(options);
-//         let file = await fs.createWriteStream(path.join(UPGRADE_DIR_PATH, TAR_FILE_NAME), {mode: hdb_terms.HDB_FILE_PERMISSIONS});
-//         res.pipe(file);
-//         file.on('finish', async function() {
-//             let tarball = await fs.createReadStream(path.join(UPGRADE_DIR_PATH, TAR_FILE_NAME), {mode: hdb_terms.HDB_FILE_PERMISSIONS}).pipe(tar.extract(UPGRADE_DIR_PATH));
-//             tarball.on('finish', async function () {
-//                 await copyUpgradeExecutable();
-//                 callUpgradeOnNew();
-//             });
-//         });
-//     } catch (e) {
-//         log.error(`There was an error with the request to get the latest HDB Build: ${e}`);
-//         throw new Error("Error getting latest build" + e);
-//     }
-// }
-
-/**
- * Get the type of OS this is running on.
- * @returns {*}
- */
-// function findOs() {
-//     if (os.arch() === 'arm' || os.arch() === 'arm64') {
-//         switch (os.release()) {
-//             case "armv7l":
-//                 return 'ARM 7';
-//             case "armv6l":
-//                 return 'ARM 6';
-//             default:
-//                 return null;
-//         }
-//     }
-//     switch (os.platform()) {
-//         case "darwin":
-//             return 'Mac';
-//         case "linux":
-//             return 'Linux';
-//         default:
-//             return null;
-//     }
-// }
-
-/**
- * Makes a copy of the upgraded HDB executable file so it can be run during the upgrade process.  This file is copied into
- * the existing install's bin directory so it can access the boot props file.
- * @returns {Promise<void>}
- */
-// async function copyUpgradeExecutable() {
-//     let source_path = path.join(UPGRADE_DIR_PATH, 'HarperDB', 'bin', 'harperdb');
-//     // Note we need to rename the new executable to 'hdb', so we don't e overwrite the existing installed executable (yet)
-//     let destination_path = path.join(process.cwd(), 'hdb');
-//     await p_fs_copyfile(source_path, destination_path).catch((e) => {
-//         log.error(e);
-//         throw e;
-//     });
-//     // Need to set perms on new hdb exe.
-//     await p_fs_chmod(`${process.cwd()}/${EXE_COPY_NAME}`, hdb_terms.HDB_FILE_PERMISSIONS).catch((e) => {
-//         let msg = `Error setting permissions on newest version of HarperDB ${e}`;
-//         log.error(msg);
-//         throw e;
-//     });
-// }
-
-/**
  * Run the upgrade directives between the old version and the new version.  This should only be called if there are upgrade
  * directives to run
- * @param old_version_number - The currently installed version number of HDB.
- * @param new_version_number - The latest version being upgraded to.
- * @returns {Array}
+ *
+ * @param upgrade_obj {UpgradeObject}
+ * @returns {*|[]}
  */
 function runUpgradeDirectives(upgrade_obj) {
     let directive_results = [];
@@ -315,51 +163,6 @@ function listDirectiveChanges(upgrade_obj) {
     }
     return directive_change_descriptions;
 }
-
-/**
- * Makes a backup of the harperdb files.  The backup is placed in the data path in the backups folder.
- */
-// function backupCurrInstall() {
-//     console.log('Backing up current install files.');
-//     let curr_install_base = path.join(process.cwd(), '../');
-//     let data_base = env.get(hdb_terms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY);
-//     log.info(`Current install path is: ${curr_install_base}`);
-//
-//     let backup_path = path.join(data_base, 'backup', `version${(version.version().replace('/./g', '-'))}`);
-//     log.info(`Writing backup files to path: ${backup_path}`);
-//
-//     if(fs.existsSync(backup_path)) {
-//         fs_extra.emptyDirSync(backup_path);
-//     } else {
-//         fs.mkdirSync(backup_path, {mode:  hdb_terms.HDB_FILE_PERMISSIONS});
-//     }
-//     try {
-//         fs_extra.copySync(curr_install_base, backup_path);
-//     } catch(err) {
-//         console.log(`There was a problem backing up current install.  Please check the logs.  Exiting.`);
-//         log.fatal(err);
-//         throw err;
-//     }
-// }
-
-/**
- * Copies the untarred files of the new version into the existing install path.
- */
-// function copyNewFilesIntoInstall() {
-//     console.log('Copying new install files.');
-//     let curr_install_base = path.join(process.cwd(), '../');
-//     log.info(`backing up current install files to path: ${curr_install_base}`);
-//     let upgrade_base = path.join(UPGRADE_DIR_PATH, 'HarperDB');
-//     log.info(`upgrading from path: ${upgrade_base} to install path ${curr_install_base}`);
-//     // copy the new files to the current directory.
-//     try {
-//         fs_extra.copySync(upgrade_base, curr_install_base);
-//     } catch(err) {
-//         console.log(`There was a problem copying new install files..  Please check the logs.  Exiting.`);
-//         log.fatal(err);
-//         throw err;
-//     }
-// }
 
 function printToLogAndConsole(msg, log_level) {
     if(!log_level) {
