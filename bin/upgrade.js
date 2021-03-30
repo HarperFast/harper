@@ -57,52 +57,57 @@ function checkIfRunning() {
  * @returns {Promise<*>}
  */
 async function upgrade(upgrade_obj) {
-    try {
-        log.setLogLevel(log.INFO);
-        printToLogAndConsole(`This version of HarperDB is ${version.version()}`);
-        if (hdb_util.isEmptyOrZeroLength(env) ) {
-            const hdb_not_found_msg = 'The hdb_boot_properties file was not found.  Please install HDB.';
-            printToLogAndConsole(hdb_not_found_msg, log.ERR);
-            process.exit(1);
-        }
-
-        let hdb_upgrade_info = upgrade_obj;
-        if (!hdb_upgrade_info) {
-            hdb_upgrade_info = await hdbInfoController.getVersionUpdateInfo();
-            if (!hdb_upgrade_info) {
-                console.log("HarperDB version is current");
-                process.exit(0);
-            }
-        }
-
-        let current_hdb_version = hdb_upgrade_info[UPGRADE_VERSION] ? hdb_upgrade_info[UPGRADE_VERSION] : version.version();
-        if(!current_hdb_version) {
-            console.log('Current Version field missing from the package.json file.  Cannot continue with upgrade.  If you need support, please contact support@harperdb.io');
-            log.notify('Missing new version field from upgrade info object');
-            process.exit(1);
-        }
-
-        // check if already running, ends process if error caught.
-        try {
-            await checkIfRunning();
-        } catch(e) {
-            console.log(e.message);
-            throw e;
-        }
-
-        let start_upgrade = await upgradePrompt.forceUpdatePrompt(hdb_upgrade_info);
-        if(!start_upgrade) {
-            console.log('Cancelled upgrade, closing HarperDB');
-            process.exit(1);
-        }
-
-        countdown.message(`Starting upgrade to version ${current_hdb_version}`);
-        countdown.start();
-        log.info(`Starting upgrade to version ${current_hdb_version}`);
-        await startUpgrade(hdb_upgrade_info);
-    } catch(err) {
-        throw err;
+    log.setLogLevel(log.INFO);
+    printToLogAndConsole(`This version of HarperDB is ${version.version()}`);
+    if (hdb_util.isEmptyOrZeroLength(env) ) {
+        const hdb_not_found_msg = 'The hdb_boot_properties file was not found.  Please install HDB.';
+        printToLogAndConsole(hdb_not_found_msg, log.ERR);
+        process.exit(1);
     }
+
+    let hdb_upgrade_info = upgrade_obj;
+    if (!hdb_upgrade_info) {
+        hdb_upgrade_info = await hdbInfoController.getVersionUpdateInfo();
+        if (!hdb_upgrade_info) {
+            console.log("HarperDB version is current");
+            process.exit(0);
+        }
+    }
+
+    let current_hdb_version = hdb_upgrade_info[UPGRADE_VERSION] ? hdb_upgrade_info[UPGRADE_VERSION] : version.version();
+    if(!current_hdb_version) {
+        console.log('Current Version field missing from the package.json file.  Cannot continue with upgrade.  If you need support, please contact support@harperdb.io');
+        log.notify('Missing new version field from upgrade info object');
+        process.exit(1);
+    }
+
+    // check if already running, ends process if error caught.
+    try {
+        await checkIfRunning();
+    } catch(e) {
+        console.log(e.message);
+        throw e;
+    }
+
+    let start_upgrade;
+
+    try {
+        start_upgrade = await upgradePrompt.forceUpdatePrompt(hdb_upgrade_info);
+    } catch(err) {
+        log.error('There was an error when prompting user about upgrade.');
+        log.error(err);
+        start_upgrade = false;
+    }
+
+    if(!start_upgrade) {
+        console.log('Cancelled upgrade, closing HarperDB');
+        process.exit(1);
+    }
+
+    countdown.message(`Starting upgrade to version ${current_hdb_version}`);
+    countdown.start();
+    log.info(`Starting upgrade to version ${current_hdb_version}`);
+    await startUpgrade(hdb_upgrade_info);
 }
 
 /**

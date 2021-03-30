@@ -20,7 +20,7 @@ describe('Test hdbInfoController module - ', function() {
     let insert_stub;
     let version_stub;
     let getLatestHdbInfoRecord_stub;
-    let filterInvalidVersions_stub;
+    let hasRequiredUpgrades_stub;
     let checkIfInstallIsSupported_stub;
     let consoleError_stub;
     let log_info_stub;
@@ -202,7 +202,7 @@ describe('Test hdbInfoController module - ', function() {
             getLatestHdbInfoRecord_stub = sandbox.stub().resolves(INFO_SEARCH_RESULT[1]);
             hdb_info_controller_rw.__set__('getLatestHdbInfoRecord', getLatestHdbInfoRecord_stub);
             version_stub = sandbox.stub(version, 'version').returns('3.0.2');
-            filterInvalidVersions_stub = sandbox.stub(directiveManager, 'filterInvalidVersions').returns(FULL_ARRAY);
+            hasRequiredUpgrades_stub = sandbox.stub(directiveManager, 'hasRequiredUpgrades').returns(true);
             checkIfInstallIsSupported_stub = sandbox.stub().returns();
         })
 

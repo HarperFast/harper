@@ -67,12 +67,8 @@ async function run() {
             const update_obj = await hdbInfoController.getVersionUpdateInfo();
             if (update_obj !== undefined) {
                 upgrade_vers = update_obj[terms.UPGRADE_JSON_FIELD_NAMES_ENUM.UPGRADE_VERSION];
-
                 await upgrade.upgrade(update_obj);
-                // if (upgrade_result) {
-                //     await hdbInfoController.updateHdbUpgradeInfo(upgrade_vers);
-                //     console.log('Upgrade complete.  Starting HarperDB.');
-                // }
+                console.log('Upgrade complete.  Starting HarperDB.');
             }
         } catch(err) {
             if (upgrade_vers) {

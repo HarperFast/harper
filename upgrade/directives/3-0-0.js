@@ -3,7 +3,6 @@
 const path = require('path');
 const upgrade_directive = require('../UpgradeDirective');
 const fs = require('fs-extra');
-// const winston = require('winston');
 const hdb_log = require('../../utility/logging/harper_logger');
 const { HDB_SETTINGS_NAMES, HDB_SETTINGS_DEFAULT_VALUES } = require('../../utility/hdbTerms');
 const PropertiesReader = require('properties-reader');
@@ -134,9 +133,8 @@ directive3_0_0.settings_file_function.push(function updateSettingsFile_3_0_0() {
     return upgrade_success_msg;
 });
 
-directive3_0_0.functions.push(() => {
-    // TODO - Kyle's indexing script is imported to this file and added here.
-});
+//Kyle's indexing script/s is imported to this file and added here.
+// directive3_0_0.functions.push(() => {});
 
 directives.push(directive3_0_0);
 

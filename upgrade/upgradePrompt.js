@@ -4,7 +4,6 @@ const log = require('../utility/logging/harper_logger');
 const { Select } = require('enquirer');
 const os = require('os');
 const process_directives = require('./processDirectives');
-// const upgrade = require('../bin/upgrade');
 
 const UPGRADE_PROCEED = 'Yes, proceed';
 const UPGRADE_CANCEL = 'No, cancel the upgrade';
@@ -16,8 +15,7 @@ const UPGRADE_CANCEL = 'No, cancel the upgrade';
  */
 async function forceUpdatePrompt(upgrade_obj) {
     // pull directive changes
-    // let changes = upgrade.listDirectiveChanges(upgrade_obj);
-    let changes = listDirectiveChanges(upgrade_obj);
+    let changes = process_directives.getDirectiveChangeDescriptions(upgrade_obj);
     let counter = 1;
     let message = 'HarperDB has been recently updated, we need to complete an update process.  If a backup of your data has not been created, cancel this process and backup.  The following data will be affected:';
     message = message + os.EOL;
@@ -49,22 +47,12 @@ async function forceUpdatePrompt(upgrade_obj) {
     try {
         response = await select_questions.run();
     } catch(err) {
-        log.error('There was an error asking for an upgrade.');
+        log.error('There was an error when prompting user about an upgrade.');
         log.error(err);
         return false;
     }
 
     return response === UPGRADE_PROCEED;
-}
-
-function listDirectiveChanges(upgrade_obj) {
-    let directive_change_descriptions = [];
-    try {
-        directive_change_descriptions = process_directives.getDirectiveChangeDescriptions(upgrade_obj);
-    } catch(e) {
-        throw e;
-    }
-    return directive_change_descriptions;
 }
 
 module.exports = {

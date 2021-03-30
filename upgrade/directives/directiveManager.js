@@ -8,6 +8,7 @@
  */
 const hdb_utils = require('../../utility/common_utils');
 const hdb_terms = require('../../utility/hdbTerms');
+const hdb_log = require('../../utility/logging/harper_logger');
 const { DATA_VERSION, UPGRADE_VERSION } = hdb_terms.UPGRADE_JSON_FIELD_NAMES_ENUM;
 
 // VERSIONS
@@ -31,20 +32,25 @@ function filterInvalidVersions(upgrade_obj) {
     let curr_version = upgrade_obj[DATA_VERSION];
     let new_version = upgrade_obj[UPGRADE_VERSION];
 
-    if (hdb_utils.isEmptyOrZeroLength(curr_version)) {
-        //TODO - this scenario should return ALL b/c it means it's an old install that hasn't been updated
-        // return [];
+    if (hdb_utils.isEmptyOrZeroLength(curr_version) || hdb_utils.isEmptyOrZeroLength(curr_version)) {
+        //we should never get to this scenario but if so, we will return empty array so that server can try to start
+        // with current install and data
+        const version_error = new Error(`Version data is not tracked correctly.  Current version data: ${upgrade_obj}`);
+        hdb_log.error('There was an error when trying to evaluate the version information for your instance.  Trying to ' +
+            'start the server anyways but it may fail. If you continue to have this problem, please contact support@harperdb.io.');
+        hdb_log.error(version_error);
+        return [];
     }
-    // if(!versions.has(curr_version)) {
-    //     return [];
-    // }
-    // if(!versions.has(new_version)) {
-    //     new_version = "99";
-    // }
+
     let filtered_keys = [...versions.keys()].sort(hdb_utils.compareVersions).filter( function(this_version) {
         return this_version > curr_version && this_version <= new_version;
     });
     return filtered_keys;
+}
+
+function hasRequiredUpgrades(upgrade_obj) {
+    const valid_versions = filterInvalidVersions(upgrade_obj);
+    return valid_versions.length > 0;
 }
 
 function getModuleByVersion(version) {
@@ -60,5 +66,6 @@ function getModuleByVersion(version) {
 module.exports = {
     getSortedVersions,
     getModuleByVersion,
-    filterInvalidVersions
+    filterInvalidVersions,
+    hasRequiredUpgrades
 };

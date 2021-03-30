@@ -161,7 +161,7 @@ async function getVersionUpdateInfo() {
         // instance is running on at least the 2.0 release (when we last ran upgrade directives) - if it has not, the
         // upgrade will fail because we are no longer supporting the 2.0 upgrade directive so we need to throw an error
         // to the user and stop this process until they downgrade to their old version OR do a new, fresh install.
-        checkIfInstallIsSupported(current_version);
+        checkIfInstallIsSupported();
 
         const latest_info_record = await getLatestHdbInfoRecord();
         //If no record is returned, it means we have an old instance that needs to be upgraded bc new installs will
@@ -187,7 +187,7 @@ async function getVersionUpdateInfo() {
         const newUpgradeObj = new UpgradeObject(data_version_num, current_version);
         //we only want to prompt for a reinstall if there are updates that need to be made.  If there are no new version
         // update directives between the two versions, we can skip by returning undefined
-        const upgradeRequired = directiveManager.filterInvalidVersions(newUpgradeObj).length > 0;
+        const upgradeRequired = directiveManager.hasRequiredUpgrades(newUpgradeObj);
         if (upgradeRequired) {
             return newUpgradeObj;
         } else {
