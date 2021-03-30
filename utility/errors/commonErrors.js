@@ -165,7 +165,8 @@ const USER_ERROR_MSGS ={
     ALTER_USER_DUP_ROLES: (role) => `Update failed.  There are duplicates for the '${role}' role which is not allowed. Update your roles and try again.`,
     ALTER_USER_ROLE_NOT_FOUND: (role) => `Update failed.  Requested '${role}' role not found.`,
     DUP_ROLES_FOUND: (role) => `Multiple ${role} roles found.  Roles must have unique 'role' value. Please update and try again.`,
-    ROLE_NAME_NOT_FOUND: (role) => `${role} role not found`
+    ROLE_NAME_NOT_FOUND: (role) => `${role} role not found`,
+    USER_ALREADY_EXISTS: (user) => `User ${user} already exists`
 };
 
 const VALIDATION_ERROR_MSGS = {
