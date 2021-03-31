@@ -5,6 +5,8 @@
  */
 
 const util = require('util');
+const colors = require("colors/safe");
+const os = require('os');
 
 const insert = require('./insert');
 const search = require('./search');
@@ -14,8 +16,7 @@ const DataLayerObjects = require('./DataLayerObjects');
 const { UpgradeObject } = require('../upgrade/UpgradeObjects');
 const version = require('../bin/version');
 const log = require('../utility/logging/harper_logger');
-const hdb_comm = require('../utility/common_utils');
-const { compareVersions } = hdb_comm;
+const hdb_utils = require('../utility/common_utils');
 const global_schema = require('../utility/globalSchema');
 const env = require('../utility/environment/environmentManager');
 const directiveManager = require('../upgrade/directives/directiveManager');
@@ -151,6 +152,19 @@ async function getVersionUpdateInfo() {
     log.info('Checking if HDB software has been updated');
     try {
         const current_version = version.version();
+        const latest_info_record = await getLatestHdbInfoRecord();
+
+        let data_version_num;
+
+        if (!hdb_utils.isEmpty(latest_info_record)) {
+            data_version_num = latest_info_record.data_version_num;
+            if (hdb_utils.compareVersions(data_version_num.toString(), current_version.toString()) > 0) {
+                console.log(colors.yellow(`This instance's data was last run on version ${data_version_num}`));
+                console.error(colors.red(`You have installed a version lower than the version that your data was created on or was upgraded to.  This may cause issues and is currently not supported.${os.EOL}${hdb_terms.SUPPORT_HELP_MSG}`));
+                throw new Error('Trying to downgrade HDB versions is not supported.');
+            }
+        }
+
         //if the current version is below the default version number we are tracking, we do not need to consider any
         // updates for the instance and can just skip the upgrade step
         if (current_version < DEFAULT_DATA_VERSION_NUM) {
@@ -163,25 +177,17 @@ async function getVersionUpdateInfo() {
         // to the user and stop this process until they downgrade to their old version OR do a new, fresh install.
         checkIfInstallIsSupported();
 
-        const latest_info_record = await getLatestHdbInfoRecord();
         //If no record is returned, it means we have an old instance that needs to be upgraded bc new installs will
         // always result in a record being inserted into the hdb_info table.  When this happens, we use the default data
         // version number value to make sure all upgrades starting at 3.0.0 run and, when that's completed, a new, complete
         // hdb_info record will be inserted
-        if (latest_info_record === undefined) {
+        if (hdb_utils.isEmpty(latest_info_record)) {
             return new UpgradeObject(DEFAULT_DATA_VERSION_NUM, current_version);
         }
-
-        const { data_version_num } = latest_info_record;
 
         if (current_version.toString() === data_version_num.toString()) {
             //versions are up to date so nothing to do here
             return;
-        }
-
-        if (compareVersions(data_version_num.toString(), current_version.toString()) > 0) {
-            console.error(`You have installed a version lower than version that your data was created on.  This may cause issues and is not supported.  ${hdb_terms.SUPPORT_HELP_MSG}`);
-            throw new Error('Trying to downgrade HDB versions is not supported.');
         }
 
         const newUpgradeObj = new UpgradeObject(data_version_num, current_version);

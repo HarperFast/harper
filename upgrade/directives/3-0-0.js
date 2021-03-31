@@ -1,11 +1,12 @@
 "use strict";
 
 const path = require('path');
-const upgrade_directive = require('../UpgradeDirective');
+const colors = require("colors/safe");
 const fs = require('fs-extra');
+const PropertiesReader = require('properties-reader');
+const upgrade_directive = require('../UpgradeDirective');
 const hdb_log = require('../../utility/logging/harper_logger');
 const { HDB_SETTINGS_NAMES, HDB_SETTINGS_DEFAULT_VALUES } = require('../../utility/hdbTerms');
-const PropertiesReader = require('properties-reader');
 const env = require('../../utility/environment/environmentManager');
 
 let directive3_0_0 = new upgrade_directive('3.0.0');
@@ -36,8 +37,8 @@ directive3_0_0.settings_file_function.push(function updateSettingsFile_3_0_0() {
     const server_port_new = http_secure_enabled_new ? http_secure_port_old : http_port_old;
 
     if (http_enabled_old && http_secure_enabled_old) {
-        console.log("HarperDB 3.0.0 does not allow HTTP and HTTPS to be enabled at the same time. This upgrade has enabled " +
-            "HTTPS and disabled HTTP. You can modify this in your settings.js file.");
+        console.log(colors.yellow("HarperDB 3.0.0 does not allow HTTP and HTTPS to be enabled at the same time. This upgrade has enabled " +
+            "HTTPS and disabled HTTP. You can modify this in your settings.js file."));
     }
 
     let new_hdb_settings_vals = `   ;Settings for the HarperDB process.\n` +

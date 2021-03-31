@@ -46,7 +46,7 @@ function getDirectiveChangeDescriptions(upgrade_obj) {
     let loaded_directives = directive_manager.filterInvalidVersions(upgrade_obj);
     let upgrade_directives = getVersionsToInstall(upgrade_obj[DATA_VERSION], loaded_directives);
 
-    for(let vers of upgrade_directives) {
+    for (let vers of upgrade_directives) {
         let new_description = {};
         if (vers.change_description) {
             new_description['change_description'] = vers.change_description;
@@ -69,19 +69,13 @@ function processDirectives(upgrade_obj) {
     let loaded_directives = directive_manager.filterInvalidVersions(upgrade_obj);
 
     const data_version = upgrade_obj[DATA_VERSION];
-    const upgrade_version = upgrade_obj[UPGRADE_VERSION];
-
-    if(hdb_util.isEmptyOrZeroLength(data_version)) {
-        log.info(`Invalid value for '${DATA_VERSION}'`);
-    }
-    if(hdb_util.isEmptyOrZeroLength(upgrade_version)) {
-        log.info(`Invalid value for '${UPGRADE_VERSION}'`);
-    }
     let upgrade_directives = getVersionsToInstall(data_version, loaded_directives);
+
     let settings_func_response = [];
     let func_responses = [];
+    console.log('Starting upgrade process...');
     for (let vers of upgrade_directives) {
-        let notify_msg = `Starting upgrade to version ${vers.version}`;
+        let notify_msg = `Running upgrade from version ${vers.version}`;
         log.notify(notify_msg);
         console.log(notify_msg);
 

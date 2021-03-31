@@ -16,7 +16,7 @@ const version_3_0_0 = require('./3-0-0');
 
 let versions = new Map();
 
-//TODO:  ALL NEW DIRECTIVES MUST BE ADDED TO VERSIONS
+//ALL DIRECTIVES MUST BE ADDED TO VERSIONS
 if (version_3_0_0) {
     version_3_0_0.forEach((version) => {
         versions.set(version.version, version);
@@ -32,13 +32,12 @@ function filterInvalidVersions(upgrade_obj) {
     let curr_version = upgrade_obj[DATA_VERSION];
     let new_version = upgrade_obj[UPGRADE_VERSION];
 
-    if (hdb_utils.isEmptyOrZeroLength(curr_version) || hdb_utils.isEmptyOrZeroLength(curr_version)) {
+    if (hdb_utils.isEmptyOrZeroLength(curr_version) || hdb_utils.isEmptyOrZeroLength(new_version)) {
         //we should never get to this scenario but if so, we will return empty array so that server can try to start
         // with current install and data
-        const version_error = new Error(`Version data is not tracked correctly.  Current version data: ${upgrade_obj}`);
+        hdb_log.info(`Version data is not tracked correctly.  Current version data: ${upgrade_obj}`);
         hdb_log.error('There was an error when trying to evaluate the version information for your instance.  Trying to ' +
             'start the server anyways but it may fail. If you continue to have this problem, please contact support@harperdb.io.');
-        hdb_log.error(version_error);
         return [];
     }
 

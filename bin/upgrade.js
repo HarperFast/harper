@@ -15,6 +15,7 @@
  *
  */
 const CLI = require('clui');
+const colors = require("colors/safe");
 const env = require('../utility/environment/environmentManager');
 const log = require('../utility/logging/harper_logger');
 const hdb_util = require('../utility/common_utils');
@@ -40,16 +41,14 @@ module.exports = {
  * Check to see if an instance of HDB is running. Throws an error if running, otherwise it will just return to resolve the promise.
  * @throws
  */
-function checkIfRunning() {
-    isHarperRunning().then(hdb_running => {
-        if(hdb_running) {
-            let run_err = "HarperDB is running, please stop HarperDB with 'harperdb stop' and run the upgrade command again.";
-            printToLogAndConsole(run_err, log.ERR);
-            throw new Error(run_err);
-        }
-    }).catch(err => {
-        throw err;
-    });
+async function checkIfRunning() {
+    const hdb_running = await isHarperRunning();
+    if(hdb_running) {
+        let run_err = "HarperDB is running, please stop HarperDB with 'harperdb stop' and run the upgrade command again.";
+        console.log(colors.red(run_err));
+        log.error(run_err);
+        process.exit(1);
+    }
 }
 
 /**
@@ -74,6 +73,8 @@ async function upgrade(upgrade_obj) {
         }
     }
 
+    //The upgrade version should always be included in the hdb_upgrade_info object returned from the getVersion function
+    // above but testing for it and using the version from package.json just in case it is not
     let current_hdb_version = hdb_upgrade_info[UPGRADE_VERSION] ? hdb_upgrade_info[UPGRADE_VERSION] : version.version();
     if(!current_hdb_version) {
         console.log('Current Version field missing from the package.json file.  Cannot continue with upgrade.  If you need support, please contact support@harperdb.io');
@@ -82,12 +83,7 @@ async function upgrade(upgrade_obj) {
     }
 
     // check if already running, ends process if error caught.
-    try {
-        await checkIfRunning();
-    } catch(e) {
-        console.log(e.message);
-        throw e;
-    }
+    await checkIfRunning();
 
     let start_upgrade;
 

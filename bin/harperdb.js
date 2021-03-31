@@ -9,12 +9,12 @@ const upgrade = require('./upgrade');
 const fs = require('fs');
 const logger = require('../utility/logging/harper_logger');
 const hdb_terms = require('../utility/hdbTerms');
-const hdb_utils = require('../utility/common_utils');
-const {promisify} = require('util');
+// const hdb_utils = require('../utility/common_utils');
+// const {promisify} = require('util');
 const path = require('path');
 const os = require('os');
 
-const p_upgrade = promisify(upgrade.upgrade);
+// const p_upgrade = promisify(upgrade.upgrade);
 
 harperDBService();
 
@@ -101,7 +101,7 @@ function harperDBService() {
                 break;
             case hdb_terms.SERVICE_ACTIONS_ENUM.UPGRADE:
                 logger.setLogLevel(logger.INFO);
-                p_upgrade(null)
+                upgrade.upgrade(null)
                     .then(() => {
                         // all done, no-op
                         console.log(`Your instance of HDB is up to date!`);
