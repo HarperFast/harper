@@ -1,7 +1,9 @@
 'use strict';
 
-const old_environment_utility = require('./nodeLMDB/environmentUtility');
+//keep these 2 dependencies in this exact order, otherwise this will fail on OSX
 const new_environment_utility = require('../../utility/lmdb/environmentUtility');
+const old_environment_utility = require('./nodeLMDB/environmentUtility');
+
 const {insertRecords} = require('../../utility/lmdb/writeUtility');
 const lmdb_common = require('../../utility/lmdb/commonUtility');
 const lmdb_terms = require('../../utility/lmdb/terms');
