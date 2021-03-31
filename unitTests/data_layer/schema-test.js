@@ -605,7 +605,7 @@ describe('Test schema module', function() {
             let result = await schema.createAttribute(CREATE_ATTR_OBJECT_TEST);
             expect(bridge_create_attr_stub).to.have.been.calledWith(CREATE_ATTR_OBJECT_TEST);
             expect(signal_schema_change_stub).to.have.been.calledOnce;
-            expect(result).to.equal(attribute_structure_fake);
+            expect(result).to.equal("attribute 'dogsrule.catsdrool.name' successfully created.");
         });
 
         it('should throw schema doesnt exist error', async () => {

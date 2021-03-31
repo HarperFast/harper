@@ -8,7 +8,8 @@ const SCHEMA_NAME = 'schema';
 const BASE_PATH = test_utils.getMockFSPath();
 const BASE_SCHEMA_PATH = path.join(BASE_PATH, SCHEMA_NAME);
 const SYSTEM_SCHEMA_PATH = path.join(BASE_SCHEMA_PATH, SYSTEM_FOLDER_NAME);
-
+const TRANSACTIONS_NAME = 'transactions';
+const BASE_TXN_PATH = path.join(BASE_PATH, TRANSACTIONS_NAME);
 
 const rewire = require('rewire');
 const lmdb_create_records = rewire('../../../../../data_layer/harperBridge/lmdbBridge/lmdbMethods/lmdbCreateRecords');
@@ -113,20 +114,17 @@ describe('Test lmdbUpsertRecords module',() => {
     let hdb_schema_env;
     let hdb_table_env;
     let hdb_attribute_env;
-    let rw_env_util;
     const uuid_v4_stub = { v4: () => NEW_HASH_VALUE };
     let rw_process_rows;
     let rw_upsert_records;
 
     before(()=>{
-        rw_env_util = environment_utility.__set__('MAP_SIZE', 10*1024*1024*1024);
         date_stub = sandbox.stub(Date, 'now').returns(TIMESTAMP);
         rw_process_rows = lmdb_process_rows.__set__('uuid', uuid_v4_stub);
         rw_upsert_records = lmdb_upsert_records.__set__('lmdb_process_rows', lmdb_process_rows);
     });
 
     after(() => {
-        rw_env_util();
         rw_process_rows();
         rw_upsert_records();
         date_stub.restore();
@@ -197,6 +195,15 @@ describe('Test lmdbUpsertRecords module',() => {
         });
 
         afterEach(async ()=>{
+            let env = await environment_utility.openEnvironment(path.join(BASE_SCHEMA_PATH, CREATE_TABLE_OBJ_TEST_A.schema), CREATE_TABLE_OBJ_TEST_A.table);
+            env.close();
+
+            let txn_env1 = await environment_utility.openEnvironment(path.join(BASE_TXN_PATH, CREATE_TABLE_OBJ_TEST_A.schema), CREATE_TABLE_OBJ_TEST_A.table, true);
+            txn_env1.close();
+
+            hdb_schema_env.close();
+            hdb_table_env.close();
+            hdb_attribute_env.close();
             m_time_stub.restore();
             await fs.remove(BASE_PATH);
             global.lmdb_map = undefined;

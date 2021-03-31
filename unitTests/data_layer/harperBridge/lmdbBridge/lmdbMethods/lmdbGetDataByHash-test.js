@@ -8,6 +8,8 @@ const SCHEMA_NAME = 'schema';
 const BASE_PATH = test_utils.getMockFSPath();
 const BASE_SCHEMA_PATH = path.join(BASE_PATH, SCHEMA_NAME);
 const SYSTEM_SCHEMA_PATH = path.join(BASE_SCHEMA_PATH, SYSTEM_FOLDER_NAME);
+const TRANSACTIONS_NAME = 'transactions';
+const BASE_TXN_PATH = path.join(BASE_PATH, TRANSACTIONS_NAME);
 
 const rewire = require('rewire');
 const lmdb_create_records = rewire('../../../../../data_layer/harperBridge/lmdbBridge/lmdbMethods/lmdbCreateRecords');
@@ -94,14 +96,11 @@ describe('Test lmdbGetDataByHash module', ()=>{
     let hdb_schema_env;
     let hdb_table_env;
     let hdb_attribute_env;
-    let rw_env_util;
     before(()=>{
-        rw_env_util = environment_utility.__set__('MAP_SIZE', 5*1024*1024*1024);
         date_stub = sandbox.stub(Date, 'now').returns(TIMESTAMP);
     });
 
     after(()=>{
-        rw_env_util();
         date_stub.restore();
     });
 
@@ -142,6 +141,15 @@ describe('Test lmdbGetDataByHash module', ()=>{
         });
 
         afterEach(async ()=>{
+            let env = await environment_utility.openEnvironment(path.join(BASE_SCHEMA_PATH, CREATE_TABLE_OBJ_TEST_A.schema), CREATE_TABLE_OBJ_TEST_A.table);
+            env.close();
+
+            let txn_env1 = await environment_utility.openEnvironment(path.join(BASE_TXN_PATH, CREATE_TABLE_OBJ_TEST_A.schema), CREATE_TABLE_OBJ_TEST_A.table, true);
+            txn_env1.close();
+
+            hdb_schema_env.close();
+            hdb_table_env.close();
+            hdb_attribute_env.close();
             await fs.remove(BASE_PATH);
             global.lmdb_map = undefined;
             delete global.hdb_schema;
@@ -149,34 +157,34 @@ describe('Test lmdbGetDataByHash module', ()=>{
 
         it('test validation', async()=>{
             await test_utils.assertErrorAsync(lmdb_get_data_by_hash, [{}],
-                new Error("Schema can't be blank,Table can't be blank,Hash values can't be blank,Get attributes can't be blank"));
+                new Error("'schema' is required. 'table' is required. 'hash_values' is required. 'get_attributes' is required"));
 
             let search_obj = new SearchByHashObject('dev');
             await test_utils.assertErrorAsync(lmdb_get_data_by_hash, [search_obj],
-                new Error("Table can't be blank,Hash values can't be blank,Get attributes can't be blank"));
+                new Error("'table' is required. 'hash_values' is required. 'get_attributes' is required"));
 
             search_obj = new SearchByHashObject('dev', 'dog');
             await test_utils.assertErrorAsync(lmdb_get_data_by_hash, [search_obj],
-                new Error("Hash values can't be blank,Get attributes can't be blank"));
+                new Error("'hash_values' is required. 'get_attributes' is required"));
 
             search_obj = new SearchByHashObject('dev', 'dog',[8]);
             await test_utils.assertErrorAsync(lmdb_get_data_by_hash, [search_obj],
-                new Error("Get attributes can't be blank"));
+                new Error("'get_attributes' is required"));
 
             search_obj = new SearchByHashObject('dev', 'dog', [8], ALL_FETCH_ATTRIBUTES);
             await test_utils.assertErrorAsync(lmdb_get_data_by_hash, [search_obj], undefined);
 
             search_obj = new SearchByHashObject('dev', 'dog', 8, ALL_FETCH_ATTRIBUTES);
-            await test_utils.assertErrorAsync(lmdb_get_data_by_hash, [search_obj], new Error('hash_values must be an array'));
+            await test_utils.assertErrorAsync(lmdb_get_data_by_hash, [search_obj], new Error("'hash_values' must be an array"));
 
             search_obj = new SearchByHashObject('dev', 'dog', [8], 'test');
-            await test_utils.assertErrorAsync(lmdb_get_data_by_hash, [search_obj], new Error('get_attributes must be an array'));
+            await test_utils.assertErrorAsync(lmdb_get_data_by_hash, [search_obj], new Error("'get_attributes' must be an array"));
 
             search_obj = new SearchByHashObject('dev', 'dog', [], ALL_FETCH_ATTRIBUTES);
-            await test_utils.assertErrorAsync(lmdb_get_data_by_hash, [search_obj], new Error('Hash values can\'t be blank'));
+            await test_utils.assertErrorAsync(lmdb_get_data_by_hash, [search_obj], new Error("'hash_values' must contain at least 1 items"));
 
             search_obj = new SearchByHashObject('dev', 'dog', [8], []);
-            await test_utils.assertErrorAsync(lmdb_get_data_by_hash, [search_obj], new Error('Get attributes can\'t be blank'));
+            await test_utils.assertErrorAsync(lmdb_get_data_by_hash, [search_obj], new Error("'get_attributes' does not contain 1 required value(s). 'get_attributes' must contain at least 1 items"));
         });
 
         it('test finding 1 row', async()=>{

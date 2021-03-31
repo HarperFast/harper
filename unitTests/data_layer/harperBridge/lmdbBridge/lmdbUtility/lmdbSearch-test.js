@@ -41,19 +41,16 @@ const thread_search_function = lmdb_search.__get__('threadSearch');
 
 describe('test lmdbSearch module', ()=>{
     let date_stub;
-    let rw_env_util;
     before(()=>{
         test_data.forEach(record=>{
             Object.keys(record).forEach(key=>{
                 record[key] = common_utils.autoCast(record[key]);
             });
         });
-        rw_env_util = environment_utility.__set__('MAP_SIZE', 5*1024*1024*1024);
         date_stub = sandbox.stub(Date, 'now').returns(TIMESTAMP);
     });
 
     after(()=>{
-        rw_env_util();
         date_stub.restore();
     });
 
@@ -148,10 +145,16 @@ describe('test lmdbSearch module', ()=>{
             assert.deepStrictEqual(search_type, lmdb_terms.SEARCH_TYPES.STARTS_WITH);
         });
 
-        it('test for unknown search_type', ()=>{
+        it('test for wildcard in middle of value is equals', ()=>{
             let search_object = new SearchObject('dev', 'dog', 'name', 'Ky*le', 'id', ['id', 'name']);
-            let search_type =test_utils.assertErrorSync(create_search_type_function, [search_object, 'id'], LMDB_ERRORS.UNKNOWN_SEARCH_TYPE);
-            assert.deepStrictEqual(search_type, undefined);
+            let search_type =test_utils.assertErrorSync(create_search_type_function, [search_object, 'id'], undefined);
+            assert.deepStrictEqual(search_type, lmdb_terms.SEARCH_TYPES.EQUALS);
+        });
+
+        it('test for percent wildcard in middle of value is equals', ()=>{
+            let search_object = new SearchObject('dev', 'd%og', 'name', 'Kyle', 'id', ['id', 'name']);
+            let search_type =test_utils.assertErrorSync(create_search_type_function, [search_object, 'id'], undefined);
+            assert.deepStrictEqual(search_type, lmdb_terms.SEARCH_TYPES.EQUALS);
         });
 
         it('test for > comparator is GREATER_THAN', ()=>{
@@ -205,18 +208,19 @@ describe('test lmdbSearch module', ()=>{
 
             env = await environment_utility.createEnvironment(DEV_SCHEMA_PATH, 'test');
             await environment_utility.createDBI(env, 'id', false);
-            await environment_utility.createDBI(env, 'temperature', true, lmdb_terms.DBI_KEY_TYPES.NUMBER);
-            await environment_utility.createDBI(env, 'temperature_double', true, lmdb_terms.DBI_KEY_TYPES.NUMBER);
-            await environment_utility.createDBI(env, 'temperature_neg', true, lmdb_terms.DBI_KEY_TYPES.NUMBER);
-            await environment_utility.createDBI(env, 'temperature_pos', true, lmdb_terms.DBI_KEY_TYPES.NUMBER);
-            await environment_utility.createDBI(env, 'temperature_str', true, lmdb_terms.DBI_KEY_TYPES.STRING);
-            await environment_utility.createDBI(env, 'state', true, lmdb_terms.DBI_KEY_TYPES.STRING);
-            await environment_utility.createDBI(env, 'city', true, lmdb_terms.DBI_KEY_TYPES.STRING);
+            await environment_utility.createDBI(env, 'temperature', true);
+            await environment_utility.createDBI(env, 'temperature_double', true);
+            await environment_utility.createDBI(env, 'temperature_neg', true);
+            await environment_utility.createDBI(env, 'temperature_pos', true);
+            await environment_utility.createDBI(env, 'temperature_str', true);
+            await environment_utility.createDBI(env, 'state', true);
+            await environment_utility.createDBI(env, 'city', true);
 
-            write_utility.insertRecords(env, 'id', ['id', 'temperature', 'temperature_str', 'state', 'city'], test_data);
+            await write_utility.insertRecords(env, 'id', ['id', 'temperature', 'temperature_str', 'state', 'city'], test_data);
         });
 
         after(async () => {
+            env.close();
             await fs.remove(BASE_PATH);
             global.lmdb_map = undefined;
         });
@@ -781,12 +785,13 @@ describe('test lmdbSearch module', ()=>{
 
     describe('test threadSearch function', ()=>{
         let env;
+        let temp_env;
         let rw_ts_path;
         before(async () => {
             test_data = require('../../../../testData');
             rw_ts_path = lmdb_search.__set__('LMDB_THREAD_SEARCH_MODULE_PATH', path.join(__dirname, '_lmdbThreadSearch'));
             await fs.mkdirp(SYSTEM_SCHEMA_PATH);
-            let temp_env = await environment_utility.createEnvironment(SYSTEM_SCHEMA_PATH, 'hdb_temp');
+            temp_env = await environment_utility.createEnvironment(SYSTEM_SCHEMA_PATH, 'hdb_temp');
             environment_utility.createDBI(temp_env, 'id', false);
 
             await fs.mkdirp(DEV_SCHEMA_PATH);
@@ -805,18 +810,20 @@ describe('test lmdbSearch module', ()=>{
 
             env = await environment_utility.createEnvironment(DEV_SCHEMA_PATH, 'test');
             await environment_utility.createDBI(env, 'id', false);
-            await environment_utility.createDBI(env, 'temperature', true, lmdb_terms.DBI_KEY_TYPES.NUMBER);
-            await environment_utility.createDBI(env, 'temperature_double', true, lmdb_terms.DBI_KEY_TYPES.NUMBER);
-            await environment_utility.createDBI(env, 'temperature_neg', true, lmdb_terms.DBI_KEY_TYPES.NUMBER);
-            await environment_utility.createDBI(env, 'temperature_pos', true, lmdb_terms.DBI_KEY_TYPES.NUMBER);
-            await environment_utility.createDBI(env, 'temperature_str', true, lmdb_terms.DBI_KEY_TYPES.STRING);
-            await environment_utility.createDBI(env, 'state', true, lmdb_terms.DBI_KEY_TYPES.STRING);
-            await environment_utility.createDBI(env, 'city', true, lmdb_terms.DBI_KEY_TYPES.STRING);
+            await environment_utility.createDBI(env, 'temperature', true);
+            await environment_utility.createDBI(env, 'temperature_double', true);
+            await environment_utility.createDBI(env, 'temperature_neg', true);
+            await environment_utility.createDBI(env, 'temperature_pos', true);
+            await environment_utility.createDBI(env, 'temperature_str', true);
+            await environment_utility.createDBI(env, 'state', true);
+            await environment_utility.createDBI(env, 'city', true);
 
-            write_utility.insertRecords(env, 'id', ['id', 'temperature', 'temperature_str', 'state', 'city'], test_data);
+            await write_utility.insertRecords(env, 'id', ['id', 'temperature', 'temperature_str', 'state', 'city'], test_data);
         });
 
         after(async () => {
+            env.close();
+            temp_env.close();
             rw_ts_path();
             await fs.remove(BASE_PATH);
             global.lmdb_map = undefined;

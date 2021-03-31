@@ -33,11 +33,13 @@ const TEST_SEARCH_OBJ = {
 };
 
 const ERR_MSGS = {
-    SCHEMA: "Schema can't be blank",
-    TABLE: "Table can't be blank",
-    HASHES: "Hash values can't be blank",
-    GET_ATTR: "Get attributes can't be blank"
-}
+    SCHEMA: "'schema' is not allowed to be empty",
+    TABLE: "'table' is not allowed to be empty",
+    HASHES: "'hash_values' must be an array",
+    HASHES_2: "'hash_values' must contain at least 1 items",
+    GET_ATTR: "'get_attributes' must be an array",
+    GET_ATTR_2: "'get_attributes' does not contain 1 required value(s). 'get_attributes' must contain at least 1 items"
+};
 
 function setupTestData() {
     const test_data = deepClone(TEST_DATA_DOG);
@@ -110,7 +112,7 @@ describe('fsGetDataByHash', () => {
             err = e;
         }
 
-        expect(err.message).to.equal("Schema can't be blank,Table can't be blank,Hash values can't be blank,Get attributes can't be blank");
+        expect(err.message).to.equal("'schema' is required. 'table' is required. 'hash_values' is required. 'get_attributes' is required");
     }));
 
     it('Should return error if empty string is passed in for schema', mochaAsyncWrapper(async () => {
@@ -166,7 +168,7 @@ describe('fsGetDataByHash', () => {
             err = e;
         }
 
-        expect(err.message).to.equal(ERR_MSGS.HASHES);
+        expect(err.message).to.equal(ERR_MSGS.HASHES_2);
     }));
 
     it('Should return error if empty string is passed in for get_attributes', mochaAsyncWrapper(async () => {
@@ -194,6 +196,6 @@ describe('fsGetDataByHash', () => {
             err = e;
         }
 
-        expect(err.message).to.equal(ERR_MSGS.GET_ATTR);
+        expect(err.message).to.equal(ERR_MSGS.GET_ATTR_2);
     }));
 });

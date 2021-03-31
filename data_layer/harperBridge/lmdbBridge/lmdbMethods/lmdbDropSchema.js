@@ -9,6 +9,7 @@ const delete_records = require('./lmdbDeleteRecords');
 const get_data_by_hash = require('./lmdbGetDataByHash');
 const search_data_by_value = require('./lmdbSearchByValue');
 const hdb_terms = require('../../../../utility/hdbTerms');
+const hdb_utils = require('../../../../utility/common_utils');
 const path = require('path');
 const {getBaseSchemaPath} = require('../lmdbUtility/initializePaths');
 const { handleHDBError, hdb_errors } = require('../../../../utility/errors/hdbError');
@@ -73,9 +74,11 @@ async function validateDropSchema(drop_schema) {
         throw err;
     }
 
+    let drop_schema_cast = hdb_utils.autoCast(drop_schema);
+
     // Data found by the search function should match the drop_schema
     for (let item in search_result) {
-        if (search_result[item].name === drop_schema) {
+        if (search_result[item].name === drop_schema_cast) {
             delete_schema = drop_schema;
         }
     }

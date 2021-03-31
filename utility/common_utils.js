@@ -166,10 +166,8 @@ function isBoolean(value){
         return false;
     }
 
-    if(value === true || value === false){
-        return true;
-    }
-    return false;
+    return value === true || value === false;
+
 }
 
 /**
@@ -241,13 +239,15 @@ function autoCast(data){
  * @returns {boolean}
  */
 function autoCasterIsNumberCheck(data){
-    let contains_e = data.toUpperCase().includes('E');
-    let starts_with_zero = (data !== "0" && data.startsWith('0'));
-    if (starts_with_zero === false && contains_e === false && is_number(data)) {
+    if(data.startsWith('0.')){
         return true;
     }
 
-    return false;
+    let contains_e = data.toUpperCase().includes('E');
+    let starts_with_zero = (data !== "0" && data.startsWith('0'));
+    return !!(starts_with_zero === false && contains_e === false && is_number(data));
+
+
 }
 
 /**
@@ -507,6 +507,7 @@ function isClusterOperation(operation_name) {
  * sends a processed transaction from HarperDB to socketcluster
  * @param channel
  * @param transaction
+ * @param originator
  */
 function sendTransactionToSocketCluster(channel, transaction, originator) {
     if(global.hdb_socket_client !== undefined) {
@@ -595,8 +596,8 @@ function promisifyPapaParse() {
 
 /**
  * Removes the byte order mark from a string
- * @param string
  * @returns a string minus any byte order marks
+ * @param data_string
  */
 function removeBOM(data_string) {
     if (typeof data_string !== 'string') {

@@ -8,7 +8,6 @@ const LMDBUpsertTransactionObject = require('./LMDBUpsertTransactionObject');
 const LMDBDeleteTransactionObject = require('./LMDBDeleteTransactionObject');
 
 const lmdb_terms = require('../../../../utility/lmdb/terms');
-const lmdb_utils = require('../../../../utility/lmdb/commonUtility');
 const hdb_util = require('../../../../utility/common_utils');
 const { HDB_SETTINGS_NAMES } = require('../../../../utility/hdbTerms');
 const env_mngr = require('../../../../utility/environment/environmentManager');
@@ -45,25 +44,20 @@ async function writeTransaction(hdb_operation, lmdb_response){
 
     if(txn_env !== undefined){
         environment_util.initializeDBIs(txn_env, lmdb_terms.TRANSACTIONS_DBI_NAMES_ENUM.TIMESTAMP, lmdb_terms.TRANSACTIONS_DBIS);
-        let txn = undefined;
+
         try {
-            txn = txn_env.beginTxn();
-
             let txn_timestamp = txn_object.timestamp;
-            let txn_timestamp_key_value = lmdb_utils.convertKeyValueToWrite(txn_timestamp, lmdb_terms.DBI_KEY_TYPES.NUMBER);
-            txn.putString(txn_env.dbis[lmdb_terms.TRANSACTIONS_DBI_NAMES_ENUM.TIMESTAMP], txn_timestamp_key_value, JSON.stringify(txn_object), {noOverwrite: true});
-            if (!hdb_util.isEmpty(txn_object.user_name)) {
-                txn.putString(txn_env.dbis[lmdb_terms.TRANSACTIONS_DBI_NAMES_ENUM.USER_NAME], txn_object.user_name.toString(), txn_timestamp.toString());
-            }
-            for (let x = 0; x < txn_object.hash_values.length; x++) {
-                txn.putString(txn_env.dbis[lmdb_terms.TRANSACTIONS_DBI_NAMES_ENUM.HASH_VALUE], txn_object.hash_values[x].toString(), txn_timestamp.toString());
-            }
-
-            txn.commit();
+            let result = await txn_env.dbis[lmdb_terms.TRANSACTIONS_DBI_NAMES_ENUM.TIMESTAMP].ifNoExists(txn_timestamp, ()=> {
+                txn_env.dbis[lmdb_terms.TRANSACTIONS_DBI_NAMES_ENUM.TIMESTAMP].put(txn_timestamp, txn_object);
+                if (!hdb_util.isEmpty(txn_object.user_name)) {
+                    txn_env.dbis[lmdb_terms.TRANSACTIONS_DBI_NAMES_ENUM.USER_NAME].put(txn_object.user_name, txn_timestamp);
+                }
+                for (let x = 0; x < txn_object.hash_values.length; x++) {
+                    txn_env.dbis[lmdb_terms.TRANSACTIONS_DBI_NAMES_ENUM.HASH_VALUE].put(txn_object.hash_values[x], txn_timestamp);
+                }
+            });
+            return result;
         }catch(e){
-            if(txn !== undefined){
-                txn.abort();
-            }
             throw e;
         }
     }

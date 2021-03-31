@@ -100,6 +100,7 @@ async function parseMessage(runner_message) {
             }
             break;
         case hdb_terms.JOB_TYPE_ENUM.delete_files_before:
+        case hdb_terms.JOB_TYPE_ENUM.delete_records_before:
             try {
                 response = await runCSVJob(runner_message, hdb_delete.deleteFilesBefore, runner_message.json);
             } catch(e) {
