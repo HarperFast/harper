@@ -9,12 +9,8 @@ const upgrade = require('./upgrade');
 const fs = require('fs');
 const logger = require('../utility/logging/harper_logger');
 const hdb_terms = require('../utility/hdbTerms');
-// const hdb_utils = require('../utility/common_utils');
-// const {promisify} = require('util');
 const path = require('path');
 const os = require('os');
-
-// const p_upgrade = promisify(upgrade.upgrade);
 
 harperDBService();
 
@@ -59,7 +55,6 @@ function harperDBService() {
             }
         }
 
-        let tar_file_path = process.argv[3];
         let result = undefined;
         switch (service) {
             case hdb_terms.SERVICE_ACTIONS_ENUM.RUN:

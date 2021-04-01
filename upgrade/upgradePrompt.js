@@ -3,7 +3,7 @@
 const log = require('../utility/logging/harper_logger');
 const { Select } = require('enquirer');
 const os = require('os');
-const process_directives = require('./processDirectives');
+const process_directives = require('./directivesManager');
 
 const UPGRADE_PROCEED = 'Yes, proceed';
 const UPGRADE_CANCEL = 'No, cancel the upgrade';

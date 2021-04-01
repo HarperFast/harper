@@ -102,6 +102,7 @@ function run_install(callback) {
 /**
  * Makes a call to insert the hdb_info table with the newly installed version.  This is written as a callback function
  * as we can't make the installer async until we pick a new CLI base.
+ *
  * @param callback
  */
 function insertHdbInfo(callback) {

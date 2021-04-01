@@ -11,7 +11,7 @@ const insert = require('../../data_layer/insert');
 const version = require('../../bin/version');
 const harper_logger = require('../../utility/logging/harper_logger');
 const hdb_terms = require('../../utility/hdbTerms');
-const directiveManager = require('../../upgrade/directives/directiveManager');
+const directiveManager = require('../../upgrade/directives/directivesController');
 const os = require('os');
 const colors = require('colors')
 

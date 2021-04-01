@@ -1,7 +1,7 @@
 'use strict';
 
 /**
- * The directive manager serves as an interface between directive files and HDB at large.  Since we don't maintain file
+ * The directive controller serves as an interface between directive files and HDB at large.  Since we don't maintain file
  * structure in the installed version, we need to require all directive files in order to make them accessible.
  *
  * Any time a directive file is added to the project, it must be required in this manager.
@@ -28,7 +28,7 @@ function getSortedVersions() {
     return sorted_keys;
 }
 
-function filterInvalidVersions(upgrade_obj) {
+function getVersionsForUpgrade(upgrade_obj) {
     let curr_version = upgrade_obj[DATA_VERSION];
     let new_version = upgrade_obj[UPGRADE_VERSION];
 
@@ -48,7 +48,7 @@ function filterInvalidVersions(upgrade_obj) {
 }
 
 function hasRequiredUpgrades(upgrade_obj) {
-    const valid_versions = filterInvalidVersions(upgrade_obj);
+    const valid_versions = getVersionsForUpgrade(upgrade_obj);
     return valid_versions.length > 0;
 }
 
@@ -65,6 +65,6 @@ function getModuleByVersion(version) {
 module.exports = {
     getSortedVersions,
     getModuleByVersion,
-    filterInvalidVersions,
+    getVersionsForUpgrade,
     hasRequiredUpgrades
 };

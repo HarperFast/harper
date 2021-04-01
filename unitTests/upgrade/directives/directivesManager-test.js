@@ -1,0 +1,235 @@
+'use strict';
+
+const test_util = require('../../test_utils');
+test_util.preTestPrep();
+
+const assert = require('assert');
+const chai = require('chai');
+const sinon = require('sinon');
+const { expect } = chai;
+
+const rewire = require('rewire');
+const fs = require('fs');
+const PropertiesReader = require('properties-reader');
+
+const directivesManager_rw = rewire('../../../upgrade/directivesManager');
+const upgrade_directive = require('../../../upgrade/UpgradeDirective');
+const directivesController_stub = require('./testDirectives/directivesControllerStub');
+
+const BASE = process.cwd();
+// let TEST_SETTINGS_PATH = BASE + '/testsettings.js';
+// let DIR_PATH_BASE = BASE + '/processDirectivesTest/';
+
+//TODO: Move the files created in these tests to the new test harness.
+
+//Use the manager stub in order to control the tests.
+directivesManager_rw.__set__('directivesController', directivesController_stub);
+
+const VERSION_KEYS = {
+    DATA: 'data_version',
+    UPGRADE: 'upgrade_version'
+};
+
+function generateUpgradeObj(data_ver, upgrade_ver) {
+    return {
+        [VERSION_KEYS.DATA]: data_ver,
+        [VERSION_KEYS.UPGRADE]: upgrade_ver
+    }
+}
+
+describe('processDirectives Module', function() {
+    // before(() => {
+    //     directivesManager_rw.__set__('hdb_base', DIR_PATH_BASE);
+    // });
+
+    after(() => {
+        rewire('../../../upgrade/directivesManager');
+        // fs.unlinkSync(SETTINGS_PATH);
+    });
+
+    describe('Test processDirectives()', () => {
+        let processDirectives_rw = directivesManager_rw.__get__('processDirectives');
+        const directive_msgs = [ 'processing settings func for 3.0.0 upgrade', 'processing other func for 3.0.0 upgrade',
+            'processing a second func for 3.0.0 upgrade', 'processing settings func for 3.1.0 upgrade', 'processing other func for 3.1.0 upgrade',
+            'processing settings func for 4.1.1 upgrade', 'processing other func for 4.1.1 upgrade']
+        // directivesManager_rw.__set__('settings_file_path', TEST_SETTINGS_PATH);
+        //
+        // afterEach( function () {
+        //     try {
+        //         test_util.cleanUpDirectories(BASE + '/processDirectivesTest/');
+        //     } catch(e) {
+        //         console.error(e);
+        //     }
+        // });
+
+        it('test upgrade from 3.0 to 3.1', function() {
+            const test_upgrade_ver = '3.1.0'
+            const test_upgrade_obj = generateUpgradeObj('3.0.0', test_upgrade_ver);
+
+            const test_result = processDirectives_rw(test_upgrade_obj);
+
+            expect(test_result.length).to.eql(2);
+            test_result.forEach(str => {
+                expect(str.includes(test_upgrade_ver)).to.be.true;
+            })
+
+        });
+
+        it('test upgrade to 3.0.0', function() {
+            const test_upgrade_ver = '3.0.0'
+            const test_upgrade_obj = generateUpgradeObj('2.9', test_upgrade_ver);
+
+            const test_result = processDirectives_rw(test_upgrade_obj);
+
+            expect(test_result.length).to.eql(3);
+            test_result.forEach(str => {
+                expect(str.includes(test_upgrade_ver)).to.be.true;
+            })
+        });
+
+        it('test upgrade to 5.1.1', function() {
+            const test_upgrade_ver = '5.1.1'
+            const test_upgrade_obj = generateUpgradeObj('2.9', test_upgrade_ver);
+
+            const test_result = processDirectives_rw(test_upgrade_obj);
+
+            expect(test_result.length).to.equal(directive_msgs.length);
+            expect(test_result).to.deep.equal(directive_msgs);
+        });
+
+        it('test upgrade to 3.0.0 from older version', function() {
+            const test_upgrade_ver = '3.0.0'
+            const test_upgrade_obj = generateUpgradeObj('1.9', test_upgrade_ver);
+
+            const test_result = processDirectives_rw(test_upgrade_obj);
+
+            expect(test_result.length).to.equal(3);
+            expect(test_result).to.deep.equal([directive_msgs[0], directive_msgs[1], directive_msgs[2]]);
+        });
+    })
+
+    describe('Test runFunctions()', function() {
+        let runFunctions = directivesManager_rw.__get__('runFunctions');
+        let results = [];
+
+        afterEach(function() {
+           results = [];
+        });
+
+        function func1() {
+          results.push('Function 1 running');
+        }
+
+        function func2() {
+            results.push('Function 2 running');
+        }
+
+        function bad_func() {
+            throw new Error('test error');
+        };
+
+        it('Test nominal case with valid functions', () => {
+            runFunctions([func1,func2]);
+            assert.equal(results.length, 2, 'Did not get expected function results');
+        });
+
+        it('Test exception handling, expect func2 to not run', () => {
+            let result = undefined;
+            try {
+                runFunctions([bad_func,func2]);
+            } catch(e) {
+                result = e;
+            }
+            assert.equal((result instanceof Error), true, 'Did not get expected exception');
+            assert.equal(results.length, 0, 'Did not get expected function results');
+        });
+        it('Test runFunctions with null parameter', () => {
+            let result = undefined;
+            try {
+                runFunctions(null);
+            } catch(e) {
+                result = e;
+            }
+            assert.equal(results.length, 0, 'Expected empty results array');
+        });
+        it('Test runFunctions with null parameter', () => {
+            let result = undefined;
+            try {
+                runFunctions(null);
+            } catch(e) {
+                result = e;
+            }
+            assert.equal(results.length, 0, 'Expected empty results array');
+        });
+        it('Test runFunctions with non array parameter', () => {
+            let result = undefined;
+            try {
+                runFunctions('test');
+            } catch(e) {
+                result = e;
+            }
+            assert.equal(results.length, 0, 'Expected empty results array');
+        });
+        it('Test runFunctions with non function values', () => {
+            let result = undefined;
+            try {
+                runFunctions(['test']);
+            } catch(e) {
+                result = e;
+            }
+            assert.equal(results.length, 0, 'Expected empty results array');
+        });
+    });
+
+    describe('Test getUpgradeDirectivesToInstall()', function() {
+        let getUpgradeDirectivesToInstall_rw = directivesManager_rw.__get__('getUpgradeDirectivesToInstall');
+        let getVersionsForUpgrade_rw = directivesController_stub.__get__('getVersionsForUpgrade');
+
+        it('Test getUpgradeDirectivesToInstall nominal case', function() {
+            const test_upgrade_obj = generateUpgradeObj('3.0.0', '4.1.1');
+            const loaded_directives = getVersionsForUpgrade_rw(test_upgrade_obj);
+
+            let directives_to_run = getUpgradeDirectivesToInstall_rw(loaded_directives);
+            assert.equal(directives_to_run.length, 2, 'Expected 2 version values back');
+            assert.equal(directives_to_run[0].version, '3.1.0', 'Expected 3.1.0 version returned');
+            assert.equal(directives_to_run[1].version, '4.1.1', 'Expected 4.1.1 version returned');
+        });
+
+        it('Test getUpgradeDirectivesToInstall  with invalid number version', function() {
+            const test_upgrade_obj = generateUpgradeObj('3.0.0', '4.1.1');
+            const loaded_directives = getVersionsForUpgrade_rw(test_upgrade_obj);
+            loaded_directives.push(new upgrade_directive('3.1.1.22'));
+            let directives_to_run = getUpgradeDirectivesToInstall_rw(loaded_directives);
+            assert.equal(directives_to_run.length, 2, 'Expected 2 upgrade numbers back');
+            assert.equal(directives_to_run[0].version, '3.1.0', 'Expected 3.1.0 version returned');
+            assert.equal(directives_to_run[1].version, '4.1.1', 'Expected 4.1.1 version returned');
+        });
+
+        it('Test getUpgradeDirectivesToInstall  with null directive parameter', function() {
+            let versions_to_run = getUpgradeDirectivesToInstall_rw(null);
+            assert.equal(versions_to_run.length, 0, 'Expected 0 upgrade numbers back');
+        });
+    });
+
+    describe('Test getDirectiveChangeDescriptions()', function() {
+
+        it('Test getDirectiveChangeDescriptions - nominal case', function() {
+            const test_upgrade_obj = generateUpgradeObj('3.0.0', '4.1.1');
+            const change_descriptions = directivesManager_rw.getDirectiveChangeDescriptions(test_upgrade_obj);
+
+            assert.equal(change_descriptions.length, 2, 'Expected 2 change descriptions returned');
+            assert.equal(change_descriptions[0].change_description, 'Change descriptions for 3.1.0', 'Expected 3.1.0 change description returned');
+            assert.equal(change_descriptions[1].change_description, 'Change descriptions for 4.1.1', 'Expected 4.1.1 change description returned');
+        });
+
+        it('Test getDirectiveChangeDescriptions - no valid versions', function() {
+            const test_upgrade_obj = generateUpgradeObj('1.0.0', '2.1.1');
+            const change_descriptions = directivesManager_rw.getDirectiveChangeDescriptions(test_upgrade_obj);
+
+            assert.equal(change_descriptions.length, 0, 'Expected 0 change descriptions returned');
+        });
+    });
+});
+
+
+

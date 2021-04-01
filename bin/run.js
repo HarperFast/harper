@@ -61,6 +61,8 @@ async function run() {
     }
 
     try {
+        await checkTransactionLogEnvironmentsExist();
+
         // Check to see if an upgrade is needed based on existing hdb_info data.  If so, we need to force the user to upgrade.
         let upgrade_vers;
         try {
@@ -78,8 +80,6 @@ async function run() {
             }
             process.exit(1);
         }
-
-        await checkTransactionLogEnvironmentsExist();
 
         let is_in_use = await isPortInUse();
         if(!is_in_use) {

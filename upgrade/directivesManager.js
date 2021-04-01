@@ -1,39 +1,15 @@
 'use strict';
 
-const env = require('../utility/environment/environmentManager');
 const hdb_util = require('../utility/common_utils');
 const log = require('../utility/logging/harper_logger');
-const PropertiesReader = require('properties-reader');
-const directive_manager = require('./directives/directiveManager');
+const directivesController = require('./directives/directivesController');
 const terms = require('../utility/hdbTerms');
-const { DATA_VERSION, UPGRADE_VERSION } = terms.UPGRADE_JSON_FIELD_NAMES_ENUM;
+const { DATA_VERSION } = terms.UPGRADE_JSON_FIELD_NAMES_ENUM;
 
 module.exports = {
-    processDirectives,
-    getDirectiveChangeDescriptions
+    getDirectiveChangeDescriptions,
+    processDirectives
 };
-
-let hdb_boot_properties = undefined;
-let hdb_properties = undefined;
-
-try {
-    // We still use the PropertiesReader here as we need to write out comments during directives.
-    hdb_boot_properties = PropertiesReader(env.BOOT_PROPS_FILE_PATH);
-    hdb_properties = PropertiesReader(hdb_boot_properties.get('settings_path'));
-} catch(e) {
-    log.info(`Couldn't read settings files.`);
-}
-
-// These are stored to make unit testing easier
-let hdb_base = undefined;
-let settings_file_path = undefined;
-
-try {
-    hdb_base = hdb_properties.get('HDB_ROOT');
-    settings_file_path = hdb_boot_properties.get('settings_path');
-} catch(e) {
-    log.info('Could not set hdb_base and settings_file_path' + e);
-}
 
 /**
  * Create an array containing change descriptor objects.
@@ -43,8 +19,8 @@ try {
  */
 function getDirectiveChangeDescriptions(upgrade_obj) {
     let change_descriptions = [];
-    let loaded_directives = directive_manager.filterInvalidVersions(upgrade_obj);
-    let upgrade_directives = getVersionsToInstall(upgrade_obj[DATA_VERSION], loaded_directives);
+    let loaded_directives = directivesController.getVersionsForUpgrade(upgrade_obj);
+    let upgrade_directives = getUpgradeDirectivesToInstall(loaded_directives);
 
     for (let vers of upgrade_directives) {
         let new_description = {};
@@ -66,24 +42,25 @@ function getDirectiveChangeDescriptions(upgrade_obj) {
  * @returns {*[]}
  */
 function processDirectives(upgrade_obj) {
-    let loaded_directives = directive_manager.filterInvalidVersions(upgrade_obj);
-
-    const data_version = upgrade_obj[DATA_VERSION];
-    let upgrade_directives = getVersionsToInstall(data_version, loaded_directives);
-
-    let settings_func_response = [];
-    let func_responses = [];
     console.log('Starting upgrade process...');
+
+    let loaded_directives = directivesController.getVersionsForUpgrade(upgrade_obj);
+    let upgrade_directives = getUpgradeDirectivesToInstall(loaded_directives);
+
+    let all_responses = [];
     for (let vers of upgrade_directives) {
         let notify_msg = `Running upgrade from version ${vers.version}`;
         log.notify(notify_msg);
         console.log(notify_msg);
 
+        let settings_func_response = [];
+        let func_responses = [];
+
         // Run settings file update
         try {
             settings_func_response = runFunctions(vers.settings_file_function);
         } catch(e) {
-            log.error('running settings func in process Directives' + e);
+            log.error(`Error while running a settings upgrade script for ${vers.version}: ` + e);
             throw e;
         }
         for(let i of settings_func_response) {
@@ -94,16 +71,18 @@ function processDirectives(upgrade_obj) {
         try {
             func_responses = runFunctions(vers.functions);
         } catch(e) {
-            log.error('running func in process Directives' + e);
+            log.error(`Error while running an upgrade script for ${vers.version}: ` + e);
             throw e;
         }
+
+        for(let i of func_responses) {
+            log.info(i);
+        }
+
+        all_responses.push(...settings_func_response, ...func_responses);
     }
 
-    for(let i of func_responses) {
-        log.info(i);
-    }
-
-    return [...settings_func_response, ...func_responses];
+    return all_responses;
 }
 
 /**
@@ -148,16 +127,14 @@ function runFunctions(directive_functions) {
  * @param curr_version_num - The current version of HDB.
  * @returns {Array}
  */
-function getVersionsToInstall(curr_version_num, loaded_directives) {
-    if(hdb_util.isEmptyOrZeroLength(curr_version_num)) {
-        return [];
-    }
+function getUpgradeDirectivesToInstall(loaded_directives) {
     if(hdb_util.isEmptyOrZeroLength(loaded_directives)) {
         return [];
     }
+
     let version_modules_to_run = [];
     for(let vers of loaded_directives) {
-        let module = directive_manager.getModuleByVersion(vers);
+        let module = directivesController.getModuleByVersion(vers);
         if(module) {
             version_modules_to_run.push(module);
         }

@@ -21,7 +21,7 @@ const log = require('../utility/logging/harper_logger');
 const hdb_util = require('../utility/common_utils');
 const hdb_terms = require('../utility/hdbTerms');
 const version = require('./version');
-const process_directives = require('../upgrade/processDirectives');
+const directivesManager = require('../upgrade/directivesManager');
 const { isHarperRunning } = require('../utility/common_utils');
 const hdbInfoController = require('../data_layer/hdbInfoController');
 const upgradePrompt = require('../upgrade/upgradePrompt');
@@ -43,7 +43,7 @@ module.exports = {
  */
 async function checkIfRunning() {
     const hdb_running = await isHarperRunning();
-    if(hdb_running) {
+    if (hdb_running) {
         let run_err = "HarperDB is running, please stop HarperDB with 'harperdb stop' and run the upgrade command again.";
         console.log(colors.red(run_err));
         log.error(run_err);
@@ -142,7 +142,7 @@ async function startUpgrade(upgrade_obj) {
 function runUpgradeDirectives(upgrade_obj) {
     let directive_results = [];
     try {
-        directive_results = process_directives.processDirectives(upgrade_obj);
+        directive_results = directivesManager.processDirectives(upgrade_obj);
     } catch(e) {
         throw e;
     }
@@ -158,7 +158,7 @@ function runUpgradeDirectives(upgrade_obj) {
 function listDirectiveChanges(upgrade_obj) {
     let directive_change_descriptions = [];
     try {
-        directive_change_descriptions = process_directives.getDirectiveChangeDescriptions(upgrade_obj);
+        directive_change_descriptions = directivesManager.getDirectiveChangeDescriptions(upgrade_obj);
     } catch(e) {
         throw e;
     }

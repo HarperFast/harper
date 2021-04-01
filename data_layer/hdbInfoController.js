@@ -19,7 +19,7 @@ const log = require('../utility/logging/harper_logger');
 const hdb_utils = require('../utility/common_utils');
 const global_schema = require('../utility/globalSchema');
 const env = require('../utility/environment/environmentManager');
-const directiveManager = require('../upgrade/directives/directiveManager');
+const directiveManager = require('../upgrade/directives/directivesController');
 
 let p_search_search_by_value = util.promisify(search.searchByValue);
 let p_setSchemaDataToGlobal = util.promisify(global_schema.setSchemaDataToGlobal);
