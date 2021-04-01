@@ -29,9 +29,11 @@ let pino_logger;
 module.exports = reindexUpgrade;
 
 async function reindexUpgrade() {
-    //await getTables(SCHEMA_PATH);
+    await getTables(SCHEMA_PATH);
     await getTables(TRANSACTIONS_PATH);
 }
+
+// TODO: add more logging to the main log. more progress and list which table currently working on. When testing we need to know how big tmp folder grows
 
 async function getTables(reindex_path){
     logger.notify('Reindexing upgrade started');
@@ -69,7 +71,7 @@ async function getTables(reindex_path){
         }
     }
 
-    //fs.emptyDir(TMP_PATH);
+    fs.emptyDir(TMP_PATH);
     logger.notify('Reindexing upgrade completed');
 }
 
@@ -89,6 +91,7 @@ async function initPinoLogger(schema, table) {
 }
 
 async function processTable(schema, table, the_schema_path){
+    let is_schema_reindex = !the_schema_path.includes('hdb/transactions');
     //open the existing environment with the "old" environment utility
     let old_env = await old_environment_utility.openEnvironment(the_schema_path, table);
     //find the name of the hash attribute
@@ -130,19 +133,20 @@ async function processTable(schema, table, the_schema_path){
 
             let results;
             let success = false;
-            if (the_schema_path.includes('hdb/transactions')) {
+            if (is_schema_reindex) {
+                results = await insertRecords(new_env, hash, all_dbi_names, [record], false);
+                success = results.written_hashes.indexOf(hash_value) > -1;
+            } else {
+                // Transaction logs are indexed different to regular records so they need their on insert function.
                 results = await insertTransaction(new_env, record);
                 success = results;
-            } else {
-                results = await insertRecords(new_env, hash, all_dbi_names, [record], false);
-                success = results.written_hashes.indexOf(hash_value) > -1
             }
 
             pino_logger.info(`Insert success: ${JSON.stringify(results)}`);
 
             //validate indices for the row
             assert(success, true);
-            validateIndices(new_env, hash, record[hash]);
+            validateIndices(new_env, hash, record[hash], is_schema_reindex);
 
             //increment the progress bar by 1
             bar.increment();
@@ -209,10 +213,10 @@ function validateIndices(env, hash, hash_value, is_schema_reindex){
     if (is_schema_reindex) {
         entries = Object.entries(record);
     } else {
+        // For transaction log we only create indices from user_name and hash_values, which means we only need to check for those two.
         let tmp_obj = {
-            [lmdb_terms.TRANSACTIONS_DBI_NAMES_ENUM.TIMESTAMP]: record[lmdb_terms.TRANSACTIONS_DBI_NAMES_ENUM.TIMESTAMP],
-            [lmdb_terms.TRANSACTIONS_DBI_NAMES_ENUM.USER_NAME]: record[lmdb_terms.TRANSACTIONS_DBI_NAMES_ENUM.USER_NAME],
-            [lmdb_terms.TRANSACTIONS_DBI_NAMES_ENUM.HASH_VALUE]: record[lmdb_terms.TRANSACTIONS_DBI_NAMES_ENUM.HASH_VALUE]
+            [lmdb_terms.TRANSACTIONS_DBI_NAMES_ENUM.USER_NAME]: record.user_name,
+            [lmdb_terms.TRANSACTIONS_DBI_NAMES_ENUM.HASH_VALUE]: record.hash_values
         };
 
         entries = Object.entries(tmp_obj);
@@ -220,29 +224,41 @@ function validateIndices(env, hash, hash_value, is_schema_reindex){
 
     for (const [key, value] of entries) {
         if(key !== hash && env.dbis[key] !== undefined && !hdb_common.isEmptyOrZeroLength(value)) {
-            let found = false;
-            try {
-                if(lmdb_common.checkIsBlob(value)){
-                    let blob_key = `${key}/${hash_value}`;
-                    let entry = env.dbis[lmdb_terms.BLOB_DBI_NAME].get(blob_key);
-                    found = entry !== undefined;
-                    if (!found) {
-                        pino_logger.info(`Validate indices did not find blob value in new DBI: ${value}. Hash: ${hash_value}`);
-                    }
-                } else {
-                    let find_value = lmdb_common.convertKeyValueToWrite(value);
-                    found = env.dbis[key].doesExist(find_value, hash_value);
-                    if (!found) {
-                        pino_logger.info(`Validate indices did not find value in new DBI: ${find_value}. Hash: ${hash_value}`);
-                    }
-                }
 
-                assert.deepStrictEqual(found, true);
-            }catch(e){
-                pino_logger.error(e);
-                console.error(e);
+            // When validating transaction indices we need to validate each index created for timestamp hash.
+            if (!is_schema_reindex && key === 'hash_value') {
+                for (let j = 0, length = value.length; j < length; j++) {
+                    let value_value = value[j];
+                    validateIndex(env, key, value_value, hash_value);
+                }
+            } else {
+                validateIndex(env, key, value, hash_value);
             }
         }
+    }
+}
+
+function validateIndex(env, key, value, hash_value) {
+    try {
+        let found = false;
+        if(lmdb_common.checkIsBlob(value)){
+            let blob_key = `${key}/${hash_value}`;
+            let entry = env.dbis[lmdb_terms.BLOB_DBI_NAME].get(blob_key);
+            found = entry !== undefined;
+            if (!found) {
+                pino_logger.info(`Validate indices did not find blob value in new DBI: ${value}. Hash: ${hash_value}`);
+            }
+        } else {
+            let find_value = lmdb_common.convertKeyValueToWrite(value);
+            found = env.dbis[key].doesExist(find_value, hash_value);
+            if (!found) {
+                pino_logger.info(`Validate indices did not find value in new DBI: ${find_value}. Hash: ${hash_value}`);
+            }
+        }
+        assert.deepStrictEqual(found, true);
+    }catch(e){
+        pino_logger.error(e);
+        console.error(e);
     }
 }
 
