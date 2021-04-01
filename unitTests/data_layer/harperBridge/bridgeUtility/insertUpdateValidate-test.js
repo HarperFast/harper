@@ -113,20 +113,6 @@ describe('Tests for fsUtility function insertUpdateValidate', () => {
         expect(error).to.be.instanceOf(Error);
     });
 
-    it('Test that insert validator throws schema must be alpha numeric error',() => {
-        let write_object_clone = test_utils.deepClone(WRITE_OBJECT_TEST);
-        write_object_clone.table = '`//`';
-        let error;
-        try {
-            insertUpdateValidate(write_object_clone);
-        } catch(err) {
-            error = err;
-        }
-
-        expect(error.message).to.equal('Table names cannot include backticks or forward slashes');
-        expect(error).to.be.instanceOf(Error);
-    });
-
     it('Test that valid hash must be provided error is thrown',() => {
         let write_object_clone = test_utils.deepClone(WRITE_OBJECT_TEST);
         write_object_clone.operation = 'update';

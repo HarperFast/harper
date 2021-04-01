@@ -38,25 +38,25 @@ const INSERT_OBJECT_TEST = {
         {
             name: "Harper",
             breed: "Mutt",
-            id: "8",
+            id: 8,
             age: 5
         },
         {
             name: "Penny",
             breed: "Mutt",
-            id: "9",
+            id: 9,
             age: 5,
             height: 145
         },
         {
             name: "David",
             breed: "Mutt",
-            id: "12"
+            id: 12
         },
         {
             name: "Rob",
             breed: "Mutt",
-            id: "10",
+            id: 10,
             age: 5,
             height: 145
         }
@@ -171,14 +171,11 @@ describe('Test lmdbCreateRecords module', ()=>{
     let hdb_schema_env;
     let hdb_table_env;
     let hdb_attribute_env;
-    let rw_env_util;
     before(()=>{
-        rw_env_util = environment_utility.__set__('MAP_SIZE', 5*1024*1024*1024);
         date_stub = sandbox.stub(Date, 'now').returns(TIMESTAMP);
     });
 
     after(()=>{
-        rw_env_util();
         date_stub.restore();
     });
 
@@ -221,6 +218,15 @@ describe('Test lmdbCreateRecords module', ()=>{
         });
 
         afterEach(async ()=>{
+            let env1 = await environment_utility.openEnvironment(path.join(BASE_SCHEMA_PATH, CREATE_TABLE_OBJ_TEST_A.schema), CREATE_TABLE_OBJ_TEST_A.table);
+            env1.close();
+
+            let txn_env1 = await environment_utility.openEnvironment(path.join(BASE_TXN_PATH, CREATE_TABLE_OBJ_TEST_A.schema), CREATE_TABLE_OBJ_TEST_A.table, true);
+            txn_env1.close();
+
+            hdb_table_env.close();
+            hdb_schema_env.close();
+            hdb_attribute_env.close();
             await fs.remove(BASE_PATH);
             global.lmdb_map = undefined;
             delete global.hdb_schema;
@@ -265,14 +271,14 @@ describe('Test lmdbCreateRecords module', ()=>{
             assert.deepStrictEqual(records, expected_search);
 
             //verify txn created
-            let insert_txn_obj = new LMDBInsertTransactionObject(insert_obj.records, undefined, m_time, INSERT_HASHES);
+            let insert_txn_obj = Object.assign({}, new LMDBInsertTransactionObject(insert_obj.records, undefined, m_time, INSERT_HASHES));
             let expected_timestamp = test_utils.assignObjecttoNullObject({
-                [m_time]: [JSON.stringify(insert_txn_obj)]
+                [m_time]: [insert_txn_obj]
             });
 
             let hashes = Object.create(null);
             insert_obj.records.forEach(record=>{
-                hashes[record[HASH_ATTRIBUTE_NAME]] = [m_time.toString()];
+                hashes[record[HASH_ATTRIBUTE_NAME]] = [m_time];
             });
             await verify_txn(TXN_SCHEMA_PATH, INSERT_OBJECT_TEST.table, expected_timestamp, hashes);
         });
@@ -306,14 +312,14 @@ describe('Test lmdbCreateRecords module', ()=>{
             assert.deepStrictEqual(results, expected_result);
 
             //verify txn created
-            let insert_txn_obj = new LMDBInsertTransactionObject(insert_obj1.records, undefined, m_time, INSERT_HASHES);
+            let insert_txn_obj = Object.assign({}, new LMDBInsertTransactionObject(insert_obj1.records, undefined, m_time, INSERT_HASHES));
             let expected_timestamp = test_utils.assignObjecttoNullObject({
-                [m_time]: [JSON.stringify(insert_txn_obj)]
+                [m_time]: [insert_txn_obj]
             });
 
             let hashes = Object.create(null);
             insert_obj1.records.forEach(record=>{
-                hashes[record[HASH_ATTRIBUTE_NAME]] = [m_time.toString()];
+                hashes[record[HASH_ATTRIBUTE_NAME]] = [m_time];
             });
             await verify_txn(TXN_SCHEMA_PATH, INSERT_OBJECT_TEST.table, expected_timestamp, hashes);
 
@@ -323,25 +329,25 @@ describe('Test lmdbCreateRecords module', ()=>{
                 {
                     name: "Harper",
                     breed: "Mutt",
-                    id: "8",
+                    id: 8,
                     age: 5
                 },
                 {
                     name: "Penny",
                     breed: "Mutt",
-                    id: "9",
+                    id: 9,
                     age: 5,
                     height: 145
                 },
                 {
                     name: "David",
                     breed: "Mutt",
-                    id: "123"
+                    id: 123
                 },
                 {
                     name: "Rob",
                     breed: "Mutt",
-                    id: "1232",
+                    id: 1232,
                     age: 5,
                     height: 145
                 }
@@ -413,11 +419,11 @@ describe('Test lmdbCreateRecords module', ()=>{
             assert.deepStrictEqual(records, new_records_excpected);
 
             //verify txns
-            let insert_txn_obj2 = new LMDBInsertTransactionObject(insert_obj.records, undefined, m_time, [ 123, 1232 ]);
-            expected_timestamp[m_time] = [JSON.stringify(insert_txn_obj2)];
+            let insert_txn_obj2 = Object.assign({}, new LMDBInsertTransactionObject(insert_obj.records, undefined, m_time, [ 123, 1232 ]));
+            expected_timestamp[m_time] = [insert_txn_obj2];
 
             insert_obj.records.forEach(record=>{
-                hashes[record[HASH_ATTRIBUTE_NAME]] = [m_time.toString()];
+                hashes[record[HASH_ATTRIBUTE_NAME]] = [m_time];
             });
             await verify_txn(TXN_SCHEMA_PATH, INSERT_OBJECT_TEST.table, expected_timestamp, hashes);
         });
@@ -430,14 +436,14 @@ describe('Test lmdbCreateRecords module', ()=>{
             await test_utils.assertErrorAsync(lmdb_create_records, [insert_obj], undefined);
 
             //verify txn created
-            let insert_txn_obj = new LMDBInsertTransactionObject(insert_obj.records, undefined, m_time, INSERT_HASHES);
+            let insert_txn_obj = Object.assign({}, new LMDBInsertTransactionObject(insert_obj.records, undefined, m_time, INSERT_HASHES));
             let expected_timestamp = test_utils.assignObjecttoNullObject({
-                [m_time]: [JSON.stringify(insert_txn_obj)]
+                [m_time]: [insert_txn_obj]
             });
 
             let hashes = Object.create(null);
             insert_obj.records.forEach(record=>{
-                hashes[record[HASH_ATTRIBUTE_NAME]] = [m_time.toString()];
+                hashes[record[HASH_ATTRIBUTE_NAME]] = [m_time];
             });
             await verify_txn(TXN_SCHEMA_PATH, INSERT_OBJECT_TEST.table, expected_timestamp, hashes);
 

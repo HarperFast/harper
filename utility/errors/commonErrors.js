@@ -83,7 +83,7 @@ const LMDB_ERRORS_ENUM = {
     START_VALUE_REQUIRED: 'start_value is required',
     END_VALUE_REQUIRED: 'end_value is required',
     CANNOT_COMPARE_STRING_TO_NUMERIC_KEYS: 'cannot compare a string to numeric keys',
-    END_VALUE_MUST_BE_GREATER_THAN_START_VALUE: 'end_value must be greater than start_value',
+    END_VALUE_MUST_BE_GREATER_THAN_START_VALUE: 'end_value must be greater than or equal to start_value',
     UNKNOWN_SEARCH_TYPE: 'unknown search type',
     CANNOT_DROP_TABLE_HASH_ATTRIBUTE: 'cannot drop a table\'s hash attribute'
 };
@@ -165,7 +165,12 @@ const USER_ERROR_MSGS ={
     ALTER_USER_DUP_ROLES: (role) => `Update failed.  There are duplicates for the '${role}' role which is not allowed. Update your roles and try again.`,
     ALTER_USER_ROLE_NOT_FOUND: (role) => `Update failed.  Requested '${role}' role not found.`,
     DUP_ROLES_FOUND: (role) => `Multiple ${role} roles found.  Roles must have unique 'role' value. Please update and try again.`,
-    ROLE_NAME_NOT_FOUND: (role) => `${role} role not found`
+    ROLE_NAME_NOT_FOUND: (role) => `${role} role not found`,
+    USER_ALREADY_EXISTS: (user) => `User ${user} already exists`
+};
+
+const VALIDATION_ERROR_MSGS = {
+    SEARCH_CONDITIONS_INVALID_SORT_ATTRIBUTE: (attribute) => `invalid sort attribute '${attribute}', the attribute must either be the table's hash attribute or an attribute used in conditions.`
 };
 
 //into a single export while still allowing us to group them here in a more readable/searchable way
@@ -178,7 +183,8 @@ const HDB_ERROR_MSGS = {
     ...SCHEMA_OP_ERROR_MSGS,
     ...SQL_ERROR_MSGS,
     ...USER_ERROR_MSGS,
-    ...WRITE_OPS_ERROR_MSGS
+    ...WRITE_OPS_ERROR_MSGS,
+    ...VALIDATION_ERROR_MSGS
 };
 
 // All error messages should be added to the HDB_ERROR_MSGS ENUM for export - this helps to organize all error messages
@@ -189,5 +195,6 @@ module.exports = {
     DEFAULT_ERROR_RESP,
     HTTP_STATUS_CODES,
     LMDB_ERRORS_ENUM,
-    AUTHENTICATION_ERROR_MSGS
+    AUTHENTICATION_ERROR_MSGS,
+    VALIDATION_ERROR_MSGS
 };

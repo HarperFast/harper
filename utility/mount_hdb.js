@@ -7,7 +7,6 @@
 const fs = require('fs');
 const path = require('path');
 const terms = require('../utility/hdbTerms');
-const lmdb_terms = require('../utility/lmdb/terms');
 
 const lmdb_environment_utility = require('../utility/lmdb/environmentUtility');
 const system_schema = require('../json/systemSchema');
@@ -96,11 +95,11 @@ async function createLMDBTables(schema_path, transactions_path, logger){
             let attribute_name = attributes[y].attribute;
             try {
                 if(terms.TIME_STAMP_NAMES.indexOf(attribute_name) >=0){
-                    await lmdb_environment_utility.createDBI(table_env, attribute_name, true, lmdb_terms.DBI_KEY_TYPES.NUMBER);
+                    await lmdb_environment_utility.createDBI(table_env, attribute_name, true);
                 } else if (attribute_name === hash_attribute){
-                    await lmdb_environment_utility.createDBI(table_env, attribute_name, false, lmdb_terms.DBI_KEY_TYPES.STRING, true);
+                    await lmdb_environment_utility.createDBI(table_env, attribute_name, false, true);
                 } else{
-                    await lmdb_environment_utility.createDBI(table_env, attribute_name, true, lmdb_terms.DBI_KEY_TYPES.STRING, false);
+                    await lmdb_environment_utility.createDBI(table_env, attribute_name, true, false);
                 }
             } catch(e){
                 logger.error(`issue creating dbi for ${terms.SYSTEM_SCHEMA_NAME}.${table_name}.${attribute_name}: ${e}`);

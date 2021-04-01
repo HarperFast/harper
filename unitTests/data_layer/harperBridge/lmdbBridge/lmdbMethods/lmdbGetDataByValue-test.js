@@ -14,7 +14,6 @@ const test_data = require('../../../../testData');
 
 const rewire = require('rewire');
 const environment_utility = rewire('../../../../../utility/lmdb/environmentUtility');
-const lmdb_terms = require('../../../../../utility/lmdb/terms');
 const write_utility = require('../../../../../utility/lmdb/writeUtility');
 const delete_utility = require('../../../../../utility/lmdb/deleteUtility');
 const SearchObject = require('../../../../../data_layer/SearchObject');
@@ -37,7 +36,6 @@ const TIMESTAMP_OBJECT = {
 
 describe('test lmdbGetDataByValue module', ()=>{
     let date_stub;
-    let rw_env_util;
     before(()=>{
         test_data.forEach(record=>{
             Object.keys(record).forEach(key=>{
@@ -45,13 +43,10 @@ describe('test lmdbGetDataByValue module', ()=>{
             });
         });
 
-
-        rw_env_util = environment_utility.__set__('MAP_SIZE', 5*1024*1024*1024);
         date_stub = sandbox.stub(Date, 'now').returns(TIMESTAMP);
     });
 
     after(()=>{
-        rw_env_util();
         date_stub.restore();
     });
 
@@ -74,31 +69,32 @@ describe('test lmdbGetDataByValue module', ()=>{
                 system: systemSchema};
 
             env = await environment_utility.createEnvironment(DEV_SCHEMA_PATH, 'test');
-            await environment_utility.createDBI(env, 'id', false);
-            await environment_utility.createDBI(env, 'temperature', true, lmdb_terms.DBI_KEY_TYPES.NUMBER);
-            await environment_utility.createDBI(env, 'temperature_double', true, lmdb_terms.DBI_KEY_TYPES.NUMBER);
-            await environment_utility.createDBI(env, 'temperature_neg', true, lmdb_terms.DBI_KEY_TYPES.NUMBER);
-            await environment_utility.createDBI(env, 'temperature_pos', true, lmdb_terms.DBI_KEY_TYPES.NUMBER);
-            await environment_utility.createDBI(env, 'temperature_str', true, lmdb_terms.DBI_KEY_TYPES.STRING);
-            await environment_utility.createDBI(env, 'state', true, lmdb_terms.DBI_KEY_TYPES.STRING);
-            await environment_utility.createDBI(env, 'city', true, lmdb_terms.DBI_KEY_TYPES.STRING);
+            await environment_utility.createDBI(env, 'id', false, true);
+            await environment_utility.createDBI(env, 'temperature', true);
+            await environment_utility.createDBI(env, 'temperature_double', true);
+            await environment_utility.createDBI(env, 'temperature_neg', true);
+            await environment_utility.createDBI(env, 'temperature_pos', true);
+            await environment_utility.createDBI(env, 'temperature_str', true);
+            await environment_utility.createDBI(env, 'state', true);
+            await environment_utility.createDBI(env, 'city', true);
 
-            write_utility.insertRecords(env, 'id', ['id', 'temperature', 'temperature_str', 'state', 'city'], test_data);
+            await write_utility.insertRecords(env, 'id', ['id', 'temperature', 'temperature_str', 'state', 'city'], test_data);
         });
 
         after(async () => {
+            env.close();
             await fs.remove(BASE_PATH);
             global.lmdb_map = undefined;
         });
 
         it('test validation', async()=>{
-            await test_utils.assertErrorAsync(lmdb_search, [{}], new Error("Schema can't be blank,Table can't be blank,Search attribute can't be blank,Get attributes can't be blank"));
-            await test_utils.assertErrorAsync(lmdb_search, [{schema:'dev'}], new Error("Table can't be blank,Search attribute can't be blank,Get attributes can't be blank"));
-            await test_utils.assertErrorAsync(lmdb_search, [{schema:'dev', table:'test'}], new Error("Search attribute can't be blank,Get attributes can't be blank"));
-            await test_utils.assertErrorAsync(lmdb_search, [{schema:'dev', table:'test', search_attribute: 'city'}], new Error("Get attributes can't be blank"));
-            await test_utils.assertErrorAsync(lmdb_search, [{schema:'dev', table:'test', search_attribute: 'city', search_value: '*'}], new Error("Get attributes can't be blank"));
-            await test_utils.assertErrorAsync(lmdb_search, [{schema:'dev/sss', table:'test', search_attribute: 'city', search_value: '*', get_attributes:['*']}], new Error("Schema names cannot include backticks or forward slashes"));
-            await test_utils.assertErrorAsync(lmdb_search, [{schema:'dev', table:'test`er`', search_attribute: 'city', search_value: '*', get_attributes:['*']}], new Error("Table names cannot include backticks or forward slashes"));
+            await test_utils.assertErrorAsync(lmdb_search, [{}], new Error("'schema' is required. 'table' is required. 'search_attribute' is required. 'search_value' is required. 'get_attributes' is required"));
+            await test_utils.assertErrorAsync(lmdb_search, [{schema:'dev'}], new Error("'table' is required. 'search_attribute' is required. 'search_value' is required. 'get_attributes' is required"));
+            await test_utils.assertErrorAsync(lmdb_search, [{schema:'dev', table:'test'}], new Error("'search_attribute' is required. 'search_value' is required. 'get_attributes' is required"));
+            await test_utils.assertErrorAsync(lmdb_search, [{schema:'dev', table:'test', search_attribute: 'city'}], new Error("'search_value' is required. 'get_attributes' is required"));
+            await test_utils.assertErrorAsync(lmdb_search, [{schema:'dev', table:'test', search_attribute: 'city', search_value: '*'}], new Error("'get_attributes' is required"));
+            await test_utils.assertErrorAsync(lmdb_search, [{schema:'dev/sss', table:'test', search_attribute: 'city', search_value: '*', get_attributes:['*']}], new Error("'schema' names cannot include backticks or forward slashes"));
+            await test_utils.assertErrorAsync(lmdb_search, [{schema:'dev', table:'test`er`', search_attribute: 'city', search_value: '*', get_attributes:['*']}], new Error("'table' names cannot include backticks or forward slashes"));
 
             await test_utils.assertErrorAsync(lmdb_search, [{schema:'dev', table:'test', search_attribute: 'city', search_value: '*', get_attributes:['*']}, '$$'], new Error("Value search comparator - $$ - is not valid"));
         });
@@ -229,7 +225,7 @@ describe('test lmdbGetDataByValue module', ()=>{
 
         it('test search value is json', async()=>{
             let record = {id:'jsontest', city:{cool:true}};
-            write_utility.insertRecords(env, 'id', ['id', 'city'], [test_utils.deepClone(record)]);
+            await write_utility.insertRecords(env, 'id', ['id', 'city'], [test_utils.deepClone(record)]);
 
             let search_object = new SearchObject('dev', 'test', 'city', record.city, 'id', ['id', 'city']);
             let results = await test_utils.assertErrorAsync(lmdb_search, [search_object], undefined);
@@ -238,12 +234,12 @@ describe('test lmdbGetDataByValue module', ()=>{
             };
             assert.deepEqual(results, expected);
 
-            delete_utility.deleteRecords(env, 'id', [record.id]);
+            await delete_utility.deleteRecords(env, 'id', [record.id]);
         });
 
         it('test search value is array', async()=>{
             let record = {id:'arraytest', city:['awesome', 'great']};
-            write_utility.insertRecords(env, 'id', ['id', 'city'], [test_utils.deepClone(record)]);
+            await write_utility.insertRecords(env, 'id', ['id', 'city'], [test_utils.deepClone(record)]);
 
             let search_object = new SearchObject('dev', 'test', 'city', record.city, 'id', ['id', 'city']);
             let results = await test_utils.assertErrorAsync(lmdb_search, [search_object], undefined);
@@ -252,7 +248,7 @@ describe('test lmdbGetDataByValue module', ()=>{
             };
             assert.deepEqual(results, expected);
 
-            delete_utility.deleteRecords(env, 'id', [record.id]);
+            await delete_utility.deleteRecords(env, 'id', [record.id]);
         });
 
         it('test searchall', async()=>{

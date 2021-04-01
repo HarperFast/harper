@@ -32,9 +32,7 @@ const CREATE_SCHEMA_OBJ_TEST_A = {
 describe('test lmdbCreateSchema module', ()=>{
     let env;
     let date_stub;
-    let rw_env_util;
     before(async ()=>{
-        rw_env_util = environment_utility.__set__('MAP_SIZE', 5*1024*1024*1024);
 
         global.hdb_schema = {system: systemSchema};
         date_stub = sandbox.stub(Date, 'now').returns(TIMESTAMP);
@@ -45,7 +43,7 @@ describe('test lmdbCreateSchema module', ()=>{
     });
 
     after(async ()=>{
-        rw_env_util();
+        env.close();
         date_stub.restore();
         delete global.hdb_schema;
         await fs.remove(BASE_PATH);

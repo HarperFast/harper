@@ -74,9 +74,7 @@ describe("test lmdbCreateTable module", ()=>{
     let hdb_table_env;
     let hdb_attribute_env;
     let date_stub;
-    let rw_env_util;
     before(async ()=>{
-        rw_env_util = environment_utility.__set__('MAP_SIZE', 5*1024*1024*1024);
         global.lmdb_map = undefined;
         global.hdb_schema = {system: systemSchema};
         date_stub = sandbox.stub(Date, 'now').returns(TIMESTAMP);
@@ -98,7 +96,10 @@ describe("test lmdbCreateTable module", ()=>{
     });
 
     after(async ()=>{
-        rw_env_util();
+        hdb_table_env.close();
+        hdb_schema_env.close();
+        hdb_attribute_env.close();
+
         date_stub.restore();
         delete global.hdb_schema;
         await fs.remove(BASE_PATH);
@@ -130,11 +131,13 @@ describe("test lmdbCreateTable module", ()=>{
             [hdb_attribute_env, 'id','schema_table', `${TABLE_SYSTEM_DATA_TEST_A.schema}.${TABLE_SYSTEM_DATA_TEST_A.name}`], undefined);
 
         let attribute_records = test_utils.assertErrorSync(search_utility.batchSearchByHash,
-            [hdb_attribute_env, systemSchema.hdb_attribute.hash_attribute, HDB_ATTRIBUTE_ATTRIBUTES, Object.keys(attribute_ids)], undefined);
+            [hdb_attribute_env, systemSchema.hdb_attribute.hash_attribute, HDB_ATTRIBUTE_ATTRIBUTES, attribute_ids[0]], undefined);
         assert.deepStrictEqual(attribute_records.length, 3);
         attribute_records.forEach(record=>{
             assert(expected_attributes.indexOf(record.attribute) > -1);
         });
+
+        new_env.close();
 
         //validate the transactions environments
         let transaction_path = path.join(transactions_path, CREATE_TABLE_OBJ_TEST_A.schema);
@@ -145,6 +148,8 @@ describe("test lmdbCreateTable module", ()=>{
         let txn_dbis = test_utils.assertErrorSync(environment_utility.listDBIs, [txn_env], undefined);
 
         assert.deepStrictEqual(txn_dbis, expected_txn_dbis);
+
+        txn_env.close();
     });
 
     it('Test creating a table under the prod schema', async ()=>{
@@ -171,11 +176,13 @@ describe("test lmdbCreateTable module", ()=>{
             [hdb_attribute_env, systemSchema.hdb_attribute.hash_attribute, 'schema_table', `${TABLE_SYSTEM_DATA_TEST_B.schema}.${TABLE_SYSTEM_DATA_TEST_B.name}`], undefined);
 
         let attribute_records = await test_utils.assertErrorAsync(search_utility.batchSearchByHash,
-            [hdb_attribute_env, systemSchema.hdb_attribute.hash_attribute, HDB_ATTRIBUTE_ATTRIBUTES, Object.keys(attribute_ids)], undefined);
+            [hdb_attribute_env, systemSchema.hdb_attribute.hash_attribute, HDB_ATTRIBUTE_ATTRIBUTES, attribute_ids[0]], undefined);
         assert.deepStrictEqual(attribute_records.length, 3);
         attribute_records.forEach(record=>{
             assert(expected_attributes.indexOf(record.attribute) > -1);
         });
+
+        new_env.close();
 
         //validate the transactions environments
         let transaction_path = path.join(transactions_path, CREATE_TABLE_OBJ_TEST_B.schema);
@@ -184,7 +191,7 @@ describe("test lmdbCreateTable module", ()=>{
         await test_utils.assertErrorAsync(fs.access, [table_transaction_path], undefined);
         let txn_env = await test_utils.assertErrorAsync(environment_utility.openEnvironment, [transaction_path, CREATE_TABLE_OBJ_TEST_B.table, true], undefined);
         let txn_dbis = test_utils.assertErrorSync(environment_utility.listDBIs, [txn_env], undefined);
-
+        txn_env.close();
         assert.deepStrictEqual(txn_dbis, expected_txn_dbis);
     });
 
