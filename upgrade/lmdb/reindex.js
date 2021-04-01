@@ -59,9 +59,9 @@ async function getTables(reindex_path){
                 // Each table gets its own log
                 await initPinoLogger(schema_name, table_name);
 
-                pino_logger.info(`Reindexing started for schema: ${schema_name} table: ${table_name}`);
+                pino_logger.info(`Reindexing started for ${schema_name}.${table_name}`);
                 await processTable(schema_name, table_name, the_schema_path);
-                pino_logger.info(`Reindexing completed for schema: ${schema_name} table: ${table_name}`);
+                pino_logger.info(`Reindexing completed for ${schema_name}.${table_name}`);
             } catch(err) {
                 err.schema_path = the_schema_path;
                 err.table_name = table_name;
@@ -137,7 +137,7 @@ async function processTable(schema, table, the_schema_path){
                 results = await insertRecords(new_env, hash, all_dbi_names, [record], false);
                 success = results.written_hashes.indexOf(hash_value) > -1;
             } else {
-                // Transaction logs are indexed different to regular records so they need their on insert function.
+                // Transaction logs are indexed different to regular records so they need their own insert function.
                 results = await insertTransaction(new_env, record);
                 success = results;
             }
