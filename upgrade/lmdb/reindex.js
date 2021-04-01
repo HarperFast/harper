@@ -71,7 +71,7 @@ async function getTables(reindex_path){
         }
     }
 
-    fs.emptyDir(TMP_PATH);
+    await fs.emptyDir(TMP_PATH);
     logger.notify('Reindexing upgrade completed');
 }
 
