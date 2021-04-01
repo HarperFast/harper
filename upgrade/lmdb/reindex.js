@@ -9,6 +9,7 @@ const lmdb_common = require('../../utility/lmdb/commonUtility');
 const lmdb_terms = require('../../utility/lmdb/terms');
 const hdb_common = require('../../utility/common_utils');
 const logger = require('../../utility/logging/harper_logger');
+const hdb_util = require('../../utility/common_utils');
 const fs = require('fs-extra');
 const path = require('path');
 const progress = require('cli-progress');
@@ -22,13 +23,13 @@ if(!env_mngr.isInitialized()) {
 const BASE_PATH = env_mngr.getHdbBasePath();
 const SCHEMA_PATH = path.join(BASE_PATH, 'schema');
 const TMP_PATH = path.join(BASE_PATH, 'tmp');
-const TRANSACTIONS_PATH = path.join(BASE_PATH, );
+const TRANSACTIONS_PATH = path.join(BASE_PATH, 'transactions');
 let pino_logger;
 
 module.exports = reindexUpgrade;
 
 async function reindexUpgrade() {
-    await getTables(SCHEMA_PATH);
+    //await getTables(SCHEMA_PATH);
     await getTables(TRANSACTIONS_PATH);
 }
 
@@ -127,11 +128,20 @@ async function processTable(schema, table, the_schema_path){
             let hash_value = hdb_common.autoCast(record[hash]);
             pino_logger.info(`Record hash value: ${hash_value} hash: ${hash}`);
 
-            let results = await insertRecords(new_env, hash, all_dbi_names, [record], false);
-            pino_logger.info(`Insert result: ${JSON.stringify(results)}`);
+            let results;
+            let success = false;
+            if (the_schema_path.includes('hdb/transactions')) {
+                results = await insertTransaction(new_env, record);
+                success = results;
+            } else {
+                results = await insertRecords(new_env, hash, all_dbi_names, [record], false);
+                success = results.written_hashes.indexOf(hash_value) > -1
+            }
+
+            pino_logger.info(`Insert success: ${JSON.stringify(results)}`);
 
             //validate indices for the row
-            assert(results.written_hashes.indexOf(hash_value) > -1);
+            assert(success, true);
             validateIndices(new_env, hash, record[hash]);
 
             //increment the progress bar by 1
@@ -173,12 +183,42 @@ async function processTable(schema, table, the_schema_path){
     new_environment_utility.closeEnvironment(env);
 }
 
-function validateIndices(env, hash, hash_value){
+async function insertTransaction(txn_env, txn_object) {
+    new_environment_utility.initializeDBIs(txn_env, lmdb_terms.TRANSACTIONS_DBI_NAMES_ENUM.TIMESTAMP, lmdb_terms.TRANSACTIONS_DBIS);
+
+    let txn_timestamp = txn_object.timestamp;
+    let result = await txn_env.dbis[lmdb_terms.TRANSACTIONS_DBI_NAMES_ENUM.TIMESTAMP].ifNoExists(txn_timestamp, ()=> {
+        txn_env.dbis[lmdb_terms.TRANSACTIONS_DBI_NAMES_ENUM.TIMESTAMP].put(txn_timestamp, txn_object);
+        if (!hdb_util.isEmpty(txn_object.user_name)) {
+            txn_env.dbis[lmdb_terms.TRANSACTIONS_DBI_NAMES_ENUM.USER_NAME].put(txn_object.user_name, txn_timestamp);
+        }
+        for (let x = 0; x < txn_object.hash_values.length; x++) {
+            txn_env.dbis[lmdb_terms.TRANSACTIONS_DBI_NAMES_ENUM.HASH_VALUE].put(txn_object.hash_values[x], txn_timestamp);
+        }
+    });
+    return result;
+}
+
+function validateIndices(env, hash, hash_value, is_schema_reindex){
     let hash_dbi = env.dbis[hash];
 
     let record = hash_dbi.get(hash_value);
     assert.deepStrictEqual(typeof record, 'object');
-    for (const [key, value] of Object.entries(record)) {
+
+    let entries;
+    if (is_schema_reindex) {
+        entries = Object.entries(record);
+    } else {
+        let tmp_obj = {
+            [lmdb_terms.TRANSACTIONS_DBI_NAMES_ENUM.TIMESTAMP]: record[lmdb_terms.TRANSACTIONS_DBI_NAMES_ENUM.TIMESTAMP],
+            [lmdb_terms.TRANSACTIONS_DBI_NAMES_ENUM.USER_NAME]: record[lmdb_terms.TRANSACTIONS_DBI_NAMES_ENUM.USER_NAME],
+            [lmdb_terms.TRANSACTIONS_DBI_NAMES_ENUM.HASH_VALUE]: record[lmdb_terms.TRANSACTIONS_DBI_NAMES_ENUM.HASH_VALUE]
+        };
+
+        entries = Object.entries(tmp_obj);
+    }
+
+    for (const [key, value] of entries) {
         if(key !== hash && env.dbis[key] !== undefined && !hdb_common.isEmptyOrZeroLength(value)) {
             let found = false;
             try {
@@ -218,4 +258,4 @@ function getHashDBI(dbis){
 }
 
 
-getTables().then(d=>{});
+reindexUpgrade().then(d=>{});
