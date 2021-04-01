@@ -110,7 +110,7 @@ function insertHdbInfo(callback) {
         //Add initial hdb_info record for new install
         hdbInfoController.insertHdbInstallInfo(vers)
             .then(res => {
-                winston.error('Product version info was properly inserted');
+                winston.info('Product version info was properly inserted');
                 return callback(null, res);
             })
             .catch(err => {
