@@ -25,21 +25,27 @@ const SCHEMA_PATH = path.join(BASE_PATH, 'schema');
 const TMP_PATH = path.join(BASE_PATH, 'tmp');
 const TRANSACTIONS_PATH = path.join(BASE_PATH, 'transactions');
 let pino_logger;
+let error_occurred = false;
 
 module.exports = reindexUpgrade;
 
 async function reindexUpgrade() {
+    console.log('Reindexing upgrade started for schemas');
+    logger.notify('Reindexing upgrade started for schemas');
     await getTables(SCHEMA_PATH);
+
+    console.log('\n\nReindexing upgrade started for transaction logs');
+    logger.notify('Reindexing upgrade started for transaction logs');
     await getTables(TRANSACTIONS_PATH);
+    logger.notify('Reindexing upgrade complete');
 }
 
 // TODO: add more logging to the main log. more progress and list which table currently working on. When testing we need to know how big tmp folder grows
 
 async function getTables(reindex_path){
-    logger.notify('Reindexing upgrade started');
-
     // Get list of schema folders
     let schema_list = await fs.readdir(reindex_path);
+    let is_transaction_reindex = reindex_path.includes('hdb/transactions');
 
     for(let x = 0, length = schema_list.length; x < length; x++){
         let schema_name = schema_list[x];
@@ -55,28 +61,35 @@ async function getTables(reindex_path){
             if (table_name === '.DS_Store') {
                 continue;
             }
+
             try {
                 // Each table gets its own log
-                await initPinoLogger(schema_name, table_name);
-
+                await initPinoLogger(schema_name, table_name, is_transaction_reindex);
                 pino_logger.info(`Reindexing started for ${schema_name}.${table_name}`);
-                await processTable(schema_name, table_name, the_schema_path);
+                logger.notify(`${is_transaction_reindex ? 'Transaction' : 'Schema'} reindexing started for ${schema_name}.${table_name}`);
+                await processTable(schema_name, table_name, the_schema_path, is_transaction_reindex);
                 pino_logger.info(`Reindexing completed for ${schema_name}.${table_name}`);
             } catch(err) {
+                error_occurred = true;
                 err.schema_path = the_schema_path;
                 err.table_name = table_name;
+                logger.error('There was an error with the reindex upgrade, check the logs in hdb/tmp for more details');
                 logger.error(err);
                 pino_logger.error(err);
+                console.error(err);
             }
         }
     }
 
-    await fs.emptyDir(TMP_PATH);
-    logger.notify('Reindexing upgrade completed');
+    // If no errors occurred clean out the tmp folder after reindex.
+    if (!error_occurred) {
+        await fs.emptyDir(TMP_PATH);
+    }
 }
 
-async function initPinoLogger(schema, table) {
-    let log_name = `${schema}_${table}.log`;
+async function initPinoLogger(schema, table, is_transaction_reindex) {
+    let reindex_suffix = is_transaction_reindex ? 'transaction_reindex' : 'schema_reindex';
+    let log_name = `${schema}_${table}_${reindex_suffix}.log`;
     let log_destination = path.join(TMP_PATH, log_name);
     await fs.ensureDir(TMP_PATH);
     await fs.writeFile(log_destination, '');
@@ -90,8 +103,7 @@ async function initPinoLogger(schema, table) {
     }, log_destination);
 }
 
-async function processTable(schema, table, the_schema_path){
-    let is_transaction_reindex = the_schema_path.includes('hdb/transactions');
+async function processTable(schema, table, the_schema_path, is_transaction_reindex){
     //open the existing environment with the "old" environment utility
     let old_env = await old_environment_utility.openEnvironment(the_schema_path, table, is_transaction_reindex);
     //find the name of the hash attribute
@@ -134,7 +146,7 @@ async function processTable(schema, table, the_schema_path){
             let results;
             let success = false;
             if (is_transaction_reindex) {
-                // Transaction logs are indexed different to regular records so they need their own insert function.
+                // Transaction logs are indexed differently to regular records so they need their own insert function.
                 results = await insertTransaction(new_env, record);
                 success = results;
             } else {
@@ -150,11 +162,18 @@ async function processTable(schema, table, the_schema_path){
 
             //increment the progress bar by 1
             bar.increment();
-            pino_logger.info(`${bar.value} of ${bar.total} records inserted`);
+
+            // For every 10% complete log in hdb_log
+            let percent_complete = ((bar.value / bar.total) * 100);
+            if (percent_complete % 10 === 0) {
+                logger.notify(`${schema}.${table} ${bar.value}/${bar.total} records inserted`);
+            }
+            pino_logger.info(`${bar.value}/${bar.total} records inserted`);
         }
         txn.close();
 
     }catch(e){
+        error_occurred = true;
         if(txn !== undefined){
             txn.close();
         }
@@ -162,6 +181,7 @@ async function processTable(schema, table, the_schema_path){
 
         throw e;
     }
+
     bar.stop();
     //stat old & new envs to make sure they both have the same number of rows
     let old_stats = old_environment_utility.statDBI(old_env, hash);
@@ -189,7 +209,6 @@ async function processTable(schema, table, the_schema_path){
 
 async function insertTransaction(txn_env, txn_object) {
     new_environment_utility.initializeDBIs(txn_env, lmdb_terms.TRANSACTIONS_DBI_NAMES_ENUM.TIMESTAMP, lmdb_terms.TRANSACTIONS_DBIS);
-
     let txn_timestamp = txn_object.timestamp;
     let result = await txn_env.dbis[lmdb_terms.TRANSACTIONS_DBI_NAMES_ENUM.TIMESTAMP].ifNoExists(txn_timestamp, ()=> {
         txn_env.dbis[lmdb_terms.TRANSACTIONS_DBI_NAMES_ENUM.TIMESTAMP].put(txn_timestamp, txn_object);
@@ -216,7 +235,6 @@ function validateIndices(env, hash, hash_value, is_transaction_reindex){
             [lmdb_terms.TRANSACTIONS_DBI_NAMES_ENUM.USER_NAME]: record.user_name,
             [lmdb_terms.TRANSACTIONS_DBI_NAMES_ENUM.HASH_VALUE]: record.hash_values
         };
-
         entries = Object.entries(tmp_obj);
     } else {
         entries = Object.entries(record);
@@ -257,6 +275,7 @@ function validateIndex(env, key, value, hash_value) {
         }
         assert.deepStrictEqual(found, true);
     }catch(e){
+        error_occurred = true;
         pino_logger.error(e);
         console.error(e);
     }
