@@ -9,18 +9,13 @@ const sinon = require('sinon');
 const { expect } = chai;
 
 const rewire = require('rewire');
-const fs = require('fs');
-const PropertiesReader = require('properties-reader');
-
-const directivesManager_rw = rewire('../../../upgrade/directivesManager');
+let directivesManager_rw = rewire('../../../upgrade/directivesManager');
 const upgrade_directive = require('../../../upgrade/UpgradeDirective');
 const directivesController_stub = require('./testDirectives/directivesControllerStub');
 
-const BASE = process.cwd();
+// const BASE = process.cwd();
 // let TEST_SETTINGS_PATH = BASE + '/testsettings.js';
 // let DIR_PATH_BASE = BASE + '/processDirectivesTest/';
-
-//TODO: Move the files created in these tests to the new test harness.
 
 //Use the manager stub in order to control the tests.
 directivesManager_rw.__set__('directivesController', directivesController_stub);
@@ -52,6 +47,8 @@ describe('processDirectives Module', function() {
         const directive_msgs = [ 'processing settings func for 3.0.0 upgrade', 'processing other func for 3.0.0 upgrade',
             'processing a second func for 3.0.0 upgrade', 'processing settings func for 3.1.0 upgrade', 'processing other func for 3.1.0 upgrade',
             'processing settings func for 4.1.1 upgrade', 'processing other func for 4.1.1 upgrade']
+        // const runFunc_stub = sinon.stub().returns(["func return value"]);
+        // directivesManager_rw.__set__('runFunctions')
         // directivesManager_rw.__set__('settings_file_path', TEST_SETTINGS_PATH);
         //
         // afterEach( function () {
@@ -61,6 +58,27 @@ describe('processDirectives Module', function() {
         //         console.error(e);
         //     }
         // });
+        let sandbox;
+        let directive_stub;
+        let settings_func_stub;
+        let upgrade_func_stub;
+        let getUpgradeDirsToInstall_stub;
+
+        before(() => {
+            sandbox = sinon.createSandbox();
+            directive_stub = new upgrade_directive('1.2.3');
+            settings_func_stub = sandbox.stub().returns('settings func return');
+            upgrade_func_stub = sandbox.stub().returns('upgrade func return');
+            directive_stub.settings_file_function = [settings_func_stub];
+            directive_stub.functions = [upgrade_func_stub];
+            getUpgradeDirsToInstall_stub = sandbox.stub().returns([directive_stub])
+        })
+
+        after(() => {
+            sandbox.restore();
+            directivesManager_rw = rewire('../../../upgrade/directivesManager');
+            directivesManager_rw.__set__('directivesController', directivesController_stub);
+        })
 
         it('test upgrade from 3.0 to 3.1', function() {
             const test_upgrade_ver = '3.1.0'
@@ -105,6 +123,45 @@ describe('processDirectives Module', function() {
 
             expect(test_result.length).to.equal(3);
             expect(test_result).to.deep.equal([directive_msgs[0], directive_msgs[1], directive_msgs[2]]);
+        });
+
+        it('test processDirectives with settings function error', function() {
+            const test_upgrade_ver = '3.0.0'
+            const test_upgrade_obj = generateUpgradeObj('1.9', test_upgrade_ver);
+            const test_err = 'settings func error!'
+            settings_func_stub.throws(new  Error(test_err));
+            directivesManager_rw.__set__('getUpgradeDirectivesToInstall', getUpgradeDirsToInstall_stub)
+
+            let test_result;
+
+            try {
+                processDirectives_rw(test_upgrade_obj);
+            } catch(e) {
+                test_result = e;
+            }
+
+            expect(test_result instanceof Error).to.be.true;
+            expect(test_result.message).to.equal(test_err);
+        });
+
+        it('test processDirectives with upgrade function error', function() {
+            const test_upgrade_ver = '3.0.0'
+            const test_upgrade_obj = generateUpgradeObj('1.9', test_upgrade_ver);
+            const test_err = 'upgrade func error!'
+            settings_func_stub.returns('settings func return');
+            upgrade_func_stub.throws(new  Error(test_err));
+            directivesManager_rw.__set__('getUpgradeDirectivesToInstall', getUpgradeDirsToInstall_stub)
+
+            let test_result;
+
+            try {
+                processDirectives_rw(test_upgrade_obj);
+            } catch(e) {
+                test_result = e;
+            }
+
+            expect(test_result instanceof Error).to.be.true;
+            expect(test_result.message).to.equal(test_err);
         });
     })
 
@@ -224,6 +281,13 @@ describe('processDirectives Module', function() {
 
         it('Test getDirectiveChangeDescriptions - no valid versions', function() {
             const test_upgrade_obj = generateUpgradeObj('1.0.0', '2.1.1');
+            const change_descriptions = directivesManager_rw.getDirectiveChangeDescriptions(test_upgrade_obj);
+
+            assert.equal(change_descriptions.length, 0, 'Expected 0 change descriptions returned');
+        });
+
+        it('Test getDirectiveChangeDescriptions - versions w/o a change description', function() {
+            const test_upgrade_obj = [ new upgrade_directive('1.2.3') ];
             const change_descriptions = directivesManager_rw.getDirectiveChangeDescriptions(test_upgrade_obj);
 
             assert.equal(change_descriptions.length, 0, 'Expected 0 change descriptions returned');

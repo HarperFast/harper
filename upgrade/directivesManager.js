@@ -23,12 +23,8 @@ function getDirectiveChangeDescriptions(upgrade_obj) {
     let upgrade_directives = getUpgradeDirectivesToInstall(loaded_directives);
 
     for (let vers of upgrade_directives) {
-        let new_description = {};
         if (vers.change_description) {
-            new_description['change_description'] = vers.change_description;
-        }
-        if (Object.keys(new_description).length > 0) {
-            change_descriptions.push(new_description);
+            change_descriptions.push({ change_description: vers.change_description });
         }
     }
 
