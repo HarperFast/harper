@@ -6,6 +6,9 @@ const path = require('path');
 const fs = require('fs');
 const terms = require('../utility/hdbTerms');
 
+//NOTE - from Sam - These methods were moved from the old upgrade module to preserve them in case they are needed/helpful
+// for later upgrade code/directives.  If these do get added back into our code, make sure unit tests are written and the file is removed
+// from `sonar.coverage.exclusions` in the `sonar-project.properties` config file
 
 /**
  * Creates all directories specified in a directive file.

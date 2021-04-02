@@ -130,7 +130,7 @@ function getUpgradeDirectivesToInstall(loaded_directives) {
 
     let version_modules_to_run = [];
     for(let vers of loaded_directives) {
-        let module = directivesController.getModuleByVersion(vers);
+        let module = directivesController.getDirectiveByVersion(vers);
         if(module) {
             version_modules_to_run.push(module);
         }

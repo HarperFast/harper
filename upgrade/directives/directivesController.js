@@ -24,8 +24,7 @@ if (version_3_0_0) {
 }
 
 function getSortedVersions() {
-    let sorted_keys = [...versions.keys()].sort(hdb_utils.compareVersions);
-    return sorted_keys;
+    return [...versions.keys()].sort(hdb_utils.compareVersions);
 }
 
 function getVersionsForUpgrade(upgrade_obj) {
@@ -35,7 +34,7 @@ function getVersionsForUpgrade(upgrade_obj) {
     if (hdb_utils.isEmptyOrZeroLength(curr_version) || hdb_utils.isEmptyOrZeroLength(new_version)) {
         //we should never get to this scenario but if so, we will return empty array so that server can try to start
         // with current install and data
-        hdb_log.info(`Version data is not tracked correctly.  Current version data: ${upgrade_obj}`);
+        hdb_log.info(`There is an issue with the version data in your instance of HDB.  Current version data: ${upgrade_obj}`);
         hdb_log.error('There was an error when trying to evaluate the version information for your instance.  Trying to ' +
             'start the server anyways but it may fail. If you continue to have this problem, please contact support@harperdb.io.');
         return [];
@@ -47,12 +46,12 @@ function getVersionsForUpgrade(upgrade_obj) {
     return filtered_keys;
 }
 
-function hasRequiredUpgrades(upgrade_obj) {
+function hasUpgradesRequired(upgrade_obj) {
     const valid_versions = getVersionsForUpgrade(upgrade_obj);
     return valid_versions.length > 0;
 }
 
-function getModuleByVersion(version) {
+function getDirectiveByVersion(version) {
     if(hdb_utils.isEmptyOrZeroLength(version)) {
         return null;
     }
@@ -64,7 +63,7 @@ function getModuleByVersion(version) {
 
 module.exports = {
     getSortedVersions,
-    getModuleByVersion,
+    getDirectiveByVersion,
     getVersionsForUpgrade,
-    hasRequiredUpgrades
+    hasUpgradesRequired
 };

@@ -22,7 +22,7 @@ const OLD_SETTINGS_KEYS = {
 
 directive3_0_0.change_description = "Placeholder for change descriptions for 3.0.0";
 
-directive3_0_0.settings_file_function.push(function updateSettingsFile_3_0_0() {
+function updateSettingsFile_3_0_0() {
     env.initSync();
 
     const hdb_boot_properties = PropertiesReader(env.BOOT_PROPS_FILE_PATH);
@@ -132,10 +132,12 @@ directive3_0_0.settings_file_function.push(function updateSettingsFile_3_0_0() {
     hdb_log.info(upgrade_success_msg);
 
     return upgrade_success_msg;
-});
+}
 
-//Kyle's indexing script/s is imported to this file and added here.
-// directive3_0_0.functions.push(() => {});
+directive3_0_0.settings_file_function.push(updateSettingsFile_3_0_0);
+
+//TODO - Kyle's indexing script/s is imported to this file and added here.
+//directive3_0_0.functions.push(() => {});
 
 directives.push(directive3_0_0);
 

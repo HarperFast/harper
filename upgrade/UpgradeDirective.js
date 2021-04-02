@@ -10,7 +10,7 @@ class UpgradeDirective {
     constructor(version_number) {
         this.version = version_number;
         this.change_description = "";
-        // Function that builds updated settings file. Function must be synchronous.
+        // Function that builds updated settings file. Function must be synchronous and set in class object within an array.
         this.settings_file_function = [];
         // Functions can be added into this which will be run after the settings file function has been run.  Functions must be
         // synchronous.

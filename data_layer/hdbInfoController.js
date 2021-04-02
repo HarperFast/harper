@@ -193,7 +193,7 @@ async function getVersionUpdateInfo() {
         const newUpgradeObj = new UpgradeObject(data_version_num, current_version);
         //we only want to prompt for a reinstall if there are updates that need to be made.  If there are no new version
         // update directives between the two versions, we can skip by returning undefined
-        const upgradeRequired = directiveManager.hasRequiredUpgrades(newUpgradeObj);
+        const upgradeRequired = directiveManager.hasUpgradesRequired(newUpgradeObj);
         if (upgradeRequired) {
             return newUpgradeObj;
         } else {

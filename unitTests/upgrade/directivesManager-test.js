@@ -1,6 +1,7 @@
 'use strict';
 
-const test_util = require('../../test_utils');
+const test_util = require('../test_utils');
+const { generateUpgradeObj } = test_util;
 test_util.preTestPrep();
 
 const assert = require('assert');
@@ -9,9 +10,9 @@ const sinon = require('sinon');
 const { expect } = chai;
 
 const rewire = require('rewire');
-let directivesManager_rw = rewire('../../../upgrade/directivesManager');
-const upgrade_directive = require('../../../upgrade/UpgradeDirective');
-const directivesController_stub = require('./testDirectives/directivesControllerStub');
+let directivesManager_rw = rewire('../../upgrade/directivesManager');
+const upgrade_directive = require('../../upgrade/UpgradeDirective');
+const directivesController_stub = require('./directives/directivesControllerStub');
 
 // const BASE = process.cwd();
 // let TEST_SETTINGS_PATH = BASE + '/testsettings.js';
@@ -20,25 +21,13 @@ const directivesController_stub = require('./testDirectives/directivesController
 //Use the manager stub in order to control the tests.
 directivesManager_rw.__set__('directivesController', directivesController_stub);
 
-const VERSION_KEYS = {
-    DATA: 'data_version',
-    UPGRADE: 'upgrade_version'
-};
-
-function generateUpgradeObj(data_ver, upgrade_ver) {
-    return {
-        [VERSION_KEYS.DATA]: data_ver,
-        [VERSION_KEYS.UPGRADE]: upgrade_ver
-    }
-}
-
 describe('processDirectives Module', function() {
     // before(() => {
     //     directivesManager_rw.__set__('hdb_base', DIR_PATH_BASE);
     // });
 
     after(() => {
-        rewire('../../../upgrade/directivesManager');
+        rewire('../../upgrade/directivesManager');
         // fs.unlinkSync(SETTINGS_PATH);
     });
 
@@ -76,7 +65,7 @@ describe('processDirectives Module', function() {
 
         after(() => {
             sandbox.restore();
-            directivesManager_rw = rewire('../../../upgrade/directivesManager');
+            directivesManager_rw = rewire('../../upgrade/directivesManager');
             directivesManager_rw.__set__('directivesController', directivesController_stub);
         })
 
