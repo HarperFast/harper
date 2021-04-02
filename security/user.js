@@ -58,7 +58,7 @@ async function addUser(user) {
 
     let validation_resp = validation.addUserValidation(clean_user);
     if(validation_resp){
-        throw new Error(validation_resp);
+        throw handleHDBError(new Error(), validation_resp.message, HTTP_STATUS_CODES.BAD_REQUEST);
     }
 
     let search_obj = {
@@ -260,6 +260,10 @@ async function dropUser(user) {
             schema: "system",
             hash_values: [user.username]
         };
+
+        if (hdb_utility.isEmpty(global.hdb_users.get(user.username))) {
+            throw handleHDBError(new Error(), HDB_ERROR_MSGS.USER_NOT_EXIST(user.username), HTTP_STATUS_CODES.NOT_FOUND);
+        }
 
         let success;
         try {
