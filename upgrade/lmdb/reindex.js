@@ -93,7 +93,7 @@ async function initPinoLogger(schema, table) {
 async function processTable(schema, table, the_schema_path){
     let is_schema_reindex = !the_schema_path.includes('hdb/transactions');
     //open the existing environment with the "old" environment utility
-    let old_env = await old_environment_utility.openEnvironment(the_schema_path, table);
+    let old_env = await old_environment_utility.openEnvironment(the_schema_path, table, !is_schema_reindex);
     //find the name of the hash attribute
     let hash = getHashDBI(old_env.dbis);
     let all_dbi_names = Object.keys(old_env.dbis);
