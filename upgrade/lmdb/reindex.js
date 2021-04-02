@@ -91,9 +91,9 @@ async function initPinoLogger(schema, table) {
 }
 
 async function processTable(schema, table, the_schema_path){
-    let is_schema_reindex = !the_schema_path.includes('hdb/transactions');
+    let is_transaction_reindex = the_schema_path.includes('hdb/transactions');
     //open the existing environment with the "old" environment utility
-    let old_env = await old_environment_utility.openEnvironment(the_schema_path, table, !is_schema_reindex);
+    let old_env = await old_environment_utility.openEnvironment(the_schema_path, table, is_transaction_reindex);
     //find the name of the hash attribute
     let hash = getHashDBI(old_env.dbis);
     let all_dbi_names = Object.keys(old_env.dbis);
@@ -133,20 +133,20 @@ async function processTable(schema, table, the_schema_path){
 
             let results;
             let success = false;
-            if (is_schema_reindex) {
-                results = await insertRecords(new_env, hash, all_dbi_names, [record], false);
-                success = results.written_hashes.indexOf(hash_value) > -1;
-            } else {
+            if (is_transaction_reindex) {
                 // Transaction logs are indexed different to regular records so they need their own insert function.
                 results = await insertTransaction(new_env, record);
                 success = results;
+            } else {
+                results = await insertRecords(new_env, hash, all_dbi_names, [record], false);
+                success = results.written_hashes.indexOf(hash_value) > -1;
             }
 
             pino_logger.info(`Insert success: ${JSON.stringify(results)}`);
 
             //validate indices for the row
             assert(success, true);
-            validateIndices(new_env, hash, record[hash], is_schema_reindex);
+            validateIndices(new_env, hash, record[hash], is_transaction_reindex);
 
             //increment the progress bar by 1
             bar.increment();
@@ -203,16 +203,14 @@ async function insertTransaction(txn_env, txn_object) {
     return result;
 }
 
-function validateIndices(env, hash, hash_value, is_schema_reindex){
+function validateIndices(env, hash, hash_value, is_transaction_reindex){
     let hash_dbi = env.dbis[hash];
 
     let record = hash_dbi.get(hash_value);
     assert.deepStrictEqual(typeof record, 'object');
 
     let entries;
-    if (is_schema_reindex) {
-        entries = Object.entries(record);
-    } else {
+    if (is_transaction_reindex) {
         // For transaction log we only create indices from user_name and hash_values, which means we only need to check for those two.
         let tmp_obj = {
             [lmdb_terms.TRANSACTIONS_DBI_NAMES_ENUM.USER_NAME]: record.user_name,
@@ -220,13 +218,15 @@ function validateIndices(env, hash, hash_value, is_schema_reindex){
         };
 
         entries = Object.entries(tmp_obj);
+    } else {
+        entries = Object.entries(record);
     }
 
     for (const [key, value] of entries) {
         if(key !== hash && env.dbis[key] !== undefined && !hdb_common.isEmptyOrZeroLength(value)) {
 
             // When validating transaction indices we need to validate each index created for timestamp hash.
-            if (!is_schema_reindex && key === 'hash_value') {
+            if (is_transaction_reindex && key === 'hash_value') {
                 for (let j = 0, length = value.length; j < length; j++) {
                     let value_value = value[j];
                     validateIndex(env, key, value_value, hash_value);
