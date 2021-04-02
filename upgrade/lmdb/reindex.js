@@ -30,6 +30,8 @@ let error_occurred = false;
 module.exports = reindexUpgrade;
 
 async function reindexUpgrade() {
+    //TODO Do i need to check to see if they are using FS?
+
     console.log('Reindexing upgrade started for schemas');
     logger.notify('Reindexing upgrade started for schemas');
     await getTables(SCHEMA_PATH);
@@ -293,4 +295,4 @@ function getHashDBI(dbis){
 }
 
 
-reindexUpgrade().then(d=>{});
+//reindexUpgrade().then(d=>{});
