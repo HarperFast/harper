@@ -29,6 +29,13 @@ let error_occurred = false;
 
 module.exports = reindexUpgrade;
 
+/**
+ * Used by upgrade to create new lmdb-store indices from existing node-lmdb indices.
+ * Queries the existing table indices to build a new one in hdb/tmp. Once the full table
+ * has been processed it will move the table from tmp to the schema folder.
+ * If reindexing transactions will move to transactions folder.
+ * @returns {Promise<void>}
+ */
 async function reindexUpgrade() {
     console.info('Reindexing upgrade started for schemas');
     logger.notify('Reindexing upgrade started for schemas');
@@ -40,6 +47,12 @@ async function reindexUpgrade() {
     logger.notify('Reindexing upgrade complete');
 }
 
+/**
+ * Gets all the tables in each schema. For each table a temp log is initiated and
+ * processTable called. If no errors occur it will empty the tmp folder.
+ * @param reindex_path
+ * @returns {Promise<void>}
+ */
 async function getTables(reindex_path){
     // Get list of schema folders
     let schema_list = await fs.readdir(reindex_path);
@@ -85,6 +98,13 @@ async function getTables(reindex_path){
     }
 }
 
+/**
+ * Creates a log for each table that gets re-indexed.
+ * @param schema
+ * @param table
+ * @param is_transaction_reindex
+ * @returns {Promise<undefined>}
+ */
 async function initPinoLogger(schema, table, is_transaction_reindex) {
     let reindex_suffix = is_transaction_reindex ? 'transaction_reindex' : 'schema_reindex';
     let log_name = `${schema}_${table}_${reindex_suffix}.log`;
@@ -101,6 +121,15 @@ async function initPinoLogger(schema, table, is_transaction_reindex) {
     }, log_destination);
 }
 
+/**
+ * Opens the old and new environments and copies the records over. Once complete it will
+ * validate that all records are in new environment and that the stats match.
+ * @param schema
+ * @param table
+ * @param the_schema_path
+ * @param is_transaction_reindex
+ * @returns {Promise<void>}
+ */
 async function processTable(schema, table, the_schema_path, is_transaction_reindex){
     //open the existing environment with the "old" environment utility
     let old_env = await old_environment_utility.openEnvironment(the_schema_path, table, is_transaction_reindex);
@@ -205,6 +234,13 @@ async function processTable(schema, table, the_schema_path, is_transaction_reind
     new_environment_utility.closeEnvironment(env);
 }
 
+/**
+ * Transaction logs are indexed differently to regular records so they need their own insert function.
+ * They only get secondary indexes for user_name and hash_value.
+ * @param txn_env
+ * @param txn_object
+ * @returns {Promise<*>}
+ */
 async function insertTransaction(txn_env, txn_object) {
     new_environment_utility.initializeDBIs(txn_env, lmdb_terms.TRANSACTIONS_DBI_NAMES_ENUM.TIMESTAMP, lmdb_terms.TRANSACTIONS_DBIS);
     let txn_timestamp = txn_object.timestamp;
@@ -220,6 +256,13 @@ async function insertTransaction(txn_env, txn_object) {
     return result;
 }
 
+/**
+ * For each entry we call validate.
+ * @param env
+ * @param hash
+ * @param hash_value
+ * @param is_transaction_reindex
+ */
 function validateIndices(env, hash, hash_value, is_transaction_reindex){
     let hash_dbi = env.dbis[hash];
 
@@ -254,6 +297,13 @@ function validateIndices(env, hash, hash_value, is_transaction_reindex){
     }
 }
 
+/**
+ * Validates that the entry is in the new index
+ * @param env
+ * @param key
+ * @param value
+ * @param hash_value
+ */
 function validateIndex(env, key, value, hash_value) {
     try {
         let found = false;
@@ -279,6 +329,11 @@ function validateIndex(env, key, value, hash_value) {
     }
 }
 
+/**
+ * Gets the hash of a DBIS.
+ * @param dbis
+ * @returns {string}
+ */
 function getHashDBI(dbis){
     let hash_attribute;
     for (const [key, value] of Object.entries(dbis)) {
