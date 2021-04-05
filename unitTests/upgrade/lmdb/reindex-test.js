@@ -11,15 +11,26 @@ chai.use(sinon_chai);
 const test_utils = require('../../test_utils');
 const logger = require('../../../utility/logging/harper_logger');
 const env_mngr = require('../../../utility/environment/environmentManager');
+const lmdb_common = require('../../../utility/lmdb/commonUtility');
 
-const TMP_TEST_DIR = 'tmp_reindex_test';
-const BASE_PATH_TEST = path.join(__dirname, TMP_TEST_DIR);
+const TEST_DIR = 'reindexTestDir';
+const BASE_PATH_TEST = path.join(__dirname, TEST_DIR);
 const SCHEMA_PATH_TEST = path.join(BASE_PATH_TEST, 'schema');
 const TMP_PATH_TEST = path.join(BASE_PATH_TEST, 'tmp');
 const TRANSACTIONS_PATH_TEST = path.join(BASE_PATH_TEST, 'transactions');
+const OLD_ENV_SCHEMA = path.join(BASE_PATH_TEST, 'oldNodeLmdbEnv', 'schema');
+const OLD_ENV_TRANSACTIONS = path.join(BASE_PATH_TEST, 'oldNodeLmdbEnv', 'transactions');
 
 describe('Test reindex module', () => {
     const sandbox = sinon.createSandbox();
+    const the_schema_path_dev_test = path.join(SCHEMA_PATH_TEST, 'dev');
+    const the_tran_schema_path_dev_test = path.join(TRANSACTIONS_PATH_TEST, 'dev');
+    const pino_info_fake = sinon.fake();
+    const pino_error_fake = sinon.fake();
+    const pino_logger_test = {
+        info: pino_info_fake,
+        error: pino_error_fake
+    };
     let reindex_rw;
     let logger_notify_stub;
     let logger_error_stub;
@@ -28,14 +39,23 @@ describe('Test reindex module', () => {
         // This stub and rewire need to be here as putting it in outer scope was messing interfering with other tests.
         sandbox.stub(env_mngr,'getHdbBasePath').returns(BASE_PATH_TEST);
         reindex_rw = rewire('../../../upgrade/lmdb/reindex');
-        fs.mkdirsSync(BASE_PATH_TEST);
         logger_notify_stub = sandbox.stub(logger, 'notify');
         logger_error_stub = sandbox.stub(logger, 'error');
+        reindex_rw.__set__('pino_logger', pino_logger_test);
+        sandbox.stub(console, 'error');
+        sandbox.stub(console, 'info');
     });
 
-    after(() => {
+    afterEach(() => {
+        sandbox.resetHistory();
+        pino_info_fake.resetHistory();
+        pino_error_fake.resetHistory();
+    });
+
+    after(async () => {
         sandbox.restore();
-        //TODO add async dir cleanup
+        rewire('../../../upgrade/lmdb/reindex');
+        await fs.emptyDir(TMP_PATH_TEST);
     });
 
     describe('Test reindexUpgrade function', () => {
@@ -62,17 +82,167 @@ describe('Test reindex module', () => {
     });
 
     describe('Test getTables function', () => {
+        const process_table_stub = sandbox.stub();
+        const init_pino_logger_stub = sandbox.stub();
         let getTables;
+        let process_table_rw;
+        let init_pino_logger_rw;
+        let empty_dir_stub;
 
         before(() => {
+            empty_dir_stub = sandbox.stub(fs, 'emptyDir');
             getTables = reindex_rw.__get__('getTables');
+            process_table_rw = reindex_rw.__set__('processTable', process_table_stub);
+            init_pino_logger_rw = reindex_rw.__set__('initPinoLogger', init_pino_logger_stub);
         });
         
-        it('Test ', () => {
-            
+        after(() => {
+            process_table_rw();
+            init_pino_logger_rw();
+        });
+        
+        it('Test schema and tables are loaded happy path', async () => {
+            await getTables(SCHEMA_PATH_TEST);
+
+            expect(init_pino_logger_stub.getCall(0)).to.have.been.calledWith('dev', 'dog', false);
+            expect(init_pino_logger_stub.getCall(1)).to.have.been.calledWith('dev', 'owner', false);
+            expect(process_table_stub.getCall(0)).to.have.been.calledWith('dev', 'dog', the_schema_path_dev_test, false);
+            expect(process_table_stub.getCall(1)).to.have.been.calledWith('dev', 'owner', the_schema_path_dev_test, false);
+            expect(empty_dir_stub).to.have.been.calledWith(TMP_PATH_TEST);
         });
 
+        it('Test error is handled as expected', async () => {
+            process_table_stub.throws(new Error('Error processing table'));
+            await getTables(SCHEMA_PATH_TEST);
 
+            expect(logger_error_stub.getCall(0)).to.have.been.calledWith('There was an error with the reindex upgrade, check the logs in hdb/tmp for more details');
+            expect(logger_error_stub.getCall(1).args[0].message).to.equal('Error processing table');
+            expect(logger_error_stub.getCall(1).args[0].schema_path).to.equal(the_schema_path_dev_test);
+            expect(logger_error_stub.getCall(1).args[0].table_name).to.equal('owner');
+            expect(empty_dir_stub).to.have.not.been.called;
+        });
     });
 
+    describe('Test initPinoLogger', () => {
+        const pino_stub = sandbox.stub();
+        let initPinoLogger;
+        let ensure_dir_stub;
+        let write_file_stub;
+
+        before(() => {
+            initPinoLogger = reindex_rw.__get__('initPinoLogger');
+            ensure_dir_stub = sandbox.stub(fs, 'ensureDir');
+            write_file_stub = sandbox.stub(fs, 'writeFile');
+            reindex_rw.__set__('pino', pino_stub);
+        });
+
+        after(() => {
+            reindex_rw.__set__('pino_logger', pino_logger_test);
+        });
+
+        it('Test fs and pino stubs are called as expected happy path', async () => {
+            const expected_log_dest = path.join(TMP_PATH_TEST, 'dev_dog_transaction_reindex.log');
+            await initPinoLogger('dev', 'dog', true);
+
+            expect(ensure_dir_stub).to.have.been.calledWith(TMP_PATH_TEST);
+            expect(write_file_stub).to.have.been.calledWith(expected_log_dest, '');
+            expect(pino_stub.firstCall.args[0].level).to.equal('debug');
+            expect(pino_stub.firstCall.args[1]).to.equal(expected_log_dest);
+        });
+    });
+
+    describe('Test processTable, insertTransaction, validateIndices & getHashDBI functions', () => {
+        let processTable;
+
+        const revert_process_table = async () => {
+            await fs.copy(OLD_ENV_SCHEMA, SCHEMA_PATH_TEST);
+            await fs.copy(OLD_ENV_TRANSACTIONS, TRANSACTIONS_PATH_TEST);
+        };
+
+        before(() => {
+            processTable = reindex_rw.__get__('processTable');
+        });
+
+        after(async () => {
+            await revert_process_table();
+        });
+
+        // These tests don't use any stubs. They will reindex the tables in reindexTestDir schema & transactions.
+        // There are no expects in some of the tests because the reindex code contains validation and asserts.
+        it('Test that a table is successfully processed happy path', async () => {
+            await processTable('dev', 'dog', the_schema_path_dev_test, false);
+        });
+
+        it('Test that a transaction table is successfully processed happy path', async () => {
+            await processTable('dev', 'dog', the_tran_schema_path_dev_test, true);
+        });
+
+        it('Test error is thrown if reindex called on already indexed environment', async () => {
+            global.old_lmdb_map = undefined;
+            let error;
+            try {
+                await processTable('dev', 'dog', the_schema_path_dev_test, false);
+            } catch(err) {
+                error = err;
+            }
+
+            expect(error.message).to.equal('MDB_INVALID: File is not an LMDB file');
+        });
+
+        it('Test error is thrown if environment does not exist', async () => {
+            await revert_process_table();
+            let error;
+            try {
+                await processTable('dev', 'no_dog', the_schema_path_dev_test, false);
+            } catch(err) {
+                error = err;
+            }
+
+            expect(error.message).to.equal('invalid environment');
+        });
+
+        it('Test an error from the validator handled correctly', async () => {
+            await revert_process_table();
+            const validate_indices_stub = sandbox.stub().throws(new Error('validation error'));
+            const validate_indices_rw = reindex_rw.__set__('validateIndices', validate_indices_stub);
+            await test_utils.assertErrorAsync(processTable, ['dev', 'dog', the_schema_path_dev_test, false], new Error('validation error'));
+            validate_indices_rw();
+        });
+    });
+
+    describe('Test validateIndex function', () => {
+        let validateIndex;
+        let check_is_blod_stub;
+
+        const env_test = {
+            "dbis": {
+                "__blob__": {
+                    "get": () => undefined
+                },
+                "name": {
+                    "doesExist": () => undefined
+                }
+            }
+        };
+
+        before(() => {
+            validateIndex = reindex_rw.__get__('validateIndex');
+            check_is_blod_stub = sandbox.stub(lmdb_common, 'checkIsBlob');
+        });
+
+        it('Test assert fails if blob entry is not found', () => {
+            check_is_blod_stub.returns(true);
+            validateIndex(env_test, 'name', 'jerry', '123abc');
+            expect(pino_info_fake).to.have.been.calledWith('Validate indices did not find blob value in new DBI: jerry. Hash: 123abc');
+            expect(pino_error_fake.firstCall.args[0].message).to.include('Expected values to be strictly deep-equal:\n\nfalse !== true\n');
+        });
+
+        it('Test assert fails if value not found', () => {
+            check_is_blod_stub.returns(false);
+            validateIndex(env_test, 'name', 'jerry', '123abc');
+            expect(pino_info_fake).to.have.been.calledWith('Validate indices did not find value in new DBI: jerry. Hash: 123abc');
+            expect(pino_error_fake.firstCall.args[0].message).to.include('Expected values to be strictly deep-equal');
+        });
+
+    });
 });

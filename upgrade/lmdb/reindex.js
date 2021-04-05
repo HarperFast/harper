@@ -30,19 +30,15 @@ let error_occurred = false;
 module.exports = reindexUpgrade;
 
 async function reindexUpgrade() {
-    //TODO Do i need to check to see if they are using FS?
-
-    console.log('Reindexing upgrade started for schemas');
+    console.info('Reindexing upgrade started for schemas');
     logger.notify('Reindexing upgrade started for schemas');
     await getTables(SCHEMA_PATH);
 
-    console.log('\n\nReindexing upgrade started for transaction logs');
+    console.info('\n\nReindexing upgrade started for transaction logs');
     logger.notify('Reindexing upgrade started for transaction logs');
     await getTables(TRANSACTIONS_PATH);
     logger.notify('Reindexing upgrade complete');
 }
-
-// TODO: add more logging to the main log. more progress and list which table currently working on. When testing we need to know how big tmp folder grows
 
 async function getTables(reindex_path){
     // Get list of schema folders
@@ -293,6 +289,3 @@ function getHashDBI(dbis){
     }
     return hash_attribute;
 }
-
-
-//reindexUpgrade().then(d=>{});
