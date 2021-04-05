@@ -15,9 +15,7 @@ const install_user_permission = require('../utility/install_user_permission');
 const { isHarperRunning } = require('../utility/common_utils');
 const { promisify } = require('util');
 const stop = require('./stop');
-const upgrade_prompt = require('../upgrade/upgradePrompt');
 const upgrade = require('./upgrade');
-const version = require('./version');
 const hdb_license = require('../utility/registration/hdb_license');
 const hdbInfoController = require('../data_layer/hdbInfoController');
 

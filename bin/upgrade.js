@@ -16,13 +16,13 @@
  */
 const CLI = require('clui');
 const colors = require("colors/safe");
+const fs = require('fs-extra');
 const env = require('../utility/environment/environmentManager');
 const log = require('../utility/logging/harper_logger');
-const hdb_util = require('../utility/common_utils');
 const hdb_terms = require('../utility/hdbTerms');
 const version = require('./version');
 const directivesManager = require('../upgrade/directivesManager');
-const { isHarperRunning } = require('../utility/common_utils');
+const hdb_utils = require('../utility/common_utils');
 const hdbInfoController = require('../data_layer/hdbInfoController');
 const upgradePrompt = require('../upgrade/upgradePrompt');
 
@@ -32,9 +32,7 @@ let Spinner = CLI.Spinner;
 let countdown = new Spinner(`Upgrading HarperDB `, ['⣾', '⣽', '⣻', '⢿', '⡿', '⣟', '⣯', '⣷']);
 
 module.exports = {
-    upgrade,
-    startUpgrade,
-    listDirectiveChanges
+    upgrade
 };
 
 /**
@@ -42,7 +40,7 @@ module.exports = {
  * @throws
  */
 async function checkIfRunning() {
-    const hdb_running = await isHarperRunning();
+    const hdb_running = await hdb_utils.isHarperRunning();
     if (hdb_running) {
         let run_err = "HarperDB is running, please stop HarperDB with 'harperdb stop' and run the upgrade command again.";
         console.log(colors.red(run_err));
@@ -58,7 +56,7 @@ async function checkIfRunning() {
 async function upgrade(upgrade_obj) {
     log.setLogLevel(log.INFO);
     printToLogAndConsole(`This version of HarperDB is ${version.version()}`);
-    if (hdb_util.isEmptyOrZeroLength(env) ) {
+    if (!fs.existsSync(env.BOOT_PROPS_FILE_PATH)) {
         const hdb_not_found_msg = 'The hdb_boot_properties file was not found.  Please install HDB.';
         printToLogAndConsole(hdb_not_found_msg, log.ERR);
         process.exit(1);
@@ -87,23 +85,29 @@ async function upgrade(upgrade_obj) {
 
     let start_upgrade;
 
+    let exit_code = 0;
     try {
         start_upgrade = await upgradePrompt.forceUpdatePrompt(hdb_upgrade_info);
     } catch(err) {
         log.error('There was an error when prompting user about upgrade.');
         log.error(err);
         start_upgrade = false;
+        exit_code = 1;
     }
 
     if(!start_upgrade) {
         console.log('Cancelled upgrade, closing HarperDB');
-        process.exit(1);
+        process.exit(exit_code);
     }
 
     countdown.message(`Starting upgrade to version ${current_hdb_version}`);
     countdown.start();
     log.info(`Starting upgrade to version ${current_hdb_version}`);
-    await startUpgrade(hdb_upgrade_info);
+
+    await runUpgrade(hdb_upgrade_info);
+
+    countdown.stop();
+    printToLogAndConsole(`HarperDB was successfully upgraded to version ${hdb_upgrade_info[UPGRADE_VERSION]}`, log.INFO);
 }
 
 /**
@@ -113,10 +117,10 @@ async function upgrade(upgrade_obj) {
  * @throws
  * @returns {Promise}
  */
-async function startUpgrade(upgrade_obj) {
+async function runUpgrade(upgrade_obj) {
 
     try {
-        await runUpgradeDirectives(upgrade_obj);
+        await directivesManager.processDirectives(upgrade_obj);
     } catch(err) {
         printToLogAndConsole('There was an error during the data upgrade.  Please check the logs.', log.error);
         throw(err);
@@ -128,41 +132,6 @@ async function startUpgrade(upgrade_obj) {
         log.error('Error updating the hdbInfo version table.');
         log.error(err);
     }
-    countdown.stop();
-    printToLogAndConsole(`HarperDB was successfully upgraded to version ${upgrade_obj[UPGRADE_VERSION]}`, log.INFO);
-}
-
-/**
- * Run the upgrade directives between the old version and the new version.  This should only be called if there are upgrade
- * directives to run
- *
- * @param upgrade_obj {UpgradeObject}
- * @returns {*|[]}
- */
-function runUpgradeDirectives(upgrade_obj) {
-    let directive_results = [];
-    try {
-        directive_results = directivesManager.processDirectives(upgrade_obj);
-    } catch(e) {
-        throw e;
-    }
-    return directive_results;
-}
-
-/**
- * List the change descriptions for all directives between the old version and the new one.
- * @param old_version_number - The version being replaced
- * @param new_version_number - The new version
- * @returns {Array}
- */
-function listDirectiveChanges(upgrade_obj) {
-    let directive_change_descriptions = [];
-    try {
-        directive_change_descriptions = directivesManager.getDirectiveChangeDescriptions(upgrade_obj);
-    } catch(e) {
-        throw e;
-    }
-    return directive_change_descriptions;
 }
 
 function printToLogAndConsole(msg, log_level) {
