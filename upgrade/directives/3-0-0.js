@@ -4,12 +4,12 @@ const path = require('path');
 const colors = require("colors/safe");
 const fs = require('fs-extra');
 const PropertiesReader = require('properties-reader');
-const upgrade_directive = require('../UpgradeDirective');
+const UpgradeDirective = require('../UpgradeDirective');
 const hdb_log = require('../../utility/logging/harper_logger');
 const { HDB_SETTINGS_NAMES, HDB_SETTINGS_DEFAULT_VALUES } = require('../../utility/hdbTerms');
 const env = require('../../utility/environment/environmentManager');
 
-let directive3_0_0 = new upgrade_directive('3.0.0');
+let directive3_0_0 = new UpgradeDirective('3.0.0');
 let directives = [];
 
 //We need these here b/c they are no longer
@@ -23,10 +23,7 @@ const OLD_SETTINGS_KEYS = {
 directive3_0_0.change_description = "Placeholder for change descriptions for 3.0.0";
 
 function updateSettingsFile_3_0_0() {
-    env.initSync();
-
-    const hdb_boot_properties = PropertiesReader(env.BOOT_PROPS_FILE_PATH);
-    const hdb_properties = PropertiesReader(hdb_boot_properties.get('settings_path'));
+    const hdb_properties = PropertiesReader(env.getProperty(HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY));
 
     const http_secure_enabled_old = hdb_properties.get(OLD_SETTINGS_KEYS.HTTP_SECURE_ENABLED_KEY);
     const http_secure_port_old = hdb_properties.get(OLD_SETTINGS_KEYS.HTTP_SECURE_PORT_KEY);
@@ -106,7 +103,7 @@ function updateSettingsFile_3_0_0() {
 
     try {
         //create backup of old settings file
-        const settings_backup_path =  path.join(settings_dir, '3_0_0_upgrade_settings.js.back');
+        const settings_backup_path =  path.join(settings_dir, '3_0_0_upgrade_settings.bak');
         hdb_log.info(`Backing up old settings file to: ${settings_backup_path}`);
         fs.copySync(settings_path, settings_backup_path);
 

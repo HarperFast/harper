@@ -40,10 +40,9 @@ function getVersionsForUpgrade(upgrade_obj) {
         return [];
     }
 
-    let filtered_keys = [...versions.keys()].sort(hdb_utils.compareVersions).filter( function(this_version) {
+    return [...versions.keys()].sort(hdb_utils.compareVersions).filter( function(this_version) {
         return this_version > curr_version && this_version <= new_version;
     });
-    return filtered_keys;
 }
 
 function hasUpgradesRequired(upgrade_obj) {

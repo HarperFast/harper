@@ -236,6 +236,7 @@ function promptForReinstall(callback) {
     });
 }
 
+//TODO - do we need this step anymore?
 /**
  * Prepare all data needed to perform a reinstall.
  * @param callback

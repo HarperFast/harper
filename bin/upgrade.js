@@ -1,5 +1,6 @@
 'use strict';
 
+//TODO - rewrite code comment
 /**
  * The upgrade process is a two part process, where the first upgrade call is made against the currently installed
  * version of harperDB in the /bin directory as ./harperdb upgrade.  Upgrade will call the LMS to get the latest version
@@ -14,10 +15,13 @@
  * stored in the new versions, swap the /bin/harperdb with /upgrade/harperdb by moving /bin/harperdb to <install_path>/trash.
  *
  */
+
+const env = require('../utility/environment/environmentManager');
+env.initSync();
+
 const CLI = require('clui');
 const colors = require("colors/safe");
 const fs = require('fs-extra');
-const env = require('../utility/environment/environmentManager');
 const log = require('../utility/logging/harper_logger');
 const hdb_terms = require('../utility/hdbTerms');
 const version = require('./version');
@@ -54,7 +58,6 @@ async function checkIfRunning() {
  * @returns {Promise<*>}
  */
 async function upgrade(upgrade_obj) {
-    log.setLogLevel(log.INFO);
     printToLogAndConsole(`This version of HarperDB is ${version.version()}`);
     if (!fs.existsSync(env.BOOT_PROPS_FILE_PATH)) {
         const hdb_not_found_msg = 'The hdb_boot_properties file was not found.  Please install HDB.';
@@ -120,7 +123,7 @@ async function upgrade(upgrade_obj) {
 async function runUpgrade(upgrade_obj) {
 
     try {
-        await directivesManager.processDirectives(upgrade_obj);
+        directivesManager.processDirectives(upgrade_obj);
     } catch(err) {
         printToLogAndConsole('There was an error during the data upgrade.  Please check the logs.', log.error);
         throw(err);

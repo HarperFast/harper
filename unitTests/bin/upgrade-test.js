@@ -87,7 +87,6 @@ describe('Test upgrade.js', () => {
     });
 
     describe('upgrade()', async () => {
-        let logSetLevel_stub;
         let spinner_rw;
         let runUpgrade_orig;
         let runUpgrade_stub;
@@ -99,7 +98,6 @@ describe('Test upgrade.js', () => {
             upgrade_rw.__set__('runUpgrade', runUpgrade_stub);
             checkIfRunning_stub = sandbox.stub().resolves();
             upgrade_rw.__set__('checkIfRunning', checkIfRunning_stub);
-            logSetLevel_stub = sandbox.stub(hdb_logger, 'setLogLevel').returns();
             getVersionUpdateInfo_stub = sandbox.stub(hdbInfoController, 'getVersionUpdateInfo').resolves(TEST_UPGRADE_OBJ);
             forceUpdatePrompt_stub = sandbox.stub(updatePrompt, 'forceUpdatePrompt').resolves(true);
             spinner_rw = upgrade_rw.__get__('countdown');
@@ -244,13 +242,6 @@ describe('Test upgrade.js', () => {
 
             upgrade_rw.__set__('env', env_orig);
         });
-
-        it('Log level should be set to info for upgrade process', async () => {
-            await upgrade_rw.upgrade();
-
-            expect(logSetLevel_stub.calledOnce).to.eql(true);
-            expect(logSetLevel_stub.args[0][0]).to.eql(hdb_logger.INFO);
-        });
     });
 
     describe('runUpgrade()', () => {
@@ -304,17 +295,4 @@ describe('Test upgrade.js', () => {
             expect(insertHdbUpgradeInfo_stub.called).to.be.true;
         });
     });
-
-    describe('runUpgradeDirectives()', () => {
-        it('should do a thing', () => {
-
-        })
-    })
-
-    describe('listDirectiveChanges()', () => {
-        it('should do a thing', () => {
-
-        })
-    })
-
 });
