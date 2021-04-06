@@ -244,7 +244,7 @@ async function processTable(schema, table, the_schema_path, is_transaction_reind
 async function insertTransaction(txn_env, txn_object) {
     new_environment_utility.initializeDBIs(txn_env, lmdb_terms.TRANSACTIONS_DBI_NAMES_ENUM.TIMESTAMP, lmdb_terms.TRANSACTIONS_DBIS);
     let txn_timestamp = txn_object.timestamp;
-    let result = await txn_env.dbis[lmdb_terms.TRANSACTIONS_DBI_NAMES_ENUM.TIMESTAMP].ifNoExists(txn_timestamp, ()=> {
+    return await txn_env.dbis[lmdb_terms.TRANSACTIONS_DBI_NAMES_ENUM.TIMESTAMP].ifNoExists(txn_timestamp, ()=> {
         txn_env.dbis[lmdb_terms.TRANSACTIONS_DBI_NAMES_ENUM.TIMESTAMP].put(txn_timestamp, txn_object);
         if (!hdb_util.isEmpty(txn_object.user_name)) {
             txn_env.dbis[lmdb_terms.TRANSACTIONS_DBI_NAMES_ENUM.USER_NAME].put(txn_object.user_name, txn_timestamp);
@@ -253,7 +253,6 @@ async function insertTransaction(txn_env, txn_object) {
             txn_env.dbis[lmdb_terms.TRANSACTIONS_DBI_NAMES_ENUM.HASH_VALUE].put(txn_object.hash_values[x], txn_timestamp);
         }
     });
-    return result;
 }
 
 /**
