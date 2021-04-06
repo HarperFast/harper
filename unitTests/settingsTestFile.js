@@ -3,6 +3,7 @@ const fs = require('fs-extra');
 const hdb_utils = require('../utility/common_utils');
 
 const TEST_SETTINGS_FILE = 'settings.test';
+const TEST_SETTINGS_FILE_PATH = `${__dirname}/${TEST_SETTINGS_FILE}`;
 const TEST_SETTINGS_FILE_BAK = 'settings.test.bak';
 const SETTINGS = (settings_values = {}) => (
     '\t;Settings for the HarperDB process\n' +
@@ -72,12 +73,17 @@ const SETTINGS = (settings_values = {}) => (
 
 module.exports = {
     buildFile,
-    deleteFile
+    deleteFile,
+    getSettingsFilePath
 };
+
+function getSettingsFilePath() {
+    return TEST_SETTINGS_FILE_PATH;
+}
 
 function buildFile(settings_values = {}) {
     try {
-        fs.writeFileSync(`${__dirname}/${TEST_SETTINGS_FILE}`, SETTINGS(settings_values));
+        fs.writeFileSync(TEST_SETTINGS_FILE_PATH, SETTINGS(settings_values));
     } catch (err) {
         console.error(`Error building temporary settings.test file: ${err}`);
     }
@@ -86,7 +92,7 @@ function buildFile(settings_values = {}) {
 
 function deleteFile(bak_path_name = TEST_SETTINGS_FILE_BAK) {
     try {
-        fs.unlinkSync(`${__dirname}/${TEST_SETTINGS_FILE}`);
+        fs.unlinkSync(TEST_SETTINGS_FILE_PATH);
         fs.unlinkSync(`${__dirname}/${bak_path_name}`);
     } catch (err) {
         console.error(`Error deleting temporary settings.test file and/or backup: ${err}`);

@@ -373,8 +373,8 @@ function initSync() {
                 }
                 readEnvVariable(value);
             }
-            initialized = true;
         }
+        initialized = true;
     } catch(err) {
         let msg = `Error reading in HDB environment variables from path ${BOOT_PROPS_FILE_PATH}.  Please check your boot props and settings files`;
         log.fatal(msg);
@@ -384,7 +384,7 @@ function initSync() {
 
 function initTestEnvironment(test_config_obj = {}) {
     try {
-        const { keep_alive_timeout, headers_timeout, server_timeout, https_enabled, cors_enabled, cors_whitelist, old_http_enabled, old_http_port, old_https_port } = test_config_obj;
+        const { keep_alive_timeout, headers_timeout, server_timeout, https_enabled, cors_enabled, cors_whitelist } = test_config_obj;
         let props_path = process.cwd();
         props_path = path.join(props_path, '../', 'unitTests');
         setPropsFilePath(`${props_path}/hdb_boot_properties.file`);
@@ -414,16 +414,6 @@ function initTestEnvironment(test_config_obj = {}) {
         }
         if (headers_timeout) {
             setProperty(hdb_terms.HDB_SETTINGS_NAMES.SERVER_HEADERS_TIMEOUT_KEY, headers_timeout);
-        }
-        if (old_http_enabled) {
-            setProperty('HTTP_ON', old_http_enabled);
-        }
-        //These properties are added here for testing the 3.0.0 upgrades
-        if (old_http_port) {
-            setProperty('HTTP_PORT', old_http_port);
-        }
-        if (old_https_port) {
-            setProperty('HTTPS_PORT', old_https_port);
         }
 
         data_store_type = hdb_terms.STORAGE_TYPES_ENUM.FILE_SYSTEM;
