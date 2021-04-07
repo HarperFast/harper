@@ -351,17 +351,18 @@ describe('Test user.js', () => {
         });
 
         it('Test failed validation', async function () {
-            // inject a failed insert
-            validate_stub.callsFake(function() {
-                return FAILED_VALIDATE_MESSAGE;
-            });
+            validate_stub.restore();
+            const user_clone = test_utils.deepClone(TEST_ADD_USER_JSON);
+            user_clone.username = 'kevin spacey';
+            user_clone.active = true;
+
             let err;
             try {
-                let res = await user.addUser(TEST_ADD_USER_JSON);
+                let res = await user.addUser(user_clone);
             } catch(error) {
                 err = error;
             }
-            assert.equal(err.message, FAILED_VALIDATE_MESSAGE, 'Expected success result not returned.');
+            assert.equal(err.message, 'Username is invalid', 'Expected success result not returned.');
             assert.equal(signal_spy.called, false);
         });
 
@@ -629,10 +630,11 @@ describe('Test user.js', () => {
         let delete_orig = user.__get__('p_delete_delete');
 
         before(function() {
-            user.__set__('p_search_search_by_value', search_val_orig)
-        })
+            user.__set__('p_search_search_by_value', search_val_orig);
+        });
 
         beforeEach( function() {
+            global.hdb_users = new Map([[TEST_USER.username, TEST_USER]]);
             // We are not testing these other functions, so we stub them.
             delete_stub = sinon.stub().resolves(true);
             user.__set__('p_delete_delete', delete_stub);
@@ -692,6 +694,14 @@ describe('Test user.js', () => {
             expect(logger_error_stub).to.have.been.calledWith('Got an error setting users to global.');
             logger_error_stub.restore();
             set_users_to_global_rw();
+        });
+
+        it('Test user does not exist error is thrown', async () => {
+            const user_clone = test_utils.deepClone(TEST_DROP_USER_JSON);
+            user_clone.username = 'not_a_user';
+            const expected_err = test_utils.generateHDBError('User not_a_user does not exist', 404);
+            await test_utils.assertErrorAsync(user.dropUser, [user_clone], expected_err);
+
         });
     });
 
