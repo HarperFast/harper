@@ -14,39 +14,19 @@ let directivesManager_rw = rewire('../../upgrade/directivesManager');
 const upgrade_directive = require('../../upgrade/UpgradeDirective');
 const directivesController_stub = require('./directives/directivesControllerStub');
 
-// const BASE = process.cwd();
-// let TEST_SETTINGS_PATH = BASE + '/testsettings.js';
-// let DIR_PATH_BASE = BASE + '/processDirectivesTest/';
-
 //Use the manager stub in order to control the tests.
 directivesManager_rw.__set__('directivesController', directivesController_stub);
 
 describe('processDirectives Module', function() {
-    // before(() => {
-    //     directivesManager_rw.__set__('hdb_base', DIR_PATH_BASE);
-    // });
-
     after(() => {
         rewire('../../upgrade/directivesManager');
-        // fs.unlinkSync(SETTINGS_PATH);
     });
 
     describe('Test processDirectives()', () => {
         let processDirectives_rw = directivesManager_rw.__get__('processDirectives');
         const directive_msgs = [ 'processing settings func for 3.0.0 upgrade', 'processing other func for 3.0.0 upgrade',
             'processing a second func for 3.0.0 upgrade', 'processing settings func for 3.1.0 upgrade', 'processing other func for 3.1.0 upgrade',
-            'processing settings func for 4.1.1 upgrade', 'processing other func for 4.1.1 upgrade']
-        // const runFunc_stub = sinon.stub().returns(["func return value"]);
-        // directivesManager_rw.__set__('runFunctions')
-        // directivesManager_rw.__set__('settings_file_path', TEST_SETTINGS_PATH);
-        //
-        // afterEach( function () {
-        //     try {
-        //         test_util.cleanUpDirectories(BASE + '/processDirectivesTest/');
-        //     } catch(e) {
-        //         console.error(e);
-        //     }
-        // });
+            'processing settings func for 4.1.1 upgrade', 'processing other func for 4.1.1 upgrade'];
         let sandbox;
         let directive_stub;
         let settings_func_stub;

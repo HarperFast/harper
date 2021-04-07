@@ -3,9 +3,6 @@
 const test_util = require('../test_utils');
 test_util.preTestPrep();
 
-const fs = require('fs-extra');
-const util = require('util');
-const hdb_utils = require('../../utility/common_utils');
 
 const sinon = require('sinon');
 const chai = require('chai');
@@ -14,6 +11,7 @@ const { expect } = chai;
 const rewire = require('rewire');
 let upgrade_rw = rewire(`../../bin/upgrade`);
 
+const hdb_utils = require('../../utility/common_utils');
 const hdbInfoController = require('../../data_layer/hdbInfoController');
 const updatePrompt = require('../../upgrade/upgradePrompt');
 const directivesManager = require('../../upgrade/directivesManager');
@@ -21,8 +19,6 @@ const hdb_logger = require('../../utility/logging/harper_logger');
 const colors = require('colors/safe');
 const version = require('../../bin/version');
 const { UpgradeObject } = require('../../upgrade/UpgradeObjects');
-
-// const settings_test_file = require('../settingsTestFile');
 
 const TEST_CURR_VERS = '3.0.0';
 const TEST_DATA_VERS = '2.9.9';
@@ -289,7 +285,7 @@ describe('Test upgrade.js', () => {
             await runUpgrade_rw(TEST_UPGRADE_OBJ);
 
             expect(logErr_stub.calledTwice).to.be.true;
-            expect(logErr_stub.args[0][0]).to.eql('Error updating the hdbInfo version table.');
+            expect(logErr_stub.args[0][0]).to.eql("Error updating the 'hdb_info' system table.");
             expect(logErr_stub.args[1][0]).to.deep.equal(test_error);
             expect(processDirectives_stub.calledOnce).to.be.true;
             expect(insertHdbUpgradeInfo_stub.called).to.be.true;

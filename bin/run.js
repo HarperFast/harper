@@ -59,9 +59,8 @@ async function run() {
     }
 
     try {
-        await checkTransactionLogEnvironmentsExist();
-
-        // Check to see if an upgrade is needed based on existing hdb_info data.  If so, we need to force the user to upgrade.
+        // Check to see if an upgrade is needed based on existing hdb_info data.  If so, we need to force the user to upgrade
+        // before the server can be started.
         let upgrade_vers;
         try {
             const update_obj = await hdbInfoController.getVersionUpdateInfo();
@@ -73,11 +72,15 @@ async function run() {
         } catch(err) {
             if (upgrade_vers) {
                 console.error(`Got an error while trying to upgrade your HarperDB instance to version ${upgrade_vers}.  Exiting HarperDB.`);
+                logger.error(err);
             } else {
                 console.error(`Got an error while trying to upgrade your HarperDB instance.  Exiting HarperDB.`);
+                logger.error(err);
             }
             process.exit(1);
         }
+
+        await checkTransactionLogEnvironmentsExist();
 
         let is_in_use = await isPortInUse();
         if(!is_in_use) {

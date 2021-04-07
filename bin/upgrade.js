@@ -1,19 +1,9 @@
 'use strict';
 
-//TODO - rewrite code comment
 /**
- * The upgrade process is a two part process, where the first upgrade call is made against the currently installed
- * version of harperDB in the /bin directory as ./harperdb upgrade.  Upgrade will call the LMS to get the latest version
- * of HDB, compare with the currently installed version to see if an upgrade is needed.  If needed, It will check for any
- * running instances of HDB and cancel the upgrade until they are stopped.  It will then download the tarball of the
- * latest version of HDB and untar it into an upgrade/ directory.
- *
- * Once they are stopped, it will call startUpgrade() on the newly downloaded version of HDB in upgrade/, and then stop
- * the currently running process.
- *
- * startUpgrade() will read in the current environemnt variable settings, create an upgrade log file, run the upgrade directives
- * stored in the new versions, swap the /bin/harperdb with /upgrade/harperdb by moving /bin/harperdb to <install_path>/trash.
- *
+ * The upgrade module is used to facilitate the upgrade process for existing instances of HDB that pull down a new version
+ * of HDB from NPM that requires a specific upgrade script be run - e.g. there are changes required for the settings.js
+ * config file, a data model change requires a re-indexing script is run, etc.
  */
 
 const env = require('../utility/environment/environmentManager');
@@ -40,22 +30,10 @@ module.exports = {
 };
 
 /**
- * Check to see if an instance of HDB is running. Throws an error if running, otherwise it will just return to resolve the promise.
- * @throws
- */
-async function checkIfRunning() {
-    const hdb_running = await hdb_utils.isHarperRunning();
-    if (hdb_running) {
-        let run_err = "HarperDB is running, please stop HarperDB with 'harperdb stop' and run the upgrade command again.";
-        console.log(colors.red(run_err));
-        log.error(run_err);
-        process.exit(1);
-    }
-}
-
-/**
  * Runs the upgrade directives, if needed, for an updated version of HarperDB.
- * @returns {Promise<*>}
+ *
+ * @param upgrade_obj - optional
+ * @returns {Promise<void>}
  */
 async function upgrade(upgrade_obj) {
     printToLogAndConsole(`This version of HarperDB is ${version.version()}`);
@@ -114,11 +92,26 @@ async function upgrade(upgrade_obj) {
 }
 
 /**
- * This function is called during an upgrade from the existing install's harperdb executable.  We needed to be able to
- * overwrite the existing executable during upgrade as well as reference directive files that are packaged into latest
- * versions.
+ * Check to see if an instance of HDB is running. Throws an error if running, otherwise it will just return to resolve the promise.
  * @throws
- * @returns {Promise}
+ */
+async function checkIfRunning() {
+    const hdb_running = await hdb_utils.isHarperRunning();
+    if (hdb_running) {
+        let run_err = "HarperDB is running, please stop HarperDB with 'harperdb stop' and run the upgrade command again.";
+        console.log(colors.red(run_err));
+        log.error(run_err);
+        process.exit(1);
+    }
+}
+
+/**
+ * This function is called during an upgrade to execute the applicable upgrade directives based on the data and current
+ * version info passed within the `upgrade_obj` argument.  After the upgrade is completed, a new record is inserted into
+ * the hdb_info table to track the version info for the instance's data and software.
+ *
+ * @param upgrade_obj
+ * @returns {Promise<void>}
  */
 async function runUpgrade(upgrade_obj) {
 
@@ -132,7 +125,7 @@ async function runUpgrade(upgrade_obj) {
     try {
         await hdbInfoController.insertHdbUpgradeInfo(upgrade_obj[UPGRADE_VERSION]);
     } catch(err) {
-        log.error('Error updating the hdbInfo version table.');
+        log.error("Error updating the 'hdb_info' system table.");
         log.error(err);
     }
 }

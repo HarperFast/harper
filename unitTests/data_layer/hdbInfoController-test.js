@@ -143,15 +143,15 @@ describe('Test hdbInfoController module ', function() {
         });
     })
 
-    describe('Test searchInfo() ', () => {
-        let searchInfo_rw;
+    describe('Test getAllHdbInfoRecords() ', () => {
+        let getAllHdbInfoRecords_rw;
 
         before(() => {
-            searchInfo_rw = hdb_info_controller_rw.__get__('searchInfo');
+            getAllHdbInfoRecords_rw = hdb_info_controller_rw.__get__('getAllHdbInfoRecords');
         })
 
         it('Should return the results from the hdb_info table search - nominal case', async function() {
-            const result = await searchInfo_rw();
+            const result = await getAllHdbInfoRecords_rw();
 
             assert.deepEqual(result, INFO_SEARCH_RESULT, 'expected results from search call');
             assert.equal(result.length, INFO_SEARCH_RESULT.length, 'results should be returned as an array w/ length = 2');
@@ -160,11 +160,11 @@ describe('Test hdbInfoController module ', function() {
         it('Should log error if thrown from search function and return []', async function() {
             const test_err = new Error("Search ERROR!");
             search_stub.throws(test_err);
-            searchInfo_rw = hdb_info_controller_rw.__get__('searchInfo');
+            getAllHdbInfoRecords_rw = hdb_info_controller_rw.__get__('getAllHdbInfoRecords');
 
             let result;
             try {
-                result = await searchInfo_rw();
+                result = await getAllHdbInfoRecords_rw();
             } catch(err) {
                 result = err;
             }

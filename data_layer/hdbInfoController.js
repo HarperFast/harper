@@ -27,18 +27,17 @@ let p_setSchemaDataToGlobal = util.promisify(global_schema.setSchemaDataToGlobal
 const HDB_INFO_SEARCH_ATTRIBUTE = 'info_id';
 
 //IMPORTANT - this is the value we use to set a default/stubbed 'data version' number for HDB instances installed before
-// version 3.0.0 inorder to allow our version comparison functions to evaluate correctly.  B/c most/all older versions
+// version 3.0.0 in order to allow our version comparison functions to evaluate correctly.  B/c most/all older versions
 // will NOT have a hdb_info record from their previous install, we need to stub this data so that the 3.0.0 upgrade
 // directives - and any additional upgrade directives that may be added later (if they do not upgrade right away) - are
 // identified and run when the upgrade eventually happens.
 const DEFAULT_DATA_VERSION_NUM = '2.9.9';
 
 /**
- * Insert a row into hdb_info with the initial version data at install.
+ * * Insert a row into hdb_info with the initial version data at install.
  *
  * @param new_version_string - The version of this install
- * @returns {Promise<void>}
- * @throws
+ * @returns {Promise<{message: string, new_attributes: *, txn_time: *}|undefined>}
  */
 async function insertHdbInstallInfo(new_version_string) {
     const info_table_insert_object = new BinObjects.HdbInfoInsertObject(1, new_version_string, new_version_string);
@@ -53,17 +52,16 @@ async function insertHdbInstallInfo(new_version_string) {
     return insert.insert(insert_object);
 }
 
-//TODO - these transactions may not be logged b/c the checkTransactionLogEnvironmentsExist() is run after the update - is that a problem?
 /**
- * This method inserts the new hdb info record after the upgrade process has completed with the new version value for the
- * hdb version and data version.
+ * This method inserts the new 'hdb_info' record after the upgrade process has completed with the new version value for the
+ * hdb software version and data version.
  *
  * @param new_version_string
  * @returns {Promise<void>}
  */
 async function insertHdbUpgradeInfo(new_version_string) {
     let new_info_record;
-    let version_data = await searchInfo();
+    let version_data = await getAllHdbInfoRecords();
 
     // always have a 0 in case the search returned nothing.  That way we will have an entry at 1 if there are no rows returned due to table
     // not existing (upgrade from old install).
@@ -77,11 +75,10 @@ async function insertHdbUpgradeInfo(new_version_string) {
     const new_id = latest_id + 1;
     new_info_record = new BinObjects.HdbInfoInsertObject(new_id, new_version_string, new_version_string);
 
-    //Insert the most recent record with the new data version in the hdb_info table.
+    //Insert the most recent record with the new data version in the hdb_info system table.
     let insert_object = new DataLayerObjects.InsertObject(hdb_terms.OPERATIONS_ENUM.INSERT,
         hdb_terms.SYSTEM_SCHEMA_NAME,
         hdb_terms.SYSTEM_TABLE_NAMES.INFO_TABLE_NAME,
-        // This could be called outside of harperdb where global is not instantiated, so we have to hard code it.
         hdb_terms.SYSTEM_TABLE_HASH_ATTRIBUTES.INFO_TABLE_ATTRIBUTE,
         [new_info_record]);
 
@@ -89,7 +86,11 @@ async function insertHdbUpgradeInfo(new_version_string) {
     await insert.insert(insert_object);
 }
 
-async function searchInfo() {
+/**
+ * Returns all records from the 'hdb_info' system table
+ * @returns {Promise<[]>}
+ */
+async function getAllHdbInfoRecords() {
     // get the latest hdb_info id
     let search_obj = new DataLayerObjects.NoSQLSeachObject(hdb_terms.SYSTEM_SCHEMA_NAME,
         hdb_terms.SYSTEM_TABLE_NAMES.INFO_TABLE_NAME,
@@ -118,7 +119,7 @@ async function searchInfo() {
  * @returns {Promise<*>} - the most recent record OR undefined (if no records exist in the table)
  */
 async function getLatestHdbInfoRecord() {
-    let version_data = await searchInfo();
+    let version_data = await getAllHdbInfoRecords();
 
     //This scenario means that new software has been downloaded but harperdb install has not been run so
     // we need to run the upgrade for 3.0
@@ -146,7 +147,7 @@ async function getLatestHdbInfoRecord() {
  * the method returns an UpgradeObject w/ the version number of the hdb software/instance and the older version number that
  * the data is on.
  *
- * @returns {Promise<UpgradeObject> || undefined} - returns an UpgradeObject (if an upgrade is required) OR undefined (if not)
+ * @returns {Promise<UpgradeObject> || undefined} - returns an UpgradeObject, if an upgrade is required, OR undefined, if not.
  */
 async function getVersionUpdateInfo() {
     log.info('Checking if HDB software has been updated');
@@ -206,6 +207,11 @@ async function getVersionUpdateInfo() {
     }
 }
 
+/**
+ * See note above for more context but, for an upgrade to the 3.0.0 release (and any further upgrades), the HDB instance
+ * must be at least on 2.0.0 - this method checks to confirm that one of the settings/config values from that version is
+ * present. If it is not, the instance is too old to upgrade.
+ */
 function checkIfInstallIsSupported() {
     try {
         env.getProperty(hdb_terms.HDB_SETTINGS_NAMES.CLUSTERING_USER_KEY);
@@ -222,6 +228,5 @@ function checkIfInstallIsSupported() {
 module.exports = {
     insertHdbInstallInfo,
     insertHdbUpgradeInfo,
-    getVersionUpdateInfo,
-    searchInfo
+    getVersionUpdateInfo
 };
