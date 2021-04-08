@@ -7,43 +7,49 @@ const rewire = require('rewire');
 const assert = require('assert');
 // Need to rewire this since we have a promisified data member for search.  Remove rewire when search is asyncified.
 const hdb_info_controller_rw = rewire('../../data_layer/hdbInfoController');
-const SystemSchema = require('../../json/systemSchema');
 const insert = require('../../data_layer/insert');
 const version = require('../../bin/version');
 const harper_logger = require('../../utility/logging/harper_logger');
 const hdb_terms = require('../../utility/hdbTerms');
+const directiveManager = require('../../upgrade/directives/directivesController');
+const os = require('os');
+const colors = require('colors')
 
-describe('Test hdbInfoController module - ', function() {
-    let sandbox = undefined;
-    let search_stub;
-    let insert_stub;
-    let version_stub;
-    let getLatestHdbInfoRecord_stub;
-    let consoleError_stub;
-    let log_info_stub;
-    const INFO_SEARCH_RESULT = [
-        {
-            info_id: 1,
-            data_version_num: "1.2.0001",
-            hdb_version_num: "1.2.0001"
-        },
-        {
-            info_id: 2,
-            data_version_num: "1.3.0001",
-            hdb_version_num: "1.3.0001"
-        }
-    ];
+let sandbox;
+let search_stub;
+let insert_stub;
+let version_stub;
+let getLatestHdbInfoRecord_stub;
+let hasUpgradesRequired_stub;
+let checkIfInstallIsSupported_stub;
+let consoleLog_stub;
+let consoleError_stub;
+let log_info_stub;
+const FULL_ARRAY = [1,2,3];
+const EMPTY_ARRAY = [];
+const OLD_VERSION_NUM = "2.0.1";
+const INFO_SEARCH_RESULT = [
+    {
+        info_id: 1,
+        data_version_num: "3.0.0",
+        hdb_version_num: "3.0.0"
+    },
+    {
+        info_id: 2,
+        data_version_num: "3.0.1",
+        hdb_version_num: "3.0.1"
+    }
+];
 
+describe('Test hdbInfoController module ', function() {
     before(() => {
         sandbox = sinon.createSandbox();
         search_stub = sandbox.stub().resolves(INFO_SEARCH_RESULT);
         hdb_info_controller_rw.__set__('p_search_search_by_value', search_stub);
         insert_stub = sandbox.stub(insert, 'insert').resolves();
+        consoleLog_stub = sandbox.stub(console, 'log').returns();
         consoleError_stub = sandbox.stub(console, 'error').returns();
         log_info_stub = sandbox.stub(harper_logger, 'info').returns();
-        global.hdb_schema = undefined;
-        global['hdb_schema'] = {system: {}};
-        global['hdb_schema']['system'] = SystemSchema;
     });
 
     afterEach(() => {
@@ -137,15 +143,15 @@ describe('Test hdbInfoController module - ', function() {
         });
     })
 
-    describe('Test searchInfo() ', () => {
-        let searchInfo_rw;
+    describe('Test getAllHdbInfoRecords() ', () => {
+        let getAllHdbInfoRecords_rw;
 
         before(() => {
-            searchInfo_rw = hdb_info_controller_rw.__get__('searchInfo');
+            getAllHdbInfoRecords_rw = hdb_info_controller_rw.__get__('getAllHdbInfoRecords');
         })
 
         it('Should return the results from the hdb_info table search - nominal case', async function() {
-            const result = await searchInfo_rw();
+            const result = await getAllHdbInfoRecords_rw();
 
             assert.deepEqual(result, INFO_SEARCH_RESULT, 'expected results from search call');
             assert.equal(result.length, INFO_SEARCH_RESULT.length, 'results should be returned as an array w/ length = 2');
@@ -154,11 +160,11 @@ describe('Test hdbInfoController module - ', function() {
         it('Should log error if thrown from search function and return []', async function() {
             const test_err = new Error("Search ERROR!");
             search_stub.throws(test_err);
-            searchInfo_rw = hdb_info_controller_rw.__get__('searchInfo');
+            getAllHdbInfoRecords_rw = hdb_info_controller_rw.__get__('getAllHdbInfoRecords');
 
             let result;
             try {
-                result = await searchInfo_rw();
+                result = await getAllHdbInfoRecords_rw();
             } catch(err) {
                 result = err;
             }
@@ -195,11 +201,13 @@ describe('Test hdbInfoController module - ', function() {
         before(() => {
             getLatestHdbInfoRecord_stub = sandbox.stub().resolves(INFO_SEARCH_RESULT[1]);
             hdb_info_controller_rw.__set__('getLatestHdbInfoRecord', getLatestHdbInfoRecord_stub);
-            version_stub = sandbox.stub(version, 'version').returns('3.0.0');
+            version_stub = sandbox.stub(version, 'version').returns('3.0.2');
+            hasUpgradesRequired_stub = sandbox.stub(directiveManager, 'hasUpgradesRequired').returns(true);
+            checkIfInstallIsSupported_stub = sandbox.stub().returns();
         })
 
         it('getVersionUpdateInfo nominal test', async () => {
-            const expected_result = { "currentVersion": "1.3.0001", "upgradeVersion": "3.0.0" };
+            const expected_result = { "data_version": "3.0.1", "upgrade_version": "3.0.2" };
 
             let result;
             try {
@@ -238,8 +246,28 @@ describe('Test hdbInfoController module - ', function() {
 
             assert.ok(result instanceof Error, 'Expected error to be thrown');
             assert.equal(result.message, expected_err_msg, 'Expected error message result not returned');
+            assert.ok(consoleLog_stub.calledOnce, 'Data version message was not logged to console');
+            assert.equal(consoleLog_stub.args[0][0], colors.yellow(`This instance's data was last run on version ${INFO_SEARCH_RESULT[1].data_version_num}`),'Console message not correct');
             assert.ok(consoleError_stub.calledOnce, 'Error message was not logged to console');
-            assert.equal(consoleError_stub.args[0][0], `You have installed a version lower than version that your data was created on.  This may cause issues and is not supported.  ${hdb_terms.SUPPORT_HELP_MSG}`,'Console message not correct');
+            assert.equal(consoleError_stub.args[0][0], colors.red(`You have installed a version lower than the version that your data was created on or was upgraded to.  This may cause issues and is currently not supported.${os.EOL}${hdb_terms.SUPPORT_HELP_MSG}`),'Console message not correct');
+        });
+
+        it('getVersionUpdateInfo - current version is before 3.0.0 so no upgrade required', async () => {
+            getLatestHdbInfoRecord_stub.resolves();
+            version_stub.returns(OLD_VERSION_NUM);
+
+            let result = await hdb_info_controller_rw.getVersionUpdateInfo();
+
+            assert.equal(result, undefined, 'Expected undefined to be returned from function');
+            getLatestHdbInfoRecord_stub.reset();
+        });
+
+        it('getVersionUpdateInfo - current version was downgraded after being upgraded to 3.0.2 - error thrown', async () => {
+            version_stub.returns(OLD_VERSION_NUM);
+
+            let result = await hdb_info_controller_rw.getVersionUpdateInfo();
+
+            assert.equal(result, undefined, 'Expected undefined to be returned from function');
         });
 
         it('test getVersionUpdateInfo - version throws exception', async function() {

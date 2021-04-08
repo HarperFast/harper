@@ -15,9 +15,7 @@ const install_user_permission = require('../utility/install_user_permission');
 const { isHarperRunning } = require('../utility/common_utils');
 const { promisify } = require('util');
 const stop = require('./stop');
-const upgrade_prompt = require('../utility/userInterface/upgradePrompt');
 const upgrade = require('./upgrade');
-const version = require('./version');
 const hdb_license = require('../utility/registration/hdb_license');
 const hdbInfoController = require('../data_layer/hdbInfoController');
 
@@ -61,24 +59,23 @@ async function run() {
     }
 
     try {
-        // Check to see if an upgrade is needed based on existing hdb_info data.  If so, we need to force the user to upgrade.
+        // Check to see if an upgrade is needed based on existing hdb_info data.  If so, we need to force the user to upgrade
+        // before the server can be started.
         let upgrade_vers;
         try {
             const update_obj = await hdbInfoController.getVersionUpdateInfo();
             if (update_obj !== undefined) {
                 upgrade_vers = update_obj[terms.UPGRADE_JSON_FIELD_NAMES_ENUM.UPGRADE_VERSION];
-
-                let upgrade_result = await forceUpdate(update_obj);
-                if (upgrade_result) {
-                    await hdbInfoController.updateHdbUpgradeInfo(upgrade_vers);
-                    console.log('Upgrade complete.  Starting HarperDB.');
-                }
+                await upgrade.upgrade(update_obj);
+                console.log('Upgrade complete.  Starting HarperDB.');
             }
         } catch(err) {
             if (upgrade_vers) {
                 console.error(`Got an error while trying to upgrade your HarperDB instance to version ${upgrade_vers}.  Exiting HarperDB.`);
+                logger.error(err);
             } else {
                 console.error(`Got an error while trying to upgrade your HarperDB instance.  Exiting HarperDB.`);
+                logger.error(err);
             }
             process.exit(1);
         }
@@ -135,45 +132,6 @@ async function openCreateTransactionEnvironment(schema, table_name){
         let error_msg = `Unable to create the transaction environment for ${schema}.${table_name}, due to: ${e.message}`;
         console.error(error_msg);
         logger.error(error_msg);
-    }
-}
-
-/**
- * Force the user to perform an upgrade by running the upgrade scripts.  If they cancel, process will term.
- * @param update_obj - version data returned from the hdb_info system table
- * @returns {Promise<boolean>}
- */
-async function forceUpdate(update_obj) {
-    let old_version = update_obj[terms.UPGRADE_JSON_FIELD_NAMES_ENUM.CURRENT_VERSION] ? update_obj[terms.UPGRADE_JSON_FIELD_NAMES_ENUM.CURRENT_VERSION] : '2.9';
-    let new_version = update_obj[terms.UPGRADE_JSON_FIELD_NAMES_ENUM.UPGRADE_VERSION];
-
-    if(!new_version) {
-        new_version = version.version();
-        if(!new_version) {
-            console.log('Current Version field missing from the package.json file.  Cannot continue with upgrade.  If you need support, please contact support@harperdb.io');
-            logger.notify('Missing new version field from upgrade info object');
-            process.exit(1);
-        }
-    }
-
-    //TODO - before prompt, make sure there is actually an upgrade script that is required to run
-
-    let start_upgrade = await upgrade_prompt.forceUpdatePrompt(old_version, new_version);
-    if(!start_upgrade) {
-        console.log('Cancelled upgrade, closing HarperDB');
-        process.exit(1);
-    }
-    try {
-        let upgrade_result = await upgrade.startUpgradeDirectives(old_version, new_version);
-        upgrade_result.forEach((result) => {
-           logger.info(result);
-        });
-
-        return true;
-    } catch(err) {
-        console.log('There was an error during the data upgrade.  Please check the logs.');
-        logger.error(err);
-        return false;
     }
 }
 

@@ -9,12 +9,8 @@ const upgrade = require('./upgrade');
 const fs = require('fs');
 const logger = require('../utility/logging/harper_logger');
 const hdb_terms = require('../utility/hdbTerms');
-const hdb_utils = require('../utility/common_utils');
-const {promisify} = require('util');
 const path = require('path');
 const os = require('os');
-
-const p_upgrade = promisify(upgrade.upgrade);
 
 harperDBService();
 
@@ -59,7 +55,6 @@ function harperDBService() {
             }
         }
 
-        let tar_file_path = process.argv[3];
         let result = undefined;
         switch (service) {
             case hdb_terms.SERVICE_ACTIONS_ENUM.RUN:
@@ -101,37 +96,14 @@ function harperDBService() {
                 break;
             case hdb_terms.SERVICE_ACTIONS_ENUM.UPGRADE:
                 logger.setLogLevel(logger.INFO);
-                p_upgrade()
-                    .then( () => {
+                upgrade.upgrade(null)
+                    .then(() => {
                         // all done, no-op
-                        console.log(`Upgrade is complete.`);
+                        console.log(`Your instance of HDB is up to date!`);
                     })
                     .catch((e) => {
                         logger.error(`Got an error during upgrade ${e}`);
                     });
-                break;
-            case hdb_terms.SERVICE_ACTIONS_ENUM.UPGRADE_EXTERN:
-                logger.setLogLevel(logger.INFO);
-
-                if(hdb_utils.isEmptyOrZeroLength(tar_file_path)) {
-                    upgrade.startUpgrade()
-                        .then(() => {
-                            logger.notify('Upgrade complete');
-                    })
-                        .catch((upgrade_err) => {
-                            console.log('There was an error during the upgrade process.  Please check the logs for details.');
-                            logger.error(upgrade_err);
-                        });
-                } else {
-                    upgrade.upgradeFromFilePath(tar_file_path)
-                        .then(() => {
-                        logger.notify('Upgrade complete');
-                    })
-                        .catch((upgrade_err) => {
-                            console.log('There was an error during the upgrade process.  Please check the logs for details.');
-                            logger.error(upgrade_err);
-                        });
-                }
                 break;
             default:
                 run.run();

@@ -195,7 +195,6 @@ describe('Test readEnvVariable', () => {
     });
 });
 
-//
 describe('Test readSettingsFile', () => {
     let test_properties = {};
     let readSettingsFile = env_rw.__get__('readSettingsFile');
@@ -279,8 +278,9 @@ describe('Test readPropsFile', () => {
             throw e;
         }
         let prop1 = env_rw.getProperty(terms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY);
+        let settings_file_name = path.basename(prop1)
 
-        assert.equal(prop1, './settings.tstFile');
+        assert.equal(settings_file_name, 'settings.tstFile');
     });
     it('invalid key path', () => {
         access_stub = sandbox.stub(fs, 'accessSync').throws(new Error('INVALID PATH'));

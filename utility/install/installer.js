@@ -19,7 +19,6 @@ const hri = require('human-readable-ids').hri;
 const terms_address = 'https://harperdb.io/legal/software-license-subscription-agreement';
 const env = require('../../utility/environment/environmentManager');
 const os = require('os');
-const user_schema = require('../../security/user');
 const comm = require('../common_utils');
 const hdb_terms = require('../hdbTerms');
 const hdbInfoController = require('../../data_layer/hdbInfoController');
@@ -35,7 +34,6 @@ module.exports = {
 const schema = require('../../utility/globalSchema');
 
 let wizard_result;
-let existing_users = [];
 let check_install_path = false;
 const KEY_PAIR_BITS = 2048;
 
@@ -102,6 +100,7 @@ function run_install(callback) {
 /**
  * Makes a call to insert the hdb_info table with the newly installed version.  This is written as a callback function
  * as we can't make the installer async until we pick a new CLI base.
+ *
  * @param callback
  */
 function insertHdbInfo(callback) {
@@ -180,7 +179,7 @@ function promptForReinstall(callback) {
     let reinstall_schema = {
         properties: {
             REINSTALL: {
-                message: colors.red('It appears HarperDB is already installed.  Enter \'y/yes\'to reinstall. (yes/no)'),
+                message: colors.red(`It appears HarperDB version ${version.version()} is already installed.  Enter \'y/yes\'to reinstall. (yes/no)`),
                 validator: /y[es]*|n[o]?/,
                 warning: 'Must respond yes or no',
                 default: 'no'
@@ -225,7 +224,7 @@ function promptForReinstall(callback) {
                 } else {
                     // keep data - this means they should be using the upgrade command
                     const upgrade_msg = "Please use `harperdb upgrade` to update your existing instance of HDB. Exiting install...";
-                    console.log(`${os.EOL}` + colors.magenta.bold(upgrade_msg));
+                    console.log(`${os.EOL}` + colors.magenta.bold(upgrade_msg) + `${os.EOL}`);
                     process.exit(0);
                 }
             });
@@ -233,27 +232,6 @@ function promptForReinstall(callback) {
             return callback(null, false);
         }
     });
-}
-
-/**
- * Prepare all data needed to perform a reinstall.
- * @param callback
- * @returns {*}
- */
-function prepForReinstall(callback) {
-    winston.info('Preparing for reinstall.');
-    if (!global.hdb_users || !global.hdb_schema) {
-        user_schema.setUsersToGlobal((err) => {
-            if (err) {
-                winston.error(err);
-                return callback(err, null);
-            }}).then(() => {
-                existing_users.push([...global.hdb_users.keys()]);
-                schema.setSchemaDataToGlobal(() => callback(null, true));
-        });
-    } else {
-        return callback(null, null);
-    }
 }
 
 /**
@@ -366,16 +344,8 @@ function wizard(err, callback) {
             }
             // we have an existing install, prompt for reinstall.
             promptForReinstall((reinstall_err, reinstall) => {
-                if (reinstall) {
-                    env.setPropsFilePath(wizard_result.HDB_ROOT + '/config/settings.js');
-                    env.initSync();
-                    prepForReinstall((prep_reinstall_err) => {
-                        winston.error(prep_reinstall_err);
-                        return callback(null, wizard_result.HDB_ROOT);
-                    });
-                } else {
-                    return callback(null, wizard_result.HDB_ROOT);
-                }
+                //the process will exit in `promptForReinstall` if they choose not to proceed
+                return callback(null, wizard_result.HDB_ROOT);
             });
         } else {
             return callback(null, wizard_result.HDB_ROOT);
