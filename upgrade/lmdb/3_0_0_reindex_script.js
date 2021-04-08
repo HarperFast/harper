@@ -344,5 +344,3 @@ function getHashDBI(dbis){
     }
     return hash_attribute;
 }
-
-//reindexUpgrade().then(d=>{});
