@@ -22606,7 +22606,7 @@ BRF:16
 BRH:12
 end_of_record
 TN:
-SF:upgrade/lmdb/reindex.js
+SF:upgrade/lmdb/3_0_0_reindex_script.js
 FN:32,reindexUpgrade
 FN:43,getTables
 FN:88,initPinoLogger

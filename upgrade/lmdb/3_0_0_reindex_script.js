@@ -22,7 +22,7 @@ if(!env_mngr.isInitialized()) {
 
 const BASE_PATH = env_mngr.getHdbBasePath();
 const SCHEMA_PATH = path.join(BASE_PATH, 'schema');
-const TMP_PATH = path.join(BASE_PATH, 'tmp');
+const TMP_PATH = path.join(BASE_PATH, '3_0_0_upgrade_tmp');
 const TRANSACTIONS_PATH = path.join(BASE_PATH, 'transactions');
 let pino_logger;
 let error_occurred = false;
@@ -39,11 +39,11 @@ module.exports = reindexUpgrade;
 async function reindexUpgrade() {
     console.info('Reindexing upgrade started for schemas');
     logger.notify('Reindexing upgrade started for schemas');
-    await getTables(SCHEMA_PATH);
+    await getSchemaTable(SCHEMA_PATH, false);
 
     console.info('\n\nReindexing upgrade started for transaction logs');
     logger.notify('Reindexing upgrade started for transaction logs');
-    await getTables(TRANSACTIONS_PATH);
+    await getSchemaTable(TRANSACTIONS_PATH, true);
     logger.notify('Reindexing upgrade complete');
 }
 
@@ -51,23 +51,29 @@ async function reindexUpgrade() {
  * Gets all the tables in each schema. For each table a temp log is initiated and
  * processTable called. If no errors occur it will empty the tmp folder.
  * @param reindex_path
+ * @param is_transaction_reindex
  * @returns {Promise<void>}
  */
-async function getTables(reindex_path){
+async function getSchemaTable(reindex_path, is_transaction_reindex){
     // Get list of schema folders
     let schema_list = await fs.readdir(reindex_path);
-    let is_transaction_reindex = reindex_path.includes('hdb/transactions');
 
-    for(let x = 0, length = schema_list.length; x < length; x++){
+    let schema_length_list = schema_list.length;
+    for(let x = 0; x < schema_length_list; x++){
         let schema_name = schema_list[x];
         let the_schema_path = path.join(reindex_path, schema_name);
         if (schema_name === '.DS_Store') {
             continue;
         }
 
+        // Create temp schema folder
+        let tmp_schema_path = path.join(TMP_PATH, schema_name);
+        await fs.emptyDir(tmp_schema_path);
+
         // Get list of table folders
         let table_list = await fs.readdir(the_schema_path);
-        for(let y = 0, table_length = table_list.length; y < table_length; y++){
+        let table_list_length = table_list.length;
+        for(let y = 0; y < table_list_length; y++){
             const table_name = table_list[y];
             if (table_name === '.DS_Store') {
                 continue;
@@ -78,13 +84,14 @@ async function getTables(reindex_path){
                 await initPinoLogger(schema_name, table_name, is_transaction_reindex);
                 pino_logger.info(`Reindexing started for ${schema_name}.${table_name}`);
                 logger.notify(`${is_transaction_reindex ? 'Transaction' : 'Schema'} reindexing started for ${schema_name}.${table_name}`);
-                await processTable(schema_name, table_name, the_schema_path, is_transaction_reindex);
+                await processTable(schema_name, table_name, the_schema_path, is_transaction_reindex, tmp_schema_path);
                 pino_logger.info(`Reindexing completed for ${schema_name}.${table_name}`);
+                logger.notify(`Reindexing completed for ${schema_name}.${table_name}`);
             } catch(err) {
                 error_occurred = true;
                 err.schema_path = the_schema_path;
                 err.table_name = table_name;
-                logger.error('There was an error with the reindex upgrade, check the logs in hdb/tmp for more details');
+                logger.error('There was an error with the reindex upgrade, check the logs in hdb/3_0_0_upgrade_tmp for more details');
                 logger.error(err);
                 pino_logger.error(err);
                 console.error(err);
@@ -94,7 +101,7 @@ async function getTables(reindex_path){
 
     // If no errors occurred clean out the tmp folder after reindex.
     if (!error_occurred) {
-        await fs.emptyDir(TMP_PATH);
+        await fs.remove(TMP_PATH);
     }
 }
 
@@ -128,9 +135,10 @@ async function initPinoLogger(schema, table, is_transaction_reindex) {
  * @param table
  * @param the_schema_path
  * @param is_transaction_reindex
+ * @param tmp_schema_path
  * @returns {Promise<void>}
  */
-async function processTable(schema, table, the_schema_path, is_transaction_reindex){
+async function processTable(schema, table, the_schema_path, is_transaction_reindex, tmp_schema_path){
     //open the existing environment with the "old" environment utility
     let old_env = await old_environment_utility.openEnvironment(the_schema_path, table, is_transaction_reindex);
     //find the name of the hash attribute
@@ -149,12 +157,6 @@ async function processTable(schema, table, the_schema_path, is_transaction_reind
         clearOnComplete: false
     });
     bar.start(stats.entryCount, 0, {});
-
-    //create temp folder
-    let tmp_schema_path = path.join(TMP_PATH, schema);
-    await fs.remove(path.join(tmp_schema_path, table));
-    await fs.mkdirp(tmp_schema_path);
-    pino_logger.info(`Temp schema path: ${tmp_schema_path}`);
 
     //create lmdb-store env
     let new_env = await new_environment_utility.createEnvironment(tmp_schema_path, table, false);
@@ -181,11 +183,10 @@ async function processTable(schema, table, the_schema_path, is_transaction_reind
                 success = results.written_hashes.indexOf(hash_value) > -1;
             }
 
-            pino_logger.info(`Insert success: ${JSON.stringify(results)}`);
-
             //validate indices for the row
             assert(success, true);
             validateIndices(new_env, hash, record[hash], is_transaction_reindex);
+            pino_logger.info(`Insert success, written hashes: ${results.written_hashes}`);
 
             //increment the progress bar by 1
             bar.increment();
@@ -343,3 +344,5 @@ function getHashDBI(dbis){
     }
     return hash_attribute;
 }
+
+//reindexUpgrade().then(d=>{});
