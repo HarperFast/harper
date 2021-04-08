@@ -56,7 +56,7 @@ async function upgrade(upgrade_obj) {
     // above but testing for it and using the version from package.json just in case it is not
     let current_hdb_version = hdb_upgrade_info[UPGRADE_VERSION] ? hdb_upgrade_info[UPGRADE_VERSION] : version.version();
     if(!current_hdb_version) {
-        console.log('Current Version field missing from the package.json file.  Cannot continue with upgrade.  If you need support, please contact support@harperdb.io');
+        console.log(`Current Version field missing from the package.json file.  Cannot continue with upgrade.  If you need support, please contact ${hdb_terms.HDB_SUPPORT_ADDRESS}`);
         log.notify('Missing new version field from upgrade info object');
         process.exit(1);
     }

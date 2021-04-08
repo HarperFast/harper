@@ -218,7 +218,7 @@ function checkIfInstallIsSupported() {
     } catch(err) {
         const err_msg = 'You are attempting to upgrade from a very old instance of HDB that is no longer supported. ' +
             'In order to upgrade to this version of HDB, you must do a fresh install. If you need support, ' +
-            'please contact support@harperdb.io';
+            `please contact ${hdb_terms.HDB_SUPPORT_ADDRESS}`;
         console.log(err_msg);
         throw new Error(err_msg);
     }
