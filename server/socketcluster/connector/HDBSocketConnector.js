@@ -65,6 +65,7 @@ class HDBSocketConnector extends SocketConnector{
                                     let result = await operation_function(req);
                                     log.debug(result);
                                 }else {
+                                    req.transaction[terms.CLUSTERING_FLAG] = true;
                                     let result = await operation_function_caller.callOperationFunctionAsAwait(operation_function, req.transaction, transact_to_cluster_utilities.postOperationHandler, req);
                                     log.debug(result);
                                 }
