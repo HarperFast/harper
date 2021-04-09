@@ -135,11 +135,12 @@ function termsAgreement(callback) {
     let terms_schema = {
         properties: {
             TC_AGREEMENT: {
-                message: colors.magenta(`I Agree to the HarperDB Terms and Conditions. (yes/no).  The Terms and Conditions can 
+                description: colors.magenta(`I Agree to the HarperDB Terms and Conditions. (yes/no).  The Terms and Conditions can 
                 be found at ${terms_address}`),
-                validator: /y[es]*|n[o]?/,
-                warning: 'Must respond yes or no',
-                default: 'yes'
+                pattern: /y(es)?$|n(o)?$/,
+                message: "Must respond 'yes' or 'no'",
+                default: 'yes',
+                required: true
             }
         }
     };
@@ -179,24 +180,26 @@ function promptForReinstall(callback) {
     let reinstall_schema = {
         properties: {
             REINSTALL: {
-                message: colors.red(`It appears HarperDB version ${version.version()} is already installed.  Enter \'y/yes\'to reinstall. (yes/no)`),
-                validator: /y[es]*|n[o]?/,
-                warning: 'Must respond yes or no',
-                default: 'no'
+                description: colors.red(`It appears HarperDB version ${version.version()} is already installed.  Enter \'y/yes\'to reinstall. (yes/no)`),
+                pattern: /y(es)?$|n(o)?$/,
+                message: "Must respond 'yes' or 'no'",
+                default: 'no',
+                required: true
             }
         }
     };
     let overwrite_schema = {
         properties: {
             KEEP_DATA: {
-                message: colors.red('Would you like to keep existing data?  (yes/no)'),
-                validator: /y[es]*|n[o]?/,
-                warning: 'Must respond yes or no',
+                description: `${os.EOL}` + colors.red.bold('Would you like to keep your existing data in HDB?  (yes/no)'),
+                pattern: /y(es)?$|n(o)?$/,
+                message: "Must respond 'yes' or 'no'",
                 required: true
             }
         }
     };
 
+    prompt.message = '';
     prompt.get(reinstall_schema, function (err, reinstall_result) {
         if (err) { return callback(err); }
 
@@ -224,7 +227,7 @@ function promptForReinstall(callback) {
                 } else {
                     // keep data - this means they should be using the upgrade command
                     const upgrade_msg = "Please use `harperdb upgrade` to update your existing instance of HDB. Exiting install...";
-                    console.log(`${os.EOL}` + colors.magenta.bold(upgrade_msg) + `${os.EOL}`);
+                    console.log(`${os.EOL}` + colors.magenta.bold(upgrade_msg));
                     process.exit(0);
                 }
             });
