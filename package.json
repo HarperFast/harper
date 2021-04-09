@@ -103,6 +103,7 @@
     "minimist": "^1.2.5",
     "mocha": "^8.2.0",
     "mocha-teamcity-reporter": "^3.0.0",
+    "mock-stdin": "^1.0.0",
     "newman": "^5.1.2",
     "newman-reporter-html": "^1.0.5",
     "newman-reporter-teamcity": "^0.1.11",

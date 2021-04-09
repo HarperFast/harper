@@ -5,7 +5,7 @@ const minimist = require('minimist');
 const colors = require("colors/safe");
 const log = require('../utility/logging/harper_logger');
 const os = require('os');
-const process_directives = require('./directivesManager');
+const directivesManager = require('./directivesManager');
 
 const UPGRADE_PROCEED = ['yes', 'y'];
 
@@ -16,10 +16,11 @@ const UPGRADE_PROCEED = ['yes', 'y'];
  */
 async function forceUpdatePrompt(upgrade_obj) {
     // pull directive changes
-    let changes = process_directives.getDirectiveChangeDescriptions(upgrade_obj);
+    let changes = directivesManager.getDirectiveChangeDescriptions(upgrade_obj);
     let counter = 1;
-    let message = `${colors.bold.green(`${os.EOL}Your current HarperDB version requires that we complete an update process.`)} ${os.EOL}If a backup of your data has not been created, we recommend you cancel this process and backup before proceeding.${os.EOL}${os.EOL}`
-        + `${colors.underline('The following updates will be implemented as a part of this upgrade:')}${os.EOL}`;
+    let message = `${os.EOL}` + colors.bold.green('Your current HarperDB version requires that we complete an update process.')
+        + `${os.EOL}` + 'If a backup of your data has not been created, we recommend you cancel this process and backup before proceeding.'
+        + `${os.EOL}${os.EOL}` + colors.underline('The following updates will be implemented as a part of this upgrade:') + `${os.EOL}`;
     /*
         Should create a message to the user that describes the changes specified in the directives as a numbered list.
      */
