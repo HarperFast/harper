@@ -24,9 +24,10 @@ const LMDB_MDB_NOTFOUND_CODE = -30798;
  * @param {String} hash_attribute - name of the table's hash attribute
  * @param {Array.<String>} write_attributes - list of all attributes to write to the database
  * @param  {Array.<Object>} records - object array records to insert
+ * @param {Boolean} generate_timestamps - defines if timestamps should be created
  * @returns {Promise<InsertRecordsResponseObject>}
  */
-async function insertRecords(env, hash_attribute, write_attributes , records){
+async function insertRecords(env, hash_attribute, write_attributes , records, generate_timestamps = true){
     validateWrite(env, hash_attribute, write_attributes , records);
 
     try {
@@ -38,7 +39,7 @@ async function insertRecords(env, hash_attribute, write_attributes , records){
         let keys = [];
         for(let index = 0; index < records.length; index++){
             let record = records[index];
-            setTimestamps(record, true);
+            setTimestamps(record, true, generate_timestamps);
 
             let cast_hash_value = hdb_utils.autoCast(record[hash_attribute]);
             record[hash_attribute] = cast_hash_value;
@@ -113,8 +114,13 @@ function removeSkippedRecords(records, remove_indices = []){
  * auto sets the createdtime & updatedtime stamps on a record
  * @param {Object} record
  * @param {Boolean} is_insert
+ * @param {Boolean} generate_timestamps - defines if we should create timestamps for this record
  */
-function setTimestamps(record, is_insert){
+function setTimestamps(record, is_insert, generate_timestamps = true){
+    if(generate_timestamps === false){
+        return;
+    }
+
     let timestamp = Date.now();
     record[UPDATED_TIME_ATTRIBUTE_NAME] = timestamp;
     if(is_insert === true) {
