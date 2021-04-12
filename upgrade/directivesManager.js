@@ -37,7 +37,7 @@ function getDirectiveChangeDescriptions(upgrade_obj) {
  * @param upgrade_obj {UpgradeObject}
  * @returns {*[]}
  */
-function processDirectives(upgrade_obj) {
+async function processDirectives(upgrade_obj) {
     console.log('Starting upgrade process...');
 
     let loaded_directives = directivesController.getVersionsForUpgrade(upgrade_obj);
@@ -45,7 +45,7 @@ function processDirectives(upgrade_obj) {
 
     let all_responses = [];
     for (let vers of upgrade_directives) {
-        let notify_msg = `Running upgrade from version ${vers.version}`;
+        let notify_msg = `Running upgrade for version ${vers.version}`;
         log.notify(notify_msg);
         console.log(notify_msg);
 
@@ -65,7 +65,7 @@ function processDirectives(upgrade_obj) {
 
         // Run upgrade functions/scripts
         try {
-            func_responses = runFunctions(vers.functions);
+            func_responses = await runAsyncFunctions(vers.functions);
         } catch(e) {
             log.error(`Error while running an upgrade script for ${vers.version}: ` + e);
             throw e;
@@ -106,6 +106,40 @@ function runFunctions(directive_functions) {
         try {
             // All defined functions should be synchronous
             func_responses.push(func());
+        } catch(e) {
+            log.error(e);
+            // Right now assume any functions that need to be run are critical to a successful upgrade, so fail completely
+            // if any of them fail.
+            throw e;
+        }
+    }
+    return func_responses;
+}
+
+/**
+ * Runs functions specified in a directive object.
+ *
+ * @param directive_functions - Array of functions to run
+ * @returns - Array of responses from function calls
+ */
+async function runAsyncFunctions(directive_functions) {
+    if(hdb_util.isEmptyOrZeroLength(directive_functions)) {
+        log.info('No functions found to run for upgrade');
+        return [];
+    }
+    if(!Array.isArray(directive_functions)) {
+        log.info('Passed parameter is not an array');
+        return [];
+    }
+    let func_responses = [];
+    for(let func of directive_functions) {
+        log.info(`Running function ${func.name}`);
+        if(!(func instanceof Function)) {
+            log.info('Variable being processed is not a function');
+            continue;
+        }
+        try {
+            func_responses.push(await func());
         } catch(e) {
             log.error(e);
             // Right now assume any functions that need to be run are critical to a successful upgrade, so fail completely

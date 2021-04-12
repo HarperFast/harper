@@ -81,13 +81,13 @@ async function upgrade(upgrade_obj) {
         process.exit(exit_code);
     }
 
-    countdown.message(`Starting upgrade to version ${current_hdb_version}`);
-    countdown.start();
+    // countdown.message(`Starting upgrade to version ${current_hdb_version}`);
+    // countdown.start();
     log.info(`Starting upgrade to version ${current_hdb_version}`);
 
     await runUpgrade(hdb_upgrade_info);
 
-    countdown.stop();
+    // countdown.stop();
     printToLogAndConsole(`HarperDB was successfully upgraded to version ${hdb_upgrade_info[UPGRADE_VERSION]}`, log.INFO);
 }
 
@@ -116,11 +116,13 @@ async function checkIfRunning() {
 async function runUpgrade(upgrade_obj) {
 
     try {
-        directivesManager.processDirectives(upgrade_obj);
+        await directivesManager.processDirectives(upgrade_obj);
     } catch(err) {
         printToLogAndConsole('There was an error during the data upgrade.  Please check the logs.', log.error);
         throw(err);
     }
+
+
 
     try {
         await hdbInfoController.insertHdbUpgradeInfo(upgrade_obj[UPGRADE_VERSION]);

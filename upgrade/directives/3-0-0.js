@@ -136,9 +136,7 @@ function updateSettingsFile_3_0_0() {
 directive3_0_0.settings_file_function.push(updateSettingsFile_3_0_0);
 
 //TODO - Kyle's indexing script/s is imported to this file and added here.
-directive3_0_0.functions.push((async () => {
-    await reindex_script();
-}));
+directive3_0_0.functions.push(reindex_script);
 
 directives.push(directive3_0_0);
 

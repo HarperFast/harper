@@ -34,7 +34,7 @@ module.exports = reindexUpgrade;
  * Queries the existing table indices to build a new one in hdb/tmp. Once the full table
  * has been processed it will move the table from tmp to the schema folder.
  * If reindexing transactions will move to transactions folder.
- * @returns {Promise<void>}
+ * @returns {Promise<string>}
  */
 async function reindexUpgrade() {
     console.info('Reindexing upgrade started for schemas');
@@ -45,6 +45,7 @@ async function reindexUpgrade() {
     logger.notify('Reindexing upgrade started for transaction logs');
     await getSchemaTable(TRANSACTIONS_PATH, true);
     logger.notify('Reindexing upgrade complete');
+    return 'Reindexing for 3.0.0 upgrade complete';
 }
 
 /**

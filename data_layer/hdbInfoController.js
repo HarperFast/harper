@@ -83,7 +83,7 @@ async function insertHdbUpgradeInfo(new_version_string) {
         [new_info_record]);
 
     await p_setSchemaDataToGlobal();
-    await insert.insert(insert_object);
+    return insert.insert(insert_object);
 }
 
 /**
