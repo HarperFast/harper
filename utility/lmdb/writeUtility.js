@@ -24,9 +24,10 @@ const LMDB_MDB_NOTFOUND_CODE = -30798;
  * @param {String} hash_attribute - name of the table's hash attribute
  * @param {Array.<String>} write_attributes - list of all attributes to write to the database
  * @param  {Array.<Object>} records - object array records to insert
+ * @param {Boolean} generate_timestamps - defines if timestamps should be created
  * @returns {Promise<InsertRecordsResponseObject>}
  */
-async function insertRecords(env, hash_attribute, write_attributes , records){
+async function insertRecords(env, hash_attribute, write_attributes , records, generate_timestamps = true){
     validateWrite(env, hash_attribute, write_attributes , records);
 
     try {
@@ -38,51 +39,10 @@ async function insertRecords(env, hash_attribute, write_attributes , records){
         let keys = [];
         for(let index = 0; index < records.length; index++){
             let record = records[index];
-            setTimestamps(record, true);
+            setTimestamps(record, true, generate_timestamps);
 
-            let cast_hash_value = hdb_utils.autoCast(record[hash_attribute]);
-            record[hash_attribute] = cast_hash_value;
-            let put_values = [];
-            put_values.push([env.dbis[hash_attribute], cast_hash_value, record, 1]);
-            for (let x = 0; x < write_attributes.length; x++) {
-                let attribute = write_attributes[x];
-
-                //we do not process the write to the hash attribute, blob as they are handled differently.  Also skip if the attribute does not exist on the object
-                if (attribute === hash_attribute || attribute === lmdb_terms.BLOB_DBI_NAME || record.hasOwnProperty(attribute) === false) {
-                    continue;
-                }
-
-                let value = record[attribute];
-                if (typeof value === 'function') {
-                    let value_results = value([[{}]]);
-                    if (Array.isArray(value_results)) {
-                        value = value_results[0][hdb_terms.FUNC_VAL];
-                        record[attribute] = value;
-                    }
-                }
-
-                value = hdb_utils.autoCast(value);
-                value = value === undefined ? null : value;
-                record[attribute] = value;
-                if (value !== null && value !== undefined) {
-                    //LMDB has a 254 byte limit for keys, so we return null if the byte size is larger than 254 to not index that value
-                    if (common.checkIsBlob(value)) {
-                        let key = `${attribute}/${cast_hash_value}`;
-                        put_values.push([env.dbis[lmdb_terms.BLOB_DBI_NAME], key, value]);
-                    } else {
-                        let converted_key = common.convertKeyValueToWrite(value);
-                        put_values.push([env.dbis[attribute], converted_key, cast_hash_value]);
-                    }
-                }
-            }
-
-            let promise = env.dbis[hash_attribute].ifNoExists(cast_hash_value, ()=> {
-                for(let x = 0, length = put_values.length; x < length; x++){
-                    let put_value = put_values[x];
-                    put_value[0].put(put_value[1], put_value[2], put_value[3]);
-                }
-            });
-
+            let promise = insertRecord(env, hash_attribute, write_attributes, record);
+            let cast_hash_value = record[hash_attribute];
             puts.push(promise);
             keys.push(cast_hash_value);
         }
@@ -91,6 +51,59 @@ async function insertRecords(env, hash_attribute, write_attributes , records){
     }catch(e){
         throw e;
     }
+}
+
+/**
+ *
+ * @param {lmdb.RootDatabase} env - lmdb environment object
+ * @param {String} hash_attribute - name of the table's hash attribute
+ * @param {Array.<String>} write_attributes - list of all attributes to write to the database
+ * @param  {Object} record - the record to insert
+ * @returns {Promise<boolean>}
+ */
+function insertRecord(env, hash_attribute, write_attributes, record){
+    let cast_hash_value = hdb_utils.autoCast(record[hash_attribute]);
+    record[hash_attribute] = cast_hash_value;
+    let put_values = [];
+    put_values.push([env.dbis[hash_attribute], cast_hash_value, record, 1]);
+    for (let x = 0; x < write_attributes.length; x++) {
+        let attribute = write_attributes[x];
+
+        //we do not process the write to the hash attribute, blob as they are handled differently.  Also skip if the attribute does not exist on the object
+        if (attribute === hash_attribute || attribute === lmdb_terms.BLOB_DBI_NAME || record.hasOwnProperty(attribute) === false) {
+            continue;
+        }
+
+        let value = record[attribute];
+        if (typeof value === 'function') {
+            let value_results = value([[{}]]);
+            if (Array.isArray(value_results)) {
+                value = value_results[0][hdb_terms.FUNC_VAL];
+                record[attribute] = value;
+            }
+        }
+
+        value = hdb_utils.autoCast(value);
+        value = value === undefined ? null : value;
+        record[attribute] = value;
+        if (value !== null && value !== undefined) {
+            //LMDB has a 254 byte limit for keys, so we return null if the byte size is larger than 254 to not index that value
+            if (common.checkIsBlob(value)) {
+                let key = `${attribute}/${cast_hash_value}`;
+                put_values.push([env.dbis[lmdb_terms.BLOB_DBI_NAME], key, value]);
+            } else {
+                let converted_key = common.convertKeyValueToWrite(value);
+                put_values.push([env.dbis[attribute], converted_key, cast_hash_value]);
+            }
+        }
+    }
+
+    return env.dbis[hash_attribute].ifNoExists(cast_hash_value, ()=> {
+        for(let x = 0, length = put_values.length; x < length; x++){
+            let put_value = put_values[x];
+            put_value[0].put(put_value[1], put_value[2], put_value[3]);
+        }
+    });
 }
 
 /**
@@ -113,12 +126,19 @@ function removeSkippedRecords(records, remove_indices = []){
  * auto sets the createdtime & updatedtime stamps on a record
  * @param {Object} record
  * @param {Boolean} is_insert
+ * @param {Boolean} generate_timestamps - defines if we should create timestamps for this record
  */
-function setTimestamps(record, is_insert){
+function setTimestamps(record, is_insert, generate_timestamps = true){
     let timestamp = Date.now();
-    record[UPDATED_TIME_ATTRIBUTE_NAME] = timestamp;
-    if(is_insert === true) {
-        record[CREATED_TIME_ATTRIBUTE_NAME] = timestamp;
+
+    if(generate_timestamps === true || !Number.isInteger(record[UPDATED_TIME_ATTRIBUTE_NAME])) {
+        record[UPDATED_TIME_ATTRIBUTE_NAME] = timestamp;
+    }
+
+    if (is_insert === true) {
+        if(generate_timestamps === true || !Number.isInteger(record[CREATED_TIME_ATTRIBUTE_NAME])) {
+            record[CREATED_TIME_ATTRIBUTE_NAME] = timestamp;
+        }
     } else {
         delete record[CREATED_TIME_ATTRIBUTE_NAME];
     }
@@ -154,9 +174,10 @@ function initializeTransaction(env, hash_attribute, write_attributes){
  * @param {String} hash_attribute - name of the table's hash attribute
  * @param {Array.<String>} write_attributes - list of all attributes to write to the database
  * @param  {Array.<Object>} records - object array records to update
+ * @param {boolean} generate_timestamps
  * @returns {Promise<UpdateRecordsResponseObject>}
  */
-async function updateRecords(env, hash_attribute, write_attributes , records){
+async function updateRecords(env, hash_attribute, write_attributes , records, generate_timestamps = true){
     //validate
     validateWrite(env, hash_attribute, write_attributes , records);
 
@@ -171,22 +192,20 @@ async function updateRecords(env, hash_attribute, write_attributes , records){
         let keys = [];
         for(let index = 0; index < records.length; index++){
             let record = records[index];
-            setTimestamps(record, false);
+            setTimestamps(record, false, generate_timestamps);
 
             let cast_hash_value = hdb_utils.autoCast(record[hash_attribute]);
-            //grab existing record
-            let existing_record = env.dbis[hash_attribute].get(cast_hash_value);
 
-            if(!existing_record){
+            let promise;
+            try {
+                promise = env.dbis[hash_attribute].ifVersion(cast_hash_value, 1, () => {
+                    updateUpsertRecord(env, hash_attribute, record, cast_hash_value, result);
+                });
+            }catch(e){
                 result.skipped_hashes.push(cast_hash_value);
                 remove_indices.push(index);
                 continue;
             }
-
-            result.original_records.push(existing_record);
-            let promise = env.dbis[hash_attribute].ifVersion(cast_hash_value, 1, ()=> {
-                updateUpsertRecord(env, hash_attribute, record, existing_record, cast_hash_value);
-            });
             puts.push(promise);
             keys.push(cast_hash_value);
         }
@@ -203,9 +222,10 @@ async function updateRecords(env, hash_attribute, write_attributes , records){
  * @param {String} hash_attribute - name of the table's hash attribute
  * @param {Array.<String>} write_attributes - list of all attributes to write to the database
  * @param  {Array.<Object>} records - object array records to update
+ * @param {boolean} generate_timestamps
  * @returns {Promise<UpdateRecordsResponseObject>}
  */
-async function upsertRecords(env, hash_attribute, write_attributes , records){
+async function upsertRecords(env, hash_attribute, write_attributes , records, generate_timestamps = true){
     //validate
     try {
         validateWrite(env, hash_attribute, write_attributes , records);
@@ -240,18 +260,14 @@ async function upsertRecords(env, hash_attribute, write_attributes , records){
             let promise;
             //if the existing record doesn't exist we initialize it as an empty object & flag the record as an insert
             if (hdb_utils.isEmpty(existing_record)) {
-                existing_record = {};
                 is_insert = true;
-                setTimestamps(record, is_insert);
-                promise = env.dbis[hash_attribute].ifNoExists(hash_value, ()=> {
-                    updateUpsertRecord(env, hash_attribute, record, existing_record, hash_value);
-                });
+                setTimestamps(record, is_insert, generate_timestamps);
+                promise = insertRecord(env, hash_attribute, write_attributes, record);
             } else {
-                setTimestamps(record, is_insert);
+                setTimestamps(record, is_insert, generate_timestamps);
                 promise = env.dbis[hash_attribute].ifVersion(hash_value, 1, ()=> {
-                    updateUpsertRecord(env, hash_attribute, record, existing_record, hash_value);
+                    updateUpsertRecord(env, hash_attribute, record, hash_value, result);
                 });
-                result.original_records.push(existing_record);
             }
 
             puts.push(promise);
@@ -286,10 +302,16 @@ async function finalizeWrite(puts, keys, records, result, remove_indices = []){
  * @param {lmdb.RootDatabase} env
  * @param {String} hash_attribute - name of the table's hash attribute
  * @param {{}} record - the record to process
- * @param {{}} existing_record - the original record that is potentially being updated
  * @param {string|number} cast_hash_value - the hash attribute value cast to it's data type
+ * @param {UpdateRecordsResponseObject|UpsertRecordsResponseObject} result
  */
-function updateUpsertRecord(env, hash_attribute, record, existing_record, cast_hash_value){
+function updateUpsertRecord(env, hash_attribute, record, cast_hash_value, result){
+    let existing_record = env.dbis[hash_attribute].get(cast_hash_value);
+    if(Number.isInteger(record[UPDATED_TIME_ATTRIBUTE_NAME]) && existing_record[UPDATED_TIME_ATTRIBUTE_NAME] > record[UPDATED_TIME_ATTRIBUTE_NAME]){
+        throw new Error('existing record is newer than updating record');
+    }
+    result.original_records.push(existing_record);
+
     //iterate the entries from the record
     for (let [key, value] of Object.entries(record)) {
         if(key === hash_attribute || key === lmdb_terms.BLOB_DBI_NAME){
