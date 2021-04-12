@@ -323,6 +323,11 @@ describe('Test lmdbCreateRecords module', ()=>{
             });
             await verify_txn(TXN_SCHEMA_PATH, INSERT_OBJECT_TEST.table, expected_timestamp, hashes);
 
+            insert_obj1.records.forEach(record=>{
+                assert.deepStrictEqual(record.__updatedtime__, TIMESTAMP);
+                assert.deepStrictEqual(record.__createdtime__, TIMESTAMP);
+            });
+
             global.hdb_schema[SCHEMA_TABLE_TEST.schema][SCHEMA_TABLE_TEST.name]['attributes'] = NO_NEW_ATTR_TEST;
             let insert_obj = test_utils.deepClone(INSERT_OBJECT_TEST);
             let new_records = [
@@ -426,6 +431,64 @@ describe('Test lmdbCreateRecords module', ()=>{
                 hashes[record[HASH_ATTRIBUTE_NAME]] = [m_time];
             });
             await verify_txn(TXN_SCHEMA_PATH, INSERT_OBJECT_TEST.table, expected_timestamp, hashes);
+        });
+
+        it('Test inserting record with __clustering__', async () => {
+            let expected_result = {
+                new_attributes: [
+                    "name",
+                    "breed",
+                    "age"
+                ],
+                written_hashes: [8],
+                skipped_hashes: [],
+                schema_table: {
+                    attributes: SCHEMA_TABLE_TEST.attributes,
+                    hash_attribute: HASH_ATTRIBUTE_NAME,
+                    residence: undefined,
+                    schema: INSERT_OBJECT_TEST.schema,
+                    name: INSERT_OBJECT_TEST.table
+                },
+                txn_time: m_time
+            };
+
+            //verify no transactions
+            await verify_txn(TXN_SCHEMA_PATH, INSERT_OBJECT_TEST.table);
+
+            let insert_obj1 = {
+                operation: "insert",
+                schema: 'dev',
+                table: 'dog',
+                records: [
+                    {
+                        name: "Harper",
+                        breed: "Mutt",
+                        id: 8,
+                        age: 5,
+                        __createdtime__: 123456,
+                        __updatedtime__: 123456
+                    }
+                ],
+                __clustering__:true
+            };
+
+            let results = await test_utils.assertErrorAsync(lmdb_create_records, [insert_obj1], undefined);
+            assert.deepStrictEqual(results, expected_result);
+
+            //verify txn created
+            let insert_txn_obj = Object.assign({}, new LMDBInsertTransactionObject(insert_obj1.records, undefined, m_time, [8]));
+            let expected_timestamp = test_utils.assignObjecttoNullObject({
+                [m_time]: [insert_txn_obj]
+            });
+
+            let hashes = Object.create(null);
+            insert_obj1.records.forEach(record=>{
+                hashes[record[HASH_ATTRIBUTE_NAME]] = [m_time];
+            });
+            await verify_txn(TXN_SCHEMA_PATH, INSERT_OBJECT_TEST.table, expected_timestamp, hashes);
+
+            assert.deepStrictEqual(insert_obj1.records[0].__updatedtime__, 123456);
+            assert.deepStrictEqual(insert_obj1.records[0].__createdtime__, 123456);
         });
 
         it('Test inserting rows that already exist', async () => {
