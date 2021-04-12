@@ -99,6 +99,66 @@ describe("Test writeUtility module", ()=>{
         });
     });
 
+    describe("Test setTimestamps function", ()=>{
+        let rw_set_timestamps;
+        before(()=>{
+            rw_set_timestamps = write_utility.__get__('setTimestamps');
+            sandbox.restore();
+            date_stub = sandbox.stub(Date, 'now').returns(TIMESTAMP);
+        });
+
+        it("pass record, is insert = true, expect timestamps created", ()=>{
+            let record = test_utils.deepClone(ONE_RECORD_ARRAY[0]);
+
+            rw_set_timestamps(record, true);
+            assert.deepStrictEqual(record.__updatedtime__, TIMESTAMP);
+            assert.deepStrictEqual(record.__createdtime__, TIMESTAMP);
+        });
+        it("pass record, is insert = true, generate timestamp false, no stamps on record", ()=>{
+            let record = test_utils.deepClone(ONE_RECORD_ARRAY[0]);
+
+            rw_set_timestamps(record, true, false);
+            assert.deepStrictEqual(record.__updatedtime__, TIMESTAMP);
+            assert.deepStrictEqual(record.__createdtime__, TIMESTAMP);
+        });
+
+        it("pass record, is insert = true, generate timestamp false, non-numeric stamps on record", ()=>{
+            let record = test_utils.deepClone(ONE_RECORD_ARRAY[0]);
+            record.__createdtime__ = "heyyy";
+            record.__updatedtime__ = "heyyy";
+            rw_set_timestamps(record, true, false);
+            assert.deepStrictEqual(record.__updatedtime__, TIMESTAMP);
+            assert.deepStrictEqual(record.__createdtime__, TIMESTAMP);
+        });
+
+        it("pass record, is insert = false, generate timestamp true", ()=>{
+            let record = test_utils.deepClone(ONE_RECORD_ARRAY[0]);
+            record.__createdtime__ = "heyyy";
+            record.__updatedtime__ = "heyyy";
+            rw_set_timestamps(record, false);
+            assert.deepStrictEqual(record.__updatedtime__, TIMESTAMP);
+            assert.deepStrictEqual(record.__createdtime__, undefined);
+        });
+
+        it("pass record, is insert = false, generate timestamp false", ()=>{
+            let record = test_utils.deepClone(ONE_RECORD_ARRAY[0]);
+            record.__createdtime__ = "heyyy";
+            record.__updatedtime__ = "heyyy";
+            rw_set_timestamps(record, false, false);
+            assert.deepStrictEqual(record.__updatedtime__, TIMESTAMP);
+            assert.deepStrictEqual(record.__createdtime__, undefined);
+        });
+
+        it("pass record, is insert = false, generate timestamp false timestamps are numbers", ()=>{
+            let record = test_utils.deepClone(ONE_RECORD_ARRAY[0]);
+            record.__createdtime__ = 123456;
+            record.__updatedtime__ = 123456;
+            rw_set_timestamps(record, false, false);
+            assert.deepStrictEqual(record.__updatedtime__, 123456);
+            assert.deepStrictEqual(record.__createdtime__, undefined);
+        });
+    });
+
     describe("Test insertRecords function", ()=>{
         let stub;
         let get_micro_time_stub;
@@ -197,6 +257,86 @@ describe("Test writeUtility module", ()=>{
             }
             assert.deepStrictEqual(keys, [46]);
             assert.deepStrictEqual(records, [1]);
+
+            keys = [];
+            records = [];
+            for (let { key, value } of env.dbis.__createdtime__.getRange({ })) {
+                keys.push(key);
+                records.push(value);
+            }
+            assert.deepStrictEqual(records, [1]);
+            assert.deepStrictEqual(keys, [TIMESTAMP]);
+
+            keys = [];
+            records = [];
+            for (let { key, value } of env.dbis.__updatedtime__.getRange({ })) {
+                keys.push(key);
+                records.push(value);
+            }
+            assert.deepStrictEqual(records, [1]);
+            assert.deepStrictEqual(keys, [TIMESTAMP]);
+        });
+
+        it("test insert one row don't generate timestamps", async ()=>{
+            let insert_records = test_utils.deepClone(ONE_RECORD_ARRAY);
+            insert_records[0].__updatedtime__ = 123456;
+            insert_records[0].__createdtime__ = 123456;
+            let result = await test_utils.assertErrorAsync(write_utility.insertRecords, [env, HASH_ATTRIBUTE_NAME, ALL_ATTRIBUTES, insert_records, false], undefined,
+                "pass valid env hash_attribute all_attributes records");
+
+            let expected_result = new InsertRecordsResponseObject([1], [], TXN_TIMESTAMP);
+            assert.deepStrictEqual(result, expected_result);
+
+            assert.deepStrictEqual(insert_records[0].__updatedtime__, 123456);
+            assert.deepStrictEqual(insert_records[0].__createdtime__, 123456);
+
+            let records = [];
+            let keys = [];
+            for (let { key, value } of env.dbis.__updatedtime__.getRange({ })) {
+                keys.push(key);
+                records.push(value);
+            }
+            assert.deepStrictEqual(records, [1]);
+            assert.deepStrictEqual(keys, [123456]);
+
+            keys = [];
+            records = [];
+            for (let { key, value } of env.dbis.__createdtime__.getRange({ })) {
+                keys.push(key);
+                records.push(value);
+            }
+            assert.deepStrictEqual(records, [1]);
+            assert.deepStrictEqual(keys, [123456]);
+        });
+
+        it("test insert one row don't generate timestamps, but no timestamps on row", async ()=>{
+            let insert_records = test_utils.deepClone(ONE_RECORD_ARRAY);
+            let result = await test_utils.assertErrorAsync(write_utility.insertRecords, [env, HASH_ATTRIBUTE_NAME, ALL_ATTRIBUTES, insert_records, false], undefined,
+                "pass valid env hash_attribute all_attributes records");
+
+            let expected_result = new InsertRecordsResponseObject([1], [], TXN_TIMESTAMP);
+            assert.deepStrictEqual(result, expected_result);
+
+            assert.deepStrictEqual(insert_records[0].__updatedtime__, TIMESTAMP);
+            assert.deepStrictEqual(insert_records[0].__createdtime__, TIMESTAMP);
+
+            let records = [];
+            let keys = [];
+            for (let { key, value } of env.dbis.__updatedtime__.getRange({ })) {
+                keys.push(key);
+                records.push(value);
+            }
+            assert.deepStrictEqual(records, [1]);
+            assert.deepStrictEqual(keys, [TIMESTAMP]);
+
+            keys = [];
+            records = [];
+            for (let { key, value } of env.dbis.__createdtime__.getRange({ })) {
+                keys.push(key);
+                records.push(value);
+            }
+            assert.deepStrictEqual(records, [1]);
+            assert.deepStrictEqual(keys, [TIMESTAMP]);
         });
 
         it("test insert one row that already exists", async ()=>{
@@ -327,7 +467,7 @@ describe("Test writeUtility module", ()=>{
             await fs.mkdirp(BASE_TEST_PATH);
             global.lmdb_map = undefined;
             env = await environment_utility.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
-            await environment_utility.createDBI(env, 'id', false);
+            await environment_utility.createDBI(env, 'id', false, true);
             await environment_utility.createDBI(env, '__blob__', false);
             let insert_records = test_utils.deepClone(ONE_RECORD_ARRAY);
             await write_utility.insertRecords(env, HASH_ATTRIBUTE_NAME, test_utils.deepClone(ALL_ATTRIBUTES), insert_records);
@@ -385,6 +525,95 @@ describe("Test writeUtility module", ()=>{
             assert.deepStrictEqual(records,expected2);
         });
 
+        it("test update one existing row with row whose timestamp is older than row in database", async ()=>{
+            let all_attributes_for_update = ['__blob__', '__createdtime__', '__updatedtime__','age', 'height', 'id', 'name'];
+
+            let records = [];
+            for (let { key, value } of env.dbis[HASH_ATTRIBUTE_NAME].getRange({ })) {
+                records.push(value);
+            }
+
+            let expected = [ONE_RECORD_ARRAY_EXPECTED[0]];
+            assert.deepStrictEqual(records, expected);
+
+            let expected_update_response = new UpdateRecordsResponseObject([], [1], TXN_TIMESTAMP, []);
+
+            let update_records = test_utils.deepClone(UPDATE_ONE_RECORD_ARRAY);
+            update_records[0]['__updatedtime__'] = TIMESTAMP - 100;
+            let results = await test_utils.assertErrorAsync(write_utility.updateRecords, [env, HASH_ATTRIBUTE_NAME, all_attributes_for_update, update_records, false], undefined);
+            assert.deepStrictEqual(results, expected_update_response);
+
+            let all_dbis = test_utils.assertErrorSync(environment_utility.listDBIs, [env], undefined);
+            assert.deepStrictEqual(all_dbis, all_attributes_for_update);
+
+            records = [];
+            for (let { key, value } of env.dbis[HASH_ATTRIBUTE_NAME].getRange({ })) {
+                records.push(value);
+            }
+            assert.deepStrictEqual(records,expected);
+        });
+
+        it("test update one existing row, generate timestamps = false, but no updatedtimestamp", async ()=>{
+            let all_attributes_for_update = ['__blob__', '__createdtime__', '__updatedtime__','age', 'height', 'id', 'name'];
+
+            let records = [];
+            for (let { key, value } of env.dbis[HASH_ATTRIBUTE_NAME].getRange({ })) {
+                records.push(value);
+            }
+
+            let expected = [ONE_RECORD_ARRAY_EXPECTED[0]];
+            assert.deepStrictEqual(records, expected);
+
+            let expected_update_response = new UpdateRecordsResponseObject([1], [], TXN_TIMESTAMP, records);
+
+            let update_records = test_utils.deepClone(UPDATE_ONE_RECORD_ARRAY);
+            update_records[0]['__createdtime__'] = 'bad value';
+            let results = await test_utils.assertErrorAsync(write_utility.updateRecords, [env, HASH_ATTRIBUTE_NAME, all_attributes_for_update, update_records, false], undefined);
+            assert.deepStrictEqual(results, expected_update_response);
+
+            let all_dbis = test_utils.assertErrorSync(environment_utility.listDBIs, [env], undefined);
+            assert.deepStrictEqual(all_dbis, all_attributes_for_update);
+
+            records = [];
+            for (let { key, value } of env.dbis[HASH_ATTRIBUTE_NAME].getRange({ })) {
+                records.push(value);
+            }
+            let expected2 = [UPDATE_ONE_RECORD_ARRAY_EXPECTED[0]];
+            assert.deepStrictEqual(records,expected2);
+        });
+
+        it("test update one existing row, generate timestamps = false, updated timestamp is newer the one in db", async ()=>{
+            let all_attributes_for_update = ['__blob__', '__createdtime__', '__updatedtime__','age', 'height', 'id', 'name'];
+
+            let records = [];
+            for (let { key, value } of env.dbis[HASH_ATTRIBUTE_NAME].getRange({ })) {
+                records.push(value);
+            }
+
+            let expected = [ONE_RECORD_ARRAY_EXPECTED[0]];
+            assert.deepStrictEqual(records, expected);
+
+            let expected_update_response = new UpdateRecordsResponseObject([1], [], TXN_TIMESTAMP, records);
+
+            let update_records = test_utils.deepClone(UPDATE_ONE_RECORD_ARRAY);
+            let updated_time = TIMESTAMP +1;
+            update_records[0]['__createdtime__'] = 'bad value';
+            update_records[0]['__updatedtime__'] = updated_time;
+            let results = await test_utils.assertErrorAsync(write_utility.updateRecords, [env, HASH_ATTRIBUTE_NAME, all_attributes_for_update, update_records, false], undefined);
+            assert.deepStrictEqual(results, expected_update_response);
+
+            let all_dbis = test_utils.assertErrorSync(environment_utility.listDBIs, [env], undefined);
+            assert.deepStrictEqual(all_dbis, all_attributes_for_update);
+
+            records = [];
+            for (let { key, value } of env.dbis[HASH_ATTRIBUTE_NAME].getRange({ })) {
+                records.push(value);
+            }
+            let expected2 = test_utils.deepClone([UPDATE_ONE_RECORD_ARRAY_EXPECTED[0]]);
+            expected2[0].__updatedtime__ = updated_time;
+            assert.deepStrictEqual(records,expected2);
+        });
+
         it("test update one existing row & one non-existing row", async ()=>{
             let all_attributes_for_update = ['__blob__','__createdtime__', '__updatedtime__','age', 'height', 'id', 'name'];
 
@@ -406,7 +635,6 @@ describe("Test writeUtility module", ()=>{
 
             let expected_update_records = test_utils.deepClone(UPDATE_ONE_RECORD_ARRAY);
             expected_update_records[0].__updatedtime__ = TIMESTAMP;
-            console.log(expected_update_records);
             assert.deepStrictEqual(update_records, expected_update_records);
             assert.deepStrictEqual(results, expected_update_response);
 
@@ -628,7 +856,7 @@ describe("Test writeUtility module", ()=>{
             await fs.mkdirp(BASE_TEST_PATH);
             global.lmdb_map = undefined;
             env = await environment_utility.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
-            await environment_utility.createDBI(env, 'id', false);
+            await environment_utility.createDBI(env, 'id', false, true);
             await environment_utility.createDBI(env, '__blob__', false);
             let insert_records = test_utils.deepClone(ONE_RECORD_ARRAY);
             await write_utility.insertRecords(env, HASH_ATTRIBUTE_NAME, test_utils.deepClone(ALL_ATTRIBUTES), insert_records);

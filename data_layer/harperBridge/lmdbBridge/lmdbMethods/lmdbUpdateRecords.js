@@ -38,7 +38,7 @@ async function lmdbUpdateRecords(update_obj) {
         let new_attributes = await lmdb_check_new_attributes(update_obj.hdb_auth_header, schema_table, attributes);
         let env_base_path = path.join(getBaseSchemaPath(), update_obj.schema.toString());
         let environment = await environment_utility.openEnvironment(env_base_path, update_obj.table);
-        let lmdb_response = await lmdb_update_records(environment, schema_table.hash_attribute, attributes, update_obj.records);
+        let lmdb_response = await lmdb_update_records(environment, schema_table.hash_attribute, attributes, update_obj.records, update_obj[hdb_terms.CLUSTERING_FLAG] !== true);
 
         try {
             await write_transaction(update_obj, lmdb_response);
