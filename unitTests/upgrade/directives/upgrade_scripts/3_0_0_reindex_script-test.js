@@ -8,10 +8,10 @@ const { expect } = chai;
 const sinon = require('sinon');
 const sinon_chai = require('sinon-chai');
 chai.use(sinon_chai);
-const test_utils = require('../../test_utils');
-const logger = require('../../../utility/logging/harper_logger');
-const env_mngr = require('../../../utility/environment/environmentManager');
-const lmdb_common = require('../../../utility/lmdb/commonUtility');
+const test_utils = require('../../../test_utils');
+const logger = require('../../../../utility/logging/harper_logger');
+const env_mngr = require('../../../../utility/environment/environmentManager');
+const lmdb_common = require('../../../../utility/lmdb/commonUtility');
 
 const TEST_DIR = 'reindexTestDir';
 const BASE_PATH_TEST = path.join(__dirname, TEST_DIR);
@@ -39,7 +39,7 @@ describe('Test reindex module', () => {
     before(() => {
         // This stub and rewire need to be here as putting it in outer scope was messing interfering with other tests.
         sandbox.stub(env_mngr,'getHdbBasePath').returns(BASE_PATH_TEST);
-        reindex_rw = rewire('../../../upgrade/lmdb/3_0_0_reindex_script');
+        reindex_rw = rewire('../../../../upgrade/directives/upgrade_scripts/3_0_0_reindex_script');
         logger_notify_stub = sandbox.stub(logger, 'notify');
         logger_error_stub = sandbox.stub(logger, 'error');
         reindex_rw.__set__('pino_logger', pino_logger_test);
@@ -55,7 +55,7 @@ describe('Test reindex module', () => {
 
     after(async () => {
         sandbox.restore();
-        rewire('../../../upgrade/lmdb/3_0_0_reindex_script');
+        rewire('../../../../upgrade/directives/upgrade_scripts/3_0_0_reindex_script');
         await fs.remove(TMP_PATH_TEST);
     });
 
@@ -98,13 +98,13 @@ describe('Test reindex module', () => {
             process_table_rw = reindex_rw.__set__('processTable', process_table_stub);
             init_pino_logger_rw = reindex_rw.__set__('initPinoLogger', init_pino_logger_stub);
         });
-        
+
         after(() => {
             process_table_rw();
             init_pino_logger_rw();
             fs_empty_dir_stub.restore();
         });
-        
+
         it('Test schema and tables are loaded happy path', async () => {
             await getSchemaTables(SCHEMA_PATH_TEST, false);
 

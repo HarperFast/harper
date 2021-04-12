@@ -1,21 +1,21 @@
 'use strict';
 
 //keep these 2 dependencies in this exact order, otherwise this will fail on OSX
-const new_environment_utility = require('../../utility/lmdb/environmentUtility');
-const old_environment_utility = require('./nodeLMDB/environmentUtility');
+const new_environment_utility = require('../../../utility/lmdb/environmentUtility');
+const old_environment_utility = require('../../lmdb/nodeLMDB/environmentUtility');
 
-const {insertRecords} = require('../../utility/lmdb/writeUtility');
-const lmdb_common = require('../../utility/lmdb/commonUtility');
-const lmdb_terms = require('../../utility/lmdb/terms');
-const hdb_common = require('../../utility/common_utils');
-const logger = require('../../utility/logging/harper_logger');
-const hdb_util = require('../../utility/common_utils');
+const {insertRecords} = require('../../../utility/lmdb/writeUtility');
+const lmdb_common = require('../../../utility/lmdb/commonUtility');
+const lmdb_terms = require('../../../utility/lmdb/terms');
+const hdb_common = require('../../../utility/common_utils');
+const logger = require('../../../utility/logging/harper_logger');
+const hdb_util = require('../../../utility/common_utils');
 const fs = require('fs-extra');
 const path = require('path');
 const progress = require('cli-progress');
 const assert = require('assert');
 const pino = require('pino');
-const env_mngr = require('../../utility/environment/environmentManager');
+const env_mngr = require('../../../utility/environment/environmentManager');
 if(!env_mngr.isInitialized()) {
     env_mngr.initSync();
 }

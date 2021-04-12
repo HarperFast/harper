@@ -9,6 +9,8 @@ const hdb_log = require('../../utility/logging/harper_logger');
 const { HDB_SETTINGS_NAMES, HDB_SETTINGS_DEFAULT_VALUES } = require('../../utility/hdbTerms');
 const env = require('../../utility/environment/environmentManager');
 
+const reindex_script = require('./upgrade_scripts/3_0_0_reindex_script');
+
 let directive3_0_0 = new UpgradeDirective('3.0.0');
 let directives = [];
 
@@ -134,7 +136,9 @@ function updateSettingsFile_3_0_0() {
 directive3_0_0.settings_file_function.push(updateSettingsFile_3_0_0);
 
 //TODO - Kyle's indexing script/s is imported to this file and added here.
-//directive3_0_0.functions.push(() => {});
+directive3_0_0.functions.push((async () => {
+    await reindex_script();
+}));
 
 directives.push(directive3_0_0);
 
