@@ -454,6 +454,7 @@ const TIME_STAMP_NAMES_ENUM = {
     CREATED_TIME: '__createdtime__',
     UPDATED_TIME: '__updatedtime__'
 };
+const CLUSTERING_FLAG = '__clustering__';
 
 const TIME_STAMP_NAMES = Object.values(TIME_STAMP_NAMES_ENUM);
 
@@ -596,5 +597,6 @@ module.exports = {
     SEARCH_WILDCARDS,
     FUNC_VAL,
     READ_TRANSACTION_LOG_SEARCH_TYPES_ENUM,
-    JWT_ENUM
+    JWT_ENUM,
+    CLUSTERING_FLAG
 };

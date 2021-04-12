@@ -48,7 +48,7 @@ async function lmdbUpsertRecords(upsert_obj) {
     let new_attributes = await lmdb_check_new_attributes(upsert_obj.hdb_auth_header, schema_table, attributes);
     let env_base_path = path.join(getBaseSchemaPath(), upsert_obj.schema.toString());
     let environment = await environment_utility.openEnvironment(env_base_path, upsert_obj.table);
-    let lmdb_response = await lmdb_upsert_records(environment, schema_table.hash_attribute, attributes, upsert_obj.records);
+    let lmdb_response = await lmdb_upsert_records(environment, schema_table.hash_attribute, attributes, upsert_obj.records, upsert_obj[hdb_terms.CLUSTERING_FLAG] !== true);
 
     try {
         await write_transaction(upsert_obj, lmdb_response);
