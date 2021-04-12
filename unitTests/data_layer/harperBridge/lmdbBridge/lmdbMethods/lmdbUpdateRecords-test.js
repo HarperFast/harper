@@ -296,6 +296,83 @@ describe('Test lmdbUpdateRecords module', ()=>{
             await verify_txn(TXN_SCHEMA_PATH, INSERT_OBJECT_TEST.table, copy_expected_timestamp_txn, copy_expected_hashes_txn);
         });
 
+        it('Test updating 1 row with __clustering__ = true', async ()=>{
+            const update_obj = {
+                operation: "update",
+                schema: "dev",
+                table: "dog",
+                __clustering__: true,
+                records: [
+                    {
+                        name: "Beethoven",
+                        breed: "St. Bernard",
+                        id: 10,
+                        height:undefined,
+                        age: 10,
+                        __updatedtime__: 9999999999999966,
+                        __createdtime__: 3333334
+                    }
+                ]
+            };
+
+            let expected_return_result = {
+                new_attributes: [],
+                written_hashes: [ 10],
+                skipped_hashes: [],
+                schema_table: {
+                    attributes: NO_NEW_ATTR_TEST,
+                    hash_attribute: HASH_ATTRIBUTE_NAME,
+                    residence: undefined,
+                    schema: INSERT_OBJECT_TEST.schema,
+                    name: INSERT_OBJECT_TEST.table
+                },
+                txn_time:m_time
+            };
+
+            //verify inserted txn
+            let copy_expected_timestamp_txn = Object.create(null);
+            for(let [key, value] of Object.entries(expected_timestamp_txn)){
+                copy_expected_timestamp_txn[key] = [Object.assign({}, value[0])];
+            }
+            let copy_expected_hashes_txn = test_utils.assignObjecttoNullObject(test_utils.deepClone(expected_hashes_txn));
+            await verify_txn(TXN_SCHEMA_PATH, INSERT_OBJECT_TEST.table, copy_expected_timestamp_txn, copy_expected_hashes_txn);
+
+            let expected_search = test_utils.assignObjecttoNullObject(update_obj.records[0]);
+            expected_search.__createdtime__=INSERT_TIMESTAMP;
+            expected_search.__updatedtime__=9999999999999966;
+            expected_search.height = null;
+
+            let results = await test_utils.assertErrorAsync(lmdb_update_records, [update_obj], undefined);
+            assert.deepStrictEqual(results, expected_return_result);
+
+            let dog_env = await test_utils.assertErrorAsync(environment_utility.openEnvironment,[path.join(BASE_SCHEMA_PATH, INSERT_OBJECT_TEST.schema), INSERT_OBJECT_TEST.table], undefined);
+            let record = test_utils.assertErrorSync(search_utility.searchByHash, [dog_env, HASH_ATTRIBUTE_NAME, ALL_FETCH_ATTRIBUTES, '10'], undefined);
+            assert.deepStrictEqual(record, expected_search);
+
+            //make sure the height index does not have an entry for id 10
+            let height_results = test_utils.assertErrorSync(search_utility.iterateDBI, [dog_env, "height"], undefined);
+            Object.keys(height_results).forEach(result=>{
+                assert(result.indexOf(10) < 0);
+            });
+
+            //verify txns with update
+            let orig_rec = {
+                __createdtime__:INSERT_TIMESTAMP,
+                __updatedtime__: INSERT_TIMESTAMP,
+                age: 5,
+                breed: "Mutt",
+                height: 145,
+                id: 10,
+                name: "Rob"
+            };
+
+            let update_txn = Object.assign({}, new LMDBUpdateTransactionObject(update_obj.records, [orig_rec], undefined, m_time, [10]));
+            copy_expected_timestamp_txn[m_time] = [update_txn];
+
+            copy_expected_hashes_txn[10].push(m_time);
+            await verify_txn(TXN_SCHEMA_PATH, INSERT_OBJECT_TEST.table, copy_expected_timestamp_txn, copy_expected_hashes_txn);
+        });
+
         it('Test update record with no hash attribute', async () => {
             const update_obj = {
                 operation: "update",
