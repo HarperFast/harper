@@ -15,7 +15,7 @@ const UPGRADE_PROCEED = ['yes', 'y'];
  * @returns {Promise<boolean>}
  */
 async function forceUpdatePrompt(upgrade_obj) {
-    // pull directive changes
+    // pull and format directive changes for prompt
     let changes = directivesManager.getDirectiveChangeDescriptions(upgrade_obj);
     let counter = 1;
     let message = `${os.EOL}` + colors.bold.green('Your current HarperDB version requires that we complete an update process.')
@@ -39,7 +39,7 @@ async function forceUpdatePrompt(upgrade_obj) {
                 description: colors.magenta(`${os.EOL}[CONFIRM_UPGRADE] Do you want to upgrade your HDB instance now? (yes/no)`),
                 pattern: /y(es)?$|n(o)?$/,
                 message: "Must respond 'yes' or 'no'",
-                default: 'yes',
+                default: 'no',
                 required: true
             }
         }
