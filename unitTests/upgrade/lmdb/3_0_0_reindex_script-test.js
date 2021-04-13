@@ -185,16 +185,10 @@ describe('Test reindex module', () => {
             await processTable('dev', 'dog', the_tran_schema_path_dev_test, true, tmp_schema_path_test);
         });
 
-        it('Test error is thrown if reindex called on already indexed environment', async () => {
+        it('Test error is thrown and ignored if reindex called on already indexed environment', async () => {
             global.old_lmdb_map = undefined;
-            let error;
-            try {
-                await processTable('dev', 'dog', the_schema_path_dev_test, false, tmp_schema_path_test);
-            } catch(err) {
-                error = err;
-            }
-
-            expect(error.message).to.equal('MDB_INVALID: File is not an LMDB file');
+            await processTable('dev', 'dog', the_schema_path_dev_test, false, tmp_schema_path_test);
+            expect(logger_notify_stub).to.have.been.calledWith('dev.dog file is not from the old environment and has been skipped');
         });
 
         it('Test error is thrown if environment does not exist', async () => {
