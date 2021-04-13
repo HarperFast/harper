@@ -3,7 +3,6 @@
 const test_util = require('../test_utils');
 test_util.preTestPrep();
 
-
 const sinon = require('sinon');
 const chai = require('chai');
 const { expect } = chai;
@@ -83,7 +82,6 @@ describe('Test upgrade.js', () => {
     });
 
     describe('upgrade()', async () => {
-        let spinner_rw;
         let runUpgrade_orig;
         let runUpgrade_stub;
         let checkIfRunning_stub;
@@ -96,7 +94,6 @@ describe('Test upgrade.js', () => {
             upgrade_rw.__set__('checkIfRunning', checkIfRunning_stub);
             getVersionUpdateInfo_stub = sandbox.stub(hdbInfoController, 'getVersionUpdateInfo').resolves(TEST_UPGRADE_OBJ);
             forceUpdatePrompt_stub = sandbox.stub(updatePrompt, 'forceUpdatePrompt').resolves(true);
-            spinner_rw = upgrade_rw.__get__('countdown');
         })
 
         beforeEach(() => {
@@ -104,7 +101,6 @@ describe('Test upgrade.js', () => {
         })
 
         afterEach(() => {
-            spinner_rw.stop();
             getVersionUpdateInfo_stub.resolves(TEST_UPGRADE_OBJ);
             version_stub.returns(TEST_CURR_VERS);
             forceUpdatePrompt_stub.resolves(true);

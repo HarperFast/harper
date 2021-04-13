@@ -3,33 +3,10 @@
 const hdb_util = require('../utility/common_utils');
 const log = require('../utility/logging/harper_logger');
 const directivesController = require('./directives/directivesController');
-const terms = require('../utility/hdbTerms');
-const { DATA_VERSION } = terms.UPGRADE_JSON_FIELD_NAMES_ENUM;
 
 module.exports = {
-    getDirectiveChangeDescriptions,
     processDirectives
 };
-
-/**
- * Create an array containing change descriptor objects.
- *
- * @param upgrade_obj {UpgradeObject}
- * @returns {[]} - Array of change descriptions to display to the user before confirming/starting the upgrade process
- */
-function getDirectiveChangeDescriptions(upgrade_obj) {
-    let change_descriptions = [];
-    let loaded_directives = directivesController.getVersionsForUpgrade(upgrade_obj);
-    let upgrade_directives = getUpgradeDirectivesToInstall(loaded_directives);
-
-    for (let vers of upgrade_directives) {
-        if (vers.change_description) {
-            change_descriptions.push({ change_description: vers.change_description });
-        }
-    }
-
-    return change_descriptions;
-}
 
 /**
  * Iterates through the directives files to find uninstalled updates and runs the files.
@@ -49,45 +26,38 @@ async function processDirectives(upgrade_obj) {
         log.notify(notify_msg);
         console.log(notify_msg);
 
-        let settings_func_response = [];
-        let func_responses = [];
+        let sync_func_response = [];
+        let async_func_responses = [];
 
-        // Run settings file update
+        // Run sync functions for upgrade
         try {
-            settings_func_response = runFunctions(vers.settings_file_function);
+            sync_func_response = runSyncFunctions(vers.sync_functions);
         } catch(e) {
             log.error(`Error while running a settings upgrade script for ${vers.version}: ` + e);
             throw e;
         }
-        for(let i of settings_func_response) {
-            log.info(i);
-        }
 
-        // Run upgrade functions/scripts
+        // Run async functions for upgrade
         try {
-            func_responses = await runAsyncFunctions(vers.functions);
+            async_func_responses = await runAsyncFunctions(vers.async_functions);
         } catch(e) {
             log.error(`Error while running an upgrade script for ${vers.version}: ` + e);
             throw e;
         }
 
-        for(let i of func_responses) {
-            log.info(i);
-        }
-
-        all_responses.push(...settings_func_response, ...func_responses);
+        all_responses.push(...sync_func_response, ...async_func_responses);
     }
 
     return all_responses;
 }
 
 /**
- * Runs functions specified in a directive object.
+ * Runs sync functions specified in a directive object.
  *
- * @param directive_functions - Array of functions to run
+ * @param directive_functions - Array of sync functions to run
  * @returns - Array of responses from function calls
  */
-function runFunctions(directive_functions) {
+function runSyncFunctions(directive_functions) {
     if(hdb_util.isEmptyOrZeroLength(directive_functions)) {
         log.info('No functions found to run for upgrade');
         return [];
@@ -104,8 +74,9 @@ function runFunctions(directive_functions) {
             continue;
         }
         try {
-            // All defined functions should be synchronous
-            func_responses.push(func());
+            const response = func();
+            log.info(response);
+            func_responses.push(response);
         } catch(e) {
             log.error(e);
             // Right now assume any functions that need to be run are critical to a successful upgrade, so fail completely
@@ -113,14 +84,15 @@ function runFunctions(directive_functions) {
             throw e;
         }
     }
+
     return func_responses;
 }
 
 /**
- * Runs functions specified in a directive object.
+ * Runs async functions specified in a directive object.
  *
- * @param directive_functions - Array of functions to run
- * @returns - Array of responses from function calls
+ * @param directive_functions - Array of async functions to run
+ * @returns - Array of responses from async function calls
  */
 async function runAsyncFunctions(directive_functions) {
     if(hdb_util.isEmptyOrZeroLength(directive_functions)) {
@@ -139,7 +111,9 @@ async function runAsyncFunctions(directive_functions) {
             continue;
         }
         try {
-            func_responses.push(await func());
+            const response = await func();
+            log.info(response);
+            func_responses.push(response);
         } catch(e) {
             log.error(e);
             // Right now assume any functions that need to be run are critical to a successful upgrade, so fail completely

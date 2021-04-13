@@ -9,7 +9,6 @@
 const env = require('../utility/environment/environmentManager');
 env.initSync();
 
-const CLI = require('clui');
 const colors = require("colors/safe");
 const fs = require('fs-extra');
 const log = require('../utility/logging/harper_logger');
@@ -21,9 +20,6 @@ const hdbInfoController = require('../data_layer/hdbInfoController');
 const upgradePrompt = require('../upgrade/upgradePrompt');
 
 const { UPGRADE_VERSION } = hdb_terms.UPGRADE_JSON_FIELD_NAMES_ENUM;
-
-let Spinner = CLI.Spinner;
-let countdown = new Spinner(`Upgrading HarperDB `, ['⣾', '⣽', '⣻', '⢿', '⡿', '⣟', '⣯', '⣷']);
 
 module.exports = {
     upgrade
@@ -81,13 +77,10 @@ async function upgrade(upgrade_obj) {
         process.exit(exit_code);
     }
 
-    // countdown.message(`Starting upgrade to version ${current_hdb_version}`);
-    // countdown.start();
     log.info(`Starting upgrade to version ${current_hdb_version}`);
 
     await runUpgrade(hdb_upgrade_info);
 
-    // countdown.stop();
     printToLogAndConsole(`HarperDB was successfully upgraded to version ${hdb_upgrade_info[UPGRADE_VERSION]}`, log.INFO);
 }
 
@@ -121,8 +114,6 @@ async function runUpgrade(upgrade_obj) {
         printToLogAndConsole('There was an error during the data upgrade.  Please check the logs.', log.error);
         throw(err);
     }
-
-
 
     try {
         await hdbInfoController.insertHdbUpgradeInfo(upgrade_obj[UPGRADE_VERSION]);

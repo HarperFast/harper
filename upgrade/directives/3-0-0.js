@@ -36,8 +36,8 @@ function updateSettingsFile_3_0_0() {
     const server_port_new = http_secure_enabled_new ? http_secure_port_old : http_port_old;
 
     if (http_enabled_old && http_secure_enabled_old) {
-        console.log(colors.yellow("HarperDB 3.0.0 does not allow HTTP and HTTPS to be enabled at the same time. This upgrade has enabled " +
-            "HTTPS and disabled HTTP. You can modify this in your settings.js file."));
+        console.log(colors.magenta("HarperDB 3.0.0 does not allow HTTP and HTTPS to be enabled at the same time. This upgrade has enabled " +
+            "HTTPS and disabled HTTP. You can modify this in config/settings.js."));
     }
 
     let new_hdb_settings_vals = `   ;Settings for the HarperDB process.\n` +
@@ -133,10 +133,8 @@ function updateSettingsFile_3_0_0() {
     return upgrade_success_msg;
 }
 
-directive3_0_0.settings_file_function.push(updateSettingsFile_3_0_0);
-
-//TODO - Kyle's indexing script/s is imported to this file and added here.
-directive3_0_0.functions.push(reindex_script);
+directive3_0_0.sync_functions.push(updateSettingsFile_3_0_0);
+directive3_0_0.async_functions.push(reindex_script);
 
 directives.push(directive3_0_0);
 

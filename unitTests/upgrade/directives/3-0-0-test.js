@@ -74,7 +74,7 @@ describe('3.0.0 Upgrade Directive', () => {
         const TEST_ERROR = new Error("This. Is. An. Error");
 
         before(() => {
-            updateSettingsFile_3_0_0 = directive3_0_0.settings_file_function[0];
+            updateSettingsFile_3_0_0 = directive3_0_0.sync_functions[0];
             consoleLog_spy = sandbox.spy(console, 'log');
             consoleError_spy = sandbox.spy(console, 'error');
             logInfo_stub = sandbox.stub(hdb_logger, 'info').returns();
@@ -133,8 +133,8 @@ describe('3.0.0 Upgrade Directive', () => {
             sandbox.resetHistory();
             updateSettingsFile_3_0_0();
 
-            expect(consoleLog_spy.args[0][0]).to.equal(colors.yellow("HarperDB 3.0.0 does not allow HTTP and HTTPS to be enabled at the same time. This upgrade has enabled " +
-                "HTTPS and disabled HTTP. You can modify this in your settings.js file."))
+            expect(consoleLog_spy.args[0][0]).to.equal(colors.magenta("HarperDB 3.0.0 does not allow HTTP and HTTPS to be enabled at the same time. This upgrade has enabled " +
+                "HTTPS and disabled HTTP. You can modify this in config/settings.js."))
         });
 
         it('Test backup settings file is written',() => {
