@@ -246,9 +246,12 @@ async function deleteEnvironment(base_path, env_name, is_txn = false) {
 function closeEnvironment(env){
     //make sure env is actually a reference to the lmdb environment class so we don't blow anything up
     common.validateEnv(env);
+    let environment_name = env[lmdb_terms.ENVIRONMENT_NAME_KEY];
     //we need to close the environment to release the file from the process
     env.close();
-
+    if(environment_name !== undefined && global.lmdb_map !== undefined){
+        delete global.lmdb_map[environment_name];
+    }
 }
 
 /**

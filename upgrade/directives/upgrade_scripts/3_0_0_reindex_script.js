@@ -140,8 +140,22 @@ async function initPinoLogger(schema, table, is_transaction_reindex) {
  * @returns {Promise<void>}
  */
 async function processTable(schema, table, the_schema_path, is_transaction_reindex, tmp_schema_path){
-    //open the existing environment with the "old" environment utility
-    let old_env = await old_environment_utility.openEnvironment(the_schema_path, table, is_transaction_reindex);
+    let old_env;
+    try {
+        //open the existing environment with the "old" environment utility
+        old_env = await old_environment_utility.openEnvironment(the_schema_path, table, is_transaction_reindex);
+    } catch(err) {
+        // If the environment/table is not of the NODE LMDB type it is skipped.
+        if (err.message === 'MDB_INVALID: File is not an LMDB file') {
+            logger.notify(`${schema}.${table} file is not from the old environment and has been skipped`);
+            console.info(`${schema}.${table} file is not from the old environment and has been skipped`);
+            pino_logger.error(err);
+            return;
+        }
+
+        throw err;
+    }
+
     //find the name of the hash attribute
     let hash = getHashDBI(old_env.dbis);
     let all_dbi_names = Object.keys(old_env.dbis);
