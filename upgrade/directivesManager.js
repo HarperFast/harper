@@ -11,8 +11,8 @@ module.exports = {
 /**
  * Iterates through the directives files to find uninstalled updates and runs the files.
  *
- * @param upgrade_obj {UpgradeObject}
- * @returns {*[]}
+ * @param upgrade_obj
+ * @returns {Promise<*[]>}
  */
 async function processDirectives(upgrade_obj) {
     console.log('Starting upgrade process...');

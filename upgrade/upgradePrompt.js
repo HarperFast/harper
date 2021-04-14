@@ -16,7 +16,7 @@ const UPGRADE_PROCEED = ['yes', 'y'];
 async function forceUpdatePrompt(upgrade_obj) {
     let upgrade_message = `${os.EOL}` + colors.bold.green('Your current HarperDB version requires that we complete an update process.')
         + `${os.EOL}` + 'If a backup of your data has not been created, we recommend you cancel this process and backup before proceeding.'
-        + `${os.EOL}${os.EOL}` + colors.underline('You can read more about the changes in this upgrade here: https://harperdb.io/developers/release-notes/') + `${os.EOL}`;
+        + `${os.EOL}${os.EOL}` + 'You can read more about the changes in this upgrade at https://harperdb.io/developers/release-notes/' + `${os.EOL}`;
     prompt.override = minimist(process.argv);
     prompt.start();
     prompt.message = upgrade_message;
