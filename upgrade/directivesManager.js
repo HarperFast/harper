@@ -21,7 +21,9 @@ async function processDirectives(upgrade_obj) {
     let upgrade_directives = getUpgradeDirectivesToInstall(loaded_directives);
 
     let all_responses = [];
-    for (let vers of upgrade_directives) {
+    const dir_length = upgrade_directives.length;
+    for (let i = 0; i < dir_length; i++) {
+        const vers = upgrade_directives[i];
         let notify_msg = `Running upgrade for version ${vers.version}`;
         log.notify(notify_msg);
         console.log(notify_msg);
@@ -104,7 +106,9 @@ async function runAsyncFunctions(directive_functions) {
         return [];
     }
     let func_responses = [];
-    for(let func of directive_functions) {
+    const funcs_length = directive_functions.length;
+    for (let i = 0; i < funcs_length; i++) {
+        const func = directive_functions[i];
         log.info(`Running function ${func.name}`);
         if(!(func instanceof Function)) {
             log.info('Variable being processed is not a function');

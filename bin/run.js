@@ -59,25 +59,28 @@ async function run() {
     }
 
     try {
-        // Check to see if an upgrade is needed based on existing hdb_info data.  If so, we need to force the user to upgrade
-        // before the server can be started.
-        let upgrade_vers;
-        try {
-            const update_obj = await hdbInfoController.getVersionUpdateInfo();
-            if (update_obj !== undefined) {
-                upgrade_vers = update_obj[terms.UPGRADE_JSON_FIELD_NAMES_ENUM.UPGRADE_VERSION];
-                await upgrade.upgrade(update_obj);
-                console.log('Upgrade complete.  Starting HarperDB.');
+        const hdb_installed = await isHdbInstalled();
+        if (hdb_installed) {
+            // Check to see if an upgrade is needed based on existing hdb_info data.  If so, we need to force the user to upgrade
+            // before the server can be started.
+            let upgrade_vers;
+            try {
+                const update_obj = await hdbInfoController.getVersionUpdateInfo();
+                if (update_obj !== undefined) {
+                    upgrade_vers = update_obj[terms.UPGRADE_JSON_FIELD_NAMES_ENUM.UPGRADE_VERSION];
+                    await upgrade.upgrade(update_obj);
+                    console.log('Upgrade complete.  Starting HarperDB.');
+                }
+            } catch(err) {
+                if (upgrade_vers) {
+                    console.error(`Got an error while trying to upgrade your HarperDB instance to version ${upgrade_vers}.  Exiting HarperDB.`);
+                    logger.error(err);
+                } else {
+                    console.error(`Got an error while trying to upgrade your HarperDB instance.  Exiting HarperDB.`);
+                    logger.error(err);
+                }
+                process.exit(1);
             }
-        } catch(err) {
-            if (upgrade_vers) {
-                console.error(`Got an error while trying to upgrade your HarperDB instance to version ${upgrade_vers}.  Exiting HarperDB.`);
-                logger.error(err);
-            } else {
-                console.error(`Got an error while trying to upgrade your HarperDB instance.  Exiting HarperDB.`);
-                logger.error(err);
-            }
-            process.exit(1);
         }
 
         await checkTransactionLogEnvironmentsExist();
@@ -335,3 +338,19 @@ function exitInstall(){
 module.exports ={
     run:run
 };
+
+async function isHdbInstalled() {
+    try {
+        await fs.stat(env.BOOT_PROPS_FILE_PATH);
+        await fs.stat(env.get(terms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY));
+    } catch(err) {
+        if(err.errno === ENOENT_ERR_CODE) {
+            // boot props not found, hdb not installed
+            return false;
+        } else {
+            logger.error(`Error checking for install - ${err}`);
+            throw err;
+        }
+    }
+    return true;
+}

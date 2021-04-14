@@ -20,14 +20,15 @@ if(!env_mngr.isInitialized()) {
     env_mngr.initSync();
 }
 
-const BASE_PATH = env_mngr.getHdbBasePath();
-const SCHEMA_PATH = path.join(BASE_PATH, 'schema');
-const TMP_PATH = path.join(BASE_PATH, '3_0_0_upgrade_tmp');
-const TRANSACTIONS_PATH = path.join(BASE_PATH, 'transactions');
+module.exports = reindexUpgrade;
+
+let BASE_PATH;
+let SCHEMA_PATH;
+let TMP_PATH;
+let TRANSACTIONS_PATH;
 let pino_logger;
 let error_occurred = false;
 
-module.exports = reindexUpgrade;
 
 /**
  * Used by upgrade to create new lmdb-store indices from existing node-lmdb indices.
@@ -37,6 +38,12 @@ module.exports = reindexUpgrade;
  * @returns {Promise<string>}
  */
 async function reindexUpgrade() {
+    //These variables need to be set within the reindex script so that they do not throw an error when the module is loaded
+    // for a new install (i.e. the base path has not been set yet)
+    BASE_PATH = env_mngr.getHdbBasePath();
+    SCHEMA_PATH = path.join(BASE_PATH, 'schema');
+    TMP_PATH = path.join(BASE_PATH, '3_0_0_upgrade_tmp');
+    TRANSACTIONS_PATH = path.join(BASE_PATH, 'transactions');
     console.info('Reindexing upgrade started for schemas');
     logger.notify('Reindexing upgrade started for schemas');
     await getSchemaTable(SCHEMA_PATH, false);
