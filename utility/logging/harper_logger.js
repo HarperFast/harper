@@ -24,6 +24,8 @@ const terms = require('../hdbTerms');
 //Using numbers rather than strings for faster comparison
 const WIN = 1;
 const PIN = 2;
+// Set interval that log buffer should be flushed at.
+const LOG_BUFFER_FLUSH_INTERVAL = 10000;
 
 const NOTIFY = 'notify';
 const FATAL = 'fatal';
@@ -56,7 +58,7 @@ let log_location = undefined;
 let log_directory = undefined;
 let log_file_name = undefined;
 
-let pin_logger = undefined;
+let pino_logger = undefined;
 let win_logger = undefined;
 
 // read environment settings to get preferred logger and default log level
@@ -86,15 +88,13 @@ if (hdb_properties === undefined) {
     }
 }
 
-//TODO: All of this should be happening in an env variable module (yet to be written).
 if (log_level === undefined || log_level === 0 || log_level === null) {
     log_level = 'error';
 }
 
-//TODO: All of this should be happening in an env variable module (yet to be written).
 if (log_path === undefined || log_path === null) {
     log_location = '../run_log.log';
-};
+}
 
 module.exports = {
     trace:trace,
@@ -119,55 +119,10 @@ module.exports = {
 };
 
 /**
- * initialize the winston logger
- */
-function initWinstonLogger() {
-    try {
-        if (!daily_rotate || log_location === LOGGER_PATH.RUN_LOG) {
-            win_logger = new (winston.Logger)({
-                transports: [
-                    new (winston.transports.File)({
-                        level: log_level,
-                        filename: log_location,
-                        handleExceptions: true,
-                        prettyPrint: true
-                    })
-                ],
-                levels: winston_log_levels,
-                level: log_level,
-                exitOnError: false
-            });
-        } else {
-            win_logger = new (winston.Logger)({
-                transports: [
-                    new (winston.transports.DailyRotateFile)({
-                        filename: log_location,
-                        handleExceptions: true,
-                        level: log_level,
-                        maxFiles: max_daily_files,
-                        prettyPrint: true,
-                        json: true,
-                        zippedArchive: true
-                    })
-                ],
-                levels: winston_log_levels,
-                level: log_level,
-                exitOnError: false
-            });
-        }
-    } catch (err) {
-        // if this fails we have no logger, so just write to the console and rethrow so everything fails.
-        console.error('There was an error initializing the logger.');
-        console.error(err);
-        throw err;
-    }
-}
-
-/**
  * Initialize the Pino logger with custom levels
  */
 function initPinoLogger() {
-    pin_logger = pino(
+    pino_logger = pino(
     {
             customLevels: {
                 notify: 70,
@@ -180,7 +135,7 @@ function initPinoLogger() {
             },
             useOnlyCustomLevels:true,
             level: log_level,
-            name: 'harperDB',
+            name: 'HarperDB',
             timestamp: pino.stdTimeFunctions.isoTime,
             formatters: {
                 bindings() {
@@ -198,6 +153,28 @@ function initPinoLogger() {
             sync: false // Asynchronous logging
         }
     ));
+
+    // asynchronously flush every 10 seconds to keep the buffer empty
+    // in periods of low activity
+    setInterval(function () {
+        pino_logger.flush();
+    }, LOG_BUFFER_FLUSH_INTERVAL).unref();
+
+    // use pino.final to create a special logger that
+    // guarantees final tick writes
+    const handler = pino.final(pino_logger, (err, finalLogger, evt) => {
+        finalLogger.info(`${evt} caught`);
+        if (err) finalLogger.error(err, 'error caused exit');
+        process.exit(err ? 1 : 0);
+    });
+
+    // catch all the ways node might exit, if one occurs anything in the log buffer will be written to logs.
+    process.on('beforeExit', () => handler(null, 'beforeExit'));
+    process.on('exit', () => handler(null, 'exit'));
+    process.on('uncaughtException', (err) => handler(err, 'uncaughtException'));
+    process.on('SIGINT', () => handler(null, 'SIGINT'));
+    process.on('SIGQUIT', () => handler(null, 'SIGQUIT'));
+    process.on('SIGTERM', () => handler(null, 'SIGTERM'));
 }
 
 /**
@@ -211,11 +188,12 @@ function write_log(level, message) {
         level = 'error';
     }
 
-    if (!pin_logger) {
+    if (!pino_logger) {
         initPinoLogger();
-        trace(`initialized pino logger writing to ${log_location}`);
+        trace(`Initialized pino logger writing to ${log_location} process pid ${process.pid}`);
     }
-    pin_logger[level](message);
+
+    pino_logger[level](message);
 }
 
 /**
@@ -302,11 +280,11 @@ function setLogLevel(level) {
 
             case PIN:
                 //PINO
-                if(pin_logger === undefined) {
+                if(pino_logger === undefined) {
                     log_level = level;
                     return;
                 }
-                pin_logger.level = level;
+                pino_logger.level = level;
                 break;
 
             default:
@@ -343,7 +321,7 @@ function setLogType(type) {
         return;
     }
     win_logger = undefined;
-    pin_logger = undefined;
+    pino_logger = undefined;
     log_type = type;
 }
 
@@ -403,9 +381,9 @@ function setLogLocation(log_location_setting) {
 
     log_location = daily_rotate ? path.join(log_directory, `%DATE%_${log_file_name}`) : path.join(log_directory, log_file_name);
 
-    if (!pin_logger) {
+    if (!pino_logger) {
         initPinoLogger();
-        trace(`initialized pino logger writing to ${log_location}`);
+        trace(`Initialized pino logger writing to ${log_location} process pid ${process.pid}`);
     }
 }
 
