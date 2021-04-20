@@ -122,7 +122,8 @@ const OPERATION_AUTH_ERROR_MSGS = {
     OP_NOT_FOUND: (op) => `Operation '${op}' not found`,
     SYSTEM_TIMESTAMP_PERMS_ERR: "Internal timestamp attributes - '__createdtime_' and '__updatedtime__' - cannot be inserted to or updated by HDB users.",
     UNKNOWN_OP_AUTH_ERROR: (op, schema, table) => `There was an error authorizing ${op} op on table '${schema}.${table}'`,
-    USER_HAS_NO_PERMS: (user) => `User ${user} has no role or permissions.  Please assign the user a valid role.`
+    USER_HAS_NO_PERMS: (user) => `User ${user} has no role or permissions.  Please assign the user a valid role.`,
+    DROP_SYSTEM: "The 'system' schema, tables and records are used internally by HarperDB and cannot be updated or removed."
 };
 
 const ROLE_PERMS_ERROR_MSGS = {
