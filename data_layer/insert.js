@@ -17,7 +17,6 @@ const { handleHDBError, hdb_errors } = require('../utility/errors/hdbError');
 const { HTTP_STATUS_CODES } = hdb_errors;
 
 const p_global_schema = util.promisify(global_schema.getTableSchema);
-const p_schema_to_global = util.promisify(global_schema.setSchemaDataToGlobal);
 
 const UPDATE_ACTION = 'updated';
 const INSERT_ACTION = 'inserted';
@@ -133,7 +132,6 @@ async function insertData(insert_object){
 
     try {
         let bridge_insert_result = await harperBridge.createRecords(insert_object);
-        await p_schema_to_global();
 
         return returnObject(INSERT_ACTION, bridge_insert_result.written_hashes, insert_object, bridge_insert_result.skipped_hashes, bridge_insert_result.new_attributes, bridge_insert_result.txn_time);
     } catch (e) {
