@@ -25,37 +25,6 @@ const terms = require('../hdbTerms');
 const WIN = 1;
 const PIN = 2;
 
-const DEFAULT_LOG_FILE_NAME = 'hdb_log.log';
-
-let daily_rotate = undefined;
-let max_daily_files = undefined;
-let log_level = undefined;
-let log_type = undefined;
-
-let log_location = undefined;
-// Variables used for log daily rotation
-let log_directory = undefined;
-let log_file_name = undefined;
-
-// read environment settings to get preferred logger and default log level
-const PropertiesReader = require('properties-reader');
-let hdb_properties = undefined;
-let boot_props_file_path = getPropsFilePath();
-
-let pin_logger = undefined;
-let win_logger = undefined;
-
-//  RFC5424: severity of all levels is assumed to be numerically ascending from most important to least important
-const winston_log_levels = {
-    notify: 0,
-    fatal: 1,
-    error: 2,
-    warn: 3,
-    info: 4,
-    debug: 5,
-    trace: 6
-};
-
 const NOTIFY = 'notify';
 const FATAL = 'fatal';
 const ERR = 'error';
@@ -80,37 +49,52 @@ const LOGGER_PATH = {
     RUN_LOG: "../run_log.log"
 };
 
-try {
-    hdb_properties = PropertiesReader(boot_props_file_path);
-    hdb_properties.append(hdb_properties.get('settings_path'));
+const DEFAULT_LOG_FILE_NAME = 'hdb_log.log';
 
-    // read environment settings to get log settings
-    daily_rotate = `${hdb_properties.get('LOG_DAILY_ROTATE')}`.toLowerCase() === 'true';
-    const daily_max = hdb_properties.get('LOG_MAX_DAILY_FILES');
-    max_daily_files = daily_max ? daily_max + 'd' : null;
-    log_level = hdb_properties.get('LOG_LEVEL');
-    log_type = hdb_properties.get('LOGGER');
-    const log_path_setting = hdb_properties.get('LOG_PATH');
+let log_location = undefined;
+// Variables used for log daily rotation
+let log_directory = undefined;
+let log_file_name = undefined;
 
-    setLogLocation(log_path_setting);
-} catch (e) {
-    // in early stage like install or run, settings file and folder is not available yet so let it takes default settings below
+let pin_logger = undefined;
+let win_logger = undefined;
+
+// read environment settings to get preferred logger and default log level
+const PropertiesReader = require('properties-reader');
+let daily_rotate;
+let max_daily_files;
+let log_level;
+let log_type;
+let log_path;
+let daily_max;
+let hdb_properties;
+if (hdb_properties === undefined) {
+    try {
+        let boot_props_file_path = getPropsFilePath();
+        hdb_properties = PropertiesReader(boot_props_file_path);
+        hdb_properties.append(hdb_properties.get('settings_path'));
+        daily_rotate = `${hdb_properties.get('LOG_DAILY_ROTATE')}`.toLowerCase() === 'true';
+        daily_max = hdb_properties.get('LOG_MAX_DAILY_FILES');
+        max_daily_files = daily_max ? daily_max + 'd' : null;
+        log_level = hdb_properties.get('LOG_LEVEL');
+        log_type = hdb_properties.get('LOGGER');
+        log_path = hdb_properties.get('LOG_PATH');
+
+        setLogLocation(log_path);
+    } catch(err) {
+        // In early stage like install or run, settings file and folder is not available yet so let it takes default settings below
+    }
 }
 
 //TODO: All of this should be happening in an env variable module (yet to be written).
 if (log_level === undefined || log_level === 0 || log_level === null) {
-    log_level = ERR;
+    log_level = 'error';
 }
 
 //TODO: All of this should be happening in an env variable module (yet to be written).
-if (log_type === undefined || log_type === 0 || log_type === null) {
-    log_type = WIN;
-}
-
-//TODO: All of this should be happening in an env variable module (yet to be written).
-if (log_location === undefined || log_location === null) {
+if (log_path === undefined || log_path === null) {
     log_location = '../run_log.log';
-}
+};
 
 module.exports = {
     trace:trace,
@@ -223,42 +207,15 @@ function initPinoLogger() {
  * @param {String} message - The message to be written to the log
  */
 function write_log(level, message) {
-    // The properties reader returns an object with a length of 0 if a value isn't found.
-    if (log_type === undefined || log_type === 0 || log_type === null) {
-        log_type = 1;
-    }
     if (level === undefined || level === 0 || level === null) {
-        level = ERR;
+        level = 'error';
     }
 
-    switch (log_type) {
-        case WIN:
-            //WINSTON
-            if (!win_logger) {
-                initWinstonLogger();
-                trace(`initialized winston logger writing to ${log_directory}`);
-            }
-            win_logger.log(level, message);
-            break;
-
-        case PIN:
-            //PINO
-            if (!pin_logger) {
-                initPinoLogger();
-                trace(`initialized pino logger writing to ${log_location}`);
-            }
-            pin_logger[level](message);
-            break;
-
-        default:
-            //WINSTON is default
-            if (!win_logger) {
-                initWinstonLogger();
-                trace(`initialized winston logger writing to ${log_directory}`);
-            }
-            win_logger.log(level, message);
-            break;
+    if (!pin_logger) {
+        initPinoLogger();
+        trace(`initialized pino logger writing to ${log_location}`);
     }
+    pin_logger[level](message);
 }
 
 /**
@@ -446,24 +403,9 @@ function setLogLocation(log_location_setting) {
 
     log_location = daily_rotate ? path.join(log_directory, `%DATE%_${log_file_name}`) : path.join(log_directory, log_file_name);
 
-    win_logger = undefined;
-    pin_logger = undefined;
-
-    switch (log_type) {
-        case WIN:
-            initWinstonLogger();
-            trace(`initialized winston logger writing to ${daily_rotate ? log_directory : log_location}`);
-            break;
-
-        case PIN:
-            initPinoLogger();
-            trace(`initialized pino logger writing to ${log_location}`);
-            break;
-
-        default:
-            initWinstonLogger();
-            trace(`initialized winston logger writing to ${daily_rotate ? log_directory : log_location}`);
-            break;
+    if (!pin_logger) {
+        initPinoLogger();
+        trace(`initialized pino logger writing to ${log_location}`);
     }
 }
 
