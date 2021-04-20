@@ -542,6 +542,35 @@ describe("Test LMDB environmentUtility module", ()=>{
         });
     });
 
+    describe("Test closeEnvironment function", ()=> {
+        let env;
+        beforeEach(async () => {
+            global.lmdb_map = undefined;
+            await fs.mkdirp(BASE_TEST_PATH);
+
+            env = await lmdb_env_util.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
+        });
+
+        after(async () => {
+            await fs.remove(BASE_TEST_PATH);
+            test_utils.tearDownMockFS();
+            global.lmdb_map = undefined;
+        });
+
+        it('call function no args', async ()=>{
+            await test_utils.assertErrorAsync(lmdb_env_util.closeEnvironment, [], LMDB_TEST_ERRORS.ENV_REQUIRED);
+
+            await test_utils.assertErrorAsync(lmdb_env_util.closeEnvironment, ['hello'], LMDB_TEST_ERRORS.INVALID_ENVIRONMENT);
+        });
+
+        it('call function happy path', async ()=>{
+            assert.deepStrictEqual(global.lmdb_map['lmdbTest.test'], env);
+            await test_utils.assertErrorAsync(lmdb_env_util.closeEnvironment, [env], undefined);
+
+            assert.deepStrictEqual(global.lmdb_map['lmdbTest.test'], undefined);
+        });
+    });
+
         describe("Test statDBI function", ()=> {
             let env;
             before(async () => {
