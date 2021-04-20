@@ -183,10 +183,8 @@ function initWinstonLogger() {
  * Initialize the Pino logger with custom levels
  */
 function initPinoLogger() {
-    const pino_write_stream = fs.createWriteStream(log_location, {'flags': 'a'});
-    win_logger = undefined;
     pin_logger = pino(
-        {
+    {
             customLevels: {
                 notify: 70,
                 fatal: 60,
@@ -198,10 +196,24 @@ function initPinoLogger() {
             },
             useOnlyCustomLevels:true,
             level: log_level,
-            name: 'harperDB'
+            name: 'harperDB',
+            timestamp: pino.stdTimeFunctions.isoTime,
+            formatters: {
+                bindings() {
+                    return undefined; // Removes pid and hostname from log
+                },
+                level (label) {
+                    return { level: label };
+                }
+            },
         },
-        pino_write_stream
-    );
+        pino.destination(
+    {
+            dest: log_location,
+            minLength: 4096, // Buffer before writing
+            sync: false // Asynchronous logging
+        }
+    ));
 }
 
 /**
