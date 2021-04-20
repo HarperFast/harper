@@ -105,7 +105,6 @@ module.exports = {
     fatal:fatal,
     notify:notify,
     setLogLevel:setLogLevel,
-    setLogType:setLogType,
     write_log:write_log,
     readLog:readLog,
     log_level,
@@ -257,72 +256,13 @@ function notify(message) {
  * @param {string} level - The logging level for the HDB processes.
  */
 function setLogLevel(level) {
-    let log_index = Object.keys(winston_log_levels).indexOf(level);
-
-    if (log_index !== -1) {
-        switch (log_type) {
-            case WIN:
-                //WINSTON
-                if (win_logger === undefined) {
-                    log_level = level;
-                    return;
-                }
-
-                //Winston is strange, it has a log level at the logger level, the transport level, and each individual transport.
-                win_logger.level = level;
-                win_logger.transports.level = level;
-                if (daily_rotate) {
-                    win_logger.transports.dailyRotateFile.level = level;
-                } else {
-                    win_logger.transports.file.level = level;
-                }
-                break;
-
-            case PIN:
-                //PINO
-                if(pino_logger === undefined) {
-                    log_level = level;
-                    return;
-                }
-                pino_logger.level = level;
-                break;
-
-            default:
-                //WINSTON is default
-                if (win_logger === undefined) {
-                    log_level = level;
-                    return;
-                }
-                //Winston is strange, it has a log level at the logger level, the transport level, and each individual transport.
-                win_logger.level = level;
-                win_logger.transports.level = level;
-                if (daily_rotate) {
-                    win_logger.transports.dailyRotateFile.level = level;
-                } else {
-                    win_logger.transports.file.level = level;
-                }
-                break;
-        }
-
+    if(pino_logger === undefined) {
         log_level = level;
-    } else {
-        write_log(INFO, `Log level could not be updated to ${level}, that level is not valid.`);
-    }
-}
-
-/**
- * Set the logger type used by the HDB process.
- * @param type = The logger to use.  1 = Winston, 2 = Pino.  Any other values
- * will be ignored with an error logged.
- */
-function setLogType(type) {
-    if (type > PIN || type < WIN) {
-        write_log(ERR, `logger type ${type} is invalid`);
         return;
     }
-    win_logger = undefined;
-    pino_logger = undefined;
-    log_type = type;
+
+    pino_logger.level = level;
+    log_level = level;
 }
 
 /**
