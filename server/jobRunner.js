@@ -219,11 +219,16 @@ function threadExecute(argument){
             }
         });
 
+        forked.on('exit', (code, exit_signal) => {
+            if (exit_signal === 'SIGKILL' || exit_signal === 'SIGABRT') {
+                reject(new Error(`Job exited with signal: ${exit_signal}`));
+            }
+        });
+
         forked.on('error', data=>{
             forked.kill("SIGINT");
             reject(data);
         });
-
     });
 }
 
