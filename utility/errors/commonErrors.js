@@ -38,7 +38,10 @@ const DEFAULT_ERROR_RESP = DEFAULT_ERROR_MSGS[HTTP_STATUS_CODES.INTERNAL_SERVER_
 
 //Add all error messages that are generic and can be used across modules here
 const COMMON_ERROR_MSGS = {
-    OP_NOT_SUPPORTED_FOR_FS: (op) => `${op} is not available for this instance because it uses the File System data store.`
+    OP_NOT_SUPPORTED_FOR_FS: (op) => `${op} is not available for this instance because it uses the File System data store.`,
+    MISSING_VALUE: (value) => `${value} is missing.`,
+    INVALID_VALUE: (value) => `${value} is invalid.`,
+    NOT_FOUND: (value) => `${value} not found.`
 };
 
 const BULK_LOAD_ERROR_MSGS = {
