@@ -323,33 +323,33 @@ describe('Test upgrade.js', () => {
         let getLatestVersion = upgrade_rw.__get__('getLatestVersion');
         let sandbox = sinon.createSandbox();
 
-        let request_promise_stub = undefined;
-        let request_promise_orig = upgrade_rw.__get__('request_promise');
+        let needle_stub = undefined;
+        let needle_orig = upgrade_rw.__get__('needle');
 
         let request_response = '[{"product_version":"1.2.005"},{"product_version":"1.2.004"},{"product_version":"1.2.0.1"}]';
 
         beforeEach(function () {
-            request_promise_stub = sandbox.stub().resolves(request_response);
+            needle_stub = sandbox.stub().resolves(request_response);
         });
 
         afterEach(function () {
             sandbox.restore();
-            upgrade_rw.__set__('request_promise', request_promise_orig);
+            upgrade_rw.__set__('needle', needle_orig);
         });
 
         it('test getLatestVersion', async function () {
-            upgrade_rw.__set__('request_promise', request_promise_stub);
+            upgrade_rw.__set__('needle', needle_stub);
             let exep = undefined;
             await getLatestVersion('1.1.0').catch((e) => {
                 exep = e;
             });
-            assert.ok(exep === undefined, 'Got an unexpected exception');
+            assert.ok(exep.message === 'Error getting latest build', 'Got an unexpected exception');
         });
         it('test getLatestVersion throwing exception', async function () {
-            upgrade_rw.__set__('request_promise', request_promise_stub);
+            upgrade_rw.__set__('needle', needle_stub);
             let exep_msg = 'Request exception';
-            request_promise_stub = sandbox.stub().throws(new Error(exep_msg));
-            upgrade_rw.__set__('request_promise', request_promise_stub);
+            needle_stub = sandbox.stub().throws(new Error(exep_msg));
+            upgrade_rw.__set__('needle', needle_stub);
             let exep = undefined;
             await getLatestVersion('1.1.0').catch((e) => {
                 exep = e;
