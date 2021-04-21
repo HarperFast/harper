@@ -32,10 +32,16 @@ module.exports = {
  * @returns {Promise<void>}
  */
 async function upgrade(upgrade_obj) {
-    printToLogAndConsole(`This version of HarperDB is ${version.version()}`);
+    //We have to make sure HDB is installed before doing anything else
     if (!fs.existsSync(env.BOOT_PROPS_FILE_PATH)) {
-        const hdb_not_found_msg = 'The hdb_boot_properties file was not found.  Please install HDB.';
+        const hdb_not_found_msg = 'The hdb_boot_properties file was not found. Please install HDB.';
         printToLogAndConsole(hdb_not_found_msg, log.ERR);
+        process.exit(1);
+    }
+
+    if (!fs.existsSync(env.get(hdb_terms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY))) {
+        const hdb_not_installed_msg = 'The hdb settings file was not found. Please make sure HDB is installed.';
+        printToLogAndConsole(hdb_not_installed_msg, log.ERR);
         process.exit(1);
     }
 
@@ -47,6 +53,8 @@ async function upgrade(upgrade_obj) {
             process.exit(0);
         }
     }
+
+    printToLogAndConsole(`This version of HarperDB is ${version.version()}`);
 
     //The upgrade version should always be included in the hdb_upgrade_info object returned from the getVersion function
     // above but testing for it and using the version from package.json just in case it is not
@@ -128,5 +136,5 @@ function printToLogAndConsole(msg, log_level) {
         log_level = log.info;
     }
     log.write_log(log_level, msg);
-    console.log(msg);
+    console.log(colors.magenta(msg));
 }
