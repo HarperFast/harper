@@ -1,31 +1,18 @@
 'use strict';
-/**
- * This module decouples a logging call from any specific logging implementation or module (e.g. Winston).  It currently
- * support Winston and Pino though it should be easy to add additional supported loggers if needed.  The logging levels
- * supported follow the Pino default log levels.  The Winston log levels have been replaced, as the default levels are
- * dumb (see: silly log level).
- *
- * Log levels can be set dynamically at run time through the setLogLevel function.  They type of logger can also be set
- * at run time, thought the usefulness of this is debatable.
- *
- */
 
 const winston = require('winston');
-require('winston-daily-rotate-file');
 const pino = require('pino');
 const fs = require('fs');
 const moment = require('moment');
 const path = require('path');
 const util = require('util');
 const validator = require('../../validation/readLogValidator');
+const PropertiesReader = require('properties-reader');
 const os = require('os');
 const terms = require('../hdbTerms');
 
-//Using numbers rather than strings for faster comparison
-const WIN = 1;
-const PIN = 2;
 // Set interval that log buffer should be flushed at.
-const LOG_BUFFER_FLUSH_INTERVAL = 10000;
+const LOG_BUFFER_FLUSH_INTERVAL = 5000;
 
 const NOTIFY = 'notify';
 const FATAL = 'fatal';
@@ -34,11 +21,6 @@ const WARN = 'warn';
 const INFO = 'info';
 const DEBUG = 'debug';
 const TRACE = 'trace';
-
-const DEFAULT_LOGGER_FIELDS = {
-    WIN: ['level','message','timestamp'],
-    PIN: ['level','msg','time']
-};
 
 const LOGGER_TYPE = {
     RUN_LOG: "run_log",
@@ -53,40 +35,39 @@ const LOGGER_PATH = {
 
 const DEFAULT_LOG_FILE_NAME = 'hdb_log.log';
 
-let log_location = undefined;
-// Variables used for log daily rotation
 let log_directory = undefined;
 let log_file_name = undefined;
-
 let pino_logger = undefined;
-let win_logger = undefined;
+let log_location = undefined;
+let daily_rotate = undefined;
+let log_level = undefined;
+let log_path = undefined;
+let default_log_directory = undefined;
+let daily_max = undefined;
+let hdb_properties = undefined;
+let tomorrows_date = undefined;
 
-// read environment settings to get preferred logger and default log level
-const PropertiesReader = require('properties-reader');
-let daily_rotate;
-let max_daily_files;
-let log_level;
-let log_type;
-let log_path;
-let daily_max;
-let hdb_properties;
-if (hdb_properties === undefined) {
-    try {
-        let boot_props_file_path = getPropsFilePath();
-        hdb_properties = PropertiesReader(boot_props_file_path);
-        hdb_properties.append(hdb_properties.get('settings_path'));
-        daily_rotate = `${hdb_properties.get('LOG_DAILY_ROTATE')}`.toLowerCase() === 'true';
-        daily_max = hdb_properties.get('LOG_MAX_DAILY_FILES');
-        max_daily_files = daily_max ? daily_max + 'd' : null;
-        log_level = hdb_properties.get('LOG_LEVEL');
-        log_type = hdb_properties.get('LOGGER');
-        log_path = hdb_properties.get('LOG_PATH');
+/**
+ * Immediately invoked function that gets log parameters.
+ */
+(function loadLogParams() {
+    if (hdb_properties === undefined) {
+        try {
+            const boot_props_file_path = getPropsFilePath();
+            hdb_properties = PropertiesReader(boot_props_file_path);
+            hdb_properties.append(hdb_properties.get('settings_path'));
+            daily_rotate = `${hdb_properties.get('LOG_DAILY_ROTATE')}`.toLowerCase() === 'true';
+            daily_max = hdb_properties.get('LOG_MAX_DAILY_FILES');
+            log_level = hdb_properties.get('LOG_LEVEL');
+            log_path = hdb_properties.get('LOG_PATH');
+            default_log_directory = hdb_properties.get('HDB_ROOT') + '/log/';
 
-        setLogLocation(log_path);
-    } catch(err) {
-        // In early stage like install or run, settings file and folder is not available yet so let it takes default settings below
+            createLog(log_path);
+        } catch(err) {
+            // In early stage like install or run, settings file and folder is not available yet so let it takes default settings below
+        }
     }
-}
+})();
 
 if (log_level === undefined || log_level === 0 || log_level === null) {
     log_level = 'error';
@@ -118,62 +99,134 @@ module.exports = {
 };
 
 /**
- * Initialize the Pino logger with custom levels
+ * Set a location for the log file to be written.  Will stop writing to any existing logs and start writing to the new location.
+ * @param log_location_setting
+ */
+function createLog(log_location_setting) {
+    if (daily_rotate) {
+        // If the logs are set to daily rotate we get tomorrows date so that we know when to create a new log file.
+        tomorrows_date = moment("2021-04-20").utc().add(1, 'days');
+    }
+
+    //if log location isn't defined, assume HDB_ROOT/log/hdb_log.log
+    if (log_location_setting === undefined || log_location_setting === 0 || log_location_setting === null) {
+        log_directory = default_log_directory;
+        log_file_name = DEFAULT_LOG_FILE_NAME;
+    } else {
+        try {
+            const has_log_ext = path.extname(log_location_setting).length > 1;
+            if (has_log_ext) {
+                const log_settings_directory = path.parse(log_location_setting).dir;
+                const log_settings_name = path.parse(log_location_setting).base;
+
+                if (fs.existsSync(log_settings_directory)) {
+                    log_directory = log_settings_directory;
+                    log_file_name = log_settings_name;
+                } else {
+                    log_directory = log_settings_directory;
+                    log_file_name = log_settings_name;
+                    try {
+                        fs.mkdirSync(log_settings_directory,{ recursive: true });
+                    } catch(err) {
+                        write_log(INFO, `Attempted to create log directory from settings file but failed.  Using default log path - 'hdb/log/hdb_log.log'`);
+                        log_directory = default_log_directory;
+                        log_file_name = DEFAULT_LOG_FILE_NAME;
+                    }
+                }
+            } else {
+                if (fs.existsSync(log_location_setting)) {
+                    log_directory = log_location_setting;
+                    log_file_name = DEFAULT_LOG_FILE_NAME;
+                } else {
+                    log_directory = log_location_setting;
+                    try {
+                        fs.mkdirSync(log_location_setting,{ recursive: true });
+                    } catch(err) {
+                        write_log(INFO, `Attempted to create log directory from settings file but failed.  Using default log path - 'hdb/log/hdb_log.log'`);
+                        log_directory = default_log_directory;
+                    }
+
+                    log_file_name = DEFAULT_LOG_FILE_NAME;
+                }
+            }
+        } catch(e) {
+            write_log(INFO, `Attempted to create log directory from settings file but failed.  Using default log path - 'hdb/log/hdb_log.log'`);
+            log_directory = default_log_directory;
+            log_file_name = DEFAULT_LOG_FILE_NAME;
+        }
+    }
+
+    log_location = daily_rotate ? path.join(log_directory, `${moment().utc().format('YYYY-MM-DD')}_${log_file_name}`) : path.join(log_directory, log_file_name);
+
+    if (!pino_logger) {
+        initPinoLogger();
+        trace(`Initialized pino logger writing to ${log_location} process pid ${process.pid}`);
+    }
+}
+
+/**
+ * Initialize asynchronous Pino logger
  */
 function initPinoLogger() {
-    pino_logger = pino(
-    {
-            customLevels: {
-                notify: 70,
-                fatal: 60,
-                error: 50,
-                warn: 40,
-                info: 30,
-                debug: 20,
-                trace: 10
-            },
-            useOnlyCustomLevels:true,
-            level: log_level,
-            name: 'HarperDB',
-            timestamp: pino.stdTimeFunctions.isoTime,
-            formatters: {
-                bindings() {
-                    return undefined; // Removes pid and hostname from log
+    try {
+        pino_logger = pino(
+            {
+                customLevels: {
+                    notify: 70,
+                    fatal: 60,
+                    error: 50,
+                    warn: 40,
+                    info: 30,
+                    debug: 20,
+                    trace: 10
                 },
-                level (label) {
-                    return { level: label };
-                }
+                useOnlyCustomLevels:true,
+                level: log_level,
+                name: 'HarperDB',
+                messageKey: 'message',
+                timestamp: () => `,"timestamp":"${new Date(Date.now()).toISOString()}"`,
+                formatters: {
+                    bindings() {
+                        return undefined; // Removes pid and hostname from log
+                    },
+                    level (label) {
+                        return { level: label };
+                    }
+                },
             },
-        },
-        pino.destination(
-    {
-            dest: log_location,
-            minLength: 4096, // Buffer before writing
-            sync: false // Asynchronous logging
-        }
-    ));
+            pino.destination(
+                {
+                    dest: log_location,
+                    minLength: 4096, // Buffer before writing
+                    sync: false // Asynchronous logging
+                }
+            ));
 
-    // asynchronously flush every 10 seconds to keep the buffer empty
-    // in periods of low activity
-    setInterval(function () {
-        pino_logger.flush();
-    }, LOG_BUFFER_FLUSH_INTERVAL).unref();
+        // asynchronously flush every to keep the buffer empty
+        // in periods of low activity
+        setInterval(function () {
+            pino_logger.flush();
+        }, LOG_BUFFER_FLUSH_INTERVAL).unref();
 
-    // use pino.final to create a special logger that
-    // guarantees final tick writes
-    const handler = pino.final(pino_logger, (err, finalLogger, evt) => {
-        finalLogger.info(`${evt} caught`);
-        if (err) finalLogger.error(err, 'error caused exit');
-        process.exit(err ? 1 : 0);
-    });
+        // use pino.final to create a special logger that
+        // guarantees final tick writes
+        const handler = pino.final(pino_logger, (err, finalLogger, evt) => {
+            finalLogger.info(`${evt} caught`);
+            if (err) finalLogger.error(err, 'error caused exit');
+            process.exit(err ? 1 : 0);
+        });
 
-    // catch all the ways node might exit, if one occurs anything in the log buffer will be written to logs.
-    process.on('beforeExit', () => handler(null, 'beforeExit'));
-    process.on('exit', () => handler(null, 'exit'));
-    process.on('uncaughtException', (err) => handler(err, 'uncaughtException'));
-    process.on('SIGINT', () => handler(null, 'SIGINT'));
-    process.on('SIGQUIT', () => handler(null, 'SIGQUIT'));
-    process.on('SIGTERM', () => handler(null, 'SIGTERM'));
+        // catch all the ways node might exit, if one occurs anything in the log buffer will be written to logs.
+        process.on('beforeExit', () => handler(null, 'beforeExit'));
+        process.on('exit', () => handler(null, 'exit'));
+        process.on('uncaughtException', (err) => handler(err, 'uncaughtException'));
+        process.on('SIGINT', () => handler(null, 'SIGINT'));
+        process.on('SIGQUIT', () => handler(null, 'SIGQUIT'));
+        process.on('SIGTERM', () => handler(null, 'SIGTERM'));
+    } catch(err) {
+        console.error(err);
+        throw err;
+    }
 }
 
 /**
@@ -183,16 +236,74 @@ function initPinoLogger() {
  * @param {String} message - The message to be written to the log
  */
 function write_log(level, message) {
-    if (level === undefined || level === 0 || level === null) {
-        level = 'error';
+    try {
+        if (level === undefined || level === 0 || level === null) {
+            level = 'error';
+        }
+
+        if (!pino_logger) {
+            initPinoLogger();
+            trace(`Initialized pino logger writing to ${log_location} process pid ${process.pid}`);
+        }
+
+        // Daily rotate is set in HDB config
+        if (daily_rotate) {
+            const current_date = moment().utc();
+            // If the current logs date is the same as previously set tomorrows date we create a new log.
+            if (current_date.diff(tomorrows_date, 'days') > 0) {
+                // Anything in the the current logs buffer is flushed to the log file.
+                if (!pino_logger) {
+                    pino_logger.flush();
+                }
+
+                // Update the tomorrow date value
+                tomorrows_date = moment().utc().add(1, 'days');
+                log_location = path.join(log_directory, `${current_date.format('YYYY-MM-DD')}_${log_file_name}`);
+
+                // Create a new pino logger instance under new file name.
+                initPinoLogger();
+                trace(`Initialized pino logger writing to ${log_location} process pid ${process.pid}`);
+
+                // If the config has a value for dail max we must check to see any old logs need to be removed.
+                if (Number.isInteger(daily_max) && daily_max > 0) {
+                    removeOldLogs();
+                }
+            }
+        }
+
+        pino_logger[level](message);
+    } catch(err) {
+        console.error(err);
+        throw err;
+    }
+}
+
+/**
+ * Gets all the log files in the log dir and extracts the date from the file names.
+ * From there it will remove the oldest log if the total number of logs is greater than daily max.
+ */
+function removeOldLogs() {
+    const all_log_files = fs.readdirSync(log_directory, { withFileTypes: true });
+    let all_valid_dates = [];
+    const array_length = all_log_files.length;
+    for (let x = 0; x < array_length; x++) {
+        const file_name = all_log_files[x].name;
+        const log_date = file_name.split('_')[0];
+
+        // If the file has a .log extension and a valid date at the beginning of its name push it to array.
+        if (path.extname(file_name) === '.log' && moment(log_date, 'YYYY-MM-DD', true).isValid()) {
+            all_valid_dates.push({ date: log_date, file_name });
+        }
     }
 
-    if (!pino_logger) {
-        initPinoLogger();
-        trace(`Initialized pino logger writing to ${log_location} process pid ${process.pid}`);
+    if (all_valid_dates.length > daily_max) {
+        // Sort array of log file dates so that we know the oldest log.
+        const sorted_dates = all_valid_dates.sort((a, b) => moment(a.date, 'YYYY-MM-DD', true) - moment(b.date, 'YYYY-MM-DD', true));
+        // Oldest log will be the one at the start of array.
+        const log_to_remove = sorted_dates[0].file_name;
+        fs.unlinkSync(path.join(log_directory, log_to_remove));
+        pino_logger.info(`${log_to_remove} deleted`);
     }
-
-    pino_logger[level](message);
 }
 
 /**
@@ -265,98 +376,16 @@ function setLogLevel(level) {
     log_level = level;
 }
 
-/**
- * Set a location for the log file to be written.  Will stop writing to any existing logs and start writing to the new location.
- * @param log_location_setting
- */
-function setLogLocation(log_location_setting) {
-    const default_log_directory = hdb_properties.get('HDB_ROOT') + '/log/';
-    //if log location isn't defined, assume HDB_ROOT/log/hdb_log.log
-    if (log_location_setting === undefined || log_location_setting === 0 || log_location_setting === null) {
-        log_directory = default_log_directory;
-        log_file_name = DEFAULT_LOG_FILE_NAME;
-    } else {
-        try {
-            const has_log_ext = path.extname(log_location_setting).length > 1;
-            if (has_log_ext) {
-                const log_settings_directory = path.parse(log_location_setting).dir;
-                const log_settings_name = path.parse(log_location_setting).base;
-
-                if (fs.existsSync(log_settings_directory)) {
-                    log_directory = log_settings_directory;
-                    log_file_name = log_settings_name;
-                } else {
-                    log_directory = log_settings_directory;
-                    log_file_name = log_settings_name;
-                    try {
-                        fs.mkdirSync(log_settings_directory,{ recursive: true });
-                    } catch(err) {
-                        write_log(INFO, `Attempted to create log directory from settings file but failed.  Using default log path - 'hdb/log/hdb_log.log'`);
-                        log_directory = default_log_directory;
-                        log_file_name = DEFAULT_LOG_FILE_NAME;
-                    }
-                }
-            } else {
-                if (fs.existsSync(log_location_setting)) {
-                    log_directory = log_location_setting;
-                    log_file_name = DEFAULT_LOG_FILE_NAME;
-                } else {
-                    log_directory = log_location_setting;
-                    try {
-                        fs.mkdirSync(log_location_setting,{ recursive: true });
-                    } catch(err) {
-                        write_log(INFO, `Attempted to create log directory from settings file but failed.  Using default log path - 'hdb/log/hdb_log.log'`);
-                        log_directory = default_log_directory;
-                    }
-
-                    log_file_name = DEFAULT_LOG_FILE_NAME;
-                }
-            }
-        } catch(e) {
-            write_log(INFO, `Attempted to create log directory from settings file but failed.  Using default log path - 'hdb/log/hdb_log.log'`);
-            log_directory = default_log_directory;
-            log_file_name = DEFAULT_LOG_FILE_NAME;
-        }
-    }
-
-    log_location = daily_rotate ? path.join(log_directory, `%DATE%_${log_file_name}`) : path.join(log_directory, log_file_name);
-
-    if (!pino_logger) {
-        initPinoLogger();
-        trace(`Initialized pino logger writing to ${log_location} process pid ${process.pid}`);
-    }
-}
-
-let bones = winston;
-
 async function readLog(read_log_object) {
-    let validation = validator(read_log_object);
-
+    const validation = validator(read_log_object);
     if (validation) {
         throw new Error(validation);
     }
 
     const options = {
-        limit: 100
+        limit: 100,
+        fields: ['level','message','timestamp']
     };
-
-    switch (log_type) {
-        case WIN:
-            options.fields = DEFAULT_LOGGER_FIELDS.WIN;
-            break;
-
-        case PIN:
-            if (read_log_object.log === LOGGER_TYPE.INSTALL_LOG) {
-                options.fields = DEFAULT_LOGGER_FIELDS.WIN;
-            } else {
-                options.fields = DEFAULT_LOGGER_FIELDS.PIN;
-            }
-            break;
-
-        default:
-            options.fields = DEFAULT_LOGGER_FIELDS.WIN;
-            break;
-    }
 
     switch (read_log_object.log) {
         case LOGGER_TYPE.INSTALL_LOG:
@@ -406,28 +435,20 @@ async function readLog(read_log_object) {
     }
 }
 
-function configureWinstonForQuery(log_path) {
-    if (daily_rotate && !log_path && log_type === WIN) {
-        bones.configure({
-            transports: [
-                new (winston.transports.DailyRotateFile)({
-                    filename: path.join(log_directory, `%DATE%_${log_file_name}`),
-                    json: true,
-                })
-            ],
-            exitOnError: false
-        });
-    } else {
-        const query_path = log_path ? log_path : log_location;
-        bones.configure({
-            transports: [
-                new (winston.transports.File)({
-                    filename: query_path
-                })
-            ],
-            exitOnError: false
-        });
-    }
+/**
+ * Winston is used to query the Pino log.
+ * @param query_log_path
+ */
+function configureWinstonForQuery(query_log_path) {
+    const query_path = query_log_path ? query_log_path : log_location;
+    winston.configure({
+        transports: [
+            new (winston.transports.File)({
+                filename: query_path
+            })
+        ],
+        exitOnError: false
+    });
 }
 
 /**

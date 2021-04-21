@@ -106,15 +106,6 @@ const constraints = {
             message: "must be trace, debug, info, error, fatal or notify."
         }
     },
-    LOGGER: {
-        presence: false,
-        numericality: {
-            onlyInteger: true,
-            greaterThan: 0,
-            lessThanOrEqualTo: 2,
-            message: 'must specify an integer of 1 to use Winston, 2 to use Pino.'
-        }
-    },
     LOG_PATH: {
         presence: false,
         format: {

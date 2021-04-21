@@ -494,7 +494,6 @@ describe('Test initSync', () => {
         }
         let prop1 = env_rw.getProperty(terms.HDB_SETTINGS_NAMES.SERVER_PORT_KEY);
         let prop2 = env_rw.getProperty(terms.HDB_SETTINGS_NAMES.LOG_LEVEL_KEY);
-        let prop3 = env_rw.getProperty(terms.HDB_SETTINGS_NAMES.LOGGER_KEY);
         assert.equal(prop1, 9925);
         assert.equal(prop2, 'trace');
         assert.equal(prop3, '1');
