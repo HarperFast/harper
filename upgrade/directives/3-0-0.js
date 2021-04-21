@@ -63,9 +63,9 @@ function updateSettingsFile_3_0_0() {
         `   ;The number of milliseconds of inactivity a server needs to wait for additional incoming data, after it has finished writing the last response.  Defaults to 5,000 ms (5 seconds).\n` +
         `${HDB_SETTINGS_NAMES.SERVER_KEEP_ALIVE_TIMEOUT_KEY} = ${hdb_properties.get(HDB_SETTINGS_NAMES.SERVER_KEEP_ALIVE_TIMEOUT_KEY)}\n` +
         `   ;Limit the amount of time the parser will wait to receive the complete HTTP headers..  Defaults to 60,000 ms (1 minute).\n` +
-        `${HDB_SETTINGS_NAMES.SERVER_HEADERS_TIMEOUT_KEY} = ${HDB_SETTINGS_NAMES.SERVER_HEADERS_TIMEOUT_KEY}\n` +
+        `${HDB_SETTINGS_NAMES.SERVER_HEADERS_TIMEOUT_KEY} = ${hdb_properties.get(HDB_SETTINGS_NAMES.SERVER_HEADERS_TIMEOUT_KEY)}\n` +
         `   ;Set to control amount of logging generated.  Accepted levels are trace, debug, warn, error, fatal.\n` +
-        `${HDB_SETTINGS_NAMES.LOG_LEVEL_KEY} = ${HDB_SETTINGS_NAMES.LOG_LEVEL_KEY}\n` +
+        `${HDB_SETTINGS_NAMES.LOG_LEVEL_KEY} = ${hdb_properties.get(HDB_SETTINGS_NAMES.LOG_LEVEL_KEY)}\n` +
         `   ;Setting LOGGER to 1 uses the WINSTON logger.\n` +
         `   ; 2 Uses the more performant PINO logger.\n` +
         `${HDB_SETTINGS_NAMES.LOGGER_KEY} = ${hdb_properties.get(HDB_SETTINGS_NAMES.LOGGER_KEY)}\n` +

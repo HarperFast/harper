@@ -105,7 +105,7 @@ async function getAllHdbInfoRecords() {
     try {
         version_data = await p_search_search_by_value(search_obj);
     } catch(err) {
-        // search may fail during a new install as the table doesn't exist yet (we haven't done an insert).  This is ok,
+        // search may fail during a new install as the table doesn't exist yet or initial upgrade for 3.0.  This is ok,
         // we will assume an id of 0 below.
         log.info(err);
     }

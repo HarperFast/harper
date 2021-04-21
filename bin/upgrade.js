@@ -87,7 +87,13 @@ async function upgrade(upgrade_obj) {
 
     log.info(`Starting upgrade to version ${current_hdb_version}`);
 
-    await runUpgrade(hdb_upgrade_info);
+    try {
+        await runUpgrade(hdb_upgrade_info);
+    } catch(err) {
+        log.error('There was an error when upgrading your HDB instance. Check logs for more details.');
+        log.error(err);
+        throw err;
+    }
 
     printToLogAndConsole(`HarperDB was successfully upgraded to version ${hdb_upgrade_info[UPGRADE_VERSION]}`, log.INFO);
 }
