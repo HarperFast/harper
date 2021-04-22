@@ -8,7 +8,7 @@ const UpgradeDirective = require('../UpgradeDirective');
 const hdb_log = require('../../utility/logging/harper_logger');
 const { HDB_SETTINGS_NAMES, HDB_SETTINGS_DEFAULT_VALUES } = require('../../utility/hdbTerms');
 const env = require('../../utility/environment/environmentManager');
-const { isNotEmptyAndHasValue } = require('../../utility/common_utils');
+const common_utils = require('../../utility/common_utils');
 
 const reindex_script = require('./upgrade_scripts/3_0_0_reindex_script');
 
@@ -28,7 +28,7 @@ const OLD_SETTINGS_KEYS = {
 let old_hdb_props;
 function getOldPropsValue(prop_name, value_required = false) {
     const old_val =  old_hdb_props.getRaw(prop_name);
-    if (isNotEmptyAndHasValue(old_val)) {
+    if (common_utils.isNotEmptyAndHasValue(old_val)) {
         return old_val;
     }
     if (value_required) {
@@ -42,16 +42,15 @@ function updateSettingsFile_3_0_0() {
 
     //check to see if new settings keys from 3.0.0 are already there - this means the settings file has been updated but
     // there may have been an error/fail during the reindexing step.
-    if (isNotEmptyAndHasValue(old_hdb_props.get(HDB_SETTINGS_NAMES.SERVER_PORT_KEY))
-        || isNotEmptyAndHasValue(old_hdb_props.get(HDB_SETTINGS_NAMES.SERVER_HEADERS_TIMEOUT_KEY))) {
+    if (common_utils.isNotEmptyAndHasValue(old_hdb_props.get(HDB_SETTINGS_NAMES.SERVER_PORT_KEY))) {
         const settings_already_updated_msg = 'New settings file for 3.0.0 upgrade has already been successfully created.';
-        console.info(settings_already_updated_msg);
+        console.log(settings_already_updated_msg);
         hdb_log.info(settings_already_updated_msg);
         return settings_already_updated_msg;
     }
 
     const settings_update_msg = 'Updating settings file for version 3.0.0';
-    console.info(settings_update_msg);
+    console.log(settings_update_msg);
     hdb_log.info(settings_update_msg);
 
     const http_secure_enabled_old = getOldPropsValue(OLD_SETTINGS_KEYS.HTTP_SECURE_ENABLED_KEY);
@@ -149,7 +148,7 @@ function updateSettingsFile_3_0_0() {
         hdb_log.info('Updating env variables with new settings values');
     } catch(err) {
         console.error('There was a problem writing the new settings file. Please check the log for details.');
-        console.info("Attempting to reset the settings file to its original state.  Use the '.bak' file if this fails.");
+        console.log("Attempting to reset the settings file to its original state.  Use the '.bak' file if this fails.");
         fs.copySync(settings_backup_path, settings_path);
         throw err;
     }
@@ -158,7 +157,7 @@ function updateSettingsFile_3_0_0() {
     env.initSync();
 
     const upgrade_success_msg = 'New settings file for 3.0.0 upgrade successfully created.';
-    console.info(upgrade_success_msg);
+    console.log(upgrade_success_msg);
     hdb_log.info(upgrade_success_msg);
 
     return upgrade_success_msg;

@@ -68,7 +68,8 @@ const SETTINGS = (settings_values = {}) => (
     '\t;The user used to connect to other instances of HarperDB, this user must have a role of cluster_user\n' +
     'CLUSTERING_USER=clustusr\n' +
     'PROCESS_DIR_TEST=I\'m A Test\n' +
-    'VERSION=1.1.1\n'
+    'VERSION=1.1.1\n' +
+    `${settings_values.SERVER_PORT ? `SERVER_PORT=${settings_values.SERVER_PORT}\n` : ''}`
 );
 
 module.exports = {

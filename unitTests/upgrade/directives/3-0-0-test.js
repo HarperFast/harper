@@ -27,16 +27,19 @@ const PREV_PORT_VALS = {
 
 let directive3_0_0;
 
-function generateSettingsVals(HTTP_ON = true, HTTPS_ON = false) {
+function generateSettingsVals(HTTP_ON = true, HTTPS_ON = false, SERVER_PORT = null) {
     return {
         HTTP_ON,
-        HTTPS_ON
+        HTTPS_ON,
+        SERVER_PORT
     }
 }
 
+let sandbox;
 let updateSettingsFile_3_0_0;
-function setupTest(HTTP_ON, HTTPS_ON) {
-    buildFile(generateSettingsVals(HTTP_ON, HTTPS_ON))
+function setupTest(HTTP_ON, HTTPS_ON, SERVER_PORT, SERVER_HEADERS_TIMEOUT) {
+    buildFile(generateSettingsVals(HTTP_ON, HTTPS_ON, SERVER_PORT, SERVER_HEADERS_TIMEOUT))
+    sandbox.resetHistory();
 }
 
 function getNewEnvVals() {
@@ -48,8 +51,6 @@ function getNewEnvVals() {
 }
 
 describe('3.0.0 Upgrade Directive', () => {
-    let sandbox;
-
     before(() => {
         test_util.preTestPrep();
         directive3_0_0 = require('../../../upgrade/directives/3-0-0')[0];
@@ -66,8 +67,8 @@ describe('3.0.0 Upgrade Directive', () => {
 
     describe('updateSettingsFile_3_0_0()', function() {
         let consoleLog_spy;
-        let logInfo_stub;
         let consoleError_spy;
+        let logInfo_stub;
         let fsWriteFileSync_spy;
         let fsCopySync_spy;
         let fsUnlinkSync_spy;
@@ -96,6 +97,18 @@ describe('3.0.0 Upgrade Directive', () => {
             expect(SERVER_PORT).to.equal(PREV_PORT_VALS.HTTP_PORT);
             expect(HTTPS_ON).to.be.false;
             expect(result).to.equal('New settings file for 3.0.0 upgrade successfully created.')
+        });
+
+        it('Test settings update console/log info',() => {
+            setupTest(true, false);
+            updateSettingsFile_3_0_0();
+
+            const expected_start_msg = 'Updating settings file for version 3.0.0';
+            expect(consoleLog_spy.args[0][0]).to.equal(expected_start_msg);
+            expect(logInfo_stub.args[0][0]).to.equal(expected_start_msg);
+            const expected_end_msg = 'New settings file for 3.0.0 upgrade successfully created.';
+            expect(consoleLog_spy.args[2][0]).to.equal(expected_end_msg);
+            expect(logInfo_stub.args[5][0]).to.equal(expected_end_msg);
         });
 
         it('Test settings update w/ only HTTP and HTTPS enabled',() => {
@@ -130,30 +143,27 @@ describe('3.0.0 Upgrade Directive', () => {
 
         it('Test settings w/ both HTTP/S enabled - console message should be logged for user',() => {
             setupTest(true, true)
-            sandbox.resetHistory();
             updateSettingsFile_3_0_0();
 
-            expect(consoleLog_spy.args[0][0]).to.equal(colors.magenta("HarperDB 3.0.0 does not allow HTTP and HTTPS to be enabled at the same time. This upgrade has enabled " +
+            expect(consoleLog_spy.args[1][0]).to.equal(colors.magenta("HarperDB 3.0.0 does not allow HTTP and HTTPS to be enabled at the same time. This upgrade has enabled " +
                 "HTTPS and disabled HTTP. You can modify this in config/settings.js."))
         });
 
         it('Test backup settings file is written',() => {
             setupTest()
-            sandbox.resetHistory();
             updateSettingsFile_3_0_0();
 
-            expect(logInfo_stub.args[0][0]).to.equal(`Backing up old settings file to: ${SETTINGS_BAK_PATH}`)
+            expect(logInfo_stub.args[1][0]).to.equal(`Backing up old settings file to: ${SETTINGS_BAK_PATH}`)
             expect(fsCopySync_spy.args[0][0]).to.equal(SETTINGS_PATH);
             expect(fsCopySync_spy.args[0][1]).to.equal(SETTINGS_BAK_PATH);
         });
 
         it('Test new settings file is written',() => {
             setupTest()
-            sandbox.resetHistory();
             updateSettingsFile_3_0_0();
 
-            expect(logInfo_stub.args[1][0].includes('New settings file values for 3.0.0 upgrade:')).to.be.true;
-            expect(logInfo_stub.args[2][0]).to.equal(`Creating new/upgraded settings file at '${SETTINGS_PATH}'`);
+            expect(logInfo_stub.args[2][0].includes('New settings file values for 3.0.0 upgrade:')).to.be.true;
+            expect(logInfo_stub.args[3][0]).to.equal(`Creating new/upgraded settings file at '${SETTINGS_PATH}'`);
             expect(fsWriteFileSync_spy.args[0][0]).to.equal(SETTINGS_PATH);
             //Not checking the exact string value but confirming that a new settings val is present and old one is NOT
             expect(fsWriteFileSync_spy.args[0][1].includes('SERVER_PORT')).to.be.true;
@@ -162,7 +172,6 @@ describe('3.0.0 Upgrade Directive', () => {
 
         it('Test exception thrown from fs.copySync is handled',() => {
             setupTest();
-            sandbox.resetHistory();
             fsCopySync_spy.restore()
             fsCopySync_spy = sandbox.stub(fs, 'copySync').throws(TEST_ERROR);
 
@@ -181,7 +190,6 @@ describe('3.0.0 Upgrade Directive', () => {
 
         it('Test exception thrown from fs.writeFileSync is handled',() => {
             setupTest();
-            sandbox.resetHistory();
             fsWriteFileSync_spy.restore()
             fsWriteFileSync_spy = sandbox.stub(fs, 'writeFileSync').throws(TEST_ERROR);
 
@@ -192,12 +200,22 @@ describe('3.0.0 Upgrade Directive', () => {
                 test_result = e;
             }
 
-            expect(logInfo_stub.args[1][0].includes('New settings file values for 3.0.0 upgrade:')).to.be.true;
-            expect(logInfo_stub.args[2][0]).to.equal(`Creating new/upgraded settings file at '${SETTINGS_PATH}'`);
-            expect(consoleError_spy.args[0][0]).to.equal('There was a problem writing the new settings file.  Please check the log for details.');
+            expect(logInfo_stub.args[2][0].includes('New settings file values for 3.0.0 upgrade:')).to.be.true;
+            expect(logInfo_stub.args[3][0]).to.equal(`Creating new/upgraded settings file at '${SETTINGS_PATH}'`);
+            expect(consoleError_spy.args[0][0]).to.equal('There was a problem writing the new settings file. Please check the log for details.');
             expect(test_result).to.equal(TEST_ERROR);
 
             fsWriteFileSync_spy.restore()
+        });
+
+        it('Test settings update skips if 3.0 SERVER_PORT key found',() => {
+            setupTest(true, true, 1234);
+            const test_result = updateSettingsFile_3_0_0();
+
+            const expected_msg = 'New settings file for 3.0.0 upgrade has already been successfully created.';
+            expect(consoleLog_spy.args[0][0]).to.equal(expected_msg);
+            expect(logInfo_stub.args[0][0]).to.equals(expected_msg);
+            expect(test_result).to.equal(expected_msg);
         });
     });
 })

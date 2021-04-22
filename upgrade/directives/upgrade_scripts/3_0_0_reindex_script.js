@@ -61,8 +61,8 @@ async function reindexUpgrade() {
         console.info('\n\nReindexing upgrade started for transaction logs');
         logger.notify('Reindexing upgrade started for transaction logs');
         await getSchemaTable(TRANSACTIONS_PATH, true);
-        logger.notify('Reindexing upgrade complete');
     }
+    logger.notify('Reindexing upgrade complete');
     return 'Reindexing for 3.0.0 upgrade complete';
 }
 

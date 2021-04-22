@@ -35,6 +35,8 @@ describe('Test reindex module', () => {
     let reindex_rw;
     let logger_notify_stub;
     let logger_error_stub;
+    let getDataStoreType_stub;
+    let console_info_stub;
 
     before(() => {
         // This stub and rewire need to be here as putting it in outer scope was messing interfering with other tests.
@@ -44,7 +46,8 @@ describe('Test reindex module', () => {
         logger_error_stub = sandbox.stub(logger, 'error');
         reindex_rw.__set__('pino_logger', pino_logger_test);
         sandbox.stub(console, 'error');
-        sandbox.stub(console, 'info');
+        console_info_stub = sandbox.stub(console, 'info');
+        getDataStoreType_stub = sandbox.stub(env_mngr, 'getDataStoreType').returns('lmdb');
     });
 
     afterEach(() => {
@@ -79,6 +82,27 @@ describe('Test reindex module', () => {
             expect(logger_notify_stub.getCall(2)).to.have.been.calledWith('Reindexing upgrade complete');
             expect(get_schema_tables_stub.getCall(0)).to.have.been.calledWith(SCHEMA_PATH_TEST);
             expect(get_schema_tables_stub.getCall(1)).to.have.been.calledWith(TRANSACTIONS_PATH_TEST);
+        });
+
+        it('Test reindex functions are skipped for FS datastore', async () => {
+            getDataStoreType_stub.returns('fs');
+            const test_result = await reindex_rw();
+
+            expect(logger_notify_stub.called).to.be.false;
+            expect(console_info_stub.args[0][0]).to.equal('\n\nHDB using FS datastore - no need to run LMDB reindexing');
+            expect(test_result).to.equal('Reindexing skipped for FS datastore instance of HDB')
+            getDataStoreType_stub.returns('lmdb');
+        });
+
+        it('Test reindex functions for transactions are skipped if transactions dir doesnt exist', async () => {
+            const pathExists_stub = sandbox.stub(fs, 'pathExists').resolves(false);
+            await reindex_rw();
+
+            expect(logger_notify_stub.getCall(0)).to.have.been.calledWith('Reindexing upgrade started for schemas');
+            expect(logger_notify_stub.getCall(1)).to.have.been.calledWith('Reindexing upgrade complete');
+            expect(get_schema_tables_stub.getCall(0)).to.have.been.calledWith(SCHEMA_PATH_TEST);
+            expect(get_schema_tables_stub.calledOnce).to.be.true;
+            pathExists_stub.restore();
         });
     });
 
