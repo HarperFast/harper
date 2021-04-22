@@ -325,32 +325,6 @@ describe('processDirectives Module', function() {
             assert.equal(versions_to_run.length, 0, 'Expected 0 upgrade numbers back');
         });
     });
-
-    // describe('Test getDirectiveChangeDescriptions()', function() {
-    //
-    //     it('Test getDirectiveChangeDescriptions - nominal case', function() {
-    //         const test_upgrade_obj = generateUpgradeObj('3.0.0', '4.1.1');
-    //         const change_descriptions = directivesManager_rw.getDirectiveChangeDescriptions(test_upgrade_obj);
-    //
-    //         assert.equal(change_descriptions.length, 2, 'Expected 2 change descriptions returned');
-    //         assert.equal(change_descriptions[0].change_description, 'Change descriptions for 3.1.0', 'Expected 3.1.0 change description returned');
-    //         assert.equal(change_descriptions[1].change_description, 'Change descriptions for 4.1.1', 'Expected 4.1.1 change description returned');
-    //     });
-    //
-    //     it('Test getDirectiveChangeDescriptions - no valid versions', function() {
-    //         const test_upgrade_obj = generateUpgradeObj('1.0.0', '2.1.1');
-    //         const change_descriptions = directivesManager_rw.getDirectiveChangeDescriptions(test_upgrade_obj);
-    //
-    //         assert.equal(change_descriptions.length, 0, 'Expected 0 change descriptions returned');
-    //     });
-    //
-    //     it('Test getDirectiveChangeDescriptions - versions w/o a change description', function() {
-    //         const test_upgrade_obj = [ new upgrade_directive('1.2.3') ];
-    //         const change_descriptions = directivesManager_rw.getDirectiveChangeDescriptions(test_upgrade_obj);
-    //
-    //         assert.equal(change_descriptions.length, 0, 'Expected 0 change descriptions returned');
-    //     });
-    // });
 });
 
 

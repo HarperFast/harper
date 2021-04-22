@@ -61,10 +61,6 @@ describe('3.0.0 Upgrade Directive', () => {
         sandbox.restore();
     });
 
-    it('Test directive class object values are present', () => {
-        expect(directive3_0_0.change_description).to.eql("Placeholder for change descriptions for 3.0.0");
-    });
-
     describe('updateSettingsFile_3_0_0()', function() {
         let consoleLog_spy;
         let consoleError_spy;

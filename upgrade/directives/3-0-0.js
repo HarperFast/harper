@@ -13,7 +13,6 @@ const common_utils = require('../../utility/common_utils');
 const reindex_script = require('./upgrade_scripts/3_0_0_reindex_script');
 
 let directive3_0_0 = new UpgradeDirective('3.0.0');
-directive3_0_0.change_description = "Placeholder for change descriptions for 3.0.0";
 
 let directives = [];
 
