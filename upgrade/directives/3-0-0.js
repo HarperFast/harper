@@ -45,9 +45,14 @@ function updateSettingsFile_3_0_0() {
     if (isNotEmptyAndHasValue(old_hdb_props.get(HDB_SETTINGS_NAMES.SERVER_PORT_KEY))
         || isNotEmptyAndHasValue(old_hdb_props.get(HDB_SETTINGS_NAMES.SERVER_HEADERS_TIMEOUT_KEY))) {
         const settings_already_updated_msg = 'New settings file for 3.0.0 upgrade has already been successfully created.';
+        console.info(settings_already_updated_msg);
         hdb_log.info(settings_already_updated_msg);
-        return settings_already_updated_msg
+        return settings_already_updated_msg;
     }
+
+    const settings_update_msg = 'Updating settings file for version 3.0.0';
+    console.info(settings_update_msg);
+    hdb_log.info(settings_update_msg);
 
     const http_secure_enabled_old = getOldPropsValue(OLD_SETTINGS_KEYS.HTTP_SECURE_ENABLED_KEY);
     const http_secure_port_old = getOldPropsValue(OLD_SETTINGS_KEYS.HTTP_SECURE_PORT_KEY);
@@ -153,6 +158,7 @@ function updateSettingsFile_3_0_0() {
     env.initSync();
 
     const upgrade_success_msg = 'New settings file for 3.0.0 upgrade successfully created.';
+    console.info(upgrade_success_msg);
     hdb_log.info(upgrade_success_msg);
 
     return upgrade_success_msg;
