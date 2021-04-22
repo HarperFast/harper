@@ -11,7 +11,7 @@ const PropertiesReader = require('properties-reader');
 const os = require('os');
 const terms = require('../hdbTerms');
 
-// Set interval that log buffer should be flushed at.
+// Set interval that log buffer flushes at.
 const LOG_BUFFER_FLUSH_INTERVAL = 5000;
 
 const NOTIFY = 'notify';
