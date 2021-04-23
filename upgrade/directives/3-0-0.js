@@ -25,6 +25,9 @@ const OLD_SETTINGS_KEYS = {
 };
 
 let old_hdb_props;
+//We need to make sure we are setting empty string for values that are null/undefined/empty string - PropertiesReader
+// castes values in some awkward ways and this covers those scenarios AND ensures we have default values set for new
+// config values that may have been added in a previous version (between when user installed HDB and is now upgrading)
 function getOldPropsValue(prop_name, value_required = false) {
     const old_val =  old_hdb_props.getRaw(prop_name);
     if (common_utils.isNotEmptyAndHasValue(old_val)) {
@@ -39,8 +42,8 @@ function getOldPropsValue(prop_name, value_required = false) {
 function updateSettingsFile_3_0_0() {
     old_hdb_props = PropertiesReader(env.getProperty(HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY));
 
-    //check to see if new settings keys from 3.0.0 are already there - this means the settings file has been updated but
-    // there may have been an error/fail during the reindexing step.
+    //check to see if the new SERVER_PORT settings key from 3.0.0 is already there - this means the settings file has been updated but
+    // there may have been an error/fail during the reindexing step so we can skip this part of the upgrade
     if (common_utils.isNotEmptyAndHasValue(old_hdb_props.get(HDB_SETTINGS_NAMES.SERVER_PORT_KEY))) {
         const settings_already_updated_msg = 'New settings file for 3.0.0 upgrade has already been successfully created.';
         console.log(settings_already_updated_msg);
@@ -146,6 +149,7 @@ function updateSettingsFile_3_0_0() {
         fs.writeFileSync(settings_path, new_hdb_settings_vals);
         hdb_log.info('Updating env variables with new settings values');
     } catch(err) {
+        //if there was an error writing the new file, we will do our best to reset the original settings file
         console.error('There was a problem writing the new settings file. Please check the log for details.');
         console.log("Attempting to reset the settings file to its original state.  Use the '.bak' file if this fails.");
         fs.copySync(settings_backup_path, settings_path);
