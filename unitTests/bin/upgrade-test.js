@@ -3,7 +3,6 @@
 const test_util = require('../test_utils');
 test_util.preTestPrep();
 
-
 const sinon = require('sinon');
 const chai = require('chai');
 const { expect } = chai;
@@ -19,6 +18,7 @@ const hdb_logger = require('../../utility/logging/harper_logger');
 const colors = require('colors/safe');
 const version = require('../../bin/version');
 const { UpgradeObject } = require('../../upgrade/UpgradeObjects');
+const fs = require('fs-extra');
 
 const TEST_CURR_VERS = '3.0.0';
 const TEST_DATA_VERS = '2.9.9';
@@ -83,10 +83,10 @@ describe('Test upgrade.js', () => {
     });
 
     describe('upgrade()', async () => {
-        let spinner_rw;
         let runUpgrade_orig;
         let runUpgrade_stub;
         let checkIfRunning_stub;
+        let fsExistsSync_stub;
 
         before(() => {
             runUpgrade_orig = upgrade_rw.__get__('runUpgrade');
@@ -96,7 +96,7 @@ describe('Test upgrade.js', () => {
             upgrade_rw.__set__('checkIfRunning', checkIfRunning_stub);
             getVersionUpdateInfo_stub = sandbox.stub(hdbInfoController, 'getVersionUpdateInfo').resolves(TEST_UPGRADE_OBJ);
             forceUpdatePrompt_stub = sandbox.stub(updatePrompt, 'forceUpdatePrompt').resolves(true);
-            spinner_rw = upgrade_rw.__get__('countdown');
+            fsExistsSync_stub = sandbox.stub(fs, 'existsSync').returns(true);
         })
 
         beforeEach(() => {
@@ -104,7 +104,6 @@ describe('Test upgrade.js', () => {
         })
 
         afterEach(() => {
-            spinner_rw.stop();
             getVersionUpdateInfo_stub.resolves(TEST_UPGRADE_OBJ);
             version_stub.returns(TEST_CURR_VERS);
             forceUpdatePrompt_stub.resolves(true);
@@ -113,6 +112,7 @@ describe('Test upgrade.js', () => {
 
         after(() => {
             upgrade_rw.__set__('runUpgrade', runUpgrade_orig);
+            fsExistsSync_stub.reset();
         })
 
         it('Nominal case - upgrade runs to completion w/o update obj passed in as arg', async () => {
@@ -215,12 +215,7 @@ describe('Test upgrade.js', () => {
         });
 
         it('Should exit process with code 1 if boot prop file does not exist - i.e. HDB has not been installed', async () => {
-            const env_orig = upgrade_rw.__get__('env');
-            const test_file_path = `${__dirname}/'fake_test_boot_prop.file'`
-            const env_stub = {
-                BOOT_PROPS_FILE_PATH: test_file_path
-            };
-            upgrade_rw.__set__('env', env_stub)
+            fsExistsSync_stub.onFirstCall().returns(false);
 
             try {
                 await upgrade_rw.upgrade();
@@ -232,11 +227,28 @@ describe('Test upgrade.js', () => {
             expect(checkIfRunning_stub.calledOnce).to.be.false;
             expect(forceUpdatePrompt_stub.calledOnce).to.be.false;
             expect(runUpgrade_stub.calledOnce).to.be.false;
-            expect(printToLogAndConsole_stub.args[1][0]).to.eql('The hdb_boot_properties file was not found.  Please install HDB.');
+            expect(printToLogAndConsole_stub.args[0][0]).to.eql('The hdb_boot_properties file was not found. Please install HDB.');
             expect(processExit_stub.calledOnce).to.be.true;
             expect(processExit_stub.args[0][0]).to.equal(1);
+        });
 
-            upgrade_rw.__set__('env', env_orig);
+        it('Should exit process with code 1 if settings file does not exist - i.e. HDB has not been installed', async () => {
+            fsExistsSync_stub.onFirstCall().returns(true);
+            fsExistsSync_stub.onSecondCall().returns(false);
+
+            try {
+                await upgrade_rw.upgrade();
+            } catch(e) {
+                //this is here to catch the error the exit stub is throwing so tests do not fail
+            }
+
+            expect(getVersionUpdateInfo_stub.calledOnce).to.be.false;
+            expect(checkIfRunning_stub.calledOnce).to.be.false;
+            expect(forceUpdatePrompt_stub.calledOnce).to.be.false;
+            expect(runUpgrade_stub.calledOnce).to.be.false;
+            expect(printToLogAndConsole_stub.args[0][0]).to.eql('The hdb settings file was not found. Please make sure HDB is installed.');
+            expect(processExit_stub.calledOnce).to.be.true;
+            expect(processExit_stub.args[0][0]).to.equal(1);
         });
     });
 

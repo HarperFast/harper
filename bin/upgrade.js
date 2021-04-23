@@ -9,7 +9,6 @@
 const env = require('../utility/environment/environmentManager');
 env.initSync();
 
-const CLI = require('clui');
 const colors = require("colors/safe");
 const fs = require('fs-extra');
 const log = require('../utility/logging/harper_logger');
@@ -22,9 +21,6 @@ const upgradePrompt = require('../upgrade/upgradePrompt');
 
 const { UPGRADE_VERSION } = hdb_terms.UPGRADE_JSON_FIELD_NAMES_ENUM;
 
-let Spinner = CLI.Spinner;
-let countdown = new Spinner(`Upgrading HarperDB `, ['⣾', '⣽', '⣻', '⢿', '⡿', '⣟', '⣯', '⣷']);
-
 module.exports = {
     upgrade
 };
@@ -36,10 +32,16 @@ module.exports = {
  * @returns {Promise<void>}
  */
 async function upgrade(upgrade_obj) {
-    printToLogAndConsole(`This version of HarperDB is ${version.version()}`);
+    //We have to make sure HDB is installed before doing anything else
     if (!fs.existsSync(env.BOOT_PROPS_FILE_PATH)) {
-        const hdb_not_found_msg = 'The hdb_boot_properties file was not found.  Please install HDB.';
+        const hdb_not_found_msg = 'The hdb_boot_properties file was not found. Please install HDB.';
         printToLogAndConsole(hdb_not_found_msg, log.ERR);
+        process.exit(1);
+    }
+
+    if (!fs.existsSync(env.get(hdb_terms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY))) {
+        const hdb_not_installed_msg = 'The hdb settings file was not found. Please make sure HDB is installed.';
+        printToLogAndConsole(hdb_not_installed_msg, log.ERR);
         process.exit(1);
     }
 
@@ -51,6 +53,8 @@ async function upgrade(upgrade_obj) {
             process.exit(0);
         }
     }
+
+    printToLogAndConsole(`This version of HarperDB is ${version.version()}`);
 
     //The upgrade version should always be included in the hdb_upgrade_info object returned from the getVersion function
     // above but testing for it and using the version from package.json just in case it is not
@@ -81,13 +85,16 @@ async function upgrade(upgrade_obj) {
         process.exit(exit_code);
     }
 
-    countdown.message(`Starting upgrade to version ${current_hdb_version}`);
-    countdown.start();
     log.info(`Starting upgrade to version ${current_hdb_version}`);
 
-    await runUpgrade(hdb_upgrade_info);
+    try {
+        await runUpgrade(hdb_upgrade_info);
+    } catch(err) {
+        log.error('There was an error when upgrading your HDB instance. Check logs for more details.');
+        log.error(err);
+        throw err;
+    }
 
-    countdown.stop();
     printToLogAndConsole(`HarperDB was successfully upgraded to version ${hdb_upgrade_info[UPGRADE_VERSION]}`, log.INFO);
 }
 
@@ -116,7 +123,7 @@ async function checkIfRunning() {
 async function runUpgrade(upgrade_obj) {
 
     try {
-        directivesManager.processDirectives(upgrade_obj);
+        await directivesManager.processDirectives(upgrade_obj);
     } catch(err) {
         printToLogAndConsole('There was an error during the data upgrade.  Please check the logs.', log.error);
         throw(err);
@@ -135,5 +142,5 @@ function printToLogAndConsole(msg, log_level) {
         log_level = log.info;
     }
     log.write_log(log_level, msg);
-    console.log(msg);
+    console.log(colors.magenta(msg));
 }

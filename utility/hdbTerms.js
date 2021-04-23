@@ -296,6 +296,7 @@ const GEO_CONVERSION_ENUM = {
     polygon: 'polygon'
 };
 
+//NOTE - please be sure to add default values for new settings keys in the `HDB_SETTINGS_DEFAULT_VALUES` enum as well
 const HDB_SETTINGS_NAMES = {
     PROJECT_DIR_KEY: 'PROJECT_DIR',
     HDB_ROOT_KEY: 'HDB_ROOT',
@@ -351,7 +352,9 @@ const HDB_SETTINGS_DEFAULT_VALUES = {
     CLUSTERING_PORT: '5545',
     CLUSTERING: 'false',
     MAX_HDB_PROCESSES: 4,
-    DISABLE_TRANSACTION_LOG: false
+    DISABLE_TRANSACTION_LOG: false,
+    OPERATION_TOKEN_TIMEOUT: '1d',
+    REFRESH_TOKEN_TIMEOUT: '30d'
 };
 
 // Describes all available job types

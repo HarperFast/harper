@@ -276,13 +276,16 @@ const test_table_schema = {
     }
 };
 
-const sandbox = sinon.createSandbox();
-const translateRolePerms_rw =  permissionsTranslator_rw.__get__('translateRolePermissions');
-const translateRolePerms_spy =  sandbox.spy(translateRolePerms_rw);
-permissionsTranslator_rw.__set__('translateRolePermissions', translateRolePerms_spy);
+let sandbox;
+let translateRolePerms_rw;
+let translateRolePerms_spy;
 
 describe('Test permissionsTranslator module', function () {
     before(() => {
+        sandbox = sinon.createSandbox();
+        translateRolePerms_rw =  permissionsTranslator_rw.__get__('translateRolePermissions');
+        translateRolePerms_spy =  sandbox.spy(translateRolePerms_rw);
+        permissionsTranslator_rw.__set__('translateRolePermissions', translateRolePerms_spy);
         global.hdb_schema = clonedeep(TEST_SCHEMA_DOG_BREED);
     });
     afterEach(() => {

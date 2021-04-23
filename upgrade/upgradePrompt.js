@@ -5,7 +5,6 @@ const minimist = require('minimist');
 const colors = require("colors/safe");
 const log = require('../utility/logging/harper_logger');
 const os = require('os');
-const directivesManager = require('./directivesManager');
 
 const UPGRADE_PROCEED = ['yes', 'y'];
 
@@ -15,24 +14,12 @@ const UPGRADE_PROCEED = ['yes', 'y'];
  * @returns {Promise<boolean>}
  */
 async function forceUpdatePrompt(upgrade_obj) {
-    // pull and format directive changes for prompt
-    let changes = directivesManager.getDirectiveChangeDescriptions(upgrade_obj);
-    let counter = 1;
-    let message = `${os.EOL}` + colors.bold.green('Your current HarperDB version requires that we complete an update process.')
+    let upgrade_message = `${os.EOL}` + colors.bold.green('Your current HarperDB version requires that we complete an update process.')
         + `${os.EOL}` + 'If a backup of your data has not been created, we recommend you cancel this process and backup before proceeding.'
-        + `${os.EOL}${os.EOL}` + colors.underline('The following updates will be implemented as a part of this upgrade:') + `${os.EOL}`;
-    /*
-        Should create a message to the user that describes the changes specified in the directives as a numbered list.
-     */
-    changes.forEach((change) => {
-       if(change.change_description) {
-           message = `${message} ${counter}. ${change.change_description} ${os.EOL}`;
-           counter++;
-       }
-    });
+        + `${os.EOL}${os.EOL}` + 'You can read more about the changes in this upgrade at https://harperdb.io/developers/release-notes/' + `${os.EOL}`;
     prompt.override = minimist(process.argv);
     prompt.start();
-    prompt.message = message;
+    prompt.message = upgrade_message;
     let upgrade_confirmation = {
         properties: {
             CONFIRM_UPGRADE: {

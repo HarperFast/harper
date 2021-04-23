@@ -1,20 +1,19 @@
 "use strict";
+
 /**
- * Class that describes the data required for an install or upgrade.
+ * Class that describes the data/scripts required to execute a new version upgrade.
  */
 class UpgradeDirective {
     /**
-     * Constructor for an upgradeDirective.
+     * Constructor for an Upgrade Directive.
      * @param version_number - The version of HDB this directive describes.
      */
     constructor(version_number) {
         this.version = version_number;
-        this.change_description = "";
-        // Function that builds updated settings file. Function must be synchronous and set in class object within an array.
-        this.settings_file_function = [];
-        // Functions can be added into this which will be run after the settings file function has been run.  Functions must be
-        // synchronous.
-        this.functions = [];
+        // Sync functions that must be set in class object within an array.
+        this.sync_functions = [];
+        // Async functions that must be set in class object within an array.
+        this.async_functions = [];
     }
 }
 

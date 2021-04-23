@@ -9,7 +9,6 @@ const mock_stdin = require('mock-stdin');
 const prompt = require('prompt');
 const os = require('os');
 const upgradePrompt = require('../../upgrade/upgradePrompt');
-const directivesManager = require('../../upgrade/directivesManager');
 
 function buildProcessArgs(yes_or_no) {
     return ['--CONFIRM_UPGRADE', yes_or_no]
@@ -18,13 +17,11 @@ function buildProcessArgs(yes_or_no) {
 describe('Test upgradePrompt module', () => {
     let sandbox;
     let prompt_spy;
-    let getDirectiveChangeDesc_stub;
     let stdin_stubber;
 
     before(() => {
         sandbox = sinon.createSandbox();
         prompt_spy = sandbox.spy(prompt, 'get');
-        getDirectiveChangeDesc_stub = sandbox.stub(directivesManager, 'getDirectiveChangeDescriptions').returns(['change description']);
         stdin_stubber = mock_stdin.stdin();
     })
 

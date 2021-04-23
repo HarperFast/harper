@@ -29,17 +29,17 @@ describe('processDirectives Module', function() {
             'processing settings func for 4.1.1 upgrade', 'processing other func for 4.1.1 upgrade'];
         let sandbox;
         let directive_stub;
-        let settings_func_stub;
-        let upgrade_func_stub;
+        let sync_func_stub;
+        let async_func_stub;
         let getUpgradeDirsToInstall_stub;
 
         before(() => {
             sandbox = sinon.createSandbox();
             directive_stub = new upgrade_directive('1.2.3');
-            settings_func_stub = sandbox.stub().returns('settings func return');
-            upgrade_func_stub = sandbox.stub().returns('upgrade func return');
-            directive_stub.settings_file_function = [settings_func_stub];
-            directive_stub.functions = [upgrade_func_stub];
+            sync_func_stub = sandbox.stub().returns('sync func return');
+            async_func_stub = sandbox.stub().resolves('async func return');
+            directive_stub.sync_functions = [sync_func_stub];
+            directive_stub.async_functions = [async_func_stub];
             getUpgradeDirsToInstall_stub = sandbox.stub().returns([directive_stub])
         })
 
@@ -49,11 +49,11 @@ describe('processDirectives Module', function() {
             directivesManager_rw.__set__('directivesController', directivesController_stub);
         })
 
-        it('test upgrade from 3.0 to 3.1', function() {
+        it('test upgrade from 3.0 to 3.1', async function() {
             const test_upgrade_ver = '3.1.0'
             const test_upgrade_obj = generateUpgradeObj('3.0.0', test_upgrade_ver);
 
-            const test_result = processDirectives_rw(test_upgrade_obj);
+            const test_result = await processDirectives_rw(test_upgrade_obj);
 
             expect(test_result.length).to.eql(2);
             test_result.forEach(str => {
@@ -62,11 +62,11 @@ describe('processDirectives Module', function() {
 
         });
 
-        it('test upgrade to 3.0.0', function() {
+        it('test upgrade to 3.0.0', async function() {
             const test_upgrade_ver = '3.0.0'
             const test_upgrade_obj = generateUpgradeObj('2.9', test_upgrade_ver);
 
-            const test_result = processDirectives_rw(test_upgrade_obj);
+            const test_result = await processDirectives_rw(test_upgrade_obj);
 
             expect(test_result.length).to.eql(3);
             test_result.forEach(str => {
@@ -74,37 +74,37 @@ describe('processDirectives Module', function() {
             })
         });
 
-        it('test upgrade to 5.1.1', function() {
+        it('test upgrade to 5.1.1', async function() {
             const test_upgrade_ver = '5.1.1'
             const test_upgrade_obj = generateUpgradeObj('2.9', test_upgrade_ver);
 
-            const test_result = processDirectives_rw(test_upgrade_obj);
+            const test_result = await processDirectives_rw(test_upgrade_obj);
 
             expect(test_result.length).to.equal(directive_msgs.length);
             expect(test_result).to.deep.equal(directive_msgs);
         });
 
-        it('test upgrade to 3.0.0 from older version', function() {
+        it('test upgrade to 3.0.0 from older version', async function() {
             const test_upgrade_ver = '3.0.0'
             const test_upgrade_obj = generateUpgradeObj('1.9', test_upgrade_ver);
 
-            const test_result = processDirectives_rw(test_upgrade_obj);
+            const test_result = await processDirectives_rw(test_upgrade_obj);
 
             expect(test_result.length).to.equal(3);
             expect(test_result).to.deep.equal([directive_msgs[0], directive_msgs[1], directive_msgs[2]]);
         });
 
-        it('test processDirectives with settings function error', function() {
+        it('test processDirectives with settings function error', async function() {
             const test_upgrade_ver = '3.0.0'
             const test_upgrade_obj = generateUpgradeObj('1.9', test_upgrade_ver);
             const test_err = 'settings func error!'
-            settings_func_stub.throws(new  Error(test_err));
+            sync_func_stub.throws(new  Error(test_err));
             directivesManager_rw.__set__('getUpgradeDirectivesToInstall', getUpgradeDirsToInstall_stub)
 
             let test_result;
 
             try {
-                processDirectives_rw(test_upgrade_obj);
+                await processDirectives_rw(test_upgrade_obj);
             } catch(e) {
                 test_result = e;
             }
@@ -113,18 +113,18 @@ describe('processDirectives Module', function() {
             expect(test_result.message).to.equal(test_err);
         });
 
-        it('test processDirectives with upgrade function error', function() {
+        it('test processDirectives with upgrade function error', async function() {
             const test_upgrade_ver = '3.0.0'
             const test_upgrade_obj = generateUpgradeObj('1.9', test_upgrade_ver);
             const test_err = 'upgrade func error!'
-            settings_func_stub.returns('settings func return');
-            upgrade_func_stub.throws(new  Error(test_err));
+            sync_func_stub.returns('settings func return');
+            async_func_stub.throws(new  Error(test_err));
             directivesManager_rw.__set__('getUpgradeDirectivesToInstall', getUpgradeDirsToInstall_stub)
 
             let test_result;
 
             try {
-                processDirectives_rw(test_upgrade_obj);
+                await processDirectives_rw(test_upgrade_obj);
             } catch(e) {
                 test_result = e;
             }
@@ -134,8 +134,8 @@ describe('processDirectives Module', function() {
         });
     })
 
-    describe('Test runFunctions()', function() {
-        let runFunctions = directivesManager_rw.__get__('runFunctions');
+    describe('Test runSyncFunctions()', function() {
+        let runSyncFunctions_rw = directivesManager_rw.__get__('runSyncFunctions');
         let results = [];
 
         afterEach(function() {
@@ -155,51 +155,140 @@ describe('processDirectives Module', function() {
         };
 
         it('Test nominal case with valid functions', () => {
-            runFunctions([func1,func2]);
+            runSyncFunctions_rw([func1,func2]);
             assert.equal(results.length, 2, 'Did not get expected function results');
         });
 
         it('Test exception handling, expect func2 to not run', () => {
             let result = undefined;
             try {
-                runFunctions([bad_func,func2]);
+                runSyncFunctions_rw([bad_func,func2]);
             } catch(e) {
                 result = e;
             }
             assert.equal((result instanceof Error), true, 'Did not get expected exception');
             assert.equal(results.length, 0, 'Did not get expected function results');
         });
-        it('Test runFunctions with null parameter', () => {
+
+        it('Test runSyncFunctions with null parameter', () => {
             let result = undefined;
             try {
-                runFunctions(null);
+                runSyncFunctions_rw(null);
             } catch(e) {
                 result = e;
             }
             assert.equal(results.length, 0, 'Expected empty results array');
         });
-        it('Test runFunctions with null parameter', () => {
+
+        it('Test runSyncFunctions with null parameter', () => {
             let result = undefined;
             try {
-                runFunctions(null);
+                runSyncFunctions_rw(null);
             } catch(e) {
                 result = e;
             }
             assert.equal(results.length, 0, 'Expected empty results array');
         });
-        it('Test runFunctions with non array parameter', () => {
+
+        it('Test runSyncFunctions with non array parameter', () => {
             let result = undefined;
             try {
-                runFunctions('test');
+                runSyncFunctions_rw('test');
             } catch(e) {
                 result = e;
             }
             assert.equal(results.length, 0, 'Expected empty results array');
         });
-        it('Test runFunctions with non function values', () => {
+
+        it('Test runSyncFunctions with non function values', () => {
             let result = undefined;
             try {
-                runFunctions(['test']);
+                runSyncFunctions_rw(['test']);
+            } catch(e) {
+                result = e;
+            }
+            assert.equal(results.length, 0, 'Expected empty results array');
+        });
+    });
+
+    describe('Test runAsyncFunctions()', function() {
+        let runAsyncFunctions_rw = directivesManager_rw.__get__('runAsyncFunctions');
+        let results = [];
+
+        afterEach(function() {
+           results = [];
+        });
+
+        async function func1() {
+          return new Promise((resolve) => {
+              results.push('Function 1 running');
+              resolve();
+          });
+        }
+
+        async function func2() {
+            return new Promise((resolve) => {
+                results.push('Function 2 running');
+                resolve();
+            });
+        }
+
+        async function bad_func() {
+            return new Promise((resolve, reject) => {
+               reject(new Error('test error'));
+            });
+        };
+
+        it('Test nominal case with valid functions', async () => {
+            await runAsyncFunctions_rw([func1,func2]);
+            assert.equal(results.length, 2, 'Did not get expected function results');
+        });
+
+        it('Test exception handling, expect func2 to not run', async () => {
+            let result = undefined;
+            try {
+                await runAsyncFunctions_rw([bad_func,func2]);
+            } catch(e) {
+                result = e;
+            }
+            assert.equal((result instanceof Error), true, 'Did not get expected exception');
+            assert.equal(results.length, 0, 'Did not get expected function results');
+        });
+
+        it('Test runAsyncFunctions with null parameter', async () => {
+            let result = undefined;
+            try {
+                await runAsyncFunctions_rw(null);
+            } catch(e) {
+                result = e;
+            }
+            assert.equal(results.length, 0, 'Expected empty results array');
+        });
+
+        it('Test runAsyncFunctions with null parameter', async () => {
+            let result = undefined;
+            try {
+                await runAsyncFunctions_rw(null);
+            } catch(e) {
+                result = e;
+            }
+            assert.equal(results.length, 0, 'Expected empty results array');
+        });
+
+        it('Test runAsyncFunctions with non array parameter', async () => {
+            let result = undefined;
+            try {
+                await runAsyncFunctions_rw('test');
+            } catch(e) {
+                result = e;
+            }
+            assert.equal(results.length, 0, 'Expected empty results array');
+        });
+
+        it('Test runAsyncFunctions with non function values', async () => {
+            let result = undefined;
+            try {
+                await runAsyncFunctions_rw(['test']);
             } catch(e) {
                 result = e;
             }
@@ -234,32 +323,6 @@ describe('processDirectives Module', function() {
         it('Test getUpgradeDirectivesToInstall  with null directive parameter', function() {
             let versions_to_run = getUpgradeDirectivesToInstall_rw(null);
             assert.equal(versions_to_run.length, 0, 'Expected 0 upgrade numbers back');
-        });
-    });
-
-    describe('Test getDirectiveChangeDescriptions()', function() {
-
-        it('Test getDirectiveChangeDescriptions - nominal case', function() {
-            const test_upgrade_obj = generateUpgradeObj('3.0.0', '4.1.1');
-            const change_descriptions = directivesManager_rw.getDirectiveChangeDescriptions(test_upgrade_obj);
-
-            assert.equal(change_descriptions.length, 2, 'Expected 2 change descriptions returned');
-            assert.equal(change_descriptions[0].change_description, 'Change descriptions for 3.1.0', 'Expected 3.1.0 change description returned');
-            assert.equal(change_descriptions[1].change_description, 'Change descriptions for 4.1.1', 'Expected 4.1.1 change description returned');
-        });
-
-        it('Test getDirectiveChangeDescriptions - no valid versions', function() {
-            const test_upgrade_obj = generateUpgradeObj('1.0.0', '2.1.1');
-            const change_descriptions = directivesManager_rw.getDirectiveChangeDescriptions(test_upgrade_obj);
-
-            assert.equal(change_descriptions.length, 0, 'Expected 0 change descriptions returned');
-        });
-
-        it('Test getDirectiveChangeDescriptions - versions w/o a change description', function() {
-            const test_upgrade_obj = [ new upgrade_directive('1.2.3') ];
-            const change_descriptions = directivesManager_rw.getDirectiveChangeDescriptions(test_upgrade_obj);
-
-            assert.equal(change_descriptions.length, 0, 'Expected 0 change descriptions returned');
         });
     });
 });
