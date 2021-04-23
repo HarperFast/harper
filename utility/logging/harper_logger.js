@@ -13,6 +13,7 @@ const terms = require('../hdbTerms');
 
 // Set interval that log buffer flushes at.
 const LOG_BUFFER_FLUSH_INTERVAL = 5000;
+const DATE_FORMAT = 'YYYY-MM-DD';
 
 const NOTIFY = 'notify';
 const FATAL = 'fatal';
@@ -86,7 +87,7 @@ module.exports = {
     fatal:fatal,
     notify:notify,
     setLogLevel:setLogLevel,
-    write_log:write_log,
+    writeLog:writeLog,
     readLog:readLog,
     log_level,
     NOTIFY,
@@ -105,7 +106,7 @@ module.exports = {
 function createLog(log_location_setting) {
     if (daily_rotate) {
         // If the logs are set to daily rotate we get tomorrows date so that we know when to create a new log file.
-        tomorrows_date = moment("2021-04-20").utc().add(1, 'days');
+        tomorrows_date = moment().utc().add(1, 'days');
     }
 
     //if log location isn't defined, assume HDB_ROOT/log/hdb_log.log
@@ -128,9 +129,10 @@ function createLog(log_location_setting) {
                     try {
                         fs.mkdirSync(log_settings_directory,{ recursive: true });
                     } catch(err) {
-                        write_log(INFO, `Attempted to create log directory from settings file but failed.  Using default log path - 'hdb/log/hdb_log.log'`);
                         log_directory = default_log_directory;
                         log_file_name = DEFAULT_LOG_FILE_NAME;
+                        log_location = path.join(log_directory, log_file_name);
+                        writeLog(INFO, `Attempted to create log directory from settings file but failed.  Using default log path - 'hdb/log/hdb_log.log'`);
                     }
                 }
             } else {
@@ -139,24 +141,27 @@ function createLog(log_location_setting) {
                     log_file_name = DEFAULT_LOG_FILE_NAME;
                 } else {
                     log_directory = log_location_setting;
+                    log_file_name = DEFAULT_LOG_FILE_NAME;
                     try {
                         fs.mkdirSync(log_location_setting,{ recursive: true });
                     } catch(err) {
-                        write_log(INFO, `Attempted to create log directory from settings file but failed.  Using default log path - 'hdb/log/hdb_log.log'`);
                         log_directory = default_log_directory;
+                        log_location = path.join(log_directory, log_file_name);
+                        writeLog(INFO, `Attempted to create log directory from settings file but failed.  Using default log path - 'hdb/log/hdb_log.log'`);
                     }
-
-                    log_file_name = DEFAULT_LOG_FILE_NAME;
                 }
             }
         } catch(e) {
-            write_log(INFO, `Attempted to create log directory from settings file but failed.  Using default log path - 'hdb/log/hdb_log.log'`);
             log_directory = default_log_directory;
             log_file_name = DEFAULT_LOG_FILE_NAME;
+            log_location = path.join(log_directory, log_file_name);
+            writeLog(INFO, `Attempted to create log directory from settings file but failed.  Using default log path - 'hdb/log/hdb_log.log'`);
         }
     }
 
-    log_location = daily_rotate ? path.join(log_directory, `${moment().utc().format('YYYY-MM-DD')}_${log_file_name}`) : path.join(log_directory, log_file_name);
+    if (log_location === undefined) {
+        log_location = daily_rotate ? path.join(log_directory, `${moment().utc().format(DATE_FORMAT)}_${log_file_name}`) : path.join(log_directory, log_file_name);
+    }
 
     if (!pino_logger) {
         initPinoLogger();
@@ -235,7 +240,7 @@ function initPinoLogger() {
  * @param {string|number|null} level - The log level this message should be written to
  * @param {String} message - The message to be written to the log
  */
-function write_log(level, message) {
+function writeLog(level, message) {
     try {
         if (level === undefined || level === 0 || level === null) {
             level = 'error';
@@ -250,19 +255,19 @@ function write_log(level, message) {
         if (daily_rotate) {
             const current_date = moment().utc();
             // If the current logs date is the same as previously set tomorrows date we create a new log.
-            if (current_date.diff(tomorrows_date, 'days') > 0) {
+            if (moment(current_date.format(DATE_FORMAT)).isSameOrAfter(tomorrows_date.format(DATE_FORMAT))) {
                 // Anything in the the current logs buffer is flushed to the log file.
-                if (!pino_logger) {
-                    pino_logger.flush();
+                if (pino_logger) {
+                    pino_logger.flushSync();
                 }
 
                 // Update the tomorrow date value
                 tomorrows_date = moment().utc().add(1, 'days');
-                log_location = path.join(log_directory, `${current_date.format('YYYY-MM-DD')}_${log_file_name}`);
+                log_location = path.join(log_directory, `${current_date.format(DATE_FORMAT)}_${log_file_name}`);
 
                 // Create a new pino logger instance under new file name.
                 initPinoLogger();
-                trace(`Initialized pino logger writing to ${log_location} process pid ${process.pid}`);
+                pino_logger.notify(`Initialized pino logger writing to ${log_location} process pid ${process.pid}`);
 
                 // If the config has a value for dail max we must check to see any old logs need to be removed.
                 if (Number.isInteger(daily_max) && daily_max > 0) {
@@ -291,14 +296,14 @@ function removeOldLogs() {
         const log_date = file_name.split('_')[0];
 
         // If the file has a .log extension and a valid date at the beginning of its name push it to array.
-        if (path.extname(file_name) === '.log' && moment(log_date, 'YYYY-MM-DD', true).isValid()) {
+        if (path.extname(file_name) === '.log' && moment(log_date, DATE_FORMAT, true).isValid()) {
             all_valid_dates.push({ date: log_date, file_name });
         }
     }
 
     if (all_valid_dates.length > daily_max) {
         // Sort array of log file dates so that we know the oldest log.
-        const sorted_dates = all_valid_dates.sort((a, b) => moment(a.date, 'YYYY-MM-DD', true) - moment(b.date, 'YYYY-MM-DD', true));
+        const sorted_dates = all_valid_dates.sort((a, b) => moment(a.date, DATE_FORMAT, true) - moment(b.date, DATE_FORMAT, true));
         // Oldest log will be the one at the start of array.
         const log_to_remove = sorted_dates[0].file_name;
         fs.unlinkSync(path.join(log_directory, log_to_remove));
@@ -311,7 +316,7 @@ function removeOldLogs() {
  * @param {string} message - The string message to write to the log
  */
 function info(message) {
-    write_log(INFO, message);
+    writeLog(INFO, message);
 }
 
 /**
@@ -319,7 +324,7 @@ function info(message) {
  * @param {string} message - The string message to write to the log
  */
 function trace(message) {
-    write_log(TRACE, message);
+    writeLog(TRACE, message);
 }
 
 /**
@@ -327,7 +332,7 @@ function trace(message) {
  * @param {string} message - The string message to write to the log
  */
 function error(message) {
-    write_log(ERR, message);
+    writeLog(ERR, message);
 }
 
 /**
@@ -335,7 +340,7 @@ function error(message) {
  * @param {string} message - The string message to write to the log
  */
 function fatal(message) {
-    write_log(FATAL, message);
+    writeLog(FATAL, message);
 }
 
 /**
@@ -343,7 +348,7 @@ function fatal(message) {
  * @param {string} message - The string message to write to the log
  */
 function debug(message) {
-    write_log(DEBUG, message);
+    writeLog(DEBUG, message);
 }
 
 /**
@@ -351,7 +356,7 @@ function debug(message) {
  * @param {string} message - The string message to write to the log
  */
 function warn(message) {
-    write_log(WARN, message);
+    writeLog(WARN, message);
 }
 
 /**
@@ -359,7 +364,7 @@ function warn(message) {
  * @param {string} message - The string message to write to the log
  */
 function notify(message) {
-    write_log(NOTIFY, message);
+    writeLog(NOTIFY, message);
 }
 
 /**

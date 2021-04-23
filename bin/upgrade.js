@@ -463,6 +463,6 @@ function printToLogAndConsole(msg, log_level) {
     if(!log_level) {
         log_level = log.info;
     }
-    log.write_log(log_level, msg);
+    log.writeLog(log_level, msg);
     console.log(msg);
 }
