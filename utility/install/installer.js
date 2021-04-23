@@ -16,7 +16,7 @@ const async = require('async');
 const minimist = require('minimist');
 const forge = require('node-forge');
 const hri = require('human-readable-ids').hri;
-const terms_address = 'https://harperdb.io/legal/software-license-subscription-agreement';
+const terms_address = 'https://harperdb.io/legal/end-user-license-agreement';
 const env = require('../../utility/environment/environmentManager');
 const os = require('os');
 const comm = require('../common_utils');
@@ -132,23 +132,20 @@ function insertHdbInfo(callback) {
 function termsAgreement(callback) {
     winston.info('Asking for terms agreement.');
     prompt.message = ``;
+    const line_break = os.EOL;
     let terms_schema = {
         properties: {
             TC_AGREEMENT: {
-                description: colors.magenta(`I Agree to the HarperDB Terms and Conditions. (yes/no).  The Terms and Conditions can 
-                be found at ${terms_address}`),
-                pattern: /y(es)?$|n(o)?$/,
-                message: "Must respond 'yes' or 'no'",
-                default: 'yes',
-                required: true
+                description: colors.magenta(`Terms & Conditions can be found at ${terms_address}${line_break}and can be viewed by typing or copying and pasting the URL into your web browser.${line_break}${colors.bold('I Agree to the HarperDB Terms and Conditions. (yes/no)')}`),
             }
         }
     };
     prompt.get(terms_schema, function (err, result) {
         if (err) { return callback(err); }
-        if (result.TC_AGREEMENT === 'yes' || result.TC_AGREEMENT === 'y') {
+        if (result.TC_AGREEMENT === 'yes') {
             return callback(null, true);
         }
+        console.log(colors.yellow(`Terms & Conditions acceptance is required to proceed with installation.`));
         winston.error('Terms and Conditions agreement was refused.');
         return callback('REFUSED', false);
     });
