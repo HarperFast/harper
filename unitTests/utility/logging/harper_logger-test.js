@@ -355,7 +355,7 @@ describe('Test harper_logger module', () => {
         it('Test writeLog with daily rotate next day log created', () => {
             const tomorrows_date = moment().utc().add(1, 'days');
             sandbox.useFakeTimers({now: new Date(tomorrows_date.format('YYYY,MM,DD'))});
-            harper_logger_rw.writeLog('error', 'Test a new date log is created');
+            harper_logger_rw.writeLog('fatal', 'Test a new date log is created');
 
             // setMockPropParams(true, 3, LOG_LEVEL.TRACE, LOG_PATH_TEST, HDB_ROOT_TEST);
             // harper_logger_rw = rewire('../../../utility/logging/harper_logger');
