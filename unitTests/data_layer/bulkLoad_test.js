@@ -335,17 +335,19 @@ describe('Test bulkLoad.js', () => {
 
     describe('Test downloadCSVFile function', () => {
         let response_fake = {
-            body: 'id, name \n 1, harper\n'
+            raw: 'id, name \n 1, harper\n',
+            statusCode: 200,
+            headers: {
+                "content-type": "text/csv"
+            }
         };
         let downloadCSVFile_rw = bulkLoad_rewire.__get__('downloadCSVFile');
         let sandbox = sinon.createSandbox();
         let request_response_stub = sandbox.stub().resolves(response_fake);
-        let validate_response_stub = sandbox.stub();
         let mk_dir_stub;
         let write_file_stub;
 
         before(() => {
-            bulkLoad_rewire.__set__('validateURLResponse', validate_response_stub);
             mk_dir_stub = sandbox.stub(fs, 'mkdirp');
             write_file_stub = sandbox.stub(fs, 'writeFile');
         });
@@ -361,19 +363,20 @@ describe('Test bulkLoad.js', () => {
             } catch (err) {
                 error = err;
             }
-            expect(error.http_resp_msg).to.be.equal('Error downloading CSV file from wwwwww.badurl.com, status code: undefined. Check the log for more information.');
+            expect(error.http_resp_msg).to.be.equal('CSV Load failed from URL: wwwwww.badurl.com, status code: 302, message: Found');
         });
 
         it('Test for nominal behaviour, stubs are called as expected', async () => {
-            bulkLoad_rewire.__set__('request_promise', request_response_stub);
+            bulkLoad_rewire.__set__('needle', request_response_stub);
             let csv_file_name = `${Date.now()}.csv`;
             await downloadCSVFile_rw('www.csv.com', csv_file_name);
 
             expect(mk_dir_stub).to.have.been.calledWith(CSV_URL_TEMP_DIR);
-            expect(write_file_stub).to.have.been.calledWith(`${CSV_URL_TEMP_DIR}/${csv_file_name}`, response_fake.body);
+            expect(write_file_stub).to.have.been.calledWith(`${CSV_URL_TEMP_DIR}/${csv_file_name}`, response_fake.raw);
         });
 
         it('Test that error from mkdirSync is handled correctly', async () => {
+            bulkLoad_rewire.__set__('needle', request_response_stub);
             let error_msg = 'Error creating directory';
             mk_dir_stub.throws(new Error(error_msg));
             let test_err_result = await test_utils.testError(downloadCSVFile_rw('www.csv.com'), error_msg);

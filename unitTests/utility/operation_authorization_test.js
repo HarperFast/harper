@@ -447,7 +447,29 @@ describe('Test operation_authorization', function() {
             req_json.hdb_user.role.permission.dev.tables.dog.attribute_permissions = att_base;
             let result = op_auth_rewire.verifyPermsAst(temp_select, req_json.hdb_user, search.search.name);
             assert.equal(result, null);
-        })
+        });
+
+        it('Test cannot delete from system table error returned', () => {
+            let ast_test = {
+                "table": {
+                    "databaseid": "system",
+                    "tableid": "hdb_user"
+                },
+                "where": {
+                    "left": {
+                        "columnid": "id"
+                    },
+                    "op": "=",
+                    "right": {
+                        "value": 1
+                    }
+                }
+            };
+            let temp_delete = new alasql.yy.Delete(ast_test);
+            let req_json = getRequestJson(TEST_JSON);
+            let expected_error = test_utils.generateHDBError("The 'system' schema, tables and records are used internally by HarperDB and cannot be updated or removed.", 403)
+            test_utils.assertErrorSync(op_auth_rewire.verifyPermsAst, [temp_delete, req_json.hdb_user, 'delete'], expected_error);
+        });
     });
 
     describe(`Test verifyPerms`,function() {
@@ -708,6 +730,33 @@ describe('Test operation_authorization', function() {
             let result = op_auth_rewire.verifyPerms(req_json, user.addUser);
             assert.equal(result.unauthorized_access.length, 1);
             assert.equal(result.unauthorized_access[0], TEST_OPERATION_AUTH_ERROR.OP_IS_SU_ONLY(user.addUser.name));
+        });
+
+        it('Test error is thrown from trying to drop system schema', () => {
+            let req_json = getRequestJson(TEST_JSON);
+            req_json.operation = 'drop_schema';
+            req_json.schema = 'system';
+            let expected_error = test_utils.generateHDBError("The 'system' schema, tables and records are used internally by HarperDB and cannot be updated or removed.", 403)
+            test_utils.assertErrorSync(op_auth_rewire.verifyPerms, [req_json, 'dropSchema'], expected_error);
+        });
+
+        it('Test error is thrown from trying to drop system table', () => {
+            let req_json = getRequestJson(TEST_JSON);
+            req_json.operation = 'drop_table';
+            req_json.schema = 'system';
+            req_json.table = 'hdb_user';
+            let expected_error = test_utils.generateHDBError("The 'system' schema, tables and records are used internally by HarperDB and cannot be updated or removed.", 403)
+            test_utils.assertErrorSync(op_auth_rewire.verifyPerms, [req_json, 'dropTable'], expected_error);
+        });
+
+        it('Test error is thrown from trying to drop system attribute', () => {
+            let req_json = getRequestJson(TEST_JSON);
+            req_json.operation = 'drop_table';
+            req_json.schema = 'system';
+            req_json.table = 'hdb_user';
+            req_json.attribute = 'username';
+            let expected_error = test_utils.generateHDBError("The 'system' schema, tables and records are used internally by HarperDB and cannot be updated or removed.", 403)
+            test_utils.assertErrorSync(op_auth_rewire.verifyPerms, [req_json, 'dropAttribute'], expected_error);
         });
     });
 

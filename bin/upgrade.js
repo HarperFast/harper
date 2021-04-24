@@ -18,8 +18,7 @@ const os = require('os');
 const fs = require('fs');
 const tar = require('tar-fs');
 const CLI = require('clui');
-const request = require("request");
-const request_promise = require("request-promise-native");
+const needle = require('needle');
 const env = require('../utility/environment/environmentManager');
 const log = require('../utility/logging/harper_logger');
 const hdb_util = require('../utility/common_utils');
@@ -143,6 +142,7 @@ async function upgrade() {
         printToLogAndConsole('You are attempting to upgrade HarperDB on an unsupported operating system', log.ERR);
         throw new Error('You are attempting to upgrade HarperDB on an unsupported operating system');
     }
+
     let latest_version = await getLatestVersion(opers).catch((e) => {
         log.error(e);
         console.error(`Error getting latest version from HarperDB: ${e}`);
@@ -279,23 +279,25 @@ function postInstallCleanUp() {
  * @returns {Promise<*>}
  */
 async function getLatestVersion(opers) {
-    let options = {
-        method: 'GET',
-        url: VERSIONS_URL + opers,
-        headers:
-            {
-                'cache-control': 'no-cache',
-                'content-type': 'application/json',
-                'Accept': 'application/json'
-            }
-    };
     let res = undefined;
     try {
-        res = await request_promise(options);
+        let options = {
+            headers: {
+                content_type: 'application/json',
+                accept: 'application/json'
+            }
+        };
+
+        // Note - The versions page no longer exists.
+        res = await needle('get', VERSIONS_URL + opers, options);
+        if (res.statusCode !== '200') {
+            throw res.statusMessage;
+        }
     } catch (e) {
         log.error(`There was an error with the request to get the latest HDB Build: ${e}`);
         throw new Error("Error getting latest build");
     }
+
     res = JSON.parse(res);
     return res[0].product_version;
 }
@@ -306,20 +308,15 @@ async function getLatestVersion(opers) {
  * @returns {Promise<void>}
  */
 async function getBuild(opers) {
-    let options = {
-        method: 'GET',
-        url: DOWNLOAD_URL + opers,
-        headers:
-            {
-                'cache-control': 'no-cache',
-                'content-type': 'application/json',
-                'Accept': 'application/json'
-            }
-    };
     let res = undefined;
     try {
-        // The request-promise repo recommends using plain old request when piping needs to happen.
-        res = await request(options);
+        let options = {
+            headers: {
+                content_type: 'application/json',
+                accept: 'application/json'
+            }
+        };
+        res = await needle('get', DOWNLOAD_URL + opers, options);
         let file = await fs.createWriteStream(path.join(UPGRADE_DIR_PATH, TAR_FILE_NAME), {mode: hdb_terms.HDB_FILE_PERMISSIONS});
         res.pipe(file);
         file.on('finish', async function() {

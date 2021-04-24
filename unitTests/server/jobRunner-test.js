@@ -133,6 +133,70 @@ describe('Test parseMessage', function() {
             assert.ok(e.message.length > 0, 'expected exception');
         }
     });
+
+    it('Test the operation switch statement', async () => {
+        let runner_message = new jobs_runner.RunnerMessage();
+        let job_object = new JobObject();
+        runner_message.json = DATA_LOAD_MESSAGE;
+        runner_message.job = job_object;
+        const run_csv_response_test = 'run csv called';
+        const run_csv_job_stub = sandbox.stub().resolves(run_csv_response_test);
+        jobs_runner.__set__('runCSVJob', run_csv_job_stub);
+
+        runner_message.json.operation = 'csv_file_load';
+        const csv_file = await parseMessage(runner_message);
+        assert.equal(csv_file, run_csv_response_test);
+        assert.equal(run_csv_job_stub.args[0][1].name, 'csvFileLoad');
+
+        run_csv_job_stub.resetHistory();
+        runner_message.json.operation = 'csv_url_load';
+        const csv_url = await parseMessage(runner_message);
+        assert.equal(csv_url, run_csv_response_test);
+        assert.equal(run_csv_job_stub.args[0][1].name, 'csvURLLoad');
+
+        run_csv_job_stub.resetHistory();
+        runner_message.json.operation = 'csv_data_load';
+        const csv_data = await parseMessage(runner_message);
+        assert.equal(csv_data, run_csv_response_test);
+        assert.equal(run_csv_job_stub.args[0][1].name, 'csvDataLoad');
+
+        run_csv_job_stub.resetHistory();
+        runner_message.json.operation = 'import_from_s3';
+        const import_s3 = await parseMessage(runner_message);
+        assert.equal(import_s3, run_csv_response_test);
+        assert.equal(run_csv_job_stub.args[0][1].name, 'importFromS3');
+
+        run_csv_job_stub.resetHistory();
+        runner_message.json.operation = 'export_local';
+        const export_local = await parseMessage(runner_message);
+        assert.equal(export_local, run_csv_response_test);
+        assert.equal(run_csv_job_stub.args[0][1].name, 'export_local');
+
+        run_csv_job_stub.resetHistory();
+        runner_message.json.operation = 'export_to_s3';
+        const export_to_s3 = await parseMessage(runner_message);
+        assert.equal(export_to_s3, run_csv_response_test);
+        assert.equal(run_csv_job_stub.args[0][1].name, 'export_to_s3');
+
+        run_csv_job_stub.resetHistory();
+        runner_message.json.operation = 'delete_files_before';
+        const delete_files_before = await parseMessage(runner_message);
+        assert.equal(delete_files_before, run_csv_response_test);
+        assert.equal(run_csv_job_stub.args[0][1].name, 'deleteFilesBefore');
+
+        run_csv_job_stub.resetHistory();
+        runner_message.json.operation = 'delete_records_before';
+        const delete_records_before = await parseMessage(runner_message);
+        assert.equal(delete_records_before, run_csv_response_test);
+        assert.equal(run_csv_job_stub.args[0][1].name, 'deleteFilesBefore');
+
+        run_csv_job_stub.resetHistory();
+        runner_message.json.operation = 'delete_transaction_logs_before';
+        const delete_transaction_logs_before = await parseMessage(runner_message);
+        assert.equal(delete_transaction_logs_before, run_csv_response_test);
+        assert.equal(run_csv_job_stub.args[0][1].name, 'deleteTransactionLogsBefore');
+    });
+
 });
 
 describe('Test runCSVJob', function() {
