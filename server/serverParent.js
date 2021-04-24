@@ -30,7 +30,8 @@ async function serverParent(num_workers) {
     process.on('uncaughtException', function (err) {
         let message = `Found an uncaught exception with message: ${err.message}${os.EOL}Stack: ${err.stack}${os.EOL}Terminating HDB.`;
         console.error(message);
-        harper_logger.fatal(message);
+        const final_logger = harper_logger.finalLogger();
+        final_logger.fatal(message);
         process.exit(1);
     });
 

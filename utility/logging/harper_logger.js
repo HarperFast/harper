@@ -36,9 +36,10 @@ const LOGGER_PATH = {
 
 const DEFAULT_LOG_FILE_NAME = 'hdb_log.log';
 
+let pino_logger = undefined;
+let final_logger = undefined;
 let log_directory = undefined;
 let log_file_name = undefined;
-let pino_logger = undefined;
 let log_location = undefined;
 let daily_rotate = undefined;
 let log_level = undefined;
@@ -89,6 +90,7 @@ module.exports = {
     setLogLevel:setLogLevel,
     writeLog:writeLog,
     readLog:readLog,
+    finalLogger,
     log_level,
     NOTIFY,
     FATAL,
@@ -106,8 +108,7 @@ module.exports = {
 function createLog(log_location_setting) {
     if (daily_rotate) {
         // If the logs are set to daily rotate we get tomorrows date so that we know when to create a new log file.
-        //tomorrows_date = moment().utc().add(1, 'days');
-        tomorrows_date = moment().utc().add(30, 'seconds');
+        tomorrows_date = moment().utc().add(1, 'days');
     }
 
     //if log location isn't defined, assume HDB_ROOT/log/hdb_log.log
@@ -217,23 +218,44 @@ function initPinoLogger() {
 
         // use pino.final to create a special logger that
         // guarantees final tick writes
-        const handler = pino.final(pino_logger, (err, finalLogger, evt) => {
+/*        const handler = pino.final(pino_logger, (err, finalLogger, evt) => {
+            console.log(finalLogger.destination)
             finalLogger.info(`${evt} caught`);
             if (err) finalLogger.error(err, 'error caused exit');
             process.exit(err ? 1 : 0);
-        });
+        })*/
+
+        final_logger = pino.final(pino_logger);
 
         // catch all the ways node might exit, if one occurs anything in the log buffer will be written to logs.
-        process.on('beforeExit', () => handler(null, 'beforeExit'));
-        process.on('exit', () => handler(null, 'exit'));
-        process.on('uncaughtException', (err) => handler(err, 'uncaughtException'));
-        process.on('SIGINT', () => handler(null, 'SIGINT'));
-        process.on('SIGQUIT', () => handler(null, 'SIGQUIT'));
-        process.on('SIGTERM', () => handler(null, 'SIGTERM'));
+        process.on('beforeExit', () => final_logger.error('dying'));
+        process.on('exit', () => final_logger.error('dying'));
+        process.on('uncaughtException', (err) => final_logger.error('dying'));
+        process.on('SIGINT', () => final_logger.error('dying'));
+        process.on('SIGQUIT', () => final_logger.error('dying'));
+        process.on('SIGTERM', () => final_logger.error('dying'));
     } catch(err) {
         console.error(err);
         throw err;
     }
+}
+
+/**
+ * Uses pino.final to create a special logger that guarantees final tick writes
+ * on process exit events.
+ * @param pino_log
+ * @returns {undefined|*|(function(*=, ...[*]): *)}
+ */
+function finalLogger() {
+    if (pino_logger === undefined) {
+        initPinoLogger();
+    }
+
+    if (final_logger === undefined) {
+        return pino.final(pino_logger);
+    }
+
+    return final_logger;
 }
 
 /**
@@ -256,29 +278,6 @@ function writeLog(level, message) {
         // Daily rotate is set in HDB config
         if (daily_rotate) {
             const current_date = moment().utc();
-
-
-            if (current_date.diff(tomorrows_date) > 1) {
-                // Anything in the the current logs buffer is flushed to the log file.
-                if (pino_logger) {
-                    pino_logger.flush();
-                }
-
-                // Update the tomorrow date value
-                tomorrows_date = moment().utc().add(1, 'days');
-                log_location = path.join(log_directory, `${tomorrows_date.format(DATE_FORMAT)}_${log_file_name}`);
-
-                // Create a new pino logger instance under new file name.
-                initPinoLogger();
-                pino_logger.notify(`Initialized pino logger writing to ${log_location} process pid ${process.pid}`);
-
-                // If the config has a value for dail max we must check to see any old logs need to be removed.
-                if (Number.isInteger(daily_max) && daily_max > 0) {
-                    removeOldLogs();
-                }
-            }
-
-/*            const current_date = moment().utc();
             // If the current logs date is the same as previously set tomorrows date we create a new log.
             if (moment(current_date.format(DATE_FORMAT)).isSameOrAfter(tomorrows_date.format(DATE_FORMAT))) {
                 // Anything in the the current logs buffer is flushed to the log file.
@@ -298,7 +297,7 @@ function writeLog(level, message) {
                 if (Number.isInteger(daily_max) && daily_max > 0) {
                     removeOldLogs();
                 }
-            }*/
+            }
         }
 
         pino_logger[level](message);

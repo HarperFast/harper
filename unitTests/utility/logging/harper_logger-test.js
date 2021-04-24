@@ -336,10 +336,10 @@ describe('Test harper_logger module', () => {
             }, 5000);
         }).timeout(8000);*/
 
-        it('Test writeLog with daily rotate', () => {
+        it('Test writeLog with daily rotate', (done) => {
             setMockPropParams(true, 3, LOG_LEVEL.TRACE, LOG_PATH_TEST, HDB_ROOT_TEST);
             harper_logger_rw = rewire('../../../utility/logging/harper_logger');
-/*            const expected_log_path = path.join(TEST_LOG_DIR, `${moment().utc().format('YYYY-MM-DD')}_${LOG_NAME_TEST}`);
+            const expected_log_path = path.join(TEST_LOG_DIR, `${moment().utc().format('YYYY-MM-DD')}_${LOG_NAME_TEST}`);
             const file_exists = fs_extra.pathExistsSync(expected_log_path);
             expect(file_exists).to.be.true;
             testWriteLogBulkWrite();
@@ -348,28 +348,24 @@ describe('Test harper_logger module', () => {
             setTimeout(() => {
                 testWriteLogBulkTests(expected_log_path);
                 done();
-            }, 5000);*/
+            }, 5000);
         }).timeout(8000);
 
         // This test relies on the one above to create logger.
-        it('Test writeLog with daily rotate next day log created', () => {
+        it('Test writeLog with daily rotate next day log created', (done) => {
             const tomorrows_date = moment().utc().add(1, 'days');
             sandbox.useFakeTimers({now: new Date(tomorrows_date.format('YYYY,MM,DD'))});
             harper_logger_rw.writeLog('fatal', 'Test a new date log is created');
-
-            // setMockPropParams(true, 3, LOG_LEVEL.TRACE, LOG_PATH_TEST, HDB_ROOT_TEST);
-            // harper_logger_rw = rewire('../../../utility/logging/harper_logger');
-
-/*            const expected_log_path = path.join(TEST_LOG_DIR, `${tomorrows_date.format('YYYY-MM-DD')}_${LOG_NAME_TEST}`);
+            const expected_log_path = path.join(TEST_LOG_DIR, `${tomorrows_date.format('YYYY-MM-DD')}_${LOG_NAME_TEST}`);
             const file_exists = fs_extra.pathExistsSync(expected_log_path);
             expect(file_exists).to.be.true;
-            testWriteLogBulkWrite();*/
+            testWriteLogBulkWrite();
 
             //The log buffer gets flushed every 5 seconds so we wait for the flush to happen before reading.
-/*            setTimeout(() => {
+            setTimeout(() => {
                 testWriteLogBulkTests(expected_log_path);
                 done();
-            }, 5000);*/
+            }, 5000);
         }).timeout(8000);
     });
 });
