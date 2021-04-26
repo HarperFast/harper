@@ -4,7 +4,7 @@ const test_utils = require('../../test_utils');
 const sinon = require('sinon');
 const chai = require('chai');
 const path = require('path');
-const pino = require('pino');
+const os = require('os');
 const moment = require('moment');
 const mock_require = require('mock-require');
 const fs_extra = require('fs-extra');
@@ -311,23 +311,24 @@ describe('Test harper_logger module', () => {
         it('Test writeLog writes to log as expected happy path', (done) => {
             setMockPropParams(false, 2, LOG_LEVEL.TRACE, LOG_PATH_TEST, HDB_ROOT_TEST);
             harper_logger_rw = rewire('../../../utility/logging/harper_logger');
+            pino_logger = harper_logger_rw.__get__('pino_logger');
             const file_exists = fs_extra.pathExistsSync(LOG_PATH_TEST);
             expect(file_exists).to.be.true;
             testWriteLogBulkWrite(LOG_PATH_TEST);
 
-            //The log buffer gets flushed every 5 seconds so we wait for the flush to happen before reading.
             setTimeout(() => {
+                pino_logger.flush();
                 testWriteLogBulkTests(LOG_PATH_TEST);
                 done();
-            }, 5000);
-        }).timeout(8000);
+            }, 1000);
+        }).timeout(3000);
 
         // This test relies on the one above to create logger.
         it('Test writeLog sets level to error if param not passed', (done) => {
             harper_logger_rw.writeLog(undefined, 'Undefined level log');
 
-            // The log buffer gets flushed every 5 seconds so we wait for the flush to happen before reading.
             setTimeout(() => {
+                pino_logger.flush();
                 const log_json = convertLogToJson(LOG_PATH_TEST);
                 let log_found = false;
                 for (const log of log_json) {
@@ -338,23 +339,24 @@ describe('Test harper_logger module', () => {
                 expect(log_found).to.be.true;
                 fs_extra.removeSync(LOG_PATH_TEST);
                 done();
-            }, 5000);
-        }).timeout(8000);
+            }, 1000);
+        }).timeout(3000);
 
         it('Test writeLog with daily rotate', (done) => {
             setMockPropParams(true, 3, LOG_LEVEL.TRACE, LOG_PATH_TEST, HDB_ROOT_TEST);
             harper_logger_rw = rewire('../../../utility/logging/harper_logger');
+            pino_logger = harper_logger_rw.__get__('pino_logger');
             const expected_log_path = path.join(TEST_LOG_DIR, `${moment().utc().format('YYYY-MM-DD')}_${LOG_NAME_TEST}`);
             const file_exists = fs_extra.pathExistsSync(expected_log_path);
             expect(file_exists).to.be.true;
             testWriteLogBulkWrite();
 
-            //The log buffer gets flushed every 5 seconds so we wait for the flush to happen before reading.
             setTimeout(() => {
+                pino_logger.flush();
                 testWriteLogBulkTests(expected_log_path);
                 done();
-            }, 5000);
-        }).timeout(8000);
+            }, 1000);
+        }).timeout(3000);
 
         // This test relies on the one above to create logger.
         it('Test writeLog with daily rotate next day log created', (done) => {
@@ -650,5 +652,30 @@ describe('Test harper_logger module', () => {
             };
             await test_utils.assertErrorAsync(harper_logger_rw.readLog, [read_obj], new Error('Level not valid'));
         });
+    });
+    
+    describe('Test getPropsFilePath', () => {
+        let getPropsFilePath;
+
+        before(() => {
+            setMockPropParams(false, null, LOG_LEVEL.TRACE, LOG_PATH_TEST, HDB_ROOT_TEST);
+            harper_logger_rw = rewire('../../../utility/logging/harper_logger');
+            getPropsFilePath = harper_logger_rw.__get__('getPropsFilePath');
+        });
+        
+        it('Test home dir returned if os.homedir throws error', () => {
+            const homedir_stub = sandbox.stub(os, 'homedir').throws(new Error('error'));
+            const result = getPropsFilePath();
+            expect(result.includes('.harperdb/hdb_boot_properties.file'));
+            homedir_stub.restore();
+        });
+
+        it('Test root dir used if home dir undefined', () => {
+            const homedir_stub = sandbox.stub(os, 'homedir').returns(undefined);
+            const result = getPropsFilePath();
+            expect(result.includes('harperdb/utility/hdb_boot_properties.file'));
+            homedir_stub.restore();
+        });
+    
     });
 });
