@@ -167,8 +167,7 @@ function createLog(log_location_setting) {
 
     if (!pino_logger) {
         initPinoLogger();
-        pino_logger.trace(`Initialized pino logger writing to ${log_location} process pid ${process.pid}`);
-        //trace(`Initialized pino logger writing to ${log_location} process pid ${process.pid}`);
+        trace(`Initialized pino logger writing to ${log_location} process pid ${process.pid}`);
     }
 }
 
@@ -216,24 +215,7 @@ function initPinoLogger() {
             pino_logger.flush();
         }, LOG_BUFFER_FLUSH_INTERVAL).unref();
 
-        // use pino.final to create a special logger that
-        // guarantees final tick writes
-/*        const handler = pino.final(pino_logger, (err, finalLogger, evt) => {
-            console.log(finalLogger.destination)
-            finalLogger.info(`${evt} caught`);
-            if (err) finalLogger.error(err, 'error caused exit');
-            process.exit(err ? 1 : 0);
-        })*/
-
         final_logger = pino.final(pino_logger);
-
-        // catch all the ways node might exit, if one occurs anything in the log buffer will be written to logs.
-        process.on('beforeExit', () => final_logger.error('dying'));
-        process.on('exit', () => final_logger.error('dying'));
-        process.on('uncaughtException', (err) => final_logger.error('dying'));
-        process.on('SIGINT', () => final_logger.error('dying'));
-        process.on('SIGQUIT', () => final_logger.error('dying'));
-        process.on('SIGTERM', () => final_logger.error('dying'));
     } catch(err) {
         console.error(err);
         throw err;
@@ -252,7 +234,8 @@ function finalLogger() {
     }
 
     if (final_logger === undefined) {
-        return pino.final(pino_logger);
+        final_logger = pino.final(pino_logger);
+        return final_logger;
     }
 
     return final_logger;
@@ -287,11 +270,14 @@ function writeLog(level, message) {
 
                 // Update the tomorrow date value
                 tomorrows_date = moment().utc().add(1, 'days');
-                log_location = path.join(log_directory, `${current_date.format(DATE_FORMAT)}_${log_file_name}`);
+                const new_log_location = path.join(log_directory, `${current_date.format(DATE_FORMAT)}_${log_file_name}`);
 
                 // Create a new pino logger instance under new file name.
-                initPinoLogger();
-                pino_logger.notify(`Initialized pino logger writing to ${log_location} process pid ${process.pid}`);
+                if (new_log_location !== log_location) {
+                    log_location = new_log_location;
+                    initPinoLogger();
+                    pino_logger.notify(`Initialized pino logger writing to ${log_location} process pid ${process.pid}`);
+                }
 
                 // If the config has a value for dail max we must check to see any old logs need to be removed.
                 if (Number.isInteger(daily_max) && daily_max > 0) {
@@ -408,7 +394,7 @@ function setLogLevel(level) {
 async function readLog(read_log_object) {
     const validation = validator(read_log_object);
     if (validation) {
-        throw new Error(validation);
+        throw validation;
     }
 
     const options = {

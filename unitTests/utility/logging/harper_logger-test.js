@@ -1,6 +1,6 @@
 'use strict';
 
-//const test_utils = require('../../test_utils');
+const test_utils = require('../../test_utils');
 const sinon = require('sinon');
 const chai = require('chai');
 const path = require('path');
@@ -13,7 +13,9 @@ const sinon_chai = require('sinon-chai');
 const expect = chai.expect;
 chai.use(sinon_chai);
 const rewire = require('rewire');
+
 let harper_logger_rw;
+let pino_logger;
 
 const LOG_DIR_TEST = 'testLogger';
 const LOG_NAME_TEST = 'log_unit_test.log';
@@ -145,15 +147,15 @@ function testWriteLogBulkTests(log_path) {
 
 describe('Test harper_logger module', () => {
     const sandbox = sinon.createSandbox();
-    let pino_spy = sandbox.spy(pino);
 
     before(() => {
-
+        fs_extra.mkdirpSync(TEST_LOG_DIR);
     });
 
     after(() => {
         mock_require.stopAll();
         sandbox.restore();
+        fs_extra.removeSync(TEST_LOG_DIR);
     });
 
     describe('Test createLog function', () => {
@@ -302,8 +304,11 @@ describe('Test harper_logger module', () => {
     });
     
     describe('Test writeLog function', () => {
+        after(() => {
+            fs_extra.emptyDirSync(LOG_PATH_TEST);
+        });
 
-/*        it('Test writeLog writes to log as expected happy path', (done) => {
+        it('Test writeLog writes to log as expected happy path', (done) => {
             setMockPropParams(false, 2, LOG_LEVEL.TRACE, LOG_PATH_TEST, HDB_ROOT_TEST);
             harper_logger_rw = rewire('../../../utility/logging/harper_logger');
             const file_exists = fs_extra.pathExistsSync(LOG_PATH_TEST);
@@ -312,7 +317,7 @@ describe('Test harper_logger module', () => {
 
             //The log buffer gets flushed every 5 seconds so we wait for the flush to happen before reading.
             setTimeout(() => {
-                testWriteLogBulkTests();
+                testWriteLogBulkTests(LOG_PATH_TEST);
                 done();
             }, 5000);
         }).timeout(8000);
@@ -334,7 +339,7 @@ describe('Test harper_logger module', () => {
                 fs_extra.removeSync(LOG_PATH_TEST);
                 done();
             }, 5000);
-        }).timeout(8000);*/
+        }).timeout(8000);
 
         it('Test writeLog with daily rotate', (done) => {
             setMockPropParams(true, 3, LOG_LEVEL.TRACE, LOG_PATH_TEST, HDB_ROOT_TEST);
@@ -353,19 +358,297 @@ describe('Test harper_logger module', () => {
 
         // This test relies on the one above to create logger.
         it('Test writeLog with daily rotate next day log created', (done) => {
-            const tomorrows_date = moment().utc().add(1, 'days');
-            sandbox.useFakeTimers({now: new Date(tomorrows_date.format('YYYY,MM,DD'))});
+            let tomorrows_date = moment().utc().add(1, 'days');
+            let fake_timer = sandbox.useFakeTimers({now: new Date(tomorrows_date.format('YYYY,MM,DD'))});
             harper_logger_rw.writeLog('fatal', 'Test a new date log is created');
-            const expected_log_path = path.join(TEST_LOG_DIR, `${tomorrows_date.format('YYYY-MM-DD')}_${LOG_NAME_TEST}`);
+            let expected_log_path = path.join(TEST_LOG_DIR, `${tomorrows_date.format('YYYY-MM-DD')}_${LOG_NAME_TEST}`);
             const file_exists = fs_extra.pathExistsSync(expected_log_path);
             expect(file_exists).to.be.true;
             testWriteLogBulkWrite();
+            fake_timer.restore();
 
             //The log buffer gets flushed every 5 seconds so we wait for the flush to happen before reading.
             setTimeout(() => {
                 testWriteLogBulkTests(expected_log_path);
-                done();
+                tomorrows_date = moment().utc().add(2, 'days');
+                fake_timer = sandbox.useFakeTimers({now: new Date(tomorrows_date.format('YYYY,MM,DD'))});
+                harper_logger_rw.writeLog('fatal', 'Test a new NEW date log is created');
+                expected_log_path = path.join(TEST_LOG_DIR, `${tomorrows_date.format('YYYY-MM-DD')}_${LOG_NAME_TEST}`);
+                const file_exists = fs_extra.pathExistsSync(expected_log_path);
+                expect(file_exists).to.be.true;
+                fake_timer.restore();
+                testWriteLogBulkWrite();
+
+                setTimeout(() => {
+                    testWriteLogBulkTests(expected_log_path);
+                    done();
+                }, 5000);
             }, 5000);
-        }).timeout(8000);
+        }).timeout(110000);
+
+        it('Test writeLog removes old log with daily max set', () => {
+            const tomorrows_date = moment().utc().add(3, 'days');
+            const fake_timer = sandbox.useFakeTimers({now: new Date(tomorrows_date.format('YYYY,MM,DD'))});
+            setMockPropParams(true, 3, LOG_LEVEL.TRACE, LOG_PATH_TEST, HDB_ROOT_TEST);
+            moment.prototype.isSameOrAfter = sandbox.stub().callsFake(() => true);
+            harper_logger_rw = rewire('../../../utility/logging/harper_logger');
+            harper_logger_rw.writeLog('fatal', 'Test a new date log is created please');
+            const expected_log_path = path.join(TEST_LOG_DIR, `${tomorrows_date.format('YYYY-MM-DD')}_${LOG_NAME_TEST}`);
+            const file_exists = fs_extra.pathExistsSync(expected_log_path);
+            const all_log_files = fs.readdirSync(TEST_LOG_DIR);
+            expect(file_exists).to.be.true;
+            expect(all_log_files.length).to.equal(3);
+            fake_timer.restore();
+        });
+    });
+
+    describe('Test finalLogger function', () => {
+        before(() => {
+            fs_extra.emptyDirSync(TEST_LOG_DIR);
+        });
+
+        after(() => {
+            fs_extra.emptyDirSync(TEST_LOG_DIR);
+        });
+
+        it('Test final logger instance is returned', () => {
+            setMockPropParams(false, 2, LOG_LEVEL.TRACE, LOG_PATH_TEST, HDB_ROOT_TEST);
+            harper_logger_rw = rewire('../../../utility/logging/harper_logger');
+            const final_logger = harper_logger_rw.finalLogger();
+            expect(typeof final_logger).to.equal('object');
+        });
+
+        // This test relies on the one above to create logger.
+        it('Test final logger instance is returned when pino undefined', () => {
+            harper_logger_rw.__set__('pino_logger', undefined);
+            const final_logger = harper_logger_rw.finalLogger();
+            expect(typeof final_logger).to.equal('object');
+            const pino_logger = harper_logger_rw.__get__('pino_logger');
+            expect(typeof pino_logger).to.equal('object');
+        });
+    });
+    
+    describe('Test removeOldLogs function', () => {
+        after(() => {
+            fs_extra.emptyDirSync(TEST_LOG_DIR);
+        });
+        
+        it('Test old log is removed happy path', () => {
+            setMockPropParams(true, 2, LOG_LEVEL.TRACE, LOG_PATH_TEST, HDB_ROOT_TEST);
+            harper_logger_rw = rewire('../../../utility/logging/harper_logger');
+            moment.prototype.isSameOrAfter = sandbox.stub().callsFake(() => true);
+            fs_extra.ensureFileSync(path.join(TEST_LOG_DIR, '2021-04-25_log_unit_test.log'));
+            fs_extra.ensureFileSync(path.join(TEST_LOG_DIR, '2021-03-01_log_unit_test.log'));
+            harper_logger_rw.writeLog('info', 'This log will trigger daily max');
+            const file_exists = fs_extra.pathExistsSync(path.join(TEST_LOG_DIR, '2021-03-01_log_unit_test.log'));
+            expect(file_exists).to.be.false;
+        });
+    });
+    
+    describe('Test setLogLevel function', () => {
+        before(() => {
+            setMockPropParams(false, null, LOG_LEVEL.NOTIFY, LOG_PATH_TEST, HDB_ROOT_TEST);
+            harper_logger_rw = rewire('../../../utility/logging/harper_logger');
+            pino_logger = harper_logger_rw.__get__('pino_logger');
+        });
+
+        after(() => {
+            fs_extra.emptyDirSync(TEST_LOG_DIR);
+        });
+
+        afterEach((done) => {
+            setTimeout(() => done(), 500);
+        });
+
+        it('Test debug log level works as expected', () => {
+            harper_logger_rw.setLogLevel(LOG_LEVEL.DEBUG);
+            testWriteLogBulkWrite();
+            pino_logger.flush();
+            const log = fs_extra.readFileSync(LOG_PATH_TEST);
+            expect(log.includes('"level":"trace"')).to.be.false;
+            expect(log.includes('"level":"debug"')).to.be.true;
+            expect(log.includes('"level":"info"')).to.be.true;
+            expect(log.includes('"level":"warn"')).to.be.true;
+            expect(log.includes('"level":"error"')).to.be.true;
+            expect(log.includes('"level":"fatal"')).to.be.true;
+            expect(log.includes('"level":"notify"')).to.be.true;
+        });
+
+        it('Test info log level works as expected', () => {
+            fs_extra.writeFileSync(LOG_PATH_TEST, '');
+            harper_logger_rw.setLogLevel(LOG_LEVEL.INFO);
+            testWriteLogBulkWrite();
+            pino_logger.flush();
+            const log = fs_extra.readFileSync(LOG_PATH_TEST);
+            expect(log.includes('"level":"trace"')).to.be.false;
+            expect(log.includes('"level":"debug"')).to.be.false;
+            expect(log.includes('"level":"info"')).to.be.true;
+            expect(log.includes('"level":"warn"')).to.be.true;
+            expect(log.includes('"level":"error"')).to.be.true;
+            expect(log.includes('"level":"fatal"')).to.be.true;
+            expect(log.includes('"level":"notify"')).to.be.true;
+        });
+
+        it('Test warn log level works as expected', () => {
+            fs_extra.writeFileSync(LOG_PATH_TEST, '');
+            harper_logger_rw.setLogLevel(LOG_LEVEL.WARN);
+            testWriteLogBulkWrite();
+            pino_logger.flush();
+            const log = fs_extra.readFileSync(LOG_PATH_TEST);
+            expect(log.includes('"level":"trace"')).to.be.false;
+            expect(log.includes('"level":"debug"')).to.be.false;
+            expect(log.includes('"level":"info"')).to.be.false;
+            expect(log.includes('"level":"warn"')).to.be.true;
+            expect(log.includes('"level":"error"')).to.be.true;
+            expect(log.includes('"level":"fatal"')).to.be.true;
+            expect(log.includes('"level":"notify"')).to.be.true;
+        });
+
+        it('Test error log level works as expected', () => {
+            fs_extra.writeFileSync(LOG_PATH_TEST, '');
+            harper_logger_rw.setLogLevel(LOG_LEVEL.ERROR);
+            testWriteLogBulkWrite();
+            pino_logger.flush();
+            const log = fs_extra.readFileSync(LOG_PATH_TEST);
+            expect(log.includes('"level":"trace"')).to.be.false;
+            expect(log.includes('"level":"debug"')).to.be.false;
+            expect(log.includes('"level":"info"')).to.be.false;
+            expect(log.includes('"level":"warn"')).to.be.false;
+            expect(log.includes('"level":"error"')).to.be.true;
+            expect(log.includes('"level":"fatal"')).to.be.true;
+            expect(log.includes('"level":"notify"')).to.be.true;
+        });
+
+        it('Test fatal log level works as expected', () => {
+            fs_extra.writeFileSync(LOG_PATH_TEST, '');
+            harper_logger_rw.setLogLevel(LOG_LEVEL.FATAL);
+            testWriteLogBulkWrite();
+            pino_logger.flush();
+            const log = fs_extra.readFileSync(LOG_PATH_TEST);
+            expect(log.includes('"level":"trace"')).to.be.false;
+            expect(log.includes('"level":"debug"')).to.be.false;
+            expect(log.includes('"level":"info"')).to.be.false;
+            expect(log.includes('"level":"warn"')).to.be.false;
+            expect(log.includes('"level":"error"')).to.be.false;
+            expect(log.includes('"level":"fatal"')).to.be.true;
+            expect(log.includes('"level":"notify"')).to.be.true;
+        });
+
+        it('Test notify log level works as expected', () => {
+            fs_extra.writeFileSync(LOG_PATH_TEST, '');
+            harper_logger_rw.setLogLevel(LOG_LEVEL.NOTIFY);
+            testWriteLogBulkWrite();
+            pino_logger.flush();
+            const log = fs_extra.readFileSync(LOG_PATH_TEST);
+            expect(log.includes('"level":"trace"')).to.be.false;
+            expect(log.includes('"level":"debug"')).to.be.false;
+            expect(log.includes('"level":"info"')).to.be.false;
+            expect(log.includes('"level":"warn"')).to.be.false;
+            expect(log.includes('"level":"error"')).to.be.false;
+            expect(log.includes('"level":"fatal"')).to.be.false;
+            expect(log.includes('"level":"notify"')).to.be.true;
+        });
+    });
+    
+    describe('Test readLog function', () => {
+        const log_msg_test = "I am an old error message";
+
+        before((done) => {
+            fs_extra.writeFileSync(LOG_PATH_TEST, `{"level":"error","timestamp":"2021-04-26T01:00:00.000Z","message":"${log_msg_test}"}\n`);
+            setMockPropParams(false, null, LOG_LEVEL.TRACE, LOG_PATH_TEST, HDB_ROOT_TEST);
+            harper_logger_rw = rewire('../../../utility/logging/harper_logger');
+            testWriteLogBulkWrite();
+            pino_logger = harper_logger_rw.__get__('pino_logger');
+            setTimeout(() => {
+                pino_logger.flush();
+                done();
+            }, 500);
+        });
+
+        it('Test read log from', async () => {
+            const read_obj = {
+                "operation": "read_log",
+                "from": "2021-04-26T01:10:00.000Z"
+            };
+            const result = await harper_logger_rw.readLog(read_obj);
+            let test_msg_found = false;
+            result.file.forEach((log) => {
+                if (log.message === log_msg_test) {
+                    test_msg_found = true;
+                }
+            });
+
+            expect(result.file.length).to.equal(8);
+            expect(test_msg_found).to.be.false;
+        });
+
+        it('Test read log until', async () => {
+            const read_obj = {
+                "operation": "read_log",
+                "until": "2021-04-26T01:10:00.000Z"
+            };
+            const result = await harper_logger_rw.readLog(read_obj);
+            expect(result.file.length).to.equal(1);
+            expect(result.file[0].message).to.be.equal(log_msg_test);
+        });
+
+        it('Test read log level', async () => {
+            const read_obj = {
+                "operation": "read_log",
+                "level": "fatal"
+            };
+            const result = await harper_logger_rw.readLog(read_obj);
+            expect(result.file.length).to.equal(1);
+            expect(result.file[0].message).to.be.equal('fatal log');
+        });
+
+        it('Test read log limit', async () => {
+            const read_obj = {
+                "operation": "read_log",
+                "limit": 3
+            };
+            const result = await harper_logger_rw.readLog(read_obj);
+            expect(result.file.length).to.equal(3);
+        });
+
+        it('Test read log order desc', async () => {
+            const read_obj = {
+                "operation": "read_log",
+                "order": "desc"
+            };
+            const result = await harper_logger_rw.readLog(read_obj);
+            expect(result.file.length).to.equal(9);
+            expect(result.file[8].message).to.equal(log_msg_test);
+        });
+
+        it('Test read log order asc', async () => {
+            const read_obj = {
+                "operation": "read_log",
+                "order": "asc"
+            };
+            const result = await harper_logger_rw.readLog(read_obj);
+            expect(result.file.length).to.equal(9);
+            expect(result.file[0].message).to.equal(log_msg_test);
+        });
+
+        it('Test read log start', async () => {
+            const read_obj = {
+                "operation": "read_log",
+                "order": "asc",
+                "start": 7
+            };
+            const result = await harper_logger_rw.readLog(read_obj);
+            expect(result.file.length).to.equal(2);
+            expect(result.file[0].message).to.equal('fatal log');
+            expect(result.file[1].message).to.equal('notify log');
+        });
+
+        it('Test for validation error', async () => {
+            const read_obj = {
+                "operation": "read_log",
+                "level": "eror"
+            };
+            await test_utils.assertErrorAsync(harper_logger_rw.readLog, [read_obj], new Error('Level not valid'));
+        });
     });
 });
