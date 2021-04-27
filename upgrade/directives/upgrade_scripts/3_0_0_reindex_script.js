@@ -1,50 +1,69 @@
 'use strict';
 
 //keep these 2 dependencies in this exact order, otherwise this will fail on OSX
-const new_environment_utility = require('../../utility/lmdb/environmentUtility');
-const old_environment_utility = require('./nodeLMDB/environmentUtility');
+const new_environment_utility = require('../../../utility/lmdb/environmentUtility');
+const old_environment_utility = require('../../lmdb/nodeLMDB/environmentUtility');
 
-const {insertRecords} = require('../../utility/lmdb/writeUtility');
-const lmdb_common = require('../../utility/lmdb/commonUtility');
-const lmdb_terms = require('../../utility/lmdb/terms');
-const hdb_common = require('../../utility/common_utils');
-const logger = require('../../utility/logging/harper_logger');
-const hdb_util = require('../../utility/common_utils');
+const {insertRecords} = require('../../../utility/lmdb/writeUtility');
+const lmdb_common = require('../../../utility/lmdb/commonUtility');
+const lmdb_terms = require('../../../utility/lmdb/terms');
+const hdb_common = require('../../../utility/common_utils');
+const { STORAGE_TYPES_ENUM } = require('../../../utility/hdbTerms');
+const logger = require('../../../utility/logging/harper_logger');
+const hdb_util = require('../../../utility/common_utils');
 const fs = require('fs-extra');
 const path = require('path');
 const progress = require('cli-progress');
 const assert = require('assert');
 const pino = require('pino');
-const env_mngr = require('../../utility/environment/environmentManager');
+const env_mngr = require('../../../utility/environment/environmentManager');
 if(!env_mngr.isInitialized()) {
     env_mngr.initSync();
 }
 
-const BASE_PATH = env_mngr.getHdbBasePath();
-const SCHEMA_PATH = path.join(BASE_PATH, 'schema');
-const TMP_PATH = path.join(BASE_PATH, '3_0_0_upgrade_tmp');
-const TRANSACTIONS_PATH = path.join(BASE_PATH, 'transactions');
+module.exports = reindexUpgrade;
+
+let BASE_PATH;
+let SCHEMA_PATH;
+let TMP_PATH;
+let TRANSACTIONS_PATH;
 let pino_logger;
 let error_occurred = false;
 
-module.exports = reindexUpgrade;
 
 /**
  * Used by upgrade to create new lmdb-store indices from existing node-lmdb indices.
  * Queries the existing table indices to build a new one in hdb/tmp. Once the full table
  * has been processed it will move the table from tmp to the schema folder.
  * If reindexing transactions will move to transactions folder.
- * @returns {Promise<void>}
+ * @returns {Promise<string>}
  */
 async function reindexUpgrade() {
+    //we need to check to see if the instance is using FS instead of LMDB - if so, we can skip the reindex step
+    if (env_mngr.getDataStoreType() === STORAGE_TYPES_ENUM.FILE_SYSTEM) {
+        console.info('\n\nHDB using FS datastore - no need to run LMDB reindexing');
+        return 'Reindexing skipped for FS datastore instance of HDB';
+    }
+    //These variables need to be set within the reindex script so that they do not throw an error when the module is loaded
+    // for a new install (i.e. the base path has not been set yet)
+    BASE_PATH = env_mngr.getHdbBasePath();
+    SCHEMA_PATH = path.join(BASE_PATH, 'schema');
+    TMP_PATH = path.join(BASE_PATH, '3_0_0_upgrade_tmp');
+    TRANSACTIONS_PATH = path.join(BASE_PATH, 'transactions');
     console.info('Reindexing upgrade started for schemas');
     logger.notify('Reindexing upgrade started for schemas');
     await getSchemaTable(SCHEMA_PATH, false);
 
-    console.info('\n\nReindexing upgrade started for transaction logs');
-    logger.notify('Reindexing upgrade started for transaction logs');
-    await getSchemaTable(TRANSACTIONS_PATH, true);
+    //We need to confirm that transactions have been implemented for this instance before trying to reindex them so we
+    // don't throw an error.
+    const transactions_exist = await fs.pathExists(TRANSACTIONS_PATH);
+    if (transactions_exist) {
+        console.info('\n\nReindexing upgrade started for transaction logs');
+        logger.notify('Reindexing upgrade started for transaction logs');
+        await getSchemaTable(TRANSACTIONS_PATH, true);
+    }
     logger.notify('Reindexing upgrade complete');
+    return 'Reindexing for 3.0.0 upgrade complete';
 }
 
 /**

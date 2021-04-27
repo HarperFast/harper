@@ -812,6 +812,20 @@ function assignObjectToNullObject(...objects){
     return Object.assign.apply(null, objects);
 }
 
+/**
+ * Creates stubbed value for an UpgradeObject
+ *
+ * @param data_ver
+ * @param upgrade_ver
+ * @returns {{data_version, upgrade_version}}
+ */
+function generateUpgradeObj(data_ver, upgrade_ver) {
+    return {
+        data_version: data_ver,
+        upgrade_version: upgrade_ver
+    }
+}
+
 module.exports = {
     changeProcessToBinDir,
     deepClone,
@@ -835,6 +849,7 @@ module.exports = {
     getHTTPSCredentials,
     assertErrorSync,
     assertErrorAsync,
+    generateUpgradeObj,
     assignObjecttoNullObject: assignObjectToNullObject,
     COMMON_TEST_TERMS
 };

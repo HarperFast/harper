@@ -9,7 +9,7 @@ const LMDBDeleteTransactionObject = require('./LMDBDeleteTransactionObject');
 
 const lmdb_terms = require('../../../../utility/lmdb/terms');
 const hdb_util = require('../../../../utility/common_utils');
-const HDB_SETTINGS_NAMES = require('../../../../utility/hdbTerms').HDB_SETTINGS_NAMES;
+const { HDB_SETTINGS_NAMES } = require('../../../../utility/hdbTerms');
 const env_mngr = require('../../../../utility/environment/environmentManager');
 if(!env_mngr.isInitialized()){
     env_mngr.initSync();

@@ -161,11 +161,13 @@ const SQL_ERROR_MSGS = {
     OUTER_JOIN_TRANSLATION_ERROR: "There was an error translating the final SQL outer join data."
 };
 
-const USER_ERROR_MSGS ={
+const USER_ERROR_MSGS = {
     ALTER_USER_DUP_ROLES: (role) => `Update failed.  There are duplicates for the '${role}' role which is not allowed. Update your roles and try again.`,
     ALTER_USER_ROLE_NOT_FOUND: (role) => `Update failed.  Requested '${role}' role not found.`,
     DUP_ROLES_FOUND: (role) => `Multiple ${role} roles found.  Roles must have unique 'role' value. Please update and try again.`,
-    ROLE_NAME_NOT_FOUND: (role) => `${role} role not found`
+    ROLE_NAME_NOT_FOUND: (role) => `${role} role not found`,
+    USER_ALREADY_EXISTS: (user) => `User ${user} already exists`,
+    USER_NOT_EXIST: (user) => `User ${user} does not exist`
 };
 
 const VALIDATION_ERROR_MSGS = {

@@ -58,7 +58,7 @@ async function addUser(user) {
 
     let validation_resp = validation.addUserValidation(clean_user);
     if(validation_resp){
-        throw new Error(validation_resp);
+        throw handleHDBError(new Error(), validation_resp.message, HTTP_STATUS_CODES.BAD_REQUEST);
     }
 
     let search_obj = {
@@ -69,11 +69,15 @@ async function addUser(user) {
         get_attributes: ['id', 'permission', 'role']
     };
 
-    let search_role = await p_search_search_by_value(search_obj).catch((err) => {
+    let search_role;
+    try {
+        search_role = await p_search_search_by_value(search_obj);
+    } catch(err) {
         logger.error('There was an error searching for a role in add user');
         logger.error(err);
         throw err;
-    });
+    }
+
     if (!search_role || search_role.length < 1) {
         throw handleHDBError(new Error(), HDB_ERROR_MSGS.ROLE_NAME_NOT_FOUND(clean_user.role), HTTP_STATUS_CODES.NOT_FOUND);
     }
@@ -96,21 +100,27 @@ async function addUser(user) {
         records: [clean_user]
     };
 
-    let success = await insert.insert(insert_object).catch((err) => {
+    let success;
+    try {
+        success = await insert.insert(insert_object);
+    } catch(err) {
         logger.error('There was an error searching for a user.');
         logger.error(err);
         throw err;
-    });
+    }
+
     logger.debug(success);
 
-    await setUsersToGlobal().catch((err) => {
+    try {
+        await setUsersToGlobal();
+    } catch(err) {
         logger.error('Got an error setting users to global');
         logger.error(err);
-       throw err;
-    });
+        throw err;
+    }
 
     if(success.skipped_hashes.length === 1) {
-        return `User ${clean_user.username} already exists.`;
+        throw handleHDBError(new Error(), HDB_ERROR_MSGS.USER_ALREADY_EXISTS(clean_user.username), HTTP_STATUS_CODES.CONFLICT);
     }
 
     const new_user = Object.assign({}, clean_user);
@@ -172,11 +182,15 @@ async function alterUser(json_message) {
             search_value: clean_user.role,
             get_attributes: ['*']
         };
-        let role_data = await p_search_search_by_value(role_search_obj).catch((err) => {
+
+        let role_data;
+        try {
+            role_data = await p_search_search_by_value(role_search_obj);
+        } catch(err) {
             logger.error('Got an error searching for a role.');
             logger.error(err);
             throw err;
-        });
+        }
 
         if (!role_data || role_data.length === 0) {
             const msg = HDB_ERROR_MSGS.ALTER_USER_ROLE_NOT_FOUND(clean_user.role);
@@ -200,17 +214,22 @@ async function alterUser(json_message) {
         records: [clean_user]
     };
 
-    let success = await insert.update(update_object).catch((err) => {
+    let success;
+    try {
+        success = await insert.update(update_object);
+    } catch(err) {
         logger.error(`Error during update.`);
         logger.error(err);
         throw err;
-    });
+    }
 
-    await setUsersToGlobal().catch((err) => {
+    try {
+        await setUsersToGlobal();
+    } catch(err) {
         logger.error('Got an error setting users to global');
         logger.error(err);
         throw err;
-    });
+    }
 
     let alter_user_msg = new terms.ClusterMessageObjects.HdbCoreClusterAlterUserRequestMessage();
     alter_user_msg.user = clean_user;
@@ -242,17 +261,28 @@ async function dropUser(user) {
             hash_values: [user.username]
         };
 
-        let success = await p_delete_delete(delete_object).catch((err) => {
+        if (hdb_utility.isEmpty(global.hdb_users.get(user.username))) {
+            throw handleHDBError(new Error(), HDB_ERROR_MSGS.USER_NOT_EXIST(user.username), HTTP_STATUS_CODES.NOT_FOUND);
+        }
+
+        let success;
+        try {
+            success = await p_delete_delete(delete_object);
+        } catch(err) {
             logger.error('Got an error deleting a user.');
             logger.error(err);
             throw err;
-        });
+        }
+
         logger.debug(success);
-        await setUsersToGlobal().catch((err) => {
+
+        try {
+            await setUsersToGlobal();
+        } catch(err) {
             logger.error('Got an error setting users to global.');
             logger.error(err);
             throw err;
-        });
+        }
 
         let alter_user_msg = new terms.ClusterMessageObjects.HdbCoreClusterDropUserRequestMessage();
         alter_user_msg.user = user;
@@ -277,11 +307,16 @@ async function userInfo(body) {
         search_obj.table = 'hdb_role';
         search_obj.hash_values = [user.role.id];
         search_obj.get_attributes = ['*'];
-        let role_data = await p_search_search_by_hash(search_obj).catch((err) => {
+
+        let role_data;
+        try {
+            role_data = await p_search_search_by_hash(search_obj);
+        } catch(err) {
             logger.error('Got an error searching for a role.');
             logger.error(err);
             throw err;
-        });
+        }
+
         user.role = role_data[0];
         delete user.password;
         delete user.refresh_token;
@@ -298,11 +333,15 @@ async function userInfo(body) {
  * the results of list users.
  */
 async function listUsersExternal() {
-    let user_data = await listUsers().catch((err) => {
-       logger.error('Got an error listing users.');
-       logger.error(err);
-       throw err;
-    });
+    let user_data;
+    try {
+        user_data = await listUsers();
+    } catch(err) {
+        logger.error('Got an error listing users.');
+        logger.error(err);
+        throw err;
+    }
+
     try {
         user_data.forEach(user => {
             delete user.password;
@@ -331,13 +370,16 @@ async function listUsers() {
             get_attributes: ['*']
         };
 
-        let roles = await p_search_search_by_value(role_search_obj).catch((err) => {
+        let roles;
+        try {
+            roles = await p_search_search_by_value(role_search_obj);
+        } catch(err) {
             logger.error(`Got an error searching for roles.`);
             logger.error(err);
             throw err;
-        });
+        }
 
-        if (roles) {
+        if (!hdb_utility.isEmptyOrZeroLength(roles)) {
             let roleMapObj = {};
             for (let r in roles) {
                 roleMapObj[roles[r].id] = roles[r];
@@ -349,11 +391,15 @@ async function listUsers() {
             user_search_obj.search_value = '*';
             user_search_obj.search_attribute = 'username';
             user_search_obj.get_attributes = ['*'];
-            let users = await p_search_search_by_value(user_search_obj).catch((err) => {
+
+            let users;
+            try {
+                users = await p_search_search_by_value(user_search_obj);
+            } catch(err) {
                 logger.error('Got an error searching for users.');
                 logger.error(err);
                 throw err;
-            });
+            }
 
             const user_obj = new Map();
             for (let u in users) {
