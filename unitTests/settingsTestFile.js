@@ -34,7 +34,7 @@ const SETTINGS = '\t;Settings for the HarperDB process\n' +
     'LOG_LEVEL=debug\n' +
     '\t;The path where log files will be written\n' +
     'LOG_PATH=/Users/harperdb/unitTests/envDir/log/hdb_log.log\n' +
-    '\t;Set to true to enable daily log file rotations - each log file name will be prepended with YYYY-MM-DD (for WINSTON logger only)\n' +
+    '\t;Set to true to enable daily log file rotations - each log file name will be prepended with YYYY-MM-DD\n' +
     'LOG_DAILY_ROTATE=false\n' +
     '\t;Set the number of daily log files to maintain when LOG_DAILY_ROTATE is enabled\n' +
     'If no integer value is set, no limit will be set for=\n' +

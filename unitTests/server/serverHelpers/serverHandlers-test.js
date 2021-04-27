@@ -17,12 +17,13 @@ const { HTTP_STATUS_CODES } = hdb_errors;
 
 let console_stub;
 let process_exit_stub;
-let fatal_log_stub;
 let error_log_stub;
 let warn_log_stub;
 let choose_op_stub;
 let process_local_trans_stub;
 let final_logger_fatal_stub;
+let final_logger_error_stub;
+let final_logger_info_stub;
 
 const TEST_ERR = new Error('This is a narly error');
 
@@ -46,10 +47,15 @@ class TestMockResp {
 function setupSandbox() {
     console_stub = sandbox.stub(console, 'error').callsFake(() => {});
     error_log_stub = sandbox.stub(logger, 'error').callsFake(() => {});
-    fatal_log_stub = sandbox.stub(logger, 'fatal').callsFake(() => {});
     warn_log_stub = sandbox.stub(logger, 'warn').callsFake(() => {});
     final_logger_fatal_stub = sandbox.stub().callsFake(() => {});
-    sandbox.stub(logger, 'finalLogger').returns({fatal: final_logger_fatal_stub});
+    final_logger_error_stub = sandbox.stub().callsFake(() => {});
+    final_logger_info_stub = sandbox.stub().callsFake(() => {});
+    sandbox.stub(logger, 'finalLogger').returns({
+        fatal: final_logger_fatal_stub,
+        error: final_logger_error_stub,
+        info: final_logger_info_stub
+    });
 }
 
 function testCallBack(err, data) {
@@ -368,35 +374,35 @@ describe('Test serverHandlers.js module ', () => {
         it('Test handleBeforeExit', () => {
             const process_stub = sandbox.stub(process, 'exit');
             serverHandlers_rw.handleBeforeExit();
-            assert.ok(final_logger_fatal_stub.args[0][0].includes('beforeExit caught') === true, 'Error should be passed to final_logger.fatal()');
+            assert.ok(final_logger_info_stub.args[0][0].includes('beforeExit caught') === true, 'Error should be passed to final_logger.fatal()');
             process_stub.restore();
         });
 
         it('Test handleExit', () => {
             const process_stub = sandbox.stub(process, 'exit');
             serverHandlers_rw.handleExit();
-            assert.ok(final_logger_fatal_stub.args[0][0].includes('exit caught') === true, 'Error should be passed to final_logger.fatal()');
+            assert.ok(final_logger_info_stub.args[0][0].includes('exit caught') === true, 'Error should be passed to final_logger.fatal()');
             process_stub.restore();
         });
 
         it('Test handleSigint', () => {
             const process_stub = sandbox.stub(process, 'exit');
             serverHandlers_rw.handleSigint();
-            assert.ok(final_logger_fatal_stub.args[0][0].includes('SIGINT caught') === true, 'Error should be passed to final_logger.fatal()');
+            assert.ok(final_logger_error_stub.args[0][0].includes('SIGINT caught') === true, 'Error should be passed to final_logger.fatal()');
             process_stub.restore();
         });
 
         it('Test handleSigquit', () => {
             const process_stub = sandbox.stub(process, 'exit');
             serverHandlers_rw.handleSigquit();
-            assert.ok(final_logger_fatal_stub.args[0][0].includes('SIGQUIT caught') === true, 'Error should be passed to final_logger.fatal()');
+            assert.ok(final_logger_error_stub.args[0][0].includes('SIGQUIT caught') === true, 'Error should be passed to final_logger.fatal()');
             process_stub.restore();
         });
 
         it('Test handleSigterm', () => {
             const process_stub = sandbox.stub(process, 'exit');
             serverHandlers_rw.handleSigterm();
-            assert.ok(final_logger_fatal_stub.args[0][0].includes('SIGTERM caught') === true, 'Error should be passed to final_logger.fatal()');
+            assert.ok(final_logger_error_stub.args[0][0].includes('SIGTERM caught') === true, 'Error should be passed to final_logger.fatal()');
             process_stub.restore();
         });
 

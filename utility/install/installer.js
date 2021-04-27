@@ -629,7 +629,7 @@ function createSettingsFile(mount_status, callback) {
             `${HDB_SETTINGS_NAMES.LOG_LEVEL_KEY} = warn\n` +
             `   ;The path where log files will be written. If there is no file name included in the path, the log file will be created by default as 'hdb_log.log' \n` +
             `${HDB_SETTINGS_NAMES.LOG_PATH_KEY} = ${wizard_result.HDB_ROOT}/log/hdb_log.log\n` +
-            `   ;Set to true to enable daily log file rotations - each log file name will be prepended with YYYY-MM-DD (for WINSTON logger only).\n` +
+            `   ;Set to true to enable daily log file rotations - each log file name will be prepended with YYYY-MM-DD.\n` +
             `${HDB_SETTINGS_NAMES.LOG_DAILY_ROTATE_KEY} = false\n` +
             `   ;Set the number of daily log files to maintain when LOG_DAILY_ROTATE is enabled. If no integer value is set, no limit will be set for\n` +
             `   ;daily log files which may consume a large amount of storage depending on your log settings.\n` +

@@ -34,6 +34,16 @@ const LOGGER_PATH = {
     RUN_LOG: "../run_log.log"
 };
 
+const CUSTOM_LOG_LEVELS = {
+    notify: 70,
+    fatal: 60,
+    error: 50,
+    warn: 40,
+    info: 30,
+    debug: 20,
+    trace: 10
+};
+
 const DEFAULT_LOG_FILE_NAME = 'hdb_log.log';
 
 let pino_logger = undefined;
@@ -178,15 +188,7 @@ function initPinoLogger() {
     try {
         pino_logger = pino(
             {
-                customLevels: {
-                    notify: 70,
-                    fatal: 60,
-                    error: 50,
-                    warn: 40,
-                    info: 30,
-                    debug: 20,
-                    trace: 10
-                },
+                customLevels: CUSTOM_LOG_LEVELS,
                 useOnlyCustomLevels:true,
                 level: log_level,
                 name: 'HarperDB',

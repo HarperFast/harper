@@ -22,31 +22,31 @@ function handleServerUncaughtException(err) {
 
 function handleBeforeExit() {
     const final_logger = harper_logger.finalLogger();
-    final_logger.fatal('beforeExit caught');
+    final_logger.info('beforeExit caught');
     process.exit(0);
 }
 
 function handleExit() {
     const final_logger = harper_logger.finalLogger();
-    final_logger.fatal('exit caught');
+    final_logger.info('exit caught');
     process.exit(0);
 }
 
 function handleSigint() {
     const final_logger = harper_logger.finalLogger();
-    final_logger.fatal('SIGINT caught');
+    final_logger.error('SIGINT caught');
     process.exit(0);
 }
 
 function handleSigquit() {
     const final_logger = harper_logger.finalLogger();
-    final_logger.fatal('SIGQUIT caught');
+    final_logger.error('SIGQUIT caught');
     process.exit(0);
 }
 
 function handleSigterm() {
     const final_logger = harper_logger.finalLogger();
-    final_logger.fatal('SIGTERM caught');
+    final_logger.error('SIGTERM caught');
     process.exit(0);
 }
 
