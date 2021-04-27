@@ -158,6 +158,10 @@ describe('Test harper_logger module', () => {
         fs_extra.removeSync(TEST_LOG_DIR);
     });
 
+    afterEach((done) => {
+        setTimeout(() => done(), 1000);
+    });
+
     describe('Test createLog function', () => {
         after(() => {
             fs_extra.emptyDirSync(TEST_LOG_DIR);
