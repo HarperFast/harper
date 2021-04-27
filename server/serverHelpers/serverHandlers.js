@@ -34,19 +34,19 @@ function handleExit() {
 
 function handleSigint() {
     const final_logger = harper_logger.finalLogger();
-    final_logger.error('SIGINT caught');
+    final_logger.info('SIGINT caught');
     process.exit(0);
 }
 
 function handleSigquit() {
     const final_logger = harper_logger.finalLogger();
-    final_logger.error('SIGQUIT caught');
+    final_logger.info('SIGQUIT caught');
     process.exit(0);
 }
 
 function handleSigterm() {
     const final_logger = harper_logger.finalLogger();
-    final_logger.error('SIGTERM caught');
+    final_logger.info('SIGTERM caught');
     process.exit(0);
 }
 

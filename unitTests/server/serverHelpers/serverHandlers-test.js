@@ -388,21 +388,21 @@ describe('Test serverHandlers.js module ', () => {
         it('Test handleSigint', () => {
             const process_stub = sandbox.stub(process, 'exit');
             serverHandlers_rw.handleSigint();
-            assert.ok(final_logger_error_stub.args[0][0].includes('SIGINT caught') === true, 'Error should be passed to final_logger.fatal()');
+            assert.ok(final_logger_info_stub.args[0][0].includes('SIGINT caught') === true, 'Error should be passed to final_logger.fatal()');
             process_stub.restore();
         });
 
         it('Test handleSigquit', () => {
             const process_stub = sandbox.stub(process, 'exit');
             serverHandlers_rw.handleSigquit();
-            assert.ok(final_logger_error_stub.args[0][0].includes('SIGQUIT caught') === true, 'Error should be passed to final_logger.fatal()');
+            assert.ok(final_logger_info_stub.args[0][0].includes('SIGQUIT caught') === true, 'Error should be passed to final_logger.fatal()');
             process_stub.restore();
         });
 
         it('Test handleSigterm', () => {
             const process_stub = sandbox.stub(process, 'exit');
             serverHandlers_rw.handleSigterm();
-            assert.ok(final_logger_error_stub.args[0][0].includes('SIGTERM caught') === true, 'Error should be passed to final_logger.fatal()');
+            assert.ok(final_logger_info_stub.args[0][0].includes('SIGTERM caught') === true, 'Error should be passed to final_logger.fatal()');
             process_stub.restore();
         });
 
