@@ -29,8 +29,9 @@ describe('test lmdbCreateTransactionsEnvironment module', ()=>{
     });
 
     describe('test lmdbCreateTransactionsEnvironment function', ()=>{
-        before(() => {
+        before(async () => {
             global.lmdb_map = undefined;
+            await fs.mkdirp(BASE_TRANSACTIONS_PATH);
         });
 
         after(async () => {
@@ -44,7 +45,7 @@ describe('test lmdbCreateTransactionsEnvironment module', ()=>{
 
             await test_utils.assertErrorAsync(environment_utility.openEnvironment, [transaction_path, CREATE_TABLE_OBJ.table, true], LMDB_ERRORS.INVALID_BASE_PATH);
 
-            assert.deepStrictEqual(global.lmdb_map, undefined);
+            assert.deepStrictEqual(global.lmdb_map, Object.create(null));
 
             await test_utils.assertErrorAsync(lmdb_create_txn_envs, [CREATE_TABLE_OBJ], undefined);
 

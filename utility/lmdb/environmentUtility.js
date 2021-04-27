@@ -62,7 +62,7 @@ class TransactionCursor{
  * @param {String} base_path - top level path the environment folder and the data.mdb file live under
  * @param {String} env_name - name of environment
  */
-async function pathEnvNameValidation(base_path, env_name){
+function pathEnvNameValidation(base_path, env_name){
     if(base_path === undefined){
         throw new Error(LMDB_ERRORS.BASE_PATH_REQUIRED);
     }
@@ -70,7 +70,9 @@ async function pathEnvNameValidation(base_path, env_name){
     if(env_name === undefined){
         throw new Error(LMDB_ERRORS.ENV_NAME_REQUIRED);
     }
+}
 
+async function verifyEnvironmentBasePath(base_path){
     //verify the base_path is valid
     try {
         await fs.access(base_path);
@@ -124,7 +126,8 @@ function validateEnvDBIName(env, dbi_name){
  * @returns {Promise<lmdb.RootDatabase>} - LMDB environment object
  */
 async function createEnvironment(base_path, env_name, is_txn = false) {
-    await pathEnvNameValidation(base_path, env_name);
+    pathEnvNameValidation(base_path, env_name);
+    await verifyEnvironmentBasePath(base_path);
     env_name = env_name.toString();
     try {
         await fs.access(path.join(base_path, env_name, MDB_FILE_NAME), fs.constants.R_OK | fs.constants.F_OK);
@@ -187,7 +190,7 @@ async function copyEnvironment(base_path, env_name, destination_path, compact_en
  * @param {Boolean} is_txn - defines if is a transactions environemnt
  */
 async function openEnvironment(base_path, env_name, is_txn = false){
-    await pathEnvNameValidation(base_path, env_name);
+    pathEnvNameValidation(base_path, env_name);
     env_name = env_name.toString();
     let full_name = getCachedEnvironmentName(base_path, env_name, is_txn);
 
@@ -198,7 +201,7 @@ async function openEnvironment(base_path, env_name, is_txn = false){
     if(global.lmdb_map[full_name] !== undefined){
         return global.lmdb_map[full_name];
     }
-
+    await verifyEnvironmentBasePath(base_path);
     await validateEnvironmentPath(base_path, env_name);
 
     let env_path = path.join(base_path, env_name);
@@ -224,8 +227,9 @@ async function openEnvironment(base_path, env_name, is_txn = false){
  * @param {Boolean} is_txn - defines if is a transactions environemnt
  */
 async function deleteEnvironment(base_path, env_name, is_txn = false) {
-    await pathEnvNameValidation(base_path, env_name);
+    pathEnvNameValidation(base_path, env_name);
     env_name = env_name.toString();
+    await verifyEnvironmentBasePath(base_path);
     await validateEnvironmentPath(base_path, env_name);
 
     await fs.remove(path.join(base_path, env_name));
