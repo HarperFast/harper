@@ -61,13 +61,13 @@ async function getSchemaTable(reindex_path, is_transaction_reindex){
     let schema_length_list = schema_list.length;
     for(let x = 0; x < schema_length_list; x++){
         let schema_name = schema_list[x];
-        let the_schema_path = path.join(reindex_path, schema_name);
+        let the_schema_path = path.join(reindex_path, schema_name.toString());
         if (schema_name === '.DS_Store') {
             continue;
         }
 
         // Create temp schema folder
-        let tmp_schema_path = path.join(TMP_PATH, schema_name);
+        let tmp_schema_path = path.join(TMP_PATH, schema_name.toString());
         await fs.emptyDir(tmp_schema_path);
 
         // Get list of table folders
@@ -237,8 +237,8 @@ async function processTable(schema, table, the_schema_path, is_transaction_reind
     delete global.lmdb_map[`${schema}.${table}`];
 
     //move environment to correct location
-    let table_path = path.join(the_schema_path, table);
-    await fs.move(path.join(tmp_schema_path, table), table_path, {overwrite: true});
+    let table_path = path.join(the_schema_path, table.toString());
+    await fs.move(path.join(tmp_schema_path, table.toString()), table_path, {overwrite: true});
     pino_logger.info(`Moving environment to schema folder: ${table_path}`);
 
     //stat the moved env & make sure stats match from before

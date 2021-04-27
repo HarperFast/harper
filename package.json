@@ -17,7 +17,7 @@
     "harperdb": "./bin/harperdb.js"
   },
   "engines": {
-    "node": "12.19.0"
+    "node": "14.16.1"
   },
   "homepage": "https://www.harperdb.io/",
   "bugs": "support@harperdb.io",
