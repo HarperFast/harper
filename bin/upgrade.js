@@ -195,7 +195,7 @@ async function startUpgrade() {
         CURRENT_VERSION_NUM = JSON.parse(curr_package_json).version;
         await p_set_schema_global();
     } catch(e) {
-        printToLogAndConsole('Error loading the currently installed version number');
+        printToLogAndConsole('Error loading the currently installed version number', log.ERR);
         log.error(e);
     }
 

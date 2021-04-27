@@ -250,6 +250,7 @@ describe('Test harper_logger module', () => {
             setMockPropParams(false, 2, LOG_LEVEL.TRACE, temp_log_dir, HDB_ROOT_TEST);
             const fs_mkdir_stub = sandbox.stub(fs, 'mkdirSync').throws(new Error('There has been an error'));
             harper_logger_rw = rewire('../../../utility/logging/harper_logger');
+            fs_mkdir_stub.restore();
             const file_exists = fs_extra.pathExistsSync(expected_log_path);
             expect(file_exists).to.be.true;
 
@@ -258,7 +259,6 @@ describe('Test harper_logger module', () => {
                 const log = fs_extra.readFileSync(expected_log_path).toString();
                 expect(log.includes("message\":\"Attempted to create log directory from settings file but failed.  Using default log path - 'hdb/log/hdb_log.log'")).to.be.true;
                 fs_extra.removeSync(temp_default_log_dir);
-                fs_mkdir_stub.restore();
                 done();
             }, 5000);
         }).timeout(8000);
@@ -271,6 +271,7 @@ describe('Test harper_logger module', () => {
             setMockPropParams(false, 2, LOG_LEVEL.TRACE, temp_log_dir, HDB_ROOT_TEST);
             const fs_mkdir_stub = sandbox.stub(fs, 'mkdirSync').throws(new Error('There has been an error'));
             harper_logger_rw = rewire('../../../utility/logging/harper_logger');
+            fs_mkdir_stub.restore();
             const file_exists = fs_extra.pathExistsSync(expected_log_path);
             expect(file_exists).to.be.true;
 
@@ -279,7 +280,6 @@ describe('Test harper_logger module', () => {
                 const log = fs_extra.readFileSync(expected_log_path).toString();
                 expect(log.includes("message\":\"Attempted to create log directory from settings file but failed.  Using default log path - 'hdb/log/hdb_log.log'")).to.be.true;
                 fs_extra.removeSync(temp_default_log_dir);
-                fs_mkdir_stub.restore();
                 done();
             }, 5000);
         }).timeout(8000);
@@ -556,15 +556,25 @@ describe('Test harper_logger module', () => {
         const log_msg_test = "I am an old error message";
 
         before((done) => {
-            fs_extra.writeFileSync(LOG_PATH_TEST, `{"level":"error","timestamp":"2021-04-26T01:00:00.000Z","message":"${log_msg_test}"}\n`);
             setMockPropParams(false, null, LOG_LEVEL.TRACE, LOG_PATH_TEST, HDB_ROOT_TEST);
             harper_logger_rw = rewire('../../../utility/logging/harper_logger');
+            const fake_timer = sandbox.useFakeTimers({now: new Date(2021,1,1,0,0)});
+            harper_logger_rw.error(log_msg_test);
+            fake_timer.restore();
             testWriteLogBulkWrite();
             pino_logger = harper_logger_rw.__get__('pino_logger');
             setTimeout(() => {
                 pino_logger.flush();
                 done();
             }, 500);
+        });
+
+        it('Test read log no query ', async () => {
+            const read_obj = {
+                "operation": "read_log"
+            };
+            const result = await harper_logger_rw.readLog(read_obj);
+            expect(result.file.length).to.equal(9);
         });
 
         it('Test read log from', async () => {
@@ -587,7 +597,7 @@ describe('Test harper_logger module', () => {
         it('Test read log until', async () => {
             const read_obj = {
                 "operation": "read_log",
-                "until": "2021-04-26T01:10:00.000Z"
+                "until": "2021-02-01T07:00:10.000Z"
             };
             const result = await harper_logger_rw.readLog(read_obj);
             expect(result.file.length).to.equal(1);
@@ -620,7 +630,7 @@ describe('Test harper_logger module', () => {
             };
             const result = await harper_logger_rw.readLog(read_obj);
             expect(result.file.length).to.equal(9);
-            expect(result.file[8].message).to.equal(log_msg_test);
+            expect(result.file[8].message).to.include('Initialized pino logger');
         });
 
         it('Test read log order asc', async () => {
@@ -630,7 +640,7 @@ describe('Test harper_logger module', () => {
             };
             const result = await harper_logger_rw.readLog(read_obj);
             expect(result.file.length).to.equal(9);
-            expect(result.file[0].message).to.equal(log_msg_test);
+            expect(result.file[0].message).to.include('Initialized pino logger');
         });
 
         it('Test read log start', async () => {
@@ -676,6 +686,5 @@ describe('Test harper_logger module', () => {
             expect(result.includes('harperdb/utility/hdb_boot_properties.file'));
             homedir_stub.restore();
         });
-    
     });
 });

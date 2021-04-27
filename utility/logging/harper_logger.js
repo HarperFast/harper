@@ -399,7 +399,10 @@ async function readLog(read_log_object) {
 
     const options = {
         limit: 100,
-        fields: ['level','message','timestamp']
+        fields: ['level','message','timestamp'],
+        // Winston adds a default 'from' value if one is not passed. The default is one day from today, this is silly so we
+        // override it. If a 'from' date is included in the request it will be added below.
+        from: new Date('1970-01-01T00:00:00')
     };
 
     switch (read_log_object.log) {
