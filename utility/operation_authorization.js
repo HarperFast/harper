@@ -46,6 +46,17 @@ const UPSERT_OP = 'upsert';
 
 const DESCRIBE_SCHEMA_KEY = schema_describe.describeSchema.name;
 const DESCRIBE_TABLE_KEY = schema_describe.describeTable.name;
+const FORBIDDEN_SYSTEM_OPS_ENUM = {
+    delete: true,
+    deleteRecordCallbackified: true,
+    update: true,
+    updateData: true,
+    dropAttribute: true,
+    dropTable: true,
+    dropSchema: true,
+    upsert: true,
+    upsertData: true
+};
 
 const CATCHUP = 'catchup';
 const HANDLE_GET_JOB = 'handleGetJob';
@@ -180,6 +191,11 @@ function verifyPermsAst(ast, user_object, operation) {
         // set to true if this operation affects a system table.  Only su can read from system tables, but can't update/delete.
         const is_super_user = !!user_object.role.permission.super_user;
         const is_su_system_operation = schemas.includes('system');
+
+        if (is_su_system_operation && FORBIDDEN_SYSTEM_OPS_ENUM[operation]) {
+            throw handleHDBError(new Error(), HDB_ERROR_MSGS.DROP_SYSTEM, HTTP_STATUS_CODES.FORBIDDEN);
+        }
+
         if (is_super_user && !is_su_system_operation) {
             //admins can do (almost) anything through the hole in sheet!
             return null;
@@ -262,6 +278,11 @@ function verifyPerms(request_json, operation) {
     const is_super_user = !!request_json.hdb_user.role.permission.super_user;
     // set to true if this operation affects a system table.  Only su can read from system tables, but can't update/delete.
     let is_su_system_operation = schema_table_map.has(terms.SYSTEM_SCHEMA_NAME) || operation_schema === terms.SYSTEM_SCHEMA_NAME;
+
+    if (is_su_system_operation && FORBIDDEN_SYSTEM_OPS_ENUM[op]) {
+        throw handleHDBError(new Error(), HDB_ERROR_MSGS.DROP_SYSTEM, HTTP_STATUS_CODES.FORBIDDEN);
+    }
+
     if (is_super_user && !is_su_system_operation) {
         //admins can do (almost) anything through the hole in sheet!
         return null;

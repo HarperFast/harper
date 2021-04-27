@@ -2,7 +2,7 @@
 
 const insert = require('./insert');
 const validator = require('../validation/fileLoadValidator');
-const request_promise = require('request-promise-native');
+const needle = require('needle');
 const hdb_terms = require('../utility/hdbTerms');
 const hdb_utils = require('../utility/common_utils');
 const { handleHDBError, hdb_errors } = require('../utility/errors/hdbError');
@@ -203,18 +203,9 @@ async function importFromS3(json_message) {
  * @returns {Promise<void>}
  */
 async function downloadCSVFile(url, csv_file_name) {
-    let options = {
-        method: 'GET',
-        uri: `${url}`,
-        encoding: null,
-        resolveWithFullResponse: true
-    };
-
     let response;
     try {
-        //TODO - 'request_promise' has been deprecated.  We should consider updating this library if we ever need to use
-        // this functionality in other areas in CORE.  See CORE-1127
-        response = await request_promise(options);
+        response = await needle('get', url);
     } catch(err) {
         const err_msg = `Error downloading CSV file from ${url}, status code: ${err.statusCode}. Check the log for more information.`;
         throw handleHDBError(err, err_msg, err.statusCode, logger.ERR, "Error downloading CSV file - " + err);
@@ -222,7 +213,7 @@ async function downloadCSVFile(url, csv_file_name) {
 
     validateURLResponse(response, url);
 
-    await writeFileToTempFolder(csv_file_name, response.body);
+    await writeFileToTempFolder(csv_file_name, response.raw);
 }
 
 /**
@@ -307,7 +298,7 @@ function validateURLResponse(response, url) {
         throw handleHDBError(new Error(),`CSV Load failed from URL: ${url}, unsupported content type: ${response.headers['content-type']}`, HTTP_STATUS_CODES.BAD_REQUEST);
     }
 
-    if (!response.body) {
+    if (!response.raw) {
         throw handleHDBError(new Error(),`CSV Load failed from URL: ${url}, no csv found at url`, HTTP_STATUS_CODES.BAD_REQUEST);
     }
 }
