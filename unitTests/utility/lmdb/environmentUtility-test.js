@@ -54,10 +54,6 @@ describe("Test LMDB environmentUtility module", ()=>{
             await test_utils.assertErrorAsync(rw_validator, [BASE_TEST_PATH], LMDB_TEST_ERRORS.ENV_NAME_REQUIRED, 'no env_name');
         });
 
-        it('call function invalid base_path', async ()=>{
-            await test_utils.assertErrorAsync(rw_validator, [INVALID_BASE_TEST_PATH, TEST_ENVIRONMENT_NAME], LMDB_TEST_ERRORS.INVALID_BASE_PATH, 'invalid base_path');
-        });
-
         it('call function happy path', async ()=>{
             await test_utils.assertErrorAsync(rw_validator, [BASE_TEST_PATH, TEST_ENVIRONMENT_NAME], undefined, 'happy path');
         });
