@@ -30,9 +30,7 @@ async function lmdbCheckForNewAttributes(hdb_auth_header, table_schema, data_att
             });
         }
 
-        let new_attributes = data_attributes.filter(attribute => {
-            return raw_attributes.indexOf(attribute) < 0;
-        });
+        let new_attributes = data_attributes.filter(attribute => raw_attributes.indexOf(attribute) < 0);
 
         if (new_attributes.length === 0) {
             return new_attributes;
@@ -69,7 +67,7 @@ async function createNewAttribute(hdb_auth_header,schema, table, attribute) {
     } catch(e){
         //if the attribute already exists we do not want to stop the insert
         if(typeof e === 'object' && e.message !== undefined && e.message.includes(ATTRIBUTE_ALREADY_EXISTS)){
-            logger.warn(e);
+            logger.warn(`attribute ${schema}.${table}.${attribute} already exists`);
         } else {
             throw e;
         }
