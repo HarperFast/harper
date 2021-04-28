@@ -16,10 +16,9 @@ const async = require('async');
 const minimist = require('minimist');
 const forge = require('node-forge');
 const hri = require('human-readable-ids').hri;
-const terms_address = 'https://harperdb.io/legal/software-license-subscription-agreement';
+const terms_address = 'https://harperdb.io/legal/end-user-license-agreement';
 const env = require('../../utility/environment/environmentManager');
 const os = require('os');
-const user_schema = require('../../security/user');
 const comm = require('../common_utils');
 const hdb_terms = require('../hdbTerms');
 const hdbInfoController = require('../../data_layer/hdbInfoController');
@@ -35,8 +34,6 @@ module.exports = {
 const schema = require('../../utility/globalSchema');
 
 let wizard_result;
-let existing_users = [];
-let keep_data = false;
 let check_install_path = false;
 let install_logger;
 const KEY_PAIR_BITS = 2048;
@@ -84,7 +81,7 @@ function run_install(callback) {
                 createSuperUser,
                 createClusterUser,
                 generateKeys,
-                updateHdbInfo,
+                insertHdbInfo,
                 () => {
                     check_jwt_tokens();
 
@@ -106,23 +103,30 @@ function run_install(callback) {
 }
 
 /**
- * Makes a call to update the hdb_info table with the newly installed version.  This is written as a callback function
+ * Makes a call to insert the hdb_info table with the newly installed version.  This is written as a callback function
  * as we can't make the installer async until we pick a new CLI base.
+ *
  * @param callback
  */
-function updateHdbInfo(callback) {
+function insertHdbInfo(callback) {
     let vers = version.version();
-    if(vers) {
-        hdbInfoController.updateHdbInfo(vers)
-            .then((err, res) => {
-                if(err) {
-                    install_logger.error('Error inserting product info');
-                    return callback(err, null);
-                } else {
-                    return callback(null, res);
-                }
-
+    if (vers) {
+        //Add initial hdb_info record for new install
+        hdbInfoController.insertHdbInstallInfo(vers)
+            .then(res => {
+                install_logger.info('Product version info was properly inserted');
+                return callback(null, res);
+            })
+            .catch(err => {
+                install_logger.error('Error inserting product version info');
+                install_logger.error(err);
+                return callback(err, null);
             });
+    } else {
+        const err_msg = 'The version is missing/removed from package.json';
+        install_logger.error(err_msg);
+        console.log(err_msg);
+        return callback(err_msg, null);
     }
 }
 
@@ -133,22 +137,20 @@ function updateHdbInfo(callback) {
 function termsAgreement(callback) {
     install_logger.info('Asking for terms agreement.');
     prompt.message = ``;
+    const line_break = os.EOL;
     let terms_schema = {
         properties: {
             TC_AGREEMENT: {
-                message: colors.magenta(`I Agree to the HarperDB Terms and Conditions. (yes/no).  The Terms and Conditions can 
-                be found at ${terms_address}`),
-                validator: /y[es]*|n[o]?/,
-                warning: 'Must respond yes or no',
-                default: 'yes'
+                description: colors.magenta(`Terms & Conditions can be found at ${terms_address}${line_break}and can be viewed by typing or copying and pasting the URL into your web browser.${line_break}${colors.bold('[TC_AGREEMENT] I Agree to the HarperDB Terms and Conditions. (yes/no)')}`),
             }
         }
     };
     prompt.get(terms_schema, function (err, result) {
         if (err) { return callback(err); }
-        if (result.TC_AGREEMENT === 'yes' || result.TC_AGREEMENT === 'y') {
+        if (result.TC_AGREEMENT === 'yes') {
             return callback(null, true);
         }
+        console.log(colors.yellow(`Terms & Conditions acceptance is required to proceed with installation.`));
         install_logger.error('Terms and Conditions agreement was refused.');
         return callback('REFUSED', false);
     });
@@ -180,24 +182,26 @@ function promptForReinstall(callback) {
     let reinstall_schema = {
         properties: {
             REINSTALL: {
-                message: colors.red('It appears HarperDB is already installed.  Enter \'y/yes\'to reinstall. (yes/no)'),
-                validator: /y[es]*|n[o]?/,
-                warning: 'Must respond yes or no',
-                default: 'no'
+                description: colors.red(`It appears HarperDB version ${version.version()} is already installed.  Enter \'y/yes\'to reinstall. (yes/no)`),
+                pattern: /y(es)?$|n(o)?$/,
+                message: "Must respond 'yes' or 'no'",
+                default: 'no',
+                required: true
             }
         }
     };
     let overwrite_schema = {
         properties: {
             KEEP_DATA: {
-                message: colors.red('Would you like to keep existing data?  You will still need to create a new admin user. (yes/no)'),
-                validator: /y[es]*|n[o]?/,
-                warning: 'Must respond yes or no',
-                default: 'no'
+                description: `${os.EOL}` + colors.red.bold('Would you like to keep your existing data in HDB?  (yes/no)'),
+                pattern: /y(es)?$|n(o)?$/,
+                message: "Must respond 'yes' or 'no'",
+                required: true
             }
         }
     };
 
+    prompt.message = '';
     prompt.get(reinstall_schema, function (err, reinstall_result) {
         if (err) { return callback(err); }
 
@@ -223,37 +227,16 @@ function promptForReinstall(callback) {
                         });
                     });
                 } else {
-                    // keep data
-                    keep_data = true;
-                    // we need the global.hdb_schema set so we can find existing roles when we add the new user.
-                    prepForReinstall(() => callback(null, true));
+                    // keep data - this means they should be using the upgrade command
+                    const upgrade_msg = "Please use `harperdb upgrade` to update your existing instance of HDB. Exiting install...";
+                    console.log(`${os.EOL}` + colors.magenta.bold(upgrade_msg));
+                    process.exit(0);
                 }
             });
         } else {
             return callback(null, false);
         }
     });
-}
-
-/**
- * Prepare all data needed to perform a reinstall.
- * @param callback
- * @returns {*}
- */
-function prepForReinstall(callback) {
-    install_logger.info('Preparing for reinstall.');
-    if (!global.hdb_users || !global.hdb_schema) {
-        user_schema.setUsersToGlobal((err) => {
-            if (err) {
-                install_logger.error(err);
-                return callback(err, null);
-            }}).then(() => {
-                existing_users.push([...global.hdb_users.keys()]);
-                schema.setSchemaDataToGlobal(() => callback(null, true));
-        });
-    } else {
-        return callback(null, null);
-    }
 }
 
 /**
@@ -303,21 +286,7 @@ function wizard(err, callback) {
             HDB_ADMIN_USERNAME: {
                 description: colors.magenta('[HDB_ADMIN_USERNAME] Please enter a username for the HDB_ADMIN'),
                 default: 'HDB_ADMIN',
-                message: 'Specified username is invalid or already in use.',
-                required: true,
-                // check against the previously built list of existing usernames.
-                conform: function (username) {
-                    admin_username = username;
-                    if (!keep_data) {
-                        return true;
-                    }
-                    for (let i = 0; i < existing_users.length; i++) {
-                        if (username === existing_users[i]) {
-                            return false;
-                        }
-                    }
-                    return true;
-                }
+                required: true
             },
             HDB_ADMIN_PASSWORD: {
                 description: colors.magenta('[HDB_ADMIN_PASSWORD] Please enter a password for the HDB_ADMIN'),
@@ -329,21 +298,10 @@ function wizard(err, callback) {
                 default: 'CLUSTER_USER',
                 message: 'Specified username is invalid or already in use.',
                 required: true,
-                // check against the previously built list of existing usernames.
+                // check clustering user name not the same as admin user name
                 conform: function (username) {
-                    // check clustering user name not the same as admin user name
                     if (username === admin_username) {
                         return false;
-                    }
-
-                    if (!keep_data) {
-                        return true;
-                    }
-
-                    for (let i = 0; i < existing_users.length; i++) {
-                        if (username === existing_users[i]) {
-                            return false;
-                        }
                     }
                     return true;
                 }
@@ -391,16 +349,8 @@ function wizard(err, callback) {
             }
             // we have an existing install, prompt for reinstall.
             promptForReinstall((reinstall_err, reinstall) => {
-                if (reinstall) {
-                    env.setPropsFilePath(wizard_result.HDB_ROOT + '/config/settings.js');
-                    env.initSync();
-                    prepForReinstall((prep_reinstall_err) => {
-                        install_logger.error(prep_reinstall_err);
-                        return callback(null, wizard_result.HDB_ROOT);
-                    });
-                } else {
-                    return callback(null, wizard_result.HDB_ROOT);
-                }
+                //the process will exit in `promptForReinstall` if they choose not to proceed
+                return callback(null, wizard_result.HDB_ROOT);
             });
         } else {
             return callback(null, wizard_result.HDB_ROOT);
@@ -467,87 +417,31 @@ function createAdminUser(role, admin_user, callback) {
     const role_ops = require('../../security/role');
     const util = require('util');
     const cb_role_add_role = util.callbackify(role_ops.addRole);
-    const cb_role_list_role = util.callbackify(role_ops.listRoles);
     const cb_user_add_user = util.callbackify(user_ops.addUser);
 
     schema.setSchemaDataToGlobal(() => {
-        if (keep_data && admin_user !== undefined) {
-            // Look for existing role if this is a reinstall
-            cb_role_list_role((null), (err, res) => {
-                install_logger.info(`found ${res.length} existing roles.`);
-                let role_list = 'Please select the number assigned to the role that should be assigned to the new user.';
+        cb_role_add_role(role, (err, res) => {
+            if (err) {
+                install_logger.error('role failed to create ' + err);
+                console.log('There was a problem creating the default role.  Please check the install log for details.');
+                return callback(err);
+            }
 
-                if (res && res.length > 1) {
-                    for (let i = 0; i < res.length; i++) {
-                        // It would be confusing to offer 0 as a number for the user to select, so offset by 1 to start at 1.
-                        role_list += `\n ${i + 1}. ${res[i].role}`;
-                    }
+            if(admin_user === undefined){
+                return callback(null);
+            }
 
-                    let role_schema = {
-                        properties: {
-                            ROLE: {
-                                message: colors.red(role_list),
-                                type: 'number',
-                                minimum: 1,
-                                maximum: res.length,
-                                warning: 'Must select the number corresponding to the desired role.',
-                                default: '1'
-                            }
-                        }
-                    };
+            admin_user.role = res.role;
 
-                    prompt.get(role_schema, function (prompt_err, selected_role) {
-                        // account for the offset
-                        admin_user.role = res[selected_role.ROLE - 1].role;
-
-                        cb_user_add_user(admin_user, (add_user_err) => {
-                            if (add_user_err) {
-                                install_logger.error('user creation error' + add_user_err);
-                                console.error('There was a problem creating the admin user.  Please check the install log for details.');
-                                return callback(add_user_err);
-                            }
-                            return callback(null);
-                        });
-                    });
-
-                } else {
-                    admin_user.role = res[0].role;
-
-                    cb_user_add_user(admin_user, (add_user_err) => {
-                        if (add_user_err) {
-                            install_logger.error('user creation error' + add_user_err);
-                            console.error('There was a problem creating the admin user.  Please check the install log for details.');
-                            return callback(add_user_err);
-                        }
-                        return callback(null);
-                    });
+            cb_user_add_user(admin_user, (add_user_err) => {
+                if (add_user_err) {
+                    install_logger.error('user creation error' + add_user_err);
+                    console.error('There was a problem creating the admin user.  Please check the install log for details.');
+                    return callback(add_user_err);
                 }
+                return callback(null);
             });
-
-        } else {
-            cb_role_add_role(role, (err, res) => {
-                if (err) {
-                    install_logger.error('role failed to create ' + err);
-                    console.log('There was a problem creating the default role.  Please check the install log for details.');
-                    return callback(err);
-                }
-
-                if(admin_user === undefined){
-                    return callback(null);
-                }
-
-                admin_user.role = res.role;
-
-                cb_user_add_user(admin_user, (add_user_err) => {
-                    if (add_user_err) {
-                        install_logger.error('user creation error' + add_user_err);
-                        console.error('There was a problem creating the admin user.  Please check the install log for details.');
-                        return callback(add_user_err);
-                    }
-                    return callback(null);
-                });
-            });
-        }
+        });
     });
 }
 
@@ -559,25 +453,8 @@ function createSettingsFile(mount_status, callback) {
         return callback('mount failed');
     }
 
-    if (keep_data) {
-        console.log('Existing settings.js file will be moved to settings.js.backup.  Remember to update the new settings file with your old settings.');
-        install_logger.info('Existing settings.js file will be moved to settings.js.backup.  Remember to update the new settings file with your old settings.');
-    }
     let settings_path = `${wizard_result.HDB_ROOT}/config/settings.js`;
     createBootPropertiesFile(settings_path, (err) => {
-        // copy settings file to backup.
-        if (keep_data) {
-            if (fs.existsSync(settings_path)) {
-                try {
-                    fs.copySync(settings_path, settings_path + '.back');
-                } catch (fs_exists_err) {
-                    console.log(`There was a problem backing up current settings.js file.  Please check the logs.  Exiting.`);
-                    install_logger.fatal(fs_exists_err);
-                    throw fs_exists_err;
-                }
-            }
-        }
-
         install_logger.info('info', `creating settings file....`);
         if (err) {
             install_logger.info('info', 'boot properties error' + err);

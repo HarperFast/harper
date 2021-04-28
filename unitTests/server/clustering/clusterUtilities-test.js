@@ -1,13 +1,14 @@
 "use strict";
 
+const test_util = require('../../test_utils');
+test_util.preTestPrep();
+
 const assert = require('assert');
 const chai = require('chai');
 const rewire = require('rewire');
 const sinon = require('sinon');
-const cluster_utils = rewire('../../../server/clustering/clusterUtilities');
-const cluster_utils_node_validation = cluster_utils.__get__('nodeValidation');
-const test_util = require('../../test_utils');
-test_util.preTestPrep();
+let cluster_utils = rewire('../../../server/clustering/clusterUtilities');
+let cluster_utils_node_validation = cluster_utils.__get__('nodeValidation');
 const path = require(`path`);
 const hdb_license = require('../../../utility/registration/hdb_license');
 const settings_test_file = require('../../settingsTestFile');
@@ -43,6 +44,10 @@ describe('Test clusterUtilities' , ()=> {
             sandbox.restore();
             license_stub = undefined;
         });
+
+        after(() => {
+            rewire('../../../server/clustering/clusterUtilities');
+        })
         it('Pass in invalid addNode, empty object', () => {
             assert.rejects(cluster_utils.addNode({}), {message: "Error: Name can't be blank,Port can't be blank,Host can't be blank"});
         });
@@ -388,11 +393,14 @@ describe('Test configureCluster', () => {
 
     // Builds a temporary settings file to be used by upgrade tests.
     before(() => {
+        test_util.preTestPrep();
+        cluster_utils = rewire('../../../server/clustering/clusterUtilities');
         settings_test_file.buildFile();
     });
 
     // Remove temporary settings file.
     after(() => {
+        rewire('../../../server/clustering/clusterUtilities');
         settings_test_file.deleteFile();
     });
 
@@ -564,6 +572,7 @@ describe('clusterMessageHandler method', () => {
     }
 
     before(() => {
+        cluster_utils = rewire('../../../server/clustering/clusterUtilities');
         log_error_stub = sandbox.stub(hdb_logger, 'error').callsFake(fake);
         log_info_stub = sandbox.stub(hdb_logger, 'info').callsFake(fake);
         log_warn_stub = sandbox.stub(hdb_logger, 'warn').callsFake(fake);
