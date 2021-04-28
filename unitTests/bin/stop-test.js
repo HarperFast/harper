@@ -24,7 +24,7 @@ const HDB_PROC_END_TIMEOUT = 5;
  * Unit tests for bin/stop.js
  */
 describe('Test stop.js' , () => {
-    const sandbox = sinon.createSandbox();
+    let sandbox;
     let log_error_stub;
     let log_info_stub;
     let console_log_spy;
@@ -51,25 +51,24 @@ describe('Test stop.js' , () => {
     }];
 
     afterEach(() => {
-        sinon.resetHistory();
+        sandbox.resetHistory();
     });
 
     before(() => {
-        log_error_stub = sinon.stub(logger, 'error');
-        log_info_stub = sinon.stub(logger, 'info');
+        sandbox = sinon.createSandbox();
+        log_error_stub = sandbox.stub(logger, 'error');
+        log_info_stub = sandbox.stub(logger, 'info');
         // I had console.log as a stub but it was stopping npm test from running on the command line.
-        console_log_spy = sinon.spy(console, 'log');
-        console_error_stub = sinon.stub(console, 'error');
-        find_ps_stub = sinon.stub(ps_list, 'findPs');
         ({ final_logger_error_stub, final_logger_info_stub } = test_util.stubFinalLogger(sandbox, logger));
         stop = rewire('../../bin/stop');
+        console_log_spy = sandbox.spy(console, 'log');
+        console_error_stub = sandbox.stub(console, 'error');
+        find_ps_stub = sandbox.stub(ps_list, 'findPs');
     });
 
     after(() => {
+        rewire('../../bin/stop');
         sandbox.restore();
-        stop = rewire('../../bin/stop');
-        log_error_stub.restore();
-        log_info_stub.restore();
     });
 
     /**
@@ -83,7 +82,7 @@ describe('Test stop.js' , () => {
         };
 
         before(() => {
-            signal_stub = sinon.stub(signal, 'signalRestart').returns();
+            signal_stub = sandbox.stub(signal, 'signalRestart').returns();
         });
 
         it('should return restart response hard', async () => {
@@ -122,13 +121,12 @@ describe('Test stop.js' , () => {
      * Tests for stop function
      */
     context('stop', () => {
-        let kill_procs_stub = sinon.stub();
+        let kill_procs_stub;
         let kill_procs_rewire;
 
         before(() => {
+            kill_procs_stub = sandbox.stub();
             kill_procs_rewire = stop.__set__('killProcs', kill_procs_stub);
-            sinon.resetHistory();
-
         });
 
         after(() => {
@@ -169,15 +167,16 @@ describe('Test stop.js' , () => {
      */
     context('kill process', () => {
         let os_user_info_stub;
-        let process_kill_stub = sinon.stub();
+        let process_kill_stub;
         let process_kill_rewire;
-        let check_hdb_proc_end_stub = sinon.stub();
+        let check_hdb_proc_end_stub;
         let check_hdb_end_rewire;
         let kill_procs;
 
         before(() => {
-            sinon.resetHistory();
-            os_user_info_stub = sinon.stub(os, 'userInfo');
+            process_kill_stub = sandbox.stub();
+            check_hdb_proc_end_stub = sandbox.stub();
+            os_user_info_stub = sandbox.stub(os, 'userInfo');
             kill_procs = stop.__get__('killProcs');
             process_kill_rewire = stop.__set__('process.kill', process_kill_stub);
             check_hdb_end_rewire = stop.__set__('checkHdbProcsEnd', check_hdb_proc_end_stub);
@@ -248,7 +247,7 @@ describe('Test stop.js' , () => {
     context('check HDB processes have finished', () => {
         let check_hdb_procs_end;
         let async_set_timeout_rewire;
-        let async_set_timeout_stub = sinon.stub().resolves();
+        let async_set_timeout_stub;
         // fake responses from ps_list calls
         let hdb_instance_first = [{
             pid: 2235,
@@ -299,9 +298,10 @@ describe('Test stop.js' , () => {
 
         before(() => {
             // was getting funny behaviour from stub so restored it to get onCalls working.
+            async_set_timeout_stub = sandbox.stub().resolves();
             find_ps_stub.restore();
-            sinon.resetHistory();
-            find_ps_stub = sinon.stub(ps_list, 'findPs');
+            sandbox.resetHistory();
+            find_ps_stub = sandbox.stub(ps_list, 'findPs');
             find_ps_stub.onSecondCall().resolves(hdb_instance_first);
             find_ps_stub.onThirdCall().resolves(hdb_instance_second);
             find_ps_stub.resolves(hdb_instance_third);

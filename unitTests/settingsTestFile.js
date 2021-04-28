@@ -1,9 +1,12 @@
 'use strict';
 const fs = require('fs-extra');
+const hdb_utils = require('../utility/common_utils');
 
 const TEST_SETTINGS_FILE = 'settings.test';
+const TEST_SETTINGS_FILE_PATH = `${__dirname}/${TEST_SETTINGS_FILE}`;
 const TEST_SETTINGS_FILE_BAK = 'settings.test.bak';
-const SETTINGS = '\t;Settings for the HarperDB process\n' +
+const SETTINGS = (settings_values = {}) => (
+    '\t;Settings for the HarperDB process\n' +
     '\t;The directory harperdb has been installed in\n' +
     'PROJECT_DIR=/Users/harperdb/unitTests/server/clustering\n' +
     '\t;The directory selected during install where the database files reside\n' +
@@ -18,9 +21,9 @@ const SETTINGS = '\t;Settings for the HarperDB process\n' +
     'PRIVATE_KEY=/Users/harperdb/unitTests/envDir/utility/keys/privateKey.pem\n' +
     '\t;Set to true to enable HTTPS on the HarperDB REST endpoint\n' +
     'Requires a valid certificate and key=\n' +
-    'HTTPS_ON=FALSE\n' +
+    `HTTPS_ON=${!hdb_utils.isEmpty(settings_values.HTTPS_ON) ? settings_values.HTTPS_ON : 'FALSE'}\n` +
     '\t;Set to true to have HarperDB run using standard HTTP\n' +
-    'HTTP_ON=TRUE\n' +
+    `HTTP_ON=${!hdb_utils.isEmpty(settings_values.HTTP_ON) ? settings_values.HTTP_ON : 'TRUE'}\n` +
     '\t;Set to true to enable Cross Origin Resource Sharing, which allows requests across a domain\n' +
     'CORS_ON=TRUE\n' +
     '\t;Allows for setting allowable domains with CORS\n' +
@@ -63,29 +66,34 @@ const SETTINGS = '\t;Settings for the HarperDB process\n' +
     'CLUSTERING_USER=clustusr\n' +
     'PROCESS_DIR_TEST=I\'m A Test\n' +
     'VERSION=1.1.1\n' +
-    'HELIUM_SERVER_HOST=localhost:41000\n' +
-    'HELIUM_VOLUME_PATH=/tmp/hdb\n';
+    `${settings_values.SERVER_PORT ? `SERVER_PORT=${settings_values.SERVER_PORT}\n` : ''}`
+);
 
 module.exports = {
     buildFile,
-    deleteFile
+    deleteFile,
+    getSettingsFilePath
 };
 
-function buildFile() {
+function getSettingsFilePath() {
+    return TEST_SETTINGS_FILE_PATH;
+}
+
+function buildFile(settings_values = {}) {
     try {
-        fs.writeFileSync(`${__dirname}/${TEST_SETTINGS_FILE}`, SETTINGS);
+        fs.writeFileSync(TEST_SETTINGS_FILE_PATH, SETTINGS(settings_values));
     } catch (err) {
         console.error(`Error building temporary settings.test file: ${err}`);
     }
-    console.log('Settings test file successfully created');
+    console.log('Settings test file successfully CREATED');
 }
 
-function deleteFile() {
+function deleteFile(bak_path_name = TEST_SETTINGS_FILE_BAK) {
     try {
-        fs.unlinkSync(`${__dirname}/${TEST_SETTINGS_FILE}`);
-        fs.unlinkSync(`${__dirname}/${TEST_SETTINGS_FILE_BAK}`);
+        fs.unlinkSync(TEST_SETTINGS_FILE_PATH);
+        fs.unlinkSync(`${__dirname}/${bak_path_name}`);
     } catch (err) {
-        console.error(`Error deleting temporary settings.test file: ${err}`);
+        console.error(`Error deleting temporary settings.test file and/or backup: ${err}`);
     }
-    console.log('Settings test file successfully deleted');
+    console.log('Settings test file and backup successfully DELETED');
 }

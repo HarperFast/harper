@@ -54,10 +54,6 @@ describe("Test LMDB environmentUtility module", ()=>{
             await test_utils.assertErrorAsync(rw_validator, [BASE_TEST_PATH], LMDB_TEST_ERRORS.ENV_NAME_REQUIRED, 'no env_name');
         });
 
-        it('call function invalid base_path', async ()=>{
-            await test_utils.assertErrorAsync(rw_validator, [INVALID_BASE_TEST_PATH, TEST_ENVIRONMENT_NAME], LMDB_TEST_ERRORS.INVALID_BASE_PATH, 'invalid base_path');
-        });
-
         it('call function happy path', async ()=>{
             await test_utils.assertErrorAsync(rw_validator, [BASE_TEST_PATH, TEST_ENVIRONMENT_NAME], undefined, 'happy path');
         });
@@ -539,6 +535,35 @@ describe("Test LMDB environmentUtility module", ()=>{
         it('call function no dbis', async ()=>{
             let dbis = await test_utils.assertErrorAsync(lmdb_env_util.listDBIs, [env2], undefined);
             assert.deepStrictEqual(dbis, [lmdb_terms.BLOB_DBI_NAME]);
+        });
+    });
+
+    describe("Test closeEnvironment function", ()=> {
+        let env;
+        beforeEach(async () => {
+            global.lmdb_map = undefined;
+            await fs.mkdirp(BASE_TEST_PATH);
+
+            env = await lmdb_env_util.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
+        });
+
+        after(async () => {
+            await fs.remove(BASE_TEST_PATH);
+            test_utils.tearDownMockFS();
+            global.lmdb_map = undefined;
+        });
+
+        it('call function no args', async ()=>{
+            await test_utils.assertErrorAsync(lmdb_env_util.closeEnvironment, [], LMDB_TEST_ERRORS.ENV_REQUIRED);
+
+            await test_utils.assertErrorAsync(lmdb_env_util.closeEnvironment, ['hello'], LMDB_TEST_ERRORS.INVALID_ENVIRONMENT);
+        });
+
+        it('call function happy path', async ()=>{
+            assert.deepStrictEqual(global.lmdb_map['lmdbTest.test'], env);
+            await test_utils.assertErrorAsync(lmdb_env_util.closeEnvironment, [env], undefined);
+
+            assert.deepStrictEqual(global.lmdb_map['lmdbTest.test'], undefined);
         });
     });
 

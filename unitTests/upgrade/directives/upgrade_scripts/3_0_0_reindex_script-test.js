@@ -8,10 +8,10 @@ const { expect } = chai;
 const sinon = require('sinon');
 const sinon_chai = require('sinon-chai');
 chai.use(sinon_chai);
-const test_utils = require('../../test_utils');
-const logger = require('../../../utility/logging/harper_logger');
-const env_mngr = require('../../../utility/environment/environmentManager');
-const lmdb_common = require('../../../utility/lmdb/commonUtility');
+const test_utils = require('../../../test_utils');
+const logger = require('../../../../utility/logging/harper_logger');
+const env_mngr = require('../../../../utility/environment/environmentManager');
+const lmdb_common = require('../../../../utility/lmdb/commonUtility');
 
 const TEST_DIR = 'reindexTestDir';
 const BASE_PATH_TEST = path.join(__dirname, TEST_DIR);
@@ -35,16 +35,19 @@ describe('Test reindex module', () => {
     let reindex_rw;
     let logger_notify_stub;
     let logger_error_stub;
+    let getDataStoreType_stub;
+    let console_info_stub;
 
     before(() => {
         // This stub and rewire need to be here as putting it in outer scope was messing interfering with other tests.
         sandbox.stub(env_mngr,'getHdbBasePath').returns(BASE_PATH_TEST);
-        reindex_rw = rewire('../../../upgrade/lmdb/3_0_0_reindex_script');
+        reindex_rw = rewire('../../../../upgrade/directives/upgrade_scripts/3_0_0_reindex_script');
         logger_notify_stub = sandbox.stub(logger, 'notify');
         logger_error_stub = sandbox.stub(logger, 'error');
         reindex_rw.__set__('pino_logger', pino_logger_test);
         sandbox.stub(console, 'error');
-        sandbox.stub(console, 'info');
+        console_info_stub = sandbox.stub(console, 'info');
+        getDataStoreType_stub = sandbox.stub(env_mngr, 'getDataStoreType').returns('lmdb');
     });
 
     afterEach(() => {
@@ -55,7 +58,7 @@ describe('Test reindex module', () => {
 
     after(async () => {
         sandbox.restore();
-        rewire('../../../upgrade/lmdb/3_0_0_reindex_script');
+        rewire('../../../../upgrade/directives/upgrade_scripts/3_0_0_reindex_script');
         await fs.remove(TMP_PATH_TEST);
     });
 
@@ -80,6 +83,27 @@ describe('Test reindex module', () => {
             expect(get_schema_tables_stub.getCall(0)).to.have.been.calledWith(SCHEMA_PATH_TEST);
             expect(get_schema_tables_stub.getCall(1)).to.have.been.calledWith(TRANSACTIONS_PATH_TEST);
         });
+
+        it('Test reindex functions are skipped for FS datastore', async () => {
+            getDataStoreType_stub.returns('fs');
+            const test_result = await reindex_rw();
+
+            expect(logger_notify_stub.called).to.be.false;
+            expect(console_info_stub.args[0][0]).to.equal('\n\nHDB using FS datastore - no need to run LMDB reindexing');
+            expect(test_result).to.equal('Reindexing skipped for FS datastore instance of HDB')
+            getDataStoreType_stub.returns('lmdb');
+        });
+
+        it('Test reindex functions for transactions are skipped if transactions dir doesnt exist', async () => {
+            const pathExists_stub = sandbox.stub(fs, 'pathExists').resolves(false);
+            await reindex_rw();
+
+            expect(logger_notify_stub.getCall(0)).to.have.been.calledWith('Reindexing upgrade started for schemas');
+            expect(logger_notify_stub.getCall(1)).to.have.been.calledWith('Reindexing upgrade complete');
+            expect(get_schema_tables_stub.getCall(0)).to.have.been.calledWith(SCHEMA_PATH_TEST);
+            expect(get_schema_tables_stub.calledOnce).to.be.true;
+            pathExists_stub.restore();
+        });
     });
 
     describe('Test getSchemaTable function', () => {
@@ -98,13 +122,13 @@ describe('Test reindex module', () => {
             process_table_rw = reindex_rw.__set__('processTable', process_table_stub);
             init_pino_logger_rw = reindex_rw.__set__('initPinoLogger', init_pino_logger_stub);
         });
-        
+
         after(() => {
             process_table_rw();
             init_pino_logger_rw();
             fs_empty_dir_stub.restore();
         });
-        
+
         it('Test schema and tables are loaded happy path', async () => {
             await getSchemaTables(SCHEMA_PATH_TEST, false);
 
