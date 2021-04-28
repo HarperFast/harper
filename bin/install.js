@@ -1,5 +1,6 @@
 const installer = require('../utility/install/installer');
 const logger = require('../utility/logging/harper_logger');
+const final_logger = logger.finalLogger();
 
 function install (callback) {
     installer.install(function(err) {
@@ -9,7 +10,7 @@ function install (callback) {
                 return callback(err, null);
             }
             console.log("There was an error during the install.  Please check the install logs. \n ERROR: " + err);
-            logger.error(err);
+            final_logger.error(err);
             return callback(err);
         }
 
