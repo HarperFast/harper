@@ -23,9 +23,9 @@ const HDB_LICENSE_EMAIL_ADDRESS = 'customer-success@harperdb.io';
 const BASIC_LICENSE_MAX_NON_CU_ROLES = 1;
 const BASIC_LICENSE_MAX_CLUSTER_CONNS = 3;
 const BASIC_LICENSE_CLUSTER_CONNECTION_LIMIT_WS_ERROR_CODE = 4141;
-const HDB_SUPPORT_URL = 'https://harperdbhelp.zendesk.com/hc/en-us';
+const HDB_SUPPORT_URL = 'https://harperdbhelp.zendesk.com/hc/en-us/requests/new';
 const HDB_PRICING_URL = 'https://www.harperdb.io/product';
-const SUPPORT_HELP_MSG = `For support, please submit a support request at ${HDB_SUPPORT_URL} or contact ${HDB_SUPPORT_ADDRESS}`;
+const SUPPORT_HELP_MSG = `For support, please submit a request at ${HDB_SUPPORT_URL} or contact ${HDB_SUPPORT_ADDRESS}`;
 const LICENSE_HELP_MSG = `For license support, please contact ${HDB_LICENSE_EMAIL_ADDRESS}`;
 const SEARCH_NOT_FOUND_MESSAGE = "None of the specified records were found.";
 const SEARCH_ATTRIBUTE_NOT_FOUND = `hash attribute not found`;
@@ -89,8 +89,8 @@ const INSERT_MODULE_ENUM = {
 };
 
 const UPGRADE_JSON_FIELD_NAMES_ENUM = {
-    CURRENT_VERSION: 'currentVersion',
-    UPGRADE_VERSION: 'upgradeVersion'
+    DATA_VERSION: 'data_version',
+    UPGRADE_VERSION: 'upgrade_version'
 };
 
 const SYSTEM_TABLE_NAMES = {
@@ -283,8 +283,7 @@ const SERVICE_ACTIONS_ENUM = {
     STOP:'stop',
     RESTART:'restart',
     VERSION: 'version',
-    UPGRADE:'upgrade',
-    UPGRADE_EXTERN: 'upgrade_external'
+    UPGRADE:'upgrade'
 };
 
 //describes the Geo Conversion types
@@ -297,6 +296,7 @@ const GEO_CONVERSION_ENUM = {
     polygon: 'polygon'
 };
 
+//NOTE - please be sure to add default values for new settings keys in the `HDB_SETTINGS_DEFAULT_VALUES` enum as well
 const HDB_SETTINGS_NAMES = {
     PROJECT_DIR_KEY: 'PROJECT_DIR',
     HDB_ROOT_KEY: 'HDB_ROOT',
@@ -352,7 +352,9 @@ const HDB_SETTINGS_DEFAULT_VALUES = {
     CLUSTERING_PORT: '5545',
     CLUSTERING: 'false',
     MAX_HDB_PROCESSES: 4,
-    DISABLE_TRANSACTION_LOG: false
+    DISABLE_TRANSACTION_LOG: false,
+    OPERATION_TOKEN_TIMEOUT: '1d',
+    REFRESH_TOKEN_TIMEOUT: '30d'
 };
 
 // Describes all available job types

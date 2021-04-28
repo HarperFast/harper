@@ -1,7 +1,9 @@
 'use strict';
 
 const test_utils = require('../../../../test_utils');
-test_utils.preTestPrep();const path = require('path');
+test_utils.preTestPrep();
+
+const path = require('path');
 const TRANSACTIONS_NAME = 'transactions';
 const BASE_PATH = test_utils.getMockFSPath();
 const BASE_TRANSACTIONS_PATH = path.join(BASE_PATH, TRANSACTIONS_NAME, 'dev');
@@ -28,8 +30,6 @@ const CREATE_TABLE_OBJ = new CreateTableObject('dev', 'test', 'id');
 const INSERT_RECORDS = [{id: 1, name: 'Penny'}, {id: 2, name: 'Kato', age: '6'}, {id: 3, name: 'Riley', age: '7'}, {id: 'blerrrrr', name: 'Rosco'}];
 let INSERT_HASHES = [1,2,3, 'blerrrrr'];
 
-
-
 const HDB_USER = {
     username: 'kyle'
 };
@@ -37,10 +37,6 @@ const HDB_USER = {
 describe('test lmdbDeleteTransactionLogsBefore module', ()=>{
     before(async ()=>{
         await fs.remove(BASE_PATH);
-    });
-
-    after(()=>{
-
     });
 
     describe('test deleteTransactions function', ()=>{

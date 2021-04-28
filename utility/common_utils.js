@@ -472,7 +472,8 @@ function callProcessSend(process_msg) {
 
 /**
  * Uses module ps_list to check if hdb process is running
- * @returns {process}
+ *
+ * @returns {Promise<boolean>}
  */
 async function isHarperRunning(){
     try {
