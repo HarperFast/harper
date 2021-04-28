@@ -21,6 +21,7 @@ const CLI = require('clui');
 const needle = require('needle');
 const env = require('../utility/environment/environmentManager');
 const log = require('../utility/logging/harper_logger');
+const final_logger = log.finalLogger();
 const hdb_util = require('../utility/common_utils');
 const hdb_terms = require('../utility/hdbTerms');
 const { promisify } = require('util');
@@ -110,7 +111,7 @@ async function upgradeFromFilePath(file_path) {
     });
     tarball.on('error', (err) => {
         printToLogAndConsole(`There was an error extracting the upgrade tar file at path: ${file_path}`);
-        log.error(err);
+        final_logger.error(err);
         throw new Error(`Error unpacking upgrade file.`);
     });
 }
@@ -144,7 +145,7 @@ async function upgrade() {
     }
 
     let latest_version = await getLatestVersion(opers).catch((e) => {
-        log.error(e);
+        final_logger.error(e);
         console.error(`Error getting latest version from HarperDB: ${e}`);
         throw e;
     });
@@ -154,7 +155,7 @@ async function upgrade() {
     }
     countdown.message(`Starting upgrade to version ${latest_version}`);
     countdown.start();
-    log.info(`Starting upgrade to version ${latest_version}`);
+    final_logger.info(`Starting upgrade to version ${latest_version}`);
     // Remove any existing upgrade/ directory path files
     let upgrade_dir_stat = await p_fs_readdir(UPGRADE_DIR_PATH).catch((e) => {
         // no-op
@@ -196,7 +197,7 @@ async function startUpgrade() {
         await p_set_schema_global();
     } catch(e) {
         printToLogAndConsole('Error loading the currently installed version number', log.ERR);
-        log.error(e);
+        final_logger.error(e);
     }
 
     let upgrade_package_path = path.join(UPGRADE_DIR_PATH, 'HarperDB', 'package.json');
@@ -236,12 +237,12 @@ async function startUpgrade() {
         throw err;
     }
     let exe_path = path.join(process.cwd(), EXE_NAME);
-    log.info(`Calling chmod on ${exe_path}`);
+    final_logger.info(`Calling chmod on ${exe_path}`);
     try {
         fs.chmodSync(exe_path, hdb_terms.HDB_FILE_PERMISSIONS);
     } catch(e) {
         let msg = `Unable to set permissions ${ hdb_terms.HDB_FILE_PERMISSIONS} on ${exe_path}.  Please set the permissions using the command chmod ${ hdb_terms.HDB_FILE_PERMISSIONS} ${exe_path}`;
-        log.error(msg);
+        final_logger.error(msg);
         console.error(msg);
     }
 
@@ -251,8 +252,8 @@ async function startUpgrade() {
     try {
         await hdbInfoController.updateHdbInfo(version.version());
     } catch(err) {
-        log.error('Error updating the hdbInfo version table.');
-        log.error(err);
+        final_logger.error('Error updating the hdbInfo version table.');
+        final_logger.error(err);
     }
     countdown.stop();
     printToLogAndConsole(`HarperDB was successfully upgraded to version ${version.version()}`, log.INFO);
@@ -269,7 +270,7 @@ function postInstallCleanUp() {
     } catch(e) {
         let msg = `There was a problem cleaning up the upgrade files.  These can be manually removed from ${UPGRADE_DIR_PATH}`;
         console.error(msg);
-        log.error(msg);
+        final_logger.error(msg);
     }
 }
 
@@ -294,7 +295,7 @@ async function getLatestVersion(opers) {
             throw res.statusMessage;
         }
     } catch (e) {
-        log.error(`There was an error with the request to get the latest HDB Build: ${e}`);
+        final_logger.error(`There was an error with the request to get the latest HDB Build: ${e}`);
         throw new Error("Error getting latest build");
     }
 
@@ -327,7 +328,7 @@ async function getBuild(opers) {
             });
         });
     } catch (e) {
-        log.error(`There was an error with the request to get the latest HDB Build: ${e}`);
+        final_logger.error(`There was an error with the request to get the latest HDB Build: ${e}`);
         throw new Error("Error getting latest build" + e);
     }
 }
@@ -367,13 +368,13 @@ async function copyUpgradeExecutable() {
     // Note we need to rename the new executable to 'hdb', so we don't e overwrite the existing installed executable (yet)
     let destination_path = path.join(process.cwd(), 'hdb');
     await p_fs_copyfile(source_path, destination_path).catch((e) => {
-        log.error(e);
+        final_logger.error(e);
         throw e;
     });
     // Need to set perms on new hdb exe.
     await p_fs_chmod(`${process.cwd()}/${EXE_COPY_NAME}`, hdb_terms.HDB_FILE_PERMISSIONS).catch((e) => {
         let msg = `Error setting permissions on newest version of HarperDB ${e}`;
-        log.error(msg);
+        final_logger.error(msg);
         throw e;
     });
 }
@@ -418,10 +419,10 @@ function backupCurrInstall() {
     console.log('Backing up current install files.');
     let curr_install_base = path.join(process.cwd(), '../');
     let data_base = env.get(hdb_terms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY);
-    log.info(`Current install path is: ${curr_install_base}`);
+    final_logger.info(`Current install path is: ${curr_install_base}`);
 
     let backup_path = path.join(data_base, 'backup', `version${(version.version().replace('/./g', '-'))}`);
-    log.info(`Writing backup files to path: ${backup_path}`);
+    final_logger.info(`Writing backup files to path: ${backup_path}`);
 
     if(fs.existsSync(backup_path)) {
         fs_extra.emptyDirSync(backup_path);
@@ -432,7 +433,7 @@ function backupCurrInstall() {
         fs_extra.copySync(curr_install_base, backup_path);
     } catch(err) {
         console.log(`There was a problem backing up current install.  Please check the logs.  Exiting.`);
-        log.fatal(err);
+        final_logger.fatal(err);
         throw err;
     }
 }
@@ -443,15 +444,15 @@ function backupCurrInstall() {
 function copyNewFilesIntoInstall() {
     console.log('Copying new install files.');
     let curr_install_base = path.join(process.cwd(), '../');
-    log.info(`backing up current install files to path: ${curr_install_base}`);
+    final_logger.info(`backing up current install files to path: ${curr_install_base}`);
     let upgrade_base = path.join(UPGRADE_DIR_PATH, 'HarperDB');
-    log.info(`upgrading from path: ${upgrade_base} to install path ${curr_install_base}`);
+    final_logger.info(`upgrading from path: ${upgrade_base} to install path ${curr_install_base}`);
     // copy the new files to the current directory.
     try {
         fs_extra.copySync(upgrade_base, curr_install_base);
     } catch(err) {
         console.log(`There was a problem copying new install files..  Please check the logs.  Exiting.`);
-        log.fatal(err);
+        final_logger.fatal(err);
         throw err;
     }
 }
@@ -460,6 +461,6 @@ function printToLogAndConsole(msg, log_level) {
     if(!log_level) {
         log_level = log.info;
     }
-    log.writeLog(log_level, msg);
+    final_logger[log_level](log_level);
     console.log(msg);
 }

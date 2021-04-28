@@ -7,6 +7,7 @@ const net = require('net');
 const install = require('../utility/install/installer');
 const colors = require("colors/safe");
 const logger = require('../utility/logging/harper_logger');
+const final_logger = logger.finalLogger();
 const pjson = require(`${__dirname}/../package.json`);
 const terms = require('../utility/hdbTerms');
 const install_user_permission = require('../utility/install_user_permission');
@@ -49,12 +50,12 @@ async function run() {
         hdb_running = await isHarperRunning();
     } catch(err) {
         console.log(err);
-        logger.error(err);
+        final_logger.error(err);
     }
     if(hdb_running) {
         let run_err = 'HarperDB is already running.';
         console.log(run_err);
-        logger.info(run_err);
+        final_logger.notify(run_err);
         return;
     }
 
@@ -85,7 +86,7 @@ async function run() {
         }
     } catch(err) {
         console.log(err);
-        logger.info(err);
+        final_logger.info(err);
     }
 }
 
@@ -126,7 +127,7 @@ async function openCreateTransactionEnvironment(schema, table_name){
     } catch(e){
         let error_msg = `Unable to create the transaction environment for ${schema}.${table_name}, due to: ${e.message}`;
         console.error(error_msg);
-        logger.error(error_msg);
+        final_logger.error(error_msg);
     }
 }
 
@@ -140,14 +141,14 @@ async function forceUpdate(update_json) {
     let new_version = update_json[terms.UPGRADE_JSON_FIELD_NAMES_ENUM.UPGRADE_VERSION];
     if(!old_version) {
         console.log('Current Version field missing from the config file.  Cannot continue with upgrade.  Please contact support@harperdb.io');
-        logger.notify('Missing current version field from upgradeconfig');
+        final_logger.notify('Missing current version field from upgradeconfig');
         process.exit(1);
     }
     if(!new_version) {
         new_version = version.version();
         if(!new_version) {
             console.log('Current Version field missing from the config file.  Cannot continue with upgrade.  Please contact support@harperdb.io');
-            logger.notify('Missing new version field from upgradeconfig');
+            final_logger.notify('Missing new version field from upgradeconfig');
             process.exit(1);
         }
     }
@@ -159,13 +160,13 @@ async function forceUpdate(update_json) {
     try {
         let upgrade_result = await upgrade.startUpgradeDirectives(old_version, new_version);
         upgrade_result.forEach((result) => {
-           logger.info(result);
+            final_logger.info(result);
         });
         // success, remove the upgrade file.
         return true;
     } catch(err) {
         console.log('There was an error during the data upgrade.  Please check the logs.');
-        logger.error(err);
+        final_logger.error(err);
         return false;
     }
 }
@@ -178,13 +179,13 @@ async function isPortInUse() {
     try {
         server_port = env.get(terms.HDB_SETTINGS_NAMES.SERVER_PORT_KEY);
     } catch (e) {
-        logger.info('hdb_boot_props file not found.');
+        final_logger.info('hdb_boot_props file not found.');
         return;
     }
 
     if (!server_port) {
         let port_err = 'server port is undefined.  Please check your settings file.';
-        logger.error(port_err);
+        final_logger.error(port_err);
         await startHarper();
     }
 
@@ -238,7 +239,7 @@ async function startHarper() {
             // boot props not found, don't return and kick off install
             start_install = true;
         } else {
-            logger.error(`start fail: ${err}`);
+            final_logger.error(`start fail: ${err}`);
             return;
         }
     }

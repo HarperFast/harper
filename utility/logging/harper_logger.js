@@ -225,9 +225,7 @@ function initPinoLogger() {
 }
 
 /**
- * Uses pino.final to create a special logger that guarantees final tick writes
- * on process exit events.
- * @param pino_log
+ * finalLogger is a specialist logger that synchronously flushes on every write
  * @returns {undefined|*|(function(*=, ...[*]): *)}
  */
 function finalLogger() {
