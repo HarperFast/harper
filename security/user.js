@@ -40,7 +40,6 @@ const license = require('../utility/registration/hdb_license');
 const systemSchema = require('../json/systemSchema');
 const { handleHDBError, hdb_errors } = require('../utility/errors/hdbError');
 const { HTTP_STATUS_CODES, AUTHENTICATION_ERROR_MSGS, HDB_ERROR_MSGS } = hdb_errors;
-const clone = require('clone');
 
 const USER_ATTRIBUTE_WHITELIST = {
     username: true,
@@ -535,7 +534,7 @@ async function findAndValidateUser(username, pw, validate_password = true) {
     if (user_tmp && !user_tmp.active) {
         throw handleHDBError(new Error(), AUTHENTICATION_ERROR_MSGS.USER_INACTIVE, HTTP_STATUS_CODES.UNAUTHORIZED);
     }
-    let user = clone(user_tmp);
+    let user = Object.assign({}, user_tmp);
     if (validate_password === true && !password.validate(user.password, pw)) {
         throw handleHDBError(new Error(), AUTHENTICATION_ERROR_MSGS.GENERIC_AUTH_FAIL, HTTP_STATUS_CODES.UNAUTHORIZED);
     }
