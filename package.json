@@ -83,7 +83,7 @@
     "passport-http": "^0.3.0",
     "passport-local": "^1.0.0",
     "pino": "^6.11.2",
-    "prompt": "^1.0.0",
+    "prompt": "^1.1.0",
     "properties-reader": "0.0.15",
     "recursive-iterator": "^3.3.0",
     "socketcluster": "^14.4.2",

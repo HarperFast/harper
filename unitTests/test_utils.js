@@ -234,7 +234,7 @@ function createMockFS(hash_attribute, schema, table, test_data) {
                 makeTheDir(attribute_instance_dir_path);
                 // make the hash file
                 let hash_file_path = path.join(hash_dir_path, `${data[hash_attribute]}.hdb`);
-                fs.writeFileSync(hash_file_path, attr_values.value);
+                fs.writeFileSync(hash_file_path, attr_values.value.toString());
                 test_record_paths.files.push(hash_file_path);
                 if (!is_hash) {
                     let link_path = path.join(attribute_instance_dir_path, data[hash_attribute] + '.hdb');
