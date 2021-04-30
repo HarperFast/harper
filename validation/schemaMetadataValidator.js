@@ -6,6 +6,7 @@ const { hdb_errors } = require('../utility/errors/hdbError');
 module.exports = {
     checkSchemaExists,
     checkSchemaTableExists,
+    doesAttributeExist,
     schema_describe
 };
 
@@ -51,4 +52,29 @@ async function checkSchemaTableExists(schema_name, table_name) {
         }
 
     }
+}
+
+/**
+ * checks the global schema.table for the attribute.
+ * @param schema
+ * @param table
+ * @param attribute
+ * @returns {boolean}
+ */
+function doesAttributeExist(schema, table, attribute) {
+    let attributes_obj_array = [];
+    //on initial creation of a table it will not exist in hdb_schema yet
+    if(global.hdb_schema[schema] && global.hdb_schema[schema][table]) {
+        attributes_obj_array = global.hdb_schema[schema][table]['attributes'];
+    }
+    if(Array.isArray(attributes_obj_array) && attributes_obj_array.length > 0) {
+        for (let attr of attributes_obj_array) {
+            if (attr.attribute === attribute) {
+                return true;
+
+            }
+        }
+    }
+
+    return false;
 }

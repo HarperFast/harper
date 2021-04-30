@@ -43,11 +43,11 @@ async function createSchema(schema_create_object) {
 async function createSchemaStructure(schema_create_object) {
     let validation_error = validation.schema_object(schema_create_object);
     if (validation_error) {
-        throw validation_error;
+        throw handleHDBError(validation_error, validation_error.message, HTTP_STATUS_CODES.BAD_REQUEST);
     }
 
     if (!await schema_metadata_validator.checkSchemaExists(schema_create_object.schema)) {
-        throw `schema '${schema_create_object.schema}' already exists`;
+        throw handleHDBError(new Error(), HDB_ERROR_MSGS.SCHEMA_EXISTS_ERR(schema_create_object.schema), HTTP_STATUS_CODES.BAD_REQUEST, logger.ERR, HDB_ERROR_MSGS.SCHEMA_EXISTS_ERR(schema_create_object.schema));
     }
 
     try {
@@ -76,19 +76,19 @@ async function createTableStructure(create_table_object) {
     let validation_obj = clone(create_table_object);
     let validation_error = validation.create_table_object(validation_obj);
     if (validation_error) {
-        throw validation_error;
+        throw handleHDBError(validation_error, validation_error.message, HTTP_STATUS_CODES.BAD_REQUEST);
     }
 
     validation.validateTableResidence(create_table_object.residence);
 
     let invalid_schema_msg = await schema_metadata_validator.checkSchemaExists(create_table_object.schema);
     if (invalid_schema_msg) {
-        throw invalid_schema_msg;
+        throw handleHDBError(new Error(), invalid_schema_msg, HTTP_STATUS_CODES.NOT_FOUND, logger.ERR, invalid_schema_msg);
     }
 
     let invalid_table_msg = await schema_metadata_validator.checkSchemaTableExists(create_table_object.schema, create_table_object.table);
     if (!invalid_table_msg) {
-        throw `table '${create_table_object.table}' already exists in schema '${create_table_object.schema}'`;
+        throw handleHDBError(new Error(), HDB_ERROR_MSGS.TABLE_EXISTS_ERR(create_table_object.schema, create_table_object.table), HTTP_STATUS_CODES.BAD_REQUEST, logger.ERR, HDB_ERROR_MSGS.TABLE_EXISTS_ERR(create_table_object.schema, create_table_object.table));
     }
 
     let table_system_data = {
@@ -104,7 +104,7 @@ async function createTableStructure(create_table_object) {
                 table_system_data.residence = create_table_object.residence;
                 await harperBridge.createTable(table_system_data, create_table_object);
             } else {
-                throw new Error(`Clustering does not appear to be enabled. Cannot insert table with property 'residence'.`);
+                throw handleHDBError(new Error(), `Clustering does not appear to be enabled. Cannot insert table with property 'residence'.`, HTTP_STATUS_CODES.BAD_REQUEST);
             }
         } else {
             await harperBridge.createTable(table_system_data, create_table_object);
@@ -119,12 +119,12 @@ async function createTableStructure(create_table_object) {
 async function dropSchema(drop_schema_object) {
     let validation_error = validation.schema_object(drop_schema_object);
     if (validation_error) {
-        throw validation_error;
+        throw handleHDBError(validation_error, validation_error.message, HTTP_STATUS_CODES.BAD_REQUEST);
     }
 
     let invalid_schema_msg = await schema_metadata_validator.checkSchemaExists(drop_schema_object.schema);
     if (invalid_schema_msg) {
-        throw invalid_schema_msg;
+        throw handleHDBError(new Error(), invalid_schema_msg, HTTP_STATUS_CODES.NOT_FOUND, logger.ERR, invalid_schema_msg);
     }
 
     //we refresh and assign the entire schema metadata to global in order to make sure we have the latest
@@ -149,12 +149,12 @@ async function dropSchema(drop_schema_object) {
 async function dropTable(drop_table_object) {
     let validation_error = validation.table_object(drop_table_object);
     if (validation_error) {
-        throw validation_error;
+        throw handleHDBError(validation_error, validation_error.message, HTTP_STATUS_CODES.BAD_REQUEST);
     }
 
     let invalid_schema_table_msg = await schema_metadata_validator.checkSchemaTableExists(drop_table_object.schema, drop_table_object.table);
     if (invalid_schema_table_msg) {
-        throw invalid_schema_table_msg;
+        throw handleHDBError(new Error(), invalid_schema_table_msg, HTTP_STATUS_CODES.NOT_FOUND, logger.ERR, invalid_schema_table_msg);
     }
 
     //we refresh and assign the entire table metadata to global in order to make sure we have the latest
@@ -183,26 +183,30 @@ async function dropTable(drop_table_object) {
 async function dropAttribute(drop_attribute_object) {
     let validation_error = validation.attribute_object(drop_attribute_object);
     if (validation_error) {
-        throw validation_error;
+        throw handleHDBError(validation_error, validation_error.message, HTTP_STATUS_CODES.BAD_REQUEST);
     }
 
     let invalid_schema_table_msg = await schema_metadata_validator.checkSchemaTableExists(drop_attribute_object.schema, drop_attribute_object.table);
     if (invalid_schema_table_msg) {
-        throw invalid_schema_table_msg;
+        throw handleHDBError(new Error(), invalid_schema_table_msg, HTTP_STATUS_CODES.NOT_FOUND, logger.ERR, invalid_schema_table_msg);
     }
 
     if (drop_attribute_object.attribute === global.hdb_schema[drop_attribute_object.schema][drop_attribute_object.table].hash_attribute) {
-        throw new Error('You cannot drop a hash attribute');
+        throw handleHDBError(new Error(), 'You cannot drop a hash attribute', HTTP_STATUS_CODES.BAD_REQUEST);
     }
 
     if(hdb_terms.TIME_STAMP_NAMES.indexOf(drop_attribute_object.attribute) >= 0){
-        throw new Error(`cannot drop internal timestamp attribute: ${drop_attribute_object.attribute}`);
+        throw handleHDBError(new Error(), `cannot drop internal timestamp attribute: ${drop_attribute_object.attribute}`, HTTP_STATUS_CODES.BAD_REQUEST);
+    }
+
+    if (!schema_metadata_validator.doesAttributeExist(drop_attribute_object.schema, drop_attribute_object.table, drop_attribute_object.attribute)) {
+        throw handleHDBError(new Error(), HDB_ERROR_MSGS.ATTR_NOT_FOUND(drop_attribute_object.schema, drop_attribute_object.table, drop_attribute_object.attribute),
+            HTTP_STATUS_CODES.NOT_FOUND, logger.ERR, HDB_ERROR_MSGS.ATTR_NOT_FOUND(drop_attribute_object.schema, drop_attribute_object.table, drop_attribute_object.attribute));
     }
 
     try {
         await harperBridge.dropAttribute(drop_attribute_object);
         dropAttributeFromGlobal(drop_attribute_object);
-
 
         let drop_attribute_message = Object.assign({}, signalling.SCHEMA_CHANGE_MESSAGE);
         drop_attribute_message.operation = drop_attribute_object;
@@ -230,12 +234,22 @@ function dropAttributeFromGlobal(drop_attribute_object) {
 }
 
 async function createAttribute(create_attribute_object) {
+    let validation_error = validation.attribute_object(create_attribute_object);
+    if (validation_error) {
+        throw handleHDBError(validation_error, validation_error.message, HTTP_STATUS_CODES.BAD_REQUEST);
+    }
+
     if (!global.hdb_schema[create_attribute_object.schema]) {
         throw handleHDBError(new Error(), HDB_ERROR_MSGS.SCHEMA_NOT_FOUND(create_attribute_object.schema), HTTP_STATUS_CODES.NOT_FOUND);
     }
 
     if (!global.hdb_schema[create_attribute_object.schema][create_attribute_object.table]) {
         throw handleHDBError(new Error(), HDB_ERROR_MSGS.TABLE_NOT_FOUND(create_attribute_object.schema, create_attribute_object.table), HTTP_STATUS_CODES.NOT_FOUND);
+    }
+
+    if (schema_metadata_validator.doesAttributeExist(create_attribute_object.schema, create_attribute_object.table, create_attribute_object.attribute)) {
+        throw handleHDBError(new Error(), HDB_ERROR_MSGS.ATTR_EXISTS_ERR(create_attribute_object.schema, create_attribute_object.table, create_attribute_object.attribute),
+        HTTP_STATUS_CODES.BAD_REQUEST, logger.ERR, HDB_ERROR_MSGS.ATTR_EXISTS_ERR(create_attribute_object.schema, create_attribute_object.table, create_attribute_object.attribute));
     }
 
     try {
