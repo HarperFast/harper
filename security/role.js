@@ -98,9 +98,8 @@ async function addRole(role){
         records: [role]
     };
 
-    await insert.insert(insert_object).catch((err) => {
-        throw err;
-    });
+    await insert.insert(insert_object);
+
     signalling.signalUserChange({type: 'user'});
 
     role = scrubRoleDetails(role);
@@ -154,9 +153,7 @@ async function dropRole(role){
     }
 
     let role_id_search = new SearchByHashObject(terms.SYSTEM_SCHEMA_NAME, terms.SYSTEM_TABLE_NAMES.ROLE_TABLE_NAME, [role.id], ['role']);
-    let role_name = await p_search_search_by_hash(role_id_search).catch((err) => {
-        throw err;
-    });
+    let role_name = await p_search_search_by_hash(role_id_search);
 
     if(role_name.length === 0) {
         throw handleHDBError(new Error(), HDB_ERROR_MSGS.ROLE_NOT_FOUND, HTTP_STATUS_CODES.NOT_FOUND);
@@ -183,9 +180,7 @@ async function dropRole(role){
         hash_values: [role.id]
     };
 
-    await p_delete_delete(delete_object).catch((err) => {
-       throw err;
-    });
+    await p_delete_delete(delete_object);
 
     signalling.signalUserChange({type: 'user'});
     return `${role_name[0].role} successfully deleted`;
@@ -201,10 +196,5 @@ async function listRoles(){
         get_attributes: ["*"]
     };
 
-    let roles = await p_search_search_by_value(search_obj).catch((err) => {
-       throw err;
-    });
-
-    return roles;
+    return p_search_search_by_value(search_obj);
 }
-
