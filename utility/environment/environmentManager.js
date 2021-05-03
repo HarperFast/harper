@@ -254,7 +254,6 @@ function readPropsFile() {
         //throw new Error(error_msg);
         storeVariableValue(hdb_terms.HDB_SETTINGS_NAMES.LOG_LEVEL_KEY, log.DEBUG);
         storeVariableValue(hdb_terms.HDB_SETTINGS_NAMES.LOG_PATH_KEY, '../run_log.log');
-        storeVariableValue(hdb_terms.HDB_SETTINGS_NAMES.LOGGER_KEY, 1);
         return false;
     }
 
@@ -392,7 +391,6 @@ function initTestEnvironment(test_config_obj = {}) {
         setProperty(hdb_terms.HDB_SETTINGS_NAMES.INSTALL_USER, os.userInfo().username);
         setProperty(hdb_terms.HDB_SETTINGS_NAMES.PRIVATE_KEY_KEY, `${props_path}/envDir/utility/keys/privateKey.pem`);
         setProperty(hdb_terms.HDB_SETTINGS_NAMES.CERT_KEY, `${props_path}/envDir/utility/keys/certificate.pem`);
-        setProperty(hdb_terms.HDB_SETTINGS_NAMES.LOGGER_KEY, `1`);
         setProperty(hdb_terms.HDB_SETTINGS_NAMES.LOG_LEVEL_KEY, `debug`);
         setProperty(hdb_terms.HDB_SETTINGS_NAMES.LOG_PATH_KEY, `${props_path}/envDir/log/hdb_log.log`);
         setProperty(hdb_terms.HDB_SETTINGS_NAMES.LOG_DAILY_ROTATE_KEY, false);

@@ -214,7 +214,7 @@ async function descTable(describe_table_object, attr_perms) {
 
             if(env_mngr.getDataStoreType() === terms.STORAGE_TYPES_ENUM.LMDB){
                 try {
-                    let schema_path = path.join(lmdb_init_paths.getBaseSchemaPath(), table_result.schema);
+                    let schema_path = path.join(lmdb_init_paths.getBaseSchemaPath(), table_result.schema.toString());
                     let env = await lmdb_environment_utility.openEnvironment(schema_path, table_result.name);
                     let dbi_stat = lmdb_environment_utility.statDBI(env, table_result.hash_attribute);
                     table_result.record_count = dbi_stat.entryCount;

@@ -21,9 +21,14 @@ describe('Test installer module', () => {
     let callback_stub;
     let test_result;
     let installer_rw;
+    let install_log_fake = {
+        error: () => {},
+        info: () => {}
+    }
 
     before(() => {
         installer_rw = rewire('../../utility/install/installer');
+        installer_rw.__set__('install_logger', install_log_fake);
         sandbox = sinon.createSandbox();
         prompt_spy = sandbox.spy(prompt, 'get');
         stdin_stubber = mock_stdin.stdin();

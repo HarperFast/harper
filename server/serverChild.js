@@ -35,7 +35,12 @@ const {
     handlePostRequest,
     handleServerUncaughtException,
     serverErrorHandler,
-    reqBodyValidationHandler
+    reqBodyValidationHandler,
+    handleBeforeExit,
+    handleExit,
+    handleSigint,
+    handleSigquit,
+    handleSigterm
 } = require('./serverHelpers/serverHandlers');
 
 const REQ_MAX_BODY_SIZE = 1024*1024*1024; //this is 1GB in bytes
@@ -76,6 +81,11 @@ async function childServer() {
         //this message handler allows all forked processes to communicate with one another0
         process.on('message', handleServerMessage);
         process.on('uncaughtException', handleServerUncaughtException);
+        process.on('beforeExit', handleBeforeExit);
+        process.on('exit', handleExit);
+        process.on('SIGINT', handleSigint);
+        process.on('SIGQUIT', handleSigquit);
+        process.on('SIGTERM', handleSigterm);
 
         await setUp();
 

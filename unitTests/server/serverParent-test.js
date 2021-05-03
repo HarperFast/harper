@@ -99,12 +99,27 @@ describe('Test serverParent.js', () => {
 
             process.emit('uncaughtException', new Error(test_error));
 
-            expect(logger_fatal_stub.calledOnce).to.be.true;
             expect(process_exit_stub.calledOnce).to.be.true;
             expect(process_exit_stub.args[0][0]).to.eql(1);
 
             process_exit_stub.resetBehavior();
         })
+
+        it('check that all serverHandlers listeners are added to process', async function() {
+            process_exit_stub.callsFake(fake);
+            await serverParent_rw(test_worker_num);
+            const before_exit_listeners = process.listeners('beforeExit').map(func => func.name);
+            expect(before_exit_listeners).to.include('handleBeforeExit');
+            const exit_listeners = process.listeners('exit').map(func => func.name);
+            expect(exit_listeners).to.include('handleExit');
+            const signit_listeners = process.listeners('SIGINT').map(func => func.name);
+            expect(signit_listeners).to.include('handleSigint');
+            const sigquit_listeners = process.listeners('SIGQUIT').map(func => func.name);
+            expect(sigquit_listeners).to.include('handleSigquit');
+            const sigterm_listeners = process.listeners('SIGTERM').map(func => func.name);
+            expect(sigterm_listeners).to.include('handleSigterm');
+            process_exit_stub.resetBehavior();
+        });
 
         it('should catch allChildrenStoppedEmitter event and restart if ready', async function() {
             const test_msg = "Test msg";
