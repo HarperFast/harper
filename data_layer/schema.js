@@ -196,7 +196,7 @@ async function dropAttribute(drop_attribute_object) {
     }
 
     if(hdb_terms.TIME_STAMP_NAMES.indexOf(drop_attribute_object.attribute) >= 0){
-        throw new Error(`cannot drop internal timestamp attribute: ${drop_attribute_object.attribute}`);
+        throw handleHDBError(new Error(), `cannot drop internal timestamp attribute: ${drop_attribute_object.attribute}`, HTTP_STATUS_CODES.BAD_REQUEST);
     }
 
     try {
