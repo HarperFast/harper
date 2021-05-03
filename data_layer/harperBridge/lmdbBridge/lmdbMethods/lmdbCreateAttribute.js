@@ -6,8 +6,10 @@ const write_utility = require('../../../../utility/lmdb/writeUtility');
 const {getSystemSchemaPath,getBaseSchemaPath} = require('../lmdbUtility/initializePaths');
 const path = require('path');
 const system_schema = require('../../../../json/systemSchema');
+const schema_validator = require('../../../../validation/schema_validator');
 const LMDBCreateAttributeObject = require('../lmdbUtility/LMDBCreateAttributeObject');
 const returnObject = require('../../bridgeUtility/insertUpdateReturnObj');
+const { handleHDBError, hdb_errors } = require('../../../../utility/errors/hdbError');
 const hdb_utils = require('../../../../utility/common_utils');
 
 const HDB_TABLE_INFO = system_schema.hdb_attribute;
@@ -26,6 +28,11 @@ module.exports = lmdbCreateAttribute;
  * @returns {{skipped_hashes: *, update_hashes: *, message: string}}
  */
 async function lmdbCreateAttribute(create_attribute_obj) {
+    let validation_error = schema_validator.attribute_object(create_attribute_obj);
+    if (validation_error) {
+        throw handleHDBError(new Error(), validation_error.message, hdb_errors.HTTP_STATUS_CODES.BAD_REQUEST);
+    }
+
     //the validator strings everything so we need to recast the booleans on create_attribute_obj
     create_attribute_obj.is_hash_attribute = create_attribute_obj.is_hash_attribute === "true";
     create_attribute_obj.dup_sort = hdb_utils.isEmpty(create_attribute_obj.dup_sort) || create_attribute_obj.dup_sort == "true";
