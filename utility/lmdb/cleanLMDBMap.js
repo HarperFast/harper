@@ -24,7 +24,7 @@ function cleanLMDBMap(msg){
                             try {
                                 environment_utility.closeEnvironment(global.lmdb_map[key]);
                             } catch(err) {
-                                if (err.message && err.message !== LMDB_ERRORS.ENV_REQUIRED) {
+                                if (err.message !== LMDB_ERRORS.ENV_REQUIRED) {
                                     throw err;
                                 }
                             }
@@ -40,7 +40,7 @@ function cleanLMDBMap(msg){
                         environment_utility.closeEnvironment(global.lmdb_map[schema_table_name]);
                         environment_utility.closeEnvironment(global.lmdb_map[txn_schema_table_name]);
                     } catch(err) {
-                        if (err.message && err.message !== LMDB_ERRORS.ENV_REQUIRED) {
+                        if (err.message !== LMDB_ERRORS.ENV_REQUIRED) {
                             throw err;
                         }
                     }
