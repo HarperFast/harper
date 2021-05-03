@@ -58,14 +58,18 @@ async function generateFingerPrint() {
 async function writeFingerprint(){
     let hash = uuidV4();
     let hashed_hash = password.hash(hash);
-    await fs.writeFile(FINGER_PRINT_FILE, hashed_hash).catch((err) => {
+
+    try {
+        await fs.writeFile(FINGER_PRINT_FILE, hashed_hash);
+    } catch(err) {
         if(err.code === 'EEXIST'){
             return hashed_hash;
         }
         log.error(`Error writing fingerprint file to ${FINGER_PRINT_FILE}`);
         log.error(err);
         throw new Error('There was an error generating the fingerprint');
-    });
+    }
+
     return hashed_hash;
 }
 
