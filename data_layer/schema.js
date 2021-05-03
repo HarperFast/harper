@@ -196,17 +196,13 @@ async function dropAttribute(drop_attribute_object) {
     }
 
     if(hdb_terms.TIME_STAMP_NAMES.indexOf(drop_attribute_object.attribute) >= 0){
-        throw handleHDBError(new Error(), `cannot drop internal timestamp attribute: ${drop_attribute_object.attribute}`, HTTP_STATUS_CODES.BAD_REQUEST);
-    }
-
-    if (!schema_metadata_validator.doesAttributeExist(drop_attribute_object.schema, drop_attribute_object.table, drop_attribute_object.attribute)) {
-        throw handleHDBError(new Error(), HDB_ERROR_MSGS.ATTR_NOT_FOUND(drop_attribute_object.schema, drop_attribute_object.table, drop_attribute_object.attribute),
-            HTTP_STATUS_CODES.NOT_FOUND, logger.ERR, HDB_ERROR_MSGS.ATTR_NOT_FOUND(drop_attribute_object.schema, drop_attribute_object.table, drop_attribute_object.attribute));
+        throw new Error(`cannot drop internal timestamp attribute: ${drop_attribute_object.attribute}`);
     }
 
     try {
         await harperBridge.dropAttribute(drop_attribute_object);
         dropAttributeFromGlobal(drop_attribute_object);
+
 
         let drop_attribute_message = Object.assign({}, signalling.SCHEMA_CHANGE_MESSAGE);
         drop_attribute_message.operation = drop_attribute_object;
@@ -234,22 +230,12 @@ function dropAttributeFromGlobal(drop_attribute_object) {
 }
 
 async function createAttribute(create_attribute_object) {
-    let validation_error = validation.attribute_object(create_attribute_object);
-    if (validation_error) {
-        throw handleHDBError(validation_error, validation_error.message, HTTP_STATUS_CODES.BAD_REQUEST);
-    }
-
     if (!global.hdb_schema[create_attribute_object.schema]) {
         throw handleHDBError(new Error(), HDB_ERROR_MSGS.SCHEMA_NOT_FOUND(create_attribute_object.schema), HTTP_STATUS_CODES.NOT_FOUND);
     }
 
     if (!global.hdb_schema[create_attribute_object.schema][create_attribute_object.table]) {
         throw handleHDBError(new Error(), HDB_ERROR_MSGS.TABLE_NOT_FOUND(create_attribute_object.schema, create_attribute_object.table), HTTP_STATUS_CODES.NOT_FOUND);
-    }
-
-    if (schema_metadata_validator.doesAttributeExist(create_attribute_object.schema, create_attribute_object.table, create_attribute_object.attribute)) {
-        throw handleHDBError(new Error(), HDB_ERROR_MSGS.ATTR_EXISTS_ERR(create_attribute_object.schema, create_attribute_object.table, create_attribute_object.attribute),
-        HTTP_STATUS_CODES.BAD_REQUEST, logger.ERR, HDB_ERROR_MSGS.ATTR_EXISTS_ERR(create_attribute_object.schema, create_attribute_object.table, create_attribute_object.attribute));
     }
 
     try {

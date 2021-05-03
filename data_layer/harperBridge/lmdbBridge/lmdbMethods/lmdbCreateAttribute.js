@@ -37,6 +37,19 @@ async function lmdbCreateAttribute(create_attribute_obj) {
     create_attribute_obj.is_hash_attribute = create_attribute_obj.is_hash_attribute === "true";
     create_attribute_obj.dup_sort = hdb_utils.isEmpty(create_attribute_obj.dup_sort) || create_attribute_obj.dup_sort == "true";
 
+    let attributes_obj_array = [];
+    //on initial creation of a table it will not exist in hdb_schema yet
+    if(global.hdb_schema[create_attribute_obj.schema] && global.hdb_schema[create_attribute_obj.schema][create_attribute_obj.table]) {
+        attributes_obj_array = global.hdb_schema[create_attribute_obj.schema][create_attribute_obj.table]['attributes'];
+    }
+    if(Array.isArray(attributes_obj_array) && attributes_obj_array.length > 0) {
+        for (let attribute of attributes_obj_array) {
+            if (attribute.attribute === create_attribute_obj.attribute) {
+                throw new Error(`attribute '${attribute.attribute}' already exists in ${create_attribute_obj.schema}.${create_attribute_obj.table}`);
+            }
+        }
+    }
+
     //insert the attribute meta_data into system.hdb_attribute
     let record = new LMDBCreateAttributeObject(create_attribute_obj.schema, create_attribute_obj.table, create_attribute_obj.attribute, create_attribute_obj.id);
 
