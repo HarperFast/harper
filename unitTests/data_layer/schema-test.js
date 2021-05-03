@@ -163,7 +163,7 @@ describe('Test schema module', function() {
                 error = err;
             }
 
-            expect(error).to.equal(`schema '${SCHEMA_CREATE_OBJECT_TEST.schema}' already exists`);
+            expect(error.message).to.equal(`Schema '${SCHEMA_CREATE_OBJECT_TEST.schema}' already exists`);
         });
 
         it('should call bridge and return success message', async () => {
@@ -257,7 +257,7 @@ describe('Test schema module', function() {
                error = err;
             }
 
-            expect(error).to.equal(`Schema '${CREATE_TABLE_OBJECT_TEST.schema}' does not exist`);
+            expect(error.message).to.equal(`Schema '${CREATE_TABLE_OBJECT_TEST.schema}' does not exist`);
             expect(create_table_validator_stub).to.have.been.calledOnce;
             expect(residence_validator_stub).to.have.been.calledOnce;
         });
@@ -272,7 +272,7 @@ describe('Test schema module', function() {
                 error = err;
             }
 
-            expect(error).to.equal(`table '${CREATE_TABLE_OBJECT_TEST.table}' already exists in schema '${CREATE_TABLE_OBJECT_TEST.schema}'`);
+            expect(error.message).to.equal(`Table '${CREATE_TABLE_OBJECT_TEST.table}' already exists in schema '${CREATE_TABLE_OBJECT_TEST.schema}'`);
             expect(create_table_validator_stub).to.have.been.calledOnce;
             expect(residence_validator_stub).to.have.been.calledOnce;
             global.hdb_schema.dogsrule = {};
@@ -371,7 +371,7 @@ describe('Test schema module', function() {
                 error = err;
             }
 
-            expect(error).to.be.equal(`Schema '${DROP_SCHEMA_OBJECT_TEST.schema}' does not exist`);
+            expect(error.message).to.be.equal(`Schema '${DROP_SCHEMA_OBJECT_TEST.schema}' does not exist`);
         });
 
         it('Test error from bridge drop schema is caught, thrown and logged', async () => {
@@ -384,7 +384,7 @@ describe('Test schema module', function() {
         });
 
         it('Test schema obj validation catches and throws error', async () => {
-            schema_validator_stub.returns('Youve got a problem with your schema object!');
+            schema_validator_stub.returns(new Error('Youve got a problem with your schema object!'));
             let error;
             try {
                 await schema.dropSchema(DROP_SCHEMA_OBJECT_TEST);
@@ -392,7 +392,7 @@ describe('Test schema module', function() {
                 error = err;
             }
 
-            expect(error).to.equal('Youve got a problem with your schema object!');
+            expect(error.message).to.equal('Youve got a problem with your schema object!');
         });
     });
 
@@ -428,7 +428,7 @@ describe('Test schema module', function() {
         });
 
         it('Test that validation error is caught and thrown', async () => {
-            let test_err_result = await test_util.testError(schema.dropTable({operation: 'drop_table', table: '', schema: "dogs"}), 'Table  is required');
+            let test_err_result = await test_util.testError(schema.dropTable({operation: 'drop_table', table: '', schema: "dogs"}), 'Table is required');
 
             expect(test_err_result).to.be.true;
         });
