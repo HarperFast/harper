@@ -14,6 +14,14 @@ const sio_server_stopped_event = require('../events/SioServerStoppedEvent');
 const user_schema = require('../security/user');
 const util = require('util');
 
+const {
+    handleBeforeExit,
+    handleExit,
+    handleSigint,
+    handleSigquit,
+    handleSigterm
+} = require('./serverHelpers/serverHandlers');
+
 const p_schema_to_global = util.promisify(global_schema.setSchemaDataToGlobal);
 
 /**
@@ -30,9 +38,16 @@ async function serverParent(num_workers) {
     process.on('uncaughtException', function (err) {
         let message = `Found an uncaught exception with message: ${err.message}${os.EOL}Stack: ${err.stack}${os.EOL}Terminating HDB.`;
         console.error(message);
-        harper_logger.fatal(message);
+        const final_logger = harper_logger.finalLogger();
+        final_logger.fatal(message);
         process.exit(1);
     });
+
+    process.on('beforeExit', handleBeforeExit);
+    process.on('exit', handleExit);
+    process.on('SIGINT', handleSigint);
+    process.on('SIGQUIT', handleSigquit);
+    process.on('SIGTERM', handleSigterm);
 
     let restart_event_tracker = new RestartEventObject();
 

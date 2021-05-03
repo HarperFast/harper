@@ -28,7 +28,10 @@ const constraints = {
     },
     level: {
         presence: false,
-        inclusion: ['info', 'error', 'request', 'verbose']
+        inclusion: {
+            within: ['notify', 'fatal', 'error', 'warn', 'info', 'debug', 'trace'],
+            message: 'not valid'
+        }
     },
     order: {
         presence: false,
