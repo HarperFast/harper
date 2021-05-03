@@ -147,4 +147,46 @@ describe('test cleanLMDBMap module', ()=>{
         assert.deepStrictEqual(Object.keys(dog_env.dbis).indexOf('id') >=0, false );
         dog_env.close();
     });
+
+    it('Confirm env required errors on drop schema are caught and not thrown', async () => {
+        let dog_env = await env_utility.createEnvironment(DEV_PATH, 'dog');
+        env_utility.createDBI(dog_env, 'id', false);
+        close_env_stub.restore();
+        close_env_stub = sandbox.stub(env_utility, 'closeEnvironment').throws(new Error('env is required'));
+        clean_lmdb_map({operation: {operation: 'drop_schema', schema: 'dev'}});
+        assert.deepStrictEqual(logger_error_stub.callCount, 0);
+        dog_env.close();
+    });
+
+    it('Confirm error from closeEnvironment drop schema is thrown', async () => {
+        let dog_env = await env_utility.createEnvironment(DEV_PATH, 'dog');
+        env_utility.createDBI(dog_env, 'id', false);
+        close_env_stub.restore();
+        close_env_stub = sandbox.stub(env_utility, 'closeEnvironment').throws(new Error('env does not exist'));
+        clean_lmdb_map({operation: {operation: 'drop_schema', schema: 'dev'}});
+        assert.deepStrictEqual(logger_error_stub.callCount, 1);
+        dog_env.close();
+    });
+
+    it('Confirm env required errors on drop table are caught and not thrown', async () => {
+        let dog_env = await env_utility.createEnvironment(DEV_PATH, 'dog');
+        env_utility.createDBI(dog_env, 'id', false);
+        close_env_stub.restore();
+        close_env_stub = sandbox.stub(env_utility, 'closeEnvironment').throws(new Error('env is required'));
+        clean_lmdb_map({operation: {operation: 'drop_table', schema: 'dev'}});
+        close_env_stub.restore();
+        assert.deepStrictEqual(logger_error_stub.callCount, 0);
+        dog_env.close();
+    });
+
+    it('Confirm error from closeEnvironment drop table is thrown', async () => {
+        let dog_env = await env_utility.createEnvironment(DEV_PATH, 'dog');
+        env_utility.createDBI(dog_env, 'id', false);
+        close_env_stub.restore();
+        close_env_stub = sandbox.stub(env_utility, 'closeEnvironment').throws(new Error('env does not exist'));
+        clean_lmdb_map({operation: {operation: 'drop_table', schema: 'dev'}});
+        close_env_stub.restore();
+        assert.deepStrictEqual(logger_error_stub.callCount, 1);
+        dog_env.close();
+    });
 });
