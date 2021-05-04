@@ -382,6 +382,7 @@ describe('Test harper_logger module', () => {
                     console.log('## first call first timeout');
                     console.log('## ' + first_expected_log_path);
                     const first_file_exists = fs_extra.pathExistsSync(first_expected_log_path);
+                    console.log('## path exists response ' + first_file_exists);
                     console.log('## after first path exists');
                     expect(first_file_exists).to.equal(true, `first log file not found at ${first_expected_log_path}`);
                     console.log('## before write logs');
