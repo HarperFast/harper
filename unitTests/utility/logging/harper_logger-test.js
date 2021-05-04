@@ -648,7 +648,7 @@ describe('Test harper_logger module', () => {
         });
     });
     
-    describe('Test setLogLevel function', () => {
+    /*describe('Test setLogLevel function', () => {
         before(() => {
             setMockPropParams(false, null, LOG_LEVEL.NOTIFY, LOG_PATH_TEST, HDB_ROOT_TEST);
             harper_logger_rw = requireUncached('../../../utility/logging/harper_logger');
@@ -751,7 +751,7 @@ describe('Test harper_logger module', () => {
             expect(log.includes('"level":"fatal"')).to.be.false;
             expect(log.includes('"level":"notify"')).to.be.true;
         });
-    });
+    });*/
     
     describe('Test readLog function', () => {
         const log_msg_test = "I am an old error message";
