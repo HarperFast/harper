@@ -332,17 +332,22 @@ describe('Test harper_logger module', () => {
             harper_logger_rw.writeLog(undefined, 'Undefined level log');
 
             setTimeout(() => {
-                pino_logger.flush();
-                const log_json = convertLogToJson(LOG_PATH_TEST);
-                let log_found = false;
-                for (const log of log_json) {
-                    if (log.level === LOG_LEVEL.ERROR && log.hasOwnProperty('timestamp') && log.message === 'Undefined level log') {
-                        log_found = true;
+                try {
+                    pino_logger.flush();
+                    const log_json = convertLogToJson(LOG_PATH_TEST);
+                    let log_found = false;
+                    for (const log of log_json) {
+                        if (log.level === LOG_LEVEL.ERROR && log.hasOwnProperty('timestamp') && log.message === 'Undefined level log') {
+                            log_found = true;
+                        }
                     }
+                    expect(log_found).to.be.true;
+                    fs_extra.removeSync(LOG_PATH_TEST);
+                    done();
+                } catch(err) {
+                    console.error(err);
+                    done();
                 }
-                expect(log_found).to.be.true;
-                fs_extra.removeSync(LOG_PATH_TEST);
-                done();
             }, 1000);
         }).timeout(3000);
 
