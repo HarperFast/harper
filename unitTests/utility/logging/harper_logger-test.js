@@ -360,7 +360,7 @@ describe('Test harper_logger module', () => {
                 testWriteLogBulkTests(expected_log_path);
                 done();
             }, 1000);
-        }).timeout(3000);
+        }).timeout(8000);
 
         // This test relies on the one above to create logger.
         it('Test writeLog with daily rotate next day log created', (done) => {
