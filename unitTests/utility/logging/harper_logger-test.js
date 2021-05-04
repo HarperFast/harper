@@ -396,15 +396,18 @@ describe('Test harper_logger module', () => {
             const tomorrows_date = moment().utc().add(3, 'days');
             const fake_timer = sandbox.useFakeTimers({now: new Date(tomorrows_date.format('YYYY,MM,DD'))});
             setMockPropParams(true, 3, LOG_LEVEL.TRACE, LOG_PATH_TEST, HDB_ROOT_TEST);
-            moment.prototype.isSameOrAfter = sandbox.stub().callsFake(() => true);
             harper_logger_rw = rewire('../../../utility/logging/harper_logger');
+            fake_timer.restore();
+            const date_now = Date.now();
+            const date_stub = sandbox.stub(Date, 'now').returns(date_now);
+            date_stub.onFirstCall().returns(9999999999999);
             harper_logger_rw.writeLog('fatal', 'Test a new date log is created please');
             const expected_log_path = path.join(TEST_LOG_DIR, `${tomorrows_date.format('YYYY-MM-DD')}_${LOG_NAME_TEST}`);
             const file_exists = fs_extra.pathExistsSync(expected_log_path);
             const all_log_files = fs.readdirSync(TEST_LOG_DIR);
             expect(file_exists).to.be.true;
             expect(all_log_files.length).to.equal(3);
-            fake_timer.restore();
+            date_stub.restore();
         });
     });
 
@@ -442,12 +445,15 @@ describe('Test harper_logger module', () => {
         it('Test old log is removed happy path', () => {
             setMockPropParams(true, 2, LOG_LEVEL.TRACE, LOG_PATH_TEST, HDB_ROOT_TEST);
             harper_logger_rw = rewire('../../../utility/logging/harper_logger');
-            moment.prototype.isSameOrAfter = sandbox.stub().callsFake(() => true);
+            const date_now = Date.now();
+            const date_stub = sandbox.stub(Date, 'now').returns(date_now);
+            date_stub.onFirstCall().returns(9999999999999);
             fs_extra.ensureFileSync(path.join(TEST_LOG_DIR, '2021-04-25_log_unit_test.log'));
             fs_extra.ensureFileSync(path.join(TEST_LOG_DIR, '2021-03-01_log_unit_test.log'));
             harper_logger_rw.writeLog('info', 'This log will trigger daily max');
             const file_exists = fs_extra.pathExistsSync(path.join(TEST_LOG_DIR, '2021-03-01_log_unit_test.log'));
             expect(file_exists).to.be.false;
+            date_stub.restore();
         });
     });
     

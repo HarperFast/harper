@@ -118,7 +118,7 @@ module.exports = {
 function createLog(log_location_setting) {
     if (daily_rotate) {
         // If the logs are set to daily rotate we get tomorrows date so that we know when to create a new log file.
-        tomorrows_date = moment().utc().add(1, 'days');
+        tomorrows_date = moment().utc().set({'hour': 0, 'minute': 0, 'second': 0, 'millisecond': 0}).add(1, 'days').valueOf();
     }
 
     //if log location isn't defined, assume HDB_ROOT/log/hdb_log.log
@@ -259,30 +259,26 @@ function writeLog(level, message) {
         }
 
         // Daily rotate is set in HDB config
-        if (daily_rotate) {
-            const current_date = moment().utc();
-            // If the current logs date is the same as previously set tomorrows date we create a new log.
-            if (moment(current_date.format(DATE_FORMAT)).isSameOrAfter(tomorrows_date.format(DATE_FORMAT))) {
-                // Anything in the the current logs buffer is flushed to the log file.
-                if (pino_logger) {
-                    pino_logger.flush();
-                }
+        if (daily_rotate && (Date.now() > tomorrows_date)) {
+            // Anything in the the current logs buffer is flushed to the log file.
+            if (pino_logger) {
+                pino_logger.flush();
+            }
 
-                // Update the tomorrow date value
-                tomorrows_date = moment().utc().add(1, 'days');
-                const new_log_location = path.join(log_directory, `${current_date.format(DATE_FORMAT)}_${log_file_name}`);
+            // Update the tomorrow date value
+            tomorrows_date = moment().utc().set({'hour': 0, 'minute': 0, 'second': 0, 'millisecond': 0}).add(1, 'days').valueOf();
+            const new_log_location = path.join(log_directory, `${moment().utc().format(DATE_FORMAT)}_${log_file_name}`);
 
-                // Create a new pino logger instance under new file name.
-                if (new_log_location !== log_location) {
-                    log_location = new_log_location;
-                    initPinoLogger();
-                    pino_logger.notify(`Initialized pino logger writing to ${log_location} process pid ${process.pid}`);
-                }
+            // Create a new pino logger instance under new file name.
+            if (new_log_location !== log_location) {
+                log_location = new_log_location;
+                initPinoLogger();
+                pino_logger.notify(`Initialized pino logger writing to ${log_location} process pid ${process.pid}`);
+            }
 
-                // If the config has a value for dail max we must check to see any old logs need to be removed.
-                if (Number.isInteger(daily_max) && daily_max > 0) {
-                    removeOldLogs();
-                }
+            // If the config has a value for dail max we must check to see any old logs need to be removed.
+            if (Number.isInteger(daily_max) && daily_max > 0) {
+                removeOldLogs();
             }
         }
 
