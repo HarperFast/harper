@@ -440,6 +440,7 @@ describe('Test harper_logger module', () => {
             }
         }).timeout(3000);
 
+/*
         it('Test writeLog with daily rotate', (done) => {
             let fake_timer = undefined;
             try {
@@ -484,6 +485,7 @@ describe('Test harper_logger module', () => {
                 done(err);
             }
         }).timeout(11000);
+*/
 
  /*       // This test relies on the one above to create logger.
         it('Test writeLog with daily rotate next day log created', (done) => {
