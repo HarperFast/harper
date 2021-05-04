@@ -354,11 +354,16 @@ describe('Test harper_logger module', () => {
             testWriteLogBulkWrite();
 
             setTimeout(() => {
-                const file_exists = fs_extra.pathExistsSync(expected_log_path);
-                expect(file_exists).to.equal(true, `file not found at ${expected_log_path}`);
-                pino_logger.flush();
-                testWriteLogBulkTests(expected_log_path);
-                done();
+                try {
+                    const file_exists = fs_extra.pathExistsSync(expected_log_path);
+                    expect(file_exists).to.equal(true, `file not found at ${expected_log_path}`);
+                    pino_logger.flush();
+                    testWriteLogBulkTests(expected_log_path);
+                    done();
+                } catch(err) {
+                    console.error(err);
+                    done();
+                }
             }, 1000);
         }).timeout(8000);
 
@@ -372,6 +377,7 @@ describe('Test harper_logger module', () => {
             const first_expected_log_path = path.join(TEST_LOG_DIR, `${tomorrows_date.format('YYYY-MM-DD')}_${LOG_NAME_TEST}`);
             testWriteLogBulkWrite();
             fake_timer.restore();
+            let second_expected_log_path;
 
             console.log('## before first timeout');
 
@@ -391,7 +397,7 @@ describe('Test harper_logger module', () => {
                     fake_timer = sandbox.useFakeTimers({now: new Date(tomorrows_date.format('YYYY,MM,DD'))});
                     console.log('## before write log');
                     harper_logger_rw.writeLog('fatal', 'Test a new NEW date log is created');
-                    const second_expected_log_path = path.join(TEST_LOG_DIR, `${tomorrows_date.format('YYYY-MM-DD')}_${LOG_NAME_TEST}`);
+                    second_expected_log_path = path.join(TEST_LOG_DIR, `${tomorrows_date.format('YYYY-MM-DD')}_${LOG_NAME_TEST}`);
                     console.log('## before path exists');
                     const second_file_exists = fs_extra.pathExistsSync(second_expected_log_path);
                     expect(second_file_exists).to.equal(true, `second log file not found at ${second_expected_log_path}`);
@@ -401,18 +407,22 @@ describe('Test harper_logger module', () => {
                     console.log('## last call first timeout');
 
                 } catch(err) {
-                    console.log(err);
+                    console.error(err);
+                    done();
                 }
-                
-
-
 
                 setTimeout(() => {
-                    console.log('## first call second timeout');
-                    testWriteLogBulkTests(second_expected_log_path);
-                    
-                    console.log('before done');
-                    done();
+                    try {
+                        console.log('## first call second timeout');
+                        testWriteLogBulkTests(second_expected_log_path);
+
+                        console.log('before done');
+                        done();
+
+                    } catch(err) {
+                        console.error(err);
+                        done();
+                    }
                 }, 5000);
             }, 5000);
         }).timeout(110000);
