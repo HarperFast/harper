@@ -343,7 +343,7 @@ describe('Test harper_logger module', () => {
             }
         }).timeout(8000);
 
-        it('Test error from create log handled correctly', (done) => {
+/*        it('Test error from create log handled correctly', (done) => {
             try {
                 const temp_default_log_dir = path.join(__dirname, 'log');
                 fs_extra.mkdirpSync(temp_default_log_dir);
@@ -369,7 +369,7 @@ describe('Test harper_logger module', () => {
                 console.error(err);
                 done(err);
             }
-        }).timeout(8000);
+        }).timeout(8000);*/
     });
     
     describe('Test writeLog function', () => {
