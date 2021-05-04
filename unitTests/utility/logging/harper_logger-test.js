@@ -442,14 +442,14 @@ describe('Test harper_logger module', () => {
                     try {
                         const file_exists = fs_extra.pathExistsSync(expected_log_path);
                         expect(file_exists).to.equal(true, `file not found at ${expected_log_path}`);
-                        pino_logger.flush();
+                        //pino_logger.flush();
                         testWriteLogBulkTests(expected_log_path);
                         done();
                     } catch(err) {
                         console.error(err);
                         done(err);
                     }
-                }, 1000);
+                }, 5000);
             } catch(err) {
                 console.error(err);
                 done(err);
