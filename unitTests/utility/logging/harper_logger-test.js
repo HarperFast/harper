@@ -175,11 +175,16 @@ describe('Test harper_logger module', () => {
 
                 // The log buffer gets flushed every 5 seconds so we wait for the flush to happen before reading.
                 setTimeout(() => {
-                    const file_exists = fs_extra.pathExistsSync(LOG_PATH_TEST);
-                    expect(file_exists).to.be.true;
-                    const log = fs_extra.readFileSync(LOG_PATH_TEST).toString();
-                    testAllTheLevelsLogged(log);
-                    done();
+                    try {
+                        const file_exists = fs_extra.pathExistsSync(LOG_PATH_TEST);
+                        expect(file_exists).to.be.true;
+                        const log = fs_extra.readFileSync(LOG_PATH_TEST).toString();
+                        testAllTheLevelsLogged(log);
+                        done();
+                    } catch(err) {
+                        console.error(err);
+                        done();
+                    }
                 }, 5000);
             } catch(err) {
                 console.error(err);
@@ -195,11 +200,16 @@ describe('Test harper_logger module', () => {
 
                 // The log buffer gets flushed every 5 seconds so we wait for the flush to happen before reading.
                 setTimeout(() => {
-                    const file_exists = fs_extra.pathExistsSync(path.join(TEST_LOG_DIR, 'hdb_log.log'));
-                    expect(file_exists).to.be.true;
-                    const log = fs_extra.readFileSync(LOG_PATH_TEST).toString();
-                    testAllTheLevelsLogged(log);
-                    done();
+                    try {
+                        const file_exists = fs_extra.pathExistsSync(path.join(TEST_LOG_DIR, 'hdb_log.log'));
+                        expect(file_exists).to.be.true;
+                        const log = fs_extra.readFileSync(LOG_PATH_TEST).toString();
+                        testAllTheLevelsLogged(log);
+                        done();
+                    } catch(err) {
+                        console.error(err);
+                        done();
+                    }
                 }, 5000);
             } catch(err) {
                 console.error(err);
@@ -246,11 +256,16 @@ describe('Test harper_logger module', () => {
 
                 // The log buffer gets flushed every 5 seconds so we wait for the flush to happen before reading.
                 setTimeout(() => {
-                    const file_exists = fs_extra.pathExistsSync(expected_log_path);
-                    expect(file_exists).to.be.true;
-                    const log = fs_extra.readFileSync(LOG_PATH_TEST).toString();
-                    testAllTheLevelsLogged(log);
-                    done();
+                    try {
+                        const file_exists = fs_extra.pathExistsSync(expected_log_path);
+                        expect(file_exists).to.be.true;
+                        const log = fs_extra.readFileSync(LOG_PATH_TEST).toString();
+                        testAllTheLevelsLogged(log);
+                        done();
+                    } catch(err) {
+                        console.error(err);
+                        done();
+                    }
                 }, 5000);
             } catch(err) {
                 console.error(err);
@@ -272,12 +287,18 @@ describe('Test harper_logger module', () => {
 
                 // The log buffer gets flushed every 5 seconds so we wait for the flush to happen before reading.
                 setTimeout(() => {
-                    const file_exists = fs_extra.pathExistsSync(expected_log_path);
-                    expect(file_exists).to.be.true;
-                    const log = fs_extra.readFileSync(expected_log_path).toString();
-                    expect(log.includes("message\":\"Attempted to create log directory from settings file but failed.  Using default log path - 'hdb/log/hdb_log.log'")).to.be.true;
-                    fs_extra.removeSync(temp_default_log_dir);
-                    done();
+                    try {
+                        const file_exists = fs_extra.pathExistsSync(expected_log_path);
+                        expect(file_exists).to.be.true;
+                        const log = fs_extra.readFileSync(expected_log_path).toString();
+                        expect(log.includes("message\":\"Attempted to create log directory from settings file but failed.  Using default log path - 'hdb/log/hdb_log.log'")).to.be.true;
+                        fs_extra.removeSync(temp_default_log_dir);
+                        done();
+                    } catch(err) {
+                        if (fs_mkdir_stub) fs_mkdir_stub.restore();
+                        console.error(err);
+                        done();
+                    }
                 }, 5000);
             } catch(err) {
                 if (fs_mkdir_stub) fs_mkdir_stub.restore();
@@ -300,12 +321,18 @@ describe('Test harper_logger module', () => {
 
                 // The log buffer gets flushed every 5 seconds so we wait for the flush to happen before reading.
                 setTimeout(() => {
-                    const file_exists = fs_extra.pathExistsSync(expected_log_path);
-                    expect(file_exists).to.be.true;
-                    const log = fs_extra.readFileSync(expected_log_path).toString();
-                    expect(log.includes("message\":\"Attempted to create log directory from settings file but failed.  Using default log path - 'hdb/log/hdb_log.log'")).to.be.true;
-                    fs_extra.removeSync(temp_default_log_dir);
-                    done();
+                    try {
+                        const file_exists = fs_extra.pathExistsSync(expected_log_path);
+                        expect(file_exists).to.be.true;
+                        const log = fs_extra.readFileSync(expected_log_path).toString();
+                        expect(log.includes("message\":\"Attempted to create log directory from settings file but failed.  Using default log path - 'hdb/log/hdb_log.log'")).to.be.true;
+                        fs_extra.removeSync(temp_default_log_dir);
+                        done();
+                    } catch(err) {
+                        if (fs_mkdir_stub) fs_mkdir_stub.restore();
+                        console.error(err);
+                        done();
+                    }
                 }, 5000);
             } catch(err) {
                 if (fs_mkdir_stub) fs_mkdir_stub.restore();
@@ -324,12 +351,17 @@ describe('Test harper_logger module', () => {
 
                 // The log buffer gets flushed every 5 seconds so we wait for the flush to happen before reading.
                 setTimeout(() => {
-                    const file_exists = fs_extra.pathExistsSync(expected_log_path);
-                    expect(file_exists).to.be.true;
-                    const log = fs_extra.readFileSync(expected_log_path).toString();
-                    expect(log.includes("message\":\"Attempted to create log directory from settings file but failed.  Using default log path - 'hdb/log/hdb_log.log'")).to.be.true;
-                    fs_extra.removeSync(temp_default_log_dir);
-                    done();
+                    try {
+                        const file_exists = fs_extra.pathExistsSync(expected_log_path);
+                        expect(file_exists).to.be.true;
+                        const log = fs_extra.readFileSync(expected_log_path).toString();
+                        expect(log.includes("message\":\"Attempted to create log directory from settings file but failed.  Using default log path - 'hdb/log/hdb_log.log'")).to.be.true;
+                        fs_extra.removeSync(temp_default_log_dir);
+                        done();
+                    } catch(err) {
+                        console.error(err);
+                        done();
+                    }
                 }, 5000);
             } catch(err) {
                 console.error(err);
@@ -351,11 +383,16 @@ describe('Test harper_logger module', () => {
                 testWriteLogBulkWrite(LOG_PATH_TEST);
 
                 setTimeout(() => {
-                    const file_exists = fs_extra.pathExistsSync(LOG_PATH_TEST);
-                    expect(file_exists).to.be.true;
-                    pino_logger.flush();
-                    testWriteLogBulkTests(LOG_PATH_TEST);
-                    done();
+                    try {
+                        const file_exists = fs_extra.pathExistsSync(LOG_PATH_TEST);
+                        expect(file_exists).to.be.true;
+                        pino_logger.flush();
+                        testWriteLogBulkTests(LOG_PATH_TEST);
+                        done();
+                    } catch(err) {
+                        console.error(err);
+                        done();
+                    }
                 }, 1000);
             } catch(err) {
                 console.error(err);
@@ -369,17 +406,23 @@ describe('Test harper_logger module', () => {
                 harper_logger_rw.writeLog(undefined, 'Undefined level log');
 
                 setTimeout(() => {
-                    pino_logger.flush();
-                    const log_json = convertLogToJson(LOG_PATH_TEST);
-                    let log_found = false;
-                    for (const log of log_json) {
-                        if (log.level === LOG_LEVEL.ERROR && log.hasOwnProperty('timestamp') && log.message === 'Undefined level log') {
-                            log_found = true;
+                    try {
+                        pino_logger.flush();
+                        const log_json = convertLogToJson(LOG_PATH_TEST);
+                        let log_found = false;
+                        for (const log of log_json) {
+                            if (log.level === LOG_LEVEL.ERROR && log.hasOwnProperty('timestamp') && log.message === 'Undefined level log') {
+                                log_found = true;
+                            }
                         }
+
+                        expect(log_found).to.be.true;
+                        fs_extra.removeSync(LOG_PATH_TEST);
+                        done();
+                    } catch(err) {
+                        console.error(err);
+                        done();
                     }
-                    expect(log_found).to.be.true;
-                    fs_extra.removeSync(LOG_PATH_TEST);
-                    done();
                 }, 1000);
             } catch(err) {
                 console.error(err);
@@ -396,11 +439,16 @@ describe('Test harper_logger module', () => {
                 testWriteLogBulkWrite();
 
                 setTimeout(() => {
-                    const file_exists = fs_extra.pathExistsSync(expected_log_path);
-                    expect(file_exists).to.equal(true, `file not found at ${expected_log_path}`);
-                    pino_logger.flush();
-                    testWriteLogBulkTests(expected_log_path);
-                    done();
+                    try {
+                        const file_exists = fs_extra.pathExistsSync(expected_log_path);
+                        expect(file_exists).to.equal(true, `file not found at ${expected_log_path}`);
+                        pino_logger.flush();
+                        testWriteLogBulkTests(expected_log_path);
+                        done();
+                    } catch(err) {
+                        console.error(err);
+                        done();
+                    }
                 }, 1000);
             } catch(err) {
                 console.error(err);
@@ -427,36 +475,47 @@ describe('Test harper_logger module', () => {
 
                 //The log buffer gets flushed every 5 seconds so we wait for the flush to happen before reading.
                 setTimeout(() => {
+                    try {
+                        console.log('## first call first timeout');
+                        console.log('## ' + first_expected_log_path);
+                        const first_file_exists = fs_extra.pathExistsSync(first_expected_log_path);
+                        console.log('## path exists response ' + first_file_exists);
+                        console.log('## after first path exists');
+                        expect(first_file_exists).to.equal(true, `first log file not found at ${first_expected_log_path}`);
+                        console.log('## before write logs');
+                        testWriteLogBulkTests(first_expected_log_path);
+                        tomorrows_date = moment().utc().add(2, 'days');
+                        fake_timer = sandbox.useFakeTimers({now: new Date(tomorrows_date.format('YYYY,MM,DD'))});
+                        console.log('## before write log');
+                        harper_logger_rw.writeLog('fatal', 'Test a new NEW date log is created');
+                        second_expected_log_path = path.join(TEST_LOG_DIR, `${tomorrows_date.format('YYYY-MM-DD')}_${LOG_NAME_TEST}`);
+                        console.log('## before path exists');
+                        const second_file_exists = fs_extra.pathExistsSync(second_expected_log_path);
+                        expect(second_file_exists).to.equal(true, `second log file not found at ${second_expected_log_path}`);
+                        fake_timer.restore();
+                        testWriteLogBulkWrite();
 
-                    console.log('## first call first timeout');
-                    console.log('## ' + first_expected_log_path);
-                    const first_file_exists = fs_extra.pathExistsSync(first_expected_log_path);
-                    console.log('## path exists response ' + first_file_exists);
-                    console.log('## after first path exists');
-                    expect(first_file_exists).to.equal(true, `first log file not found at ${first_expected_log_path}`);
-                    console.log('## before write logs');
-                    testWriteLogBulkTests(first_expected_log_path);
-                    tomorrows_date = moment().utc().add(2, 'days');
-                    fake_timer = sandbox.useFakeTimers({now: new Date(tomorrows_date.format('YYYY,MM,DD'))});
-                    console.log('## before write log');
-                    harper_logger_rw.writeLog('fatal', 'Test a new NEW date log is created');
-                    second_expected_log_path = path.join(TEST_LOG_DIR, `${tomorrows_date.format('YYYY-MM-DD')}_${LOG_NAME_TEST}`);
-                    console.log('## before path exists');
-                    const second_file_exists = fs_extra.pathExistsSync(second_expected_log_path);
-                    expect(second_file_exists).to.equal(true, `second log file not found at ${second_expected_log_path}`);
-                    fake_timer.restore();
-                    testWriteLogBulkWrite();
+                        console.log('## last call first timeout');
 
-                    console.log('## last call first timeout');
+                        setTimeout(() => {
+                            try {
+                                console.log('## first call second timeout');
+                                testWriteLogBulkTests(second_expected_log_path);
 
-                    setTimeout(() => {
-                        console.log('## first call second timeout');
-                        testWriteLogBulkTests(second_expected_log_path);
-
-                        console.log('before done');
+                                console.log('before done');
+                                done();
+                            } catch(err) {
+                                if (fake_timer) fake_timer.restore();
+                                console.error(err);
+                                done();
+                            }
+                        }, 5000);
+                    } catch(err) {
+                        if (fake_timer) fake_timer.restore();
+                        console.error(err);
                         done();
+                    }
 
-                    }, 5000);
                 }, 5000);
             } catch(err) {
                 if (fake_timer) fake_timer.restore();
@@ -654,8 +713,13 @@ describe('Test harper_logger module', () => {
                 testWriteLogBulkWrite();
                 pino_logger = harper_logger_rw.__get__('pino_logger');
                 setTimeout(() => {
-                    pino_logger.flush();
-                    done();
+                    try {
+                        pino_logger.flush();
+                        done();
+                    } catch(err) {
+                        console.error(err);
+                        done();
+                    }
                 }, 500);
             } catch(err) {
                 console.error(err);
