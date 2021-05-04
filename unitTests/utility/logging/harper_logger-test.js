@@ -352,7 +352,7 @@ describe('Test harper_logger module', () => {
             pino_logger = harper_logger_rw.__get__('pino_logger');
             const expected_log_path = path.join(TEST_LOG_DIR, `${moment().utc().format('YYYY-MM-DD')}_${LOG_NAME_TEST}`);
             const file_exists = fs_extra.pathExistsSync(expected_log_path);
-            expect(file_exists).to.be.true;
+            expect(file_exists).to.equal(true, `file not found at ${expected_log_path}`);
             testWriteLogBulkWrite();
 
             setTimeout(() => {
@@ -369,7 +369,7 @@ describe('Test harper_logger module', () => {
             harper_logger_rw.writeLog('fatal', 'Test a new date log is created');
             let expected_log_path = path.join(TEST_LOG_DIR, `${tomorrows_date.format('YYYY-MM-DD')}_${LOG_NAME_TEST}`);
             const file_exists = fs_extra.pathExistsSync(expected_log_path);
-            expect(file_exists).to.be.true;
+            expect(file_exists).to.equal(true, `file not found at ${expected_log_path}`);
             testWriteLogBulkWrite();
             fake_timer.restore();
 
@@ -381,7 +381,7 @@ describe('Test harper_logger module', () => {
                 harper_logger_rw.writeLog('fatal', 'Test a new NEW date log is created');
                 expected_log_path = path.join(TEST_LOG_DIR, `${tomorrows_date.format('YYYY-MM-DD')}_${LOG_NAME_TEST}`);
                 const file_exists = fs_extra.pathExistsSync(expected_log_path);
-                expect(file_exists).to.be.true;
+                expect(file_exists).to.equal(true, `file not found at ${expected_log_path}`);
                 fake_timer.restore();
                 testWriteLogBulkWrite();
 
