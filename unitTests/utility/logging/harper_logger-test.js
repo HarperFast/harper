@@ -367,26 +367,26 @@ describe('Test harper_logger module', () => {
             let tomorrows_date = moment().utc().add(1, 'days');
             let fake_timer = sandbox.useFakeTimers({now: new Date(tomorrows_date.format('YYYY,MM,DD'))});
             harper_logger_rw.writeLog('fatal', 'Test a new date log is created');
-            let expected_log_path = path.join(TEST_LOG_DIR, `${tomorrows_date.format('YYYY-MM-DD')}_${LOG_NAME_TEST}`);
-            const file_exists = fs_extra.pathExistsSync(expected_log_path);
-            expect(file_exists).to.equal(true, `file not found at ${expected_log_path}`);
+            const first_expected_log_path = path.join(TEST_LOG_DIR, `${tomorrows_date.format('YYYY-MM-DD')}_${LOG_NAME_TEST}`);
             testWriteLogBulkWrite();
             fake_timer.restore();
 
             //The log buffer gets flushed every 5 seconds so we wait for the flush to happen before reading.
             setTimeout(() => {
-                testWriteLogBulkTests(expected_log_path);
+                const first_file_exists = fs_extra.pathExistsSync(first_expected_log_path);
+                expect(first_file_exists).to.equal(true, `first log file not found at ${first_expected_log_path}`);
+                testWriteLogBulkTests(first_expected_log_path);
                 tomorrows_date = moment().utc().add(2, 'days');
                 fake_timer = sandbox.useFakeTimers({now: new Date(tomorrows_date.format('YYYY,MM,DD'))});
                 harper_logger_rw.writeLog('fatal', 'Test a new NEW date log is created');
-                expected_log_path = path.join(TEST_LOG_DIR, `${tomorrows_date.format('YYYY-MM-DD')}_${LOG_NAME_TEST}`);
-                const file_exists = fs_extra.pathExistsSync(expected_log_path);
-                expect(file_exists).to.equal(true, `file not found at ${expected_log_path}`);
+                const second_expected_log_path = path.join(TEST_LOG_DIR, `${tomorrows_date.format('YYYY-MM-DD')}_${LOG_NAME_TEST}`);
+                const second_file_exists = fs_extra.pathExistsSync(second_expected_log_path);
+                expect(second_file_exists).to.equal(true, `second log file not found at ${second_expected_log_path}`);
                 fake_timer.restore();
                 testWriteLogBulkWrite();
 
                 setTimeout(() => {
-                    testWriteLogBulkTests(expected_log_path);
+                    testWriteLogBulkTests(second_expected_log_path);
                     done();
                 }, 5000);
             }, 5000);
