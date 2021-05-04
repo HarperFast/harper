@@ -274,8 +274,7 @@ describe('Test harper_logger module', () => {
         }).timeout(8000);
 
         // This test was causing a sh: line 1: 74770 Segmentation fault: 11  nyc --reporter=lcov ../node_modules/mocha/bin/_mocha '../unitTests/**/*.js' --config '../unitTests/.mocharc.json'
-        // error which was exiting out of the unit tests. I couldn't fix the error so commented out tests.
-
+        // error which was exiting out of the unit tests. I couldn't fix the error so commented out the test.
 /*        it('Test error from create log with log file provided handled correctly', (done) => {
             let fs_mkdir_stub = undefined;
             try {
@@ -434,6 +433,7 @@ describe('Test harper_logger module', () => {
         }).timeout(3000);
 
         it('Test writeLog with daily rotate', (done) => {
+            let fake_timer = undefined;
             try {
                 setMockPropParams(true, 3, LOG_LEVEL.TRACE, LOG_PATH_TEST, HDB_ROOT_TEST);
                 harper_logger_rw = rewire('../../../utility/logging/harper_logger');
@@ -447,7 +447,25 @@ describe('Test harper_logger module', () => {
                         expect(file_exists).to.equal(true, `file not found at ${expected_log_path}`);
                         pino_logger.flush();
                         testWriteLogBulkTests(expected_log_path);
-                        done();
+
+                        let tomorrows_date = moment().utc().add(1, 'days');
+                        fake_timer = sandbox.useFakeTimers({now: new Date(tomorrows_date.format('YYYY,MM,DD'))});
+                        harper_logger_rw.writeLog('fatal', 'Test a new date log is created');
+                        const second_expected_log_path = path.join(TEST_LOG_DIR, `${tomorrows_date.format('YYYY-MM-DD')}_${LOG_NAME_TEST}`);
+                        const second_file_exists = fs_extra.pathExistsSync(second_expected_log_path);
+                        expect(second_file_exists).to.equal(true, `first log file not found at ${second_expected_log_path}`);
+                        testWriteLogBulkWrite();
+                        fake_timer.restore();
+                        setTimeout(() => {
+                            try {
+                                testWriteLogBulkTests(second_expected_log_path);
+                                done();
+                            } catch(err) {
+                                if (fake_timer) fake_timer.restore();
+                                console.error(err);
+                                done(err);
+                            }
+                        }, 5000);
                     } catch(err) {
                         console.error(err);
                         done(err);
@@ -457,9 +475,9 @@ describe('Test harper_logger module', () => {
                 console.error(err);
                 done(err);
             }
-        }).timeout(8000);
+        }).timeout(11000);
 
-        // This test relies on the one above to create logger.
+ /*       // This test relies on the one above to create logger.
         it('Test writeLog with daily rotate next day log created', (done) => {
             let fake_timer = undefined;
             try {
@@ -497,7 +515,7 @@ describe('Test harper_logger module', () => {
                 }, 5000);
 
 
-/*                //The log buffer gets flushed every 5 seconds so we wait for the flush to happen before reading.
+/!*                //The log buffer gets flushed every 5 seconds so we wait for the flush to happen before reading.
                 setTimeout(() => {
                     try {
                         console.log('## first call first timeout');
@@ -540,14 +558,14 @@ describe('Test harper_logger module', () => {
                         done();
                     }
 
-                }, 5000);*/
+                }, 5000);*!/
             } catch(err) {
                 if (fake_timer) fake_timer.restore();
                 console.error(err);
                 done(err);
             }
         }).timeout(110000);
-
+*/
         it('Test writeLog removes old log with daily max set', () => {
             let date_stub = undefined;
             try {
