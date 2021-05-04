@@ -256,7 +256,6 @@ describe('Test harper_logger module', () => {
             harper_logger_rw = rewire('../../../utility/logging/harper_logger');
             fs_mkdir_stub.restore();
 
-
             // The log buffer gets flushed every 5 seconds so we wait for the flush to happen before reading.
             setTimeout(() => {
                 const file_exists = fs_extra.pathExistsSync(expected_log_path);
@@ -365,6 +364,8 @@ describe('Test harper_logger module', () => {
 
         // This test relies on the one above to create logger.
         it('Test writeLog with daily rotate next day log created', (done) => {
+            console.log('## test called');
+            
             let tomorrows_date = moment().utc().add(1, 'days');
             let fake_timer = sandbox.useFakeTimers({now: new Date(tomorrows_date.format('YYYY,MM,DD'))});
             harper_logger_rw.writeLog('fatal', 'Test a new date log is created');
@@ -372,8 +373,13 @@ describe('Test harper_logger module', () => {
             testWriteLogBulkWrite();
             fake_timer.restore();
 
+            console.log('## before first timeout');
+
+
             //The log buffer gets flushed every 5 seconds so we wait for the flush to happen before reading.
             setTimeout(() => {
+                
+                console.log('## first call first timeout');
                 const first_file_exists = fs_extra.pathExistsSync(first_expected_log_path);
                 expect(first_file_exists).to.equal(true, `first log file not found at ${first_expected_log_path}`);
                 testWriteLogBulkTests(first_expected_log_path);
@@ -386,8 +392,14 @@ describe('Test harper_logger module', () => {
                 fake_timer.restore();
                 testWriteLogBulkWrite();
 
+                console.log('## last call first timeout');
+
+
                 setTimeout(() => {
+                    console.log('## first call second timeout');
                     testWriteLogBulkTests(second_expected_log_path);
+                    
+                    console.log('before done');
                     done();
                 }, 5000);
             }, 5000);
