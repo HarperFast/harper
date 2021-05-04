@@ -183,12 +183,12 @@ describe('Test harper_logger module', () => {
                         done();
                     } catch(err) {
                         console.error(err);
-                        done();
+                        done(err);
                     }
                 }, 5000);
             } catch(err) {
                 console.error(err);
-                done();
+                done(err);
             }
         }).timeout(8000);
 
@@ -208,12 +208,12 @@ describe('Test harper_logger module', () => {
                         done();
                     } catch(err) {
                         console.error(err);
-                        done();
+                        done(err);
                     }
                 }, 5000);
             } catch(err) {
                 console.error(err);
-                done();
+                done(err);
             }
         }).timeout(8000);
 
@@ -264,12 +264,12 @@ describe('Test harper_logger module', () => {
                         done();
                     } catch(err) {
                         console.error(err);
-                        done();
+                        done(err);
                     }
                 }, 5000);
             } catch(err) {
                 console.error(err);
-                done();
+                done(err);
             }
         }).timeout(8000);
 
@@ -297,13 +297,13 @@ describe('Test harper_logger module', () => {
                     } catch(err) {
                         if (fs_mkdir_stub) fs_mkdir_stub.restore();
                         console.error(err);
-                        done();
+                        done(err);
                     }
                 }, 5000);
             } catch(err) {
                 if (fs_mkdir_stub) fs_mkdir_stub.restore();
                 console.error(err);
-                done();
+                done(err);
             }
         }).timeout(8000);
 
@@ -331,13 +331,13 @@ describe('Test harper_logger module', () => {
                     } catch(err) {
                         if (fs_mkdir_stub) fs_mkdir_stub.restore();
                         console.error(err);
-                        done();
+                        done(err);
                     }
                 }, 5000);
             } catch(err) {
                 if (fs_mkdir_stub) fs_mkdir_stub.restore();
                 console.error(err);
-                done();
+                done(err);
             }
         }).timeout(8000);
 
@@ -360,12 +360,12 @@ describe('Test harper_logger module', () => {
                         done();
                     } catch(err) {
                         console.error(err);
-                        done();
+                        done(err);
                     }
                 }, 5000);
             } catch(err) {
                 console.error(err);
-                done();
+                done(err);
             }
         }).timeout(8000);
     });
@@ -391,12 +391,12 @@ describe('Test harper_logger module', () => {
                         done();
                     } catch(err) {
                         console.error(err);
-                        done();
+                        done(err);
                     }
                 }, 1000);
             } catch(err) {
                 console.error(err);
-                done();
+                done(err);
             }
         }).timeout(3000);
 
@@ -421,12 +421,12 @@ describe('Test harper_logger module', () => {
                         done();
                     } catch(err) {
                         console.error(err);
-                        done();
+                        done(err);
                     }
                 }, 1000);
             } catch(err) {
                 console.error(err);
-                done();
+                done(err);
             }
         }).timeout(3000);
 
@@ -447,12 +447,12 @@ describe('Test harper_logger module', () => {
                         done();
                     } catch(err) {
                         console.error(err);
-                        done();
+                        done(err);
                     }
                 }, 1000);
             } catch(err) {
                 console.error(err);
-                done();
+                done(err);
             }
         }).timeout(8000);
 
@@ -472,8 +472,29 @@ describe('Test harper_logger module', () => {
 
                 console.log('## before first timeout');
 
+                setTimeout(() => {
+                    try {
+                        console.log('## first call first timeout');
+                        console.log('## ' + first_expected_log_path);
+                        const first_file_exists = fs_extra.pathExistsSync(first_expected_log_path);
+                        console.log('## path exists response ' + first_file_exists);
+                        console.log('## after first path exists');
+                        expect(first_file_exists).to.equal(true, `first log file not found at ${first_expected_log_path}`);
+                        console.log('## before write logs');
+                        testWriteLogBulkTests(first_expected_log_path);
+                        fake_timer.restore();
 
-                //The log buffer gets flushed every 5 seconds so we wait for the flush to happen before reading.
+                        console.log('## last call first timeout');
+                        done();
+                    } catch(err) {
+                        if (fake_timer) fake_timer.restore();
+                        console.error(err);
+                        done(err);
+                    }
+                }, 5000);
+
+
+/*                //The log buffer gets flushed every 5 seconds so we wait for the flush to happen before reading.
                 setTimeout(() => {
                     try {
                         console.log('## first call first timeout');
@@ -516,11 +537,11 @@ describe('Test harper_logger module', () => {
                         done();
                     }
 
-                }, 5000);
+                }, 5000);*/
             } catch(err) {
                 if (fake_timer) fake_timer.restore();
                 console.error(err);
-                done();
+                done(err);
             }
         }).timeout(110000);
 
@@ -529,7 +550,7 @@ describe('Test harper_logger module', () => {
             try {
                 const tomorrows_date = moment().utc().add(3, 'days');
                 const fake_timer = sandbox.useFakeTimers({now: new Date(tomorrows_date.format('YYYY,MM,DD'))});
-                setMockPropParams(true, 3, LOG_LEVEL.TRACE, LOG_PATH_TEST, HDB_ROOT_TEST);
+                setMockPropParams(true, 2, LOG_LEVEL.TRACE, LOG_PATH_TEST, HDB_ROOT_TEST);
                 harper_logger_rw = rewire('../../../utility/logging/harper_logger');
                 fake_timer.restore();
                 const date_now = Date.now();
@@ -540,11 +561,12 @@ describe('Test harper_logger module', () => {
                 const file_exists = fs_extra.pathExistsSync(expected_log_path);
                 const all_log_files = fs.readdirSync(TEST_LOG_DIR);
                 expect(file_exists).to.be.true;
-                expect(all_log_files.length).to.equal(3);
+                expect(all_log_files.length).to.equal(2);
                 date_stub.restore();
             } catch(err) {
                 if (date_stub) date_stub.restore();
                 console.error(err);
+                throw err;
             }
         });
     });
@@ -718,12 +740,12 @@ describe('Test harper_logger module', () => {
                         done();
                     } catch(err) {
                         console.error(err);
-                        done();
+                        done(err);
                     }
                 }, 500);
             } catch(err) {
                 console.error(err);
-                done();
+                done(err);
             }
         });
 
