@@ -477,6 +477,7 @@ function createSettingsFile(mount_status, callback) {
         let clustering_username = wizard_result.CLUSTERING_USERNAME !== undefined ? wizard_result.CLUSTERING_USERNAME : '';
 
         let HDB_SETTINGS_NAMES = hdb_terms.HDB_SETTINGS_NAMES;
+        let HDB_SETTINGS_DEFAULT = hdb_terms.HDB_SETTINGS_DEFAULT_VALUES;
 
         let hdb_props_value = `   ;Settings for the HarperDB process.\n` +
             `\n` +
@@ -491,32 +492,32 @@ function createSettingsFile(mount_status, callback) {
             `   ;The path to the SSL private key used when running with HTTPS enabled.\n` +
             `${HDB_SETTINGS_NAMES.PRIVATE_KEY_KEY} = ${wizard_result.HDB_ROOT}/keys/privateKey.pem\n` +
             `   ;Set to true to enable HTTPS on the HarperDB REST endpoint.  Requires a valid certificate and key.\n` +
-            `${HDB_SETTINGS_NAMES.HTTP_SECURE_ENABLED_KEY} = false\n` +
+            `${HDB_SETTINGS_NAMES.HTTP_SECURE_ENABLED_KEY} = ${HDB_SETTINGS_DEFAULT.HTTPS_ON}\n` +
             `   ;Set to true to enable Cross Origin Resource Sharing, which allows requests across a domain.\n` +
-            `${HDB_SETTINGS_NAMES.CORS_ENABLED_KEY} = true\n` +
+            `${HDB_SETTINGS_NAMES.CORS_ENABLED_KEY} = ${HDB_SETTINGS_DEFAULT.CORS_ON}\n` +
             `   ;Allows for setting allowable domains with CORS. Comma separated list.\n` +
-            `${HDB_SETTINGS_NAMES.CORS_WHITELIST_KEY} =\n` +
+            `${HDB_SETTINGS_NAMES.CORS_WHITELIST_KEY} = ${HDB_SETTINGS_DEFAULT.CORS_WHITELIST}\n` +
             `   ;Length of time in milliseconds after which a request will timeout.  Defaults to 120,000 ms (2 minutes).\n` +
-            `${HDB_SETTINGS_NAMES.SERVER_TIMEOUT_KEY} = 120000\n` +
+            `${HDB_SETTINGS_NAMES.SERVER_TIMEOUT_KEY} = ${HDB_SETTINGS_DEFAULT.SERVER_TIMEOUT_MS}\n` +
             `   ;The number of milliseconds of inactivity a server needs to wait for additional incoming data, after it has finished writing the last response.  Defaults to 5,000 ms (5 seconds).\n` +
-            `${HDB_SETTINGS_NAMES.SERVER_KEEP_ALIVE_TIMEOUT_KEY} = 5000\n` +
+            `${HDB_SETTINGS_NAMES.SERVER_KEEP_ALIVE_TIMEOUT_KEY} = ${HDB_SETTINGS_DEFAULT.SERVER_KEEP_ALIVE_TIMEOUT}\n` +
             `   ;Limit the amount of time the parser will wait to receive the complete HTTP headers..  Defaults to 60,000 ms (1 minute).\n` +
-            `${HDB_SETTINGS_NAMES.SERVER_HEADERS_TIMEOUT_KEY} = 60000\n` +
+            `${HDB_SETTINGS_NAMES.SERVER_HEADERS_TIMEOUT_KEY} = ${HDB_SETTINGS_DEFAULT.SERVER_HEADERS_TIMEOUT}\n` +
             `   ;Set to control amount of logging generated.  Accepted levels are trace, debug, warn, error, fatal.\n` +
-            `${HDB_SETTINGS_NAMES.LOG_LEVEL_KEY} = warn\n` +
+            `${HDB_SETTINGS_NAMES.LOG_LEVEL_KEY} = ${HDB_SETTINGS_DEFAULT.LOG_LEVEL}\n` +
             `   ;The path where log files will be written. If there is no file name included in the path, the log file will be created by default as 'hdb_log.log' \n` +
-            `${HDB_SETTINGS_NAMES.LOG_PATH_KEY} = ${wizard_result.HDB_ROOT}/log/hdb_log.log\n` +
+            `${HDB_SETTINGS_NAMES.LOG_PATH_KEY} = ${wizard_result.HDB_ROOT}/${HDB_SETTINGS_DEFAULT.LOG_PATH}\n` +
             `   ;Set to true to enable daily log file rotations - each log file name will be prepended with YYYY-MM-DD.\n` +
-            `${HDB_SETTINGS_NAMES.LOG_DAILY_ROTATE_KEY} = false\n` +
+            `${HDB_SETTINGS_NAMES.LOG_DAILY_ROTATE_KEY} = ${HDB_SETTINGS_DEFAULT.LOG_DAILY_ROTATE_KEY}\n` +
             `   ;Set the number of daily log files to maintain when LOG_DAILY_ROTATE is enabled. If no integer value is set, no limit will be set for\n` +
             `   ;daily log files which may consume a large amount of storage depending on your log settings.\n` +
-            `${HDB_SETTINGS_NAMES.LOG_MAX_DAILY_FILES_KEY} =\n` +
+            `${HDB_SETTINGS_NAMES.LOG_MAX_DAILY_FILES_KEY} = ${HDB_SETTINGS_DEFAULT.LOG_MAX_DAILY_FILES_KEY}\n` +
             `   ;The environment used by NodeJS.  Setting to production will be the most performant, settings to development will generate more logging.\n` +
-            `${HDB_SETTINGS_NAMES.PROPS_ENV_KEY} = production\n` +
+            `${HDB_SETTINGS_NAMES.PROPS_ENV_KEY} = ${HDB_SETTINGS_DEFAULT.NODE_ENV}\n` +
             `   ;This allows self signed certificates to be used in clustering.  This is a security risk\n` +
             `   ;as clustering will not validate the cert, so should only be used internally.\n` +
             `   ;The HDB install creates a self signed certificate, if you use that cert this must be set to true.\n` +
-            `${HDB_SETTINGS_NAMES.ALLOW_SELF_SIGNED_SSL_CERTS} = false\n` +
+            `${HDB_SETTINGS_NAMES.ALLOW_SELF_SIGNED_SSL_CERTS} = ${HDB_SETTINGS_DEFAULT.ALLOW_SELF_SIGNED_SSL_CERTS}\n` +
             `   ;Set the max number of processes HarperDB will start.  This can also be limited by number of cores and licenses.\n` +
             `${HDB_SETTINGS_NAMES.MAX_HDB_PROCESSES} = ${num_cores}\n` +
             `   ;Set to true to enable clustering.  Requires a valid enterprise license.\n` +
@@ -528,11 +529,11 @@ function createSettingsFile(mount_status, callback) {
             `   ;The user used to connect to other instances of HarperDB, this user must have a role of cluster_user. \n` +
             `${HDB_SETTINGS_NAMES.CLUSTERING_USER_KEY}=${clustering_username}\n` +
             `   ;Defines if this instance does not record transactions. Note, if Clustering is enabled and Transaction Log is disabled your nodes will not catch up.  \n` +
-            `${HDB_SETTINGS_NAMES.DISABLE_TRANSACTION_LOG_KEY} = false\n` +
+            `${HDB_SETTINGS_NAMES.DISABLE_TRANSACTION_LOG_KEY} = ${HDB_SETTINGS_DEFAULT.DISABLE_TRANSACTION_LOG}\n` +
             `   ;Defines the length of time an operation token will be valid until it expires. Example values: https://github.com/vercel/ms  \n` +
-            `${HDB_SETTINGS_NAMES.OPERATION_TOKEN_TIMEOUT_KEY} = 1d\n` +
+            `${HDB_SETTINGS_NAMES.OPERATION_TOKEN_TIMEOUT_KEY} = ${HDB_SETTINGS_DEFAULT.OPERATION_TOKEN_TIMEOUT}\n` +
             `   ;Defines the length of time a refresh token will be valid until it expires. Example values: https://github.com/vercel/ms  \n` +
-            `${HDB_SETTINGS_NAMES.REFRESH_TOKEN_TIMEOUT_KEY} = 30d\n`
+            `${HDB_SETTINGS_NAMES.REFRESH_TOKEN_TIMEOUT_KEY} = ${HDB_SETTINGS_DEFAULT.REFRESH_TOKEN_TIMEOUT}\n`
         ;
 
         install_logger.info('info', `hdb_props_value ${JSON.stringify(hdb_props_value)}`);
