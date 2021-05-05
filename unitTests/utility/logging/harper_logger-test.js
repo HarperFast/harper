@@ -1,4 +1,3 @@
-/*
 'use strict';
 
 const SegfaultHandler = require('segfault-handler');
@@ -282,9 +281,9 @@ describe('Test harper_logger module', () => {
             }
         }).timeout(8000);
 
-        // These tests were causing a sh: line 1: 74770 Segmentation fault: 11  nyc --reporter=lcov ../node_modules/mocha/bin/_mocha '../unitTests/!**!/!*.js' --config '../unitTests/.mocharc.json'
+        // These tests were causing a sh: line 1: 74770 Segmentation fault: 11  nyc --reporter=lcov ../node_modules/mocha/bin/_mocha '../unitTests/**/*.js' --config '../unitTests/.mocharc.json'
         // error which was exiting out of the unit tests. I couldn't fix the error so commented out the tests.
-/!*        it('Test error from create log with log file provided handled correctly', (done) => {
+/*        it('Test error from create log with log file provided handled correctly', (done) => {
             let fs_mkdir_stub = undefined;
             try {
                 const temp_default_log_dir = path.join(__dirname, 'log');
@@ -316,9 +315,9 @@ describe('Test harper_logger module', () => {
                 console.error(err);
                 done(err);
             }
-        }).timeout(8000);*!/
+        }).timeout(8000);*/
 
-/!*        it('Test error from create log with no log file provided handled correctly', (done) => {
+/*        it('Test error from create log with no log file provided handled correctly', (done) => {
             let fs_mkdir_stub = undefined;
             try {
                 const temp_default_log_dir = path.join(__dirname, 'log');
@@ -350,7 +349,7 @@ describe('Test harper_logger module', () => {
                 console.error(err);
                 done(err);
             }
-        }).timeout(8000);*!/
+        }).timeout(8000);*/
 
         it('Test error from create log handled correctly', (done) => {
             try {
@@ -441,7 +440,7 @@ describe('Test harper_logger module', () => {
             }
         }).timeout(3000);
 
-/!*
+/*
         it('Test writeLog with daily rotate', (done) => {
             let fake_timer = undefined;
             try {
@@ -486,9 +485,9 @@ describe('Test harper_logger module', () => {
                 done(err);
             }
         }).timeout(11000);
-*!/
+*/
 
- /!*       // This test relies on the one above to create logger.
+ /*       // This test relies on the one above to create logger.
         it('Test writeLog with daily rotate next day log created', (done) => {
             let fake_timer = undefined;
             try {
@@ -576,8 +575,8 @@ describe('Test harper_logger module', () => {
                 done(err);
             }
         }).timeout(110000);
-*!/
- /!*       it('Test writeLog removes old log with daily max set', () => {
+*/
+ /*       it('Test writeLog removes old log with daily max set', () => {
             let date_stub = undefined;
             try {
                 const tomorrows_date = moment().utc().add(3, 'days');
@@ -600,7 +599,7 @@ describe('Test harper_logger module', () => {
                 console.error(err);
                 throw err;
             }
-        });*!/
+        });*/
     });
 
     describe('Test finalLogger function', () => {
@@ -649,7 +648,7 @@ describe('Test harper_logger module', () => {
         });
     });
     
-    /!*describe('Test setLogLevel function', () => {
+    /*describe('Test setLogLevel function', () => {
         before(() => {
             setMockPropParams(false, null, LOG_LEVEL.NOTIFY, LOG_PATH_TEST, HDB_ROOT_TEST);
             harper_logger_rw = requireUncached('../../../utility/logging/harper_logger');
@@ -752,7 +751,7 @@ describe('Test harper_logger module', () => {
             expect(log.includes('"level":"fatal"')).to.be.false;
             expect(log.includes('"level":"notify"')).to.be.true;
         });
-    });*!/
+    });*/
     
     describe('Test readLog function', () => {
         const log_msg_test = "I am an old error message";
@@ -899,4 +898,4 @@ describe('Test harper_logger module', () => {
             homedir_stub.restore();
         });
     });
-});*/
+});
