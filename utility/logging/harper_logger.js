@@ -86,6 +86,7 @@ if (log_level === undefined || log_level === 0 || log_level === null) {
 }
 
 if (log_path === undefined || log_path === null) {
+    // Slice is used here because it ensures on an npm global install the log is created in the correct folder - harperdb.
     log_location = path.join(__dirname.slice(0, -16), 'run_log.log');
 }
 

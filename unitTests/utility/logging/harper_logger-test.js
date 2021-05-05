@@ -305,6 +305,16 @@ describe('Test harper_logger module', () => {
                 done();
             }, 5000);
         }).timeout(8000);
+
+        it('Test default run_log location is correct', () => {
+            const err_mock = () => ({
+                append: () => { throw 'err' }
+            });
+            mock_require('properties-reader', err_mock)
+            harper_logger_rw = rewire('../../../utility/logging/harper_logger');
+            const run_log_path = harper_logger_rw.__get__('log_location');
+            expect(run_log_path).to.include('harperdb/run_log.log');
+        });
     });
     
     describe('Test writeLog function', () => {
