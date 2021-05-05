@@ -23,7 +23,7 @@ const comm = require('../common_utils');
 const hdb_terms = require('../hdbTerms');
 const hdbInfoController = require('../../data_layer/hdbInfoController');
 const version = require('../../bin/version');
-const LOG_LOCATION = ('../install_log.log');
+const LOG_LOCATION = path.join( __dirname.slice(0, -15), 'install_log.log');
 const check_jwt_tokens = require('./checkJWTTokensExist');
 
 module.exports = {

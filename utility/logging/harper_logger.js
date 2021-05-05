@@ -86,7 +86,7 @@ if (log_level === undefined || log_level === 0 || log_level === null) {
 }
 
 if (log_path === undefined || log_path === null) {
-    log_location = '../run_log.log';
+    log_location = path.join(__dirname.slice(0, -16), 'run_log.log');
 }
 
 module.exports = {
