@@ -525,15 +525,17 @@ function createSettingsFile(mount_status, callback) {
             `   ;The port that will be used for HarperDB clustering.\n` +
             `${HDB_SETTINGS_NAMES.CLUSTERING_PORT_KEY} = ${clustering_port}\n` +
             `   ;The name of this node in your HarperDB cluster topology.  This must be a value unique from the rest of your cluster node names.\n` +
-            `${HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY}=${node_name}\n` +
+            `${HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY} = ${node_name}\n` +
             `   ;The user used to connect to other instances of HarperDB, this user must have a role of cluster_user. \n` +
-            `${HDB_SETTINGS_NAMES.CLUSTERING_USER_KEY}=${clustering_username}\n` +
+            `${HDB_SETTINGS_NAMES.CLUSTERING_USER_KEY} = ${clustering_username}\n` +
             `   ;Defines if this instance does not record transactions. Note, if Clustering is enabled and Transaction Log is disabled your nodes will not catch up.  \n` +
             `${HDB_SETTINGS_NAMES.DISABLE_TRANSACTION_LOG_KEY} = ${HDB_SETTINGS_DEFAULT.DISABLE_TRANSACTION_LOG}\n` +
             `   ;Defines the length of time an operation token will be valid until it expires. Example values: https://github.com/vercel/ms  \n` +
             `${HDB_SETTINGS_NAMES.OPERATION_TOKEN_TIMEOUT_KEY} = ${HDB_SETTINGS_DEFAULT.OPERATION_TOKEN_TIMEOUT}\n` +
             `   ;Defines the length of time a refresh token will be valid until it expires. Example values: https://github.com/vercel/ms  \n` +
-            `${HDB_SETTINGS_NAMES.REFRESH_TOKEN_TIMEOUT_KEY} = ${HDB_SETTINGS_DEFAULT.REFRESH_TOKEN_TIMEOUT}\n`
+            `${HDB_SETTINGS_NAMES.REFRESH_TOKEN_TIMEOUT_KEY} = ${HDB_SETTINGS_DEFAULT.REFRESH_TOKEN_TIMEOUT}\n` +
+            `   ;The port the IPC server will run on.\n` +
+            `${HDB_SETTINGS_NAMES.IPC_SERVER_PORT} = ${HDB_SETTINGS_DEFAULT.IPC_SERVER_PORT}\n`
         ;
 
         install_logger.info('info', `hdb_props_value ${JSON.stringify(hdb_props_value)}`);
