@@ -58,8 +58,10 @@ describe('Test searchUtility module', ()=>{
     describe('test searchByHash function', ()=>{
         let env;
         before(async ()=>{
-            await fs.mkdirp(BASE_TEST_PATH);
             global.lmdb_map = undefined;
+            await fs.remove(test_utils.getMockFSPath());
+            await fs.mkdirp(BASE_TEST_PATH);
+
             env = await environment_utility.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
             await environment_utility.createDBI(env, 'id', false, true);
             await write_utility.insertRecords(env, HASH_ATTRIBUTE_NAME, test_utils.deepClone(All_ATTRIBUTES), MULTI_RECORD_ARRAY);
@@ -67,8 +69,8 @@ describe('Test searchUtility module', ()=>{
 
         after(async ()=>{
             env.close();
-            await fs.remove(BASE_TEST_PATH);
             global.lmdb_map = undefined;
+            await fs.remove(test_utils.getMockFSPath());
         });
 
         it("test validation", ()=>{
@@ -121,8 +123,10 @@ describe('Test searchUtility module', ()=>{
     describe("Test batchSearchByHash", ()=>{
         let env;
         before(async ()=>{
-            await fs.mkdirp(BASE_TEST_PATH);
             global.lmdb_map = undefined;
+            await fs.remove(test_utils.getMockFSPath());
+            await fs.mkdirp(BASE_TEST_PATH);
+
             env = await environment_utility.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
             await environment_utility.createDBI(env, 'id');
             await write_utility.insertRecords(env, HASH_ATTRIBUTE_NAME, test_utils.deepClone(All_ATTRIBUTES), MULTI_RECORD_ARRAY);
@@ -130,8 +134,8 @@ describe('Test searchUtility module', ()=>{
 
         after(async ()=>{
             env.close();
-            await fs.remove(BASE_TEST_PATH);
             global.lmdb_map = undefined;
+            await fs.remove(test_utils.getMockFSPath());
         });
 
         it("test validation", ()=>{
@@ -192,8 +196,10 @@ describe('Test searchUtility module', ()=>{
     describe("Test batchSearchByHashToMap", ()=>{
         let env;
         before(async ()=>{
-            await fs.mkdirp(BASE_TEST_PATH);
             global.lmdb_map = undefined;
+            await fs.remove(test_utils.getMockFSPath());
+            await fs.mkdirp(BASE_TEST_PATH);
+
             env = await environment_utility.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
             await environment_utility.createDBI(env, 'id');
             await write_utility.insertRecords(env, HASH_ATTRIBUTE_NAME, test_utils.deepClone(SOME_ATTRIBUTES), MULTI_RECORD_ARRAY);
@@ -201,8 +207,9 @@ describe('Test searchUtility module', ()=>{
 
         after(async ()=>{
             env.close();
-            await fs.remove(BASE_TEST_PATH);
+
             global.lmdb_map = undefined;
+            await fs.remove(test_utils.getMockFSPath());
         });
 
         it("test validation", ()=>{
@@ -251,8 +258,10 @@ describe('Test searchUtility module', ()=>{
     describe("Test checkHashExists", ()=> {
         let env;
         before(async () => {
-            await fs.mkdirp(BASE_TEST_PATH);
             global.lmdb_map = undefined;
+            await fs.remove(test_utils.getMockFSPath());
+            await fs.mkdirp(BASE_TEST_PATH);
+
             env = await environment_utility.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
             await environment_utility.createDBI(env, 'id');
             await write_utility.insertRecords(env, HASH_ATTRIBUTE_NAME, test_utils.deepClone(SOME_ATTRIBUTES), MULTI_RECORD_ARRAY);
@@ -260,8 +269,9 @@ describe('Test searchUtility module', ()=>{
 
         after(async () => {
             env.close();
-            await fs.remove(BASE_TEST_PATH);
+
             global.lmdb_map = undefined;
+            await fs.remove(test_utils.getMockFSPath());
         });
 
         it("test validation", () => {
@@ -291,8 +301,10 @@ describe('Test searchUtility module', ()=>{
     describe('test searchAll function', ()=> {
         let env;
         before(async () => {
-            await fs.mkdirp(BASE_TEST_PATH);
             global.lmdb_map = undefined;
+            await fs.remove(test_utils.getMockFSPath());
+            await fs.mkdirp(BASE_TEST_PATH);
+
             env = await environment_utility.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
             await environment_utility.createDBI(env, 'id');
             await write_utility.insertRecords(env, HASH_ATTRIBUTE_NAME, test_utils.deepClone(All_ATTRIBUTES), MULTI_RECORD_ARRAY);
@@ -300,8 +312,9 @@ describe('Test searchUtility module', ()=>{
 
         after(async () => {
             env.close();
-            await fs.remove(BASE_TEST_PATH);
+
             global.lmdb_map = undefined;
+            await fs.remove(test_utils.getMockFSPath());
         });
 
         it("test validation", () => {
@@ -339,8 +352,10 @@ describe('Test searchUtility module', ()=>{
     describe('test searchAllToMap function', ()=> {
         let env;
         before(async () => {
-            await fs.mkdirp(BASE_TEST_PATH);
             global.lmdb_map = undefined;
+            await fs.remove(test_utils.getMockFSPath());
+            await fs.mkdirp(BASE_TEST_PATH);
+
             env = await environment_utility.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
             await environment_utility.createDBI(env, 'id');
             await write_utility.insertRecords(env, HASH_ATTRIBUTE_NAME, test_utils.deepClone(SOME_ATTRIBUTES), MULTI_RECORD_ARRAY);
@@ -348,8 +363,9 @@ describe('Test searchUtility module', ()=>{
 
         after(async () => {
             env.close();
-            await fs.remove(BASE_TEST_PATH);
+
             global.lmdb_map = undefined;
+            await fs.remove(test_utils.getMockFSPath());
         });
 
         it("test validation", () => {
@@ -377,8 +393,10 @@ describe('Test searchUtility module', ()=>{
     describe('test countAll function', ()=> {
         let env;
         before(async () => {
-            await fs.mkdirp(BASE_TEST_PATH);
             global.lmdb_map = undefined;
+            await fs.remove(test_utils.getMockFSPath());
+            await fs.mkdirp(BASE_TEST_PATH);
+
             env = await environment_utility.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
             await environment_utility.createDBI(env, 'id', false, true);
             await write_utility.insertRecords(env, HASH_ATTRIBUTE_NAME, test_utils.deepClone(SOME_ATTRIBUTES), MULTI_RECORD_ARRAY);
@@ -386,8 +404,9 @@ describe('Test searchUtility module', ()=>{
 
         after(async () => {
             env.close();
-            await fs.remove(BASE_TEST_PATH);
+
             global.lmdb_map = undefined;
+            await fs.remove(test_utils.getMockFSPath());
         });
 
         it("test validation", () => {
@@ -406,8 +425,10 @@ describe('Test searchUtility module', ()=>{
     describe('test iterateDBI function', () => {
         let env;
         before(async () => {
-            await fs.mkdirp(BASE_TEST_PATH);
             global.lmdb_map = undefined;
+            await fs.remove(test_utils.getMockFSPath());
+            await fs.mkdirp(BASE_TEST_PATH);
+
             env = await environment_utility.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
             await environment_utility.createDBI(env, 'id', false, true);
             await write_utility.insertRecords(env, HASH_ATTRIBUTE_NAME, test_utils.deepClone(All_ATTRIBUTES), MULTI_RECORD_ARRAY2);
@@ -415,8 +436,9 @@ describe('Test searchUtility module', ()=>{
 
         after(async () => {
             env.close();
-            await fs.remove(BASE_TEST_PATH);
+
             global.lmdb_map = undefined;
+            await fs.remove(test_utils.getMockFSPath());
         });
 
         it("test validation", () => {

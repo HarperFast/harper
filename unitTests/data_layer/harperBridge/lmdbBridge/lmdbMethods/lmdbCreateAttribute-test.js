@@ -85,8 +85,10 @@ describe("test lmdbCreateAttribute module", ()=>{
     before(async ()=>{
         //uuid_stub = sandbox.stub(uuid, 'v4').returns(MOCK_UUID_VALUE);
         global.hdb_schema = {system: systemSchema};
-        await fs.mkdirp(BASE_TEST_PATH);
         global.lmdb_map = undefined;
+        await fs.remove(test_utils.getMockFSPath());
+        await fs.mkdirp(BASE_TEST_PATH);
+
 
         hdb_schema_env = await environment_utility.createEnvironment(BASE_TEST_PATH, systemSchema.hdb_schema.name);
         environment_utility.createDBI(hdb_schema_env, systemSchema.hdb_schema.hash_attribute, false, true);
@@ -122,8 +124,9 @@ describe("test lmdbCreateAttribute module", ()=>{
         hdb_attribute_env.close();
 
         delete global.hdb_schema;
-        await fs.remove(BASE_PATH);
         global.lmdb_map = undefined;
+        await fs.remove(test_utils.getMockFSPath());
+
     });
 
     it('Test that a datastore is created and system schema updated with new attribute', async () => {

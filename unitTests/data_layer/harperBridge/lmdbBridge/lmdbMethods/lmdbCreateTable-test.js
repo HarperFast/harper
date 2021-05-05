@@ -78,6 +78,7 @@ describe("test lmdbCreateTable module", ()=>{
         global.lmdb_map = undefined;
         global.hdb_schema = {system: systemSchema};
         date_stub = sandbox.stub(Date, 'now').returns(TIMESTAMP);
+        await fs.remove(test_utils.getMockFSPath());
         await fs.mkdirp(BASE_TEST_PATH);
 
 

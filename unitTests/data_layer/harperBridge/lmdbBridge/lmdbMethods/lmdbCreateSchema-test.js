@@ -36,8 +36,10 @@ describe('test lmdbCreateSchema module', ()=>{
 
         global.hdb_schema = {system: systemSchema};
         date_stub = sandbox.stub(Date, 'now').returns(TIMESTAMP);
-        await fs.mkdirp(BASE_TEST_PATH);
         global.lmdb_map = undefined;
+        await fs.remove(test_utils.getMockFSPath());
+        await fs.mkdirp(BASE_TEST_PATH);
+
         env = await environment_utility.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
         environment_utility.createDBI(env, HASH_ATTRIBUTE_NAME, false);
     });
@@ -46,8 +48,9 @@ describe('test lmdbCreateSchema module', ()=>{
         env.close();
         date_stub.restore();
         delete global.hdb_schema;
-        await fs.remove(BASE_PATH);
+
         global.lmdb_map = undefined;
+        await fs.remove(test_utils.getMockFSPath());
     });
 
     it('Test that a new schema is added to the system datastore', async()=>{

@@ -61,12 +61,13 @@ const INSERT_OBJECT_TEST = {
 describe('test lmdbDropAllAttributes module', ()=>{
     let date_stub;
     before(async ()=>{
-        await fs.remove(BASE_PATH);
+        await fs.remove(test_utils.getMockFSPath());
         date_stub = sandbox.stub(Date, 'now').returns(TIMESTAMP);
     });
 
-    after(()=>{
+    after(async ()=>{
         date_stub.restore();
+        await fs.remove(test_utils.getMockFSPath());
     });
 
     describe('test lmdbDropAllAttributes function', ()=>{
@@ -74,9 +75,10 @@ describe('test lmdbDropAllAttributes module', ()=>{
         let hdb_table_env;
         let hdb_attribute_env;
         before(async () => {
+            global.lmdb_map = undefined;
+            await fs.remove(test_utils.getMockFSPath());
             await fs.mkdirp(SYSTEM_SCHEMA_PATH);
             await fs.mkdirp(DEV_SCHEMA_PATH);
-            global.lmdb_map = undefined;
 
             global.hdb_schema = {
                 dev: {
@@ -135,8 +137,9 @@ describe('test lmdbDropAllAttributes module', ()=>{
             hdb_schema_env.close();
             hdb_table_env.close();
             hdb_attribute_env.close();
-            await fs.remove(BASE_PATH);
+
             global.lmdb_map = undefined;
+            await fs.remove(test_utils.getMockFSPath());
         });
 
         it('Test invalid schema', async ()=>{
