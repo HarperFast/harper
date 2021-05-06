@@ -40,8 +40,9 @@ describe('Test getLMDBStats function', function() {
     after(async function() {
         env.close();
         txn_env.close();
-        await fs.remove(test_util.getMockFSPath());
+
         global.lmdb_map = undefined;
+        await fs.remove(test_util.getMockFSPath());
     });
 
     it('getLMDBStats, test nominal case', async function () {

@@ -25,18 +25,20 @@ describe('test cleanLMDBMap module', ()=>{
     let logger_error_stub;
     let close_env_stub;
     beforeEach(async ()=>{
+        global.lmdb_map = undefined;
+        await fs.remove(test_utils.getMockFSPath());
         await fs.mkdirp(DEV_PATH);
         await fs.mkdirp(PROD_PATH);
         await fs.mkdirp(DEV_TXN_PATH);
         await fs.mkdirp(PROD_TXN_PATH);
-        global.lmdb_map = undefined;
+
     });
 
     afterEach(async()=>{
         close_env_stub.resetHistory();
         logger_error_stub.resetHistory();
-        await fs.remove(BASE_TEST_PATH);
-        await fs.remove(BASE_TXN_PATH);
+        global.lmdb_map = undefined;
+        await fs.remove(test_utils.getMockFSPath());
 
     });
 
@@ -45,8 +47,9 @@ describe('test cleanLMDBMap module', ()=>{
         close_env_stub = sandbox.spy(clean_lmdb_map.__get__('environment_utility'), 'closeEnvironment');
     });
 
-    after(()=>{
+    after(async()=>{
         global.lmdb_map = undefined;
+        await fs.remove(test_utils.getMockFSPath());
         sinon.restore();
     });
 
@@ -145,6 +148,48 @@ describe('test cleanLMDBMap module', ()=>{
         assert.deepStrictEqual(Object.keys(dog_env.dbis).indexOf('id') >=0, true );
         clean_lmdb_map({operation: {operation: 'drop_attribute', schema: 'dev', table: 'dog', attribute: 'id'}});
         assert.deepStrictEqual(Object.keys(dog_env.dbis).indexOf('id') >=0, false );
+        dog_env.close();
+    });
+
+    it('Confirm env required errors on drop schema are caught and not thrown', async () => {
+        let dog_env = await env_utility.createEnvironment(DEV_PATH, 'dog');
+        env_utility.createDBI(dog_env, 'id', false);
+        close_env_stub.restore();
+        close_env_stub = sandbox.stub(env_utility, 'closeEnvironment').throws(new Error('env is required'));
+        clean_lmdb_map({operation: {operation: 'drop_schema', schema: 'dev'}});
+        assert.deepStrictEqual(logger_error_stub.callCount, 0);
+        dog_env.close();
+    });
+
+    it('Confirm error from closeEnvironment drop schema is thrown', async () => {
+        let dog_env = await env_utility.createEnvironment(DEV_PATH, 'dog');
+        env_utility.createDBI(dog_env, 'id', false);
+        close_env_stub.restore();
+        close_env_stub = sandbox.stub(env_utility, 'closeEnvironment').throws(new Error('env does not exist'));
+        clean_lmdb_map({operation: {operation: 'drop_schema', schema: 'dev'}});
+        assert.deepStrictEqual(logger_error_stub.callCount, 1);
+        dog_env.close();
+    });
+
+    it('Confirm env required errors on drop table are caught and not thrown', async () => {
+        let dog_env = await env_utility.createEnvironment(DEV_PATH, 'dog');
+        env_utility.createDBI(dog_env, 'id', false);
+        close_env_stub.restore();
+        close_env_stub = sandbox.stub(env_utility, 'closeEnvironment').throws(new Error('env is required'));
+        clean_lmdb_map({operation: {operation: 'drop_table', schema: 'dev'}});
+        close_env_stub.restore();
+        assert.deepStrictEqual(logger_error_stub.callCount, 0);
+        dog_env.close();
+    });
+
+    it('Confirm error from closeEnvironment drop table is thrown', async () => {
+        let dog_env = await env_utility.createEnvironment(DEV_PATH, 'dog');
+        env_utility.createDBI(dog_env, 'id', false);
+        close_env_stub.restore();
+        close_env_stub = sandbox.stub(env_utility, 'closeEnvironment').throws(new Error('env does not exist'));
+        clean_lmdb_map({operation: {operation: 'drop_table', schema: 'dev'}});
+        close_env_stub.restore();
+        assert.deepStrictEqual(logger_error_stub.callCount, 1);
         dog_env.close();
     });
 });

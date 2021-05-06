@@ -69,17 +69,19 @@ describe("Test writeUtility module", ()=>{
     describe("Test validateInsert function", ()=>{
         let env;
         before(async ()=>{
-
-            await fs.mkdirp(BASE_TEST_PATH);
             global.lmdb_map = undefined;
+            await fs.remove(test_utils.getMockFSPath());
+            await fs.mkdirp(BASE_TEST_PATH);
+
             env = await environment_utility.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
         });
 
         after(async ()=>{
             env.close();
             sandbox.restore();
-            await fs.remove(BASE_TEST_PATH);
+
             global.lmdb_map = undefined;
+            await fs.remove(test_utils.getMockFSPath());
         });
 
         it("test function", ()=>{
@@ -174,8 +176,10 @@ describe("Test writeUtility module", ()=>{
         let env;
         beforeEach(async ()=>{
             date_stub = sandbox.stub(Date, 'now').returns(TIMESTAMP);
-            await fs.mkdirp(BASE_TEST_PATH);
             global.lmdb_map = undefined;
+            await fs.remove(test_utils.getMockFSPath());
+            await fs.mkdirp(BASE_TEST_PATH);
+
             env = await environment_utility.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
             await environment_utility.createDBI(env, 'id', false, true);
             await environment_utility.createDBI(env, 'name', true);
@@ -186,8 +190,9 @@ describe("Test writeUtility module", ()=>{
         afterEach(async ()=>{
             env.close();
             date_stub.restore();
-            await fs.remove(BASE_TEST_PATH);
+
             global.lmdb_map = undefined;
+            await fs.remove(test_utils.getMockFSPath());
         });
 
         it("test validation", ()=>{
@@ -464,8 +469,10 @@ describe("Test writeUtility module", ()=>{
 
         beforeEach(async ()=>{
             date_stub = sandbox.stub(Date, 'now').returns(TIMESTAMP);
-            await fs.mkdirp(BASE_TEST_PATH);
             global.lmdb_map = undefined;
+            await fs.remove(test_utils.getMockFSPath());
+            await fs.mkdirp(BASE_TEST_PATH);
+
             env = await environment_utility.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
             await environment_utility.createDBI(env, 'id', false, true);
             await environment_utility.createDBI(env, '__blob__', false);
@@ -476,8 +483,9 @@ describe("Test writeUtility module", ()=>{
         afterEach(async ()=>{
             env.close();
             date_stub.restore();
-            await fs.remove(BASE_TEST_PATH);
+
             global.lmdb_map = undefined;
+            await fs.remove(test_utils.getMockFSPath());
         });
 
         it("test validation", async ()=>{
@@ -853,8 +861,10 @@ describe("Test writeUtility module", ()=>{
 
         beforeEach(async ()=>{
             date_stub = sandbox.stub(Date, 'now').returns(TIMESTAMP);
-            await fs.mkdirp(BASE_TEST_PATH);
             global.lmdb_map = undefined;
+            await fs.remove(test_utils.getMockFSPath());
+            await fs.mkdirp(BASE_TEST_PATH);
+
             env = await environment_utility.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
             await environment_utility.createDBI(env, 'id', false, true);
             await environment_utility.createDBI(env, '__blob__', false);
@@ -865,8 +875,9 @@ describe("Test writeUtility module", ()=>{
         afterEach(async ()=>{
             env.close();
             date_stub.restore();
-            await fs.remove(BASE_TEST_PATH);
+
             global.lmdb_map = undefined;
+            await fs.remove(test_utils.getMockFSPath());
         });
 
         it("test validation", async ()=>{

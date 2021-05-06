@@ -30,14 +30,15 @@ const get_dbi_definition = rw_lmdb_env_util.__get__('getDBIDefinition');
 
 describe("Test LMDB environmentUtility module", ()=>{
     before(async()=>{
+        global.lmdb_map = undefined;
         await fs.remove(test_utils.getMockFSPath());
         await fs.mkdirp(BASE_TEST_PATH);
-        global.lmdb_map = undefined;
+
     });
 
     after(async ()=>{
-        await fs.remove(BASE_TEST_PATH);
         global.lmdb_map = undefined;
+        await fs.remove(test_utils.getMockFSPath());
     });
 
     describe("Test pathEnvNameValidation function", ()=>{
@@ -61,15 +62,19 @@ describe("Test LMDB environmentUtility module", ()=>{
 
     describe("Test validateEnvironmentPath function", ()=>{
         let rw_validator;
+        let env;
         before(async ()=>{
             rw_validator = rw_lmdb_env_util.__get__('validateEnvironmentPath');
             global.lmdb_map = undefined;
-            await lmdb_env_util.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
+            await fs.remove(test_utils.getMockFSPath());
+            await fs.mkdirp(BASE_TEST_PATH);
+            env = await lmdb_env_util.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
         });
 
         after(async ()=>{
-            await fs.emptyDir(BASE_TEST_PATH);
+            env.close();
             global.lmdb_map = undefined;
+            await fs.remove(test_utils.getMockFSPath());
         });
 
         it('call function invalid base_path', async ()=>{
@@ -87,13 +92,15 @@ describe("Test LMDB environmentUtility module", ()=>{
         before(async ()=>{
             rw_validator = rw_lmdb_env_util.__get__('validateEnvDBIName');
             global.lmdb_map = undefined;
+            await fs.remove(test_utils.getMockFSPath());
+            await fs.mkdirp(BASE_TEST_PATH);
             env = await lmdb_env_util.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
         });
 
         after(async()=>{
             lmdb_env_util.closeEnvironment(env);
-            await fs.emptyDir(BASE_TEST_PATH);
             global.lmdb_map = undefined;
+            await fs.remove(test_utils.getMockFSPath());
         });
 
         it('call function no args', async ()=>{
@@ -110,13 +117,15 @@ describe("Test LMDB environmentUtility module", ()=>{
     });
 
     describe("Test createEnvironment function", ()=>{
-        before(()=>{
+        before(async ()=>{
             global.lmdb_map = undefined;
+            await fs.remove(test_utils.getMockFSPath());
+            await fs.mkdirp(BASE_TEST_PATH);
         });
 
         after(async ()=>{
-            await fs.emptyDir(BASE_TEST_PATH);
             global.lmdb_map = undefined;
+            await fs.remove(test_utils.getMockFSPath());
         });
 
         it('call function no args', async ()=>{
@@ -158,21 +167,25 @@ describe("Test LMDB environmentUtility module", ()=>{
 
             //test to make sure the internal dbi exists
             await test_utils.assertErrorAsync(lmdb_env_util.openDBI, [env, lmdb_terms.INTERNAL_DBIS_NAME], undefined);
+            env.close();
         });
     });
 
     describe("Test openEnvironment function", ()=> {
+        let env;
         before(async () => {
             global.lmdb_map = undefined;
+
+            await fs.remove(test_utils.getMockFSPath());
             await fs.mkdirp(BASE_TEST_PATH);
 
-            await lmdb_env_util.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
+            env = await lmdb_env_util.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
         });
 
         after(async () => {
-            await fs.remove(BASE_TEST_PATH);
-            test_utils.tearDownMockFS();
+            env.close();
             global.lmdb_map = undefined;
+            await fs.remove(test_utils.getMockFSPath());
         });
 
         it('call function no args', async ()=>{
@@ -209,6 +222,7 @@ describe("Test LMDB environmentUtility module", ()=>{
         let env_orig;
         before(async () => {
             global.lmdb_map = undefined;
+            await fs.remove(test_utils.getMockFSPath());
             await fs.mkdirp(BASE_TEST_PATH);
             await fs.mkdirp(BACKUP_TEST_ENV_PATH);
             env_orig = await lmdb_env_util.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
@@ -216,10 +230,8 @@ describe("Test LMDB environmentUtility module", ()=>{
 
         after(async () => {
             lmdb_env_util.closeEnvironment(env_orig);
-            await fs.remove(BASE_TEST_PATH);
-            await fs.remove(BACKUP_PATH);
-            test_utils.tearDownMockFS();
             global.lmdb_map = undefined;
+            await fs.remove(test_utils.getMockFSPath());
         });
 
         it('call function no args', async ()=>{
@@ -269,16 +281,18 @@ describe("Test LMDB environmentUtility module", ()=>{
         let env_orig;
         before(async () => {
             global.lmdb_map = undefined;
+            await fs.remove(test_utils.getMockFSPath());
             await fs.mkdirp(BASE_TEST_PATH);
 
             env_orig = await lmdb_env_util.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
         });
 
         after(async () => {
-
-            await fs.remove(BASE_TEST_PATH);
-            test_utils.tearDownMockFS();
+            try {
+                env_orig.close();
+            }catch(e){}
             global.lmdb_map = undefined;
+            await fs.remove(test_utils.getMockFSPath());
         });
 
         it('call function no args', async ()=>{
@@ -316,6 +330,7 @@ describe("Test LMDB environmentUtility module", ()=>{
             let env;
             beforeEach(async () => {
                 global.lmdb_map = undefined;
+                await fs.remove(test_utils.getMockFSPath());
                 await fs.mkdirp(BASE_TEST_PATH);
 
                 env = await lmdb_env_util.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
@@ -323,9 +338,8 @@ describe("Test LMDB environmentUtility module", ()=>{
 
             afterEach(async () => {
                 lmdb_env_util.closeEnvironment(env);
-                await fs.remove(BASE_TEST_PATH);
-                test_utils.tearDownMockFS();
                 global.lmdb_map = undefined;
+                await fs.remove(test_utils.getMockFSPath());
             });
 
             it('call function no args', async ()=>{
@@ -399,6 +413,7 @@ describe("Test LMDB environmentUtility module", ()=>{
             let env;
             before(async () => {
                 global.lmdb_map = undefined;
+                await fs.remove(test_utils.getMockFSPath());
                 await fs.mkdirp(BASE_TEST_PATH);
 
                 env = await lmdb_env_util.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
@@ -407,9 +422,8 @@ describe("Test LMDB environmentUtility module", ()=>{
 
             after(async () => {
                 lmdb_env_util.closeEnvironment(env);
-                await fs.remove(BASE_TEST_PATH);
-                test_utils.tearDownMockFS();
                 global.lmdb_map = undefined;
+                await fs.remove(test_utils.getMockFSPath());
             });
 
             it('call function no args', async ()=>{
@@ -462,6 +476,7 @@ describe("Test LMDB environmentUtility module", ()=>{
             let env2;
             before(async () => {
                 global.lmdb_map = undefined;
+                await fs.remove(test_utils.getMockFSPath());
                 await fs.mkdirp(BASE_TEST_PATH);
 
                 env = await lmdb_env_util.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
@@ -473,9 +488,9 @@ describe("Test LMDB environmentUtility module", ()=>{
             after(async () => {
                 lmdb_env_util.closeEnvironment(env);
                 lmdb_env_util.closeEnvironment(env2);
-                await fs.remove(BASE_TEST_PATH);
-                test_utils.tearDownMockFS();
+
                 global.lmdb_map = undefined;
+                await fs.remove(test_utils.getMockFSPath());
             });
 
             it('call function no args', async ()=>{
@@ -506,6 +521,7 @@ describe("Test LMDB environmentUtility module", ()=>{
         let env2;
         before(async () => {
             global.lmdb_map = undefined;
+            await fs.remove(test_utils.getMockFSPath());
             await fs.mkdirp(BASE_TEST_PATH);
 
             env = await lmdb_env_util.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
@@ -517,9 +533,9 @@ describe("Test LMDB environmentUtility module", ()=>{
         after(async () => {
             lmdb_env_util.closeEnvironment(env);
             lmdb_env_util.closeEnvironment(env2);
-            await fs.remove(BASE_TEST_PATH);
-            test_utils.tearDownMockFS();
+
             global.lmdb_map = undefined;
+            await fs.remove(test_utils.getMockFSPath());
         });
 
         it('call function no args', async ()=>{
@@ -542,15 +558,15 @@ describe("Test LMDB environmentUtility module", ()=>{
         let env;
         beforeEach(async () => {
             global.lmdb_map = undefined;
+            await fs.remove(test_utils.getMockFSPath());
             await fs.mkdirp(BASE_TEST_PATH);
 
             env = await lmdb_env_util.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
         });
 
         after(async () => {
-            await fs.remove(BASE_TEST_PATH);
-            test_utils.tearDownMockFS();
             global.lmdb_map = undefined;
+            await fs.remove(test_utils.getMockFSPath());
         });
 
         it('call function no args', async ()=>{
@@ -571,6 +587,7 @@ describe("Test LMDB environmentUtility module", ()=>{
             let env;
             before(async () => {
                 global.lmdb_map = undefined;
+                await fs.remove(test_utils.getMockFSPath());
                 await fs.mkdirp(BASE_TEST_PATH);
 
                 env = await lmdb_env_util.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
@@ -579,9 +596,9 @@ describe("Test LMDB environmentUtility module", ()=>{
 
             after(async () => {
                 lmdb_env_util.closeEnvironment(env);
-                await fs.remove(BASE_TEST_PATH);
-                test_utils.tearDownMockFS();
+
                 global.lmdb_map = undefined;
+                await fs.remove(test_utils.getMockFSPath());
             });
 
             it('call function no args', async ()=>{
@@ -616,6 +633,7 @@ describe("Test LMDB environmentUtility module", ()=>{
 
         before(async () => {
             global.lmdb_map = undefined;
+            await fs.remove(test_utils.getMockFSPath());
             await fs.mkdirp(BASE_TEST_PATH);
 
             env = await lmdb_env_util.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
@@ -624,9 +642,8 @@ describe("Test LMDB environmentUtility module", ()=>{
 
         after(async () => {
             lmdb_env_util.closeEnvironment(env);
-            await fs.remove(BASE_TEST_PATH);
-            test_utils.tearDownMockFS();
             global.lmdb_map = undefined;
+            await fs.remove(test_utils.getMockFSPath());
         });
 
         it('call function no args', async ()=>{
@@ -645,6 +662,7 @@ describe("Test LMDB environmentUtility module", ()=>{
             let env;
             before(async () => {
                 global.lmdb_map = undefined;
+                await fs.remove(test_utils.getMockFSPath());
                 await fs.mkdirp(BASE_TEST_PATH);
 
                 env = await lmdb_env_util.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
@@ -653,9 +671,9 @@ describe("Test LMDB environmentUtility module", ()=>{
 
             after(async () => {
                 lmdb_env_util.closeEnvironment(env);
-                await fs.remove(BASE_TEST_PATH);
-                test_utils.tearDownMockFS();
+
                 global.lmdb_map = undefined;
+                await fs.remove(test_utils.getMockFSPath());
             });
 
             it('call function no args', async ()=>{
@@ -692,16 +710,19 @@ describe("Test LMDB environmentUtility module", ()=>{
     describe("Test initializeDBIs function", ()=>{
         let env;
         before(async ()=>{
-            await fs.mkdirp(BASE_TEST_PATH);
             global.lmdb_map = undefined;
+            await fs.remove(test_utils.getMockFSPath());
+            await fs.mkdirp(BASE_TEST_PATH);
+
             env = await lmdb_env_util.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
             await lmdb_env_util.createDBI(env, 'id');
         });
 
         after(async ()=>{
             lmdb_env_util.closeEnvironment(env);
-            await fs.remove(BASE_TEST_PATH);
+
             global.lmdb_map = undefined;
+            await fs.remove(test_utils.getMockFSPath());
         });
 
         it("pass valid env hash_attribute all_attributes", ()=>{
