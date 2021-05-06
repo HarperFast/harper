@@ -38,7 +38,10 @@ const DEFAULT_ERROR_RESP = DEFAULT_ERROR_MSGS[HTTP_STATUS_CODES.INTERNAL_SERVER_
 
 //Add all error messages that are generic and can be used across modules here
 const COMMON_ERROR_MSGS = {
-    OP_NOT_SUPPORTED_FOR_FS: (op) => `${op} is not available for this instance because it uses the File System data store.`
+    OP_NOT_SUPPORTED_FOR_FS: (op) => `${op} is not available for this instance because it uses the File System data store.`,
+    MISSING_VALUE: (value) => `${value} is missing.`,
+    INVALID_VALUE: (value) => `${value} is invalid.`,
+    NOT_FOUND: (value) => `${value} not found.`
 };
 
 const BULK_LOAD_ERROR_MSGS = {
@@ -119,7 +122,8 @@ const OPERATION_AUTH_ERROR_MSGS = {
     OP_NOT_FOUND: (op) => `Operation '${op}' not found`,
     SYSTEM_TIMESTAMP_PERMS_ERR: "Internal timestamp attributes - '__createdtime_' and '__updatedtime__' - cannot be inserted to or updated by HDB users.",
     UNKNOWN_OP_AUTH_ERROR: (op, schema, table) => `There was an error authorizing ${op} op on table '${schema}.${table}'`,
-    USER_HAS_NO_PERMS: (user) => `User ${user} has no role or permissions.  Please assign the user a valid role.`
+    USER_HAS_NO_PERMS: (user) => `User ${user} has no role or permissions.  Please assign the user a valid role.`,
+    DROP_SYSTEM: "The 'system' schema, tables and records are used internally by HarperDB and cannot be updated or removed."
 };
 
 const ROLE_PERMS_ERROR_MSGS = {

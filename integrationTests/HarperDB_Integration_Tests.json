@@ -37770,7 +37770,7 @@
 											"    var jsonData = pm.response.json();",
 											"    pm.expect(jsonData.message.indexOf('Starting job')).to.eql(0);",
 											"    ",
-											"    eval(pm.globals.get(\"function:getJobId\"))(jsonData, \"Drop S3 schema\");",
+											"    eval(pm.globals.get(\"function:getJobId\"))(jsonData, \"Create S3 test table\");",
 											"});",
 											"",
 											"pm.test(\"Status code is 200\", function () {",
@@ -37860,7 +37860,7 @@
 											"            console.log(jsonData[0]);",
 											"            if(pm.environment.get(\"next_request\")){",
 											"                postman.setNextRequest(pm.environment.get(\"next_request\"));",
-											"                pm.environment.set(\"next_request\", null);",
+											"                pm.environment.set(\"next_request\", \"Create S3 test table\");",
 											"            }",
 											"           ",
 											"            pm.expect(jsonData[0].message.ETag).to.exist;",
@@ -37931,6 +37931,1168 @@
 								"body": {
 									"mode": "raw",
 									"raw": "{\n\t\"operation\":\"get_job\",\n\t\"id\": \"{{job_id}}\"\n}"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "Create S3 test table",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"value": "Basic c2dvbGRiZXJnOnRlc3QxMjM0IQ=="
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"operation\":\"create_table\",\n  \"schema\":\"S3_DATA\",\n  \"table\":\"s3_test\",\n  \"hash_attribute\": \"id\"\n}"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "Create S3 CSV import test table",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"value": "Basic c2dvbGRiZXJnOnRlc3QxMjM0IQ=="
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"operation\":\"create_table\",\n  \"schema\":\"S3_DATA\",\n  \"table\":\"s3_test_csv_import\",\n  \"hash_attribute\": \"id\"\n}"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "Create S3 JSON import test table",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"value": "Basic c2dvbGRiZXJnOnRlc3QxMjM0IQ=="
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"operation\":\"create_table\",\n  \"schema\":\"S3_DATA\",\n  \"table\":\"s3_test_json_import\",\n  \"hash_attribute\": \"id\"\n}"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "Insert records S3 test table",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"All records are inserted\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData.inserted_hashes.length).to.eql(3);",
+											"    pm.expect(jsonData.message).to.eql(\"inserted 3 of 3 records\");",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"value": "Basic c2dvbGRiZXJnOnRlc3QxMjM0IQ=="
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n    \"operation\":\"insert\",\n    \"schema\":\"S3_DATA\",\n    \"table\":\"s3_test\",\n    \"records\": [\n      {\n        \"id\": \"a\",\n        \"address\": \"1 North Street\",\n        \"lastname\":\"Dog\",\n        \"firstname\":\"Harper\",\n        \"one\": \"only one\"\n      },\n      {\n        \"id\": \"b\",\n        \"object\": {\"name\":\"object\", \"number\": 1, \"array\": [1, \"two\"]},\n        \"array\": [1, 2, \"three\"],\n        \"firstname\":\"Harper\"\n      },\n      {\n          \"id\": \"c\",\n          \"object_array\": [\n              {\"number\": 1},\n              {\"number\": \"two\", \"count\": 2}\n          ]\n      }\n\n    ]\n}\n"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "Export S3 test table CSV",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"pm.test(\"Check for job message\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    let message_parts = jsonData.message.split(' ');",
+											"    pm.environment.set('job_id', message_parts[4]);",
+											"    pm.expect(jsonData.message.indexOf('Starting job')).to.eql(0);",
+											"});",
+											"",
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"value": "Basic c2dvbGRiZXJnOnRlc3QxMjM0IQ=="
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\t\"operation\":\"export_to_s3\",\n\t\"format\":\"csv\",\n\t\"s3\":{\n\t\t\"aws_access_key_id\":\"{{s3_key}}\",\n\t\t\"aws_secret_access_key\":\"{{s3_secret}}\",\n\t\t\"bucket\":\"harperdb-integration-test-data/non_public_folder\",\n\t\t\"key\":\"test_export_csv\"\n\t},\n\t\"search_operation\":{\n\t\t\"operation\": \"sql\",\n\t\t\"sql\": \"SELECT * FROM S3_DATA.s3_test\"\n\t}\n}"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "Wait for CSV export to complete",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"let response = pm.response.json();",
+											"let status = response[0].status;",
+											"",
+											"switch(status){",
+											"    case 'IN_PROGRESS':",
+											"        console.log('Wating for S3 CSV export to complete');",
+											"        setTimeout(() => {}, 2000);",
+											"        postman.setNextRequest(pm.info.requestId);",
+											"        break;",
+											"",
+											"    case 'COMPLETE':",
+											"        pm.test(\"Export CSV to S3 has completed\", () => {",
+											"            pm.expect(status).to.equal('COMPLETE');",
+											"        });",
+											"        break;",
+											"",
+											"    case 'ERROR':",
+											"        pm.test(\"Export CSV to S3 has failed\", () => {",
+											"            pm.expect(true).to.be.false;",
+											"        });",
+											"        break;",
+											"        ",
+											"    default:",
+											"        pm.test(\"Export CSV to S3 unknow status\", () => {",
+											"            pm.expect(true).to.be.false;",
+											"        });",
+											"        break;",
+											"}"
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"exec": [
+											"setTimeout(()=>{}, 200);",
+											"console.log(\"Checking Job CSV URL load\" + pm.environment.get(\"job_id\"));"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "saveHelperData",
+											"type": "any"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\t\"operation\":\"get_job\",\n\t\"id\": \"{{job_id}}\"\n}"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "Import S3 test table CSV",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"Check for job message\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    let message_parts = jsonData.message.split(' ');",
+											"    pm.environment.set('job_id', message_parts[4]);",
+											"    pm.expect(jsonData.message.indexOf('Starting job')).to.eql(0);",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"value": "Basic c2dvbGRiZXJnOnRlc3QxMjM0IQ=="
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\t\"operation\":\"import_from_s3\",\n\t\"action\": \"insert\",\n\t\"schema\":\"S3_DATA\",\n\t\"table\":\"s3_test_csv_import\",\n\t\"s3\":{\n\t\t\"aws_access_key_id\":\"{{s3_key}}\",\n\t\t\"aws_secret_access_key\":\"{{s3_secret}}\",\n\t\t\"bucket\":\"harperdb-integration-test-data/non_public_folder\",\n\t\t\"key\":\"test_export_csv.csv\"\n\t}\n}"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "Wait for CSV import to complete",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"let response = pm.response.json();",
+											"let status = response[0].status;",
+											"",
+											"switch(status){",
+											"    case 'IN_PROGRESS':",
+											"        console.log('Wating for S3 CSV import to complete');",
+											"        setTimeout(() => {}, 2000);",
+											"        postman.setNextRequest(pm.info.requestId);",
+											"        break;",
+											"",
+											"    case 'COMPLETE':",
+											"        pm.test(\"Import CSV to S3 has completed\", () => {",
+											"            pm.expect(status).to.equal('COMPLETE');",
+											"        });",
+											"        break;",
+											"",
+											"    case 'ERROR':",
+											"        pm.test(\"Import CSV to S3 has failed\", () => {",
+											"            pm.expect(true).to.be.false;",
+											"        });",
+											"        break;",
+											"        ",
+											"    default:",
+											"        pm.test(\"Import CSV to S3 unknow status\", () => {",
+											"            pm.expect(true).to.be.false;",
+											"        });",
+											"        break;",
+											"}"
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"exec": [
+											"setTimeout(()=>{}, 200);",
+											"console.log(\"Checking Job CSV URL load\" + pm.environment.get(\"job_id\"));"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "saveHelperData",
+											"type": "any"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\t\"operation\":\"get_job\",\n\t\"id\": \"{{job_id}}\"\n}"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "Confirm CSV records import",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"let expected_res = [",
+											"    {",
+											"        \"one\": \"only one\",",
+											"        \"object_array\": null,",
+											"        \"id\": \"a\",",
+											"        \"address\": \"1 North Street\",",
+											"        \"object\": null,",
+											"        \"lastname\": \"Dog\",",
+											"        \"firstname\": \"Harper\",",
+											"        \"array\": null",
+											"    },",
+											"    {",
+											"        \"one\": null,",
+											"        \"object_array\": null,",
+											"        \"id\": \"b\",",
+											"        \"address\": null,",
+											"        \"object\": {",
+											"            \"name\": \"object\",",
+											"            \"number\": 1,",
+											"            \"array\": [",
+											"                1,",
+											"                \"two\"",
+											"            ]",
+											"        },",
+											"        \"lastname\": null,",
+											"        \"firstname\": \"Harper\",",
+											"        \"array\": [",
+											"            1,",
+											"            2,",
+											"            \"three\"",
+											"        ]",
+											"    },",
+											"    {",
+											"        \"one\": null,",
+											"        \"object_array\": [",
+											"            {",
+											"                \"number\": 1",
+											"            },",
+											"            {",
+											"                \"number\": \"two\",",
+											"                \"count\": 2",
+											"            }",
+											"        ],",
+											"        \"id\": \"c\",",
+											"        \"address\": null,",
+											"        \"object\": null,",
+											"        \"lastname\": null,",
+											"        \"firstname\": null,",
+											"        \"array\": null",
+											"    }",
+											"]",
+											"",
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"All records are inserted\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData).to.eql(expected_res);",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"exec": [
+											"setTimeout(()=>{}, 200);",
+											"console.log(\"Checking Job CSV URL load\" + pm.environment.get(\"job_id\"));"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "saveHelperData",
+											"type": "any"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"select `one`, `object_array`, `id`, `address`, `object`, `lastname`, `firstname`, `array` FROM S3_DATA.s3_test_csv_import ORDER BY id ASC\"\n}"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "Export S3 test table JSON",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"pm.test(\"Check for job message\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    let message_parts = jsonData.message.split(' ');",
+											"    pm.environment.set('job_id', message_parts[4]);",
+											"    pm.expect(jsonData.message.indexOf('Starting job')).to.eql(0);",
+											"});",
+											"",
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"value": "Basic c2dvbGRiZXJnOnRlc3QxMjM0IQ=="
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\t\"operation\":\"export_to_s3\",\n\t\"format\":\"json\",\n\t\"s3\":{\n\t\t\"aws_access_key_id\":\"{{s3_key}}\",\n\t\t\"aws_secret_access_key\":\"{{s3_secret}}\",\n\t\t\"bucket\":\"harperdb-integration-test-data/non_public_folder\",\n\t\t\"key\":\"test_export_json\"\n\t},\n\t\"search_operation\":{\n\t\t\"operation\": \"sql\",\n\t\t\"sql\": \"SELECT * FROM S3_DATA.s3_test\"\n\t}\n}"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "Wait for JSON export to complete",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"let response = pm.response.json();",
+											"let status = response[0].status;",
+											"",
+											"switch(status){",
+											"    case 'IN_PROGRESS':",
+											"        console.log('Wating for S3 JSON export to complete');",
+											"        setTimeout(() => {}, 2000);",
+											"        postman.setNextRequest(pm.info.requestId);",
+											"        break;",
+											"",
+											"    case 'COMPLETE':",
+											"        pm.test(\"Export JSON to S3 has completed\", () => {",
+											"            pm.expect(status).to.equal('COMPLETE');",
+											"        });",
+											"        break;",
+											"",
+											"    case 'ERROR':",
+											"        pm.test(\"Export JSON to S3 has failed\", () => {",
+											"            pm.expect(true).to.be.false;",
+											"        });",
+											"        break;",
+											"        ",
+											"    default:",
+											"        pm.test(\"Export JSON to S3 unknow status\", () => {",
+											"            pm.expect(true).to.be.false;",
+											"        });",
+											"        break;",
+											"}"
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"exec": [
+											"setTimeout(()=>{}, 200);",
+											"console.log(\"Checking Job CSV URL load\" + pm.environment.get(\"job_id\"));"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "saveHelperData",
+											"type": "any"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\t\"operation\":\"get_job\",\n\t\"id\": \"{{job_id}}\"\n}"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "Import S3 test table JSON",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"Check for job message\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    let message_parts = jsonData.message.split(' ');",
+											"    pm.environment.set('job_id', message_parts[4]);",
+											"    pm.expect(jsonData.message.indexOf('Starting job')).to.eql(0);",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"value": "Basic c2dvbGRiZXJnOnRlc3QxMjM0IQ=="
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\t\"operation\":\"import_from_s3\",\n\t\"action\": \"insert\",\n\t\"schema\":\"S3_DATA\",\n\t\"table\":\"s3_test_json_import\",\n\t\"s3\":{\n\t\t\"aws_access_key_id\":\"{{s3_key}}\",\n\t\t\"aws_secret_access_key\":\"{{s3_secret}}\",\n\t\t\"bucket\":\"harperdb-integration-test-data/non_public_folder\",\n\t\t\"key\":\"test_export_json.json\"\n\t}\n}"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "Wait for JSON import to complete",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"let response = pm.response.json();",
+											"let status = response[0].status;",
+											"",
+											"switch(status){",
+											"    case 'IN_PROGRESS':",
+											"        console.log('Wating for S3 JSON import to complete');",
+											"        setTimeout(() => {}, 2000);",
+											"        postman.setNextRequest(pm.info.requestId);",
+											"        break;",
+											"",
+											"    case 'COMPLETE':",
+											"        pm.test(\"Import JSON to S3 has completed\", () => {",
+											"            pm.expect(status).to.equal('COMPLETE');",
+											"        });",
+											"        break;",
+											"",
+											"    case 'ERROR':",
+											"        pm.test(\"Import JSON to S3 has failed\", () => {",
+											"            pm.expect(true).to.be.false;",
+											"        });",
+											"        break;",
+											"        ",
+											"    default:",
+											"        pm.test(\"Import JSON to S3 unknow status\", () => {",
+											"            pm.expect(true).to.be.false;",
+											"        });",
+											"        break;",
+											"}"
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"exec": [
+											"setTimeout(()=>{}, 200);",
+											"console.log(\"Checking Job CSV URL load\" + pm.environment.get(\"job_id\"));"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "saveHelperData",
+											"type": "any"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\t\"operation\":\"get_job\",\n\t\"id\": \"{{job_id}}\"\n}"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "Confirm JSON records import",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"let expected_res = [",
+											"    {",
+											"        \"one\": \"only one\",",
+											"        \"object_array\": null,",
+											"        \"id\": \"a\",",
+											"        \"address\": \"1 North Street\",",
+											"        \"object\": null,",
+											"        \"lastname\": \"Dog\",",
+											"        \"firstname\": \"Harper\",",
+											"        \"array\": null",
+											"    },",
+											"    {",
+											"        \"one\": null,",
+											"        \"object_array\": null,",
+											"        \"id\": \"b\",",
+											"        \"address\": null,",
+											"        \"object\": {",
+											"            \"name\": \"object\",",
+											"            \"number\": 1,",
+											"            \"array\": [",
+											"                1,",
+											"                \"two\"",
+											"            ]",
+											"        },",
+											"        \"lastname\": null,",
+											"        \"firstname\": \"Harper\",",
+											"        \"array\": [",
+											"            1,",
+											"            2,",
+											"            \"three\"",
+											"        ]",
+											"    },",
+											"    {",
+											"        \"one\": null,",
+											"        \"object_array\": [",
+											"            {",
+											"                \"number\": 1",
+											"            },",
+											"            {",
+											"                \"number\": \"two\",",
+											"                \"count\": 2",
+											"            }",
+											"        ],",
+											"        \"id\": \"c\",",
+											"        \"address\": null,",
+											"        \"object\": null,",
+											"        \"lastname\": null,",
+											"        \"firstname\": null,",
+											"        \"array\": null",
+											"    }",
+											"]",
+											"",
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"All records are inserted\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData).to.eql(expected_res);",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"exec": [
+											"setTimeout(()=>{}, 200);",
+											"console.log(\"Checking Job CSV URL load\" + pm.environment.get(\"job_id\"));"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "saveHelperData",
+											"type": "any"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"select `one`, `object_array`, `id`, `address`, `object`, `lastname`, `firstname`, `array` FROM S3_DATA.s3_test_csv_import ORDER BY id ASC\"\n}"
 								},
 								"url": {
 									"raw": "{{host}}:{{port}}",
@@ -49507,19 +50669,7 @@
 											"var jsonData = pm.response.json();",
 											"",
 											"pm.test(\"Op auth error message\", function () {",
-											"    pm.expect(jsonData.error).to.eql(\"This operation is not authorized due to role restrictions and/or invalid schema items\");",
-											"});",
-											"",
-											"pm.test(\"Includes correct system table perm object in unauthorized_access\", function () {",
-											"    pm.expect(jsonData.unauthorized_access.length).to.eql(1);",
-											"    pm.expect(jsonData.unauthorized_access[0].required_table_permissions.length).to.eql(1);",
-											"    pm.expect(jsonData.unauthorized_access[0].required_table_permissions[0]).to.eql('update');",
-											"    pm.expect(jsonData.unauthorized_access[0].schema).to.eql('system');",
-											"    pm.expect(jsonData.unauthorized_access[0].table).to.eql('hdb_user');",
-											"});",
-											"",
-											"pm.test(\"invalid_schema_items is empty\", function () {",
-											"    pm.expect(jsonData.invalid_schema_items.length).to.eql(0);",
+											"    pm.expect(jsonData.error).to.eql(\"The 'system' schema, tables and records are used internally by HarperDB and cannot be updated or removed.\");",
 											"});"
 										],
 										"type": "text/javascript"
@@ -49587,22 +50737,8 @@
 											"var jsonData = pm.response.json();",
 											"",
 											"pm.test(\"Op auth error message\", function () {",
-											"    pm.expect(jsonData.error).to.eql(\"This operation is not authorized due to role restrictions and/or invalid schema items\");",
-											"});",
-											"",
-											"pm.test(\"Includes correct table perm object in unauthorized_access\", function () {",
-											"    pm.expect(jsonData.unauthorized_access.length).to.eql(1);",
-											"    pm.expect(jsonData.unauthorized_access[0].required_table_permissions.length).to.eql(1);",
-											"    pm.expect(jsonData.unauthorized_access[0].required_table_permissions[0]).to.eql('update');",
-											"    pm.expect(jsonData.unauthorized_access[0].schema).to.eql('system');",
-											"    pm.expect(jsonData.unauthorized_access[0].table).to.eql('hdb_user');",
-											"});",
-											"",
-											"pm.test(\"invalid_schema_items is empty\", function () {",
-											"    pm.expect(jsonData.invalid_schema_items.length).to.eql(0);",
-											"});",
-											"",
-											""
+											"    pm.expect(jsonData.error).to.eql(\"The 'system' schema, tables and records are used internally by HarperDB and cannot be updated or removed.\");",
+											"});"
 										],
 										"type": "text/javascript"
 									}
@@ -49669,20 +50805,9 @@
 											"var jsonData = pm.response.json();",
 											"",
 											"pm.test(\"Op auth error message\", function () {",
-											"    pm.expect(jsonData.error).to.eql(\"This operation is not authorized due to role restrictions and/or invalid schema items\");",
+											"    pm.expect(jsonData.error).to.eql(\"The 'system' schema, tables and records are used internally by HarperDB and cannot be updated or removed.\");",
 											"});",
-											"",
-											"pm.test(\"Includes correct system table perm object in unauthorized_access\", function () {",
-											"    pm.expect(jsonData.unauthorized_access.length).to.eql(1);",
-											"    pm.expect(jsonData.unauthorized_access[0].required_table_permissions.length).to.eql(1);",
-											"    pm.expect(jsonData.unauthorized_access[0].required_table_permissions[0]).to.eql('delete');",
-											"    pm.expect(jsonData.unauthorized_access[0].schema).to.eql('system');",
-											"    pm.expect(jsonData.unauthorized_access[0].table).to.eql('hdb_user');",
-											"});",
-											"",
-											"pm.test(\"invalid_schema_items is empty\", function () {",
-											"    pm.expect(jsonData.invalid_schema_items.length).to.eql(0);",
-											"});"
+											""
 										],
 										"type": "text/javascript"
 									}
@@ -49749,21 +50874,8 @@
 											"var jsonData = pm.response.json();",
 											"",
 											"pm.test(\"Op auth error message\", function () {",
-											"    pm.expect(jsonData.error).to.eql(\"This operation is not authorized due to role restrictions and/or invalid schema items\");",
+											"    pm.expect(jsonData.error).to.eql(\"The 'system' schema, tables and records are used internally by HarperDB and cannot be updated or removed.\");",
 											"});",
-											"",
-											"pm.test(\"Includes correct table perm object in unauthorized_access\", function () {",
-											"    pm.expect(jsonData.unauthorized_access.length).to.eql(1);",
-											"    pm.expect(jsonData.unauthorized_access[0].required_table_permissions.length).to.eql(1);",
-											"    pm.expect(jsonData.unauthorized_access[0].required_table_permissions[0]).to.eql('delete');",
-											"    pm.expect(jsonData.unauthorized_access[0].schema).to.eql('system');",
-											"    pm.expect(jsonData.unauthorized_access[0].table).to.eql('hdb_user');",
-											"});",
-											"",
-											"pm.test(\"invalid_schema_items is empty\", function () {",
-											"    pm.expect(jsonData.invalid_schema_items.length).to.eql(0);",
-											"});",
-											"",
 											""
 										],
 										"type": "text/javascript"
@@ -49831,17 +50943,9 @@
 											"var jsonData = pm.response.json();",
 											"",
 											"pm.test(\"Op auth error message\", function () {",
-											"    pm.expect(jsonData.error).to.eql(\"This operation is not authorized due to role restrictions and/or invalid schema items\");",
+											"    pm.expect(jsonData.error).to.eql(\"The 'system' schema, tables and records are used internally by HarperDB and cannot be updated or removed.\");",
 											"});",
-											"",
-											"pm.test(\"Includes correct table perm object in unauthorized_access\", function () {",
-											"    pm.expect(jsonData.unauthorized_access.length).to.eql(1);",
-											"    pm.expect(jsonData.unauthorized_access[0]).to.eql(\"Operation 'dropTable' is restricted to 'super_user' roles\");",
-											"});",
-											"",
-											"pm.test(\"invalid_schema_items is empty\", function () {",
-											"    pm.expect(jsonData.invalid_schema_items.length).to.eql(0);",
-											"});"
+											""
 										],
 										"type": "text/javascript"
 									}
@@ -49908,18 +51012,8 @@
 											"var jsonData = pm.response.json();",
 											"",
 											"pm.test(\"Op auth error message\", function () {",
-											"    pm.expect(jsonData.error).to.eql(\"This operation is not authorized due to role restrictions and/or invalid schema items\");",
+											"    pm.expect(jsonData.error).to.eql(\"The 'system' schema, tables and records are used internally by HarperDB and cannot be updated or removed.\");",
 											"});",
-											"",
-											"pm.test(\"Includes correct message in unauthorized_access\", function () {",
-											"    pm.expect(jsonData.unauthorized_access.length).to.eql(1);",
-											"    pm.expect(jsonData.unauthorized_access[0]).to.eql(\"Operation 'dropTable' is restricted to 'super_user' roles\");",
-											"});",
-											"",
-											"pm.test(\"invalid_schema_items is empty\", function () {",
-											"    pm.expect(jsonData.invalid_schema_items.length).to.eql(0);",
-											"});",
-											"",
 											""
 										],
 										"type": "text/javascript"
@@ -50106,6 +51200,211 @@
 									],
 									"port": "{{port}}"
 								}
+							},
+							"response": []
+						},
+						{
+							"name": "SQL update system table",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"pm.test(\"Status code is 403\", function () {",
+											"    pm.response.to.have.status(403);",
+											"});",
+											"",
+											"var jsonData = pm.response.json();",
+											"",
+											"pm.test(\"Op auth error message\", function () {",
+											"    pm.expect(jsonData.error).to.eql(\"The 'system' schema, tables and records are used internally by HarperDB and cannot be updated or removed.\");",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"value": "Basic SERCX0FETUlOOnJvb3Q="
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"UPDATE system.hdb_user SET name = 'jerry' where id = 1\"\n}"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								},
+								"description": "Confirm that a super user can NOT update record in system table"
+							},
+							"response": []
+						},
+						{
+							"name": "SQL delete system table",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"pm.test(\"Status code is 403\", function () {",
+											"    pm.response.to.have.status(403);",
+											"});",
+											"",
+											"var jsonData = pm.response.json();",
+											"",
+											"pm.test(\"Op auth error message\", function () {",
+											"    pm.expect(jsonData.error).to.eql(\"The 'system' schema, tables and records are used internally by HarperDB and cannot be updated or removed.\");",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"value": "Basic SERCX0FETUlOOnJvb3Q="
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"delete from system.hdb_user where id = 1\"\n}"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								},
+								"description": "Confirm that a super user can NOT update record in system table"
+							},
+							"response": []
+						},
+						{
+							"name": "Delete attribute from system table",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"pm.test(\"Status code is 403\", function () {",
+											"    pm.response.to.have.status(403);",
+											"});",
+											"",
+											"var jsonData = pm.response.json();",
+											"",
+											"pm.test(\"Op auth error message\", function () {",
+											"    pm.expect(jsonData.error).to.eql(\"The 'system' schema, tables and records are used internally by HarperDB and cannot be updated or removed.\");",
+											"});",
+											""
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"value": "Basic SERCX0FETUlOOnJvb3Q="
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\"operation\":\"drop_attribute\",\n\"schema\":\"system\",\n\"table\":\"hdb_user\",\n\"attribute\": \"password\"\n}"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								},
+								"description": "Confirm that a super user can NOT delete record from system table"
 							},
 							"response": []
 						}
@@ -53382,6 +54681,84 @@
 						"body": {
 							"mode": "raw",
 							"raw": "{\n\t\"operation\": \"get_configuration\"\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						},
+						"description": "We first need to create a Schema.  A Schema can be thought of as a container of tables that are independent from tables in other schemas.  An example might be the Schema dev with a table called dog.  The Schema prod may also have a table dog. \n\nNote that if you see the error response \"Cannot complete request: User 'admin' not found\", you need to set the basic auth to the user and password you entered during the install process.  What the heck is basic auth?  Read our article on it here: https://harperdbhelp.zendesk.com/hc/en-us/articles/115010250207-Basic-Auth-with-Postman"
+					},
+					"response": []
+				},
+				{
+					"name": "Read log",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"test shape of read log response\", ()=>{",
+									"    let json_data = pm.response.json();",
+									"",
+									"    pm.expect(json_data.hasOwnProperty('file')).to.be.true;",
+									"    pm.expect(Array.isArray(json_data.file)).to.be.true;",
+									"    pm.expect(json_data.file[0].hasOwnProperty('level')).to.be.true;",
+									"    pm.expect(json_data.file[0].hasOwnProperty('message')).to.be.true;",
+									"    pm.expect(json_data.file[0].hasOwnProperty('timestamp')).to.be.true;",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"type": "any"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"name": "Content-Type",
+								"type": "text",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic YWRtaW46MTQwMA=="
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\": \"read_log\"\n}"
 						},
 						"url": {
 							"raw": "{{host}}:{{port}}",
