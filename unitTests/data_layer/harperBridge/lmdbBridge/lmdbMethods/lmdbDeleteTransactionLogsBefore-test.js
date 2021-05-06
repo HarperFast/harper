@@ -41,16 +41,19 @@ describe('test lmdbDeleteTransactionLogsBefore module', ()=>{
 
     describe('test deleteTransactions function', ()=>{
         beforeEach(async ()=>{
-            await fs.mkdirp(BASE_PATH);
             global.lmdb_map = undefined;
+            await fs.remove(test_utils.getMockFSPath());
+            await fs.mkdirp(BASE_PATH);
+
             await lmdb_create_txn_envs(CREATE_TABLE_OBJ);
         });
 
         afterEach(async ()=>{
             let env1 = await environment_utility.openEnvironment(BASE_TRANSACTIONS_PATH, CREATE_TABLE_OBJ.table, true);
             env1.close();
-            await fs.remove(BASE_PATH);
+
             global.lmdb_map = undefined;
+            await fs.remove(test_utils.getMockFSPath());
         });
 
         it('test deleting the first 1000 txns', async ()=>{
@@ -145,16 +148,19 @@ describe('test lmdbDeleteTransactionLogsBefore module', ()=>{
 
     describe('test deleteTransactionLogsBefore function', ()=>{
         beforeEach(async ()=>{
-            await fs.mkdirp(BASE_PATH);
             global.lmdb_map = undefined;
+            await fs.remove(test_utils.getMockFSPath());
+            await fs.mkdirp(BASE_PATH);
+
             await lmdb_create_txn_envs(CREATE_TABLE_OBJ);
         });
 
         afterEach(async ()=>{
             let env1 = await environment_utility.openEnvironment(BASE_TRANSACTIONS_PATH, CREATE_TABLE_OBJ.table, true);
             env1.close();
-            await fs.remove(BASE_PATH);
+
             global.lmdb_map = undefined;
+            await fs.remove(test_utils.getMockFSPath());
         });
 
         it('deleting 19000 out of 20k txns', async()=>{

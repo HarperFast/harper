@@ -79,15 +79,18 @@ describe('Test lmdbReadTransactionLog module', ()=>{
         let search_txn_by_user_func = rw_read_txn_log.__get__('searchTransactionsByUsername');
         let txn_env;
         beforeEach(async ()=>{
-            await fs.mkdirp(BASE_PATH);
             global.lmdb_map = undefined;
+            await fs.remove(test_utils.getMockFSPath());
+            await fs.mkdirp(BASE_PATH);
+
             txn_env = await lmdb_create_txn_envs(CREATE_TABLE_OBJ);
         });
 
         afterEach(async ()=>{
             txn_env.close();
-            await fs.remove(BASE_PATH);
+
             global.lmdb_map = undefined;
+            await fs.remove(test_utils.getMockFSPath());
         });
 
         it('test with no records', ()=>{
@@ -130,15 +133,18 @@ describe('Test lmdbReadTransactionLog module', ()=>{
         let search_txn_by_hash_func = rw_read_txn_log.__get__('searchTransactionsByHashValues');
         let txn_env;
         beforeEach(async ()=>{
-            await fs.mkdirp(BASE_PATH);
             global.lmdb_map = undefined;
+            await fs.remove(test_utils.getMockFSPath());
+            await fs.mkdirp(BASE_PATH);
+
             txn_env = await lmdb_create_txn_envs(CREATE_TABLE_OBJ);
         });
 
         afterEach(async ()=>{
             txn_env.close();
-            await fs.remove(BASE_PATH);
+
             global.lmdb_map = undefined;
+            await fs.remove(test_utils.getMockFSPath());
         });
 
         it('test reading by hash value', async ()=>{
@@ -190,15 +196,18 @@ describe('Test lmdbReadTransactionLog module', ()=>{
         let search_txn_by_timestamp_func = rw_read_txn_log.__get__('searchTransactionsByTimestamp');
         let txn_env;
         beforeEach(async ()=>{
-            await fs.mkdirp(BASE_PATH);
             global.lmdb_map = undefined;
+            await fs.remove(test_utils.getMockFSPath());
+            await fs.mkdirp(BASE_PATH);
+
             txn_env = await lmdb_create_txn_envs(CREATE_TABLE_OBJ);
         });
 
         afterEach(async ()=>{
             txn_env.close();
-            await fs.remove(BASE_PATH);
+
             global.lmdb_map = undefined;
+            await fs.remove(test_utils.getMockFSPath());
         });
 
         it('test reading with no timestamps, should return all', async ()=>{
@@ -246,8 +255,10 @@ describe('Test lmdbReadTransactionLog module', ()=>{
     describe('test readTransactionLog function', ()=>{
         let txn_env;
         beforeEach(async ()=>{
-            await fs.mkdirp(BASE_PATH);
             global.lmdb_map = undefined;
+            await fs.remove(test_utils.getMockFSPath());
+            await fs.mkdirp(BASE_PATH);
+
             global.hdb_schema = {
                 dev:{
                     test: {
@@ -260,8 +271,9 @@ describe('Test lmdbReadTransactionLog module', ()=>{
 
         afterEach(async ()=>{
             txn_env.close();
-            await fs.remove(BASE_PATH);
+
             global.lmdb_map = undefined;
+            await fs.remove(test_utils.getMockFSPath());
             delete global.hdb_schema;
         });
 

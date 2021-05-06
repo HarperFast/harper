@@ -91,9 +91,10 @@ describe('test validateDropSchema module', ()=>{
         let hdb_attribute_env;
         before(async () => {
             timestamps = [];
+            global.lmdb_map = undefined;
+            await fs.remove(test_utils.getMockFSPath());
             await fs.mkdirp(SYSTEM_SCHEMA_PATH);
             await fs.mkdirp(DEV_SCHEMA_PATH);
-            global.lmdb_map = undefined;
 
             global.hdb_schema = {
                 dev: {
@@ -182,8 +183,8 @@ describe('test validateDropSchema module', ()=>{
             hdb_schema_env.close();
             hdb_attribute_env.close();
 
-            await fs.remove(BASE_PATH);
             global.lmdb_map = undefined;
+            await fs.remove(test_utils.getMockFSPath());
         });
 
         it('Test error is thrown with no hash attribute', async()=>{
