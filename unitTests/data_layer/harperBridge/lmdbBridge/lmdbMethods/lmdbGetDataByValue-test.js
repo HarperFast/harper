@@ -53,9 +53,10 @@ describe('test lmdbGetDataByValue module', ()=>{
     describe('test method', ()=>{
         let env;
         before(async () => {
+            global.lmdb_map = undefined;
+            await fs.remove(test_utils.getMockFSPath());
             await fs.mkdirp(SYSTEM_SCHEMA_PATH);
             await fs.mkdirp(DEV_SCHEMA_PATH);
-            global.lmdb_map = undefined;
 
             global.hdb_schema = {
                 dev: {
@@ -83,8 +84,9 @@ describe('test lmdbGetDataByValue module', ()=>{
 
         after(async () => {
             env.close();
-            await fs.remove(BASE_PATH);
+
             global.lmdb_map = undefined;
+            await fs.remove(test_utils.getMockFSPath());
         });
 
         it('test validation', async()=>{

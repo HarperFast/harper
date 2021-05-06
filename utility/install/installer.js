@@ -142,7 +142,7 @@ function termsAgreement(callback) {
     let terms_schema = {
         properties: {
             TC_AGREEMENT: {
-                description: colors.magenta(`Terms & Conditions can be found at ${terms_address}${line_break}and can be viewed by typing or copying and pasting the URL into your web browser.${line_break}${colors.bold('[TC_AGREEMENT] I Agree to the HarperDB Terms and Conditions. (yes/no)')}`),
+                description: colors.magenta(`Terms & Conditions can be found at ${terms_address}${line_break}and can be viewed by typing or copying and pasting the URL into your web browser.${line_break}${'[TC_AGREEMENT] I Agree to the HarperDB Terms and Conditions. (yes/no)'}`),
             }
         }
     };

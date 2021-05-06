@@ -191,9 +191,10 @@ describe('test lmdbSearch module', ()=>{
     describe('test executeSearch method', ()=>{
         let env;
         before(async () => {
+            global.lmdb_map = undefined;
+            await fs.remove(test_utils.getMockFSPath());
             await fs.mkdirp(SYSTEM_SCHEMA_PATH);
             await fs.mkdirp(DEV_SCHEMA_PATH);
-            global.lmdb_map = undefined;
 
             global.hdb_schema = {
                 dev: {
@@ -221,8 +222,9 @@ describe('test lmdbSearch module', ()=>{
 
         after(async () => {
             env.close();
-            await fs.remove(BASE_PATH);
+
             global.lmdb_map = undefined;
+            await fs.remove(test_utils.getMockFSPath());
         });
 
         it('test equals on string', async()=>{
@@ -790,12 +792,13 @@ describe('test lmdbSearch module', ()=>{
         before(async () => {
             test_data = require('../../../../testData');
             rw_ts_path = lmdb_search.__set__('LMDB_THREAD_SEARCH_MODULE_PATH', path.join(__dirname, '_lmdbThreadSearch'));
+            global.lmdb_map = undefined;
+            await fs.remove(test_utils.getMockFSPath());
             await fs.mkdirp(SYSTEM_SCHEMA_PATH);
             temp_env = await environment_utility.createEnvironment(SYSTEM_SCHEMA_PATH, 'hdb_temp');
             environment_utility.createDBI(temp_env, 'id', false);
 
             await fs.mkdirp(DEV_SCHEMA_PATH);
-            global.lmdb_map = undefined;
 
             global.hdb_schema = {
                 dev: {
@@ -825,8 +828,9 @@ describe('test lmdbSearch module', ()=>{
             env.close();
             temp_env.close();
             rw_ts_path();
-            await fs.remove(BASE_PATH);
+
             global.lmdb_map = undefined;
+            await fs.remove(test_utils.getMockFSPath());
         });
 
         it('test equals on string', async()=>{
