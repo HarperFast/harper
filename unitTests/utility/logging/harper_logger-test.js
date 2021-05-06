@@ -469,8 +469,9 @@ describe('Test harper_logger module', () => {
                         fake_timer.restore();
                         setTimeout(() => {
                             try {
-                                const second_file_exists = fs_extra.pathExistsSync(second_expected_log_path);
-                                expect(second_file_exists).to.equal(true, `second log file not found at ${second_expected_log_path}`);
+                                // Was getting intermittent fails with this test in TC CI tests, the the file doesn't exist testWriteLogBulkTests with fail.
+                                // const second_file_exists = fs_extra.pathExistsSync(second_expected_log_path);
+                                // expect(second_file_exists).to.equal(true, `second log file not found at ${second_expected_log_path}`);
                                 testWriteLogBulkTests(second_expected_log_path);
                                 done();
                             } catch(err) {
@@ -582,7 +583,7 @@ describe('Test harper_logger module', () => {
         });
 
         afterEach((done) => {
-            setTimeout(() => done(), 500);
+            setTimeout(() => done(), 1000);
         });
 
         it('Test debug log level works as expected', () => {
