@@ -100,7 +100,7 @@ function updateSettingsFile_3_1_0() {
 
     const settings_path = env.get('settings_path');
     const settings_dir = path.dirname(settings_path);
-    const settings_backup_path = path.join(settings_dir, '3_0_0_upgrade_settings.bak');
+    const settings_backup_path = path.join(settings_dir, '3_1_0_upgrade_settings.bak');
 
     try {
         //create backup of old settings file
