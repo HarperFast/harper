@@ -22,25 +22,13 @@ const PERSON_ATTRIBUTES = ['id', 'first_name', 'state', 'age', 'alive', 'birth_m
 const TIMESTAMP = Date.now();
 
 describe('test between function', ()=> {
-    function createExpected(attribute, start_value, end_value){
-        let expected = Object.create(null);
-
-        for(let x = 0; x < test_data.length; x++){
-            let attr_value = isNaN(test_data[x][attribute]) ? test_data[x][attribute] : Number(test_data[x][attribute]);
-            if(attr_value >= start_value && attr_value <= end_value){
-                let id = test_data[x].id;
-                expected[id.toString()] = test_utils.assignObjecttoNullObject({id: Number(id)});
-                expected[id.toString()][attribute] = attr_value;
-            }
-        }
-
-        return expected;
-    }
 
     let env;
     before(async () => {
-        await fs.mkdirp(BASE_TEST_PATH);
         global.lmdb_map = undefined;
+        await fs.remove(test_utils.getMockFSPath());
+        await fs.mkdirp(BASE_TEST_PATH);
+
         env = await environment_utility.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
         await environment_utility.createDBI(env, 'id', false, true);
         await environment_utility.createDBI(env, 'temperature', true);
@@ -53,8 +41,8 @@ describe('test between function', ()=> {
 
     after(async () => {
         env.close();
-        await fs.remove(BASE_TEST_PATH);
         global.lmdb_map = undefined;
+        await fs.remove(test_utils.getMockFSPath());
     });
 
     it("test validation", () => {
@@ -340,8 +328,10 @@ describe('test between function', ()=> {
         let env;
         before(async () => {
             date_stub = sandbox.stub(Date, 'now').returns(TIMESTAMP);
-            await fs.mkdirp(BASE_TEST_PATH);
             global.lmdb_map = undefined;
+            await fs.remove(test_utils.getMockFSPath());
+            await fs.mkdirp(BASE_TEST_PATH);
+
             env = await environment_utility.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
             await environment_utility.createDBI(env, 'id', false, true);
 
@@ -351,8 +341,8 @@ describe('test between function', ()=> {
         after(async () => {
             date_stub.restore();
             env.close();
-            await fs.remove(BASE_TEST_PATH);
             global.lmdb_map = undefined;
+            await fs.remove(test_utils.getMockFSPath());
         });
 
         /** HASH ATTRIBUTE **/

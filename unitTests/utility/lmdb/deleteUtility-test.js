@@ -65,8 +65,9 @@ describe('Test deleteUtility', ()=>{
     });
 
     beforeEach(async ()=>{
-        await fs.mkdirp(BASE_TEST_PATH);
         global.lmdb_map = undefined;
+        await fs.remove(test_utils.getMockFSPath());
+        await fs.mkdirp(BASE_TEST_PATH);
         env = await environment_utility.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
         await environment_utility.createDBI(env, HASH_ATTRIBUTE_NAME, false);
         await environment_utility.createDBI(env, '__blob__', false);
@@ -75,8 +76,8 @@ describe('Test deleteUtility', ()=>{
 
     afterEach(async ()=>{
         env.close();
-        await fs.remove(BASE_TEST_PATH);
         global.lmdb_map = undefined;
+        await fs.remove(BASE_TEST_PATH);
     });
 
     describe('Test deleteRecords function', ()=>{

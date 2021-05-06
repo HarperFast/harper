@@ -25,18 +25,20 @@ describe('test cleanLMDBMap module', ()=>{
     let logger_error_stub;
     let close_env_stub;
     beforeEach(async ()=>{
+        global.lmdb_map = undefined;
+        await fs.remove(test_utils.getMockFSPath());
         await fs.mkdirp(DEV_PATH);
         await fs.mkdirp(PROD_PATH);
         await fs.mkdirp(DEV_TXN_PATH);
         await fs.mkdirp(PROD_TXN_PATH);
-        global.lmdb_map = undefined;
+
     });
 
     afterEach(async()=>{
         close_env_stub.resetHistory();
         logger_error_stub.resetHistory();
-        await fs.remove(BASE_TEST_PATH);
-        await fs.remove(BASE_TXN_PATH);
+        global.lmdb_map = undefined;
+        await fs.remove(test_utils.getMockFSPath());
 
     });
 
@@ -45,8 +47,9 @@ describe('test cleanLMDBMap module', ()=>{
         close_env_stub = sandbox.spy(clean_lmdb_map.__get__('environment_utility'), 'closeEnvironment');
     });
 
-    after(()=>{
+    after(async()=>{
         global.lmdb_map = undefined;
+        await fs.remove(test_utils.getMockFSPath());
         sinon.restore();
     });
 
