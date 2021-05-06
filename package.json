@@ -96,18 +96,18 @@
   },
   "devDependencies": {
     "axios": "^0.21.0",
-    "chai": "^4.2.0",
+    "chai": "^4.3.4",
     "eslint": "^5.16.0",
     "minimist": "^1.2.5",
-    "mocha": "^8.2.0",
+    "mocha": "^8.3.2",
     "mocha-teamcity-reporter": "^3.0.0",
     "mock-stdin": "^1.0.0",
     "newman": "^5.1.2",
     "newman-reporter-html": "^1.0.5",
     "newman-reporter-teamcity": "^0.1.11",
-    "nyc": "^15.0.0",
+    "nyc": "^15.1.0",
     "rewire": "^5.0.0",
-    "sinon": "^5.1.1",
+    "sinon": "^10.0.0",
     "sinon-chai": "^3.3.0",
     "mock-require": "^3.0.3"
   }
