@@ -31,12 +31,13 @@ describe('test lmdbCreateTransactionsEnvironment module', ()=>{
     describe('test lmdbCreateTransactionsEnvironment function', ()=>{
         before(async () => {
             global.lmdb_map = undefined;
+            await fs.remove(test_utils.getMockFSPath());
             await fs.mkdirp(BASE_TRANSACTIONS_PATH);
         });
 
         after(async () => {
-            await fs.remove(BASE_PATH);
             global.lmdb_map = undefined;
+            await fs.remove(test_utils.getMockFSPath());
         });
 
         it('test adding a transaction environment', async()=>{
