@@ -37,7 +37,7 @@ function updateSettingsFile_3_1_0() {
 
     const settings_update_msg = 'Updating settings file for version 3.1.0';
     console.log(settings_update_msg);
-    hdb_log.notify(settings_update_msg);
+    hdb_log.info(settings_update_msg);
 
     let new_hdb_settings_vals = `   ;Settings for the HarperDB process.\n` +
         `\n` +
@@ -104,7 +104,7 @@ function updateSettingsFile_3_1_0() {
 
     try {
         //create backup of old settings file
-        hdb_log.notify(`Backing up old settings file to: ${settings_backup_path}`);
+        hdb_log.info(`Backing up old settings file to: ${settings_backup_path}`);
         fs.copySync(settings_path, settings_backup_path);
     } catch(err) {
         hdb_log.error(err);
@@ -113,11 +113,11 @@ function updateSettingsFile_3_1_0() {
     }
 
     try {
-        hdb_log.notify(`New settings file values for 3.1.0 upgrade: ${JSON.stringify(new_hdb_settings_vals)}`);
-        hdb_log.notify(`Creating new/upgraded settings file at '${settings_path}'`);
+        hdb_log.info(`New settings file values for 3.1.0 upgrade: ${JSON.stringify(new_hdb_settings_vals)}`);
+        hdb_log.info(`Creating new/upgraded settings file at '${settings_path}'`);
 
         fs.writeFileSync(settings_path, new_hdb_settings_vals);
-        hdb_log.notify('Updating env variables with new settings values');
+        hdb_log.info('Updating env variables with new settings values');
     } catch(err) {
         //if there was an error writing the new file, we will do our best to reset the original settings file
         console.error('There was a problem writing the new settings file. Please check the log for details.');
