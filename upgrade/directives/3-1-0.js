@@ -6,10 +6,10 @@ const PropertiesReader = require('properties-reader');
 const UpgradeDirective = require('../UpgradeDirective');
 const hdb_log = require('../../utility/logging/harper_logger');
 const common_utils = require('../../utility/common_utils');
-const { HDB_SETTINGS_NAMES, HDB_SETTINGS_DEFAULT_VALUES, HDB_SETTINGS_DEFAULT } = require('../../utility/hdbTerms');
+const { HDB_SETTINGS_NAMES, HDB_SETTINGS_DEFAULT_VALUES } = require('../../utility/hdbTerms');
 const env = require('../../utility/environment/environmentManager');
 
-let directive3_1_0 = new UpgradeDirective('3.0.0');
+let directive3_1_0 = new UpgradeDirective('3.1.0');
 let directives = [];
 
 let old_hdb_props;
@@ -27,6 +27,11 @@ function getOldPropsValue(prop_name, value_required = false) {
     return '';
 }
 
+/**
+ * Removes the logger option from setting as Pino will now be default and only logger.
+ * Adds
+ * @returns {string}
+ */
 function updateSettingsFile_3_1_0() {
     old_hdb_props = PropertiesReader(env.getProperty(HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY));
 
@@ -90,7 +95,7 @@ function updateSettingsFile_3_1_0() {
         `   ;Defines the length of time a refresh token will be valid until it expires. Example values: https://github.com/vercel/ms  \n` +
         `${HDB_SETTINGS_NAMES.REFRESH_TOKEN_TIMEOUT_KEY} = ${getOldPropsValue(HDB_SETTINGS_NAMES.REFRESH_TOKEN_TIMEOUT_KEY, true)}\n` +
         `   ;The port the IPC server will run on.\n` +
-        `${HDB_SETTINGS_NAMES.IPC_SERVER_PORT} = ${HDB_SETTINGS_DEFAULT.IPC_SERVER_PORT}\n`
+        `${HDB_SETTINGS_NAMES.IPC_SERVER_PORT} = ${HDB_SETTINGS_DEFAULT_VALUES.IPC_SERVER_PORT}\n`
     ;
 
     const settings_path = env.get('settings_path');
