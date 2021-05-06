@@ -1,8 +1,5 @@
 'use strict';
 
-const SegfaultHandler = require('segfault-handler');
-SegfaultHandler.registerHandler('crash.log');
-
 const test_utils = require('../../test_utils');
 const sinon = require('sinon');
 const chai = require('chai');
@@ -485,95 +482,6 @@ describe('Test harper_logger module', () => {
             }
         }).timeout(11000);
 
- /*       // This test relies on the one above to create logger.
-        it('Test writeLog with daily rotate next day log created', (done) => {
-            let fake_timer = undefined;
-            try {
-                console.log('## test called');
-
-                let tomorrows_date = moment().utc().add(1, 'days');
-                fake_timer = sandbox.useFakeTimers({now: new Date(tomorrows_date.format('YYYY,MM,DD'))});
-                harper_logger_rw.writeLog('fatal', 'Test a new date log is created');
-                const first_expected_log_path = path.join(TEST_LOG_DIR, `${tomorrows_date.format('YYYY-MM-DD')}_${LOG_NAME_TEST}`);
-                testWriteLogBulkWrite();
-                fake_timer.restore();
-                let second_expected_log_path;
-
-                console.log('## before first timeout');
-
-                setTimeout(() => {
-                    try {
-                        console.log('## first call first timeout');
-                        console.log('## ' + first_expected_log_path);
-                        const first_file_exists = fs_extra.pathExistsSync(first_expected_log_path);
-                        console.log('## path exists response ' + first_file_exists);
-                        console.log('## after first path exists');
-                        expect(first_file_exists).to.equal(true, `first log file not found at ${first_expected_log_path}`);
-                        console.log('## before write logs');
-                        testWriteLogBulkTests(first_expected_log_path);
-                        fake_timer.restore();
-
-                        console.log('## last call first timeout');
-                        done();
-                    } catch(err) {
-                        if (fake_timer) fake_timer.restore();
-                        console.error(err);
-                        done(err);
-                    }
-                }, 5000);
-
-
-/!*                //The log buffer gets flushed every 5 seconds so we wait for the flush to happen before reading.
-                setTimeout(() => {
-                    try {
-                        console.log('## first call first timeout');
-                        console.log('## ' + first_expected_log_path);
-                        const first_file_exists = fs_extra.pathExistsSync(first_expected_log_path);
-                        console.log('## path exists response ' + first_file_exists);
-                        console.log('## after first path exists');
-                        expect(first_file_exists).to.equal(true, `first log file not found at ${first_expected_log_path}`);
-                        console.log('## before write logs');
-                        testWriteLogBulkTests(first_expected_log_path);
-                        tomorrows_date = moment().utc().add(2, 'days');
-                        fake_timer = sandbox.useFakeTimers({now: new Date(tomorrows_date.format('YYYY,MM,DD'))});
-                        console.log('## before write log');
-                        harper_logger_rw.writeLog('fatal', 'Test a new NEW date log is created');
-                        second_expected_log_path = path.join(TEST_LOG_DIR, `${tomorrows_date.format('YYYY-MM-DD')}_${LOG_NAME_TEST}`);
-                        console.log('## before path exists');
-                        const second_file_exists = fs_extra.pathExistsSync(second_expected_log_path);
-                        expect(second_file_exists).to.equal(true, `second log file not found at ${second_expected_log_path}`);
-                        fake_timer.restore();
-                        testWriteLogBulkWrite();
-
-                        console.log('## last call first timeout');
-
-                        setTimeout(() => {
-                            try {
-                                console.log('## first call second timeout');
-                                testWriteLogBulkTests(second_expected_log_path);
-
-                                console.log('before done');
-                                done();
-                            } catch(err) {
-                                if (fake_timer) fake_timer.restore();
-                                console.error(err);
-                                done();
-                            }
-                        }, 5000);
-                    } catch(err) {
-                        if (fake_timer) fake_timer.restore();
-                        console.error(err);
-                        done();
-                    }
-
-                }, 5000);*!/
-            } catch(err) {
-                if (fake_timer) fake_timer.restore();
-                console.error(err);
-                done(err);
-            }
-        }).timeout(110000);
-*/
         it('Test writeLog removes old log with daily max set', () => {
             let date_stub = undefined;
             try {
