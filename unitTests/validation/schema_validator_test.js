@@ -153,7 +153,7 @@ describe(`Test schema validators `, function () {
             const test_obj = test_table_obj();
             delete test_obj.hash_attribute
             const test_result = schema_validator.create_table_object(test_obj);
-            assert.equal(test_result.message, "Hash attribute  is required", "Create table object validation should error msg when no hash attribute value is included");
+            assert.equal(test_result.message, "Hash attribute is required", "Create table object validation should error msg when no hash attribute value is included");
         });
     });
 

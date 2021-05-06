@@ -153,9 +153,12 @@ const ROLE_PERMS_ERROR_MSGS = {
 
 const SCHEMA_OP_ERROR_MSGS = {
     ATTR_NOT_FOUND: (schema, table, attr) => `Attribute '${attr}' does not exist on '${schema}.${table}'`,
+    ATTR_EXISTS_ERR: (schema, table, attr) => `Attribute '${attr}' already exists in ${schema}.${table}'`,
     DESCRIBE_ALL_ERR: "There was an error during describeAll.  Please check the logs and try again.",
     INVALID_TABLE_ERR: (table_result) => `Invalid table ${JSON.stringify(table_result)}`,
     SCHEMA_NOT_FOUND: (schema) => `Schema '${schema}' does not exist`,
+    SCHEMA_EXISTS_ERR: (schema) => `Schema '${schema}' already exists`,
+    TABLE_EXISTS_ERR: (schema, table) => `Table '${table}' already exists in schema '${schema}'`,
     SCHEMA_REQUIRED_ERR: "schema is required",
     TABLE_NOT_FOUND: (schema, table) => `Table '${schema}.${table}' does not exist`,
     TABLE_REQUIRED_ERR: "table is required"
