@@ -66,6 +66,9 @@ const TRANSACTIONS_DIR_NAME = 'transactions';
 const LIMIT_COUNT_NAME = '.count';
 const ID_ATTRIBUTE_STRING = 'id';
 
+const INSTALL_LOG = 'install_log.log';
+const RUN_LOG = 'run_log.log';
+
 const CLUSTERING_PAYLOAD_FILE_NAME = '.scPayload.json';
 
 const CLUSTERING_FOLDER_NAMES_ENUM = {
@@ -600,5 +603,7 @@ module.exports = {
     FUNC_VAL,
     READ_TRANSACTION_LOG_SEARCH_TYPES_ENUM,
     JWT_ENUM,
-    CLUSTERING_FLAG
+    CLUSTERING_FLAG,
+    RUN_LOG,
+    INSTALL_LOG
 };
