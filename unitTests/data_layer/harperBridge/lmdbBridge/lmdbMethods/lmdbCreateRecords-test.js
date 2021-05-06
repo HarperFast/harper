@@ -196,9 +196,9 @@ describe('Test lmdbCreateRecords module', ()=>{
                 },
                 system: systemSchema};
 
-            await fs.mkdirp(SYSTEM_SCHEMA_PATH);
-
             global.lmdb_map = undefined;
+            await fs.remove(test_utils.getMockFSPath());
+            await fs.mkdirp(SYSTEM_SCHEMA_PATH);
 
             hdb_schema_env = await environment_utility.createEnvironment(SYSTEM_SCHEMA_PATH, systemSchema.hdb_schema.name);
             environment_utility.createDBI(hdb_schema_env, systemSchema.hdb_schema.hash_attribute, false);
@@ -227,8 +227,9 @@ describe('Test lmdbCreateRecords module', ()=>{
             hdb_table_env.close();
             hdb_schema_env.close();
             hdb_attribute_env.close();
-            await fs.remove(BASE_PATH);
+
             global.lmdb_map = undefined;
+            await fs.remove(test_utils.getMockFSPath());
             delete global.hdb_schema;
             m_time_stub.restore();
         });

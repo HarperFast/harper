@@ -30,25 +30,13 @@ const MULTI_RECORD_ARRAY2 = [
 ];
 
 describe('test contains function', ()=> {
-    function createExpected(attribute, value){
-        let expected = Object.create(null);
-
-        for(let x = 0; x < MULTI_RECORD_ARRAY2.length; x++){
-            let attr_value = isNaN(MULTI_RECORD_ARRAY2[x][attribute]) ? MULTI_RECORD_ARRAY2[x][attribute] : Number(MULTI_RECORD_ARRAY2[x][attribute]);
-            if(attr_value && attr_value.toString().indexOf(value) >= 0){
-                let id = MULTI_RECORD_ARRAY2[x].id;
-                expected[id.toString()] = test_utils.assignObjecttoNullObject({id: Number(id)});
-                expected[id.toString()][attribute] = attr_value;
-            }
-        }
-
-        return expected;
-    }
 
     let env;
     before(async () => {
-        await fs.mkdirp(BASE_TEST_PATH);
         global.lmdb_map = undefined;
+        await fs.remove(test_utils.getMockFSPath());
+        await fs.mkdirp(BASE_TEST_PATH);
+
         env = await environment_utility.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
         await environment_utility.createDBI(env, 'id', false, true);
         await write_utility.insertRecords(env, HASH_ATTRIBUTE_NAME, test_utils.deepClone(All_ATTRIBUTES), MULTI_RECORD_ARRAY2);
@@ -56,8 +44,8 @@ describe('test contains function', ()=> {
 
     after(async () => {
         env.close();
-        await fs.remove(BASE_TEST_PATH);
         global.lmdb_map = undefined;
+        await fs.remove(test_utils.getMockFSPath());
     });
 
     it("test validation", () => {
@@ -116,8 +104,10 @@ describe('test contains function reverse limit offset', ()=> {
     let date_stub;
     before(async () => {
         date_stub = sandbox.stub(Date, 'now').returns(TIMESTAMP);
-        await fs.mkdirp(BASE_TEST_PATH);
         global.lmdb_map = undefined;
+        await fs.remove(test_utils.getMockFSPath());
+        await fs.mkdirp(BASE_TEST_PATH);
+
         env = await environment_utility.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
         await environment_utility.createDBI(env, 'id', false, true);
         await write_utility.insertRecords(env, HASH_ATTRIBUTE_NAME, test_utils.deepClone(PERSON_ATTRIBUTES), test_utils.deepClone(test_data));
@@ -126,8 +116,8 @@ describe('test contains function reverse limit offset', ()=> {
     after(async () => {
         date_stub.restore();
         env.close();
-        await fs.remove(BASE_TEST_PATH);
         global.lmdb_map = undefined;
+        await fs.remove(test_utils.getMockFSPath());
     });
 
     it("test search on id limit 20", () => {
