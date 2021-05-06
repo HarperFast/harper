@@ -172,6 +172,10 @@ describe('Test harper_logger module', () => {
             fs_extra.emptyDirSync(TEST_LOG_DIR);
         });
 
+        afterEach(() => {
+            mock_require.stopAll();
+        });
+
         it('Test log is create with file name provided and contains logs', (done) => {
             try {
                 setMockPropParams(false, 2, LOG_LEVEL.TRACE, LOG_PATH_TEST, HDB_ROOT_TEST);
@@ -382,6 +386,10 @@ describe('Test harper_logger module', () => {
             fs_extra.emptyDirSync(LOG_PATH_TEST);
         });
 
+        afterEach(() => {
+            mock_require.stopAll();
+        });
+
         it('Test writeLog writes to log as expected happy path', (done) => {
             try {
                 setMockPropParams(false, 2, LOG_LEVEL.TRACE, LOG_PATH_TEST, HDB_ROOT_TEST);
@@ -517,6 +525,10 @@ describe('Test harper_logger module', () => {
             fs_extra.emptyDirSync(TEST_LOG_DIR);
         });
 
+        afterEach(() => {
+            mock_require.stopAll();
+        });
+
         it('Test final logger instance is returned', () => {
             setMockPropParams(false, 2, LOG_LEVEL.TRACE, LOG_PATH_TEST, HDB_ROOT_TEST);
             harper_logger_rw = requireUncached('../../../utility/logging/harper_logger');
@@ -537,6 +549,10 @@ describe('Test harper_logger module', () => {
     describe('Test removeOldLogs function', () => {
         after(() => {
             fs_extra.emptyDirSync(TEST_LOG_DIR);
+        });
+
+        afterEach(() => {
+            mock_require.stopAll();
         });
         
         it('Test old log is removed happy path', () => {
