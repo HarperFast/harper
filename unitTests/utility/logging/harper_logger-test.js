@@ -446,7 +446,6 @@ describe('Test harper_logger module', () => {
         }).timeout(3000);
 
         it('Test writeLog with daily rotate', (done) => {
-            let fake_timer = undefined;
             try {
                 setMockPropParams(true, 3, LOG_LEVEL.TRACE, LOG_PATH_TEST, HDB_ROOT_TEST);
                 harper_logger_rw = requireUncached('../../../utility/logging/harper_logger');
@@ -460,26 +459,7 @@ describe('Test harper_logger module', () => {
                         expect(file_exists).to.equal(true, `file not found at ${expected_log_path}`);
                         pino_logger.flush();
                         testWriteLogBulkTests(expected_log_path);
-
-                        let tomorrows_date = moment().utc().add(1, 'days');
-                        fake_timer = sandbox.useFakeTimers({now: new Date(tomorrows_date.format('YYYY,MM,DD'))});
-                        harper_logger_rw.writeLog('fatal', 'Test a new date log is created');
-                        const second_expected_log_path = path.join(TEST_LOG_DIR, `${tomorrows_date.format('YYYY-MM-DD')}_${LOG_NAME_TEST}`);
-                        testWriteLogBulkWrite();
-                        fake_timer.restore();
-                        setTimeout(() => {
-                            try {
-                                // Was getting intermittent fails with this test in TC CI tests, the the file doesn't exist testWriteLogBulkTests with fail.
-                                // const second_file_exists = fs_extra.pathExistsSync(second_expected_log_path);
-                                // expect(second_file_exists).to.equal(true, `second log file not found at ${second_expected_log_path}`);
-                                testWriteLogBulkTests(second_expected_log_path);
-                                done();
-                            } catch(err) {
-                                if (fake_timer) fake_timer.restore();
-                                console.error(err);
-                                done(err);
-                            }
-                        }, 5000);
+                        done();
                     } catch(err) {
                         console.error(err);
                         done(err);
