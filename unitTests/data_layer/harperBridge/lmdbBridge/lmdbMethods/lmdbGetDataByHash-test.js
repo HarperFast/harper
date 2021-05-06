@@ -119,9 +119,9 @@ describe('Test lmdbGetDataByHash module', ()=>{
                 },
                 system: systemSchema};
 
-            await fs.mkdirp(SYSTEM_SCHEMA_PATH);
-
             global.lmdb_map = undefined;
+            await fs.remove(test_utils.getMockFSPath());
+            await fs.mkdirp(SYSTEM_SCHEMA_PATH);
 
             hdb_schema_env = await environment_utility.createEnvironment(SYSTEM_SCHEMA_PATH, systemSchema.hdb_schema.name);
             environment_utility.createDBI(hdb_schema_env, systemSchema.hdb_schema.hash_attribute, false);
@@ -150,9 +150,10 @@ describe('Test lmdbGetDataByHash module', ()=>{
             hdb_schema_env.close();
             hdb_table_env.close();
             hdb_attribute_env.close();
-            await fs.remove(BASE_PATH);
+
             global.lmdb_map = undefined;
             delete global.hdb_schema;
+            await fs.remove(test_utils.getMockFSPath());
         });
 
         it('test validation', async()=>{

@@ -24,8 +24,10 @@ describe('test greaterThan function', ()=> {
     let env;
 
     before(async () => {
-        await fs.mkdirp(BASE_TEST_PATH);
         global.lmdb_map = undefined;
+        await fs.remove(test_utils.getMockFSPath());
+        await fs.mkdirp(BASE_TEST_PATH);
+
         env = await environment_utility.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
         await environment_utility.createDBI(env, 'id', false, true);
         await environment_utility.createDBI(env, 'temperature', true);
@@ -38,8 +40,9 @@ describe('test greaterThan function', ()=> {
 
     after(async () => {
         env.close();
-        await fs.remove(BASE_TEST_PATH);
+
         global.lmdb_map = undefined;
+        await fs.remove(test_utils.getMockFSPath());
     });
 
     it("test validation", () => {
@@ -266,8 +269,10 @@ describe('test greaterThan function rreverse limit offset', ()=> {
     let date_stub;
     before(async () => {
         date_stub = sandbox.stub(Date, 'now').returns(TIMESTAMP);
-        await fs.mkdirp(BASE_TEST_PATH);
         global.lmdb_map = undefined;
+        await fs.remove(test_utils.getMockFSPath());
+        await fs.mkdirp(BASE_TEST_PATH);
+
         env = await environment_utility.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
         await environment_utility.createDBI(env, 'id', false, true);
         await write_utility.insertRecords(env, HASH_ATTRIBUTE_NAME, test_utils.deepClone(PERSON_ATTRIBUTES), test_utils.deepClone(test_data));
@@ -276,8 +281,8 @@ describe('test greaterThan function rreverse limit offset', ()=> {
     after(async () => {
         date_stub.restore();
         env.close();
-        await fs.remove(BASE_TEST_PATH);
         global.lmdb_map = undefined;
+        await fs.remove(test_utils.getMockFSPath());
     });
 
     /** TEST HASH ATTRIBUTE **/

@@ -158,13 +158,15 @@ describe('test lmdbWriteTransaction module', ()=>{
     });
 
     describe('test createTransactionObject function', ()=>{
-        before(() => {
+        before(async () => {
             global.lmdb_map = undefined;
+            await fs.remove(test_utils.getMockFSPath());
         });
 
         after(async () => {
-            await fs.remove(BASE_PATH);
+
             global.lmdb_map = undefined;
+            await fs.remove(test_utils.getMockFSPath());
         });
 
         it('test for insert operation no user on operation', async()=>{
