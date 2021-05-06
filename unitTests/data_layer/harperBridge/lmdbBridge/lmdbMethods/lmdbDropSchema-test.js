@@ -89,7 +89,7 @@ describe('test validateDropSchema module', ()=>{
     let date_stub;
 
     before(async ()=>{
-        await fs.remove(BASE_PATH);
+        await fs.remove(test_utils.getMockFSPath());
         date_stub = sandbox.stub(Date, 'now').returns(TIMESTAMP);
     });
 
@@ -102,9 +102,10 @@ describe('test validateDropSchema module', ()=>{
         let hdb_table_env;
         let hdb_attribute_env;
         before(async () => {
+            global.lmdb_map = undefined;
+            await fs.remove(test_utils.getMockFSPath());
             await fs.mkdirp(SYSTEM_SCHEMA_PATH);
             await fs.mkdirp(DEV_SCHEMA_PATH);
-            global.lmdb_map = undefined;
 
             global.hdb_schema = {
                 dev: {
@@ -184,8 +185,8 @@ describe('test validateDropSchema module', ()=>{
             hdb_schema_env.close();
             hdb_table_env.close();
 
-            await fs.remove(BASE_PATH);
             global.lmdb_map = undefined;
+            await fs.remove(test_utils.getMockFSPath());
         });
 
         it('test validate invalid schema', async()=>{

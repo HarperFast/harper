@@ -87,7 +87,7 @@ describe('Tests for file system module fsCreateAttribute', () => {
         });
 
         it('Test that validation catches and throws from invalid object', async () => {
-            let test_err_result = await test_utils.testError(fsCreateAttribute({schema: "TestSchema", table: "TestTable"}), 'Attribute  is required');
+            let test_err_result = await test_utils.testError(fsCreateAttribute({schema: "TestSchema", table: "TestTable"}), 'Attribute is required');
 
             expect(test_err_result).to.be.true;
         });

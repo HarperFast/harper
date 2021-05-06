@@ -2,6 +2,7 @@
 
 const environment_utility = require('./environmentUtility');
 const harper_logger = require('../logging/harper_logger');
+const LMDB_ERRORS = require('../errors/commonErrors').LMDB_ERRORS_ENUM;
 
 module.exports = cleanLMDBMap;
 
@@ -20,8 +21,13 @@ function cleanLMDBMap(msg){
                     for(let x = 0; x < keys.length; x ++){
                         let key = keys[x];
                         if(key.startsWith(`${msg.operation.schema}.`) || key.startsWith(`txn.${msg.operation.schema}.`)){
-                            environment_utility.closeEnvironment(global.lmdb_map[key]);
-                            delete global.lmdb_map[key];
+                            try {
+                                environment_utility.closeEnvironment(global.lmdb_map[key]);
+                            } catch(err) {
+                                if (err.message !== LMDB_ERRORS.ENV_REQUIRED) {
+                                    throw err;
+                                }
+                            }
                         }
                     }
                     break;
@@ -30,10 +36,14 @@ function cleanLMDBMap(msg){
                     let schema_table_name = `${msg.operation.schema}.${msg.operation.table}`;
                     // eslint-disable-next-line no-case-declarations
                     let txn_schema_table_name = `txn.${schema_table_name}`;
-                    environment_utility.closeEnvironment(global.lmdb_map[schema_table_name]);
-                    environment_utility.closeEnvironment(global.lmdb_map[txn_schema_table_name]);
-                    delete global.lmdb_map[schema_table_name];
-                    delete global.lmdb_map[txn_schema_table_name];
+                    try {
+                        environment_utility.closeEnvironment(global.lmdb_map[schema_table_name]);
+                        environment_utility.closeEnvironment(global.lmdb_map[txn_schema_table_name]);
+                    } catch(err) {
+                        if (err.message !== LMDB_ERRORS.ENV_REQUIRED) {
+                            throw err;
+                        }
+                    }
                     break;
                 case 'drop_attribute':
                     cached_environment = global.lmdb_map[`${msg.operation.schema}.${msg.operation.table}`];
