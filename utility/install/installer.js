@@ -24,6 +24,7 @@ const hdb_terms = require('../hdbTerms');
 const hdbInfoController = require('../../data_layer/hdbInfoController');
 const version = require('../../bin/version');
 // Slice is used here because it ensures on an npm global install the log is created in the correct folder - harperdb.
+// The slice will remove 'utility/install' from the __dirname string making the log location the harperdb dir.
 const LOG_LOCATION = path.join( __dirname.slice(0, -15), 'install_log.log');
 const check_jwt_tokens = require('./checkJWTTokensExist');
 
