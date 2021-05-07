@@ -23,7 +23,8 @@ const comm = require('../common_utils');
 const hdb_terms = require('../hdbTerms');
 const hdbInfoController = require('../../data_layer/hdbInfoController');
 const version = require('../../bin/version');
-const LOG_LOCATION = ('../install_log.log');
+// Location of the install log - the harperdb dir.
+const LOG_LOCATION = path.resolve( __dirname, `../../${hdb_terms.INSTALL_LOG}`);
 const check_jwt_tokens = require('./checkJWTTokensExist');
 
 module.exports = {
