@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+console.log('begin');
+
 'use strict';
 console.log('require run');
 const run = require('./run');
