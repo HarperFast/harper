@@ -86,7 +86,8 @@ if (log_level === undefined || log_level === 0 || log_level === null) {
 }
 
 if (log_path === undefined || log_path === null) {
-    log_location = '../run_log.log';
+    // Location of the run log - the harperdb dir.
+    log_location = path.resolve(__dirname, `../../${terms.RUN_LOG}`);
 }
 
 module.exports = {
