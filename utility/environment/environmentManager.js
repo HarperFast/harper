@@ -401,6 +401,7 @@ function initTestEnvironment(test_config_obj = {}) {
         setProperty(hdb_terms.HDB_SETTINGS_NAMES.HTTP_SECURE_ENABLED_KEY, common_utils.isEmpty(https_enabled) ? true : https_enabled);
         setProperty(hdb_terms.HDB_SETTINGS_NAMES.SERVER_PORT_KEY, 9925);
         setProperty(hdb_terms.HDB_SETTINGS_NAMES.CORS_ENABLED_KEY, common_utils.isEmpty(cors_enabled) ? false : cors_enabled);
+        setProperty(hdb_terms.HDB_SETTINGS_NAMES.IPC_SERVER_PORT, 9383);
         if (cors_whitelist) {
             setProperty(hdb_terms.HDB_SETTINGS_NAMES.CORS_WHITELIST_KEY, cors_whitelist);
         }
