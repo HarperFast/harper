@@ -181,6 +181,13 @@ const VALIDATION_ERROR_MSGS = {
     SEARCH_CONDITIONS_INVALID_SORT_ATTRIBUTE: (attribute) => `invalid sort attribute '${attribute}', the attribute must either be the table's hash attribute or an attribute used in conditions.`
 };
 
+const IPC_ERRORS = {
+    INVALID_IPC_DATA_TYPE: 'Invalid IPC message data type, must be an object',
+    MISSING_TYPE: "IPC message missing 'type' property",
+    MISSING_MSG: "IPC message missing 'message' property",
+    INVALID_EVENT: (event) => `IPC server received invalid event type: ${event}`
+};
+
 //into a single export while still allowing us to group them here in a more readable/searchable way
 const HDB_ERROR_MSGS = {
     ...AUTHENTICATION_ERROR_MSGS,
@@ -192,7 +199,8 @@ const HDB_ERROR_MSGS = {
     ...SQL_ERROR_MSGS,
     ...USER_ERROR_MSGS,
     ...WRITE_OPS_ERROR_MSGS,
-    ...VALIDATION_ERROR_MSGS
+    ...VALIDATION_ERROR_MSGS,
+    ...IPC_ERRORS
 };
 
 // All error messages should be added to the HDB_ERROR_MSGS ENUM for export - this helps to organize all error messages
@@ -204,5 +212,6 @@ module.exports = {
     HTTP_STATUS_CODES,
     LMDB_ERRORS_ENUM,
     AUTHENTICATION_ERROR_MSGS,
-    VALIDATION_ERROR_MSGS
+    VALIDATION_ERROR_MSGS,
+    IPC_ERRORS
 };

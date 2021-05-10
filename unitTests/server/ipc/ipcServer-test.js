@@ -55,7 +55,7 @@ describe('Test ipcServer module', () => {
     it('Test invalid IPC msg type is logged', () => {
         const data_test = 'create schema';
         message_listener_rw(data_test);
-        expect(log_warn_stub).to.have.been.calledWith('Invalid IPC message type, must be an object');
+        expect(log_warn_stub).to.have.been.calledWith('Invalid IPC message data type, must be an object');
     });
 
     it('Test missing type is logged', () => {

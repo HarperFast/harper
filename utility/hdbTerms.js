@@ -508,6 +508,7 @@ const JWT_ENUM = {
 };
 
 const HDB_IPC_SERVER = 'hdb_ipc_server';
+const HDB_IPC_CLIENT_PREFIX = 'hdb_ipc_client_';
 const IPC_EVENT_TYPES = {
     CREATE_SCHEMA: 'create_schema',
     CREATE_TABLE: 'create_table',
@@ -625,5 +626,6 @@ module.exports = {
     RUN_LOG,
     INSTALL_LOG,
     HDB_IPC_SERVER,
-    IPC_EVENT_TYPES
+    IPC_EVENT_TYPES,
+    HDB_IPC_CLIENT_PREFIX
 };
