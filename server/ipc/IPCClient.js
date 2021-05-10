@@ -60,17 +60,17 @@ class IPCClient {
     emitToServer(data) {
         if (typeof data !== 'object') {
             hdb_logger.warn(IPC_ERRORS.INVALID_IPC_DATA_TYPE);
-            throw IPC_ERRORS.INVALID_IPC_DATA_TYPE;
+            throw new Error(IPC_ERRORS.INVALID_IPC_DATA_TYPE);
         }
 
         if (hdb_utils.isEmpty(data.type)) {
             hdb_logger.warn(IPC_ERRORS.MISSING_TYPE);
-            throw IPC_ERRORS.MISSING_TYPE;
+            throw new Error(IPC_ERRORS.MISSING_TYPE);
         }
 
         if (hdb_utils.isEmpty(data.message)) {
             hdb_logger.warn(IPC_ERRORS.MISSING_MSG);
-            throw IPC_ERRORS.MISSING_MSG;
+            throw new Error(IPC_ERRORS.MISSING_MSG);
         }
 
         const event_type = data.type;
@@ -80,7 +80,7 @@ class IPCClient {
             this.ipc.of[this.server_name].emit('message', data);
         } else {
             hdb_logger.warn(IPC_ERRORS.INVALID_EVENT(event_type));
-            throw IPC_ERRORS.INVALID_EVENT(event_type);
+            throw new Error(IPC_ERRORS.INVALID_EVENT(event_type));
         }
     }
 }
