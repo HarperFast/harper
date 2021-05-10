@@ -55,7 +55,7 @@ async function upgrade(upgrade_obj) {
         }
     }
 
-    printToLogAndConsole(`This version of HarperDB is ${version.version()}`);
+    printToLogAndConsole(`This version of HarperDB is ${version.version()}`, log.INFO);
 
     //The upgrade version should always be included in the hdb_upgrade_info object returned from the getVersion function
     // above but testing for it and using the version from package.json just in case it is not
@@ -126,7 +126,7 @@ async function runUpgrade(upgrade_obj) {
     try {
         await directivesManager.processDirectives(upgrade_obj);
     } catch(err) {
-        printToLogAndConsole('There was an error during the data upgrade.  Please check the logs.', log.error);
+        printToLogAndConsole('There was an error during the data upgrade.  Please check the logs.', log.ERR);
         throw(err);
     }
 
@@ -138,7 +138,7 @@ async function runUpgrade(upgrade_obj) {
     }
 }
 
-function printToLogAndConsole(msg, log_level) {
+function printToLogAndConsole(msg, log_level = undefined) {
     if(!log_level) {
         log_level = log.info;
     }
