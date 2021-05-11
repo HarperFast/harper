@@ -23,8 +23,6 @@ const EMPTY_STRING = '';
 const FILE_EXTENSION_LENGTH = 4;
 const CHARACTER_LIMIT = 255;
 
-const HDB_PROC_NAME = terms.HDB_PROC_NAME;
-
 //Because undefined will not return in a JSON response, we convert undefined to null when autocasting
 const AUTOCAST_COMMON_STRINGS = {
     'true': true,
@@ -52,7 +50,7 @@ module.exports = {
     valueConverter: valueConverter,
     timeoutPromise: timeoutPromise,
     callProcessSend: callProcessSend,
-    isHarperRunning: isHarperRunning,
+    isServerRunning: isServerRunning,
     isClusterOperation: isClusterOperation,
     getClusterUser: getClusterUser,
     sendTransactionToSocketCluster,
@@ -471,14 +469,14 @@ function callProcessSend(process_msg) {
 }
 
 /**
- * Uses module ps_list to check if hdb process is running
- *
+ * Checks all running processes to see if any match the name provided.
+ * @param process_name
  * @returns {Promise<boolean>}
  */
-async function isHarperRunning(){
+async function isServerRunning(process_name){
     try {
         let hdb_running = false;
-        const list = await ps_list.findPs(HDB_PROC_NAME);
+        const list = await ps_list.findPs(process_name);
 
         if(!isEmptyOrZeroLength(list)) {
             hdb_running = true;

@@ -13,7 +13,7 @@ const final_logger = logger.finalLogger();
 const pjson = require(`${__dirname}/../package.json`);
 const terms = require('../utility/hdbTerms');
 const install_user_permission = require('../utility/install_user_permission');
-const { isHarperRunning } = require('../utility/common_utils');
+const { isServerRunning } = require('../utility/common_utils');
 const { promisify } = require('util');
 const stop = require('./stop');
 const upgrade = require('./upgrade');
@@ -47,7 +47,7 @@ let child = undefined;
 async function run() {
     let hdb_running = undefined;
     try {
-        hdb_running = await isHarperRunning();
+        hdb_running = await isServerRunning(terms.HDB_PROC_NAME);
     } catch(err) {
         console.log(err);
         final_logger.error(err);
@@ -354,4 +354,10 @@ async function isHdbInstalled() {
         }
     }
     return true;
+}
+
+function launchIPCServer() {
+    await isServerRunning()
+
+
 }

@@ -761,7 +761,7 @@ describe('Test isObject', () => {
 // TODO: Commented this out for now due to it breaking tests on the CI server.  Will revisit later.
 // https://harperdb.atlassian.net/browse/CORE-273
 /*
-describe('Test isHarperRunning', () => {
+describe('Test isServerRunning', () => {
     let child;
 
     // on run of harperdb, if hdb is not running it will output 2 data events. First for the dog, second for the successfully started
@@ -787,7 +787,7 @@ describe('Test isHarperRunning', () => {
 
     it('Should return true - HDB is running', (done)=>{
         child.on('close', () => {
-            let result = cu.isHarperRunning();
+            let result = cu.isServerRunning();
             result.then((running)=>{
                 expect(running).to.be.true
                 done();
@@ -805,7 +805,7 @@ describe('Test isHarperRunning', () => {
 
     it('Should return false - HDB is not running', (done)=>{
         child.on('exit', () => {
-            let result = cu.isHarperRunning();
+            let result = cu.isServerRunning();
             result.then((running) => {
                 expect(running).to.be.false;
                 done();
