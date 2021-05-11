@@ -74,7 +74,7 @@ class IPCClient {
         }
 
         const event_type = data.type;
-        hdb_logger.info(`IPC client ${this.ipc.config.id} emitting ${JSON.stringify(data)}`);
+        hdb_logger.trace(`IPC client ${this.ipc.config.id} emitting ${JSON.stringify(data)}`);
 
         if (hdb_terms.IPC_EVENT_TYPES[event_type.toUpperCase()]) {
             this.ipc.of[this.server_name].emit('message', data);

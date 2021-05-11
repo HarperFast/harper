@@ -18,10 +18,10 @@ describe('Test IPCClient class', () => {
 
     let client_test;
     let log_warn_stub;
-    let log_info_stub;
+    let log_trace_stub;
 
     before(() => {
-        log_info_stub = sandbox.stub(harper_logger, 'info');
+        log_trace_stub = sandbox.stub(harper_logger, 'trace');
         log_warn_stub = sandbox.stub(harper_logger, 'warn');
     });
 
@@ -52,7 +52,7 @@ describe('Test IPCClient class', () => {
         }
 
         expect(error).to.be.undefined;
-        expect(log_info_stub).to.have.been.calledWith('IPC client hdb_ipc_client_123 emitting {"type":"create_schema","message":"dog"}');
+        expect(log_trace_stub).to.have.been.calledWith('IPC client hdb_ipc_client_123 emitting {"type":"create_schema","message":"dog"}');
     });
 
     it('Test invalid IPC msg type is logged and thrown', () => {
