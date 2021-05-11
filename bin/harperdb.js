@@ -1,26 +1,15 @@
 #!/usr/bin/env node
-console.log('begin');
-
 'use strict';
-console.log('require run');
 const run = require('./run');
-console.log('require install');
 const install = require('./install');
-console.log('require stop');
 const stop = require('./stop');
-console.log('require version');
+
 const version = require('./version');
-console.log('require upgrade');
 const upgrade = require('./upgrade');
-console.log('require fs');
 const fs = require('fs');
-console.log('require logger');
 const logger = require('../utility/logging/harper_logger');
-console.log('require hdbTerms');
 const hdb_terms = require('../utility/hdbTerms');
-console.log('require path');
 const path = require('path');
-console.log('require os');
 const os = require('os');
 
 harperDBService();
@@ -45,7 +34,6 @@ function checkCallingUserSync() {
 }
 
 function harperDBService() {
-    console.log('in harperDBService');
     let service;
 
     fs.readdir(__dirname, (err, files) => {
@@ -70,7 +58,6 @@ function harperDBService() {
         let result = undefined;
         switch (service) {
             case hdb_terms.SERVICE_ACTIONS_ENUM.RUN:
-                console.log('call run');
                 result = run.run();
                 break;
             case hdb_terms.SERVICE_ACTIONS_ENUM.INSTALL:
