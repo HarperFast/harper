@@ -470,22 +470,18 @@ function callProcessSend(process_msg) {
 
 /**
  * Checks all running processes to see if any match the name provided.
- * @param process_name
+ * @param module_name
  * @returns {Promise<boolean>}
  */
-async function isServerRunning(process_name){
-    try {
-        let hdb_running = false;
-        const list = await ps_list.findPs(process_name);
+async function isServerRunning(module_name){
+    let hdb_running = false;
+    const list = await ps_list.findPs(module_name);
 
-        if(!isEmptyOrZeroLength(list)) {
-            hdb_running = true;
-        }
-
-        return hdb_running;
-    } catch(err) {
-        throw err;
+    if(!isEmptyOrZeroLength(list)) {
+        hdb_running = true;
     }
+
+    return hdb_running;
 }
 
 /**

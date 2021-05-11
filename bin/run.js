@@ -6,12 +6,14 @@ env.initSync();
 const fs = require('fs-extra');
 const path = require('path');
 const net = require('net');
+const os = require('os');
 const install = require('../utility/install/installer');
 const colors = require("colors/safe");
 const logger = require('../utility/logging/harper_logger');
 const final_logger = logger.finalLogger();
 const pjson = require(`${__dirname}/../package.json`);
 const terms = require('../utility/hdbTerms');
+const ps_list = require('../utility/psList');
 const install_user_permission = require('../utility/install_user_permission');
 const { isServerRunning } = require('../utility/common_utils');
 const { promisify } = require('util');
@@ -359,8 +361,26 @@ async function isHdbInstalled() {
 }
 
 async function launchIPCServer() {
-    if (await isServerRunning(terms.IPC_SERVER_FILE)) {
-
+    // If there is already an instance of the HDB IPC server running we kill it.
+    if (await isServerRunning(terms.IPC_SERVER_MODULE)) {
+        const curr_user = os.userInfo();
+        const ipc_server_ps = await ps_list.findPs(terms.IPC_SERVER_MODULE);
+        ipc_server_ps.forEach((ps) => {
+            try {
+                // Note we are doing loose equality (==) rather than strict
+                // equality here, as find-process returns the uid as a string.  No point in spending time converting it.
+                // if curr_user.uid is 0, the user has run run using sudo or logged in as root.
+                if (curr_user.uid == 0 || ps.uid == curr_user.uid) {
+                    process.kill(ps.pid);
+                    final_logger.info(`An existing HDB IPC server process was found and killed: ${ps.cmd}`);
+                }
+            } catch(err) {
+                const err_msg = `An existing HDB IPC server process was found to be running and was attempted to be killed but received the following error: ${err}`;
+                final_logger.error(err_msg);
+                console.error(err_msg);
+                process.exit(1);
+            }
+        });
     }
 
 }

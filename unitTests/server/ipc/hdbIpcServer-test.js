@@ -9,7 +9,7 @@ const rewire = require('rewire');
 const test_util = require('../../test_utils');
 const harper_logger = require('../../../utility/logging/harper_logger');
 
-describe('Test ipcServer module', () => {
+describe('Test hdbIpcServer module', () => {
     const sandbox = sinon.createSandbox();
     let ipc_server;
     let ipc;
@@ -19,7 +19,7 @@ describe('Test ipcServer module', () => {
 
     before(() => {
         test_util.preTestPrep();
-        ipc_server = rewire('../../../server/ipc/ipcServer');
+        ipc_server = rewire('../../../server/ipc/hdbIpcServer');
         ipc = ipc_server.__get__('ipc');
         message_listener_rw = ipc_server.__get__('messageListener');
         log_info_stub = sandbox.stub(harper_logger, 'info');
