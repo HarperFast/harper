@@ -45,7 +45,7 @@ async function getCPUInfo(){
     try {
         // eslint-disable-next-line no-unused-vars
         let {family, model, stepping, revision, voltage, speedmin, speedmax, governor, socket, cache, ...cpu_info} = await si.cpu();
-        cpu_info.cpu_speed = await si.cpuCurrentspeed();
+        cpu_info.cpu_speed = await si.cpuCurrentSpeed();
 
         let {
             // eslint-disable-next-line no-unused-vars

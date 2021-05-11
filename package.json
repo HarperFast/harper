@@ -1,6 +1,6 @@
 {
   "name": "harperdb",
-  "version": "3.0.0",
+  "version": "3.1.0",
   "description": "HarperDB no-SQL SQL database written in node.js",
   "keywords": [
     "database",
@@ -64,6 +64,7 @@
     "human-readable-ids": "^1.0.4",
     "is-number": "^7.0.0",
     "joi": "^17.4.0",
+    "json2csv": "^5.0.6",
     "jsonata": "^1.8.3",
     "jsonwebtoken": "^8.5.1",
     "lmdb-store": "^1.2.5",
@@ -72,6 +73,7 @@
     "microtime": "^3.0.0",
     "minimist": "^1.2.5",
     "moment": "^2.23.0",
+    "needle": "^2.6.0",
     "node-forge": "^0.10.0",
     "node-lmdb": "^0.9.4",
     "papaparse": "^5.2.0",
@@ -82,33 +84,31 @@
     "prompt": "^1.1.0",
     "properties-reader": "0.0.15",
     "recursive-iterator": "^3.3.0",
-    "request": "^2.88.2",
-    "request-promise-native": "^1.0.9",
     "socketcluster": "^14.4.2",
     "socketcluster-client": "^14.2.2",
     "stream-chain": "^2.2.3",
     "stream-json": "^1.7.1",
-    "systeminformation": "^4.34.10",
+    "systeminformation": "^5.6.12",
     "truncate-utf8-bytes": "^1.0.2",
     "uuid": "^3.3.2",
     "validate.js": "^0.11.1",
-    "winston": "^2.4.4",
-    "winston-daily-rotate-file": "^3.9.0"
+    "winston": "^3.3.3"
   },
   "devDependencies": {
     "axios": "^0.21.0",
-    "chai": "^4.2.0",
+    "chai": "^4.3.4",
     "eslint": "^5.16.0",
     "minimist": "^1.2.5",
-    "mocha": "^8.2.0",
+    "mocha": "^8.3.2",
     "mocha-teamcity-reporter": "^3.0.0",
     "mock-stdin": "^1.0.0",
     "newman": "^5.1.2",
     "newman-reporter-html": "^1.0.5",
     "newman-reporter-teamcity": "^0.1.11",
-    "nyc": "^15.0.0",
+    "nyc": "^15.1.0",
     "rewire": "^5.0.0",
-    "sinon": "^5.1.1",
-    "sinon-chai": "^3.3.0"
+    "sinon": "^10.0.0",
+    "sinon-chai": "^3.3.0",
+    "mock-require": "^3.0.3"
   }
 }
