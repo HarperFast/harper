@@ -508,6 +508,8 @@ const JWT_ENUM = {
     JWT_PASSPHRASE_NAME: '.jwtPass'
 };
 
+const IPC_SERVER_FILE = `ipcServer.${CODE_EXTENSION}`;
+
 module.exports = {
     LOCAL_HARPERDB_OPERATIONS,
     HDB_SUPPORT_ADDRESS,
@@ -608,5 +610,6 @@ module.exports = {
     JWT_ENUM,
     CLUSTERING_FLAG,
     RUN_LOG,
-    INSTALL_LOG
+    INSTALL_LOG,
+    IPC_SERVER_FILE
 };

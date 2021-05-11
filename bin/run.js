@@ -45,6 +45,8 @@ let child = undefined;
  * start.  If the hdb_boot_props file is not found, it is assumed an install needs to be performed.
  */
 async function run() {
+    await launchIPCServer();
+
     let hdb_running = undefined;
     try {
         hdb_running = await isServerRunning(terms.HDB_PROC_NAME);
@@ -356,8 +358,9 @@ async function isHdbInstalled() {
     return true;
 }
 
-function launchIPCServer() {
-    await isServerRunning()
+async function launchIPCServer() {
+    if (await isServerRunning(terms.IPC_SERVER_FILE)) {
 
+    }
 
 }
