@@ -71,7 +71,8 @@ module.exports = {
     isObject,
     isNotEmptyAndHasValue,
     autoCasterIsNumberCheck,
-    backtickASTSchemaItems
+    backtickASTSchemaItems,
+    isPortTaken
 };
 
 /**
@@ -485,35 +486,22 @@ async function isServerRunning(module_name){
     return hdb_running;
 }
 
+/**
+ * Checks to see if a port is taken or not.
+ * @param port
+ * @returns {Promise<unknown>}
+ */
 function isPortTaken(port) {
     if(!port) {
         throw new Error(`Invalid port passed as parameter`);
     }
 
-    new Promise((resolve, reject) => {
+    // To check if a port is taken or not we create a tester server at the provided port.
+    return new Promise((resolve, reject) => {
         const tester = net.createServer()
-            .once('error', err => (err.code == 'EADDRINUSE' ? resolve(false) : reject(err)))
-            .once('listening', () => tester.once('close', () => resolve(true)).close())
-            .listen(port)
-
-
-    });
-
-
-    const tester = net.createServer();
-    new Promise(function(resolve) {
-        tester.once('error', function (err) {
-            if (err.code !== 'EADDRINUSE') {
-                resolve(true);
-            }
-            resolve(true);
-        });
-        tester.once('listening', function() {
-            tester.once('close', function() {
-                resolve(false);
-            }).close();
-        });
-        tester.listen(port);
+            .once('error', (err) => {err.code === 'EADDRINUSE' ? resolve(true) : reject(err);})
+            .once('listening', () => tester.once('close', () => resolve(false)).close())
+            .listen(port);
     });
 }
 
