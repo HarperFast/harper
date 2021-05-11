@@ -143,9 +143,7 @@ async function openCreateTransactionEnvironment(schema, table_name){
     }
 }
 
-async function isPortInUse() {
-    let server_port;
-
+async function isPortInUse(server_port) {
     // If this fails to find the boot props file, this must be a new install.  This will fall through,
     // pass the process and port check, and then hit the install portion of startHarper().
     try {
@@ -170,11 +168,11 @@ async function isPortInUse() {
         console.error(`error checking for port ${server_port}`);
     }
 }
-
-/**
+/*
+/!**
  * Checks to see if the port specified in the settings file is in use.
  * @param port - The port to check for running processes against
- */
+ *!/
 function isPortTaken(port) {
     if(!port) {
         throw new Error(`Invalid port passed as parameter`);
@@ -196,7 +194,7 @@ function isPortTaken(port) {
         tester.listen(port);
     });
     return event_response;
-}
+}*/
 
 /**
  * Helper function to start HarperDB.  If the hdb_boot properties file is not found, an install is started.

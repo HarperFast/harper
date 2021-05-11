@@ -5,6 +5,7 @@ const log = require('./logging/harper_logger');
 const fs_extra = require('fs-extra');
 const truncate = require('truncate-utf8-bytes');
 const os = require('os');
+const net = require('net');
 const RecursiveIterator = require('recursive-iterator');
 const terms = require('./hdbTerms');
 const ps_list = require('./psList');
@@ -482,6 +483,38 @@ async function isServerRunning(module_name){
     }
 
     return hdb_running;
+}
+
+function isPortTaken(port) {
+    if(!port) {
+        throw new Error(`Invalid port passed as parameter`);
+    }
+
+    new Promise((resolve, reject) => {
+        const tester = net.createServer()
+            .once('error', err => (err.code == 'EADDRINUSE' ? resolve(false) : reject(err)))
+            .once('listening', () => tester.once('close', () => resolve(true)).close())
+            .listen(port)
+
+
+    });
+
+
+    const tester = net.createServer();
+    new Promise(function(resolve) {
+        tester.once('error', function (err) {
+            if (err.code !== 'EADDRINUSE') {
+                resolve(true);
+            }
+            resolve(true);
+        });
+        tester.once('listening', function() {
+            tester.once('close', function() {
+                resolve(false);
+            }).close();
+        });
+        tester.listen(port);
+    });
 }
 
 /**
