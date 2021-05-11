@@ -508,6 +508,22 @@ const JWT_ENUM = {
     JWT_PASSPHRASE_NAME: '.jwtPass'
 };
 
+const HDB_IPC_SERVER = 'hdb_ipc_server';
+const IPC_EVENT_TYPES = {
+    CREATE_SCHEMA: 'create_schema',
+    CREATE_TABLE: 'create_table',
+    CREATE_ATTRIBUTE: 'create_attribute',
+    DROP_SCHEMA: 'drop_schema',
+    DROP_TABLE: 'drop_table',
+    DROP_ATTRIBUTE: 'drop_attribute',
+    ADD_USER: 'add_user',
+    ADD_ROLE: 'add_role',
+    ALTER_USER: 'alter_user',
+    ALTER_ROLE: 'alter_role',
+    DROP_ROLE: 'drop_role',
+    DROP_USER: 'drop_user'
+};
+
 module.exports = {
     LOCAL_HARPERDB_OPERATIONS,
     HDB_SUPPORT_ADDRESS,
@@ -608,5 +624,7 @@ module.exports = {
     JWT_ENUM,
     CLUSTERING_FLAG,
     RUN_LOG,
-    INSTALL_LOG
+    INSTALL_LOG,
+    HDB_IPC_SERVER,
+    IPC_EVENT_TYPES
 };
