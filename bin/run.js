@@ -229,7 +229,9 @@ function foregroundHandler() {
     if (!is_foreground) {
         ipc_child.unref();
         child.unref();
-        exitInstall();
+
+        // Exit run process with success code.
+        process.exit(0);
     }
 
     process.on('exit', processExitHandler.bind(null, {is_foreground: is_foreground}));
@@ -278,10 +280,6 @@ function createForkArgs(module_path){
     }
     args.push(module_path);
     return args;
-}
-
-function exitInstall(){
-    process.exit(0);
 }
 
 module.exports ={
