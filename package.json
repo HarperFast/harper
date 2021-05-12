@@ -1,6 +1,6 @@
 {
   "name": "harperdb",
-  "version": "3.0.0",
+  "version": "3.1.0",
   "description": "HarperDB no-SQL SQL database written in node.js",
   "keywords": [
     "database",
@@ -75,6 +75,7 @@
     "moment": "^2.23.0",
     "needle": "^2.6.0",
     "node-forge": "^0.10.0",
+    "node-ipc": "^9.1.4",
     "node-lmdb": "^0.9.4",
     "papaparse": "^5.2.0",
     "passport": "^0.3.2",

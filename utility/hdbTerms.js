@@ -310,17 +310,18 @@ const HDB_SETTINGS_NAMES = {
     CORS_ENABLED_KEY: 'CORS_ON',
     CORS_WHITELIST_KEY: 'CORS_WHITELIST',
     LOG_LEVEL_KEY: 'LOG_LEVEL',
+    LOGGER_KEY: 'LOGGER',
     LOG_PATH_KEY: 'LOG_PATH',
     LOG_DAILY_ROTATE_KEY: 'LOG_DAILY_ROTATE',
     LOG_MAX_DAILY_FILES_KEY: 'LOG_MAX_DAILY_FILES',
     PROPS_ENV_KEY: 'NODE_ENV',
-    SETTINGS_PATH_KEY: 'settings_path',
+    SETTINGS_PATH_KEY: 'settings_path', // This value is used in the boot prop file not the settings file. It should stay lowercase.
     CLUSTERING_PORT_KEY: 'CLUSTERING_PORT',
     CLUSTERING_NODE_NAME_KEY: 'NODE_NAME',
     CLUSTERING_ENABLED_KEY: 'CLUSTERING',
     ALLOW_SELF_SIGNED_SSL_CERTS: 'ALLOW_SELF_SIGNED_SSL_CERTS',
     MAX_HDB_PROCESSES: 'MAX_HDB_PROCESSES',
-    INSTALL_USER: 'install_user',
+    INSTALL_USER: 'install_user', // This value is used in the boot prop file not the settings file. It should stay lowercase.
     CLUSTERING_USER_KEY: 'CLUSTERING_USER',
     SERVER_TIMEOUT_KEY: 'SERVER_TIMEOUT_MS',
     SERVER_KEEP_ALIVE_TIMEOUT_KEY: 'SERVER_KEEP_ALIVE_TIMEOUT',
@@ -507,6 +508,23 @@ const JWT_ENUM = {
     JWT_PASSPHRASE_NAME: '.jwtPass'
 };
 
+const HDB_IPC_SERVER = 'hdb_ipc_server';
+const HDB_IPC_CLIENT_PREFIX = 'hdb_ipc_client_';
+const IPC_EVENT_TYPES = {
+    CREATE_SCHEMA: 'create_schema',
+    CREATE_TABLE: 'create_table',
+    CREATE_ATTRIBUTE: 'create_attribute',
+    DROP_SCHEMA: 'drop_schema',
+    DROP_TABLE: 'drop_table',
+    DROP_ATTRIBUTE: 'drop_attribute',
+    ADD_USER: 'add_user',
+    ADD_ROLE: 'add_role',
+    ALTER_USER: 'alter_user',
+    ALTER_ROLE: 'alter_role',
+    DROP_ROLE: 'drop_role',
+    DROP_USER: 'drop_user'
+};
+
 module.exports = {
     LOCAL_HARPERDB_OPERATIONS,
     HDB_SUPPORT_ADDRESS,
@@ -607,5 +625,8 @@ module.exports = {
     JWT_ENUM,
     CLUSTERING_FLAG,
     RUN_LOG,
-    INSTALL_LOG
+    INSTALL_LOG,
+    HDB_IPC_SERVER,
+    IPC_EVENT_TYPES,
+    HDB_IPC_CLIENT_PREFIX
 };

@@ -6,6 +6,10 @@ const path = require('path');
 const fs = require('fs');
 const terms = require('../utility/hdbTerms');
 
+module.exports = {
+    getOldPropsValue
+};
+
 //NOTE - from Sam - These methods were moved from the old upgrade module to preserve them in case they are needed/helpful
 // for later upgrade code/directives.  If these do get added back into our code, make sure unit tests are written and the file is removed
 // from `sonar.coverage.exclusions` in the `sonar-project.properties` config file
@@ -77,4 +81,24 @@ function makeDirectory(targetDir, {isRelativeToScript = false} = {}) {
         }
         return curDir;
     }, initDir);
+}
+
+/**
+ * We need to make sure we are setting empty string for values that are null/undefined/empty string - PropertiesReader
+ * castes values in some awkward ways and this covers those scenarios AND ensures we have default values set for new
+ * config values that may have been added in a previous version (between when user installed HDB and is now upgrading)
+ * @param prop_name
+ * @param old_hdb_props
+ * @param value_required
+ * @returns {string|*}
+ */
+function getOldPropsValue(prop_name, old_hdb_props, value_required = false) {
+    const old_val = old_hdb_props.getRaw(prop_name);
+    if (hdb_util.isNotEmptyAndHasValue(old_val)) {
+        return old_val;
+    }
+    if (value_required) {
+        return terms.HDB_SETTINGS_DEFAULT_VALUES[prop_name];
+    }
+    return '';
 }
