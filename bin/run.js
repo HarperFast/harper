@@ -34,9 +34,15 @@ const ENOENT_ERR_CODE = -2;
 const MEM_SETTING_KEY = '--max-old-space-size=';
 
 const NO_IPC_PORT_FOUND_ERR = 'Error getting IPC server port from environment variables';
+const NO_HDB_PORT_FOUND_ERR = 'Error getting HDB server port from environment variables';
 const IPC_FORK_ERR = 'There was an error starting the IPC server, check the log for more details.';
 const HDB_SERVER_ERR = 'There was an error starting the HDB server, check the log for more details.';
 const FOREGROUND_ERR = 'There was an error foreground handler, check the log for more details.';
+const UPGRADE_COMPLETE_MSG = 'Upgrade complete.  Starting HarperDB.';
+const UPGRADE_ERR = 'Got an error while trying to upgrade your HarperDB instance.  Exiting HarperDB.';
+const ALREADY_RUNNING_ERR = 'HarperDB is already running.';
+const HDB_NOT_FOUND_MSG = 'HarperDB not found, starting install process.';
+const INSTALL_ERR = 'There was an error during install, check install_log.log for more details.  Exiting.';
 
 // promisified functions
 const p_install_install = promisify(install.install);
@@ -53,14 +59,14 @@ async function run() {
     // Check to see if HDB is already running, if it is return/stop run.
     try {
         if(await isServerRunning(terms.HDB_PROC_NAME)) {
-            let run_err = 'HarperDB is already running.';
-            console.log(run_err);
-            final_logger.notify(run_err);
+            console.log(ALREADY_RUNNING_ERR);
+            final_logger.notify(ALREADY_RUNNING_ERR);
             return;
         }
     } catch(err) {
         console.log(err);
         final_logger.error(err);
+        process.exit(1);
     }
 
     // Check to see if HDB is installed, if it isn't we call install.
@@ -74,14 +80,14 @@ async function run() {
                 if (update_obj !== undefined) {
                     upgrade_vers = update_obj[terms.UPGRADE_JSON_FIELD_NAMES_ENUM.UPGRADE_VERSION];
                     await upgrade.upgrade(update_obj);
-                    console.log('Upgrade complete.  Starting HarperDB.');
+                    console.log(UPGRADE_COMPLETE_MSG);
                 }
             } catch(err) {
                 if (upgrade_vers) {
                     console.error(`Got an error while trying to upgrade your HarperDB instance to version ${upgrade_vers}.  Exiting HarperDB.`);
                     final_logger.error(err);
                 } else {
-                    console.error(`Got an error while trying to upgrade your HarperDB instance.  Exiting HarperDB.`);
+                    console.error(UPGRADE_ERR);
                     final_logger.error(err);
                 }
                 process.exit(1);
@@ -91,20 +97,21 @@ async function run() {
 
             await launchIPCServer();
 
-            launchHdbServer();
+            await launchHdbServer();
 
         } else {
-            console.log(`HarperDB not found, starting install process.`);
+            console.log(HDB_NOT_FOUND_MSG);
             try {
                 await p_install_install();
             } catch(err) {
-                console.error('There was an error during install, check install_log.log for more details. Exiting.');
+                console.error(INSTALL_ERR);
                 process.exit(1);
             }
         }
     } catch(err) {
         console.log(err);
         final_logger.info(err);
+        process.exit(1);
     }
 }
 
@@ -114,7 +121,7 @@ async function run() {
  */
 async function checkTransactionLogEnvironmentsExist(){
     if(env.getHdbBasePath() !== undefined && env.getDataStoreType() === terms.STORAGE_TYPES_ENUM.LMDB){
-        console.info('Checking Transaction Environments exist');
+        final_logger.info('Checking Transaction Environments exist');
 
         for (const table_name of Object.keys(SYSTEM_SCHEMA)) {
             await openCreateTransactionEnvironment(terms.SYSTEM_SCHEMA_NAME, table_name);
@@ -128,7 +135,7 @@ async function checkTransactionLogEnvironmentsExist(){
             }
         }
 
-        console.info('Finished checking Transaction Environments exist');
+        final_logger.info('Finished checking Transaction Environments exist');
     }
 }
 
@@ -149,7 +156,31 @@ async function openCreateTransactionEnvironment(schema, table_name){
     }
 }
 
-function launchHdbServer() {
+async function launchHdbServer() {
+    // Get the HDB server port from env vars, if for some reason it's undefined use the default one.
+    let hdb_server_port;
+    try {
+        hdb_server_port = env.get(terms.HDB_SETTINGS_NAMES.SERVER_PORT_KEY);
+        hdb_server_port = isEmpty(hdb_server_port) ? terms.HDB_SETTINGS_DEFAULT_VALUES.SERVER_PORT : hdb_server_port;
+    } catch(err) {
+        final_logger.error(err);
+        console.error(NO_HDB_PORT_FOUND_ERR);
+        process.exit(1);
+    }
+
+    // Check to see if the HDB port is available.
+    try {
+        const is_port_taken = await isPortTaken(hdb_server_port);
+        if (is_port_taken === true) {
+            console.log(`Port: ${hdb_server_port} is being used by another process and cannot be used by the HDB server. Please update the HDB server port in the HDB config/settings.js file.`);
+            process.exit(1);
+        }
+    } catch(err) {
+        final_logger.error(err);
+        console.error(`Error checking for port ${hdb_server_port}. Check log for more details.`);
+        process.exit(1);
+    }
+
     // Check user has required permissions to start HDB.
     try {
         install_user_permission.checkPermission();
