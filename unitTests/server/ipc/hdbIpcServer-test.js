@@ -15,14 +15,14 @@ describe('Test hdbIpcServer module', () => {
     let ipc;
     let message_listener_rw;
     let log_warn_stub;
-    let log_info_stub;
+    let log_trace_stub;
 
     before(() => {
         test_util.preTestPrep();
         ipc_server = rewire('../../../server/ipc/hdbIpcServer');
         ipc = ipc_server.__get__('ipc');
         message_listener_rw = ipc_server.__get__('messageListener');
-        log_info_stub = sandbox.stub(harper_logger, 'info');
+        log_trace_stub = sandbox.stub(harper_logger, 'trace');
         log_warn_stub = sandbox.stub(harper_logger, 'warn');
     });
 
@@ -49,13 +49,13 @@ describe('Test hdbIpcServer module', () => {
         expect(typeof broadcast_stub.args[0][1]).to.equal('object');
         expect(broadcast_stub.args[0][1].type).to.equal(data_test.type);
         expect(broadcast_stub.args[0][1].message).to.equal(data_test.message);
-        expect(log_info_stub).to.have.been.calledWith(`IPC server received a message type ${data_test.type}, with message ${data_test.message}`);
+        expect(log_trace_stub).to.have.been.calledWith(`IPC server received a message type ${data_test.type}, with message ${data_test.message}`);
     });
     
     it('Test invalid IPC msg type is logged', () => {
         const data_test = 'create schema';
         message_listener_rw(data_test);
-        expect(log_warn_stub).to.have.been.calledWith('Invalid IPC message type, must be an object');
+        expect(log_warn_stub).to.have.been.calledWith('Invalid IPC message data type, must be an object');
     });
 
     it('Test missing type is logged', () => {
