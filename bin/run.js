@@ -173,8 +173,11 @@ function launchHdbServer() {
     } catch(err) {
         console.error(HDB_SERVER_ERR);
         final_logger.error(err);
-        process.exit(1); // TODO do i need to also stop the IPC server if we get to here??
+        process.exit(1);
     }
+
+    console.log(colors.magenta('' + fs.readFileSync(path.join(__dirname,'../utility/install/ascii_logo.txt'))));
+    console.log(colors.magenta(`|------------- HarperDB ${pjson.version} successfully started ------------|`));
 
     try {
         foregroundHandler();
@@ -183,9 +186,6 @@ function launchHdbServer() {
         final_logger.error(err);
         process.exit(1);
     }
-
-    console.log(colors.magenta('' + fs.readFileSync(path.join(__dirname,'../utility/install/ascii_logo.txt'))));
-    console.log(colors.magenta(`|------------- HarperDB ${pjson.version} successfully started ------------|`));
 }
 
 /**
