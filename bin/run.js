@@ -64,7 +64,7 @@ async function run() {
             return;
         }
     } catch(err) {
-        console.log(err);
+        console.error(err);
         final_logger.error(err);
         process.exit(1);
     }
@@ -105,12 +105,13 @@ async function run() {
                 await p_install_install();
             } catch(err) {
                 console.error(INSTALL_ERR);
+                final_logger.error(err);
                 process.exit(1);
             }
         }
     } catch(err) {
-        console.log(err);
-        final_logger.info(err);
+        console.error(err);
+        final_logger.error(err);
         process.exit(1);
     }
 }
@@ -185,6 +186,7 @@ async function launchHdbServer() {
     try {
         install_user_permission.checkPermission();
     } catch(err) {
+        final_logger.error(err);
         console.error(err.message);
         process.exit(1);
     }
@@ -196,7 +198,7 @@ async function launchHdbServer() {
         const mem_value = license.ram_allocation ? MEM_SETTING_KEY + license.ram_allocation
             : MEM_SETTING_KEY + terms.RAM_ALLOCATION_ENUM.DEFAULT;
 
-        child = fork(hdb_args[0], [hdb_args[1], hdb_args[2]], {
+        child = fork(hdb_args[0], [hdb_args[1]], {
             detached: true,
             stdio: 'ignore',
             execArgv: [mem_value]
