@@ -22,7 +22,7 @@ const UpsertRecordsResponseObject = require('../../../utility/lmdb/UpsertRecords
 const TIMESTAMP = Date.now();
 const UUID_VALUE='aaa-111-bbb-222';
 
-const BASE_TEST_PATH = path.join(test_utils.getMockFSPath(), 'lmdbTest');
+const BASE_TEST_PATH = path.join(test_utils.getMockLMDBPath(), 'lmdbTest');
 const TEST_ENVIRONMENT_NAME = 'test';
 const HASH_ATTRIBUTE_NAME = 'id';
 const ALL_ATTRIBUTES = ['id', 'name', 'age', '__createdtime__', '__updatedtime__', '__blob__'];
@@ -70,7 +70,7 @@ describe("Test writeUtility module", ()=>{
         let env;
         before(async ()=>{
             global.lmdb_map = undefined;
-            await fs.remove(test_utils.getMockFSPath());
+            await fs.remove(test_utils.getMockLMDBPath());
             await fs.mkdirp(BASE_TEST_PATH);
 
             env = await environment_utility.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
@@ -81,7 +81,7 @@ describe("Test writeUtility module", ()=>{
             sandbox.restore();
 
             global.lmdb_map = undefined;
-            await fs.remove(test_utils.getMockFSPath());
+            await fs.remove(test_utils.getMockLMDBPath());
         });
 
         it("test function", ()=>{
@@ -177,7 +177,7 @@ describe("Test writeUtility module", ()=>{
         beforeEach(async ()=>{
             date_stub = sandbox.stub(Date, 'now').returns(TIMESTAMP);
             global.lmdb_map = undefined;
-            await fs.remove(test_utils.getMockFSPath());
+            await fs.remove(test_utils.getMockLMDBPath());
             await fs.mkdirp(BASE_TEST_PATH);
 
             env = await environment_utility.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
@@ -192,7 +192,7 @@ describe("Test writeUtility module", ()=>{
             date_stub.restore();
 
             global.lmdb_map = undefined;
-            await fs.remove(test_utils.getMockFSPath());
+            await fs.remove(test_utils.getMockLMDBPath());
         });
 
         it("test validation", ()=>{
@@ -470,7 +470,7 @@ describe("Test writeUtility module", ()=>{
         beforeEach(async ()=>{
             date_stub = sandbox.stub(Date, 'now').returns(TIMESTAMP);
             global.lmdb_map = undefined;
-            await fs.remove(test_utils.getMockFSPath());
+            await fs.remove(test_utils.getMockLMDBPath());
             await fs.mkdirp(BASE_TEST_PATH);
 
             env = await environment_utility.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
@@ -485,7 +485,7 @@ describe("Test writeUtility module", ()=>{
             date_stub.restore();
 
             global.lmdb_map = undefined;
-            await fs.remove(test_utils.getMockFSPath());
+            await fs.remove(test_utils.getMockLMDBPath());
         });
 
         it("test validation", async ()=>{
@@ -862,7 +862,7 @@ describe("Test writeUtility module", ()=>{
         beforeEach(async ()=>{
             date_stub = sandbox.stub(Date, 'now').returns(TIMESTAMP);
             global.lmdb_map = undefined;
-            await fs.remove(test_utils.getMockFSPath());
+            await fs.remove(test_utils.getMockLMDBPath());
             await fs.mkdirp(BASE_TEST_PATH);
 
             env = await environment_utility.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
@@ -877,7 +877,7 @@ describe("Test writeUtility module", ()=>{
             date_stub.restore();
 
             global.lmdb_map = undefined;
-            await fs.remove(test_utils.getMockFSPath());
+            await fs.remove(test_utils.getMockLMDBPath());
         });
 
         it("test validation", async ()=>{

@@ -151,6 +151,17 @@ function getMockFSPath() {
     return path.join(UNIT_TEST_DIR, ENV_DIR_NAME);
 }
 
+/** HELPER METHODS TO CREATE MOCK HDB SCHEMA FILE SYSTEM STRUCTURE */
+/**
+ * Returns the path to the test root path that will be used for testing
+ * @returns String representing the path value to the mock file system directory
+ */
+function getMockLMDBPath() {
+    let lmdb_path = path.join(UNIT_TEST_DIR, ENV_DIR_NAME, process.pid.toString());
+    env.setProperty(terms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY, lmdb_path);
+    return lmdb_path;
+}
+
 /**
  * Validates that arguments passed into `createMockFS()` are not null, undefined, or "" - throws error, if so
  * @param argArray Array of arg values
@@ -733,7 +744,7 @@ function getHTTPSCredentials() {
             "P9kAKD3/uvPtZSz77jAdIk/1hwv+QUzahhhYHUcWL7N+nreYyigAdFI0/2Z/BcKO\n" +
             "KA+qobbatVaK0aihycZhrwyomOGBy5X/TpVTQWCvdNCL0Hg=\n" +
             "-----END CERTIFICATE-----"
-    }
+    };
 }
 
 /**
@@ -852,7 +863,7 @@ function generateUpgradeObj(data_ver, upgrade_ver) {
     return {
         data_version: data_ver,
         upgrade_version: upgrade_ver
-    }
+    };
 }
 
 module.exports = {
@@ -868,6 +879,7 @@ module.exports = {
     tearDownMockFSSystem,
     makeTheDir,
     getMockFSPath,
+    getMockLMDBPath,
     sortAsc,
     sortDesc,
     sortAttrKeyMap,

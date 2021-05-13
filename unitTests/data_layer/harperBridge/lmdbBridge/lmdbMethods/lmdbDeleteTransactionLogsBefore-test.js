@@ -5,7 +5,7 @@ test_utils.preTestPrep();
 
 const path = require('path');
 const TRANSACTIONS_NAME = 'transactions';
-const BASE_PATH = test_utils.getMockFSPath();
+const BASE_PATH = test_utils.getMockLMDBPath();
 const BASE_TRANSACTIONS_PATH = path.join(BASE_PATH, TRANSACTIONS_NAME, 'dev');
 
 const rewire = require('rewire');
@@ -42,7 +42,7 @@ describe('test lmdbDeleteTransactionLogsBefore module', ()=>{
     describe('test deleteTransactions function', ()=>{
         beforeEach(async ()=>{
             global.lmdb_map = undefined;
-            await fs.remove(test_utils.getMockFSPath());
+            await fs.remove(test_utils.getMockLMDBPath());
             await fs.mkdirp(BASE_PATH);
 
             await lmdb_create_txn_envs(CREATE_TABLE_OBJ);
@@ -53,7 +53,7 @@ describe('test lmdbDeleteTransactionLogsBefore module', ()=>{
             env1.close();
 
             global.lmdb_map = undefined;
-            await fs.remove(test_utils.getMockFSPath());
+            await fs.remove(test_utils.getMockLMDBPath());
         });
 
         it('test deleting the first 1000 txns', async ()=>{
@@ -149,7 +149,7 @@ describe('test lmdbDeleteTransactionLogsBefore module', ()=>{
     describe('test deleteTransactionLogsBefore function', ()=>{
         beforeEach(async ()=>{
             global.lmdb_map = undefined;
-            await fs.remove(test_utils.getMockFSPath());
+            await fs.remove(test_utils.getMockLMDBPath());
             await fs.mkdirp(BASE_PATH);
 
             await lmdb_create_txn_envs(CREATE_TABLE_OBJ);
@@ -160,7 +160,7 @@ describe('test lmdbDeleteTransactionLogsBefore module', ()=>{
             env1.close();
 
             global.lmdb_map = undefined;
-            await fs.remove(test_utils.getMockFSPath());
+            await fs.remove(test_utils.getMockLMDBPath());
         });
 
         it('deleting 19000 out of 20k txns', async()=>{
