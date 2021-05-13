@@ -5,16 +5,14 @@ env.initSync();
 
 const fs = require('fs-extra');
 const path = require('path');
-const os = require('os');
 const install = require('../utility/install/installer');
 const colors = require("colors/safe");
 const logger = require('../utility/logging/harper_logger');
 const final_logger = logger.finalLogger();
 const pjson = require(`${__dirname}/../package.json`);
 const terms = require('../utility/hdbTerms');
-const ps_list = require('../utility/psList');
 const install_user_permission = require('../utility/install_user_permission');
-const { isServerRunning, isPortTaken, isEmpty } = require('../utility/common_utils');
+const hdb_utils = require('../utility/common_utils');
 const { promisify } = require('util');
 const stop = require('./stop');
 const upgrade = require('./upgrade');
@@ -58,7 +56,7 @@ let ipc_child = undefined;
 async function run() {
     // Check to see if HDB is already running, if it is return/stop run.
     try {
-        if(await isServerRunning(terms.HDB_PROC_NAME)) {
+        if(await hdb_utils.isServerRunning(terms.HDB_PROC_NAME)) {
             console.log(ALREADY_RUNNING_ERR);
             final_logger.notify(ALREADY_RUNNING_ERR);
             return;
@@ -162,7 +160,7 @@ async function launchHdbServer() {
     let hdb_server_port;
     try {
         hdb_server_port = env.get(terms.HDB_SETTINGS_NAMES.SERVER_PORT_KEY);
-        hdb_server_port = isEmpty(hdb_server_port) ? terms.HDB_SETTINGS_DEFAULT_VALUES.SERVER_PORT : hdb_server_port;
+        hdb_server_port = hdb_utils.isEmpty(hdb_server_port) ? terms.HDB_SETTINGS_DEFAULT_VALUES.SERVER_PORT : hdb_server_port;
     } catch(err) {
         final_logger.error(err);
         console.error(NO_HDB_PORT_FOUND_ERR);
@@ -171,7 +169,7 @@ async function launchHdbServer() {
 
     // Check to see if the HDB port is available.
     try {
-        const is_port_taken = await isPortTaken(hdb_server_port);
+        const is_port_taken = await hdb_utils.isPortTaken(hdb_server_port);
         if (is_port_taken === true) {
             console.log(`Port: ${hdb_server_port} is being used by another process and cannot be used by the HDB server. Please update the HDB server port in the HDB config/settings.js file.`);
             process.exit(1);
@@ -255,7 +253,7 @@ async function processExitHandler(options) {
         try {
             await stop.stop();
         } catch(err) {
-            console.log(err);
+            console.error(err);
         }
     }
 }
@@ -302,7 +300,7 @@ async function isHdbInstalled() {
             return false;
         }
 
-        final_logger.error(`Error checking for install - ${err}`);
+        final_logger.error(`Error checking for HDB install - ${err}`);
         throw err;
     }
 
@@ -316,32 +314,22 @@ async function isHdbInstalled() {
  */
 async function launchIPCServer() {
     // If there is already an instance of the HDB IPC server running we kill it.
-    if (await isServerRunning(terms.IPC_SERVER_MODULE)) {
-        const curr_user = os.userInfo();
-        const ipc_server_ps = await ps_list.findPs(terms.IPC_SERVER_MODULE);
-        ipc_server_ps.forEach((ps) => {
-            try {
-                // Note we are doing loose equality (==) rather than strict
-                // equality here, as find-process returns the uid as a string.  No point in spending time converting it.
-                // if curr_user.uid is 0, the user has run run using sudo or logged in as root.
-                if (curr_user.uid == 0 || ps.uid == curr_user.uid) {
-                    process.kill(ps.pid);
-                    final_logger.info(`An existing HDB IPC server process was found and killed: ${ps.cmd}`);
-                }
-            } catch(err) {
-                const err_msg = `An existing HDB IPC server process was found to be running and was attempted to be killed but received the following error: ${err}`;
-                final_logger.error(err_msg);
-                console.error(err_msg);
-                process.exit(1);
-            }
-        });
+    if (await hdb_utils.isServerRunning(terms.IPC_SERVER_MODULE)) {
+        try {
+            await hdb_utils.stopProcess(terms.IPC_SERVER_MODULE);
+        } catch(err) {
+            const err_msg = `An existing HDB IPC server process was found to be running and was attempted to be killed but received the following error: ${err}`;
+            final_logger.error(err_msg);
+            console.error(err_msg);
+            process.exit(1);
+        }
     }
 
     // Get the IPC server port from env vars, if for some reason it's undefined use the default one.
     let ipc_server_port;
     try {
         ipc_server_port = env.get(terms.HDB_SETTINGS_NAMES.IPC_SERVER_PORT);
-        ipc_server_port = isEmpty(ipc_server_port) ? terms.HDB_SETTINGS_DEFAULT_VALUES.IPC_SERVER_PORT : ipc_server_port;
+        ipc_server_port = hdb_utils.isEmpty(ipc_server_port) ? terms.HDB_SETTINGS_DEFAULT_VALUES.IPC_SERVER_PORT : ipc_server_port;
     } catch(err) {
         final_logger.error(err);
         console.error(NO_IPC_PORT_FOUND_ERR);
@@ -350,7 +338,7 @@ async function launchIPCServer() {
 
     // Check to see if the IPC port is available.
     try {
-        const is_port_taken = await isPortTaken(ipc_server_port);
+        const is_port_taken = await hdb_utils.isPortTaken(ipc_server_port);
         if (is_port_taken === true) {
             console.log(`Port: ${ipc_server_port} is being used by another process and cannot be used by the IPC server. Please update the IPC server port in the HDB config/settings.js file.`);
             process.exit(1);
@@ -364,7 +352,7 @@ async function launchIPCServer() {
     // Launch IPC server as a child background process.
     try {
         const ipc_fork_args = createForkArgs(path.resolve(__dirname, '../', 'server/ipc', terms.IPC_SERVER_MODULE));
-        ipc_child = fork(ipc_fork_args[0], [ipc_fork_args[1], ipc_fork_args[2]], {
+        ipc_child = fork(ipc_fork_args[0], [ipc_fork_args[1]], {
             detached: true,
             stdio: 'ignore',
         });

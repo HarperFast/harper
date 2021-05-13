@@ -6,11 +6,13 @@ const { expect } = chai;
 const sinon_chai = require('sinon-chai');
 chai.use(sinon_chai);
 const rewire = require('rewire');
+const fs = require('fs-extra');
 const test_util = require('../test_utils');
 const harper_logger = require('../../utility/logging/harper_logger');
 const env_mangr = require('../../utility/environment/environmentManager');
 const install_user_permission = require('../../utility/install_user_permission');
 const hdb_license = require('../../utility/registration/hdb_license');
+const hdb_utils = require('../../utility/common_utils');
 const hdbInfoController = require('../../data_layer/hdbInfoController');
 const schema_describe = require('../../data_layer/schemaDescribe');
 const upgrade = require('../../bin/upgrade');
@@ -46,14 +48,13 @@ describe('Test run module', () => {
     });
 
     describe('Test run function', () => {
-        const is_server_running_stub = sinon.stub();
+        let is_server_running_stub;
         const is_hdb_installed_stub = sinon.stub();
         const check_trans_log_env_exists_stub = sinon.stub();
         const launch_ipc_server_stub = sinon.stub();
         const launch_hdb_server_stub = sinon.stub();
         const p_install_install_stub = sinon.stub();
         let is_hdb_installed_rw;
-        let is_server_running_rw;
         let check_trans_log_env_exists_rw;
         let launch_ipc_server_rw;
         let launch_hdb_server_rw;
@@ -63,7 +64,6 @@ describe('Test run module', () => {
         let run;
 
         before(() => {
-            is_server_running_rw = run_rw.__set__('isServerRunning', is_server_running_stub);
             is_hdb_installed_rw = run_rw.__set__('isHdbInstalled', is_hdb_installed_stub);
             check_trans_log_env_exists_rw = run_rw.__set__('checkTransactionLogEnvironmentsExist', check_trans_log_env_exists_stub);
             launch_ipc_server_rw = run_rw.__set__('launchIPCServer', launch_ipc_server_stub);
@@ -71,6 +71,7 @@ describe('Test run module', () => {
             p_install_install_rw = run_rw.__set__('p_install_install', p_install_install_stub);
             get_ver_update_info_stub = sinon.stub(hdbInfoController, 'getVersionUpdateInfo');
             upgrade_stub = sinon.stub(upgrade, 'upgrade');
+            is_server_running_stub = sinon.stub(hdb_utils, 'isServerRunning');
             run = run_rw.__get__('run');
         });
 
@@ -79,12 +80,12 @@ describe('Test run module', () => {
         });
 
         after(() => {
-            is_server_running_rw();
             is_hdb_installed_rw();
             check_trans_log_env_exists_rw();
             launch_ipc_server_rw();
             launch_hdb_server_rw();
-            //run_sandbox.restore();
+            p_install_install_rw();
+            is_server_running_stub.restore();
         });
 
         it('Test run happy path, all functions are called as expected', async () => {
@@ -252,23 +253,22 @@ describe('Test run module', () => {
     });
 
     describe('Test launchHdbServer function', () => {
-        const is_port_taken_stub = sinon.stub();
+        let is_port_taken_stub;
         const foreground_handler_stub = sinon.stub();
         const fork_stub = sinon.stub();
         let fork_rw;
         let foreground_handler_rw;
-        let is_port_taken_rw;
         let check_perms_stub;
         let license_search_stub;
         let launchHdbServer;
 
         before(() => {
             launchHdbServer = run_rw.__get__('launchHdbServer');
-            is_port_taken_rw = run_rw.__set__('isPortTaken', is_port_taken_stub);
             foreground_handler_rw = run_rw.__set__('foregroundHandler', foreground_handler_stub);
             fork_rw = run_rw.__set__('fork', fork_stub);
             check_perms_stub = sinon.stub(install_user_permission, 'checkPermission');
             license_search_stub = sinon.stub(hdb_license, 'licenseSearch');
+            is_port_taken_stub = sinon.stub(hdb_utils, 'isPortTaken');
         });
 
         beforeEach(() => {
@@ -277,6 +277,8 @@ describe('Test run module', () => {
 
         after(() => {
             foreground_handler_rw();
+            fork_rw();
+            is_port_taken_stub.restore();
         });
 
         it('Test all everything is called as expected happy path', async () => {
@@ -325,9 +327,9 @@ describe('Test run module', () => {
         });
 
         it('Test error from get server port is handled as expected', async () => {
-            const is_empty_rw = run_rw.__set__('isEmpty', sinon.stub().throws(TEST_ERROR));
+            let is_empty_stub = sinon.stub(hdb_utils, 'isEmpty').throws(TEST_ERROR)
             await launchHdbServer();
-            is_empty_rw();
+            is_empty_stub.restore();
 
             expect(console_error_stub.getCall(0).firstArg).to.equal('Error getting HDB server port from environment variables');
             expect(final_log_error_stub.getCall(0).firstArg.name).to.equal(TEST_ERROR);
@@ -388,7 +390,7 @@ describe('Test run module', () => {
         });
     });
     
-    describe('Test foregroundHandler function', () => {
+    describe('Test foregroundHandler and isForegroundProcess functions', () => {
         const process_exit_handler_stub = sinon.stub();
         const ipc_child_unref_stub = sinon.stub().callsFake(() => {});
         const fake_ipc_child = { unref: ipc_child_unref_stub };
@@ -396,18 +398,20 @@ describe('Test run module', () => {
         const fake_child = { unref: child_unref_stub };
         let process_exit_handler_rw;
         let foregroundHandler;
-        let stop_stub;
 
         before(() => {
             process_exit_handler_rw = run_rw.__set__('processExitHandler', process_exit_handler_stub);
             run_rw.__set__('ipc_child', fake_ipc_child);
             run_rw.__set__('child', fake_child);
             foregroundHandler = run_rw.__get__('foregroundHandler');
-            stop_stub = sinon.stub(stop, 'stop');
         });
 
         beforeEach(() => {
             sinon.resetHistory();
+        });
+
+        after(() => {
+            process_exit_handler_rw();
         });
 
         it('Test happy path non foreground', () => {
@@ -417,6 +421,162 @@ describe('Test run module', () => {
             expect(child_unref_stub).to.have.been.called;
             expect(process_exit_stub.getCall(0).firstArg).to.equal(0);
         });
+
+        it('Test happy path foreground', () => {
+            process.argv.push('foreground');
+            foregroundHandler();
+            process.argv.splice(process.argv.indexOf('foreground'), 1);
+
+
+            expect(ipc_child_unref_stub).to.have.not.been.called;
+            expect(child_unref_stub).to.have.not.been.called;
+        });
     });
 
+    describe('Test processExitHandler function', () => {
+        let stop_stub;
+        let processExitHandler;
+
+        before(() => {
+            stop_stub = sinon.stub(stop, 'stop');
+            processExitHandler = run_rw.__get__('processExitHandler');
+        });
+
+        it('Test stop is called happy path', async () => {
+            await processExitHandler({ is_foreground: true });
+            expect(stop_stub).to.have.been.called;
+        });
+
+        it('Test error from stop is handled', async () => {
+            stop_stub.throws(TEST_ERROR);
+            await processExitHandler({ is_foreground: true });
+
+            expect(console_error_stub.getCall(0).firstArg.name).to.equal(TEST_ERROR);
+        });
+    });
+
+    describe('Test isHdbInstalled function', () => {
+        let isHdbInstalled;
+        let fs_stat_stub;
+
+        before(() => {
+            fs_stat_stub = sinon.stub(fs, 'stat');
+            isHdbInstalled = run_rw.__get__('isHdbInstalled');
+        });
+
+        after(() => {
+            fs_stat_stub.restore();
+        });
+
+        it('Test two calls to fs stat with the correct arguments happy path', async () => {
+            const result = await isHdbInstalled();
+
+            expect(result).to.be.true;
+            expect(fs_stat_stub.getCall(0).args[0]).to.include('.harperdb/hdb_boot_properties.file');
+            expect(fs_stat_stub.getCall(1).args[0]).to.include('harperdb/unitTests/settings.test');
+        });
+
+        it('Test ENOENT err code returns false', async () => {
+            let err = new Error(TEST_ERROR);
+            err.errno = -2;
+            fs_stat_stub.throws(err);
+            const result = await isHdbInstalled();
+
+            expect(result).to.be.false;
+        });
+
+        it('Test non ENOENT error is handled as expected', async () => {
+            fs_stat_stub.throws(new Error(TEST_ERROR));
+            await test_util.assertErrorAsync(isHdbInstalled, [], new Error(TEST_ERROR));
+            expect(final_log_error_stub.getCall(0).firstArg).to.equal('Error checking for HDB install - Error: I am a unit test error test');
+        });
+    });
+
+    describe('Test launchIPCServer function', () => {
+        let launchIPCServer;
+        let is_server_running_stub;
+        let stop_process_stub;
+        let is_port_taken_stub;
+        const fork_stub = sinon.stub();
+        let fork_rw;
+
+        before(() => {
+            fork_rw = run_rw.__set__('fork', fork_stub);
+            is_server_running_stub = sinon.stub(hdb_utils, 'isServerRunning');
+            stop_process_stub = sinon.stub(hdb_utils, 'stopProcess');
+            is_port_taken_stub = sinon.stub(hdb_utils, 'isPortTaken');
+            launchIPCServer = run_rw.__get__('launchIPCServer');
+        });
+
+        beforeEach(() => {
+            sinon.resetHistory();
+        });
+
+        after(() => {
+            fork_rw();
+        });
+
+        it('Test all everything is called as expected happy path', async () => {
+            is_server_running_stub.resolves(true);
+            is_port_taken_stub.resolves(false);
+            await launchIPCServer();
+
+            expect(is_server_running_stub).to.have.been.calledWith('hdbIpcServer.js');
+            expect(stop_process_stub).to.have.been.calledWith('hdbIpcServer.js');
+            expect(is_port_taken_stub).to.have.been.calledWith(9383);
+            expect(fork_stub.args[0][0]).to.include('harperdb/server/ipc/hdbIpcServer.js');
+            expect(fork_stub.args[0][1]).to.eql([undefined]);
+            expect(fork_stub.args[0][2].detached).to.equal(true);
+            expect(fork_stub.args[0][2].stdio).to.equal('ignore');
+        });
+
+        it('Test error from stopProcess is handled as expected', async () => {
+            is_server_running_stub.resolves(true);
+            stop_process_stub.throws(TEST_ERROR);
+            await launchIPCServer();
+
+            expect(console_error_stub.getCall(0).firstArg).to.equal('An existing HDB IPC server process was found to be running and was attempted to be killed but received the following error: I am a unit test error test');
+            expect(final_log_error_stub.getCall(0).firstArg).to.equal('An existing HDB IPC server process was found to be running and was attempted to be killed but received the following error: I am a unit test error test');
+            expect(process_exit_stub.getCall(0).firstArg).to.equal(1);
+        });
+
+        it('Test error from getting IPC server port is handled as expected', async () => {
+            let is_empty_stub = sinon.stub(hdb_utils, 'isEmpty').throws(TEST_ERROR)
+            is_server_running_stub.resolves(false);
+            await launchIPCServer();
+            is_empty_stub.restore();
+
+            expect(console_error_stub.getCall(0).firstArg).to.equal('Error getting IPC server port from environment variables');
+            expect(final_log_error_stub.getCall(0).firstArg.name).to.equal(TEST_ERROR);
+            expect(process_exit_stub.getCall(0).firstArg).to.equal(1);
+        });
+
+        it('Test message is logged and process exited if port taken', async () => {
+            is_port_taken_stub.resolves(true);
+            await launchIPCServer();
+
+            expect(console_log_stub.getCall(0).firstArg).to.equal('Port: 9383 is being used by another process and cannot be used by the IPC server. Please update the IPC server port in the HDB config/settings.js file.');
+            expect(process_exit_stub.getCall(0).firstArg).to.equal(1);
+        });
+
+        it('Test error from isPortTaken is handled as expected', async () => {
+            is_port_taken_stub.throws(TEST_ERROR);
+            await launchIPCServer();
+
+            expect(console_error_stub.getCall(0).firstArg).to.equal('Error checking for port 9383. Check log for more details.');
+            expect(final_log_error_stub.getCall(0).firstArg.name).to.equal(TEST_ERROR);
+            expect(process_exit_stub.getCall(0).firstArg).to.equal(1);
+        });
+
+        it('Test error from fork is handled as expected', async () => {
+            is_server_running_stub.resolves(false);
+            is_port_taken_stub.resolves(false);
+            fork_stub.throws(TEST_ERROR);
+            await launchIPCServer();
+
+            expect(console_error_stub.getCall(0).firstArg).to.equal('There was an error starting the IPC server, check the log for more details.');
+            expect(final_log_error_stub.getCall(0).firstArg.name).to.eql(TEST_ERROR);
+            expect(process_exit_stub.getCall(0).firstArg).to.equal(1);
+        });
+    });
 });

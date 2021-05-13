@@ -72,7 +72,8 @@ module.exports = {
     isNotEmptyAndHasValue,
     autoCasterIsNumberCheck,
     backtickASTSchemaItems,
-    isPortTaken
+    isPortTaken,
+    stopProcess
 };
 
 /**
@@ -783,4 +784,23 @@ function backtickASTSchemaItems(statement) {
         log.error(`Got an error back ticking items.`);
         log.error(err);
     }
+}
+
+/**
+ * Finds a process by its module name then kills it.
+ * @param module
+ * @returns {Promise<void>}
+ */
+async function stopProcess(module) {
+    const curr_user = os.userInfo();
+    const module_ps = await ps_list.findPs(module);
+    module_ps.forEach((ps) => {
+        // Note we are doing loose equality (==) rather than strict
+        // equality here, as find-process returns the uid as a string.  No point in spending time converting it.
+        // if curr_user.uid is 0, the user has run run using sudo or logged in as root.
+        if (curr_user.uid == 0 || ps.uid == curr_user.uid) {
+            process.kill(ps.pid);
+            log.trace(`Following process was killed by stopProcess: ${ps.cmd}`);
+        }
+    });
 }
