@@ -13,10 +13,10 @@ const env_mangr = require('../../utility/environment/environmentManager');
 const install_user_permission = require('../../utility/install_user_permission');
 const hdb_license = require('../../utility/registration/hdb_license');
 const hdb_utils = require('../../utility/common_utils');
-const hdbInfoController = require('../../data_layer/hdbInfoController');
-const schema_describe = require('../../data_layer/schemaDescribe');
-const upgrade = require('../../bin/upgrade');
-const stop = require('../../bin/stop');
+let hdbInfoController;
+let schema_describe;
+let upgrade;
+let stop;
 let run_rw;
 
 describe('Test run module', () => {
@@ -34,6 +34,12 @@ describe('Test run module', () => {
     let process_exit_stub;
 
     before(() => {
+        // These are here because having them in the usual spot was causing errors in other tests. I dont know why exactly... but this helps.
+        hdbInfoController = require('../../data_layer/hdbInfoController');
+        schema_describe = require('../../data_layer/schemaDescribe');
+        upgrade = require('../../bin/upgrade');
+        stop = require('../../bin/stop');
+
         process_exit_stub = sinon.stub(process, 'exit');
         console_log_stub = sinon.stub(console, 'log');
         console_error_stub = sinon.stub(console, 'error');
@@ -389,7 +395,7 @@ describe('Test run module', () => {
             expect(process_exit_stub.getCall(0).firstArg).to.equal(1);
         });
     });
-    
+
     describe('Test foregroundHandler and isForegroundProcess functions', () => {
         const process_exit_handler_stub = sinon.stub();
         const ipc_child_unref_stub = sinon.stub().callsFake(() => {});
