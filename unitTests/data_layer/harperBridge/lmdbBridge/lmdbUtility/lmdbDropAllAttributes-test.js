@@ -4,7 +4,7 @@ const test_utils = require('../../../../test_utils');
 test_utils.preTestPrep();const path = require('path');
 const SYSTEM_FOLDER_NAME = 'system';
 const SCHEMA_NAME = 'schema';
-const BASE_PATH = test_utils.getMockFSPath();
+const BASE_PATH = test_utils.getMockLMDBPath();
 const BASE_SCHEMA_PATH = path.join(BASE_PATH, SCHEMA_NAME);
 const SYSTEM_SCHEMA_PATH = path.join(BASE_SCHEMA_PATH, SYSTEM_FOLDER_NAME);
 const DEV_SCHEMA_PATH = path.join(BASE_SCHEMA_PATH, 'dev');
@@ -61,13 +61,13 @@ const INSERT_OBJECT_TEST = {
 describe('test lmdbDropAllAttributes module', ()=>{
     let date_stub;
     before(async ()=>{
-        await fs.remove(test_utils.getMockFSPath());
+        await fs.remove(test_utils.getMockLMDBPath());
         date_stub = sandbox.stub(Date, 'now').returns(TIMESTAMP);
     });
 
     after(async ()=>{
         date_stub.restore();
-        await fs.remove(test_utils.getMockFSPath());
+        await fs.remove(test_utils.getMockLMDBPath());
     });
 
     describe('test lmdbDropAllAttributes function', ()=>{
@@ -76,7 +76,7 @@ describe('test lmdbDropAllAttributes module', ()=>{
         let hdb_attribute_env;
         before(async () => {
             global.lmdb_map = undefined;
-            await fs.remove(test_utils.getMockFSPath());
+            await fs.remove(test_utils.getMockLMDBPath());
             await fs.mkdirp(SYSTEM_SCHEMA_PATH);
             await fs.mkdirp(DEV_SCHEMA_PATH);
 
@@ -139,7 +139,7 @@ describe('test lmdbDropAllAttributes module', ()=>{
             hdb_attribute_env.close();
 
             global.lmdb_map = undefined;
-            await fs.remove(test_utils.getMockFSPath());
+            await fs.remove(test_utils.getMockLMDBPath());
         });
 
         it('Test invalid schema', async ()=>{

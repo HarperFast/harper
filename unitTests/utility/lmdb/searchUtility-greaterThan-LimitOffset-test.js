@@ -12,7 +12,7 @@ const test_data = require('../../personData.json');
 const test_data2 = require('../../testData');
 const sinon = require('sinon');
 const sandbox = sinon.createSandbox();
-const BASE_TEST_PATH = path.join(test_utils.getMockFSPath(), 'lmdbTest');
+const BASE_TEST_PATH = path.join(test_utils.getMockLMDBPath(), 'lmdbTest');
 const TEST_ENVIRONMENT_NAME = 'test';
 const HASH_ATTRIBUTE_NAME = 'id';
 const LMDB_TEST_ERRORS = require('../../commonTestErrors').LMDB_ERRORS_ENUM;
@@ -25,7 +25,7 @@ describe('test greaterThan function', ()=> {
 
     before(async () => {
         global.lmdb_map = undefined;
-        await fs.remove(test_utils.getMockFSPath());
+        await fs.remove(test_utils.getMockLMDBPath());
         await fs.mkdirp(BASE_TEST_PATH);
 
         env = await environment_utility.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
@@ -42,7 +42,7 @@ describe('test greaterThan function', ()=> {
         env.close();
 
         global.lmdb_map = undefined;
-        await fs.remove(test_utils.getMockFSPath());
+        await fs.remove(test_utils.getMockLMDBPath());
     });
 
     it("test validation", () => {
@@ -270,7 +270,7 @@ describe('test greaterThan function rreverse limit offset', ()=> {
     before(async () => {
         date_stub = sandbox.stub(Date, 'now').returns(TIMESTAMP);
         global.lmdb_map = undefined;
-        await fs.remove(test_utils.getMockFSPath());
+        await fs.remove(test_utils.getMockLMDBPath());
         await fs.mkdirp(BASE_TEST_PATH);
 
         env = await environment_utility.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
@@ -282,7 +282,7 @@ describe('test greaterThan function rreverse limit offset', ()=> {
         date_stub.restore();
         env.close();
         global.lmdb_map = undefined;
-        await fs.remove(test_utils.getMockFSPath());
+        await fs.remove(test_utils.getMockLMDBPath());
     });
 
     /** TEST HASH ATTRIBUTE **/

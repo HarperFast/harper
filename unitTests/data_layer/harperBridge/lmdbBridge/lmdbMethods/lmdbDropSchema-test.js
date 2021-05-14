@@ -7,7 +7,7 @@ const { HDB_ERROR_MSGS, HTTP_STATUS_CODES } = require('../../../../../utility/er
 
 const SYSTEM_FOLDER_NAME = 'system';
 const SCHEMA_NAME = 'schema';
-const BASE_PATH = test_utils.getMockFSPath();
+const BASE_PATH = test_utils.getMockLMDBPath();
 const BASE_SCHEMA_PATH = path.join(BASE_PATH, SCHEMA_NAME);
 const SYSTEM_SCHEMA_PATH = path.join(BASE_SCHEMA_PATH, SYSTEM_FOLDER_NAME);
 const DEV_SCHEMA_PATH = path.join(BASE_SCHEMA_PATH, 'dev');
@@ -89,7 +89,7 @@ describe('test validateDropSchema module', ()=>{
     let date_stub;
 
     before(async ()=>{
-        await fs.remove(test_utils.getMockFSPath());
+        await fs.remove(test_utils.getMockLMDBPath());
         date_stub = sandbox.stub(Date, 'now').returns(TIMESTAMP);
     });
 
@@ -103,7 +103,7 @@ describe('test validateDropSchema module', ()=>{
         let hdb_attribute_env;
         before(async () => {
             global.lmdb_map = undefined;
-            await fs.remove(test_utils.getMockFSPath());
+            await fs.remove(test_utils.getMockLMDBPath());
             await fs.mkdirp(SYSTEM_SCHEMA_PATH);
             await fs.mkdirp(DEV_SCHEMA_PATH);
 
@@ -186,7 +186,7 @@ describe('test validateDropSchema module', ()=>{
             hdb_table_env.close();
 
             global.lmdb_map = undefined;
-            await fs.remove(test_utils.getMockFSPath());
+            await fs.remove(test_utils.getMockLMDBPath());
         });
 
         it('test validate invalid schema', async()=>{
