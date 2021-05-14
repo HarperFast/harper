@@ -20,10 +20,11 @@ let stop;
 let run_rw;
 
 describe('Test run module', () => {
+    const sandbox = sinon.createSandbox();
     const TEST_ERROR = 'I am a unit test error test';
-    const final_log_notify_stub = sinon.stub().callsFake(() => {});
-    const final_log_error_stub = sinon.stub().callsFake(() => {});
-    const final_log_info_stub = sinon.stub().callsFake(() => {});
+    const final_log_notify_stub = sandbox.stub().callsFake(() => {});
+    const final_log_error_stub = sandbox.stub().callsFake(() => {});
+    const final_log_info_stub = sandbox.stub().callsFake(() => {});
     const final_logger_fake = {
         notify: final_log_notify_stub,
         error: final_log_error_stub,
@@ -40,26 +41,27 @@ describe('Test run module', () => {
         upgrade = require('../../bin/upgrade');
         stop = require('../../bin/stop');
 
-        process_exit_stub = sinon.stub(process, 'exit');
-        console_log_stub = sinon.stub(console, 'log');
-        console_error_stub = sinon.stub(console, 'error');
-        sinon.stub(harper_logger, 'finalLogger').returns(final_logger_fake);
+        process_exit_stub = sandbox.stub(process, 'exit');
+        console_log_stub = sandbox.stub(console, 'log');
+        console_error_stub = sandbox.stub(console, 'error');
+        sandbox.stub(harper_logger, 'finalLogger').returns(final_logger_fake);
         test_util.preTestPrep();
         run_rw = rewire('../../bin/run');
     });
 
     after(() => {
-        sinon.restore();
+        sandbox.resetHistory();
+        sandbox.restore();
         rewire('../../bin/run');
     });
 
     describe('Test run function', () => {
         let is_server_running_stub;
-        const is_hdb_installed_stub = sinon.stub();
-        const check_trans_log_env_exists_stub = sinon.stub();
-        const launch_ipc_server_stub = sinon.stub();
-        const launch_hdb_server_stub = sinon.stub();
-        const p_install_install_stub = sinon.stub();
+        const is_hdb_installed_stub = sandbox.stub();
+        const check_trans_log_env_exists_stub = sandbox.stub();
+        const launch_ipc_server_stub = sandbox.stub();
+        const launch_hdb_server_stub = sandbox.stub();
+        const p_install_install_stub = sandbox.stub();
         let is_hdb_installed_rw;
         let check_trans_log_env_exists_rw;
         let launch_ipc_server_rw;
@@ -75,14 +77,14 @@ describe('Test run module', () => {
             launch_ipc_server_rw = run_rw.__set__('launchIPCServer', launch_ipc_server_stub);
             launch_hdb_server_rw = run_rw.__set__('launchHdbServer', launch_hdb_server_stub);
             p_install_install_rw = run_rw.__set__('p_install_install', p_install_install_stub);
-            get_ver_update_info_stub = sinon.stub(hdbInfoController, 'getVersionUpdateInfo');
-            upgrade_stub = sinon.stub(upgrade, 'upgrade');
-            is_server_running_stub = sinon.stub(hdb_utils, 'isServerRunning');
+            get_ver_update_info_stub = sandbox.stub(hdbInfoController, 'getVersionUpdateInfo');
+            upgrade_stub = sandbox.stub(upgrade, 'upgrade');
+            is_server_running_stub = sandbox.stub(hdb_utils, 'isServerRunning');
             run = run_rw.__get__('run');
         });
 
         beforeEach(() => {
-            sinon.resetHistory();
+            sandbox.resetHistory();
         });
 
         after(() => {
@@ -186,7 +188,7 @@ describe('Test run module', () => {
     });
 
     describe('Test checkTransactionLogEnvironmentsExist function', async () => {
-        const open_create_trans_env_stub = sinon.stub();
+        const open_create_trans_env_stub = sandbox.stub();
         const describe_results_test = {
             "northnwd": {
                 "customers": {
@@ -197,8 +199,8 @@ describe('Test run module', () => {
         let checkTransactionLogEnvironmentsExist;
 
         before(() => {
-            sinon.stub(env_mangr, 'getDataStoreType').returns('lmdb');
-            sinon.stub(schema_describe, 'describeAll').resolves(describe_results_test);
+            sandbox.stub(env_mangr, 'getDataStoreType').returns('lmdb');
+            sandbox.stub(schema_describe, 'describeAll').resolves(describe_results_test);
             open_create_trans_env_rw = run_rw.__set__('openCreateTransactionEnvironment', open_create_trans_env_stub);
             checkTransactionLogEnvironmentsExist = run_rw.__get__('checkTransactionLogEnvironmentsExist');
         });
@@ -226,7 +228,7 @@ describe('Test run module', () => {
     });
 
     describe('Test openCreateTransactionEnvironment function', () => {
-        let lmdb_create_txn_env_stub = sinon.stub();
+        let lmdb_create_txn_env_stub = sandbox.stub();
         let openCreateTransactionEnvironment;
 
         before(() => {
@@ -235,7 +237,7 @@ describe('Test run module', () => {
         });
 
         beforeEach(() => {
-            sinon.resetHistory();
+            sandbox.resetHistory();
         });
 
         it('Test openCreateTransactionEnvironment happy path', async () => {
@@ -246,7 +248,7 @@ describe('Test run module', () => {
             };
             await openCreateTransactionEnvironment('unit_tests', 'are_amazing');
 
-            expect(lmdb_create_txn_env_stub).to.have.been.calledWith(sinon.match(expected_obj));
+            expect(lmdb_create_txn_env_stub).to.have.been.calledWith(sandbox.match(expected_obj));
         });
 
         it('Test openCreateTransactionEnvironment sad path', async () => {
@@ -260,8 +262,8 @@ describe('Test run module', () => {
 
     describe('Test launchHdbServer function', () => {
         let is_port_taken_stub;
-        const foreground_handler_stub = sinon.stub();
-        const fork_stub = sinon.stub();
+        const foreground_handler_stub = sandbox.stub();
+        const fork_stub = sandbox.stub();
         let fork_rw;
         let foreground_handler_rw;
         let check_perms_stub;
@@ -272,13 +274,13 @@ describe('Test run module', () => {
             launchHdbServer = run_rw.__get__('launchHdbServer');
             foreground_handler_rw = run_rw.__set__('foregroundHandler', foreground_handler_stub);
             fork_rw = run_rw.__set__('fork', fork_stub);
-            check_perms_stub = sinon.stub(install_user_permission, 'checkPermission');
-            license_search_stub = sinon.stub(hdb_license, 'licenseSearch');
-            is_port_taken_stub = sinon.stub(hdb_utils, 'isPortTaken');
+            check_perms_stub = sandbox.stub(install_user_permission, 'checkPermission');
+            license_search_stub = sandbox.stub(hdb_license, 'licenseSearch');
+            is_port_taken_stub = sandbox.stub(hdb_utils, 'isPortTaken');
         });
 
         beforeEach(() => {
-            sinon.resetHistory();
+            sandbox.resetHistory();
         });
 
         after(() => {
@@ -333,7 +335,7 @@ describe('Test run module', () => {
         });
 
         it('Test error from get server port is handled as expected', async () => {
-            let is_empty_stub = sinon.stub(hdb_utils, 'isEmpty').throws(TEST_ERROR)
+            let is_empty_stub = sandbox.stub(hdb_utils, 'isEmpty').throws(TEST_ERROR)
             await launchHdbServer();
             is_empty_stub.restore();
 
@@ -397,10 +399,10 @@ describe('Test run module', () => {
     });
 
     describe('Test foregroundHandler and isForegroundProcess functions', () => {
-        const process_exit_handler_stub = sinon.stub();
-        const ipc_child_unref_stub = sinon.stub().callsFake(() => {});
+        const process_exit_handler_stub = sandbox.stub();
+        const ipc_child_unref_stub = sandbox.stub().callsFake(() => {});
         const fake_ipc_child = { unref: ipc_child_unref_stub };
-        const child_unref_stub = sinon.stub().callsFake(() => {});
+        const child_unref_stub = sandbox.stub().callsFake(() => {});
         const fake_child = { unref: child_unref_stub };
         let process_exit_handler_rw;
         let foregroundHandler;
@@ -413,7 +415,7 @@ describe('Test run module', () => {
         });
 
         beforeEach(() => {
-            sinon.resetHistory();
+            sandbox.resetHistory();
         });
 
         after(() => {
@@ -444,7 +446,7 @@ describe('Test run module', () => {
         let processExitHandler;
 
         before(() => {
-            stop_stub = sinon.stub(stop, 'stop');
+            stop_stub = sandbox.stub(stop, 'stop');
             processExitHandler = run_rw.__get__('processExitHandler');
         });
 
@@ -466,7 +468,7 @@ describe('Test run module', () => {
         let fs_stat_stub;
 
         before(() => {
-            fs_stat_stub = sinon.stub(fs, 'stat');
+            fs_stat_stub = sandbox.stub(fs, 'stat');
             isHdbInstalled = run_rw.__get__('isHdbInstalled');
         });
 
@@ -503,19 +505,19 @@ describe('Test run module', () => {
         let is_server_running_stub;
         let stop_process_stub;
         let is_port_taken_stub;
-        const fork_stub = sinon.stub();
+        const fork_stub = sandbox.stub();
         let fork_rw;
 
         before(() => {
             fork_rw = run_rw.__set__('fork', fork_stub);
-            is_server_running_stub = sinon.stub(hdb_utils, 'isServerRunning');
-            stop_process_stub = sinon.stub(hdb_utils, 'stopProcess');
-            is_port_taken_stub = sinon.stub(hdb_utils, 'isPortTaken');
+            is_server_running_stub = sandbox.stub(hdb_utils, 'isServerRunning');
+            stop_process_stub = sandbox.stub(hdb_utils, 'stopProcess');
+            is_port_taken_stub = sandbox.stub(hdb_utils, 'isPortTaken');
             launchIPCServer = run_rw.__get__('launchIPCServer');
         });
 
         beforeEach(() => {
-            sinon.resetHistory();
+            sandbox.resetHistory();
         });
 
         after(() => {
@@ -547,7 +549,7 @@ describe('Test run module', () => {
         });
 
         it('Test error from getting IPC server port is handled as expected', async () => {
-            let is_empty_stub = sinon.stub(hdb_utils, 'isEmpty').throws(TEST_ERROR)
+            let is_empty_stub = sandbox.stub(hdb_utils, 'isEmpty').throws(TEST_ERROR)
             is_server_running_stub.resolves(false);
             await launchIPCServer();
             is_empty_stub.restore();

@@ -768,6 +768,7 @@ describe('Test isServerRunning', () => {
     });
 
     after(() => {
+        sinon.resetHistory();
         sinon.restore();
     });
 
@@ -797,6 +798,7 @@ describe('Test stopProcess', () => {
     });
     
     after(() => {
+        sinon.resetHistory();
         sinon.restore();
     });
 

@@ -73,6 +73,7 @@ describe('Test schema module', function() {
     let sandbox = sinon.createSandbox();
 
     before(function() {
+        sinon.resetHistory();
         env.setProperty('HDB_ROOT', HDB_ROOT_TEST);
         insert_stub = sinon.stub(insert, 'insert');
         signal_schema_change_stub = sinon.stub(signalling, 'signalSchemaChange');
