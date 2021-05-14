@@ -7,6 +7,7 @@ const sinon_chai = require('sinon-chai');
 chai.use(sinon_chai);
 const rewire = require('rewire');
 const fs = require('fs-extra');
+const path = require('path');
 const test_util = require('../test_utils');
 const harper_logger = require('../../utility/logging/harper_logger');
 const env_mangr = require('../../utility/environment/environmentManager');
@@ -529,8 +530,8 @@ describe('Test run module', () => {
             is_port_taken_stub.resolves(false);
             await launchIPCServer();
 
-            expect(is_server_running_stub).to.have.been.calledWith('hdbIpcServer.js');
-            expect(stop_process_stub).to.have.been.calledWith('hdbIpcServer.js');
+            expect(is_server_running_stub).to.have.been.calledWith(path.resolve(__dirname, '../../server/ipc/hdbIpcServer.js'));
+            expect(stop_process_stub).to.have.been.calledWith(path.resolve(__dirname, '../../server/ipc/hdbIpcServer.js'));
             expect(is_port_taken_stub).to.have.been.calledWith(9383);
             expect(fork_stub.args[0][0]).to.include('harperdb/server/ipc/hdbIpcServer.js');
             expect(fork_stub.args[0][1]).to.eql([undefined]);
