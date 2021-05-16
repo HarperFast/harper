@@ -16,18 +16,6 @@ async function doesPathExist(path) {
 validate.validators.doesPathExist = doesPathExist;
 
 const constraints = {
-    PROJECT_DIR: {
-        presence: false,
-        format: {
-            pattern: "/^\\/|\\/\\/|(\\/[\\w-]+)+$",
-            message: "must be a valid unix directory path."
-        },
-        length: {
-            maximum: 250,
-            tooLong: 'cannot exceed 250 characters'
-        },
-        doesPathExist
-    },
     HDB_ROOT: {
         presence: false,
         format: {

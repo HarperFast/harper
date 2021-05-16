@@ -25,7 +25,8 @@ let FINGER_PRINT_FILE = undefined;
 let current_license = undefined;
 
 try {
-    FINGER_PRINT_FILE = `${env.get('PROJECT_DIR')}/utility/keys/${terms.REG_KEY_FILE_NAME}`;
+    FINGER_PRINT_FILE = path.resolve(__dirname, '../keys/', terms.REG_KEY_FILE_NAME);
+    //FINGER_PRINT_FILE = `${env.get('PROJECT_DIR')}/utility/keys/${terms.REG_KEY_FILE_NAME}`;
     if(!fs.existsSync(FINGER_PRINT_FILE)) {
         // As of version 2.0, we store the reg keys in ~/.harperdb.
         FINGER_PRINT_FILE = path.join(hdb_utils.getHomeDir(), terms.HDB_HOME_DIR_NAME, terms.LICENSE_KEY_DIR_NAME, terms.REG_KEY_FILE_NAME);

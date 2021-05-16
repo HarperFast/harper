@@ -475,8 +475,6 @@ function createSettingsFile(mount_status, callback) {
 
         let hdb_props_value = `   ;Settings for the HarperDB process.\n` +
             `\n` +
-            `   ;The directory harperdb has been installed in.\n` +
-            `${HDB_SETTINGS_NAMES.PROJECT_DIR_KEY} = ${path_module.resolve(__dirname, '../../')}\n` +
             `   ;The directory selected during install where the database files reside.\n` +
             `${HDB_SETTINGS_NAMES.HDB_ROOT_KEY} = ${wizard_result.HDB_ROOT}\n` +
             `   ;The port the HarperDB REST interface will listen on.\n` +
@@ -656,30 +654,6 @@ function generateKeys(callback) {
                 return callback(fs_write_file_err);
             }
             return callback();
-        });
-    });
-}
-
-
-function setupService(callback) {
-    fs.readFile(`./utility/install/harperdb.service`, 'utf8', function (err, data) {
-        let fileData = data.replace('{{project_dir}}', `${env.get('PROJECT_DIR')}`).replace('{{hdb_directory}}',
-            env.get('HDB_ROOT'));
-        fs.writeFile('/etc/systemd/system/harperdb.service', fileData, function (fs_write_file_err) {
-
-            if (fs_write_file_err) {
-                winston.info('error', `Service Setup Error ${fs_write_file_err}`);
-                console.error('There was a problem setting up the service.  Please check the install log for details.');
-                return callback(fs_write_file_err);
-            }
-
-            let terminal = spawn('bash');
-            terminal.stderr.on('data', function () {
-            });
-
-            terminal.stdin.write(`sudo systemctl daemon-reload &`);
-            terminal.stdin.end();
-            return callback(null, 'success');
         });
     });
 }
