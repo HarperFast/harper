@@ -4,6 +4,7 @@ const hdb_terms = require('../utility/hdbTerms');
 const os = require('os');
 const async_set_timeout = require('util').promisify(setTimeout);
 const log = require('../utility/logging/harper_logger');
+const final_logger = log.finalLogger();
 const signal = require('../utility/signalling');
 
 const HDB_PROC_END_TIMEOUT = 100;
@@ -34,7 +35,7 @@ async function restartProcesses(json_message) {
         return RESTART_RESPONSE_SOFT;
     } catch(err) {
         let msg = `There was an error restarting HarperDB. ${err}`;
-        log.error(msg);
+        final_logger.error(msg);
         return msg;
     }
 }
@@ -46,12 +47,12 @@ async function restartProcesses(json_message) {
 async function stop() {
     console.log("Stopping HarperDB.");
     try {
-        log.info(`Stopping ${hdb_terms.SC_PROC_NAME} - ${hdb_terms.SC_PROC_DESCRIPTOR}.`);
+        final_logger.info(`Stopping ${hdb_terms.SC_PROC_NAME} - ${hdb_terms.SC_PROC_DESCRIPTOR}.`);
         await killProcs(hdb_terms.SC_PROC_NAME, hdb_terms.SC_PROC_DESCRIPTOR);
-        log.info(`Stopping ${hdb_terms.HDB_PROC_NAME} - ${hdb_terms.HDB_PROC_DESCRIPTOR}.`);
+        final_logger.info(`Stopping ${hdb_terms.HDB_PROC_NAME} - ${hdb_terms.HDB_PROC_DESCRIPTOR}.`);
         await killProcs(hdb_terms.HDB_PROC_NAME, hdb_terms.HDB_PROC_DESCRIPTOR);
 
-        log.notify(`HarperDB has stopped`);
+        final_logger.notify(`HarperDB has stopped`);
     } catch(err){
         console.error(err);
         throw err;
@@ -103,7 +104,7 @@ async function checkHdbProcsEnd(proc_name){
     } while(go_on && x < CHECK_PROCS_LOOP_LIMIT);
 
     if(go_on) {
-        log.error('Unable to stop all the processes');
+        final_logger.error('Unable to stop all the processes');
         console.error('Unable to stop all the processes');
     }
 }

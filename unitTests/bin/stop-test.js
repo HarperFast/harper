@@ -12,7 +12,7 @@ const signal = require('../../utility/signalling');
 const hdb_terms = require('../../utility/hdbTerms');
 const logger = require('../../utility/logging/harper_logger');
 const rewire = require('rewire');
-let stop = rewire('../../bin/stop');
+let stop;
 
 chai.use(sinon_chai);
 
@@ -30,6 +30,8 @@ describe('Test stop.js' , () => {
     let console_log_spy;
     let console_error_stub;
     let find_ps_stub;
+    let final_logger_error_stub;
+    let final_logger_info_stub;
     let harper_instances_fake = [{
         pid: 2235,
         name: 'node',
@@ -57,6 +59,8 @@ describe('Test stop.js' , () => {
         log_error_stub = sandbox.stub(logger, 'error');
         log_info_stub = sandbox.stub(logger, 'info');
         // I had console.log as a stub but it was stopping npm test from running on the command line.
+        ({ final_logger_error_stub, final_logger_info_stub } = test_util.stubFinalLogger(sandbox, logger));
+        stop = rewire('../../bin/stop');
         console_log_spy = sandbox.spy(console, 'log');
         console_error_stub = sandbox.stub(console, 'error');
         find_ps_stub = sandbox.stub(ps_list, 'findPs');
@@ -108,8 +112,8 @@ describe('Test stop.js' , () => {
 
             expect(signal_stub).to.have.been.calledOnce;
             expect(result).to.equal(return_err);
-            expect(log_error_stub).to.have.been.calledOnce;
-            expect(log_error_stub).to.have.been.calledWith(return_err);
+            expect(final_logger_error_stub).to.have.been.calledOnce;
+            expect(final_logger_error_stub).to.have.been.calledWith(return_err);
         });
     });
 
@@ -135,11 +139,11 @@ describe('Test stop.js' , () => {
             expect(console_log_spy).to.have.been.calledOnce;
             expect(console_log_spy).to.have.been.calledWith('Stopping HarperDB.');
             expect(kill_procs_stub).to.have.been.calledTwice;
-            expect(log_info_stub).to.have.been.calledTwice;
+            expect(final_logger_info_stub).to.have.been.calledTwice;
             expect(kill_procs_stub).to.have.been.calledWith(hdb_terms.HDB_PROC_NAME, hdb_terms.HDB_PROC_DESCRIPTOR);
-            expect(log_info_stub).to.have.been.calledWith(`Stopping ${hdb_terms.HDB_PROC_NAME} - ${hdb_terms.HDB_PROC_DESCRIPTOR}.`);
+            expect(final_logger_info_stub).to.have.been.calledWith(`Stopping ${hdb_terms.HDB_PROC_NAME} - ${hdb_terms.HDB_PROC_DESCRIPTOR}.`);
             expect(kill_procs_stub).to.have.been.calledWith(hdb_terms.SC_PROC_NAME, hdb_terms.SC_PROC_DESCRIPTOR);
-            expect(log_info_stub).to.have.been.calledWith(`Stopping ${hdb_terms.SC_PROC_NAME} - ${hdb_terms.SC_PROC_DESCRIPTOR}.`);
+            expect(final_logger_info_stub).to.have.been.calledWith(`Stopping ${hdb_terms.SC_PROC_NAME} - ${hdb_terms.SC_PROC_DESCRIPTOR}.`);
         });
 
         it('should catch error from killProcs and console error it', async () => {
@@ -318,12 +322,13 @@ describe('Test stop.js' , () => {
         });
 
         it('should call unable to stop all processes', async () => {
+            sandbox.resetHistory();
             find_ps_stub.resolves(hdb_instance_first);
             await check_hdb_procs_end(hdb_terms.HDB_PROC_NAME);
 
             expect(async_set_timeout_stub).to.have.callCount(HDB_PROC_END_TIMEOUT);
-            expect(log_error_stub).to.have.been.calledOnce;
-            expect(log_error_stub).to.have.been.calledWith('Unable to stop all the processes');
+            expect(final_logger_error_stub).to.have.been.calledOnce;
+            expect(final_logger_error_stub).to.have.been.calledWith('Unable to stop all the processes');
             expect(console_error_stub).to.have.been.calledOnce;
             expect(console_error_stub).to.have.been.calledWith('Unable to stop all the processes');
         });

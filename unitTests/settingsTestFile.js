@@ -33,12 +33,9 @@ const SETTINGS = (settings_values = {}) => (
     '\t;Set to control amount of logging generated\n' +
     'Accepted levels are trace, debug, warn, error, fatal=\n' +
     'LOG_LEVEL=debug\n' +
-    '\t;Setting LOGGER to 1 uses the WINSTON logger\n' +
-    '\t; 2 Uses the more performant PINO logger\n' +
-    'LOGGER=1\n' +
     '\t;The path where log files will be written\n' +
     'LOG_PATH=/Users/harperdb/unitTests/envDir/log/hdb_log.log\n' +
-    '\t;Set to true to enable daily log file rotations - each log file name will be prepended with YYYY-MM-DD (for WINSTON logger only)\n' +
+    '\t;Set to true to enable daily log file rotations - each log file name will be prepended with YYYY-MM-DD\n' +
     'LOG_DAILY_ROTATE=false\n' +
     '\t;Set the number of daily log files to maintain when LOG_DAILY_ROTATE is enabled\n' +
     'If no integer value is set, no limit will be set for=\n' +

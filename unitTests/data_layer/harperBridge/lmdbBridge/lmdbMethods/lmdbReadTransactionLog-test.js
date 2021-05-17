@@ -2,7 +2,7 @@
 
 const test_utils = require('../../../../test_utils');
 test_utils.preTestPrep();
-const BASE_PATH = test_utils.getMockFSPath();
+const BASE_PATH = test_utils.getMockLMDBPath();
 
 const rewire = require('rewire');
 const environment_utility = rewire('../../../../../utility/lmdb/environmentUtility');
@@ -80,7 +80,7 @@ describe('Test lmdbReadTransactionLog module', ()=>{
         let txn_env;
         beforeEach(async ()=>{
             global.lmdb_map = undefined;
-            await fs.remove(test_utils.getMockFSPath());
+            await fs.remove(test_utils.getMockLMDBPath());
             await fs.mkdirp(BASE_PATH);
 
             txn_env = await lmdb_create_txn_envs(CREATE_TABLE_OBJ);
@@ -90,7 +90,7 @@ describe('Test lmdbReadTransactionLog module', ()=>{
             txn_env.close();
 
             global.lmdb_map = undefined;
-            await fs.remove(test_utils.getMockFSPath());
+            await fs.remove(test_utils.getMockLMDBPath());
         });
 
         it('test with no records', ()=>{
@@ -134,7 +134,7 @@ describe('Test lmdbReadTransactionLog module', ()=>{
         let txn_env;
         beforeEach(async ()=>{
             global.lmdb_map = undefined;
-            await fs.remove(test_utils.getMockFSPath());
+            await fs.remove(test_utils.getMockLMDBPath());
             await fs.mkdirp(BASE_PATH);
 
             txn_env = await lmdb_create_txn_envs(CREATE_TABLE_OBJ);
@@ -144,7 +144,7 @@ describe('Test lmdbReadTransactionLog module', ()=>{
             txn_env.close();
 
             global.lmdb_map = undefined;
-            await fs.remove(test_utils.getMockFSPath());
+            await fs.remove(test_utils.getMockLMDBPath());
         });
 
         it('test reading by hash value', async ()=>{
@@ -197,7 +197,7 @@ describe('Test lmdbReadTransactionLog module', ()=>{
         let txn_env;
         beforeEach(async ()=>{
             global.lmdb_map = undefined;
-            await fs.remove(test_utils.getMockFSPath());
+            await fs.remove(test_utils.getMockLMDBPath());
             await fs.mkdirp(BASE_PATH);
 
             txn_env = await lmdb_create_txn_envs(CREATE_TABLE_OBJ);
@@ -207,7 +207,7 @@ describe('Test lmdbReadTransactionLog module', ()=>{
             txn_env.close();
 
             global.lmdb_map = undefined;
-            await fs.remove(test_utils.getMockFSPath());
+            await fs.remove(test_utils.getMockLMDBPath());
         });
 
         it('test reading with no timestamps, should return all', async ()=>{
@@ -256,7 +256,7 @@ describe('Test lmdbReadTransactionLog module', ()=>{
         let txn_env;
         beforeEach(async ()=>{
             global.lmdb_map = undefined;
-            await fs.remove(test_utils.getMockFSPath());
+            await fs.remove(test_utils.getMockLMDBPath());
             await fs.mkdirp(BASE_PATH);
 
             global.hdb_schema = {
@@ -273,7 +273,7 @@ describe('Test lmdbReadTransactionLog module', ()=>{
             txn_env.close();
 
             global.lmdb_map = undefined;
-            await fs.remove(test_utils.getMockFSPath());
+            await fs.remove(test_utils.getMockLMDBPath());
             delete global.hdb_schema;
         });
 

@@ -11,10 +11,10 @@ const logger = require('../../../utility/logging/harper_logger');
 const sinon = require('sinon');
 const sandbox = sinon.createSandbox();
 const LMDB_TEST_FOLDER_NAME = 'lmdbTest';
-const BASE_TEST_PATH = path.join(test_utils.getMockFSPath(), LMDB_TEST_FOLDER_NAME);
+const BASE_TEST_PATH = path.join(test_utils.getMockLMDBPath(), LMDB_TEST_FOLDER_NAME);
 const DEV_PATH = path.join(BASE_TEST_PATH, 'dev');
 const PROD_PATH = path.join(BASE_TEST_PATH, 'prod');
-const BASE_TXN_PATH = path.join(test_utils.getMockFSPath(), 'txn');
+const BASE_TXN_PATH = path.join(test_utils.getMockLMDBPath(), 'txn');
 const DEV_TXN_PATH = path.join(BASE_TXN_PATH, 'dev');
 const PROD_TXN_PATH = path.join(BASE_TXN_PATH, 'prod');
 
@@ -26,7 +26,7 @@ describe('test cleanLMDBMap module', ()=>{
     let close_env_stub;
     beforeEach(async ()=>{
         global.lmdb_map = undefined;
-        await fs.remove(test_utils.getMockFSPath());
+        await fs.remove(test_utils.getMockLMDBPath());
         await fs.mkdirp(DEV_PATH);
         await fs.mkdirp(PROD_PATH);
         await fs.mkdirp(DEV_TXN_PATH);
@@ -38,7 +38,7 @@ describe('test cleanLMDBMap module', ()=>{
         close_env_stub.resetHistory();
         logger_error_stub.resetHistory();
         global.lmdb_map = undefined;
-        await fs.remove(test_utils.getMockFSPath());
+        await fs.remove(test_utils.getMockLMDBPath());
 
     });
 
@@ -49,7 +49,7 @@ describe('test cleanLMDBMap module', ()=>{
 
     after(async()=>{
         global.lmdb_map = undefined;
-        await fs.remove(test_utils.getMockFSPath());
+        await fs.remove(test_utils.getMockLMDBPath());
         sinon.restore();
     });
 

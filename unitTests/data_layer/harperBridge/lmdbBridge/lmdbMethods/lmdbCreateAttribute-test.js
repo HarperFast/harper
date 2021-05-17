@@ -6,7 +6,7 @@ test_utils.preTestPrep();
 const path = require('path');
 const LMDB_TEST_FOLDER_NAME = 'system';
 const SCHEMA_NAME = 'schema';
-const BASE_PATH = test_utils.getMockFSPath();
+const BASE_PATH = test_utils.getMockLMDBPath();
 const BASE_SCHEMA_PATH = path.join(BASE_PATH, SCHEMA_NAME);
 const BASE_TXN_PATH = path.join(BASE_PATH, 'transactions');
 const BASE_TEST_PATH = path.join(BASE_SCHEMA_PATH, LMDB_TEST_FOLDER_NAME);
@@ -86,7 +86,7 @@ describe("test lmdbCreateAttribute module", ()=>{
         //uuid_stub = sandbox.stub(uuid, 'v4').returns(MOCK_UUID_VALUE);
         global.hdb_schema = {system: systemSchema};
         global.lmdb_map = undefined;
-        await fs.remove(test_utils.getMockFSPath());
+        await fs.remove(test_utils.getMockLMDBPath());
         await fs.mkdirp(BASE_TEST_PATH);
 
 
@@ -125,7 +125,7 @@ describe("test lmdbCreateAttribute module", ()=>{
 
         delete global.hdb_schema;
         global.lmdb_map = undefined;
-        await fs.remove(test_utils.getMockFSPath());
+        await fs.remove(test_utils.getMockLMDBPath());
 
     });
 
@@ -208,7 +208,7 @@ describe("test lmdbCreateAttribute module", ()=>{
     });
 
     it('Test that validation error is thrown', async () => {
-        let attr_required = test_utils.generateHDBError('Attribute  is required', 400);
+        let attr_required = test_utils.generateHDBError('Attribute is required', 400);
         let create_attr_obj = test_utils.deepClone(CREATE_ATTR_OBJ_TEST);
         delete create_attr_obj.attribute;
         await test_utils.assertErrorAsync(lmdb_create_attribute, [create_attr_obj],attr_required);

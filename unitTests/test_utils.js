@@ -151,6 +151,17 @@ function getMockFSPath() {
     return path.join(UNIT_TEST_DIR, ENV_DIR_NAME);
 }
 
+/** HELPER METHODS TO CREATE MOCK HDB SCHEMA FILE SYSTEM STRUCTURE */
+/**
+ * Returns the path to the test root path that will be used for testing
+ * @returns String representing the path value to the mock file system directory
+ */
+function getMockLMDBPath() {
+    let lmdb_path = path.join(UNIT_TEST_DIR, ENV_DIR_NAME, process.pid.toString());
+    env.setProperty(terms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY, lmdb_path);
+    return lmdb_path;
+}
+
 /**
  * Validates that arguments passed into `createMockFS()` are not null, undefined, or "" - throws error, if so
  * @param argArray Array of arg values
@@ -733,7 +744,7 @@ function getHTTPSCredentials() {
             "P9kAKD3/uvPtZSz77jAdIk/1hwv+QUzahhhYHUcWL7N+nreYyigAdFI0/2Z/BcKO\n" +
             "KA+qobbatVaK0aihycZhrwyomOGBy5X/TpVTQWCvdNCL0Hg=\n" +
             "-----END CERTIFICATE-----"
-    }
+    };
 }
 
 /**
@@ -812,6 +823,35 @@ function assignObjectToNullObject(...objects){
     return Object.assign.apply(null, objects);
 }
 
+function stubFinalLogger(sandbox, logger) {
+    const final_logger_notify_stub = sandbox.stub().callsFake(() => {});
+    const final_logger_fatal_stub = sandbox.stub().callsFake(() => {});
+    const final_logger_error_stub = sandbox.stub().callsFake(() => {});
+    const final_logger_warn_stub = sandbox.stub().callsFake(() => {});
+    const final_logger_info_stub = sandbox.stub().callsFake(() => {});
+    const final_logger_debug_stub = sandbox.stub().callsFake(() => {});
+    const final_logger_trace_stub = sandbox.stub().callsFake(() => {});
+    sandbox.stub(logger, 'finalLogger').returns({
+        notify: final_logger_notify_stub,
+        fatal: final_logger_fatal_stub,
+        error: final_logger_error_stub,
+        warn: final_logger_warn_stub,
+        info: final_logger_info_stub,
+        debug: final_logger_debug_stub,
+        trace: final_logger_trace_stub
+    });
+
+    return {
+        final_logger_notify_stub,
+        final_logger_fatal_stub,
+        final_logger_error_stub,
+        final_logger_warn_stub,
+        final_logger_info_stub,
+        final_logger_debug_stub,
+        final_logger_trace_stub
+    };
+}
+
 /**
  * Creates stubbed value for an UpgradeObject
  *
@@ -823,7 +863,7 @@ function generateUpgradeObj(data_ver, upgrade_ver) {
     return {
         data_version: data_ver,
         upgrade_version: upgrade_ver
-    }
+    };
 }
 
 module.exports = {
@@ -839,6 +879,7 @@ module.exports = {
     tearDownMockFSSystem,
     makeTheDir,
     getMockFSPath,
+    getMockLMDBPath,
     sortAsc,
     sortDesc,
     sortAttrKeyMap,
@@ -851,5 +892,6 @@ module.exports = {
     assertErrorAsync,
     generateUpgradeObj,
     assignObjecttoNullObject: assignObjectToNullObject,
+    stubFinalLogger,
     COMMON_TEST_TERMS
 };

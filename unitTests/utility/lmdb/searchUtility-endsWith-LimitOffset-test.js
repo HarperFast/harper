@@ -11,7 +11,7 @@ const assert = require('assert');
 const test_data = require('../../personData.json');
 const sinon = require('sinon');
 const sandbox = sinon.createSandbox();
-const BASE_TEST_PATH = path.join(test_utils.getMockFSPath(), 'lmdbTest');
+const BASE_TEST_PATH = path.join(test_utils.getMockLMDBPath(), 'lmdbTest');
 const TEST_ENVIRONMENT_NAME = 'test';
 const HASH_ATTRIBUTE_NAME = 'id';
 
@@ -34,7 +34,7 @@ describe('test endsWith function', ()=> {
     let env;
     before(async () => {
         global.lmdb_map = undefined;
-        await fs.remove(test_utils.getMockFSPath());
+        await fs.remove(test_utils.getMockLMDBPath());
         await fs.mkdirp(BASE_TEST_PATH);
 
         env = await environment_utility.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
@@ -45,7 +45,7 @@ describe('test endsWith function', ()=> {
     after(async () => {
         env.close();
         global.lmdb_map = undefined;
-        await fs.remove(test_utils.getMockFSPath());
+        await fs.remove(test_utils.getMockLMDBPath());
     });
 
     it("test validation", () => {
@@ -113,7 +113,7 @@ describe('test endsWith function reverse limit offset', ()=> {
     before(async () => {
         date_stub = sandbox.stub(Date, 'now').returns(TIMESTAMP);
         global.lmdb_map = undefined;
-        await fs.remove(test_utils.getMockFSPath());
+        await fs.remove(test_utils.getMockLMDBPath());
         await fs.mkdirp(BASE_TEST_PATH);
 
         env = await environment_utility.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
@@ -125,7 +125,7 @@ describe('test endsWith function reverse limit offset', ()=> {
         date_stub.restore();
         env.close();
         global.lmdb_map = undefined;
-        await fs.remove(test_utils.getMockFSPath());
+        await fs.remove(test_utils.getMockLMDBPath());
     });
 
     it("test search on id limit 20", () => {
@@ -138,10 +138,10 @@ describe('test endsWith function reverse limit offset', ()=> {
 
     it("test search on id offset 20", () => {
         let expected = [[201,211,221,231,241,251,261,271,281,291,301,311,321,331,341,351,361,371,381,391,401,411,421,431,441,451,461,471,481,491,501,511,521,531,541,551,561,571,581,591,601,611,621,631,641,651,661,671,681,691,701,711,721,731,741,751,761,771,781,791,801,811,821,831,841,851,861,871,881,891,901,911,921,931,941,951,961,971,981,991],[{"id": 201},{"id": 211},{"id": 221},{"id": 231},{"id": 241},{"id": 251},{"id": 261},{"id": 271},{"id": 281},{"id": 291},{"id": 301},{"id": 311},{"id": 321},{"id": 331},{"id": 341},{"id": 351},{"id": 361},{"id": 371},{"id": 381},{"id": 391},{"id": 401},{"id": 411},{"id": 421},{"id": 431},{"id": 441},{"id": 451},{"id": 461},{"id": 471},{"id": 481},{"id": 491},{"id": 501},{"id": 511},{"id": 521},{"id": 531},{"id": 541},{"id": 551},{"id": 561},{"id": 571},{"id": 581},{"id": 591},{"id": 601},{"id": 611},{"id": 621},{"id": 631},{"id": 641},{"id": 651},{"id": 661},{"id": 671},{"id": 681},{"id": 691},{"id": 701},{"id": 711},{"id": 721},{"id": 731},{"id": 741},{"id": 751},{"id": 761},{"id": 771},{"id": 781},{"id": 791},{"id": 801},{"id": 811},{"id": 821},{"id": 831},{"id": 841},{"id": 851},{"id": 861},{"id": 871},{"id": 881},{"id": 891},{"id": 901},{"id": 911},{"id": 921},{"id": 931},{"id": 941},{"id": 951},{"id": 961},{"id": 971},{"id": 981},{"id": 991}]];
-        let results = test_utils.assertErrorSync(search_util.endsWith, [env, 'id', 'id', 1, false, undefined, 20], undefined, 'all arguments');
-        assert.deepEqual(results[0].length, 80);
-        assert.deepEqual(results[1].length, 80);
-        assert.deepEqual(results, expected);
+        let results = search_util.endsWith(env, 'id', 'id', 1, false, undefined, 20);
+        assert.deepEqual(results[0].length, 80, `expected results index 0 to be 80 but got ${results[0].length}`);
+        assert.deepEqual(results[1].length, 80, `expected results index 1 to be 80 but got ${results[1].length}`);
+        assert.deepEqual(results, expected, 'results does not match expected result');
     });
 
     it("test search on id limit 20 offset 20", () => {

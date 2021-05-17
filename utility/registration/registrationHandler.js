@@ -108,15 +108,8 @@ async function parseLicense(license, company) {
 }
 
 async function register() {
-    let data = await promptForRegistration().catch((err) => {
-       throw err;
-    });
-
-    let result = parseLicense(data.HDB_LICENSE, data.CUSTOMER_COMPANY).catch((err) => {
-       throw err;
-    });
-
-    return result;
+    let data = await promptForRegistration();
+    return parseLicense(data.HDB_LICENSE, data.CUSTOMER_COMPANY);
 }
 
 /**
@@ -150,10 +143,13 @@ async function promptForRegistration() {
         log.error(err);
     }
 
-    let data = await p_prompt_get(register_schema).catch((err) => {
+    let data;
+    try {
+        data = await p_prompt_get(register_schema);
+    } catch(err) {
         console.error('There was a problem prompting for registration input.  Exiting.');
         throw err;
-    });
+    }
 
     return data;
 }

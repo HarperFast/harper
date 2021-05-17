@@ -38,7 +38,10 @@ const DEFAULT_ERROR_RESP = DEFAULT_ERROR_MSGS[HTTP_STATUS_CODES.INTERNAL_SERVER_
 
 //Add all error messages that are generic and can be used across modules here
 const COMMON_ERROR_MSGS = {
-    OP_NOT_SUPPORTED_FOR_FS: (op) => `${op} is not available for this instance because it uses the File System data store.`
+    OP_NOT_SUPPORTED_FOR_FS: (op) => `${op} is not available for this instance because it uses the File System data store.`,
+    MISSING_VALUE: (value) => `${value} is missing.`,
+    INVALID_VALUE: (value) => `${value} is invalid.`,
+    NOT_FOUND: (value) => `${value} not found.`
 };
 
 const BULK_LOAD_ERROR_MSGS = {
@@ -119,7 +122,8 @@ const OPERATION_AUTH_ERROR_MSGS = {
     OP_NOT_FOUND: (op) => `Operation '${op}' not found`,
     SYSTEM_TIMESTAMP_PERMS_ERR: "Internal timestamp attributes - '__createdtime_' and '__updatedtime__' - cannot be inserted to or updated by HDB users.",
     UNKNOWN_OP_AUTH_ERROR: (op, schema, table) => `There was an error authorizing ${op} op on table '${schema}.${table}'`,
-    USER_HAS_NO_PERMS: (user) => `User ${user} has no role or permissions.  Please assign the user a valid role.`
+    USER_HAS_NO_PERMS: (user) => `User ${user} has no role or permissions.  Please assign the user a valid role.`,
+    DROP_SYSTEM: "The 'system' schema, tables and records are used internally by HarperDB and cannot be updated or removed."
 };
 
 const ROLE_PERMS_ERROR_MSGS = {
@@ -149,9 +153,12 @@ const ROLE_PERMS_ERROR_MSGS = {
 
 const SCHEMA_OP_ERROR_MSGS = {
     ATTR_NOT_FOUND: (schema, table, attr) => `Attribute '${attr}' does not exist on '${schema}.${table}'`,
+    ATTR_EXISTS_ERR: (schema, table, attr) => `Attribute '${attr}' already exists in ${schema}.${table}'`,
     DESCRIBE_ALL_ERR: "There was an error during describeAll.  Please check the logs and try again.",
     INVALID_TABLE_ERR: (table_result) => `Invalid table ${JSON.stringify(table_result)}`,
     SCHEMA_NOT_FOUND: (schema) => `Schema '${schema}' does not exist`,
+    SCHEMA_EXISTS_ERR: (schema) => `Schema '${schema}' already exists`,
+    TABLE_EXISTS_ERR: (schema, table) => `Table '${table}' already exists in schema '${schema}'`,
     SCHEMA_REQUIRED_ERR: "schema is required",
     TABLE_NOT_FOUND: (schema, table) => `Table '${schema}.${table}' does not exist`,
     TABLE_REQUIRED_ERR: "table is required"
@@ -174,6 +181,13 @@ const VALIDATION_ERROR_MSGS = {
     SEARCH_CONDITIONS_INVALID_SORT_ATTRIBUTE: (attribute) => `invalid sort attribute '${attribute}', the attribute must either be the table's hash attribute or an attribute used in conditions.`
 };
 
+const IPC_ERRORS = {
+    INVALID_IPC_DATA_TYPE: 'Invalid IPC message data type, must be an object',
+    MISSING_TYPE: "IPC message missing 'type' property",
+    MISSING_MSG: "IPC message missing 'message' property",
+    INVALID_EVENT: (event) => `IPC server received invalid event type: ${event}`
+};
+
 //into a single export while still allowing us to group them here in a more readable/searchable way
 const HDB_ERROR_MSGS = {
     ...AUTHENTICATION_ERROR_MSGS,
@@ -185,7 +199,8 @@ const HDB_ERROR_MSGS = {
     ...SQL_ERROR_MSGS,
     ...USER_ERROR_MSGS,
     ...WRITE_OPS_ERROR_MSGS,
-    ...VALIDATION_ERROR_MSGS
+    ...VALIDATION_ERROR_MSGS,
+    ...IPC_ERRORS
 };
 
 // All error messages should be added to the HDB_ERROR_MSGS ENUM for export - this helps to organize all error messages
@@ -197,5 +212,6 @@ module.exports = {
     HTTP_STATUS_CODES,
     LMDB_ERRORS_ENUM,
     AUTHENTICATION_ERROR_MSGS,
-    VALIDATION_ERROR_MSGS
+    VALIDATION_ERROR_MSGS,
+    IPC_ERRORS
 };

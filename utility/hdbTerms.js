@@ -66,6 +66,9 @@ const TRANSACTIONS_DIR_NAME = 'transactions';
 const LIMIT_COUNT_NAME = '.count';
 const ID_ATTRIBUTE_STRING = 'id';
 
+const INSTALL_LOG = 'install_log.log';
+const RUN_LOG = 'run_log.log';
+
 const CLUSTERING_PAYLOAD_FILE_NAME = '.scPayload.json';
 
 const CLUSTERING_FOLDER_NAMES_ENUM = {
@@ -311,20 +314,21 @@ const HDB_SETTINGS_NAMES = {
     LOG_DAILY_ROTATE_KEY: 'LOG_DAILY_ROTATE',
     LOG_MAX_DAILY_FILES_KEY: 'LOG_MAX_DAILY_FILES',
     PROPS_ENV_KEY: 'NODE_ENV',
-    SETTINGS_PATH_KEY: 'settings_path',
+    SETTINGS_PATH_KEY: 'settings_path', // This value is used in the boot prop file not the settings file. It should stay lowercase.
     CLUSTERING_PORT_KEY: 'CLUSTERING_PORT',
     CLUSTERING_NODE_NAME_KEY: 'NODE_NAME',
     CLUSTERING_ENABLED_KEY: 'CLUSTERING',
     ALLOW_SELF_SIGNED_SSL_CERTS: 'ALLOW_SELF_SIGNED_SSL_CERTS',
     MAX_HDB_PROCESSES: 'MAX_HDB_PROCESSES',
-    INSTALL_USER: 'install_user',
+    INSTALL_USER: 'install_user', // This value is used in the boot prop file not the settings file. It should stay lowercase.
     CLUSTERING_USER_KEY: 'CLUSTERING_USER',
     SERVER_TIMEOUT_KEY: 'SERVER_TIMEOUT_MS',
     SERVER_KEEP_ALIVE_TIMEOUT_KEY: 'SERVER_KEEP_ALIVE_TIMEOUT',
     SERVER_HEADERS_TIMEOUT_KEY: 'SERVER_HEADERS_TIMEOUT',
     DISABLE_TRANSACTION_LOG_KEY: 'DISABLE_TRANSACTION_LOG',
     OPERATION_TOKEN_TIMEOUT_KEY: 'OPERATION_TOKEN_TIMEOUT',
-    REFRESH_TOKEN_TIMEOUT_KEY: 'REFRESH_TOKEN_TIMEOUT'
+    REFRESH_TOKEN_TIMEOUT_KEY: 'REFRESH_TOKEN_TIMEOUT',
+    IPC_SERVER_PORT: 'IPC_SERVER_PORT'
 };
 
 /**
@@ -336,16 +340,15 @@ const HDB_SETTINGS_NAMES_REVERSE_LOOKUP = _.invert(HDB_SETTINGS_NAMES);
 // Default values for the Settings, some do not have a default.
 const HDB_SETTINGS_DEFAULT_VALUES = {
     SERVER_PORT: 9925,
-    HTTPS_ON: 'true',
-    CORS_ON: 'true',
+    HTTPS_ON: false,
+    CORS_ON: true,
     CORS_WHITELIST: '',
     SERVER_TIMEOUT_MS: 120000,
     SERVER_KEEP_ALIVE_TIMEOUT: 5000,
     SERVER_HEADERS_TIMEOUT: 60000,
     LOG_LEVEL: 'error',
-    LOGGER: '1',
-    LOG_PATH: './harper_log.log',
-    LOG_DAILY_ROTATE_KEY: 'false',
+    LOG_PATH: 'log/hdb_log.log',
+    LOG_DAILY_ROTATE_KEY: false,
     LOG_MAX_DAILY_FILES_KEY: '',
     NODE_ENV: 'production',
     CLUSTERING_PORT: '5545',
@@ -353,7 +356,9 @@ const HDB_SETTINGS_DEFAULT_VALUES = {
     MAX_HDB_PROCESSES: 4,
     DISABLE_TRANSACTION_LOG: false,
     OPERATION_TOKEN_TIMEOUT: '1d',
-    REFRESH_TOKEN_TIMEOUT: '30d'
+    REFRESH_TOKEN_TIMEOUT: '30d',
+    IPC_SERVER_PORT: 9383,
+    ALLOW_SELF_SIGNED_SSL_CERTS: false
 };
 
 // Describes all available job types
@@ -502,6 +507,23 @@ const JWT_ENUM = {
     JWT_PASSPHRASE_NAME: '.jwtPass'
 };
 
+const HDB_IPC_SERVER = 'hdb_ipc_server';
+const HDB_IPC_CLIENT_PREFIX = 'hdb_ipc_client_';
+const IPC_EVENT_TYPES = {
+    CREATE_SCHEMA: 'create_schema',
+    CREATE_TABLE: 'create_table',
+    CREATE_ATTRIBUTE: 'create_attribute',
+    DROP_SCHEMA: 'drop_schema',
+    DROP_TABLE: 'drop_table',
+    DROP_ATTRIBUTE: 'drop_attribute',
+    ADD_USER: 'add_user',
+    ADD_ROLE: 'add_role',
+    ALTER_USER: 'alter_user',
+    ALTER_ROLE: 'alter_role',
+    DROP_ROLE: 'drop_role',
+    DROP_USER: 'drop_user'
+};
+
 module.exports = {
     LOCAL_HARPERDB_OPERATIONS,
     HDB_SUPPORT_ADDRESS,
@@ -600,5 +622,10 @@ module.exports = {
     FUNC_VAL,
     READ_TRANSACTION_LOG_SEARCH_TYPES_ENUM,
     JWT_ENUM,
-    CLUSTERING_FLAG
+    CLUSTERING_FLAG,
+    RUN_LOG,
+    INSTALL_LOG,
+    HDB_IPC_SERVER,
+    IPC_EVENT_TYPES,
+    HDB_IPC_CLIENT_PREFIX
 };

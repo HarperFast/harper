@@ -2,7 +2,7 @@
  * INSTALLER.JS
  *
  * This module is used to install HarperDB.  It is meant to be a self contained module which is why it configures
- * it's own winston instance.
+ * it's own pino instance.
  */
 
 const prompt = require('prompt');
@@ -11,7 +11,7 @@ const path = require('path');
 const mount = require('./../mount_hdb');
 const fs = require('fs-extra');
 const colors = require("colors/safe");
-const winston = require('winston');
+const pino = require('pino');
 const async = require('async');
 const minimist = require('minimist');
 const forge = require('node-forge');
@@ -23,7 +23,8 @@ const comm = require('../common_utils');
 const hdb_terms = require('../hdbTerms');
 const hdbInfoController = require('../../data_layer/hdbInfoController');
 const version = require('../../bin/version');
-const LOG_LOCATION = ('../install_log.log');
+// Location of the install log - the harperdb dir.
+const LOG_LOCATION = path.resolve( __dirname, `../../${hdb_terms.INSTALL_LOG}`);
 const check_jwt_tokens = require('./checkJWTTokensExist');
 
 module.exports = {
@@ -35,6 +36,7 @@ const schema = require('../../utility/globalSchema');
 
 let wizard_result;
 let check_install_path = false;
+let install_logger;
 const KEY_PAIR_BITS = 2048;
 
 env.initSync();
@@ -45,33 +47,37 @@ env.initSync();
  * @param callback
  */
 function run_install(callback) {
-    winston.configure({
-        transports: [
-            new (winston.transports.File)({
-                filename: LOG_LOCATION,
-                level: 'verbose',
-                handleExceptions: true,
-                prettyPrint: true
-            })
-        ],
-        exitOnError: false
-    });
+    install_logger = pino({
+        level: 'trace',
+        name: 'Install-log',
+        messageKey: 'message',
+        timestamp: () => `,"timestamp":"${new Date(Date.now()).toISOString()}"`,
+        formatters: {
+            bindings() {
+                return undefined; // Removes pid and hostname from log
+            },
+            level (label) {
+                return { level: label };
+            }
+        },
+    }, LOG_LOCATION);
+
 
     if (comm.isEmptyOrZeroLength(os.userInfo().uid)) {
         let msg = `Installing user: ${os.userInfo().username} has no pid.  Please install with a properly created user. Cancelling install.`;
-        winston.error(msg);
+        install_logger.error(msg);
         console.log(msg);
         return callback(msg, null);
     }
     prompt.override = minimist(process.argv);
     prompt.start();
-    winston.info('starting install');
+    install_logger.info('starting install');
     checkInstall(function (err, keepGoing) {
         if (keepGoing) {
             async.waterfall([
                 termsAgreement,
                 wizard,
-                async.apply(mount, winston),
+                async.apply(mount, install_logger),
                 createSettingsFile,
                 createSuperUser,
                 createClusterUser,
@@ -81,7 +87,7 @@ function run_install(callback) {
                     check_jwt_tokens();
 
                     console.log('HarperDB Installation was successful');
-                    winston.info('Installation Successful');
+                    install_logger.info('Installation Successful');
                     process.exit(0);
                 }
             ], function (install_err) {
@@ -109,17 +115,17 @@ function insertHdbInfo(callback) {
         //Add initial hdb_info record for new install
         hdbInfoController.insertHdbInstallInfo(vers)
             .then(res => {
-                winston.info('Product version info was properly inserted');
+                install_logger.info('Product version info was properly inserted');
                 return callback(null, res);
             })
             .catch(err => {
-                winston.error('Error inserting product version info');
-                winston.error(err);
+                install_logger.error('Error inserting product version info');
+                install_logger.error(err);
                 return callback(err, null);
             });
     } else {
         const err_msg = 'The version is missing/removed from package.json';
-        winston.error(err_msg);
+        install_logger.error(err_msg);
         console.log(err_msg);
         return callback(err_msg, null);
     }
@@ -130,7 +136,7 @@ function insertHdbInfo(callback) {
  * @param {*} callback
  */
 function termsAgreement(callback) {
-    winston.info('Asking for terms agreement.');
+    install_logger.info('Asking for terms agreement.');
     prompt.message = ``;
     const line_break = os.EOL;
     let terms_schema = {
@@ -146,7 +152,7 @@ function termsAgreement(callback) {
             return callback(null, true);
         }
         console.log(colors.yellow(`Terms & Conditions acceptance is required to proceed with installation.`));
-        winston.error('Terms and Conditions agreement was refused.');
+        install_logger.error('Terms and Conditions agreement was refused.');
         return callback('REFUSED', false);
     });
 }
@@ -157,7 +163,7 @@ function termsAgreement(callback) {
  * @param callback
  */
 function checkInstall(callback) {
-    winston.info('Checking for previous installation.');
+    install_logger.info('Checking for previous installation.');
     try {
         let boot_prop_path = comm.getPropsFilePath();
         fs.accessSync(boot_prop_path, fs.constants.F_OK | fs.constants.R_OK);
@@ -173,7 +179,7 @@ function checkInstall(callback) {
 }
 
 function promptForReinstall(callback) {
-    winston.info('Previous install detected, asking for reinstall.');
+    install_logger.info('Previous install detected, asking for reinstall.');
     let reinstall_schema = {
         properties: {
             REINSTALL: {
@@ -207,14 +213,14 @@ function promptForReinstall(callback) {
                     // don't keep data, tear it all out.
                     fs.remove(env.get('HDB_ROOT'), function (fs_remove_err) {
                         if (fs_remove_err) {
-                            winston.error(fs_remove_err);
+                            install_logger.error(fs_remove_err);
                             console.log('There was a problem removing the existing installation.  Please check the install log for details.');
                             return callback(fs_remove_err);
                         }
 
                         fs.unlink(env.BOOT_PROPS_FILE_PATH, function (fs_unlink_err) {
                             if (fs_unlink_err) {
-                                winston.error(fs_unlink_err);
+                                install_logger.error(fs_unlink_err);
                                 console.log('There was a problem removing the existing installation.  Please check the install log for details.');
                                 return callback(fs_unlink_err);
                             }
@@ -241,7 +247,7 @@ function promptForReinstall(callback) {
  */
 function wizard(err, callback) {
     prompt.message = ``;
-    winston.info('Starting install wizard');
+    install_logger.info('Starting install wizard');
     let admin_username;
     let install_schema = {
         properties: {
@@ -354,7 +360,7 @@ function wizard(err, callback) {
 }
 
 function createSuperUser(callback){
-    winston.info('Creating Super user.');
+    install_logger.info('Creating Super user.');
     let role = {
         role: 'super_user',
         permission: {
@@ -378,7 +384,7 @@ function createSuperUser(callback){
 }
 
 function createClusterUser(callback){
-    winston.info('Creating Cluster user.');
+    install_logger.info('Creating Cluster user.');
     let role = {
         role: 'cluster_user',
         permission: {
@@ -405,7 +411,7 @@ function createClusterUser(callback){
 }
 
 function createAdminUser(role, admin_user, callback) {
-    winston.info('Creating admin user.');
+    install_logger.info('Creating admin user.');
     // These need to be defined here since they use the hdb_boot_properties file, but it has not yet been created
     // in the installer.
     const user_ops = require('../../security/user');
@@ -417,7 +423,7 @@ function createAdminUser(role, admin_user, callback) {
     schema.setSchemaDataToGlobal(() => {
         cb_role_add_role(role, (err, res) => {
             if (err) {
-                winston.error('role failed to create ' + err);
+                install_logger.error('role failed to create ' + err);
                 console.log('There was a problem creating the default role.  Please check the install log for details.');
                 return callback(err);
             }
@@ -430,7 +436,7 @@ function createAdminUser(role, admin_user, callback) {
 
             cb_user_add_user(admin_user, (add_user_err) => {
                 if (add_user_err) {
-                    winston.error('user creation error' + add_user_err);
+                    install_logger.error('user creation error' + add_user_err);
                     console.error('There was a problem creating the admin user.  Please check the install log for details.');
                     return callback(add_user_err);
                 }
@@ -442,24 +448,24 @@ function createAdminUser(role, admin_user, callback) {
 
 function createSettingsFile(mount_status, callback) {
     console.log('Starting HarperDB Install...');
-    winston.info('Creating settings file.');
+    install_logger.info('Creating settings file.');
     if (mount_status !== 'complete') {
-        winston.error('mount failed.');
+        install_logger.error('mount failed.');
         return callback('mount failed');
     }
 
     let settings_path = `${wizard_result.HDB_ROOT}/config/settings.js`;
     createBootPropertiesFile(settings_path, (err) => {
-        winston.info('info', `creating settings file....`);
+        install_logger.info('info', `creating settings file....`);
         if (err) {
-            winston.info('info', 'boot properties error' + err);
+            install_logger.info('info', 'boot properties error' + err);
             console.error('There was a problem creating the boot file.  Please check the install log for details.');
             return callback(err);
         }
         let num_cores = 4;
         try {
             num_cores = os.cpus().length;
-            winston.info(`Detected ${num_cores} on this machine, defaulting MAX_HDB_PROCESSES to that.  This can be changed later in the settings.js file.`);
+            install_logger.info(`Detected ${num_cores} on this machine, defaulting MAX_HDB_PROCESSES to that.  This can be changed later in the settings.js file.`);
         } catch (cpus_err) {
             //No-op, should only get here in the case of android.  Defaulted to 4.
         }
@@ -472,6 +478,7 @@ function createSettingsFile(mount_status, callback) {
         let clustering_username = wizard_result.CLUSTERING_USERNAME !== undefined ? wizard_result.CLUSTERING_USERNAME : '';
 
         let HDB_SETTINGS_NAMES = hdb_terms.HDB_SETTINGS_NAMES;
+        let HDB_SETTINGS_DEFAULT = hdb_terms.HDB_SETTINGS_DEFAULT_VALUES;
 
         let hdb_props_value = `   ;Settings for the HarperDB process.\n` +
             `\n` +
@@ -484,35 +491,32 @@ function createSettingsFile(mount_status, callback) {
             `   ;The path to the SSL private key used when running with HTTPS enabled.\n` +
             `${HDB_SETTINGS_NAMES.PRIVATE_KEY_KEY} = ${wizard_result.HDB_ROOT}/keys/privateKey.pem\n` +
             `   ;Set to true to enable HTTPS on the HarperDB REST endpoint.  Requires a valid certificate and key.\n` +
-            `${HDB_SETTINGS_NAMES.HTTP_SECURE_ENABLED_KEY} = false\n` +
+            `${HDB_SETTINGS_NAMES.HTTP_SECURE_ENABLED_KEY} = ${HDB_SETTINGS_DEFAULT.HTTPS_ON}\n` +
             `   ;Set to true to enable Cross Origin Resource Sharing, which allows requests across a domain.\n` +
-            `${HDB_SETTINGS_NAMES.CORS_ENABLED_KEY} = true\n` +
+            `${HDB_SETTINGS_NAMES.CORS_ENABLED_KEY} = ${HDB_SETTINGS_DEFAULT.CORS_ON}\n` +
             `   ;Allows for setting allowable domains with CORS. Comma separated list.\n` +
-            `${HDB_SETTINGS_NAMES.CORS_WHITELIST_KEY} =\n` +
+            `${HDB_SETTINGS_NAMES.CORS_WHITELIST_KEY} = ${HDB_SETTINGS_DEFAULT.CORS_WHITELIST}\n` +
             `   ;Length of time in milliseconds after which a request will timeout.  Defaults to 120,000 ms (2 minutes).\n` +
-            `${HDB_SETTINGS_NAMES.SERVER_TIMEOUT_KEY} = 120000\n` +
+            `${HDB_SETTINGS_NAMES.SERVER_TIMEOUT_KEY} = ${HDB_SETTINGS_DEFAULT.SERVER_TIMEOUT_MS}\n` +
             `   ;The number of milliseconds of inactivity a server needs to wait for additional incoming data, after it has finished writing the last response.  Defaults to 5,000 ms (5 seconds).\n` +
-            `${HDB_SETTINGS_NAMES.SERVER_KEEP_ALIVE_TIMEOUT_KEY} = 5000\n` +
+            `${HDB_SETTINGS_NAMES.SERVER_KEEP_ALIVE_TIMEOUT_KEY} = ${HDB_SETTINGS_DEFAULT.SERVER_KEEP_ALIVE_TIMEOUT}\n` +
             `   ;Limit the amount of time the parser will wait to receive the complete HTTP headers..  Defaults to 60,000 ms (1 minute).\n` +
-            `${HDB_SETTINGS_NAMES.SERVER_HEADERS_TIMEOUT_KEY} = 60000\n` +
+            `${HDB_SETTINGS_NAMES.SERVER_HEADERS_TIMEOUT_KEY} = ${HDB_SETTINGS_DEFAULT.SERVER_HEADERS_TIMEOUT}\n` +
             `   ;Set to control amount of logging generated.  Accepted levels are trace, debug, warn, error, fatal.\n` +
-            `${HDB_SETTINGS_NAMES.LOG_LEVEL_KEY} = warn\n` +
-            `   ;Setting LOGGER to 1 uses the WINSTON logger.\n` +
-            `   ; 2 Uses the more performant PINO logger.\n` +
-            `${HDB_SETTINGS_NAMES.LOGGER_KEY} = 1\n` +
+            `${HDB_SETTINGS_NAMES.LOG_LEVEL_KEY} = ${HDB_SETTINGS_DEFAULT.LOG_LEVEL}\n` +
             `   ;The path where log files will be written. If there is no file name included in the path, the log file will be created by default as 'hdb_log.log' \n` +
-            `${HDB_SETTINGS_NAMES.LOG_PATH_KEY} = ${wizard_result.HDB_ROOT}/log/hdb_log.log\n` +
-            `   ;Set to true to enable daily log file rotations - each log file name will be prepended with YYYY-MM-DD (for WINSTON logger only).\n` +
-            `${HDB_SETTINGS_NAMES.LOG_DAILY_ROTATE_KEY} = false\n` +
+            `${HDB_SETTINGS_NAMES.LOG_PATH_KEY} = ${wizard_result.HDB_ROOT}/${HDB_SETTINGS_DEFAULT.LOG_PATH}\n` +
+            `   ;Set to true to enable daily log file rotations - each log file name will be prepended with YYYY-MM-DD.\n` +
+            `${HDB_SETTINGS_NAMES.LOG_DAILY_ROTATE_KEY} = ${HDB_SETTINGS_DEFAULT.LOG_DAILY_ROTATE_KEY}\n` +
             `   ;Set the number of daily log files to maintain when LOG_DAILY_ROTATE is enabled. If no integer value is set, no limit will be set for\n` +
             `   ;daily log files which may consume a large amount of storage depending on your log settings.\n` +
-            `${HDB_SETTINGS_NAMES.LOG_MAX_DAILY_FILES_KEY} =\n` +
+            `${HDB_SETTINGS_NAMES.LOG_MAX_DAILY_FILES_KEY} = ${HDB_SETTINGS_DEFAULT.LOG_MAX_DAILY_FILES_KEY}\n` +
             `   ;The environment used by NodeJS.  Setting to production will be the most performant, settings to development will generate more logging.\n` +
-            `${HDB_SETTINGS_NAMES.PROPS_ENV_KEY} = production\n` +
+            `${HDB_SETTINGS_NAMES.PROPS_ENV_KEY} = ${HDB_SETTINGS_DEFAULT.NODE_ENV}\n` +
             `   ;This allows self signed certificates to be used in clustering.  This is a security risk\n` +
             `   ;as clustering will not validate the cert, so should only be used internally.\n` +
             `   ;The HDB install creates a self signed certificate, if you use that cert this must be set to true.\n` +
-            `${HDB_SETTINGS_NAMES.ALLOW_SELF_SIGNED_SSL_CERTS} = false\n` +
+            `${HDB_SETTINGS_NAMES.ALLOW_SELF_SIGNED_SSL_CERTS} = ${HDB_SETTINGS_DEFAULT.ALLOW_SELF_SIGNED_SSL_CERTS}\n` +
             `   ;Set the max number of processes HarperDB will start.  This can also be limited by number of cores and licenses.\n` +
             `${HDB_SETTINGS_NAMES.MAX_HDB_PROCESSES} = ${num_cores}\n` +
             `   ;Set to true to enable clustering.  Requires a valid enterprise license.\n` +
@@ -520,24 +524,26 @@ function createSettingsFile(mount_status, callback) {
             `   ;The port that will be used for HarperDB clustering.\n` +
             `${HDB_SETTINGS_NAMES.CLUSTERING_PORT_KEY} = ${clustering_port}\n` +
             `   ;The name of this node in your HarperDB cluster topology.  This must be a value unique from the rest of your cluster node names.\n` +
-            `${HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY}=${node_name}\n` +
+            `${HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY} = ${node_name}\n` +
             `   ;The user used to connect to other instances of HarperDB, this user must have a role of cluster_user. \n` +
-            `${HDB_SETTINGS_NAMES.CLUSTERING_USER_KEY}=${clustering_username}\n` +
+            `${HDB_SETTINGS_NAMES.CLUSTERING_USER_KEY} = ${clustering_username}\n` +
             `   ;Defines if this instance does not record transactions. Note, if Clustering is enabled and Transaction Log is disabled your nodes will not catch up.  \n` +
-            `${HDB_SETTINGS_NAMES.DISABLE_TRANSACTION_LOG_KEY} = false\n` +
+            `${HDB_SETTINGS_NAMES.DISABLE_TRANSACTION_LOG_KEY} = ${HDB_SETTINGS_DEFAULT.DISABLE_TRANSACTION_LOG}\n` +
             `   ;Defines the length of time an operation token will be valid until it expires. Example values: https://github.com/vercel/ms  \n` +
-            `${HDB_SETTINGS_NAMES.OPERATION_TOKEN_TIMEOUT_KEY} = 1d\n` +
+            `${HDB_SETTINGS_NAMES.OPERATION_TOKEN_TIMEOUT_KEY} = ${HDB_SETTINGS_DEFAULT.OPERATION_TOKEN_TIMEOUT}\n` +
             `   ;Defines the length of time a refresh token will be valid until it expires. Example values: https://github.com/vercel/ms  \n` +
-            `${HDB_SETTINGS_NAMES.REFRESH_TOKEN_TIMEOUT_KEY} = 30d\n`
+            `${HDB_SETTINGS_NAMES.REFRESH_TOKEN_TIMEOUT_KEY} = ${HDB_SETTINGS_DEFAULT.REFRESH_TOKEN_TIMEOUT}\n` +
+            `   ;The port the IPC server will run on.\n` +
+            `${HDB_SETTINGS_NAMES.IPC_SERVER_PORT} = ${HDB_SETTINGS_DEFAULT.IPC_SERVER_PORT}\n`
         ;
 
-        winston.info('info', `hdb_props_value ${JSON.stringify(hdb_props_value)}`);
-        winston.info('info', `settings path: ${env.get('settings_path')}`);
+        install_logger.info('info', `hdb_props_value ${JSON.stringify(hdb_props_value)}`);
+        install_logger.info('info', `settings path: ${env.get('settings_path')}`);
         try {
             fs.writeFile(env.get('settings_path'), hdb_props_value, function (fs_write_file_err) {
                 if (fs_write_file_err) {
                     console.error('There was a problem writing the settings file.  Please check the install log for details.');
-                    winston.error(fs_write_file_err);
+                    install_logger.error(fs_write_file_err);
                     return callback(fs_write_file_err);
                 }
                 // load props
@@ -545,13 +551,13 @@ function createSettingsFile(mount_status, callback) {
                 return callback(null);
             });
         } catch (e) {
-            winston.info(e);
+            install_logger.info(e);
         }
     });
 }
 
 function generateKeys(callback) {
-    winston.info('Generating keys files.');
+    install_logger.info('Generating keys files.');
     let pki = forge.pki;
     let keys = pki.rsa.generateKeyPair(KEY_PAIR_BITS);
     let cert = pki.createCertificate();
@@ -643,13 +649,13 @@ function generateKeys(callback) {
     // convert a Forge certificate to PEM
     fs.writeFile(env.get('CERTIFICATE'), pki.certificateToPem(cert), function (err) {
         if (err) {
-            winston.error(err);
+            install_logger.error(err);
             console.error('There was a problem creating the PEM file.  Please check the install log for details.');
             return callback(err);
         }
         fs.writeFile(env.get('PRIVATE_KEY'), forge.pki.privateKeyToPem(keys.privateKey), function (fs_write_file_err) {
             if (fs_write_file_err) {
-                winston.error(fs_write_file_err);
+                install_logger.error(fs_write_file_err);
                 console.error('There was a problem creating the private key file.  Please check the install log for details.');
                 return callback(fs_write_file_err);
             }
@@ -659,9 +665,9 @@ function generateKeys(callback) {
 }
 
 function createBootPropertiesFile(settings_path, callback) {
-    winston.info('info', 'creating boot file');
+    install_logger.info('info', 'creating boot file');
     if (!settings_path) {
-        winston.error('info', 'missing settings path');
+        install_logger.error('info', 'missing settings path');
         return callback('missing setings');
     }
     let install_user = undefined;
@@ -678,7 +684,7 @@ function createBootPropertiesFile(settings_path, callback) {
     if(!install_user) {
         let msg = 'Could not determine current username in this environment.  Please set the USERNAME environment variable in your OS and try install again.';
         console.error(msg);
-        winston.error(msg);
+        install_logger.error(msg);
         return callback(msg, null);
     }
     let boot_props_value = `settings_path = ${settings_path}
@@ -697,11 +703,11 @@ function createBootPropertiesFile(settings_path, callback) {
     let props_file_path = path.join(home_dir_path, hdb_terms.BOOT_PROPS_FILE_NAME);
     fs.writeFile(props_file_path, boot_props_value, function (err) {
         if (err) {
-            winston.error('info', `Bootloader error ${err}`);
+            install_logger.error('info', `Bootloader error ${err}`);
             console.error('There was a problem creating the boot file.  Please check the install log for details.');
             return callback(err);
         }
-        winston.info('info', `props path ${props_file_path}`);
+        install_logger.info('info', `props path ${props_file_path}`);
         env.setProperty(hdb_terms.HDB_SETTINGS_NAMES.INSTALL_USER, `${install_user}`);
         env.setProperty(hdb_terms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY, settings_path);
         env.setPropsFilePath(props_file_path);

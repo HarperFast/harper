@@ -606,12 +606,7 @@ async function authHeaderToUser(json_body) {
     let req = {};
     req.headers = {};
     req.headers.authorization = json_body.hdb_auth_header;
-
-    let user = await p_auth_authorize(req, null)
-        .catch((e) => {
-            throw e;
-        });
-    json_body.hdb_user = user;
+    json_body.hdb_user = await p_auth_authorize(req, null);
     return json_body;
 }
 
