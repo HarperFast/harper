@@ -508,6 +508,7 @@ const JWT_ENUM = {
     JWT_PASSPHRASE_NAME: '.jwtPass'
 };
 
+const IPC_SERVER_MODULE = `hdbIpcServer.${CODE_EXTENSION}`;
 const HDB_IPC_SERVER = 'hdb_ipc_server';
 const HDB_IPC_CLIENT_PREFIX = 'hdb_ipc_client_';
 const IPC_EVENT_TYPES = {
@@ -626,6 +627,7 @@ module.exports = {
     CLUSTERING_FLAG,
     RUN_LOG,
     INSTALL_LOG,
+    IPC_SERVER_MODULE,
     HDB_IPC_SERVER,
     IPC_EVENT_TYPES,
     HDB_IPC_CLIENT_PREFIX

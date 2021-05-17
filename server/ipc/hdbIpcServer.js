@@ -62,3 +62,4 @@ function messageListener(data) {
 }
 
 ipc.server.start();
+hdb_logger.trace(`HDB IPC Server: ${hdb_terms.HDB_IPC_SERVER}, started on port: ${env.get(hdb_terms.HDB_SETTINGS_NAMES.IPC_SERVER_PORT)}`);

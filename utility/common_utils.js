@@ -5,6 +5,7 @@ const log = require('./logging/harper_logger');
 const fs_extra = require('fs-extra');
 const truncate = require('truncate-utf8-bytes');
 const os = require('os');
+const net = require('net');
 const RecursiveIterator = require('recursive-iterator');
 const terms = require('./hdbTerms');
 const ps_list = require('./psList');
@@ -22,8 +23,6 @@ const CHECK_PROCS_LOOP_LIMIT = 5;
 const EMPTY_STRING = '';
 const FILE_EXTENSION_LENGTH = 4;
 const CHARACTER_LIMIT = 255;
-
-const HDB_PROC_NAME = terms.HDB_PROC_NAME;
 
 //Because undefined will not return in a JSON response, we convert undefined to null when autocasting
 const AUTOCAST_COMMON_STRINGS = {
@@ -52,7 +51,7 @@ module.exports = {
     valueConverter: valueConverter,
     timeoutPromise: timeoutPromise,
     callProcessSend: callProcessSend,
-    isHarperRunning: isHarperRunning,
+    isServerRunning: isServerRunning,
     isClusterOperation: isClusterOperation,
     getClusterUser: getClusterUser,
     sendTransactionToSocketCluster,
@@ -72,7 +71,9 @@ module.exports = {
     isObject,
     isNotEmptyAndHasValue,
     autoCasterIsNumberCheck,
-    backtickASTSchemaItems
+    backtickASTSchemaItems,
+    isPortTaken,
+    stopProcess
 };
 
 /**
@@ -471,23 +472,38 @@ function callProcessSend(process_msg) {
 }
 
 /**
- * Uses module ps_list to check if hdb process is running
- *
+ * Checks all running processes to see if any match the name provided.
+ * @param module_name
  * @returns {Promise<boolean>}
  */
-async function isHarperRunning(){
-    try {
-        let hdb_running = false;
-        const list = await ps_list.findPs(HDB_PROC_NAME);
+async function isServerRunning(module_name){
+    let hdb_running = false;
+    const list = await ps_list.findPs(module_name);
 
-        if(!isEmptyOrZeroLength(list)) {
-            hdb_running = true;
-        }
-
-        return hdb_running;
-    } catch(err) {
-        throw err;
+    if(!isEmptyOrZeroLength(list)) {
+        hdb_running = true;
     }
+
+    return hdb_running;
+}
+
+/**
+ * Checks to see if a port is taken or not.
+ * @param port
+ * @returns {Promise<unknown>}
+ */
+function isPortTaken(port) {
+    if(!port) {
+        throw new Error(`Invalid port passed as parameter`);
+    }
+
+    // To check if a port is taken or not we create a tester server at the provided port.
+    return new Promise((resolve, reject) => {
+        const tester = net.createServer()
+            .once('error', (err) => {err.code === 'EADDRINUSE' ? resolve(true) : reject(err);})
+            .once('listening', () => tester.once('close', () => resolve(false)).close())
+            .listen(port);
+    });
 }
 
 /**
@@ -768,4 +784,23 @@ function backtickASTSchemaItems(statement) {
         log.error(`Got an error back ticking items.`);
         log.error(err);
     }
+}
+
+/**
+ * Finds a process by its module name then kills it.
+ * @param module
+ * @returns {Promise<void>}
+ */
+async function stopProcess(module) {
+    const curr_user = os.userInfo();
+    const module_ps = await ps_list.findPs(module);
+    module_ps.forEach((ps) => {
+        // Note we are doing loose equality (==) rather than strict
+        // equality here, as find-process returns the uid as a string.  No point in spending time converting it.
+        // if curr_user.uid is 0, the user has run run using sudo or logged in as root.
+        if (curr_user.uid == 0 || ps.uid == curr_user.uid) {
+            process.kill(ps.pid);
+            log.trace(`Following process was killed by stopProcess: ${ps.cmd}`);
+        }
+    });
 }
