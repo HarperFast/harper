@@ -40,6 +40,6 @@ const timestamp_constraints = {
 };
 
 module.exports = function (delete_object, date_format) {
-    const final_constraints = date_format === 'timestamp' ? Object.assign(constraints, timestamp_constraints) : Object.assign(constraints, date_constraints);
+    const final_constraints = date_format === 'timestamp' ? {...constraints, ...timestamp_constraints} : {...constraints, ...date_constraints};
     return validator.validateObject(delete_object, final_constraints);
 };
