@@ -11,7 +11,6 @@ const global_schema = require('../utility/globalSchema');
 const p_global_schema = promisify(global_schema.getTableSchema);
 const harperBridge = require('./harperBridge/harperBridge');
 const {DeleteResponseObject} = require('./DataLayerObjects');
-const {DeleteBeforeObject} = require('./DeleteBeforeObject');
 const { handleHDBError, hdb_errors } = require('../utility/errors/hdbError');
 const { HDB_ERROR_MSGS, HTTP_STATUS_CODES } = hdb_errors;
 
@@ -42,12 +41,12 @@ async function deleteFilesBefore(delete_obj) {
 
     let parsed_date = moment(delete_obj.date, moment.ISO_8601);
     if(!parsed_date.isValid()) {
-        throw new Error("Invalid date, must be in ISO-8601 format (YYYY-MM-DD).");
+        throw handleHDBError(new Error(), HDB_ERROR_MSGS.INVALID_DATE, HTTP_STATUS_CODES.BAD_REQUEST, harper_logger.ERR, HDB_ERROR_MSGS.INVALID_DATE);
     }
 
     let invalid_schema_table_msg = common_utils.checkSchemaTableExist(delete_obj.schema, delete_obj.table);
     if (invalid_schema_table_msg) {
-        throw new Error(invalid_schema_table_msg);
+        throw handleHDBError(new Error(), invalid_schema_table_msg, HTTP_STATUS_CODES.NOT_FOUND, harper_logger.ERR, invalid_schema_table_msg);
     }
 
     try {
@@ -74,12 +73,12 @@ async function deleteTransactionLogsBefore(delete_obj) {
     }
 
     if(isNaN(delete_obj.timestamp)) {
-        throw new Error(`Invalid timestamp: ${delete_obj.timestamp}`);
+        throw handleHDBError(new Error(), HDB_ERROR_MSGS.INVALID_VALUE('Timestamp'), HTTP_STATUS_CODES.BAD_REQUEST, harper_logger.ERR, HDB_ERROR_MSGS.INVALID_VALUE('Timestamp'));
     }
 
     let invalid_schema_table_msg = common_utils.checkSchemaTableExist(delete_obj.schema, delete_obj.table);
     if (invalid_schema_table_msg) {
-        throw new Error(invalid_schema_table_msg);
+        throw handleHDBError(new Error(), invalid_schema_table_msg, HTTP_STATUS_CODES.NOT_FOUND, harper_logger.ERR, invalid_schema_table_msg);
     }
 
     try {

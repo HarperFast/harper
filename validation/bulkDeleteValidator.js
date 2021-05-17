@@ -24,10 +24,6 @@ const constraints = {
         presence: { message: "is required" },
         format: common_validators.schema_format,
         length: common_validators.schema_length
-    },
-    hash_values: {
-        presence: { message: "is required" },
-        typeArray: true
     }
 };
 
