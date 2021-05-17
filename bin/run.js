@@ -29,6 +29,7 @@ const CreateTableObject = require('../data_layer/CreateTableObject');
 const FOREGROUND_ARG = 'foreground';
 const ENOENT_ERR_CODE = -2;
 
+const IPC_SERVER_CWD = path.resolve(__dirname, '../server/ipc');
 const MEM_SETTING_KEY = '--max-old-space-size=';
 
 const NO_IPC_PORT_FOUND_ERR = 'Error getting IPC server port from environment variables';
@@ -315,9 +316,9 @@ async function isHdbInstalled() {
  */
 async function launchIPCServer() {
     // If there is already an instance of the HDB IPC server running we kill it.
-    if (await hdb_utils.isServerRunning(terms.IPC_SERVER_MODULE)) {
+    if (await hdb_utils.isServerRunning(path.join(IPC_SERVER_CWD, terms.IPC_SERVER_MODULE))) {
         try {
-            await hdb_utils.stopProcess(terms.IPC_SERVER_MODULE);
+            await hdb_utils.stopProcess(path.join(IPC_SERVER_CWD, terms.IPC_SERVER_MODULE));
         } catch(err) {
             const err_msg = `An existing HDB IPC server process was found to be running and was attempted to be killed but received the following error: ${err}`;
             final_logger.error(err_msg);

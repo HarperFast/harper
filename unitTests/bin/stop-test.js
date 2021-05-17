@@ -8,6 +8,8 @@ const sinon_chai = require('sinon-chai');
 const expect = chai.expect;
 const ps_list = require('../../utility/psList');
 const os = require('os');
+const path = require('path');
+const hdb_utils = require('../../utility/common_utils');
 const signal = require('../../utility/signalling');
 const hdb_terms = require('../../utility/hdbTerms');
 const logger = require('../../utility/logging/harper_logger');
@@ -123,8 +125,10 @@ describe('Test stop.js' , () => {
     context('stop', () => {
         let kill_procs_stub;
         let kill_procs_rewire;
+        let stop_process_stub;
 
         before(() => {
+            stop_process_stub = sandbox.stub(hdb_utils, 'stopProcess');
             kill_procs_stub = sandbox.stub();
             kill_procs_rewire = stop.__set__('killProcs', kill_procs_stub);
         });
@@ -139,11 +143,12 @@ describe('Test stop.js' , () => {
             expect(console_log_spy).to.have.been.calledOnce;
             expect(console_log_spy).to.have.been.calledWith('Stopping HarperDB.');
             expect(kill_procs_stub).to.have.been.calledTwice;
-            expect(final_logger_info_stub).to.have.been.calledTwice;
-            expect(kill_procs_stub).to.have.been.calledWith(hdb_terms.HDB_PROC_NAME, hdb_terms.HDB_PROC_DESCRIPTOR);
+            expect(final_logger_info_stub).to.have.been.calledThrice;
+            expect(kill_procs_stub.getCall(0).args[0]).to.equal(path.resolve('../server/socketcluster',hdb_terms.SC_PROC_NAME), hdb_terms.SC_PROC_DESCRIPTOR);
+            expect(kill_procs_stub.getCall(1).args[0]).to.equal(path.resolve('../server', hdb_terms.HDB_PROC_NAME), hdb_terms.HDB_PROC_DESCRIPTOR);
             expect(final_logger_info_stub).to.have.been.calledWith(`Stopping ${hdb_terms.HDB_PROC_NAME} - ${hdb_terms.HDB_PROC_DESCRIPTOR}.`);
-            expect(kill_procs_stub).to.have.been.calledWith(hdb_terms.SC_PROC_NAME, hdb_terms.SC_PROC_DESCRIPTOR);
             expect(final_logger_info_stub).to.have.been.calledWith(`Stopping ${hdb_terms.SC_PROC_NAME} - ${hdb_terms.SC_PROC_DESCRIPTOR}.`);
+            expect(stop_process_stub.getCall(0).args[0]).to.equal(path.resolve('../server/ipc', hdb_terms.IPC_SERVER_MODULE));
         });
 
         it('should catch error from killProcs and console error it', async () => {

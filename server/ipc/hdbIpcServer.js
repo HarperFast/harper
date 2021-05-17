@@ -20,6 +20,18 @@ ipc.serve(
           'message', messageListener
       );
       ipc.server.on(
+          'connect',
+          () => {
+              hdb_logger.trace('HDB IPC server connected');
+          }
+      );
+      ipc.server.on(
+          'disconnect',
+          () => {
+              hdb_logger.trace('HDB IPC server disconnected');
+          }
+      );
+      ipc.server.on(
           'error',
           (error) => {
               hdb_logger.error(`IPC server error: ${error}`);
