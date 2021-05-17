@@ -469,7 +469,6 @@ function createSettingsFile(mount_status, callback) {
         } catch (cpus_err) {
             //No-op, should only get here in the case of android.  Defaulted to 4.
         }
-        const path_module = require('path');
 
         const ARGS = minimist(process.argv.slice(2));
         let clustering_enabled = ARGS.enable_clustering !== undefined;
