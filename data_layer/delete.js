@@ -1,6 +1,7 @@
 "use strict";
 
-const bulk_delete_validator = require('../validation/bulkDeleteValidator');
+const bulkDeleteValidator = require('../validation/bulkDeleteValidator');
+const deleteValidator = require('../validation/deleteValidator');
 const common_utils = require('../utility/common_utils');
 const moment = require('moment');
 const harper_logger = require('../utility/logging/harper_logger');
@@ -11,6 +12,8 @@ const p_global_schema = promisify(global_schema.getTableSchema);
 const harperBridge = require('./harperBridge/harperBridge');
 const {DeleteResponseObject} = require('./DataLayerObjects');
 const {DeleteBeforeObject} = require('./DeleteBeforeObject');
+const { handleHDBError, hdb_errors } = require('../utility/errors/hdbError');
+const { HDB_ERROR_MSGS, HTTP_STATUS_CODES } = hdb_errors;
 
 const SUCCESS_MESSAGE = 'records successfully deleted';
 
@@ -32,21 +35,14 @@ module.exports = {
  * @param delete_obj - the request passed from chooseOperation.
  */
 async function deleteFilesBefore(delete_obj) {
-    if(common_utils.isEmptyOrZeroLength(delete_obj.date)) {
-        throw new Error("Invalid date.");
+    let validation = bulkDeleteValidator(delete_obj, 'date');
+    if (validation) {
+        throw handleHDBError(validation, validation.message, HTTP_STATUS_CODES.BAD_REQUEST);
     }
 
     let parsed_date = moment(delete_obj.date, moment.ISO_8601);
     if(!parsed_date.isValid()) {
         throw new Error("Invalid date, must be in ISO-8601 format (YYYY-MM-DD).");
-    }
-
-    if (common_utils.isEmptyOrZeroLength(delete_obj.schema)) {
-        throw new Error('Invalid schema.');
-    }
-
-    if (common_utils.isEmptyOrZeroLength(delete_obj.table)) {
-        throw new Error('Invalid table.');
     }
 
     let invalid_schema_table_msg = common_utils.checkSchemaTableExist(delete_obj.schema, delete_obj.table);
@@ -72,21 +68,13 @@ async function deleteFilesBefore(delete_obj) {
  * @param {DeleteBeforeObject} delete_obj - the request passed from chooseOperation.
  */
 async function deleteTransactionLogsBefore(delete_obj) {
-    if(common_utils.isEmptyOrZeroLength(delete_obj.timestamp)) {
-        throw new Error("Invalid timestamp.");
+    let validation = bulkDeleteValidator(delete_obj, 'timestamp');
+    if (validation) {
+        throw handleHDBError(validation, validation.message, HTTP_STATUS_CODES.BAD_REQUEST);
     }
-
 
     if(isNaN(delete_obj.timestamp)) {
         throw new Error(`Invalid timestamp: ${delete_obj.timestamp}`);
-    }
-
-    if (common_utils.isEmptyOrZeroLength(delete_obj.schema)) {
-        throw new Error('Invalid schema.');
-    }
-
-    if (common_utils.isEmptyOrZeroLength(delete_obj.table)) {
-        throw new Error('Invalid table.');
     }
 
     let invalid_schema_table_msg = common_utils.checkSchemaTableExist(delete_obj.schema, delete_obj.table);
@@ -111,14 +99,14 @@ async function deleteTransactionLogsBefore(delete_obj) {
  * @returns {Promise<string>}
  */
 async function deleteRecord(delete_object) {
-    let validation = bulk_delete_validator(delete_object);
+    let validation = deleteValidator(delete_object);
     if (validation) {
-        throw validation;
+        throw handleHDBError(validation, validation.message, HTTP_STATUS_CODES.BAD_REQUEST);
     }
 
     let invalid_schema_table_msg = common_utils.checkSchemaTableExist(delete_object.schema, delete_object.table);
     if (invalid_schema_table_msg) {
-        throw new Error(invalid_schema_table_msg);
+        throw handleHDBError(new Error(), invalid_schema_table_msg, HTTP_STATUS_CODES.NOT_FOUND, harper_logger.ERR, invalid_schema_table_msg);
     }
 
     try {

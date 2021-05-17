@@ -672,7 +672,6 @@ async function checkProcessRunning(proc_name){
     }
 }
 
-//TODO - update this method to throw an error via handleHDBError method w/ a 404 status code
 /**
  * Checks the global schema to see if a Schema or Table exist.
  * @param schema
@@ -697,7 +696,7 @@ function checkSchemaTableExist(schema, table) {
  */
 function checkSchemaExists(schema) {
     if (!global.hdb_schema[schema]) {
-        return `Schema '${schema}' does not exist`;
+        return hdb_errors.HDB_ERROR_MSGS.SCHEMA_NOT_FOUND(schema);
     }
 }
 
@@ -709,7 +708,7 @@ function checkSchemaExists(schema) {
  */
 function checkTableExists(schema, table) {
     if (!global.hdb_schema[schema][table]) {
-        return `Table '${table}' does not exist in schema '${schema}'`;
+        return hdb_errors.HDB_ERROR_MSGS.TABLE_NOT_FOUND(schema, table);
     }
 }
 

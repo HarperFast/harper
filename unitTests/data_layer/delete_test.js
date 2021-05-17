@@ -220,5 +220,17 @@ describe('Tests for delete.js', () => {
 
             expect(test_err_result).to.be.true;
         });
+
+        it('Test that error from schema/table check is handled', async () => {
+            global.hdb_schema = {
+                [DELETE_RECORDS_TEST.schema]: {
+                    [DELETE_RECORDS_TEST.table]: {}
+                }
+            };
+            let delete_obj_clone = test_utils.deepClone(DELETE_RECORDS_TEST);
+            let expected_error = test_utils.generateHDBError("Schema 'imnotaschema' does not exist", 404);
+            delete_obj_clone.schema = 'imnotaschema';
+            await test_utils.assertErrorAsync(_delete.deleteRecord, [delete_obj_clone], expected_error);
+        });
     });
 });
