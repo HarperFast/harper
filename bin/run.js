@@ -171,6 +171,7 @@ async function launchHdbServer() {
     try {
         const is_port_taken = await hdb_utils.isPortTaken(hdb_server_port);
         if (is_port_taken === true) {
+            final_logger.fatal(`Port: ${hdb_server_port} is being used by another process and cannot be used by the HDB server. Please update the HDB server port in the HDB config/settings.js file.`);
             console.log(`Port: ${hdb_server_port} is being used by another process and cannot be used by the HDB server. Please update the HDB server port in the HDB config/settings.js file.`);
             process.exit(1);
         }
