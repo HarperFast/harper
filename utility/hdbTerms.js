@@ -301,7 +301,6 @@ const GEO_CONVERSION_ENUM = {
 
 //NOTE - please be sure to add default values for new settings keys in the `HDB_SETTINGS_DEFAULT_VALUES` enum as well
 const HDB_SETTINGS_NAMES = {
-    PROJECT_DIR_KEY: 'PROJECT_DIR',
     HDB_ROOT_KEY: 'HDB_ROOT',
     SERVER_PORT_KEY: 'SERVER_PORT',
     CERT_KEY: 'CERTIFICATE',

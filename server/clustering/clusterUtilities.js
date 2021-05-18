@@ -618,8 +618,8 @@ function restartHDB() {
         // try to change to 'bin' dir
         let command = (global.running_from_repo ? 'node' : 'harperdb');
         let args = (global.running_from_repo ? ['harperdb', 'restart'] : ['restart']);
-        let base = env_mgr.get(terms.HDB_SETTINGS_NAMES.PROJECT_DIR_KEY);
-        process.chdir(path.join(base, 'bin'));
+        let bin_dir = path.resolve(__dirname, '../../bin');
+        process.chdir(bin_dir);
         let child = child_process.spawn(command, args, {detached:true, stdio: "ignore"});
        child.unref();
     } catch (err) {
