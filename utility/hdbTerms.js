@@ -376,7 +376,7 @@ const JOB_TYPE_ENUM = {
     import_from_s3: 'import_from_s3'
 };
 
-const IPC_MESSAGE_TYPE_ENUM = { // CLUSTER_MESSAGE_TYPE_ENUM
+const CLUSTER_MESSAGE_TYPE_ENUM = {
     CLUSTERING_PAYLOAD: 'clustering_payload',
     DELEGATE_THREAD_RESPONSE: 'delegate_thread_response',
     CLUSTERING: 'clustering',
@@ -512,6 +512,11 @@ const IPC_SERVER_MODULE = `hdbIpcServer.${CODE_EXTENSION}`;
 const HDB_IPC_SERVER = 'hdb_ipc_server';
 const HDB_IPC_CLIENT_PREFIX = 'hdb_ipc_client_';
 const IPC_EVENT_TYPES = {
+    JOB: 'job',
+    RESTART: 'restart',
+    CHILD_STOPPED: 'child_started',
+    SCHEMA: 'schema',
+    USER: 'user',
     CREATE_SCHEMA: 'create_schema',
     CREATE_TABLE: 'create_table',
     CREATE_ATTRIBUTE: 'create_attribute',
@@ -556,7 +561,7 @@ module.exports = {
     HDB_SETTINGS_NAMES_REVERSE_LOOKUP,
     HDB_SETTINGS_DEFAULT_VALUES,
     SERVICE_ACTIONS_ENUM,
-    IPC_MESSAGE_TYPE_ENUM,
+    CLUSTER_MESSAGE_TYPE_ENUM,
     CLUSTER_CONNECTION_DIRECTION_ENUM,
     CLUSTER_EVENTS_DEFS_ENUM,
     PERIOD_REGEX,
