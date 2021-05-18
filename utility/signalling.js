@@ -50,8 +50,18 @@ function signalJobAdded(message){
 function signalChildStarted() {
     try {
         hdb_logger.debug(`Sending child started signal from process ${process.pid}`);
-        const ipc_event_child = new IPCEventObject(hdb_terms.IPC_EVENT_TYPES.CHILD_STARTED, process.pid);
-        sendIpcEvent(ipc_event_child);
+        const ipc_event_child_start = new IPCEventObject(hdb_terms.IPC_EVENT_TYPES.CHILD_STARTED, process.pid);
+        sendIpcEvent(ipc_event_child_start);
+    } catch(err) {
+        hdb_logger.error(err);
+    }
+}
+
+function signalChildStopped() {
+    try {
+        hdb_logger.debug(`Sending child stopped signal from process ${process.pid}`);
+        const ipc_event_child_stop = new IPCEventObject(hdb_terms.IPC_EVENT_TYPES.CHILD_STOPPED, process.pid);
+        sendIpcEvent(ipc_event_child_stop);
     } catch(err) {
         hdb_logger.error(err);
     }
@@ -76,8 +86,9 @@ function signalRestart(force) {
 module.exports = {
     signalSchemaChange,
     signalUserChange,
-    signalJobAdded: signalJobAdded,
-    signalChildStarted: signalChildStarted,
-    signalRestart: signalRestart,
+    signalJobAdded,
+    signalChildStarted,
+    signalChildStopped,
+    signalRestart,
     SCHEMA_CHANGE_MESSAGE
 };

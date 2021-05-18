@@ -50,7 +50,6 @@ module.exports = {
     stringifyProps: stringifyProps,
     valueConverter: valueConverter,
     timeoutPromise: timeoutPromise,
-    sendIpcMessage: sendIpcMessage, //callProcessSend,
     isServerRunning: isServerRunning,
     isClusterOperation: isClusterOperation,
     getClusterUser: getClusterUser,
@@ -457,18 +456,6 @@ function timeoutPromise(ms, msg) {
             clearTimeout(timeout);
         }
     };
-}
-
-/**
- * Wrapper function for process.send, will catch cases where parent tries to send an IPC message.
- * @param process_msg - The message to send.
- */ //send ipc message
-function sendIpcMessage(process_msg) {
-    if(process.send === undefined || global.isMaster) {
-        log.error('Tried to call process.send() but process.send is undefined.');
-        return;
-    }
-    process.send(process_msg);
 }
 
 /**

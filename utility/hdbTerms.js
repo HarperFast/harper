@@ -515,6 +515,7 @@ const IPC_EVENT_TYPES = {
     JOB: 'job',
     RESTART: 'restart',
     CHILD_STARTED: 'child_started',
+    CHILD_STOPPED: 'child_stopped',
     SCHEMA: 'schema',
     USER: 'user',
     CREATE_SCHEMA: 'create_schema',
