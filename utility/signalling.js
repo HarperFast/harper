@@ -1,8 +1,8 @@
 'use strict';
 
-const harper_logger = require('../utility/logging/harper_logger');
+const hdb_logger = require('../utility/logging/harper_logger');
 const hdb_terms = require('./hdbTerms');
-const common = require('./common_utils');
+const hdb_utils = require('./common_utils');
 const IPCEventObject = require('../server/ipc/utility/IPCEventObject');
 const { sendIpcEvent } = require('../server/ipc/utility/ipcUtils');
 
@@ -24,7 +24,7 @@ function signalSchemaChange(message){
         const ipc_event_schema = new IPCEventObject(hdb_terms.IPC_EVENT_TYPES.SCHEMA, message);
         sendIpcEvent(ipc_event_schema);
     } catch(err) {
-        harper_logger.error(err);
+        hdb_logger.error(err);
     }
 }
 
@@ -33,7 +33,7 @@ function signalUserChange(message){
         const ipc_event_user = new IPCEventObject(hdb_terms.IPC_EVENT_TYPES.USER, message);
         sendIpcEvent(ipc_event_user);
     } catch(err) {
-        harper_logger.error(err);
+        hdb_logger.error(err);
     }
 }
 
@@ -43,25 +43,25 @@ function signalJobAdded(message){
         const ipc_event_job = new IPCEventObject(hdb_terms.IPC_EVENT_TYPES.JOB, job_added_msg);
         sendIpcEvent(ipc_event_job);
     } catch(err) {
-        harper_logger.error(err);
+        hdb_logger.error(err);
     }
 }
 
 function signalChildStarted() {
     try {
-        harper_logger.debug(`Sending child started signal from process ${process.pid}`);
+        hdb_logger.debug(`Sending child started signal from process ${process.pid}`);
         const ipc_event_child = new IPCEventObject(hdb_terms.IPC_EVENT_TYPES.CHILD_STARTED, process.pid);
         sendIpcEvent(ipc_event_child);
     } catch(err) {
-        harper_logger.error(err);
+        hdb_logger.error(err);
     }
 }
 
 function signalRestart(force) {
-    const force_boolean = common.autoCast(force);
+    const force_boolean = hdb_utils.autoCast(force);
 
     if (typeof force_boolean !== 'boolean') {
-        harper_logger.error('Invalid force value, must be a boolean.');
+        hdb_logger.error('Invalid force value, must be a boolean.');
         throw new Error('Invalid force value, must be a boolean.');
     }
 
@@ -69,7 +69,7 @@ function signalRestart(force) {
         const ipc_event_restart = new IPCEventObject(hdb_terms.IPC_EVENT_TYPES.RESTART, force_boolean);
         sendIpcEvent(ipc_event_restart);
     } catch(err) {
-        harper_logger.error(err);
+        hdb_logger.error(err);
     }
 }
 
@@ -81,4 +81,3 @@ module.exports = {
     signalRestart: signalRestart,
     SCHEMA_CHANGE_MESSAGE
 };
-
