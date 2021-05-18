@@ -22,13 +22,6 @@ class RestartSignalObject {
     }
 }
 
-class ChildStartedSignalObject {
-    constructor(pid) {
-        this.type = hdb_terms.CLUSTER_MESSAGE_TYPE_ENUM.CHILD_STARTED;
-        this.pid = pid;
-    }
-}
-
 const SCHEMA_CHANGE_MESSAGE = {
     type: hdb_terms.SCHEMA_DIR_NAME
 };
@@ -62,16 +55,12 @@ function signalJobAdded(message){
 }
 
 function signalChildStarted() {
-    harper_logger.debug(`Sending child started signal from process ${process.pid}`);
     try {
-        // if process.send is undefined we are running a single instance of the process.
-        if (process.send !== undefined && !global.isMaster) {
-            process.send(new ChildStartedSignalObject(process.pid));
-        } else {
-            harper_logger.warn('Only 1 process is running, but a signal has been invoked.  Signals will be ignored when only 1 process is running.');
-        }
-    } catch(e){
-        harper_logger.error(e);
+        harper_logger.debug(`Sending child started signal from process ${process.pid}`);
+        const ipc_event_child = new IPCEventObject(hdb_terms.IPC_EVENT_TYPES.CHILD_STARTED, process.pid);
+        sendIpcEvent(ipc_event_child);
+    } catch(err) {
+        harper_logger.error(err);
     }
 }
 

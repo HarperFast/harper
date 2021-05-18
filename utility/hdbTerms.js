@@ -514,7 +514,7 @@ const HDB_IPC_CLIENT_PREFIX = 'hdb_ipc_client_';
 const IPC_EVENT_TYPES = {
     JOB: 'job',
     RESTART: 'restart',
-    CHILD_STOPPED: 'child_started',
+    CHILD_STARTED: 'child_started',
     SCHEMA: 'schema',
     USER: 'user',
     CREATE_SCHEMA: 'create_schema',
