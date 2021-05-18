@@ -839,7 +839,7 @@ describe('Test serverChild.js', () => {
     describe('shutDown() method',() => {
         let serverClose_stub;
         let hdbServer_stub;
-        let callProcessSend_stub;
+        let signalChildStopped_stub;
         let shutDown_rw;
         let timeout_stub;
 
@@ -849,7 +849,7 @@ describe('Test serverChild.js', () => {
             hdbServer_stub = {
                 close: serverClose_stub
             }
-            callProcessSend_stub = sandbox.stub(hdb_util, 'callProcessSend');
+            signalChildStopped_stub = sandbox.stub(signalling, 'signalChildStopped');
             timeout_stub = sandbox.stub().callsFake(fake);
             serverChild_rw.__set__('setTimeout', timeout_stub);
         })
@@ -882,14 +882,14 @@ describe('Test serverChild.js', () => {
         it('Should call .callProcessSend() after server is closed', async() => {
             await shutDown_rw();
 
-            expect(callProcessSend_stub.calledOnce).to.be.true;
+            expect(signalChildStopped_stub.calledOnce).to.be.true;
         })
 
         it('Should call .callProcessSend() even if no hdbServer is set on process', async() => {
             serverChild_rw.__set__('hdbServer', undefined);
             await shutDown_rw();
 
-            expect(callProcessSend_stub.calledOnce).to.be.true;
+            expect(signalChildStopped_stub.calledOnce).to.be.true;
         })
 
         it('Should not call .close() if there is no server instance set on process', async() => {

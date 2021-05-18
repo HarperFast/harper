@@ -17,6 +17,7 @@ class JobAddedSignalMessage {
 
 function signalSchemaChange(message){
     try {
+        hdb_logger.trace(`signalSchemaChange called with message: ${message}`);
         const ipc_event_schema = new IPCEventObject(hdb_terms.IPC_EVENT_TYPES.SCHEMA, message);
         sendIpcEvent(ipc_event_schema);
     } catch(err) {
@@ -26,6 +27,7 @@ function signalSchemaChange(message){
 
 function signalUserChange(message){
     try {
+        hdb_logger.trace(`signalUserChange called with message: ${message}`);
         const ipc_event_user = new IPCEventObject(hdb_terms.IPC_EVENT_TYPES.USER, message);
         sendIpcEvent(ipc_event_user);
     } catch(err) {
@@ -35,6 +37,7 @@ function signalUserChange(message){
 
 function signalJobAdded(message){
     try {
+        hdb_logger.trace(`signalJobAdded called with message: ${message}`);
         const job_added_msg = new JobAddedSignalMessage(message);
         const ipc_event_job = new IPCEventObject(hdb_terms.IPC_EVENT_TYPES.JOB, job_added_msg);
         sendIpcEvent(ipc_event_job);
@@ -45,7 +48,7 @@ function signalJobAdded(message){
 
 function signalChildStarted() {
     try {
-        hdb_logger.debug(`Sending child started signal from process ${process.pid}`);
+        hdb_logger.trace(`signalChildStarted called with message: ${process.pid}`);
         const ipc_event_child_start = new IPCEventObject(hdb_terms.IPC_EVENT_TYPES.CHILD_STARTED, process.pid);
         sendIpcEvent(ipc_event_child_start);
     } catch(err) {
@@ -55,7 +58,7 @@ function signalChildStarted() {
 
 function signalChildStopped() {
     try {
-        hdb_logger.debug(`Sending child stopped signal from process ${process.pid}`);
+        hdb_logger.trace(`signalChildStopped called with message: ${process.pid}`);
         const ipc_event_child_stop = new IPCEventObject(hdb_terms.IPC_EVENT_TYPES.CHILD_STOPPED, process.pid);
         sendIpcEvent(ipc_event_child_stop);
     } catch(err) {
@@ -72,6 +75,7 @@ function signalRestart(force) {
     }
 
     try {
+        hdb_logger.trace(`signalRestart called with message: ${process.pid}`);
         const ipc_event_restart = new IPCEventObject(hdb_terms.IPC_EVENT_TYPES.RESTART, force_boolean);
         sendIpcEvent(ipc_event_restart);
     } catch(err) {
