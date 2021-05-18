@@ -15,13 +15,6 @@ class JobAddedSignalMessage {
     }
 }
 
-class RestartSignalObject {
-    constructor(force) {
-        this.force_shutdown = force;
-        this.type = hdb_terms.CLUSTER_MESSAGE_TYPE_ENUM.RESTART;
-    }
-}
-
 const SCHEMA_CHANGE_MESSAGE = {
     type: hdb_terms.SCHEMA_DIR_NAME
 };
@@ -65,8 +58,7 @@ function signalChildStarted() {
 }
 
 function signalRestart(force) {
-    let err = null;
-    let force_boolean = common.autoCast(force);
+    const force_boolean = common.autoCast(force);
 
     if (typeof force_boolean !== 'boolean') {
         harper_logger.error('Invalid force value, must be a boolean.');
@@ -74,16 +66,10 @@ function signalRestart(force) {
     }
 
     try {
-        // if process.send is undefined we are running a single instance of the process.
-        if (process.send !== undefined && !global.isMaster) {
-            common.callProcessSend(new RestartSignalObject(force_boolean));
-        } else {
-            err = 'Only 1 process is running, but a signal has been invoked.  Signals will be ignored when only 1 process is running.';
-            harper_logger.warn(err);
-        }
-    } catch(e){
-        err = 'Got an error restarting HarperDB.  Please check the logs and try again.';
-        harper_logger.error(e);
+        const ipc_event_restart = new IPCEventObject(hdb_terms.IPC_EVENT_TYPES.RESTART, force_boolean);
+        sendIpcEvent(ipc_event_restart);
+    } catch(err) {
+        harper_logger.error(err);
     }
 }
 
