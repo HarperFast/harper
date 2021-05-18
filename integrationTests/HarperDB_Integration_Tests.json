@@ -6836,7 +6836,7 @@
 									"",
 									"pm.test(\"insert non existent table\", function () {",
 									"    var jsonData = pm.response.json();",
-									"    pm.expect(jsonData.error).to.eql(\"Table 'not_a_table' does not exist in schema 'northnwd'\");",
+									"    pm.expect(jsonData.error).to.eql(\"Table 'northnwd.not_a_table' does not exist\");",
 									"});"
 								],
 								"type": "text/javascript"
@@ -6961,7 +6961,7 @@
 									"",
 									"pm.test(\"insert non existent table\", function () {",
 									"    var jsonData = pm.response.json();",
-									"    pm.expect(jsonData.error).to.eql(\"Table 'not_a_table' does not exist in schema 'northnwd'\");",
+									"    pm.expect(jsonData.error).to.eql(\"Table 'northnwd.not_a_table' does not exist\");",
 									"});"
 								],
 								"type": "text/javascript"
