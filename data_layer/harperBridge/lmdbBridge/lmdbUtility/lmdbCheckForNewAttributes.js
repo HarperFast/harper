@@ -83,10 +83,7 @@ async function createAttribute(create_attribute_object) {
     let attribute_structure;
     try {
         attribute_structure = await lmdbCreateAttribute(create_attribute_object);
-
-        let create_attribute_message = Object.assign({}, signalling.SCHEMA_CHANGE_MESSAGE);
-        create_attribute_message.operation = create_attribute_object;
-        signalling.signalSchemaChange(create_attribute_message);
+        signalling.signalSchemaChange(create_attribute_object);
 
         return attribute_structure;
     } catch(err) {

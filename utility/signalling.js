@@ -15,10 +15,6 @@ class JobAddedSignalMessage {
     }
 }
 
-const SCHEMA_CHANGE_MESSAGE = {
-    type: hdb_terms.SCHEMA_DIR_NAME
-};
-
 function signalSchemaChange(message){
     try {
         const ipc_event_schema = new IPCEventObject(hdb_terms.IPC_EVENT_TYPES.SCHEMA, message);
@@ -89,6 +85,5 @@ module.exports = {
     signalJobAdded,
     signalChildStarted,
     signalChildStopped,
-    signalRestart,
-    SCHEMA_CHANGE_MESSAGE
+    signalRestart
 };
