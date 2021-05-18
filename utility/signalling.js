@@ -1,8 +1,8 @@
 'use strict';
 
-const hdb_logger = require('../utility/logging/harper_logger');
 const hdb_terms = require('./hdbTerms');
 const hdb_utils = require('./common_utils');
+const hdb_logger = require('../utility/logging/harper_logger');
 const IPCEventObject = require('../server/ipc/utility/IPCEventObject');
 const { sendIpcEvent } = require('../server/ipc/utility/ipcUtils');
 

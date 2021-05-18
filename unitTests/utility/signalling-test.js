@@ -6,9 +6,9 @@ const rewire = require('rewire');
 const { expect } = chai;
 const sinon_chai = require('sinon-chai');
 chai.use(sinon_chai);
-const test_utils = require('../test_utils');
-const ipc_utils = require('../../server/ipc/utility/ipcUtils');
-const hdb_logger = require('../../utility/logging/harper_logger');
+let test_utils;
+let ipc_utils;
+let hdb_logger;
 let signalling;
 
 describe('Test signalling module', () => {
@@ -18,9 +18,12 @@ describe('Test signalling module', () => {
     let log_error_stub;
 
     before(() => {
-        send_ipc_event_stub = sandbox.stub(ipc_utils, 'sendIpcEvent');
+        hdb_logger = require('../../utility/logging/harper_logger');
         log_error_stub = sandbox.stub(hdb_logger, 'error');
         sandbox.stub(hdb_logger, 'trace');
+        test_utils = require('../test_utils');
+        ipc_utils = require('../../server/ipc/utility/ipcUtils');
+        send_ipc_event_stub = sandbox.stub(ipc_utils, 'sendIpcEvent');
         signalling = rewire('../../utility/signalling');
     });
 
