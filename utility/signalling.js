@@ -6,7 +6,7 @@ const common = require('./common_utils');
 const IPCEventObject = require('../server/ipc/utility/IPCEventObject');
 const { sendIpcEvent } = require('../server/ipc/utility/ipcUtils');
 
-class JobAddedSignalMessage { // TODO: was JobAddedSignalObject
+class JobAddedSignalMessage {
     constructor(runner_message) {
         // For now we want to target the creating process to handle this job.  At some point this can
         // be made smarter to delegate to a different process.
@@ -102,7 +102,6 @@ module.exports = {
     signalSchemaChange,
     signalUserChange,
     signalJobAdded: signalJobAdded,
-    JobAddedSignalObject: JobAddedSignalObject,
     signalChildStarted: signalChildStarted,
     signalRestart: signalRestart,
     SCHEMA_CHANGE_MESSAGE
