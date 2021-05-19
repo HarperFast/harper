@@ -390,85 +390,53 @@ describe('Test harper_logger module', () => {
             mock_require.stopAll();
         });
 
-        it('Test writeLog writes to log as expected happy path', (done) => {
-            try {
-                setMockPropParams(false, 2, LOG_LEVEL.TRACE, LOG_PATH_TEST, HDB_ROOT_TEST);
-                harper_logger_rw = requireUncached('../../../utility/logging/harper_logger');
-                pino_logger = harper_logger_rw.__get__('pino_logger');
-                testWriteLogBulkWrite(LOG_PATH_TEST);
+        it('Test writeLog writes to log as expected happy path', async() => {
 
-                setTimeout(() => {
-                    try {
-                        const file_exists = fs_extra.pathExistsSync(LOG_PATH_TEST);
-                        expect(file_exists).to.be.true;
-                        pino_logger.flush();
-                        testWriteLogBulkTests(LOG_PATH_TEST);
-                        done();
-                    } catch(err) {
-                        console.error(err);
-                        done(err);
-                    }
-                }, 1000);
-            } catch(err) {
-                console.error(err);
-                done(err);
-            }
+            setMockPropParams(false, 2, LOG_LEVEL.TRACE, LOG_PATH_TEST, HDB_ROOT_TEST);
+            harper_logger_rw = requireUncached('../../../utility/logging/harper_logger');
+            pino_logger = harper_logger_rw.__get__('pino_logger');
+            testWriteLogBulkWrite(LOG_PATH_TEST);
+            await new Promise(resolve => setTimeout(resolve, 1000));
+            const file_exists = fs_extra.pathExistsSync(LOG_PATH_TEST);
+            expect(file_exists).to.be.true;
+            pino_logger.flush();
+            await new Promise(resolve => setTimeout(resolve, 1000));
+            testWriteLogBulkTests(LOG_PATH_TEST);
+
         }).timeout(3000);
 
         // This test relies on the one above to create logger.
-        it('Test writeLog sets level to error if param not passed', (done) => {
-            try {
+        it('Test writeLog sets level to error if param not passed', async () => {
                 harper_logger_rw.writeLog(undefined, 'Undefined level log');
 
-                setTimeout(() => {
-                    try {
-                        pino_logger.flush();
-                        const log_json = convertLogToJson(LOG_PATH_TEST);
-                        let log_found = false;
-                        for (const log of log_json) {
-                            if (log.level === LOG_LEVEL.ERROR && log.hasOwnProperty('timestamp') && log.message === 'Undefined level log') {
-                                log_found = true;
-                            }
+
+                    pino_logger.flush();
+                    await new Promise(resolve => setTimeout(resolve, 1000));
+                    const log_json = convertLogToJson(LOG_PATH_TEST);
+                    let log_found = false;
+                    for (const log of log_json) {
+                        if (log.level === LOG_LEVEL.ERROR && log.hasOwnProperty('timestamp') && log.message === 'Undefined level log') {
+                            log_found = true;
                         }
-
-                        expect(log_found).to.be.true;
-                        fs_extra.removeSync(LOG_PATH_TEST);
-                        done();
-                    } catch(err) {
-                        console.error(err);
-                        done(err);
                     }
-                }, 1000);
-            } catch(err) {
-                console.error(err);
-                done(err);
-            }
-        }).timeout(3000);
 
-        it('Test writeLog with daily rotate', (done) => {
-            try {
-                setMockPropParams(true, 3, LOG_LEVEL.TRACE, LOG_PATH_TEST, HDB_ROOT_TEST);
-                harper_logger_rw = requireUncached('../../../utility/logging/harper_logger');
-                pino_logger = harper_logger_rw.__get__('pino_logger');
-                const expected_log_path = path.join(TEST_LOG_DIR, `${moment().utc().format('YYYY-MM-DD')}_${LOG_NAME_TEST}`);
-                testWriteLogBulkWrite();
+                    expect(log_found).to.be.true;
+                    fs_extra.removeSync(LOG_PATH_TEST);
 
-                setTimeout(() => {
-                    try {
-                        const file_exists = fs_extra.pathExistsSync(expected_log_path);
-                        expect(file_exists).to.equal(true, `file not found at ${expected_log_path}`);
-                        pino_logger.flush();
-                        testWriteLogBulkTests(expected_log_path);
-                        done();
-                    } catch(err) {
-                        console.error(err);
-                        done(err);
-                    }
-                }, 5000);
-            } catch(err) {
-                console.error(err);
-                done(err);
-            }
+        }).timeout(8000);
+
+        it('Test writeLog with daily rotate', async() => {
+            setMockPropParams(true, 3, LOG_LEVEL.TRACE, LOG_PATH_TEST, HDB_ROOT_TEST);
+            harper_logger_rw = requireUncached('../../../utility/logging/harper_logger');
+            pino_logger = harper_logger_rw.__get__('pino_logger');
+            const expected_log_path = path.join(TEST_LOG_DIR, `${moment().utc().format('YYYY-MM-DD')}_${LOG_NAME_TEST}`);
+            testWriteLogBulkWrite();
+            await new Promise(resolve => setTimeout(resolve, 5000));
+            const file_exists = fs_extra.pathExistsSync(expected_log_path);
+            expect(file_exists).to.equal(true, `file not found at ${expected_log_path}`);
+            pino_logger.flush();
+            await new Promise(resolve => setTimeout(resolve, 1000));
+            testWriteLogBulkTests(expected_log_path);
         }).timeout(11000);
 
         it('Test writeLog removes old log with daily max set', () => {
@@ -566,10 +534,11 @@ describe('Test harper_logger module', () => {
             setTimeout(() => done(), 1000);
         });
 
-        it('Test debug log level works as expected', () => {
+        it('Test debug log level works as expected', async () => {
             harper_logger_rw.setLogLevel(LOG_LEVEL.DEBUG);
             testWriteLogBulkWrite();
             pino_logger.flush();
+            await new Promise(resolve => setTimeout(resolve, 1000));
             const log = fs_extra.readFileSync(LOG_PATH_TEST);
             expect(log.includes('"level":"trace"')).to.be.false;
             expect(log.includes('"level":"debug"')).to.be.true;
@@ -580,11 +549,12 @@ describe('Test harper_logger module', () => {
             expect(log.includes('"level":"notify"')).to.be.true;
         });
 
-        it('Test info log level works as expected', () => {
+        it('Test info log level works as expected', async () => {
             fs_extra.writeFileSync(LOG_PATH_TEST, '');
             harper_logger_rw.setLogLevel(LOG_LEVEL.INFO);
             testWriteLogBulkWrite();
             pino_logger.flush();
+            await new Promise(resolve => setTimeout(resolve, 1000));
             const log = fs_extra.readFileSync(LOG_PATH_TEST);
             expect(log.includes('"level":"trace"')).to.be.false;
             expect(log.includes('"level":"debug"')).to.be.false;
@@ -595,11 +565,12 @@ describe('Test harper_logger module', () => {
             expect(log.includes('"level":"notify"')).to.be.true;
         });
 
-        it('Test warn log level works as expected', () => {
+        it('Test warn log level works as expected', async () => {
             fs_extra.writeFileSync(LOG_PATH_TEST, '');
             harper_logger_rw.setLogLevel(LOG_LEVEL.WARN);
             testWriteLogBulkWrite();
             pino_logger.flush();
+            await new Promise(resolve => setTimeout(resolve, 1000));
             const log = fs_extra.readFileSync(LOG_PATH_TEST);
             expect(log.includes('"level":"trace"')).to.be.false;
             expect(log.includes('"level":"debug"')).to.be.false;
@@ -610,11 +581,12 @@ describe('Test harper_logger module', () => {
             expect(log.includes('"level":"notify"')).to.be.true;
         });
 
-        it('Test error log level works as expected', () => {
+        it('Test error log level works as expected', async () => {
             fs_extra.writeFileSync(LOG_PATH_TEST, '');
             harper_logger_rw.setLogLevel(LOG_LEVEL.ERROR);
             testWriteLogBulkWrite();
             pino_logger.flush();
+            await new Promise(resolve => setTimeout(resolve, 1000));
             const log = fs_extra.readFileSync(LOG_PATH_TEST);
             expect(log.includes('"level":"trace"')).to.be.false;
             expect(log.includes('"level":"debug"')).to.be.false;
@@ -625,11 +597,12 @@ describe('Test harper_logger module', () => {
             expect(log.includes('"level":"notify"')).to.be.true;
         });
 
-        it('Test fatal log level works as expected', () => {
+        it('Test fatal log level works as expected', async() => {
             fs_extra.writeFileSync(LOG_PATH_TEST, '');
             harper_logger_rw.setLogLevel(LOG_LEVEL.FATAL);
             testWriteLogBulkWrite();
             pino_logger.flush();
+            await new Promise(resolve => setTimeout(resolve, 1000));
             const log = fs_extra.readFileSync(LOG_PATH_TEST);
             expect(log.includes('"level":"trace"')).to.be.false;
             expect(log.includes('"level":"debug"')).to.be.false;
@@ -640,11 +613,12 @@ describe('Test harper_logger module', () => {
             expect(log.includes('"level":"notify"')).to.be.true;
         });
 
-        it('Test notify log level works as expected', () => {
+        it('Test notify log level works as expected', async() => {
             fs_extra.writeFileSync(LOG_PATH_TEST, '');
             harper_logger_rw.setLogLevel(LOG_LEVEL.NOTIFY);
             testWriteLogBulkWrite();
             pino_logger.flush();
+            await new Promise(resolve => setTimeout(resolve, 1000));
             const log = fs_extra.readFileSync(LOG_PATH_TEST);
             expect(log.includes('"level":"trace"')).to.be.false;
             expect(log.includes('"level":"debug"')).to.be.false;

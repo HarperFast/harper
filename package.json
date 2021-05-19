@@ -28,7 +28,11 @@
   "license": "See License in ./license/Community+Edition+and+Evaluation+End+User+License+Agreement.pdf",
   "scripts": {
     "build": "eslint -c ./.eslintbuild bin/ data_layer/ events/ lib/ security/ server/ sqlTranslator/ upgrade/ utility/ validation/",
-    "test": "npm run build && node utility/devops/register.js --reset_license --storage_type=fs && cd bin/ && nyc --reporter=lcov ../node_modules/mocha/bin/_mocha '../unitTests/**/*.js' --config '../unitTests/.mocharc.json'&& node ../utility/devops/register.js --reset_license --storage_type=fs",
+    "test": "rm -rf ./.nyc_output/* && npm run build && node utility/devops/register.js --reset_license --storage_type=fs && npm run cover:main && npm run cover:lmdbbridge && npm run cover:lmdbutility && nyc merge .nyc_output coverage.json && node ./utility/devops/register.js --reset_license --storage_type=fs",
+    "cover:main": "cd bin/ && nyc --no-clean --reporter=lcov ../node_modules/mocha/bin/_mocha '../unitTests/**/*.js' --config '../unitTests/.mocharc-main.json'",
+    "cover:lmdbbridge": "cd bin/ && nyc --no-clean --reporter=lcov ../node_modules/mocha/bin/_mocha '../unitTests/data_layer/harperBridge/lmdbBridge/**/*.js' --parallel --config '../unitTests/.mocharc.json'",
+    "cover:lmdbutility": "cd bin/ && nyc --no-clean --reporter=lcov ../node_modules/mocha/bin/_mocha '../unitTests/utility/lmdb/**/*.js' --parallel --config '../unitTests/.mocharc.json'",
+    "test:ci": " cd bin/ && ../node_modules/mocha/bin/_mocha '../unitTests/**/*.js' --retries 3 --config '../unitTests/.mocharc-main.json' --reporter mocha-teamcity-reporter && ../node_modules/mocha/bin/_mocha '../unitTests/data_layer/harperBridge/lmdbBridge/**/*.js' --parallel --retries 3 --config '../unitTests/.mocharc.json' --reporter mocha-teamcity-reporter && ../node_modules/mocha/bin/_mocha '../unitTests/utility/lmdb/**/*.js' --parallel --retries 3 --config '../unitTests/.mocharc.json' --reporter mocha-teamcity-reporter",
     "hdb-check": "./utility/devops/hdb-check.sh",
     "prepublish": "npm run build",
     "prebuild": "date",
@@ -102,6 +106,7 @@
     "minimist": "^1.2.5",
     "mocha": "^8.3.2",
     "mocha-teamcity-reporter": "^3.0.0",
+    "mock-require": "^3.0.3",
     "mock-stdin": "^1.0.0",
     "newman": "^5.1.2",
     "newman-reporter-html": "^1.0.5",
@@ -109,7 +114,6 @@
     "nyc": "^15.1.0",
     "rewire": "^5.0.0",
     "sinon": "^10.0.0",
-    "sinon-chai": "^3.3.0",
-    "mock-require": "^3.0.3"
+    "sinon-chai": "^3.3.0"
   }
 }

@@ -404,27 +404,6 @@ describe('Test configureCluster', () => {
         settings_test_file.deleteFile();
     });
 
-    it(`Test nominal project dir path`, async () => {
-        let test_msg = {
-            'operation': 'configure_cluster',
-            'PROJECT_DIR': __dirname
-        };
-        let result = await cluster_utils.configureCluster(test_msg);
-        assert.strictEqual(result, CONFIGURE_SUCCESS_RESPONSE, 'Expected success message');
-    });
-    it(`Test bad windows path`, async () => {
-        let test_msg = {
-            "operation": "configure_cluster",
-            "PROJECT_DIR": "\\LOLWindows"
-        };
-        let result = undefined;
-        try {
-            result = await cluster_utils.configureCluster(test_msg);
-        } catch(err) {
-            result = err;
-        }
-        assert.strictEqual(result instanceof Error, true, 'Expected error');
-    });
     it(`Test nominal integer validation for HTTP Port`, async () => {
         let test_msg = {
             "operation": "configure_cluster",

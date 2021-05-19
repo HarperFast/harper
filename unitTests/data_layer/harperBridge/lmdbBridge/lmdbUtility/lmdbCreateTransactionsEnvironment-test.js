@@ -3,7 +3,7 @@
 const test_utils = require('../../../../test_utils');
 test_utils.preTestPrep();const path = require('path');
 const TRANSACTIONS_NAME = 'transactions';
-const BASE_PATH = test_utils.getMockFSPath();
+const BASE_PATH = test_utils.getMockLMDBPath();
 const BASE_TRANSACTIONS_PATH = path.join(BASE_PATH, TRANSACTIONS_NAME);
 
 
@@ -31,13 +31,13 @@ describe('test lmdbCreateTransactionsEnvironment module', ()=>{
     describe('test lmdbCreateTransactionsEnvironment function', ()=>{
         before(async () => {
             global.lmdb_map = undefined;
-            await fs.remove(test_utils.getMockFSPath());
+            await fs.remove(test_utils.getMockLMDBPath());
             await fs.mkdirp(BASE_TRANSACTIONS_PATH);
         });
 
         after(async () => {
             global.lmdb_map = undefined;
-            await fs.remove(test_utils.getMockFSPath());
+            await fs.remove(test_utils.getMockLMDBPath());
         });
 
         it('test adding a transaction environment', async()=>{

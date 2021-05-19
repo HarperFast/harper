@@ -4,7 +4,7 @@ const test_utils = require('../../../../test_utils');
 test_utils.preTestPrep();
 const path = require('path');
 const TRANSACTIONS_NAME = 'transactions';
-const BASE_PATH = test_utils.getMockFSPath();
+const BASE_PATH = test_utils.getMockLMDBPath();
 const BASE_TRANSACTIONS_PATH = path.join(BASE_PATH, TRANSACTIONS_NAME);
 
 const rewire = require('rewire');
@@ -160,13 +160,13 @@ describe('test lmdbWriteTransaction module', ()=>{
     describe('test createTransactionObject function', ()=>{
         before(async () => {
             global.lmdb_map = undefined;
-            await fs.remove(test_utils.getMockFSPath());
+            await fs.remove(test_utils.getMockLMDBPath());
         });
 
         after(async () => {
 
             global.lmdb_map = undefined;
-            await fs.remove(test_utils.getMockFSPath());
+            await fs.remove(test_utils.getMockLMDBPath());
         });
 
         it('test for insert operation no user on operation', async()=>{
