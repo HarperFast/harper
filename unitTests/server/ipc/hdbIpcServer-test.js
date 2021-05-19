@@ -55,19 +55,19 @@ describe('Test hdbIpcServer module', () => {
     it('Test invalid IPC msg type is logged', () => {
         const data_test = 'create schema';
         message_listener_rw(data_test);
-        expect(log_warn_stub).to.have.been.calledWith('Invalid IPC message data type, must be an object');
+        expect(log_warn_stub).to.have.been.calledWith('Invalid IPC event data type, must be an object');
     });
 
     it('Test missing type is logged', () => {
         const data_test = { message: 'unit-test' };
         message_listener_rw(data_test);
-        expect(log_warn_stub).to.have.been.calledWith("IPC message missing 'type' property");
+        expect(log_warn_stub).to.have.been.calledWith("IPC event missing 'type'");
     });
 
     it('Test missing message is logged', () => {
         const data_test = { type: 'create_schema' };
         message_listener_rw(data_test);
-        expect(log_warn_stub).to.have.been.calledWith("IPC message missing 'message' property");
+        expect(log_warn_stub).to.have.been.calledWith("IPC event missing 'message'");
     });
 
     it('Test invalid event type logged', () => {
