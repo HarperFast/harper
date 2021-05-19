@@ -87,7 +87,7 @@ async function createAttribute(create_attribute_object) {
     try {
 
         attribute_structure = await fsCreateAttribute(create_attribute_object);
-        signalling.signalSchemaChange({type: 'schema'});
+        signalling.signalSchemaChange(create_attribute_object);
 
         return attribute_structure;
     } catch(err) {
