@@ -52,7 +52,7 @@ function createFSTables(schema_path, logger){
     let tables = Object.keys(system_schema);
     for(let x = 0; x < tables.length; x++) {
         let table_name = tables[x];
-        makeDirectory(logger, path.join(schema_path, table_name));
+        makeDirectory(logger, path.join(schema_path.toString(), table_name.toString()));
         let attributes = system_schema[table_name].attributes;
 
         for(let y = 0; y < attributes.length; y++){

@@ -72,9 +72,10 @@ describe('test checkJWTTokenExist function', ()=>{
     });
 
     it('test keys exist', ()=>{
-        fs.writeFileSync(path.join(KEYS_PATH, '.jwtPass'));
-        fs.writeFileSync(path.join(KEYS_PATH, '.jwtPrivate.key'));
-        fs.writeFileSync(path.join(KEYS_PATH, '.jwtPublic.key'));
+
+        fs.writeFileSync(path.join(KEYS_PATH, '.jwtPass'),'');
+        fs.writeFileSync(path.join(KEYS_PATH, '.jwtPrivate.key'),'');
+        fs.writeFileSync(path.join(KEYS_PATH, '.jwtPublic.key'),'');
 
         fs_writefile_spy.resetHistory();
         check_jwt_token_exist();
