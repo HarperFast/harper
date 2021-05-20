@@ -1,6 +1,7 @@
 'use strict';
 
 const hdb_logger = require('../../utility/logging/harper_logger');
+const hdb_terms = require('../../utility/hdbTerms');
 const clean_lmdb_map = require('../../utility/lmdb/cleanLMDBMap');
 const global_schema = require('../../utility/globalSchema');
 const schema_describe = require('../../data_layer/schemaDescribe');
@@ -13,7 +14,7 @@ const { validateEvent } = require('../../server/ipc/utility/ipcUtils');
  * @type {{schema: ((function(*): Promise<void>)|*), job: ((function(*): Promise<void>)|*), user: ((function(): Promise<void>)|*)}}
  */
 const hdb_child_ipc_handlers = {
-    'schema': async (event) => {
+    [hdb_terms.IPC_EVENT_TYPES.SCHEMA]: async (event) => {
         const validate = validateEvent(event);
         if (validate) {
             hdb_logger.error(validate);
@@ -23,14 +24,14 @@ const hdb_child_ipc_handlers = {
         clean_lmdb_map(event.message);
         await syncSchemaMetadata(event.message);
     },
-    'user': async () => {
+    [hdb_terms.IPC_EVENT_TYPES.USER]: async () => {
         try {
             await user_schema.setUsersToGlobal();
         } catch(err){
             hdb_logger.error(err);
         }
     },
-    'job': async (event) => {
+    [hdb_terms.IPC_EVENT_TYPES.JOB]: async (event) => {
         const validate = validateEvent(event);
         if (validate) {
             hdb_logger.error(validate);

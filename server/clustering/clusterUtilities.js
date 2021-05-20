@@ -478,21 +478,21 @@ function getClusterStatus() {
 function clusterMessageHandler(msg) {
     try {
         switch(msg.type) {
-            case terms.CLUSTER_MESSAGE_TYPE_ENUM.SCHEMA:
-                global.forks.forEach((fork) => {
-                    fork.send(msg);
-                });
-
-                if(global.ws_fork){
-                    global.ws_fork.send(msg);
-                }
-
-                break;
-            case terms.CLUSTER_MESSAGE_TYPE_ENUM.USER:
-                global.forks.forEach((fork) => {
-                    fork.send(msg);
-                });
-                break;
+            // case terms.CLUSTER_MESSAGE_TYPE_ENUM.SCHEMA:
+            //     global.forks.forEach((fork) => {
+            //         fork.send(msg);
+            //     });
+            //
+            //     if(global.ws_fork){
+            //         global.ws_fork.send(msg);
+            //     }
+            //
+            //     break;
+            // case terms.CLUSTER_MESSAGE_TYPE_ENUM.USER:
+            //     global.forks.forEach((fork) => {
+            //         fork.send(msg);
+            //     });
+            //     break;
             case terms.CLUSTER_MESSAGE_TYPE_ENUM.CLUSTER_STATUS:
                 let status = undefined;
                 let target_process = undefined;
