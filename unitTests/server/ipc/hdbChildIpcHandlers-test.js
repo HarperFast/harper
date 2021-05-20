@@ -6,7 +6,6 @@ const rewire = require('rewire');
 const { expect } = chai;
 const sinon_chai = require('sinon-chai');
 chai.use(sinon_chai);
-const test_util = require('../../test_utils');
 const harper_logger = require('../../../utility/logging/harper_logger');
 const user_schema = require('../../../security/user');
 const hdb_child_ipc_handlers = rewire('../../../server/ipc/hdbChildIpcHandlers');
@@ -36,12 +35,18 @@ describe('Test hdbChildIpcHandler module', () => {
         let sync_schema_rw;
         let set_users_to_global_stub;
         let parse_msg_stub;
+        let schema_handler;
+        let user_handler;
+        let job_handler;
 
         before(() => {
             hdb_child_ipc_handlers.__set__('clean_lmdb_map', clean_map_stub);
             sync_schema_rw = hdb_child_ipc_handlers.__set__('syncSchemaMetadata', sync_schema_stub);
             set_users_to_global_stub = sandbox.stub(user_schema, 'setUsersToGlobal');
             parse_msg_stub = sandbox.stub(job_runner, 'parseMessage');
+            schema_handler = hdb_child_ipc_handlers.__get__('schemaHandler');
+            user_handler = hdb_child_ipc_handlers.__get__('userHandler');
+            job_handler = hdb_child_ipc_handlers.__get__('jobHandler');
         });
 
         afterEach(() => {
@@ -64,7 +69,7 @@ describe('Test hdbChildIpcHandler module', () => {
                 "operation": "create_schema",
                 "schema": "unit_test"
             };
-            await hdb_child_ipc_handlers.schema(test_event);
+            await schema_handler(test_event);
             expect(clean_map_stub).to.have.been.calledWith(expected_msg);
             expect(sync_schema_stub).to.have.been.calledWith(expected_msg);
         });
@@ -74,18 +79,18 @@ describe('Test hdbChildIpcHandler module', () => {
                 "type": "schema",
                 "message": undefined
             };
-            await hdb_child_ipc_handlers.schema(test_event);
+            await schema_handler(test_event);
             expect(log_error_stub).to.have.been.calledWith("IPC event missing 'message'");
         });
 
         it('Test user function is called as expected', async () => {
-            await hdb_child_ipc_handlers.user();
+            await user_handler();
             expect(set_users_to_global_stub).to.have.been.called;
         });
 
         it('Test error from user function is logged', async () => {
             set_users_to_global_stub.throws(TEST_ERR);
-            await hdb_child_ipc_handlers.user();
+            await user_handler();
             expect(log_error_stub.args[0][0].name).to.equal(TEST_ERR);
         });
 
@@ -118,7 +123,7 @@ describe('Test hdbChildIpcHandler module', () => {
                 }
             };
 
-            await hdb_child_ipc_handlers.job(test_event);
+            await job_handler(test_event);
             expect(parse_msg_stub).to.have.been.calledWith(expected_message);
         });
 
@@ -128,7 +133,7 @@ describe('Test hdbChildIpcHandler module', () => {
                 "message": 'hi'
             };
             parse_msg_stub.throws(TEST_ERR);
-            await hdb_child_ipc_handlers.job(test_event);
+            await job_handler(test_event);
             expect(log_error_stub.args[0][0].name).to.equal(TEST_ERR);
         });
 
@@ -136,7 +141,7 @@ describe('Test hdbChildIpcHandler module', () => {
             const test_event = {
                 "type": "job"
             };
-            await hdb_child_ipc_handlers.job(test_event);
+            await job_handler(test_event);
             expect(log_error_stub).to.have.been.calledWith("IPC event missing 'message'");
         });
     });
