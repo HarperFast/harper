@@ -475,7 +475,7 @@ function getClusterStatus() {
  * This function describes messages the parent process expects to recieve from child processes.
  * @param msg
  */
-function clusterMessageHandler(msg) {
+/*function clusterMessageHandler(msg) {
     try {
         switch(msg.type) {
             // case terms.CLUSTER_MESSAGE_TYPE_ENUM.SCHEMA:
@@ -565,11 +565,11 @@ function clusterMessageHandler(msg) {
                 break;
             case terms.CLUSTER_MESSAGE_TYPE_ENUM.RESTART:
                 log.info('Received restart event.');
-                if(!global.forks || global.forks.length === 0) {
-                    log.info('No processes found');
-                } else {
-                    log.info(`Shutting down ${global.forks.length} process.`);
-                }
+                // if(!global.forks || global.forks.length === 0) {
+                //     log.info('No processes found');
+                // } else {
+                //     log.info(`Shutting down ${global.forks.length} process.`);
+                // }
 
                 if(msg.force_shutdown) {
                     restartHDB();
@@ -577,16 +577,16 @@ function clusterMessageHandler(msg) {
                     break;
                 }
 
-                for(let i=0; i<global.forks.length; i++) {
-                    if(global.forks[i]) {
-                        try {
-                            log.debug(`Sending ${terms.RESTART_CODE} signal to process with pid:${global.forks[i].process.pid}`);
-                            global.forks[i].send(msg);
-                        } catch(err) {
-                            log.error(`Got an error trying to send ${terms.RESTART_CODE} to process ${global.forks[i].process.pid}.`);
-                        }
-                    }
-                }
+                // for(let i=0; i<global.forks.length; i++) {
+                //     if(global.forks[i]) {
+                //         try {
+                //             log.debug(`Sending ${terms.RESTART_CODE} signal to process with pid:${global.forks[i].process.pid}`);
+                //             global.forks[i].send(msg);
+                //         } catch(err) {
+                //             log.error(`Got an error trying to send ${terms.RESTART_CODE} to process ${global.forks[i].process.pid}.`);
+                //         }
+                //     }
+                // }
                 // Try to shutdown all SocketServer and SocketClient connections.
                 if(global.cluster_server) {
                     // Close server will emit an event once it is done
@@ -600,7 +600,7 @@ function clusterMessageHandler(msg) {
     } catch (e) {
         log.error(e);
     }
-}
+}*/
 
 async function authHeaderToUser(json_body) {
     let req = {};
@@ -646,7 +646,6 @@ module.exports = {
     configureCluster,
     clusterStatus,
     removeNode: removeNode,
-    clusterMessageHandler: clusterMessageHandler,
     authHeaderToUser: authHeaderToUser,
     setEnterprise: setEnterprise,
     restartHDB: restartHDB,
