@@ -69,14 +69,14 @@ describe('Tests for delete.js', () => {
         it('Test that validation error returned', async () => {
             let delete_obj = test_utils.deepClone(DELETE_BEFORE_OBJ);
             delete delete_obj.date;
-            let expected_error = test_utils.generateHDBError('Date is required', 400);
+            let expected_error = test_utils.generateHDBError("'date' is required", 400);
             await test_utils.assertErrorAsync(_delete.deleteFilesBefore, [delete_obj], expected_error);
         });
 
         it('Test that Invalid date format error returned', async () => {
             let delete_obj = test_utils.deepClone(DELETE_BEFORE_OBJ);
             delete_obj.date = '03-09-2023';
-            let test_err_result = await test_utils.testError(_delete.deleteFilesBefore(delete_obj), 'Invalid date, must be in ISO-8601 format (YYYY-MM-DD).');
+            let test_err_result = await test_utils.testError(_delete.deleteFilesBefore(delete_obj), "'date' must be in ISO 8601 date format");
 
             expect(test_err_result).to.be.true;
         });
@@ -110,14 +110,14 @@ describe('Tests for delete.js', () => {
         it('Test that validation error returned', async () => {
             let delete_obj = test_utils.deepClone(DELETE_TXN_BEFORE_OBJ);
             delete delete_obj.timestamp;
-            let expected_error = test_utils.generateHDBError('Timestamp is required', 400);
+            let expected_error = test_utils.generateHDBError("'timestamp' is required", 400);
             await test_utils.assertErrorAsync(_delete.deleteTransactionLogsBefore, [delete_obj], expected_error);
         });
 
         it('Test that date string is invalid', async () => {
             let delete_obj = test_utils.deepClone(DELETE_TXN_BEFORE_OBJ);
             delete_obj.timestamp = '03-09-2023';
-            let expected_error = test_utils.generateHDBError('Timestamp is invalid.', 400);
+            let expected_error = test_utils.generateHDBError("'timestamp' is invalid", 400);
             await test_utils.assertErrorAsync(_delete.deleteTransactionLogsBefore, [delete_obj], expected_error);
         });
 
@@ -167,7 +167,7 @@ describe('Tests for delete.js', () => {
         it('Test that validation error is thrown from bad delete object', async () => {
             let delete_obj = test_utils.deepClone(DELETE_OBJ_TEST);
             delete_obj.hash_values = 'id';
-            let test_err_result = await test_utils.testError(_delete.deleteRecord(delete_obj), 'Hash values hash_values has value id which is not an Array');
+            let test_err_result = await test_utils.testError(_delete.deleteRecord(delete_obj), "'hash_values' must be an array");
 
             expect(test_err_result).to.be.true;
         });
