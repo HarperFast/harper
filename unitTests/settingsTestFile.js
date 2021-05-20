@@ -7,8 +7,6 @@ const TEST_SETTINGS_FILE_PATH = `${__dirname}/${TEST_SETTINGS_FILE}`;
 const TEST_SETTINGS_FILE_BAK = 'settings.test.bak';
 const SETTINGS = (settings_values = {}) => (
     '\t;Settings for the HarperDB process\n' +
-    '\t;The directory harperdb has been installed in\n' +
-    'PROJECT_DIR=/Users/harperdb/unitTests/server/clustering\n' +
     '\t;The directory selected during install where the database files reside\n' +
     'HDB_ROOT=/Users/harperdb/unitTests/envDir\n' +
     '\t;The port the HarperDB REST interface will listen on\n' +

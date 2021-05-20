@@ -474,7 +474,7 @@ function statDBI(env, dbi_name){
  */
 async function environmentDataSize(environment_base_path, table_name){
     try {
-        let environment_path = path.join(environment_base_path, table_name, MDB_FILE_NAME);
+        let environment_path = path.join(environment_base_path, table_name.toString(), MDB_FILE_NAME);
         let stat_result = await fs.stat(environment_path);
         return stat_result["size"];
     }catch(e){

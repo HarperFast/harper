@@ -17,7 +17,7 @@
     "harperdb": "./bin/harperdb.js"
   },
   "engines": {
-    "node": "12.22.1"
+    "node": "14.16.1"
   },
   "homepage": "https://www.harperdb.io/",
   "bugs": "support@harperdb.io",
@@ -52,7 +52,7 @@
     "async": "^2.6.1",
     "aws-sdk": "^2.389.0",
     "body-parser": "^1.18.3",
-    "bytenode": "^1.1.6",
+    "bytenode": "^1.2.3",
     "cli-progress": "^3.9.0",
     "clone": "^2.1.1",
     "colors": "^1.4.0",
