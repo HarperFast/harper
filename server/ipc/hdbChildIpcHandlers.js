@@ -14,38 +14,21 @@ const { validateEvent } = require('../../server/ipc/utility/ipcUtils');
  * @type {{schema: ((function(*): Promise<void>)|*), job: ((function(*): Promise<void>)|*), user: ((function(): Promise<void>)|*)}}
  */
 const hdb_child_ipc_handlers = {
-    [hdb_terms.IPC_EVENT_TYPES.SCHEMA]: async (event) => {
-        const validate = validateEvent(event);
-        if (validate) {
-            hdb_logger.error(validate);
-            return;
-        }
-
-        clean_lmdb_map(event.message);
-        await syncSchemaMetadata(event.message);
-    },
-    [hdb_terms.IPC_EVENT_TYPES.USER]: async () => {
-        try {
-            await user_schema.setUsersToGlobal();
-        } catch(err){
-            hdb_logger.error(err);
-        }
-    },
-    [hdb_terms.IPC_EVENT_TYPES.JOB]: async (event) => {
-        const validate = validateEvent(event);
-        if (validate) {
-            hdb_logger.error(validate);
-            return;
-        }
-
-        try {
-            const result = await job_runner.parseMessage(event.message);
-            hdb_logger.info(`completed job with result: ${JSON.stringify(result)}`);
-        } catch(err) {
-            hdb_logger.error(err);
-        }
-    }
+    [hdb_terms.IPC_EVENT_TYPES.SCHEMA]: schemaHandler,
+    [hdb_terms.IPC_EVENT_TYPES.USER]: userHandler,
+    [hdb_terms.IPC_EVENT_TYPES.JOB]: jobHandler
 };
+
+async function schemaHandler(event) {
+    const validate = validateEvent(event);
+    if (validate) {
+        hdb_logger.error(validate);
+        return;
+    }
+
+    clean_lmdb_map(event.message);
+    await syncSchemaMetadata(event.message);
+}
 
 /**
  * Switch statement to handle schema-related messages from other forked processes - i.e. if another process completes an
@@ -94,6 +77,29 @@ async function syncSchemaMetadata(msg) {
 
 function handleErrorCallback(err) {
     if (err) {
+        hdb_logger.error(err);
+    }
+}
+
+async function userHandler() {
+    try {
+        await user_schema.setUsersToGlobal();
+    } catch(err){
+        hdb_logger.error(err);
+    }
+}
+
+async function jobHandler(event) {
+    const validate = validateEvent(event);
+    if (validate) {
+        hdb_logger.error(validate);
+        return;
+    }
+
+    try {
+        const result = await job_runner.parseMessage(event.message);
+        hdb_logger.info(`completed job with result: ${JSON.stringify(result)}`);
+    } catch(err) {
         hdb_logger.error(err);
     }
 }
