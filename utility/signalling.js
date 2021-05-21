@@ -6,18 +6,9 @@ const hdb_logger = require('../utility/logging/harper_logger');
 const IPCEventObject = require('../server/ipc/utility/IPCEventObject');
 const { sendIpcEvent } = require('../server/ipc/utility/ipcUtils');
 
-class JobAddedSignalMessage {
-    constructor(runner_message) {
-        // For now we want to target the creating process to handle this job.  At some point this can
-        // be made smarter to delegate to a different process.
-        this.target_process_id = process.pid;
-        this.runner_message = runner_message;
-    }
-}
-
 function signalSchemaChange(message){
     try {
-        hdb_logger.trace(`signalSchemaChange called with message: ${message}`);
+        hdb_logger.trace(`signalSchemaChange called with message: ${JSON.stringify(message)}`);
         const ipc_event_schema = new IPCEventObject(hdb_terms.IPC_EVENT_TYPES.SCHEMA, message);
         sendIpcEvent(ipc_event_schema);
     } catch(err) {
@@ -27,20 +18,9 @@ function signalSchemaChange(message){
 
 function signalUserChange(message){
     try {
-        hdb_logger.trace(`signalUserChange called with message: ${message}`);
+        hdb_logger.trace(`signalUserChange called with message: ${JSON.stringify(message)}`);
         const ipc_event_user = new IPCEventObject(hdb_terms.IPC_EVENT_TYPES.USER, message);
         sendIpcEvent(ipc_event_user);
-    } catch(err) {
-        hdb_logger.error(err);
-    }
-}
-
-function signalJobAdded(message){
-    try {
-        hdb_logger.trace(`signalJobAdded called with message: ${message}`);
-        const job_added_msg = new JobAddedSignalMessage(message);
-        const ipc_event_job = new IPCEventObject(hdb_terms.IPC_EVENT_TYPES.JOB, job_added_msg);
-        sendIpcEvent(ipc_event_job);
     } catch(err) {
         hdb_logger.error(err);
     }
@@ -86,7 +66,6 @@ function signalRestart(force) {
 module.exports = {
     signalSchemaChange,
     signalUserChange,
-    signalJobAdded,
     signalChildStarted,
     signalChildStopped,
     signalRestart

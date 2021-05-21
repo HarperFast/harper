@@ -185,6 +185,7 @@ const IPC_ERRORS = {
     INVALID_IPC_DATA_TYPE: 'Invalid IPC event data type, must be an object',
     MISSING_TYPE: "IPC event missing 'type'",
     MISSING_MSG: "IPC event missing 'message'",
+    MISSING_ORIGIN: "IPC event message missing 'originator' property",
     INVALID_EVENT: (event) => `IPC server received invalid event type: ${event}`
 };
 

@@ -7,7 +7,9 @@ const { IPC_ERRORS } = require('../../../utility/errors/commonErrors');
 
 module.exports = {
     sendIpcEvent,
-    validateEvent
+    validateEvent,
+    SchemaEventMsg,
+    UserEventMsg
 };
 
 /**
@@ -40,7 +42,37 @@ function validateEvent(event) {
         return IPC_ERRORS.MISSING_MSG;
     }
 
+    if (!event.message.hasOwnProperty('originator') || hdb_utils.isEmpty(event.message.originator)) {
+        return IPC_ERRORS.MISSING_ORIGIN;
+    }
+
     if (hdb_terms.IPC_EVENT_TYPES[event.type.toUpperCase()] === undefined) {
         return IPC_ERRORS.INVALID_EVENT(event.type);
     }
+}
+
+/**
+ * Constructor function for the message of schema IPC events
+ * @param originator
+ * @param operation
+ * @param schema
+ * @param table
+ * @param attribute
+ * @constructor
+ */
+function SchemaEventMsg(originator, operation, schema, table = undefined, attribute = undefined) {
+    this.originator = originator;
+    this.operation = operation;
+    this.schema = schema;
+    this.table = table;
+    this.attribute = attribute;
+}
+
+/**
+ * Constructor function for the message of user IPC events
+ * @param originator
+ * @constructor
+ */
+function UserEventMsg(originator) {
+    this.originator = originator;
 }

@@ -26,6 +26,12 @@ async function schemaHandler(event) {
         return;
     }
 
+    if (event.message.originator === process.pid) {
+        hdb_logger.trace(`Schema event received by originator ${process.pid} and ignored`);
+        return;
+    }
+
+    hdb_logger.trace(`HDB child with ${hdb_terms.HDB_IPC_CLIENT_PREFIX}${process.pid} received schema event: ${JSON.stringify(event)}`);
     clean_lmdb_map(event.message);
     await syncSchemaMetadata(event.message);
 }
@@ -81,8 +87,20 @@ function handleErrorCallback(err) {
     }
 }
 
-async function userHandler() {
+async function userHandler(event) {
     try {
+        const validate = validateEvent(event);
+        if (validate) {
+            hdb_logger.error(validate);
+            return;
+        }
+
+        if (event.message.originator === process.pid) {
+            hdb_logger.trace(`User event received by originator ${process.pid} and ignored`);
+            return;
+        }
+
+        hdb_logger.trace(`HDB child with ${hdb_terms.HDB_IPC_CLIENT_PREFIX}${process.pid} received user event: ${JSON.stringify(event)}`);
         await user_schema.setUsersToGlobal();
     } catch(err){
         hdb_logger.error(err);
@@ -96,7 +114,13 @@ async function jobHandler(event) {
         return;
     }
 
+    if (event.message.originator === process.pid) {
+        hdb_logger.trace(`Job event received by originator ${process.pid} and ignored`);
+        return;
+    }
+
     try {
+        hdb_logger.trace(`HDB child with ${hdb_terms.HDB_IPC_CLIENT_PREFIX}${process.pid} received job event: ${JSON.stringify(event)}`);
         const result = await job_runner.parseMessage(event.message);
         hdb_logger.info(`completed job with result: ${JSON.stringify(result)}`);
     } catch(err) {

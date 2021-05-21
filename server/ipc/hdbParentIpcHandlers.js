@@ -21,13 +21,13 @@ const hdb_parent_ipc_handlers = {
 };
 
 async function childStartedHandler(event) {
+    hdb_logger.trace(`HDB parent with ${hdb_terms.HDB_IPC_CLIENT_PREFIX}${process.pid} received child_started event: ${JSON.stringify(event)}`);
     const validate = validateEvent(event);
     if (validate) {
         hdb_logger.error(validate);
         return;
     }
 
-    hdb_logger.trace(`Got child started event`);
     if(started_forks[event.message]) {
         hdb_logger.warn(`Got a duplicate child started event for pid ${event.message}`);
     } else {
@@ -52,7 +52,7 @@ async function childStartedHandler(event) {
 }
 
 function childStoppedHandler(event) {
-    hdb_logger.trace(`Got child stopped event`);
+    hdb_logger.trace(`HDB parent with ${hdb_terms.HDB_IPC_CLIENT_PREFIX}${process.pid} received child_stopped event: ${JSON.stringify(event)}`);
     if(started_forks[event.message] === false) {
         hdb_logger.warn(`Got a duplicate child started event for pid ${event.message}`);
     } else {
@@ -74,7 +74,7 @@ function childStoppedHandler(event) {
 }
 
 function restartHandler(event) {
-    hdb_logger.info('Received restart event.');
+    hdb_logger.trace(`HDB parent with ${hdb_terms.HDB_IPC_CLIENT_PREFIX}${process.pid} received restart event: ${JSON.stringify(event)}`);
 
     if(event.message) {
         restartHDB();

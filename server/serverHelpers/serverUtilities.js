@@ -201,24 +201,18 @@ async function catchup(req) {
     }
 }
 
-async function signalJob(json) {
+async function executeJob(json) {
     let new_job_object = undefined;
     let result = undefined;
     try {
         result = await jobs.addJob(json);
         new_job_object = result.createdJob;
         let job_runner_message = new job_runner.RunnerMessage(new_job_object, json);
-        signal.signalJobAdded(job_runner_message);
-        // TODO: not sure what to do with code in else statement
-        // if (process.send !== undefined) {
-        //     signal.signalJobAdded(job_signal_message);
-        // } else {
-        //     // purposefully not waiting for await response as we want to callback immediately.
-        //     job_runner.parseMessage(job_signal_message.runner_message)
-        //         .catch(e => {
-        //             harper_logger.error(`Got an error trying to run a job with message ${job_runner_message}. ${e}`);
-        //         });
-        // }
+        // purposefully not waiting for await response as we want to callback immediately.
+        job_runner.parseMessage(job_runner_message).catch(e => {
+            harper_logger.error(`Got an error trying to run a job with message ${job_runner_message}. ${e}`);
+        });
+
         return `Starting job with id ${new_job_object.id}`;
     } catch (err) {
         let message = `There was an error adding a job: ${err.http_resp_msg ? err.http_resp_msg : err}`;
@@ -238,10 +232,10 @@ function initializeOperationFunctionMap(){
     op_func_map.set(terms.OPERATIONS_ENUM.SEARCH_BY_VALUE, new OperationFunctionObject(p_search_search_by_value));
     op_func_map.set(terms.OPERATIONS_ENUM.SEARCH, new OperationFunctionObject(p_search_search));
     op_func_map.set(terms.OPERATIONS_ENUM.SQL, new OperationFunctionObject(p_sql_evaluate_sql));
-    op_func_map.set(terms.OPERATIONS_ENUM.CSV_DATA_LOAD, new OperationFunctionObject(signalJob, bulkLoad.csvDataLoad));
-    op_func_map.set(terms.OPERATIONS_ENUM.CSV_FILE_LOAD, new OperationFunctionObject(signalJob, bulkLoad.csvFileLoad));
-    op_func_map.set(terms.OPERATIONS_ENUM.CSV_URL_LOAD, new OperationFunctionObject(signalJob, bulkLoad.csvURLLoad));
-    op_func_map.set(terms.OPERATIONS_ENUM.IMPORT_FROM_S3, new OperationFunctionObject(signalJob, bulkLoad.importFromS3));
+    op_func_map.set(terms.OPERATIONS_ENUM.CSV_DATA_LOAD, new OperationFunctionObject(executeJob, bulkLoad.csvDataLoad));
+    op_func_map.set(terms.OPERATIONS_ENUM.CSV_FILE_LOAD, new OperationFunctionObject(executeJob, bulkLoad.csvFileLoad));
+    op_func_map.set(terms.OPERATIONS_ENUM.CSV_URL_LOAD, new OperationFunctionObject(executeJob, bulkLoad.csvURLLoad));
+    op_func_map.set(terms.OPERATIONS_ENUM.IMPORT_FROM_S3, new OperationFunctionObject(executeJob, bulkLoad.importFromS3));
     op_func_map.set(terms.OPERATIONS_ENUM.CREATE_SCHEMA, new OperationFunctionObject(schema.createSchema));
     op_func_map.set(terms.OPERATIONS_ENUM.CREATE_TABLE, new OperationFunctionObject(schema.createTable));
     op_func_map.set(terms.OPERATIONS_ENUM.CREATE_ATTRIBUTE, new OperationFunctionObject(schema.createAttribute));
@@ -267,10 +261,10 @@ function initializeOperationFunctionMap(){
     op_func_map.set(terms.OPERATIONS_ENUM.REMOVE_NODE, new OperationFunctionObject(cluster_utilities.removeNode));
     op_func_map.set(terms.OPERATIONS_ENUM.CONFIGURE_CLUSTER, new OperationFunctionObject(cluster_utilities.configureCluster));
     op_func_map.set(terms.OPERATIONS_ENUM.CLUSTER_STATUS, new OperationFunctionObject(cluster_utilities.clusterStatus));
-    op_func_map.set(terms.OPERATIONS_ENUM.EXPORT_TO_S3, new OperationFunctionObject(signalJob, export_.export_to_s3));
-    op_func_map.set(terms.OPERATIONS_ENUM.DELETE_FILES_BEFORE, new OperationFunctionObject(signalJob, delete_.deleteFilesBefore));
-    op_func_map.set(terms.OPERATIONS_ENUM.DELETE_RECORDS_BEFORE, new OperationFunctionObject(signalJob, delete_.deleteFilesBefore));
-    op_func_map.set(terms.OPERATIONS_ENUM.EXPORT_LOCAL, new OperationFunctionObject(signalJob, export_.export_local));
+    op_func_map.set(terms.OPERATIONS_ENUM.EXPORT_TO_S3, new OperationFunctionObject(executeJob, export_.export_to_s3));
+    op_func_map.set(terms.OPERATIONS_ENUM.DELETE_FILES_BEFORE, new OperationFunctionObject(executeJob, delete_.deleteFilesBefore));
+    op_func_map.set(terms.OPERATIONS_ENUM.DELETE_RECORDS_BEFORE, new OperationFunctionObject(executeJob, delete_.deleteFilesBefore));
+    op_func_map.set(terms.OPERATIONS_ENUM.EXPORT_LOCAL, new OperationFunctionObject(executeJob, export_.export_local));
     op_func_map.set(terms.OPERATIONS_ENUM.SEARCH_JOBS_BY_START_DATE, new OperationFunctionObject(jobs.handleGetJobsByStartDate));
     op_func_map.set(terms.OPERATIONS_ENUM.GET_JOB, new OperationFunctionObject(jobs.handleGetJob));
     op_func_map.set(terms.OPERATIONS_ENUM.GET_FINGERPRINT, new OperationFunctionObject(reg.getFingerprint));
@@ -279,7 +273,7 @@ function initializeOperationFunctionMap(){
     op_func_map.set(terms.OPERATIONS_ENUM.RESTART, new OperationFunctionObject(stop.restartProcesses));
     op_func_map.set(terms.OPERATIONS_ENUM.CATCHUP, new OperationFunctionObject(catchup));
     op_func_map.set(terms.OPERATIONS_ENUM.SYSTEM_INFORMATION, new OperationFunctionObject(system_information.systemInformation));
-    op_func_map.set(terms.OPERATIONS_ENUM.DELETE_TRANSACTION_LOGS_BEFORE, new OperationFunctionObject(signalJob, delete_.deleteTransactionLogsBefore));
+    op_func_map.set(terms.OPERATIONS_ENUM.DELETE_TRANSACTION_LOGS_BEFORE, new OperationFunctionObject(executeJob, delete_.deleteTransactionLogsBefore));
     op_func_map.set(terms.OPERATIONS_ENUM.READ_TRANSACTION_LOG, new OperationFunctionObject(read_transaction_log));
     op_func_map.set(terms.OPERATIONS_ENUM.CREATE_AUTHENTICATION_TOKENS, new OperationFunctionObject(token_authentication.createTokens));
     op_func_map.set(terms.OPERATIONS_ENUM.REFRESH_OPERATION_TOKEN, new OperationFunctionObject(token_authentication.refreshOperationToken));
