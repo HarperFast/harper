@@ -37,6 +37,15 @@ async function serverParent(num_workers) {
     check_jwt_tokens();
     global.isMaster = cluster.isMaster;
 
+    try {
+        // Instantiate new instance of HDB IPC client and assign it to global.
+        global.hdb_ipc = new IPCClient(process.pid, hdbParentIpcHandlers);
+    } catch(err) {
+        harper_logger.error('Error instantiating new instance of IPC client in HDB server parent');
+        harper_logger.error(err);
+        throw err;
+    }
+
     process.on('uncaughtException', function (err) {
         let message = `Found an uncaught exception with message: ${err.message}${os.EOL}Stack: ${err.stack}${os.EOL}Terminating HDB.`;
         console.error(message);
@@ -121,15 +130,6 @@ async function launch(num_workers) {
     for (let i = 0; i < num_workers; i++) {
         try {
             let forked = cluster.fork();
-
-            try {
-                // Instantiate new instance of HDB IPC client and assign it to global.
-                global.hdb_ipc = new IPCClient(process.pid, hdbParentIpcHandlers);
-            } catch(err) {
-                harper_logger.error('Error instantiating new instance of IPC client in HDB server parent');
-                harper_logger.error(err);
-                throw err;
-            }
 
             forked.on('error',(err) => {
                 harper_logger.fatal('There was an error starting the HDB Child process.');

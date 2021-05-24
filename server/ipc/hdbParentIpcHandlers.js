@@ -21,24 +21,30 @@ const hdb_parent_ipc_handlers = {
 };
 
 async function childStartedHandler(event) {
-    hdb_logger.trace(`HDB parent with ${hdb_terms.HDB_IPC_CLIENT_PREFIX}${process.pid} received child_started event: ${JSON.stringify(event)}`);
     const validate = validateEvent(event);
     if (validate) {
         hdb_logger.error(validate);
         return;
     }
 
-    if(started_forks[event.message]) {
-        hdb_logger.warn(`Got a duplicate child started event for pid ${event.message}`);
+    if (event.message.originator === process.pid) {
+        hdb_logger.trace(`child_started event received by originator ${process.pid} and ignored`);
+        return;
+    }
+
+    hdb_logger.trace(`HDB parent with ${hdb_terms.HDB_IPC_CLIENT_PREFIX}${process.pid} received child_started event: ${JSON.stringify(event)}`);
+
+    if(started_forks[event.message.originator]) {
+        hdb_logger.warn(`Got a duplicate child started event for pid ${event.message.originator}`);
     } else {
         child_event_count++;
         hdb_logger.info(`Received ${child_event_count} child started event(s).`);
-        started_forks[event.message] = true;
+        started_forks[event.message.originator] = true;
         if (Object.keys(started_forks).length === global.forks.length) {
             //all children are started, kick off enterprise.
             child_event_count = 0;
 
-            hdb_logger.trace('clusterUtilities kickOffEnterprise');
+            hdb_logger.trace('childStartedHandler kickOffEnterprise');
             try {
                 if(global.clustering_on === true) {
                     await enterprise_util.kickOffEnterprise();
@@ -52,14 +58,25 @@ async function childStartedHandler(event) {
 }
 
 function childStoppedHandler(event) {
+    const validate = validateEvent(event);
+    if (validate) {
+        hdb_logger.error(validate);
+        return;
+    }
+
+    if (event.message.originator === process.pid) {
+        hdb_logger.trace(`child_stopped event received by originator ${process.pid} and ignored`);
+        return;
+    }
+
     hdb_logger.trace(`HDB parent with ${hdb_terms.HDB_IPC_CLIENT_PREFIX}${process.pid} received child_stopped event: ${JSON.stringify(event)}`);
-    if(started_forks[event.message] === false) {
-        hdb_logger.warn(`Got a duplicate child started event for pid ${event.message}`);
+    if(started_forks[event.message.originator] === false) {
+        hdb_logger.warn(`Got a duplicate child started event for pid ${event.message.originator}`);
     } else {
         child_event_count++;
         hdb_logger.info(`Received ${child_event_count} child stopped event(s).`);
         hdb_logger.info(`started forks: ${util.inspect(started_forks)}`);
-        started_forks[event.message] = false;
+        started_forks[event.message.originator] = false;
         for(let fork of Object.keys(started_forks)) {
             // We still have children running, break;
             if(started_forks[fork] === true) {

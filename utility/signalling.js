@@ -26,28 +26,28 @@ function signalUserChange(message){
     }
 }
 
-function signalChildStarted() {
+function signalChildStarted(message) {
     try {
-        hdb_logger.trace(`signalChildStarted called with message: ${process.pid}`);
-        const ipc_event_child_start = new IPCEventObject(hdb_terms.IPC_EVENT_TYPES.CHILD_STARTED, process.pid);
+        hdb_logger.trace(`signalChildStarted called with message: ${JSON.stringify(message)}`);
+        const ipc_event_child_start = new IPCEventObject(hdb_terms.IPC_EVENT_TYPES.CHILD_STARTED, message);
         sendIpcEvent(ipc_event_child_start);
     } catch(err) {
         hdb_logger.error(err);
     }
 }
 
-function signalChildStopped() {
+function signalChildStopped(message) {
     try {
-        hdb_logger.trace(`signalChildStopped called with message: ${process.pid}`);
-        const ipc_event_child_stop = new IPCEventObject(hdb_terms.IPC_EVENT_TYPES.CHILD_STOPPED, process.pid);
+        hdb_logger.trace(`signalChildStopped called with message: ${JSON.stringify(message)}`);
+        const ipc_event_child_stop = new IPCEventObject(hdb_terms.IPC_EVENT_TYPES.CHILD_STOPPED, message);
         sendIpcEvent(ipc_event_child_stop);
     } catch(err) {
         hdb_logger.error(err);
     }
 }
 
-function signalRestart(force) {
-    const force_boolean = hdb_utils.autoCast(force);
+function signalRestart(message) {
+    const force_boolean = hdb_utils.autoCast(message.force);
 
     if (typeof force_boolean !== 'boolean') {
         hdb_logger.error('Invalid force value, must be a boolean.');
@@ -55,8 +55,8 @@ function signalRestart(force) {
     }
 
     try {
-        hdb_logger.trace(`signalRestart called with message: ${process.pid}`);
-        const ipc_event_restart = new IPCEventObject(hdb_terms.IPC_EVENT_TYPES.RESTART, force_boolean);
+        hdb_logger.trace(`signalRestart called with message: ${JSON.stringify(message)}`);
+        const ipc_event_restart = new IPCEventObject(hdb_terms.IPC_EVENT_TYPES.RESTART, message);
         sendIpcEvent(ipc_event_restart);
     } catch(err) {
         hdb_logger.error(err);

@@ -9,7 +9,10 @@ module.exports = {
     sendIpcEvent,
     validateEvent,
     SchemaEventMsg,
-    UserEventMsg
+    UserEventMsg,
+    ChildStartedMsg,
+    ChildStoppedMsg,
+    RestartMsg
 };
 
 /**
@@ -75,4 +78,33 @@ function SchemaEventMsg(originator, operation, schema, table = undefined, attrib
  */
 function UserEventMsg(originator) {
     this.originator = originator;
+}
+
+/**
+ * Constructor function for the message of child started IPC events
+ * @param originator
+ * @constructor
+ */
+function ChildStartedMsg(originator) {
+    this.originator = originator;
+}
+
+/**
+ * Constructor function for the message of child stopped IPC events
+ * @param originator
+ * @constructor
+ */
+function ChildStoppedMsg(originator) {
+    this.originator = originator;
+}
+
+/**
+ * Constructor function for the message of restart IPC events
+ * @param originator
+ * @param force
+ * @constructor
+ */
+function RestartMsg(originator, force) {
+    this.originator = originator;
+    this.force = force;
 }
