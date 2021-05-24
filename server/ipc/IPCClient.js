@@ -15,6 +15,7 @@ class IPCClient {
         this.server_name = hdb_terms.HDB_IPC_SERVER;
         this.ipc.config.retry = 100;
         this.ipc.config.id = hdb_terms.HDB_IPC_CLIENT_PREFIX + id;
+        this.ipc.config.silent = true;
         this.event_handlers = event_handlers;
         this.connect();
     }

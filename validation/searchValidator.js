@@ -71,6 +71,7 @@ module.exports = function (search_object, type) {
 
             let table_schema = global.hdb_schema[search_object.schema][search_object.table];
             let all_table_attributes = table_schema.attributes;
+            console.log(`\n Search validator ${JSON.stringify(all_table_attributes)}`);
 
             //this clones the get_attributes array
             let check_attributes = [...search_object.get_attributes];

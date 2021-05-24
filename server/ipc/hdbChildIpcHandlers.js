@@ -66,8 +66,10 @@ async function syncSchemaMetadata(msg) {
                         global.hdb_schema[msg.schema] = {};
                     }
 
-                    global.hdb_schema[msg.schema][msg.table] =
-                        await schema_describe.describeTable({schema: msg.schema, table: msg.table});
+                    let tableee = await schema_describe.describeTable({schema: msg.schema, table: msg.table});
+
+                    global.hdb_schema[msg.schema][msg.table] = tableee;
+                    console.log(`#### global schema updated ${process.pid} ${JSON.stringify(tableee.attributes)}\n`);
                     break;
                 default:
                     global_schema.setSchemaDataToGlobal(handleErrorCallback);
