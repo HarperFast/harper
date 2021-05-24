@@ -758,6 +758,105 @@ describe('Test isObject', () => {
     });
 });
 
+describe('Test assignCMDENVVariables', ()=>{
+    it('pass no keys', ()=>{
+        let objs = cu.assignCMDENVVariables();
+
+        assert.deepStrictEqual(objs, {});
+    });
+
+    it('pass keys as empty array', ()=>{
+        let objs = cu.assignCMDENVVariables([]);
+
+        assert.deepStrictEqual(objs, {});
+    });
+
+    it('pass keys as string', ()=>{
+        let objs = cu.assignCMDENVVariables('stuff');
+
+        assert.deepStrictEqual(objs, {});
+    });
+
+    it('pass keys that do not exist in env / args', ()=>{
+        let objs = cu.assignCMDENVVariables(['HDB1', 'HDB2']);
+
+        assert.deepStrictEqual(objs, {});
+    });
+
+    it('pass keys that are only on env', ()=>{
+        try {
+            process.env['HDB1'] = 'envtest1';
+            process.env['HDB2'] = 'envtest2';
+            let objs = cu.assignCMDENVVariables(['HDB1', 'HDB2']);
+
+            assert.deepStrictEqual(objs, {HDB1: 'envtest1', HDB2: 'envtest2'});
+        }catch(e){
+            assert.deepStrictEqual(e, undefined);
+        }
+        delete process.env['HDB1'];
+        delete process.env['HDB2'];
+    });
+
+    it('pass keys that are only on cmd', ()=>{
+        try {
+            process.argv.push('--HDB1');
+            process.argv.push('cmdtest1');
+            process.argv.push('--HDB2');
+            process.argv.push('cmdtest2');
+            let objs = cu.assignCMDENVVariables(['HDB1', 'HDB2']);
+
+            assert.deepStrictEqual(objs, {HDB1: 'cmdtest1', HDB2: 'cmdtest2'});
+        }catch(e){
+            assert.deepStrictEqual(e, undefined);
+        }
+        process.argv.splice(process.argv.length - 4, 4);
+    });
+
+    it('pass keys that are only on cmd & env, validate that cmd wins', ()=>{
+        try {
+            process.argv.push('--HDB1');
+            process.argv.push('cmdtest1');
+            process.argv.push('--HDB2');
+            process.argv.push('cmdtest2');
+
+            process.env['HDB1'] = 'envtest1';
+            process.env['HDB2'] = 'envtest2';
+
+            let objs = cu.assignCMDENVVariables(['HDB1', 'HDB2']);
+
+            assert.deepStrictEqual(objs, {HDB1: 'cmdtest1', HDB2: 'cmdtest2'});
+        }catch(e){
+            assert.deepStrictEqual(e, undefined);
+        }
+        process.argv.splice(process.argv.length - 4, 4);
+        delete process.env['HDB1'];
+        delete process.env['HDB2'];
+    })
+
+    it('pass keys that are on cmd & env, validate that cmd wins when keys are in both', ()=>{
+        try {
+            process.argv.push('--HDB1');
+            process.argv.push('cmdtest1');
+            process.argv.push('--HDB2');
+            process.argv.push('cmdtest2');
+
+            process.env['HDB1'] = 'envtest1';
+            process.env['HDB2'] = 'envtest2';
+            process.env['HDB3'] = 'envtest3';
+
+            let objs = cu.assignCMDENVVariables(['HDB1', 'HDB2', 'HDB3']);
+
+            assert.deepStrictEqual(objs, {HDB1: 'cmdtest1', HDB2: 'cmdtest2', HDB3: 'envtest3'});
+        }catch(e){
+            assert.deepStrictEqual(e, undefined);
+        }
+        process.argv.splice(process.argv.length - 4, 4);
+        delete process.env['HDB1'];
+        delete process.env['HDB2'];
+        delete process.env['HDB3'];
+    });
+});
+
 // TODO: Commented this out for now due to it breaking tests on the CI server.  Will revisit later.
 // https://harperdb.atlassian.net/browse/CORE-273
 /*
