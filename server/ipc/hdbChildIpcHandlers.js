@@ -26,11 +26,6 @@ async function schemaHandler(event) {
         return;
     }
 
-    if (event.message.originator === process.pid) {
-        hdb_logger.trace(`Schema event received by originator ${process.pid} and ignored`);
-        return;
-    }
-
     hdb_logger.trace(`HDB child with ${hdb_terms.HDB_IPC_CLIENT_PREFIX}${process.pid} received schema event: ${JSON.stringify(event)}`);
     clean_lmdb_map(event.message);
     await syncSchemaMetadata(event.message);
@@ -66,10 +61,7 @@ async function syncSchemaMetadata(msg) {
                         global.hdb_schema[msg.schema] = {};
                     }
 
-                    let tableee = await schema_describe.describeTable({schema: msg.schema, table: msg.table});
-
-                    global.hdb_schema[msg.schema][msg.table] = tableee;
-                    console.log(`#### global schema updated ${process.pid} ${JSON.stringify(tableee.attributes)}\n`);
+                    global.hdb_schema[msg.schema][msg.table] = await schema_describe.describeTable({schema: msg.schema, table: msg.table});
                     break;
                 default:
                     global_schema.setSchemaDataToGlobal(handleErrorCallback);
@@ -97,11 +89,6 @@ async function userHandler(event) {
             return;
         }
 
-        if (event.message.originator === process.pid) {
-            hdb_logger.trace(`User event received by originator ${process.pid} and ignored`);
-            return;
-        }
-
         hdb_logger.trace(`HDB child with ${hdb_terms.HDB_IPC_CLIENT_PREFIX}${process.pid} received user event: ${JSON.stringify(event)}`);
         await user_schema.setUsersToGlobal();
     } catch(err){
@@ -113,11 +100,6 @@ async function jobHandler(event) {
     const validate = validateEvent(event);
     if (validate) {
         hdb_logger.error(validate);
-        return;
-    }
-
-    if (event.message.originator === process.pid) {
-        hdb_logger.trace(`Job event received by originator ${process.pid} and ignored`);
         return;
     }
 

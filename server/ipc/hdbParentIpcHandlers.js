@@ -7,9 +7,6 @@ const { restartHDB } = require('../../server/clustering/clusterUtilities');
 const children_stopped_event = require('../../events/AllChildrenStoppedEvent');
 const { validateEvent } = require('../../server/ipc/utility/ipcUtils');
 const util = require('util');
-const child_process = require('child_process');
-const path = require('path');
-
 
 let started_forks = {};
 let child_event_count = 0;
@@ -24,11 +21,6 @@ async function childStartedHandler(event) {
     const validate = validateEvent(event);
     if (validate) {
         hdb_logger.error(validate);
-        return;
-    }
-
-    if (event.message.originator === process.pid) {
-        hdb_logger.trace(`child_started event received by originator ${process.pid} and ignored`);
         return;
     }
 
@@ -61,11 +53,6 @@ function childStoppedHandler(event) {
     const validate = validateEvent(event);
     if (validate) {
         hdb_logger.error(validate);
-        return;
-    }
-
-    if (event.message.originator === process.pid) {
-        hdb_logger.trace(`child_stopped event received by originator ${process.pid} and ignored`);
         return;
     }
 
