@@ -6,14 +6,12 @@
  */
 
 const prompt = require('prompt');
-const spawn = require('child_process').spawn;
 const path = require('path');
 const mount = require('./../mount_hdb');
 const fs = require('fs-extra');
 const colors = require("colors/safe");
 const pino = require('pino');
 const async = require('async');
-const minimist = require('minimist');
 const forge = require('node-forge');
 const hri = require('human-readable-ids').hri;
 const terms_address = 'https://harperdb.io/legal/end-user-license-agreement';
@@ -69,7 +67,9 @@ function run_install(callback) {
         console.log(msg);
         return callback(msg, null);
     }
-    prompt.override = minimist(process.argv);
+
+    prompt.override = comm.assignCMDENVVariables(['TC_AGREEMENT','HDB_ROOT', 'SERVER_PORT', 'HDB_ADMIN_USERNAME', 'HDB_ADMIN_PASSWORD', 'CLUSTERING_USER', 'CLUSTERING_PASSWORD',
+        'CLUSTERING_PORT', 'NODE_NAME', 'CLUSTERING', 'REINSTALL', 'REINSTALL']);
     prompt.start();
     install_logger.info('starting install');
     checkInstall(function (err, keepGoing) {
@@ -294,17 +294,15 @@ function wizard(err, callback) {
                 hidden: true,
                 required: true
             },
-            CLUSTERING_USERNAME: {
-                description: colors.magenta('[CLUSTERING_USERNAME] Please enter a username for the CLUSTERING USER'),
+            CLUSTERING_USER: {
+                description: colors.magenta('[CLUSTERING_USER] Please enter a username for the CLUSTERING USER'),
                 default: 'CLUSTER_USER',
                 message: 'Specified username is invalid or already in use.',
                 required: true,
                 // check clustering user name not the same as admin user name
                 conform: function (username) {
-                    if (username === admin_username) {
-                        return false;
-                    }
-                    return true;
+                    return username !== admin_username;
+
                 }
             },
             CLUSTERING_PASSWORD: {
@@ -315,12 +313,12 @@ function wizard(err, callback) {
         }
     };
 
-    const ARGS = minimist(process.argv.slice(2));
-    if(ARGS.enable_clustering === undefined){
+    const ARGS = comm.assignCMDENVVariables(['CLUSTERING']);
+    if(ARGS.CLUSTERING === undefined){
         delete install_schema.properties.NODE_NAME;
         delete install_schema.properties.CLUSTERING_PASSWORD;
         delete install_schema.properties.CLUSTERING_PORT;
-        delete install_schema.properties.CLUSTERING_USERNAME;
+        delete install_schema.properties.CLUSTERING_USER;
     }
 
     console.log(colors.magenta('' + fs.readFileSync(path.join(__dirname, './ascii_logo.txt'))));
@@ -393,9 +391,9 @@ function createClusterUser(callback){
     };
 
     let user = undefined;
-    if(wizard_result.CLUSTERING_USERNAME !== undefined && wizard_result.CLUSTERING_PASSWORD !== undefined){
+    if(wizard_result.CLUSTERING_USER !== undefined && wizard_result.CLUSTERING_PASSWORD !== undefined){
         user = {
-            username: wizard_result.CLUSTERING_USERNAME,
+            username: wizard_result.CLUSTERING_USER,
             password: wizard_result.CLUSTERING_PASSWORD,
             active: true
         };
@@ -462,22 +460,26 @@ function createSettingsFile(mount_status, callback) {
             console.error('There was a problem creating the boot file.  Please check the install log for details.');
             return callback(err);
         }
-        let num_cores = 4;
-        try {
-            num_cores = os.cpus().length;
-            install_logger.info(`Detected ${num_cores} on this machine, defaulting MAX_HDB_PROCESSES to that.  This can be changed later in the settings.js file.`);
-        } catch (cpus_err) {
-            //No-op, should only get here in the case of android.  Defaulted to 4.
-        }
-
-        const ARGS = minimist(process.argv.slice(2));
-        let clustering_enabled = ARGS.enable_clustering !== undefined;
-        let clustering_port = wizard_result.CLUSTERING_PORT !== undefined ? wizard_result.CLUSTERING_PORT : '';
-        let node_name = wizard_result.NODE_NAME !== undefined ? wizard_result.NODE_NAME : '';
-        let clustering_username = wizard_result.CLUSTERING_USERNAME !== undefined ? wizard_result.CLUSTERING_USERNAME : '';
-
         let HDB_SETTINGS_NAMES = hdb_terms.HDB_SETTINGS_NAMES;
         let HDB_SETTINGS_DEFAULT = hdb_terms.HDB_SETTINGS_DEFAULT_VALUES;
+        const ARGS = comm.assignCMDENVVariables(Object.keys(hdb_terms.HDB_SETTINGS_NAMES_REVERSE_LOOKUP));
+
+        let num_cores = 4;
+        if(Number.isInteger(ARGS[HDB_SETTINGS_NAMES.MAX_HDB_PROCESSES])){
+            num_cores = ARGS[HDB_SETTINGS_NAMES.MAX_HDB_PROCESSES];
+        } else {
+            try {
+                num_cores = os.cpus().length;
+                install_logger.info(`Detected ${num_cores} on this machine, defaulting MAX_HDB_PROCESSES to that.  This can be changed later in the settings.js file.`);
+            } catch (cpus_err) {
+                //No-op, should only get here in the case of android.  Defaulted to 4.
+            }
+        }
+
+        let log_path = ARGS[HDB_SETTINGS_NAMES.LOG_PATH_KEY];
+        if(!log_path){
+            log_path = `${wizard_result.HDB_ROOT}/${HDB_SETTINGS_DEFAULT.LOG_PATH}`;
+        }
 
         let hdb_props_value = `   ;Settings for the HarperDB process.\n` +
             `\n` +
@@ -490,50 +492,50 @@ function createSettingsFile(mount_status, callback) {
             `   ;The path to the SSL private key used when running with HTTPS enabled.\n` +
             `${HDB_SETTINGS_NAMES.PRIVATE_KEY_KEY} = ${wizard_result.HDB_ROOT}/keys/privateKey.pem\n` +
             `   ;Set to true to enable HTTPS on the HarperDB REST endpoint.  Requires a valid certificate and key.\n` +
-            `${HDB_SETTINGS_NAMES.HTTP_SECURE_ENABLED_KEY} = ${HDB_SETTINGS_DEFAULT.HTTPS_ON}\n` +
+            `${HDB_SETTINGS_NAMES.HTTP_SECURE_ENABLED_KEY} = ${generateSettingsValue(ARGS, HDB_SETTINGS_NAMES.HTTP_SECURE_ENABLED_KEY)}\n` +
             `   ;Set to true to enable Cross Origin Resource Sharing, which allows requests across a domain.\n` +
-            `${HDB_SETTINGS_NAMES.CORS_ENABLED_KEY} = ${HDB_SETTINGS_DEFAULT.CORS_ON}\n` +
+            `${HDB_SETTINGS_NAMES.CORS_ENABLED_KEY} = ${generateSettingsValue(ARGS, HDB_SETTINGS_NAMES.CORS_ENABLED_KEY)}\n` +
             `   ;Allows for setting allowable domains with CORS. Comma separated list.\n` +
-            `${HDB_SETTINGS_NAMES.CORS_WHITELIST_KEY} = ${HDB_SETTINGS_DEFAULT.CORS_WHITELIST}\n` +
+            `${HDB_SETTINGS_NAMES.CORS_WHITELIST_KEY} = ${generateSettingsValue(ARGS, HDB_SETTINGS_NAMES.CORS_WHITELIST_KEY)}\n` +
             `   ;Length of time in milliseconds after which a request will timeout.  Defaults to 120,000 ms (2 minutes).\n` +
-            `${HDB_SETTINGS_NAMES.SERVER_TIMEOUT_KEY} = ${HDB_SETTINGS_DEFAULT.SERVER_TIMEOUT_MS}\n` +
+            `${HDB_SETTINGS_NAMES.SERVER_TIMEOUT_KEY} = ${generateSettingsValue(ARGS, HDB_SETTINGS_NAMES.SERVER_TIMEOUT_KEY)}\n` +
             `   ;The number of milliseconds of inactivity a server needs to wait for additional incoming data, after it has finished writing the last response.  Defaults to 5,000 ms (5 seconds).\n` +
-            `${HDB_SETTINGS_NAMES.SERVER_KEEP_ALIVE_TIMEOUT_KEY} = ${HDB_SETTINGS_DEFAULT.SERVER_KEEP_ALIVE_TIMEOUT}\n` +
+            `${HDB_SETTINGS_NAMES.SERVER_KEEP_ALIVE_TIMEOUT_KEY} = ${generateSettingsValue(ARGS, HDB_SETTINGS_NAMES.SERVER_KEEP_ALIVE_TIMEOUT_KEY)}\n` +
             `   ;Limit the amount of time the parser will wait to receive the complete HTTP headers..  Defaults to 60,000 ms (1 minute).\n` +
-            `${HDB_SETTINGS_NAMES.SERVER_HEADERS_TIMEOUT_KEY} = ${HDB_SETTINGS_DEFAULT.SERVER_HEADERS_TIMEOUT}\n` +
+            `${HDB_SETTINGS_NAMES.SERVER_HEADERS_TIMEOUT_KEY} = ${generateSettingsValue(ARGS, HDB_SETTINGS_NAMES.SERVER_HEADERS_TIMEOUT_KEY)}\n` +
             `   ;Set to control amount of logging generated.  Accepted levels are trace, debug, warn, error, fatal.\n` +
-            `${HDB_SETTINGS_NAMES.LOG_LEVEL_KEY} = ${HDB_SETTINGS_DEFAULT.LOG_LEVEL}\n` +
+            `${HDB_SETTINGS_NAMES.LOG_LEVEL_KEY} = ${generateSettingsValue(ARGS, HDB_SETTINGS_NAMES.LOG_LEVEL_KEY)}\n` +
             `   ;The path where log files will be written. If there is no file name included in the path, the log file will be created by default as 'hdb_log.log' \n` +
-            `${HDB_SETTINGS_NAMES.LOG_PATH_KEY} = ${wizard_result.HDB_ROOT}/${HDB_SETTINGS_DEFAULT.LOG_PATH}\n` +
+            `${HDB_SETTINGS_NAMES.LOG_PATH_KEY} = ${log_path}\n` +
             `   ;Set to true to enable daily log file rotations - each log file name will be prepended with YYYY-MM-DD.\n` +
-            `${HDB_SETTINGS_NAMES.LOG_DAILY_ROTATE_KEY} = ${HDB_SETTINGS_DEFAULT.LOG_DAILY_ROTATE_KEY}\n` +
+            `${HDB_SETTINGS_NAMES.LOG_DAILY_ROTATE_KEY} = ${generateSettingsValue(ARGS, HDB_SETTINGS_NAMES.LOG_DAILY_ROTATE_KEY)}\n` +
             `   ;Set the number of daily log files to maintain when LOG_DAILY_ROTATE is enabled. If no integer value is set, no limit will be set for\n` +
             `   ;daily log files which may consume a large amount of storage depending on your log settings.\n` +
-            `${HDB_SETTINGS_NAMES.LOG_MAX_DAILY_FILES_KEY} = ${HDB_SETTINGS_DEFAULT.LOG_MAX_DAILY_FILES_KEY}\n` +
+            `${HDB_SETTINGS_NAMES.LOG_MAX_DAILY_FILES_KEY} = ${generateSettingsValue(ARGS, HDB_SETTINGS_NAMES.LOG_MAX_DAILY_FILES_KEY)}\n` +
             `   ;The environment used by NodeJS.  Setting to production will be the most performant, settings to development will generate more logging.\n` +
-            `${HDB_SETTINGS_NAMES.PROPS_ENV_KEY} = ${HDB_SETTINGS_DEFAULT.NODE_ENV}\n` +
+            `${HDB_SETTINGS_NAMES.PROPS_ENV_KEY} = ${generateSettingsValue(ARGS, HDB_SETTINGS_NAMES.PROPS_ENV_KEY)}\n` +
             `   ;This allows self signed certificates to be used in clustering.  This is a security risk\n` +
             `   ;as clustering will not validate the cert, so should only be used internally.\n` +
             `   ;The HDB install creates a self signed certificate, if you use that cert this must be set to true.\n` +
-            `${HDB_SETTINGS_NAMES.ALLOW_SELF_SIGNED_SSL_CERTS} = ${HDB_SETTINGS_DEFAULT.ALLOW_SELF_SIGNED_SSL_CERTS}\n` +
+            `${HDB_SETTINGS_NAMES.ALLOW_SELF_SIGNED_SSL_CERTS} = ${generateSettingsValue(ARGS, HDB_SETTINGS_NAMES.ALLOW_SELF_SIGNED_SSL_CERTS)}\n` +
             `   ;Set the max number of processes HarperDB will start.  This can also be limited by number of cores and licenses.\n` +
             `${HDB_SETTINGS_NAMES.MAX_HDB_PROCESSES} = ${num_cores}\n` +
             `   ;Set to true to enable clustering.  Requires a valid enterprise license.\n` +
-            `${HDB_SETTINGS_NAMES.CLUSTERING_ENABLED_KEY} = ${clustering_enabled}\n` +
+            `${HDB_SETTINGS_NAMES.CLUSTERING_ENABLED_KEY} = ${generateSettingsValue(ARGS, HDB_SETTINGS_NAMES.CLUSTERING_ENABLED_KEY)}\n` +
             `   ;The port that will be used for HarperDB clustering.\n` +
-            `${HDB_SETTINGS_NAMES.CLUSTERING_PORT_KEY} = ${clustering_port}\n` +
+            `${HDB_SETTINGS_NAMES.CLUSTERING_PORT_KEY} = ${generateSettingsValue(ARGS, HDB_SETTINGS_NAMES.CLUSTERING_PORT_KEY)}\n` +
             `   ;The name of this node in your HarperDB cluster topology.  This must be a value unique from the rest of your cluster node names.\n` +
-            `${HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY} = ${node_name}\n` +
+            `${HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY} = ${generateSettingsValue(ARGS, HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY)}\n` +
             `   ;The user used to connect to other instances of HarperDB, this user must have a role of cluster_user. \n` +
-            `${HDB_SETTINGS_NAMES.CLUSTERING_USER_KEY} = ${clustering_username}\n` +
+            `${HDB_SETTINGS_NAMES.CLUSTERING_USER_KEY} = ${generateSettingsValue(ARGS, HDB_SETTINGS_NAMES.CLUSTERING_USER_KEY)}\n` +
             `   ;Defines if this instance does not record transactions. Note, if Clustering is enabled and Transaction Log is disabled your nodes will not catch up.  \n` +
-            `${HDB_SETTINGS_NAMES.DISABLE_TRANSACTION_LOG_KEY} = ${HDB_SETTINGS_DEFAULT.DISABLE_TRANSACTION_LOG}\n` +
+            `${HDB_SETTINGS_NAMES.DISABLE_TRANSACTION_LOG_KEY} = ${generateSettingsValue(ARGS, HDB_SETTINGS_NAMES.DISABLE_TRANSACTION_LOG_KEY)}\n` +
             `   ;Defines the length of time an operation token will be valid until it expires. Example values: https://github.com/vercel/ms  \n` +
-            `${HDB_SETTINGS_NAMES.OPERATION_TOKEN_TIMEOUT_KEY} = ${HDB_SETTINGS_DEFAULT.OPERATION_TOKEN_TIMEOUT}\n` +
+            `${HDB_SETTINGS_NAMES.OPERATION_TOKEN_TIMEOUT_KEY} = ${generateSettingsValue(ARGS, HDB_SETTINGS_NAMES.OPERATION_TOKEN_TIMEOUT_KEY)}\n` +
             `   ;Defines the length of time a refresh token will be valid until it expires. Example values: https://github.com/vercel/ms  \n` +
-            `${HDB_SETTINGS_NAMES.REFRESH_TOKEN_TIMEOUT_KEY} = ${HDB_SETTINGS_DEFAULT.REFRESH_TOKEN_TIMEOUT}\n` +
+            `${HDB_SETTINGS_NAMES.REFRESH_TOKEN_TIMEOUT_KEY} = ${generateSettingsValue(ARGS, HDB_SETTINGS_NAMES.REFRESH_TOKEN_TIMEOUT_KEY)}\n` +
             `   ;The port the IPC server will run on.\n` +
-            `${HDB_SETTINGS_NAMES.IPC_SERVER_PORT} = ${HDB_SETTINGS_DEFAULT.IPC_SERVER_PORT}\n`
+            `${HDB_SETTINGS_NAMES.IPC_SERVER_PORT} = ${generateSettingsValue(ARGS, HDB_SETTINGS_NAMES.IPC_SERVER_PORT)}\n`
         ;
 
         install_logger.info('info', `hdb_props_value ${JSON.stringify(hdb_props_value)}`);
@@ -553,6 +555,18 @@ function createSettingsFile(mount_status, callback) {
             install_logger.info(e);
         }
     });
+}
+
+function generateSettingsValue(args, setting_name){
+    if(args[setting_name] !== undefined){
+        return args[setting_name];
+    }
+
+    if(hdb_terms.HDB_SETTINGS_DEFAULT_VALUES[setting_name] !== undefined){
+        return hdb_terms.HDB_SETTINGS_DEFAULT_VALUES[setting_name];
+    }
+
+    return '';
 }
 
 function generateKeys(callback) {
