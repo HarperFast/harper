@@ -1,118 +1,93 @@
-const harper_logger = require('../utility/logging/harper_logger');
-const terms = require('./hdbTerms');
-const common = require('./common_utils');
+'use strict';
 
-class JobAddedSignalObject {
-    constructor(job_id, runner_message) {
-        this.runner_message = runner_message;
-        this.type = terms.CLUSTER_MESSAGE_TYPE_ENUM.JOB;
+const hdb_terms = require('./hdbTerms');
+const hdb_utils = require('./common_utils');
+const hdb_logger = require('../utility/logging/harper_logger');
+const IPCEventObject = require('../server/ipc/utility/IPCEventObject');
+const { sendIpcEvent } = require('../server/ipc/utility/ipcUtils');
+
+class JobAddedSignalMessage {
+    constructor(runner_message) {
         // For now we want to target the creating process to handle this job.  At some point this can
         // be made smarter to delegate to a different process.
         this.target_process_id = process.pid;
+        this.runner_message = runner_message;
     }
 }
-
-class RestartSignalObject {
-    constructor(force) {
-        this.force_shutdown = force;
-        this.type = terms.CLUSTER_MESSAGE_TYPE_ENUM.RESTART;
-    }
-}
-
-class ChildStartedSignalObject {
-    constructor(pid) {
-        this.type = terms.CLUSTER_MESSAGE_TYPE_ENUM.CHILD_STARTED;
-        this.pid = pid;
-    }
-}
-
-const SCHEMA_CHANGE_MESSAGE = {
-    type: terms.SCHEMA_DIR_NAME
-};
 
 function signalSchemaChange(message){
     try {
-        if(!global.isMaster){
-            process.send(message);
-        } else {
-            harper_logger.warn(`Got schema change, but process.send is undefined and I am not parent. My pid is ${process.pid}.  Global.isMaster is: ${global.isMaster}`);
-        }
-    }catch(e){
-        harper_logger.error(e);
+        hdb_logger.trace(`signalSchemaChange called with message: ${message}`);
+        const ipc_event_schema = new IPCEventObject(hdb_terms.IPC_EVENT_TYPES.SCHEMA, message);
+        sendIpcEvent(ipc_event_schema);
+    } catch(err) {
+        hdb_logger.error(err);
     }
 }
 
 function signalUserChange(message){
     try {
-        // if process.send is undefined we are running a single instance of the process.
-        if (process.send !== undefined && !global.isMaster) {
-            process.send(message);
-        } else {
-            //TODO: Can't call user schema directly, circular dependency.  FIX THIS,
-        }
-    } catch(e){
-        harper_logger.error(e);
+        hdb_logger.trace(`signalUserChange called with message: ${message}`);
+        const ipc_event_user = new IPCEventObject(hdb_terms.IPC_EVENT_TYPES.USER, message);
+        sendIpcEvent(ipc_event_user);
+    } catch(err) {
+        hdb_logger.error(err);
     }
 }
 
-function signalJobAdded(job_added_signal_object){
+function signalJobAdded(message){
     try {
-        // if process.send is undefined we are running a single instance of the process.
-        if (process.send !== undefined && !global.isMaster) {
-            process.send(job_added_signal_object);
-        } else {
-            harper_logger.warn('Only 1 process is running, but a signal has been invoked.  Signals will be ignored when only 1 process is running.');
-        }
-
-    } catch(e){
-        harper_logger.error(e);
+        hdb_logger.trace(`signalJobAdded called with message: ${message}`);
+        const job_added_msg = new JobAddedSignalMessage(message);
+        const ipc_event_job = new IPCEventObject(hdb_terms.IPC_EVENT_TYPES.JOB, job_added_msg);
+        sendIpcEvent(ipc_event_job);
+    } catch(err) {
+        hdb_logger.error(err);
     }
 }
 
 function signalChildStarted() {
-    harper_logger.debug(`Sending child started signal from process ${process.pid}`);
     try {
-        // if process.send is undefined we are running a single instance of the process.
-        if (process.send !== undefined && !global.isMaster) {
-            process.send(new ChildStartedSignalObject(process.pid));
-        } else {
-            harper_logger.warn('Only 1 process is running, but a signal has been invoked.  Signals will be ignored when only 1 process is running.');
-        }
-    } catch(e){
-        harper_logger.error(e);
+        hdb_logger.trace(`signalChildStarted called with message: ${process.pid}`);
+        const ipc_event_child_start = new IPCEventObject(hdb_terms.IPC_EVENT_TYPES.CHILD_STARTED, process.pid);
+        sendIpcEvent(ipc_event_child_start);
+    } catch(err) {
+        hdb_logger.error(err);
+    }
+}
+
+function signalChildStopped() {
+    try {
+        hdb_logger.trace(`signalChildStopped called with message: ${process.pid}`);
+        const ipc_event_child_stop = new IPCEventObject(hdb_terms.IPC_EVENT_TYPES.CHILD_STOPPED, process.pid);
+        sendIpcEvent(ipc_event_child_stop);
+    } catch(err) {
+        hdb_logger.error(err);
     }
 }
 
 function signalRestart(force) {
-    let err = null;
-    let force_boolean = common.autoCast(force);
+    const force_boolean = hdb_utils.autoCast(force);
 
     if (typeof force_boolean !== 'boolean') {
-        harper_logger.error('Invalid force value, must be a boolean.');
+        hdb_logger.error('Invalid force value, must be a boolean.');
         throw new Error('Invalid force value, must be a boolean.');
     }
 
     try {
-        // if process.send is undefined we are running a single instance of the process.
-        if (process.send !== undefined && !global.isMaster) {
-            common.callProcessSend(new RestartSignalObject(force_boolean));
-        } else {
-            err = 'Only 1 process is running, but a signal has been invoked.  Signals will be ignored when only 1 process is running.';
-            harper_logger.warn(err);
-        }
-    } catch(e){
-        err = 'Got an error restarting HarperDB.  Please check the logs and try again.';
-        harper_logger.error(e);
+        hdb_logger.trace(`signalRestart called with message: ${process.pid}`);
+        const ipc_event_restart = new IPCEventObject(hdb_terms.IPC_EVENT_TYPES.RESTART, force_boolean);
+        sendIpcEvent(ipc_event_restart);
+    } catch(err) {
+        hdb_logger.error(err);
     }
 }
 
 module.exports = {
     signalSchemaChange,
     signalUserChange,
-    signalJobAdded: signalJobAdded,
-    JobAddedSignalObject: JobAddedSignalObject,
-    signalChildStarted: signalChildStarted,
-    signalRestart: signalRestart,
-    SCHEMA_CHANGE_MESSAGE
+    signalJobAdded,
+    signalChildStarted,
+    signalChildStopped,
+    signalRestart
 };
-

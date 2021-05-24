@@ -349,7 +349,7 @@ async function shutDown() {
     if (hdbServer) {
         setTimeout(() => {
             harper_logger.info(`Timeout occurred during client disconnect.  Took longer than ${terms.RESTART_TIMEOUT_MS}ms.`);
-            hdb_util.callProcessSend({type: terms.CLUSTER_MESSAGE_TYPE_ENUM.CHILD_STOPPED, pid: process.pid});
+            signalling.signalChildStopped();
         }, terms.RESTART_TIMEOUT_MS);
 
         try {
@@ -361,7 +361,7 @@ async function shutDown() {
         }
     }
     harper_logger.info(`Process pid:${process.pid} - Work completed, shutting down`);
-    hdb_util.callProcessSend({type: terms.CLUSTER_MESSAGE_TYPE_ENUM.CHILD_STOPPED, pid: process.pid});
+    signalling.signalChildStopped();
 }
 
 module.exports = childServer;

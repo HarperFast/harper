@@ -214,8 +214,8 @@ function threadExecute(argument){
                 //we have this if statement to stop false processing from schema signalling
                 forked.kill("SIGINT");
                 resolve(data.thread_results);
-            } else if(data.type === signal.SCHEMA_CHANGE_MESSAGE.type){
-                signal.signalSchemaChange(signal.SCHEMA_CHANGE_MESSAGE);
+            } else if(data.type === hdb_terms.IPC_EVENT_TYPES.SCHEMA){
+                signal.signalSchemaChange(hdb_terms.IPC_EVENT_TYPES.SCHEMA);
             }
         });
 

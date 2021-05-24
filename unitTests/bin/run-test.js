@@ -26,10 +26,12 @@ describe('Test run module', () => {
     const final_log_notify_stub = sandbox.stub().callsFake(() => {});
     const final_log_error_stub = sandbox.stub().callsFake(() => {});
     const final_log_info_stub = sandbox.stub().callsFake(() => {});
+    const final_log_fatal_stub = sandbox.stub().callsFake(() => {});
     const final_logger_fake = {
         notify: final_log_notify_stub,
         error: final_log_error_stub,
-        info: final_log_info_stub
+        info: final_log_info_stub,
+        fatal: final_log_fatal_stub
     };
     let console_log_stub;
     let console_error_stub;
