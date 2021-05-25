@@ -83,12 +83,12 @@ function run_install(callback) {
                 createClusterUser,
                 generateKeys,
                 insertHdbInfo,
-                () => {
+                (data, callback2) => {
                     check_jwt_tokens();
 
                     console.log('HarperDB Installation was successful');
                     install_logger.info('Installation Successful');
-                    process.exit(0);
+                    callback2();
                 }
             ], function (install_err) {
                 if (install_err) {
