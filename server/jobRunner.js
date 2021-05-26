@@ -203,7 +203,6 @@ function threadExecute(argument){
     return new Promise((resolve, reject)=>{
         const forked = fork(JOB_THREAD_MODULE_PATH);
         forked.send(argument);
-        // TODO: Will this on message listener need updating
         forked.on('message', async data=>{
             if(data.hasOwnProperty('error')){
                 let err = new Error();
@@ -216,7 +215,6 @@ function threadExecute(argument){
                 forked.kill("SIGINT");
                 resolve(data.thread_results);
             } else if(data.type === hdb_terms.IPC_EVENT_TYPES.SCHEMA){
-                // TODO: Ask Kyle about this - why are we sending it just 'schema'
                 signal.signalSchemaChange(hdb_terms.IPC_EVENT_TYPES.SCHEMA);
             }
         });
