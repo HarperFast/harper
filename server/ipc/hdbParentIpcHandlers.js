@@ -58,7 +58,7 @@ function childStoppedHandler(event) {
 
     hdb_logger.trace(`HDB parent with ${hdb_terms.HDB_IPC_CLIENT_PREFIX}${process.pid} received child_stopped event: ${JSON.stringify(event)}`);
     if(started_forks[event.message.originator] === false) {
-        hdb_logger.warn(`Got a duplicate child started event for pid ${event.message.originator}`);
+        hdb_logger.warn(`Got a duplicate child stopped event for pid ${event.message.originator}`);
     } else {
         child_event_count++;
         hdb_logger.info(`Received ${child_event_count} child stopped event(s).`);
@@ -78,14 +78,21 @@ function childStoppedHandler(event) {
 }
 
 function restartHandler(event) {
+    const validate = validateEvent(event);
+    if (validate) {
+        hdb_logger.error(validate);
+        return;
+    }
+
     hdb_logger.trace(`HDB parent with ${hdb_terms.HDB_IPC_CLIENT_PREFIX}${process.pid} received restart event: ${JSON.stringify(event)}`);
 
-    if(event.message) {
+    if(event.message.force === true) {
         restartHDB();
         hdb_logger.info('Force shutting down processes.');
         return;
     }
 
+    // TODO: Test this with non forced
     // Try to shutdown all SocketServer and SocketClient connections.
     if(global.cluster_server) {
         // Close server will emit an event once it is done
