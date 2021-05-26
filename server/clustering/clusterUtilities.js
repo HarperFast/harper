@@ -10,9 +10,7 @@ const env_mgr = require('../../utility/environment/environmentManager');
 const os = require('os');
 const configure_validator = require('../../validation/clustering/configureValidator');
 const auth = require('../../security/auth');
-const ClusterStatusObject = require('../../server/clustering/ClusterStatusObject');
 const cluster_status_event = require('../../events/ClusterStatusEmitter');
-const children_stopped_event = require('../../events/AllChildrenStoppedEvent');
 const child_process = require('child_process');
 const path = require('path');
 const InsertObject = require('../../data_layer/DataLayerObjects').InsertObject;
@@ -30,9 +28,6 @@ const p_search_by_hash = util.promisify(search.searchByHash);
 
 const iface = os.networkInterfaces();
 const addresses = [];
-const started_forks = {};
-let is_enterprise = false;
-let child_event_count = 0;
 
 const STATUS_TIMEOUT_MS = 10000;
 const DUPLICATE_ERR_MSG = 'Cannot add a node that matches the hosts clustering config.';
@@ -45,26 +40,6 @@ for (let k in iface) {
         if (address.family === 'IPv4' && !address.internal) {
             addresses.push(address.address);
         }
-    }
-}
-
-function setEnterprise(enterprise) {
-    is_enterprise = enterprise;
-}
-
-/**
- * Kicks off the clustering server and processes.  Only called with a valid license installed.
- * @returns {Promise<void>}
- */
-async function kickOffEnterprise() {
-    log.trace('clusterUtilities kickOffEnterprise');
-    try {
-        if(global.clustering_on === true) {
-            const enterprise_util = require('../../utility/enterpriseInitialization');
-            await enterprise_util.kickOffEnterprise();
-        }
-    } catch (e) {
-        log.error(e);
     }
 }
 
@@ -404,204 +379,6 @@ async function clusterStatus(cluster_status_json) {
     return response;
 }
 
-/**
- * Decide which process to send response to.  If parameter is null, a random process will be selected.
- * @param target_process_id
- */
-function selectProcess(target_process_id) {
-    let backup_process = undefined;
-    let specified_process = undefined;
-    for(let i = 0; i < global.forks.length; i++) {
-        if(!backup_process && global.forks[i].process.pid !== target_process_id) {
-            // Set a backup process to send the message to in case we don't find the specified process.
-            backup_process = global.forks[i];
-        }
-        if(global.forks[i].process.pid === target_process_id) {
-            specified_process = global.forks[i];
-            log.info(`Processing job on process: ${target_process_id}`);
-            return specified_process;
-        }
-    }
-    if(!specified_process && backup_process) {
-        log.info(`The specified process ${target_process_id} was not found, sending to default process instead.`);
-        return backup_process;
-    }
-}
-
-/**
- * This will build and populate a ClusterStatusObject and send it back to the process that requested it.
- */
-function getClusterStatus() {
-    log.debug('getting cluster status.');
-    if(!global.cluster_server) {
-        log.error(`Tried to get cluster status, but the cluster is not initialized.`);
-        throw new Error(`Tried to get cluster status, but the cluster is not initialized.`);
-    }
-    let status_obj = new ClusterStatusObject.ClusterStatusObject();
-    try {
-        status_obj.my_node_port = global.cluster_server.socket_server.port;
-        status_obj.my_node_name = global.cluster_server.socket_server.name;
-        log.debug(`There are ${global.cluster_server.socket_client.length} socket clients.`);
-        for(let conn of global.cluster_server.socket_client) {
-            let new_status = new ClusterStatusObject.ConnectionStatus();
-            new_status.direction = conn.direction;
-            if (conn.other_node) {
-                new_status.host = conn.other_node.host;
-                new_status.port = conn.other_node.port;
-            }
-            let status = conn.client.connected;
-            new_status.connection_status = (status ? ClusterStatusObject.CONNECTION_STATUS_ENUM.CONNECTED :
-                ClusterStatusObject.CONNECTION_STATUS_ENUM.DISCONNECTED);
-
-            switch (conn.direction) {
-                case terms.CLUSTER_CONNECTION_DIRECTION_ENUM.INBOUND:
-                    status_obj.inbound_connections.push(new_status);
-                    break;
-                case terms.CLUSTER_CONNECTION_DIRECTION_ENUM.OUTBOUND:
-                    status_obj.outbound_connections.push(new_status);
-                    break;
-                case terms.CLUSTER_CONNECTION_DIRECTION_ENUM.BIDIRECTIONAL:
-                    status_obj.bidirectional_connections.push(new_status);
-                    break;
-            }
-        }
-    } catch(err) {
-        log.error(err);
-    }
-    return status_obj;
-}
-
-/**
- * This function describes messages the parent process expects to recieve from child processes.
- * @param msg
- */
-/*function clusterMessageHandler(msg) {
-    try {
-        switch(msg.type) {
-            // case terms.CLUSTER_MESSAGE_TYPE_ENUM.SCHEMA:
-            //     global.forks.forEach((fork) => {
-            //         fork.send(msg);
-            //     });
-            //
-            //     if(global.ws_fork){
-            //         global.ws_fork.send(msg);
-            //     }
-            //
-            //     break;
-            // case terms.CLUSTER_MESSAGE_TYPE_ENUM.USER:
-            //     global.forks.forEach((fork) => {
-            //         fork.send(msg);
-            //     });
-            //     break;
-            case terms.CLUSTER_MESSAGE_TYPE_ENUM.CLUSTER_STATUS:
-                let status = undefined;
-                let target_process = undefined;
-                try {
-                    target_process = selectProcess(msg.target_process_id);
-                    status = getClusterStatus();
-                } catch (err) {
-                    log.error(err);
-                    status = err.message;
-                }
-                if(!target_process) {
-                    log.error(`Failed to select a process to respond to with cluster status.`);
-                    target_process = global.forks[0];
-                }
-                msg["cluster_status"] = status;
-                target_process.process.send({"type": terms.CLUSTER_MESSAGE_TYPE_ENUM.CLUSTER_STATUS, "status": status});
-                break;
-            case terms.CLUSTER_MESSAGE_TYPE_ENUM.JOB:
-                if (!hdb_utils.isEmptyOrZeroLength(msg.target_process_id)) {
-                    // If a process is specified in the message, send this job to that process.
-                    let target_process = selectProcess(msg.target_process_id);
-                    if(!target_process) {
-                        log.error(`Failed to select a process to send job message to.`);
-                        return;
-                    }
-                    target_process.send(msg);
-                }
-                break;
-            case terms.CLUSTER_MESSAGE_TYPE_ENUM.CHILD_STARTED:
-                log.trace(`Got child started event`);
-                if(started_forks[msg.pid]) {
-                    log.warn(`Got a duplicate child started event for pid ${msg.pid}`);
-                } else {
-                    child_event_count++;
-                    log.info(`Received ${child_event_count} child started event(s).`);
-                    started_forks[msg.pid] = true;
-                    if (Object.keys(started_forks).length === global.forks.length) {
-                        //all children are started, kick off enterprise.
-                        child_event_count = 0;
-                        kickOffEnterprise()
-                            .then(() => {
-                                log.info('HDB server clustering initialized');
-                            })
-                            .catch(e => {
-                                log.error('HDB server clustering failed to start: ' + e);
-                            });
-                        }
-                    }
-                break;
-            case terms.CLUSTER_MESSAGE_TYPE_ENUM.CHILD_STOPPED:
-                log.trace(`Got child stopped event`);
-                if(started_forks[msg.pid] === false) {
-                    log.warn(`Got a duplicate child started event for pid ${msg.pid}`);
-                } else {
-                    child_event_count++;
-                    log.info(`Received ${child_event_count} child stopped event(s).`);
-                    log.info(`started forks: ${util.inspect(started_forks)}`);
-                    started_forks[msg.pid] = false;
-                    for(let fork of Object.keys(started_forks)) {
-                        // We still have children running, break;
-                        if(started_forks[fork] === true) {
-                            return;
-                        }
-                    }
-                    //All children are stopped, emit event
-                    log.debug(`All children stopped, restarting.`);
-                    child_event_count = 0;
-                    children_stopped_event.allChildrenStoppedEmitter.emit(children_stopped_event.EVENT_NAME, new children_stopped_event.AllChildrenStoppedMessage());
-                }
-                break;
-            case terms.CLUSTER_MESSAGE_TYPE_ENUM.RESTART:
-                log.info('Received restart event.');
-                // if(!global.forks || global.forks.length === 0) {
-                //     log.info('No processes found');
-                // } else {
-                //     log.info(`Shutting down ${global.forks.length} process.`);
-                // }
-
-                if(msg.force_shutdown) {
-                    restartHDB();
-                    log.info('Force shutting down processes.');
-                    break;
-                }
-
-                // for(let i=0; i<global.forks.length; i++) {
-                //     if(global.forks[i]) {
-                //         try {
-                //             log.debug(`Sending ${terms.RESTART_CODE} signal to process with pid:${global.forks[i].process.pid}`);
-                //             global.forks[i].send(msg);
-                //         } catch(err) {
-                //             log.error(`Got an error trying to send ${terms.RESTART_CODE} to process ${global.forks[i].process.pid}.`);
-                //         }
-                //     }
-                // }
-                // Try to shutdown all SocketServer and SocketClient connections.
-                if(global.cluster_server) {
-                    // Close server will emit an event once it is done
-                    global.cluster_server.closeServer();
-                }
-                break;
-            default:
-                log.info(`Got an unhandled cluster message type ${msg.type}`);
-                break;
-        }
-    } catch (e) {
-        log.error(e);
-    }
-}*/
-
 async function authHeaderToUser(json_body) {
     let req = {};
     req.headers = {};
@@ -647,7 +424,6 @@ module.exports = {
     clusterStatus,
     removeNode: removeNode,
     authHeaderToUser: authHeaderToUser,
-    setEnterprise: setEnterprise,
     restartHDB: restartHDB,
     isEmpty
 };

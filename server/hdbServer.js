@@ -96,7 +96,6 @@ function handleClusterExit(dead_worker, code, signal) {
     let new_worker = undefined;
     try {
         new_worker = cluster.fork();
-        //new_worker.on('message', cluster_utilities.clusterMessageHandler);
         harper_logger.info(`kicked off replacement worker with new pid=${new_worker.process.pid}`);
     } catch(e) {
         harper_logger.fatal(`FATAL error trying to restart a dead_worker with pid ${dead_worker.process.pid}.  ${e}`);
