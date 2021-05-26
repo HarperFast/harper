@@ -25,7 +25,6 @@ const global_schema = require('../../utility/globalSchema');
 const system_information = require('../../utility/environment/systemInformation');
 const transact_to_clustering_utils = require('./../transactToClusteringUtilities');
 const job_runner = require('./../jobRunner');
-const signal = require('../../utility/signalling');
 const token_authentication = require('../../security/tokenAuthentication');
 const configuration = require('../../server/configuration');
 
@@ -209,9 +208,11 @@ async function executeJob(json) {
         new_job_object = result.createdJob;
         let job_runner_message = new job_runner.RunnerMessage(new_job_object, json);
         // purposefully not waiting for await response as we want to callback immediately.
-        job_runner.parseMessage(job_runner_message).catch(e => {
+        try {
+            job_runner.parseMessage(job_runner_message)
+        } catch(err) {
             harper_logger.error(`Got an error trying to run a job with message ${job_runner_message}. ${e}`);
-        });
+        }
 
         return `Starting job with id ${new_job_object.id}`;
     } catch (err) {
