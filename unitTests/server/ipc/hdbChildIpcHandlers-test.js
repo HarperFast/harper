@@ -61,11 +61,13 @@ describe('Test hdbChildIpcHandler module', () => {
             const test_event = {
                 "type": "schema",
                 "message": {
+                    "originator": 12345,
                     "operation": "create_schema",
                     "schema": "unit_test"
                 }
             };
             const expected_msg = {
+                "originator": 12345,
                 "operation": "create_schema",
                 "schema": "unit_test"
             };
@@ -84,13 +86,30 @@ describe('Test hdbChildIpcHandler module', () => {
         });
 
         it('Test user function is called as expected', async () => {
-            await user_handler();
+            const test_event = {
+                "type": "schema",
+                "message": { "originator": 12345 }
+            };
+            await user_handler(test_event);
             expect(set_users_to_global_stub).to.have.been.called;
+        });
+
+        it('Test user validation error is handled as expected', async () => {
+            const test_event = {
+                "type": "schema",
+                "message": { }
+            };
+            await user_handler(test_event);
+            expect(log_error_stub).to.have.been.calledWith("IPC event message missing 'originator' property");
         });
 
         it('Test error from user function is logged', async () => {
             set_users_to_global_stub.throws(TEST_ERR);
-            await user_handler();
+            const test_event = {
+                "type": "schema",
+                "message": { "originator": 12345 }
+            };
+            await user_handler(test_event);
             expect(log_error_stub.args[0][0].name).to.equal(TEST_ERR);
         });
 
@@ -98,6 +117,7 @@ describe('Test hdbChildIpcHandler module', () => {
             const test_event = {
                 "type": "job",
                 "message": {
+                    "originator": 12345,
                     "job": {
                         "operation":"csv_file_load",
                         "action":"insert",
@@ -111,6 +131,7 @@ describe('Test hdbChildIpcHandler module', () => {
                 }
             };
             const expected_message = {
+                "originator": 12345,
                 "job": {
                     "operation":"csv_file_load",
                     "action":"insert",
@@ -130,7 +151,7 @@ describe('Test hdbChildIpcHandler module', () => {
         it('Test error from job function is logged', async () => {
             const test_event = {
                 "type": "job",
-                "message": 'hi'
+                "message": { "originator": 12345 }
             };
             parse_msg_stub.throws(TEST_ERR);
             await job_handler(test_event);

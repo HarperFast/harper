@@ -51,8 +51,60 @@ describe('Test ipcUtils module', () => {
         });
 
         it('Test invalid event type error returned', () => {
-            const result = ipc_utils.validateEvent({ type: 'table', message: 'create' });
+            const result = ipc_utils.validateEvent({ type: 'table', message: { "originator": 12345 } });
             expect(result).to.equal('IPC server received invalid event type: table');
+        });
+
+        it('Test missing originator error returned', () => {
+            const result = ipc_utils.validateEvent({ type: 'table', message: { "operation": "create_table" } });
+            expect(result).to.equal("IPC event message missing 'originator' property");
+        });
+    });
+
+    describe('Test constructor functions', () => {
+        it('Test SchemaEventMsg', () => {
+            const expected_obj = {
+                "attribute": undefined,
+                "operation": "create_schema",
+                "originator": 12345,
+                "schema": "unit",
+                "table": "test",
+            };
+            const result = new ipc_utils.SchemaEventMsg(12345, 'create_schema', 'unit', 'test');
+            expect(result).to.eql(expected_obj);
+        });
+
+        it('Test UserEventMsg', () => {
+            const expected_obj = {
+                "originator": 12345
+            };
+            const result = new ipc_utils.UserEventMsg(12345);
+            expect(result).to.eql(expected_obj);
+        });
+
+        it('Test ChildStartedMsg', () => {
+            const expected_obj = {
+                "originator": 12345
+            };
+            const result = new ipc_utils.ChildStartedMsg(12345);
+            expect(result).to.eql(expected_obj);
+        });
+
+        it('Test ChildStoppedMsg', () => {
+            const expected_obj = {
+                "originator": 12345
+            };
+            const result = new ipc_utils.ChildStoppedMsg(12345);
+            expect(result).to.eql(expected_obj);
+        });
+
+        it('Test RestartMsg', () => {
+            const expected_obj = {
+                "originator": 12345,
+                "force": false
+            };
+            const result = new ipc_utils.RestartMsg(12345, false);
+            expect(result).to.eql(expected_obj);
         });
     });
 });
