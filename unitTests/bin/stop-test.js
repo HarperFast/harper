@@ -10,7 +10,7 @@ const ps_list = require('../../utility/psList');
 const os = require('os');
 const path = require('path');
 const hdb_utils = require('../../utility/common_utils');
-const signal = require('../../utility/signalling');
+const signalling = require('../../utility/signalling');
 const hdb_terms = require('../../utility/hdbTerms');
 const logger = require('../../utility/logging/harper_logger');
 const rewire = require('rewire');
@@ -84,7 +84,7 @@ describe('Test stop.js' , () => {
         };
 
         before(() => {
-            signal_stub = sandbox.stub(signal, 'signalRestart').returns();
+            signal_stub = sandbox.stub(signalling, 'signalRestart').returns();
         });
 
         it('should return restart response hard', async () => {
@@ -92,7 +92,7 @@ describe('Test stop.js' , () => {
             let result = await stop.restartProcesses(json_message_fake);
 
             expect(signal_stub).to.have.been.calledOnce;
-            expect(signal_stub).to.have.been.calledWith(true);
+            expect(signal_stub.args[0][0].force).to.eql(true);
             expect(result).to.equal(RESTART_RESPONSE_HARD);
         });
 
@@ -101,7 +101,7 @@ describe('Test stop.js' , () => {
             let result = await stop.restartProcesses(json_message_fake);
 
             expect(signal_stub).to.have.been.calledOnce;
-            expect(signal_stub).to.have.been.calledWith(json_message_fake.force);
+            expect(signal_stub.args[0][0].force).to.eql(false);
             expect(result).to.equal(RESTART_RESPONSE_SOFT);
         });
 
