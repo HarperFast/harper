@@ -920,3 +920,4 @@ describe('Test stopProcess', () => {
         expect(process_kill_stub.args[0][0]).to.equal(5839);
     });
 });
+*/
