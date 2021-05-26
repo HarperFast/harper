@@ -3,6 +3,7 @@ const path = require('path');
 const fs = require('fs-extra');
 const log = require('./logging/harper_logger');
 const fs_extra = require('fs-extra');
+const minimist = require('minimist');
 const truncate = require('truncate-utf8-bytes');
 const os = require('os');
 const net = require('net');
@@ -72,7 +73,8 @@ module.exports = {
     autoCasterIsNumberCheck,
     backtickASTSchemaItems,
     isPortTaken,
-    stopProcess
+    stopProcess,
+    assignCMDENVVariables
 };
 
 /**
@@ -790,4 +792,31 @@ async function stopProcess(module) {
             log.trace(`Following process was killed by stopProcess: ${ps.cmd}`);
         }
     });
+}
+
+/**
+ * This function receives a list of keys used to find if they exist in command line args &/or environment variables (command line always supercedes env vars).
+ * if found they key/value is assigned to the return object
+ * @param {[string]} keys - arrays of keys to search for and assign to the return object
+ * @returns {{}}
+ */
+function assignCMDENVVariables(keys = []){
+    if(!Array.isArray(keys)){
+        return {};
+    }
+
+    let env_args = process.env;
+    let cmd_args = minimist(process.argv);
+    let hdb_settings = {};
+    for(let x = 0, length = keys.length; x < length; x++){
+        let setting = keys[x];
+
+        //we set the env variable first which gets overridden by a command line arg (if present)
+        if(cmd_args[setting] !== undefined){
+            hdb_settings[setting] = cmd_args[setting];
+        } else if(env_args[setting] !== undefined){
+            hdb_settings[setting] = env_args[setting];
+        }
+    }
+    return hdb_settings;
 }
