@@ -209,7 +209,7 @@ async function signalJob(json) {
         new_job_object = result.createdJob;
         let job_runner_message = new job_runner.RunnerMessage(new_job_object, json);
         signal.signalJobAdded(job_runner_message);
-        // TODO: not sure what to do with code in else statement
+        // This code is updated on CORE-1305 which is the next PR
         // if (process.send !== undefined) {
         //     signal.signalJobAdded(job_signal_message);
         // } else {

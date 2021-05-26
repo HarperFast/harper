@@ -57,20 +57,20 @@ describe('Test IPCClient class', () => {
 
     it('Test invalid IPC msg type is logged and thrown', () => {
         client_test = new IPCClient(123, event_handlers_test);
-        test_util.assertErrorSync(client_test.emitToServer, ['delete all the data'], new Error('Invalid IPC message data type, must be an object'));
-        expect(log_warn_stub).to.have.been.calledWith('Invalid IPC message data type, must be an object');
+        test_util.assertErrorSync(client_test.emitToServer, ['delete all the data'], new Error('Invalid IPC event data type, must be an object'));
+        expect(log_warn_stub).to.have.been.calledWith('Invalid IPC event data type, must be an object');
     });
 
     it('Test missing type is logged and thrown', () => {
         client_test = new IPCClient(123, event_handlers_test);
-        test_util.assertErrorSync(client_test.emitToServer, [{ message: 'i am a message' }], new Error("IPC message missing 'type' property"));
-        expect(log_warn_stub).to.have.been.calledWith("IPC message missing 'type' property");
+        test_util.assertErrorSync(client_test.emitToServer, [{ message: 'i am a message' }], new Error("IPC event missing 'type'"));
+        expect(log_warn_stub).to.have.been.calledWith("IPC event missing 'type'");
     });
 
     it('Test missing message is logged and thrown', () => {
         client_test = new IPCClient(123, event_handlers_test);
-        test_util.assertErrorSync(client_test.emitToServer, [{ type: 'create_table' }], new Error("IPC message missing 'message' property"));
-        expect(log_warn_stub).to.have.been.calledWith("IPC message missing 'message' property");
+        test_util.assertErrorSync(client_test.emitToServer, [{ type: 'create_table' }], new Error("IPC event missing 'message'"));
+        expect(log_warn_stub).to.have.been.calledWith("IPC event missing 'message'");
     });
 
     it('Test invalid event type logged and thrown', () => {

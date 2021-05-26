@@ -33,4 +33,26 @@ describe('Test ipcUtils module', () => {
             expect(log_warn_stub.args[0][0]).to.equal(expected_log);
         });
     });
+
+    describe('Test validateEvent function', () => {
+        it('Test non object error returned', () => {
+            const result = ipc_utils.validateEvent('message');
+            expect(result).to.equal('Invalid IPC event data type, must be an object');
+        });
+
+        it('Test missing type error returned', () => {
+            const result = ipc_utils.validateEvent({message: 'add user'});
+            expect(result).to.equal("IPC event missing 'type'");
+        });
+
+        it('Test missing message error returned', () => {
+            const result = ipc_utils.validateEvent({type: 'schema'});
+            expect(result).to.equal("IPC event missing 'message'");
+        });
+
+        it('Test invalid event type error returned', () => {
+            const result = ipc_utils.validateEvent({ type: 'table', message: 'create' });
+            expect(result).to.equal('IPC server received invalid event type: table');
+        });
+    });
 });

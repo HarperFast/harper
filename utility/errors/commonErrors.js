@@ -182,9 +182,9 @@ const VALIDATION_ERROR_MSGS = {
 };
 
 const IPC_ERRORS = {
-    INVALID_IPC_DATA_TYPE: 'Invalid IPC message data type, must be an object',
-    MISSING_TYPE: "IPC message missing 'type' property",
-    MISSING_MSG: "IPC message missing 'message' property",
+    INVALID_IPC_DATA_TYPE: 'Invalid IPC event data type, must be an object',
+    MISSING_TYPE: "IPC event missing 'type'",
+    MISSING_MSG: "IPC event missing 'message'",
     INVALID_EVENT: (event) => `IPC server received invalid event type: ${event}`
 };
 

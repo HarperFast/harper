@@ -4,7 +4,6 @@ const cluster = require('cluster');
 const env = require('../utility/environment/environmentManager');
 env.initSync();
 const terms = require('../utility/hdbTerms');
-const hdb_util = require('../utility/common_utils');
 const util = require('util');
 const harper_logger = require('../utility/logging/harper_logger');
 
@@ -17,16 +16,15 @@ const fastify_compress = require('fastify-compress');
 const fastify_static = require('fastify-static');
 const fastify_helmet = require('fastify-helmet');
 const spawn_cluster_connection = require('./socketcluster/connector/spawnSCConnection');
-const schema_describe = require('../data_layer/schemaDescribe');
-const clean_lmdb = require('../utility/lmdb/cleanLMDBMap');
 
 const signalling = require('../utility/signalling');
 const guidePath = require('path');
 
 const global_schema = require('../utility/globalSchema');
 const user_schema = require('../security/user');
-const job_runner = require('./jobRunner');
 const hdb_license = require('../utility/registration/hdb_license');
+let hdb_child_ipc_handlers = require('../server/ipc/hdbChildIpcHandlers');
+const IPCClient = require('./ipc/IPCClient');
 
 const p_schema_to_global = util.promisify(global_schema.setSchemaDataToGlobal);
 
@@ -78,8 +76,18 @@ async function childServer() {
         global.clustering_on = false;
         global.isMaster = cluster.isMaster;
 
+        // Instantiate new instance of HDB IPC client and assign it to global.
+        try {
+            // The restart event handler needs to be assigned here because it requires the hdbServer value.
+            hdb_child_ipc_handlers[terms.IPC_EVENT_TYPES.RESTART] = shutDown;
+            global.hdb_ipc = new IPCClient(process.pid, hdb_child_ipc_handlers);
+        } catch(err) {
+            harper_logger.error('Error instantiating new instance of IPC client in HDB server child');
+            harper_logger.error(err);
+            throw err;
+        }
+
         //this message handler allows all forked processes to communicate with one another0
-        process.on('message', handleServerMessage);
         process.on('uncaughtException', handleServerUncaughtException);
         process.on('beforeExit', handleBeforeExit);
         process.on('exit', handleExit);
@@ -247,104 +255,13 @@ function getHeaderTimeoutConfig() {
 }
 
 /**
- * Switch statement for handling messages from other forked processes
- *
- * @param msg - msg object passed from another forked process
- * @returns {Promise<void>}
- */
-async function handleServerMessage(msg) {
-    switch (msg.type) {
-        case 'schema':
-            clean_lmdb(msg);
-            await syncSchemaMetadata(msg);
-            break;
-        case 'user':
-            try {
-                await user_schema.setUsersToGlobal();
-            } catch(e){
-                harper_logger.error(e);
-            }
-            break;
-        case 'job':
-            job_runner.parseMessage(msg.runner_message).then((result) => {
-                harper_logger.info(`completed job with result: ${JSON.stringify(result)}`);
-            }).catch(function isError(e) {
-                harper_logger.error(e);
-            });
-            break;
-        case terms.CLUSTER_MESSAGE_TYPE_ENUM.RESTART:
-            harper_logger.info(`Server close event received for process ${process.pid}`);
-            harper_logger.debug(`calling shutdown`);
-            await shutDown().then(() => {
-                harper_logger.info(`Completed shut down`);
-                process.exit(terms.RESTART_CODE_NUM);
-            });
-            break;
-        default:
-            harper_logger.info(`Received unknown signaling message ${msg.type}, ignoring message`);
-            break;
-    }
-}
-
-/**
- * Switch statement to handle schema-related messages from other forked processes - i.e. if another process completes an
- * operation that updates schema and, therefore, requires that we update the global schema value for the process
- *
- * @param msg
- * @returns {Promise<void>}
- */
-async function syncSchemaMetadata(msg) {
-    try{
-        if (global.hdb_schema !== undefined && typeof global.hdb_schema === 'object' && msg.operation !== undefined) {
-
-            switch (msg.operation.operation) {
-                case 'drop_schema':
-                    delete global.hdb_schema[msg.operation.schema];
-                    break;
-                case 'drop_table':
-                    if (global.hdb_schema[msg.operation.schema] !== undefined) {
-                        delete global.hdb_schema[msg.operation.schema][msg.operation.table];
-                    }
-                    break;
-                case 'create_schema':
-                    if (global.hdb_schema[msg.operation.schema] === undefined) {
-                        global.hdb_schema[msg.operation.schema] = {};
-                    }
-                    break;
-                case 'create_table':
-                case 'create_attribute':
-                    if (global.hdb_schema[msg.operation.schema] === undefined) {
-                        global.hdb_schema[msg.operation.schema] = {};
-                    }
-
-                    global.hdb_schema[msg.operation.schema][msg.operation.table] =
-                        await schema_describe.describeTable({schema: msg.operation.schema, table: msg.operation.table});
-                    break;
-                default:
-                    global_schema.setSchemaDataToGlobal(handleErrorCallback);
-                    break;
-            }
-        } else{
-            global_schema.setSchemaDataToGlobal(handleErrorCallback);
-        }
-    } catch(e) {
-        harper_logger.error(e);
-    }
-}
-
-function handleErrorCallback(err) {
-    if (err) {
-        harper_logger.error(err);
-    }
-}
-
-/**
  * This method is used for soft/graceful server shutdowns - i.e. when we want to allow existing API requests/operations to
  * complete/be returned before exiting the process and restarting the server.
  *
  * @returns {Promise<void>}
  */
 async function shutDown() {
+    harper_logger.info(`Server close event received for process ${process.pid}`);
     harper_logger.debug(`Calling shutdown`);
     if (hdbServer) {
         setTimeout(() => {
@@ -365,4 +282,3 @@ async function shutDown() {
 }
 
 module.exports = childServer;
-
