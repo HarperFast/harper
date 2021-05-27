@@ -17,6 +17,11 @@ const hdb_parent_ipc_handlers = {
     [hdb_terms.IPC_EVENT_TYPES.RESTART]: restartHandler
 };
 
+/**
+ * Checks that all HDB child processes have started. Starts SC if clustering true.
+ * @param event
+ * @returns {Promise<void>}
+ */
 async function childStartedHandler(event) {
     const validate = validateEvent(event);
     if (validate) {
@@ -49,6 +54,10 @@ async function childStartedHandler(event) {
     }
 }
 
+/**
+ * Makes sure all HDB child processes have stopped. Used by restart.
+ * @param event
+ */
 function childStoppedHandler(event) {
     const validate = validateEvent(event);
     if (validate) {
@@ -77,6 +86,10 @@ function childStoppedHandler(event) {
     }
 }
 
+/**
+ * restarts HDB
+ * @param event
+ */
 function restartHandler(event) {
     const validate = validateEvent(event);
     if (validate) {

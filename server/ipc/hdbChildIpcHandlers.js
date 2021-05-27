@@ -6,7 +6,6 @@ const clean_lmdb_map = require('../../utility/lmdb/cleanLMDBMap');
 const global_schema = require('../../utility/globalSchema');
 const schema_describe = require('../../data_layer/schemaDescribe');
 const user_schema = require('../../security/user');
-const job_runner = require('../jobRunner');
 const { validateEvent } = require('../../server/ipc/utility/ipcUtils');
 
 /**
@@ -15,10 +14,14 @@ const { validateEvent } = require('../../server/ipc/utility/ipcUtils');
  */
 const hdb_child_ipc_handlers = {
     [hdb_terms.IPC_EVENT_TYPES.SCHEMA]: schemaHandler,
-    [hdb_terms.IPC_EVENT_TYPES.USER]: userHandler,
-    [hdb_terms.IPC_EVENT_TYPES.JOB]: jobHandler
+    [hdb_terms.IPC_EVENT_TYPES.USER]: userHandler
 };
 
+/**
+ * Updates the global hdb_schema object.
+ * @param event
+ * @returns {Promise<void>}
+ */
 async function schemaHandler(event) {
     const validate = validateEvent(event);
     if (validate) {
@@ -81,6 +84,11 @@ function handleErrorCallback(err) {
     }
 }
 
+/**
+ * Updates the global hdb_users object by querying the hdb_role table.
+ * @param event
+ * @returns {Promise<void>}
+ */
 async function userHandler(event) {
     try {
         const validate = validateEvent(event);
@@ -92,22 +100,6 @@ async function userHandler(event) {
         hdb_logger.trace(`HDB child with ${hdb_terms.HDB_IPC_CLIENT_PREFIX}${process.pid} received user event: ${JSON.stringify(event)}`);
         await user_schema.setUsersToGlobal();
     } catch(err){
-        hdb_logger.error(err);
-    }
-}
-
-async function jobHandler(event) {
-    const validate = validateEvent(event);
-    if (validate) {
-        hdb_logger.error(validate);
-        return;
-    }
-
-    try {
-        hdb_logger.trace(`HDB child with ${hdb_terms.HDB_IPC_CLIENT_PREFIX}${process.pid} received job event: ${JSON.stringify(event)}`);
-        const result = await job_runner.parseMessage(event.message);
-        hdb_logger.info(`completed job with result: ${JSON.stringify(result)}`);
-    } catch(err) {
         hdb_logger.error(err);
     }
 }
