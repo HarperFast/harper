@@ -13,6 +13,8 @@ const RoomMessageObjects = require('../room/RoomMessageObjects');
 const fs = require('fs-extra');
 const path = require('path');
 const clean_lmdb = require('../../../utility/lmdb/cleanLMDBMap');
+const IPCClient = require('../../ipc/IPCClient');
+const { validateEvent } = require('../../../server/ipc/utility/ipcUtils');
 // NOTE: The cluster worker doesn't use the environment manager yet, but some of the commands need values in there.
 // We initialize this here so the manager is always ready and initialized when a rule needs it.
 const env = require('../../../utility/environment/environmentManager');
@@ -71,7 +73,18 @@ class ClusterWorker extends WorkerIF {
     run() {
         log.debug('Cluster Worker starting up.');
 
-        this.on('masterMessage', this.parentMessageHandler.bind(this));
+        try {
+            const sc_worker_ipc_handlers = {
+                [terms.IPC_EVENT_TYPES.SCHEMA]: this.parentMessageHandler
+            };
+            global.hdb_ipc = new IPCClient(process.pid, sc_worker_ipc_handlers);
+            log.trace('Instantiated IPC client in socket cluster worker');
+        } catch(err) {
+            log.error('Error instantiating new instance of IPC client in socket cluster worker');
+            log.error(err);
+            throw err;
+        }
+
         this.hdb_workers = [];
         this.hdb_users = {};
 
@@ -129,22 +142,48 @@ class ClusterWorker extends WorkerIF {
     }
 
     syncSchemaMetadata(msg) {
-            if (global.hdb_schema !== undefined && typeof global.hdb_schema === 'object' && msg.operation !== undefined) {
+            if (global.hdb_schema !== undefined && typeof global.hdb_schema === 'object' && msg !== undefined) {
                 // eslint-disable-next-line default-case
-                switch (msg.operation.operation) {
+                switch (msg.operation) {
                     case 'drop_schema':
-                        delete global.hdb_schema[msg.operation.schema];
+                        delete global.hdb_schema[msg.schema];
                         break;
                     case 'drop_table':
-                        if (global.hdb_schema[msg.operation.schema] !== undefined) {
-                            delete global.hdb_schema[msg.operation.schema][msg.operation.table];
+                        if (global.hdb_schema[msg.schema] !== undefined) {
+                            delete global.hdb_schema[msg.schema][msg.table];
                         }
                         break;
                 }
             }
     }
 
-    parentMessageHandler(data, respond) {
+    parentMessageHandler(event) {
+        log.trace(`parentMessageHandler received event: ${JSON.stringify(event)}`);
+        const validate = validateEvent(event);
+        if (validate) {
+            log.error(validate);
+            return;
+        }
+
+        try {
+            if (event.message !== undefined) {
+                this.setHDBDatatoExchange(event.message).then(() => {
+                    log.info('hdb_data successfully set to exchange');
+                });
+            }
+
+            if(event.type && event.type === 'schema'){
+                clean_lmdb(event.message, true);
+                this.syncSchemaMetadata(event.message);
+            }
+
+        }catch(e){
+            log.error(`Error in cluster worker parent message handler ${e}`);
+            throw e;
+        }
+    }
+
+/*    parentMessageHandler(data, respond) {
         log.trace('parentMessageHandler.');
         try {
             if (data.hdb_data !== undefined) {
@@ -162,7 +201,7 @@ class ClusterWorker extends WorkerIF {
         }catch(e){
             respond(e);
         }
-    }
+    }*/
 
     async setHDBDatatoExchange(hdb_data) {
         log.trace('setHDBDatatoExchange');
