@@ -208,11 +208,9 @@ async function executeJob(json) {
         new_job_object = result.createdJob;
         let job_runner_message = new job_runner.RunnerMessage(new_job_object, json);
         // purposefully not waiting for await response as we want to callback immediately.
-        try {
-            job_runner.parseMessage(job_runner_message);
-        } catch(err) {
-            harper_logger.error(`Got an error trying to run a job with message ${job_runner_message}. ${err}`);
-        }
+        job_runner.parseMessage(job_runner_message).catch(e => {
+            harper_logger.error(`Got an error trying to run a job with message ${job_runner_message}. ${e}`);
+        });
 
         return `Starting job with id ${new_job_object.id}`;
     } catch (err) {

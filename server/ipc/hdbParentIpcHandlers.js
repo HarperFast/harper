@@ -92,7 +92,6 @@ function restartHandler(event) {
         return;
     }
 
-    // TODO: Test this with non forced
     // Try to shutdown all SocketServer and SocketClient connections.
     if(global.cluster_server) {
         // Close server will emit an event once it is done
