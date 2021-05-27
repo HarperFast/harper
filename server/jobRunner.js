@@ -12,6 +12,7 @@ const fork = require('child_process').fork;
 const path = require('path');
 const JOB_THREAD_MODULE_PATH = path.join(__dirname, 'jobThread');
 const signal = require('../utility/signalling');
+const { SchemaEventMsg } = require('../server/ipc/utility/ipcUtils');
 
 class RunnerResponse {
     constructor(success, message, error) {
@@ -215,7 +216,7 @@ function threadExecute(argument){
                 forked.kill("SIGINT");
                 resolve(data.thread_results);
             } else if(data.type === hdb_terms.IPC_EVENT_TYPES.SCHEMA){
-                signal.signalSchemaChange(hdb_terms.IPC_EVENT_TYPES.SCHEMA);
+                signal.signalSchemaChange(new SchemaEventMsg(process.pid, 'job'));
             }
         });
 

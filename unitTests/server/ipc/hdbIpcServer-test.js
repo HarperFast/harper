@@ -49,7 +49,7 @@ describe('Test hdbIpcServer module', () => {
         expect(typeof broadcast_stub.args[0][1]).to.equal('object');
         expect(broadcast_stub.args[0][1].type).to.equal(data_test.type);
         expect(broadcast_stub.args[0][1].message).to.equal(data_test.message);
-        expect(log_trace_stub).to.have.been.calledWith(`IPC server received a message type ${data_test.type}, with message ${data_test.message}`);
+        expect(log_trace_stub.args[0][0]).to.equal(`IPC server received a message type ${data_test.type}, with message "${data_test.message}"`);
     });
     
     it('Test invalid IPC msg type is logged', () => {

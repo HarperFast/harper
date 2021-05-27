@@ -7,7 +7,10 @@ const insertUpdateValidate = require('../../bridgeUtility/insertUpdateValidate')
 const checkForNewAttributes = require('../../bridgeUtility/checkForNewAttr');
 const log = require('../../../../utility/logging/harper_logger');
 const hdb_utils = require('../../../../utility/common_utils');
+const hdb_terms = require('../../../../utility/hdbTerms');
 const signalling = require('../../../../utility/signalling');
+const { SchemaEventMsg } = require('../../../../server/ipc/utility/ipcUtils');
+
 
 const ATTRIBUTE_ALREADY_EXISTS = 'already exists';
 
@@ -87,7 +90,7 @@ async function createAttribute(create_attribute_object) {
     try {
 
         attribute_structure = await fsCreateAttribute(create_attribute_object);
-        signalling.signalSchemaChange(create_attribute_object);
+        signalling.signalSchemaChange(new SchemaEventMsg(process.pid, hdb_terms.OPERATIONS_ENUM.CREATE_ATTRIBUTE, create_attribute_object.schema, create_attribute_object.table, create_attribute_object.attribute));
 
         return attribute_structure;
     } catch(err) {

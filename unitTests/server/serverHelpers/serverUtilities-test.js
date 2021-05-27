@@ -110,21 +110,21 @@ describe('Test serverUtilities_rw.js module ', () => {
         it('test CSV_DATA_LOAD', ()=>{
             let result = serverUtilities_rw.getOperationFunction({operation: 'csv_data_load'});
 
-            assert.deepStrictEqual(result.operation_function.name, 'signalJob');
+            assert.deepStrictEqual(result.operation_function.name, 'executeJob');
             assert.deepStrictEqual(result.job_operation_function.name, 'csvDataLoad');
         });
 
         it('test CSV_FILE_LOAD', ()=>{
             let result = serverUtilities_rw.getOperationFunction({operation: 'csv_file_load'});
 
-            assert.deepStrictEqual(result.operation_function.name, 'signalJob');
+            assert.deepStrictEqual(result.operation_function.name, 'executeJob');
             assert.deepStrictEqual(result.job_operation_function.name, 'csvFileLoad');
         });
 
         it('test CSV_URL_LOAD', ()=>{
             let result = serverUtilities_rw.getOperationFunction({operation: 'csv_url_load'});
 
-            assert.deepStrictEqual(result.operation_function.name, 'signalJob');
+            assert.deepStrictEqual(result.operation_function.name, 'executeJob');
             assert.deepStrictEqual(result.job_operation_function.name, 'csvURLLoad');
         });
 
@@ -306,21 +306,21 @@ describe('Test serverUtilities_rw.js module ', () => {
         it('test EXPORT_TO_S3', ()=>{
             let result = serverUtilities_rw.getOperationFunction({operation: 'export_to_s3'});
 
-            assert.deepStrictEqual(result.operation_function.name, 'signalJob');
+            assert.deepStrictEqual(result.operation_function.name, 'executeJob');
             assert.deepStrictEqual(result.job_operation_function.name, 'export_to_s3');
         });
 
         it('test DELETE_FILES_BEFORE', ()=>{
             let result = serverUtilities_rw.getOperationFunction({operation: 'delete_files_before'});
 
-            assert.deepStrictEqual(result.operation_function.name, 'signalJob');
+            assert.deepStrictEqual(result.operation_function.name, 'executeJob');
             assert.deepStrictEqual(result.job_operation_function.name, 'deleteFilesBefore');
         });
 
         it('test EXPORT_LOCAL', ()=>{
             let result = serverUtilities_rw.getOperationFunction({operation: 'export_local'});
 
-            assert.deepStrictEqual(result.operation_function.name, 'signalJob');
+            assert.deepStrictEqual(result.operation_function.name, 'executeJob');
             assert.deepStrictEqual(result.job_operation_function.name, 'export_local');
         });
 
@@ -383,7 +383,7 @@ describe('Test serverUtilities_rw.js module ', () => {
         it('test DELETE_TRANSACTION_LOGS_BEFORE', ()=>{
             let result = serverUtilities_rw.getOperationFunction({operation: 'delete_transaction_logs_before'});
 
-            assert.deepStrictEqual(result.operation_function.name, 'signalJob');
+            assert.deepStrictEqual(result.operation_function.name, 'executeJob');
             assert.deepStrictEqual(result.job_operation_function.name, 'deleteTransactionLogsBefore');
         });
 

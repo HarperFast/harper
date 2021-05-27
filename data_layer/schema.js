@@ -11,7 +11,7 @@ const util = require('util');
 const harperBridge = require('./harperBridge/harperBridge');
 const { handleHDBError, hdb_errors } = require('../utility/errors/hdbError');
 const { HDB_ERROR_MSGS, HTTP_STATUS_CODES } = hdb_errors;
-
+const { SchemaEventMsg } = require('../server/ipc/utility/ipcUtils');
 
 module.exports = {
     createSchema: createSchema,
@@ -29,7 +29,7 @@ module.exports = {
 async function createSchema(schema_create_object) {
     try {
         let schema_structure = await createSchemaStructure(schema_create_object);
-        signalling.signalSchemaChange(schema_create_object);
+        signalling.signalSchemaChange(new SchemaEventMsg(process.pid, schema_create_object.operation, schema_create_object.schema));
 
         return schema_structure;
     } catch(err) {
@@ -59,7 +59,7 @@ async function createSchemaStructure(schema_create_object) {
 async function createTable(create_table_object) {
     try {
         let create_table_structure = await createTableStructure(create_table_object);
-        signalling.signalSchemaChange(create_table_object);
+        signalling.signalSchemaChange(new SchemaEventMsg(process.pid, create_table_object.operation, create_table_object.schema, create_table_object.table));
 
         return create_table_structure;
     } catch(err) {
@@ -128,7 +128,7 @@ async function dropSchema(drop_schema_object) {
 
     try {
         await harperBridge.dropSchema(drop_schema_object);
-        signalling.signalSchemaChange(drop_schema_object);
+        signalling.signalSchemaChange(new SchemaEventMsg(process.pid, drop_schema_object.operation, drop_schema_object.schema));
         delete global.hdb_schema[drop_schema_object.schema];
         const SCHEMA_DELETE_MSG = `successfully deleted schema '${drop_schema_object.schema}'`;
 
@@ -155,7 +155,7 @@ async function dropTable(drop_table_object) {
 
     try {
         await harperBridge.dropTable(drop_table_object);
-        signalling.signalSchemaChange(drop_table_object);
+        signalling.signalSchemaChange(new SchemaEventMsg(process.pid, drop_table_object.operation, drop_table_object.schema, drop_table_object.table));
         const TABLE_DELETE_MSG = `successfully deleted table '${drop_table_object.schema}.${drop_table_object.table}'`;
 
         return TABLE_DELETE_MSG;
@@ -191,7 +191,7 @@ async function dropAttribute(drop_attribute_object) {
     try {
         await harperBridge.dropAttribute(drop_attribute_object);
         dropAttributeFromGlobal(drop_attribute_object);
-        signalling.signalSchemaChange(drop_attribute_object);
+        signalling.signalSchemaChange(new SchemaEventMsg(process.pid, drop_attribute_object.operation, drop_attribute_object.schema, drop_attribute_object.table, drop_attribute_object.attribute));
 
         return `successfully deleted attribute '${drop_attribute_object.attribute}'`;
     } catch(err) {
@@ -225,7 +225,7 @@ async function createAttribute(create_attribute_object) {
 
     try {
         await harperBridge.createAttribute(create_attribute_object);
-        signalling.signalSchemaChange(create_attribute_object);
+        signalling.signalSchemaChange(new SchemaEventMsg(process.pid, create_attribute_object.operation, create_attribute_object.schema, create_attribute_object.table, create_attribute_object.attribute));
 
         return `attribute '${create_attribute_object.schema}.${create_attribute_object.table}.${create_attribute_object.attribute}' successfully created.`;
     } catch(err) {

@@ -75,32 +75,6 @@ describe('Test signalling module', () => {
         expect(log_error_stub.args[0][0].name).to.equal(TEST_ERROR);
     });
 
-    it('Test signalJobAdded happy path', () => {
-        const message = {
-            "job": {
-                "operation":"csv_file_load",
-                "action":"insert",
-                "schema":"unit_test",
-                "table":"daugz",
-                "file_path":"daugz.csv"
-                },
-            "json": {
-                "message": "job started"
-            }
-        };
-
-        signalling.signalJobAdded(message);
-        expect(send_ipc_event_stub.args[0][0].type).to.equal('job');
-        expect(send_ipc_event_stub.args[0][0].message).to.haveOwnProperty('target_process_id');
-        expect(send_ipc_event_stub.args[0][0].message.runner_message).to.eql(message);
-    });
-
-    it('Test signalJobAdded sad path', () => {
-        send_ipc_event_stub.throws(TEST_ERROR);
-        signalling.signalJobAdded('message');
-        expect(log_error_stub.args[0][0].name).to.equal(TEST_ERROR);
-    });
-
     it('Test signalChildStarted happy path', () => {
         signalling.signalChildStarted();
         expect(send_ipc_event_stub.args[0][0].type).to.equal('child_started');
@@ -126,10 +100,10 @@ describe('Test signalling module', () => {
     });
 
     it('Test signalRestart happy path', () => {
-        const message = true;
+        const message = { "force": true };
         const expected_event = {
             "type": "restart",
-            "message": true
+            "message": { force:true }
         };
         signalling.signalRestart(message);
         expect(send_ipc_event_stub).to.have.been.calledWith(sinon.match(expected_event));
@@ -137,7 +111,8 @@ describe('Test signalling module', () => {
 
     it('Test signalRestart sad path', () => {
         send_ipc_event_stub.throws(TEST_ERROR);
-        signalling.signalRestart(false);
+        const message = { "force": true };
+        signalling.signalRestart(message);
         expect(log_error_stub.args[0][0].name).to.equal(TEST_ERROR);
     });
 

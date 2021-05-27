@@ -46,7 +46,6 @@ describe('Test hdbChildIpcHandler module', () => {
             parse_msg_stub = sandbox.stub(job_runner, 'parseMessage');
             schema_handler = hdb_child_ipc_handlers.__get__('schemaHandler');
             user_handler = hdb_child_ipc_handlers.__get__('userHandler');
-            job_handler = hdb_child_ipc_handlers.__get__('jobHandler');
         });
 
         afterEach(() => {
@@ -61,11 +60,13 @@ describe('Test hdbChildIpcHandler module', () => {
             const test_event = {
                 "type": "schema",
                 "message": {
+                    "originator": 12345,
                     "operation": "create_schema",
                     "schema": "unit_test"
                 }
             };
             const expected_msg = {
+                "originator": 12345,
                 "operation": "create_schema",
                 "schema": "unit_test"
             };
@@ -84,65 +85,31 @@ describe('Test hdbChildIpcHandler module', () => {
         });
 
         it('Test user function is called as expected', async () => {
-            await user_handler();
+            const test_event = {
+                "type": "schema",
+                "message": { "originator": 12345 }
+            };
+            await user_handler(test_event);
             expect(set_users_to_global_stub).to.have.been.called;
+        });
+
+        it('Test user validation error is handled as expected', async () => {
+            const test_event = {
+                "type": "schema",
+                "message": { }
+            };
+            await user_handler(test_event);
+            expect(log_error_stub).to.have.been.calledWith("IPC event message missing 'originator' property");
         });
 
         it('Test error from user function is logged', async () => {
             set_users_to_global_stub.throws(TEST_ERR);
-            await user_handler();
+            const test_event = {
+                "type": "schema",
+                "message": { "originator": 12345 }
+            };
+            await user_handler(test_event);
             expect(log_error_stub.args[0][0].name).to.equal(TEST_ERR);
-        });
-
-        it('Test job function is called as expected', async () => {
-            const test_event = {
-                "type": "job",
-                "message": {
-                    "job": {
-                        "operation":"csv_file_load",
-                        "action":"insert",
-                        "schema":"unit_test",
-                        "table":"daugz",
-                        "file_path":"daugz.csv"
-                    },
-                    "json": {
-                        "message": "job started"
-                    }
-                }
-            };
-            const expected_message = {
-                "job": {
-                    "operation":"csv_file_load",
-                    "action":"insert",
-                    "schema":"unit_test",
-                    "table":"daugz",
-                    "file_path":"daugz.csv"
-                },
-                "json": {
-                    "message": "job started"
-                }
-            };
-
-            await job_handler(test_event);
-            expect(parse_msg_stub).to.have.been.calledWith(expected_message);
-        });
-
-        it('Test error from job function is logged', async () => {
-            const test_event = {
-                "type": "job",
-                "message": 'hi'
-            };
-            parse_msg_stub.throws(TEST_ERR);
-            await job_handler(test_event);
-            expect(log_error_stub.args[0][0].name).to.equal(TEST_ERR);
-        });
-
-        it('Test job validation error is handled as expected', async () => {
-            const test_event = {
-                "type": "job"
-            };
-            await job_handler(test_event);
-            expect(log_error_stub).to.have.been.calledWith("IPC event missing 'message'");
         });
     });
 

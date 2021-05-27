@@ -5,7 +5,8 @@ const os = require('os');
 const async_set_timeout = require('util').promisify(setTimeout);
 const log = require('../utility/logging/harper_logger');
 const final_logger = log.finalLogger();
-const signal = require('../utility/signalling');
+const signalling = require('../utility/signalling');
+const { RestartMsg } = require('../server/ipc/utility/ipcUtils');
 const hdb_utils = require('../utility/common_utils');
 const path = require('path');
 
@@ -34,10 +35,10 @@ async function restartProcesses(json_message) {
     }
     try {
         if (json_message.force === true || json_message.force === 'true') {
-            signal.signalRestart(true);
+            signalling.signalRestart(new RestartMsg(process.pid, true));
             return RESTART_RESPONSE_HARD;
         }
-        signal.signalRestart(false);
+        signalling.signalRestart(new RestartMsg(process.pid, false));
         return RESTART_RESPONSE_SOFT;
     } catch(err) {
         let msg = `There was an error restarting HarperDB. ${err}`;
