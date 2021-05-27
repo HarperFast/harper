@@ -154,7 +154,7 @@ async function isPortInUse() {
     if (!server_port) {
         let port_err = 'server port is undefined.  Please check your settings file.';
         final_logger.error(port_err);
-        await startHarper();
+        server_port = terms.HDB_SETTINGS_DEFAULT_VALUES.SERVER_PORT;
     }
 
     try {
