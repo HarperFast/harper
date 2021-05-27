@@ -74,7 +74,7 @@ describe('Test serverParent.js', () => {
     })
 
     describe('exported serverParent method', () => {
-        afterEach(() => {
+        beforeEach(() => {
             const serverException = process.listeners('uncaughtException').pop()
             if (serverException.name === '') {
                 process.removeListener('uncaughtException', serverException);
@@ -184,6 +184,12 @@ describe('Test serverParent.js', () => {
 
             expect(global.isMaster).to.be.true;
         })
+
+        it('should catch and log error thrown from IPCClient', async () => {
+            ipc_client_stub.throws(test_error);
+            await test_utils.assertErrorAsync(serverParent_rw, [test_worker_num], test_error);
+            expect(logger_error_stub.getCall(0).args[0]).to.equal('Error instantiating new instance of IPC client in HDB server parent');
+        });
     })
 
     describe('launch() method',async() => {

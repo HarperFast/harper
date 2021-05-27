@@ -306,8 +306,6 @@ describe('Test serverChild.js', () => {
             expect(hdb_server[plugin_key]).to.deep.equal(['fastify-cors', ...DEFAULT_FASTIFY_PLUGIN_ARR]);
         })
 
-
-
         it('should call handlePostRequest on HTTP post request',async() => {
             const test_config_settings = { https_on: false }
             test_utils.preTestPrep(test_config_settings);
@@ -488,6 +486,17 @@ describe('Test serverChild.js', () => {
 
             process_stub.restore();
         })
+
+        it('should catch error from IPC client and log', async () => {
+            const process_stub = sandbox.stub(process, "exit").callsFake(fake);
+            const test_err = "This is a test error.";
+            ipc_client_stub.throws(test_err);
+            await serverChild_rw();
+
+            expect(logger_error_spy.getCall(0).args[0]).to.equal('Error instantiating new instance of IPC client in HDB server child');
+            expect(process_stub.args[0][0]).to.equal(1);
+            process_stub.restore();
+        });
     })
 
     describe('buildServer() method', () => {
