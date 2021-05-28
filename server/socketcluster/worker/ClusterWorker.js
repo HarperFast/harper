@@ -75,7 +75,7 @@ class ClusterWorker extends WorkerIF {
 
         try {
             const sc_worker_ipc_handlers = {
-                [terms.IPC_EVENT_TYPES.SCHEMA]: this.parentMessageHandler
+                [terms.IPC_EVENT_TYPES.SCHEMA]: this.parentMessageHandler.bind(this)
             };
             global.hdb_ipc = new IPCClient(process.pid, sc_worker_ipc_handlers);
             log.trace('Instantiated IPC client in socket cluster worker');

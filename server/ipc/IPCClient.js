@@ -48,6 +48,7 @@ class IPCClient {
         this.ipc.of[this.server_name].on(
             'error',
             (error) => {
+                if (error.code === 'ECONNREFUSED') hdb_logger.error('Error connecting to HDB IPC server. Confirm that the server is running.');
                 hdb_logger.error(`Error with IPC client ${this.ipc.config.id}`);
                 hdb_logger.error(error);
             }
