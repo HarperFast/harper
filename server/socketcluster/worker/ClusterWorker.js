@@ -8,7 +8,6 @@ const log = require('../../../utility/logging/harper_logger');
 const NodeConnector = require('../handlers/NodeConnectionsHandler');
 const sc_utils = require('../util/socketClusterUtils');
 const terms = require('../../../utility/hdbTerms');
-const {inspect} = require('util');
 const RoomMessageObjects = require('../room/RoomMessageObjects');
 const fs = require('fs-extra');
 const path = require('path');
@@ -182,26 +181,6 @@ class ClusterWorker extends WorkerIF {
             throw e;
         }
     }
-
-/*    parentMessageHandler(data, respond) {
-        log.trace('parentMessageHandler.');
-        try {
-            if (data.hdb_data !== undefined) {
-                this.setHDBDatatoExchange(data.hdb_data).then(() => {
-                    log.info('hdb_data successfully set to exchange');
-                });
-            }
-
-            if(data.type && data.type === 'schema'){
-                clean_lmdb(data, true);
-                this.syncSchemaMetadata(data);
-            }
-
-            respond();
-        }catch(e){
-            respond(e);
-        }
-    }*/
 
     async setHDBDatatoExchange(hdb_data) {
         log.trace('setHDBDatatoExchange');

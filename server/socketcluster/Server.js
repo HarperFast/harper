@@ -4,8 +4,6 @@ const fs = require('fs-extra');
 const env = require('../../utility/environment/environmentManager');
 env.initSync();
 const terms = require('../../utility/hdbTerms');
-const signalling = require('../../utility/signalling');
-const { SchemaEventMsg } = require('../ipc/utility/ipcUtils');
 const PROPS_PRIVATE_KEY = 'PRIVATE_KEY';
 const PROPS_CERT_KEY = 'CERTIFICATE';
 const PRIVATE_KEY = env.get(PROPS_PRIVATE_KEY);
