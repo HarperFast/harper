@@ -47,11 +47,15 @@ const CUSTOM_LOG_LEVELS = {
 const DEFAULT_LOG_FILE_NAME = 'hdb_log.log';
 
 let pino_logger = undefined;
+let std_out_logger = undefined;
+let std_err_logger = undefined;
 let final_logger = undefined;
 let log_directory = undefined;
 let log_file_name = undefined;
 let log_location = undefined;
 let daily_rotate = undefined;
+let log_to_file = undefined;
+let log_to_stdstreams = undefined;
 let log_level = undefined;
 let log_path = undefined;
 let default_log_directory = undefined;
@@ -72,6 +76,8 @@ let tomorrows_date = undefined;
             daily_max = hdb_properties.get('LOG_MAX_DAILY_FILES');
             log_level = hdb_properties.get('LOG_LEVEL');
             log_path = hdb_properties.get('LOG_PATH');
+            log_to_file = hdb_properties.get('LOG_TO_FILE').toString().toLowerCase() === 'true';
+            log_to_stdstreams = hdb_properties.get('LOG_TO_STDSTREAMS').toString().toLowerCase() === 'true';
             default_log_directory = hdb_properties.get('HDB_ROOT') + '/log/';
 
             createLog(log_path);
