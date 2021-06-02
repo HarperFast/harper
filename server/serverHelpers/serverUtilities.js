@@ -10,6 +10,7 @@ const read_transaction_log = require('../../data_layer/readTransactionLog');
 const user = require('../../security/user');
 const role = require('../../security/role');
 const cluster_utilities = require('./../clustering/clusterUtilities');
+const custom_function_operations = require('./../customFunctions/operations');
 const harper_logger = require('../../utility/logging/harper_logger');
 const export_ = require('../../data_layer/export');
 const op_auth = require('../../utility/operation_authorization');
@@ -277,6 +278,11 @@ function initializeOperationFunctionMap(){
     op_func_map.set(terms.OPERATIONS_ENUM.CREATE_AUTHENTICATION_TOKENS, new OperationFunctionObject(token_authentication.createTokens));
     op_func_map.set(terms.OPERATIONS_ENUM.REFRESH_OPERATION_TOKEN, new OperationFunctionObject(token_authentication.refreshOperationToken));
     op_func_map.set(terms.OPERATIONS_ENUM.GET_CONFIGURATION, new OperationFunctionObject(configuration.getConfiguration));
+    op_func_map.set(terms.OPERATIONS_ENUM.CUSTOM_FUNCTIONS_STATUS, new OperationFunctionObject(custom_function_operations.customFunctionsStatus));
+    op_func_map.set(terms.OPERATIONS_ENUM.GET_CUSTOM_FUNCTIONS, new OperationFunctionObject(custom_function_operations.getCustomFunctions));
+    op_func_map.set(terms.OPERATIONS_ENUM.GET_CUSTOM_FUNCTION, new OperationFunctionObject(custom_function_operations.getCustomFunction));
+    op_func_map.set(terms.OPERATIONS_ENUM.SET_CUSTOM_FUNCTION, new OperationFunctionObject(custom_function_operations.setCustomFunction));
+    op_func_map.set(terms.OPERATIONS_ENUM.DROP_CUSTOM_FUNCTION, new OperationFunctionObject(custom_function_operations.dropCustomFunction));
 
     return op_func_map;
 }
