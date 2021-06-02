@@ -16,11 +16,11 @@ function cleanLMDBMap(msg){
             let keys = Object.keys(global.lmdb_map);
             let cached_environment = undefined;
 
-            switch (msg.operation.operation) {
+            switch (msg.operation) {
                 case 'drop_schema':
                     for(let x = 0; x < keys.length; x ++){
                         let key = keys[x];
-                        if(key.startsWith(`${msg.operation.schema}.`) || key.startsWith(`txn.${msg.operation.schema}.`)){
+                        if(key.startsWith(`${msg.schema}.`) || key.startsWith(`txn.${msg.schema}.`)){
                             try {
                                 environment_utility.closeEnvironment(global.lmdb_map[key]);
                             } catch(err) {
@@ -33,7 +33,7 @@ function cleanLMDBMap(msg){
                     break;
                 case 'drop_table':
                     // eslint-disable-next-line no-case-declarations
-                    let schema_table_name = `${msg.operation.schema}.${msg.operation.table}`;
+                    let schema_table_name = `${msg.schema}.${msg.table}`;
                     // eslint-disable-next-line no-case-declarations
                     let txn_schema_table_name = `txn.${schema_table_name}`;
                     try {
@@ -46,9 +46,9 @@ function cleanLMDBMap(msg){
                     }
                     break;
                 case 'drop_attribute':
-                    cached_environment = global.lmdb_map[`${msg.operation.schema}.${msg.operation.table}`];
-                    if(cached_environment !== undefined && typeof cached_environment.dbis === 'object' && cached_environment.dbis[`${msg.operation.attribute}`] !== undefined){
-                        delete cached_environment.dbis[`${msg.operation.attribute}`];
+                    cached_environment = global.lmdb_map[`${msg.schema}.${msg.table}`];
+                    if(cached_environment !== undefined && typeof cached_environment.dbis === 'object' && cached_environment.dbis[`${msg.attribute}`] !== undefined){
+                        delete cached_environment.dbis[`${msg.attribute}`];
                     }
                     break;
                 default:

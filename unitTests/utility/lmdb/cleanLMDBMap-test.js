@@ -75,7 +75,7 @@ describe('test cleanLMDBMap module', ()=>{
         assert.deepStrictEqual(Object.keys(prod_dog_env.getStats()),STAT_ATTRIBUTES);
         assert.deepStrictEqual(Object.keys(prod_txn_dog_env.getStats()),STAT_ATTRIBUTES);
 
-        clean_lmdb_map({operation: {operation: 'drop_schema', schema: 'dev'}});
+        clean_lmdb_map({operation: 'drop_schema', schema: 'dev'});
 
         assert.deepStrictEqual(logger_error_stub.callCount, 0);
         assert.deepStrictEqual(close_env_stub.callCount, 4);
@@ -118,7 +118,7 @@ describe('test cleanLMDBMap module', ()=>{
         assert.deepStrictEqual(Object.keys(txn_dog_env.getStats()),STAT_ATTRIBUTES);
         assert.deepStrictEqual(Object.keys(txn_breed_env.getStats()),STAT_ATTRIBUTES);
 
-        clean_lmdb_map({operation: {operation: 'drop_table', schema: 'dev', table: 'dog'}});
+        clean_lmdb_map({operation: 'drop_table', schema: 'dev', table: 'dog'});
 
         assert.deepStrictEqual(logger_error_stub.callCount, 0);
         assert.deepStrictEqual(close_env_stub.callCount, 2);
@@ -146,7 +146,7 @@ describe('test cleanLMDBMap module', ()=>{
         env_utility.createDBI(dog_env, 'id', false);
         assert.deepStrictEqual(Object.keys(dog_env.getStats()), STAT_ATTRIBUTES);
         assert.deepStrictEqual(Object.keys(dog_env.dbis).indexOf('id') >=0, true );
-        clean_lmdb_map({operation: {operation: 'drop_attribute', schema: 'dev', table: 'dog', attribute: 'id'}});
+        clean_lmdb_map({operation: 'drop_attribute', schema: 'dev', table: 'dog', attribute: 'id'});
         assert.deepStrictEqual(Object.keys(dog_env.dbis).indexOf('id') >=0, false );
         dog_env.close();
     });
@@ -156,7 +156,7 @@ describe('test cleanLMDBMap module', ()=>{
         env_utility.createDBI(dog_env, 'id', false);
         close_env_stub.restore();
         close_env_stub = sandbox.stub(env_utility, 'closeEnvironment').throws(new Error('env is required'));
-        clean_lmdb_map({operation: {operation: 'drop_schema', schema: 'dev'}});
+        clean_lmdb_map({operation: 'drop_schema', schema: 'dev'});
         assert.deepStrictEqual(logger_error_stub.callCount, 0);
         dog_env.close();
     });
@@ -166,7 +166,7 @@ describe('test cleanLMDBMap module', ()=>{
         env_utility.createDBI(dog_env, 'id', false);
         close_env_stub.restore();
         close_env_stub = sandbox.stub(env_utility, 'closeEnvironment').throws(new Error('env does not exist'));
-        clean_lmdb_map({operation: {operation: 'drop_schema', schema: 'dev'}});
+        clean_lmdb_map({operation: 'drop_schema', schema: 'dev'});
         assert.deepStrictEqual(logger_error_stub.callCount, 1);
         dog_env.close();
     });
@@ -176,7 +176,7 @@ describe('test cleanLMDBMap module', ()=>{
         env_utility.createDBI(dog_env, 'id', false);
         close_env_stub.restore();
         close_env_stub = sandbox.stub(env_utility, 'closeEnvironment').throws(new Error('env is required'));
-        clean_lmdb_map({operation: {operation: 'drop_table', schema: 'dev'}});
+        clean_lmdb_map({operation: 'drop_table', schema: 'dev'});
         close_env_stub.restore();
         assert.deepStrictEqual(logger_error_stub.callCount, 0);
         dog_env.close();
@@ -187,7 +187,7 @@ describe('test cleanLMDBMap module', ()=>{
         env_utility.createDBI(dog_env, 'id', false);
         close_env_stub.restore();
         close_env_stub = sandbox.stub(env_utility, 'closeEnvironment').throws(new Error('env does not exist'));
-        clean_lmdb_map({operation: {operation: 'drop_table', schema: 'dev'}});
+        clean_lmdb_map({operation: 'drop_table', schema: 'dev'});
         close_env_stub.restore();
         assert.deepStrictEqual(logger_error_stub.callCount, 1);
         dog_env.close();

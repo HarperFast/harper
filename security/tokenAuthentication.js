@@ -13,6 +13,7 @@ const user_functions = require('./user');
 const update = require('../data_layer/insert').update;
 const UpdateObject = require('../data_layer/UpdateObject');
 const signalling = require('../utility/signalling');
+const { UserEventMsg } = require('../server/ipc/utility/ipcUtils');
 const env = require('../utility/environment/environmentManager');
 if(!env.isInitialized()){
     env.initSync();
@@ -96,7 +97,7 @@ async function createTokens(auth_object){
         throw handleHDBError(new Error(), AUTHENTICATION_ERROR_MSGS.REFRESH_TOKEN_SAVE_FAILED, HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR);
     }
 
-    signalling.signalUserChange({type: 'user'});
+    signalling.signalUserChange(new UserEventMsg(process.pid));
 
     return new JWTTokens(operation_token, refresh_token);
 }

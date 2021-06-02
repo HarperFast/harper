@@ -327,7 +327,7 @@ describe('Test operation_authorization', function() {
         global.hdb_schema = undefined;
     });
 
-    const JOB_OP_FUNC_KEYS = ["signalJob"];
+    const JOB_OP_FUNC_KEYS = ["executeJob"];
     function getOperationFuncName(op) {
         const { operation_function, job_operation_function } = op;
         let finalOp = operation_function.name;

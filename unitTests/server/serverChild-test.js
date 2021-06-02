@@ -51,6 +51,7 @@ let logger_fatal_spy;
 let logger_trace_spy;
 let setUsersToGlobal_stub;
 let setSchemaGlobal_stub;
+let ipc_client_stub;
 const fake = () => {};
 
 const test_op_resp = "table 'dev.dogz' successfully created.";
@@ -61,6 +62,7 @@ describe('Test serverChild.js', () => {
     let signalChildStarted_stub;
 
     before(() => {
+        ipc_client_stub = sandbox.stub();
         logger_info_stub = sandbox.stub(harper_logger, 'info').callsFake(fake);
         logger_debug_stub = sandbox.stub(harper_logger, 'debug').callsFake(fake);
         logger_error_spy = sandbox.stub(harper_logger, 'error').callsFake(fake);
@@ -77,6 +79,7 @@ describe('Test serverChild.js', () => {
 
         serverChild_rw = rewire('../../server/serverChild');
         serverChild_rw.__set__('setUp', setup_stub);
+        serverChild_rw.__set__('IPCClient', ipc_client_stub);
         test_utils.preTestPrep();
         fs.mkdirpSync(KEYS_PATH);
 
@@ -303,8 +306,6 @@ describe('Test serverChild.js', () => {
             expect(hdb_server[plugin_key]).to.deep.equal(['fastify-cors', ...DEFAULT_FASTIFY_PLUGIN_ARR]);
         })
 
-
-
         it('should call handlePostRequest on HTTP post request',async() => {
             const test_config_settings = { https_on: false }
             test_utils.preTestPrep(test_config_settings);
@@ -485,6 +486,17 @@ describe('Test serverChild.js', () => {
 
             process_stub.restore();
         })
+
+        it('should catch error from IPC client and log', async () => {
+            const process_stub = sandbox.stub(process, "exit").callsFake(fake);
+            const test_err = "This is a test error.";
+            ipc_client_stub.throws(test_err);
+            await serverChild_rw();
+
+            expect(logger_error_spy.getCall(0).args[0]).to.equal('Error instantiating new instance of IPC client in HDB server child');
+            expect(process_stub.args[0][0]).to.equal(1);
+            process_stub.restore();
+        });
     })
 
     describe('buildServer() method', () => {
@@ -618,228 +630,10 @@ describe('Test serverChild.js', () => {
 
     })
 
-    describe('handleServerMessage() method',() => {
-        let clean_lmdb_stub;
-        let syncSchemaMetadata_stub;
-        // let setUsersToGlobal_stub;
-        let job_runner_stub;
-        let shutDown_stub;
-        let handleServerMessage_rw;
-        const test_msg = (msg) => ({ type: msg })
-
-        // before(() => {
-        //     setUsersToGlobal_stub = sandbox.stub(user_schema, 'setUsersToGlobal').resolves();
-        // })
-
-        beforeEach(() => {
-            serverChild_rw = rewire('../../server/serverChild');
-            clean_lmdb_stub = sandbox.stub().returns();
-            serverChild_rw.__set__('clean_lmdb', clean_lmdb_stub);
-
-            syncSchemaMetadata_stub = sandbox.stub().resolves();
-            serverChild_rw.__set__('syncSchemaMetadata', syncSchemaMetadata_stub);
-
-            job_runner_stub = sandbox.stub().resolves({});
-            const job_runner_rw = serverChild_rw.__get__('job_runner');
-            job_runner_rw.parseMessage = job_runner_stub;
-            serverChild_rw.__set__('job_runner', job_runner_rw);
-
-            shutDown_stub = sandbox.stub().resolves();
-            serverChild_rw.__set__('shutDown', shutDown_stub);
-
-            handleServerMessage_rw = serverChild_rw.__get__('handleServerMessage');
-        })
-
-        it('should call clean_lmdb and syncSchemaMetadata methods on `schema` msg', async() => {
-            await handleServerMessage_rw(test_msg('schema'));
-
-            expect(clean_lmdb_stub.calledOnce).to.be.true;
-            expect(syncSchemaMetadata_stub.calledOnce).to.be.true;
-        })
-
-        it('should call user_schema.setUsersToGlobal method on `user` msg', async() => {
-            await handleServerMessage_rw(test_msg('user'));
-
-            expect(setUsersToGlobal_stub.calledOnce).to.be.true;
-        })
-
-        it('should call job_runner.parseMessage method on `job` msg', async() => {
-            await handleServerMessage_rw(test_msg('job'));
-
-            expect(job_runner_stub.calledOnce).to.be.true;
-        })
-
-        it('should call shutdown method', async() => {
-            const process_stub = sandbox.stub(process, "exit").callsFake(fake);
-            handleServerMessage_rw = serverChild_rw.__get__('handleServerMessage');
-
-            await handleServerMessage_rw(test_msg('restart'));
-
-            expect(shutDown_stub.calledOnce).to.be.true;
-            expect(logger_info_stub.calledTwice).to.be.true;
-            expect(logger_info_stub.args[0][0]).to.include('Server close event received for process ');
-            expect(logger_info_stub.args[1][0]).to.equal(`Completed shut down`);
-            expect(process_stub.calledOnce).to.be.true;
-            expect(process_stub.args[0][0]).to.equal(24);
-            serverChild_rw = rewire('../../server/serverChild');
-            process_stub.restore();
-        })
-    })
-
-    describe('syncSchemaMetadata() method',() => {
-        let syncSchemaMetadata_rw;
-        let describeTable_stub;
-        let handleErrorCallback_rw;
-        let handleErrorCallback_stub;
-        const test_schema = 'test_schema';
-        const test_table = 'test_table';
-        const test_err = 'test error';
-        const test_msg = (op, schema, table) => {
-            const msg = {
-                operation: op
-            }
-            if (schema) {
-                msg.schema = schema
-            }
-            if (table) {
-                msg.table = table
-            }
-            return { operation: msg }
-        };
-        const test_global_schema = {
-            [test_schema]: {
-                [test_table]: 'testy test test'
-            }
-        };
-        const test_table_data = "test table data";
-
-        before(() => {
-            describeTable_stub = sandbox.stub(schema_describe, 'describeTable').resolves(test_table_data);
-            serverChild_rw = rewire('../../server/serverChild');
-            syncSchemaMetadata_rw = serverChild_rw.__get__('syncSchemaMetadata');
-            handleErrorCallback_rw = serverChild_rw.__get__('handleErrorCallback');
-            handleErrorCallback_stub = sandbox.stub().callsFake(fake);
-            serverChild_rw.__set__('handleErrorCallback', handleErrorCallback_stub);
-        })
-
-        beforeEach(() => {
-            global.hdb_schema = Object.assign({}, test_global_schema);
-        })
-
-        afterEach(() => {
-            sandbox.resetHistory();
-        })
-
-        it('drop_schema op msg - should delete schema from global schema', async() => {
-            const test_drop_schema = test_msg('drop_schema', test_schema)
-            await syncSchemaMetadata_rw(test_drop_schema);
-
-            expect(global.hdb_schema[test_schema]).to.be.undefined;
-        })
-
-        it('drop_table op msg - should delete table from global schema', async() => {
-            const test_drop_table = test_msg('drop_table', test_schema, test_table)
-            await syncSchemaMetadata_rw(test_drop_table);
-
-            expect(global.hdb_schema[test_schema]).to.eql({});
-        })
-
-        it('create_schema op msg - should do nothing if schema exists in global schema', async() => {
-            const test_create_schema = test_msg('create_schema', test_schema)
-            await syncSchemaMetadata_rw(test_create_schema);
-
-            expect(global.hdb_schema).to.eql(test_global_schema);
-        })
-
-        it('create_schema op msg - should add schema to global if not present in global schema', async() => {
-            global.hdb_schema = {};
-            const test_create_schema = test_msg('create_schema', test_schema)
-            await syncSchemaMetadata_rw(test_create_schema);
-
-            expect(global.hdb_schema[test_schema]).to.eql({});
-        })
-
-        it('create_table op msg - should call describeTable', async() => {
-            const test_create_table = test_msg('create_table', test_schema, test_table);
-            await syncSchemaMetadata_rw(test_create_table);
-
-            expect(describeTable_stub.calledOnce).to.be.true;
-            expect(global.hdb_schema[test_schema][test_table]).to.eql(test_table_data);
-        })
-
-        it('create_table op msg - should add schema and table to global schema and call describeTable', async() => {
-            global.hdb_schema = {};
-            const test_create_table = test_msg('create_table', test_schema, test_table);
-            await syncSchemaMetadata_rw(test_create_table);
-
-            expect(describeTable_stub.calledOnce).to.be.true;
-            expect(global.hdb_schema[test_schema][test_table]).to.eql(test_table_data);
-        })
-
-        it('create_attribute op msg - should call describeTable', async() => {
-            const test_create_attr = test_msg('create_attribute', test_schema, test_table);
-            await syncSchemaMetadata_rw(test_create_attr);
-
-            expect(describeTable_stub.calledOnce).to.be.true;
-            expect(global.hdb_schema[test_schema][test_table]).to.eql(test_table_data);
-        })
-
-        it('create_attribute op msg - should add schema and table to global schema and call describeTable', async() => {
-            global.hdb_schema = {};
-            const test_create_attr = test_msg('create_attribute', test_schema, test_table);
-            await syncSchemaMetadata_rw(test_create_attr);
-
-            expect(describeTable_stub.calledOnce).to.be.true;
-            expect(global.hdb_schema[test_schema][test_table]).to.eql(test_table_data);
-        })
-
-        it('should call setSchemaDataToGlobal if unrecognized op is passed in message', async() => {
-            const test_rando_op = test_msg('rando_op');
-            await syncSchemaMetadata_rw(test_rando_op);
-
-            expect(setSchemaGlobal_stub.calledOnce).to.be.true;
-        })
-
-        it('should call setSchemaDataToGlobal if hdb_schema has not been set to global', async() => {
-            global.hdb_schema = undefined;
-            await syncSchemaMetadata_rw({});
-
-            expect(setSchemaGlobal_stub.calledOnce).to.be.true;
-        })
-
-        it('should call setSchemaDataToGlobal if msg arg is not an object', async() => {
-            await syncSchemaMetadata_rw("Testing 123");
-
-            expect(setSchemaGlobal_stub.calledOnce).to.be.true;
-        })
-
-        it('should call setSchemaDataToGlobal if msg arg does not include an operation value', async() => {
-            await syncSchemaMetadata_rw({});
-
-            expect(setSchemaGlobal_stub.calledOnce).to.be.true;
-        })
-
-        it('should log error if thrown from setSchemaDataToGlobal', async() => {
-            setSchemaGlobal_stub.callsArgWithAsync(0, [test_err])
-            await syncSchemaMetadata_rw({});
-
-            expect(handleErrorCallback_stub.calledOnce).to.be.true;
-        })
-
-        it('should catch and log error if thrown somewhere in method', async() => {
-            describeTable_stub.throws(test_err);
-
-            const test_create_attr = test_msg('create_attribute', test_schema, test_table);
-            await syncSchemaMetadata_rw(test_create_attr);
-
-            expect(logger_error_spy.calledOnce).to.be.true;
-        })
-    })
-
     describe('shutDown() method',() => {
         let serverClose_stub;
         let hdbServer_stub;
-        let callProcessSend_stub;
+        let signalChildStopped_stub;
         let shutDown_rw;
         let timeout_stub;
 
@@ -849,7 +643,7 @@ describe('Test serverChild.js', () => {
             hdbServer_stub = {
                 close: serverClose_stub
             }
-            callProcessSend_stub = sandbox.stub(hdb_util, 'callProcessSend');
+            signalChildStopped_stub = sandbox.stub(signalling, 'signalChildStopped');
             timeout_stub = sandbox.stub().callsFake(fake);
             serverChild_rw.__set__('setTimeout', timeout_stub);
         })
@@ -882,14 +676,14 @@ describe('Test serverChild.js', () => {
         it('Should call .callProcessSend() after server is closed', async() => {
             await shutDown_rw();
 
-            expect(callProcessSend_stub.calledOnce).to.be.true;
+            expect(signalChildStopped_stub.calledOnce).to.be.true;
         })
 
         it('Should call .callProcessSend() even if no hdbServer is set on process', async() => {
             serverChild_rw.__set__('hdbServer', undefined);
             await shutDown_rw();
 
-            expect(callProcessSend_stub.calledOnce).to.be.true;
+            expect(signalChildStopped_stub.calledOnce).to.be.true;
         })
 
         it('Should not call .close() if there is no server instance set on process', async() => {

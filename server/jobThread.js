@@ -6,6 +6,7 @@ const promisify = require('util').promisify;
 const p_schema_to_global = promisify(global_schema.setSchemaDataToGlobal);
 const server_utils = require('../server/serverHelpers/serverUtilities');
 const spawn_cluster_connection = require('../server/socketcluster/connector/spawnSCConnection');
+const IPCClient = require('../server/ipc/IPCClient');
 const log = require('../utility/logging/harper_logger');
 const p_timeout = promisify(setTimeout);
 const CONNECT_TRIES = 5;
@@ -22,6 +23,17 @@ async function thread(argument){
     try {
         await p_schema_to_global();
         await user.setUsersToGlobal();
+
+        // Instantiate new instance of HDB IPC client and assign it to global.
+        try {
+            // Because this client is on the job thread it doesn't need any handlers, hence the empty object param
+            global.hdb_ipc = new IPCClient(process.pid, {});
+        } catch(err) {
+            log.error('Error instantiating new instance of IPC client in HDB job thread');
+            log.error(err);
+            throw err;
+        }
+
         spawn_cluster_connection(false);
         await waitForSocketToConnect();
         let operation = server_utils.getOperationFunction(argument);
