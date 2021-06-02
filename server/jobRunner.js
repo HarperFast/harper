@@ -12,6 +12,7 @@ const fork = require('child_process').fork;
 const path = require('path');
 const JOB_THREAD_MODULE_PATH = path.join(__dirname, 'jobThread');
 const signal = require('../utility/signalling');
+const { SchemaEventMsg } = require('../server/ipc/utility/ipcUtils');
 
 class RunnerResponse {
     constructor(success, message, error) {
@@ -214,8 +215,8 @@ function threadExecute(argument){
                 //we have this if statement to stop false processing from schema signalling
                 forked.kill("SIGINT");
                 resolve(data.thread_results);
-            } else if(data.type === signal.SCHEMA_CHANGE_MESSAGE.type){
-                signal.signalSchemaChange(signal.SCHEMA_CHANGE_MESSAGE);
+            } else if(data.type === hdb_terms.IPC_EVENT_TYPES.SCHEMA){
+                signal.signalSchemaChange(new SchemaEventMsg(process.pid, 'job'));
             }
         });
 

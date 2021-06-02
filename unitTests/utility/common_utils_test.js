@@ -5,6 +5,7 @@
 
 const assert = require('assert');
 const chai = require('chai');
+const sinon = require('sinon');
 const { spawn } = require('child_process');
 const cu = require('../../utility/common_utils');
 const test_utils = require('../test_utils');
@@ -16,6 +17,7 @@ const rewire = require('rewire');
 const cu_rewire = rewire('../../utility/common_utils');
 const upgrade_directive = require('../../upgrade/UpgradeDirective');
 const env_variable = require('../../upgrade/EnvironmentVariable');
+const os = require('os');
 const ps_list = require('../../utility/psList');
 const { expect } = chai;
 const ALL_SPACES = '     ';
@@ -869,47 +871,53 @@ describe('Test isHarperRunning', () => {
     it('Should start HDB and return starting message', (done)=>{
         child = spawn('node', ['harperdb']);
         let x = 0;
+describe('Test isServerRunning', () => {
+    let ps_list_stub;
 
-        child.stdout.on('data', (data) => {
-            let data_string = data.toString();
-
-            if(data_string === 'HarperDB is already running.\n'){
-                expect(data_string).to.not.equal('HarperDB is already running.\n');
-                done();
-            } else if(x === 1) {
-                expect(data_string).to.include('successfully started');
-                done();
-            }
-            x++;
-        });
+    before(() => {
+        ps_list_stub = sinon.stub(ps_list, 'findPs');
     });
 
-    it('Should return true - HDB is running', (done)=>{
-        child.on('close', () => {
-            let result = cu.isHarperRunning();
-            result.then((running)=>{
-                expect(running).to.be.true
-                done();
-            });
-        });
+    after(() => {
+        sinon.resetHistory();
+        sinon.restore();
     });
 
-    it('Should stop HDB and return stopping message', (done)=>{
-        child = spawn('node', ['harperdb', 'stop']);
-        child.stdout.on('data', (data) => {
-            expect(data.toString()).to.include('Stopping HarperDB.');
-            done();
-        });
+    it('Test true is returned if ps list is returned', async () => {
+        ps_list_stub.resolves('a process');
+        const result = await cu_rewire.isServerRunning();
+        expect(result).to.be.true;
     });
 
-    it('Should return false - HDB is not running', (done)=>{
-        child.on('exit', () => {
-            let result = cu.isHarperRunning();
-            result.then((running) => {
-                expect(running).to.be.false;
-                done();
-            });
-        });
+    it('Test false is returned if no ps list is returned', async () => {
+        ps_list_stub.resolves('');
+        const result = await cu_rewire.isServerRunning();
+        expect(result).to.be.false;
+    });
+});
+
+
+describe('Test stopProcess', () => {
+    let user_info_stub;
+    let find_ps_stub;
+    let process_kill_stub;
+
+    before(() => {
+        user_info_stub = sinon.stub(os, 'userInfo');
+        find_ps_stub = sinon.stub(ps_list, 'findPs');
+        process_kill_stub = sinon.stub(process, 'kill');
+    });
+
+    after(() => {
+        sinon.resetHistory();
+        sinon.restore();
+    });
+
+    it('Test process kil is called for process', async () => {
+        user_info_stub.returns({ uid: 123 });
+        find_ps_stub.resolves([{ pid: 5839, uid: 123 }]);
+        await cu_rewire.stopProcess('test123abc.js');
+        expect(process_kill_stub.args[0][0]).to.equal(5839);
     });
 });
 */

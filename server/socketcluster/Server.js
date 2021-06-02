@@ -1,6 +1,5 @@
 'use strict';
 const SocketCluster = require('socketcluster');
-const promisify = require('util').promisify;
 const fs = require('fs-extra');
 const env = require('../../utility/environment/environmentManager');
 env.initSync();
@@ -90,15 +89,7 @@ try {
         logLevel: 1
     });
 
-    let p_send_to_worker = promisify(socketCluster.sendToWorker).bind(socketCluster);
     registerHandlers();
-
-    process.on('message', async (msg) => {
-        if(socketCluster.isWorkerClusterReady === true && socketCluster.workerCluster && socketCluster.workerCluster.pid &&
-            msg.type && msg.type === 'schema' ){
-            await p_send_to_worker(0, msg);
-        }
-    });
 
 } catch(err) {
     log.fatal('There was a fatal error starting clustering.  Please check the logs and try again.');

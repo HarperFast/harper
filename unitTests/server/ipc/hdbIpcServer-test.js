@@ -9,7 +9,7 @@ const rewire = require('rewire');
 const test_util = require('../../test_utils');
 const harper_logger = require('../../../utility/logging/harper_logger');
 
-describe('Test ipcServer module', () => {
+describe('Test hdbIpcServer module', () => {
     const sandbox = sinon.createSandbox();
     let ipc_server;
     let ipc;
@@ -19,7 +19,7 @@ describe('Test ipcServer module', () => {
 
     before(() => {
         test_util.preTestPrep();
-        ipc_server = rewire('../../../server/ipc/ipcServer');
+        ipc_server = rewire('../../../server/ipc/hdbIpcServer');
         ipc = ipc_server.__get__('ipc');
         message_listener_rw = ipc_server.__get__('messageListener');
         log_trace_stub = sandbox.stub(harper_logger, 'trace');
@@ -49,25 +49,25 @@ describe('Test ipcServer module', () => {
         expect(typeof broadcast_stub.args[0][1]).to.equal('object');
         expect(broadcast_stub.args[0][1].type).to.equal(data_test.type);
         expect(broadcast_stub.args[0][1].message).to.equal(data_test.message);
-        expect(log_trace_stub).to.have.been.calledWith(`IPC server received a message type ${data_test.type}, with message ${data_test.message}`);
+        expect(log_trace_stub.args[0][0]).to.equal(`IPC server received a message type ${data_test.type}, with message "${data_test.message}"`);
     });
     
     it('Test invalid IPC msg type is logged', () => {
         const data_test = 'create schema';
         message_listener_rw(data_test);
-        expect(log_warn_stub).to.have.been.calledWith('Invalid IPC message data type, must be an object');
+        expect(log_warn_stub).to.have.been.calledWith('Invalid IPC event data type, must be an object');
     });
 
     it('Test missing type is logged', () => {
         const data_test = { message: 'unit-test' };
         message_listener_rw(data_test);
-        expect(log_warn_stub).to.have.been.calledWith("IPC message missing 'type' property");
+        expect(log_warn_stub).to.have.been.calledWith("IPC event missing 'type'");
     });
 
     it('Test missing message is logged', () => {
         const data_test = { type: 'create_schema' };
         message_listener_rw(data_test);
-        expect(log_warn_stub).to.have.been.calledWith("IPC message missing 'message' property");
+        expect(log_warn_stub).to.have.been.calledWith("IPC event missing 'message'");
     });
 
     it('Test invalid event type logged', () => {

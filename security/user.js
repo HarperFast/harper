@@ -40,6 +40,7 @@ const license = require('../utility/registration/hdb_license');
 const systemSchema = require('../json/systemSchema');
 const { handleHDBError, hdb_errors } = require('../utility/errors/hdbError');
 const { HTTP_STATUS_CODES, AUTHENTICATION_ERROR_MSGS, HDB_ERROR_MSGS } = hdb_errors;
+const { UserEventMsg } = require('../server/ipc/utility/ipcUtils');
 
 const USER_ATTRIBUTE_WHITELIST = {
     username: true,
@@ -128,7 +129,7 @@ async function addUser(user) {
     add_user_msg.user = new_user;
     // TODO: Check if this should be removed, postOperation
     hdb_utility.sendTransactionToSocketCluster(terms.INTERNAL_SC_CHANNELS.ADD_USER, add_user_msg, env.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY));
-    signalling.signalUserChange({type: 'user'});
+    signalling.signalUserChange(new UserEventMsg(process.pid));
     return `${new_user.username} successfully added`;
 }
 
@@ -233,7 +234,7 @@ async function alterUser(json_message) {
     let alter_user_msg = new terms.ClusterMessageObjects.HdbCoreClusterAlterUserRequestMessage();
     alter_user_msg.user = clean_user;
     hdb_utility.sendTransactionToSocketCluster(terms.INTERNAL_SC_CHANNELS.ALTER_USER, alter_user_msg, env.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY));
-    signalling.signalUserChange({type: 'user'});
+    signalling.signalUserChange(new UserEventMsg(process.pid));
     return success;
 }
 
@@ -286,7 +287,7 @@ async function dropUser(user) {
         let alter_user_msg = new terms.ClusterMessageObjects.HdbCoreClusterDropUserRequestMessage();
         alter_user_msg.user = user;
         hdb_utility.sendTransactionToSocketCluster(terms.INTERNAL_SC_CHANNELS.DROP_USER, alter_user_msg, env.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY));
-        signalling.signalUserChange({type: 'user'});
+        signalling.signalUserChange(new UserEventMsg(process.pid));
         return `${user.username} successfully deleted`;
     } catch(err) {
         throw err;
