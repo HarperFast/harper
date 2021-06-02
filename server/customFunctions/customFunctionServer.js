@@ -49,7 +49,7 @@ let os_cpus = undefined;
 
 //in an instance of having HDB installed on an android devices we don't have access to the cpu info so we need to handle the error and move on
 try {
-    num_cf_processes = env.get(terms.HDB_SETTINGS_NAMES.MAX_CUSTOM_FUNCTION_PROCESSES);
+    num_cf_processes = env.get(terms.HDB_SETTINGS_NAMES.MAX_CUSTOM_FUNCTION_PROCESSES); // TODO do we need to start all the processes if there arent that many functions?
     os_cpus = os.cpus().length;
     num_workers = ((num_cf_processes && num_cf_processes > 0) ? num_cf_processes : os_cpus);
     // don't allow more processes than the machine has cores.

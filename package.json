@@ -59,6 +59,7 @@
     "compression": "^1.7.4",
     "cors": "^2.8.5",
     "fastify": "^3.13.0",
+    "fastify-autoload": "^3.7.1",
     "fastify-compress": "^3.4.0",
     "fastify-cors": "^5.0.0",
     "fastify-helmet": "^5.0.3",

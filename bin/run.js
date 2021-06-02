@@ -370,7 +370,6 @@ async function launchIPCServer() {
     }
 }
 
-
 /**
  * Validates the the Custom Functions server is not already running and its port is available,
  * then forks a child process which the Custom Functions server will run on.
@@ -378,14 +377,14 @@ async function launchIPCServer() {
  */
 async function launchCustomFunctionServer() {
     if (env.get(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_ENABLED_KEY)) {
-        final_logger.notify('Running run/launchCustomFunctionServer()');
+        final_logger.info('Running run/launchCustomFunctionServer()');
         const cf_server_port = env.get(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_PORT_KEY) || terms.HDB_SETTINGS_DEFAULT_VALUES.CUSTOM_FUNCTIONS_PORT_KEY;
 
         // Check to see if the HDB port is available.
         try {
             const is_port_taken = await hdb_utils.isPortTaken(cf_server_port);
             if (is_port_taken === true) {
-                console.log(`Port: ${cf_server_port} is being used by another process and cannot be used by the HDB server. Please update the HDB Custom Server port in the HDB config/settings.js file.`);
+                console.log(`Port: ${cf_server_port} is being used by another process and cannot be used by the Custom Functions server. Please update the Custom Functions server port in the HDB config/settings.js file.`);
                 process.exit(1);
             }
         } catch(err) {
@@ -399,8 +398,7 @@ async function launchCustomFunctionServer() {
             const cf_args = createForkArgs(path.resolve(__dirname, '../', 'server/customFunctions', terms.CUSTOM_FUNCTION_PROC_NAME));
 
             cf_child = fork(cf_args[0], [cf_args[1]], {
-                detached: true,
-                stdio: 'ignore'
+                detached: true
             });
 
             final_logger.notify(`cfArgs: ${cf_args[0]}`);
@@ -411,6 +409,6 @@ async function launchCustomFunctionServer() {
             process.exit(1);
         }
     } else {
-        final_logger.notify(`Custom Function server not enabled. To enable the Custom Functions server, set CUSTOM_FUNCTIONS to true in settings.js`);
+        final_logger.notify(`Custom Functions server not enabled. To enable the Custom Functions server, set CUSTOM_FUNCTIONS to true the HDB config/settings.js file.`);
     }
 }
