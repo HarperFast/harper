@@ -1,4 +1,5 @@
 "use strict";
+console.log('CALLED####');
 const os = require('os');
 const cluster = require('cluster');
 
@@ -57,7 +58,7 @@ try {
         num_workers = os_cpus;
         harper_logger.info(`${terms.HDB_SETTINGS_NAMES.MAX_CUSTOM_FUNCTION_PROCESSES} setting is higher than the number of cores on this machine (${os_cpus}).  Settings number of processes to ${os_cpus}`);
     } else {
-        harper_logger.notify(`Setting number of custom function server processes to ${os_cpus}`);
+        harper_logger.notify(`Setting number of custom function server processes to ${num_workers}`);
     }
 } catch(e) {
     num_workers = terms.HDB_SETTINGS_DEFAULT_VALUES.MAX_CUSTOM_FUNCTION_PROCESSES;
@@ -79,7 +80,11 @@ global.clustering_on = false;
  */
 
 if (cluster.isMaster && (num_workers >= 1)) {
+    console.log('launching server parent');
     serverParent(num_workers);
+    console.log('launched server parent');
 } else {
+    console.log('launching child');
     serverChild();
+    console.log('launched child');
 }

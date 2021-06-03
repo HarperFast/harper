@@ -398,11 +398,12 @@ async function launchCustomFunctionServer() {
             const cf_args = createForkArgs(path.resolve(__dirname, '../', 'server/customFunctions', terms.CUSTOM_FUNCTION_PROC_NAME));
 
             cf_child = fork(cf_args[0], [cf_args[1]], {
-                detached: true
+                detached: true,
+                stdio: 'ignore'
             });
 
             final_logger.notify(`cfArgs: ${cf_args[0]}`);
-            final_logger.notify(`cfChild: ${JSON.stringify(cf_child)}`);
+            //final_logger.notify(`cfChild: ${JSON.stringify(cf_child)}`);
         } catch(err) {
             console.error(CF_SERVER_ERR);
             final_logger.error(err);
