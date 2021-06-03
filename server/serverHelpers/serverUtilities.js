@@ -127,10 +127,12 @@ function chooseOperation(json) {
             let sql_statement = (json.operation === 'sql' ? json.sql : json.search_operation.sql);
             let parsed_sql_object = sql.convertSQLToAST(sql_statement);
             json.parsed_sql_object = parsed_sql_object;
-            let ast_perm_check = sql.checkASTPermissions(json, parsed_sql_object);
-            if (ast_perm_check) {
-                harper_logger.error(`${HTTP_STATUS_CODES.FORBIDDEN} from operation ${json.search_operation}`);
-                throw handleHDBError(new Error(), ast_perm_check, hdb_errors.HTTP_STATUS_CODES.FORBIDDEN);
+            if (!json.bypass_auth) {
+                let ast_perm_check = sql.checkASTPermissions(json, parsed_sql_object);
+                if (ast_perm_check) {
+                    harper_logger.error(`${HTTP_STATUS_CODES.FORBIDDEN} from operation ${json.search_operation}`);
+                    throw handleHDBError(new Error(), ast_perm_check, hdb_errors.HTTP_STATUS_CODES.FORBIDDEN);
+                }
             }
         //we need to bypass permission checks to allow the create_authorization_tokens
         } else if(json.operation !== terms.OPERATIONS_ENUM.CREATE_AUTHENTICATION_TOKENS){
