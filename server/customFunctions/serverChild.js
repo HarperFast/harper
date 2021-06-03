@@ -60,7 +60,6 @@ async function childServer() {
         try {
             //make sure the process waits for the server to be fully instantiated before moving forward
             await customFunctionsServer.ready();
-            harper_logger.notify(customFunctionsServer.printRoutes());
         } catch(err) {
             harper_logger.error(`Custom Functions childServer.ready() error: ${err}`);
             throw err;
