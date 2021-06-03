@@ -17,7 +17,7 @@ const signalling = require('../../utility/signalling');
 const global_schema = require('../../utility/globalSchema');
 const user_schema = require('../../security/user');
 const IPCClient = require('../ipc/IPCClient');
-const { ChildStartedMsg, ChildStoppedMsg } = require('../ipc/utility/ipcUtils');
+const { ChildStartedMsg, ChildStoppedMsg, validateEvent } = require('../ipc/utility/ipcUtils');
 let hdb_child_ipc_handlers = require('../ipc/hdbChildIpcHandlers');
 
 const getServerOptions = require('./helpers/getServerOptions');
@@ -193,25 +193,33 @@ function buildServer(is_https) {
  *
  * @returns {Promise<void>}
  */
-async function shutDown() {
-    harper_logger.info(`Server close event received for process ${process.pid}`);
-    harper_logger.debug(`Calling shutdown`);
-    if (customFunctionsServer) {
-        setTimeout(() => {
-            harper_logger.info(`Timeout occurred during client disconnect.  Took longer than ${terms.RESTART_TIMEOUT_MS}ms.`);
-            signalling.signalChildStopped(new ChildStoppedMsg(process.pid, terms.SERVICES.CUSTOM_FUNCTIONS));
-        }, terms.RESTART_TIMEOUT_MS);
-
-        try {
-            await customFunctionsServer.close();
-            customFunctionsServer = null;
-            harper_logger.debug(`Process pid:${process.pid} - server closed`);
-        } catch (err) {
-            harper_logger.debug(`Process pid:${process.pid} - error closing server - ${err}`);
-        }
+async function shutDown(event) {
+    const validate = validateEvent(event);
+    if (validate) {
+        harper_logger.error(validate);
+        return;
     }
-    harper_logger.info(`Process pid:${process.pid} - Work completed, shutting down`);
-    signalling.signalChildStopped(new ChildStoppedMsg(process.pid, terms.SERVICES.CUSTOM_FUNCTIONS));
+
+    if (event.message.force !== true) {
+        harper_logger.info(`Server close event received for process ${process.pid}`);
+        harper_logger.debug(`Calling shutdown`);
+        if (customFunctionsServer) {
+            setTimeout(() => {
+                harper_logger.info(`Timeout occurred during client disconnect.  Took longer than ${terms.RESTART_TIMEOUT_MS}ms.`);
+                signalling.signalChildStopped(new ChildStoppedMsg(process.pid, terms.SERVICES.CUSTOM_FUNCTIONS));
+            }, terms.RESTART_TIMEOUT_MS);
+
+            try {
+                await customFunctionsServer.close();
+                customFunctionsServer = null;
+                harper_logger.debug(`Process pid:${process.pid} - server closed`);
+            } catch (err) {
+                harper_logger.debug(`Process pid:${process.pid} - error closing server - ${err}`);
+            }
+        }
+        harper_logger.info(`Process pid:${process.pid} - Work completed, shutting down`);
+        signalling.signalChildStopped(new ChildStoppedMsg(process.pid, terms.SERVICES.CUSTOM_FUNCTIONS));
+    }
 }
 
 module.exports = childServer;

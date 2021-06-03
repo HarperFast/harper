@@ -103,9 +103,12 @@ function restartHandler(event) {
 
     hdb_logger.trace(`HDB parent with ${hdb_terms.HDB_IPC_CLIENT_PREFIX}${process.pid} received restart event: ${JSON.stringify(event)}`);
 
-    if(event.message.force === true) {
+    // Only the core process needs to call a forced restart.
+    if(event.message.force === true && global.service === hdb_terms.SERVICES.HDB_CORE) {
         restartHDB();
         hdb_logger.info('Force shutting down processes.');
+        return;
+    } else if(event.message.force === true) {
         return;
     }
 
