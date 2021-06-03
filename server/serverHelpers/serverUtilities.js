@@ -135,7 +135,7 @@ function chooseOperation(json) {
                 }
             }
         //we need to bypass permission checks to allow the create_authorization_tokens
-        } else if(json.operation !== terms.OPERATIONS_ENUM.CREATE_AUTHENTICATION_TOKENS){
+        } else if(!json.bypass_auth && json.operation !== terms.OPERATIONS_ENUM.CREATE_AUTHENTICATION_TOKENS){
             let function_to_check = (job_operation_function === undefined ? operation_function : job_operation_function);
             let operation_json = ((json.search_operation) ? json.search_operation : json);
             if (!operation_json.hdb_user) {
