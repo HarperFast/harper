@@ -29,6 +29,7 @@ const permsTranslator = require('../security/permissionsTranslator');
 const system_information = require('../utility/environment/systemInformation');
 const token_authentication = require('../security/tokenAuthentication');
 const configuration = require('../server/configuration');
+const functions_operations = require('../server/customFunctions/operations');
 const alasql = require('alasql');
 
 const PermissionResponseObject = require('../security/data_objects/PermissionResponseObject');
