@@ -101,10 +101,13 @@ function authHandler(req, resp, done) {
     }
 }
 
-async function handlePostRequest(req) {
+async function handlePostRequest(req, bypass_auth = false) {
     let operation_function;
 
     try {
+        if (bypass_auth && req.body.operation !== 'configure_cluster') {
+            req.body.bypass_auth = bypass_auth;
+        }
         operation_function = server_utilities.chooseOperation(req.body);
         return server_utilities.processLocalTransaction(req, operation_function);
     } catch (error) {
