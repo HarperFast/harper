@@ -123,6 +123,13 @@ required_permissions.set(configuration.getConfiguration.name, new permission(tru
 required_permissions.set(token_authentication.createTokens.name, new permission(false, []));
 required_permissions.set(token_authentication.refreshOperationToken.name, new permission(false, []));
 
+//Operations specific to HDB Functions
+required_permissions.set(functions_operations.customFunctionsStatus.name, new permission(true, []));
+required_permissions.set(functions_operations.getCustomFunctions.name, new permission(true, []));
+required_permissions.set(functions_operations.getCustomFunction.name, new permission(true, []));
+required_permissions.set(functions_operations.setCustomFunction.name, new permission(true, []));
+required_permissions.set(functions_operations.dropCustomFunction.name, new permission(true, []));
+
 //Below are functions that are currently open to all roles
 required_permissions.set(reg.getRegistrationInfo.name, new permission(false, []));
 required_permissions.set(user.userInfo.name, new permission(false, []));
