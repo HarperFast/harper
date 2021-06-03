@@ -15,9 +15,11 @@ const RESTART_RESPONSE_SOFT = `Restarting HarperDB. This may take up to ${hdb_te
 const RESTART_RESPONSE_HARD = `Force restarting HarperDB`;
 const CHECK_PROCS_LOOP_LIMIT = 5;
 const IPC_STOP_ERR = 'Error stopping the HDB IPC server. Check log for more detail.';
+const CF_STOP_ERR = 'Error stopping the Custom Functions server. Check log for more detail.';
 const HDB_SERVER_CWD = path.resolve(__dirname, '../server');
 const SC_SERVER_CWD = path.resolve(__dirname, '../server/socketcluster');
 const IPC_SERVER_CWD = path.resolve(__dirname, '../server/ipc');
+const CF_SERVER_CWD = path.resolve(__dirname, '../server/customFunctions');
 
 module.exports = {
     stop,
@@ -64,6 +66,15 @@ async function stop() {
             await hdb_utils.stopProcess(path.join(IPC_SERVER_CWD, hdb_terms.IPC_SERVER_MODULE));
         } catch(err) {
             console.error(IPC_STOP_ERR);
+            final_logger.error(err);
+        }
+
+        try {
+            final_logger.info(`Stopping ${hdb_terms.CUSTOM_FUNCTION_PROC_NAME}`);
+            await hdb_utils.stopProcess(path.join(CF_SERVER_CWD, hdb_terms.CUSTOM_FUNCTION_PROC_NAME));
+        } catch(err) {
+            console.error(CF_STOP_ERR);
+            final_logger.error(err);
         }
 
         final_logger.notify(`HarperDB has stopped`);

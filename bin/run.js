@@ -403,7 +403,6 @@ async function launchCustomFunctionServer() {
             });
 
             final_logger.notify(`cfArgs: ${cf_args[0]}`);
-            //final_logger.notify(`cfChild: ${JSON.stringify(cf_child)}`);
         } catch(err) {
             console.error(CF_SERVER_ERR);
             final_logger.error(err);

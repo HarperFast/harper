@@ -1,13 +1,19 @@
 "use strict";
 
+const all_children_stopped_event = require('../../events/AllChildrenStoppedEvent');
 const check_jwt_tokens = require('../../utility/install/checkJWTTokensExist');
 const cluster = require('cluster');
+const cluster_utilities = require('../clustering/clusterUtilities');
 const env = require('../../utility/environment/environmentManager');
 const global_schema = require('../../utility/globalSchema');
 const harper_logger = require('../../utility/logging/harper_logger');
 const os = require('os');
+const RestartEventObject = require('../RestartEventObject');
 const user_schema = require('../../security/user');
 const util = require('util');
+const hdb_terms = require('../../utility/hdbTerms');
+const IPCClient = require('../ipc/IPCClient');
+const hdbParentIpcHandlers = require('../ipc/hdbParentIpcHandlers');
 
 const p_schema_to_global = util.promisify(global_schema.setSchemaDataToGlobal);
 
@@ -22,12 +28,37 @@ async function serverParent(num_workers) {
     harper_logger.notify('starting Custom Functions serverParent');
     check_jwt_tokens();
     global.isCustomFunctionMaster = cluster.isMaster;
+    global.service = hdb_terms.SERVICES.CUSTOM_FUNCTIONS;
+
+    try {
+        // Instantiate new instance of HDB IPC client and assign it to global.
+        global.hdb_ipc = new IPCClient(process.pid, hdbParentIpcHandlers);
+    } catch(err) {
+        harper_logger.error('Error instantiating new instance of IPC client in Custom Functions server parent');
+        harper_logger.error(err);
+        throw err;
+    }
 
     process.on('uncaughtException', function (err) {
         let message = `Found an uncaught exception with message: ${err.message}${os.EOL}Stack: ${err.stack}${os.EOL} Terminating Custom Functions Server.`;
         console.error(message);
         harper_logger.fatal(message);
         process.exit(1);
+    });
+
+    let restart_event_tracker = new RestartEventObject();
+
+    // Handles restart operation for all processes
+    all_children_stopped_event.allChildrenStoppedEmitter.on(all_children_stopped_event.EVENT_NAME,(msg) => {
+        harper_logger.info(`Got all children stopped event.`);
+        try {
+            restart_event_tracker.fastify_connections_stopped = true;
+            if(restart_event_tracker.isReadyForRestart()) {
+                cluster_utilities.restartHDB();
+            }
+        } catch(err) {
+            harper_logger.error(`Error tracking allchildrenstopped event.`);
+        }
     });
 
     try {
@@ -86,7 +117,8 @@ async function launch(num_workers) {
             harper_logger.fatal(`Had trouble kicking off new Custom Function processes.  ${e}`);
         }
     }
-    global.custom_functions_forks = forks;
+    global.custom_functions_forks = forks; // TODO do we need this? the handler uses forks not custom_functions_forks
+    global.forks = forks;
 }
 
 module.exports = serverParent;

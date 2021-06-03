@@ -16,11 +16,13 @@ const harper_logger = require('../../utility/logging/harper_logger');
 const signalling = require('../../utility/signalling');
 const global_schema = require('../../utility/globalSchema');
 const user_schema = require('../../security/user');
+const IPCClient = require('../ipc/IPCClient');
+const { ChildStartedMsg, ChildStoppedMsg } = require('../ipc/utility/ipcUtils');
+let hdb_child_ipc_handlers = require('../ipc/hdbChildIpcHandlers');
 
 const getServerOptions = require('./helpers/getServerOptions');
 const getCORSOptions = require('./helpers/getCORSOptions');
 const getHeaderTimeoutConfig = require('./helpers/getHeaderTimeoutConfig');
-
 
 const p_schema_to_global = util.promisify(global_schema.setSchemaDataToGlobal);
 
@@ -38,6 +40,17 @@ let endpoint_base = env.getProperty(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DI
  */
 async function childServer() {
     try {
+        // Instantiate new instance of HDB IPC client and assign it to global.
+        try {
+            // The restart event handler needs to be assigned here because it requires the customFunctionsServer value.
+            hdb_child_ipc_handlers[terms.IPC_EVENT_TYPES.RESTART] = shutDown;
+            global.hdb_ipc = new IPCClient(process.pid, hdb_child_ipc_handlers);
+        } catch(err) {
+            harper_logger.error('Error instantiating new instance of IPC client in Custom Functions server child');
+            harper_logger.error(err);
+            throw err;
+        }
+
         harper_logger.info('In Custom Functions Fastify server' + process.cwd());
         harper_logger.info(`Custom Functions Running with NODE_ENV set as: ${process.env.NODE_ENV}`);
         harper_logger.debug(`Custom Functions Child server process ${process.pid} starting up.`);
@@ -71,7 +84,7 @@ async function childServer() {
             await customFunctionsServer.listen(props_server_port, '::');
             harper_logger.info(`Custom Functions child process running on port ${props_server_port}`);
             //signal to parent process that server has started on child process
-            signalling.signalChildStarted();
+            signalling.signalChildStarted(new ChildStartedMsg(process.pid, terms.SERVICES.CUSTOM_FUNCTIONS));
         } catch(err) {
             customFunctionsServer.close();
             harper_logger.error(`Custom Functions childServer.listen() error: ${err}`);
@@ -102,12 +115,6 @@ async function setUp() {
     }
 }
 
-/**
- * This method is used for soft/graceful server shutdowns - i.e. when we want to allow existing API requests/operations to
- * complete/be returned before exiting the process and restarting the server.
- *
- * @returns {Promise<void>}
- */
 async function buildRoutes (server) {
     try {
         harper_logger.info('Custom Functions starting createServer');
@@ -178,8 +185,33 @@ function buildServer(is_https) {
         harper_logger.fatal(err);
         process.exit(1);
     }
+}
 
+/**
+ * This method is used for soft/graceful server shutdowns - i.e. when we want to allow existing API requests/operations to
+ * complete/be returned before exiting the process and restarting the server.
+ *
+ * @returns {Promise<void>}
+ */
+async function shutDown() {
+    harper_logger.info(`Server close event received for process ${process.pid}`);
+    harper_logger.debug(`Calling shutdown`);
+    if (customFunctionsServer) {
+        setTimeout(() => {
+            harper_logger.info(`Timeout occurred during client disconnect.  Took longer than ${terms.RESTART_TIMEOUT_MS}ms.`);
+            signalling.signalChildStopped(new ChildStoppedMsg(process.pid, terms.SERVICES.CUSTOM_FUNCTIONS));
+        }, terms.RESTART_TIMEOUT_MS);
+
+        try {
+            await customFunctionsServer.close();
+            customFunctionsServer = null;
+            harper_logger.debug(`Process pid:${process.pid} - server closed`);
+        } catch (err) {
+            harper_logger.debug(`Process pid:${process.pid} - error closing server - ${err}`);
+        }
+    }
+    harper_logger.info(`Process pid:${process.pid} - Work completed, shutting down`);
+    signalling.signalChildStopped(new ChildStoppedMsg(process.pid, terms.SERVICES.CUSTOM_FUNCTIONS));
 }
 
 module.exports = childServer;
-

@@ -530,24 +530,16 @@ const IPC_SERVER_MODULE = `hdbIpcServer.${CODE_EXTENSION}`;
 const HDB_IPC_SERVER = 'hdb_ipc_server';
 const HDB_IPC_CLIENT_PREFIX = 'hdb_ipc_client_';
 const IPC_EVENT_TYPES = {
-    JOB: 'job',
     RESTART: 'restart',
     CHILD_STARTED: 'child_started',
     CHILD_STOPPED: 'child_stopped',
     SCHEMA: 'schema',
-    USER: 'user',
-    CREATE_SCHEMA: 'create_schema',
-    CREATE_TABLE: 'create_table',
-    CREATE_ATTRIBUTE: 'create_attribute',
-    DROP_SCHEMA: 'drop_schema',
-    DROP_TABLE: 'drop_table',
-    DROP_ATTRIBUTE: 'drop_attribute',
-    ADD_USER: 'add_user',
-    ADD_ROLE: 'add_role',
-    ALTER_USER: 'alter_user',
-    ALTER_ROLE: 'alter_role',
-    DROP_ROLE: 'drop_role',
-    DROP_USER: 'drop_user'
+    USER: 'user'
+};
+
+const SERVICES = {
+    HDB_CORE: 'hdb_core',
+    CUSTOM_FUNCTIONS: 'custom_functions'
 };
 
 module.exports = {
@@ -656,5 +648,6 @@ module.exports = {
     IPC_EVENT_TYPES,
     HDB_IPC_CLIENT_PREFIX,
     CUSTOM_FUNCTION_PROC_NAME,
-    CUSTOM_FUNCTION_PROC_DESCRIPTOR
+    CUSTOM_FUNCTION_PROC_DESCRIPTOR,
+    SERVICES
 };

@@ -13,8 +13,9 @@ const RestartEventObject = require('./RestartEventObject');
 const sio_server_stopped_event = require('../events/SioServerStoppedEvent');
 const user_schema = require('../security/user');
 const util = require('util');
+const hdb_terms = require('../utility/hdbTerms');
 const IPCClient = require('./ipc/IPCClient');
-const hdbParentIpcHandlers = require('../server/ipc/hdbParentIpcHandlers');
+const hdbParentIpcHandlers = require('./ipc/hdbParentIpcHandlers');
 
 const {
     handleBeforeExit,
@@ -36,6 +37,7 @@ const p_schema_to_global = util.promisify(global_schema.setSchemaDataToGlobal);
 async function serverParent(num_workers) {
     check_jwt_tokens();
     global.isMaster = cluster.isMaster;
+    global.service = hdb_terms.SERVICES.HDB_CORE;
 
     try {
         // Instantiate new instance of HDB IPC client and assign it to global.

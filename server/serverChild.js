@@ -23,7 +23,7 @@ const guidePath = require('path');
 const global_schema = require('../utility/globalSchema');
 const user_schema = require('../security/user');
 const hdb_license = require('../utility/registration/hdb_license');
-let hdb_child_ipc_handlers = require('../server/ipc/hdbChildIpcHandlers');
+let hdb_child_ipc_handlers = require('./ipc/hdbChildIpcHandlers');
 const IPCClient = require('./ipc/IPCClient');
 const { ChildStartedMsg, ChildStoppedMsg } = require('./ipc/utility/ipcUtils');
 
@@ -114,7 +114,7 @@ async function childServer() {
             await hdbServer.listen(props_server_port, '::');
             harper_logger.info(`HarperDB ${pjson.version} ${server_type} Server running on port ${props_server_port}`);
             //signal to parent process that server has started on child process
-            signalling.signalChildStarted(new ChildStartedMsg(process.pid));
+            signalling.signalChildStarted(new ChildStartedMsg(process.pid, terms.SERVICES.HDB_CORE));
         } catch(err) {
             hdbServer.close();
             harper_logger.error(`Error configuring ${server_type} server`);
@@ -267,7 +267,7 @@ async function shutDown() {
     if (hdbServer) {
         setTimeout(() => {
             harper_logger.info(`Timeout occurred during client disconnect.  Took longer than ${terms.RESTART_TIMEOUT_MS}ms.`);
-            signalling.signalChildStopped(new ChildStoppedMsg(process.pid));
+            signalling.signalChildStopped(new ChildStoppedMsg(process.pid, terms.SERVICES.HDB_CORE));
         }, terms.RESTART_TIMEOUT_MS);
 
         try {
@@ -279,7 +279,7 @@ async function shutDown() {
         }
     }
     harper_logger.info(`Process pid:${process.pid} - Work completed, shutting down`);
-    signalling.signalChildStopped(new ChildStoppedMsg(process.pid));
+    signalling.signalChildStopped(new ChildStoppedMsg(process.pid, terms.SERVICES.HDB_CORE));
 }
 
 module.exports = childServer;
