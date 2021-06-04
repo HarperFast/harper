@@ -47,6 +47,8 @@ const MOMENT_DAYS_TAG = 'd';
 const API_TURNOVER_SEC = 999999;
 const WILDCARD_SEARCH_VALUE = '*';
 
+const MEM_SETTING_KEY = '--max-old-space-size=';
+
 // Name of the System schema
 const SYSTEM_SCHEMA_NAME = 'system';
 const HASH_FOLDER_NAME = '__hdb_hash';
@@ -649,5 +651,6 @@ module.exports = {
     HDB_IPC_CLIENT_PREFIX,
     CUSTOM_FUNCTION_PROC_NAME,
     CUSTOM_FUNCTION_PROC_DESCRIPTOR,
-    SERVICES
+    SERVICES,
+    MEM_SETTING_KEY
 };

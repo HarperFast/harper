@@ -1,9 +1,8 @@
 "use strict";
 
-const all_children_stopped_event = require('../../events/AllChildrenStoppedEvent');
+const all_cf_children_stopped_event = require('../../events/AllCFChildrenStoppedEvent');
 const check_jwt_tokens = require('../../utility/install/checkJWTTokensExist');
 const cluster = require('cluster');
-const cluster_utilities = require('../clustering/clusterUtilities');
 const env = require('../../utility/environment/environmentManager');
 const global_schema = require('../../utility/globalSchema');
 const harper_logger = require('../../utility/logging/harper_logger');
@@ -14,8 +13,12 @@ const util = require('util');
 const hdb_terms = require('../../utility/hdbTerms');
 const IPCClient = require('../ipc/IPCClient');
 const hdbParentIpcHandlers = require('../ipc/hdbParentIpcHandlers');
+const child_process = require('child_process');
+const path = require('path');
 
 const p_schema_to_global = util.promisify(global_schema.setSchemaDataToGlobal);
+
+const CF_SERVER_CWD = path.resolve(__dirname, '../customFunctions');
 
 /**
  * Function called to start up HDB server clustering process - this method is called from customFunctionServer as the "parent" process
@@ -49,15 +52,15 @@ async function serverParent(num_workers) {
     let restart_event_tracker = new RestartEventObject();
 
     // Handles restart operation for all processes
-    all_children_stopped_event.allChildrenStoppedEmitter.on(all_children_stopped_event.EVENT_NAME,(msg) => {
-        harper_logger.info(`Got all children stopped event.`);
+    all_cf_children_stopped_event.allCFChildrenStoppedEmitter.on(all_cf_children_stopped_event.EVENT_NAME, (msg) => {
+        harper_logger.info(`Got all custom function children stopped event.`);
         try {
             restart_event_tracker.fastify_connections_stopped = true;
             if(restart_event_tracker.isReadyForRestart()) {
-                cluster_utilities.restartHDB();
+                restartCF();
             }
         } catch(err) {
-            harper_logger.error(`Error tracking allchildrenstopped event.`);
+            harper_logger.error(`Error tracking all custom function children stopped event.`);
         }
     });
 
@@ -66,6 +69,19 @@ async function serverParent(num_workers) {
         await launch(num_workers);
     } catch(e) {
         harper_logger.error(e);
+    }
+}
+
+function restartCF() {
+    try {
+        const args = path.join(CF_SERVER_CWD, 'restartCFServer.js');
+        let child = child_process.spawn('node', [args], {detached:true, stdio: "ignore"});
+        child.unref();
+    } catch (err) {
+        let msg = `There was an error restarting Custom Functions.  Please restart manually. ${err}`;
+        console.log(msg);
+        harper_logger.error(msg);
+        throw err;
     }
 }
 
@@ -117,7 +133,7 @@ async function launch(num_workers) {
             harper_logger.fatal(`Had trouble kicking off new Custom Function processes.  ${e}`);
         }
     }
-    global.custom_functions_forks = forks; // TODO do we need this? the handler uses forks not custom_functions_forks
+
     global.forks = forks;
 }
 

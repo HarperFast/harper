@@ -268,9 +268,9 @@ async function shutDown(event) {
         return;
     }
 
-    if (event.message.force !== true) {
+    if ((event.message.force === false && event.message.service === undefined) || (event.message.service !== undefined && event.message.service === terms.SERVICES.HDB_CORE)) {
         harper_logger.info(`Server close event received for process ${process.pid}`);
-        harper_logger.debug(`Calling shutdown`);
+        harper_logger.debug(`Calling shutdown in server/serverChild`);
         if (hdbServer) {
             setTimeout(() => {
                 harper_logger.info(`Timeout occurred during client disconnect.  Took longer than ${terms.RESTART_TIMEOUT_MS}ms.`);

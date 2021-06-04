@@ -10,12 +10,15 @@ const global_schema = require('../utility/globalSchema');
 const harper_logger = require('../utility/logging/harper_logger');
 const os = require('os');
 const RestartEventObject = require('./RestartEventObject');
-const sio_server_stopped_event = require('../events/SioServerStoppedEvent');
 const user_schema = require('../security/user');
 const util = require('util');
 const hdb_terms = require('../utility/hdbTerms');
 const IPCClient = require('./ipc/IPCClient');
 const hdbParentIpcHandlers = require('./ipc/hdbParentIpcHandlers');
+const child_process = require('child_process');
+const path = require('path');
+
+const HDB_SERVER_CWD = __dirname;
 
 const {
     handleBeforeExit,
@@ -70,23 +73,10 @@ async function serverParent(num_workers) {
         try {
             restart_event_tracker.fastify_connections_stopped = true;
             if(restart_event_tracker.isReadyForRestart()) {
-                cluster_utilities.restartHDB();
+                restartHDB();
             }
         } catch(err) {
-            harper_logger.error(`Error tracking allchildrenstopped event.`);
-        }
-    });
-
-    // Consume SocketIOServerStopped events
-    sio_server_stopped_event.sioServerStoppedEmitter.on(sio_server_stopped_event.EVENT_NAME, (msg) => {
-        harper_logger.info(`Got sio server stopped event.`);
-        try {
-            restart_event_tracker.sio_connections_stopped = true;
-            if(restart_event_tracker.isReadyForRestart()) {
-                cluster_utilities.restartHDB();
-            }
-        } catch(err) {
-            harper_logger.error(`Error tracking sio server stopped event.`);
+            harper_logger.error(`Error tracking all children stopped event.`);
         }
     });
 
@@ -95,6 +85,19 @@ async function serverParent(num_workers) {
         await launch(num_workers);
     } catch(e) {
         harper_logger.error(e);
+    }
+}
+
+function restartHDB() {
+    try {
+        const args = path.join(HDB_SERVER_CWD, 'restartHDBServer.js');
+        let child = child_process.spawn('node', [args], {detached:true, stdio: "ignore"});
+        child.unref();
+    } catch (err) {
+        let msg = `There was an error restarting HarperDB.  Please restart manually. ${err}`;
+        console.log(msg);
+        harper_logger.error(msg);
+        throw err;
     }
 }
 

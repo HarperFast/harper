@@ -9,13 +9,18 @@ const signalling = require('../utility/signalling');
 const { RestartMsg } = require('../server/ipc/utility/ipcUtils');
 const hdb_utils = require('../utility/common_utils');
 const path = require('path');
+const { handleHDBError, hdb_errors } = require('../utility/errors/hdbError');
+const { HTTP_STATUS_CODES } = hdb_errors;
 
 const HDB_PROC_END_TIMEOUT = 100;
 const RESTART_RESPONSE_SOFT = `Restarting HarperDB. This may take up to ${hdb_terms.RESTART_TIMEOUT_MS/1000} seconds.`;
 const RESTART_RESPONSE_HARD = `Force restarting HarperDB`;
+const RESTART_RESPONSE_CF = 'Restarting custom_functions';
 const CHECK_PROCS_LOOP_LIMIT = 5;
 const IPC_STOP_ERR = 'Error stopping the HDB IPC server. Check log for more detail.';
 const CF_STOP_ERR = 'Error stopping the Custom Functions server. Check log for more detail.';
+const NO_FORCE_ALLOWED_ERR = 'Force restarts are not available with service restart';
+const INVALID_SERVICE_ERR = 'Invalid service';
 const HDB_SERVER_CWD = path.resolve(__dirname, '../server');
 const SC_SERVER_CWD = path.resolve(__dirname, '../server/socketcluster');
 const IPC_SERVER_CWD = path.resolve(__dirname, '../server/ipc');
@@ -32,15 +37,32 @@ module.exports = {
  * @returns {Promise}
  */
 async function restartProcesses(json_message) {
+    const is_forced_restart = json_message.force === true || json_message.force === 'true';
+    if (is_forced_restart && !hdb_utils.isEmpty(json_message.service)) {
+        throw handleHDBError(new Error(), NO_FORCE_ALLOWED_ERR, HTTP_STATUS_CODES.BAD_REQUEST);
+    }
+
+    if (!hdb_utils.isEmpty(json_message.service) && json_message.service !== hdb_terms.SERVICES.CUSTOM_FUNCTIONS) {
+        throw handleHDBError(new Error(), INVALID_SERVICE_ERR, HTTP_STATUS_CODES.BAD_REQUEST);
+    }
+
     if(!json_message.force) {
         json_message.force = false;
     }
+
     try {
-        if (json_message.force === true || json_message.force === 'true') {
+        if (is_forced_restart) {
             signalling.signalRestart(new RestartMsg(process.pid, true));
             return RESTART_RESPONSE_HARD;
         }
+
+        if (json_message.service === hdb_terms.SERVICES.CUSTOM_FUNCTIONS) {
+            signalling.signalRestart(new RestartMsg(process.pid, false, json_message.service));
+            return RESTART_RESPONSE_CF;
+        }
+
         signalling.signalRestart(new RestartMsg(process.pid, false));
+
         return RESTART_RESPONSE_SOFT;
     } catch(err) {
         let msg = `There was an error restarting HarperDB. ${err}`;

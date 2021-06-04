@@ -30,7 +30,6 @@ const FOREGROUND_ARG = 'foreground';
 const ENOENT_ERR_CODE = -2;
 
 const IPC_SERVER_CWD = path.resolve(__dirname, '../server/ipc');
-const MEM_SETTING_KEY = '--max-old-space-size=';
 
 const NO_IPC_PORT_FOUND_ERR = 'Error getting IPC server port from environment variables';
 const NO_HDB_PORT_FOUND_ERR = 'Error getting HDB server port from environment variables';
@@ -193,10 +192,10 @@ async function launchHdbServer() {
 
     // Launch the HDB server as a child process.
     try {
-        const hdb_args = createForkArgs(path.resolve(__dirname, '../', 'server', terms.HDB_PROC_NAME));
+        const hdb_args = hdb_utils.createForkArgs(path.resolve(__dirname, '../', 'server', terms.HDB_PROC_NAME));
         const license = hdb_license.licenseSearch();
-        const mem_value = license.ram_allocation ? MEM_SETTING_KEY + license.ram_allocation
-            : MEM_SETTING_KEY + terms.RAM_ALLOCATION_ENUM.DEFAULT;
+        const mem_value = license.ram_allocation ? terms.MEM_SETTING_KEY + license.ram_allocation
+            : terms.MEM_SETTING_KEY + terms.RAM_ALLOCATION_ENUM.DEFAULT;
 
         child = fork(hdb_args[0], [hdb_args[1]], {
             detached: true,
@@ -280,15 +279,6 @@ function isForegroundProcess(){
     return is_foreground;
 }
 
-function createForkArgs(module_path){
-    let args = [];
-    if(terms.CODE_EXTENSION === terms.COMPILED_EXTENSION){
-        args.push(path.resolve(__dirname, '../', 'node_modules', 'bytenode', 'cli.js'));
-    }
-    args.push(module_path);
-    return args;
-}
-
 module.exports ={
     run:run
 };
@@ -358,7 +348,7 @@ async function launchIPCServer() {
 
     // Launch IPC server as a child background process.
     try {
-        const ipc_fork_args = createForkArgs(path.resolve(__dirname, '../', 'server/ipc', terms.IPC_SERVER_MODULE));
+        const ipc_fork_args = hdb_utils.createForkArgs(path.resolve(__dirname, '../', 'server/ipc', terms.IPC_SERVER_MODULE));
         ipc_child = fork(ipc_fork_args[0], [ipc_fork_args[1]], {
             detached: true,
             stdio: 'ignore',
@@ -395,7 +385,7 @@ async function launchCustomFunctionServer() {
 
         // Launch the Custom Function server as a child background process.
         try {
-            const cf_args = createForkArgs(path.resolve(__dirname, '../', 'server/customFunctions', terms.CUSTOM_FUNCTION_PROC_NAME));
+            const cf_args = hdb_utils.createForkArgs(path.resolve(__dirname, '../', 'server/customFunctions', terms.CUSTOM_FUNCTION_PROC_NAME));
 
             cf_child = fork(cf_args[0], [cf_args[1]], {
                 detached: true,

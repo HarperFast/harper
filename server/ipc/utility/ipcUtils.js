@@ -106,9 +106,11 @@ function ChildStoppedMsg(originator, service) {
  * Constructor function for the message of restart IPC events
  * @param originator
  * @param force
+ * @param service
  * @constructor
  */
-function RestartMsg(originator, force) {
+function RestartMsg(originator, force, service = undefined) {
     this.originator = originator;
     this.force = force;
+    this.service = service;
 }

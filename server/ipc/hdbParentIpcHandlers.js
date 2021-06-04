@@ -5,6 +5,7 @@ const hdb_logger = require('../../utility/logging/harper_logger');
 const enterprise_util = require('../../utility/enterpriseInitialization');
 const { restartHDB } = require('../../server/clustering/clusterUtilities');
 const children_stopped_event = require('../../events/AllChildrenStoppedEvent');
+const cf_children_stopped_event = require('../../events/AllCFChildrenStoppedEvent');
 const { validateEvent } = require('../../server/ipc/utility/ipcUtils');
 const util = require('util');
 
@@ -82,10 +83,17 @@ function childStoppedHandler(event) {
                     return;
                 }
             }
-            //All children are stopped, emit event
-            hdb_logger.debug(`All children stopped, restarting.`);
+
             child_event_count = 0;
-            children_stopped_event.allChildrenStoppedEmitter.emit(children_stopped_event.EVENT_NAME, new children_stopped_event.AllChildrenStoppedMessage());
+
+            // All children are stopped, emit event
+            if (event.message.service === hdb_terms.SERVICES.CUSTOM_FUNCTIONS) {
+                hdb_logger.debug(`All custom function children stopped, restarting.`);
+                cf_children_stopped_event.allCFChildrenStoppedEmitter.emit(cf_children_stopped_event.EVENT_NAME, new cf_children_stopped_event.AllCFChildrenStoppedMessage());
+            } else {
+                hdb_logger.debug(`All children stopped, restarting.`);
+                children_stopped_event.allChildrenStoppedEmitter.emit(children_stopped_event.EVENT_NAME, new children_stopped_event.AllChildrenStoppedMessage());
+            }
         }
     }
 }
