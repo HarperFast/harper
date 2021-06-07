@@ -43,12 +43,14 @@ const fake = () => {
 const test_cert_val = test_utils.getHTTPSCredentials().cert;
 const test_key_val = test_utils.getHTTPSCredentials().key;
 
-describe('Test serverChild.js', () => {
+describe('Test custom functions serverChild.js', () => {
   let signalChildStarted_stub;
   let serverClose_stub;
   let customFunctionsServer_stub;
+  let ipc_client_stub;
 
   before(() => {
+    ipc_client_stub = sandbox.stub();
     logger_info_stub = sandbox.stub(harper_logger, 'info').callsFake(fake);
     logger_error_spy = sandbox.stub(harper_logger, 'error').callsFake(fake);
     logger_fatal_spy = sandbox.stub(harper_logger, 'fatal').callsFake(fake);
@@ -59,6 +61,7 @@ describe('Test serverChild.js', () => {
     serverClose_stub = sandbox.stub().resolves();
     customFunctionsServer_stub = { close: serverClose_stub };
     serverChild_rw = rewire('../../../server/customFunctions/serverChild');
+    serverChild_rw.__set__('IPCClient', ipc_client_stub);
     serverChild_rw.__set__('setUp', setup_stub);
     serverChild_rw.__set__('customFunctionsServer', customFunctionsServer_stub);
     test_utils.preTestPrep();
@@ -236,13 +239,9 @@ describe('Test serverChild.js', () => {
       test_utils.preTestPrep();
       await serverChild_rw();
 
-      expect(logger_error_spy.calledTwice).to.be.true;
+      expect(logger_error_spy.calledThrice).to.be.true;
       expect(logger_error_spy.args[0][0]).to.equal('Custom Functions childServer.listen() error: Error: This is a test error.');
       expect(logger_error_spy.args[1][0]).to.equal(`Custom Functions ${process.pid} Error: Error: This is a test error.`);
-
-      expect(logger_fatal_spy.calledOnce).to.be.true;
-      expect(logger_fatal_spy.args[0][0].message).to.equal(test_err);
-
       expect(process_stub.calledOnce).to.be.true;
       expect(process_stub.args[0][0]).to.equal(1);
 

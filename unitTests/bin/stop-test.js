@@ -132,6 +132,10 @@ describe('Test stop.js' , () => {
             kill_procs_stub = sandbox.stub();
             kill_procs_rewire = stop.__set__('killProcs', kill_procs_stub);
         });
+        
+        afterEach(() => {
+            sandbox.resetHistory();
+        });
 
         after(() => {
             kill_procs_rewire();
@@ -143,12 +147,13 @@ describe('Test stop.js' , () => {
             expect(console_log_spy).to.have.been.calledOnce;
             expect(console_log_spy).to.have.been.calledWith('Stopping HarperDB.');
             expect(kill_procs_stub).to.have.been.calledTwice;
-            expect(final_logger_info_stub).to.have.been.calledThrice;
+            expect(final_logger_info_stub.callCount).to.equal(4);
             expect(kill_procs_stub.getCall(0).args[0]).to.equal(path.resolve('../server/socketcluster',hdb_terms.SC_PROC_NAME), hdb_terms.SC_PROC_DESCRIPTOR);
             expect(kill_procs_stub.getCall(1).args[0]).to.equal(path.resolve('../server', hdb_terms.HDB_PROC_NAME), hdb_terms.HDB_PROC_DESCRIPTOR);
             expect(final_logger_info_stub).to.have.been.calledWith(`Stopping ${hdb_terms.HDB_PROC_NAME} - ${hdb_terms.HDB_PROC_DESCRIPTOR}.`);
             expect(final_logger_info_stub).to.have.been.calledWith(`Stopping ${hdb_terms.SC_PROC_NAME} - ${hdb_terms.SC_PROC_DESCRIPTOR}.`);
             expect(stop_process_stub.getCall(0).args[0]).to.equal(path.resolve('../server/ipc', hdb_terms.IPC_SERVER_MODULE));
+            expect(stop_process_stub.getCall(1).args[0]).to.equal(path.resolve('../server/customFunctions', hdb_terms.CUSTOM_FUNCTION_PROC_NAME));
         });
 
         it('should catch error from killProcs and console error it', async () => {

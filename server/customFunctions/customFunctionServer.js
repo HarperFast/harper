@@ -1,5 +1,4 @@
 "use strict";
-console.log('CALLED####');
 const os = require('os');
 const cluster = require('cluster');
 

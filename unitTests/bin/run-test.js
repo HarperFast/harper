@@ -308,6 +308,7 @@ describe('Test run module', () => {
 
         it('Test happy path when fork args are compiled extension', async () => {
             const terms_test = {
+                MEM_SETTING_KEY: '--max-old-space-size=',
                 HDB_SETTINGS_NAMES: {
                     SERVER_PORT_KEY: 'SERVER_PORT'
                 },
@@ -322,11 +323,14 @@ describe('Test run module', () => {
             }
 
             };
+
+            const create_fork_args_stub = sandbox.stub(hdb_utils, 'createForkArgs').returns(['node_modules/bytenode/cli.js', 'harperdb/server/hdbServer.jsc']);
             const terms_rw = run_rw.__set__('terms', terms_test);
             is_port_taken_stub.resolves(false);
             license_search_stub.returns({ ram_allocation: 1024 });
             await launchHdbServer();
             terms_rw();
+            create_fork_args_stub.restore();
 
             expect(check_perms_stub).to.have.been.called;
             expect(fork_stub.args[0][0]).to.include('node_modules/bytenode/cli.js');
