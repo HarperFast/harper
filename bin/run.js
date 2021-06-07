@@ -392,7 +392,7 @@ async function launchCustomFunctionServer() {
                 stdio: 'ignore'
             });
 
-            final_logger.notify(`cfArgs: ${cf_args[0]}`);
+            final_logger.trace(`custom function for args: ${cf_args[0]}`);
         } catch(err) {
             console.error(CF_SERVER_ERR);
             final_logger.error(err);
