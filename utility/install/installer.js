@@ -505,7 +505,7 @@ function createSettingsFile(mount_status, callback) {
             `${HDB_SETTINGS_NAMES.SERVER_HEADERS_TIMEOUT_KEY} = ${generateSettingsValue(ARGS, HDB_SETTINGS_NAMES.SERVER_HEADERS_TIMEOUT_KEY)}\n` +
             `   ;Define whether to log to a file or not.\n` +
             `${HDB_SETTINGS_NAMES.LOG_TO_FILE} = ${generateSettingsValue(ARGS, HDB_SETTINGS_NAMES.LOG_TO_FILE)}\n` +
-            `   ;Define whether to log to stdout/stderr or not.` +
+            `   ;Define whether to log to stdout/stderr or not.\n` +
             `${HDB_SETTINGS_NAMES.LOG_TO_STDSTREAMS} = ${generateSettingsValue(ARGS, HDB_SETTINGS_NAMES.LOG_TO_STDSTREAMS)}\n` +
             `   ;Set to control amount of logging generated.  Accepted levels are trace, debug, warn, error, fatal.\n` +
             `${HDB_SETTINGS_NAMES.LOG_LEVEL_KEY} = ${generateSettingsValue(ARGS, HDB_SETTINGS_NAMES.LOG_LEVEL_KEY)}\n` +

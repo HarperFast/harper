@@ -76,8 +76,21 @@ let tomorrows_date = undefined;
             daily_max = hdb_properties.get('LOG_MAX_DAILY_FILES');
             log_level = hdb_properties.get('LOG_LEVEL');
             log_path = hdb_properties.get('LOG_PATH');
-            log_to_file = hdb_properties.get('LOG_TO_FILE').toString().toLowerCase() === 'true';
-            log_to_stdstreams = hdb_properties.get('LOG_TO_STDSTREAMS').toString().toLowerCase() === 'true';
+
+            log_to_file = hdb_properties.get('LOG_TO_FILE');
+            if(log_to_file !== undefined && log_to_file !== null){
+                log_to_file = log_to_file.toString().toLowerCase() === 'true';
+            }
+
+            log_to_stdstreams = hdb_properties.get('LOG_TO_STDSTREAMS');
+            if(log_to_stdstreams !== undefined && log_to_stdstreams !== null){
+                log_to_stdstreams = log_to_stdstreams.toString().toLowerCase() === 'true';
+            }
+
+            if(log_to_file === false && log_to_stdstreams === false){
+                log_to_file = true;
+            }
+
             default_log_directory = hdb_properties.get('HDB_ROOT') + '/log/';
 
             createLog(log_path);
@@ -193,23 +206,24 @@ function createLog(log_location_setting) {
  */
 function initPinoLogger() {
     try {
-        pino_logger = pino(
-            {
-                customLevels: CUSTOM_LOG_LEVELS,
-                useOnlyCustomLevels:true,
-                level: log_level,
-                name: 'HarperDB',
-                messageKey: 'message',
-                timestamp: () => `,"timestamp":"${new Date(Date.now()).toISOString()}"`,
-                formatters: {
-                    bindings() {
-                        return undefined; // Removes pid and hostname from log
-                    },
-                    level (label) {
-                        return { level: label };
-                    }
+        const pino_args = {
+            customLevels: CUSTOM_LOG_LEVELS,
+            useOnlyCustomLevels:true,
+            level: log_level,
+            name: 'HarperDB',
+            messageKey: 'message',
+            timestamp: () => `,"timestamp":"${new Date(Date.now()).toISOString()}"`,
+            formatters: {
+                bindings() {
+                    return undefined; // Removes pid and hostname from log
                 },
+                level (label) {
+                    return { level: label };
+                }
             },
+        };
+
+        pino_logger = pino(pino_args,
             pino.destination(
                 {
                     dest: log_location,
@@ -225,6 +239,10 @@ function initPinoLogger() {
         }, LOG_BUFFER_FLUSH_INTERVAL).unref();
 
         final_logger = pino.final(pino_logger);
+
+        std_out_logger = pino(pino_args);
+        std_err_logger = pino(pino_args, process.stderr);
+
     } catch(err) {
         console.error(err);
         throw err;
@@ -289,10 +307,35 @@ function writeLog(level, message) {
             }
         }
 
-        pino_logger[level](message);
+        if(log_to_file === true) {
+            pino_logger[level](message);
+        }
+
+        logToStdStream(level, message);
     } catch(err) {
         console.error(err);
         throw err;
+    }
+}
+
+/**
+ * logs to stdout / stderr if logging to std streams is enabled
+ * @param {string} level - log level
+ * @param {string} message - message to log
+ */
+function logToStdStream(level, message){
+    if(log_to_stdstreams !== true) {
+        return;
+    }
+
+    if(!std_err_logger || !std_out_logger){
+        initPinoLogger();
+    }
+
+    if(level === FATAL || level === ERR){
+        std_err_logger[level](message);
+    } else{
+        std_out_logger[level](message);
     }
 }
 

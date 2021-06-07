@@ -103,6 +103,8 @@
     "axios": "^0.21.0",
     "chai": "^4.3.4",
     "eslint": "^5.16.0",
+    "hook-std": "^2.0.0",
+    "intercept-stdout": "^0.1.2",
     "minimist": "^1.2.5",
     "mocha": "^8.3.2",
     "mocha-teamcity-reporter": "^3.0.0",

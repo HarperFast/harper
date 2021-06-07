@@ -4,6 +4,7 @@ const test_utils = require('../../test_utils');
 const sinon = require('sinon');
 const chai = require('chai');
 const path = require('path');
+const hook_std = require('intercept-stdout');
 const os = require('os');
 const moment = require('moment');
 const mock_require = require('mock-require');
@@ -42,7 +43,7 @@ const LOG_MSGS_TEST = {
     TRACE: 'trace log'
 };
 
-function setMockPropParams(daily_rotate, daily_max, log_level, log_path, hdb_root) {
+function setMockPropParams(daily_rotate, daily_max, log_level, log_path, hdb_root, log_to_file, log_to_stdstreams) {
     const props_reader_mock = () => ({
         append: () => {},
         get: (value) => {
@@ -57,6 +58,10 @@ function setMockPropParams(daily_rotate, daily_max, log_level, log_path, hdb_roo
                     return log_path;
                 case 'HDB_ROOT':
                     return hdb_root;
+                case 'LOG_TO_FILE':
+                    return log_to_file;
+                case 'LOG_TO_STDSTREAMS':
+                    return log_to_stdstreams;
                 default:
                     break;
             }
@@ -84,6 +89,16 @@ function testAllTheLevelsLogged(log) {
     expect(log.includes(LOG_MSGS_TEST.ERROR)).to.be.equal(true, "Log does not contain error message");
     expect(log.includes(LOG_MSGS_TEST.FATAL)).to.be.equal(true, "Log does not contain fatal message");
     expect(log.includes(LOG_MSGS_TEST.NOTIFY)).to.be.equal(true, "Log does not contain notify message");
+}
+
+function testAllTheLevelsNotLogged(log) {
+    expect(log.includes(LOG_MSGS_TEST.TRACE)).to.be.equal(false, "Log contains trace message");
+    expect(log.includes(LOG_MSGS_TEST.DEBUG)).to.be.equal(false, "Log contains debug message");
+    expect(log.includes(LOG_MSGS_TEST.INFO)).to.be.equal(false, "Log contains info message");
+    expect(log.includes(LOG_MSGS_TEST.WARN)).to.be.equal(false, "Log contains warn message");
+    expect(log.includes(LOG_MSGS_TEST.ERROR)).to.be.equal(false, "Log contains error message");
+    expect(log.includes(LOG_MSGS_TEST.FATAL)).to.be.equal(false, "Log contains fatal message");
+    expect(log.includes(LOG_MSGS_TEST.NOTIFY)).to.be.equal(false, "Log contains notify message");
 }
 
 function testWriteLogBulkWrite() {
@@ -178,10 +193,14 @@ describe('Test harper_logger module', () => {
 
         it('Test log is create with file name provided and contains logs', (done) => {
             try {
-                setMockPropParams(false, 2, LOG_LEVEL.TRACE, LOG_PATH_TEST, HDB_ROOT_TEST);
+                let std_outs = '';
+                const out_promise = hook_std((output) => {
+                    std_outs += output + '\\n';
+                });
+                setMockPropParams(false, 2, LOG_LEVEL.TRACE, LOG_PATH_TEST, HDB_ROOT_TEST, true);
                 harper_logger_rw = requireUncached('../../../utility/logging/harper_logger');
                 logAllTheLevels();
-
+                out_promise();
                 // The log buffer gets flushed every 5 seconds so we wait for the flush to happen before reading.
                 setTimeout(() => {
                     try {
@@ -189,6 +208,37 @@ describe('Test harper_logger module', () => {
                         expect(file_exists).to.be.true;
                         const log = fs_extra.readFileSync(LOG_PATH_TEST).toString();
                         testAllTheLevelsLogged(log);
+                        testAllTheLevelsNotLogged(std_outs);
+                        done();
+                    } catch(err) {
+                        console.error(err);
+                        done(err);
+                    }
+                }, 5000);
+            } catch(err) {
+                console.error(err);
+                done(err);
+            }
+        }).timeout(8000);
+
+        it('Test log is created with file name provided, but we log to std streams so entries do not exist in log', (done) => {
+            try {
+                let std_outs = '';
+                const out_promise = hook_std((output) => {
+                    std_outs += output + '\\n';
+                });
+                setMockPropParams(false, 2, LOG_LEVEL.TRACE, LOG_PATH_TEST, HDB_ROOT_TEST, false, true);
+                harper_logger_rw = requireUncached('../../../utility/logging/harper_logger');
+
+                logAllTheLevels();
+                out_promise();
+                // The log buffer gets flushed every 5 seconds so we wait for the flush to happen before reading.
+                setTimeout(() => {
+                    try {
+                        const file_exists = fs_extra.pathExistsSync(LOG_PATH_TEST);
+                        expect(file_exists).to.be.true;
+                        const log = fs_extra.readFileSync(LOG_PATH_TEST).toString();
+                        testAllTheLevelsLogged(std_outs);
                         done();
                     } catch(err) {
                         console.error(err);
@@ -203,10 +253,14 @@ describe('Test harper_logger module', () => {
 
         it('Test log is create with default name and contains logs', (done) => {
             try {
-                setMockPropParams(false, 2, LOG_LEVEL.TRACE, TEST_LOG_DIR, HDB_ROOT_TEST);
+                let std_outs = '';
+                const out_promise = hook_std((output) => {
+                    std_outs += output + '\\n';
+                });
+                setMockPropParams(false, 2, LOG_LEVEL.TRACE, TEST_LOG_DIR, HDB_ROOT_TEST, true);
                 harper_logger_rw = requireUncached('../../../utility/logging/harper_logger');
                 logAllTheLevels();
-
+                out_promise();
                 // The log buffer gets flushed every 5 seconds so we wait for the flush to happen before reading.
                 setTimeout(() => {
                     try {
@@ -214,6 +268,37 @@ describe('Test harper_logger module', () => {
                         expect(file_exists).to.be.true;
                         const log = fs_extra.readFileSync(LOG_PATH_TEST).toString();
                         testAllTheLevelsLogged(log);
+                        testAllTheLevelsNotLogged(std_outs);
+                        done();
+                    } catch(err) {
+                        console.error(err);
+                        done(err);
+                    }
+                }, 5000);
+            } catch(err) {
+                console.error(err);
+                done(err);
+            }
+        }).timeout(8000);
+
+        it('Test log is create with default name and contains no logs, std out are verified', (done) => {
+            try {
+                let std_outs = '';
+                const out_promise = hook_std((output) => {
+                    std_outs += output + '\\n';
+                });
+
+                setMockPropParams(false, 2, LOG_LEVEL.TRACE, TEST_LOG_DIR, HDB_ROOT_TEST, false, true);
+                harper_logger_rw = requireUncached('../../../utility/logging/harper_logger');
+                logAllTheLevels();
+                out_promise();
+                // The log buffer gets flushed every 5 seconds so we wait for the flush to happen before reading.
+                setTimeout(() => {
+                    try {
+                        const file_exists = fs_extra.pathExistsSync(path.join(TEST_LOG_DIR, 'hdb_log.log'));
+                        expect(file_exists).to.be.true;
+                        const log = fs_extra.readFileSync(LOG_PATH_TEST).toString();
+                        testAllTheLevelsLogged(std_outs);
                         done();
                     } catch(err) {
                         console.error(err);
@@ -229,7 +314,7 @@ describe('Test harper_logger module', () => {
         it('Test log is created when log location not defined', () => {
             const temp_log_dir = path.join(__dirname, 'log');
             fs_extra.mkdirpSync(temp_log_dir);
-            setMockPropParams(false, 2, LOG_LEVEL.TRACE, undefined, HDB_ROOT_TEST);
+            setMockPropParams(false, 2, LOG_LEVEL.TRACE, undefined, HDB_ROOT_TEST, true);
             harper_logger_rw = requireUncached('../../../utility/logging/harper_logger');
             const file_exists = fs_extra.pathExistsSync(temp_log_dir);
             expect(file_exists).to.be.true;
@@ -239,7 +324,7 @@ describe('Test harper_logger module', () => {
         it('Test log is created if log path provided but dir does not exist', () => {
             const temp_log_dir = path.join(__dirname, 'log');
             const temp_log_path = path.join(temp_log_dir, 'my_log.log');
-            setMockPropParams(false, 2, LOG_LEVEL.TRACE, temp_log_path, HDB_ROOT_TEST);
+            setMockPropParams(false, 2, LOG_LEVEL.TRACE, temp_log_path, HDB_ROOT_TEST, true);
             harper_logger_rw = requireUncached('../../../utility/logging/harper_logger');
             const file_exists = fs_extra.pathExistsSync(temp_log_path);
             expect(file_exists).to.be.true;
@@ -249,7 +334,7 @@ describe('Test harper_logger module', () => {
         it('Test log is create when just dir is provided and it does not exist', () => {
             const temp_log_dir = path.join(__dirname, 'log');
             const expected_log_path = path.join(temp_log_dir, 'hdb_log.log');
-            setMockPropParams(false, 2, LOG_LEVEL.TRACE, temp_log_dir, HDB_ROOT_TEST);
+            setMockPropParams(false, 2, LOG_LEVEL.TRACE, temp_log_dir, HDB_ROOT_TEST, true);
             harper_logger_rw = requireUncached('../../../utility/logging/harper_logger');
             const file_exists = fs_extra.pathExistsSync(expected_log_path);
             expect(file_exists).to.be.true;
@@ -258,7 +343,7 @@ describe('Test harper_logger module', () => {
 
         it('Test log includes date in name if daily rotate set', (done) => {
             try {
-                setMockPropParams(true, 2, LOG_LEVEL.TRACE, LOG_PATH_TEST, HDB_ROOT_TEST);
+                setMockPropParams(true, 2, LOG_LEVEL.TRACE, LOG_PATH_TEST, HDB_ROOT_TEST, true);
                 harper_logger_rw = requireUncached('../../../utility/logging/harper_logger');
                 const expected_log_path = path.join(TEST_LOG_DIR, `${moment().utc().format('YYYY-MM-DD')}_${LOG_NAME_TEST}`);
                 logAllTheLevels();
@@ -392,7 +477,7 @@ describe('Test harper_logger module', () => {
 
         it('Test writeLog writes to log as expected happy path', async() => {
 
-            setMockPropParams(false, 2, LOG_LEVEL.TRACE, LOG_PATH_TEST, HDB_ROOT_TEST);
+            setMockPropParams(false, 2, LOG_LEVEL.TRACE, LOG_PATH_TEST, HDB_ROOT_TEST, true);
             harper_logger_rw = requireUncached('../../../utility/logging/harper_logger');
             pino_logger = harper_logger_rw.__get__('pino_logger');
             testWriteLogBulkWrite(LOG_PATH_TEST);
@@ -426,7 +511,7 @@ describe('Test harper_logger module', () => {
         }).timeout(8000);
 
         it('Test writeLog with daily rotate', async() => {
-            setMockPropParams(true, 3, LOG_LEVEL.TRACE, LOG_PATH_TEST, HDB_ROOT_TEST);
+            setMockPropParams(true, 3, LOG_LEVEL.TRACE, LOG_PATH_TEST, HDB_ROOT_TEST, true);
             harper_logger_rw = requireUncached('../../../utility/logging/harper_logger');
             pino_logger = harper_logger_rw.__get__('pino_logger');
             const expected_log_path = path.join(TEST_LOG_DIR, `${moment().utc().format('YYYY-MM-DD')}_${LOG_NAME_TEST}`);
@@ -444,7 +529,7 @@ describe('Test harper_logger module', () => {
             try {
                 const tomorrows_date = moment().utc().add(3, 'days');
                 const fake_timer = sandbox.useFakeTimers({now: new Date(tomorrows_date.format('YYYY,MM,DD'))});
-                setMockPropParams(true, 2, LOG_LEVEL.TRACE, LOG_PATH_TEST, HDB_ROOT_TEST);
+                setMockPropParams(true, 2, LOG_LEVEL.TRACE, LOG_PATH_TEST, HDB_ROOT_TEST, true);
                 harper_logger_rw = requireUncached('../../../utility/logging/harper_logger');
                 fake_timer.restore();
                 const date_now = Date.now();
@@ -479,7 +564,7 @@ describe('Test harper_logger module', () => {
         });
 
         it('Test final logger instance is returned', () => {
-            setMockPropParams(false, 2, LOG_LEVEL.TRACE, LOG_PATH_TEST, HDB_ROOT_TEST);
+            setMockPropParams(false, 2, LOG_LEVEL.TRACE, LOG_PATH_TEST, HDB_ROOT_TEST, true);
             harper_logger_rw = requireUncached('../../../utility/logging/harper_logger');
             const final_logger = harper_logger_rw.finalLogger();
             expect(typeof final_logger).to.equal('object');
@@ -505,7 +590,7 @@ describe('Test harper_logger module', () => {
         });
         
         it('Test old log is removed happy path', () => {
-            setMockPropParams(true, 2, LOG_LEVEL.TRACE, LOG_PATH_TEST, HDB_ROOT_TEST);
+            setMockPropParams(true, 2, LOG_LEVEL.TRACE, LOG_PATH_TEST, HDB_ROOT_TEST, true);
             harper_logger_rw = requireUncached('../../../utility/logging/harper_logger');
             const date_now = Date.now();
             const date_stub = sandbox.stub(Date, 'now').returns(date_now);
@@ -521,7 +606,7 @@ describe('Test harper_logger module', () => {
     
     describe('Test setLogLevel function', () => {
         before(() => {
-            setMockPropParams(false, null, LOG_LEVEL.NOTIFY, LOG_PATH_TEST, HDB_ROOT_TEST);
+            setMockPropParams(false, null, LOG_LEVEL.NOTIFY, LOG_PATH_TEST, HDB_ROOT_TEST, true);
             harper_logger_rw = requireUncached('../../../utility/logging/harper_logger');
             pino_logger = harper_logger_rw.__get__('pino_logger');
         });
@@ -635,7 +720,7 @@ describe('Test harper_logger module', () => {
 
         before((done) => {
             try {
-                setMockPropParams(false, null, LOG_LEVEL.TRACE, LOG_PATH_TEST, HDB_ROOT_TEST);
+                setMockPropParams(false, null, LOG_LEVEL.TRACE, LOG_PATH_TEST, HDB_ROOT_TEST, true);
                 harper_logger_rw = requireUncached('../../../utility/logging/harper_logger');
                 const fake_timer = sandbox.useFakeTimers({now: new Date(2021,1,1,0,0)});
                 harper_logger_rw.error(log_msg_test);
@@ -756,7 +841,7 @@ describe('Test harper_logger module', () => {
         let getPropsFilePath;
 
         before(() => {
-            setMockPropParams(false, null, LOG_LEVEL.TRACE, LOG_PATH_TEST, HDB_ROOT_TEST);
+            setMockPropParams(false, null, LOG_LEVEL.TRACE, LOG_PATH_TEST, HDB_ROOT_TEST, true);
             harper_logger_rw = requireUncached('../../../utility/logging/harper_logger');
             getPropsFilePath = harper_logger_rw.__get__('getPropsFilePath');
         });
