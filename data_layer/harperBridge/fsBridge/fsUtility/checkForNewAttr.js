@@ -1,9 +1,11 @@
 'use strict';
 
 const h_utils = require('../../../../utility/common_utils');
+const hdb_terms = require('../../../../utility/hdbTerms');
 const logger = require('../../../../utility/logging/harper_logger');
 const fsCreateAttribute = require('../fsMethods/fsCreateAttribute');
 const signalling = require('../../../../utility/signalling');
+const { SchemaEventMsg } = require('../../../../server/ipc/utility/ipcUtils');
 
 const ATTRIBUTE_ALREADY_EXISTS = 'attribute already exists';
 
@@ -83,7 +85,7 @@ async function createAttribute(create_attribute_object) {
     let attribute_structure;
     try {
         attribute_structure = await fsCreateAttribute(create_attribute_object);
-        signalling.signalSchemaChange({type: 'schema'});
+        signalling.signalSchemaChange(new SchemaEventMsg(process.pid, hdb_terms.OPERATIONS_ENUM.CREATE_ATTRIBUTE, create_attribute_object.schema, create_attribute_object.table, create_attribute_object.attribute));
 
         return attribute_structure;
     } catch(err) {

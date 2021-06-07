@@ -1,10 +1,12 @@
 'use strict';
 
 const h_utils = require('../../../../utility/common_utils');
+const hdb_terms = require('../../../../utility/hdbTerms');
 const logger = require('../../../../utility/logging/harper_logger');
 const lmdbCreateAttribute = require('../lmdbMethods/lmdbCreateAttribute');
 const LMDBCreateAttributeObject = require('./LMDBCreateAttributeObject');
 const signalling = require('../../../../utility/signalling');
+const { SchemaEventMsg } = require('../../../../server/ipc/utility/ipcUtils');
 
 const ATTRIBUTE_ALREADY_EXISTS = 'already exists in';
 
@@ -83,10 +85,7 @@ async function createAttribute(create_attribute_object) {
     let attribute_structure;
     try {
         attribute_structure = await lmdbCreateAttribute(create_attribute_object);
-
-        let create_attribute_message = Object.assign({}, signalling.SCHEMA_CHANGE_MESSAGE);
-        create_attribute_message.operation = create_attribute_object;
-        signalling.signalSchemaChange(create_attribute_message);
+        signalling.signalSchemaChange(new SchemaEventMsg(process.pid, hdb_terms.OPERATIONS_ENUM.CREATE_ATTRIBUTE, create_attribute_object.schema, create_attribute_object.table, create_attribute_object.attribute));
 
         return attribute_structure;
     } catch(err) {

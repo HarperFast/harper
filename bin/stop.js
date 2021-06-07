@@ -5,12 +5,19 @@ const os = require('os');
 const async_set_timeout = require('util').promisify(setTimeout);
 const log = require('../utility/logging/harper_logger');
 const final_logger = log.finalLogger();
-const signal = require('../utility/signalling');
+const signalling = require('../utility/signalling');
+const { RestartMsg } = require('../server/ipc/utility/ipcUtils');
+const hdb_utils = require('../utility/common_utils');
+const path = require('path');
 
 const HDB_PROC_END_TIMEOUT = 100;
 const RESTART_RESPONSE_SOFT = `Restarting HarperDB. This may take up to ${hdb_terms.RESTART_TIMEOUT_MS/1000} seconds.`;
 const RESTART_RESPONSE_HARD = `Force restarting HarperDB`;
 const CHECK_PROCS_LOOP_LIMIT = 5;
+const IPC_STOP_ERR = 'Error stopping the HDB IPC server. Check log for more detail.';
+const HDB_SERVER_CWD = path.resolve(__dirname, '../server');
+const SC_SERVER_CWD = path.resolve(__dirname, '../server/socketcluster');
+const IPC_SERVER_CWD = path.resolve(__dirname, '../server/ipc');
 
 module.exports = {
     stop,
@@ -28,10 +35,10 @@ async function restartProcesses(json_message) {
     }
     try {
         if (json_message.force === true || json_message.force === 'true') {
-            signal.signalRestart(true);
+            signalling.signalRestart(new RestartMsg(process.pid, true));
             return RESTART_RESPONSE_HARD;
         }
-        signal.signalRestart(false);
+        signalling.signalRestart(new RestartMsg(process.pid, false));
         return RESTART_RESPONSE_SOFT;
     } catch(err) {
         let msg = `There was an error restarting HarperDB. ${err}`;
@@ -48,9 +55,16 @@ async function stop() {
     console.log("Stopping HarperDB.");
     try {
         final_logger.info(`Stopping ${hdb_terms.SC_PROC_NAME} - ${hdb_terms.SC_PROC_DESCRIPTOR}.`);
-        await killProcs(hdb_terms.SC_PROC_NAME, hdb_terms.SC_PROC_DESCRIPTOR);
+        await killProcs(path.join(SC_SERVER_CWD, hdb_terms.SC_PROC_NAME), hdb_terms.SC_PROC_DESCRIPTOR);
         final_logger.info(`Stopping ${hdb_terms.HDB_PROC_NAME} - ${hdb_terms.HDB_PROC_DESCRIPTOR}.`);
-        await killProcs(hdb_terms.HDB_PROC_NAME, hdb_terms.HDB_PROC_DESCRIPTOR);
+        await killProcs(path.join(HDB_SERVER_CWD, hdb_terms.HDB_PROC_NAME), hdb_terms.HDB_PROC_DESCRIPTOR);
+
+        try {
+            final_logger.info(`Stopping ${hdb_terms.HDB_IPC_SERVER}`);
+            await hdb_utils.stopProcess(path.join(IPC_SERVER_CWD, hdb_terms.IPC_SERVER_MODULE));
+        } catch(err) {
+            console.error(IPC_STOP_ERR);
+        }
 
         final_logger.notify(`HarperDB has stopped`);
     } catch(err){

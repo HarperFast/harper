@@ -15,6 +15,7 @@ class IPCClient {
         this.server_name = hdb_terms.HDB_IPC_SERVER;
         this.ipc.config.retry = 100;
         this.ipc.config.id = hdb_terms.HDB_IPC_CLIENT_PREFIX + id;
+        this.ipc.config.silent = true;
         this.event_handlers = event_handlers;
         this.connect();
     }
@@ -47,6 +48,7 @@ class IPCClient {
         this.ipc.of[this.server_name].on(
             'error',
             (error) => {
+                if (error.code === 'ECONNREFUSED') hdb_logger.error('Error connecting to HDB IPC server. Confirm that the server is running.');
                 hdb_logger.error(`Error with IPC client ${this.ipc.config.id}`);
                 hdb_logger.error(error);
             }

@@ -35,6 +35,7 @@ let process_exit_stub;
 let restart_stub;
 let RestartEventObject_stub;
 let restart_ready_stub;
+let ipc_client_stub;
 const fake = () => {};
 const test_error = new Error('This is a testy mctest error')
 
@@ -59,6 +60,8 @@ describe('Test serverParent.js', () => {
         restart_ready_stub = sandbox.stub().returns(true);
         RestartEventObject_stub = sandbox.stub(RestartEventObject.prototype, 'isReadyForRestart')
             .callsFake(restart_ready_stub);
+        ipc_client_stub = sandbox.stub();
+        serverParent_rw.__set__('IPCClient', ipc_client_stub);
     })
 
     afterEach(() => {
@@ -71,7 +74,7 @@ describe('Test serverParent.js', () => {
     })
 
     describe('exported serverParent method', () => {
-        afterEach(() => {
+        beforeEach(() => {
             const serverException = process.listeners('uncaughtException').pop()
             if (serverException.name === '') {
                 process.removeListener('uncaughtException', serverException);
@@ -181,6 +184,12 @@ describe('Test serverParent.js', () => {
 
             expect(global.isMaster).to.be.true;
         })
+
+        it('should catch and log error thrown from IPCClient', async () => {
+            ipc_client_stub.throws(test_error);
+            await test_utils.assertErrorAsync(serverParent_rw, [test_worker_num], test_error);
+            expect(logger_error_stub.getCall(0).args[0]).to.equal('Error instantiating new instance of IPC client in HDB server parent');
+        });
     })
 
     describe('launch() method',async() => {
@@ -236,7 +245,7 @@ describe('Test serverParent.js', () => {
             await launch_rw(test_worker_num);
 
             expect(cluster_stub.callCount).to.eql(test_worker_num);
-            expect(fork_on_stub.callCount).to.eql(test_worker_num * 5);
+            expect(fork_on_stub.callCount).to.eql(test_worker_num * 4);
             expect(global.forks.length).to.eql(test_worker_num);
         })
 

@@ -23,7 +23,11 @@ class SocketConnector{
         }
 
         this.socket.on('error', (err, socket) =>{
-            log.error('ERROR on HDB Client socket: ' + err);
+            if (err.message === 'Socket hung up') {
+                log.warn('ERROR on HDB Client socket: ' + err);
+            } else {
+                log.error('ERROR on HDB Client socket: ' + err);
+            }
             log.info(err);
         });
 

@@ -8,7 +8,6 @@ class Broker extends SCBroker {
         this.on('subscribe', this.subscribeHandler.bind(this));
         this.on('unsubscribe', this.unsubscribeHandler);
         this.on('publish', this.publishHandler);
-        this.on('masterMessage', this.parentMessageHandler);
     }
 
     /**
@@ -48,10 +47,6 @@ class Broker extends SCBroker {
      */
     publishHandler(channel, data){
         log.trace(`broker received data on channel '${channel}': `, data);
-    }
-
-    parentMessageHandler(data, callback){
-        log.trace('data from parent: ', data);
     }
 }
 

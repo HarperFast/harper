@@ -13,6 +13,8 @@ const RestartEventObject = require('./RestartEventObject');
 const sio_server_stopped_event = require('../events/SioServerStoppedEvent');
 const user_schema = require('../security/user');
 const util = require('util');
+const IPCClient = require('./ipc/IPCClient');
+const hdbParentIpcHandlers = require('../server/ipc/hdbParentIpcHandlers');
 
 const {
     handleBeforeExit,
@@ -34,6 +36,15 @@ const p_schema_to_global = util.promisify(global_schema.setSchemaDataToGlobal);
 async function serverParent(num_workers) {
     check_jwt_tokens();
     global.isMaster = cluster.isMaster;
+
+    try {
+        // Instantiate new instance of HDB IPC client and assign it to global.
+        global.hdb_ipc = new IPCClient(process.pid, hdbParentIpcHandlers);
+    } catch(err) {
+        harper_logger.error('Error instantiating new instance of IPC client in HDB server parent');
+        harper_logger.error(err);
+        throw err;
+    }
 
     process.on('uncaughtException', function (err) {
         let message = `Found an uncaught exception with message: ${err.message}${os.EOL}Stack: ${err.stack}${os.EOL}Terminating HDB.`;
@@ -119,8 +130,7 @@ async function launch(num_workers) {
     for (let i = 0; i < num_workers; i++) {
         try {
             let forked = cluster.fork();
-            // assign handler for messages sent from child processes to the parent process
-            forked.on('message', cluster_utilities.clusterMessageHandler);
+
             forked.on('error',(err) => {
                 harper_logger.fatal('There was an error starting the HDB Child process.');
                 harper_logger.fatal(err);
