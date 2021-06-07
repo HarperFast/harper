@@ -1,7 +1,7 @@
 "use strict";
 const upgrade_directive = require('../../../../upgrade/UpgradeDirective');
 
-let this_ver = '3.1.0';
+let this_ver = '3.0.1';
 let directive = new upgrade_directive(this_ver);
 
 function updateSettingsFunc() {

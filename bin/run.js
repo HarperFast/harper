@@ -308,11 +308,18 @@ async function kickOffHDBServer() {
         let mem_value = license.ram_allocation ? MEM_SETTING_KEY + license.ram_allocation
             : MEM_SETTING_KEY + terms.RAM_ALLOCATION_ENUM.DEFAULT;
 
-        child = fork(args[0], [args[1], args[2]], {
+        let fork_options = {
             detached: true,
             stdio: 'ignore',
             execArgv: [mem_value]
-        });
+        };
+
+        //because we may need to push logs to std out/err if the process runs in foreground we need to remove the stdio: ignore
+        if(isForegroundProcess()){
+            delete fork_options.stdio;
+        }
+
+        child = fork(args[0], [args[1], args[2]], fork_options);
     } catch(err) {
         console.error(`There was an error starting the REST server.  Please try again.`);
         return FAILURE_CODE;
