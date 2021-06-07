@@ -28,7 +28,7 @@ const CF_SERVER_CWD = path.resolve(__dirname, '../customFunctions');
  * @returns {Promise<void>}
  */
 async function serverParent(num_workers) {
-    harper_logger.notify('starting Custom Functions serverParent');
+    harper_logger.notify('starting Custom Functions');
     check_jwt_tokens();
     global.isCustomFunctionMaster = cluster.isMaster;
     global.service = hdb_terms.SERVICES.CUSTOM_FUNCTIONS;

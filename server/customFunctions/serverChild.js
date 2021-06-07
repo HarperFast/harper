@@ -92,7 +92,7 @@ async function childServer() {
         }
     } catch(err) {
         harper_logger.error(`Custom Functions ${process.pid} Error: ${err}`);
-        harper_logger.fatal(err);
+        harper_logger.error(err);
         process.exit(1);
     }
 }
