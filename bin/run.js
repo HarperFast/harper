@@ -310,6 +310,7 @@ async function kickOffHDBServer() {
 
         child = fork(args[0], [args[1], args[2]], {
             detached: true,
+            stdio: 'ignore',
             execArgv: [mem_value]
         });
     } catch(err) {
