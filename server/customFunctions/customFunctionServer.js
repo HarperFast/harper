@@ -73,7 +73,6 @@ global.clustering_on = false;
 /**
  * Kicks off the custom function server and processes.
  */
-
 if (cluster.isMaster && (num_workers >= 1)) {
     serverParent(num_workers);
 } else {
