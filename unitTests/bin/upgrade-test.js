@@ -45,7 +45,7 @@ describe('Test upgrade.js', () => {
         consoleLog_stub = sandbox.stub(console, 'log').returns();
         logErr_stub = sandbox.stub(hdb_logger, 'error');
         logNotify_stub = sandbox.stub(hdb_logger, 'notify');
-        utilsIsRunning_stub = sandbox.stub(hdb_utils, 'isHarperRunning').resolves(false);
+        utilsIsRunning_stub = sandbox.stub(hdb_utils, 'isServerRunning').resolves(false);
         printToLogAndConsole_stub = sandbox.stub().returns();
         upgrade_rw.__set__('printToLogAndConsole', printToLogAndConsole_stub);
         processExit_stub = sandbox.stub(process, "exit");

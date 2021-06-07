@@ -20,6 +20,18 @@ ipc.serve(
           'message', messageListener
       );
       ipc.server.on(
+          'connect',
+          () => {
+              hdb_logger.trace('HDB IPC server connected');
+          }
+      );
+      ipc.server.on(
+          'disconnect',
+          () => {
+              hdb_logger.trace('HDB IPC server disconnected');
+          }
+      );
+      ipc.server.on(
           'error',
           (error) => {
               hdb_logger.error(`IPC server error: ${error}`);
@@ -49,7 +61,7 @@ function messageListener(data) {
     }
 
     const event_type = data.type;
-    hdb_logger.trace(`IPC server received a message type ${event_type}, with message ${data.message}`);
+    hdb_logger.trace(`IPC server received a message type ${event_type}, with message ${JSON.stringify(data.message)}`);
 
     if (hdb_terms.IPC_EVENT_TYPES[event_type.toUpperCase()]) {
         ipc.server.broadcast(
@@ -62,3 +74,4 @@ function messageListener(data) {
 }
 
 ipc.server.start();
+hdb_logger.trace(`HDB IPC Server: ${hdb_terms.HDB_IPC_SERVER}, started on port: ${env.get(hdb_terms.HDB_SETTINGS_NAMES.IPC_SERVER_PORT)}`);

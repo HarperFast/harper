@@ -104,7 +104,7 @@ async function upgrade(upgrade_obj) {
  * @throws
  */
 async function checkIfRunning() {
-    const hdb_running = await hdb_utils.isHarperRunning();
+    const hdb_running = await hdb_utils.isServerRunning(hdb_terms.HDB_PROC_NAME);
     if (hdb_running) {
         let run_err = "HarperDB is running, please stop HarperDB with 'harperdb stop' and run the upgrade command again.";
         console.log(colors.red(run_err));

@@ -17,6 +17,7 @@ const SearchObject = require('../data_layer/SearchObject');
 const SearchByHashObject = require('../data_layer/SearchByHashObject');
 const { hdb_errors, handleHDBError } = require('../utility/errors/hdbError');
 const { HDB_ERROR_MSGS, HTTP_STATUS_CODES } = hdb_errors;
+const { UserEventMsg } = require('../server/ipc/utility/ipcUtils');
 
 module.exports = {
     addRole: addRole,
@@ -100,7 +101,7 @@ async function addRole(role){
 
     await insert.insert(insert_object);
 
-    signalling.signalUserChange({type: 'user'});
+    signalling.signalUserChange(new UserEventMsg(process.pid));
 
     role = scrubRoleDetails(role);
     return role;
@@ -142,7 +143,7 @@ async function alterRole(role){
         throw handleHDBError(err);
     }
 
-    signalling.signalUserChange({type: 'user'});
+    signalling.signalUserChange(new UserEventMsg(process.pid));
     return role;
 }
 
@@ -182,7 +183,7 @@ async function dropRole(role){
 
     await p_delete_delete(delete_object);
 
-    signalling.signalUserChange({type: 'user'});
+    signalling.signalUserChange(new UserEventMsg(process.pid));
     return `${role_name[0].role} successfully deleted`;
 }
 
