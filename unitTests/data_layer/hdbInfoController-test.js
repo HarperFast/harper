@@ -201,13 +201,13 @@ describe('Test hdbInfoController module ', function() {
         before(() => {
             getLatestHdbInfoRecord_stub = sandbox.stub().resolves(INFO_SEARCH_RESULT[1]);
             hdb_info_controller_rw.__set__('getLatestHdbInfoRecord', getLatestHdbInfoRecord_stub);
-            version_stub = sandbox.stub(version, 'version').returns('3.0.2');
+            version_stub = sandbox.stub(version, 'version').returns('3.2.0');
             hasUpgradesRequired_stub = sandbox.stub(directiveManager, 'hasUpgradesRequired').returns(true);
             checkIfInstallIsSupported_stub = sandbox.stub().returns();
         })
 
         it('getVersionUpdateInfo nominal test', async () => {
-            const expected_result = { "data_version": "3.0.1", "upgrade_version": "3.0.2" };
+            const expected_result = { "data_version": "3.1.0", "upgrade_version": "3.2.0" };
 
             let result;
             try {
