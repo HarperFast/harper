@@ -319,6 +319,7 @@ describe('Test custom functions serverChild.js', () => {
     };
 
     before(() => {
+      serverChild_rw.__set__('customFunctionsServer', customFunctionsServer_stub);
       shutDown = serverChild_rw.__get__('shutDown');
       signal_stopped_stub = sandbox.stub(signalling, 'signalChildStopped');
     });
@@ -336,6 +337,5 @@ describe('Test custom functions serverChild.js', () => {
       expect(serverClose_stub.called).to.be.true;
       expect(signal_stopped_stub.args[0][0]).to.eql(expected_obj);
     });
-
   });
 });
