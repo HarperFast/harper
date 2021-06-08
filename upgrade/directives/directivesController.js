@@ -13,7 +13,7 @@ const { DATA_VERSION, UPGRADE_VERSION } = hdb_terms.UPGRADE_JSON_FIELD_NAMES_ENU
 
 // IMPORT VERSION UPGRADE DIRECTIVES HERE
 const version_3_0_0 = require('./3-0-0');
-const version_3_1_0 = require('./3-1-0');
+const version_3_0_1 = require('./3-0-1');
 
 let versions = new Map();
 
@@ -24,12 +24,11 @@ if (version_3_0_0) {
     });
 }
 
-if (version_3_1_0) {
-    version_3_1_0.forEach((version) => {
+if (version_3_0_1) {
+    version_3_0_1.forEach((version) => {
         versions.set(version.version, version);
     });
 }
-
 
 /**
  * Returns all HDB versions w/ upgrade directives

@@ -11,7 +11,7 @@ const { expect } = chai;
 // const hdb_utils = require('../../../../utility/common_utils');
 
 const test_vers3_0_0 = require('./testDirectives/3-0-0_stub');
-const test_vers3_1_0 = require('./testDirectives/3-1-0_stub');
+const test_vers3_0_1 = require('./testDirectives/3-0-1_stub');
 const test_vers4_1_1 = require('./testDirectives/4-1-1_stub');
 
 const rewire = require('rewire');
@@ -20,7 +20,7 @@ const directivesController_rw = rewire('../../../upgrade/directives/directivesCo
 let test_map = new Map();
 test_map.set(test_vers3_0_0.version, test_vers3_0_0);
 test_map.set(test_vers4_1_1.version, test_vers4_1_1);
-test_map.set(test_vers3_1_0.version, test_vers3_1_0);
+test_map.set(test_vers3_0_1.version, test_vers3_0_1);
 
 
 describe('directivesController Module', () => {
@@ -43,17 +43,17 @@ describe('directivesController Module', () => {
             let sorted_versions = directivesController_rw.getSortedVersions();
             expect(sorted_versions.length).to.equal(3);
             expect(sorted_versions[0]).to.equal(test_vers3_0_0.version);
-            expect(sorted_versions[1]).to.equal(test_vers3_1_0.version);
+            expect(sorted_versions[1]).to.equal(test_vers3_0_1.version);
             expect(sorted_versions[2]).to.equal(test_vers4_1_1.version);
         });
     });
 
     describe('test getVersionsForUpgrade()', function() {
         it('Nominal case - upgrade to next version', () => {
-            const test_upgrade_obj = generateUpgradeObj(test_vers3_0_0.version, test_vers3_1_0.version)
+            const test_upgrade_obj = generateUpgradeObj(test_vers3_0_0.version, test_vers3_0_1.version)
             const valid_versions = directivesController_rw.getVersionsForUpgrade(test_upgrade_obj);
             expect(valid_versions.length).to.equal(1);
-            expect(valid_versions[0]).to.equal(test_vers3_1_0.version);
+            expect(valid_versions[0]).to.equal(test_vers3_0_1.version);
         });
 
         it('Nominal case - initial upgrade to most recent version', () => {
@@ -61,12 +61,12 @@ describe('directivesController Module', () => {
             const valid_versions = directivesController_rw.getVersionsForUpgrade(test_upgrade_obj);
             expect(valid_versions.length).to.equal(3);
             expect(valid_versions[0]).to.equal(test_vers3_0_0.version);
-            expect(valid_versions[1]).to.equal(test_vers3_1_0.version);
+            expect(valid_versions[1]).to.equal(test_vers3_0_1.version);
             expect(valid_versions[2]).to.equal(test_vers4_1_1.version);
         });
 
         it('Test with non-existent new_version, expect 0 directives returned', () => {
-            const test_upgrade_obj = generateUpgradeObj(test_vers3_0_0.version, '3.0.1111')
+            const test_upgrade_obj = generateUpgradeObj(test_vers3_0_0.version, '3.0.01')
             const valid_versions = directivesController_rw.getVersionsForUpgrade(test_upgrade_obj);
             expect(valid_versions.length).to.equal(0);
         });
