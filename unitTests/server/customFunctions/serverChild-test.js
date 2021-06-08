@@ -306,4 +306,36 @@ describe('Test custom functions serverChild.js', () => {
       expect(spawn_cluster_conns_stub.calledOnce).to.be.true;
     });
   });
+
+  describe('Test shutDown function', () => {
+    let shutDown;
+    let signal_stopped_stub;
+    let test_event = {
+      "type": "restart",
+      "message": {
+        "force": false,
+        "originator":1234
+      }
+    };
+
+    before(() => {
+      shutDown = serverChild_rw.__get__('shutDown');
+      signal_stopped_stub = sandbox.stub(signalling, 'signalChildStopped');
+    });
+
+    afterEach(() => {
+      sandbox.resetHistory();
+    });
+
+    it('Test child stop signal it sent and server close is called', async () => {
+      const expected_obj = {
+        "originator": process.pid,
+        "service": "custom_functions"
+      };
+      await shutDown(test_event);
+      expect(serverClose_stub.called).to.be.true;
+      expect(signal_stopped_stub.args[0][0]).to.eql(expected_obj);
+    });
+
+  });
 });
