@@ -12,6 +12,8 @@ const hdb_terms = require('../../../utility/hdbTerms');
 const { buildFile, getSettingsFilePath } = require('../../settingsTestFile');
 const fs = require('fs-extra');
 
+const SETTINGS_TO_IGNORE = ['settings_path', 'install_user', 'LOGGER', 'CUSTOM_FUNCTIONS', 'CUSTOM_FUNCTIONS_PORT',
+    'CUSTOM_FUNCTIONS_DIRECTORY', 'MAX_CUSTOM_FUNCTION_PROCESSES'];
 const SETTINGS_PATH = getSettingsFilePath();
 let directive3_1_0;
 let updateSettingsFile_3_1_0;
@@ -60,7 +62,7 @@ describe('Test 3.1.0 Upgrade Directive', () => {
             const new_settings_val = fsWriteFileSync_stub.args[0][1];
             for (const name in hdb_terms.HDB_SETTINGS_NAMES) {
                 const setting_name = hdb_terms.HDB_SETTINGS_NAMES[name];
-                if (setting_name === 'settings_path' || setting_name === 'install_user' || setting_name === 'LOGGER') continue;
+                if (SETTINGS_TO_IGNORE.includes(setting_name)) continue;
                 expect(new_settings_val).to.include(setting_name, `Expected new setting to contain ${setting_name} but it did not`);
             }
 

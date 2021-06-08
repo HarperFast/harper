@@ -866,6 +866,11 @@ function generateUpgradeObj(data_ver, upgrade_ver) {
     };
 }
 
+function requireUncached(module) {
+    delete require.cache[require.resolve(module)];
+    return require(module);
+}
+
 module.exports = {
     changeProcessToBinDir,
     deepClone,
@@ -893,5 +898,6 @@ module.exports = {
     generateUpgradeObj,
     assignObjecttoNullObject: assignObjectToNullObject,
     stubFinalLogger,
+    requireUncached,
     COMMON_TEST_TERMS
 };

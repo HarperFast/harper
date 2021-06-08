@@ -18,7 +18,6 @@ const HDB_STOP_ERR = 'Restart had an error trying to stop HDB server.';
             await hdb_utils.stopProcess(path.join(HDB_SERVER_CWD, hdb_terms.HDB_PROC_NAME));
         } catch(err) {
             console.error(HDB_STOP_ERR);
-            console.error(err);
             throw err;
         }
 

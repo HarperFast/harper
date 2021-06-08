@@ -162,7 +162,7 @@ function readEnvVariable(variable_name) {
         }
         let env_value = hdb_properties.get(variable_name);
         if (common_utils.isEmptyOrZeroLength(env_value) || env_value === 0) {
-            //log.info(`A value was not found for ${variable_name}, using default value: ${defaults[variable_name]}`);
+            log.info(`A value was not found for ${variable_name}, using default value: ${defaults[variable_name]}`);
             env_value = defaults[variable_name];
         }
         if(env_value) {
@@ -401,6 +401,9 @@ function initTestEnvironment(test_config_obj = {}) {
         setProperty(hdb_terms.HDB_SETTINGS_NAMES.SERVER_PORT_KEY, 9925);
         setProperty(hdb_terms.HDB_SETTINGS_NAMES.CORS_ENABLED_KEY, common_utils.isEmpty(cors_enabled) ? false : cors_enabled);
         setProperty(hdb_terms.HDB_SETTINGS_NAMES.IPC_SERVER_PORT, 9383);
+        setProperty(hdb_terms.HDB_SETTINGS_NAMES.MAX_CUSTOM_FUNCTION_PROCESSES, 2);
+        setProperty(hdb_terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_PORT_KEY, 9926);
+        setProperty(hdb_terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_ENABLED_KEY, true);
         if (cors_whitelist) {
             setProperty(hdb_terms.HDB_SETTINGS_NAMES.CORS_WHITELIST_KEY, cors_whitelist);
         }

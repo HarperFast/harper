@@ -46,13 +46,13 @@ describe('Test IPCClient class', () => {
         client_test = new IPCClient(123, event_handlers_test);
         let error;
         try {
-            client_test.emitToServer({ type: 'create_schema', message: 'dog'});
+            client_test.emitToServer({ type: 'schema', message: 'dog'});
         } catch(err) {
             error = err;
         }
 
         expect(error).to.be.undefined;
-        expect(log_trace_stub).to.have.been.calledWith('IPC client hdb_ipc_client_123 emitting {"type":"create_schema","message":"dog"}');
+        expect(log_trace_stub).to.have.been.calledWith('IPC client hdb_ipc_client_123 emitting {"type":"schema","message":"dog"}');
     });
 
     it('Test invalid IPC msg type is logged and thrown', () => {

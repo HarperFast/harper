@@ -33,6 +33,7 @@ let logger_error_stub;
 let console_error_stub;
 let process_exit_stub;
 let restart_stub;
+let restart_hdb_rw;
 let RestartEventObject_stub;
 let restart_ready_stub;
 let ipc_client_stub;
@@ -50,13 +51,14 @@ describe('Test serverParent.js', () => {
         logger_debug_stub = sandbox.stub(harper_logger, 'debug').callsFake(fake);
         logger_fatal_stub = sandbox.stub(harper_logger, 'fatal').callsFake(fake);
         logger_error_stub = sandbox.stub(harper_logger, 'error').callsFake(fake);
+        restart_stub = sandbox.stub();
+        restart_hdb_rw = serverParent_rw.__set__('restartHDB', restart_stub);
         check_jwt_tokens_stub = sandbox.stub().callsFake();
         serverParent_rw.__set__('check_jwt_tokens', check_jwt_tokens_stub);
         launch_stub = sandbox.stub().resolves();
         serverParent_rw.__set__('launch', launch_stub);
         console_error_stub = sandbox.stub(console, 'error').callsFake(fake);
         process_exit_stub = sandbox.stub(process, 'exit');
-        restart_stub = sandbox.stub(cluster_utilities, 'restartHDB').callsFake(fake);
         restart_ready_stub = sandbox.stub().returns(true);
         RestartEventObject_stub = sandbox.stub(RestartEventObject.prototype, 'isReadyForRestart')
             .callsFake(restart_ready_stub);
@@ -144,29 +146,6 @@ describe('Test serverParent.js', () => {
 
             expect(logger_info_stub.calledOnce).to.be.true;
             expect(logger_info_stub.args[0][0]).to.eql('Got all children stopped event.');
-            expect(restart_stub.called).to.be.false;
-        })
-
-        it('should catch sioServerStoppedEmitter event and restart if ready', async function() {
-            restart_ready_stub.returns(true);
-            const test_msg = "Test msg";
-            await serverParent_rw(test_worker_num);
-
-            sio_server_stopped_event.sioServerStoppedEmitter.emit(sio_server_stopped_event.EVENT_NAME, test_msg);
-
-            expect(logger_info_stub.calledOnce).to.be.true;
-            expect(logger_info_stub.args[0][0]).to.eql('Got sio server stopped event.');
-            expect(restart_stub.calledOnce).to.be.true;
-        })
-
-        it('should catch sioServerStoppedEmitter event and NOT restart if not ready', async function() {
-            restart_ready_stub.returns(false);
-            const test_msg = "Test msg";
-            await serverParent_rw(test_worker_num);
-            sio_server_stopped_event.sioServerStoppedEmitter.emit(sio_server_stopped_event.EVENT_NAME, test_msg);
-
-            expect(logger_info_stub.calledOnce).to.be.true;
-            expect(logger_info_stub.args[0][0]).to.eql('Got sio server stopped event.');
             expect(restart_stub.called).to.be.false;
         })
 

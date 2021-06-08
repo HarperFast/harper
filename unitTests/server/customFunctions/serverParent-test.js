@@ -22,12 +22,14 @@ let logger_notify_stub;
 let logger_info_stub;
 let logger_error_stub;
 let cluster_fork_stub;
+let ipc_client_stub;
+let restart_cf_stub;
 const fake = () => {};
 const test_error = new Error('This is a testy mctest error');
 
 const test_worker_num = 3;
 
-describe('Test serverParent.js', () => {
+describe('Test custom functions serverParent.js', () => {
 
     before(() => {
         serverParent_rw = rewire('../../../server/customFunctions/serverParent');
@@ -38,6 +40,10 @@ describe('Test serverParent.js', () => {
         serverParent_rw.__set__('check_jwt_tokens', check_jwt_tokens_stub);
         launch_stub = sandbox.stub().resolves();
         serverParent_rw.__set__('launch', launch_stub);
+        ipc_client_stub = sandbox.stub();
+        serverParent_rw.__set__('IPCClient', ipc_client_stub);
+        restart_cf_stub = sandbox.stub();
+        serverParent_rw.__set__('restartCF', restart_cf_stub);
     });
 
     afterEach(() => {
@@ -112,7 +118,7 @@ describe('Test serverParent.js', () => {
         it('should configure custom_functions_forks correctly and set in global', async() => {
             await launch_rw(test_worker_num);
 
-            expect(global.custom_functions_forks.length).to.eql(test_worker_num);
+            expect(global.forks.length).to.eql(test_worker_num);
         });
     });
 });
