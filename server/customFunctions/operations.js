@@ -25,9 +25,9 @@ async function customFunctionsStatus() {
             directory: env.getProperty(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY),
         };
     } catch (err) {
-        const errString = `Error getting custom function status: ${err}`;
-        log.error(errString);
-        throw errString;
+        const err_string = `Error getting custom function status: ${err}`;
+        log.error(err_string);
+        throw err_string;
     }
     return response;
 }
@@ -44,19 +44,19 @@ async function getCustomFunctions() {
     const dir = env.getProperty(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY);
 
     try {
-        const projectFolders = fg.sync(`${dir}/*`, { onlyDirectories: true });
+        const project_folders = fg.sync(`${dir}/*`, { onlyDirectories: true });
 
-        projectFolders.forEach((projectFolder) => {
-            const folderName = projectFolder.split('/').pop();
+        project_folders.forEach((project_folder) => {
+            const folderName = project_folder.split('/').pop();
             response[folderName] = {
-                routes: fg.sync(`${projectFolder}/routes/*.js`).map((filepath) => filepath.split('/').pop().split('.js')[0]),
-                helpers: fg.sync(`${projectFolder}/helpers/*.js`).map((filepath) => filepath.split('/').pop().split('.js')[0]),
+                routes: fg.sync(`${project_folder}/routes/*.js`).map((filepath) => filepath.split('/').pop().split('.js')[0]),
+                helpers: fg.sync(`${project_folder}/helpers/*.js`).map((filepath) => filepath.split('/').pop().split('.js')[0]),
             };
         });
     } catch (err) {
-        const errString = `Error getting custom functions: ${err}`;
-        log.error(errString);
-        throw errString;
+        const err_string = `Error getting custom functions: ${err}`;
+        log.error(err_string);
+        throw err_string;
     }
     return response;
 }
@@ -81,9 +81,9 @@ async function getCustomFunction(req) {
         return fs.readFileSync(fileLocation, { encoding:'utf8' });
 
     } catch (err) {
-        const errString = `Error getting custom function: ${err}`;
-        log.error(errString);
-        throw errString;
+        const err_string = `Error getting custom function: ${err}`;
+        log.error(err_string);
+        throw err_string;
     }
 }
 
@@ -112,9 +112,9 @@ async function setCustomFunction(req) {
         fs.outputFileSync(cwd, function_content);
         return `Successfully updated custom function: ${file}.js`;
     } catch (err) {
-        const errString = `Error setting custom function: ${err}`;
-        log.error(errString);
-        throw errString;
+        const err_string = `Error setting custom function: ${err}`;
+        log.error(err_string);
+        throw err_string;
     }
 }
 
@@ -138,9 +138,9 @@ async function dropCustomFunction(req) {
         fs.unlinkSync(`${dir}/${project}/${type}/${file}.js`);
         return `Successfully deleted custom function: ${req.file}.js`;
     } catch (err) {
-        const errString = `Error deleting custom function: ${err}`;
-        log.error(errString);
-        throw errString;
+        const err_string = `Error deleting custom function: ${err}`;
+        log.error(err_string);
+        throw err_string;
     }
 }
 

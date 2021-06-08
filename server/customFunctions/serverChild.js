@@ -123,14 +123,14 @@ async function buildRoutes (server) {
             dir: path.join(__dirname, 'plugins')
         });
 
-        const projectFolders = fg.sync(`${CF_ROUTES_DIR}/*`, {
+        const project_folders = fg.sync(`${CF_ROUTES_DIR}/*`, {
             onlyDirectories: true,
             ignore: ['**/node_modules/**','**/helpers/**','**/routes/**']
         });
 
-        projectFolders.forEach((projectFolder) => {
+        project_folders.forEach((project_folder) => {
             server.register(autoload, parent => ({
-                dir: `${projectFolder}/routes`,
+                dir: `${project_folder}/routes`,
                 dirNameRoutePrefix: false,
                 options: {
                     hdbCore: parent.hdbCore,

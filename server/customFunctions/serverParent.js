@@ -113,9 +113,9 @@ async function launch(num_workers) {
         fs.mkdirSync(CF_ROUTES_DIR);
     }
 
-    const routeProjectFolders = fg.sync(`${CF_ROUTES_DIR}/*`, { onlyDirectories: true });
+    const route_project_folders = fg.sync(`${CF_ROUTES_DIR}/*`, { onlyDirectories: true });
 
-    if (routeProjectFolders.length === 0) {
+    if (route_project_folders.length === 0) {
         fs.copySync(path.join(__dirname, 'template'), CF_ROUTES_DIR);
     }
 
