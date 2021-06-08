@@ -70,35 +70,7 @@ async function run() {
 
     // Check to see if HDB is installed, if it isn't we call install.
     try {
-        if (await isHdbInstalled()) {
-            // Check to see if an upgrade is needed based on existing hdb_info data.  If so, we need to force the user to upgrade
-            // before the server can be started.
-            let upgrade_vers;
-            try {
-                const update_obj = await hdbInfoController.getVersionUpdateInfo();
-                if (update_obj !== undefined) {
-                    upgrade_vers = update_obj[terms.UPGRADE_JSON_FIELD_NAMES_ENUM.UPGRADE_VERSION];
-                    await upgrade.upgrade(update_obj);
-                    console.log(UPGRADE_COMPLETE_MSG);
-                }
-            } catch(err) {
-                if (upgrade_vers) {
-                    console.error(`Got an error while trying to upgrade your HarperDB instance to version ${upgrade_vers}.  Exiting HarperDB.`);
-                    final_logger.error(err);
-                } else {
-                    console.error(UPGRADE_ERR);
-                    final_logger.error(err);
-                }
-                process.exit(1);
-            }
-
-            await checkTransactionLogEnvironmentsExist();
-
-            await launchIPCServer();
-
-            await launchHdbServer();
-
-        } else {
+        if (await isHdbInstalled() === false) {
             console.log(HDB_NOT_FOUND_MSG);
             try {
                 await p_install_install();
@@ -108,6 +80,34 @@ async function run() {
                 process.exit(1);
             }
         }
+
+        // Check to see if an upgrade is needed based on existing hdb_info data.  If so, we need to force the user to upgrade
+        // before the server can be started.
+        let upgrade_vers;
+        try {
+            const update_obj = await hdbInfoController.getVersionUpdateInfo();
+            if (update_obj !== undefined) {
+                upgrade_vers = update_obj[terms.UPGRADE_JSON_FIELD_NAMES_ENUM.UPGRADE_VERSION];
+                await upgrade.upgrade(update_obj);
+                console.log(UPGRADE_COMPLETE_MSG);
+            }
+        } catch(err) {
+            if (upgrade_vers) {
+                console.error(`Got an error while trying to upgrade your HarperDB instance to version ${upgrade_vers}.  Exiting HarperDB.`);
+                final_logger.error(err);
+            } else {
+                console.error(UPGRADE_ERR);
+                final_logger.error(err);
+            }
+            process.exit(1);
+        }
+
+        await checkTransactionLogEnvironmentsExist();
+
+        await launchIPCServer();
+
+        await launchHdbServer();
+
     } catch(err) {
         console.error(err);
         final_logger.error(err);
