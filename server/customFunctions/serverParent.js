@@ -1,24 +1,26 @@
 "use strict";
 
+const cluster = require('cluster');
+const os = require('os');
+const util = require('util');
+const child_process = require('child_process');
+const path = require('path');
+const fs = require('fs-extra');
+const fg = require('fast-glob');
+
 const all_cf_children_stopped_event = require('../../events/AllCFChildrenStoppedEvent');
 const check_jwt_tokens = require('../../utility/install/checkJWTTokensExist');
-const cluster = require('cluster');
+
 const env = require('../../utility/environment/environmentManager');
 const global_schema = require('../../utility/globalSchema');
 const harper_logger = require('../../utility/logging/harper_logger');
-const os = require('os');
 const RestartEventObject = require('../RestartEventObject');
 const user_schema = require('../../security/user');
-const util = require('util');
 const hdb_terms = require('../../utility/hdbTerms');
 const IPCClient = require('../ipc/IPCClient');
 const hdbParentIpcHandlers = require('../ipc/hdbParentIpcHandlers');
-const child_process = require('child_process');
-const path = require('path');
 
 const p_schema_to_global = util.promisify(global_schema.setSchemaDataToGlobal);
-
-const CF_SERVER_CWD = path.resolve(__dirname, '../customFunctions');
 
 /**
  * Function called to start up HDB server clustering process - this method is called from customFunctionServer as the "parent" process
@@ -28,7 +30,6 @@ const CF_SERVER_CWD = path.resolve(__dirname, '../customFunctions');
  * @returns {Promise<void>}
  */
 async function serverParent(num_workers) {
-    harper_logger.notify('starting Custom Functions serverParent');
     check_jwt_tokens();
     global.isCustomFunctionMaster = cluster.isMaster;
     global.service = hdb_terms.SERVICES.CUSTOM_FUNCTIONS;
@@ -73,6 +74,7 @@ async function serverParent(num_workers) {
 }
 
 function restartCF() {
+    const CF_SERVER_CWD = path.resolve(__dirname, '../customFunctions');
     try {
         const args = path.join(CF_SERVER_CWD, 'restartCFServer.js');
         let child = child_process.spawn('node', [args], {detached:true, stdio: "ignore"});
@@ -97,6 +99,8 @@ function restartCF() {
 async function launch(num_workers) {
     global.custom_functions_on = env.get('CUSTOM_FUNCTIONS');
 
+    const CF_ROUTES_DIR = env.getProperty(hdb_terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY);
+
     await p_schema_to_global();
     await user_schema.setUsersToGlobal();
 
@@ -104,6 +108,16 @@ async function launch(num_workers) {
     harper_logger.info(`Custom Functions Parent ${process.pid} is running`);
     harper_logger.info(`Custom Functions Running with NODE_ENV set as: ${process.env.NODE_ENV}`);
     harper_logger.info(`Kicking off ${num_workers} Custom Functions processes.`);
+
+    if (!fs.existsSync(CF_ROUTES_DIR)){
+        fs.mkdirSync(CF_ROUTES_DIR);
+    }
+
+    const routeProjectFolders = fg.sync(`${CF_ROUTES_DIR}/*`, { onlyDirectories: true });
+
+    if (routeProjectFolders.length === 0) {
+        fs.copySync(path.join(__dirname, 'template'), CF_ROUTES_DIR);
+    }
 
     // Fork workers.
     let forks = [];

@@ -1,10 +1,13 @@
 'use strict';
 
-const fs = require('fs');
+const fs = require('fs-extra');
+const fg = require('fast-glob');
+const path = require('path');
 
 const log = require('../../utility/logging/harper_logger');
 const terms = require('../../utility/hdbTerms');
 const env = require('../../utility/environment/environmentManager');
+
 
 /**
  * Read the settings.js file and return the
@@ -22,7 +25,9 @@ async function customFunctionsStatus() {
             directory: env.getProperty(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY),
         };
     } catch (err) {
-        log.error(`Got an error getting custom api status ${err}`);
+        const errString = `Error getting custom function status: ${err}`;
+        log.error(errString);
+        throw errString;
     }
     return response;
 }
@@ -35,19 +40,23 @@ async function customFunctionsStatus() {
  */
 async function getCustomFunctions() {
     log.trace(`getting custom api endpoints`);
-    let response = [];
+    let response = {};
     const dir = env.getProperty(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY);
-    const routesDir = `${dir}/routes`;
 
     try {
-        fs.readdirSync(routesDir).forEach(file => {
-            if (file.endsWith('.js')) {
-                response.push(file.replace('.js', ''));
-            }
-        });
+        const projectFolders = fg.sync(`${dir}/*`, { onlyDirectories: true });
 
+        projectFolders.forEach((projectFolder) => {
+            const folderName = projectFolder.split('/').pop();
+            response[folderName] = {
+                routes: fg.sync(`${projectFolder}/routes/*.js`).map((filepath) => filepath.split('/').pop().split('.js')[0]),
+                helpers: fg.sync(`${projectFolder}/helpers/*.js`).map((filepath) => filepath.split('/').pop().split('.js')[0]),
+            };
+        });
     } catch (err) {
-        log.error(`Got an error getting custom api status ${err}`);
+        const errString = `Error getting custom functions: ${err}`;
+        log.error(errString);
+        throw errString;
     }
     return response;
 }
@@ -62,18 +71,19 @@ async function getCustomFunctions() {
 async function getCustomFunction(req) {
     log.trace(`getting custom api endpoint file content`);
     const dir = env.getProperty(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY);
-    const routesDir = `${dir}/routes`;
-    let file = `${routesDir}/${req.function_name}.js`;
+    const { project, type, file } = req;
+    const fileLocation = `${dir}/${project}/${type}/${file}.js`;
 
     try {
-        if (!fs.existsSync(file)){
+        if (!fs.existsSync(fileLocation)){
             throw new Error('Could not locate that endpoint file');
         }
-        return fs.readFileSync(file, { encoding:'utf8' });
+        return fs.readFileSync(fileLocation, { encoding:'utf8' });
 
     } catch (err) {
-        log.error(`Error getting custom function ${err}`);
-        throw err;
+        const errString = `Error getting custom function: ${err}`;
+        log.error(errString);
+        throw errString;
     }
 }
 
@@ -87,15 +97,24 @@ async function getCustomFunction(req) {
 async function setCustomFunction(req) {
     log.trace(`setting custom function file content`);
     const dir = env.getProperty(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY);
-    const routesDir = `${dir}/routes`;
-    let file = `${routesDir}/${req.function_name}.js`;
+    const { project, type, file, function_content } = req;
+    let cwd;
 
     try {
-        fs.writeFileSync(file, req.function_content);
-        return `Successfully updated custom function: ${req.function_name}.js`;
+        if (type === 'projects') {
+            cwd = `${dir}/${project}`;
+            fs.mkdirSync(cwd, { recursive: true });
+            fs.copySync(path.join(__dirname, 'template'), cwd);
+            return `Successfully created project: ${file}.js`;
+        }
+
+        cwd = `${dir}/${project}/${type}/${file}.js`;
+        fs.outputFileSync(cwd, function_content);
+        return `Successfully updated custom function: ${file}.js`;
     } catch (err) {
-        log.error(`Error setting custom function ${err}`);
-        throw err;
+        const errString = `Error setting custom function: ${err}`;
+        log.error(errString);
+        throw errString;
     }
 }
 
@@ -109,15 +128,19 @@ async function setCustomFunction(req) {
 async function dropCustomFunction(req) {
     log.trace(`setting custom function file content`);
     const dir = env.getProperty(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY);
-    const routesDir = `${dir}/routes`;
-    let file = `${routesDir}/${req.function_name}.js`;
+    const { project, type, file } = req;
 
     try {
-        fs.unlinkSync(file);
-        return `Successfully deleted custom function: ${req.function_name}.js`;
+        if (type === 'projects') {
+            fs.rmdirSync(`${dir}/${project}`, { recursive: true });
+            return `Successfully deleted project: ${req.project}`;
+        }
+        fs.unlinkSync(`${dir}/${project}/${type}/${file}.js`);
+        return `Successfully deleted custom function: ${req.file}.js`;
     } catch (err) {
-        log.error(`Error deleting custom function ${err}`);
-        throw err;
+        const errString = `Error deleting custom function: ${err}`;
+        log.error(errString);
+        throw errString;
     }
 }
 
