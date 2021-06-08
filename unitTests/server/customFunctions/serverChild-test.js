@@ -12,10 +12,12 @@ const signalling = require('../../../utility/signalling');
 const user_schema = require('../../../security/user');
 const global_schema = require('../../../utility/globalSchema');
 const hdb_license = require('../../../utility/registration/hdb_license');
+const env = require('../../../utility/environment/environmentManager');
 
 const KEYS_PATH = path.join(test_utils.getMockFSPath(), 'utility/keys');
 const PRIVATE_KEY_PATH = path.join(KEYS_PATH, 'privateKey.pem');
 const CERTIFICATE_PATH = path.join(KEYS_PATH, 'certificate.pem');
+const ROUTES_PATH = path.resolve(__dirname, '../../envDir/utility/routes') ;
 
 const test_req_options = {
   headers: {
@@ -50,6 +52,7 @@ describe('Test custom functions serverChild.js', () => {
   let ipc_client_stub;
 
   before(() => {
+    env.initTestEnvironment();
     ipc_client_stub = sandbox.stub();
     logger_info_stub = sandbox.stub(harper_logger, 'info').callsFake(fake);
     logger_error_spy = sandbox.stub(harper_logger, 'error').callsFake(fake);
@@ -66,6 +69,7 @@ describe('Test custom functions serverChild.js', () => {
     serverChild_rw.__set__('customFunctionsServer', customFunctionsServer_stub);
     test_utils.preTestPrep();
     fs.mkdirpSync(KEYS_PATH);
+    fs.mkdirpSync(ROUTES_PATH);
 
     fs.writeFileSync(PRIVATE_KEY_PATH, test_key_val);
     fs.writeFileSync(CERTIFICATE_PATH, test_cert_val);
