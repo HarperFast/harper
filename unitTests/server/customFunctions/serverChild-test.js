@@ -308,6 +308,8 @@ describe('Test custom functions serverChild.js', () => {
   });
 
   describe('Test shutDown function', () => {
+    const timeout_stub = sandbox.stub();
+    let timeout_rw;
     let shutDown;
     let signal_stopped_stub;
     let test_event = {
@@ -320,12 +322,17 @@ describe('Test custom functions serverChild.js', () => {
 
     before(() => {
       serverChild_rw.__set__('customFunctionsServer', customFunctionsServer_stub);
+      timeout_rw = serverChild_rw.__set__('setTimeout', timeout_stub);
       shutDown = serverChild_rw.__get__('shutDown');
       signal_stopped_stub = sandbox.stub(signalling, 'signalChildStopped');
     });
 
     afterEach(() => {
       sandbox.resetHistory();
+    });
+
+    after(() => {
+        timeout_rw();
     });
 
     it('Test child stop signal it sent and server close is called', async () => {
@@ -336,6 +343,10 @@ describe('Test custom functions serverChild.js', () => {
       await shutDown(test_event);
       expect(serverClose_stub.called).to.be.true;
       expect(signal_stopped_stub.args[0][0]).to.eql(expected_obj);
+    });
+    
+    it('Test validation error is handled as expected', () => {
+        
     });
   });
 });

@@ -31,7 +31,7 @@ describe('Test customFunctionServer module', () => {
     it('Test happy path serverParent', () => {
         test_utils.requireUncached('../server/customFunctions/customFunctionServer.js');
 
-        expect(server_parent_stub.args[0][0]).to.equal(4);
+        expect(server_parent_stub.args[0][0]).to.equal(2);
         expect(global.isMaster).to.be.true;
         expect(global.clustering_on).to.be.false;
         expect(global.running_from_repo).to.be.undefined;
@@ -47,7 +47,7 @@ describe('Test customFunctionServer module', () => {
     it('Test error from os.cpus is handled as expected', () => {
         const cpus_stub = sandbox.stub(os, 'cpus').throws('ugh an error');
         test_utils.requireUncached('../server/customFunctions/customFunctionServer.js');
-        expect(server_parent_stub.args[0][0]).to.equal(4);
+        expect(server_parent_stub.args[0][0]).to.equal(2);
         cpus_stub.restore();
     });
 
