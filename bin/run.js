@@ -361,10 +361,16 @@ async function launchIPCServer() {
     // Launch IPC server as a child background process.
     try {
         const ipc_fork_args = createForkArgs(path.resolve(__dirname, '../', 'server/ipc', terms.IPC_SERVER_MODULE));
-        ipc_child = fork(ipc_fork_args[0], [ipc_fork_args[1]], {
+        let fork_options = {
             detached: true,
-            stdio: 'ignore',
-        });
+            stdio: 'ignore'
+        };
+
+        //because we may need to push logs to std out/err if the process runs in foreground we need to remove the stdio: ignore
+        if(isForegroundProcess()){
+            delete fork_options.stdio;
+        }
+        ipc_child = fork(ipc_fork_args[0], [ipc_fork_args[1]], fork_options);
     } catch(err) {
         console.error(IPC_FORK_ERR);
         final_logger.error(err);
