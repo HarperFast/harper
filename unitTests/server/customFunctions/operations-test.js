@@ -14,20 +14,26 @@ const { expect } = chai;
 
 describe('Test custom functions operations', () => {
     let sandbox = sinon.createSandbox();
-    let root_original = env.getProperty(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY);
-    const CF_DIR_ROOT = `${root_original}/test`;
+    let ROOT_ORIGINAL = env.getProperty(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY);
+    let CF_DIR_ROOT = `${ROOT_ORIGINAL}/test`;
+    let TEMPLATE_ROOT = path.join(__dirname, '../../../', 'server', 'customFunctions', 'template');
+
+    /*
+    console.log(ROOT_ORIGINAL);
+    console.log(CF_DIR_ROOT);
+    console.log(TEMPLATE_ROOT);
+    */
 
     before(() => {
         env.setProperty(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY, CF_DIR_ROOT);
         env.setProperty(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_ENABLED_KEY, true);
         // eslint-disable-next-line no-magic-numbers
         env.setProperty(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_PORT_KEY, 9926);
-        fs.mkdirSync(CF_DIR_ROOT);
-        fs.copySync(path.join(__dirname, '../../../', 'server', 'customFunctions', 'template'), CF_DIR_ROOT);
+        fs.copySync(TEMPLATE_ROOT, CF_DIR_ROOT);
     });
 
     after(() => {
-        env.setProperty(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY, root_original);
+        env.setProperty(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY, ROOT_ORIGINAL);
         test_utils.cleanUpDirectories(CF_DIR_ROOT);
         sandbox.restore();
     });
