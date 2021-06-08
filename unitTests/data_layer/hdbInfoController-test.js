@@ -36,8 +36,8 @@ const INFO_SEARCH_RESULT = [
     },
     {
         info_id: 2,
-        data_version_num: "3.0.1",
-        hdb_version_num: "3.0.1"
+        data_version_num: "3.1.0",
+        hdb_version_num: "3.1.0"
     }
 ];
 
