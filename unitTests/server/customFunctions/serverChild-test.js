@@ -345,8 +345,14 @@ describe('Test custom functions serverChild.js', () => {
       expect(signal_stopped_stub.args[0][0]).to.eql(expected_obj);
     });
     
-    it('Test validation error is handled as expected', () => {
-        
+    it('Test validation error is handled as expected', async () => {
+        const bad_event = {
+          "Type": "restart",
+          "message": ""
+        };
+        await shutDown(bad_event);
+        expect(serverClose_stub.called).to.be.false;
+        expect(logger_error_spy.args[0][0]).to.equal("IPC event missing 'type'");
     });
   });
 });
