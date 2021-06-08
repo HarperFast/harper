@@ -285,6 +285,8 @@ function initializeOperationFunctionMap(){
     op_func_map.set(terms.OPERATIONS_ENUM.GET_CUSTOM_FUNCTION, new OperationFunctionObject(custom_function_operations.getCustomFunction));
     op_func_map.set(terms.OPERATIONS_ENUM.SET_CUSTOM_FUNCTION, new OperationFunctionObject(custom_function_operations.setCustomFunction));
     op_func_map.set(terms.OPERATIONS_ENUM.DROP_CUSTOM_FUNCTION, new OperationFunctionObject(custom_function_operations.dropCustomFunction));
+    op_func_map.set(terms.OPERATIONS_ENUM.ADD_CUSTOM_FUNCTION_PROJECT, new OperationFunctionObject(custom_function_operations.addCustomFunctionProject));
+    op_func_map.set(terms.OPERATIONS_ENUM.DROP_CUSTOM_FUNCTION_PROJECT, new OperationFunctionObject(custom_function_operations.dropCustomFunctionProject));
 
     return op_func_map;
 }

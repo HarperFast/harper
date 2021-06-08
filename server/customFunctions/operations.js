@@ -98,18 +98,9 @@ async function setCustomFunction(req) {
     log.trace(`setting custom function file content`);
     const dir = env.getProperty(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY);
     const { project, type, file, function_content } = req;
-    let cwd;
 
     try {
-        if (type === 'projects') {
-            cwd = `${dir}/${project}`;
-            fs.mkdirSync(cwd, { recursive: true });
-            fs.copySync(path.join(__dirname, 'template'), cwd);
-            return `Successfully created project: ${file}.js`;
-        }
-
-        cwd = `${dir}/${project}/${type}/${file}.js`;
-        fs.outputFileSync(cwd, function_content);
+        fs.outputFileSync(`${dir}/${project}/${type}/${file}.js`, function_content);
         return `Successfully updated custom function: ${file}.js`;
     } catch (err) {
         const err_string = `Error setting custom function: ${err}`;
@@ -131,14 +122,55 @@ async function dropCustomFunction(req) {
     const { project, type, file } = req;
 
     try {
-        if (type === 'projects') {
-            fs.rmdirSync(`${dir}/${project}`, { recursive: true });
-            return `Successfully deleted project: ${req.project}`;
-        }
         fs.unlinkSync(`${dir}/${project}/${type}/${file}.js`);
-        return `Successfully deleted custom function: ${req.file}.js`;
+        return `Successfully deleted custom function: ${file}.js`;
     } catch (err) {
         const err_string = `Error deleting custom function: ${err}`;
+        log.error(err_string);
+        throw err_string;
+    }
+}
+
+/**
+ * Create a new project folder in the custom_functions folder and copy the template into it
+ *
+ * @param {NodeObject} req
+ * @returns {string}
+ */
+async function addCustomFunctionProject(req) {
+    log.trace(`adding custom function project`);
+    const dir = env.getProperty(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY);
+    const { project } = req;
+    let cwd;
+
+    try {
+        cwd = `${dir}/${project}`;
+        fs.mkdirSync(cwd, { recursive: true });
+        fs.copySync(path.join(__dirname, 'template'), cwd);
+        return `Successfully created custom function project: ${project}`;
+    } catch (err) {
+        const err_string = `Error creating custom function project: ${err}`;
+        log.error(err_string);
+        throw err_string;
+    }
+}
+
+/**
+ * Remove a project folder from the custom_functions folder
+ *
+ * @param {NodeObject} req
+ * @returns {string}
+ */
+async function dropCustomFunctionProject(req) {
+    log.trace(`dropping custom function project`);
+    const dir = env.getProperty(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY);
+    const { project } = req;
+
+    try {
+        fs.rmdirSync(`${dir}/${project}`, { recursive: true });
+        return `Successfully deleted project: ${project}`;
+    } catch (err) {
+        const err_string = `Error creating custom function project: ${err}`;
         log.error(err_string);
         throw err_string;
     }
@@ -150,4 +182,6 @@ module.exports = {
     getCustomFunction,
     setCustomFunction,
     dropCustomFunction,
+    addCustomFunctionProject,
+    dropCustomFunctionProject,
 };
