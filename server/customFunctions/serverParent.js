@@ -30,7 +30,7 @@ const p_schema_to_global = util.promisify(global_schema.setSchemaDataToGlobal);
  * @returns {Promise<void>}
  */
 async function serverParent(num_workers) {
-    harper_logger.notify('starting Custom Functions');
+    harper_logger.info('Starting Custom Functions');
 
     check_jwt_tokens();
     global.isCustomFunctionMaster = cluster.isMaster;

@@ -219,6 +219,7 @@ const OPERATIONS_ENUM = {
     DROP_ATTRIBUTE: 'drop_attribute',
     REMOVE_NODE: 'remove_node',
     RESTART: 'restart',
+    RESTART_SERVICE: 'restart_service',
     CATCHUP: 'catchup',
     SYSTEM_INFORMATION: 'system_information',
     DELETE_TRANSACTION_LOGS_BEFORE: 'delete_transaction_logs_before',

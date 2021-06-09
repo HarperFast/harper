@@ -51,17 +51,26 @@ class HdbError extends Error {
  *
  * See above for params descriptions
  * @param e
- * @param http_code
  * @param http_msg
+ * @param http_code
  * @param log_level
  * @param log_msg
- * @returns {HdbError}
+ * @param delete_stack
+ * @returns {HdbError|*}
  */
-function handleHDBError(e, http_msg, http_code, log_level = logger.ERR, log_msg = null) {
+function handleHDBError(e, http_msg, http_code, log_level = logger.ERR, log_msg = null, delete_stack = false) {
     if (isHDBError(e)) {
         return e;
     }
-    return (new HdbError(e, http_msg, http_code, log_level, log_msg));
+
+    const error = new HdbError(e, http_msg, http_code, log_level, log_msg);
+
+    // In some situations, such as validation errors, the stack does not need to be thrown/logged.
+    if (delete_stack) {
+        delete error.stack;
+    }
+
+    return error;
 }
 
 function isHDBError(e) {
