@@ -4,6 +4,8 @@
 
 To deploy these routes, simply clone this repo into your `custom_functions` folder. By default, this folder is located in your HarperDB user folder `(~/hdb)`.
 
+**Routes are automatically prefixed with their parent folder name.**
+
 ##Routes
 
 ---
@@ -15,7 +17,7 @@ BYPASSES ALL CHECKS: DO NOT USE RAW USER-SUBMITTED VALUES IN SQL STATEMENTS
 
 ```
   server.route({
-    url: '/dogs',
+    url: '/',
     method: 'GET',
     handler: (request) => {
       request.body= {
@@ -33,7 +35,7 @@ POST, WITH STANDARD PASS-THROUGH BODY, PAYLOAD AND HDB AUTHENTICATION
 
 ```
 server.route({
-    url: '/addDog',
+    url: '/',
     method: 'POST',
     preValidation: hdbCore.preValidation,
     handler: hdbCore.request,
@@ -46,7 +48,7 @@ GET, WITH ASYNC THIRD-PARTY AUTH PREVALIDATION
 
 ```
   server.route({
-    url: '/dogs/:id',
+    url: '/:id',
     method: 'GET',
     preValidation: async (request, reply) => {
       /*

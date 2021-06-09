@@ -8,7 +8,7 @@ module.exports = async (server, { hdbCore, logger }) => {
   // GET, WITH NO preValidation AND USING hdbCore.requestWithoutAuthentication
   // BYPASSES ALL CHECKS: DO NOT USE RAW USER-SUBMITTED VALUES IN SQL STATEMENTS
   server.route({
-    url: '/dogs',
+    url: '/',
     method: 'GET',
     handler: (request) => {
       request.body= {
@@ -21,7 +21,7 @@ module.exports = async (server, { hdbCore, logger }) => {
 
   // POST, WITH STANDARD PASS-THROUGH BODY, PAYLOAD AND HDB AUTHENTICATION
   server.route({
-    url: '/addDog',
+    url: '/',
     method: 'POST',
     preValidation: hdbCore.preValidation,
     handler: hdbCore.request,
@@ -29,7 +29,7 @@ module.exports = async (server, { hdbCore, logger }) => {
 
   // GET, WITH ASYNC THIRD-PARTY AUTH PREVALIDATION
   server.route({
-    url: '/dogs/:id',
+    url: '/:id',
     method: 'GET',
     preValidation: async (request, reply) => {
       /*
