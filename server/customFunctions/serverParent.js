@@ -115,12 +115,6 @@ async function launch(num_workers) {
         fs.mkdirSync(CF_ROUTES_DIR);
     }
 
-    const route_project_folders = fg.sync(`${CF_ROUTES_DIR}/*`, { onlyDirectories: true });
-
-    if (route_project_folders.length === 0) {
-        fs.copySync(path.join(__dirname, 'template'), CF_ROUTES_DIR);
-    }
-
     // Fork workers.
     let forks = [];
     for (let i = 0; i < num_workers; i++) {
