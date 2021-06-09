@@ -6,7 +6,10 @@ const path = require('path');
 
 const log = require('../../utility/logging/harper_logger');
 const terms = require('../../utility/hdbTerms');
+const hdb_utils = require('../../utility/common_utils');
 const env = require('../../utility/environment/environmentManager');
+const { handleHDBError, hdb_errors } = require('../../utility/errors/hdbError');
+const { HDB_ERROR_MSGS, HTTP_STATUS_CODES } = hdb_errors;
 
 
 /**
@@ -25,9 +28,7 @@ async function customFunctionsStatus() {
             directory: env.getProperty(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY),
         };
     } catch (err) {
-        const err_string = `Error getting custom function status: ${err}`;
-        log.error(err_string);
-        throw err_string;
+        throw handleHDBError(new Error(), HDB_ERROR_MSGS.FUNCTION_STATUS, HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR, log.ERR, err);
     }
     return response;
 }
@@ -54,9 +55,7 @@ async function getCustomFunctions() {
             };
         });
     } catch (err) {
-        const err_string = `Error getting custom functions: ${err}`;
-        log.error(err_string);
-        throw err_string;
+        throw handleHDBError(new Error(), HDB_ERROR_MSGS.GET_FUNCTIONS, HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR, log.ERR, err);
     }
     return response;
 }
@@ -69,6 +68,10 @@ async function getCustomFunctions() {
  * @returns {string}
  */
 async function getCustomFunction(req) {
+    if (hdb_utils.isEmpty(req.project)) {
+        throw handleHDBError(new Error(), HDB_ERROR_MSGS.MISSING_VALUE('project'), HTTP_STATUS_CODES.BAD_REQUEST);
+    }
+
     log.trace(`getting custom api endpoint file content`);
     const dir = env.getProperty(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY);
     const { project, type, file } = req;
@@ -81,9 +84,7 @@ async function getCustomFunction(req) {
         return fs.readFileSync(fileLocation, { encoding:'utf8' });
 
     } catch (err) {
-        const err_string = `Error getting custom function: ${err}`;
-        log.error(err_string);
-        throw err_string;
+        throw handleHDBError(new Error(), HDB_ERROR_MSGS.GET_FUNCTION, HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR, log.ERR, err);
     }
 }
 

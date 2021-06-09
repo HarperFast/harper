@@ -190,6 +190,13 @@ const IPC_ERRORS = {
     INVALID_EVENT: (event) => `IPC server received invalid event type: ${event}`
 };
 
+const CUSTOM_FUNCTIONS_ERROR_MSGS = {
+    FUNCTION_STATUS: 'Error getting custom function status, check the log for more details.',
+    GET_FUNCTIONS: 'Error getting custom functions, check the log for more details.',
+    GET_FUNCTION: 'Error getting custom function, check the log for more details.'
+
+};
+
 //into a single export while still allowing us to group them here in a more readable/searchable way
 const HDB_ERROR_MSGS = {
     ...AUTHENTICATION_ERROR_MSGS,
@@ -202,7 +209,8 @@ const HDB_ERROR_MSGS = {
     ...USER_ERROR_MSGS,
     ...WRITE_OPS_ERROR_MSGS,
     ...VALIDATION_ERROR_MSGS,
-    ...IPC_ERRORS
+    ...IPC_ERRORS,
+    ...CUSTOM_FUNCTIONS_ERROR_MSGS
 };
 
 // All error messages should be added to the HDB_ERROR_MSGS ENUM for export - this helps to organize all error messages
