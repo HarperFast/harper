@@ -116,6 +116,7 @@ required_permissions.set(reg.setLicense.name, new permission(true, []));
 required_permissions.set(delete_.deleteFilesBefore.name, new permission(true, []));
 required_permissions.set(delete_.deleteTransactionLogsBefore.name, new permission(true, []));
 required_permissions.set(stop.restartProcesses.name, new permission(true, []));
+required_permissions.set(stop.restartService.name, new permission(true, []));
 required_permissions.set(read_transaction_log.name, new permission(true, []));
 required_permissions.set(system_information.systemInformation.name, new permission(true, []));
 required_permissions.set(configuration.getConfiguration.name, new permission(true, []));
