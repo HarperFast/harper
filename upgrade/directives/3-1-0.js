@@ -9,7 +9,7 @@ const { getOldPropsValue } = require('../upgradeUtilities');
 const { HDB_SETTINGS_NAMES, HDB_SETTINGS_DEFAULT_VALUES } = require('../../utility/hdbTerms');
 const env = require('../../utility/environment/environmentManager');
 
-let directive3_0_1 = new UpgradeDirective('3.0.1');
+let directive3_1_0 = new UpgradeDirective('3.1.0');
 let directives = [];
 
 /**
@@ -17,9 +17,9 @@ let directives = [];
  * Adds
  * @returns {string}
  */
-function updateSettingsFile_3_0_1() {
+function updateSettingsFile_3_1_0() {
     const old_hdb_props = PropertiesReader(env.getProperty(HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY));
-    const settings_update_msg = 'Updating settings file for version 3.0.1';
+    const settings_update_msg = 'Updating settings file for version 3.1.0';
     console.log(settings_update_msg);
     hdb_log.info(settings_update_msg);
 
@@ -88,7 +88,7 @@ function updateSettingsFile_3_0_1() {
 
     const settings_path = env.get('settings_path');
     const settings_dir = path.dirname(settings_path);
-    const settings_backup_path = path.join(settings_dir, '3_0_1_upgrade_settings.bak');
+    const settings_backup_path = path.join(settings_dir, '3_1_0_upgrade_settings.bak');
 
     try {
         //create backup of old settings file
@@ -101,7 +101,7 @@ function updateSettingsFile_3_0_1() {
     }
 
     try {
-        hdb_log.info(`New settings file values for 3.0.1 upgrade: ${JSON.stringify(new_hdb_settings_vals)}`);
+        hdb_log.info(`New settings file values for 3.1.0 upgrade: ${JSON.stringify(new_hdb_settings_vals)}`);
         hdb_log.info(`Creating new/upgraded settings file at '${settings_path}'`);
 
         fs.writeFileSync(settings_path, new_hdb_settings_vals);
@@ -118,15 +118,15 @@ function updateSettingsFile_3_0_1() {
     // load new props into env
     env.initSync();
 
-    const upgrade_success_msg = 'New settings file for 3.0.1 upgrade successfully created.';
+    const upgrade_success_msg = 'New settings file for 3.1.0 upgrade successfully created.';
     console.log(upgrade_success_msg);
     hdb_log.info(upgrade_success_msg);
 
     return upgrade_success_msg;
 }
 
-directive3_0_1.sync_functions.push(updateSettingsFile_3_0_1);
+directive3_1_0.sync_functions.push(updateSettingsFile_3_1_0);
 
-directives.push(directive3_0_1);
+directives.push(directive3_1_0);
 
 module.exports = directives;
