@@ -7,6 +7,8 @@ const path = require('path');
 const log = require('../../utility/logging/harper_logger');
 const terms = require('../../utility/hdbTerms');
 const env = require('../../utility/environment/environmentManager');
+const { handleHDBError, hdb_errors } = require('../../utility/errors/hdbError');
+const { HTTP_STATUS_CODES } = hdb_errors;
 
 
 /**
@@ -81,7 +83,7 @@ async function getCustomFunction(req) {
         return fs.readFileSync(fileLocation, { encoding:'utf8' });
 
     } catch (err) {
-        const err_string = `Error getting custom function: ${err}`;
+        const err_string = `Error getting custom function: ${err}`; //TODO add hdb error handler to this
         log.error(err_string);
         throw err_string;
     }
