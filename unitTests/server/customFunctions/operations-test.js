@@ -1,7 +1,5 @@
 'use strict';
 
-const path = require('path');
-const fs = require('fs-extra');
 const chai = require('chai');
 const sinon = require('sinon');
 const rewire = require('rewire');
@@ -68,6 +66,26 @@ describe('Test custom functions operations', () => {
         expect(response).to.contain('use strict');
     });
 
+    it('Test setCustomFunction creates a function file as expected', async () => {
+        const response = await operations.setCustomFunction({ project: 'test', type: 'routes', file: 'example2', function_content: 'example2' });
+
+        expect(response).to.equal('Successfully updated custom function: example2.js');
+
+        const endpoints = await operations.getCustomFunction({ project: 'test', type: 'routes', file: 'example2' });
+
+        expect(endpoints).to.contain('example2');
+    });
+
+    it('Test setCustomFunction updates a function file as expected', async () => {
+        const response = await operations.setCustomFunction({ project: 'test', type: 'routes', file: 'example2', function_content: 'example3' });
+
+        expect(response).to.equal('Successfully updated custom function: example2.js');
+
+        const endpoints = await operations.getCustomFunction({ project: 'test', type: 'routes', file: 'example2' });
+
+        expect(endpoints).to.contain('example3');
+    });
+
     it('Test dropCustomFunction drops function as expected', async () => {
         const response = await operations.dropCustomFunction({ project: 'test', type: 'routes', file: 'examples' });
 
@@ -84,7 +102,7 @@ describe('Test custom functions operations', () => {
         expect(Object.keys(endpoints[projectName])).to.have.length(2);
         expect(Object.keys(endpoints[projectName])).to.include('routes');
         expect(endpoints[projectName].routes).to.be.instanceOf(Array);
-        expect(endpoints[projectName].routes).to.have.length(0);
+        expect(endpoints[projectName].routes).to.have.length(1);
         expect(Object.keys(endpoints[projectName])).to.include('helpers');
         expect(endpoints[projectName].helpers).to.be.instanceOf(Array);
         expect(endpoints[projectName].helpers).to.have.length(1);
