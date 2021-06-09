@@ -13,7 +13,7 @@ module.exports = async (server, { hdbCore, logger }) => {
     handler: (request) => {
       request.body= {
         operation: 'sql',
-        sql: 'SELECT * FROM dev.dogs ORDER BY dog_name'
+        sql: 'SELECT * FROM dev.dog ORDER BY dog_name'
       };
       return hdbCore.requestWithoutAuthentication(request);
     }
@@ -49,7 +49,7 @@ module.exports = async (server, { hdbCore, logger }) => {
     handler: async (request) => {
       request.body= {
         operation: 'sql',
-        sql: `SELECT * FROM dev.dogs WHERE id = ${request.params.id}`
+        sql: `SELECT * FROM dev.dog WHERE id = ${request.params.id}`
       };
 
       /*
