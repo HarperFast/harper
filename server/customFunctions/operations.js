@@ -4,6 +4,7 @@ const fs = require('fs-extra');
 const fg = require('fast-glob');
 const path = require('path');
 
+const validator = require('./operationsValidation');
 const log = require('../../utility/logging/harper_logger');
 const terms = require('../../utility/hdbTerms');
 const hdb_utils = require('../../utility/common_utils');
@@ -68,21 +69,26 @@ async function getCustomFunctions() {
  * @returns {string}
  */
 async function getCustomFunction(req) {
-    if (hdb_utils.isEmpty(req.project)) {
-        throw handleHDBError(new Error(), HDB_ERROR_MSGS.MISSING_VALUE('project'), HTTP_STATUS_CODES.BAD_REQUEST);
+    if (req.project) {
+        req.project = path.parse(req.project).name;
+    }
+
+    if (req.file) {
+        req.file = path.parse(req.file).name;
+    }
+
+    const validation = validator.getCustomFunctionValidator(req);
+    if (validation) {
+        throw handleHDBError(validation, validation.message, HTTP_STATUS_CODES.BAD_REQUEST);
     }
 
     log.trace(`getting custom api endpoint file content`);
-    const dir = env.getProperty(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY);
+    const cf_dir = env.getProperty(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY);
     const { project, type, file } = req;
-    const fileLocation = `${dir}/${project}/${type}/${file}.js`;
+    const fileLocation = path.join(cf_dir, project, type, file + '.js');
 
     try {
-        if (!fs.existsSync(fileLocation)){
-            throw new Error('Could not locate that endpoint file');
-        }
         return fs.readFileSync(fileLocation, { encoding:'utf8' });
-
     } catch (err) {
         throw handleHDBError(new Error(), HDB_ERROR_MSGS.GET_FUNCTION, HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR, log.ERR, err);
     }

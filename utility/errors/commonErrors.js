@@ -191,10 +191,14 @@ const IPC_ERRORS = {
 };
 
 const CUSTOM_FUNCTIONS_ERROR_MSGS = {
-    FUNCTION_STATUS: 'Error getting custom function status, check the log for more details.',
-    GET_FUNCTIONS: 'Error getting custom functions, check the log for more details.',
-    GET_FUNCTION: 'Error getting custom function, check the log for more details.'
-
+    FUNCTION_STATUS: 'Error getting custom function status, check the log for more details',
+    GET_FUNCTIONS: 'Error getting custom functions, check the log for more details',
+    GET_FUNCTION: 'Error getting custom function, check the log for more details',
+    NO_PROJECT: "Project does not exist. Create one using 'addCustomFunctionProject'",
+    VALIDATION_ERR: 'Error validating request, check the log for more details',
+    NO_FILE: 'File does not exist',
+    BAD_FILE_NAME: 'File name can only contain alphanumeric and underscores characters',
+    BAD_PROJECT_NAME: 'Project name can only contain alphanumeric and underscores characters'
 };
 
 //into a single export while still allowing us to group them here in a more readable/searchable way
