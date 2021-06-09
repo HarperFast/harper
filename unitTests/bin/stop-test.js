@@ -86,6 +86,10 @@ describe('Test stop.js' , () => {
         before(() => {
             signal_stub = sandbox.stub(signalling, 'signalRestart').returns();
         });
+        
+        after(() => {
+            signal_stub.restore();
+        });
 
         it('should return restart response hard', async () => {
             json_message_fake.force = 'true';
@@ -116,6 +120,38 @@ describe('Test stop.js' , () => {
             expect(result).to.equal(return_err);
             expect(final_logger_error_stub).to.have.been.calledOnce;
             expect(final_logger_error_stub).to.have.been.calledWith(return_err);
+        });
+    });
+
+    describe('Test restartService function', () => {
+        let signal_stub;
+
+        before(() => {
+            signal_stub = sandbox.stub(signalling, 'signalRestart').returns();
+        });
+
+        it('Test missing service error thrown', () => {
+            const expected_err = test_util.generateHDBError("'service' is required", 400);
+            test_util.assertErrorSync(stop.restartService, [ { operation: "restart_service" }], expected_err);
+        });
+
+        it('Test invalid service error thrown', () => {
+            const expected_err = test_util.generateHDBError("Invalid service", 400);
+            test_util.assertErrorSync(stop.restartService, [ { operation: "restart_service", service: "no_service" }], expected_err);
+        });
+
+        it('Test signal restart called happy path', () => {
+            const expected_event = {
+                "originator": process.pid,
+                "force": false,
+                "service": "custom_functions"
+            };
+            const json_message_fake = {
+                operation: 'restart',
+                service: 'custom_functions'
+            };
+            stop.restartService(json_message_fake);
+            expect(signal_stub.args[0][0]).to.eql(expected_event);
         });
     });
 
