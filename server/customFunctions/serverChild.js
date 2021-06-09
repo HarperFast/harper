@@ -135,6 +135,7 @@ async function buildRoutes (server) {
                 options: {
                     hdbCore: parent.hdbCore,
                     logger: harper_logger,
+                    prefix: `/${project_folder.split('/').pop()}`,
                 }
             }));
         });
