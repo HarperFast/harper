@@ -6,17 +6,14 @@ const rewire = require('rewire');
 const fs = require('fs-extra');
 const path = require('path');
 
-const test_utils = require('../../test_utils');
 const operations = rewire('../../../server/customFunctions/operations');
 const env = require('../../../utility/environment/environmentManager');
-const terms = require('../../../utility/hdbTerms');
 const { TEST_DATA_BASE64_CF_PROJECT } = require('../../test_data');
 const { expect } = chai;
 
 describe('Test custom functions operations', () => {
     let sandbox = sinon.createSandbox();
     let CF_DIR_ROOT = path.resolve(__dirname, 'custom_functions');
-    const TEST_PROJECT_DIR = path.join(CF_DIR_ROOT, 'test2');
 
     before(() => {
         fs.ensureDirSync(CF_DIR_ROOT);
@@ -80,8 +77,9 @@ describe('Test custom functions operations', () => {
     }).timeout(5000);
 
     it('Test deployCustomFunctionProject properly deploys a project', async () => {
+        const readstream_stub = sandbox.stub(fs, 'createReadStream').returns({pipe: () => {}});
         const deploy_response = await operations.deployCustomFunctionProject({ project: 'test2', file: `${CF_DIR_ROOT}/test2.tar`, payload: TEST_DATA_BASE64_CF_PROJECT });
-
+        readstream_stub.restore();
         expect(deploy_response).to.equal('Successfully deployed project: test2');
     }).timeout(5000);
 
