@@ -3,6 +3,8 @@
 const chai = require('chai');
 const sinon = require('sinon');
 const rewire = require('rewire');
+const fs = require('fs-extra');
+const path = require('path');
 
 const test_utils = require('../../test_utils');
 const operations = rewire('../../../server/customFunctions/operations');
@@ -13,19 +15,16 @@ const { expect } = chai;
 
 describe('Test custom functions operations', () => {
     let sandbox = sinon.createSandbox();
-    let ROOT_ORIGINAL = env.getProperty(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY);
-    let CF_DIR_ROOT = `${ROOT_ORIGINAL}/test`;
+    let CF_DIR_ROOT = path.resolve(__dirname, 'custom_functions');
+    const TEST_PROJECT_DIR = path.join(CF_DIR_ROOT, 'test2');
 
     before(() => {
-        env.setProperty(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY, CF_DIR_ROOT);
-        env.setProperty(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_ENABLED_KEY, true);
-        // eslint-disable-next-line no-magic-numbers
-        env.setProperty(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_PORT_KEY, 9926);
+        fs.ensureDirSync(CF_DIR_ROOT);
+        env.initTestEnvironment();
     });
 
     after(() => {
-        env.setProperty(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY, ROOT_ORIGINAL);
-        test_utils.cleanUpDirectories(CF_DIR_ROOT);
+        fs.removeSync(CF_DIR_ROOT);
         sandbox.restore();
     });
 
@@ -78,13 +77,13 @@ describe('Test custom functions operations', () => {
         expect(Object.keys(response)).to.include('payload');
 
         expect(response.project).to.equal('test');
-    });
+    }).timeout(5000);
 
     it('Test deployCustomFunctionProject properly deploys a project', async () => {
         const deploy_response = await operations.deployCustomFunctionProject({ project: 'test2', file: `${CF_DIR_ROOT}/test2.tar`, payload: TEST_DATA_BASE64_CF_PROJECT });
 
         expect(deploy_response).to.equal('Successfully deployed project: test2');
-    });
+    }).timeout(5000);
 
     it('Test setCustomFunction creates a function file as expected', async () => {
         const response = await operations.setCustomFunction({ project: 'test', type: 'routes', file: 'example2', function_content: 'example2' });
