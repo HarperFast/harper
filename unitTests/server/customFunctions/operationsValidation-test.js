@@ -40,19 +40,19 @@ describe('Test operationsValidation module', () => {
 
         it('Test message returned if project does not exist', () => {
             fs_exists_stub.returns(false);
-            const result = checkProjectExists('unit_test', helpers_test);
+            const result = checkProjectExists(true, 'unit_test', helpers_test);
             expect(result).to.equal("Project does not exist. Create one using 'addCustomFunctionProject'");
         });
 
         it('Test project is returned if project exists', () => {
             fs_exists_stub.returns(true);
-            const result = checkProjectExists('unit_test', helpers_test);
+            const result = checkProjectExists(true, 'unit_test', helpers_test);
             expect(result).to.equal('unit_test');
         });
 
         it('Test message is returned if fs exists throws error', () => {
             fs_exists_stub.throws(test_error);
-            const result = checkProjectExists('unit_test', helpers_test);
+            const result = checkProjectExists(true, 'unit_test', helpers_test);
             expect(result).to.equal('Error validating request, check the log for more details');
         });
     });
@@ -162,6 +162,17 @@ describe('Test operationsValidation module', () => {
     });
 
     describe('Test addCustomFunctionProjectValidator function', () => {
+        let check_project_exists_stub = sandbox.stub().returns('unit_test');
+        let check_project_exists_rw;
+
+        before(() => {
+            check_project_exists_rw = validator.__set__('checkProjectExists', check_project_exists_stub);
+        });
+
+        after(() => {
+            check_project_exists_rw();
+        });
+
         it('Test validation messages are returned', () => {
             let req = {
                 "project": "",
