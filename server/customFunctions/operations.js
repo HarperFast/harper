@@ -205,7 +205,7 @@ async function dropCustomFunctionProject(req) {
     log.trace(`dropping custom function project`);
     const cf_dir = env.getProperty(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY);
     const { project } = req;
-    const path_to_project = path.join(dir, project);
+    const path_to_project = path.join(cf_dir, project);
 
     // check if the project exists
     const projectExists = fs.existsSync(path_to_project);
@@ -233,9 +233,9 @@ async function dropCustomFunctionProject(req) {
  */
 async function packageCustomFunctionProject(req) {
     log.trace(`packaging custom function project`);
-    const dir = env.getProperty(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY);
+    const cf_dir = env.getProperty(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY);
     const { project } = req;
-    const path_to_project = path.join(dir, project);
+    const path_to_project = path.join(cf_dir, project);
     const project_hash = uuidV4();
 
     // check if the project exists
@@ -279,9 +279,9 @@ async function packageCustomFunctionProject(req) {
  */
 async function deployCustomFunctionProject(req) {
     log.trace(`packaging custom function project`);
-    const dir = env.getProperty(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY);
+    const cf_dir = env.getProperty(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY);
     const { project, payload, file } = req;
-    const path_to_project = path.join(dir, project);
+    const path_to_project = path.join(cf_dir, project);
 
     // check if the project exists
     const projectExists = fs.existsSync(path_to_project);
