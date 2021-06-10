@@ -273,6 +273,7 @@ function initializeOperationFunctionMap(){
     op_func_map.set(terms.OPERATIONS_ENUM.SET_LICENSE, new OperationFunctionObject(reg.setLicense));
     op_func_map.set(terms.OPERATIONS_ENUM.GET_REGISTRATION_INFO, new OperationFunctionObject(reg.getRegistrationInfo));
     op_func_map.set(terms.OPERATIONS_ENUM.RESTART, new OperationFunctionObject(stop.restartProcesses));
+    op_func_map.set(terms.OPERATIONS_ENUM.RESTART_SERVICE, new OperationFunctionObject(stop.restartService));
     op_func_map.set(terms.OPERATIONS_ENUM.CATCHUP, new OperationFunctionObject(catchup));
     op_func_map.set(terms.OPERATIONS_ENUM.SYSTEM_INFORMATION, new OperationFunctionObject(system_information.systemInformation));
     op_func_map.set(terms.OPERATIONS_ENUM.DELETE_TRANSACTION_LOGS_BEFORE, new OperationFunctionObject(executeJob, delete_.deleteTransactionLogsBefore));
@@ -285,6 +286,8 @@ function initializeOperationFunctionMap(){
     op_func_map.set(terms.OPERATIONS_ENUM.GET_CUSTOM_FUNCTION, new OperationFunctionObject(custom_function_operations.getCustomFunction));
     op_func_map.set(terms.OPERATIONS_ENUM.SET_CUSTOM_FUNCTION, new OperationFunctionObject(custom_function_operations.setCustomFunction));
     op_func_map.set(terms.OPERATIONS_ENUM.DROP_CUSTOM_FUNCTION, new OperationFunctionObject(custom_function_operations.dropCustomFunction));
+    op_func_map.set(terms.OPERATIONS_ENUM.ADD_CUSTOM_FUNCTION_PROJECT, new OperationFunctionObject(custom_function_operations.addCustomFunctionProject));
+    op_func_map.set(terms.OPERATIONS_ENUM.DROP_CUSTOM_FUNCTION_PROJECT, new OperationFunctionObject(custom_function_operations.dropCustomFunctionProject));
 
     return op_func_map;
 }

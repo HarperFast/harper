@@ -116,6 +116,7 @@ required_permissions.set(reg.setLicense.name, new permission(true, []));
 required_permissions.set(delete_.deleteFilesBefore.name, new permission(true, []));
 required_permissions.set(delete_.deleteTransactionLogsBefore.name, new permission(true, []));
 required_permissions.set(stop.restartProcesses.name, new permission(true, []));
+required_permissions.set(stop.restartService.name, new permission(true, []));
 required_permissions.set(read_transaction_log.name, new permission(true, []));
 required_permissions.set(system_information.systemInformation.name, new permission(true, []));
 required_permissions.set(configuration.getConfiguration.name, new permission(true, []));
@@ -130,6 +131,8 @@ required_permissions.set(functions_operations.getCustomFunctions.name, new permi
 required_permissions.set(functions_operations.getCustomFunction.name, new permission(true, []));
 required_permissions.set(functions_operations.setCustomFunction.name, new permission(true, []));
 required_permissions.set(functions_operations.dropCustomFunction.name, new permission(true, []));
+required_permissions.set(functions_operations.addCustomFunctionProject.name, new permission(true, []));
+required_permissions.set(functions_operations.dropCustomFunctionProject.name, new permission(true, []));
 
 //Below are functions that are currently open to all roles
 required_permissions.set(reg.getRegistrationInfo.name, new permission(false, []));

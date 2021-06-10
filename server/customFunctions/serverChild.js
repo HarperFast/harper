@@ -2,7 +2,7 @@
 
 const util = require('util');
 const path = require('path');
-const fs = require('fs');
+const fg = require('fast-glob');
 
 const fastify = require('fastify');
 const fastify_cors = require('fastify-cors');
@@ -30,7 +30,7 @@ const { handleServerUncaughtException, serverErrorHandler } = require('../server
 
 const TRUE_COMPARE_VAL = 'TRUE';
 let customFunctionsServer = undefined;
-let endpoint_base = env.getProperty(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY);
+let CF_ROUTES_DIR = env.getProperty(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY);
 
 /**
  * Function called to start up server instance on a forked process - this method is called from customFunctionServer after process is
@@ -119,27 +119,26 @@ async function buildRoutes (server) {
     try {
         harper_logger.info('Custom Functions starting createServer');
 
-        const routesDir = `${endpoint_base}/routes`;
-        const helpersDir = `${endpoint_base}/helpers`;
-
-        if (!fs.existsSync(routesDir)){
-            fs.mkdirSync(routesDir, { recursive: true });
-        }
-        if (!fs.existsSync(helpersDir)){
-            fs.mkdirSync(helpersDir, { recursive: true });
-        }
-
         server.register(autoload, {
             dir: path.join(__dirname, 'plugins')
         });
 
-        server.register(autoload, parent => ({
-            dir: `${endpoint_base}/routes`,
-            options: {
-                hdbCore: parent.hdbCore,
-                logger: harper_logger,
-            }
-        }));
+        const project_folders = fg.sync(`${CF_ROUTES_DIR}/*`, {
+            onlyDirectories: true,
+            ignore: ['**/node_modules/**','**/helpers/**','**/routes/**']
+        });
+
+        project_folders.forEach((project_folder) => {
+            server.register(autoload, parent => ({
+                dir: `${project_folder}/routes`,
+                dirNameRoutePrefix: false,
+                options: {
+                    hdbCore: parent.hdbCore,
+                    logger: harper_logger,
+                    prefix: `/${project_folder.split('/').pop()}`,
+                }
+            }));
+        });
 
         harper_logger.info('Custom Functions completed createServer');
     } catch (e) {

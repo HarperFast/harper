@@ -20,6 +20,7 @@ const {promisify} = require('util');
 const moment = require('moment');
 const hdb_sql = require('../sqlTranslator/index');
 const file_load_validator = require('../validation/fileLoadValidator');
+const bulkDeleteValidator = require('../validation/bulkDeleteValidator');
 const { handleHDBError, hdb_errors } = require('../utility/errors/hdbError');
 const { HTTP_STATUS_CODES } = hdb_errors;
 
@@ -115,6 +116,13 @@ async function addJob(json_body) {
             break;
         case hdb_terms.OPERATIONS_ENUM.IMPORT_FROM_S3:
             validation_msg = file_load_validator.s3FileObject(json_body);
+            break;
+        case hdb_terms.OPERATIONS_ENUM.DELETE_FILES_BEFORE:
+        case hdb_terms.OPERATIONS_ENUM.DELETE_RECORDS_BEFORE:
+            validation_msg = bulkDeleteValidator(json_body, 'date');
+            break;
+        case hdb_terms.OPERATIONS_ENUM.DELETE_TRANSACTION_LOGS_BEFORE:
+            validation_msg = bulkDeleteValidator(json_body, 'timestamp');
             break;
         default:
             break;

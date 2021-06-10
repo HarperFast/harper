@@ -58,6 +58,7 @@
     "colors": "^1.4.0",
     "compression": "^1.7.4",
     "cors": "^2.8.5",
+    "fast-glob": "^3.2.5",
     "fastify": "^3.13.0",
     "fastify-autoload": "^3.7.1",
     "fastify-compress": "^3.4.0",
