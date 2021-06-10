@@ -13,7 +13,6 @@ const env = require('../../utility/environment/environmentManager');
 const { handleHDBError, hdb_errors } = require('../../utility/errors/hdbError');
 const { HDB_ERROR_MSGS, HTTP_STATUS_CODES } = hdb_errors;
 
-
 /**
  * Read the settings.js file and return the
  *
@@ -34,7 +33,6 @@ async function customFunctionsStatus() {
     }
     return response;
 }
-
 
 /**
  * Read the user-defined custom_functions/routes directory and return the file names
@@ -62,7 +60,6 @@ async function getCustomFunctions() {
     return response;
 }
 
-
 /**
  * Read the specified function_name file in the custom_functions/routes directory and return the file content
  *
@@ -78,7 +75,7 @@ async function getCustomFunction(req) {
         req.file = path.parse(req.file).name;
     }
 
-    const validation = validator.getCustomFunctionValidator(req);
+    const validation = validator.getDropCustomFunctionValidator(req);
     if (validation) {
         throw handleHDBError(validation, validation.message, HTTP_STATUS_CODES.BAD_REQUEST);
     }
@@ -95,7 +92,6 @@ async function getCustomFunction(req) {
     }
 }
 
-
 /**
  * Write the supplied function_content to the provided function_name file in the custom_functions/routes directory
  *
@@ -103,20 +99,30 @@ async function getCustomFunction(req) {
  * @returns {string}
  */
 async function setCustomFunction(req) {
+    if (req.project) {
+        req.project = path.parse(req.project).name;
+    }
+
+    if (req.file) {
+        req.file = path.parse(req.file).name;
+    }
+
+    const validation = validator.setCustomFunctionValidator(req);
+    if (validation) {
+        throw handleHDBError(validation, validation.message, HTTP_STATUS_CODES.BAD_REQUEST);
+    }
+
     log.trace(`setting custom function file content`);
-    const dir = env.getProperty(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY);
+    const cf_dir = env.getProperty(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY);
     const { project, type, file, function_content } = req;
 
     try {
-        fs.outputFileSync(`${dir}/${project}/${type}/${file}.js`, function_content);
+        fs.outputFileSync(path.join(cf_dir, project, type, file + '.js'), function_content);
         return `Successfully updated custom function: ${file}.js`;
     } catch (err) {
-        const err_string = `Error setting custom function: ${err}`;
-        log.error(err_string);
-        throw err_string;
+        throw handleHDBError(new Error(), HDB_ERROR_MSGS.SET_FUNCTION, HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR, log.ERR, err);
     }
 }
-
 
 /**
  * Delete the provided function_name file from the custom_functions/routes directory
@@ -125,17 +131,28 @@ async function setCustomFunction(req) {
  * @returns {string}
  */
 async function dropCustomFunction(req) {
-    log.trace(`setting custom function file content`);
-    const dir = env.getProperty(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY);
+    if (req.project) {
+        req.project = path.parse(req.project).name;
+    }
+
+    if (req.file) {
+        req.file = path.parse(req.file).name;
+    }
+
+    const validation = validator.getDropCustomFunctionValidator(req);
+    if (validation) {
+        throw handleHDBError(validation, validation.message, HTTP_STATUS_CODES.BAD_REQUEST);
+    }
+
+    log.trace(`dropping custom function file`);
+    const cf_dir = env.getProperty(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY);
     const { project, type, file } = req;
 
     try {
-        fs.unlinkSync(`${dir}/${project}/${type}/${file}.js`);
+        fs.unlinkSync(path.join(cf_dir, project, type, file + '.js'));
         return `Successfully deleted custom function: ${file}.js`;
     } catch (err) {
-        const err_string = `Error deleting custom function: ${err}`;
-        log.error(err_string);
-        throw err_string;
+        throw handleHDBError(new Error(), HDB_ERROR_MSGS.DROP_FUNCTION, HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR, log.ERR, err);
     }
 }
 
@@ -146,20 +163,26 @@ async function dropCustomFunction(req) {
  * @returns {string}
  */
 async function addCustomFunctionProject(req) {
+    if (req.project) {
+        req.project = path.parse(req.project).name;
+    }
+
+    const validation = validator.addCustomFunctionProjectValidator(req);
+    if (validation) {
+        throw handleHDBError(validation, validation.message, HTTP_STATUS_CODES.BAD_REQUEST);
+    }
+
     log.trace(`adding custom function project`);
-    const dir = env.getProperty(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY);
+    const cf_dir = env.getProperty(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY);
     const { project } = req;
-    let cwd;
 
     try {
-        cwd = `${dir}/${project}`;
-        fs.mkdirSync(cwd, { recursive: true });
-        fs.copySync(path.join(__dirname, 'template'), cwd);
+        const project_dir = path.join(cf_dir, project);
+        fs.mkdirSync(project_dir, { recursive: true });
+        fs.copySync(path.join(__dirname, 'template'), project_dir);
         return `Successfully created custom function project: ${project}`;
     } catch (err) {
-        const err_string = `Error creating custom function project: ${err}`;
-        log.error(err_string);
-        throw err_string;
+        throw handleHDBError(new Error(), HDB_ERROR_MSGS.ADD_FUNCTION, HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR, log.ERR, err);
     }
 }
 
@@ -170,8 +193,17 @@ async function addCustomFunctionProject(req) {
  * @returns {string}
  */
 async function dropCustomFunctionProject(req) {
+    if (req.project) {
+        req.project = path.parse(req.project).name;
+    }
+
+    const validation = validator.dropCustomFunctionProjectValidator(req);
+    if (validation) {
+        throw handleHDBError(validation, validation.message, HTTP_STATUS_CODES.BAD_REQUEST);
+    }
+
     log.trace(`dropping custom function project`);
-    const dir = env.getProperty(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY);
+    const cf_dir = env.getProperty(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY);
     const { project } = req;
     const path_to_project = path.join(dir, project);
 
@@ -185,12 +217,11 @@ async function dropCustomFunctionProject(req) {
     }
 
     try {
-        fs.rmdirSync(`${dir}/${project}`, { recursive: true });
+        const project_dir = path.join(cf_dir, project);
+        fs.rmdirSync(project_dir, { recursive: true });
         return `Successfully deleted project: ${project}`;
     } catch (err) {
-        const err_string = `Error creating custom function project: ${err}`;
-        log.error(err_string);
-        throw err_string;
+        throw handleHDBError(new Error(), HDB_ERROR_MSGS.DROP_FUNCTION_PROJECT, HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR, log.ERR, err);
     }
 }
 
