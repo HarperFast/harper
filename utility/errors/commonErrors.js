@@ -201,9 +201,11 @@ const CUSTOM_FUNCTIONS_ERROR_MSGS = {
     NO_FILE: 'File does not exist',
     BAD_FILE_NAME: 'File name can only contain alphanumeric and underscore characters',
     BAD_PROJECT_NAME: 'Project name can only contain alphanumeric and underscores characters',
+    BAD_PACKAGE: 'Packaged project must be base64-encoded tar file of project directory',
     DROP_FUNCTION: 'Error dropping custom function, check the log for more details',
     ADD_FUNCTION: 'Error adding custom function project, check the log for more details',
-    DROP_FUNCTION_PROJECT: 'Error dropping custom function project, check the log for more details'
+    DROP_FUNCTION_PROJECT: 'Error dropping custom function project, check the log for more details',
+    BAD_FILE_PATH: 'Filepath must be valid, and contain the name of the tarball you wish to write',
 };
 
 //into a single export while still allowing us to group them here in a more readable/searchable way

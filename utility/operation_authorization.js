@@ -133,6 +133,8 @@ required_permissions.set(functions_operations.setCustomFunction.name, new permis
 required_permissions.set(functions_operations.dropCustomFunction.name, new permission(true, []));
 required_permissions.set(functions_operations.addCustomFunctionProject.name, new permission(true, []));
 required_permissions.set(functions_operations.dropCustomFunctionProject.name, new permission(true, []));
+required_permissions.set(functions_operations.packageCustomFunctionProject.name, new permission(true, []));
+required_permissions.set(functions_operations.deployCustomFunctionProject.name, new permission(true, []));
 
 //Below are functions that are currently open to all roles
 required_permissions.set(reg.getRegistrationInfo.name, new permission(false, []));
