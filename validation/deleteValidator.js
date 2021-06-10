@@ -1,22 +1,13 @@
-const { common_validators } = require('./common_validators');
 const validator = require('./validationWrapper');
+const Joi = require('joi');
+const { hdb_schema_table } = require('./common_validators');
 
-const constraints = {
-    schema: {
-        presence: true,
-        format: common_validators.schema_format,
-        length: common_validators.schema_length
-    },
-    table: {
-        presence: true,
-        format: common_validators.schema_format,
-        length: common_validators.schema_length
-    },
-    hash_value: {
-        presence: true,
-    }
-};
+const delete_schema = Joi.object({
+    schema: hdb_schema_table,
+    table: hdb_schema_table,
+    hash_values: Joi.array().required()
+});
 
 module.exports = function (delete_object) {
-    return validator.validateObject(delete_object, constraints);
+    return validator.validateBySchema(delete_object, delete_schema);
 };

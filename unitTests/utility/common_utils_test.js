@@ -734,7 +734,7 @@ describe('Test checkSchemaTableExist', () => {
         };
         let result = cu_rewire.checkSchemaTableExist(test_obj.schema, test_obj.table);
 
-        expect(result).to.equal(`Table '${test_obj.table}' does not exist in schema '${test_obj.schema}'`);
+        expect(result).to.equal(`Table '${test_obj.schema}.${test_obj.table}' does not exist`);
     });
 });
 
