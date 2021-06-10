@@ -232,6 +232,15 @@ async function dropCustomFunctionProject(req) {
  * @returns Object package info: { project, payload, file }
  */
 async function packageCustomFunctionProject(req) {
+    if (req.project) {
+        req.project = path.parse(req.project).name;
+    }
+
+    const validation = validator.packageCustomFunctionProjectValidator(req);
+    if (validation) {
+        throw handleHDBError(validation, validation.message, HTTP_STATUS_CODES.BAD_REQUEST);
+    }
+
     log.trace(`packaging custom function project`);
     const cf_dir = env.getProperty(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY);
     const { project } = req;
@@ -278,6 +287,15 @@ async function packageCustomFunctionProject(req) {
  * @returns {string}
  */
 async function deployCustomFunctionProject(req) {
+    if (req.project) {
+        req.project = path.parse(req.project).name;
+    }
+
+    const validation = validator.deployCustomFunctionProjectValidator(req);
+    if (validation) {
+        throw handleHDBError(validation, validation.message, HTTP_STATUS_CODES.BAD_REQUEST);
+    }
+
     log.trace(`deploying custom function project`);
     const cf_dir = env.getProperty(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY);
     const { project, payload, file } = req;

@@ -17,7 +17,9 @@ module.exports = {
     getDropCustomFunctionValidator,
     setCustomFunctionValidator,
     addCustomFunctionProjectValidator,
-    dropCustomFunctionProjectValidator
+    dropCustomFunctionProjectValidator,
+    packageCustomFunctionProjectValidator,
+    deployCustomFunctionProjectValidator
 };
 
 /**
@@ -135,4 +137,36 @@ function dropCustomFunctionProjectValidator(req) {
     });
 
     return validator.validateBySchema(req, drop_func_schema);
+}
+
+/**
+ * Validate packageCustomFunctionProject requests.
+ * @param req
+ * @returns {*}
+ */
+function packageCustomFunctionProjectValidator(req) {
+    const package_proj_schema = Joi.object({
+        project: Joi.string().pattern(PROJECT_FILE_NAME_REGEX).custom(checkProjectExists.bind(null, true)).required()
+        .messages({'string.pattern.base': HDB_ERROR_MSGS.BAD_PROJECT_NAME}),
+    });
+
+    return validator.validateBySchema(req, package_proj_schema);
+}
+
+/**
+ * Validate deployCustomFunctionProject requests.
+ * @param req
+ * @returns {*}
+ */
+function deployCustomFunctionProjectValidator(req) {
+    const deploy_proj_schema = Joi.object({
+        project: Joi.string().pattern(PROJECT_FILE_NAME_REGEX).required()
+        .messages({'string.pattern.base': HDB_ERROR_MSGS.BAD_PROJECT_NAME}),
+        payload: Joi.string().required()
+        .messages({'string.pattern.base': HDB_ERROR_MSGS.BAD_PACKAGE}),
+        file: Joi.string().required()
+        .messages({'string.pattern.base': HDB_ERROR_MSGS.BAD_FILE_PATH}),
+    });
+
+    return validator.validateBySchema(req, deploy_proj_schema);
 }

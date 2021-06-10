@@ -5,8 +5,6 @@ const sinon = require('sinon');
 const fs = require('fs-extra');
 const { expect } = chai;
 const rewire = require('rewire');
-const hdb_utils = require('../../../utility/common_utils');
-const test_utils = require('../../test_utils');
 const env_mangr = require('../../../utility/environment/environmentManager');
 const validator = rewire('../../../server/customFunctions/operationsValidation');
 
