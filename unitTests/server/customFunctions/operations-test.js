@@ -8,6 +8,7 @@ const test_utils = require('../../test_utils');
 const operations = rewire('../../../server/customFunctions/operations');
 const env = require('../../../utility/environment/environmentManager');
 const terms = require('../../../utility/hdbTerms');
+const { TEST_DATA_BASE64_CF_PROJECT } = require('../../test_data');
 const { expect } = chai;
 
 describe('Test custom functions operations', () => {
@@ -66,6 +67,25 @@ describe('Test custom functions operations', () => {
         expect(response).to.contain('use strict');
     });
 
+    it('Test packageCustomFunctionProject properly tars up a project directory', async () => {
+        const response = await operations.packageCustomFunctionProject({ project: 'test' });
+
+        expect(response).to.be.instanceOf(Object);
+
+        expect(Object.keys(response)).to.have.length(3);
+        expect(Object.keys(response)).to.include('project');
+        expect(Object.keys(response)).to.include('file');
+        expect(Object.keys(response)).to.include('payload');
+
+        expect(response.project).to.equal('test');
+    });
+
+    it('Test deployCustomFunctionProject properly deploys a project', async () => {
+        const deploy_response = await operations.deployCustomFunctionProject({ project: 'test2', file: `${CF_DIR_ROOT}/test2.tar`, payload: TEST_DATA_BASE64_CF_PROJECT });
+
+        expect(deploy_response).to.equal('Successfully deployed project: test2');
+    });
+
     it('Test setCustomFunction creates a function file as expected', async () => {
         const response = await operations.setCustomFunction({ project: 'test', type: 'routes', file: 'example2', function_content: 'example2' });
 
@@ -96,7 +116,7 @@ describe('Test custom functions operations', () => {
         const projectName = Object.keys(endpoints)[0];
 
         expect(endpoints).to.be.instanceOf(Object);
-        expect(Object.keys(endpoints)).to.have.length(1);
+        expect(Object.keys(endpoints)).to.have.length(2);
         expect(projectName).to.equal('test');
         expect(endpoints[projectName]).to.be.instanceOf(Object);
         expect(Object.keys(endpoints[projectName])).to.have.length(2);
@@ -116,6 +136,8 @@ describe('Test custom functions operations', () => {
         const endpoints = await operations.getCustomFunctions();
 
         expect(endpoints).to.be.instanceOf(Object);
-        expect(Object.keys(endpoints)).to.have.length(0);
+        expect(Object.keys(endpoints)).to.have.length(1);
     });
+
+
 });

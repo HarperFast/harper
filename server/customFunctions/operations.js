@@ -3,11 +3,12 @@
 const fs = require('fs-extra');
 const fg = require('fast-glob');
 const path = require('path');
+const tar = require('tar-fs');
+const uuidV4 = require('uuid/v4');
 
 const validator = require('./operationsValidation');
 const log = require('../../utility/logging/harper_logger');
 const terms = require('../../utility/hdbTerms');
-const hdb_utils = require('../../utility/common_utils');
 const env = require('../../utility/environment/environmentManager');
 const { handleHDBError, hdb_errors } = require('../../utility/errors/hdbError');
 const { HDB_ERROR_MSGS, HTTP_STATUS_CODES } = hdb_errors;
@@ -172,6 +173,16 @@ async function dropCustomFunctionProject(req) {
     log.trace(`dropping custom function project`);
     const dir = env.getProperty(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY);
     const { project } = req;
+    const path_to_project = path.join(dir, project);
+
+    // check if the project exists
+    const projectExists = fs.existsSync(path_to_project);
+
+    if (!projectExists) {
+        const err_string = `Unable to locate custom function project: ${project}`;
+        log.error(err_string);
+        throw err_string;
+    }
 
     try {
         fs.rmdirSync(`${dir}/${project}`, { recursive: true });
@@ -183,6 +194,93 @@ async function dropCustomFunctionProject(req) {
     }
 }
 
+/**
+ * Tar a project folder from the custom_functions folder
+ *
+ * @param {NodeObject} req
+ * @returns Object package info: { project, payload, file }
+ */
+async function packageCustomFunctionProject(req) {
+    log.trace(`packaging custom function project`);
+    const dir = env.getProperty(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY);
+    const { project } = req;
+    const path_to_project = path.join(dir, project);
+    const project_hash = uuidV4();
+
+    // check if the project exists
+    const projectExists = fs.existsSync(path_to_project);
+
+    if (!projectExists) {
+        const err_string = `Unable to locate custom function project: ${project}`;
+        log.error(err_string);
+        throw err_string;
+    }
+
+    // ensure /tmp exists
+    if (!fs.existsSync('/tmp')){
+        fs.mkdirSync('/tmp');
+    }
+
+    const file = `/tmp/${project_hash}.tar`;
+
+    // pack the directory
+    tar.pack(path_to_project).pipe(fs.createWriteStream(file));
+
+    // wait for a second
+    // eslint-disable-next-line no-magic-numbers
+    await new Promise(resolve => setTimeout(resolve, 2000));
+
+    // read the output into base64
+    const payload = fs.readFileSync(file, { encoding: 'base64' });
+
+    // delete the file
+    fs.unlinkSync(file);
+
+    // return the package payload as base64-encoded string
+    return { project, payload, file };
+}
+
+/**
+ * Tar a project folder from the custom_functions folder
+ *
+ * @param {NodeObject} req
+ * @returns {string}
+ */
+async function deployCustomFunctionProject(req) {
+    log.trace(`packaging custom function project`);
+    const dir = env.getProperty(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY);
+    const { project, payload, file } = req;
+    const path_to_project = path.join(dir, project);
+
+    // check if the project exists
+    const projectExists = fs.existsSync(path_to_project);
+
+    if (!projectExists) {
+        fs.mkdirSync(path_to_project);
+    }
+
+    // ensure /tmp exists
+    if (!fs.existsSync('/tmp')){
+        fs.mkdirSync('/tmp');
+    }
+
+    // pack the directory
+    fs.writeFileSync(file, payload, {encoding: 'base64'});
+
+    // wait for a second
+    // eslint-disable-next-line no-magic-numbers
+    await new Promise(resolve => setTimeout(resolve, 2000));
+
+    // extract the reconstituted file to the proper project directory
+    fs.createReadStream(file).pipe(tar.extract(path_to_project));
+
+    // delete the file
+    fs.unlinkSync(file);
+
+    // return the package payload as base64-encoded string
+    return `Successfully deployed project: ${project}`;
+}
+
 module.exports = {
     customFunctionsStatus,
     getCustomFunctions,
@@ -191,4 +289,6 @@ module.exports = {
     dropCustomFunction,
     addCustomFunctionProject,
     dropCustomFunctionProject,
+    packageCustomFunctionProject,
+    deployCustomFunctionProject,
 };
