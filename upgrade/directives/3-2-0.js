@@ -84,7 +84,7 @@ function updateSettingsFile_3_2_0() {
         `   ;The port the IPC server will run on.\n` +
         `${HDB_SETTINGS_NAMES.IPC_SERVER_PORT} = ${getOldPropsValue(HDB_SETTINGS_NAMES.IPC_SERVER_PORT, old_hdb_props, true)}\n` +
         `   ;Set to true to enable custom API endpoints.  Requires a valid enterprise license.  \n` +
-        `${HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_ENABLED_KEY} = ${HDB_SETTINGS_DEFAULT_VALUES.CUSTOM_FUNCTIONS_ENABLED_KEY}\n` +
+        `${HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_ENABLED_KEY} = ${HDB_SETTINGS_DEFAULT_VALUES.CUSTOM_FUNCTIONS}\n` +
         `   ;The port used to access the custom functions server.\n` +
         `${HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_PORT_KEY} = ${HDB_SETTINGS_DEFAULT_VALUES.CUSTOM_FUNCTIONS_PORT}\n` +
         `   ;The path to the folder containing HarperDB custom API endpoint files.\n` +
