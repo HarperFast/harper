@@ -25,7 +25,7 @@ describe('processDirectives Module', function() {
     describe('Test processDirectives()', () => {
         let processDirectives_rw = directivesManager_rw.__get__('processDirectives');
         const directive_msgs = [ 'processing settings func for 3.0.0 upgrade', 'processing other func for 3.0.0 upgrade',
-            'processing a second func for 3.0.0 upgrade', 'processing settings func for 3.0.1 upgrade', 'processing other func for 3.0.1 upgrade',
+            'processing a second func for 3.0.0 upgrade', 'processing settings func for 3.1.0 upgrade', 'processing other func for 3.1.0 upgrade',
             'processing settings func for 4.1.1 upgrade', 'processing other func for 4.1.1 upgrade'];
         let sandbox;
         let directive_stub;
@@ -49,8 +49,8 @@ describe('processDirectives Module', function() {
             directivesManager_rw.__set__('directivesController', directivesController_stub);
         })
 
-        it('test upgrade from 3.0 to 3.0.1', async function() {
-            const test_upgrade_ver = '3.0.1';
+        it('test upgrade from 3.0 to 3.1.0', async function() {
+            const test_upgrade_ver = '3.1.0';
             const test_upgrade_obj = generateUpgradeObj('3.0.0', test_upgrade_ver);
 
             const test_result = await processDirectives_rw(test_upgrade_obj);
@@ -306,7 +306,7 @@ describe('processDirectives Module', function() {
 
             let directives_to_run = getUpgradeDirectivesToInstall_rw(loaded_directives);
             assert.equal(directives_to_run.length, 2, 'Expected 2 version values back');
-            assert.equal(directives_to_run[0].version, '3.0.1', 'Expected 3.0.1 version returned');
+            assert.equal(directives_to_run[0].version, '3.1.0', 'Expected 3.1.0 version returned');
             assert.equal(directives_to_run[1].version, '4.1.1', 'Expected 4.1.1 version returned');
         });
 
@@ -316,7 +316,7 @@ describe('processDirectives Module', function() {
             loaded_directives.push(new upgrade_directive('3.1.1.22'));
             let directives_to_run = getUpgradeDirectivesToInstall_rw(loaded_directives);
             assert.equal(directives_to_run.length, 2, 'Expected 2 upgrade numbers back');
-            assert.equal(directives_to_run[0].version, '3.0.1', 'Expected 3.0.1 version returned');
+            assert.equal(directives_to_run[0].version, '3.1.0', 'Expected 3.1.0 version returned');
             assert.equal(directives_to_run[1].version, '4.1.1', 'Expected 4.1.1 version returned');
         });
 
