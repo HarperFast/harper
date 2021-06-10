@@ -296,14 +296,14 @@ async function deployCustomFunctionProject(req) {
     }
 
     // pack the directory
-    fs.writeFileSync(file, payload, {encoding: 'base64'});
+    fs.writeFileSync(file, payload, { encoding: 'base64' });
 
     // wait for a second
     // eslint-disable-next-line no-magic-numbers
     await new Promise(resolve => setTimeout(resolve, 2000));
 
     // extract the reconstituted file to the proper project directory
-    fs.createReadStream(file).pipe(tar.extract(path_to_project));
+    fs.createReadStream(file).pipe(tar.extract(path_to_project, { readable: true, writable: true }));
 
     // delete the file
     fs.unlinkSync(file);
