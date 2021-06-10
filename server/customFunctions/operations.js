@@ -278,7 +278,7 @@ async function packageCustomFunctionProject(req) {
  * @returns {string}
  */
 async function deployCustomFunctionProject(req) {
-    log.trace(`packaging custom function project`);
+    log.trace(`deploying custom function project`);
     const cf_dir = env.getProperty(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY);
     const { project, payload, file } = req;
     const path_to_project = path.join(cf_dir, project);
@@ -303,7 +303,7 @@ async function deployCustomFunctionProject(req) {
     await new Promise(resolve => setTimeout(resolve, 2000));
 
     // extract the reconstituted file to the proper project directory
-    fs.createReadStream(file).pipe(tar.extract(path_to_project, { readable: true, writable: true }));
+    fs.createReadStream(file).pipe(tar.extract(path_to_project));
 
     // delete the file
     fs.unlinkSync(file);
