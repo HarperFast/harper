@@ -74,7 +74,7 @@ describe('test readTransactionLog module', ()=>{
             error = e;
         }
 
-        assert.deepStrictEqual(error, new Error(`Table '${obj.table}' does not exist in schema '${obj.schema}'`));
+        assert.deepStrictEqual(error, new Error(`Table '${obj.schema}.${obj.table}' does not exist`));
     });
 
     it('test invalid search type', async()=>{

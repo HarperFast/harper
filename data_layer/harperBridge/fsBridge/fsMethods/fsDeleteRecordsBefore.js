@@ -3,7 +3,7 @@
 const buildFolderPath = require('../fsUtility/buildFolderPath');
 const getBasePath = require('../fsUtility/getBasePath');
 const fsDeleteRecords = require('../fsMethods/fsDeleteRecords');
-const bulkDeleteValidator = require('../../../../validation/bulkDeleteValidator');
+const deleteValidator = require('../../../../validation/deleteValidator');
 const log = require('../../../../utility/logging/harper_logger');
 const hdb_utils = require('../../../../utility/common_utils');
 const terms = require('../../../../utility/hdbTerms');
@@ -131,7 +131,7 @@ async function removeFiles(schema, table, hash_attribute, ids_to_remove) {
         "hash_values": ids_to_remove
     };
 
-    let validation = bulkDeleteValidator(records_to_remove);
+    let validation = deleteValidator(records_to_remove);
     if (validation) {
         throw validation;
     }

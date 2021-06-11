@@ -1,35 +1,22 @@
 const validator = require('./validationWrapper');
-const validate = require('validate.js');
-const { common_validators } = require('./common_validators');
+const Joi = require('joi');
+const { hdb_schema_table } = require('./common_validators');
 
-validate.validators.typeArray = function(value, options, key, attributes) {
-    if (options === true) {
-        if (validate.isArray(value)) {
-            return null;
-        } else {
-            return key + " has value " + value + " which is not an Array";
-        }
-    } else {
-        return null;
-    }
+const validation_schema = {
+    schema: hdb_schema_table,
+    table: hdb_schema_table
 };
 
-const constraints = {
-    schema: {
-        presence: true,
-        format: common_validators.schema_format,
-        length: common_validators.schema_length
-    },
-    table: {
-        presence: true,
-        format: common_validators.schema_format,
-        length: common_validators.schema_length
-    },
-    hash_values: {
-        presence: true,
-        typeArray: true
-    }
+const date_schema = {
+    date: Joi.date().iso().required()
 };
-module.exports = function (delete_object) {
-    return validator.validateObject(delete_object, constraints);
+
+const timestamp_schema = {
+    timestamp: Joi.date().timestamp().required().messages({ "date.format": "'timestamp' is invalid" })
+};
+
+module.exports = function (delete_object, date_format) {
+    const final_schema = date_format === 'timestamp' ? {...validation_schema, ...timestamp_schema} : {...validation_schema, ...date_schema};
+    const bulk_delete_schema = Joi.object(final_schema);
+    return validator.validateBySchema(delete_object, bulk_delete_schema);
 };

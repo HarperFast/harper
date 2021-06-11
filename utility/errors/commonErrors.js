@@ -178,6 +178,7 @@ const USER_ERROR_MSGS = {
 };
 
 const VALIDATION_ERROR_MSGS = {
+    INVALID_DATE: 'Invalid date, must be in ISO-8601 format (YYYY-MM-DD).',
     SEARCH_CONDITIONS_INVALID_SORT_ATTRIBUTE: (attribute) => `invalid sort attribute '${attribute}', the attribute must either be the table's hash attribute or an attribute used in conditions.`
 };
 
