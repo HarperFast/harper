@@ -399,11 +399,17 @@ async function launchCustomFunctionServer() {
         // Launch the Custom Function server as a child background process.
         try {
             const cf_args = hdb_utils.createForkArgs(path.resolve(__dirname, '../', 'server/customFunctions', terms.CUSTOM_FUNCTION_PROC_NAME));
-
-            cf_child = fork(cf_args[0], [cf_args[1]], {
+            let fork_options = {
                 detached: true,
                 stdio: 'ignore'
-            });
+            };
+
+            //because we may need to push logs to std out/err if the process runs in foreground we need to remove the stdio: ignore
+            if(isForegroundProcess()){
+                delete fork_options.stdio;
+            }
+
+            cf_child = fork(cf_args[0], [cf_args[1]], fork_options);
 
             final_logger.trace(`custom function for args: ${cf_args[0]}`);
         } catch(err) {
