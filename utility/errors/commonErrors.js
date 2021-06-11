@@ -195,7 +195,7 @@ const CUSTOM_FUNCTIONS_ERROR_MSGS = {
     GET_FUNCTIONS: 'Error getting custom functions, check the log for more details',
     GET_FUNCTION: 'Error getting custom function, check the log for more details',
     SET_FUNCTION: 'Error setting custom function, check the log for more details',
-    NO_PROJECT: "Project does not exist. Create one using 'addCustomFunctionProject'",
+    NO_PROJECT: "Project does not exist. Create one using 'add_custom_function_project'",
     PROJECT_EXISTS: 'Project already exists',
     VALIDATION_ERR: 'Error validating request, check the log for more details',
     NO_FILE: 'File does not exist',
