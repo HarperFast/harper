@@ -3,6 +3,7 @@
 const hdb_utils = require('../utility/common_utils');
 const hdb_terms = require('../utility/hdbTerms');
 const hdb_license = require('../utility/registration/hdb_license');
+const env = require('../utility/environment/environmentManager');
 const path = require('path');
 const fork = require('child_process').fork;
 
@@ -25,11 +26,20 @@ const HDB_STOP_ERR = 'Restart had an error trying to stop HDB server.';
         const license = hdb_license.licenseSearch();
         const mem_value = license.ram_allocation ? hdb_terms.MEM_SETTING_KEY + license.ram_allocation
             : hdb_terms.MEM_SETTING_KEY + hdb_terms.RAM_ALLOCATION_ENUM.DEFAULT;
-        const hdb_child = fork(hdb_args[0], [hdb_args[1]], {
+
+        let options = {
             detached: true,
             stdio: 'ignore',
             execArgv: [mem_value]
-        });
+        };
+
+        //if LOG_TO_STDSTREAM in settings = true we do not want to ignore the stdio so that logging gets pushed to the terminal.
+        const log_to_streams = env.get(hdb_terms.HDB_SETTINGS_NAMES.LOG_TO_STDSTREAMS);
+        if(!hdb_utils.isEmpty(log_to_streams) && log_to_streams.toString().toLowerCase() === 'true'){
+            delete options.stdio;
+        }
+
+        const hdb_child = fork(hdb_args[0], [hdb_args[1]], options);
         hdb_child.unref();
         process.exit(0);
     } catch(err) {
