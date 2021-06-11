@@ -39,7 +39,7 @@ describe('Test operationsValidation module', () => {
         it('Test message returned if project does not exist', () => {
             fs_exists_stub.returns(false);
             const result = checkProjectExists(true, 'unit_test', helpers_test);
-            expect(result).to.equal("Project does not exist. Create one using 'addCustomFunctionProject'");
+            expect(result).to.equal("Project does not exist. Create one using 'add_custom_function_project'");
         });
 
         it('Test project is returned if project exists', () => {
