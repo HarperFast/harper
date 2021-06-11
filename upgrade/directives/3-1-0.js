@@ -127,10 +127,12 @@ function updateSettingsFile_3_1_0() {
     return upgrade_success_msg;
 }
 
-function moveLicenseDirectory(){
+function moveLicenseFiles(){
     const LICENSE_FILE_PATH = path.join(hdb_utils.getHomeDir(), terms.HDB_HOME_DIR_NAME, terms.LICENSE_KEY_DIR_NAME, terms.LICENSE_FILE_NAME);
     const REG_FILE_PATH = path.join(hdb_utils.getHomeDir(), terms.HDB_HOME_DIR_NAME, terms.LICENSE_KEY_DIR_NAME, terms.REG_KEY_FILE_NAME);
     const HDB_LICENSE_DIR = path.join(env.getHdbBasePath(), terms.LICENSE_KEY_DIR_NAME, terms.LICENSE_FILE_NAME);
+    const NEW_LICENSE_FILE_PATH = path.join(HDB_LICENSE_DIR, terms.LICENSE_FILE_NAME);
+    const NEW_REG_FILE_PATH = path.join(HDB_LICENSE_DIR, terms.REG_KEY_FILE_NAME);
 
     const settings_update_msg = 'Move license files for version 3.1.0';
     console.log(settings_update_msg);
@@ -139,7 +141,7 @@ function moveLicenseDirectory(){
     const create_license_dir_msg = 'Creating .license directory';
     console.log(create_license_dir_msg);
     hdb_log.info(create_license_dir_msg);
-    fs.mkdirSync(HDB_LICENSE_DIR);
+    fs.mkdirpSync(HDB_LICENSE_DIR);
 
     try {
         fs.accessSync(LICENSE_FILE_PATH);
@@ -149,7 +151,7 @@ function moveLicenseDirectory(){
             console.log(move_license_msg);
             hdb_log.info(move_license_msg);
 
-            fs.moveSync(LICENSE_FILE_PATH, HDB_LICENSE_DIR);
+            fs.moveSync(LICENSE_FILE_PATH, NEW_LICENSE_FILE_PATH);
 
             const success_move_license_msg = 'License file successfully moved.';
             console.log(success_move_license_msg);
@@ -161,8 +163,8 @@ function moveLicenseDirectory(){
         }
     }catch(e){
         const license_dir_no_exist = `license file '${LICENSE_FILE_PATH}' does not exist.`;
-        console.log(license_dir_no_exist);
-        hdb_log.info(license_dir_no_exist);
+        console.warn(license_dir_no_exist);
+        hdb_log.warn(license_dir_no_exist);
     }
 
     try {
@@ -173,7 +175,7 @@ function moveLicenseDirectory(){
             console.log(move_reg_msg);
             hdb_log.info(move_reg_msg);
 
-            fs.moveSync(REG_FILE_PATH, HDB_LICENSE_DIR);
+            fs.moveSync(REG_FILE_PATH, NEW_REG_FILE_PATH);
 
             const success_move_reg_msg = 'Registration file successfully moved.';
             console.log(success_move_reg_msg);
@@ -191,7 +193,7 @@ function moveLicenseDirectory(){
 }
 
 directive3_1_0.sync_functions.push(updateSettingsFile_3_1_0);
-directive3_1_0.sync_functions.push(moveLicenseDirectory);
+directive3_1_0.sync_functions.push(moveLicenseFiles);
 
 directives.push(directive3_1_0);
 
