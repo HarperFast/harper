@@ -26,8 +26,10 @@ const lmdb_create_txn_environment = require('../data_layer/harperBridge/lmdbBrid
 const CreateTableObject = require('../data_layer/CreateTableObject');
 
 // These may change to match unix return codes (i.e. 0, 1)
-const FOREGROUND_ARG = 'foreground';
 const ENOENT_ERR_CODE = -2;
+
+const FOREGROUND_ENV = env.getProperty(terms.HDB_SETTINGS_NAMES.RUN_IN_FOREGROUND);
+const RUN_IN_FOREGROUND = FOREGROUND_ENV === 'true' || FOREGROUND_ENV === true;
 
 const IPC_SERVER_CWD = path.resolve(__dirname, '../server/ipc');
 const MEM_SETTING_KEY = '--max-old-space-size=';
@@ -205,7 +207,7 @@ async function launchHdbServer() {
         };
 
         //because we may need to push logs to std out/err if the process runs in foreground we need to remove the stdio: ignore
-        if(isForegroundProcess()){
+        if(RUN_IN_FOREGROUND){
             delete fork_options.stdio;
         }
 
@@ -229,13 +231,11 @@ async function launchHdbServer() {
 }
 
 /**
- * if foreground is passed on the command line we do not exit the process
+ * if foreground is passed as an env setting we do not exit the process
  * also if foreground is passed we setup the processExitHandler to call the stop handler which kills the hdb processes
  */
 function foregroundHandler() {
-    let is_foreground = isForegroundProcess();
-
-    if (!is_foreground) {
+    if (!RUN_IN_FOREGROUND) {
         ipc_child.unref();
         child.unref();
 
@@ -243,43 +243,28 @@ function foregroundHandler() {
         process.exit(0);
     }
 
-    process.on('exit', processExitHandler.bind(null, {is_foreground: is_foreground}));
+    process.on('exit', processExitHandler);
 
     //catches ctrl+c event
-    process.on('SIGINT', processExitHandler.bind(null, {is_foreground: is_foreground}));
+    process.on('SIGINT', processExitHandler);
 
     // catches "kill pid"
-    process.on('SIGUSR1', processExitHandler.bind(null, {is_foreground: is_foreground}));
-    process.on('SIGUSR2', processExitHandler.bind(null, {is_foreground: is_foreground}));
+    process.on('SIGUSR1', processExitHandler);
+    process.on('SIGUSR2', processExitHandler);
 }
 
 /**
- * if is_foreground we call the stop function which kills the hdb processes
- * @param options
+ * If running in foreground and exit event occurs stop is called
+ * @returns {Promise<void>}
  */
-async function processExitHandler(options) {
-    if (options.is_foreground) {
+async function processExitHandler() {
+    if (RUN_IN_FOREGROUND) {
         try {
             await stop.stop();
         } catch(err) {
             console.error(err);
         }
     }
-}
-
-/**
- * check to see if any of the cli arguments are 'foreground'
- * @returns {boolean}
- */
-function isForegroundProcess(){
-    let is_foreground = false;
-    for (let arg of process.argv) {
-        if (arg === FOREGROUND_ARG) {
-            is_foreground = true;
-            break;
-        }
-    }
-    return is_foreground;
 }
 
 function createForkArgs(module_path){
@@ -367,7 +352,7 @@ async function launchIPCServer() {
         };
 
         //because we may need to push logs to std out/err if the process runs in foreground we need to remove the stdio: ignore
-        if(isForegroundProcess()){
+        if(RUN_IN_FOREGROUND){
             delete fork_options.stdio;
         }
         ipc_child = fork(ipc_fork_args[0], [ipc_fork_args[1]], fork_options);

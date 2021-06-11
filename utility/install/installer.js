@@ -539,7 +539,9 @@ function createSettingsFile(mount_status, callback) {
             `   ;Defines the length of time a refresh token will be valid until it expires. Example values: https://github.com/vercel/ms  \n` +
             `${HDB_SETTINGS_NAMES.REFRESH_TOKEN_TIMEOUT_KEY} = ${generateSettingsValue(ARGS, HDB_SETTINGS_NAMES.REFRESH_TOKEN_TIMEOUT_KEY)}\n` +
             `   ;The port the IPC server will run on.\n` +
-            `${HDB_SETTINGS_NAMES.IPC_SERVER_PORT} = ${generateSettingsValue(ARGS, HDB_SETTINGS_NAMES.IPC_SERVER_PORT)}\n`
+            `${HDB_SETTINGS_NAMES.IPC_SERVER_PORT} = ${generateSettingsValue(ARGS, HDB_SETTINGS_NAMES.IPC_SERVER_PORT)}\n` +
+            `   ;Run HDB in the foreground.\n` +
+            `${HDB_SETTINGS_NAMES.RUN_IN_FOREGROUND} = ${generateSettingsValue(ARGS, HDB_SETTINGS_NAMES.RUN_IN_FOREGROUND)}`
         ;
 
         install_logger.info('info', `hdb_props_value ${JSON.stringify(hdb_props_value)}`);
