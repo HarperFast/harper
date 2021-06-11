@@ -164,7 +164,7 @@ function deployCustomFunctionProjectValidator(req) {
         .messages({'string.pattern.base': HDB_ERROR_MSGS.BAD_PROJECT_NAME}),
         payload: Joi.string().required()
         .messages({'string.pattern.base': HDB_ERROR_MSGS.BAD_PACKAGE}),
-        file: Joi.string().pattern(PROJECT_FILE_NAME_REGEX).required()
+        file: Joi.string().required()
         .messages({'string.pattern.base': HDB_ERROR_MSGS.BAD_FILE_PATH}),
     });
 
