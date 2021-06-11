@@ -10,8 +10,8 @@ const hdb_logger = require('../../utility/logging/harper_logger');
 const { hdb_errors } = require('../../utility/errors/hdbError');
 const { HDB_ERROR_MSGS } = hdb_errors;
 
-// File name can only be alphanumeric and underscores
-const PROJECT_FILE_NAME_REGEX = /^\w+$/;
+// File name can only be alphanumeric, dash and underscores
+const PROJECT_FILE_NAME_REGEX = /^[a-zA-Z0-9-_]+$/;
 
 module.exports = {
     getDropCustomFunctionValidator,
@@ -164,7 +164,7 @@ function deployCustomFunctionProjectValidator(req) {
         .messages({'string.pattern.base': HDB_ERROR_MSGS.BAD_PROJECT_NAME}),
         payload: Joi.string().required()
         .messages({'string.pattern.base': HDB_ERROR_MSGS.BAD_PACKAGE}),
-        file: Joi.string().required()
+        file: Joi.string().pattern(PROJECT_FILE_NAME_REGEX).required()
         .messages({'string.pattern.base': HDB_ERROR_MSGS.BAD_FILE_PATH}),
     });
 

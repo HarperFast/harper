@@ -205,16 +205,6 @@ async function dropCustomFunctionProject(req) {
     log.trace(`dropping custom function project`);
     const cf_dir = env.getProperty(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY);
     const { project } = req;
-    const path_to_project = path.join(cf_dir, project);
-
-    // check if the project exists
-    const projectExists = fs.existsSync(path_to_project);
-
-    if (!projectExists) {
-        const err_string = `Unable to locate custom function project: ${project}`;
-        log.error(err_string);
-        throw err_string;
-    }
 
     try {
         const project_dir = path.join(cf_dir, project);

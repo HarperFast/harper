@@ -120,7 +120,7 @@ describe('Test operationsValidation module', () => {
                 "file": "file.js"
             };
             const result = validator.getDropCustomFunctionValidator(req);
-            expect(result.message).to.equal("Project name can only contain alphanumeric and underscores characters. File name can only contain alphanumeric and underscore characters");
+            expect(result.message).to.equal("Project name can only contain alphanumeric, dash and underscores characters. File name can only contain alphanumeric, dash and underscore characters");
         });
     });
 
@@ -155,7 +155,7 @@ describe('Test operationsValidation module', () => {
                 "function_content": "hello world"
             };
             const result = validator.setCustomFunctionValidator(req);
-            expect(result.message).to.equal("Project name can only contain alphanumeric and underscores characters. File name can only contain alphanumeric and underscore characters");
+            expect(result.message).to.equal("Project name can only contain alphanumeric, dash and underscores characters. File name can only contain alphanumeric, dash and underscore characters");
         });
     });
 
@@ -184,7 +184,7 @@ describe('Test operationsValidation module', () => {
                 "project": "../home"
             };
             const result = validator.addCustomFunctionProjectValidator(req);
-            expect(result.message).to.equal("Project name can only contain alphanumeric and underscores characters");
+            expect(result.message).to.equal("Project name can only contain alphanumeric, dash and underscores characters");
         });
     });
 
@@ -213,7 +213,7 @@ describe('Test operationsValidation module', () => {
                 "project": "../home"
             };
             const result = validator.dropCustomFunctionProjectValidator(req);
-            expect(result.message).to.equal("Project name can only contain alphanumeric and underscores characters");
+            expect(result.message).to.equal("Project name can only contain alphanumeric, dash and underscores characters");
         });
     });
 });
