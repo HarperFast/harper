@@ -150,6 +150,10 @@ function moveLicenseDirectory(){
             hdb_log.info(move_license_msg);
 
             fs.moveSync(LICENSE_FILE_PATH, HDB_LICENSE_DIR);
+
+            const success_move_license_msg = 'License file successfully moved.';
+            console.log(success_move_license_msg);
+            hdb_log.info(success_move_license_msg);
         }catch(e){
             const move_license_failed = `moving license file failed`;
             console.error(move_license_failed);
@@ -170,21 +174,24 @@ function moveLicenseDirectory(){
             hdb_log.info(move_reg_msg);
 
             fs.moveSync(REG_FILE_PATH, HDB_LICENSE_DIR);
+
+            const success_move_reg_msg = 'Registration file successfully moved.';
+            console.log(success_move_reg_msg);
+            hdb_log.info(success_move_reg_msg);
         }catch(e){
-            const move_license_failed = `moving license file failed`;
-            console.error(move_license_failed);
-            hdb_log.error(move_license_failed);
+            const move_registration_failed = `moving registration file failed`;
+            console.error(move_registration_failed);
+            hdb_log.error(move_registration_failed);
         }
     }catch(e){
-        const license_dir_no_exist = `license file '${LICENSE_FILE_PATH}' does not exist.`;
-        console.log(license_dir_no_exist);
-        hdb_log.info(license_dir_no_exist);
+        const registration_file_no_exist = `registration file '${REG_FILE_PATH}' does not exist.`;
+        console.log(registration_file_no_exist);
+        hdb_log.info(registration_file_no_exist);
     }
-
-
 }
 
 directive3_1_0.sync_functions.push(updateSettingsFile_3_1_0);
+directive3_1_0.sync_functions.push(moveLicenseDirectory);
 
 directives.push(directive3_1_0);
 
