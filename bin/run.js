@@ -29,7 +29,7 @@ const CreateTableObject = require('../data_layer/CreateTableObject');
 const ENOENT_ERR_CODE = -2;
 
 const FOREGROUND_ENV = env.getProperty(terms.HDB_SETTINGS_NAMES.RUN_IN_FOREGROUND);
-const RUN_IN_FOREGROUND = FOREGROUND_ENV === 'true' || FOREGROUND_ENV === true;
+const RUN_IN_FOREGROUND = FOREGROUND_ENV === 'true' || FOREGROUND_ENV === true || FOREGROUND_ENV === 'TRUE';
 
 const IPC_SERVER_CWD = path.resolve(__dirname, '../server/ipc');
 const MEM_SETTING_KEY = '--max-old-space-size=';
