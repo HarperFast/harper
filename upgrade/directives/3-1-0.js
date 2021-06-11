@@ -189,8 +189,8 @@ function moveLicenseFiles(){
         }
     }catch(e){
         const registration_file_no_exist = `registration file '${REG_FILE_PATH}' does not exist.`;
-        console.log(registration_file_no_exist);
-        hdb_log.info(registration_file_no_exist);
+        console.warn(registration_file_no_exist);
+        hdb_log.warn(registration_file_no_exist);
     }
 }
 

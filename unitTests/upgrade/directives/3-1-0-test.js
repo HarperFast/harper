@@ -102,7 +102,8 @@ describe('Test 3.1.0 Upgrade Directive', () => {
     describe('Test moveLicenseDirectory function', () => {
         let consoleError_stub;
         let logError_stub;
-        let fsMkdirSync_spy;
+        let consoleWarn_stub;
+        let logWarn_stub;
         let fsAccessSync_spy;
         let fsMoveSync_spy;
 
@@ -113,7 +114,8 @@ describe('Test 3.1.0 Upgrade Directive', () => {
             sandbox.stub(hdb_logger, 'info');
             consoleError_stub = sandbox.stub(console, 'error');
             logError_stub = sandbox.stub(hdb_logger, 'error');
-            fsMkdirSync_spy = sandbox.spy(fs, 'mkdirSync');
+            consoleWarn_stub = sandbox.stub(console, 'warn');
+            logWarn_stub = sandbox.stub(hdb_logger, 'warn');
             fsAccessSync_spy = sandbox.spy(fs, 'accessSync');
             fsMoveSync_spy = sandbox.spy(fs, 'moveSync');
         });
@@ -205,17 +207,87 @@ describe('Test 3.1.0 Upgrade Directive', () => {
             fs.removeSync(OLD_LIC_FILE_PATH);
 
             move_license_files();
-            expect(consoleError_stub).to.have.been.calledWith('There was a problem writing the new settings file. Please check the log for details.');
-            expect(logError_stub).to.have.been.called;
+            expect(consoleWarn_stub).to.have.been.calledWith(`license file '${OLD_LIC_FILE_PATH}' does not exist.`);
+            expect(logWarn_stub).to.have.been.called;
 
+            //test the registration moved to the right place
+            let open_err = undefined;
+            let fd = undefined;
+            try {
+                fd = fs.openSync(NEW_REG_FILE_PATH, 'r');
+            }catch(e){
+                open_err = e;
+            }
+            expect(fd).to.be.an.integer();
+            expect(open_err).to.equal(undefined);
+
+            //test the registration is no longer in the old location
+            open_err = undefined;
+            fd = undefined;
+            try {
+                fd = fs.openSync(OLD_REG_FILE_PATH, 'r');
+            }catch(e){
+                open_err = e;
+            }
+
+            expect(fd).to.equal(undefined);
+            expect(open_err.code).to.equal('ENOENT');
         });
 
-        it('Test error from writing new setting file is logged and thrown', () => {
-            fsWriteFileSync_stub.throws(new Error('Error writing new file'));
-            test_util.assertErrorSync(updateSettingsFile_3_1_0, [], new Error('Error writing new file'));
-            expect(consoleError_stub).to.have.been.calledWith('There was a problem writing the new settings file. Please check the log for details.');
-            expect(logError_stub).to.have.been.called;
-            expect(fsCopySync_stub).to.have.been.called;
+        it('Test registration file does not exist', () => {
+            fs.removeSync(OLD_REG_FILE_PATH);
+
+            move_license_files();
+            expect(consoleWarn_stub).to.have.been.calledWith(`registration file '${OLD_REG_FILE_PATH}' does not exist.`);
+            expect(logWarn_stub).to.have.been.called;
+
+            //test the registration moved to the right place
+            let open_err = undefined;
+            let fd = undefined;
+            try {
+                fd = fs.openSync(NEW_LIC_FILE_PATH, 'r');
+            }catch(e){
+                open_err = e;
+            }
+            expect(fd).to.be.an.integer();
+            expect(open_err).to.equal(undefined);
+
+            //test the registration is no longer in the old location
+            open_err = undefined;
+            fd = undefined;
+            try {
+                fd = fs.openSync(OLD_LIC_FILE_PATH, 'r');
+            }catch(e){
+                open_err = e;
+            }
+
+            expect(fd).to.equal(undefined);
+            expect(open_err.code).to.equal('ENOENT');
         });
+
+        it('Test error on license file move', () => {
+            fsMoveSync_spy.restore();
+            let moveFileStub = sandbox.stub(fs, 'moveSync').onCall(0).throws('bad move!');
+
+            move_license_files();
+            expect(consoleError_stub).to.have.been.calledWith('moving license file failed');
+            expect(logError_stub).to.have.been.called;
+            expect(moveFileStub.callCount).to.equal(2);
+            expect(moveFileStub.firstCall.exception.name).to.equal("bad move!");
+            expect(moveFileStub.secondCall.exception).to.equal(undefined);
+        });
+
+        it('Test error on registration file move', () => {
+            fsMoveSync_spy.restore();
+            let moveFileStub = sandbox.stub(fs, 'moveSync').onCall(1).throws('bad move!');
+
+            move_license_files();
+            expect(consoleError_stub).to.have.been.calledWith('moving registration file failed');
+            expect(logError_stub).to.have.been.called;
+            expect(moveFileStub.callCount).to.equal(2);
+            expect(moveFileStub.firstCall.exception).to.equal(undefined);
+            expect(moveFileStub.secondCall.exception.name).to.equal("bad move!");
+        });
+
     });
 });
