@@ -503,6 +503,10 @@ function createSettingsFile(mount_status, callback) {
             `${HDB_SETTINGS_NAMES.SERVER_KEEP_ALIVE_TIMEOUT_KEY} = ${generateSettingsValue(ARGS, HDB_SETTINGS_NAMES.SERVER_KEEP_ALIVE_TIMEOUT_KEY)}\n` +
             `   ;Limit the amount of time the parser will wait to receive the complete HTTP headers..  Defaults to 60,000 ms (1 minute).\n` +
             `${HDB_SETTINGS_NAMES.SERVER_HEADERS_TIMEOUT_KEY} = ${generateSettingsValue(ARGS, HDB_SETTINGS_NAMES.SERVER_HEADERS_TIMEOUT_KEY)}\n` +
+            `   ;Define whether to log to a file or not.\n` +
+            `${HDB_SETTINGS_NAMES.LOG_TO_FILE} = ${generateSettingsValue(ARGS, HDB_SETTINGS_NAMES.LOG_TO_FILE)}\n` +
+            `   ;Define whether to log to stdout/stderr or not.\n` +
+            `${HDB_SETTINGS_NAMES.LOG_TO_STDSTREAMS} = ${generateSettingsValue(ARGS, HDB_SETTINGS_NAMES.LOG_TO_STDSTREAMS)}\n` +
             `   ;Set to control amount of logging generated.  Accepted levels are trace, debug, warn, error, fatal.\n` +
             `${HDB_SETTINGS_NAMES.LOG_LEVEL_KEY} = ${generateSettingsValue(ARGS, HDB_SETTINGS_NAMES.LOG_LEVEL_KEY)}\n` +
             `   ;The path where log files will be written. If there is no file name included in the path, the log file will be created by default as 'hdb_log.log' \n` +

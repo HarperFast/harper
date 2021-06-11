@@ -66,7 +66,7 @@ describe('directivesController Module', () => {
         });
 
         it('Test with non-existent new_version, expect 0 directives returned', () => {
-            const test_upgrade_obj = generateUpgradeObj(test_vers3_0_0.version, '3.0.1111')
+            const test_upgrade_obj = generateUpgradeObj(test_vers3_0_0.version, '3.0.1')
             const valid_versions = directivesController_rw.getVersionsForUpgrade(test_upgrade_obj);
             expect(valid_versions.length).to.equal(0);
         });

@@ -71,33 +71,7 @@ async function run() {
 
     // Check to see if HDB is installed, if it isn't we call install.
     try {
-        if (await isHdbInstalled()) {
-            // Check to see if an upgrade is needed based on existing hdb_info data.  If so, we need to force the user to upgrade
-            // before the server can be started.
-            let upgrade_vers;
-            try {
-                const update_obj = await hdbInfoController.getVersionUpdateInfo();
-                if (update_obj !== undefined) {
-                    upgrade_vers = update_obj[terms.UPGRADE_JSON_FIELD_NAMES_ENUM.UPGRADE_VERSION];
-                    await upgrade.upgrade(update_obj);
-                    console.log(UPGRADE_COMPLETE_MSG);
-                }
-            } catch(err) {
-                if (upgrade_vers) {
-                    console.error(`Got an error while trying to upgrade your HarperDB instance to version ${upgrade_vers}.  Exiting HarperDB.`);
-                    final_logger.error(err);
-                } else {
-                    console.error(UPGRADE_ERR);
-                    final_logger.error(err);
-                }
-                process.exit(1);
-            }
-
-            await checkTransactionLogEnvironmentsExist();
-            await launchIPCServer();
-            await launchCustomFunctionServer();
-            await launchHdbServer();
-        } else {
+        if (await isHdbInstalled() === false) {
             console.log(HDB_NOT_FOUND_MSG);
             try {
                 await p_install_install();
@@ -107,6 +81,32 @@ async function run() {
                 process.exit(1);
             }
         }
+
+        // Check to see if an upgrade is needed based on existing hdb_info data.  If so, we need to force the user to upgrade
+        // before the server can be started.
+        let upgrade_vers;
+        try {
+            const update_obj = await hdbInfoController.getVersionUpdateInfo();
+            if (update_obj !== undefined) {
+                upgrade_vers = update_obj[terms.UPGRADE_JSON_FIELD_NAMES_ENUM.UPGRADE_VERSION];
+                await upgrade.upgrade(update_obj);
+                console.log(UPGRADE_COMPLETE_MSG);
+            }
+        } catch(err) {
+            if (upgrade_vers) {
+                console.error(`Got an error while trying to upgrade your HarperDB instance to version ${upgrade_vers}.  Exiting HarperDB.`);
+                final_logger.error(err);
+            } else {
+                console.error(UPGRADE_ERR);
+                final_logger.error(err);
+            }
+            process.exit(1);
+        }
+
+        await checkTransactionLogEnvironmentsExist();
+        await launchIPCServer();
+        await launchCustomFunctionServer();
+        await launchHdbServer();
     } catch(err) {
         console.error(err);
         final_logger.error(err);
@@ -197,11 +197,18 @@ async function launchHdbServer() {
         const mem_value = license.ram_allocation ? terms.MEM_SETTING_KEY + license.ram_allocation
             : terms.MEM_SETTING_KEY + terms.RAM_ALLOCATION_ENUM.DEFAULT;
 
-        child = fork(hdb_args[0], [hdb_args[1]], {
+        let fork_options = {
             detached: true,
             stdio: 'ignore',
             execArgv: [mem_value]
-        });
+        };
+
+        //because we may need to push logs to std out/err if the process runs in foreground we need to remove the stdio: ignore
+        if(isForegroundProcess()){
+            delete fork_options.stdio;
+        }
+
+        child = fork(hdb_args[0], [hdb_args[1]], fork_options);
     } catch(err) {
         console.error(HDB_SERVER_ERR);
         final_logger.error(err);
@@ -349,10 +356,16 @@ async function launchIPCServer() {
     // Launch IPC server as a child background process.
     try {
         const ipc_fork_args = hdb_utils.createForkArgs(path.resolve(__dirname, '../', 'server/ipc', terms.IPC_SERVER_MODULE));
-        ipc_child = fork(ipc_fork_args[0], [ipc_fork_args[1]], {
+        let fork_options = {
             detached: true,
-            stdio: 'ignore',
-        });
+            stdio: 'ignore'
+        };
+
+        //because we may need to push logs to std out/err if the process runs in foreground we need to remove the stdio: ignore
+        if(isForegroundProcess()){
+            delete fork_options.stdio;
+        }
+        ipc_child = fork(ipc_fork_args[0], [ipc_fork_args[1]], fork_options);
     } catch(err) {
         console.error(IPC_FORK_ERR);
         final_logger.error(err);

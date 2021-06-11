@@ -49,8 +49,8 @@ describe('processDirectives Module', function() {
             directivesManager_rw.__set__('directivesController', directivesController_stub);
         })
 
-        it('test upgrade from 3.0 to 3.1', async function() {
-            const test_upgrade_ver = '3.1.0'
+        it('test upgrade from 3.0 to 3.1.0', async function() {
+            const test_upgrade_ver = '3.1.0';
             const test_upgrade_obj = generateUpgradeObj('3.0.0', test_upgrade_ver);
 
             const test_result = await processDirectives_rw(test_upgrade_obj);

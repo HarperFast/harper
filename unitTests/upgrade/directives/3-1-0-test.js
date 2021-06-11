@@ -57,7 +57,7 @@ describe('Test 3.1.0 Upgrade Directive', () => {
             sandbox.restore();
         });
         
-        it('Test new setting file has IPC port param and logger param is removed', () => {
+        it('Test new setting file has LOG_TO_FILE & LOG_TO_STDSTREAMS and logger param is removed', () => {
             const result = updateSettingsFile_3_1_0();
             const new_settings_val = fsWriteFileSync_stub.args[0][1];
             for (const name in hdb_terms.HDB_SETTINGS_NAMES) {

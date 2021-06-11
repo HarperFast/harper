@@ -37,7 +37,6 @@ if (version_3_2_0) {
     });
 }
 
-
 /**
  * Returns all HDB versions w/ upgrade directives
  * Note: this does NOT return a list of all versions of HDB

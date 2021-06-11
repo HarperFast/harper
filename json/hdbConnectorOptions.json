@@ -1,6 +1,7 @@
 {
   "rejectUnauthorized": false,
   "autoConnect":true,
+  "autoReconnect":true,
   "secure": true,
   "connectTimeout": 10000,
   "ackTimeout": 30000,
