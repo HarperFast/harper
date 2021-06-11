@@ -83,7 +83,9 @@ function updateSettingsFile_3_1_0() {
         `   ;Defines the length of time a refresh token will be valid until it expires. Example values: https://github.com/vercel/ms  \n` +
         `${HDB_SETTINGS_NAMES.REFRESH_TOKEN_TIMEOUT_KEY} = ${getOldPropsValue(HDB_SETTINGS_NAMES.REFRESH_TOKEN_TIMEOUT_KEY, old_hdb_props, true)}\n` +
         `   ;The port the IPC server will run on.\n` +
-        `${HDB_SETTINGS_NAMES.IPC_SERVER_PORT} = ${HDB_SETTINGS_DEFAULT_VALUES.IPC_SERVER_PORT}\n`
+        `${HDB_SETTINGS_NAMES.IPC_SERVER_PORT} = ${HDB_SETTINGS_DEFAULT_VALUES.IPC_SERVER_PORT}\n` +
+        `   ;Run HDB in the foreground.\n` +
+        `${HDB_SETTINGS_NAMES.RUN_IN_FOREGROUND} = ${HDB_SETTINGS_DEFAULT_VALUES.RUN_IN_FOREGROUND}`
     ;
 
     const settings_path = env.get('settings_path');
