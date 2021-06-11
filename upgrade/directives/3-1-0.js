@@ -47,6 +47,10 @@ function updateSettingsFile_3_1_0() {
         `${HDB_SETTINGS_NAMES.SERVER_KEEP_ALIVE_TIMEOUT_KEY} = ${getOldPropsValue(HDB_SETTINGS_NAMES.SERVER_KEEP_ALIVE_TIMEOUT_KEY, old_hdb_props, true)}\n` +
         `   ;Limit the amount of time the parser will wait to receive the complete HTTP headers..  Defaults to 60,000 ms (1 minute).\n` +
         `${HDB_SETTINGS_NAMES.SERVER_HEADERS_TIMEOUT_KEY} = ${getOldPropsValue(HDB_SETTINGS_NAMES.SERVER_HEADERS_TIMEOUT_KEY, old_hdb_props, true)}\n` +
+        `   ;Define whether to log to file or not.` +
+        `${HDB_SETTINGS_NAMES.LOG_TO_FILE} = ${HDB_SETTINGS_DEFAULT_VALUES.LOG_TO_FILE}\n` +
+        `   ;Define whether to log to stdout/stderr or not.` +
+        `${HDB_SETTINGS_NAMES.LOG_TO_STDSTREAMS} = ${HDB_SETTINGS_DEFAULT_VALUES.LOG_TO_STDSTREAMS}\n` +
         `   ;Set to control amount of logging generated.  Accepted levels are trace, debug, warn, error, fatal.\n` +
         `${HDB_SETTINGS_NAMES.LOG_LEVEL_KEY} = ${getOldPropsValue(HDB_SETTINGS_NAMES.LOG_LEVEL_KEY, old_hdb_props)}\n` +
         `   ;The path where log files will be written. If there is no file name included in the path, the log file will be created by default as 'hdb_log.log' \n` +
