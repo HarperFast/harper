@@ -6,7 +6,6 @@ const util = require('util');
 const child_process = require('child_process');
 const path = require('path');
 const fs = require('fs-extra');
-const fg = require('fast-glob');
 
 const all_cf_children_stopped_event = require('../../events/AllCFChildrenStoppedEvent');
 const check_jwt_tokens = require('../../utility/install/checkJWTTokensExist');
