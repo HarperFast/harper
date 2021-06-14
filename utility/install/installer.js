@@ -183,7 +183,7 @@ function promptForReinstall(callback) {
     let reinstall_schema = {
         properties: {
             REINSTALL: {
-                description: colors.red(`It appears HarperDB version ${version.version()} is already installed.  Enter \'y/yes\'to reinstall. (yes/no)`),
+                description: colors.red(`It appears HarperDB version ${version.version()} is already installed.  Enter 'y/yes'to reinstall. (yes/no)`),
                 pattern: /y(es)?$|n(o)?$/,
                 message: "Must respond 'yes' or 'no'",
                 default: 'no',
