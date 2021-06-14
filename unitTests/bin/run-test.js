@@ -5,6 +5,7 @@ const sinon = require('sinon');
 const { expect } = chai;
 const sinon_chai = require('sinon-chai');
 chai.use(sinon_chai);
+chai.use(require('chai-integer'));
 const rewire = require('rewire');
 const fs = require('fs-extra');
 const path = require('path');
@@ -187,6 +188,130 @@ describe('Test run module', () => {
             expect(console_error_stub.getCall(0).firstArg.name).to.equal(TEST_ERROR);
             expect(final_log_error_stub.getCall(0).firstArg.name).to.equal(TEST_ERROR);
             expect(process_exit_stub.getCall(0).firstArg).to.equal(1);
+        });
+    });
+
+    describe('Test writeLicenseFromVars function', ()=>{
+        let fs_mkdirpSync_spy;
+        let fs_writeFileSync_spy;
+        let rw_writeLicenseFromVars;
+        const LICENSE_PATH = path.join(test_util.getMockFSPath(), 'keys/.license');
+        const REG_PATH = path.join(LICENSE_PATH, '060493.ks');
+        const LIC_PATH = path.join(LICENSE_PATH, '.license');
+        let assignCMDENVVariables_stub = sandbox.stub(hdb_utils, 'assignCMDENVVariables');
+        before(()=>{
+            sandbox.resetHistory();
+            fs.removeSync(LICENSE_PATH);
+            fs_mkdirpSync_spy = sandbox.spy(fs, 'mkdirpSync');
+            fs_writeFileSync_spy = sandbox.spy(fs, 'writeFileSync');
+            rw_writeLicenseFromVars = run_rw.__get__('writeLicenseFromVars');
+        });
+
+        beforeEach(()=>{
+            assignCMDENVVariables_stub.restore();
+        });
+
+        afterEach(()=>{
+            fs.removeSync(LICENSE_PATH);
+            sandbox.resetHistory();
+        });
+
+        it('test happy path', ()=>{
+            let assignCMDENVVariables_stub = sandbox.stub(hdb_utils, 'assignCMDENVVariables')
+                .returns({HARPERDB_FINGERPRINT: 'the fingerprint', HARPERDB_LICENSE:'the best license ever'});
+
+            rw_writeLicenseFromVars();
+            expect(console_error_stub.callCount).to.equal(0);
+            expect(final_log_error_stub.callCount).to.equal(0);
+
+            expect(assignCMDENVVariables_stub.callCount).to.eq(1);
+            expect(assignCMDENVVariables_stub.firstCall.args[0]).to.have.members(['HARPERDB_FINGERPRINT', 'HARPERDB_LICENSE']);
+            expect(assignCMDENVVariables_stub.firstCall.exception).to.eq(undefined);
+            expect(assignCMDENVVariables_stub.firstCall.returnValue).to.eql({HARPERDB_FINGERPRINT: 'the fingerprint', HARPERDB_LICENSE:'the best license ever'});
+
+            expect(fs_mkdirpSync_spy.callCount).to.eql(1);
+            expect(fs_writeFileSync_spy.callCount).to.eql(2);
+            expect(fs_writeFileSync_spy.firstCall.exception).to.eql(undefined);
+            expect(fs_writeFileSync_spy.firstCall.args).to.have.members([REG_PATH, 'the fingerprint']);
+            expect(fs_writeFileSync_spy.secondCall.exception).to.eql(undefined);
+            expect(fs_writeFileSync_spy.secondCall.args).to.have.members([LIC_PATH, 'the best license ever']);
+
+            //test the license exists
+            let open_err;
+            let file;
+            try {
+                file = fs.readFileSync(LIC_PATH).toString();
+            }catch(e){
+                open_err = e;
+            }
+            expect(file).to.equal('the best license ever');
+            expect(open_err).to.equal(undefined);
+
+            //test the registration exists
+            open_err = undefined;
+            file = undefined;
+            try {
+                file = fs.readFileSync(REG_PATH).toString();
+            }catch(e){
+                open_err = e;
+            }
+            expect(file).to.equal('the fingerprint');
+            expect(open_err).to.equal(undefined);
+        });
+
+        it('test no license', ()=>{
+            let assignCMDENVVariables_stub = sandbox.stub(hdb_utils, 'assignCMDENVVariables')
+                .returns({HARPERDB_FINGERPRINT: 'the fingerprint'});
+
+            rw_writeLicenseFromVars();
+            expect(console_error_stub.callCount).to.equal(0);
+            expect(final_log_error_stub.callCount).to.equal(0);
+
+            expect(assignCMDENVVariables_stub.callCount).to.eq(1);
+            expect(assignCMDENVVariables_stub.firstCall.args[0]).to.have.members(['HARPERDB_FINGERPRINT', 'HARPERDB_LICENSE']);
+            expect(assignCMDENVVariables_stub.firstCall.exception).to.eq(undefined);
+            expect(assignCMDENVVariables_stub.firstCall.returnValue).to.eql({HARPERDB_FINGERPRINT: 'the fingerprint'});
+
+            expect(fs_mkdirpSync_spy.callCount).to.eql(0);
+            expect(fs_writeFileSync_spy.callCount).to.eql(0);
+        });
+
+        it('test no fingerprint', ()=>{
+            let assignCMDENVVariables_stub = sandbox.stub(hdb_utils, 'assignCMDENVVariables')
+                .returns({HARPERDB_LICENSE: 'the license'});
+
+            rw_writeLicenseFromVars();
+            expect(console_error_stub.callCount).to.equal(0);
+            expect(final_log_error_stub.callCount).to.equal(0);
+
+            expect(assignCMDENVVariables_stub.callCount).to.eq(1);
+            expect(assignCMDENVVariables_stub.firstCall.args[0]).to.have.members(['HARPERDB_FINGERPRINT', 'HARPERDB_LICENSE']);
+            expect(assignCMDENVVariables_stub.firstCall.exception).to.eq(undefined);
+            expect(assignCMDENVVariables_stub.firstCall.returnValue).to.eql({HARPERDB_LICENSE: 'the license'});
+
+            expect(fs_mkdirpSync_spy.callCount).to.eql(0);
+            expect(fs_writeFileSync_spy.callCount).to.eql(0);
+        });
+
+        it('test writefile errors', ()=>{
+            let assignCMDENVVariables_stub = sandbox.stub(hdb_utils, 'assignCMDENVVariables')
+                .returns({HARPERDB_LICENSE: 'the license', HARPERDB_FINGERPRINT: 'the fingerprint'});
+
+            fs_writeFileSync_spy.restore();
+            let fs_writeFileSync_stub = sandbox.stub(fs, 'writeFileSync').throws('fail!');
+
+            rw_writeLicenseFromVars();
+            expect(console_error_stub.callCount).to.equal(1);
+            expect(final_log_error_stub.callCount).to.equal(1);
+
+            expect(assignCMDENVVariables_stub.callCount).to.eq(1);
+            expect(assignCMDENVVariables_stub.firstCall.args[0]).to.have.members(['HARPERDB_FINGERPRINT', 'HARPERDB_LICENSE']);
+            expect(assignCMDENVVariables_stub.firstCall.exception).to.eq(undefined);
+            expect(assignCMDENVVariables_stub.firstCall.returnValue).to.eql({HARPERDB_LICENSE: 'the license', HARPERDB_FINGERPRINT: 'the fingerprint'});
+
+            expect(fs_mkdirpSync_spy.callCount).to.eql(1);
+            expect(fs_writeFileSync_stub.callCount).to.eql(1);
+            expect(fs_writeFileSync_stub.firstCall.exception.name).to.eql('fail!');
         });
     });
 

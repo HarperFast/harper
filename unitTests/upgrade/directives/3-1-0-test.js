@@ -4,7 +4,7 @@ const chai = require('chai');
 const sinon = require('sinon');
 const { expect } = chai;
 const sinon_chai = require('sinon-chai');
-chai.use(sinon_chai)
+chai.use(sinon_chai);
 chai.use(require('chai-integer'));
 const rewire = require('rewire');
 const test_util = require('../../../unitTests/test_utils');
