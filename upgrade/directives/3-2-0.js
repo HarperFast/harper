@@ -83,6 +83,8 @@ function updateSettingsFile_3_2_0() {
         `${HDB_SETTINGS_NAMES.REFRESH_TOKEN_TIMEOUT_KEY} = ${getOldPropsValue(HDB_SETTINGS_NAMES.REFRESH_TOKEN_TIMEOUT_KEY, old_hdb_props, true)}\n` +
         `   ;The port the IPC server will run on.\n` +
         `${HDB_SETTINGS_NAMES.IPC_SERVER_PORT} = ${getOldPropsValue(HDB_SETTINGS_NAMES.IPC_SERVER_PORT, old_hdb_props, true)}\n` +
+        `   ;Run HDB in the foreground.\n` +
+        `${HDB_SETTINGS_NAMES.RUN_IN_FOREGROUND} = ${getOldPropsValue(HDB_SETTINGS_NAMES.RUN_IN_FOREGROUND, old_hdb_props, true)}\n` +
         `   ;Set to true to enable custom API endpoints.  Requires a valid enterprise license.  \n` +
         `${HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_ENABLED_KEY} = ${HDB_SETTINGS_DEFAULT_VALUES.CUSTOM_FUNCTIONS}\n` +
         `   ;The port used to access the custom functions server.\n` +

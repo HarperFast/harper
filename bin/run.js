@@ -237,7 +237,10 @@ function foregroundHandler() {
     if (!RUN_IN_FOREGROUND) {
         ipc_child.unref();
         child.unref();
-        cf_child.unref();
+
+        if (!hdb_utils.isEmpty(cf_child)) {
+            cf_child.unref();
+        }
 
         // Exit run process with success code.
         process.exit(0);
@@ -266,16 +269,6 @@ async function processExitHandler() {
         }
     }
 }
-
-function createForkArgs(module_path){
-    let args = [];
-    if(terms.CODE_EXTENSION === terms.COMPILED_EXTENSION){
-        args.push(path.resolve(__dirname, '../', 'node_modules', 'bytenode', 'cli.js'));
-    }
-    args.push(module_path);
-    return args;
-}
-
 
 module.exports ={
     run:run
@@ -396,7 +389,7 @@ async function launchCustomFunctionServer() {
             };
 
             //because we may need to push logs to std out/err if the process runs in foreground we need to remove the stdio: ignore
-            if(isForegroundProcess()){
+            if(RUN_IN_FOREGROUND){
                 delete fork_options.stdio;
             }
 
@@ -409,6 +402,6 @@ async function launchCustomFunctionServer() {
             process.exit(1);
         }
     } else {
-        final_logger.notify(`Custom Functions server not enabled. To enable the Custom Functions server, set CUSTOM_FUNCTIONS to true the HDB config/settings.js file.`);
+        final_logger.notify(`Custom Functions server not enabled. To enable the Custom Functions server set CUSTOM_FUNCTIONS to true the HDB config/settings.js file.`);
     }
 }
