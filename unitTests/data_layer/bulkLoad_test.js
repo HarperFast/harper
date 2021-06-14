@@ -359,13 +359,12 @@ describe('Test bulkLoad.js', () => {
         it('Test error is handled from request promise module', async () => {
             let error;
             try {
-                await downloadCSVFile_rw('http://harperdddbbbb.io');
+                await downloadCSVFile_rw('http://httpstat.us/404');
             } catch (err) {
                 error = err;
             }
             expect(error).to.not.equal(undefined);
-            //the response for this test suddenly changed commenting this out for now
-            //expect(error.http_resp_msg).to.be.equal('CSV Load failed from URL: wwwwww.badurl.com, status code: 302, message: Found');
+            expect(error.http_resp_msg).to.be.equal('CSV Load failed from URL: http://httpstat.us/404, status code: 404, message: Not Found');
         }).timeout(10000);
 
         it('Test for nominal behaviour, stubs are called as expected', async () => {
