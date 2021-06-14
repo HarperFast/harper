@@ -9,7 +9,6 @@ const fastify_cors = require('fastify-cors');
 const fastify_helmet = require('fastify-helmet');
 const autoload = require('fastify-autoload');
 
-const spawn_cluster_connection = require('../socketcluster/connector/spawnSCConnection');
 const env = require('../../utility/environment/environmentManager');
 const terms = require('../../utility/hdbTerms');
 const harper_logger = require('../../utility/logging/harper_logger');
@@ -106,8 +105,6 @@ async function setUp() {
         harper_logger.info('Custom Functions starting configuration.');
         await p_schema_to_global();
         await user_schema.setUsersToGlobal();
-        //Functions should not be receiving messages from the clustering server, in order to only push we pass false for the is_worker argument
-        spawn_cluster_connection(false);
 
         harper_logger.info('Custom Functions completed configuration.');
     } catch(e) {
