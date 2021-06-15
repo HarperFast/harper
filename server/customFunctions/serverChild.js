@@ -13,6 +13,7 @@ const spawn_cluster_connection = require('../socketcluster/connector/spawnSCConn
 const env = require('../../utility/environment/environmentManager');
 const terms = require('../../utility/hdbTerms');
 const harper_logger = require('../../utility/logging/harper_logger');
+const final_logger = harper_logger.finalLogger();
 const signalling = require('../../utility/signalling');
 const global_schema = require('../../utility/globalSchema');
 const user_schema = require('../../security/user');
