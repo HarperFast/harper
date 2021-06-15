@@ -47,7 +47,7 @@ function spawnSCConnection(is_worker){
 
     let SocketClass = HDBSocketConnector;
     if(is_worker !== true){
-        delete options.query;
+        delete connector_options.query;
         SocketClass = SocketConnector;
     }
 
