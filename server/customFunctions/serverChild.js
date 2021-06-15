@@ -122,6 +122,14 @@ async function buildRoutes (server) {
 
         server.register(autoload, {
             dir: path.join(__dirname, 'plugins')
+        }).after((err, instance, next) => {
+            if (err && err.message) {
+                final_logger.error(err.message);
+            } else if (err) {
+                final_logger.error(err);
+            }
+
+            next();
         });
 
         const project_folders = fg.sync(`${CF_ROUTES_DIR}/*`, {
@@ -138,7 +146,15 @@ async function buildRoutes (server) {
                     logger: harper_logger,
                     prefix: `/${project_folder.split('/').pop()}`,
                 }
-            }));
+            })).after((err, instance, next) => {
+                if (err && err.message) {
+                    final_logger.error(err.message);
+                } else if (err) {
+                    final_logger.error(err);
+                }
+
+                next();
+            });
         });
 
         harper_logger.info('Custom Functions completed createServer');
