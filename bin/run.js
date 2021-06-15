@@ -395,7 +395,7 @@ async function launchCustomFunctionServer() {
 
             cf_child = fork(cf_args[0], [cf_args[1]], fork_options);
 
-            final_logger.trace(`custom function for args: ${cf_args[0]}`);
+            final_logger.trace(`custom function fork args: ${cf_args}`);
         } catch(err) {
             console.error(CF_SERVER_ERR);
             final_logger.error(err);
