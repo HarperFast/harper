@@ -13,7 +13,6 @@ const spawn_cluster_connection = require('../socketcluster/connector/spawnSCConn
 const env = require('../../utility/environment/environmentManager');
 const terms = require('../../utility/hdbTerms');
 const harper_logger = require('../../utility/logging/harper_logger');
-const final_logger = harper_logger.finalLogger();
 const signalling = require('../../utility/signalling');
 const global_schema = require('../../utility/globalSchema');
 const user_schema = require('../../security/user');
@@ -124,9 +123,9 @@ async function buildRoutes (server) {
             dir: path.join(__dirname, 'plugins')
         }).after((err, instance, next) => {
             if (err && err.message) {
-                final_logger.error(err.message);
+                harper_logger.error(err.message);
             } else if (err) {
-                final_logger.error(err);
+                harper_logger.error(err);
             }
 
             next();
@@ -148,9 +147,9 @@ async function buildRoutes (server) {
                 }
             })).after((err, instance, next) => {
                 if (err && err.message) {
-                    final_logger.error(err.message);
+                    harper_logger.error(err.message);
                 } else if (err) {
-                    final_logger.error(err);
+                    harper_logger.error(err);
                 }
 
                 next();
