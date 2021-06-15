@@ -20,6 +20,7 @@ module.exports = function (logger, hdb_path, callback) {
     makeDirectory(logger, path.join(hdb_path, "backup"));
     makeDirectory(logger, path.join(hdb_path, 'trash'));
     makeDirectory(logger, path.join(hdb_path, 'keys'));
+    makeDirectory(logger, path.join(hdb_path, 'keys', terms.LICENSE_FILE_NAME));
     makeDirectory(logger, path.join(hdb_path, 'log'));
     makeDirectory(logger, path.join(hdb_path, 'config'));
     makeDirectory(logger, path.join(hdb_path, 'doc'));

@@ -16,7 +16,7 @@ const hdb_utils = require('../utility/common_utils');
 const { promisify } = require('util');
 const stop = require('./stop');
 const upgrade = require('./upgrade');
-const hdb_license = require('../utility/registration/hdb_license');
+
 const hdbInfoController = require('../data_layer/hdbInfoController');
 
 const SYSTEM_SCHEMA = require('../json/systemSchema.json');
@@ -106,6 +106,8 @@ async function run() {
 
         await checkTransactionLogEnvironmentsExist();
 
+        writeLicenseFromVars();
+
         await launchIPCServer();
 
         await launchHdbServer();
@@ -114,6 +116,34 @@ async function run() {
         console.error(err);
         final_logger.error(err);
         process.exit(1);
+    }
+}
+
+/**
+ * This function looks for HARPERDB_FINGERPRINT & HARPERDB_LICENSE in env / cmd.
+ * If both are found the values will be written to the fingerprint / license files
+ */
+function writeLicenseFromVars(){
+    const LICENSE_PATH = path.join(env.getHdbBasePath(), terms.LICENSE_KEY_DIR_NAME, terms.LICENSE_FILE_NAME);
+    const LICENSE_FILE = path.join(LICENSE_PATH, terms.LICENSE_FILE_NAME);
+    const FINGER_PRINT_FILE = path.join(LICENSE_PATH, terms.REG_KEY_FILE_NAME);
+
+    try {
+        const {
+            HARPERDB_FINGERPRINT,
+            HARPERDB_LICENSE
+        } = hdb_utils.assignCMDENVVariables(['HARPERDB_FINGERPRINT', 'HARPERDB_LICENSE']);
+        if (hdb_utils.isEmpty(HARPERDB_FINGERPRINT) || hdb_utils.isEmpty(HARPERDB_LICENSE)) {
+            return;
+        }
+
+        fs.mkdirpSync(LICENSE_PATH);
+        fs.writeFileSync(FINGER_PRINT_FILE, HARPERDB_FINGERPRINT);
+        fs.writeFileSync(LICENSE_FILE, HARPERDB_LICENSE);
+    }catch(e){
+        const ERROR_MSG = `Failed to write license & fingerprint due to: ${e.message}`;
+        console.error(ERROR_MSG);
+        final_logger.error(ERROR_MSG);
     }
 }
 
@@ -195,6 +225,7 @@ async function launchHdbServer() {
 
     // Launch the HDB server as a child process.
     try {
+        const hdb_license = require('../utility/registration/hdb_license');
         const hdb_args = createForkArgs(path.resolve(__dirname, '../', 'server', terms.HDB_PROC_NAME));
         const license = hdb_license.licenseSearch();
         const mem_value = license.ram_allocation ? MEM_SETTING_KEY + license.ram_allocation
