@@ -37,14 +37,12 @@ if (node_env_value === undefined || node_env_value === null || node_env_value ==
 }
 
 // decide if we are running from inside a repo (and executing server/hdbServer) rather than on an installed version.
-process.argv.forEach((arg) => {
+process.argv.forEach((arg) => { // TODO: This is wrong and needs to be updated
     if (arg.endsWith(REPO_RUNNING_PROCESS_NAME)) {
         running_from_repo = true;
         global.running_from_repo = running_from_repo;
     }
 });
-
-harper_logger.info('hdb server running from repo value is ' + running_from_repo);
 
 process.env['NODE_ENV'] = node_env_value;
 

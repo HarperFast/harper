@@ -211,8 +211,6 @@ async function launchHdbServer() {
         }
 
         child = fork(hdb_args[0], [hdb_args[1]], fork_options);
-        final_logger.info(`hdb fork args: ${hdb_args}`);
-        final_logger.info(`hdb child is: ${JSON.stringify(child)} `);
     } catch(err) {
         console.error(HDB_SERVER_ERR);
         final_logger.error(err);
@@ -398,8 +396,6 @@ async function launchCustomFunctionServer() {
             cf_child = fork(cf_args[0], [cf_args[1]], fork_options);
 
             final_logger.trace(`custom function fork args: ${cf_args}`);
-            final_logger.info(`cf_child is: ${JSON.stringify(cf_child)} `);
-
         } catch(err) {
             console.error(CF_SERVER_ERR);
             final_logger.error(err);

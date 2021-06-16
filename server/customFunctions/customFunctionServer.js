@@ -3,7 +3,6 @@ const os = require('os');
 const cluster = require('cluster');
 
 const harper_logger = require('../../utility/logging/harper_logger');
-harper_logger.info('Logger instantiated');
 const env = require('../../utility/environment/environmentManager');
 const terms = require('../../utility/hdbTerms');
 
@@ -19,9 +18,6 @@ try {
     process.exit(0);
 }
 
-harper_logger.info('env inited');
-
-
 const PROPS_ENV_KEY = 'NODE_ENV';
 const ENV_PROD_VAL = 'production';
 const ENV_DEV_VAL = 'development';
@@ -36,15 +32,12 @@ if (node_env_value === undefined || node_env_value === null || node_env_value ==
 }
 
 // decide if we are running from inside a repo (and executing server/customFunctionServer) rather than on an installed version.
-process.argv.forEach((arg) => {
+process.argv.forEach((arg) => { // TODO: This is wrong and needs to be updated
     if (arg.endsWith(REPO_RUNNING_PROCESS_NAME)) {
         running_from_repo = true;
         global.running_from_repo = running_from_repo;
     }
 });
-
-harper_logger.info('running from repo value is ' + running_from_repo);
-
 
 process.env['NODE_ENV'] = node_env_value;
 
@@ -81,10 +74,7 @@ global.clustering_on = false;
  * Kicks off the custom function server and processes.
  */
 if (cluster.isMaster && (num_workers >= 1)) {
-    harper_logger.info('just before server parent call');
     serverParent(num_workers);
 } else {
-    harper_logger.info('just before server child call');
-
     serverChild();
 }
