@@ -137,6 +137,7 @@ async function buildRoutes (server) {
         });
 
         project_folders.forEach((project_folder) => {
+            harper_logger.trace('Loading project folder ' + project_folder);
             server.register(autoload, parent => ({
                 dir: `${project_folder}/routes`,
                 dirNameRoutePrefix: false,
