@@ -26,7 +26,7 @@ const getHeaderTimeoutConfig = require('./helpers/getHeaderTimeoutConfig');
 
 const p_schema_to_global = util.promisify(global_schema.setSchemaDataToGlobal);
 
-const { handleServerUncaughtException, serverErrorHandler } = require('../serverHelpers/serverHandlers.js');
+const { handleServerUncaughtException, serverErrorHandler } = require('../serverHelpers/serverHandlers');
 
 const TRUE_COMPARE_VAL = 'TRUE';
 let customFunctionsServer = undefined;

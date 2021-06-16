@@ -90,8 +90,9 @@ async function serverParent(num_workers) {
 
 function restartHDB() {
     try {
-        const args = path.join(HDB_SERVER_CWD, 'restartHDBServer.js');
-        let child = child_process.spawn('node', [args], {detached:true, stdio: "ignore"});
+        const command = global.running_from_repo ? 'node' : path.resolve(__dirname, '../', 'node_modules', 'bytenode', 'cli.js');
+        const args = path.join(HDB_SERVER_CWD, hdb_terms.HDB_RESTART_SCRIPT);
+        let child = child_process.spawn(command, [args], {detached:true, stdio: "ignore"});
         child.unref();
     } catch (err) {
         let msg = `There was an error restarting HarperDB.  Please restart manually. ${err}`;

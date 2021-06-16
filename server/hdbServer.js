@@ -26,7 +26,7 @@ const serverChild = require('./serverChild');
 const PROPS_ENV_KEY = 'NODE_ENV';
 const ENV_PROD_VAL = 'production';
 const ENV_DEV_VAL = 'development';
-const REPO_RUNNING_PROCESS_NAME = `server/${terms.HDB_PROC_NAME}`;
+const REPO_RUNNING_PROCESS_NAME = `server/hdbServer.js`;
 
 let node_env_value = env.get(PROPS_ENV_KEY);
 let running_from_repo = false;
@@ -37,7 +37,7 @@ if (node_env_value === undefined || node_env_value === null || node_env_value ==
 }
 
 // decide if we are running from inside a repo (and executing server/hdbServer) rather than on an installed version.
-process.argv.forEach((arg) => { // TODO: This is wrong and needs to be updated
+process.argv.forEach((arg) => {
     if (arg.endsWith(REPO_RUNNING_PROCESS_NAME)) {
         running_from_repo = true;
         global.running_from_repo = running_from_repo;

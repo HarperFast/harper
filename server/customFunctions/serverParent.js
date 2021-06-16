@@ -21,6 +21,8 @@ const hdbParentIpcHandlers = require('../ipc/hdbParentIpcHandlers');
 
 const p_schema_to_global = util.promisify(global_schema.setSchemaDataToGlobal);
 
+const CF_SERVER_CWD = __dirname;
+
 /**
  * Function called to start up HDB server clustering process - this method is called from customFunctionServer as the "parent" process
  * that creates/manages the forked child processes and ensures all processes are communicating with one another
@@ -75,10 +77,10 @@ async function serverParent(num_workers) {
 }
 
 function restartCF() {
-    const CF_SERVER_CWD = path.resolve(__dirname, '../customFunctions');
     try {
-        const args = path.join(CF_SERVER_CWD, 'restartCFServer.js');
-        let child = child_process.spawn('node', [args], {detached:true, stdio: "ignore"});
+        const command = global.running_from_repo ? 'node' : path.resolve(__dirname, '../../', 'node_modules', 'bytenode', 'cli.js');
+        const args = path.join(CF_SERVER_CWD, hdb_terms.CF_RESTART_SCRIPT);
+        let child = child_process.spawn(command, [args], {detached:true, stdio: "ignore"});
         child.unref();
     } catch (err) {
         let msg = `There was an error restarting Custom Functions.  Please restart manually. ${err}`;

@@ -13,6 +13,9 @@ const CODE_EXTENSION = process.env.HDB_COMPILED === 'true' ? COMPILED_EXTENSION 
 const HDB_PROC_NAME = `hdbServer.${CODE_EXTENSION}`;
 const SC_PROC_NAME = `Server.${CODE_EXTENSION}`;
 const CUSTOM_FUNCTION_PROC_NAME = `customFunctionServer.${CODE_EXTENSION}`;
+const IPC_SERVER_MODULE = `hdbIpcServer.${CODE_EXTENSION}`;
+const HDB_RESTART_SCRIPT = `restartHDBServer.${CODE_EXTENSION}`;
+const CF_RESTART_SCRIPT = `restartCFServer.${CODE_EXTENSION}`;
 
 const HDB_PROC_DESCRIPTOR = 'HarperDB';
 const SC_PROC_DESCRIPTOR = 'Cluster Server';
@@ -543,7 +546,6 @@ const JWT_ENUM = {
     JWT_PASSPHRASE_NAME: '.jwtPass'
 };
 
-const IPC_SERVER_MODULE = `hdbIpcServer.${CODE_EXTENSION}`;
 const HDB_IPC_SERVER = 'hdb_ipc_server';
 const HDB_IPC_CLIENT_PREFIX = 'hdb_ipc_client_';
 const IPC_EVENT_TYPES = {
@@ -667,5 +669,7 @@ module.exports = {
     CUSTOM_FUNCTION_PROC_NAME,
     CUSTOM_FUNCTION_PROC_DESCRIPTOR,
     SERVICES,
-    MEM_SETTING_KEY
+    MEM_SETTING_KEY,
+    HDB_RESTART_SCRIPT,
+    CF_RESTART_SCRIPT
 };
