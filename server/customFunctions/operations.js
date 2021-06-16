@@ -13,6 +13,8 @@ const env = require('../../utility/environment/environmentManager');
 const { handleHDBError, hdb_errors } = require('../../utility/errors/hdbError');
 const { HDB_ERROR_MSGS, HTTP_STATUS_CODES } = hdb_errors;
 
+const CUSTOM_FUNCTION_TEMPLATE = path.resolve(__dirname, '../../customFunctionTemplate');
+
 /**
  * Read the settings.js file and return the
  *
@@ -179,7 +181,7 @@ async function addCustomFunctionProject(req) {
     try {
         const project_dir = path.join(cf_dir, project);
         fs.mkdirSync(project_dir, { recursive: true });
-        fs.copySync(path.join(__dirname, 'template'), project_dir);
+        fs.copySync(CUSTOM_FUNCTION_TEMPLATE, project_dir);
         return `Successfully created custom function project: ${project}`;
     } catch (err) {
         throw handleHDBError(new Error(), HDB_ERROR_MSGS.ADD_FUNCTION, HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR, log.ERR, err);
