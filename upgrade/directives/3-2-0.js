@@ -48,7 +48,7 @@ function updateSettingsFile_3_2_0() {
         `${HDB_SETTINGS_NAMES.SERVER_HEADERS_TIMEOUT_KEY} = ${getOldPropsValue(HDB_SETTINGS_NAMES.SERVER_HEADERS_TIMEOUT_KEY, old_hdb_props, true)}\n` +
         `   ;Define whether to log to file or not.` +
         `${HDB_SETTINGS_NAMES.LOG_TO_FILE} = ${getOldPropsValue(HDB_SETTINGS_NAMES.LOG_TO_FILE, old_hdb_props, true)}\n` +
-        `   ;Define whether to log to stdout/stderr or not.` +
+        `   ;Define whether to log to stdout/stderr or not. NOTE HarperDB must run in foreground in order to receive the std stream from HarperDB.` +
         `${HDB_SETTINGS_NAMES.LOG_TO_STDSTREAMS} = ${getOldPropsValue(HDB_SETTINGS_NAMES.LOG_TO_STDSTREAMS, old_hdb_props, true)}\n` +
         `   ;Set to control amount of logging generated.  Accepted levels are trace, debug, warn, error, fatal.\n` +
         `${HDB_SETTINGS_NAMES.LOG_LEVEL_KEY} = ${getOldPropsValue(HDB_SETTINGS_NAMES.LOG_LEVEL_KEY, old_hdb_props)}\n` +

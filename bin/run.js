@@ -416,7 +416,7 @@ async function launchCustomFunctionServer() {
             };
 
             //because we may need to push logs to std out/err if the process runs in foreground we need to remove the stdio: ignore
-            if(RUN_IN_FOREGROUND){
+            if(getRunInForeground()){
                 delete fork_options.stdio;
             }
 
