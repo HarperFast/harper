@@ -13,4 +13,4 @@ hdb_boot_properties.file
 /unitTests/envDir/*
 coverage.json
 
-!server/customFunctions/template/node_modules/*
+!customFunctionTemplate/node_modules/*
