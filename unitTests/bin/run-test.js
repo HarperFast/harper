@@ -559,11 +559,11 @@ describe('Test run module', () => {
         });
 
         it('Test happy path foreground', () => {
-            run_rw.__set__('RUN_IN_FOREGROUND', true);
+            run_rw.__set__('getRunInForeground', ()=>true);
             foregroundHandler();
             expect(ipc_child_unref_stub).to.have.not.been.called;
             expect(child_unref_stub).to.have.not.been.called;
-            run_rw.__set__('RUN_IN_FOREGROUND', false);
+            run_rw.__set__('getRunInForeground', ()=>false);
         });
     });
 
@@ -572,13 +572,13 @@ describe('Test run module', () => {
         let processExitHandler;
 
         before(() => {
-            run_rw.__set__('RUN_IN_FOREGROUND', true);
+            run_rw.__set__('getRunInForeground', ()=>true);
             stop_stub = sandbox.stub(stop, 'stop');
             processExitHandler = run_rw.__get__('processExitHandler');
         });
 
         after(() => {
-            run_rw.__set__('RUN_IN_FOREGROUND', false);
+            run_rw.__set__('getRunInForeground', ()=>false);
         });
 
         it('Test stop is called happy path', async () => {

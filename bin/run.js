@@ -28,9 +28,6 @@ const CreateTableObject = require('../data_layer/CreateTableObject');
 // These may change to match unix return codes (i.e. 0, 1)
 const ENOENT_ERR_CODE = -2;
 
-const FOREGROUND_ENV = env.getProperty(terms.HDB_SETTINGS_NAMES.RUN_IN_FOREGROUND);
-const RUN_IN_FOREGROUND = FOREGROUND_ENV === 'true' || FOREGROUND_ENV === true || FOREGROUND_ENV === 'TRUE';
-
 const IPC_SERVER_CWD = path.resolve(__dirname, '../server/ipc');
 const MEM_SETTING_KEY = '--max-old-space-size=';
 
@@ -238,7 +235,7 @@ async function launchHdbServer() {
         };
 
         //because we may need to push logs to std out/err if the process runs in foreground we need to remove the stdio: ignore
-        if(RUN_IN_FOREGROUND){
+        if(getRunInForeground()){
             delete fork_options.stdio;
         }
 
@@ -266,7 +263,7 @@ async function launchHdbServer() {
  * also if foreground is passed we setup the processExitHandler to call the stop handler which kills the hdb processes
  */
 function foregroundHandler() {
-    if (!RUN_IN_FOREGROUND) {
+    if (!getRunInForeground()) {
         ipc_child.unref();
         child.unref();
 
@@ -289,7 +286,7 @@ function foregroundHandler() {
  * @returns {Promise<void>}
  */
 async function processExitHandler() {
-    if (RUN_IN_FOREGROUND) {
+    if (getRunInForeground()) {
         try {
             await stop.stop();
         } catch(err) {
@@ -383,7 +380,7 @@ async function launchIPCServer() {
         };
 
         //because we may need to push logs to std out/err if the process runs in foreground we need to remove the stdio: ignore
-        if(RUN_IN_FOREGROUND){
+        if(getRunInForeground()){
             delete fork_options.stdio;
         }
         ipc_child = fork(ipc_fork_args[0], [ipc_fork_args[1]], fork_options);
@@ -392,4 +389,9 @@ async function launchIPCServer() {
         final_logger.error(err);
         process.exit(1);
     }
+}
+
+function getRunInForeground(){
+    const FOREGROUND_ENV = env.getProperty(terms.HDB_SETTINGS_NAMES.RUN_IN_FOREGROUND);
+    return FOREGROUND_ENV === 'true' || FOREGROUND_ENV === true || FOREGROUND_ENV === 'TRUE';
 }
