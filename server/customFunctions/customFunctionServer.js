@@ -3,6 +3,7 @@ const os = require('os');
 const cluster = require('cluster');
 
 const harper_logger = require('../../utility/logging/harper_logger');
+harper_logger.fatal('Logger instantiated');
 const env = require('../../utility/environment/environmentManager');
 const terms = require('../../utility/hdbTerms');
 
@@ -17,6 +18,9 @@ try {
     harper_logger.error(`Got an error loading the environment.  Exiting.${err}`);
     process.exit(0);
 }
+
+harper_logger.fatal('env inited');
+
 
 const PROPS_ENV_KEY = 'NODE_ENV';
 const ENV_PROD_VAL = 'production';
@@ -38,6 +42,9 @@ process.argv.forEach((arg) => {
         global.running_from_repo = running_from_repo;
     }
 });
+
+harper_logger.fatal('running from repo value is ' + running_from_repo);
+
 
 process.env['NODE_ENV'] = node_env_value;
 
@@ -74,7 +81,10 @@ global.clustering_on = false;
  * Kicks off the custom function server and processes.
  */
 if (cluster.isMaster && (num_workers >= 1)) {
+    harper_logger.fatal('just before server parent call');
     serverParent(num_workers);
 } else {
+    harper_logger.fatal('just before server child call');
+
     serverChild();
 }
