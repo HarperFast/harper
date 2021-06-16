@@ -102,6 +102,7 @@
   "devDependencies": {
     "axios": "^0.21.0",
     "chai": "^4.3.4",
+    "chai-integer": "^0.1.0",
     "eslint": "^5.16.0",
     "hook-std": "^2.0.0",
     "intercept-stdout": "^0.1.2",

@@ -17,22 +17,14 @@ const ALGORITHM = 'aes-256-cbc';
 const IV_LENGTH = 16;
 const KEY_LENGTH = 32;
 const env = require('../../utility/environment/environmentManager');
-
-const LICENSE_FILE = path.join(hdb_utils.getHomeDir(), terms.HDB_HOME_DIR_NAME, terms.LICENSE_KEY_DIR_NAME, terms.LICENSE_FILE_NAME);
-
-let FINGER_PRINT_FILE = undefined;
+if(!env.isInitialized()){
+    env.initSync();
+}
+const LICENSE_PATH = path.join(env.getHdbBasePath(), terms.LICENSE_KEY_DIR_NAME, terms.LICENSE_FILE_NAME);
+const LICENSE_FILE = path.join(LICENSE_PATH, terms.LICENSE_FILE_NAME);
+const FINGER_PRINT_FILE = path.join(LICENSE_PATH, terms.REG_KEY_FILE_NAME);
 
 let current_license = undefined;
-
-try {
-    FINGER_PRINT_FILE = path.resolve(__dirname, '../keys/', terms.REG_KEY_FILE_NAME);
-    if(!fs.existsSync(FINGER_PRINT_FILE)) {
-        // As of version 2.0, we store the reg keys in ~/.harperdb.
-        FINGER_PRINT_FILE = path.join(hdb_utils.getHomeDir(), terms.HDB_HOME_DIR_NAME, terms.LICENSE_KEY_DIR_NAME, terms.REG_KEY_FILE_NAME);
-    }
-} catch(err) {
-    // no-op, this should only fail during installation as the
-}
 
 module.exports = {
     validateLicense: validateLicense,
@@ -60,6 +52,7 @@ async function writeFingerprint(){
     let hashed_hash = password.hash(hash);
 
     try {
+        await fs.mkdirp(LICENSE_PATH);
         await fs.writeFile(FINGER_PRINT_FILE, hashed_hash);
     } catch(err) {
         if(err.code === 'EEXIST'){
@@ -179,6 +172,7 @@ function validateLicense(license_key, company) {
  * Licenses created pre 01-27-2020 were encrypted using an older deprecated cipher.
  * Here we check them against that older cipher.
  * @param license
+ * @param fingerprint
  */
 function checkOldLicense(license, fingerprint) {
     try {

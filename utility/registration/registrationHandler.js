@@ -10,12 +10,15 @@ const path = require('path');
 const hdb_utils = require('../common_utils');
 const version = require('../../bin/version');
 const env_utility = require('../environment/environmentManager');
+if(!env_utility.isInitialized()){
+    env_utility.initSync();
+}
 const moment = require('moment');
 
 //Promisified function
 let p_prompt_get = promisify(prompt.get);
 
-const LICENSE_FILE = path.join(hdb_utils.getHomeDir(), terms.HDB_HOME_DIR_NAME, terms.LICENSE_KEY_DIR_NAME, terms.LICENSE_FILE_NAME);
+const LICENSE_FILE = path.join(env_utility.getHdbBasePath(), terms.LICENSE_KEY_DIR_NAME, terms.LICENSE_FILE_NAME, terms.LICENSE_FILE_NAME);
 
 module.exports = {
     getFingerprint: getFingerprint,

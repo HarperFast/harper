@@ -8,6 +8,8 @@ const hdb_log = require('../../utility/logging/harper_logger');
 const { getOldPropsValue } = require('../upgradeUtilities');
 const { HDB_SETTINGS_NAMES, HDB_SETTINGS_DEFAULT_VALUES } = require('../../utility/hdbTerms');
 const env = require('../../utility/environment/environmentManager');
+const hdb_utils = require('../../utility/common_utils');
+const terms = require('../../utility/hdbTerms');
 
 let directive3_1_0 = new UpgradeDirective('3.1.0');
 let directives = [];
@@ -49,7 +51,7 @@ function updateSettingsFile_3_1_0() {
         `${HDB_SETTINGS_NAMES.SERVER_HEADERS_TIMEOUT_KEY} = ${getOldPropsValue(HDB_SETTINGS_NAMES.SERVER_HEADERS_TIMEOUT_KEY, old_hdb_props, true)}\n` +
         `   ;Define whether to log to file or not.` +
         `${HDB_SETTINGS_NAMES.LOG_TO_FILE} = ${HDB_SETTINGS_DEFAULT_VALUES.LOG_TO_FILE}\n` +
-        `   ;Define whether to log to stdout/stderr or not.` +
+        `   ;Define whether to log to stdout/stderr or not. NOTE HarperDB must run in foreground in order to receive the std stream from HarperDB.\n` +
         `${HDB_SETTINGS_NAMES.LOG_TO_STDSTREAMS} = ${HDB_SETTINGS_DEFAULT_VALUES.LOG_TO_STDSTREAMS}\n` +
         `   ;Set to control amount of logging generated.  Accepted levels are trace, debug, warn, error, fatal.\n` +
         `${HDB_SETTINGS_NAMES.LOG_LEVEL_KEY} = ${getOldPropsValue(HDB_SETTINGS_NAMES.LOG_LEVEL_KEY, old_hdb_props)}\n` +
@@ -127,7 +129,73 @@ function updateSettingsFile_3_1_0() {
     return upgrade_success_msg;
 }
 
+function moveLicenseFiles(){
+    const LICENSE_FILE_PATH = path.join(hdb_utils.getHomeDir(), terms.HDB_HOME_DIR_NAME, terms.LICENSE_KEY_DIR_NAME, terms.LICENSE_FILE_NAME);
+    const REG_FILE_PATH = path.join(hdb_utils.getHomeDir(), terms.HDB_HOME_DIR_NAME, terms.LICENSE_KEY_DIR_NAME, terms.REG_KEY_FILE_NAME);
+    const HDB_LICENSE_DIR = path.join(env.getHdbBasePath(), terms.LICENSE_KEY_DIR_NAME, terms.LICENSE_FILE_NAME);
+    const NEW_LICENSE_FILE_PATH = path.join(HDB_LICENSE_DIR, terms.LICENSE_FILE_NAME);
+    const NEW_REG_FILE_PATH = path.join(HDB_LICENSE_DIR, terms.REG_KEY_FILE_NAME);
+
+    const settings_update_msg = 'Move license files for version 3.1.0';
+    console.log(settings_update_msg);
+    hdb_log.info(settings_update_msg);
+
+    const create_license_dir_msg = 'Creating .license directory';
+    console.log(create_license_dir_msg);
+    hdb_log.info(create_license_dir_msg);
+    fs.mkdirpSync(HDB_LICENSE_DIR);
+
+    try {
+        fs.accessSync(LICENSE_FILE_PATH);
+
+        try{
+            const move_license_msg = 'Moving licence file';
+            console.log(move_license_msg);
+            hdb_log.info(move_license_msg);
+
+            fs.moveSync(LICENSE_FILE_PATH, NEW_LICENSE_FILE_PATH);
+
+            const success_move_license_msg = 'License file successfully moved.';
+            console.log(success_move_license_msg);
+            hdb_log.info(success_move_license_msg);
+        }catch(e){
+            const move_license_failed = `moving license file failed`;
+            console.error(move_license_failed);
+            hdb_log.error(move_license_failed);
+        }
+    }catch(e){
+        const license_dir_no_exist = `license file '${LICENSE_FILE_PATH}' does not exist.`;
+        console.warn(license_dir_no_exist);
+        hdb_log.warn(license_dir_no_exist);
+    }
+
+    try {
+        fs.accessSync(REG_FILE_PATH);
+
+        try{
+            const move_reg_msg = 'Moving registration file';
+            console.log(move_reg_msg);
+            hdb_log.info(move_reg_msg);
+
+            fs.moveSync(REG_FILE_PATH, NEW_REG_FILE_PATH);
+
+            const success_move_reg_msg = 'Registration file successfully moved.';
+            console.log(success_move_reg_msg);
+            hdb_log.info(success_move_reg_msg);
+        }catch(e){
+            const move_registration_failed = `moving registration file failed`;
+            console.error(move_registration_failed);
+            hdb_log.error(move_registration_failed);
+        }
+    }catch(e){
+        const registration_file_no_exist = `registration file '${REG_FILE_PATH}' does not exist.`;
+        console.warn(registration_file_no_exist);
+        hdb_log.warn(registration_file_no_exist);
+    }
+}
+
 directive3_1_0.sync_functions.push(updateSettingsFile_3_1_0);
+directive3_1_0.sync_functions.push(moveLicenseFiles);
 
 directives.push(directive3_1_0);
 
