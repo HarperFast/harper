@@ -7,19 +7,19 @@
 const license = require('../registration/hdb_license');
 const license_generator = require('./licenseGenerator');
 const reg_handler = require('../registration/registrationHandler');
-const environment_utility = require('../environment/environmentManager');
 
 const minimist = require('minimist');
 const fs = require('fs-extra');
 const path = require('path');
-const hdb_utils = require('../common_utils');
 const terms = require('../hdbTerms');
-const LICENSE_FILE = path.join(hdb_utils.getHomeDir(), terms.HDB_HOME_DIR_NAME, terms.LICENSE_KEY_DIR_NAME, terms.LICENSE_FILE_NAME);
+
 const moment = require('moment');
 const env = require('../environment/environmentManager');
 if(!env.isInitialized()) {
     env.initSync();
 }
+const LICENSE_PATH = path.join(env.getHdbBasePath(), terms.LICENSE_KEY_DIR_NAME, terms.LICENSE_FILE_NAME);
+const LICENSE_FILE = path.join(LICENSE_PATH, terms.LICENSE_FILE_NAME);
 
 const ARGS = minimist(process.argv.slice(2));
 let RESET_SUCCESS_MSG = 'successfully reset license';
@@ -37,6 +37,7 @@ async function register(){
         console.log('resetting license');
 
         try {
+            fs.mkdirpSync(LICENSE_PATH);
             fs.unlinkSync(LICENSE_FILE);
             console.log(RESET_SUCCESS_MSG);
         }catch(e){
