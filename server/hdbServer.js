@@ -44,6 +44,8 @@ process.argv.forEach((arg) => {
     }
 });
 
+harper_logger.info('hdb server running from repo value is ' + running_from_repo);
+
 process.env['NODE_ENV'] = node_env_value;
 
 let num_hdb_processes = undefined;
