@@ -15,6 +15,14 @@ const { HDB_ERROR_MSGS, HTTP_STATUS_CODES } = hdb_errors;
 
 const CUSTOM_FUNCTION_TEMPLATE = path.resolve(__dirname, '../../customFunctionTemplate');
 
+function isCFEnabled() {
+    const custom_functions_enabled = env.getProperty(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_ENABLED_KEY);
+    if (custom_functions_enabled === 'true' || custom_functions_enabled === true || custom_functions_enabled === 'TRUE') {
+        return;
+    }
+    throw handleHDBError(new Error(), HDB_ERROR_MSGS.NOT_ENABLED, HTTP_STATUS_CODES.BAD_REQUEST, undefined, undefined, true);
+}
+
 /**
  * Read the settings.js file and return the
  *
@@ -101,6 +109,7 @@ async function getCustomFunction(req) {
  * @returns {string}
  */
 async function setCustomFunction(req) {
+    isCFEnabled();
     if (req.project) {
         req.project = path.parse(req.project).name;
     }
@@ -165,6 +174,7 @@ async function dropCustomFunction(req) {
  * @returns {string}
  */
 async function addCustomFunctionProject(req) {
+    isCFEnabled();
     if (req.project) {
         req.project = path.parse(req.project).name;
     }
@@ -279,6 +289,7 @@ async function packageCustomFunctionProject(req) {
  * @returns {string}
  */
 async function deployCustomFunctionProject(req) {
+    isCFEnabled();
     if (req.project) {
         req.project = path.parse(req.project).name;
     }
