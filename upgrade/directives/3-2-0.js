@@ -87,7 +87,7 @@ function updateSettingsFile_3_2_0() {
         `${HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_ENABLED_KEY} = ${HDB_SETTINGS_DEFAULT_VALUES.CUSTOM_FUNCTIONS}\n` +
         `   ;The port used to access the custom functions server.\n` +
         `${HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_PORT_KEY} = ${HDB_SETTINGS_DEFAULT_VALUES.CUSTOM_FUNCTIONS_PORT}\n` +
-        `   ;The path to the folder containing HarperDB custom API endpoint files.\n` +
+        `   ;The path to the folder containing HarperDB custom function files.\n` +
         `${HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY} = ${path.join(getOldPropsValue(HDB_SETTINGS_NAMES.HDB_ROOT_KEY, old_hdb_props), HDB_SETTINGS_DEFAULT_VALUES.CUSTOM_FUNCTIONS_DIRECTORY)}\n` +
         `   ;Set the max number of processes HarperDB will start for the Custom Functions server\n` +
         `${HDB_SETTINGS_NAMES.MAX_CUSTOM_FUNCTION_PROCESSES} = ${HDB_SETTINGS_DEFAULT_VALUES.MAX_CUSTOM_FUNCTION_PROCESSES}\n`

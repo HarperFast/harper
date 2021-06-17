@@ -546,7 +546,7 @@ function createSettingsFile(mount_status, callback) {
             `${HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_ENABLED_KEY} = ${generateSettingsValue(ARGS, HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_ENABLED_KEY)}\n` +
             `   ;The port used to access the custom functions server.\n` +
             `${HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_PORT_KEY} = ${generateSettingsValue(ARGS, HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_PORT_KEY)}\n` +
-            `   ;The path to the folder containing HarperDB custom API endpoint files.\n` +
+            `   ;The path to the folder containing HarperDB custom function files.\n` +
             `${HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY} = ${wizard_result.HDB_ROOT}/custom_functions\n` +
             `   ;Set the max number of processes HarperDB will start for the Custom Functions server\n` +
             `${HDB_SETTINGS_NAMES.MAX_CUSTOM_FUNCTION_PROCESSES} = ${num_cores}\n`
