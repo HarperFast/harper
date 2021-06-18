@@ -7,10 +7,16 @@ const uuid = require('uuid/v4');
 const assert = require('assert');
 const COMMON_TEST_TERMS = require('./commonTestTerms');
 
+const systemSchema = require('../json/systemSchema.json');
 const env = require('../utility/environment/environmentManager');
 const terms = require('../utility/hdbTerms');
 const common_utils = require('../utility/common_utils');
 const { handleHDBError } = require('../utility/errors/hdbError');
+const environment_utility = require('../utility/lmdb/environmentUtility');
+const lmdb_create_schema = require('../data_layer/harperBridge/lmdbBridge/lmdbMethods/lmdbCreateSchema');
+const lmdb_create_table = require('../data_layer/harperBridge/lmdbBridge/lmdbMethods/lmdbCreateTable');
+const lmdb_create_records = require('../data_layer/harperBridge/lmdbBridge/lmdbMethods/lmdbCreateRecords');
+const lmdb_create_attribute = require('../data_layer/harperBridge/lmdbBridge/lmdbMethods/lmdbCreateAttribute');
 
 let env_mgr_init_sync_stub = undefined;
 const {
@@ -44,7 +50,13 @@ const ATTR_PATH_OBJECT = {
     "journals": [],
     "system": []
 };
-const SCHEMA_DIR_NAME = 'schema';
+
+const SCHEMA_NAME = 'schema';
+const LMDB_TEST_FOLDER_NAME = 'system';
+const BASE_PATH = getMockLMDBPath();
+const BASE_SCHEMA_PATH = path.join(BASE_PATH, SCHEMA_NAME);
+const BASE_TXN_PATH = path.join(BASE_PATH, 'transactions');
+const BASE_TEST_PATH = path.join(BASE_SCHEMA_PATH, LMDB_TEST_FOLDER_NAME);
 
 /**
  * This needs to be called near the top of our unit tests.  Most will fail when loading harper modules due to the
@@ -166,7 +178,7 @@ function getMockLMDBPath() {
  * Validates that arguments passed into `createMockFS()` are not null, undefined, or "" - throws error, if so
  * @param argArray Array of arg values
  */
-function validateMockFSArgs(argArray) {
+function validateMockArgs(argArray) {
     for (let i=0; i < argArray.length; i++) {
         if (argArray[i] === null || argArray[i] === undefined || argArray[i] === "") {
             throw new Error(MOCK_FS_ARGS_ERROR_MSG);
@@ -174,8 +186,110 @@ function validateMockFSArgs(argArray) {
     }
 }
 
-async function createMockDB(hash_attribute, schema, table, test_data) {
+function CreateSchemaObj(schema) {
+    this.operation = 'create_schema';
+    this.schema = schema;
+}
 
+function CreateTableObj(schema, table, hash_attribute) {
+    this.operation = 'create_table';
+    this.schema = schema;
+    this.table = table;
+    this.hash_attribute = hash_attribute;
+}
+
+function CreateSystemTableObj(schema, table, hash_attribute) {
+    this.name = table;
+    this.schema = schema;
+    this.id = '32fds2q3';
+    this.hash_attribute = hash_attribute;
+    this.residence = '*';
+}
+
+function InsertRecordsObj(schema, table, records) {
+    this.operation = 'insert';
+    this.schema = schema;
+    this.table = table;
+    this.records = records;
+}
+
+async function createMockDB(hash_attribute, schema, table, test_data) {
+    try {
+        validateMockArgs([hash_attribute, schema, table, test_data]);
+
+        let attributes = [];
+        let unique_attributes = [];
+        for (const record of test_data) {
+            for (const attr in record) {
+                if (!unique_attributes.includes(attr)) {
+                    unique_attributes.push(attr);
+                    attributes.push({ attribute: attr });
+                }
+            }
+        }
+
+        global.lmdb_map = undefined;
+        global.hdb_schema = {
+            [schema]: {
+                [table]: {
+                    attributes,
+                    hash_attribute: hash_attribute,
+                    name: table,
+                    schema
+                }
+            },
+            system: systemSchema
+        };
+
+        await fs.remove(getMockLMDBPath());
+        await fs.mkdirp(BASE_TEST_PATH);
+
+        const hdb_schema_env = await environment_utility.createEnvironment(BASE_TEST_PATH, systemSchema.hdb_schema.name);
+        environment_utility.createDBI(hdb_schema_env, systemSchema.hdb_schema.hash_attribute, false, true);
+
+        const hdb_table_env = await environment_utility.createEnvironment(BASE_TEST_PATH, systemSchema.hdb_table.name);
+        environment_utility.createDBI(hdb_table_env, systemSchema.hdb_table.hash_attribute, false, true);
+
+        const hdb_attribute_env = await environment_utility.createEnvironment(BASE_TEST_PATH, systemSchema.hdb_attribute.name);
+        environment_utility.createDBI(hdb_attribute_env, systemSchema.hdb_attribute.hash_attribute, false, true);
+
+        const create_schema_obj = new CreateSchemaObj(schema);
+        await lmdb_create_schema(create_schema_obj);
+
+        const create_table_obj = new CreateTableObj(schema, table, hash_attribute);
+        const create_sys_table_obj = new CreateSystemTableObj(schema, table, hash_attribute);
+        await lmdb_create_table(create_sys_table_obj, create_table_obj);
+
+        const insert_records_obj = new InsertRecordsObj(schema, table, test_data);
+        await lmdb_create_records(insert_records_obj);
+
+        return {
+            hdb_schema_env,
+            hdb_table_env,
+            hdb_attribute_env
+        };
+    } catch(err) {
+        console.error('Error creating mock DB for unit test.');
+        console.error(err);
+        throw err;
+    }
+}
+
+async function tearDownMockDB(envs) {
+    try {
+        const {hdb_schema_env, hdb_table_env, hdb_attribute_env } = envs;
+        hdb_table_env.close();
+        hdb_schema_env.close();
+        hdb_attribute_env.close();
+
+        delete global.hdb_schema;
+        global.lmdb_map = undefined;
+        await fs.remove(getMockLMDBPath());
+    } catch(err) {
+        console.error('Error tearing down mock DB used for unit tests');
+        console.error(err);
+        throw err;
+    }
 }
 
 /**
@@ -198,7 +312,7 @@ async function createMockDB(hash_attribute, schema, table, test_data) {
  */
 function createMockFS(hash_attribute, schema, table, test_data) {
     try {
-        validateMockFSArgs([hash_attribute, schema, table, test_data]);
+        validateMockArgs([hash_attribute, schema, table, test_data]);
 
         //create default mock fs dir
         const test_base_path = getMockFSPath();
@@ -206,7 +320,7 @@ function createMockFS(hash_attribute, schema, table, test_data) {
 
         // make schema directory to mimic actual file system
 
-        const test_base_schema_path = path.join(test_base_path, SCHEMA_DIR_NAME);
+        const test_base_schema_path = path.join(test_base_path, SCHEMA_NAME);
         makeTheDir(test_base_schema_path);
 
         //create schema
@@ -305,7 +419,7 @@ function tearDownMockFSSystem() {
 
 function createMockSystemSchema(hash_attribute, schema, table, attributes_keys) {
     const test_base_path = getMockFSPath();
-    const test_system_base_path = path.join(test_base_path, SCHEMA_DIR_NAME, terms.SYSTEM_SCHEMA_NAME);
+    const test_system_base_path = path.join(test_base_path, SCHEMA_NAME, terms.SYSTEM_SCHEMA_NAME);
 
     // create default dir structure
     makeTheDir(test_system_base_path);
@@ -877,6 +991,8 @@ module.exports = {
     preTestPrep,
     cleanUpDirectories,
     createMockFS,
+    createMockDB,
+    tearDownMockDB,
     createMockSystemSchema,
     setGlobalSchema,
     tearDownMockFS,

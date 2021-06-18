@@ -414,7 +414,7 @@ function initTestEnvironment(test_config_obj = {}) {
             setProperty(hdb_terms.HDB_SETTINGS_NAMES.SERVER_HEADERS_TIMEOUT_KEY, headers_timeout);
         }
 
-        data_store_type = hdb_terms.STORAGE_TYPES_ENUM.FILE_SYSTEM;
+        data_store_type = hdb_terms.STORAGE_TYPES_ENUM.LMDB;
     } catch(err) {
         let msg = `Error reading in HDB environment variables from path ${BOOT_PROPS_FILE_PATH}.  Please check your boot props and settings files`;
         log.fatal(msg);
