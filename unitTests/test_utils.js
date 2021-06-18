@@ -16,7 +16,6 @@ const environment_utility = require('../utility/lmdb/environmentUtility');
 const lmdb_create_schema = require('../data_layer/harperBridge/lmdbBridge/lmdbMethods/lmdbCreateSchema');
 const lmdb_create_table = require('../data_layer/harperBridge/lmdbBridge/lmdbMethods/lmdbCreateTable');
 const lmdb_create_records = require('../data_layer/harperBridge/lmdbBridge/lmdbMethods/lmdbCreateRecords');
-const lmdb_create_attribute = require('../data_layer/harperBridge/lmdbBridge/lmdbMethods/lmdbCreateAttribute');
 
 let env_mgr_init_sync_stub = undefined;
 const {
@@ -213,6 +212,15 @@ function InsertRecordsObj(schema, table, records) {
     this.records = records;
 }
 
+/**
+ * Creates a mock LMDB HDB environment/DB
+ * NOTE: Make sure to use tearDownMockDB after using this function.
+ * @param hash_attribute
+ * @param schema
+ * @param table
+ * @param test_data
+ * @returns {Promise<{hdb_schema_env: lmdb.RootDatabase, hdb_table_env: lmdb.RootDatabase, hdb_attribute_env: lmdb.RootDatabase}>}
+ */
 async function createMockDB(hash_attribute, schema, table, test_data) {
     try {
         validateMockArgs([hash_attribute, schema, table, test_data]);
@@ -269,12 +277,17 @@ async function createMockDB(hash_attribute, schema, table, test_data) {
             hdb_attribute_env
         };
     } catch(err) {
-        console.error('Error creating mock DB for unit test.');
+        console.error('Error creating mock DB for unit tests.');
         console.error(err);
         throw err;
     }
 }
 
+/**
+ * Tears down a mock LMDB HDB environment/DB
+ * @param envs
+ * @returns {Promise<void>}
+ */
 async function tearDownMockDB(envs) {
     try {
         const {hdb_schema_env, hdb_table_env, hdb_attribute_env } = envs;
