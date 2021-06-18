@@ -27,8 +27,6 @@ function updateSettingsFile_3_1_0() {
 
     let new_hdb_settings_vals = `   ;Settings for the HarperDB process.\n` +
         `\n` +
-        `   ;The directory harperdb has been installed in.\n` +
-        `${HDB_SETTINGS_NAMES.PROJECT_DIR_KEY} = ${getOldPropsValue(HDB_SETTINGS_NAMES.PROJECT_DIR_KEY, old_hdb_props)}\n` +
         `   ;The directory selected during install where the database files reside.\n` +
         `${HDB_SETTINGS_NAMES.HDB_ROOT_KEY} = ${getOldPropsValue(HDB_SETTINGS_NAMES.HDB_ROOT_KEY, old_hdb_props)}\n` +
         `   ;The port the HarperDB REST interface will listen on.\n` +

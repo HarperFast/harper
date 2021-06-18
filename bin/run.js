@@ -307,7 +307,7 @@ module.exports ={
  */
 async function isHdbInstalled() {
     try {
-        await fs.stat(env.BOOT_PROPS_FILE_PATH);
+        await fs.stat(hdb_utils.getPropsFilePath());
         await fs.stat(env.get(terms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY));
     } catch(err) {
         if(err.errno === ENOENT_ERR_CODE) {
