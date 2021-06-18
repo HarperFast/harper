@@ -16,6 +16,9 @@ const environment_utility = require('../utility/lmdb/environmentUtility');
 const lmdb_create_schema = require('../data_layer/harperBridge/lmdbBridge/lmdbMethods/lmdbCreateSchema');
 const lmdb_create_table = require('../data_layer/harperBridge/lmdbBridge/lmdbMethods/lmdbCreateTable');
 const lmdb_create_records = require('../data_layer/harperBridge/lmdbBridge/lmdbMethods/lmdbCreateRecords');
+let lmdb_schema_env = undefined;
+let lmdb_table_env = undefined;
+let lmdb_attribute_env = undefined;
 
 let env_mgr_init_sync_stub = undefined;
 const {
@@ -200,7 +203,7 @@ function CreateTableObj(schema, table, hash_attribute) {
 function CreateSystemTableObj(schema, table, hash_attribute) {
     this.name = table;
     this.schema = schema;
-    this.id = '32fds2q3';
+    this.id = uuid();
     this.hash_attribute = hash_attribute;
     this.residence = '*';
 }
@@ -236,37 +239,48 @@ async function createMockDB(hash_attribute, schema, table, test_data) {
             }
         }
 
-        global.lmdb_map = undefined;
-        global.hdb_schema = {
-            [schema]: {
-                [table]: {
-                    attributes,
-                    hash_attribute: hash_attribute,
-                    name: table,
-                    schema
-                }
-            },
-            system: systemSchema
-        };
+        if (global.hdb_schema === undefined) {
+            global.hdb_schema = { system: systemSchema };
+        }
 
-        await fs.remove(getMockLMDBPath());
         await fs.mkdirp(BASE_TEST_PATH);
 
-        const hdb_schema_env = await environment_utility.createEnvironment(BASE_TEST_PATH, systemSchema.hdb_schema.name);
-        environment_utility.createDBI(hdb_schema_env, systemSchema.hdb_schema.hash_attribute, false, true);
+        let hdb_schema_env;
+        let hdb_table_env;
+        let hdb_attribute_env;
+        if (lmdb_schema_env === undefined) {
+            hdb_schema_env = await environment_utility.createEnvironment(BASE_TEST_PATH, systemSchema.hdb_schema.name);
+            environment_utility.createDBI(hdb_schema_env, systemSchema.hdb_schema.hash_attribute, false, true);
+        }
 
-        const hdb_table_env = await environment_utility.createEnvironment(BASE_TEST_PATH, systemSchema.hdb_table.name);
-        environment_utility.createDBI(hdb_table_env, systemSchema.hdb_table.hash_attribute, false, true);
+        if (lmdb_table_env === undefined) {
+            hdb_table_env = await environment_utility.createEnvironment(BASE_TEST_PATH, systemSchema.hdb_table.name);
+            environment_utility.createDBI(hdb_table_env, systemSchema.hdb_table.hash_attribute, false, true);
+        }
 
-        const hdb_attribute_env = await environment_utility.createEnvironment(BASE_TEST_PATH, systemSchema.hdb_attribute.name);
-        environment_utility.createDBI(hdb_attribute_env, systemSchema.hdb_attribute.hash_attribute, false, true);
+        if (lmdb_attribute_env === undefined) {
+            hdb_attribute_env = await environment_utility.createEnvironment(BASE_TEST_PATH, systemSchema.hdb_attribute.name);
+            environment_utility.createDBI(hdb_attribute_env, systemSchema.hdb_attribute.hash_attribute, false, true);
+        }
 
-        const create_schema_obj = new CreateSchemaObj(schema);
-        await lmdb_create_schema(create_schema_obj);
+        if (!global.hdb_schema[schema]) {
+            const create_schema_obj = new CreateSchemaObj(schema);
+            await lmdb_create_schema(create_schema_obj);
+            global.hdb_schema[schema] = {};
+        }
 
-        const create_table_obj = new CreateTableObj(schema, table, hash_attribute);
-        const create_sys_table_obj = new CreateSystemTableObj(schema, table, hash_attribute);
-        await lmdb_create_table(create_sys_table_obj, create_table_obj);
+        if (!global.hdb_schema[schema] || !global.hdb_schema[schema][table]) {
+            const create_table_obj = new CreateTableObj(schema, table, hash_attribute);
+            const create_sys_table_obj = new CreateSystemTableObj(schema, table, hash_attribute);
+            await lmdb_create_table(create_sys_table_obj, create_table_obj);
+
+            global.hdb_schema[schema][table] = {
+                attributes,
+                hash_attribute: hash_attribute,
+                name: table,
+                schema
+            };
+        }
 
         const insert_records_obj = new InsertRecordsObj(schema, table, test_data);
         await lmdb_create_records(insert_records_obj);
@@ -290,10 +304,14 @@ async function createMockDB(hash_attribute, schema, table, test_data) {
  */
 async function tearDownMockDB(envs) {
     try {
-        const {hdb_schema_env, hdb_table_env, hdb_attribute_env } = envs;
+        const { hdb_schema_env, hdb_table_env, hdb_attribute_env } = envs;
         hdb_table_env.close();
         hdb_schema_env.close();
         hdb_attribute_env.close();
+
+        lmdb_schema_env = undefined;
+        lmdb_table_env = undefined;
+        lmdb_attribute_env = undefined;
 
         delete global.hdb_schema;
         global.lmdb_map = undefined;
