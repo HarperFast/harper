@@ -436,11 +436,6 @@ describe('Tests for file system module fsDeleteRecordsBefore', () => {
             }
         }));
 
-        it('removeFiles with empty files parameter', mochaAsyncWrapper( async () => {
-            let test_err_result = await test_utils.testError(removeFiles(TEST_SCHEMA, TEST_TABLE_DOG, HASH_ATTRIBUTE, []), "Hash values can't be blank");
-
-            assert.strictEqual(test_err_result, true);
-        }));
     });
 
 
