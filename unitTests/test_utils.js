@@ -174,6 +174,10 @@ function validateMockFSArgs(argArray) {
     }
 }
 
+async function createMockDB(hash_attribute, schema, table, test_data) {
+
+}
+
 /**
  * This function will simulate the HDB data structure with the data passed in at the path accessed by using
  * `getMockFSPath()` in your unit test file. It will build out a fs structure for the schema/table/attributes
