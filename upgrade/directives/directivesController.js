@@ -31,12 +31,6 @@ if (version_3_1_0) {
     });
 }
 
-if (version_3_2_0) {
-    version_3_2_0.forEach((version) => {
-        versions.set(version.version, version);
-    });
-}
-
 /**
  * Returns all HDB versions w/ upgrade directives
  * Note: this does NOT return a list of all versions of HDB
