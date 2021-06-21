@@ -273,6 +273,8 @@ async function createMockDB(hash_attribute, schema, table, test_data) {
             const create_table_obj = new CreateTableObj(schema, table, hash_attribute);
             const create_sys_table_obj = new CreateSystemTableObj(schema, table, hash_attribute);
             await lmdb_create_table(create_sys_table_obj, create_table_obj);
+            let table_env = environment_utility.openEnvironment(path.join(BASE_TEST_PATH, schema), table);
+            let txn_env = environment_utility.openEnvironment(path.join(BASE_TXN_PATH, schema), table, true);
 
             global.hdb_schema[schema][table] = {
                 attributes,
@@ -302,12 +304,26 @@ async function createMockDB(hash_attribute, schema, table, test_data) {
  * @param envs
  * @returns {Promise<void>}
  */
-async function tearDownMockDB(envs) {
+async function tearDownMockDB(envs = undefined) {
     try {
-        const { hdb_schema_env, hdb_table_env, hdb_attribute_env } = envs;
-        hdb_table_env.close();
-        hdb_schema_env.close();
-        hdb_attribute_env.close();
+        if (envs !== undefined) {
+            const { hdb_schema_env, hdb_table_env, hdb_attribute_env } = envs;
+            hdb_table_env.close();
+            hdb_schema_env.close();
+            hdb_attribute_env.close();
+        }
+
+        if (lmdb_schema_env !== undefined) {
+            lmdb_schema_env.close();
+        }
+
+        if (lmdb_table_env !== undefined) {
+            lmdb_table_env.close();
+        }
+
+        if (lmdb_attribute_env !== undefined) {
+            lmdb_attribute_env.close();
+        }
 
         lmdb_schema_env = undefined;
         lmdb_table_env = undefined;
