@@ -32,10 +32,9 @@ const ATTR_PATH_OBJECT = {
     "system": []
 };
 
-const SCHEMA_NAME = 'schema';
-const BASE_PATH = getMockLMDBPath();
-const BASE_SCHEMA_PATH = path.join(BASE_PATH, SCHEMA_NAME);
-const BASE_TXN_PATH = path.join(BASE_PATH, 'transactions');
+const ENV_DIR_PATH = path.join(__dirname, 'envDir');
+const BASE_SCHEMA_PATH = path.join(ENV_DIR_PATH, 'schema');
+const BASE_TXN_PATH = path.join(ENV_DIR_PATH, 'transactions');
 const BASE_SYSTEM_PATH = path.join(BASE_SCHEMA_PATH, 'system');
 
 /**
@@ -252,8 +251,8 @@ async function createMockDB(hash_attribute, schema, table, test_data) {
             const create_table_obj = new CreateTableObj(schema, table, hash_attribute);
             const create_sys_table_obj = new CreateSystemTableObj(schema, table, hash_attribute);
             await lmdb_create_table(create_sys_table_obj, create_table_obj);
-            env_array.push(environment_utility.openEnvironment(path.join(BASE_PATH, schema), table));
-            env_array.push(environment_utility.openEnvironment(path.join(BASE_TXN_PATH, schema), table, true))
+            env_array.push(await environment_utility.openEnvironment(path.join(BASE_SCHEMA_PATH, schema), table));
+            env_array.push(await environment_utility.openEnvironment(path.join(BASE_TXN_PATH, schema), table, true));
 
             global.hdb_schema[schema][table] = {
                 attributes,
@@ -282,10 +281,9 @@ async function createMockDB(hash_attribute, schema, table, test_data) {
 async function tearDownMockDB(envs = undefined) {
     try {
         if (envs !== undefined) {
-            const { hdb_schema_env, hdb_table_env, hdb_attribute_env } = envs;
-            hdb_table_env.close();
-            hdb_schema_env.close();
-            hdb_attribute_env.close();
+            for (const environment of envs) {
+                environment.close();
+            }
         }
 
         if (lmdb_schema_env !== undefined) {
