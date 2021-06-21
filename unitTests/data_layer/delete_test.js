@@ -129,18 +129,6 @@ describe('Tests for delete.js', () => {
             expect(test_err_result).to.be.false;
         });
 
-        it('Test error for FIle system', async () => {
-            global.hdb_schema = {
-                [DELETE_BEFORE_OBJ.schema]: {
-                    [DELETE_BEFORE_OBJ.table]: {}
-                }
-            };
-            let delete_obj = test_utils.deepClone(DELETE_TXN_BEFORE_OBJ);
-            let test_err_result = await test_utils.testError(_delete.deleteTransactionLogsBefore(delete_obj), 'delete_transaction_logs_before is not available for this instance because it uses the File System data store.');
-
-            expect(test_err_result).to.be.true;
-        });
-
         it('Test ok with stub', async () => {
             let bridge_delete_txns_stub = sandbox.stub(harperBridge, 'deleteTransactionLogsBefore');
 

@@ -315,15 +315,15 @@ async function tearDownMockDB(envs) {
 
         delete global.hdb_schema;
         global.lmdb_map = undefined;
-        await fs.remove(getMockLMDBPath());
+        await fs.remove(path.resolve(__dirname, 'envDir'));
     } catch(err) {
         console.error('Error tearing down mock DB used for unit tests');
         console.error(err);
         throw err;
     }
 }
-
-/**
+/*
+/!**
  * This function will simulate the HDB data structure with the data passed in at the path accessed by using
  * `getMockFSPath()` in your unit test file. It will build out a fs structure for the schema/table/attributes
  * included in the parameters AND make appropriate updates to the schema > system structure AND set global.hdb_schema.
@@ -340,7 +340,7 @@ async function tearDownMockDB(envs) {
  * @returns Object in the format of ATTR_PATH_OBJECT above that includes paths associated with the files and journal
  *          entries associated with the data passed in.
  * TODO: The method does not currently return paths for the system schema directory.
- */
+ *!/
 function createMockFS(hash_attribute, schema, table, test_data) {
     try {
         validateMockArgs([hash_attribute, schema, table, test_data]);
@@ -425,7 +425,7 @@ function createMockFS(hash_attribute, schema, table, test_data) {
     } catch(e) {
          console.error(e);
     }
-}
+}*/
 
 /**
  * Removes the mock FS directory created by `createMockFS()` and resets global.hdb_schema
@@ -436,17 +436,18 @@ function tearDownMockFS() {
     global.hdb_schema = undefined;
 }
 
-function tearDownMockFSSystem() {
+/*function tearDownMockFSSystem() {
     let mock_system_path = path.join(UNIT_TEST_DIR, ENV_DIR_NAME, 'system');
     cleanUpDirectories(mock_system_path);
     global.hdb_schema = undefined;
-}
+}*/
+/*
 
-/**
+/!**
  * This method is used in `createMockFS()` to create the mock FS structure for the schema > system directory
  * TODO: Right now, this method does not return paths to specific directories or files being created.  This functionality
  ** should be added as when needed in future tests in the `system` array value returned from `createMockFS()`.
- */
+ *!/
 
 function createMockSystemSchema(hash_attribute, schema, table, attributes_keys) {
     const test_base_path = getMockFSPath();
@@ -676,10 +677,8 @@ function createMockSystemSchema(hash_attribute, schema, table, attributes_keys) 
     makeTheDir(path.join(test_system_base_path, ROLE_TABLE_NAME));
     makeTheDir(path.join(test_system_base_path, USER_TABLE_NAME));
 }
+*/
 
-/**
- * This method is used in `createMockFS()` to update global.hdb_schema based on the mocked FS structure created.
- */
 function setGlobalSchema(hash_attribute, schema, table, attributes_keys) {
     const attributes = attributes_keys.map(attr_key => ({ "attribute": attr_key }));
     const table_id = uuid();
@@ -1021,13 +1020,10 @@ module.exports = {
     mochaAsyncWrapper,
     preTestPrep,
     cleanUpDirectories,
-    createMockFS,
     createMockDB,
     tearDownMockDB,
-    createMockSystemSchema,
     setGlobalSchema,
     tearDownMockFS,
-    tearDownMockFSSystem,
     makeTheDir,
     getMockFSPath,
     getMockLMDBPath,
