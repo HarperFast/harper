@@ -1,7 +1,6 @@
 'use strict';
 
-const needle = require('needle');
-const filter = require('../helpers/example');
+const customValidation = require('../helpers/example');
 
 // eslint-disable-next-line no-unused-vars,require-await
 module.exports = async (server, { hdbCore, logger }) => {
@@ -17,7 +16,7 @@ module.exports = async (server, { hdbCore, logger }) => {
       };
       return hdbCore.requestWithoutAuthentication(request);
     }
-  })
+  });
 
   // POST, WITH STANDARD PASS-THROUGH BODY, PAYLOAD AND HDB AUTHENTICATION
   server.route({
@@ -31,22 +30,8 @@ module.exports = async (server, { hdbCore, logger }) => {
   server.route({
     url: '/:id',
     method: 'GET',
-    preValidation: async (request, reply) => {
-      /*
-       *  takes the inbound authorization headers and sends them via http request to an external auth service
-       */
-      const result = await needle('get', 'https://jsonplaceholder.typicode.com/todos/1', { headers: { authorization: request.headers.authorization }});
-
-      /*
-       *  throw an authentication error based on the response body or statusCode
-       */
-      if (result.body.error || result.statusCode !== 200) {
-        const errorString = result.body.error || 'Sorry, there was an error authenticating your request';
-        logger.error(errorString);
-        throw new Error(errorString);
-      }
-    },
-    handler: async (request) => {
+    preValidation: (request) => customValidation(request, logger),
+    handler: (request) => {
       request.body= {
         operation: 'sql',
         sql: `SELECT * FROM dev.dog WHERE id = ${request.params.id}`
@@ -56,9 +41,7 @@ module.exports = async (server, { hdbCore, logger }) => {
        * requestWithoutAuthentication bypasses the standard HarperDB authentication.
        * YOU MUST ADD YOUR OWN preValidation method above, or this method will be available to anyone.
        */
-      const result = await hdbCore.requestWithoutAuthentication(request);
-
-      return filter(result, ['dog_name', 'owner_name', 'breed']);
+      return hdbCore.requestWithoutAuthentication(request);
     }
-  })
+  });
 };

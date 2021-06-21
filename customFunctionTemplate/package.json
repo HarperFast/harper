@@ -2,9 +2,5 @@
   "name": "custom_functions_demo",
   "version": "1.0.0",
   "description": "custom functions demo",
-  "author": "jaxon@harperdb.io",
-  "dependencies": {
-    "lodash": "^4.17.21",
-    "needle": "^2.6.0"
-  }
+  "author": "jaxon@harperdb.io"
 }
