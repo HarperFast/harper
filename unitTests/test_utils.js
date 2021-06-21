@@ -21,28 +21,7 @@ let lmdb_table_env = undefined;
 let lmdb_attribute_env = undefined;
 
 let env_mgr_init_sync_stub = undefined;
-const {
-    JOB_TABLE_NAME,
-    NODE_TABLE_NAME,
-    ATTRIBUTE_TABLE_NAME,
-    LICENSE_TABLE_NAME,
-    ROLE_TABLE_NAME,
-    SCHEMA_TABLE_NAME,
-    TABLE_TABLE_NAME,
-    USER_TABLE_NAME
-} = terms.SYSTEM_TABLE_NAMES;
 
-const {
-    ATTR_ATTRIBUTE_KEY,
-    ATTR_CREATEDDATE_KEY,
-    ATTR_HASH_ATTRIBUTE_KEY,
-    ATTR_ID_KEY,
-    ATTR_NAME_KEY,
-    ATTR_RESIDENCE_KEY,
-    ATTR_SCHEMA_KEY,
-    ATTR_SCHEMA_TABLE_KEY,
-    ATTR_TABLE_KEY,
-} = terms.SYSTEM_DEFAULT_ATTRIBUTE_NAMES;
 
 const MOCK_FS_ARGS_ERROR_MSG = "Null, undefined, and/or empty string argument values not allowed when building mock HDB FS for testing";
 const UNIT_TEST_DIR = __dirname;
@@ -54,11 +33,10 @@ const ATTR_PATH_OBJECT = {
 };
 
 const SCHEMA_NAME = 'schema';
-const LMDB_TEST_FOLDER_NAME = 'system';
 const BASE_PATH = getMockLMDBPath();
 const BASE_SCHEMA_PATH = path.join(BASE_PATH, SCHEMA_NAME);
 const BASE_TXN_PATH = path.join(BASE_PATH, 'transactions');
-const BASE_TEST_PATH = path.join(BASE_SCHEMA_PATH, LMDB_TEST_FOLDER_NAME);
+const BASE_SYSTEM_PATH = path.join(BASE_SCHEMA_PATH, 'system');
 
 /**
  * This needs to be called near the top of our unit tests.  Most will fail when loading harper modules due to the
@@ -222,12 +200,13 @@ function InsertRecordsObj(schema, table, records) {
  * @param schema
  * @param table
  * @param test_data
- * @returns {Promise<{hdb_schema_env: lmdb.RootDatabase, hdb_table_env: lmdb.RootDatabase, hdb_attribute_env: lmdb.RootDatabase}>}
+ * @returns {Promise<*[]>}
  */
 async function createMockDB(hash_attribute, schema, table, test_data) {
     try {
         validateMockArgs([hash_attribute, schema, table, test_data]);
 
+        let env_array = []
         let attributes = [];
         let unique_attributes = [];
         for (const record of test_data) {
@@ -243,24 +222,24 @@ async function createMockDB(hash_attribute, schema, table, test_data) {
             global.hdb_schema = { system: systemSchema };
         }
 
-        await fs.mkdirp(BASE_TEST_PATH);
+        await fs.mkdirp(BASE_SYSTEM_PATH);
 
-        let hdb_schema_env;
-        let hdb_table_env;
-        let hdb_attribute_env;
         if (lmdb_schema_env === undefined) {
-            hdb_schema_env = await environment_utility.createEnvironment(BASE_TEST_PATH, systemSchema.hdb_schema.name);
+            const hdb_schema_env = await environment_utility.createEnvironment(BASE_SYSTEM_PATH, systemSchema.hdb_schema.name);
             environment_utility.createDBI(hdb_schema_env, systemSchema.hdb_schema.hash_attribute, false, true);
+            env_array.push(hdb_schema_env);
         }
 
         if (lmdb_table_env === undefined) {
-            hdb_table_env = await environment_utility.createEnvironment(BASE_TEST_PATH, systemSchema.hdb_table.name);
+            const hdb_table_env = await environment_utility.createEnvironment(BASE_SYSTEM_PATH, systemSchema.hdb_table.name);
             environment_utility.createDBI(hdb_table_env, systemSchema.hdb_table.hash_attribute, false, true);
+            env_array.push(hdb_table_env);
         }
 
         if (lmdb_attribute_env === undefined) {
-            hdb_attribute_env = await environment_utility.createEnvironment(BASE_TEST_PATH, systemSchema.hdb_attribute.name);
+            const hdb_attribute_env = await environment_utility.createEnvironment(BASE_SYSTEM_PATH, systemSchema.hdb_attribute.name);
             environment_utility.createDBI(hdb_attribute_env, systemSchema.hdb_attribute.hash_attribute, false, true);
+            env_array.push(hdb_attribute_env);
         }
 
         if (!global.hdb_schema[schema]) {
@@ -273,8 +252,8 @@ async function createMockDB(hash_attribute, schema, table, test_data) {
             const create_table_obj = new CreateTableObj(schema, table, hash_attribute);
             const create_sys_table_obj = new CreateSystemTableObj(schema, table, hash_attribute);
             await lmdb_create_table(create_sys_table_obj, create_table_obj);
-            let table_env = environment_utility.openEnvironment(path.join(BASE_TEST_PATH, schema), table);
-            let txn_env = environment_utility.openEnvironment(path.join(BASE_TXN_PATH, schema), table, true);
+            env_array.push(environment_utility.openEnvironment(path.join(BASE_PATH, schema), table));
+            env_array.push(environment_utility.openEnvironment(path.join(BASE_TXN_PATH, schema), table, true))
 
             global.hdb_schema[schema][table] = {
                 attributes,
@@ -287,11 +266,7 @@ async function createMockDB(hash_attribute, schema, table, test_data) {
         const insert_records_obj = new InsertRecordsObj(schema, table, test_data);
         await lmdb_create_records(insert_records_obj);
 
-        return {
-            hdb_schema_env,
-            hdb_table_env,
-            hdb_attribute_env
-        };
+        return env_array;
     } catch(err) {
         console.error('Error creating mock DB for unit tests.');
         console.error(err);
