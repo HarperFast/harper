@@ -132,7 +132,6 @@ describe('Test describeSchema', function() {
 
     after(async function() {
         await test_util.tearDownMockDB(test_envs);
-
         sandbox.restore();
     });
 
