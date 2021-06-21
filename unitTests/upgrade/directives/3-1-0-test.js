@@ -15,8 +15,7 @@ const fs = require('fs-extra');
 const os = require('os');
 const path = require('path');
 
-const SETTINGS_TO_IGNORE = ['settings_path', 'install_user', 'LOGGER', 'CUSTOM_FUNCTIONS', 'CUSTOM_FUNCTIONS_PORT',
-    'CUSTOM_FUNCTIONS_DIRECTORY', 'MAX_CUSTOM_FUNCTION_PROCESSES', 'LOG_TO_FILE', 'LOG_TO_STDSTREAMS'];
+const SETTINGS_TO_IGNORE = ['settings_path', 'install_user', 'LOGGER', 'LOG_TO_FILE', 'LOG_TO_STDSTREAMS'];
 const SETTINGS_PATH = getSettingsFilePath();
 let directive3_1_0;
 let updateSettingsFile_3_1_0;
