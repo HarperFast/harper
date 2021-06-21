@@ -142,7 +142,7 @@ const CAT_TABLE_NAME = 'cat';
 const CAT_TABLE_HASH_ATTRIBUTE = 'id';
 const BIRD_TABLE_NAME = 'bird';
 const BIRD_TABLE_HASH_ATTRIBUTE = 'id';
-let test_env;
+let test_env = [];
 
 describe('Test setSchemaDataToGlobal function', function () {
     it('Has data["systems"] in global.hdb_schema', function (done) {
@@ -159,9 +159,9 @@ describe('Test setSchemaDataToGlobal function', function () {
 
 describe('Test returnSchema function', function () {
     beforeEach(async function () {
-        await test_util.createMockDB(DOG_TABLE_HASH_ATTRIBUTE,SCHEMA_NAME,DOG_TABLE_NAME,TEST_DATA_DOG);
-        await test_util.createMockDB(BIRD_TABLE_HASH_ATTRIBUTE,SCHEMA_NAME,CAT_TABLE_NAME,TEST_DATA_CAT);
-        test_env = await test_util.createMockDB(CAT_TABLE_HASH_ATTRIBUTE,SCHEMA_NAME,BIRD_TABLE_NAME,TEST_DATA_BIRD);
+        test_env.push(...await test_util.createMockDB(DOG_TABLE_HASH_ATTRIBUTE,SCHEMA_NAME,DOG_TABLE_NAME,TEST_DATA_DOG));
+        test_env.push(...await test_util.createMockDB(BIRD_TABLE_HASH_ATTRIBUTE,SCHEMA_NAME,CAT_TABLE_NAME,TEST_DATA_CAT));
+        test_env.push(...await test_util.createMockDB(CAT_TABLE_HASH_ATTRIBUTE,SCHEMA_NAME,BIRD_TABLE_NAME,TEST_DATA_BIRD));
     });
 
     afterEach(async function () {
@@ -195,9 +195,9 @@ describe('Test returnSchema function', function () {
 
 describe('Test getTableSchema function', function () {
     beforeEach(async function () {
-        await test_util.createMockDB(DOG_TABLE_HASH_ATTRIBUTE,SCHEMA_NAME,DOG_TABLE_NAME,TEST_DATA_DOG);
-        await test_util.createMockDB(BIRD_TABLE_HASH_ATTRIBUTE,SCHEMA_NAME,CAT_TABLE_NAME,TEST_DATA_CAT);
-        test_env = await test_util.createMockDB(CAT_TABLE_HASH_ATTRIBUTE,SCHEMA_NAME,BIRD_TABLE_NAME,TEST_DATA_BIRD);
+        test_env.push(...await test_util.createMockDB(DOG_TABLE_HASH_ATTRIBUTE,SCHEMA_NAME,DOG_TABLE_NAME,TEST_DATA_DOG));
+        test_env.push(...await test_util.createMockDB(BIRD_TABLE_HASH_ATTRIBUTE,SCHEMA_NAME,CAT_TABLE_NAME,TEST_DATA_CAT));
+        test_env.push(...await test_util.createMockDB(CAT_TABLE_HASH_ATTRIBUTE,SCHEMA_NAME,BIRD_TABLE_NAME,TEST_DATA_BIRD));
     });
 
     afterEach(async function () {
@@ -303,9 +303,9 @@ describe('Test getTableSchema function', function () {
 
 describe('Test if no table object', function () {
     beforeEach(async function () {
-        await test_util.createMockDB(DOG_TABLE_HASH_ATTRIBUTE,SCHEMA_NAME,DOG_TABLE_NAME,TEST_DATA_DOG);
-        await test_util.createMockDB(BIRD_TABLE_HASH_ATTRIBUTE,SCHEMA_NAME,CAT_TABLE_NAME,TEST_DATA_CAT);
-        test_env = await test_util.createMockDB(CAT_TABLE_HASH_ATTRIBUTE,SCHEMA_NAME,BIRD_TABLE_NAME,TEST_DATA_BIRD);
+        test_env.push(...await test_util.createMockDB(DOG_TABLE_HASH_ATTRIBUTE,SCHEMA_NAME,DOG_TABLE_NAME,TEST_DATA_DOG));
+        test_env.push(...await test_util.createMockDB(BIRD_TABLE_HASH_ATTRIBUTE,SCHEMA_NAME,CAT_TABLE_NAME,TEST_DATA_CAT));
+        test_env.push(...await test_util.createMockDB(CAT_TABLE_HASH_ATTRIBUTE,SCHEMA_NAME,BIRD_TABLE_NAME,TEST_DATA_BIRD));
     });
 
     afterEach(async function () {
@@ -323,9 +323,9 @@ describe('Test if no table object', function () {
 
 describe('Test if have dog table object', function () {
     beforeEach(async function () {
-        await test_util.createMockDB(DOG_TABLE_HASH_ATTRIBUTE,SCHEMA_NAME,DOG_TABLE_NAME,TEST_DATA_DOG);
-        await test_util.createMockDB(BIRD_TABLE_HASH_ATTRIBUTE,SCHEMA_NAME,CAT_TABLE_NAME,TEST_DATA_CAT);
-        test_env = await test_util.createMockDB(CAT_TABLE_HASH_ATTRIBUTE,SCHEMA_NAME,BIRD_TABLE_NAME,TEST_DATA_BIRD);
+        test_env.push(...await test_util.createMockDB(DOG_TABLE_HASH_ATTRIBUTE,SCHEMA_NAME,DOG_TABLE_NAME,TEST_DATA_DOG));
+        test_env.push(...await test_util.createMockDB(BIRD_TABLE_HASH_ATTRIBUTE,SCHEMA_NAME,CAT_TABLE_NAME,TEST_DATA_CAT));
+        test_env.push(...await test_util.createMockDB(CAT_TABLE_HASH_ATTRIBUTE,SCHEMA_NAME,BIRD_TABLE_NAME,TEST_DATA_BIRD));
     });
 
     afterEach(async function () {

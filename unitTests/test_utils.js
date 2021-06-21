@@ -205,7 +205,7 @@ async function createMockDB(hash_attribute, schema, table, test_data) {
     try {
         validateMockArgs([hash_attribute, schema, table, test_data]);
 
-        let env_array = []
+        let env_array = [];
         let attributes = [];
         let unique_attributes = [];
         for (const record of test_data) {
@@ -222,6 +222,7 @@ async function createMockDB(hash_attribute, schema, table, test_data) {
         }
 
         await fs.mkdirp(BASE_SYSTEM_PATH);
+        await fs.mkdirp(BASE_SCHEMA_PATH);
 
         if (lmdb_schema_env === undefined) {
             const hdb_schema_env = await environment_utility.createEnvironment(BASE_SYSTEM_PATH, systemSchema.hdb_schema.name);
@@ -282,7 +283,10 @@ async function tearDownMockDB(envs = undefined) {
     try {
         if (envs !== undefined) {
             for (const environment of envs) {
-                environment.close();
+                try {
+                    environment.close();
+                    // eslint-disable-next-line no-empty
+                } catch(err) {}
             }
         }
 
@@ -304,7 +308,7 @@ async function tearDownMockDB(envs = undefined) {
 
         delete global.hdb_schema;
         global.lmdb_map = undefined;
-        await fs.remove(path.resolve(__dirname, 'envDir'));
+        await fs.remove(ENV_DIR_PATH);
     } catch(err) {
         console.error('Error tearing down mock DB used for unit tests');
         console.error(err);
