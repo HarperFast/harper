@@ -28,7 +28,7 @@ function isCFEnabled() {
  *
  * @return Object.<String>
  */
-async function customFunctionsStatus() {
+function customFunctionsStatus() {
     log.trace(`getting custom api status`);
     let response = {};
 
@@ -49,7 +49,7 @@ async function customFunctionsStatus() {
  *
  * @return Array.<String>
  */
-async function getCustomFunctions() {
+function getCustomFunctions() {
     log.trace(`getting custom api endpoints`);
     let response = {};
     const dir = env.getProperty(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY);
@@ -76,7 +76,7 @@ async function getCustomFunctions() {
  * @param {NodeObject} req
  * @returns {string}
  */
-async function getCustomFunction(req) {
+function getCustomFunction(req) {
     if (req.project) {
         req.project = path.parse(req.project).name;
     }
@@ -108,7 +108,7 @@ async function getCustomFunction(req) {
  * @param {NodeObject} req
  * @returns {string}
  */
-async function setCustomFunction(req) {
+function setCustomFunction(req) {
     isCFEnabled();
     if (req.project) {
         req.project = path.parse(req.project).name;
@@ -141,7 +141,7 @@ async function setCustomFunction(req) {
  * @param {NodeObject} req
  * @returns {string}
  */
-async function dropCustomFunction(req) {
+function dropCustomFunction(req) {
     if (req.project) {
         req.project = path.parse(req.project).name;
     }
@@ -173,7 +173,7 @@ async function dropCustomFunction(req) {
  * @param {NodeObject} req
  * @returns {string}
  */
-async function addCustomFunctionProject(req) {
+function addCustomFunctionProject(req) {
     isCFEnabled();
     if (req.project) {
         req.project = path.parse(req.project).name;
@@ -204,7 +204,7 @@ async function addCustomFunctionProject(req) {
  * @param {NodeObject} req
  * @returns {string}
  */
-async function dropCustomFunctionProject(req) {
+function dropCustomFunctionProject(req) {
     if (req.project) {
         req.project = path.parse(req.project).name;
     }
