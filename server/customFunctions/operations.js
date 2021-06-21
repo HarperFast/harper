@@ -308,7 +308,7 @@ async function deployCustomFunctionProject(req) {
     const projectExists = fs.existsSync(path_to_project);
 
     if (!projectExists) {
-        fs.mkdirSync(path_to_project);
+        fs.mkdirSync(path_to_project, { recursive: true });
     }
 
     // ensure /tmp exists
