@@ -10,9 +10,9 @@ To deploy these routes, simply clone this repo into your `custom_functions` fold
 
 ---
 
-###/dogs
+###GET /
 
-GET, WITH NO preValidation AND USING hdbCore.requestWithoutAuthentication
+NO preValidation AND USING hdbCore.requestWithoutAuthentication
 BYPASSES ALL CHECKS: DO NOT USE RAW USER-SUBMITTED VALUES IN SQL STATEMENTS
 
 ```
@@ -29,9 +29,9 @@ BYPASSES ALL CHECKS: DO NOT USE RAW USER-SUBMITTED VALUES IN SQL STATEMENTS
   })
 ```
 
-###/addDog 
+###POST /
 
-POST, WITH STANDARD PASS-THROUGH BODY, PAYLOAD AND HDB AUTHENTICATION
+STANDARD PASS-THROUGH BODY, PAYLOAD AND HDB AUTHENTICATION
 
 ```
 server.route({
@@ -42,45 +42,81 @@ server.route({
   })
 ```
 
-###/dogs/:id
+###GET /:id
 
-GET, WITH ASYNC THIRD-PARTY AUTH PREVALIDATION
+WITH ASYNC THIRD-PARTY AUTH PREVALIDATION
 
 ```
   server.route({
     url: '/:id',
     method: 'GET',
-    preValidation: async (request, reply) => {
-      /*
-      *  takes the inbound authorization headers and sends them via http request to an external auth service
-      */
-      const result = await needle('get', 'https://jsonplaceholder.typicode.com/todos/1', { headers: { authorization: request.headers.authorization }});
-
-      /*
-      *  throw an authentication error based on the response body or statusCode
-      */
-      if (result.body.error || result.statusCode !== 200) {
-        const errorString = result.body.error || 'Sorry, there was an error authenticating your request';
-        logger.error(errorString);
-        throw new Error(errorString);
-      }
-    },
-    handler: async (request) => {
+    preValidation: (request) => customValidation(request, logger),
+    handler: (request) => {
       request.body= {
         operation: 'sql',
-        sql: `SELECT * FROM dev.dogs WHERE id = ${request.params.id}`
+        sql: `SELECT * FROM dev.dog WHERE id = ${request.params.id}`
       };
 
       /*
-      * requestWithoutAuthentication bypasses the standard HarperDB authentication.
-      * YOU MUST ADD YOUR OWN preValidation method above, or this method will be available to anyone.
-      */
-      const result = await hdbCore.requestWithoutAuthentication(request);
-
-      return filter(result, ['dog_name', 'owner_name', 'breed']);
+       * requestWithoutAuthentication bypasses the standard HarperDB authentication.
+       * YOU MUST ADD YOUR OWN preValidation method above, or this method will be available to anyone.
+       */
+      return hdbCore.requestWithoutAuthentication(request);
     }
-  })
+  });
 ```
 
+THE ASYNCRONOUS THIRD PARTY VALIDATION, FROM helpers/example.js:
 
+```
+const customValidation = async (request,logger) => {
+  const options = {
+    hostname: 'jsonplaceholder.typicode.com',
+    port: 443,
+    path: '/todos/1',
+    method: 'GET',
+    headers: { authorization: request.headers.authorization },
+  };
 
+  const result = await authRequest(options);
+
+  /*
+   *  throw an authentication error based on the response body or statusCode
+   */
+  if (result.error) {
+    const errorString = result.error || 'Sorry, there was an error authenticating your request';
+    logger.error(errorString);
+    throw new Error(errorString);
+  }
+  return request;
+};
+
+module.exports = customValidation;
+```
+
+THE ACTUAL HTTP CALL USED IN authRequest, also in helpers/example.js:
+
+```
+const authRequest = (options) => {
+  return new Promise((resolve, reject) => {
+    const req = https.request(options, (res) => {
+      res.setEncoding('utf8');
+      let responseBody = '';
+
+      res.on('data', (chunk) => {
+        responseBody += chunk;
+      });
+
+      res.on('end', () => {
+        resolve(JSON.parse(responseBody));
+      });
+    });
+
+    req.on('error', (err) => {
+      reject(err);
+    });
+
+    req.end();
+  });
+};
+```

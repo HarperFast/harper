@@ -2,13 +2,6 @@
 
 const https = require('https');
 
-/**
- * Do a request with options provided.
- *
- * @param {Object} options
- * @param {Object} data
- * @return {Promise} a promise of request
- */
 const authRequest = (options) => {
   return new Promise((resolve, reject) => {
     const req = https.request(options, (res) => {
@@ -31,8 +24,6 @@ const authRequest = (options) => {
     req.end();
   });
 };
-
-
 
 const customValidation = async (request,logger) => {
   const options = {
