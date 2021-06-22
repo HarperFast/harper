@@ -29,12 +29,12 @@ const CreateTableObject = require('../data_layer/CreateTableObject');
 const ENOENT_ERR_CODE = -2;
 
 const IPC_SERVER_CWD = path.resolve(__dirname, '../server/ipc');
-const MEM_SETTING_KEY = '--max-old-space-size=';
 
 const NO_IPC_PORT_FOUND_ERR = 'Error getting IPC server port from environment variables';
 const NO_HDB_PORT_FOUND_ERR = 'Error getting HDB server port from environment variables';
 const IPC_FORK_ERR = 'There was an error starting the IPC server, check the log for more details.';
 const HDB_SERVER_ERR = 'There was an error starting the HDB server, check the log for more details.';
+const CF_SERVER_ERR = 'There was an error starting the Custom Functions server, check the log for more details.';
 const FOREGROUND_ERR = 'There was an error foreground handler, check the log for more details.';
 const UPGRADE_COMPLETE_MSG = 'Upgrade complete.  Starting HarperDB.';
 const UPGRADE_ERR = 'Got an error while trying to upgrade your HarperDB instance.  Exiting HarperDB.';
@@ -48,6 +48,7 @@ const p_install_install = promisify(install.install);
 let fork = require('child_process').fork;
 let child = undefined;
 let ipc_child = undefined;
+let cf_child = undefined;
 
 /***
  * Starts Harper DB.  If Harper is already running, or the port is in use, and error will be thrown and Harper will not
@@ -102,13 +103,10 @@ async function run() {
         }
 
         await checkTransactionLogEnvironmentsExist();
-
         writeLicenseFromVars();
-
         await launchIPCServer();
-
+        await launchCustomFunctionServer();
         await launchHdbServer();
-
     } catch(err) {
         console.error(err);
         final_logger.error(err);
@@ -223,10 +221,10 @@ async function launchHdbServer() {
     // Launch the HDB server as a child process.
     try {
         const hdb_license = require('../utility/registration/hdb_license');
-        const hdb_args = createForkArgs(path.resolve(__dirname, '../', 'server', terms.HDB_PROC_NAME));
+        const hdb_args = hdb_utils.createForkArgs(path.resolve(__dirname, '../', 'server', terms.HDB_PROC_NAME));
         const license = hdb_license.licenseSearch();
-        const mem_value = license.ram_allocation ? MEM_SETTING_KEY + license.ram_allocation
-            : MEM_SETTING_KEY + terms.RAM_ALLOCATION_ENUM.DEFAULT;
+        const mem_value = license.ram_allocation ? terms.MEM_SETTING_KEY + license.ram_allocation
+            : terms.MEM_SETTING_KEY + terms.RAM_ALLOCATION_ENUM.DEFAULT;
 
         let fork_options = {
             detached: true,
@@ -267,6 +265,10 @@ function foregroundHandler() {
         ipc_child.unref();
         child.unref();
 
+        if (!hdb_utils.isEmpty(cf_child)) {
+            cf_child.unref();
+        }
+
         // Exit run process with success code.
         process.exit(0);
     }
@@ -293,15 +295,6 @@ async function processExitHandler() {
             console.error(err);
         }
     }
-}
-
-function createForkArgs(module_path){
-    let args = [];
-    if(terms.CODE_EXTENSION === terms.COMPILED_EXTENSION){
-        args.push(path.resolve(__dirname, '../', 'node_modules', 'bytenode', 'cli.js'));
-    }
-    args.push(module_path);
-    return args;
 }
 
 module.exports ={
@@ -373,7 +366,7 @@ async function launchIPCServer() {
 
     // Launch IPC server as a child background process.
     try {
-        const ipc_fork_args = createForkArgs(path.resolve(__dirname, '../', 'server/ipc', terms.IPC_SERVER_MODULE));
+        const ipc_fork_args = hdb_utils.createForkArgs(path.resolve(__dirname, '../', 'server/ipc', terms.IPC_SERVER_MODULE));
         let fork_options = {
             detached: true,
             stdio: 'ignore'
@@ -390,6 +383,56 @@ async function launchIPCServer() {
         process.exit(1);
     }
 }
+
+/**
+ * Validates the the Custom Functions server is not already running and its port is available,
+ * then forks a child process which the Custom Functions server will run on.
+ * @returns {Promise<void>}
+ */
+async function launchCustomFunctionServer() {
+    if (env.get(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_ENABLED_KEY)) {
+        final_logger.info('Running run/launchCustomFunctionServer()');
+        const cf_server_port = env.get(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_PORT_KEY) || terms.HDB_SETTINGS_DEFAULT_VALUES.CUSTOM_FUNCTIONS_PORT_KEY;
+
+        // Check to see if the HDB port is available.
+        try {
+            const is_port_taken = await hdb_utils.isPortTaken(cf_server_port);
+            if (is_port_taken === true) {
+                console.log(`Port: ${cf_server_port} is being used by another process and cannot be used by the Custom Functions server. Please update the Custom Functions server port in the HDB config/settings.js file.`);
+                process.exit(1);
+            }
+        } catch(err) {
+            final_logger.error(err);
+            console.error(`Error checking for port ${cf_server_port}. Check log for more details.`);
+            process.exit(1);
+        }
+
+        // Launch the Custom Function server as a child background process.
+        try {
+            const cf_args = hdb_utils.createForkArgs(path.resolve(__dirname, '../', 'server/customFunctions', terms.CUSTOM_FUNCTION_PROC_NAME));
+            let fork_options = {
+                detached: true,
+                stdio: 'ignore'
+            };
+
+            //because we may need to push logs to std out/err if the process runs in foreground we need to remove the stdio: ignore
+            if(getRunInForeground()){
+                delete fork_options.stdio;
+            }
+
+            cf_child = fork(cf_args[0], [cf_args[1]], fork_options);
+
+            final_logger.trace(`custom function fork args: ${cf_args}`);
+        } catch(err) {
+            console.error(CF_SERVER_ERR);
+            final_logger.error(err);
+            process.exit(1);
+        }
+    } else {
+        final_logger.notify(`Custom Functions server not enabled. To enable the Custom Functions server set CUSTOM_FUNCTIONS to true the HDB config/settings.js file.`);
+    }
+}
+
 
 function getRunInForeground(){
     const FOREGROUND_ENV = env.getProperty(terms.HDB_SETTINGS_NAMES.RUN_IN_FOREGROUND);

@@ -85,7 +85,15 @@ function updateSettingsFile_3_1_0() {
         `   ;The port the IPC server will run on.\n` +
         `${HDB_SETTINGS_NAMES.IPC_SERVER_PORT} = ${HDB_SETTINGS_DEFAULT_VALUES.IPC_SERVER_PORT}\n` +
         `   ;Run HDB in the foreground.\n` +
-        `${HDB_SETTINGS_NAMES.RUN_IN_FOREGROUND} = ${HDB_SETTINGS_DEFAULT_VALUES.RUN_IN_FOREGROUND}`
+        `${HDB_SETTINGS_NAMES.RUN_IN_FOREGROUND} = ${HDB_SETTINGS_DEFAULT_VALUES.RUN_IN_FOREGROUND}\n` +
+        `   ;Set to true to enable custom API endpoints.  Requires a valid enterprise license.  \n` +
+        `${HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_ENABLED_KEY} = ${HDB_SETTINGS_DEFAULT_VALUES.CUSTOM_FUNCTIONS}\n` +
+        `   ;The port used to access the custom functions server.\n` +
+        `${HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_PORT_KEY} = ${HDB_SETTINGS_DEFAULT_VALUES.CUSTOM_FUNCTIONS_PORT}\n` +
+        `   ;The path to the folder containing HarperDB custom function files.\n` +
+        `${HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY} = ${path.join(getOldPropsValue(HDB_SETTINGS_NAMES.HDB_ROOT_KEY, old_hdb_props), HDB_SETTINGS_DEFAULT_VALUES.CUSTOM_FUNCTIONS_DIRECTORY)}\n` +
+        `   ;Set the max number of processes HarperDB will start for the Custom Functions server\n` +
+        `${HDB_SETTINGS_NAMES.MAX_CUSTOM_FUNCTION_PROCESSES} = ${HDB_SETTINGS_DEFAULT_VALUES.MAX_CUSTOM_FUNCTION_PROCESSES}\n`
     ;
 
     const settings_path = env.get('settings_path');

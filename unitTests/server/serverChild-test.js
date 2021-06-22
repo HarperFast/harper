@@ -636,6 +636,13 @@ describe('Test serverChild.js', () => {
         let signalChildStopped_stub;
         let shutDown_rw;
         let timeout_stub;
+        let event = {
+            "type": "restart",
+            "message": {
+                "originator": 1234,
+                "force": false
+            }
+        };
 
         before(() => {
             serverChild_rw = rewire('../../server/serverChild');
@@ -661,34 +668,34 @@ describe('Test serverChild.js', () => {
         })
 
         it('Should set hdbServer variable to null', async() => {
-            await shutDown_rw();
+            await shutDown_rw(event);
 
             const test_server = serverChild_rw.__get__('hdbServer');
             expect(test_server).to.be.null;
         })
 
         it('Should call .close() on server isntance', async() => {
-            await shutDown_rw();
+            await shutDown_rw(event);
 
             expect(serverClose_stub.calledOnce).to.be.true;
         })
 
         it('Should call .callProcessSend() after server is closed', async() => {
-            await shutDown_rw();
+            await shutDown_rw(event);
 
             expect(signalChildStopped_stub.calledOnce).to.be.true;
         })
 
         it('Should call .callProcessSend() even if no hdbServer is set on process', async() => {
             serverChild_rw.__set__('hdbServer', undefined);
-            await shutDown_rw();
+            await shutDown_rw(event);
 
             expect(signalChildStopped_stub.calledOnce).to.be.true;
         })
 
         it('Should not call .close() if there is no server instance set on process', async() => {
             serverChild_rw.__set__('hdbServer', undefined);
-            await shutDown_rw();
+            await shutDown_rw(event);
 
             expect(serverClose_stub.called).to.be.false;
         })

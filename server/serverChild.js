@@ -23,9 +23,9 @@ const guidePath = require('path');
 const global_schema = require('../utility/globalSchema');
 const user_schema = require('../security/user');
 const hdb_license = require('../utility/registration/hdb_license');
-let hdb_child_ipc_handlers = require('../server/ipc/hdbChildIpcHandlers');
+let hdb_child_ipc_handlers = require('./ipc/hdbChildIpcHandlers');
 const IPCClient = require('./ipc/IPCClient');
-const { ChildStartedMsg, ChildStoppedMsg } = require('./ipc/utility/ipcUtils');
+const { ChildStartedMsg, ChildStoppedMsg, validateEvent } = require('./ipc/utility/ipcUtils');
 
 const p_schema_to_global = util.promisify(global_schema.setSchemaDataToGlobal);
 
@@ -114,7 +114,7 @@ async function childServer() {
             await hdbServer.listen(props_server_port, '::');
             harper_logger.info(`HarperDB ${pjson.version} ${server_type} Server running on port ${props_server_port}`);
             //signal to parent process that server has started on child process
-            signalling.signalChildStarted(new ChildStartedMsg(process.pid));
+            signalling.signalChildStarted(new ChildStartedMsg(process.pid, terms.SERVICES.HDB_CORE));
         } catch(err) {
             hdbServer.close();
             harper_logger.error(`Error configuring ${server_type} server`);
@@ -261,25 +261,33 @@ function getHeaderTimeoutConfig() {
  *
  * @returns {Promise<void>}
  */
-async function shutDown() {
-    harper_logger.info(`Server close event received for process ${process.pid}`);
-    harper_logger.debug(`Calling shutdown`);
-    if (hdbServer) {
-        setTimeout(() => {
-            harper_logger.info(`Timeout occurred during client disconnect.  Took longer than ${terms.RESTART_TIMEOUT_MS}ms.`);
-            signalling.signalChildStopped(new ChildStoppedMsg(process.pid));
-        }, terms.RESTART_TIMEOUT_MS);
-
-        try {
-            await hdbServer.close();
-            hdbServer = null;
-            harper_logger.debug(`Process pid:${process.pid} - server closed`);
-        } catch (err) {
-            harper_logger.debug(`Process pid:${process.pid} - error closing server - ${err}`);
-        }
+async function shutDown(event) {
+    const validate = validateEvent(event);
+    if (validate) {
+        harper_logger.error(validate);
+        return;
     }
-    harper_logger.info(`Process pid:${process.pid} - Work completed, shutting down`);
-    signalling.signalChildStopped(new ChildStoppedMsg(process.pid));
+
+    if ((event.message.force === false && event.message.service === undefined) || (event.message.service !== undefined && event.message.service === terms.SERVICES.HDB_CORE)) {
+        harper_logger.info(`Server close event received for process ${process.pid}`);
+        harper_logger.debug(`Calling shutdown in server/serverChild`);
+        if (hdbServer) {
+            setTimeout(() => {
+                harper_logger.info(`Timeout occurred during client disconnect.  Took longer than ${terms.RESTART_TIMEOUT_MS}ms.`);
+                signalling.signalChildStopped(new ChildStoppedMsg(process.pid, terms.SERVICES.HDB_CORE));
+            }, terms.RESTART_TIMEOUT_MS);
+
+            try {
+                await hdbServer.close();
+                hdbServer = null;
+                harper_logger.debug(`Process pid:${process.pid} - server closed`);
+            } catch (err) {
+                harper_logger.debug(`Process pid:${process.pid} - error closing server - ${err}`);
+            }
+        }
+        harper_logger.info(`Process pid:${process.pid} - Work completed, shutting down`);
+        signalling.signalChildStopped(new ChildStoppedMsg(process.pid, terms.SERVICES.HDB_CORE));
+    }
 }
 
 module.exports = childServer;

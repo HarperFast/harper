@@ -9,19 +9,27 @@ const signalling = require('../utility/signalling');
 const { RestartMsg } = require('../server/ipc/utility/ipcUtils');
 const hdb_utils = require('../utility/common_utils');
 const path = require('path');
+const { handleHDBError, hdb_errors } = require('../utility/errors/hdbError');
+const { HTTP_STATUS_CODES } = hdb_errors;
 
 const HDB_PROC_END_TIMEOUT = 100;
 const RESTART_RESPONSE_SOFT = `Restarting HarperDB. This may take up to ${hdb_terms.RESTART_TIMEOUT_MS/1000} seconds.`;
 const RESTART_RESPONSE_HARD = `Force restarting HarperDB`;
+const RESTART_RESPONSE_CF = 'Restarting custom_functions';
 const CHECK_PROCS_LOOP_LIMIT = 5;
 const IPC_STOP_ERR = 'Error stopping the HDB IPC server. Check log for more detail.';
+const CF_STOP_ERR = 'Error stopping the Custom Functions server. Check log for more detail.';
+const INVALID_SERVICE_ERR = 'Invalid service';
+const MISSING_SERVICE = "'service' is required";
 const HDB_SERVER_CWD = path.resolve(__dirname, '../server');
 const SC_SERVER_CWD = path.resolve(__dirname, '../server/socketcluster');
 const IPC_SERVER_CWD = path.resolve(__dirname, '../server/ipc');
+const CF_SERVER_CWD = path.resolve(__dirname, '../server/customFunctions');
 
 module.exports = {
     stop,
-    restartProcesses
+    restartProcesses,
+    restartService
 };
 
 /**
@@ -30,14 +38,14 @@ module.exports = {
  * @returns {Promise}
  */
 async function restartProcesses(json_message) {
-    if(!json_message.force) {
-        json_message.force = false;
-    }
+    const is_forced_restart = json_message.force === true || json_message.force === 'true';
+
     try {
-        if (json_message.force === true || json_message.force === 'true') {
+        if (is_forced_restart) {
             signalling.signalRestart(new RestartMsg(process.pid, true));
             return RESTART_RESPONSE_HARD;
         }
+
         signalling.signalRestart(new RestartMsg(process.pid, false));
         return RESTART_RESPONSE_SOFT;
     } catch(err) {
@@ -45,6 +53,24 @@ async function restartProcesses(json_message) {
         final_logger.error(msg);
         return msg;
     }
+}
+
+/**
+ * Restarts servers for a specific service.
+ * @param json_message
+ * @returns {string}
+ */
+function restartService(json_message) {
+    if (hdb_utils.isEmpty(json_message.service)) {
+        throw handleHDBError(new Error(), MISSING_SERVICE, HTTP_STATUS_CODES.BAD_REQUEST, undefined, undefined, true);
+    }
+
+    if (!hdb_utils.isEmpty(json_message.service) && json_message.service !== hdb_terms.SERVICES.CUSTOM_FUNCTIONS) {
+        throw handleHDBError(new Error(), INVALID_SERVICE_ERR, HTTP_STATUS_CODES.BAD_REQUEST,undefined, undefined,true);
+    }
+
+    signalling.signalRestart(new RestartMsg(process.pid, false, json_message.service));
+    return RESTART_RESPONSE_CF;
 }
 
 /**
@@ -64,6 +90,15 @@ async function stop() {
             await hdb_utils.stopProcess(path.join(IPC_SERVER_CWD, hdb_terms.IPC_SERVER_MODULE));
         } catch(err) {
             console.error(IPC_STOP_ERR);
+            final_logger.error(err);
+        }
+
+        try {
+            final_logger.info(`Stopping ${hdb_terms.CUSTOM_FUNCTION_PROC_NAME}`);
+            await hdb_utils.stopProcess(path.join(CF_SERVER_CWD, hdb_terms.CUSTOM_FUNCTION_PROC_NAME));
+        } catch(err) {
+            console.error(CF_STOP_ERR);
+            final_logger.error(err);
         }
 
         final_logger.notify(`HarperDB has stopped`);

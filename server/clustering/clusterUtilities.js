@@ -398,7 +398,7 @@ function restartHDB() {
         let bin_dir = path.resolve(__dirname, '../../bin');
         process.chdir(bin_dir);
         let child = child_process.spawn(command, args, {detached:true, stdio: "ignore"});
-       child.unref();
+        child.unref();
     } catch (err) {
         let msg = `There was an error restarting HarperDB.  Please restart manually. ${err}`;
         console.log(msg);

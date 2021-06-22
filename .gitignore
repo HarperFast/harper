@@ -1,7 +1,7 @@
 
 .idea/*
 
-node_modules/*
+/node_modules/*
 hdb/*
 *.log
 .nyc_output/*
@@ -10,3 +10,7 @@ hdb/*
 coverage/*
 hdb_boot_properties.file
 *test_export.json.json
+/unitTests/envDir/*
+coverage.json
+
+!customFunctionTemplate/node_modules/*

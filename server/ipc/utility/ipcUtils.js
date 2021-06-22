@@ -83,28 +83,34 @@ function UserEventMsg(originator) {
 /**
  * Constructor function for the message of child started IPC events
  * @param originator
+ * @param service
  * @constructor
  */
-function ChildStartedMsg(originator) {
+function ChildStartedMsg(originator, service) {
     this.originator = originator;
+    this.service = service;
 }
 
 /**
  * Constructor function for the message of child stopped IPC events
  * @param originator
+ * @param service
  * @constructor
  */
-function ChildStoppedMsg(originator) {
+function ChildStoppedMsg(originator, service) {
     this.originator = originator;
+    this.service = service;
 }
 
 /**
  * Constructor function for the message of restart IPC events
  * @param originator
  * @param force
+ * @param service
  * @constructor
  */
-function RestartMsg(originator, force) {
+function RestartMsg(originator, force, service = undefined) {
     this.originator = originator;
     this.force = force;
+    this.service = service;
 }
