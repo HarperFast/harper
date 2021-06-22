@@ -200,12 +200,10 @@ async function getSystemInformation(){
 async function getTableSize(){
     //get details for all tables
     let table_sizes = [];
-    if(env.getDataStoreType() === terms.STORAGE_TYPES_ENUM.LMDB) {
-        let all_schemas = await schema_describe.describeAll();
-        for (const tables of Object.values(all_schemas)) {
-            for (const table_data of Object.values(tables)) {
-                table_sizes.push(await lmdb_get_table_size(table_data));
-            }
+    let all_schemas = await schema_describe.describeAll();
+    for (const tables of Object.values(all_schemas)) {
+        for (const table_data of Object.values(tables)) {
+            table_sizes.push(await lmdb_get_table_size(table_data));
         }
     }
 

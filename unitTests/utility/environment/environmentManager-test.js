@@ -630,7 +630,7 @@ describe('test getDataStoreType', ()=>{
         }
 
         assert.deepStrictEqual(err, undefined);
-        assert.deepStrictEqual(type, terms.STORAGE_TYPES_ENUM.FILE_SYSTEM);
+        assert.deepStrictEqual(type, terms.STORAGE_TYPES_ENUM.LMDB);
 
         fs.removeSync(path.resolve(__dirname, '../../../envDir/schema'));
     });

@@ -251,7 +251,6 @@ function readPropsFile() {
         let error_msg = `The properties file at path ${BOOT_PROPS_FILE_PATH} does not exist.  Setting up defaults.`;
         log.info(error_msg);
         log.error(e);
-        //throw new Error(error_msg);
         storeVariableValue(hdb_terms.HDB_SETTINGS_NAMES.LOG_LEVEL_KEY, log.DEBUG);
         storeVariableValue(hdb_terms.HDB_SETTINGS_NAMES.LOG_PATH_KEY, '../run_log.log');
         return false;
