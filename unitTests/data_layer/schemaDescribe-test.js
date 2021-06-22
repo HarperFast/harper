@@ -74,19 +74,22 @@ const DESCRIBE_TABLE_MESSAGE = {
     "table":`${TEST_TABLE_DOG}`
 };
 
+let test_envs;
+
 describe('Test describeAll', function() {
     let search_orig = undefined;
     let desc_table_orig = undefined;
     let sandbox = undefined;
+
     before(async function() {
-        await test_util.createMockFS(HASH_ATTRIBUTE, TEST_SCHEMA, TEST_TABLE_DOG, test_data);
+        test_envs = await test_util.createMockDB(HASH_ATTRIBUTE, TEST_SCHEMA, TEST_TABLE_DOG, test_data);
         search_orig = schema_describe.__get__('p_search_search_by_value');
         desc_table_orig = schema_describe.describeTable;
         sandbox = sinon.createSandbox();
     });
 
     after(async function() {
-        await test_util.tearDownMockFS();
+        await test_util.tearDownMockDB(test_envs);
         desc_table_orig = schema_describe.describeTable;
     });
 
@@ -120,14 +123,15 @@ describe('Test describeSchema', function() {
     let desc_table_orig = undefined;
     let sandbox = undefined;
     before(async function() {
-        await test_util.createMockFS(HASH_ATTRIBUTE, TEST_SCHEMA, TEST_TABLE_DOG, test_data);
+        test_envs = await test_util.createMockDB(HASH_ATTRIBUTE, TEST_SCHEMA, TEST_TABLE_DOG, test_data);
+
         search_orig = schema_describe.__get__('p_search_search_by_value');
         desc_table_orig = schema_describe.describeTable;
         sandbox = sinon.createSandbox();
     });
 
     after(async function() {
-        await test_util.tearDownMockFS();
+        await test_util.tearDownMockDB(test_envs);
         sandbox.restore();
     });
 
@@ -185,14 +189,14 @@ describe('Test describeTable', function() {
     let sandbox = undefined;
 
     before(async function() {
-        await test_util.createMockFS(HASH_ATTRIBUTE, TEST_SCHEMA, TEST_TABLE_DOG, test_data);
+        test_envs = await test_util.createMockDB(HASH_ATTRIBUTE, TEST_SCHEMA, TEST_TABLE_DOG, test_data);
         schema_describe.__get__('p_search_search_by_value');
         desc_table_orig = schema_describe.describeTable;
         sandbox = sinon.createSandbox();
     });
 
     after(async function() {
-        await test_util.tearDownMockFS();
+        await test_util.tearDownMockDB(test_envs);
         sandbox.restore();
     });
 
