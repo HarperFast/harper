@@ -339,9 +339,9 @@ function getDataStoreType(){
 
         if(is_lmdb === true){
             data_store_type = hdb_terms.STORAGE_TYPES_ENUM.LMDB;
-        } else{
-            data_store_type = hdb_terms.STORAGE_TYPES_ENUM.FILE_SYSTEM;
         }
+
+
     }catch(e){
         //if there is no user folder we check if the command line is stating file system
         // eslint-disable-next-line no-magic-numbers
