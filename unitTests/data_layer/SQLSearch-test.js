@@ -70,7 +70,7 @@ let _finalSQL_spy;
 let _buildSQL_spy;
 let error_logger_spy;
 
-let test_env;
+let test_env = [];
 
 function setClassMethodSpies() {
     sandbox = sinon.createSandbox();
