@@ -28,11 +28,13 @@ describe('Test run module', () => {
     const final_log_error_stub = sandbox.stub().callsFake(() => {});
     const final_log_info_stub = sandbox.stub().callsFake(() => {});
     const final_log_fatal_stub = sandbox.stub().callsFake(() => {});
+    const final_log_trace_stub = sandbox.stub().callsFake(() => {});
     const final_logger_fake = {
         notify: final_log_notify_stub,
         error: final_log_error_stub,
         info: final_log_info_stub,
-        fatal: final_log_fatal_stub
+        fatal: final_log_fatal_stub,
+        trace: final_log_trace_stub
     };
     let console_log_stub;
     let console_error_stub;
@@ -65,12 +67,14 @@ describe('Test run module', () => {
         const check_trans_log_env_exists_stub = sandbox.stub();
         const launch_ipc_server_stub = sandbox.stub();
         const launch_hdb_server_stub = sandbox.stub();
+        const launch_cf_server_stub = sandbox.stub();
         const p_install_install_stub = sandbox.stub();
         let is_hdb_installed_rw;
         let check_trans_log_env_exists_rw;
         let launch_ipc_server_rw;
         let launch_hdb_server_rw;
         let p_install_install_rw;
+        let launch_cf_server_rw;
         let get_ver_update_info_stub;
         let upgrade_stub;
         let run;
@@ -80,6 +84,7 @@ describe('Test run module', () => {
             check_trans_log_env_exists_rw = run_rw.__set__('checkTransactionLogEnvironmentsExist', check_trans_log_env_exists_stub);
             launch_ipc_server_rw = run_rw.__set__('launchIPCServer', launch_ipc_server_stub);
             launch_hdb_server_rw = run_rw.__set__('launchHdbServer', launch_hdb_server_stub);
+            launch_cf_server_rw = run_rw.__set__('launchCustomFunctionServer', launch_cf_server_stub);
             p_install_install_rw = run_rw.__set__('p_install_install', p_install_install_stub);
             get_ver_update_info_stub = sandbox.stub(hdbInfoController, 'getVersionUpdateInfo');
             upgrade_stub = sandbox.stub(upgrade, 'upgrade');
@@ -97,6 +102,7 @@ describe('Test run module', () => {
             launch_ipc_server_rw();
             launch_hdb_server_rw();
             p_install_install_rw();
+            launch_cf_server_rw();
             is_server_running_stub.restore();
         });
 
@@ -433,6 +439,7 @@ describe('Test run module', () => {
 
         it('Test happy path when fork args are compiled extension', async () => {
             const terms_test = {
+                MEM_SETTING_KEY: '--max-old-space-size=',
                 HDB_SETTINGS_NAMES: {
                     SERVER_PORT_KEY: 'SERVER_PORT'
                 },
@@ -447,11 +454,14 @@ describe('Test run module', () => {
             }
 
             };
+
+            const create_fork_args_stub = sandbox.stub(hdb_utils, 'createForkArgs').returns(['node_modules/bytenode/cli.js', 'harperdb/server/hdbServer.jsc']);
             const terms_rw = run_rw.__set__('terms', terms_test);
             is_port_taken_stub.resolves(false);
             license_search_stub.returns({ ram_allocation: 1024 });
             await launchHdbServer();
             terms_rw();
+            create_fork_args_stub.restore();
 
             expect(check_perms_stub).to.have.been.called;
             expect(fork_stub.args[0][0]).to.include('node_modules/bytenode/cli.js');
@@ -651,6 +661,7 @@ describe('Test run module', () => {
         });
 
         after(() => {
+            is_port_taken_stub.restore();
             fork_rw();
         });
 
@@ -713,6 +724,65 @@ describe('Test run module', () => {
             await launchIPCServer();
 
             expect(console_error_stub.getCall(0).firstArg).to.equal('There was an error starting the IPC server, check the log for more details.');
+            expect(final_log_error_stub.getCall(0).firstArg.name).to.eql(TEST_ERROR);
+            expect(process_exit_stub.getCall(0).firstArg).to.equal(1);
+        });
+    });
+
+    describe('Test launchCustomFunctionServer function', () => {
+        let launchCustomFunctionServer;
+        let is_port_taken_stub;
+        const fork_stub = sandbox.stub();
+        let fork_rw;
+
+        before(() => {
+            sandbox.resetHistory();
+            fork_rw = run_rw.__set__('fork', fork_stub);
+            launchCustomFunctionServer = run_rw.__get__('launchCustomFunctionServer');
+            is_port_taken_stub = sandbox.stub(hdb_utils, 'isPortTaken');
+        });
+
+        beforeEach(() => {
+            sandbox.resetHistory();
+        });
+
+        after(() => {
+            fork_rw();
+            is_port_taken_stub.restore();
+        });
+
+        it('Test everything is called as expected happy path', async () => {
+            is_port_taken_stub.resolves(false);
+            await launchCustomFunctionServer();
+
+            expect(is_port_taken_stub).to.have.been.calledWith(9926);
+            expect(fork_stub.args[0][0]).to.include('harperdb/server/customFunctions/customFunctionServer.js');
+            expect(fork_stub.args[0][1]).to.eql([undefined]);
+        });
+
+        it('Test message is logged and process exited if port taken', async () => {
+            is_port_taken_stub.resolves(true);
+            await launchCustomFunctionServer();
+
+            expect(console_log_stub.getCall(0).firstArg).to.equal('Port: 9926 is being used by another process and cannot be used by the Custom Functions server. Please update the Custom Functions server port in the HDB config/settings.js file.');
+            expect(process_exit_stub.getCall(0).firstArg).to.equal(1);
+        });
+
+        it('Test error from isPortTaken is handled as expected', async () => {
+            is_port_taken_stub.throws(TEST_ERROR);
+            await launchCustomFunctionServer();
+
+            expect(console_error_stub.getCall(0).firstArg).to.equal('Error checking for port 9926. Check log for more details.');
+            expect(final_log_error_stub.getCall(0).firstArg.name).to.equal(TEST_ERROR);
+            expect(process_exit_stub.getCall(0).firstArg).to.equal(1);
+        });
+
+        it('Test error from fork is handled as expected', async () => {
+            is_port_taken_stub.resolves(false);
+            fork_stub.throws(TEST_ERROR);
+            await launchCustomFunctionServer();
+
+            expect(console_error_stub.getCall(0).firstArg).to.equal('There was an error starting the Custom Functions server, check the log for more details.');
             expect(final_log_error_stub.getCall(0).firstArg.name).to.eql(TEST_ERROR);
             expect(process_exit_stub.getCall(0).firstArg).to.equal(1);
         });

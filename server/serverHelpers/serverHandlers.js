@@ -51,6 +51,7 @@ function handleSigterm() {
 }
 
 function serverErrorHandler(error, req, resp) {
+    harper_logger.error(error);
     if (error.http_resp_code) {
         if (typeof error.http_resp_msg === 'string') {
             return resp.code(error.http_resp_code).send({error: error.http_resp_msg});
@@ -101,10 +102,13 @@ function authHandler(req, resp, done) {
     }
 }
 
-async function handlePostRequest(req) {
+async function handlePostRequest(req, bypass_auth = false) {
     let operation_function;
 
     try {
+        if (bypass_auth && req.body.operation !== 'configure_cluster') {
+            req.body.bypass_auth = bypass_auth;
+        }
         operation_function = server_utilities.chooseOperation(req.body);
         return server_utilities.processLocalTransaction(req, operation_function);
     } catch (error) {

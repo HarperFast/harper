@@ -116,7 +116,7 @@ function processAST(json_message, parsed_sql_object, callback) {
     try {
         let sql_function = nullFunction;
 
-        if (!parsed_sql_object.permissions_checked) {
+        if (!json_message.bypass_auth && !parsed_sql_object.permissions_checked) {
             let permissions_check = checkASTPermissions(json_message, parsed_sql_object);
             if (permissions_check && permissions_check.length > 0) {
                 return callback(UNAUTHORIZED_RESPONSE, permissions_check);

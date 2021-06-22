@@ -43,7 +43,7 @@ describe('Test hdbIpcServer module', () => {
     it('Text messageListener function broadcasts message', () => {
         const broadcast_stub = sandbox.stub();
         ipc_server.__set__('ipc.server.broadcast', broadcast_stub);
-        const data_test = { type: 'create_schema', message: 'unit-test' };
+        const data_test = { type: 'schema', message: 'unit-test' };
         message_listener_rw(data_test);
 
         expect(typeof broadcast_stub.args[0][1]).to.equal('object');

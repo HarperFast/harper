@@ -74,7 +74,8 @@ module.exports = {
     backtickASTSchemaItems,
     isPortTaken,
     stopProcess,
-    assignCMDENVVariables
+    assignCMDENVVariables,
+    createForkArgs
 };
 
 /**
@@ -818,4 +819,18 @@ function assignCMDENVVariables(keys = []){
         }
     }
     return hdb_settings;
+}
+
+/**
+ * Create arguments for child_process fork
+ * @param module_path
+ * @returns {*[]}
+ */
+function createForkArgs(module_path){
+    let args = [];
+    if(terms.CODE_EXTENSION === terms.COMPILED_EXTENSION){
+        args.push(path.resolve(__dirname, '../', 'node_modules', 'bytenode', 'cli.js'));
+    }
+    args.push(module_path);
+    return args;
 }

@@ -96,7 +96,7 @@ class InterNodeSocketConnector extends SocketConnector{
             this.connected_timestamp = Date.now();
 
             try {
-                await fs.writeFile(this.connection_path, this.connected_timestamp);
+                await fs.writeFile(this.connection_path, this.connected_timestamp.toString());
             } catch(e){
                 log.error(e);
             }
