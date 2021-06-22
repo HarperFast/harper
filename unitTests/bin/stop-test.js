@@ -86,6 +86,10 @@ describe('Test stop.js' , () => {
         before(() => {
             signal_stub = sandbox.stub(signalling, 'signalRestart').returns();
         });
+        
+        after(() => {
+            signal_stub.restore();
+        });
 
         it('should return restart response hard', async () => {
             json_message_fake.force = 'true';
@@ -119,6 +123,38 @@ describe('Test stop.js' , () => {
         });
     });
 
+    describe('Test restartService function', () => {
+        let signal_stub;
+
+        before(() => {
+            signal_stub = sandbox.stub(signalling, 'signalRestart').returns();
+        });
+
+        it('Test missing service error thrown', () => {
+            const expected_err = test_util.generateHDBError("'service' is required", 400);
+            test_util.assertErrorSync(stop.restartService, [ { operation: "restart_service" }], expected_err);
+        });
+
+        it('Test invalid service error thrown', () => {
+            const expected_err = test_util.generateHDBError("Invalid service", 400);
+            test_util.assertErrorSync(stop.restartService, [ { operation: "restart_service", service: "no_service" }], expected_err);
+        });
+
+        it('Test signal restart called happy path', () => {
+            const expected_event = {
+                "originator": process.pid,
+                "force": false,
+                "service": "custom_functions"
+            };
+            const json_message_fake = {
+                operation: 'restart',
+                service: 'custom_functions'
+            };
+            stop.restartService(json_message_fake);
+            expect(signal_stub.args[0][0]).to.eql(expected_event);
+        });
+    });
+
     /**
      * Tests for stop function
      */
@@ -132,6 +168,10 @@ describe('Test stop.js' , () => {
             kill_procs_stub = sandbox.stub();
             kill_procs_rewire = stop.__set__('killProcs', kill_procs_stub);
         });
+        
+        afterEach(() => {
+            sandbox.resetHistory();
+        });
 
         after(() => {
             kill_procs_rewire();
@@ -143,12 +183,13 @@ describe('Test stop.js' , () => {
             expect(console_log_spy).to.have.been.calledOnce;
             expect(console_log_spy).to.have.been.calledWith('Stopping HarperDB.');
             expect(kill_procs_stub).to.have.been.calledTwice;
-            expect(final_logger_info_stub).to.have.been.calledThrice;
+            expect(final_logger_info_stub.callCount).to.equal(4);
             expect(kill_procs_stub.getCall(0).args[0]).to.equal(path.resolve('../server/socketcluster',hdb_terms.SC_PROC_NAME), hdb_terms.SC_PROC_DESCRIPTOR);
             expect(kill_procs_stub.getCall(1).args[0]).to.equal(path.resolve('../server', hdb_terms.HDB_PROC_NAME), hdb_terms.HDB_PROC_DESCRIPTOR);
             expect(final_logger_info_stub).to.have.been.calledWith(`Stopping ${hdb_terms.HDB_PROC_NAME} - ${hdb_terms.HDB_PROC_DESCRIPTOR}.`);
             expect(final_logger_info_stub).to.have.been.calledWith(`Stopping ${hdb_terms.SC_PROC_NAME} - ${hdb_terms.SC_PROC_DESCRIPTOR}.`);
             expect(stop_process_stub.getCall(0).args[0]).to.equal(path.resolve('../server/ipc', hdb_terms.IPC_SERVER_MODULE));
+            expect(stop_process_stub.getCall(1).args[0]).to.equal(path.resolve('../server/customFunctions', hdb_terms.CUSTOM_FUNCTION_PROC_NAME));
         });
 
         it('should catch error from killProcs and console error it', async () => {

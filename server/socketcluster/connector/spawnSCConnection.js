@@ -45,10 +45,9 @@ function spawnSCConnection(is_worker){
         password: crypto_hash.decrypt(cluster_user.hash)
     };
 
-    let options = JSON.parse(JSON.stringify(connector_options));
     let SocketClass = HDBSocketConnector;
     if(is_worker !== true){
-        delete options.query;
+        delete connector_options.query;
         SocketClass = SocketConnector;
     }
 

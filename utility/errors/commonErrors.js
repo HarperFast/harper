@@ -190,6 +190,25 @@ const IPC_ERRORS = {
     INVALID_EVENT: (event) => `IPC server received invalid event type: ${event}`
 };
 
+const CUSTOM_FUNCTIONS_ERROR_MSGS = {
+    FUNCTION_STATUS: 'Error getting custom function status, check the log for more details',
+    GET_FUNCTIONS: 'Error getting custom functions, check the log for more details',
+    GET_FUNCTION: 'Error getting custom function, check the log for more details',
+    SET_FUNCTION: 'Error setting custom function, check the log for more details',
+    NO_PROJECT: "Project does not exist. Create one using 'add_custom_function_project'",
+    PROJECT_EXISTS: 'Project already exists',
+    VALIDATION_ERR: 'Error validating request, check the log for more details',
+    NO_FILE: 'File does not exist',
+    BAD_FILE_NAME: 'File name can only contain alphanumeric, dash and underscore characters',
+    BAD_PROJECT_NAME: 'Project name can only contain alphanumeric, dash and underscores characters',
+    BAD_PACKAGE: 'Packaged project must be base64-encoded tar file of project directory',
+    DROP_FUNCTION: 'Error dropping custom function, check the log for more details',
+    ADD_FUNCTION: 'Error adding custom function project, check the log for more details',
+    DROP_FUNCTION_PROJECT: 'Error dropping custom function project, check the log for more details',
+    BAD_FILE_PATH: 'Filepath must be valid, and contain the name of the tarball you wish to write',
+    NOT_ENABLED: 'Custom functions is not enabled, to enable set CUSTOM_FUNCTIONS = true in HDB config/settings.js file.'
+};
+
 //into a single export while still allowing us to group them here in a more readable/searchable way
 const HDB_ERROR_MSGS = {
     ...AUTHENTICATION_ERROR_MSGS,
@@ -202,7 +221,8 @@ const HDB_ERROR_MSGS = {
     ...USER_ERROR_MSGS,
     ...WRITE_OPS_ERROR_MSGS,
     ...VALIDATION_ERROR_MSGS,
-    ...IPC_ERRORS
+    ...IPC_ERRORS,
+    ...CUSTOM_FUNCTIONS_ERROR_MSGS
 };
 
 // All error messages should be added to the HDB_ERROR_MSGS ENUM for export - this helps to organize all error messages

@@ -5,6 +5,7 @@ const hdb_logger = require('../../utility/logging/harper_logger');
 const enterprise_util = require('../../utility/enterpriseInitialization');
 const { restartHDB } = require('../../server/clustering/clusterUtilities');
 const children_stopped_event = require('../../events/AllChildrenStoppedEvent');
+const cf_children_stopped_event = require('../../events/AllCFChildrenStoppedEvent');
 const { validateEvent } = require('../../server/ipc/utility/ipcUtils');
 const util = require('util');
 
@@ -23,32 +24,34 @@ const hdb_parent_ipc_handlers = {
  * @returns {Promise<void>}
  */
 async function childStartedHandler(event) {
-    const validate = validateEvent(event);
-    if (validate) {
-        hdb_logger.error(validate);
-        return;
-    }
+    if (global.service === event.message.service) {
+        const validate = validateEvent(event);
+        if (validate) {
+            hdb_logger.error(validate);
+            return;
+        }
 
-    hdb_logger.trace(`HDB parent with ${hdb_terms.HDB_IPC_CLIENT_PREFIX}${process.pid} received child_started event: ${JSON.stringify(event)}`);
+        hdb_logger.trace(`HDB parent with ${hdb_terms.HDB_IPC_CLIENT_PREFIX}${process.pid} received child_started event: ${JSON.stringify(event)}`);
 
-    if(started_forks[event.message.originator]) {
-        hdb_logger.warn(`Got a duplicate child started event for pid ${event.message.originator}`);
-    } else {
-        child_event_count++;
-        hdb_logger.info(`Received ${child_event_count} child started event(s).`);
-        started_forks[event.message.originator] = true;
-        if (Object.keys(started_forks).length === global.forks.length) {
-            //all children are started, kick off enterprise.
-            child_event_count = 0;
+        if(started_forks[event.message.originator]) {
+            hdb_logger.warn(`Got a duplicate child started event for pid ${event.message.originator}`);
+        } else {
+            child_event_count++;
+            hdb_logger.info(`Received ${child_event_count} child started event(s).`);
+            started_forks[event.message.originator] = true;
+            if (Object.keys(started_forks).length === global.forks.length) {
+                //all children are started, kick off enterprise.
+                child_event_count = 0;
 
-            hdb_logger.trace('childStartedHandler kickOffEnterprise');
-            try {
-                if(global.clustering_on === true) {
-                    await enterprise_util.kickOffEnterprise();
-                    hdb_logger.info('HDB server children initialized');
+                hdb_logger.trace('childStartedHandler kickOffEnterprise');
+                try {
+                    if(global.clustering_on === true) {
+                        await enterprise_util.kickOffEnterprise();
+                        hdb_logger.info('HDB server children initialized');
+                    }
+                } catch (err) {
+                    hdb_logger.error(`HDB server children failed to start: ${err}`);
                 }
-            } catch (err) {
-                hdb_logger.error(`HDB server children failed to start: ${err}`);
             }
         }
     }
@@ -59,30 +62,39 @@ async function childStartedHandler(event) {
  * @param event
  */
 function childStoppedHandler(event) {
-    const validate = validateEvent(event);
-    if (validate) {
-        hdb_logger.error(validate);
-        return;
-    }
+    if (global.service === event.message.service) {
+        const validate = validateEvent(event);
+        if (validate) {
+            hdb_logger.error(validate);
+            return;
+        }
 
-    hdb_logger.trace(`HDB parent with ${hdb_terms.HDB_IPC_CLIENT_PREFIX}${process.pid} received child_stopped event: ${JSON.stringify(event)}`);
-    if(started_forks[event.message.originator] === false) {
-        hdb_logger.warn(`Got a duplicate child stopped event for pid ${event.message.originator}`);
-    } else {
-        child_event_count++;
-        hdb_logger.info(`Received ${child_event_count} child stopped event(s).`);
-        hdb_logger.info(`started forks: ${util.inspect(started_forks)}`);
-        started_forks[event.message.originator] = false;
-        for(let fork of Object.keys(started_forks)) {
-            // We still have children running, break;
-            if(started_forks[fork] === true) {
-                return;
+        hdb_logger.trace(`HDB parent with ${hdb_terms.HDB_IPC_CLIENT_PREFIX}${process.pid} received child_stopped event: ${JSON.stringify(event)}`);
+        if(started_forks[event.message.originator] === false) {
+            hdb_logger.warn(`Got a duplicate child stopped event for pid ${event.message.originator}`);
+        } else {
+            child_event_count++;
+            hdb_logger.info(`Received ${child_event_count} child stopped event(s).`);
+            hdb_logger.info(`started forks: ${util.inspect(started_forks)}`);
+            started_forks[event.message.originator] = false;
+            for(let fork of Object.keys(started_forks)) {
+                // We still have children running, break;
+                if(started_forks[fork] === true) {
+                    return;
+                }
+            }
+
+            child_event_count = 0;
+
+            // All children are stopped, emit event
+            if (event.message.service === hdb_terms.SERVICES.CUSTOM_FUNCTIONS) {
+                hdb_logger.debug(`All custom function children stopped, restarting.`);
+                cf_children_stopped_event.allCFChildrenStoppedEmitter.emit(cf_children_stopped_event.EVENT_NAME, new cf_children_stopped_event.AllCFChildrenStoppedMessage());
+            } else {
+                hdb_logger.debug(`All children stopped, restarting.`);
+                children_stopped_event.allChildrenStoppedEmitter.emit(children_stopped_event.EVENT_NAME, new children_stopped_event.AllChildrenStoppedMessage());
             }
         }
-        //All children are stopped, emit event
-        hdb_logger.debug(`All children stopped, restarting.`);
-        child_event_count = 0;
-        children_stopped_event.allChildrenStoppedEmitter.emit(children_stopped_event.EVENT_NAME, new children_stopped_event.AllChildrenStoppedMessage());
     }
 }
 
@@ -99,9 +111,12 @@ function restartHandler(event) {
 
     hdb_logger.trace(`HDB parent with ${hdb_terms.HDB_IPC_CLIENT_PREFIX}${process.pid} received restart event: ${JSON.stringify(event)}`);
 
-    if(event.message.force === true) {
+    // Only the core process needs to call a forced restart.
+    if(event.message.force === true && global.service === hdb_terms.SERVICES.HDB_CORE) {
         restartHDB();
         hdb_logger.info('Force shutting down processes.');
+        return;
+    } else if(event.message.force === true) {
         return;
     }
 

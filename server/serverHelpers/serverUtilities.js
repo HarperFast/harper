@@ -10,6 +10,7 @@ const read_transaction_log = require('../../data_layer/readTransactionLog');
 const user = require('../../security/user');
 const role = require('../../security/role');
 const cluster_utilities = require('./../clustering/clusterUtilities');
+const custom_function_operations = require('./../customFunctions/operations');
 const harper_logger = require('../../utility/logging/harper_logger');
 const export_ = require('../../data_layer/export');
 const op_auth = require('../../utility/operation_authorization');
@@ -126,13 +127,15 @@ function chooseOperation(json) {
             let sql_statement = (json.operation === 'sql' ? json.sql : json.search_operation.sql);
             let parsed_sql_object = sql.convertSQLToAST(sql_statement);
             json.parsed_sql_object = parsed_sql_object;
-            let ast_perm_check = sql.checkASTPermissions(json, parsed_sql_object);
-            if (ast_perm_check) {
-                harper_logger.error(`${HTTP_STATUS_CODES.FORBIDDEN} from operation ${json.search_operation}`);
-                throw handleHDBError(new Error(), ast_perm_check, hdb_errors.HTTP_STATUS_CODES.FORBIDDEN);
+            if (!json.bypass_auth) {
+                let ast_perm_check = sql.checkASTPermissions(json, parsed_sql_object);
+                if (ast_perm_check) {
+                    harper_logger.error(`${HTTP_STATUS_CODES.FORBIDDEN} from operation ${json.search_operation}`);
+                    throw handleHDBError(new Error(), ast_perm_check, hdb_errors.HTTP_STATUS_CODES.FORBIDDEN);
+                }
             }
         //we need to bypass permission checks to allow the create_authorization_tokens
-        } else if(json.operation !== terms.OPERATIONS_ENUM.CREATE_AUTHENTICATION_TOKENS){
+        } else if(!json.bypass_auth && json.operation !== terms.OPERATIONS_ENUM.CREATE_AUTHENTICATION_TOKENS){
             let function_to_check = (job_operation_function === undefined ? operation_function : job_operation_function);
             let operation_json = ((json.search_operation) ? json.search_operation : json);
             if (!operation_json.hdb_user) {
@@ -270,6 +273,7 @@ function initializeOperationFunctionMap(){
     op_func_map.set(terms.OPERATIONS_ENUM.SET_LICENSE, new OperationFunctionObject(reg.setLicense));
     op_func_map.set(terms.OPERATIONS_ENUM.GET_REGISTRATION_INFO, new OperationFunctionObject(reg.getRegistrationInfo));
     op_func_map.set(terms.OPERATIONS_ENUM.RESTART, new OperationFunctionObject(stop.restartProcesses));
+    op_func_map.set(terms.OPERATIONS_ENUM.RESTART_SERVICE, new OperationFunctionObject(stop.restartService));
     op_func_map.set(terms.OPERATIONS_ENUM.CATCHUP, new OperationFunctionObject(catchup));
     op_func_map.set(terms.OPERATIONS_ENUM.SYSTEM_INFORMATION, new OperationFunctionObject(system_information.systemInformation));
     op_func_map.set(terms.OPERATIONS_ENUM.DELETE_TRANSACTION_LOGS_BEFORE, new OperationFunctionObject(executeJob, delete_.deleteTransactionLogsBefore));
@@ -277,6 +281,15 @@ function initializeOperationFunctionMap(){
     op_func_map.set(terms.OPERATIONS_ENUM.CREATE_AUTHENTICATION_TOKENS, new OperationFunctionObject(token_authentication.createTokens));
     op_func_map.set(terms.OPERATIONS_ENUM.REFRESH_OPERATION_TOKEN, new OperationFunctionObject(token_authentication.refreshOperationToken));
     op_func_map.set(terms.OPERATIONS_ENUM.GET_CONFIGURATION, new OperationFunctionObject(configuration.getConfiguration));
+    op_func_map.set(terms.OPERATIONS_ENUM.CUSTOM_FUNCTIONS_STATUS, new OperationFunctionObject(custom_function_operations.customFunctionsStatus));
+    op_func_map.set(terms.OPERATIONS_ENUM.GET_CUSTOM_FUNCTIONS, new OperationFunctionObject(custom_function_operations.getCustomFunctions));
+    op_func_map.set(terms.OPERATIONS_ENUM.GET_CUSTOM_FUNCTION, new OperationFunctionObject(custom_function_operations.getCustomFunction));
+    op_func_map.set(terms.OPERATIONS_ENUM.SET_CUSTOM_FUNCTION, new OperationFunctionObject(custom_function_operations.setCustomFunction));
+    op_func_map.set(terms.OPERATIONS_ENUM.DROP_CUSTOM_FUNCTION, new OperationFunctionObject(custom_function_operations.dropCustomFunction));
+    op_func_map.set(terms.OPERATIONS_ENUM.ADD_CUSTOM_FUNCTION_PROJECT, new OperationFunctionObject(custom_function_operations.addCustomFunctionProject));
+    op_func_map.set(terms.OPERATIONS_ENUM.DROP_CUSTOM_FUNCTION_PROJECT, new OperationFunctionObject(custom_function_operations.dropCustomFunctionProject));
+    op_func_map.set(terms.OPERATIONS_ENUM.PACKAGE_CUSTOM_FUNCTION_PROJECT, new OperationFunctionObject(custom_function_operations.packageCustomFunctionProject));
+    op_func_map.set(terms.OPERATIONS_ENUM.DEPLOY_CUSTOM_FUNCTION_PROJECT, new OperationFunctionObject(custom_function_operations.deployCustomFunctionProject));
 
     return op_func_map;
 }

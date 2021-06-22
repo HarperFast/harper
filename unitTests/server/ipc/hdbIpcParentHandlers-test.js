@@ -24,6 +24,7 @@ describe('Test hdbParentIpcHandlers module', () => {
     let restart_stub;
 
     before(() => {
+        global.service = 'hdb_core';
         log_error_stub = sandbox.stub(harper_logger, 'error');
         log_info_stub = sandbox.stub(harper_logger, 'info');
         log_trace_stub = sandbox.stub(harper_logger, 'trace');
@@ -38,13 +39,15 @@ describe('Test hdbParentIpcHandlers module', () => {
     after(() => {
         sandbox.restore();
         rewire('../../../server/ipc/hdbParentIpcHandlers');
+        delete global.service;
     });
 
     describe('Test childStartedHandler function', () => {
         const test_child_start_event = {
             "type": "child_started",
             "message": {
-                "originator": 12345
+                "originator": 12345,
+                "service": 'hdb_core'
             }
         };
         let kick_off_enterprise_stub;
@@ -84,9 +87,9 @@ describe('Test hdbParentIpcHandlers module', () => {
         });
 
         it('Test validation error is logged', async () => {
-            delete test_child_start_event.message;
+            delete test_child_start_event.type;
             await child_started_handler(test_child_start_event);
-            expect(log_error_stub.args[0][0]).to.equal("IPC event missing 'message'");
+            expect(log_error_stub.args[0][0]).to.equal("IPC event missing 'type'");
         });
     });
 
@@ -96,7 +99,8 @@ describe('Test hdbParentIpcHandlers module', () => {
         const test_child_stopped_event = {
             "type": "child_stopped",
             "message": {
-                "originator": 12346
+                "originator": 12346,
+                "service": 'hdb_core'
             }
         };
         let child_stop_rw;
@@ -132,7 +136,9 @@ describe('Test hdbParentIpcHandlers module', () => {
         });
 
         it('Test validation error is logged', () => {
-            test_child_stopped_event.message = {};
+            test_child_stopped_event.message = {
+                "service": 'hdb_core'
+            };
             child_stopped_handler(test_child_stopped_event);
             expect(log_error_stub.args[0][0]).to.equal("IPC event message missing 'originator' property");
         });
