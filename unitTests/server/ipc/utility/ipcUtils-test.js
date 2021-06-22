@@ -84,26 +84,29 @@ describe('Test ipcUtils module', () => {
 
         it('Test ChildStartedMsg', () => {
             const expected_obj = {
-                "originator": 12345
+                "originator": 12345,
+                "service": "custom_functions"
             };
-            const result = new ipc_utils.ChildStartedMsg(12345);
+            const result = new ipc_utils.ChildStartedMsg(12345, 'custom_functions');
             expect(result).to.eql(expected_obj);
         });
 
         it('Test ChildStoppedMsg', () => {
             const expected_obj = {
-                "originator": 12345
+                "originator": 12345,
+                "service": "custom_functions"
             };
-            const result = new ipc_utils.ChildStoppedMsg(12345);
+            const result = new ipc_utils.ChildStoppedMsg(12345, 'custom_functions');
             expect(result).to.eql(expected_obj);
         });
 
         it('Test RestartMsg', () => {
             const expected_obj = {
                 "originator": 12345,
-                "force": false
+                "force": false,
+                "service": "custom_functions"
             };
-            const result = new ipc_utils.RestartMsg(12345, false);
+            const result = new ipc_utils.RestartMsg(12345, false, 'custom_functions');
             expect(result).to.eql(expected_obj);
         });
     });

@@ -183,7 +183,7 @@ function promptForReinstall(callback) {
     let reinstall_schema = {
         properties: {
             REINSTALL: {
-                description: colors.red(`It appears HarperDB version ${version.version()} is already installed.  Enter \'y/yes\'to reinstall. (yes/no)`),
+                description: colors.red(`It appears HarperDB version ${version.version()} is already installed.  Enter 'y/yes'to reinstall. (yes/no)`),
                 pattern: /y(es)?$|n(o)?$/,
                 message: "Must respond 'yes' or 'no'",
                 default: 'no',
@@ -541,7 +541,15 @@ function createSettingsFile(mount_status, callback) {
             `   ;The port the IPC server will run on.\n` +
             `${HDB_SETTINGS_NAMES.IPC_SERVER_PORT} = ${generateSettingsValue(ARGS, HDB_SETTINGS_NAMES.IPC_SERVER_PORT)}\n` +
             `   ;Run HDB in the foreground.\n` +
-            `${HDB_SETTINGS_NAMES.RUN_IN_FOREGROUND} = ${generateSettingsValue(ARGS, HDB_SETTINGS_NAMES.RUN_IN_FOREGROUND)}`
+            `${HDB_SETTINGS_NAMES.RUN_IN_FOREGROUND} = ${generateSettingsValue(ARGS, HDB_SETTINGS_NAMES.RUN_IN_FOREGROUND)}\n` +
+            `   ;Set to true to enable custom API endpoints.  Requires a valid enterprise license.  \n` +
+            `${HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_ENABLED_KEY} = ${generateSettingsValue(ARGS, HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_ENABLED_KEY)}\n` +
+            `   ;The port used to access the custom functions server.\n` +
+            `${HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_PORT_KEY} = ${generateSettingsValue(ARGS, HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_PORT_KEY)}\n` +
+            `   ;The path to the folder containing HarperDB custom function files.\n` +
+            `${HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY} = ${wizard_result.HDB_ROOT}/custom_functions\n` +
+            `   ;Set the max number of processes HarperDB will start for the Custom Functions server\n` +
+            `${HDB_SETTINGS_NAMES.MAX_CUSTOM_FUNCTION_PROCESSES} = ${num_cores}\n`
         ;
 
         install_logger.info('info', `hdb_props_value ${JSON.stringify(hdb_props_value)}`);
