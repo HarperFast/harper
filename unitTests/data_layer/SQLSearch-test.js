@@ -95,10 +95,10 @@ async function setupBasicTestData() {
     const test_data_cat = deepClone(TEST_DATA_CAT);
     test_data_cat[0]['null_attr'] = null;
 
-    await createMockDB(HASH_ATTRIBUTE, TEST_SCHEMA, TEST_TABLE_DOG, test_data_dog);
-    await createMockDB(HASH_ATTRIBUTE, TEST_SCHEMA, TEST_TABLE_CAT, test_data_cat);
-    await createMockDB(HASH_ATTRIBUTE, TEST_SCHEMA, TEST_TABLE_LONGTEXT, deepClone(TEST_DATA_LONGTEXT));
-    test_env = await createMockDB("all", "call", "aggr", deepClone(TEST_DATA_AGGR));
+    test_env.push(...await createMockDB(HASH_ATTRIBUTE, TEST_SCHEMA, TEST_TABLE_DOG, test_data_dog));
+    test_env.push(...await createMockDB(HASH_ATTRIBUTE, TEST_SCHEMA, TEST_TABLE_CAT, test_data_cat));
+    test_env.push(...await createMockDB(HASH_ATTRIBUTE, TEST_SCHEMA, TEST_TABLE_LONGTEXT, deepClone(TEST_DATA_LONGTEXT)));
+    test_env.push(...await createMockDB("all", "call", "aggr", deepClone(TEST_DATA_AGGR)));
 }
 
 async function setupCSVSqlData() {
@@ -109,7 +109,7 @@ async function setupCSVSqlData() {
         const attrs = Object.keys(data[0]);
         const test_attr = attrs[0] === hash ? attrs[1] : attrs[0];
         sql_integration_data[table] = { hash, schema, table, attrs, test_attr, data: csv_data };
-        test_env = await createMockDB(hash, schema, table, data);
+        test_env.push(...await createMockDB(hash, schema, table, data));
     }
 }
 
@@ -148,6 +148,7 @@ describe('Test FileSystem Class',function() {
 
     after(async function() {
         await tearDownMockDB(test_env);
+        test_env = [];
         sandbox.restore();
     });
 

@@ -61,7 +61,7 @@ const ENTITY_TYPE_ENUM = {
     ATTRIBUTE: `attribute`
 };
 
-let test_env;
+let test_env = [];
 
 describe('Test compareSchemas', () => {
     //Stub out connection related configuration.
@@ -79,15 +79,16 @@ describe('Test compareSchemas', () => {
         connector = new HDBSocketConnector(null, null, null, null);
 
         let dog_data = test_utils.deepClone(TEST_DATA_DOG);
-        await test_utils.createMockDB(ID_HASH_NAME, SCHEMA_1_NAME, SCHEMA_1_TABLE_1_NAME, dog_data);
-        await test_utils.createMockDB(ID_HASH_NAME, SCHEMA_1_NAME, SCHEMA_1_TABLE_2_NAME, dog_data);
-        test_env = await test_utils.createMockDB(ID_HASH_NAME, SCHEMA_2_NAME, SCHEMA_2_TABLE_1_NAME, dog_data);
+        test_env.push(...await test_utils.createMockDB(ID_HASH_NAME, SCHEMA_1_NAME, SCHEMA_1_TABLE_1_NAME, dog_data));
+        test_env.push(...await test_utils.createMockDB(ID_HASH_NAME, SCHEMA_1_NAME, SCHEMA_1_TABLE_2_NAME, dog_data));
+        test_env.push(...await test_utils.createMockDB(ID_HASH_NAME, SCHEMA_2_NAME, SCHEMA_2_TABLE_1_NAME, dog_data));
 
         await p_set_global();
     });
 
     afterEach(async () => {
         await test_utils.tearDownMockDB(test_env);
+        test_env = [];
         sandbox.restore();
     });
 
@@ -164,9 +165,9 @@ describe('Test compareAttributeKeys with lmdb', () => {
     beforeEach(async () => {
         sandbox = sinon.createSandbox();
         let dog_data = test_utils.deepClone(TEST_DATA_DOG);
-        await test_utils.createMockDB(ID_HASH_NAME, SCHEMA_1_NAME, SCHEMA_1_TABLE_1_NAME, dog_data);
-        await test_utils.createMockDB(ID_HASH_NAME, SCHEMA_1_NAME, SCHEMA_1_TABLE_2_NAME, dog_data);
-        test_env = await test_utils.createMockDB(ID_HASH_NAME, SCHEMA_2_NAME, SCHEMA_2_TABLE_1_NAME, dog_data);
+        test_env.push(...await test_utils.createMockDB(ID_HASH_NAME, SCHEMA_1_NAME, SCHEMA_1_TABLE_1_NAME, dog_data));
+        test_env.push(...await test_utils.createMockDB(ID_HASH_NAME, SCHEMA_1_NAME, SCHEMA_1_TABLE_2_NAME, dog_data));
+        test_env.push(...await test_utils.createMockDB(ID_HASH_NAME, SCHEMA_2_NAME, SCHEMA_2_TABLE_1_NAME, dog_data));
         SocketConnector_stub = sandbox.stub(SocketConnector.prototype, `init`).resolves(``);
         AddEventListener_stub = sandbox.stub(HDBSocketConnector.prototype, 'addEventListener').resolves(``);
         connector = new HDBSocketConnector(null, null, null, null);
@@ -174,6 +175,7 @@ describe('Test compareAttributeKeys with lmdb', () => {
     });
     afterEach(async () => {
         await test_utils.tearDownMockDB(test_env);
+        test_env = [];
         sandbox.restore();
     });
 
@@ -277,9 +279,9 @@ describe('Test compareTableKeys with lmdb', () => {
     let sandbox = sinon.createSandbox();
     beforeEach(async () => {
         let dog_data = test_utils.deepClone(TEST_DATA_DOG);
-        await test_utils.createMockDB(ID_HASH_NAME, SCHEMA_1_NAME, SCHEMA_1_TABLE_1_NAME, dog_data);
-        await test_utils.createMockDB(ID_HASH_NAME, SCHEMA_1_NAME, SCHEMA_1_TABLE_2_NAME, dog_data);
-        test_env = await test_utils.createMockDB(ID_HASH_NAME, SCHEMA_2_NAME, SCHEMA_2_TABLE_1_NAME, dog_data);
+        test_env.push(...await test_utils.createMockDB(ID_HASH_NAME, SCHEMA_1_NAME, SCHEMA_1_TABLE_1_NAME, dog_data));
+        test_env.push(...await test_utils.createMockDB(ID_HASH_NAME, SCHEMA_1_NAME, SCHEMA_1_TABLE_2_NAME, dog_data));
+        test_env.push(...await test_utils.createMockDB(ID_HASH_NAME, SCHEMA_2_NAME, SCHEMA_2_TABLE_1_NAME, dog_data));
 
         SocketConnector_stub = sandbox.stub(SocketConnector.prototype, `init`).resolves(``);
         AddEventListener_stub = sandbox.stub(HDBSocketConnector.prototype, 'addEventListener').resolves(``);
@@ -288,6 +290,7 @@ describe('Test compareTableKeys with lmdb', () => {
     });
     afterEach(async () => {
         await test_utils.tearDownMockDB(test_env);
+        test_env = [];
         sandbox.restore();
     });
 
@@ -451,9 +454,9 @@ describe('test generateOperationFunctionCall', () => {
     let sandbox = sinon.createSandbox();
     beforeEach(async () => {
         let dog_data = test_utils.deepClone(TEST_DATA_DOG);
-        await test_utils.createMockDB(ID_HASH_NAME, SCHEMA_1_NAME, SCHEMA_1_TABLE_1_NAME, dog_data);
-        await test_utils.createMockDB(ID_HASH_NAME, SCHEMA_1_NAME, SCHEMA_1_TABLE_2_NAME, dog_data);
-        test_env = await test_utils.createMockDB(ID_HASH_NAME, SCHEMA_2_NAME, SCHEMA_2_TABLE_1_NAME, dog_data);
+        test_env.push(...await test_utils.createMockDB(ID_HASH_NAME, SCHEMA_1_NAME, SCHEMA_1_TABLE_1_NAME, dog_data));
+        test_env.push(...await test_utils.createMockDB(ID_HASH_NAME, SCHEMA_1_NAME, SCHEMA_1_TABLE_2_NAME, dog_data));
+        test_env.push(...await test_utils.createMockDB(ID_HASH_NAME, SCHEMA_2_NAME, SCHEMA_2_TABLE_1_NAME, dog_data));
 
         SocketConnector_stub = sandbox.stub(SocketConnector.prototype, `init`).resolves(``);
         AddEventListener_stub = sandbox.stub(HDBSocketConnector.prototype, 'addEventListener').resolves(``);
@@ -462,6 +465,7 @@ describe('test generateOperationFunctionCall', () => {
     });
     afterEach(async () => {
         await test_utils.tearDownMockDB(test_env);
+        test_env = [];
         sandbox.restore();
     });
 

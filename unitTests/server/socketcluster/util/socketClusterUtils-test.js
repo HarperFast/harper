@@ -49,9 +49,13 @@ const TIMESTAMP_8_25_2019 = 1566691200000;
 const TIMESTAMP_1566493702000 = 1566493702000;
 const TIMESTAMP_1566497336650 = 1566497336650;
 
+
+
 describe('Test socketClusterUtils', ()=> {
 
     describe('Test catchupHandler', ()=>{
+        let test_env;
+
         before(async ()=>{
             await fs.remove(BASE_PATH);
             await fs.remove(ENV_DIR_PATH);
@@ -64,7 +68,7 @@ describe('Test socketClusterUtils', ()=> {
                     }
                 }
             };
-            await lmdb_create_txn_envs(CREATE_TABLE_OBJ);
+            test_env = await lmdb_create_txn_envs(CREATE_TABLE_OBJ);
             let insert_obj_1 = new InsertObject('dev', 'dog', 'id', INSERT_RECORDS_1);
             insert_obj_1.hdb_user = HDB_USER_1;
             let insert_response_1 = new InsertRecordsResponseObject(INSERT_HASHES_1, [], INSERT_TIMESTAMP_1);
@@ -85,6 +89,7 @@ describe('Test socketClusterUtils', ()=> {
         });
 
         after(async ()=>{
+            test_env.close();
             global.lmdb_map = undefined;
             global.hdb_schema = undefined;
             await fs.remove(BASE_PATH);
