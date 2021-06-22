@@ -14,7 +14,7 @@ const global_schema = require('../../../utility/globalSchema');
 const hdb_license = require('../../../utility/registration/hdb_license');
 const env = require('../../../utility/environment/environmentManager');
 
-const KEYS_PATH = path.join(test_utils.getMockFSPath(), 'utility/keys');
+const KEYS_PATH = path.join(test_utils.getMockTestPath(), 'utility/keys');
 const PRIVATE_KEY_PATH = path.join(KEYS_PATH, 'privateKey.pem');
 const CERTIFICATE_PATH = path.join(KEYS_PATH, 'certificate.pem');
 const ROUTES_PATH = path.resolve(__dirname, '../../envDir/utility/routes') ;

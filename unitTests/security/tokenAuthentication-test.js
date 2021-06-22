@@ -15,7 +15,7 @@ const JWTObjects = require('../../security/JWTObjects');
 const get_jwt_keys_func = token_auth.__get__('getJWTRSAKeys');
 const hdb_error = require('../../utility/errors/hdbError').handleHDBError;
 
-const KEYS_PATH = path.join(test_util.getMockFSPath(), 'keys');
+const KEYS_PATH = path.join(test_util.getMockTestPath(), 'keys');
 const PASSPHRASE_PATH = path.join(KEYS_PATH, '.jwtPass');
 const PRIVATE_KEY_PATH = path.join(KEYS_PATH, '.jwtPrivate.key');
 const PUBLIC_KEY_PATH = path.join(KEYS_PATH, '.jwtPublic.key');
@@ -108,7 +108,7 @@ describe('test getJWTRSAKeys function', ()=>{
     });
 
     afterEach(()=> {
-        fs.removeSync(test_util.getMockFSPath());
+        fs.removeSync(test_util.getMockTestPath());
         path_join_spy.resetHistory();
         fs_readfile_spy.resetHistory();
     });
@@ -130,15 +130,15 @@ describe('test getJWTRSAKeys function', ()=>{
         assert(path_join_spy.threw() === false);
 
         let first_path_call = path_join_spy.getCall(0);
-        assert(first_path_call.args = [test_util.getMockFSPath(), 'keys', '.jwtPass']);
+        assert(first_path_call.args = [test_util.getMockTestPath(), 'keys', '.jwtPass']);
         assert(first_path_call.returned(PASSPHRASE_PATH) === true);
 
         let second_path_call = path_join_spy.getCall(1);
-        assert(second_path_call.args = [test_util.getMockFSPath(), 'keys', '.jwtPrivate.key']);
+        assert(second_path_call.args = [test_util.getMockTestPath(), 'keys', '.jwtPrivate.key']);
         assert(second_path_call.returned(PRIVATE_KEY_PATH) === true);
 
         let third_path_call = path_join_spy.getCall(2);
-        assert(third_path_call.args = [test_util.getMockFSPath(), 'keys', '.jwtPublic.key']);
+        assert(third_path_call.args = [test_util.getMockTestPath(), 'keys', '.jwtPublic.key']);
         assert(third_path_call.returned(PUBLIC_KEY_PATH) === true);
 
         rw_rsa_keys();

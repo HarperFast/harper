@@ -18,7 +18,7 @@ const global_schema = require('../../utility/globalSchema');
 const schema_describe = require('../../data_layer/schemaDescribe')
 const hdb_license = require('../../utility/registration/hdb_license');
 
-const KEYS_PATH = path.join(test_utils.getMockFSPath(), 'utility/keys');
+const KEYS_PATH = path.join(test_utils.getMockTestPath(), 'utility/keys');
 const PRIVATE_KEY_PATH = path.join(KEYS_PATH, 'privateKey.pem');
 const CERTIFICATE_PATH = path.join(KEYS_PATH, 'certificate.pem');
 
