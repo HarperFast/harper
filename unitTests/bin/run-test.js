@@ -333,7 +333,6 @@ describe('Test run module', () => {
         let checkTransactionLogEnvironmentsExist;
 
         before(() => {
-            sandbox.stub(env_mangr, 'getDataStoreType').returns('lmdb');
             sandbox.stub(schema_describe, 'describeAll').resolves(describe_results_test);
             open_create_trans_env_rw = run_rw.__set__('openCreateTransactionEnvironment', open_create_trans_env_stub);
             checkTransactionLogEnvironmentsExist = run_rw.__get__('checkTransactionLogEnvironmentsExist');

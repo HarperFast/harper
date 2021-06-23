@@ -7,11 +7,9 @@ const common_utils = require('../common_utils');
 const hdb_terms = require('../hdbTerms');
 const path = require('path');
 const os = require('os');
-const minimist = require('minimist');
 
 let BOOT_PROPS_FILE_PATH = common_utils.getPropsFilePath();
 let initialized = false;
-let data_store_type = undefined;
 const defaults = {};
 
 for(let key of Object.keys(hdb_terms.HDB_SETTINGS_NAMES)) {
@@ -33,8 +31,7 @@ module.exports = {
     append: append,
     writeSettingsFileSync,
     initTestEnvironment : initTestEnvironment,
-    isInitialized: isInitialized,
-    getDataStoreType
+    isInitialized: isInitialized
 };
 
 let hdb_properties = PropertiesReader();
@@ -311,48 +308,6 @@ function writeSettingsFileSync(create_backup_bool) {
     }
 }
 
-/**
- * evaluates what data store type HDB is using, default is LMDB.  first will check the system.user directory, chosen because it will always hold data post install.  if it has a file named data.mdb we are lmdb, otherwise fs.
- * if there is no user folder then we check if there is a data_store argument from the command line, used for install.
- */
-function getDataStoreType(){
-    if(data_store_type !== undefined){
-        return data_store_type;
-    }
-
-    //set lmdb as the default
-    data_store_type = hdb_terms.STORAGE_TYPES_ENUM.LMDB;
-
-    let readdir_results = undefined;
-    try {
-        let user_path = path.join(getHdbBasePath(), hdb_terms.SCHEMA_DIR_NAME, hdb_terms.SYSTEM_SCHEMA_NAME, hdb_terms.SYSTEM_TABLE_NAMES.USER_TABLE_NAME);
-        readdir_results = fs.readdirSync(user_path);
-        let is_lmdb = false;
-        for(let x = 0; x < readdir_results.length; x++){
-            //LMDB will have a file called data.mdb
-            if(readdir_results[x] === 'data.mdb'){
-                is_lmdb = true;
-                break;
-            }
-        }
-
-        if(is_lmdb === true){
-            data_store_type = hdb_terms.STORAGE_TYPES_ENUM.LMDB;
-        }
-
-
-    }catch(e){
-        //if there is no user folder we check if the command line is stating file system
-        // eslint-disable-next-line no-magic-numbers
-        const ARGS = minimist(process.argv.slice(2));
-        if(ARGS['data_store'] === hdb_terms.STORAGE_TYPES_ENUM.FILE_SYSTEM){
-            data_store_type = hdb_terms.STORAGE_TYPES_ENUM.FILE_SYSTEM;
-        }
-    }
-
-    return data_store_type;
-}
-
 function initSync() {
     try {
         //if readPropsFile returns false, we are installing and don't need to read anything yet.
@@ -416,8 +371,6 @@ function initTestEnvironment(test_config_obj = {}) {
         if (headers_timeout) {
             setProperty(hdb_terms.HDB_SETTINGS_NAMES.SERVER_HEADERS_TIMEOUT_KEY, headers_timeout);
         }
-
-        data_store_type = hdb_terms.STORAGE_TYPES_ENUM.LMDB;
     } catch(err) {
         let msg = `Error reading in HDB environment variables from path ${BOOT_PROPS_FILE_PATH}.  Please check your boot props and settings files`;
         log.fatal(msg);
