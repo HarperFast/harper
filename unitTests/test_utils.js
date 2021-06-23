@@ -243,6 +243,7 @@ async function createMockDB(hash_attribute, schema, table, test_data) {
         }
 
         await fs.mkdirp(BASE_SYSTEM_PATH);
+        await fs.mkdirp(BASE_SCHEMA_PATH);
 
         if (lmdb_schema_env === undefined) {
             const hdb_schema_env = await environment_utility.createEnvironment(BASE_SYSTEM_PATH, systemSchema.hdb_schema.name);
@@ -303,7 +304,10 @@ async function tearDownMockDB(envs = undefined) {
     try {
         if (envs !== undefined) {
             for (const environment of envs) {
-                environment.close();
+                try {
+                    environment.close();
+                    // eslint-disable-next-line no-empty
+                } catch(err) {}
             }
         }
 
