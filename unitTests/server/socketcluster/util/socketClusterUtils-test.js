@@ -2,7 +2,7 @@
 
 const test_util = require('../../../test_utils');
 test_util.preTestPrep();
-const BASE_PATH = test_util.getMockFSPath();
+const BASE_PATH = test_util.getMockLMDBPath();
 
 const rewire = require('rewire');
 const LMDBBridge = require('../../../../data_layer/harperBridge/lmdbBridge/LMDBBridge');
@@ -12,7 +12,7 @@ const assert = require('assert');
 const fs = require('fs-extra');
 const sc_utils = rewire('../../../../server/socketcluster/util/socketClusterUtils');
 const rw_sc = sc_utils.__set__('read_transaction_log', rw_read_txn_log);
-
+const path = require('path');
 
 const CreateTableObject = require('../../../../data_layer/CreateTableObject');
 const InsertObject = require("../../../../data_layer/InsertObject");
@@ -21,6 +21,7 @@ const LMDBInsertTransactionObject = require("../../../../data_layer/harperBridge
 const lmdb_write_txn = require('../../../../data_layer/harperBridge/lmdbBridge/lmdbUtility/lmdbWriteTransaction');
 const lmdb_create_txn_envs = require('../../../../data_layer/harperBridge/lmdbBridge/lmdbUtility/lmdbCreateTransactionsEnvironment');
 
+const ENV_DIR_PATH = path.resolve(__dirname, '../../../envDir');
 const CHANNEL_NAME_DEV_DOG = 'dev:dog';
 const CHANNEL_NAME_DEV_BREED = 'dev:breed';
 const CHANNEL_NAME_DEV_BAD = 'dev:bad';
@@ -48,11 +49,16 @@ const TIMESTAMP_8_25_2019 = 1566691200000;
 const TIMESTAMP_1566493702000 = 1566493702000;
 const TIMESTAMP_1566497336650 = 1566497336650;
 
+
+
 describe('Test socketClusterUtils', ()=> {
 
     describe('Test catchupHandler', ()=>{
+        let test_env;
+
         before(async ()=>{
             await fs.remove(BASE_PATH);
+            await fs.remove(ENV_DIR_PATH);
             await fs.mkdirp(BASE_PATH);
             global.lmdb_map = undefined;
             global.hdb_schema = {
@@ -62,7 +68,7 @@ describe('Test socketClusterUtils', ()=> {
                     }
                 }
             };
-            await lmdb_create_txn_envs(CREATE_TABLE_OBJ);
+            test_env = await lmdb_create_txn_envs(CREATE_TABLE_OBJ);
             let insert_obj_1 = new InsertObject('dev', 'dog', 'id', INSERT_RECORDS_1);
             insert_obj_1.hdb_user = HDB_USER_1;
             let insert_response_1 = new InsertRecordsResponseObject(INSERT_HASHES_1, [], INSERT_TIMESTAMP_1);
@@ -83,9 +89,11 @@ describe('Test socketClusterUtils', ()=> {
         });
 
         after(async ()=>{
+            test_env.close();
             global.lmdb_map = undefined;
             global.hdb_schema = undefined;
             await fs.remove(BASE_PATH);
+            await fs.remove(ENV_DIR_PATH);
             rw_bridge();
             rw_sc();
         });

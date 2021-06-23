@@ -201,7 +201,7 @@ describe('Test run module', () => {
         let fs_mkdirpSync_spy;
         let fs_writeFileSync_spy;
         let rw_writeLicenseFromVars;
-        const LICENSE_PATH = path.join(test_util.getMockFSPath(), 'keys/.license');
+        const LICENSE_PATH = path.join(test_util.getMockTestPath(), 'keys/.license');
         const REG_PATH = path.join(LICENSE_PATH, '060493.ks');
         const LIC_PATH = path.join(LICENSE_PATH, '.license');
         let assignCMDENVVariables_stub = sandbox.stub(hdb_utils, 'assignCMDENVVariables');

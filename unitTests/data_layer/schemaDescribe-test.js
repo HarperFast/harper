@@ -90,6 +90,7 @@ describe('Test describeAll', function() {
 
     after(async function() {
         await test_util.tearDownMockDB(test_envs);
+        test_envs = [];
         desc_table_orig = schema_describe.describeTable;
     });
 
@@ -124,7 +125,6 @@ describe('Test describeSchema', function() {
     let sandbox = undefined;
     before(async function() {
         test_envs = await test_util.createMockDB(HASH_ATTRIBUTE, TEST_SCHEMA, TEST_TABLE_DOG, test_data);
-
         search_orig = schema_describe.__get__('p_search_search_by_value');
         desc_table_orig = schema_describe.describeTable;
         sandbox = sinon.createSandbox();
@@ -132,6 +132,7 @@ describe('Test describeSchema', function() {
 
     after(async function() {
         await test_util.tearDownMockDB(test_envs);
+        test_envs = [];
         sandbox.restore();
     });
 
@@ -197,6 +198,7 @@ describe('Test describeTable', function() {
 
     after(async function() {
         await test_util.tearDownMockDB(test_envs);
+        test_envs = [];
         sandbox.restore();
     });
 

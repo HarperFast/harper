@@ -11,7 +11,7 @@ const sandbox = sinon.createSandbox();
 const rewire = require('rewire');
 const check_jwt_token_exist = rewire('../../../utility/install/checkJWTTokensExist');
 
-const KEYS_PATH = path.join(test_util.getMockFSPath(), 'keys');
+const KEYS_PATH = path.join(test_util.getMockTestPath(), 'keys');
 
 describe('test checkJWTTokenExist function', ()=>{
     let fs_access_spy;
@@ -19,6 +19,7 @@ describe('test checkJWTTokenExist function', ()=>{
     let logger_error_spy;
 
     before(()=>{
+        test_util.getMockTestPath();
         fs_access_spy = sandbox.spy(fs, 'accessSync');
         fs_writefile_spy = sandbox.spy(fs, 'writeFileSync');
         logger_error_spy = sandbox.spy(logger, 'error');
@@ -36,7 +37,7 @@ describe('test checkJWTTokenExist function', ()=>{
     });
 
     afterEach(()=>{
-        fs.removeSync(test_util.getMockFSPath());
+        fs.removeSync(test_util.getMockTestPath());
 
         fs_access_spy.resetHistory();
         fs_writefile_spy.resetHistory();

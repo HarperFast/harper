@@ -21,10 +21,10 @@ let directive3_1_0;
 let updateSettingsFile_3_1_0;
 let move_license_files;
 
-const OLD_KEYS_PATH = path.join(test_util.getMockFSPath(), '.harperdb/keys/');
+const OLD_KEYS_PATH = path.join(test_util.getMockTestPath(), '.harperdb/keys/');
 const OLD_REG_FILE_PATH = path.join(OLD_KEYS_PATH, '060493.ks');
 const OLD_LIC_FILE_PATH = path.join(OLD_KEYS_PATH, '.license');
-const NEW_KEYS_PATH = path.join(test_util.getMockFSPath(), 'keys/.license');
+const NEW_KEYS_PATH = path.join(test_util.getMockTestPath(), 'keys/.license');
 const NEW_REG_FILE_PATH = path.join(NEW_KEYS_PATH, '060493.ks');
 const NEW_LIC_FILE_PATH = path.join(NEW_KEYS_PATH, '.license');
 
@@ -109,7 +109,7 @@ describe('Test 3.1.0 Upgrade Directive', () => {
         let fsMoveSync_spy;
 
         before(() => {
-            sandbox.stub(os, 'homedir').callsFake(()=>test_util.getMockFSPath());
+            sandbox.stub(os, 'homedir').callsFake(()=>test_util.getMockTestPath());
             sandbox.stub(console, 'log');
             sandbox.stub(fs, 'unlinkSync');
             sandbox.stub(hdb_logger, 'info');
@@ -122,7 +122,7 @@ describe('Test 3.1.0 Upgrade Directive', () => {
         });
 
         beforeEach(()=>{
-            fs.removeSync(test_util.getMockFSPath());
+            fs.removeSync(test_util.getMockTestPath());
             fs.mkdirpSync(OLD_KEYS_PATH);
             fs.mkdirpSync(NEW_KEYS_PATH);
             fs.writeFileSync(OLD_REG_FILE_PATH, '');
@@ -130,7 +130,7 @@ describe('Test 3.1.0 Upgrade Directive', () => {
         });
 
         afterEach(() => {
-            fs.removeSync(test_util.getMockFSPath());
+            fs.removeSync(test_util.getMockTestPath());
 
             fs.unlinkSync(OLD_REG_FILE_PATH);
             fs.unlinkSync(OLD_LIC_FILE_PATH);
