@@ -17,7 +17,7 @@
     "harperdb": "./bin/harperdb.js"
   },
   "engines": {
-    "node": "14.16.1"
+    "node": "14.17.1"
   },
   "homepage": "https://www.harperdb.io/",
   "bugs": "support@harperdb.io",
@@ -48,7 +48,7 @@
     "@turf/distance": "^6.0.1",
     "@turf/helpers": "^6.1.4",
     "@turf/length": "^6.0.2",
-    "alasql": "^0.6.5",
+    "alasql": "^1.7.3",
     "async": "^2.6.1",
     "aws-sdk": "^2.389.0",
     "bytenode": "^1.2.3",
@@ -72,7 +72,7 @@
     "jsonwebtoken": "^8.5.1",
     "lmdb-store": "^1.2.5",
     "lodash": "^4.17.21",
-    "mathjs": "^4.4.1",
+    "mathjs": "^9.4.2",
     "microtime": "^3.0.0",
     "minimist": "^1.2.5",
     "moment": "^2.23.0",
@@ -106,12 +106,11 @@
     "eslint": "^5.16.0",
     "hook-std": "^2.0.0",
     "intercept-stdout": "^0.1.2",
-    "minimist": "^1.2.5",
     "mocha": "^8.3.2",
     "mocha-teamcity-reporter": "^3.0.0",
     "mock-require": "^3.0.3",
     "mock-stdin": "^1.0.0",
-    "newman": "^5.1.2",
+    "newman": "^5.2.3",
     "newman-reporter-html": "^1.0.5",
     "newman-reporter-teamcity": "^0.1.11",
     "nyc": "^15.1.0",
