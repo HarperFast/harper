@@ -5,11 +5,13 @@ const path = require('path');
 const chai = require('chai');
 const fs = require('fs-extra');
 const { expect } = chai;
+const assert = require('assert');
 const sinon = require('sinon');
 const sinon_chai = require('sinon-chai');
 chai.use(sinon_chai);
 const test_utils = require('../../../test_utils');
 const logger = require('../../../../utility/logging/harper_logger');
+const terms = require('../../../../utility/hdbTerms');
 const env_mngr = require('../../../../utility/environment/environmentManager');
 const lmdb_common = require('../../../../utility/lmdb/commonUtility');
 
@@ -39,6 +41,7 @@ describe('Test reindex module', () => {
     let console_info_stub;
 
     before(() => {
+        env_mngr
         // This stub and rewire need to be here as putting it in outer scope was messing interfering with other tests.
         sandbox.stub(env_mngr,'getHdbBasePath').returns(BASE_PATH_TEST);
         reindex_rw = rewire('../../../../upgrade/directives/upgrade_scripts/3_0_0_reindex_script');
@@ -47,7 +50,6 @@ describe('Test reindex module', () => {
         reindex_rw.__set__('pino_logger', pino_logger_test);
         sandbox.stub(console, 'error');
         console_info_stub = sandbox.stub(console, 'info');
-        getDataStoreType_stub = sandbox.stub(env_mngr, 'getDataStoreType').returns('lmdb');
     });
 
     afterEach(() => {
@@ -65,13 +67,21 @@ describe('Test reindex module', () => {
     describe('Test reindexUpgrade function', () => {
         const get_schema_tables_stub = sandbox.stub();
         let get_schema_tables_rw;
+        let getDataStoreType_rw;
+        getDataStoreType_stub = sandbox.stub().returns('lmdb');
+
+        beforeEach(() => {
+            sandbox.resetHistory();
+        });
 
         before(() => {
+            getDataStoreType_rw = reindex_rw.__set__('getDataStoreType', getDataStoreType_stub);
             get_schema_tables_rw = reindex_rw.__set__('getSchemaTable', get_schema_tables_stub);
         });
 
         after(() => {
             get_schema_tables_rw();
+            getDataStoreType_rw();
         });
 
         it('Test logs and functions are called as expected happy path', async () => {
@@ -114,6 +124,10 @@ describe('Test reindex module', () => {
         let init_pino_logger_rw;
         let fs_remove_spy;
         let fs_empty_dir_stub;
+
+        beforeEach(() => {
+            sandbox.resetHistory();
+        });
 
         before(() => {
             fs_remove_spy = sandbox.spy(fs, 'remove');
@@ -159,6 +173,10 @@ describe('Test reindex module', () => {
         let ensure_dir_stub;
         let write_file_stub;
 
+        beforeEach(() => {
+            sandbox.resetHistory();
+        });
+
         before(() => {
             initPinoLogger = reindex_rw.__get__('initPinoLogger');
             ensure_dir_stub = sandbox.stub(fs, 'ensureDir');
@@ -188,6 +206,10 @@ describe('Test reindex module', () => {
             await fs.copy(OLD_ENV_SCHEMA, SCHEMA_PATH_TEST);
             await fs.copy(OLD_ENV_TRANSACTIONS, TRANSACTIONS_PATH_TEST);
         };
+
+        beforeEach(() => {
+            sandbox.resetHistory();
+        });
 
         before(async () => {
             // The tmp schema dir is created in getSchemaTable so we need to create it here to test processTable.
@@ -251,6 +273,10 @@ describe('Test reindex module', () => {
             }
         };
 
+        beforeEach(() => {
+            sandbox.resetHistory();
+        });
+
         before(() => {
             validateIndex = reindex_rw.__get__('validateIndex');
             check_is_blod_stub = sandbox.stub(lmdb_common, 'checkIsBlob');
@@ -268,6 +294,83 @@ describe('Test reindex module', () => {
             validateIndex(env_test, 'name', 'jerry', '123abc');
             expect(pino_info_fake).to.have.been.calledWith('Validate indices did not find value in new DBI: jerry. Hash: 123abc');
             expect(pino_error_fake.firstCall.args[0].message).to.include('Expected values to be strictly deep-equal');
+        });
+    });
+
+    describe('test getDataStoreType', ()=>{
+        let getDataStoreType;
+
+        before(() => {
+            getDataStoreType = reindex_rw.__get__('getDataStoreType');
+        });
+
+        it('test no hdb folders, no command arguments', ()=>{
+            let err = undefined;
+            let type = undefined;
+            try{
+                type = getDataStoreType();
+            } catch(e){
+                err = e;
+            }
+
+            assert.deepStrictEqual(err, undefined);
+            assert.deepStrictEqual(type, terms.STORAGE_TYPES_ENUM.LMDB);
+        });
+
+        it('test no hdb folders, argument of --data_store=fs', ()=>{
+            process.argv.push('--data_store=fs');
+
+            let err = undefined;
+            let type = undefined;
+            try{
+                type = getDataStoreType();
+            } catch(e){
+                err = e;
+            }
+
+            assert.deepStrictEqual(err, undefined);
+            assert.deepStrictEqual(type, 'lmdb');
+
+            process.argv.pop();
+        });
+
+        it('test with hdb folders for fs', ()=>{
+            let user_path = path.resolve(__dirname, '../../../envDir/schema/system/hdb_user/__hdb_hash');
+            fs.mkdirpSync(user_path);
+
+            let err = undefined;
+            let type = undefined;
+            try{
+                type = getDataStoreType();
+            } catch(e){
+                err = e;
+            }
+
+            assert.deepStrictEqual(err, undefined);
+            assert.deepStrictEqual(type, terms.STORAGE_TYPES_ENUM.LMDB);
+
+            fs.removeSync(path.resolve(__dirname, '../../../envDir/schema'));
+        });
+
+        it('test with hdb mdb data file', ()=>{
+            let user_path = path.resolve(__dirname, '../../../envDir/schema/system/hdb_user/');
+
+            fs.mkdirpSync(user_path);
+            fs.writeFileSync(path.join(user_path, 'data.mdb'), 'test');
+
+            let err = undefined;
+            let type = undefined;
+            try{
+                type = getDataStoreType();
+            } catch(e){
+                err = e;
+            }
+
+            assert.deepStrictEqual(err, undefined);
+            assert.deepStrictEqual(type, terms.STORAGE_TYPES_ENUM.LMDB);
+
+            fs.removeSync(path.resolve(__dirname, '../../../envDir/schema'));
+
         });
     });
 });

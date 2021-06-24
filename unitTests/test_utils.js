@@ -121,8 +121,6 @@ function cleanUpDirectories(target_path) {
     }
 }
 
-/** HELPER METHODS TO CREATE MOCK HDB SCHEMA FILE SYSTEM STRUCTURE */
-
 /**
  * gets a dir path in the unit test folder that can be used for testing
  * @returns {string}
@@ -132,10 +130,9 @@ function getMockTestPath() {
     return path.join(UNIT_TEST_DIR, ENV_DIR_NAME);
 }
 
-/** HELPER METHODS TO CREATE MOCK HDB SCHEMA FILE SYSTEM STRUCTURE */
 /**
  * Returns the path to the test root path that will be used for testing
- * @returns String representing the path value to the mock file system directory
+ * @returns String representing the path value to the mock lmdb system directory
  */
 function getMockLMDBPath() {
     let lmdb_path = path.join(UNIT_TEST_DIR, ENV_DIR_NAME, process.pid.toString());

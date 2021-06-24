@@ -32,16 +32,11 @@ module.exports = function (logger, hdb_path, callback) {
     makeDirectory(logger, path.join(hdb_path, 'clustering', 'connections'));
 
     env_mngr.setProperty(terms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY, hdb_path);
-    if(env_mngr.getDataStoreType() === terms.STORAGE_TYPES_ENUM.FILE_SYSTEM){
-        createFSTables(system_schema_path, logger);
-        return callback(null, 'complete');
-    } else if(env_mngr.getDataStoreType() === terms.STORAGE_TYPES_ENUM.LMDB){
-        createLMDBTables(system_schema_path, transactions_path, logger).then(()=>{
-            callback(null, 'complete');
-        }).catch(e=>{
-            callback(e);
-        });
-    }
+    createLMDBTables(system_schema_path, transactions_path, logger).then(()=>{
+        callback(null, 'complete');
+    }).catch(e=>{
+        callback(e);
+    });
 };
 
 /**
