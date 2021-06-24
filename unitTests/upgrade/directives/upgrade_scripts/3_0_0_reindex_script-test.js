@@ -41,7 +41,6 @@ describe('Test reindex module', () => {
     let console_info_stub;
 
     before(() => {
-        env_mngr
         // This stub and rewire need to be here as putting it in outer scope was messing interfering with other tests.
         sandbox.stub(env_mngr,'getHdbBasePath').returns(BASE_PATH_TEST);
         reindex_rw = rewire('../../../../upgrade/directives/upgrade_scripts/3_0_0_reindex_script');
