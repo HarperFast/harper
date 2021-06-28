@@ -61,6 +61,8 @@ const ENTITY_TYPE_ENUM = {
     ATTRIBUTE: `attribute`
 };
 
+let test_env = [];
+
 describe('Test compareSchemas', () => {
     //Stub out connection related configuration.
     let sandbox = undefined;
@@ -77,22 +79,17 @@ describe('Test compareSchemas', () => {
         connector = new HDBSocketConnector(null, null, null, null);
 
         let dog_data = test_utils.deepClone(TEST_DATA_DOG);
-        test_utils.createMockFS(ID_HASH_NAME, SCHEMA_1_NAME, SCHEMA_1_TABLE_1_NAME, dog_data);
-        test_utils.createMockFS(ID_HASH_NAME, SCHEMA_1_NAME, SCHEMA_1_TABLE_2_NAME, dog_data);
-        test_utils.createMockFS(ID_HASH_NAME, SCHEMA_2_NAME, SCHEMA_2_TABLE_1_NAME, dog_data);
+        test_env.push(...await test_utils.createMockDB(ID_HASH_NAME, SCHEMA_1_NAME, SCHEMA_1_TABLE_1_NAME, dog_data));
+        test_env.push(...await test_utils.createMockDB(ID_HASH_NAME, SCHEMA_1_NAME, SCHEMA_1_TABLE_2_NAME, dog_data));
+        test_env.push(...await test_utils.createMockDB(ID_HASH_NAME, SCHEMA_2_NAME, SCHEMA_2_TABLE_1_NAME, dog_data));
 
         await p_set_global();
     });
 
     afterEach(async () => {
-        test_utils.tearDownMockFS();
-        test_utils.tearDownMockFSSystem();
+        await test_utils.tearDownMockDB(test_env);
+        test_env = [];
         sandbox.restore();
-    });
-
-    after(async () => {
-        test_utils.tearDownMockFS();
-        test_utils.tearDownMockFSSystem();
     });
 
    it('Nominal case with a new schema', async () => {
@@ -160,7 +157,7 @@ describe('Test compareSchemas', () => {
     });
 });
 
-describe('Test compareAttributeKeys with filesystem', () => {
+describe('Test compareAttributeKeys with lmdb', () => {
     let connector = undefined;
     let SocketConnector_stub = undefined;
     let AddEventListener_stub = undefined;
@@ -168,23 +165,18 @@ describe('Test compareAttributeKeys with filesystem', () => {
     beforeEach(async () => {
         sandbox = sinon.createSandbox();
         let dog_data = test_utils.deepClone(TEST_DATA_DOG);
-        test_utils.createMockFS(ID_HASH_NAME, SCHEMA_1_NAME, SCHEMA_1_TABLE_1_NAME, dog_data);
-        test_utils.createMockFS(ID_HASH_NAME, SCHEMA_1_NAME, SCHEMA_1_TABLE_2_NAME, dog_data);
-        test_utils.createMockFS(ID_HASH_NAME, SCHEMA_2_NAME, SCHEMA_2_TABLE_1_NAME, dog_data);
+        test_env.push(...await test_utils.createMockDB(ID_HASH_NAME, SCHEMA_1_NAME, SCHEMA_1_TABLE_1_NAME, dog_data));
+        test_env.push(...await test_utils.createMockDB(ID_HASH_NAME, SCHEMA_1_NAME, SCHEMA_1_TABLE_2_NAME, dog_data));
+        test_env.push(...await test_utils.createMockDB(ID_HASH_NAME, SCHEMA_2_NAME, SCHEMA_2_TABLE_1_NAME, dog_data));
         SocketConnector_stub = sandbox.stub(SocketConnector.prototype, `init`).resolves(``);
         AddEventListener_stub = sandbox.stub(HDBSocketConnector.prototype, 'addEventListener').resolves(``);
         connector = new HDBSocketConnector(null, null, null, null);
 
     });
     afterEach(async () => {
-        test_utils.tearDownMockFS();
-        test_utils.tearDownMockFSSystem();
+        await test_utils.tearDownMockDB(test_env);
+        test_env = [];
         sandbox.restore();
-    });
-
-    after(async () => {
-        test_utils.tearDownMockFS();
-        test_utils.tearDownMockFSSystem();
     });
 
     it('Nominal test for compareAttributeKeys, 1 new attributes', async () => {
@@ -275,21 +267,21 @@ describe('Test compareAttributeKeys with filesystem', () => {
         }
         await p_set_global();
         let found = await p_get_table(SCHEMA_1_NAME, SCHEMA_1_TABLE_1_NAME);
-        assert.strictEqual(found.attributes.length, 4, 'Expected new attribute in table');
-        assert.strictEqual(global.hdb_schema[SCHEMA_1_NAME][SCHEMA_1_TABLE_1_NAME].attributes.length, 4, 'Expected new attribute in global schema');
+        assert.strictEqual(found.attributes.length, 3, 'Expected new attribute in table');
+        assert.strictEqual(global.hdb_schema[SCHEMA_1_NAME][SCHEMA_1_TABLE_1_NAME].attributes.length, 3, 'Expected new attribute in global schema');
     });
 });
 
-describe('Test compareTableKeys with filesystem', () => {
+describe('Test compareTableKeys with lmdb', () => {
     let connector = undefined;
     let SocketConnector_stub = undefined;
     let AddEventListener_stub = undefined;
     let sandbox = sinon.createSandbox();
     beforeEach(async () => {
         let dog_data = test_utils.deepClone(TEST_DATA_DOG);
-        test_utils.createMockFS(ID_HASH_NAME, SCHEMA_1_NAME, SCHEMA_1_TABLE_1_NAME, dog_data);
-        test_utils.createMockFS(ID_HASH_NAME, SCHEMA_1_NAME, SCHEMA_1_TABLE_2_NAME, dog_data);
-        test_utils.createMockFS(ID_HASH_NAME, SCHEMA_2_NAME, SCHEMA_2_TABLE_1_NAME, dog_data);
+        test_env.push(...await test_utils.createMockDB(ID_HASH_NAME, SCHEMA_1_NAME, SCHEMA_1_TABLE_1_NAME, dog_data));
+        test_env.push(...await test_utils.createMockDB(ID_HASH_NAME, SCHEMA_1_NAME, SCHEMA_1_TABLE_2_NAME, dog_data));
+        test_env.push(...await test_utils.createMockDB(ID_HASH_NAME, SCHEMA_2_NAME, SCHEMA_2_TABLE_1_NAME, dog_data));
 
         SocketConnector_stub = sandbox.stub(SocketConnector.prototype, `init`).resolves(``);
         AddEventListener_stub = sandbox.stub(HDBSocketConnector.prototype, 'addEventListener').resolves(``);
@@ -297,14 +289,9 @@ describe('Test compareTableKeys with filesystem', () => {
 
     });
     afterEach(async () => {
-        test_utils.tearDownMockFS();
-        test_utils.tearDownMockFSSystem();
+        await test_utils.tearDownMockDB(test_env);
+        test_env = [];
         sandbox.restore();
-    });
-
-    after(async () => {
-        test_utils.tearDownMockFS();
-        test_utils.tearDownMockFSSystem();
     });
 
     it(`test compareTableKeys 1 new table.`, async () => {
@@ -383,9 +370,9 @@ describe('Test compareTableKeys with filesystem', () => {
         }
         // get table returns an error string rather than an error :(
         assert.notStrictEqual(found_table,undefined,'Expected table to be found');
-        assert.strictEqual(found_table.attributes.length,3,'Expected 2 attributes in table');
+        assert.strictEqual(found_table.attributes.length,5,'Expected 5 attributes in table');
         assert.notStrictEqual(other_found_table,undefined,'Expected table to be found');
-        assert.strictEqual(other_found_table.attributes.length,3,'Expected 2 attributes in table');
+        assert.strictEqual(other_found_table.attributes.length,5,'Expected 5 attributes in table');
         assert.notStrictEqual(global.hdb_schema[SCHEMA_1_NAME][SCHEMA_1_NEW_TABLE_NAME], undefined, 'Expected new table to be created.');
         assert.notStrictEqual(global.hdb_schema[SCHEMA_1_NAME][SCHEMA_1_OTHER_NEW_TABLE_NAME], undefined, 'Expected new table to be created.');
     });
@@ -425,7 +412,7 @@ describe('Test compareTableKeys with filesystem', () => {
         }
         // get table returns an error string rather than an error :(
         assert.notStrictEqual(found_table,undefined,'Expected table to be found');
-        assert.strictEqual(found_table.attributes.length,3,'Expected 2 attributes in table');
+        assert.strictEqual(found_table.attributes.length,5,'Expected 5 attributes in table');
         assert.notStrictEqual(global.hdb_schema[SCHEMA_1_NAME][SCHEMA_1_NEW_TABLE_NAME], undefined, 'Expected new table to be created.');
     });
     it(`test compareTableKeys bad parameter, expect exception`, async () => {
@@ -467,9 +454,9 @@ describe('test generateOperationFunctionCall', () => {
     let sandbox = sinon.createSandbox();
     beforeEach(async () => {
         let dog_data = test_utils.deepClone(TEST_DATA_DOG);
-        test_utils.createMockFS(ID_HASH_NAME, SCHEMA_1_NAME, SCHEMA_1_TABLE_1_NAME, dog_data);
-        test_utils.createMockFS(ID_HASH_NAME, SCHEMA_1_NAME, SCHEMA_1_TABLE_2_NAME, dog_data);
-        test_utils.createMockFS(ID_HASH_NAME, SCHEMA_2_NAME, SCHEMA_2_TABLE_1_NAME, dog_data);
+        test_env.push(...await test_utils.createMockDB(ID_HASH_NAME, SCHEMA_1_NAME, SCHEMA_1_TABLE_1_NAME, dog_data));
+        test_env.push(...await test_utils.createMockDB(ID_HASH_NAME, SCHEMA_1_NAME, SCHEMA_1_TABLE_2_NAME, dog_data));
+        test_env.push(...await test_utils.createMockDB(ID_HASH_NAME, SCHEMA_2_NAME, SCHEMA_2_TABLE_1_NAME, dog_data));
 
         SocketConnector_stub = sandbox.stub(SocketConnector.prototype, `init`).resolves(``);
         AddEventListener_stub = sandbox.stub(HDBSocketConnector.prototype, 'addEventListener').resolves(``);
@@ -477,14 +464,9 @@ describe('test generateOperationFunctionCall', () => {
 
     });
     afterEach(async () => {
-        test_utils.tearDownMockFS();
-        test_utils.tearDownMockFSSystem();
+        await test_utils.tearDownMockDB(test_env);
+        test_env = [];
         sandbox.restore();
-    });
-
-    after(async () => {
-        test_utils.tearDownMockFS();
-        test_utils.tearDownMockFSSystem();
     });
 
    it('nominal case with schema', () => {

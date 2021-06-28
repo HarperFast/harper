@@ -13,9 +13,9 @@ const lmdb_terms = require('../../../../upgrade/lmdb/nodeLMDB/terms');
 
 const LMDB_TEST_FOLDER_NAME = 'lmdbTest';
 const BACKUP_FOLDER_NAME = 'backup';
-const BASE_TEST_PATH = path.join(test_utils.getMockFSPath(), LMDB_TEST_FOLDER_NAME);
+const BASE_TEST_PATH = path.join(test_utils.getMockTestPath(), LMDB_TEST_FOLDER_NAME);
 const TEST_ENVIRONMENT_NAME = 'test';
-const BACKUP_PATH = path.join(test_utils.getMockFSPath(), BACKUP_FOLDER_NAME);
+const BACKUP_PATH = path.join(test_utils.getMockTestPath(), BACKUP_FOLDER_NAME);
 const BACKUP_TEST_ENV_PATH = path.join(BACKUP_PATH, TEST_ENVIRONMENT_NAME);
 
 const INVALID_BASE_TEST_PATH = '/bad/path/zzz/';
@@ -177,7 +177,7 @@ describe("Test LMDB environmentUtility module", ()=>{
 
         after(async () => {
             await fs.remove(BASE_TEST_PATH);
-            test_utils.tearDownMockFS();
+            await test_utils.tearDownMockDB();
             global.old_lmdb_map = undefined;
         });
 
@@ -224,7 +224,7 @@ describe("Test LMDB environmentUtility module", ()=>{
             lmdb_env_util.closeEnvironment(env);
             await fs.remove(BASE_TEST_PATH);
             await fs.remove(BACKUP_PATH);
-            test_utils.tearDownMockFS();
+            await test_utils.tearDownMockDB();
             global.old_lmdb_map = undefined;
         });
 
@@ -281,7 +281,7 @@ describe("Test LMDB environmentUtility module", ()=>{
         after(async () => {
             //lmdb_env_util.closeEnvironment(env);
             await fs.remove(BASE_TEST_PATH);
-            test_utils.tearDownMockFS();
+            await test_utils.tearDownMockDB();
             global.old_lmdb_map = undefined;
         });
 
@@ -328,7 +328,7 @@ describe("Test LMDB environmentUtility module", ()=>{
         afterEach(async () => {
             lmdb_env_util.closeEnvironment(env);
             await fs.remove(BASE_TEST_PATH);
-            test_utils.tearDownMockFS();
+            await test_utils.tearDownMockDB();
             global.old_lmdb_map = undefined;
         });
 
@@ -460,7 +460,7 @@ describe("Test LMDB environmentUtility module", ()=>{
 
         after(async () => {
             await fs.remove(BASE_TEST_PATH);
-            test_utils.tearDownMockFS();
+            await test_utils.tearDownMockDB();
             global.old_lmdb_map = undefined;
         });
 
@@ -526,7 +526,7 @@ describe("Test LMDB environmentUtility module", ()=>{
             lmdb_env_util.closeEnvironment(env);
             lmdb_env_util.closeEnvironment(env2);
             await fs.remove(BASE_TEST_PATH);
-            test_utils.tearDownMockFS();
+            await test_utils.tearDownMockDB();
             global.old_lmdb_map = undefined;
         });
 
@@ -570,7 +570,7 @@ describe("Test LMDB environmentUtility module", ()=>{
             lmdb_env_util.closeEnvironment(env);
             lmdb_env_util.closeEnvironment(env2);
             await fs.remove(BASE_TEST_PATH);
-            test_utils.tearDownMockFS();
+            await test_utils.tearDownMockDB();
             global.old_lmdb_map = undefined;
         });
 
@@ -603,7 +603,7 @@ describe("Test LMDB environmentUtility module", ()=>{
         after(async () => {
             lmdb_env_util.closeEnvironment(env);
             await fs.remove(BASE_TEST_PATH);
-            test_utils.tearDownMockFS();
+            await test_utils.tearDownMockDB();
             global.old_lmdb_map = undefined;
         });
 
@@ -648,7 +648,7 @@ describe("Test LMDB environmentUtility module", ()=>{
         after(async () => {
             lmdb_env_util.closeEnvironment(env);
             await fs.remove(BASE_TEST_PATH);
-            test_utils.tearDownMockFS();
+            await test_utils.tearDownMockDB();
             global.old_lmdb_map = undefined;
         });
 
@@ -677,7 +677,7 @@ describe("Test LMDB environmentUtility module", ()=>{
         after(async () => {
             lmdb_env_util.closeEnvironment(env);
             await fs.remove(BASE_TEST_PATH);
-            test_utils.tearDownMockFS();
+            await test_utils.tearDownMockDB();
             global.old_lmdb_map = undefined;
         });
 

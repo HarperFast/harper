@@ -181,7 +181,7 @@ async function getRegistrationInfo() {
 
     reg_info_obj.registered = license.enterprise;
     reg_info_obj.version = version.version();
-    reg_info_obj.storage_type = env_utility.getDataStoreType();
+    reg_info_obj.storage_type = terms.STORAGE_TYPES_ENUM.LMDB;
     reg_info_obj.ram_allocation = license.ram_allocation;
     if(isNaN(license.exp_date )){
         reg_info_obj.license_expiration_date = license.enterprise ? license.exp_date : null;

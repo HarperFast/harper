@@ -72,7 +72,7 @@ function validateLicense(license_key, company) {
         valid_date: false,
         valid_machine: false,
         exp_date: null,
-        storage_type: terms.STORAGE_TYPES_ENUM.FILE_SYSTEM,
+        storage_type: terms.STORAGE_TYPES_ENUM.LMDB,
         api_call: terms.LICENSE_VALUES.API_CALL_DEFAULT,
         ram_allocation: terms.RAM_ALLOCATION_ENUM.DEFAULT,
         version: terms.LICENSE_VALUES.VERSION_DEFAULT
@@ -225,7 +225,7 @@ function licenseSearch() {
             log.error(e);
             license_values.api_call = terms.LICENSE_VALUES.API_CALL_DEFAULT;
             license_values.ram_allocation = terms.RAM_ALLOCATION_ENUM.DEFAULT;
-            license_values.storage_type = terms.STORAGE_TYPES_ENUM.FILE_SYSTEM;
+            license_values.storage_type = terms.STORAGE_TYPES_ENUM.LMDB;
             license_values.enterprise = false;
         }
     }

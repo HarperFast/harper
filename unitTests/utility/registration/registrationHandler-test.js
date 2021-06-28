@@ -132,7 +132,7 @@ describe(`Test getRegistrationInfo`,function() {
     let log_spy;
     let test_license = {
         enterprise: true,
-        storage_type: 'fs',
+        storage_type: 'lmdb',
         exp_date: '2021-06-10',
         api_call: 1000,
         ram_allocation: 12345

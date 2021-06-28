@@ -172,7 +172,8 @@ describe('Test kickOffEnterprise', function () {
         global.hdb_users = GLOBAL_USERS;
 
         // stub searchByValue to return 4 default cluster nodes
-        search_nodes_stub = sandbox.stub(search, 'searchByValue').yields('', SEARCH_RESULT_OBJECT);
+        search_nodes_stub = sandbox.stub().resolves(SEARCH_RESULT_OBJECT);
+        let p_search_by_value_rw = enterprise_initialization.__set__('p_search_by_value', search_nodes_stub);
         get_cluster_user_stub = sandbox.stub(hdb_utils, 'getClusterUser').returns(CLUSTER_USER_INFO);
 
         env.append('CLUSTERING', 'TRUE');
@@ -188,10 +189,12 @@ describe('Test kickOffEnterprise', function () {
         });
         await enterprise_initialization.kickOffEnterprise();
         assert.equal(fork_stub.called, true, 'Child fork should have been called');
+        p_search_by_value_rw();
         revert();
     });
     it('No node data in hdb_nodes table, expect cluster server initiated', async function () {
-        search_nodes_stub = sandbox.stub(search, 'searchByValue').yields('', []);
+        search_nodes_stub = sandbox.stub().resolves([]);
+        let p_search_by_value_rw = enterprise_initialization.__set__('p_search_by_value', search_nodes_stub);
         get_cluster_user_stub = sandbox.stub(hdb_utils, 'getClusterUser').returns(CLUSTER_USER_INFO);
 
         env.append('CLUSTERING', 'TRUE');
@@ -208,6 +211,7 @@ describe('Test kickOffEnterprise', function () {
 
         await enterprise_initialization.kickOffEnterprise();
         assert.equal(fork_stub.called, true, 'Child fork should have been called');
+        p_search_by_value_rw();
         revert();
     });
     it('No cluster config in properties, expect no cluster node initiated', async function () {
@@ -221,7 +225,9 @@ describe('Test kickOffEnterprise', function () {
         assert.equal(null, global.cluster_server, 'global.cluster_server should not be set');
     });
     it('fork throws exception, expect clustering false', async function () {
-        search_nodes_stub = sandbox.stub(search, 'searchByValue').yields('', SEARCH_RESULT_OBJECT);
+        search_nodes_stub = sandbox.stub().resolves(SEARCH_RESULT_OBJECT);
+        let p_search_by_value_rw = enterprise_initialization.__set__('p_search_by_value', search_nodes_stub);
+
         env.append('CLUSTERING', 'TRUE');
         env.append('CLUSTERING_PORT', '1115');
         env.append('NODE_NAME', 'node_1');
@@ -238,6 +244,7 @@ describe('Test kickOffEnterprise', function () {
         enterprise_initialization.__set__('fork', fork_stub);
         await enterprise_initialization.kickOffEnterprise();
         assert.equal(fork_stub.called, true, 'Fork should have been called');
+        p_search_by_value_rw();
         revert();
     });
 });

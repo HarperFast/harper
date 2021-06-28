@@ -8,6 +8,7 @@ const {insertRecords} = require('../../../utility/lmdb/writeUtility');
 const lmdb_common = require('../../../utility/lmdb/commonUtility');
 const lmdb_terms = require('../../../utility/lmdb/terms');
 const hdb_common = require('../../../utility/common_utils');
+const hdb_terms = require('../../../utility/hdbTerms');
 const { STORAGE_TYPES_ENUM } = require('../../../utility/hdbTerms');
 const logger = require('../../../utility/logging/harper_logger');
 const hdb_util = require('../../../utility/common_utils');
@@ -16,6 +17,7 @@ const path = require('path');
 const progress = require('cli-progress');
 const assert = require('assert');
 const pino = require('pino');
+const minimist = require('minimist');
 const env_mngr = require('../../../utility/environment/environmentManager');
 if(!env_mngr.isInitialized()) {
     env_mngr.initSync();
@@ -29,7 +31,7 @@ let TMP_PATH;
 let TRANSACTIONS_PATH;
 let pino_logger;
 let error_occurred = false;
-
+let data_store_type = undefined;
 
 /**
  * Used by upgrade to create new lmdb-store indices from existing node-lmdb indices.
@@ -40,7 +42,7 @@ let error_occurred = false;
  */
 async function reindexUpgrade() {
     //we need to check to see if the instance is using FS instead of LMDB - if so, we can skip the reindex step
-    if (env_mngr.getDataStoreType() === STORAGE_TYPES_ENUM.FILE_SYSTEM) {
+    if (getDataStoreType() === STORAGE_TYPES_ENUM.FILE_SYSTEM) {
         console.info('\n\nHDB using FS datastore - no need to run LMDB reindexing');
         return 'Reindexing skipped for FS datastore instance of HDB';
     }
@@ -376,4 +378,45 @@ function getHashDBI(dbis){
         }
     }
     return hash_attribute;
+}
+
+/**
+ * evaluates what data store type HDB is using, default is LMDB.  first will check the system.user directory, chosen because it will always hold data post install.  if it has a file named data.mdb we are lmdb, otherwise fs.
+ * if there is no user folder then we check if there is a data_store argument from the command line, used for install.
+ */
+function getDataStoreType(){
+    if(data_store_type !== undefined){
+        return data_store_type;
+    }
+
+    //set lmdb as the default
+    data_store_type = hdb_terms.STORAGE_TYPES_ENUM.LMDB;
+    let readdir_results = undefined;
+    try {
+        let user_path = path.join(env_mngr.getHdbBasePath(), hdb_terms.SCHEMA_DIR_NAME, hdb_terms.SYSTEM_SCHEMA_NAME, hdb_terms.SYSTEM_TABLE_NAMES.USER_TABLE_NAME);
+        readdir_results = fs.readdirSync(user_path);
+        let is_lmdb = false;
+        for(let x = 0; x < readdir_results.length; x++){
+            //LMDB will have a file called data.mdb
+            if(readdir_results[x] === 'data.mdb'){
+                is_lmdb = true;
+                break;
+            }
+        }
+
+        if(is_lmdb === true){
+            data_store_type = hdb_terms.STORAGE_TYPES_ENUM.LMDB;
+        }
+
+
+    }catch(e){
+        //if there is no user folder we check if the command line is stating file system
+        // eslint-disable-next-line no-magic-numbers
+        const ARGS = minimist(process.argv.slice(2));
+        if(ARGS['data_store'] === hdb_terms.STORAGE_TYPES_ENUM.FILE_SYSTEM){
+            data_store_type = hdb_terms.STORAGE_TYPES_ENUM.FILE_SYSTEM;
+        }
+    }
+
+    return data_store_type;
 }

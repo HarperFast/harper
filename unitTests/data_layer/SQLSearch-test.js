@@ -5,10 +5,10 @@ test_utils.preTestPrep();
 
 const sql_test_utils = require('../sqlTestUtils');
 const {
-    createMockFS,
+    createMockDB,
     deepClone,
     mochaAsyncWrapper,
-    tearDownMockFS,
+    tearDownMockDB,
     sortAsc,
     sortDesc
 } = test_utils;
@@ -70,6 +70,8 @@ let _finalSQL_spy;
 let _buildSQL_spy;
 let error_logger_spy;
 
+let test_env = [];
+
 function setClassMethodSpies() {
     sandbox = sinon.createSandbox();
     _getColumns_spy = sandbox.spy(SQLSearch.prototype, '_getColumns');
@@ -88,27 +90,27 @@ function setClassMethodSpies() {
     error_logger_spy = sandbox.spy(log, 'error');
 }
 
-function setupBasicTestData() {
+async function setupBasicTestData() {
     const test_data_dog = deepClone(TEST_DATA_DOG);
     const test_data_cat = deepClone(TEST_DATA_CAT);
     test_data_cat[0]['null_attr'] = null;
 
-    createMockFS(HASH_ATTRIBUTE, TEST_SCHEMA, TEST_TABLE_DOG, test_data_dog);
-    createMockFS(HASH_ATTRIBUTE, TEST_SCHEMA, TEST_TABLE_CAT, test_data_cat);
-    createMockFS(HASH_ATTRIBUTE, TEST_SCHEMA, TEST_TABLE_LONGTEXT, deepClone(TEST_DATA_LONGTEXT));
-    createMockFS("all", "call", "aggr", deepClone(TEST_DATA_AGGR));
+    test_env.push(...await createMockDB(HASH_ATTRIBUTE, TEST_SCHEMA, TEST_TABLE_DOG, test_data_dog));
+    test_env.push(...await createMockDB(HASH_ATTRIBUTE, TEST_SCHEMA, TEST_TABLE_CAT, test_data_cat));
+    test_env.push(...await createMockDB(HASH_ATTRIBUTE, TEST_SCHEMA, TEST_TABLE_LONGTEXT, deepClone(TEST_DATA_LONGTEXT)));
+    test_env.push(...await createMockDB("all", "call", "aggr", deepClone(TEST_DATA_AGGR)));
 }
 
-function setupCSVSqlData() {
+async function setupCSVSqlData() {
     const sql_csv_data = getFormattedIntegrationTestCsvData();
 
-    sql_csv_data.forEach(({ hash, schema, table, data }) => {
+    for (const {hash, schema, table, data} of sql_csv_data) {
         const csv_data = deepClone(data);
         const attrs = Object.keys(data[0]);
         const test_attr = attrs[0] === hash ? attrs[1] : attrs[0];
         sql_integration_data[table] = { hash, schema, table, attrs, test_attr, data: csv_data };
-        createMockFS(hash, schema, table, data);
-    });
+        test_env.push(...await createMockDB(hash, schema, table, data));
+    }
 }
 
 function setupTestInstance(sql_statement, set_null_attr) {
@@ -134,9 +136,8 @@ function sortTestRows(test_results) {
 describe('Test FileSystem Class',function() {
     this.timeout(0);
 
-    before(function() {
-        tearDownMockFS();
-        setupBasicTestData();
+    before(async function() {
+        await setupBasicTestData();
         setClassMethodSpies();
     });
 
@@ -145,8 +146,9 @@ describe('Test FileSystem Class',function() {
         sandbox.resetHistory();
     });
 
-    after(function() {
-        tearDownMockFS();
+    after(async function() {
+        await tearDownMockDB(test_env);
+        test_env = [];
         sandbox.restore();
     });
 
@@ -255,8 +257,8 @@ describe('Test FileSystem Class',function() {
     // Note: These SELECT statements scenarios were developed from the SQL integration tests scenarios
     describe('search() - testing variety of SQL statements',function() {
 
-        before(function() {
-            setupCSVSqlData();
+        before(async function() {
+            await setupCSVSqlData();
         });
 
         it('Basic select by hash returns requested attribute values for hash', mochaAsyncWrapper(async function() {
@@ -1276,7 +1278,7 @@ describe('Test FileSystem Class',function() {
             const test_data_result = test_instance.data[cat_schema_table_id()].__merged_data;
 
             expect(test_instance.fetch_attributes.length).to.equal(3);
-            expect(test_data_result).to.deep.equal(expected_result_name);
+            expect(test_data_result).to.eql(expected_result_name);
             expect(_getDataByValue_spy.calledThrice).to.equal(true);
         }));
     });

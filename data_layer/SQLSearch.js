@@ -3,7 +3,7 @@
 /**
  * SQLSearch.js
  * This class is used to receive the alasql generated AST from a SQL SELECT,
- * process the HarperDB file system and return results by passing the raw values into the alasql SQL parser
+ * process and return results by passing the raw values into the alasql SQL parser
  */
 
 const _ = require('lodash');
@@ -48,7 +48,7 @@ class SQLSearch {
         this.comparator_search_values = {};
         this.tables = [];
 
-        //holds the data from the file system to be evaluated by the sql processor
+        //holds the data to be evaluated by the sql processor
         this.data = {};
 
         this.has_aggregator = false;
@@ -812,7 +812,7 @@ class SQLSearch {
             });
         }
 
-        //record the fetched attributes so we can compare to what else needs to be grabbed from them file system
+        //record the fetched attributes so we can compare to what else needs to be grabbed
         let hash_attributes = [];
         let existing_attributes = {};
         tables.forEach(table => {

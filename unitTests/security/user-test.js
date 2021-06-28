@@ -651,6 +651,8 @@ describe('Test user.js', () => {
         });
 
         it('Nominal path, drop a user', async function () {
+            const set_users_to_global_stub = sandbox.stub().resolves();
+            const set_users_to_global_rw = user.__set__('setUsersToGlobal', set_users_to_global_stub);
             // We are not testing these other functions, so we stub them.
             let err = undefined;
             let res;
@@ -659,6 +661,8 @@ describe('Test user.js', () => {
             } catch(error) {
                 err = error;
             }
+
+            set_users_to_global_rw();
             assert.equal(res, DROP_USER_RESULT, 'Expected success result not returned.');
             assert.equal(signal_spy.called, true);
         });

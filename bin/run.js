@@ -147,7 +147,7 @@ function writeLicenseFromVars(){
  * @returns {Promise<void>}
  */
 async function checkTransactionLogEnvironmentsExist(){
-    if(env.getHdbBasePath() !== undefined && env.getDataStoreType() === terms.STORAGE_TYPES_ENUM.LMDB){
+    if(env.getHdbBasePath() !== undefined){
         final_logger.info('Checking Transaction Environments exist');
 
         for (const table_name of Object.keys(SYSTEM_SCHEMA)) {

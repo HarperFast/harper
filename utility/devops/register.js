@@ -53,7 +53,7 @@ async function register(){
         let api_call = ARGS.api_call === undefined ? terms.LICENSE_VALUES.API_CALL_DEFAULT : ARGS.api_call;
         //NOTE: storage type is not currently managed via the license but related code is staying in place for potential
         // later use if/when other storage mechanisms are built into hdb bridge
-        let storage_type = ARGS.storage_type === undefined ? terms.STORAGE_TYPES_ENUM.FILE_SYSTEM : ARGS.storage_type;
+        let storage_type = terms.STORAGE_TYPES_ENUM.LMDB;
         let ram_allocation = ARGS.ram_allocation === undefined ? terms.RAM_ALLOCATION_ENUM.DEVELOPMENT : ARGS.ram_allocation;
         if(!Number.isInteger(api_call)){
             throw new Error('argument api_call must be an integer');
