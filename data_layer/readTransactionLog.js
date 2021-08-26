@@ -25,12 +25,6 @@ async function readTransactionLog(read_transaction_log_object){
         throw new Error(HDB_ERROR_MSGS.TABLE_REQUIRED_ERR);
     }
 
-    //make sure schema/table exist
-    let invalid_schema_table_msg = hdb_utils.checkSchemaTableExist(read_transaction_log_object.schema, read_transaction_log_object.table);
-    if (invalid_schema_table_msg) {
-        throw new Error(invalid_schema_table_msg);
-    }
-
     if(!hdb_utils.isEmpty(read_transaction_log_object.search_type) && SEARCH_TYPES.indexOf(read_transaction_log_object.search_type) < 0){
         throw new Error(`Invalid search_type '${read_transaction_log_object.search_type}'`);
     }

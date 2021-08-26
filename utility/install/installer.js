@@ -36,6 +36,7 @@ let wizard_result;
 let check_install_path = false;
 let install_logger;
 const KEY_PAIR_BITS = 2048;
+const UPGRADE_MSG = "Please use `harperdb upgrade` to update your existing instance of HDB. Exiting install...";
 
 env.initSync();
 
@@ -179,64 +180,72 @@ function checkInstall(callback) {
 }
 
 function promptForReinstall(callback) {
-    install_logger.info('Previous install detected, asking for reinstall.');
-    let reinstall_schema = {
-        properties: {
-            REINSTALL: {
-                description: colors.red(`It appears HarperDB version ${version.version()} is already installed.  Enter 'y/yes'to reinstall. (yes/no)`),
-                pattern: /y(es)?$|n(o)?$/,
-                message: "Must respond 'yes' or 'no'",
-                default: 'no',
-                required: true
-            }
+    hdbInfoController.getVersionUpdateInfo().then((res) => {
+
+        // Check
+        if (res !== undefined) {
+            console.log(`${os.EOL}` + colors.magenta.bold(UPGRADE_MSG));
+            process.exit(0);
         }
-    };
-    let overwrite_schema = {
-        properties: {
-            KEEP_DATA: {
-                description: `${os.EOL}` + colors.red.bold('Would you like to keep your existing data in HDB?  (yes/no)'),
-                pattern: /y(es)?$|n(o)?$/,
-                message: "Must respond 'yes' or 'no'",
-                required: true
-            }
-        }
-    };
 
-    prompt.message = '';
-    prompt.get(reinstall_schema, function (err, reinstall_result) {
-        if (err) { return callback(err); }
-
-        if (reinstall_result.REINSTALL === 'yes' || reinstall_result.REINSTALL === 'y') {
-            check_install_path = true;
-            prompt.get(overwrite_schema, function (prompt_err, overwrite_result) {
-                if (overwrite_result.KEEP_DATA === 'no' || overwrite_result.KEEP_DATA === 'n') {
-                    // don't keep data, tear it all out.
-                    fs.remove(env.get('HDB_ROOT'), function (fs_remove_err) {
-                        if (fs_remove_err) {
-                            install_logger.error(fs_remove_err);
-                            console.log('There was a problem removing the existing installation.  Please check the install log for details.');
-                            return callback(fs_remove_err);
-                        }
-
-                        fs.unlink(env.BOOT_PROPS_FILE_PATH, function (fs_unlink_err) {
-                            if (fs_unlink_err) {
-                                install_logger.error(fs_unlink_err);
-                                console.log('There was a problem removing the existing installation.  Please check the install log for details.');
-                                return callback(fs_unlink_err);
-                            }
-                            return callback(null, true);
-                        });
-                    });
-                } else {
-                    // keep data - this means they should be using the upgrade command
-                    const upgrade_msg = "Please use `harperdb upgrade` to update your existing instance of HDB. Exiting install...";
-                    console.log(`${os.EOL}` + colors.magenta.bold(upgrade_msg));
-                    process.exit(0);
+        install_logger.info('Previous install detected, asking for reinstall.');
+        let reinstall_schema = {
+            properties: {
+                REINSTALL: {
+                    description: colors.red(`It appears HarperDB version ${version.version()} is already installed.  Enter 'y/yes'to reinstall. (yes/no)`),
+                    pattern: /y(es)?$|n(o)?$/,
+                    message: "Must respond 'yes' or 'no'",
+                    default: 'no',
+                    required: true
                 }
-            });
-        } else {
-            return callback(null, false);
-        }
+            }
+        };
+        let overwrite_schema = {
+            properties: {
+                KEEP_DATA: {
+                    description: `${os.EOL}` + colors.red.bold('Would you like to keep your existing data in HDB?  (yes/no)'),
+                    pattern: /y(es)?$|n(o)?$/,
+                    message: "Must respond 'yes' or 'no'",
+                    required: true
+                }
+            }
+        };
+
+        prompt.message = '';
+        prompt.get(reinstall_schema, function (err, reinstall_result) {
+            if (err) { return callback(err); }
+
+            if (reinstall_result.REINSTALL === 'yes' || reinstall_result.REINSTALL === 'y') {
+                check_install_path = true;
+                prompt.get(overwrite_schema, function (prompt_err, overwrite_result) {
+                    if (overwrite_result.KEEP_DATA === 'no' || overwrite_result.KEEP_DATA === 'n') {
+                        // don't keep data, tear it all out.
+                        fs.remove(env.get('HDB_ROOT'), function (fs_remove_err) {
+                            if (fs_remove_err) {
+                                install_logger.error(fs_remove_err);
+                                console.log('There was a problem removing the existing installation.  Please check the install log for details.');
+                                return callback(fs_remove_err);
+                            }
+
+                            fs.unlink(env.BOOT_PROPS_FILE_PATH, function (fs_unlink_err) {
+                                if (fs_unlink_err) {
+                                    install_logger.error(fs_unlink_err);
+                                    console.log('There was a problem removing the existing installation.  Please check the install log for details.');
+                                    return callback(fs_unlink_err);
+                                }
+                                return callback(null, true);
+                            });
+                        });
+                    } else {
+                        // keep data - this means they should be using the upgrade command
+                        console.log(`${os.EOL}` + colors.magenta.bold(UPGRADE_MSG));
+                        process.exit(0);
+                    }
+                });
+            } else {
+                return callback(null, false);
+            }
+        });
     });
 }
 
@@ -312,8 +321,8 @@ function wizard(err, callback) {
             }
         }
     };
-
-    const ARGS = comm.assignCMDENVVariables(['CLUSTERING']);
+    //Assign any results from the install wizard to ARGS (which holds results from command line, environment)
+    let ARGS = comm.assignCMDENVVariables(['CLUSTERING']);
     if(ARGS.CLUSTERING === undefined){
         delete install_schema.properties.NODE_NAME;
         delete install_schema.properties.CLUSTERING_PASSWORD;
@@ -367,8 +376,8 @@ function createSuperUser(callback){
     };
 
     let user = {
-        username: wizard_result.HDB_ADMIN_USERNAME,
-        password: wizard_result.HDB_ADMIN_PASSWORD,
+        username: wizard_result.HDB_ADMIN_USERNAME.toString(),
+        password: wizard_result.HDB_ADMIN_PASSWORD.toString(),
         active: true
     };
 
@@ -393,8 +402,8 @@ function createClusterUser(callback){
     let user = undefined;
     if(wizard_result.CLUSTERING_USER !== undefined && wizard_result.CLUSTERING_PASSWORD !== undefined){
         user = {
-            username: wizard_result.CLUSTERING_USER,
-            password: wizard_result.CLUSTERING_PASSWORD,
+            username: wizard_result.CLUSTERING_USER.toString(),
+            password: wizard_result.CLUSTERING_PASSWORD.toString(),
             active: true
         };
     }
@@ -465,14 +474,31 @@ function createSettingsFile(mount_status, callback) {
         const ARGS = comm.assignCMDENVVariables(Object.keys(hdb_terms.HDB_SETTINGS_NAMES_REVERSE_LOOKUP));
 
         let num_cores = 4;
-        if(Number.isInteger(ARGS[HDB_SETTINGS_NAMES.MAX_HDB_PROCESSES])){
+        let os_cpus = undefined;
+        if(ARGS[HDB_SETTINGS_NAMES.MAX_HDB_PROCESSES] && !isNaN(ARGS[HDB_SETTINGS_NAMES.MAX_HDB_PROCESSES])
+            && Number.isInteger(parseFloat(ARGS[HDB_SETTINGS_NAMES.MAX_HDB_PROCESSES]))){
             num_cores = ARGS[HDB_SETTINGS_NAMES.MAX_HDB_PROCESSES];
         } else {
             try {
-                num_cores = os.cpus().length;
-                install_logger.info(`Detected ${num_cores} on this machine, defaulting MAX_HDB_PROCESSES to that.  This can be changed later in the settings.js file.`);
+                os_cpus = os.cpus().length;
+                num_cores = os_cpus;
+                install_logger.info(`Detected ${os_cpus} on this machine, defaulting MAX_HDB_PROCESSES to that.  This can be changed later in the settings.js file.`);
             } catch (cpus_err) {
                 //No-op, should only get here in the case of android.  Defaulted to 4.
+            }
+        }
+
+        let num_cf_processes;
+        if(ARGS[HDB_SETTINGS_NAMES.MAX_CUSTOM_FUNCTION_PROCESSES] && !isNaN(ARGS[HDB_SETTINGS_NAMES.MAX_CUSTOM_FUNCTION_PROCESSES])
+        && Number.isInteger(parseFloat(ARGS[HDB_SETTINGS_NAMES.MAX_CUSTOM_FUNCTION_PROCESSES]))){
+            num_cf_processes = ARGS[HDB_SETTINGS_NAMES.MAX_CUSTOM_FUNCTION_PROCESSES];
+        } else {
+            try {
+                num_cf_processes = os_cpus === undefined ? os.cpus().length : os_cpus;
+                install_logger.info(`Detected ${os_cpus} on this machine, defaulting MAX_CUSTOM_FUNCTION_PROCESSES to that.  This can be changed later in the settings.js file.`);
+            } catch (cpus_err) {
+                //No-op, should only get here in the case of android.  Defaulted to 4.
+                num_cf_processes = num_cores;
             }
         }
 
@@ -480,7 +506,8 @@ function createSettingsFile(mount_status, callback) {
         if(!log_path){
             log_path = `${wizard_result.HDB_ROOT}/${HDB_SETTINGS_DEFAULT.LOG_PATH}`;
         }
-
+        //set any
+        Object.assign(ARGS, wizard_result);
         let hdb_props_value = `   ;Settings for the HarperDB process.\n` +
             `\n` +
             `   ;The directory selected during install where the database files reside.\n` +
@@ -549,7 +576,9 @@ function createSettingsFile(mount_status, callback) {
             `   ;The path to the folder containing HarperDB custom function files.\n` +
             `${HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY} = ${wizard_result.HDB_ROOT}/custom_functions\n` +
             `   ;Set the max number of processes HarperDB will start for the Custom Functions server\n` +
-            `${HDB_SETTINGS_NAMES.MAX_CUSTOM_FUNCTION_PROCESSES} = ${num_cores}\n`
+            `${HDB_SETTINGS_NAMES.MAX_CUSTOM_FUNCTION_PROCESSES} = ${num_cf_processes}\n` +
+            `   ;Set the max number of processes HarperDB will start for the Clustering Server\n` +
+            `${HDB_SETTINGS_NAMES.MAX_CLUSTERING_PROCESSES} = ${generateSettingsValue(ARGS, HDB_SETTINGS_NAMES.MAX_CLUSTERING_PROCESSES)}\n`
         ;
 
         install_logger.info('info', `hdb_props_value ${JSON.stringify(hdb_props_value)}`);

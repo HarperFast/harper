@@ -11,7 +11,11 @@ const CERTIFICATE = env.get(PROPS_CERT_KEY);
 
 const log = require('../../utility/logging/harper_logger');
 const PORT = env.get('CLUSTERING_PORT');
-const DEFAULT_PORT = 12345;
+const DEFAULT_PORT = terms.HDB_SETTINGS_DEFAULT_VALUES.CLUSTERING_PORT;
+let CLUSTER_PROCESSES = env.get(terms.HDB_SETTINGS_NAMES.MAX_CLUSTERING_PROCESSES);
+if(!CLUSTER_PROCESSES || isNaN(CLUSTER_PROCESSES)){
+    CLUSTER_PROCESSES = terms.HDB_SETTINGS_DEFAULT_VALUES.MAX_CLUSTERING_PROCESSES;
+}
 
 //initializes a new socket cluster all options can be seen here: https://socketcluster.io/#!/docs/api-socketcluster
 let socketCluster = undefined;
@@ -19,7 +23,7 @@ try {
     log.trace('Starting Cluster Server');
     socketCluster = new SocketCluster({
         // Number of worker processes, this will be config based
-        workers: 1,
+        workers: CLUSTER_PROCESSES,
 
         // Number of broker processes
         brokers: 1,
@@ -196,7 +200,7 @@ function workerClusterExitHandler(worker_cluster_info){
  */
 function brokerStartHandler(broker_info){
     log.trace('broker start', broker_info);
-    log.notify('The message broker has started.');
+    log.info('The clustering message broker has started.');
 }
 
 /**
@@ -205,7 +209,7 @@ function brokerStartHandler(broker_info){
  * @param broker_info
  */
 function brokerExitHandler(broker_info){
-    log.notify('The message broker has stopped.');
+    log.info('The clustering message broker has stopped.');
 }
 
 /**

@@ -47,7 +47,7 @@ function updateSettingsFile_3_1_0() {
         `${HDB_SETTINGS_NAMES.SERVER_KEEP_ALIVE_TIMEOUT_KEY} = ${getOldPropsValue(HDB_SETTINGS_NAMES.SERVER_KEEP_ALIVE_TIMEOUT_KEY, old_hdb_props, true)}\n` +
         `   ;Limit the amount of time the parser will wait to receive the complete HTTP headers..  Defaults to 60,000 ms (1 minute).\n` +
         `${HDB_SETTINGS_NAMES.SERVER_HEADERS_TIMEOUT_KEY} = ${getOldPropsValue(HDB_SETTINGS_NAMES.SERVER_HEADERS_TIMEOUT_KEY, old_hdb_props, true)}\n` +
-        `   ;Define whether to log to file or not.` +
+        `   ;Define whether to log to file or not.\n` +
         `${HDB_SETTINGS_NAMES.LOG_TO_FILE} = ${HDB_SETTINGS_DEFAULT_VALUES.LOG_TO_FILE}\n` +
         `   ;Define whether to log to stdout/stderr or not. NOTE HarperDB must run in foreground in order to receive the std stream from HarperDB.\n` +
         `${HDB_SETTINGS_NAMES.LOG_TO_STDSTREAMS} = ${HDB_SETTINGS_DEFAULT_VALUES.LOG_TO_STDSTREAMS}\n` +

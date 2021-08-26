@@ -33,6 +33,7 @@ class AssignToHdbChildWorkerRule extends RuleIF {
                 req.data.schema = target[0];
                 req.data.table = target[1];
             }
+
             if(!worker.hdb_workers || worker.hdb_workers.length === 0) {
                 log.info('No hdbChild workers are stored. Cant send this off');
                 return false;

@@ -1,3 +1,8 @@
+'use strict';
+
+const uuid = require('uuid');
+const p_event = require('p-event');
+
 const insert = require('../../data_layer/insert');
 const node_validator = require('../../validation/nodeValidator');
 const node_subscription_validator = require('../../validation/nodeSubscriptionValidator');
@@ -7,10 +12,10 @@ const util = require('util');
 const del = require('../../data_layer/delete');
 const terms = require('../../utility/hdbTerms');
 const env_mgr = require('../../utility/environment/environmentManager');
+env_mgr.initSync();
 const os = require('os');
 const configure_validator = require('../../validation/clustering/configureValidator');
 const auth = require('../../security/auth');
-const cluster_status_event = require('../../events/ClusterStatusEmitter');
 const child_process = require('child_process');
 const path = require('path');
 const InsertObject = require('../../data_layer/DataLayerObjects').InsertObject;
@@ -29,9 +34,7 @@ const p_search_by_hash = util.promisify(search.searchByHash);
 const iface = os.networkInterfaces();
 const addresses = [];
 
-const STATUS_TIMEOUT_MS = 10000;
 const DUPLICATE_ERR_MSG = 'Cannot add a node that matches the hosts clustering config.';
-const TIMEOUT_ERR_MSG = 'Timeout trying to get cluster status.';
 const SUBSCRIPTIONS_MUST_BE_ARRAY = 'add_node subscriptions must be an array';
 
 for (let k in iface) {
@@ -42,6 +45,14 @@ for (let k in iface) {
         }
     }
 }
+
+let CLUSTER_PROCESSES = env_mgr.get(terms.HDB_SETTINGS_NAMES.MAX_CLUSTERING_PROCESSES);
+if(!CLUSTER_PROCESSES || isNaN(CLUSTER_PROCESSES)){
+    CLUSTER_PROCESSES = terms.HDB_SETTINGS_DEFAULT_VALUES.MAX_CLUSTERING_PROCESSES;
+}
+//we add 1 as we need to get responses from the cluster workers & the clustering connector process
+const STATUS_CALL_COUNT = CLUSTER_PROCESSES + 1;
+const STATUS_CALL_TIMEOUT = 5000;
 
 /**
  *
@@ -347,32 +358,52 @@ async function clusterStatus(cluster_status_json) {
             log.error(msg);
             return msg;
         }
-        let cluster_status_msg = hdb_utils.getClusterMessage(terms.CLUSTERING_MESSAGE_TYPES.GET_CLUSTER_STATUS);
-        if(!cluster_status_msg) {
-            log.error('Error building a cluster status message');
-            return;
-        }
-        cluster_status_msg.requesting_hdb_worker_id = process.pid;
-        cluster_status_msg.requestor_channel = global.hdb_socket_client.socket.id;
-        // Don't set originator so the message will be delivered to the worker rather than swallowed.
-        hdb_utils.sendTransactionToSocketCluster(cluster_status_msg.requestor_channel, cluster_status_msg, null);
-        // If we have more than 1 process, we need to get the status from the parent process which has that info stored
-        // in global.  We subscribe to an event that parent will emit once it has gathered the data.  We want to build
-        // in a timeout in case the event never comes.
-        let timeout_promise = hdb_utils.timeoutPromise(STATUS_TIMEOUT_MS, TIMEOUT_ERR_MSG);
-        let event_promise = hdb_utils.createEventPromise(cluster_status_event.EVENT_NAME, cluster_status_event.clusterEmitter, timeout_promise);
-        let result = await Promise.race([event_promise, timeout_promise.promise]);
-        log.trace(`cluster status result: ${util.inspect(result)}`);
+
+        response.status = {
+            outbound_connections: [],
+            inbound_connections:[]
+        };
+
+        //create a unique id for the cluster status request
+        let request_id = uuid.v4();
+        //emit the request via ipc, this will get picked up by clustering server
+        global.hdb_ipc.emitToServer({type: terms.IPC_EVENT_TYPES.CLUSTER_STATUS_REQUEST, message: {id: request_id}});
+
+        let status_results;
         try {
-            delete result['hdb_header'];
-            delete result['__originator'];
-            delete result['requestor_channel'];
-            delete result['channel'];
-            delete result['cluster_status_request_id'];
-        } catch(err) {
-            //no-op
+            //observe the response event for the expected number of responses.
+            status_results = await p_event.multiple(global.hdb_ipc.ipc.of.hdb_ipc_server, terms.IPC_EVENT_TYPES.CLUSTER_STATUS_RESPONSE + request_id, {
+                resolveImmediately: false,
+                count: STATUS_CALL_COUNT,
+                timeout: STATUS_CALL_TIMEOUT
+            });
+            //remove the ipc handler
+            global.hdb_ipc.ipc.of.hdb_ipc_server.off(terms.IPC_EVENT_TYPES.CLUSTER_STATUS_RESPONSE + request_id);
+        }catch(e){
+            //remove the ipc handler
+            global.hdb_ipc.ipc.of.hdb_ipc_server.off(terms.IPC_EVENT_TYPES.CLUSTER_STATUS_RESPONSE + request_id);
+            let msg = `Unable to fetch cluster status due to: ${e.message}`;
+            log.error(msg);
+            return msg;
         }
-        response["status"] = result;
+
+        //iterate & coalesce status results;
+        if(Array.isArray(status_results) && status_results.length > 0){
+            for(let x = 0, length = status_results.length; x < length; x++){
+                let result = status_results[x].message;
+                if(Array.isArray(result.outbound_connections)){
+                    for(let y = 0, len = result.outbound_connections.length; y < len; y++){
+                        response.status.outbound_connections.push(result.outbound_connections[y]);
+                    }
+                }
+
+                if(Array.isArray(result.inbound_connections)){
+                    for(let y = 0, len = result.inbound_connections.length; y < len; y++){
+                        response.status.inbound_connections.push(result.inbound_connections[y]);
+                    }
+                }
+            }
+        }
     } catch (err) {
         log.error(`Got an error getting cluster status ${err}`);
     }

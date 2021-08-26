@@ -48,9 +48,9 @@ class IPCClient {
         this.ipc.of[this.server_name].on(
             'error',
             (error) => {
-                if (error.code === 'ECONNREFUSED') hdb_logger.error('Error connecting to HDB IPC server. Confirm that the server is running.');
-                hdb_logger.error(`Error with IPC client ${this.ipc.config.id}`);
-                hdb_logger.error(error);
+                if (error.code === 'ECONNREFUSED') hdb_logger.warn('Error connecting to HDB IPC server. Confirm that the server is running.');
+                hdb_logger.warn(`Error with IPC client ${this.ipc.config.id}`);
+                hdb_logger.warn(error);
             }
         );
 
@@ -75,15 +75,9 @@ class IPCClient {
             throw new Error(IPC_ERRORS.MISSING_MSG);
         }
 
-        const event_type = data.type;
         hdb_logger.trace(`IPC client ${this.ipc.config.id} emitting ${JSON.stringify(data)}`);
 
-        if (hdb_terms.IPC_EVENT_TYPES[event_type.toUpperCase()]) {
-            this.ipc.of[this.server_name].emit('message', data);
-        } else {
-            hdb_logger.warn(IPC_ERRORS.INVALID_EVENT(event_type));
-            throw new Error(IPC_ERRORS.INVALID_EVENT(event_type));
-        }
+        this.ipc.of[this.server_name].emit('message', data);
     }
 }
 

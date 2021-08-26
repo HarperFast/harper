@@ -161,8 +161,8 @@ function getOperationFunction(json){
     if (OPERATION_FUNCTION_MAP.has(json.operation)){
         return OPERATION_FUNCTION_MAP.get(json.operation);
     }
-
-    throw handleHDBError(new Error(), hdb_errors.HDB_ERROR_MSGS.OP_NOT_FOUND(json.operation), hdb_errors.HTTP_STATUS_CODES.BAD_REQUEST);
+    harper_logger.error(json);
+    throw handleHDBError(new Error(), hdb_errors.HDB_ERROR_MSGS.OP_NOT_FOUND(json.operation), hdb_errors.HTTP_STATUS_CODES.BAD_REQUEST, undefined, undefined, true);
 }
 
 async function catchup(req) {
@@ -176,6 +176,7 @@ async function catchup(req) {
         try {
             transaction.schema = _schema;
             transaction.table = table;
+            transaction[terms.CLUSTERING_FLAG] = true;
             let result;
             switch (transaction.operation) {
                 case terms.OPERATIONS_ENUM.INSERT:
@@ -188,7 +189,7 @@ async function catchup(req) {
                     result = await insert.upsert(transaction);
                     break;
                 case terms.OPERATIONS_ENUM.DELETE:
-                    result = await delete_.delete(transaction);
+                    result = await delete_.deleteRecord(transaction);
                     break;
                 default:
                     harper_logger.warn('invalid operation in catchup');

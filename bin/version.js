@@ -4,8 +4,9 @@ let fs = require('fs-extra');
 const logger = require('../utility/logging/harper_logger');
 
 module.exports = {
-   version,
-    printVersion
+    version,
+    printVersion,
+    nodeVersion
 };
 
 let jsonData = undefined;
@@ -21,6 +22,14 @@ function version() {
     if (jsonData) {
         return jsonData.version;
     }
+}
+
+function nodeVersion() {
+    if (jsonData && jsonData.engines && jsonData.engines.node) {
+        return jsonData.engines.node;
+    }
+
+    return undefined;
 }
 
 function printVersion() {

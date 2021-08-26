@@ -56,6 +56,7 @@ class ServerSocket{
         this.socket.on(EVENT_TYPES.MESSAGE, this.messageHandler);
 
         this.socket.on(types.EMIT_TYPES.CATCHUP, this.catchup);
+        this.socket.on(types.EMIT_TYPES.CONNECT_CHECK, this.connect_check);
         this.socket.on(types.EMIT_TYPES.SCHEMA_CATCHUP, this.schema_catchup);
     }
 
@@ -65,9 +66,24 @@ class ServerSocket{
      */
     async catchup(catchup_object, response){
         //TODO validate catchup object https://harperdb.atlassian.net/browse/CORE-409
+
         try {
             let catchup_msg = await sc_util.catchupHandler(catchup_object.channel, Date.now() - catchup_object.milis_since_connected, null);
             response(null, catchup_msg);
+        } catch(e){
+            log.error(e);
+            response(e);
+        }
+    }
+
+    /**
+     *
+     * @param check_object
+     * @param response
+     */
+    connect_check(check_object, response){
+        try {
+            response(null, {});
         } catch(e){
             log.error(e);
             response(e);

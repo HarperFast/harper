@@ -58,7 +58,7 @@ module.exports = {
 async function csvDataLoad(json_message) {
     let validation_msg = validator.dataObject(json_message);
     if (validation_msg) {
-        throw handleHDBError(validation_msg, validation_msg.message, HTTP_STATUS_CODES.BAD_REQUEST);
+        throw handleHDBError(validation_msg, validation_msg.message, HTTP_STATUS_CODES.BAD_REQUEST, undefined, undefined, true);
     }
 
     let bulk_load_result = {};
@@ -79,7 +79,7 @@ async function csvDataLoad(json_message) {
 
         const attr_perms_errors = attrsPermsErrors.getPermsResponse();
         if (attr_perms_errors) {
-            throw handleHDBError(new Error(), attr_perms_errors, HTTP_STATUS_CODES.BAD_REQUEST);
+            throw handleHDBError(new Error(), attr_perms_errors, HTTP_STATUS_CODES.BAD_REQUEST, undefined, undefined, true);
         }
 
         let converted_msg = new BulkLoadDataObject(json_message.action, json_message.schema, json_message.table,
@@ -107,7 +107,7 @@ async function csvDataLoad(json_message) {
 async function csvURLLoad(json_message) {
     let validation_msg = validator.urlObject(json_message);
     if (validation_msg) {
-        throw handleHDBError(validation_msg, validation_msg.message, HTTP_STATUS_CODES.BAD_REQUEST);
+        throw handleHDBError(validation_msg, validation_msg.message, HTTP_STATUS_CODES.BAD_REQUEST, undefined, undefined, true);
     }
 
     let csv_file_name = `${Date.now()}.csv`;
@@ -145,7 +145,7 @@ async function csvURLLoad(json_message) {
 async function csvFileLoad(json_message) {
     let validation_msg = validator.fileObject(json_message);
     if (validation_msg) {
-        throw handleHDBError(validation_msg, validation_msg.message, HTTP_STATUS_CODES.BAD_REQUEST);
+        throw handleHDBError(validation_msg, validation_msg.message, HTTP_STATUS_CODES.BAD_REQUEST, undefined, undefined, true);
     }
 
     let csv_file_load_obj = new BulkLoadFileObject(this.job_operation_function.name, json_message.action, json_message.schema, json_message.table, json_message.file_path,
@@ -170,7 +170,7 @@ async function csvFileLoad(json_message) {
 async function importFromS3(json_message) {
     let validation_msg = validator.s3FileObject(json_message);
     if (validation_msg) {
-        throw handleHDBError(validation_msg, validation_msg.message, HTTP_STATUS_CODES.BAD_REQUEST);
+        throw handleHDBError(validation_msg, validation_msg.message, HTTP_STATUS_CODES.BAD_REQUEST, undefined, undefined, true);
     }
 
     let temp_file_path;

@@ -15,43 +15,37 @@ const server_utilities = require('./serverUtilities');
 function handleServerUncaughtException(err) {
     let message = `Found an uncaught exception with message: ${err.message}. ${os.EOL}Stack: ${err.stack} ${os.EOL}Terminating HDB.`;
     console.error(message);
-    const final_logger = harper_logger.finalLogger();
-    final_logger.fatal(message);
+    harper_logger.fatal(message, true);
     process.exit(1);
 }
 
 function handleBeforeExit() {
-    const final_logger = harper_logger.finalLogger();
-    final_logger.info('beforeExit caught');
+    harper_logger.info('beforeExit caught', true);
     process.exit(0);
 }
 
 function handleExit() {
-    const final_logger = harper_logger.finalLogger();
-    final_logger.info('exit caught');
+    harper_logger.info('exit caught', true);
     process.exit(0);
 }
 
 function handleSigint() {
-    const final_logger = harper_logger.finalLogger();
-    final_logger.info('SIGINT caught');
+    harper_logger.info('SIGINT caught', true);
     process.exit(0);
 }
 
 function handleSigquit() {
-    const final_logger = harper_logger.finalLogger();
-    final_logger.info('SIGQUIT caught');
+    harper_logger.info('SIGQUIT caught', true);
     process.exit(0);
 }
 
 function handleSigterm() {
-    const final_logger = harper_logger.finalLogger();
-    final_logger.info('SIGTERM caught');
+    harper_logger.info('SIGTERM caught', true);
     process.exit(0);
 }
 
 function serverErrorHandler(error, req, resp) {
-    harper_logger.error(error);
+    harper_logger.error(error, true);
     if (error.http_resp_code) {
         if (typeof error.http_resp_msg === 'string') {
             return resp.code(error.http_resp_code).send({error: error.http_resp_msg});

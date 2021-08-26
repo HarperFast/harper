@@ -5,21 +5,19 @@ const SCServer = require('../handlers/SCServer');
 const types = require('../types');
 const {promisify} = require('util');
 const log = require('../../../utility/logging/harper_logger');
-const NodeConnector = require('../handlers/NodeConnectionsHandler');
 const sc_utils = require('../util/socketClusterUtils');
 const terms = require('../../../utility/hdbTerms');
 const RoomMessageObjects = require('../room/RoomMessageObjects');
-const fs = require('fs-extra');
-const path = require('path');
 const clean_lmdb = require('../../../utility/lmdb/cleanLMDBMap');
+const cluster_data = require('../util/clusterData');
 const IPCClient = require('../../ipc/IPCClient');
+const ipc_server_handlers = require('../../ipc/serverHandlers');
+const ipc_schema_handler = ipc_server_handlers.schema;
 const { validateEvent } = require('../../../server/ipc/utility/ipcUtils');
 // NOTE: The cluster worker doesn't use the environment manager yet, but some of the commands need values in there.
 // We initialize this here so the manager is always ready and initialized when a rule needs it.
 const env = require('../../../utility/environment/environmentManager');
 env.initSync();
-
-let worker_subscriptions = {};
 
 /**
  * Represents a WorkerIF implementation for socketcluster.
@@ -44,7 +42,7 @@ class ClusterWorker extends WorkerIF {
                 return next('Got an invalid request.');
             }
             this.ensureRoomExists(req.channel);
-            next();
+            return next();
         } catch(err) {
             log.error(`got an error checking for rooms.`);
             log.error(err);
@@ -74,7 +72,8 @@ class ClusterWorker extends WorkerIF {
 
         try {
             const sc_worker_ipc_handlers = {
-                [terms.IPC_EVENT_TYPES.SCHEMA]: this.parentMessageHandler.bind(this)
+                [terms.IPC_EVENT_TYPES.SCHEMA]: this.parentMessageHandler.bind(this),
+                [terms.IPC_EVENT_TYPES.CLUSTER_STATUS_REQUEST]: this.clusterStatusHandler.bind(this)
             };
             global.hdb_ipc = new IPCClient(process.pid, sc_worker_ipc_handlers);
             log.trace('Instantiated IPC client in socket cluster worker');
@@ -90,47 +89,47 @@ class ClusterWorker extends WorkerIF {
         this.exchange_get = promisify(this.exchange.get).bind(this.exchange);
         this.exchange_set = promisify(this.exchange.set).bind(this.exchange);
         this.exchange_remove = promisify(this.exchange.remove).bind(this.exchange);
+        log.trace('Calling processArgs');
+        this.processArgs().then(()=> {
+            log.error('set middleware');
+            this.scServer.addMiddleware(this.scServer.MIDDLEWARE_PUBLISH_IN, this.checkNewRoom.bind(this));
+            this.scServer.addMiddleware(this.scServer.MIDDLEWARE_PUBLISH_IN, this.messagePrepMiddleware.bind(this));
+            this.scServer.addMiddleware(this.scServer.MIDDLEWARE_PUBLISH_IN, this.evalRoomPublishInMiddleware.bind(this));
+            this.scServer.addMiddleware(this.scServer.MIDDLEWARE_PUBLISH_IN, this.evalRoomPublishInRules.bind(this));
 
-        this.scServer.addMiddleware(this.scServer.MIDDLEWARE_PUBLISH_IN, this.checkNewRoom.bind(this));
-        this.scServer.addMiddleware(this.scServer.MIDDLEWARE_PUBLISH_IN, this.messagePrepMiddleware.bind(this));
-        this.scServer.addMiddleware(this.scServer.MIDDLEWARE_PUBLISH_IN, this.evalRoomPublishInMiddleware.bind(this));
-        this.scServer.addMiddleware(this.scServer.MIDDLEWARE_PUBLISH_IN, this.evalRoomPublishInRules.bind(this));
+            this.scServer.addMiddleware(this.scServer.MIDDLEWARE_HANDSHAKE_SC, this.evalRoomHandshakeSCMiddleware.bind(this));
+            this.scServer.addMiddleware(this.scServer.MIDDLEWARE_PUBLISH_OUT, this.evalRoomPublishOutMiddleware.bind(this));
 
-        this.scServer.addMiddleware(this.scServer.MIDDLEWARE_HANDSHAKE_SC, this.evalRoomHandshakeSCMiddleware.bind(this));
-        this.scServer.addMiddleware(this.scServer.MIDDLEWARE_PUBLISH_OUT, this.evalRoomPublishOutMiddleware.bind(this));
+            this.scServer.addMiddleware(this.scServer.MIDDLEWARE_SUBSCRIBE, this.checkNewRoom.bind(this));
+            this.scServer.addMiddleware(this.scServer.MIDDLEWARE_SUBSCRIBE, this.evalRoomSubscribeMiddleware.bind(this));
+            new SCServer(this);
 
-        this.scServer.addMiddleware(this.scServer.MIDDLEWARE_SUBSCRIBE, this.checkNewRoom.bind(this));
-        this.scServer.addMiddleware(this.scServer.MIDDLEWARE_SUBSCRIBE, this.evalRoomSubscribeMiddleware.bind(this));
-        new SCServer(this);
+            // Create a room for and subscribe to internal hdb channels.
+            this.ensureRoomExists(terms.INTERNAL_SC_CHANNELS.HDB_USERS);
+            this.ensureRoomExists(terms.INTERNAL_SC_CHANNELS.HDB_WORKERS);
+            this.ensureRoomExists(terms.INTERNAL_SC_CHANNELS.WORKER_ROOM);
 
-        // Create a room for and subscribe to internal hdb channels.
-        this.ensureRoomExists(terms.INTERNAL_SC_CHANNELS.HDB_USERS);
-        this.ensureRoomExists(terms.INTERNAL_SC_CHANNELS.HDB_WORKERS);
-        this.ensureRoomExists(terms.INTERNAL_SC_CHANNELS.WORKER_ROOM);
-        if(this.isLeader){
-            log.trace('Calling processArgs');
-            this.processArgs().then(hdb_data=>{
-                if(hdb_data && hdb_data.cluster_user) {
-                    log.trace('Cluster worker is creating connections');
-                    this.node_connector = new NodeConnector(hdb_data.nodes, hdb_data.cluster_user, this);
-                    log.trace('Cluster worker is Initializing connections.');
-                    this.node_connector.initialize().then(()=>{});
-                }
-            });
             this.ensureRoomExists(terms.INTERNAL_SC_CHANNELS.ADD_USER);
             this.ensureRoomExists(terms.INTERNAL_SC_CHANNELS.ALTER_USER);
             this.ensureRoomExists(terms.INTERNAL_SC_CHANNELS.DROP_USER);
-        }
+        });
     }
 
     async processArgs() {
         log.trace('processArgs');
         try{
-            let file_path = path.join(env.getHdbBasePath(), terms.CLUSTERING_FOLDER_NAMES_ENUM.CLUSTERING_FOLDER, terms.CLUSTERING_PAYLOAD_FILE_NAME);
-            let data = await fs.readFile(file_path, 'utf-8');
-            await fs.unlink(file_path);
-            let hdb_data = JSON.parse(data);
-            if(hdb_data !== undefined) {
+
+            let hdb_data = await cluster_data();
+
+            let users = {};
+            if(hdb_data && hdb_data.users) {
+                hdb_data.users.forEach((user) => {
+                    users[user.username] = user;
+                });
+            }
+            this.hdb_users = users;
+
+            if(hdb_data !== undefined && this.isLeader) {
                 await this.setHDBDatatoExchange(hdb_data);
                 log.info('hdb_data successfully set to exchange');
                 return hdb_data;
@@ -156,8 +155,13 @@ class ClusterWorker extends WorkerIF {
             }
     }
 
-    parentMessageHandler(event) {
-        log.trace(`parentMessageHandler received event: ${JSON.stringify(event)}`);
+    clusterStatusHandler(event){
+        let cluster_status_response = sc_utils.getWorkerStatus(this);
+        global.hdb_ipc.emitToServer({type: terms.IPC_EVENT_TYPES.CLUSTER_STATUS_RESPONSE+ event.message.id, message: cluster_status_response});
+    }
+
+    async parentMessageHandler(event) {
+        log.trace(`parentMessageHandler received event`);
         const validate = validateEvent(event);
         if (validate) {
             log.error(validate);
@@ -173,7 +177,7 @@ class ClusterWorker extends WorkerIF {
 
             if(event.type && event.type === 'schema'){
                 clean_lmdb(event.message, true);
-                this.syncSchemaMetadata(event.message);
+                await ipc_schema_handler(event);
             }
 
         }catch(e){

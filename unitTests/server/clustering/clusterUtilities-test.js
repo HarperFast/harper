@@ -12,7 +12,6 @@ let cluster_utils_node_validation = cluster_utils.__get__('nodeValidation');
 const path = require(`path`);
 const hdb_license = require('../../../utility/registration/hdb_license');
 const settings_test_file = require('../../settingsTestFile');
-const children_stopped_event = require('../../../events/AllChildrenStoppedEvent');
 const hdb_logger = require('../../../utility/logging/harper_logger');
 const util = require('util');
 

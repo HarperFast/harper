@@ -11,14 +11,15 @@ env.initSync();
 
 const colors = require("colors/safe");
 const fs = require('fs-extra');
-const log = require('../utility/logging/harper_logger');
-const final_logger = log.finalLogger();
+const hdb_logger = require('../utility/logging/harper_logger');
 const hdb_terms = require('../utility/hdbTerms');
 const version = require('./version');
 const directivesManager = require('../upgrade/directivesManager');
 const hdb_utils = require('../utility/common_utils');
 const hdbInfoController = require('../data_layer/hdbInfoController');
 const upgradePrompt = require('../upgrade/upgradePrompt');
+const ps_list = require('../utility/psList');
+const pm2_utils = require('../utility/pm2/utilityFunctions');
 
 const { UPGRADE_VERSION } = hdb_terms.UPGRADE_JSON_FIELD_NAMES_ENUM;
 
@@ -36,13 +37,13 @@ async function upgrade(upgrade_obj) {
     //We have to make sure HDB is installed before doing anything else
     if (!fs.existsSync(env.BOOT_PROPS_FILE_PATH)) {
         const hdb_not_found_msg = 'The hdb_boot_properties file was not found. Please install HDB.';
-        printToLogAndConsole(hdb_not_found_msg, log.ERR);
+        printToLogAndConsole(hdb_not_found_msg, hdb_logger.ERR);
         process.exit(1);
     }
 
     if (!fs.existsSync(env.get(hdb_terms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY))) {
         const hdb_not_installed_msg = 'The hdb settings file was not found. Please make sure HDB is installed.';
-        printToLogAndConsole(hdb_not_installed_msg, log.ERR);
+        printToLogAndConsole(hdb_not_installed_msg, hdb_logger.ERR);
         process.exit(1);
     }
 
@@ -55,14 +56,14 @@ async function upgrade(upgrade_obj) {
         }
     }
 
-    printToLogAndConsole(`This version of HarperDB is ${version.version()}`, log.INFO);
+    printToLogAndConsole(`This version of HarperDB is ${version.version()}`, hdb_logger.INFO);
 
     //The upgrade version should always be included in the hdb_upgrade_info object returned from the getVersion function
     // above but testing for it and using the version from package.json just in case it is not
     let current_hdb_version = hdb_upgrade_info[UPGRADE_VERSION] ? hdb_upgrade_info[UPGRADE_VERSION] : version.version();
     if(!current_hdb_version) {
         console.log(`Current Version field missing from the package.json file.  Cannot continue with upgrade.  If you need support, please contact ${hdb_terms.HDB_SUPPORT_ADDRESS}`);
-        final_logger.notify('Missing new version field from upgrade info object');
+        hdb_logger.notify('Missing new version field from upgrade info object', true);
         process.exit(1);
     }
 
@@ -75,8 +76,8 @@ async function upgrade(upgrade_obj) {
     try {
         start_upgrade = await upgradePrompt.forceUpdatePrompt(hdb_upgrade_info);
     } catch(err) {
-        final_logger.error('There was an error when prompting user about upgrade.');
-        final_logger.error(err);
+        hdb_logger.error('There was an error when prompting user about upgrade.', true);
+        hdb_logger.error(err, true);
         start_upgrade = false;
         exit_code = 1;
     }
@@ -86,17 +87,17 @@ async function upgrade(upgrade_obj) {
         process.exit(exit_code);
     }
 
-    final_logger.info(`Starting upgrade to version ${current_hdb_version}`);
+    hdb_logger.info(`Starting upgrade to version ${current_hdb_version}`, true);
 
     try {
         await runUpgrade(hdb_upgrade_info);
     } catch(err) {
-        final_logger.error('There was an error when upgrading your HDB instance. Check logs for more details.');
-        final_logger.error(err);
+        hdb_logger.error('There was an error when upgrading your HDB instance. Check logs for more details.', true);
+        hdb_logger.error(err, true);
         throw err;
     }
 
-    printToLogAndConsole(`HarperDB was successfully upgraded to version ${hdb_upgrade_info[UPGRADE_VERSION]}`, log.INFO);
+    printToLogAndConsole(`HarperDB was successfully upgraded to version ${hdb_upgrade_info[UPGRADE_VERSION]}`, hdb_logger.INFO);
 }
 
 /**
@@ -104,11 +105,33 @@ async function upgrade(upgrade_obj) {
  * @throws
  */
 async function checkIfRunning() {
-    const hdb_running = await hdb_utils.isServerRunning(hdb_terms.HDB_PROC_NAME);
+    let hdb_running = false;
+
+    // This is here to accommodate any HDB process that might have been started with old versions of HDB that dont use pm2.
+    const list_hdb_server = await ps_list.findPs(hdb_terms.HDB_PROC_NAME);
+    if (!hdb_utils.isEmptyOrZeroLength(list_hdb_server)) {
+        hdb_running = true;
+    }
+
+    if (!hdb_running) {
+        // This is here to accommodate any HDB process that might have been started with old versions of HDB that dont use pm2.
+        const list_hdb_express = await ps_list.findPs('hdb_express');
+        if (!hdb_utils.isEmptyOrZeroLength(list_hdb_express)) {
+            hdb_running = true;
+        }
+    }
+
+    if (!hdb_running) {
+        const process_list = await pm2_utils.list();
+        if (!hdb_utils.isEmptyOrZeroLength(process_list)) {
+            hdb_running = true;
+        }
+    }
+
     if (hdb_running) {
-        let run_err = "HarperDB is running, please stop HarperDB with 'harperdb stop' and run the upgrade command again.";
+        let run_err = "HarperDB is running, please stop all HarperDB services with 'harperdb stop' and run the upgrade command again.";
         console.log(colors.red(run_err));
-        final_logger.error(run_err);
+        hdb_logger.error(run_err, true);
         process.exit(1);
     }
 }
@@ -126,22 +149,22 @@ async function runUpgrade(upgrade_obj) {
     try {
         await directivesManager.processDirectives(upgrade_obj);
     } catch(err) {
-        printToLogAndConsole('There was an error during the data upgrade.  Please check the logs.', log.ERR);
+        printToLogAndConsole('There was an error during the data upgrade.  Please check the logs.', hdb_logger.ERR);
         throw(err);
     }
 
     try {
         await hdbInfoController.insertHdbUpgradeInfo(upgrade_obj[UPGRADE_VERSION]);
     } catch(err) {
-        final_logger.error("Error updating the 'hdb_info' system table.");
-        final_logger.error(err);
+        hdb_logger.error("Error updating the 'hdb_info' system table.", true);
+        hdb_logger.error(err, true);
     }
 }
 
 function printToLogAndConsole(msg, log_level = undefined) {
     if(!log_level) {
-        log_level = log.info;
+        log_level = hdb_logger.info;
     }
-    final_logger[log_level](msg);
+    hdb_logger[log_level](msg, true);
     console.log(colors.magenta(msg));
 }

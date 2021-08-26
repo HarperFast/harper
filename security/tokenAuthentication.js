@@ -38,15 +38,15 @@ module.exports = {
 async function createTokens(auth_object){
     //validate auth_object
     if(hdb_utils.isEmpty(auth_object) || typeof auth_object !== 'object'){
-        throw handleHDBError(new Error(), AUTHENTICATION_ERROR_MSGS.INVALID_AUTH_OBJECT, HTTP_STATUS_CODES.BAD_REQUEST);
+        throw handleHDBError(new Error(), AUTHENTICATION_ERROR_MSGS.INVALID_AUTH_OBJECT, HTTP_STATUS_CODES.BAD_REQUEST, undefined, undefined, true);
     }
 
     if(hdb_utils.isEmpty(auth_object.username)){
-        throw handleHDBError(new Error(), AUTHENTICATION_ERROR_MSGS.USERNAME_REQUIRED, HTTP_STATUS_CODES.BAD_REQUEST);
+        throw handleHDBError(new Error(), AUTHENTICATION_ERROR_MSGS.USERNAME_REQUIRED, HTTP_STATUS_CODES.BAD_REQUEST, undefined, undefined, true);
     }
 
     if(hdb_utils.isEmpty(auth_object.password)){
-        throw handleHDBError(new Error(), AUTHENTICATION_ERROR_MSGS.PASSWORD_REQUIRED, HTTP_STATUS_CODES.BAD_REQUEST);
+        throw handleHDBError(new Error(), AUTHENTICATION_ERROR_MSGS.PASSWORD_REQUIRED, HTTP_STATUS_CODES.BAD_REQUEST, undefined, undefined, true);
     }
 
     //query for user/pw
@@ -54,11 +54,11 @@ async function createTokens(auth_object){
     try {
         user = await user_functions.findAndValidateUser(auth_object.username, auth_object.password);
         if (!user) {
-            throw handleHDBError(new Error(), AUTHENTICATION_ERROR_MSGS.INVALID_CREDENTIALS, HTTP_STATUS_CODES.UNAUTHORIZED);
+            throw handleHDBError(new Error(), AUTHENTICATION_ERROR_MSGS.INVALID_CREDENTIALS, HTTP_STATUS_CODES.UNAUTHORIZED, undefined, undefined, true);
         }
     }catch(e){
         logger.error(e);
-        throw handleHDBError(new Error(), AUTHENTICATION_ERROR_MSGS.INVALID_CREDENTIALS, HTTP_STATUS_CODES.UNAUTHORIZED);
+        throw handleHDBError(new Error(), AUTHENTICATION_ERROR_MSGS.INVALID_CREDENTIALS, HTTP_STATUS_CODES.UNAUTHORIZED, undefined, undefined, true);
     }
 
     //get rsa key
@@ -136,11 +136,11 @@ async function getJWTRSAKeys(){
 
 async function refreshOperationToken(token_object){
     if(!token_object){
-        throw handleHDBError(new Error(), AUTHENTICATION_ERROR_MSGS.INVALID_BODY, HTTP_STATUS_CODES.BAD_REQUEST);
+        throw handleHDBError(new Error(), AUTHENTICATION_ERROR_MSGS.INVALID_BODY, HTTP_STATUS_CODES.BAD_REQUEST, undefined, undefined, true);
     }
 
     if(!token_object.refresh_token){
-        throw handleHDBError(new Error(), AUTHENTICATION_ERROR_MSGS.REFRESH_TOKEN_REQUIRED, HTTP_STATUS_CODES.BAD_REQUEST);
+        throw handleHDBError(new Error(), AUTHENTICATION_ERROR_MSGS.REFRESH_TOKEN_REQUIRED, HTTP_STATUS_CODES.BAD_REQUEST, undefined, undefined, true);
     }
 
     await validateRefreshToken(token_object.refresh_token);

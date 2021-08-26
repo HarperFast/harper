@@ -17,7 +17,7 @@
     "harperdb": "./bin/harperdb.js"
   },
   "engines": {
-    "node": "14.17.1"
+    "node": "14.17.3"
   },
   "homepage": "https://www.harperdb.io/",
   "bugs": "support@harperdb.io",
@@ -27,16 +27,22 @@
   },
   "license": "See License in ./license/Community+Edition+and+Evaluation+End+User+License+Agreement.pdf",
   "scripts": {
+    "submodules": "git submodule update --init --recursive",
     "build": "eslint -c ./.eslintbuild bin/ data_layer/ events/ security/ server/ sqlTranslator/ upgrade/ utility/ validation/",
-    "test": "rm -rf ./.nyc_output/* && npm run build && node utility/devops/register.js --reset_license --storage_type=lmdb && npm run cover:main && npm run cover:lmdbbridge && npm run cover:lmdbutility && nyc merge .nyc_output coverage.json && node ./utility/devops/register.js --reset_license --storage_type=lmdb",
+    "test": "rm -rf ./.nyc_output/* && npm run build && node utility/devops/register.js --reset_license --storage_type=lmdb && npm run cover:main && npm run cover:lmdbbridge && npm run cover:lmdbutility && npm run cover:hdbserver && npm run cover:cfserver && nyc merge .nyc_output coverage.json && node ./utility/devops/register.js --reset_license --storage_type=lmdb",
     "cover:main": "cd bin/ && nyc --no-clean --reporter=lcov ../node_modules/mocha/bin/_mocha '../unitTests/**/*.js' --config '../unitTests/.mocharc-main.json'",
     "cover:lmdbbridge": "cd bin/ && nyc --no-clean --reporter=lcov ../node_modules/mocha/bin/_mocha '../unitTests/data_layer/harperBridge/lmdbBridge/**/*.js' --parallel --config '../unitTests/.mocharc.json'",
     "cover:lmdbutility": "cd bin/ && nyc --no-clean --reporter=lcov ../node_modules/mocha/bin/_mocha '../unitTests/utility/lmdb/**/*.js' --parallel --config '../unitTests/.mocharc.json'",
-    "test:ci": " cd bin/ && ../node_modules/mocha/bin/_mocha '../unitTests/**/*.js' --retries 3 --config '../unitTests/.mocharc-main.json' --reporter mocha-teamcity-reporter && ../node_modules/mocha/bin/_mocha '../unitTests/data_layer/harperBridge/lmdbBridge/**/*.js' --parallel --retries 3 --config '../unitTests/.mocharc.json' --reporter mocha-teamcity-reporter && ../node_modules/mocha/bin/_mocha '../unitTests/utility/lmdb/**/*.js' --parallel --retries 3 --config '../unitTests/.mocharc.json' --reporter mocha-teamcity-reporter",
+    "cover:hdbserver": "cd bin/ && nyc --no-clean --reporter=lcov ../node_modules/mocha/bin/_mocha '../unitTests/server/harperdb/hdbServer-test.js' --parallel --config '../unitTests/.mocharc.json'",
+    "cover:cfserver": "npm run submodules && cd bin/ && nyc --no-clean --reporter=lcov ../node_modules/mocha/bin/_mocha '../unitTests/server/customFunctions/customFunctionsServer-test.js' --parallel --config '../unitTests/.mocharc.json'",
+    "test:ci": " cd bin/ && ../node_modules/mocha/bin/_mocha '../unitTests/**/*.js' --retries 3 --config '../unitTests/.mocharc-main.json' --reporter mocha-teamcity-reporter && ../node_modules/mocha/bin/_mocha '../unitTests/data_layer/harperBridge/lmdbBridge/**/*.js' --parallel --retries 3 --config '../unitTests/.mocharc.json' --reporter mocha-teamcity-reporter && ../node_modules/mocha/bin/_mocha '../unitTests/utility/lmdb/**/*.js' --parallel --retries 3 --config '../unitTests/.mocharc.json' --reporter mocha-teamcity-reporter && ../node_modules/mocha/bin/_mocha '../unitTests/server/harperdb/hdbServer-test.js' --parallel --retries 3 --config '../unitTests/.mocharc.json' --reporter mocha-teamcity-reporter && ../node_modules/mocha/bin/_mocha '../unitTests/server/customFunctions/customFunctionsServer-test.js' --parallel --retries 3 --config '../unitTests/.mocharc.json' --reporter mocha-teamcity-reporter",
     "hdb-check": "./utility/devops/hdb-check.sh",
     "prepublish": "npm run build",
     "prebuild": "date",
-    "coverage": "nyc --reporter=lcov npm test"
+    "coverage": "nyc --reporter=lcov npm test",
+    "package": "./utility/devops/build/build.sh",
+    "integrationtests:source": "node utility/devops/register.js --reset_license --storage_type=lmdb && cd ./bin && node harperdb restart && sleep 2 && cd ../integrationTests && ../node_modules/newman/bin/newman.js run HarperDB_Integration_Tests.json -e ./Int_test_env_var.json --reporters teamcity,cli,html,htmlextra --reporter-html-export newman/report.html --reporter-htmlextra-export newman/extra_report.html --insecure",
+    "integrationtests:package": "node utility/devops/register.js --reset_license --storage_type=lmdb && cd ./npm_pack/bin && node harperdb restart && sleep 2 && cd ../../integrationTests && ../node_modules/newman/bin/newman.js run HarperDB_Integration_Tests.json -e ./Int_test_env_var.json --reporters teamcity,cli,html,htmlextra --reporter-html-export newman/report.html --reporter-htmlextra-export newman/extra_report.html --insecure"
   },
   "dependencies": {
     "@turf/area": "^6.0.1",
@@ -51,7 +57,7 @@
     "alasql": "^1.7.3",
     "async": "^2.6.1",
     "aws-sdk": "^2.389.0",
-    "bytenode": "^1.2.3",
+    "bytenode": "1.2.3",
     "cli-progress": "^3.9.0",
     "clone": "^2.1.1",
     "colors": "^1.4.0",
@@ -61,6 +67,7 @@
     "fastify-compress": "^3.4.0",
     "fastify-cors": "^5.0.0",
     "fastify-helmet": "^5.0.3",
+    "fastify-plugin": "^3.0.0",
     "fastify-static": "^3.3.0",
     "fill-range": "^7.0.1",
     "fs-extra": "^7.0.1",
@@ -80,11 +87,13 @@
     "node-forge": "^0.10.0",
     "node-ipc": "^9.1.4",
     "node-lmdb": "^0.9.4",
+    "p-event": "^4.2.0",
     "papaparse": "^5.2.0",
     "passport": "^0.3.2",
     "passport-http": "^0.3.0",
     "passport-local": "^1.0.0",
     "pino": "^6.11.2",
+    "pm2": "^5.1.0",
     "prompt": "^1.1.0",
     "properties-reader": "0.0.15",
     "recursive-iterator": "^3.3.0",
@@ -112,6 +121,7 @@
     "mock-stdin": "^1.0.0",
     "newman": "^5.2.3",
     "newman-reporter-html": "^1.0.5",
+    "newman-reporter-htmlextra": "^1.21.0",
     "newman-reporter-teamcity": "^0.1.11",
     "nyc": "^15.1.0",
     "rewire": "^5.0.0",

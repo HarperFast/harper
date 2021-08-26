@@ -6,7 +6,6 @@ const {inspect} = require('util');
 const env = require('../../../utility/environment/environmentManager');
 env.initSync();
 const utils = require('../../../utility/common_utils');
-const get_cluster_user = require('../../../utility/common_utils').getClusterUser;
 const password_utility = require('../../../utility/password');
 const types = require('../types');
 const global_schema = require('../../../utility/globalSchema');
@@ -32,11 +31,14 @@ class ConnectionDetails {
 
 /**
  * Gets the status from the worker parameter and crams it into the status response message parameter.
- * @param status_response_msg - A status response message that will have the status added to.
  * @param worker - the worker to get status from.
  * @returns null
  */
-function getWorkerStatus(status_response_msg, worker) {
+function getWorkerStatus(worker) {
+    let status_response_msg = {
+        outbound_connections: [],
+        inbound_connections: []
+    };
     log.trace(`getWorkerStatus`);
     try {
         if (worker.node_connector && worker.node_connector.connections && worker.node_connector.connections.clients) {
@@ -81,6 +83,8 @@ function getWorkerStatus(status_response_msg, worker) {
                 status_response_msg.inbound_connections.push(conn);
             }
         }
+
+        return status_response_msg;
     } catch(err) {
         log.error(`There was an error getting worker status.`);
         log.error(err);
@@ -118,6 +122,7 @@ function createEventPromise(event_name, event_emitter_object, timeout_promise) {
  * @returns {Promise<void>}
  */
 async function schemaCatchupHandler() {
+    log.trace('start schemaCatchupHandler');
     if(!global.hdb_schema) {
         try {
             await p_set_schema_to_global();
@@ -146,6 +151,12 @@ async function catchupHandler(channel, start_timestamp, end_timestamp){
     if(utils.isEmpty(channel)){
         throw new Error('channel is required');
     }
+
+    //we do not want to process hdb_internal channels
+    if(channel.startsWith(hdb_terms.HDB_INTERNAL_SC_CHANNEL_PREFIX)){
+        return;
+    }
+
     let channel_split = channel.split(':');
     if(channel_split.length !== 2){
         throw new Error('invalid channel name');
@@ -164,9 +175,9 @@ async function catchupHandler(channel, start_timestamp, end_timestamp){
     }
 
     try {
-        let read_txn_log_obj = new ReadTransactionLogObject(channel_split[0], channel_split[1], hdb_terms.READ_TRANSACTION_LOG_SEARCH_TYPES_ENUM.TIMESTAMP, [start_timestamp, end_timestamp]);
+        let read_txn_log_obj = new ReadTransactionLogObject(channel_split[0], channel_split[1], hdb_terms.READ_TRANSACTION_LOG_SEARCH_TYPES_ENUM.TIMESTAMP, [parseInt(start_timestamp), parseInt(end_timestamp)]);
+        log.trace(`fetch catchup: ${JSON.stringify(read_txn_log_obj)}`);
         let results = await read_transaction_log(read_txn_log_obj);
-
         if (Array.isArray(results) && results.length > 0) {
             let catchup_response = {
                 channel: channel,
@@ -276,5 +287,6 @@ module.exports = {
     requestAndHandleLogin,
     concatSourceMessageHeader,
     parseConnectionString,
-    setGlobalSchema
+    setGlobalSchema,
+    ConnectionDetails
 };

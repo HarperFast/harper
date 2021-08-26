@@ -51,7 +51,6 @@ module.exports = {
     stringifyProps: stringifyProps,
     valueConverter: valueConverter,
     timeoutPromise: timeoutPromise,
-    isServerRunning: isServerRunning,
     isClusterOperation: isClusterOperation,
     getClusterUser: getClusterUser,
     sendTransactionToSocketCluster,
@@ -462,22 +461,6 @@ function timeoutPromise(ms, msg) {
 }
 
 /**
- * Checks all running processes to see if any match the name provided.
- * @param module_name
- * @returns {Promise<boolean>}
- */
-async function isServerRunning(module_name){
-    let hdb_running = false;
-    const list = await ps_list.findPs(module_name);
-
-    if(!isEmptyOrZeroLength(list)) {
-        hdb_running = true;
-    }
-
-    return hdb_running;
-}
-
-/**
  * Checks to see if a port is taken or not.
  * @param port
  * @returns {Promise<unknown>}
@@ -813,9 +796,9 @@ function assignCMDENVVariables(keys = []){
 
         //we set the env variable first which gets overridden by a command line arg (if present)
         if(cmd_args[setting] !== undefined){
-            hdb_settings[setting] = cmd_args[setting];
+            hdb_settings[setting] = cmd_args[setting].toString().trim();
         } else if(env_args[setting] !== undefined){
-            hdb_settings[setting] = env_args[setting];
+            hdb_settings[setting] = env_args[setting].toString().trim();
         }
     }
     return hdb_settings;

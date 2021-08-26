@@ -5,17 +5,20 @@ env.initSync();
 
 const fs = require('fs-extra');
 const path = require('path');
+const check_jwt_tokens = require('../utility/install/checkJWTTokensExist');
 const install = require('../utility/install/installer');
 const colors = require("colors/safe");
-const logger = require('../utility/logging/harper_logger');
-const final_logger = logger.finalLogger();
+const hdb_logger = require('../utility/logging/harper_logger');
 const pjson = require(`${__dirname}/../package.json`);
 const terms = require('../utility/hdbTerms');
 const install_user_permission = require('../utility/install_user_permission');
 const hdb_utils = require('../utility/common_utils');
+const pm2_utils = require('../utility/pm2/utilityFunctions');
 const { promisify } = require('util');
 const stop = require('./stop');
 const upgrade = require('./upgrade');
+const minimist = require('minimist');
+const spawn = require('child_process').spawn;
 
 const hdbInfoController = require('../data_layer/hdbInfoController');
 
@@ -28,58 +31,36 @@ const CreateTableObject = require('../data_layer/CreateTableObject');
 // These may change to match unix return codes (i.e. 0, 1)
 const ENOENT_ERR_CODE = -2;
 
-const IPC_SERVER_CWD = path.resolve(__dirname, '../server/ipc');
-
-const NO_IPC_PORT_FOUND_ERR = 'Error getting IPC server port from environment variables';
-const NO_HDB_PORT_FOUND_ERR = 'Error getting HDB server port from environment variables';
-const IPC_FORK_ERR = 'There was an error starting the IPC server, check the log for more details.';
-const HDB_SERVER_ERR = 'There was an error starting the HDB server, check the log for more details.';
-const CF_SERVER_ERR = 'There was an error starting the Custom Functions server, check the log for more details.';
-const FOREGROUND_ERR = 'There was an error foreground handler, check the log for more details.';
 const UPGRADE_COMPLETE_MSG = 'Upgrade complete.  Starting HarperDB.';
 const UPGRADE_ERR = 'Got an error while trying to upgrade your HarperDB instance.  Exiting HarperDB.';
-const ALREADY_RUNNING_ERR = 'HarperDB is already running.';
 const HDB_NOT_FOUND_MSG = 'HarperDB not found, starting install process.';
 const INSTALL_ERR = 'There was an error during install, check install_log.log for more details.  Exiting.';
+const HDB_STARTED = 'HarperDB successfully started.';
 
 // promisified functions
 const p_install_install = promisify(install.install);
 
-let fork = require('child_process').fork;
-let child = undefined;
-let ipc_child = undefined;
-let cf_child = undefined;
-
 /***
- * Starts Harper DB.  If Harper is already running, or the port is in use, and error will be thrown and Harper will not
- * start.  If the hdb_boot_props file is not found, it is assumed an install needs to be performed.
+ * Starts Harper DB.
+ * If the hdb_boot_props file is not found, it is assumed an install needs to be performed.
  */
 async function run() {
-    // Check to see if HDB is already running, if it is return/stop run.
-    try {
-        if(await hdb_utils.isServerRunning(terms.HDB_PROC_NAME)) {
-            console.log(ALREADY_RUNNING_ERR);
-            final_logger.notify(ALREADY_RUNNING_ERR);
-            return;
-        }
-    } catch(err) {
-        console.error(err);
-        final_logger.error(err);
-        process.exit(1);
-    }
-
     // Check to see if HDB is installed, if it isn't we call install.
     try {
+        console.log(colors.magenta('Starting HarperDB...'));
+
         if (await isHdbInstalled() === false) {
             console.log(HDB_NOT_FOUND_MSG);
             try {
                 await p_install_install();
             } catch(err) {
                 console.error(INSTALL_ERR);
-                final_logger.error(err);
+                hdb_logger.error(err, true);
                 process.exit(1);
             }
         }
+
+        env.initSync();
 
         // Check to see if an upgrade is needed based on existing hdb_info data.  If so, we need to force the user to upgrade
         // before the server can be started.
@@ -94,24 +75,102 @@ async function run() {
         } catch(err) {
             if (upgrade_vers) {
                 console.error(`Got an error while trying to upgrade your HarperDB instance to version ${upgrade_vers}.  Exiting HarperDB.`);
-                final_logger.error(err);
+                hdb_logger.error(err, true);
             } else {
                 console.error(UPGRADE_ERR);
-                final_logger.error(err);
+                hdb_logger.error(err, true);
             }
             process.exit(1);
         }
 
+        check_jwt_tokens();
         await checkTransactionLogEnvironmentsExist();
         writeLicenseFromVars();
-        await launchIPCServer();
-        await launchCustomFunctionServer();
-        await launchHdbServer();
+
+        // Check user has required permissions to start HDB.
+        try {
+            install_user_permission.checkPermission();
+        } catch(err) {
+            hdb_logger.error(err, true);
+            console.error(err.message);
+            process.exit(1);
+        }
+
+        const sc_env = env.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_ENABLED_KEY).toString().toLowerCase();
+        const cf_env = env.getProperty(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_ENABLED_KEY).toString().toLowerCase();
+        const clustering_enabled = sc_env === 'true' || sc_env === "'true'";
+        const custom_func_enabled = cf_env === 'true' || cf_env === "'true'";
+
+        // Run can be called with a --service argument which allows designated services to be started.
+        const cmd_args = minimist(process.argv);
+        if (!hdb_utils.isEmpty(cmd_args.service)) {
+            if (typeof cmd_args.service !== 'string') {
+                const service_err_msg = `Run service argument expected a string but received: ${cmd_args.service}`;
+                hdb_logger.error(service_err_msg, true);
+                console.log(service_err_msg);
+                process.exit(1);
+            }
+
+            const cmd_args_array = cmd_args.service.split(',');
+            for (const args of cmd_args_array) {
+                const service = args.toLowerCase();
+                if (terms.PROCESS_DESCRIPTORS_VALIDATE[service] === undefined) {
+                    hdb_logger.error(`Run received unrecognized service command argument: ${service}`, true);
+                    continue;
+                }
+
+                // If custom functions not enabled in settings.js do not start.
+                if (service === terms.PROCESS_DESCRIPTORS.CUSTOM_FUNCTIONS.toLowerCase() && !custom_func_enabled) {
+                    hdb_logger.error(`${service} is not enabled in settings`, true);
+                    continue;
+                }
+
+                // If clustering not enabled in settings.js do not start.
+                if (service === terms.PROCESS_DESCRIPTORS.CLUSTERING.toLowerCase() && !clustering_enabled) {
+                    hdb_logger.error(`${service} is not enabled in settings`, true);
+                    continue;
+                }
+
+                await pm2_utils.startService(terms.PROCESS_DESCRIPTORS_VALIDATE[service]);
+                const log_msg = `${terms.PROCESS_DESCRIPTORS_VALIDATE[service]} successfully started.`;
+                hdb_logger.notify(log_msg, true);
+                console.log(log_msg);
+            }
+
+            foregroundHandler();
+        } else if (clustering_enabled && custom_func_enabled) {
+            await pm2_utils.startAllServices();
+        } else if (clustering_enabled) {
+            await startHdbIpc();
+            await pm2_utils.startService(terms.PROCESS_DESCRIPTORS.CLUSTERING);
+            await pm2_utils.startService(terms.PROCESS_DESCRIPTORS.CLUSTERING_CONNECTOR);
+        } else if (custom_func_enabled) {
+            await startHdbIpc();
+            await pm2_utils.startService(terms.PROCESS_DESCRIPTORS.CUSTOM_FUNCTIONS);
+        } else {
+            await startHdbIpc();
+        }
+
+        // Console log Harper dog logo
+        console.log(colors.magenta('' + fs.readFileSync(path.join(__dirname,'../utility/install/ascii_logo.txt'))));
+        console.log(colors.magenta(`|------------- HarperDB ${pjson.version} successfully started ------------|`));
+
+        hdb_logger.notify(HDB_STARTED, true);
+        foregroundHandler();
     } catch(err) {
         console.error(err);
-        final_logger.error(err);
+        hdb_logger.error(err, true);
         process.exit(1);
     }
+}
+
+/**
+ * Starts HarperDB and IPC servers.
+ * @returns {Promise<void>}
+ */
+async function startHdbIpc() {
+    await pm2_utils.startService(terms.PROCESS_DESCRIPTORS.IPC);
+    await pm2_utils.startService(terms.PROCESS_DESCRIPTORS.HDB);
 }
 
 /**
@@ -138,7 +197,7 @@ function writeLicenseFromVars(){
     }catch(e){
         const ERROR_MSG = `Failed to write license & fingerprint due to: ${e.message}`;
         console.error(ERROR_MSG);
-        final_logger.error(ERROR_MSG);
+        hdb_logger.error(ERROR_MSG, true);
     }
 }
 
@@ -148,7 +207,7 @@ function writeLicenseFromVars(){
  */
 async function checkTransactionLogEnvironmentsExist(){
     if(env.getHdbBasePath() !== undefined){
-        final_logger.info('Checking Transaction Environments exist');
+        hdb_logger.info('Checking Transaction Environments exist', true);
 
         for (const table_name of Object.keys(SYSTEM_SCHEMA)) {
             await openCreateTransactionEnvironment(terms.SYSTEM_SCHEMA_NAME, table_name);
@@ -162,7 +221,7 @@ async function checkTransactionLogEnvironmentsExist(){
             }
         }
 
-        final_logger.info('Finished checking Transaction Environments exist');
+        hdb_logger.info('Finished checking Transaction Environments exist', true);
     }
 }
 
@@ -179,80 +238,7 @@ async function openCreateTransactionEnvironment(schema, table_name){
     } catch(e){
         let error_msg = `Unable to create the transaction environment for ${schema}.${table_name}, due to: ${e.message}`;
         console.error(error_msg);
-        final_logger.error(error_msg);
-    }
-}
-
-async function launchHdbServer() {
-    // Get the HDB server port from env vars, if for some reason it's undefined use the default one.
-    let hdb_server_port;
-    try {
-        hdb_server_port = env.get(terms.HDB_SETTINGS_NAMES.SERVER_PORT_KEY);
-        hdb_server_port = hdb_utils.isEmpty(hdb_server_port) ? terms.HDB_SETTINGS_DEFAULT_VALUES.SERVER_PORT : hdb_server_port;
-    } catch(err) {
-        final_logger.error(err);
-        console.error(NO_HDB_PORT_FOUND_ERR);
-        process.exit(1);
-    }
-
-    // Check to see if the HDB port is available.
-    try {
-        const is_port_taken = await hdb_utils.isPortTaken(hdb_server_port);
-        if (is_port_taken === true) {
-            final_logger.fatal(`Port: ${hdb_server_port} is being used by another process and cannot be used by the HDB server. Please update the HDB server port in the HDB config/settings.js file.`);
-            console.log(`Port: ${hdb_server_port} is being used by another process and cannot be used by the HDB server. Please update the HDB server port in the HDB config/settings.js file.`);
-            process.exit(1);
-        }
-    } catch(err) {
-        final_logger.error(err);
-        console.error(`Error checking for port ${hdb_server_port}. Check log for more details.`);
-        process.exit(1);
-    }
-
-    // Check user has required permissions to start HDB.
-    try {
-        install_user_permission.checkPermission();
-    } catch(err) {
-        final_logger.error(err);
-        console.error(err.message);
-        process.exit(1);
-    }
-
-    // Launch the HDB server as a child process.
-    try {
-        const hdb_license = require('../utility/registration/hdb_license');
-        const hdb_args = hdb_utils.createForkArgs(path.resolve(__dirname, '../', 'server', terms.HDB_PROC_NAME));
-        const license = hdb_license.licenseSearch();
-        const mem_value = license.ram_allocation ? terms.MEM_SETTING_KEY + license.ram_allocation
-            : terms.MEM_SETTING_KEY + terms.RAM_ALLOCATION_ENUM.DEFAULT;
-
-        let fork_options = {
-            detached: true,
-            stdio: 'ignore',
-            execArgv: [mem_value]
-        };
-
-        //because we may need to push logs to std out/err if the process runs in foreground we need to remove the stdio: ignore
-        if(getRunInForeground()){
-            delete fork_options.stdio;
-        }
-
-        child = fork(hdb_args[0], [hdb_args[1]], fork_options);
-    } catch(err) {
-        console.error(HDB_SERVER_ERR);
-        final_logger.error(err);
-        process.exit(1);
-    }
-
-    console.log(colors.magenta('' + fs.readFileSync(path.join(__dirname,'../utility/install/ascii_logo.txt'))));
-    console.log(colors.magenta(`|------------- HarperDB ${pjson.version} successfully started ------------|`));
-
-    try {
-        foregroundHandler();
-    } catch(err) {
-        console.error(FOREGROUND_ERR);
-        final_logger.error(err);
-        process.exit(1);
+        hdb_logger.error(error_msg, true);
     }
 }
 
@@ -262,16 +248,11 @@ async function launchHdbServer() {
  */
 function foregroundHandler() {
     if (!getRunInForeground()) {
-        ipc_child.unref();
-        child.unref();
-
-        if (!hdb_utils.isEmpty(cf_child)) {
-            cf_child.unref();
-        }
-
         // Exit run process with success code.
         process.exit(0);
     }
+
+    hdb_logger.trace('Running in foreground', true);
 
     process.on('exit', processExitHandler);
 
@@ -281,6 +262,28 @@ function foregroundHandler() {
     // catches "kill pid"
     process.on('SIGUSR1', processExitHandler);
     process.on('SIGUSR2', processExitHandler);
+
+    spawnLogProcess();
+}
+
+/**
+ * Spawn a pm2 log process
+ */
+function spawnLogProcess() {
+    const proc = spawn('node', [path.resolve(__dirname, '../node_modules/pm2/bin/pm2'),'logs']);
+
+    proc.on('error', (err) => {
+        console.log(err);
+        console.error('Failed to start subprocess.');
+    });
+
+    proc.stdout.on('data', (data) => {
+        console.log(data.toString());
+    });
+
+    proc.stderr.on('data', (data) => {
+        console.error(data.toString());
+    });
 }
 
 /**
@@ -315,124 +318,12 @@ async function isHdbInstalled() {
             return false;
         }
 
-        final_logger.error(`Error checking for HDB install - ${err}`);
+        hdb_logger.error(`Error checking for HDB install - ${err}`, true);
         throw err;
     }
 
     return true;
 }
-
-/**
- * Validates the the IPC server is not already running and its port is available,
- * then forks a child process which the IPC server will run on.
- * @returns {Promise<void>}
- */
-async function launchIPCServer() {
-    // If there is already an instance of the HDB IPC server running we kill it.
-    if (await hdb_utils.isServerRunning(path.join(IPC_SERVER_CWD, terms.IPC_SERVER_MODULE))) {
-        try {
-            await hdb_utils.stopProcess(path.join(IPC_SERVER_CWD, terms.IPC_SERVER_MODULE));
-        } catch(err) {
-            const err_msg = `An existing HDB IPC server process was found to be running and was attempted to be killed but received the following error: ${err}`;
-            final_logger.error(err_msg);
-            console.error(err_msg);
-            process.exit(1);
-        }
-    }
-
-    // Get the IPC server port from env vars, if for some reason it's undefined use the default one.
-    let ipc_server_port;
-    try {
-        ipc_server_port = env.get(terms.HDB_SETTINGS_NAMES.IPC_SERVER_PORT);
-        ipc_server_port = hdb_utils.isEmpty(ipc_server_port) ? terms.HDB_SETTINGS_DEFAULT_VALUES.IPC_SERVER_PORT : ipc_server_port;
-    } catch(err) {
-        final_logger.error(err);
-        console.error(NO_IPC_PORT_FOUND_ERR);
-        process.exit(1);
-    }
-
-    // Check to see if the IPC port is available.
-    try {
-        const is_port_taken = await hdb_utils.isPortTaken(ipc_server_port);
-        if (is_port_taken === true) {
-            console.log(`Port: ${ipc_server_port} is being used by another process and cannot be used by the IPC server. Please update the IPC server port in the HDB config/settings.js file.`);
-            process.exit(1);
-        }
-    } catch(err) {
-        final_logger.error(err);
-        console.error(`Error checking for port ${ipc_server_port}. Check log for more details.`);
-        process.exit(1);
-    }
-
-    // Launch IPC server as a child background process.
-    try {
-        const ipc_fork_args = hdb_utils.createForkArgs(path.resolve(__dirname, '../', 'server/ipc', terms.IPC_SERVER_MODULE));
-        let fork_options = {
-            detached: true,
-            stdio: 'ignore'
-        };
-
-        //because we may need to push logs to std out/err if the process runs in foreground we need to remove the stdio: ignore
-        if(getRunInForeground()){
-            delete fork_options.stdio;
-        }
-        ipc_child = fork(ipc_fork_args[0], [ipc_fork_args[1]], fork_options);
-    } catch(err) {
-        console.error(IPC_FORK_ERR);
-        final_logger.error(err);
-        process.exit(1);
-    }
-}
-
-/**
- * Validates the the Custom Functions server is not already running and its port is available,
- * then forks a child process which the Custom Functions server will run on.
- * @returns {Promise<void>}
- */
-async function launchCustomFunctionServer() {
-    if (env.get(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_ENABLED_KEY)) {
-        final_logger.info('Running run/launchCustomFunctionServer()');
-        const cf_server_port = env.get(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_PORT_KEY) || terms.HDB_SETTINGS_DEFAULT_VALUES.CUSTOM_FUNCTIONS_PORT_KEY;
-
-        // Check to see if the HDB port is available.
-        try {
-            const is_port_taken = await hdb_utils.isPortTaken(cf_server_port);
-            if (is_port_taken === true) {
-                console.log(`Port: ${cf_server_port} is being used by another process and cannot be used by the Custom Functions server. Please update the Custom Functions server port in the HDB config/settings.js file.`);
-                process.exit(1);
-            }
-        } catch(err) {
-            final_logger.error(err);
-            console.error(`Error checking for port ${cf_server_port}. Check log for more details.`);
-            process.exit(1);
-        }
-
-        // Launch the Custom Function server as a child background process.
-        try {
-            const cf_args = hdb_utils.createForkArgs(path.resolve(__dirname, '../', 'server/customFunctions', terms.CUSTOM_FUNCTION_PROC_NAME));
-            let fork_options = {
-                detached: true,
-                stdio: 'ignore'
-            };
-
-            //because we may need to push logs to std out/err if the process runs in foreground we need to remove the stdio: ignore
-            if(getRunInForeground()){
-                delete fork_options.stdio;
-            }
-
-            cf_child = fork(cf_args[0], [cf_args[1]], fork_options);
-
-            final_logger.trace(`custom function fork args: ${cf_args}`);
-        } catch(err) {
-            console.error(CF_SERVER_ERR);
-            final_logger.error(err);
-            process.exit(1);
-        }
-    } else {
-        final_logger.notify(`Custom Functions server not enabled. To enable the Custom Functions server set CUSTOM_FUNCTIONS to true the HDB config/settings.js file.`);
-    }
-}
-
 
 function getRunInForeground(){
     const FOREGROUND_ENV = env.getProperty(terms.HDB_SETTINGS_NAMES.RUN_IN_FOREGROUND);

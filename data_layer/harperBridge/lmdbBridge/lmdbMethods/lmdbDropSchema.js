@@ -84,7 +84,7 @@ async function validateDropSchema(drop_schema) {
     }
 
     if (!delete_schema) {
-        throw handleHDBError(new Error(), HDB_ERROR_MSGS.SCHEMA_NOT_FOUND(drop_schema), HTTP_STATUS_CODES.NOT_FOUND);
+        throw handleHDBError(new Error(), HDB_ERROR_MSGS.SCHEMA_NOT_FOUND(drop_schema), HTTP_STATUS_CODES.NOT_FOUND, undefined, undefined, true);
     }
 
     return delete_schema;

@@ -72,17 +72,4 @@ describe('Test IPCClient class', () => {
         test_util.assertErrorSync(client_test.emitToServer, [{ type: 'create_table' }], new Error("IPC event missing 'message'"));
         expect(log_warn_stub).to.have.been.calledWith("IPC event missing 'message'");
     });
-
-    it('Test invalid event type logged and thrown', () => {
-        client_test = new IPCClient(123, event_handlers_test);
-        let error;
-        try {
-            client_test.emitToServer({ type: 'delete_all', message: 'test me' })
-        } catch(err) {
-            error = err;
-        }
-
-        expect(error.message).to.equal("IPC server received invalid event type: delete_all");
-        expect(log_warn_stub).to.have.been.calledWith("IPC server received invalid event type: delete_all");
-    });
 });

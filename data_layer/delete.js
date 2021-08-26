@@ -36,17 +36,17 @@ module.exports = {
 async function deleteFilesBefore(delete_obj) {
     let validation = bulkDeleteValidator(delete_obj, 'date');
     if (validation) {
-        throw handleHDBError(validation, validation.message, HTTP_STATUS_CODES.BAD_REQUEST);
+        throw handleHDBError(validation, validation.message, HTTP_STATUS_CODES.BAD_REQUEST, undefined, undefined, true);
     }
 
     let parsed_date = moment(delete_obj.date, moment.ISO_8601);
     if(!parsed_date.isValid()) {
-        throw handleHDBError(new Error(), HDB_ERROR_MSGS.INVALID_DATE, HTTP_STATUS_CODES.BAD_REQUEST, harper_logger.ERR, HDB_ERROR_MSGS.INVALID_DATE);
+        throw handleHDBError(new Error(), HDB_ERROR_MSGS.INVALID_DATE, HTTP_STATUS_CODES.BAD_REQUEST, harper_logger.ERR, HDB_ERROR_MSGS.INVALID_DATE, true);
     }
 
     let invalid_schema_table_msg = common_utils.checkSchemaTableExist(delete_obj.schema, delete_obj.table);
     if (invalid_schema_table_msg) {
-        throw handleHDBError(new Error(), invalid_schema_table_msg, HTTP_STATUS_CODES.NOT_FOUND, harper_logger.ERR, invalid_schema_table_msg);
+        throw handleHDBError(new Error(), invalid_schema_table_msg, HTTP_STATUS_CODES.NOT_FOUND, harper_logger.ERR, invalid_schema_table_msg, true);
     }
 
     try {
@@ -69,16 +69,16 @@ async function deleteFilesBefore(delete_obj) {
 async function deleteTransactionLogsBefore(delete_obj) {
     let validation = bulkDeleteValidator(delete_obj, 'timestamp');
     if (validation) {
-        throw handleHDBError(validation, validation.message, HTTP_STATUS_CODES.BAD_REQUEST);
+        throw handleHDBError(validation, validation.message, HTTP_STATUS_CODES.BAD_REQUEST, undefined, undefined, true);
     }
 
     if(isNaN(delete_obj.timestamp)) {
-        throw handleHDBError(new Error(), HDB_ERROR_MSGS.INVALID_VALUE('Timestamp'), HTTP_STATUS_CODES.BAD_REQUEST, harper_logger.ERR, HDB_ERROR_MSGS.INVALID_VALUE('Timestamp'));
+        throw handleHDBError(new Error(), HDB_ERROR_MSGS.INVALID_VALUE('Timestamp'), HTTP_STATUS_CODES.BAD_REQUEST, harper_logger.ERR, HDB_ERROR_MSGS.INVALID_VALUE('Timestamp'), true);
     }
 
     let invalid_schema_table_msg = common_utils.checkSchemaTableExist(delete_obj.schema, delete_obj.table);
     if (invalid_schema_table_msg) {
-        throw handleHDBError(new Error(), invalid_schema_table_msg, HTTP_STATUS_CODES.NOT_FOUND, harper_logger.ERR, invalid_schema_table_msg);
+        throw handleHDBError(new Error(), invalid_schema_table_msg, HTTP_STATUS_CODES.NOT_FOUND, harper_logger.ERR, invalid_schema_table_msg, true);
     }
 
     try {
@@ -100,12 +100,12 @@ async function deleteTransactionLogsBefore(delete_obj) {
 async function deleteRecord(delete_object) {
     let validation = deleteValidator(delete_object);
     if (validation) {
-        throw handleHDBError(validation, validation.message, HTTP_STATUS_CODES.BAD_REQUEST);
+        throw handleHDBError(validation, validation.message, HTTP_STATUS_CODES.BAD_REQUEST, undefined, undefined, true);
     }
 
     let invalid_schema_table_msg = common_utils.checkSchemaTableExist(delete_object.schema, delete_object.table);
     if (invalid_schema_table_msg) {
-        throw handleHDBError(new Error(), invalid_schema_table_msg, HTTP_STATUS_CODES.NOT_FOUND, harper_logger.ERR, invalid_schema_table_msg);
+        throw handleHDBError(new Error(), invalid_schema_table_msg, HTTP_STATUS_CODES.NOT_FOUND, harper_logger.ERR, invalid_schema_table_msg, true);
     }
 
     try {

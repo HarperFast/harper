@@ -14,8 +14,9 @@ const MIDDLEWARE_TYPE = {
 };
 
 const EMIT_TYPES = {
-  CATCHUP: 'catchup',
-  SCHEMA_CATCHUP: 'schema_catchup'
+    CATCHUP: 'catchup',
+    SCHEMA_CATCHUP: 'schema_catchup',
+    CONNECT_CHECK: 'connect_check'
 };
 
 const ROOM_TYPE = {

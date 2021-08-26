@@ -50,14 +50,18 @@ const INVALID_LICENSE_FLAGS = {
     valid_date: true,
     valid_machine: false,
 };
+let get_finger_print_file;
 
 describe(`Test generateFingerPrint`, function () {
+
     it('Nominal, generate new finger print with hash and write finger print file', async function () {
         // rewire hdb_license instance locally to keep internal cipher const fresh from another test
         const hdb_license = rewire('../../../utility/registration/hdb_license');
 
         // delete finger print file if exist
-        let finger_print_file = hdb_license.__get__('FINGER_PRINT_FILE');
+
+        get_finger_print_file = hdb_license.__get__('getFingerPrintFilePath');
+        let finger_print_file = get_finger_print_file();
         if (fs.existsSync(finger_print_file)) {
             fs.unlinkSync(finger_print_file);
         }
@@ -441,7 +445,7 @@ describe(`Test validateLicense`, function () {
         }) ;
         licenseKeyObject.fingerprint = fingerprint;
         let license = license_generator.generateLicense(licenseKeyObject);
-        let finger_print_file = hdb_license.__get__('FINGER_PRINT_FILE');
+        let finger_print_file = get_finger_print_file();
         if (fs.existsSync(finger_print_file)) {
             // delete finger print file if exist
             fs.unlinkSync(finger_print_file);

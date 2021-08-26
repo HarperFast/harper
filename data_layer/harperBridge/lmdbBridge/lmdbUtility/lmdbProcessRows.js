@@ -37,11 +37,11 @@ function processRows(insert_obj, attributes, hash_attribute) {
  */
 function validateAttribute(attribute) {
     if (Buffer.byteLength(String(attribute)) > hdb_terms.INSERT_MODULE_ENUM.MAX_CHARACTER_SIZE) {
-        throw handleHDBError(new Error(), HDB_ERROR_MSGS.ATTR_NAME_LENGTH_ERR(attribute), HTTP_STATUS_CODES.BAD_REQUEST);
+        throw handleHDBError(new Error(), HDB_ERROR_MSGS.ATTR_NAME_LENGTH_ERR(attribute), HTTP_STATUS_CODES.BAD_REQUEST, undefined, undefined, true);
     }
 
     if (hdb_utils.isEmptyOrZeroLength(attribute) || hdb_utils.isEmpty(attribute.trim())) {
-        throw handleHDBError(new Error(), HDB_ERROR_MSGS.ATTR_NAME_NULLISH_ERR, HTTP_STATUS_CODES.BAD_REQUEST);
+        throw handleHDBError(new Error(), HDB_ERROR_MSGS.ATTR_NAME_NULLISH_ERR, HTTP_STATUS_CODES.BAD_REQUEST, undefined, undefined, true);
     }
 }
 
@@ -61,18 +61,18 @@ function validateHash(record, hash_attribute, operation) {
         }
 
         log.error(`Update transaction aborted due to record with no hash value: ${JSON.stringify(record)}`);
-        throw handleHDBError(new Error(), HDB_ERROR_MSGS.RECORD_MISSING_HASH_ERR, HTTP_STATUS_CODES.BAD_REQUEST);
+        throw handleHDBError(new Error(), HDB_ERROR_MSGS.RECORD_MISSING_HASH_ERR, HTTP_STATUS_CODES.BAD_REQUEST, undefined, undefined, true);
 
     }
 
     if (Buffer.byteLength(String(record[hash_attribute])) > hdb_terms.INSERT_MODULE_ENUM.MAX_CHARACTER_SIZE) {
         log.error(record);
-        throw handleHDBError(new Error(), HDB_ERROR_MSGS.HASH_VAL_LENGTH_ERR, HTTP_STATUS_CODES.BAD_REQUEST);
+        throw handleHDBError(new Error(), HDB_ERROR_MSGS.HASH_VAL_LENGTH_ERR, HTTP_STATUS_CODES.BAD_REQUEST, undefined, undefined, true);
     }
 
     //keep this validation as we cannot allow forward slashes for hdb fs
     if (isNaN(record[hash_attribute]) && record[hash_attribute].includes('/')) {
         log.error(record);
-        throw handleHDBError(new Error(), HDB_ERROR_MSGS.INVALID_FORWARD_SLASH_IN_HASH_ERR, HTTP_STATUS_CODES.BAD_REQUEST);
+        throw handleHDBError(new Error(), HDB_ERROR_MSGS.INVALID_FORWARD_SLASH_IN_HASH_ERR, HTTP_STATUS_CODES.BAD_REQUEST, undefined, undefined, true);
     }
 }

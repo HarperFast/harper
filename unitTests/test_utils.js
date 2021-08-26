@@ -595,35 +595,6 @@ function assignObjectToNullObject(...objects){
     return Object.assign.apply(null, objects);
 }
 
-function stubFinalLogger(sandbox, logger) {
-    const final_logger_notify_stub = sandbox.stub().callsFake(() => {});
-    const final_logger_fatal_stub = sandbox.stub().callsFake(() => {});
-    const final_logger_error_stub = sandbox.stub().callsFake(() => {});
-    const final_logger_warn_stub = sandbox.stub().callsFake(() => {});
-    const final_logger_info_stub = sandbox.stub().callsFake(() => {});
-    const final_logger_debug_stub = sandbox.stub().callsFake(() => {});
-    const final_logger_trace_stub = sandbox.stub().callsFake(() => {});
-    sandbox.stub(logger, 'finalLogger').returns({
-        notify: final_logger_notify_stub,
-        fatal: final_logger_fatal_stub,
-        error: final_logger_error_stub,
-        warn: final_logger_warn_stub,
-        info: final_logger_info_stub,
-        debug: final_logger_debug_stub,
-        trace: final_logger_trace_stub
-    });
-
-    return {
-        final_logger_notify_stub,
-        final_logger_fatal_stub,
-        final_logger_error_stub,
-        final_logger_warn_stub,
-        final_logger_info_stub,
-        final_logger_debug_stub,
-        final_logger_trace_stub
-    };
-}
-
 /**
  * Creates stubbed value for an UpgradeObject
  *
@@ -667,7 +638,6 @@ module.exports = {
     assertErrorAsync,
     generateUpgradeObj,
     assignObjecttoNullObject: assignObjectToNullObject,
-    stubFinalLogger,
     requireUncached,
     COMMON_TEST_TERMS
 };

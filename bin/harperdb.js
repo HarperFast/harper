@@ -34,6 +34,14 @@ function checkCallingUserSync() {
 }
 
 function harperDBService() {
+    const current_hdb_node_version = version.nodeVersion();
+    if (process.versions && process.versions.node && current_hdb_node_version && process.versions.node !== current_hdb_node_version) {
+        const version_error = `This version of HarperDB is designed to run on Node ${current_hdb_node_version}.  Please change to this version of Node to proceed.`;
+        logger.error(version_error);
+        console.error(version_error);
+        return;
+    }
+
     let service;
 
     fs.readdir(__dirname, (err, files) => {
@@ -80,15 +88,16 @@ function harperDBService() {
                 });
                 break;
             case hdb_terms.SERVICE_ACTIONS_ENUM.STOP:
-                stop.stop().then().catch((stop_err) => {
+                stop.stop().then(() => {
+                    process.exit(0);
+                }).catch((stop_err) => {
                     console.error(stop_err);
                 });
                 break;
             case hdb_terms.SERVICE_ACTIONS_ENUM.RESTART:
-                stop.stop().then(()=> {
-                    run.run();
-                }).catch((restart_err) => {
-                    console.error('There was an error stopping harperdb.  Please stop manually with harperdb stop and start again.');
+                stop.restartProcesses().then().catch((restart_err) => {
+                    logger.error(restart_err);
+                    console.error('There was an error restarting harperdb.  Please stop manually with harperdb stop and start again.');
                     process.exit(1);
                 });
                 break;

@@ -12,7 +12,7 @@ class AuthMiddleware extends MiddlewareIF {
         eval_function = (req, next) => {
             try {
                 log.trace('Evaluating auth middleware');
-                if (req.socket.authState === req.socket.UNAUTHENTICATED) {
+                if (!req.socket.remoteAddress.includes('127.0.0.1') && req.socket.authState === req.socket.UNAUTHENTICATED) {
                     log.error(`Not authorized`);
                     return types.ERROR_CODES.MIDDLEWARE_SWALLOW;
                 }

@@ -9,8 +9,6 @@ const jobs = require('./jobs');
 const hdb_export = require('../data_layer/export');
 const hdb_delete = require('../data_layer/delete');
 const fork = require('child_process').fork;
-const path = require('path');
-const JOB_THREAD_MODULE_PATH = path.join(__dirname, 'jobThread');
 const signal = require('../utility/signalling');
 const { SchemaEventMsg } = require('../server/ipc/utility/ipcUtils');
 
@@ -202,7 +200,7 @@ async function runCSVJob(runner_message, operation, argument) {
  */
 function threadExecute(argument){
     return new Promise((resolve, reject)=>{
-        const forked = fork(JOB_THREAD_MODULE_PATH);
+        const forked = fork(hdb_terms.LAUNCH_SERVICE_SCRIPTS.JOB);
         forked.send(argument);
         forked.on('message', async data=>{
             if(data.hasOwnProperty('error')){

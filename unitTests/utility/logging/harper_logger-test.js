@@ -550,36 +550,6 @@ describe('Test harper_logger module', () => {
         });
     });
 
-    describe('Test finalLogger function', () => {
-        before(() => {
-            fs_extra.emptyDirSync(TEST_LOG_DIR);
-        });
-
-        after(() => {
-            fs_extra.emptyDirSync(TEST_LOG_DIR);
-        });
-
-        afterEach(() => {
-            mock_require.stopAll();
-        });
-
-        it('Test final logger instance is returned', () => {
-            setMockPropParams(false, 2, LOG_LEVEL.TRACE, LOG_PATH_TEST, HDB_ROOT_TEST, true);
-            harper_logger_rw = requireUncached('../../../utility/logging/harper_logger');
-            const final_logger = harper_logger_rw.finalLogger();
-            expect(typeof final_logger).to.equal('object');
-        });
-
-        // This test relies on the one above to create logger.
-        it('Test final logger instance is returned when pino undefined', () => {
-            harper_logger_rw.__set__('pino_logger', undefined);
-            const final_logger = harper_logger_rw.finalLogger();
-            expect(typeof final_logger).to.equal('object');
-            const pino_logger = harper_logger_rw.__get__('pino_logger');
-            expect(typeof pino_logger).to.equal('object');
-        });
-    });
-    
     describe('Test removeOldLogs function', () => {
         after(() => {
             fs_extra.emptyDirSync(TEST_LOG_DIR);
@@ -858,6 +828,106 @@ describe('Test harper_logger module', () => {
             const result = getPropsFilePath();
             expect(result.includes('harperdb/utility/hdb_boot_properties.file'));
             homedir_stub.restore();
+        });
+    });
+
+    describe('Test writeToFinalLog function', () => {
+        let writeToFinalLog;
+        const init_log_stub = sandbox.stub();
+        const pino_final_stub = sandbox.stub();
+        const log_to_std_stream_stub = sandbox.stub();
+        let init_log_rw;
+        let pino_final_rw;
+        let log_to_std_stream_rw;
+
+        before(() => {
+            fs_extra.emptyDirSync(TEST_LOG_DIR);
+            harper_logger_rw = requireUncached('../../../utility/logging/harper_logger');
+            harper_logger_rw.__set__('pino_logger', undefined);
+            harper_logger_rw.__set__('final_logger', undefined);
+            harper_logger_rw.__set__('log_to_file', false);
+            harper_logger_rw.__set__('log_to_stdstreams', true);
+            writeToFinalLog = harper_logger_rw.__get__('writeToFinalLog');
+            init_log_rw = harper_logger_rw.__set__('initPinoLogger', init_log_stub);
+            pino_final_rw = harper_logger_rw.__set__('pino.final', pino_final_stub);
+            log_to_std_stream_rw = harper_logger_rw.__set__('logToStdStream', log_to_std_stream_stub);
+        });
+
+        after(() => {
+            fs_extra.emptyDirSync(TEST_LOG_DIR);
+            init_log_rw();
+            pino_final_rw();
+            log_to_std_stream_rw();
+        });
+
+        it('Test all the things are called happy path', () => {
+            writeToFinalLog('error', 'the roof is on fire');
+            expect(init_log_stub.called).to.be.true;
+            expect(pino_final_stub.called).to.be.true;
+            expect(log_to_std_stream_stub.called).to.be.true;
+        });
+    });
+
+    describe('Test all log level functions', () => {
+        let write_final_log_stub = sandbox.stub();
+        let write_final_log_rw;
+        const test_msg = 'I am a test log message';
+
+        before(() => {
+            fs_extra.emptyDirSync(TEST_LOG_DIR);
+            harper_logger_rw = requireUncached('../../../utility/logging/harper_logger');
+            write_final_log_rw = harper_logger_rw.__set__('writeToFinalLog', write_final_log_stub);
+        });
+
+        afterEach(() => {
+            sandbox.resetHistory();
+        });
+
+        after(() => {
+            fs_extra.emptyDirSync(TEST_LOG_DIR);
+            write_final_log_rw();
+        });
+
+        it('Test info loglevel functions call writeToFinalLog', () => {
+            harper_logger_rw.info(test_msg, true);
+            expect(write_final_log_stub.getCall(0).args[0]).to.equal('info');
+            expect(write_final_log_stub.getCall(0).args[1]).to.equal(test_msg);
+        });
+
+        it('Test trace loglevel functions call writeToFinalLog', () => {
+            harper_logger_rw.trace(test_msg, true);
+            expect(write_final_log_stub.getCall(0).args[0]).to.equal('trace');
+            expect(write_final_log_stub.getCall(0).args[1]).to.equal(test_msg);
+        });
+
+        it('Test error loglevel functions call writeToFinalLog', () => {
+            harper_logger_rw.error(test_msg, true);
+            expect(write_final_log_stub.getCall(0).args[0]).to.equal('error');
+            expect(write_final_log_stub.getCall(0).args[1]).to.equal(test_msg);
+        });
+
+        it('Test fatal loglevel functions call writeToFinalLog', () => {
+            harper_logger_rw.fatal(test_msg, true);
+            expect(write_final_log_stub.getCall(0).args[0]).to.equal('fatal');
+            expect(write_final_log_stub.getCall(0).args[1]).to.equal(test_msg);
+        });
+
+        it('Test debug loglevel functions call writeToFinalLog', () => {
+            harper_logger_rw.debug(test_msg, true);
+            expect(write_final_log_stub.getCall(0).args[0]).to.equal('debug');
+            expect(write_final_log_stub.getCall(0).args[1]).to.equal(test_msg);
+        });
+
+        it('Test warn loglevel functions call writeToFinalLog', () => {
+            harper_logger_rw.warn(test_msg, true);
+            expect(write_final_log_stub.getCall(0).args[0]).to.equal('warn');
+            expect(write_final_log_stub.getCall(0).args[1]).to.equal(test_msg);
+        });
+
+        it('Test notify loglevel functions call writeToFinalLog', () => {
+            harper_logger_rw.notify(test_msg, true);
+            expect(write_final_log_stub.getCall(0).args[0]).to.equal('notify');
+            expect(write_final_log_stub.getCall(0).args[1]).to.equal(test_msg);
         });
     });
 });

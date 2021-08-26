@@ -13,7 +13,7 @@ const env = require('../../utility/environment/environmentManager');
 const { handleHDBError, hdb_errors } = require('../../utility/errors/hdbError');
 const { HDB_ERROR_MSGS, HTTP_STATUS_CODES } = hdb_errors;
 
-const CUSTOM_FUNCTION_TEMPLATE = path.resolve(__dirname, '../../customFunctionTemplate');
+const CUSTOM_FUNCTION_TEMPLATE = path.resolve(__dirname, '../../custom_function_template');
 
 function isCFEnabled() {
     const custom_functions_enabled = env.getProperty(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_ENABLED_KEY);
@@ -62,6 +62,7 @@ function getCustomFunctions() {
             response[folderName] = {
                 routes: fg.sync(`${project_folder}/routes/*.js`).map((filepath) => filepath.split('/').pop().split('.js')[0]),
                 helpers: fg.sync(`${project_folder}/helpers/*.js`).map((filepath) => filepath.split('/').pop().split('.js')[0]),
+                static: fs.existsSync(`${project_folder}/static`) && fg.sync(`${project_folder}/static/**/*`).length,
             };
         });
     } catch (err) {

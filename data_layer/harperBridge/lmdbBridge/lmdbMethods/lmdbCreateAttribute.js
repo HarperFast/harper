@@ -30,7 +30,7 @@ module.exports = lmdbCreateAttribute;
 async function lmdbCreateAttribute(create_attribute_obj) {
     let validation_error = schema_validator.attribute_object(create_attribute_obj);
     if (validation_error) {
-        throw handleHDBError(new Error(), validation_error.message, hdb_errors.HTTP_STATUS_CODES.BAD_REQUEST);
+        throw handleHDBError(new Error(), validation_error.message, hdb_errors.HTTP_STATUS_CODES.BAD_REQUEST, undefined, undefined, true);
     }
 
     //the validator strings everything so we need to recast the booleans on create_attribute_obj

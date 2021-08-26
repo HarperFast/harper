@@ -85,7 +85,7 @@ async function addRole(role){
     }
 
     if(search_role && search_role.length > 0) {
-        throw handleHDBError(new Error(), HDB_ERROR_MSGS.ROLE_ALREADY_EXISTS(role.role), HTTP_STATUS_CODES.CONFLICT);
+        throw handleHDBError(new Error(), HDB_ERROR_MSGS.ROLE_ALREADY_EXISTS(role.role), HTTP_STATUS_CODES.CONFLICT, undefined, undefined, true);
     }
 
     if(!role.id)
@@ -150,14 +150,14 @@ async function alterRole(role){
 async function dropRole(role){
     let validation_resp = validation.dropRoleValidation(role);
     if (validation_resp){
-        throw handleHDBError(new Error(), validation_resp, HTTP_STATUS_CODES.BAD_REQUEST);
+        throw handleHDBError(new Error(), validation_resp, HTTP_STATUS_CODES.BAD_REQUEST, undefined, undefined, true);
     }
 
     let role_id_search = new SearchByHashObject(terms.SYSTEM_SCHEMA_NAME, terms.SYSTEM_TABLE_NAMES.ROLE_TABLE_NAME, [role.id], ['role']);
     let role_name = await p_search_search_by_hash(role_id_search);
 
     if(role_name.length === 0) {
-        throw handleHDBError(new Error(), HDB_ERROR_MSGS.ROLE_NOT_FOUND, HTTP_STATUS_CODES.NOT_FOUND);
+        throw handleHDBError(new Error(), HDB_ERROR_MSGS.ROLE_NOT_FOUND, HTTP_STATUS_CODES.NOT_FOUND, undefined, undefined, true);
     }
 
     let search_user_by_roleid = new SearchObject(terms.SYSTEM_SCHEMA_NAME, terms.SYSTEM_TABLE_NAMES.USER_TABLE_NAME, 'role', role.id, undefined, ['username', 'active']);

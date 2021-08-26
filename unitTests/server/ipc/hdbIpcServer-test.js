@@ -69,10 +69,4 @@ describe('Test hdbIpcServer module', () => {
         message_listener_rw(data_test);
         expect(log_warn_stub).to.have.been.calledWith("IPC event missing 'message'");
     });
-
-    it('Test invalid event type logged', () => {
-        const data_test = { type: 'delete_db', message: 'unit-test' };
-        message_listener_rw(data_test);
-        expect(log_warn_stub).to.have.been.calledWith('IPC server received invalid event type: delete_db');
-    });
 });

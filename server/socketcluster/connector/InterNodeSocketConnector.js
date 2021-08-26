@@ -1,27 +1,27 @@
 const SocketConnector = require('./SocketConnector');
 const sc_util = require('../util/socketClusterUtils');
 const log = require('../../../utility/logging/harper_logger');
-const AssignToHdbChild = require('../decisionMatrix/rules/AssignToHdbChildWorkerRule');
 const hdb_terms = require('../../../utility/hdbTerms');
 const env = require('../../../utility/environment/environmentManager');
 env.initSync();
 const hdb_clustering_connections_path = env.getHdbBasePath() + '/clustering/connections/';
 const fs = require('fs-extra');
-const promisify = require('util').promisify;
-const p_settimeout = promisify(setTimeout);
+const global_schema = require('../../../utility/globalSchema');
+const util = require("util");
+const types = require('../types');
+const p_schema_to_global = util.promisify(global_schema.setSchemaDataToGlobal);
 
 const CATCHUP_INTERVAL = 10000;
-const WORKER_RESPONSE_HANDLER = 1000;
 
 class InterNodeSocketConnector extends SocketConnector{
     /**
      * @param socket_client
-     * @param worker
+     * @param local_connection
      * @param additional_info
      * @param options
      * @param credentials
      */
-    constructor(socket_client, worker, additional_info = {}, options = {}, credentials){
+    constructor(socket_client, local_connection, additional_info = {}, options = {}, credentials = {}){
         super(socket_client, additional_info, options, credentials);
         if(additional_info.client_name !== undefined && additional_info.server_name !== undefined) {
             options.query.node_client_name = additional_info.client_name;
@@ -29,12 +29,15 @@ class InterNodeSocketConnector extends SocketConnector{
         }
         //TODO possibly change this to the node name, rather hostname / port?
         this.connection_path = hdb_clustering_connections_path + this.socket.options.hostname + ':' + this.socket.options.port;
-        this.worker = worker;
+
+        this.local_connection = local_connection;
     }
 
     async initialize(){
+        await p_schema_to_global();
         try {
-            this.connected_timestamp = (await fs.readFile(this.connection_path)).toString();
+            //remove any line breaks that may have been added to the file
+            this.connected_timestamp = (await fs.readFile(this.connection_path)).toString().replace(/(\r\n|\n|\r)/gm,"");
         } catch(e){
             if(e.code !== 'ENOENT') {
                 log.error(e);
@@ -58,16 +61,23 @@ class InterNodeSocketConnector extends SocketConnector{
             if (this.additional_info && this.connected_timestamp) {
                 //check subscriptions so we can locally fetch catchup and ask for remote catchup
                 for (const subscription of this.additional_info.subscriptions) {
+                    //we want to skip performing catchup requests for hdb_internal
+                    if(subscription.channel.startsWith(hdb_terms.HDB_INTERNAL_SC_CHANNEL_PREFIX)){
+                        continue;
+                    }
+
                     if (subscription.publish === true) {
                         try {
                             let catch_up_msg = await sc_util.catchupHandler(subscription.channel, this.connected_timestamp, null);
                             if (catch_up_msg) {
+                                log.trace(`send catchup payload`);
                                 this.socket.publish(hdb_terms.INTERNAL_SC_CHANNELS.CATCHUP, catch_up_msg);
                             }
                         } catch (e) {
                             log.error(e);
                         }
                     }
+
                     if (subscription.subscribe === true) {
                         //TODO correct the emits with CORE-402
                         this.socket.emit('catchup', {
@@ -92,19 +102,23 @@ class InterNodeSocketConnector extends SocketConnector{
     }
 
     async recordConnectionTimestamp(){
-        if(this.socket.state === this.socket.OPEN && this.socket.authState === this.socket.AUTHENTICATED){
-            this.connected_timestamp = Date.now();
-
-            try {
-                await fs.writeFile(this.connection_path, this.connected_timestamp.toString());
-            } catch(e){
-                log.error(e);
+        this.socket.emit(types.EMIT_TYPES.CONNECT_CHECK, {}, async (error, response)=>{
+            if(error){
+                log.warn(`error on cross node check: ${error}`);
+            } else{
+                this.connected_timestamp = Date.now();
+                log.info(`new connect time: ${this.connected_timestamp}`);
+                try {
+                    await fs.writeFileSync(this.connection_path, this.connected_timestamp.toString());
+                } catch(e){
+                    log.error(e);
+                }
             }
-        }
+        });
     }
 
     async catchupResponseHandler(error, catchup_msg) {
-        log.debug('Received catchup message');
+        log.debug(`start catchupResponseHandler`);
         if(error) {
             log.info('Error in catchupResponseHandler');
             log.error(error);
@@ -116,20 +130,8 @@ class InterNodeSocketConnector extends SocketConnector{
             return;
         }
 
-        while(this.worker.hdb_workers.length === 0){
-            await p_settimeout(WORKER_RESPONSE_HANDLER);
-        }
-
         try {
-            let req = {
-                channel: hdb_terms.INTERNAL_SC_CHANNELS.CATCHUP,
-                data: catchup_msg,
-                hdb_header: {}
-            };
-
-            log.debug('Sending catchup message to hdb child.');
-            let assign = new AssignToHdbChild();
-            assign.evaluateRule(req, null, this.worker).then(()=>{});
+            this.local_connection.publish(hdb_terms.INTERNAL_SC_CHANNELS.CATCHUP, catchup_msg);
         } catch (e) {
             log.error(e);
         }

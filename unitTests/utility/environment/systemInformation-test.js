@@ -438,15 +438,10 @@ describe('test getTableSize function', ()=>{
         test: {}
     };
     let rw_schema_describe;
-    let rw_data_store_type;
     let rw_lmdb_get_table_size;
     before(()=>{
         rw_schema_describe = rw_system_information.__set__('schema_describe', {
             describeAll: async ()=>RETURN_SCHEMA
-        });
-
-        rw_data_store_type = rw_system_information.__set__('env', {
-            getDataStoreType: ()=>'lmdb'
         });
 
         rw_lmdb_get_table_size = rw_system_information.__set__('lmdb_get_table_size', async (table_object)=>{
@@ -456,7 +451,6 @@ describe('test getTableSize function', ()=>{
 
     after(()=>{
         rw_schema_describe();
-        rw_data_store_type();
         rw_lmdb_get_table_size();
     });
 

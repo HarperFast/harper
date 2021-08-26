@@ -120,7 +120,6 @@ module.exports = {
     setLogLevel:setLogLevel,
     writeLog:writeLog,
     readLog:readLog,
-    finalLogger,
     log_level,
     NOTIFY,
     FATAL,
@@ -235,14 +234,13 @@ function initPinoLogger() {
         // asynchronously flush every to keep the buffer empty
         // in periods of low activity
         setInterval(function () {
-            pino_logger.flush();
+            if (pino_logger !== undefined) pino_logger.flush();
         }, LOG_BUFFER_FLUSH_INTERVAL).unref();
 
         final_logger = pino.final(pino_logger);
 
         std_out_logger = pino(pino_args);
         std_err_logger = pino(pino_args, process.stderr);
-
     } catch(err) {
         console.error(err);
         throw err;
@@ -250,20 +248,25 @@ function initPinoLogger() {
 }
 
 /**
- * finalLogger is a specialist logger that synchronously flushes on every write
+ * final log is a specialist logger that synchronously flushes on every write
  * @returns {undefined|*|(function(*=, ...[*]): *)}
  */
-function finalLogger() {
+function writeToFinalLog(level, message) {
     if (pino_logger === undefined) {
         initPinoLogger();
     }
 
     if (final_logger === undefined) {
         final_logger = pino.final(pino_logger);
-        return final_logger;
     }
 
-    return final_logger;
+    if (log_to_file) {
+        final_logger[level](message);
+    }
+
+    if (log_to_stdstreams) {
+        logToStdStream(level, message);
+    }
 }
 
 /**
@@ -370,57 +373,92 @@ function removeOldLogs() {
 /**
  * Writes a info message to the log.
  * @param {string} message - The string message to write to the log
+ * @param {boolean} final_log - Write to final_log
  */
-function info(message) {
-    writeLog(INFO, message);
+function info(message, final_log = false) {
+    if (final_log) {
+        writeToFinalLog(INFO, message);
+    } else {
+        writeLog(INFO, message);
+    }
 }
 
 /**
  * Writes a trace message to the log.
  * @param {string} message - The string message to write to the log
+ * @param {boolean} final_log - Write to final_log
  */
-function trace(message) {
-    writeLog(TRACE, message);
+function trace(message, final_log = false) {
+    if (final_log) {
+        writeToFinalLog(TRACE, message);
+    } else {
+        writeLog(TRACE, message);
+    }
 }
 
 /**
  * Writes a error message to the log.
  * @param {string} message - The string message to write to the log
+ * @param {boolean} final_log - Write to final_log
  */
-function error(message) {
-    writeLog(ERR, message);
+function error(message, final_log= false) {
+    if (final_log) {
+        writeToFinalLog(ERR, message);
+    } else {
+        writeLog(ERR, message);
+    }
 }
 
 /**
  * Writes a fatal message to the log.
  * @param {string} message - The string message to write to the log
+ * @param {boolean} final_log - Write to final_log
  */
-function fatal(message) {
-    writeLog(FATAL, message);
+function fatal(message, final_log= false) {
+    if (final_log) {
+        writeToFinalLog(FATAL, message);
+    } else {
+        writeLog(FATAL, message);
+    }
 }
 
 /**
  * Writes a debug message to the log.
  * @param {string} message - The string message to write to the log
+ * @param {boolean} final_log - Write to final_log
  */
-function debug(message) {
-    writeLog(DEBUG, message);
+function debug(message, final_log = false) {
+    if (final_log) {
+        writeToFinalLog(DEBUG, message);
+    } else {
+        writeLog(DEBUG, message);
+    }
 }
 
 /**
  * Writes a warn message to the log.
  * @param {string} message - The string message to write to the log
+ * @param {boolean} final_log - Write to final_log
  */
-function warn(message) {
-    writeLog(WARN, message);
+function warn(message, final_log= false) {
+    if (final_log) {
+        writeToFinalLog(WARN, message);
+    } else {
+        writeLog(WARN, message);
+    }
 }
 
 /**
  * Writes a notify message to the log.
  * @param {string} message - The string message to write to the log
+ * @param {boolean} final_log - Write to final_log
  */
-function notify(message) {
-    writeLog(NOTIFY, message);
+function notify(message, final_log= false) {
+    if (final_log) {
+        writeToFinalLog(NOTIFY, message);
+    } else {
+        writeLog(NOTIFY, message);
+    }
 }
 
 /**

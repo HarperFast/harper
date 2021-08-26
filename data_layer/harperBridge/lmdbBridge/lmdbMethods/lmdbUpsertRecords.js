@@ -28,7 +28,7 @@ async function lmdbUpsertRecords(upsert_obj) {
     try {
         validation_result = insert_update_validate(upsert_obj);
     } catch(err) {
-        throw handleHDBError(err, err.message, hdb_errors.HTTP_STATUS_CODES.BAD_REQUEST);
+        throw handleHDBError(err, err.message, hdb_errors.HTTP_STATUS_CODES.BAD_REQUEST, undefined, undefined, true);
     }
 
     let { schema_table, attributes} = validation_result;

@@ -71,13 +71,25 @@ describe('Test AuthMiddleware eval_function', function() {
    it('Test evalFunction nominal', () => {
        let request = test_util.deepClone(TEST_REQUEST);
        request.socket.authState = AUTHENTICATED;
+       request.socket.remoteAddress = 'ffff:127.0.0.1';
         let result = test_instance.eval_function(request, next_stub);
         assert.notEqual(next_stub.calledOnce, true, 'next should never be called by MiddlewareIF types');
         assert.equal(result, undefined, 'expected no false return');
    });
+
+    it('Test evalFunction unauthorized with local address', () => {
+        let request = test_util.deepClone(TEST_REQUEST);
+        request.socket.authState = UNAUTHENTICATED;
+        request.socket.remoteAddress = 'ffff:127.0.0.1';
+        let result = test_instance.eval_function(request, next_stub);
+        assert.notEqual(next_stub.calledOnce, true, 'next should never be called by MiddlewareIF types');
+        assert.equal(result, undefined, 'expected no false return');
+    });
+
     it('Test evalFunction with socket unauthoried', () => {
         let request = test_util.deepClone(TEST_REQUEST);
         request.socket.authState = UNAUTHENTICATED;
+        request.socket.remoteAddress = 'http://172.1.1.1';
         let result = test_instance.eval_function(request, next_stub);
         assert.notEqual(next_stub.calledOnce, true, 'next should never be called by MiddlewareIF types');
         assert.equal(result, types.ERROR_CODES.MIDDLEWARE_SWALLOW, 'expected no false return');

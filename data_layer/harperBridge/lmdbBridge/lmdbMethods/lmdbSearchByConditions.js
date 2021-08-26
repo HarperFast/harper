@@ -24,7 +24,7 @@ async function lmdbSearchByConditions(search_object) {
     try {
         let validation_error = search_validator(search_object, 'conditions');
         if (validation_error) {
-            throw handleHDBError(validation_error, validation_error.message, HTTP_STATUS_CODES.BAD_REQUEST);
+            throw handleHDBError(validation_error, validation_error.message, HTTP_STATUS_CODES.BAD_REQUEST, undefined, undefined, true);
         }
 
         //set the operator to always be lowercase for later evaluations

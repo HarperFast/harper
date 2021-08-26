@@ -58,7 +58,7 @@ async function addUser(user) {
 
     let validation_resp = validation.addUserValidation(clean_user);
     if(validation_resp){
-        throw handleHDBError(new Error(), validation_resp.message, HTTP_STATUS_CODES.BAD_REQUEST);
+        throw handleHDBError(new Error(), validation_resp.message, HTTP_STATUS_CODES.BAD_REQUEST, undefined, undefined, true);
     }
 
     let search_obj = {
@@ -79,10 +79,10 @@ async function addUser(user) {
     }
 
     if (!search_role || search_role.length < 1) {
-        throw handleHDBError(new Error(), HDB_ERROR_MSGS.ROLE_NAME_NOT_FOUND(clean_user.role), HTTP_STATUS_CODES.NOT_FOUND);
+        throw handleHDBError(new Error(), HDB_ERROR_MSGS.ROLE_NAME_NOT_FOUND(clean_user.role), HTTP_STATUS_CODES.NOT_FOUND, undefined, undefined, true);
     }
     if (search_role.length > 1) {
-        throw handleHDBError(new Error(), HDB_ERROR_MSGS.DUP_ROLES_FOUND(clean_user.role), HTTP_STATUS_CODES.CONFLICT);
+        throw handleHDBError(new Error(), HDB_ERROR_MSGS.DUP_ROLES_FOUND(clean_user.role), HTTP_STATUS_CODES.CONFLICT, undefined, undefined, true);
     }
 
     if (search_role[0].permission.cluster_user === true) {
@@ -120,7 +120,7 @@ async function addUser(user) {
     }
 
     if(success.skipped_hashes.length === 1) {
-        throw handleHDBError(new Error(), HDB_ERROR_MSGS.USER_ALREADY_EXISTS(clean_user.username), HTTP_STATUS_CODES.CONFLICT);
+        throw handleHDBError(new Error(), HDB_ERROR_MSGS.USER_ALREADY_EXISTS(clean_user.username), HTTP_STATUS_CODES.CONFLICT, undefined, undefined, true);
     }
 
     const new_user = Object.assign({}, clean_user);
@@ -195,13 +195,13 @@ async function alterUser(json_message) {
         if (!role_data || role_data.length === 0) {
             const msg = HDB_ERROR_MSGS.ALTER_USER_ROLE_NOT_FOUND(clean_user.role);
             logger.error(msg);
-            throw handleHDBError(new Error(), msg, HTTP_STATUS_CODES.NOT_FOUND);
+            throw handleHDBError(new Error(), msg, HTTP_STATUS_CODES.NOT_FOUND, undefined, undefined, true);
         }
 
         if (role_data.length > 1) {
             const msg = HDB_ERROR_MSGS.ALTER_USER_DUP_ROLES(clean_user.role);
             logger.error(msg);
-            throw handleHDBError(new Error(), msg, HTTP_STATUS_CODES.CONFLICT);
+            throw handleHDBError(new Error(), msg, HTTP_STATUS_CODES.CONFLICT, undefined, undefined, true);
         }
 
         clean_user.role = role_data[0].id;
@@ -262,7 +262,7 @@ async function dropUser(user) {
         };
 
         if (hdb_utility.isEmpty(global.hdb_users.get(user.username))) {
-            throw handleHDBError(new Error(), HDB_ERROR_MSGS.USER_NOT_EXIST(user.username), HTTP_STATUS_CODES.NOT_FOUND);
+            throw handleHDBError(new Error(), HDB_ERROR_MSGS.USER_NOT_EXIST(user.username), HTTP_STATUS_CODES.NOT_FOUND, undefined, undefined, true);
         }
 
         let success;
@@ -529,15 +529,15 @@ async function findAndValidateUser(username, pw, validate_password = true) {
     let user_tmp = global.hdb_users.get(username);
 
     if (!user_tmp) {
-        throw handleHDBError(new Error(), AUTHENTICATION_ERROR_MSGS.GENERIC_AUTH_FAIL, HTTP_STATUS_CODES.UNAUTHORIZED);
+        throw handleHDBError(new Error(), AUTHENTICATION_ERROR_MSGS.GENERIC_AUTH_FAIL, HTTP_STATUS_CODES.UNAUTHORIZED, undefined, undefined, true);
     }
 
     if (user_tmp && !user_tmp.active) {
-        throw handleHDBError(new Error(), AUTHENTICATION_ERROR_MSGS.USER_INACTIVE, HTTP_STATUS_CODES.UNAUTHORIZED);
+        throw handleHDBError(new Error(), AUTHENTICATION_ERROR_MSGS.USER_INACTIVE, HTTP_STATUS_CODES.UNAUTHORIZED, undefined, undefined, true);
     }
     let user = Object.assign({}, user_tmp);
     if (validate_password === true && !password.validate(user.password, pw)) {
-        throw handleHDBError(new Error(), AUTHENTICATION_ERROR_MSGS.GENERIC_AUTH_FAIL, HTTP_STATUS_CODES.UNAUTHORIZED);
+        throw handleHDBError(new Error(), AUTHENTICATION_ERROR_MSGS.GENERIC_AUTH_FAIL, HTTP_STATUS_CODES.UNAUTHORIZED, undefined, undefined, true);
     }
 
     delete user.password;

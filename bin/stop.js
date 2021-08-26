@@ -1,30 +1,18 @@
 "use strict";
-const ps_list = require('../utility/psList');
+
 const hdb_terms = require('../utility/hdbTerms');
-const os = require('os');
-const async_set_timeout = require('util').promisify(setTimeout);
-const log = require('../utility/logging/harper_logger');
-const final_logger = log.finalLogger();
-const signalling = require('../utility/signalling');
-const { RestartMsg } = require('../server/ipc/utility/ipcUtils');
+const hdb_logger = require('../utility/logging/harper_logger');
 const hdb_utils = require('../utility/common_utils');
-const path = require('path');
+const pm2_utils = require('../utility/pm2/utilityFunctions');
+const env_mngr = require('../utility/environment/environmentManager');
+const minimist = require('minimist');
 const { handleHDBError, hdb_errors } = require('../utility/errors/hdbError');
 const { HTTP_STATUS_CODES } = hdb_errors;
 
-const HDB_PROC_END_TIMEOUT = 100;
-const RESTART_RESPONSE_SOFT = `Restarting HarperDB. This may take up to ${hdb_terms.RESTART_TIMEOUT_MS/1000} seconds.`;
-const RESTART_RESPONSE_HARD = `Force restarting HarperDB`;
-const RESTART_RESPONSE_CF = 'Restarting custom_functions';
-const CHECK_PROCS_LOOP_LIMIT = 5;
-const IPC_STOP_ERR = 'Error stopping the HDB IPC server. Check log for more detail.';
-const CF_STOP_ERR = 'Error stopping the Custom Functions server. Check log for more detail.';
+const RESTART_RESPONSE = `Restarting HarperDB. This may take up to ${hdb_terms.RESTART_TIMEOUT_MS/1000} seconds.`;
 const INVALID_SERVICE_ERR = 'Invalid service';
 const MISSING_SERVICE = "'service' is required";
-const HDB_SERVER_CWD = path.resolve(__dirname, '../server');
-const SC_SERVER_CWD = path.resolve(__dirname, '../server/socketcluster');
-const IPC_SERVER_CWD = path.resolve(__dirname, '../server/ipc');
-const CF_SERVER_CWD = path.resolve(__dirname, '../server/customFunctions');
+const RESTART_MSG = 'Restarting all services';
 
 module.exports = {
     stop,
@@ -33,24 +21,114 @@ module.exports = {
 };
 
 /**
- * Send a signal to the parent process that HDB needs to be restarted.
- * @param json_message
- * @returns {Promise}
+ * Restart all services or designated services.
+ * @returns {Promise<>}
  */
-async function restartProcesses(json_message) {
-    const is_forced_restart = json_message.force === true || json_message.force === 'true';
-
+async function restartProcesses() {
     try {
-        if (is_forced_restart) {
-            signalling.signalRestart(new RestartMsg(process.pid, true));
-            return RESTART_RESPONSE_HARD;
+        const { clustering_enabled, custom_func_enabled } = checkEnvSettings();
+        // Restart can be called with a --service argument which allows designated services to be restarted.
+        const cmd_args = minimist(process.argv);
+        if (!hdb_utils.isEmpty(cmd_args.service)) {
+            if (typeof cmd_args.service !== 'string') {
+                const service_err_msg = `Restart service argument expected a string but received: ${cmd_args.service}`;
+                hdb_logger.error(service_err_msg, true);
+                return service_err_msg;
+            }
+            const cmd_args_array = cmd_args.service.split(',');
+            for (const args of cmd_args_array) {
+                const service_req = args.toLowerCase();
+                if (hdb_terms.PROCESS_DESCRIPTORS_VALIDATE[service_req] === undefined) {
+                    console.error(`Restart received unrecognized service command argument: ${service_req}`);
+                    hdb_logger.error(`Restart received unrecognized service command argument: ${service_req}`, true);
+                    continue;
+                }
+
+                const service = hdb_terms.PROCESS_DESCRIPTORS_VALIDATE[service_req];
+                console.log(`Restarting ${service}`);
+                hdb_logger.trace(`Restarting ${service}`, true);
+
+                // We need to allow for restart to be called on services that arent registered/managed by pm2. If restart is called on a
+                // service that isn't registered that service will be started by pm2.
+                if (await pm2_utils.isServiceRegistered(service)) {
+                    // If the service is registered but the settings value is not set to enabled, stop the service.
+                    if (service === hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING && !clustering_enabled) {
+                        await pm2_utils.stop(service);
+                        hdb_logger.trace(`Stopping ${service}`, true);
+                    } else if (service === hdb_terms.PROCESS_DESCRIPTORS.CUSTOM_FUNCTIONS && !custom_func_enabled) {
+                        await pm2_utils.stop(service);
+                        hdb_logger.trace(`Stopping ${service}`, true);
+                    } else {
+                        await restartService({ service });
+                    }
+                } else if (service === hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING) {
+                    if (clustering_enabled) {
+                        await pm2_utils.startService(service);
+                        hdb_logger.trace(`Starting ${service}`, true);
+                    } else {
+                        const sc_err_msg = `${service} is not enabled in hdb/setting.js and cannot be restarted.`;
+                        hdb_logger.error(sc_err_msg, true);
+                        console.log(sc_err_msg);
+                    }
+                } else if (service === hdb_terms.PROCESS_DESCRIPTORS.CUSTOM_FUNCTIONS) {
+                    if (custom_func_enabled) {
+                        await pm2_utils.startService(service);
+                        hdb_logger.trace(`Starting ${service}`, true);
+                    } else {
+                        const cf_err_msg = `${service} is not enabled in hdb/setting.js and cannot be restarted.`;
+                        hdb_logger.error(cf_err_msg, true);
+                        console.log(cf_err_msg);
+                    }
+                } else {
+                    await pm2_utils.startService(service);
+                }
+
+                hdb_logger.notify(`${service} successfully restarted.`, true);
+            }
+            return;
         }
 
-        signalling.signalRestart(new RestartMsg(process.pid, false));
-        return RESTART_RESPONSE_SOFT;
+        console.log(RESTART_RESPONSE);
+
+        const is_sc_reg = await pm2_utils.isServiceRegistered(hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING);
+        // If clustering is enabled in setting.js but is not registered to pm2, start service.
+        if (clustering_enabled && !is_sc_reg) {
+            await pm2_utils.startService(hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING);
+            await pm2_utils.startService(hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_CONNECTOR);
+            hdb_logger.trace(`Starting ${hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING}`, true);
+        }
+
+        const is_cf_reg = await pm2_utils.isServiceRegistered(hdb_terms.PROCESS_DESCRIPTORS.CUSTOM_FUNCTIONS);
+        // If custom functions is enabled in setting.js but is not registered to pm2, start service.
+        if (custom_func_enabled && !is_cf_reg) {
+            await pm2_utils.startService(hdb_terms.PROCESS_DESCRIPTORS.CUSTOM_FUNCTIONS);
+            hdb_logger.trace(`Starting ${hdb_terms.PROCESS_DESCRIPTORS.CUSTOM_FUNCTIONS}`, true);
+        }
+
+        let exclude_from_restart = [];
+        // If clustering is disabled in setting.js and is registered to pm2, stop service.
+        if (!clustering_enabled && is_sc_reg) {
+            exclude_from_restart.push(hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING);
+            await pm2_utils.stop(hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING);
+            await pm2_utils.stop(hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_CONNECTOR);
+            hdb_logger.trace(`Stopping ${hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING}`, true);
+        }
+
+        // If custom functions is disabled in setting.js and is registered to pm2, stop service.
+        if (!custom_func_enabled && is_cf_reg) {
+            exclude_from_restart.push(hdb_terms.PROCESS_DESCRIPTORS.CUSTOM_FUNCTIONS);
+            await pm2_utils.stop(hdb_terms.PROCESS_DESCRIPTORS.CUSTOM_FUNCTIONS);
+            hdb_logger.trace(`Stopping ${hdb_terms.PROCESS_DESCRIPTORS.CUSTOM_FUNCTIONS}`, true);
+        }
+
+        // If no service argument is passed all services are restarted.
+        hdb_logger.notify(RESTART_MSG, true);
+        await pm2_utils.restartAllServices(exclude_from_restart);
+
+        return RESTART_RESPONSE;
     } catch(err) {
         let msg = `There was an error restarting HarperDB. ${err}`;
-        final_logger.error(msg);
+        hdb_logger.error(msg, true);
         return msg;
     }
 }
@@ -60,17 +138,68 @@ async function restartProcesses(json_message) {
  * @param json_message
  * @returns {string}
  */
-function restartService(json_message) {
+async function restartService(json_message) {
     if (hdb_utils.isEmpty(json_message.service)) {
         throw handleHDBError(new Error(), MISSING_SERVICE, HTTP_STATUS_CODES.BAD_REQUEST, undefined, undefined, true);
     }
-
-    if (!hdb_utils.isEmpty(json_message.service) && json_message.service !== hdb_terms.SERVICES.CUSTOM_FUNCTIONS) {
+    const service_req = json_message.service.toLowerCase();
+    if (hdb_terms.PROCESS_DESCRIPTORS_VALIDATE[service_req] === undefined) {
         throw handleHDBError(new Error(), INVALID_SERVICE_ERR, HTTP_STATUS_CODES.BAD_REQUEST,undefined, undefined,true);
     }
 
-    signalling.signalRestart(new RestartMsg(process.pid, false, json_message.service));
-    return RESTART_RESPONSE_CF;
+    const { clustering_enabled, custom_func_enabled } = checkEnvSettings();
+    const service = hdb_terms.PROCESS_DESCRIPTORS_VALIDATE[service_req];
+
+    // For clustered services a rolling restart is available.
+    if (service === hdb_terms.PROCESS_DESCRIPTORS.HDB) {
+        await pm2_utils.reloadStopStart(service);
+    } else if (service === hdb_terms.PROCESS_DESCRIPTORS.CUSTOM_FUNCTIONS || service === hdb_terms.SERVICES.CUSTOM_FUNCTIONS) {
+        const is_cf_reg = await pm2_utils.isServiceRegistered(service);
+        if (custom_func_enabled) {
+            // If the service is registered to pm2 it can be restarted, if it isn't it must me started.
+            if (is_cf_reg) {
+                await pm2_utils.reloadStopStart(service);
+                hdb_logger.trace(`Reloading ${service}`, true);
+            } else {
+                await pm2_utils.startService(service);
+                hdb_logger.trace(`Starting ${service}`, true);
+            }
+        } else if (!custom_func_enabled && is_cf_reg) {
+            // If the service is registered but not enabled in settings, stop service.
+            await pm2_utils.stop(service);
+            hdb_logger.trace(`Stopping ${service}`, true);
+        } else {
+            const cf_err_msg = `${service} is not enabled in hdb/setting.js and cannot be restarted.`;
+            hdb_logger.error(cf_err_msg, true);
+            throw handleHDBError(new Error(), cf_err_msg, HTTP_STATUS_CODES.BAD_REQUEST,undefined, undefined,true);
+        }
+    } else if (service === hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING) {
+        const is_sc_reg = await pm2_utils.isServiceRegistered(service);
+        if (clustering_enabled) {
+            // If the service is registered to pm2 it can be restarted, if it isn't it must me started.
+            if (is_sc_reg) {
+                await pm2_utils.restart(service);
+                hdb_logger.trace(`Restarting ${service}`, true);
+            } else {
+                await pm2_utils.startService(service);
+                hdb_logger.trace(`Starting ${service}`, true);
+            }
+        } else if (!clustering_enabled && is_sc_reg) {
+            // If the service is registered but not enabled in settings, stop service.
+            await pm2_utils.stop(service);
+            hdb_logger.trace(`Stopping ${service}`, true);
+        } else {
+            const cf_err_msg = `${service} is not enabled in hdb/setting.js and cannot be restarted.`;
+            hdb_logger.error(cf_err_msg, true);
+            throw handleHDBError(new Error(), cf_err_msg, HTTP_STATUS_CODES.BAD_REQUEST,undefined, undefined,true);
+        }
+    } else {
+        await pm2_utils.restart(service);
+    }
+
+    const restart_msg = `Restarting ${service}`;
+    hdb_logger.notify(restart_msg, true);
+    return restart_msg;
 }
 
 /**
@@ -78,82 +207,54 @@ function restartService(json_message) {
  * this will fail.
  */
 async function stop() {
-    console.log("Stopping HarperDB.");
     try {
-        final_logger.info(`Stopping ${hdb_terms.SC_PROC_NAME} - ${hdb_terms.SC_PROC_DESCRIPTOR}.`);
-        await killProcs(path.join(SC_SERVER_CWD, hdb_terms.SC_PROC_NAME), hdb_terms.SC_PROC_DESCRIPTOR);
-        final_logger.info(`Stopping ${hdb_terms.HDB_PROC_NAME} - ${hdb_terms.HDB_PROC_DESCRIPTOR}.`);
-        await killProcs(path.join(HDB_SERVER_CWD, hdb_terms.HDB_PROC_NAME), hdb_terms.HDB_PROC_DESCRIPTOR);
+        // Stop can be called with a --service argument which allows designated services to be stopped.
+        const cmd_args = minimist(process.argv);
+        if (!hdb_utils.isEmpty(cmd_args.service)) {
+            if (typeof cmd_args.service !== 'string') {
+                const service_err_msg = `Restart service argument expected a string but received: ${cmd_args.service}`;
+                hdb_logger.error(service_err_msg, true);
+                console.log(service_err_msg);
+            }
 
-        try {
-            final_logger.info(`Stopping ${hdb_terms.HDB_IPC_SERVER}`);
-            await hdb_utils.stopProcess(path.join(IPC_SERVER_CWD, hdb_terms.IPC_SERVER_MODULE));
-        } catch(err) {
-            console.error(IPC_STOP_ERR);
-            final_logger.error(err);
+            const cmd_args_array = cmd_args.service.split(',');
+            for (const args of cmd_args_array) {
+                const service = args.toLowerCase();
+                if (hdb_terms.PROCESS_DESCRIPTORS_VALIDATE[service] === undefined) {
+                    hdb_logger.error(`Stop received unrecognized service command argument: ${service}`, true);
+                    continue;
+                }
+
+                await pm2_utils.stop(hdb_terms.PROCESS_DESCRIPTORS_VALIDATE[service]);
+                const log_msg = `${hdb_terms.PROCESS_DESCRIPTORS_VALIDATE[service]} successfully stopped.`;
+                hdb_logger.notify(log_msg, true);
+                console.log(log_msg);
+            }
+        } else {
+            // If no service argument is passed all services are stopped.
+            console.log("Stopping HarperDB.");
+            await pm2_utils.stopAllServices();
+            hdb_logger.notify(`HarperDB has stopped`, true);
         }
-
-        try {
-            final_logger.info(`Stopping ${hdb_terms.CUSTOM_FUNCTION_PROC_NAME}`);
-            await hdb_utils.stopProcess(path.join(CF_SERVER_CWD, hdb_terms.CUSTOM_FUNCTION_PROC_NAME));
-        } catch(err) {
-            console.error(CF_STOP_ERR);
-            final_logger.error(err);
-        }
-
-        final_logger.notify(`HarperDB has stopped`);
     } catch(err){
         console.error(err);
         throw err;
     }
 }
 
-async function killProcs(proc_name, descriptor){
-    try {
-        let curr_user = os.userInfo();
-        let harperdb_instances = await ps_list.findPs(proc_name);
-        if(harperdb_instances.length === 0) {
-            console.log(`No instances of ${descriptor} are running.`);
-            return;
-        }
-
-        harperdb_instances.forEach((proc) => {
-            // Note we are doing loose equality (==) rather than strict
-            // equality here, as find-process returns the uid as a string.  No point in spending time converting it.
-            // if curr_user.uid is 0, the user has run stop using sudo or logged in as root.
-            if (curr_user.uid == 0 || proc.uid == curr_user.uid) {
-                try {
-                    process.kill(proc.pid);
-                } catch (err) {
-                    console.error(err);
-                }
-            }
-        });
-
-        await checkHdbProcsEnd(proc_name);
-    }catch( err) {
-        throw err;
-    }
-}
-
 /**
- * Verifies all processes have stopped before fulfilling promise.
- * @returns {Promise<void>}
+ * Gets the current setting value for clustering and custom functions
+ * @returns {{clustering_enabled: boolean, custom_func_enabled: boolean}}
  */
-async function checkHdbProcsEnd(proc_name){
-    let go_on = true;
-    let x = 0;
-    do{
-        await async_set_timeout(HDB_PROC_END_TIMEOUT * x++);
+function checkEnvSettings() {
+    env_mngr.initSync();
+    const sc_env = env_mngr.getProperty(hdb_terms.HDB_SETTINGS_NAMES.CLUSTERING_ENABLED_KEY).toString().toLowerCase();
+    const cf_env = env_mngr.getProperty(hdb_terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_ENABLED_KEY).toString().toLowerCase();
+    const clustering_enabled = sc_env === 'true' || sc_env === "'true'";
+    const custom_func_enabled = cf_env === 'true' || cf_env === "'true'";
 
-        let instances = await ps_list.findPs(proc_name);
-        if(instances.length === 0) {
-            go_on = false;
-        }
-    } while(go_on && x < CHECK_PROCS_LOOP_LIMIT);
-
-    if(go_on) {
-        final_logger.error('Unable to stop all the processes');
-        console.error('Unable to stop all the processes');
-    }
+    return {
+        clustering_enabled,
+        custom_func_enabled
+    };
 }

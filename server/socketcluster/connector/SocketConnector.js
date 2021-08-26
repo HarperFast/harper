@@ -33,12 +33,12 @@ class SocketConnector{
 
         this.socket.on('connect', status =>{
             this.disconnect_timestamp = null;
-            log.notify(`Connected to cluster server.`);
+            log.debug(`Connected to cluster server.`);
         });
 
         this.socket.on('disconnect', status =>{
             this.disconnect_timestamp = Date.now();
-            log.notify(`Disconnected from cluster server with code: ${status} - ${terms.WEBSOCKET_CLOSE_CODE_DESCRIPTION_LOOKUP[status]}`);
+            log.debug(`Disconnected from cluster server with code: ${status} - ${terms.WEBSOCKET_CLOSE_CODE_DESCRIPTION_LOOKUP[status]}`);
         });
 
         this.socket.on('login', (data, res)=>{

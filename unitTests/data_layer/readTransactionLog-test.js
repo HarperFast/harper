@@ -51,32 +51,6 @@ describe('test readTransactionLog module', ()=>{
         assert.deepStrictEqual(error, new Error(TEST_ERROR_MSGS.TEST_SCHEMA_OP_ERROR.TABLE_REQUIRED_ERR));
     });
 
-    it('test invalid schema', async()=>{
-        let obj = new ReadTransactionLogObject('derp', 'doop');
-
-        let error = undefined;
-        try {
-            await read_txn_log(obj)
-        } catch(e){
-            error = e;
-        }
-
-        assert.deepStrictEqual(error, new Error(`Schema '${obj.schema}' does not exist`));
-    });
-
-    it('test invalid table', async()=>{
-        let obj = new ReadTransactionLogObject('dev', 'doop');
-
-        let error = undefined;
-        try {
-            await read_txn_log(obj)
-        } catch(e){
-            error = e;
-        }
-
-        assert.deepStrictEqual(error, new Error(`Table '${obj.schema}.${obj.table}' does not exist`));
-    });
-
     it('test invalid search type', async()=>{
         let obj = new ReadTransactionLogObject('dev', 'test', 'wrong');
 

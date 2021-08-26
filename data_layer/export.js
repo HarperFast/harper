@@ -46,12 +46,12 @@ async function export_local(export_object) {
     let error_message = exportCoreValidation(export_object);
     if(!hdb_utils.isEmpty(error_message)){
         hdb_logger.error(error_message);
-        throw handleHDBError(new Error(), error_message, HTTP_STATUS_CODES.BAD_REQUEST);
+        throw handleHDBError(new Error(), error_message, HTTP_STATUS_CODES.BAD_REQUEST, undefined, undefined, true);
     }
 
     if(hdb_utils.isEmpty(export_object.path)) {
         hdb_logger.error(HDB_ERROR_MSGS.MISSING_VALUE('path'));
-        throw handleHDBError(new Error(), HDB_ERROR_MSGS.MISSING_VALUE('path'), HTTP_STATUS_CODES.BAD_REQUEST);
+        throw handleHDBError(new Error(), HDB_ERROR_MSGS.MISSING_VALUE('path'), HTTP_STATUS_CODES.BAD_REQUEST, undefined, undefined, true);
     }
 
     //we will allow for a missing filename and autogen one based on the epoch
@@ -80,7 +80,7 @@ async function export_local(export_object) {
 async function confirmPath(directory_path) {
     hdb_logger.trace("in confirmPath");
     if(hdb_utils.isEmptyOrZeroLength(directory_path)) {
-        throw handleHDBError(new Error(), `Invalid path: ${directory_path}`, HTTP_STATUS_CODES.BAD_REQUEST);
+        throw handleHDBError(new Error(), `Invalid path: ${directory_path}`, HTTP_STATUS_CODES.BAD_REQUEST, undefined, undefined, true);
     }
     let stats = undefined;
     try {
@@ -95,12 +95,12 @@ async function confirmPath(directory_path) {
             error_message = err.message;
         }
         hdb_logger.error(error_message);
-        throw handleHDBError(new Error(), error_message, HTTP_STATUS_CODES.BAD_REQUEST);
+        throw handleHDBError(new Error(), error_message, HTTP_STATUS_CODES.BAD_REQUEST, undefined, undefined, true);
     }
     if (!stats.isDirectory()) {
         let err = `path '${directory_path}' is not a directory, please supply a valid folder path`;
         hdb_logger.error(err);
-        throw handleHDBError(new Error(), err, HTTP_STATUS_CODES.BAD_REQUEST);
+        throw handleHDBError(new Error(), err, HTTP_STATUS_CODES.BAD_REQUEST, undefined, undefined, true);
     }
     return true;
 }
@@ -114,13 +114,13 @@ async function confirmPath(directory_path) {
 async function saveToLocal(file_path, source_data_format, data) {
     hdb_logger.trace("in saveToLocal");
     if(hdb_common.isEmptyOrZeroLength(file_path)) {
-        throw handleHDBError(new Error(), HDB_ERROR_MSGS.INVALID_VALUE('file_path'), HTTP_STATUS_CODES.BAD_REQUEST);
+        throw handleHDBError(new Error(), HDB_ERROR_MSGS.INVALID_VALUE('file_path'), HTTP_STATUS_CODES.BAD_REQUEST, undefined, undefined, true);
     }
     if(hdb_common.isEmptyOrZeroLength(source_data_format)) {
-        throw handleHDBError(new Error(), HDB_ERROR_MSGS.INVALID_VALUE('Source format'), HTTP_STATUS_CODES.BAD_REQUEST);
+        throw handleHDBError(new Error(), HDB_ERROR_MSGS.INVALID_VALUE('Source format'), HTTP_STATUS_CODES.BAD_REQUEST, undefined, undefined, true);
     }
     if(hdb_common.isEmpty(data)) {
-        throw handleHDBError(new Error(), HDB_ERROR_MSGS.NOT_FOUND('Data'), HTTP_STATUS_CODES.BAD_REQUEST);
+        throw handleHDBError(new Error(), HDB_ERROR_MSGS.NOT_FOUND('Data'), HTTP_STATUS_CODES.BAD_REQUEST, undefined, undefined, true);
     }
 
     // Create a write stream to the local export file.

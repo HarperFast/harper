@@ -3,60 +3,29 @@
 ## Contents
 
 1. [Installing HarperDB](#installing-harperdb)
-2. [Starting HarperDB](#starting-harperdb)
-3. [Stopping HarperDB](#stopping-harperdb)
-4. [Restarting HarperDB](#restarting-harperdb)
-5. [Getting the HarperDB Version](#getting-the-harperdb-version)
-6. [Using the Built-In API](#using-the-built-in-api)
-7. [HarperDB Studio](#harperdb-studio)
-8. [Release Notes](#release-notes)
-9. [Need Help?](#need-help)
+2. [Using the Built-In API](#using-the-built-in-api)
+3. [HarperDB Studio](#harperdb-studio)
+4. [Release Notes](#release-notes)
+5. [Need Help?](#need-help)
 
 ## Installing HarperDB
 Prerequisites
-1. Node.js 12.19.0
+1. Node.js 14.17.3
 2. GCC
 3. Make
-4. Python v2.7, v3.5, v3.6, v3.7, or v3.8
+4. Python v3.6, v3.7, v3.8, or v3.9
 5. (macOS) Xcode
 
 ```
 npm install -g harperdb
-harperdb install
+harperdb
 ```
-HarperDB will prompt you for configuration options during install.
+HarperDB will prompt you for configuration options during install, and then automatically start after install.
 
-## Starting HarperDB
-
-```
-harperdb run
-
-```
-
-## Stopping HarperDB
-
-```
-harperdb stop
-
-```
-
-## Restarting HarperDB
-
-```
-harperdb restart
-
-```
-
-## Getting the HarperDB Version
-
-```
-harperdb version
-
-```
 ## Using the Built-In API
 Using HarperDB’s built-in API is as easy as making an http call to the URL and PORT of your HarperDB instance. To make it even easier, we’ve created a series of example http calls as a Postman Collection. These calls show you how to create and access sample data in HarperDB.
 
-[Postman Collection](https://docs.harperdb.io/)
+[Postman Collection](https://api.harperdb.io/)
 
 Sample code is also available in many common languages in the sample code pane. Select the language you want from the drop down and paste the code.
 
@@ -73,10 +42,10 @@ Every Installation of HarperDB can be administered through HarperDB Studio. This
 * Even though the Studio is cloud-hosted, you can securely manage User-Installed instances on your private network
 
 ## Release Notes
-[Release Notes](https://harperdb.io/developers/release-notes/)
+[Release Notes](https://harperdb.io/docs/release-notes/)
 
 ## Need Help?
-[Documentation](https://harperdb.io/developers/documentation)
+[Documentation](https://docs.harperdb.io/)
 
 support@harperdb.io
 

@@ -22,16 +22,16 @@ for(let key of Object.keys(hdb_terms.HDB_SETTINGS_NAMES)) {
 
 module.exports = {
     BOOT_PROPS_FILE_PATH,
-    getHdbBasePath: getHdbBasePath,
-    setPropsFilePath: setPropsFilePath,
-    get:get,
-    getProperty:getProperty,
+    getHdbBasePath,
+    setPropsFilePath,
+    get,
+    getProperty,
     initSync,
-    setProperty: setProperty,
-    append: append,
+    setProperty,
+    append,
     writeSettingsFileSync,
-    initTestEnvironment : initTestEnvironment,
-    isInitialized: isInitialized
+    initTestEnvironment,
+    isInitialized
 };
 
 let hdb_properties = PropertiesReader();
@@ -162,7 +162,7 @@ function readEnvVariable(variable_name) {
             log.info(`A value was not found for ${variable_name}, using default value: ${defaults[variable_name]}`);
             env_value = defaults[variable_name];
         }
-        if(env_value) {
+        if(!common_utils.isEmpty(env_value)) {
             storeVariableValue(variable_name, env_value);
         }
     } catch(err) {
@@ -356,6 +356,7 @@ function initTestEnvironment(test_config_obj = {}) {
         setProperty(hdb_terms.HDB_SETTINGS_NAMES.CORS_ENABLED_KEY, common_utils.isEmpty(cors_enabled) ? false : cors_enabled);
         setProperty(hdb_terms.HDB_SETTINGS_NAMES.IPC_SERVER_PORT, 9383);
         setProperty(hdb_terms.HDB_SETTINGS_NAMES.MAX_CUSTOM_FUNCTION_PROCESSES, 2);
+        setProperty(hdb_terms.HDB_SETTINGS_NAMES.MAX_HDB_PROCESSES, 4);
         setProperty(hdb_terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_PORT_KEY, 9926);
         setProperty(hdb_terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_ENABLED_KEY, true);
         setProperty(hdb_terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY, path.resolve(__dirname, '../../unitTests/server/customFunctions/custom_functions'));

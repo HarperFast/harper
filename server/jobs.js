@@ -128,7 +128,7 @@ async function addJob(json_body) {
             break;
     }
     if (validation_msg) {
-        throw handleHDBError(validation_msg, validation_msg.message, HTTP_STATUS_CODES.BAD_REQUEST);
+        throw handleHDBError(validation_msg, validation_msg.message, HTTP_STATUS_CODES.BAD_REQUEST, undefined, undefined, true);
     }
 
     let new_job = new JobObject();

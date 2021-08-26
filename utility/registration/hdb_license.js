@@ -20,9 +20,6 @@ const env = require('../../utility/environment/environmentManager');
 if(!env.isInitialized()){
     env.initSync();
 }
-const LICENSE_PATH = path.join(env.getHdbBasePath(), terms.LICENSE_KEY_DIR_NAME, terms.LICENSE_FILE_NAME);
-const LICENSE_FILE = path.join(LICENSE_PATH, terms.LICENSE_FILE_NAME);
-const FINGER_PRINT_FILE = path.join(LICENSE_PATH, terms.REG_KEY_FILE_NAME);
 
 let current_license = undefined;
 
@@ -33,15 +30,30 @@ module.exports = {
     getLicense
 };
 
+function getLicenseDirPath() {
+    return path.join(env.getHdbBasePath(), terms.LICENSE_KEY_DIR_NAME, terms.LICENSE_FILE_NAME);
+}
+
+function getLicenseFilePath() {
+    const license_path = getLicenseDirPath();
+    return path.join(license_path, terms.LICENSE_FILE_NAME);
+}
+
+function getFingerPrintFilePath() {
+    const license_path = getLicenseDirPath();
+    return path.join(license_path, terms.REG_KEY_FILE_NAME);
+}
+
 async function generateFingerPrint() {
+    const finger_print_file = getFingerPrintFilePath();
     try {
-        return await fs.readFile(FINGER_PRINT_FILE, 'utf8');
+        return await fs.readFile(finger_print_file, 'utf8');
     } catch(e){
         if(e.code === 'ENOENT'){
             return await writeFingerprint();
         }
 
-        log.error(`Error writing fingerprint file to ${FINGER_PRINT_FILE}`);
+        log.error(`Error writing fingerprint file to ${finger_print_file}`);
         log.error(e);
         throw new Error('There was an error generating the fingerprint');
     }
@@ -50,15 +62,16 @@ async function generateFingerPrint() {
 async function writeFingerprint(){
     let hash = uuidV4();
     let hashed_hash = password.hash(hash);
+    const finger_print_file = getFingerPrintFilePath();
 
     try {
-        await fs.mkdirp(LICENSE_PATH);
-        await fs.writeFile(FINGER_PRINT_FILE, hashed_hash);
+        await fs.mkdirp(getLicenseDirPath());
+        await fs.writeFile(finger_print_file, hashed_hash);
     } catch(err) {
         if(err.code === 'EEXIST'){
             return hashed_hash;
         }
-        log.error(`Error writing fingerprint file to ${FINGER_PRINT_FILE}`);
+        log.error(`Error writing fingerprint file to ${finger_print_file}`);
         log.error(err);
         throw new Error('There was an error generating the fingerprint');
     }
@@ -82,10 +95,11 @@ function validateLicense(license_key, company) {
         return license_validation_object;
     }
 
+    const finger_print_file = getFingerPrintFilePath();
     let is_exist = false;
 
     try {
-        is_exist = fs.statSync(FINGER_PRINT_FILE);
+        is_exist = fs.statSync(finger_print_file);
     } catch(err) {
         log.error(err);
     }
@@ -93,7 +107,7 @@ function validateLicense(license_key, company) {
     if (is_exist) {
         let fingerprint;
         try {
-            fingerprint = fs.readFileSync(FINGER_PRINT_FILE, 'utf8');
+            fingerprint = fs.readFileSync(finger_print_file, 'utf8');
         } catch (e) {
             log.error('error validating this machine in the license');
             license_validation_object.valid_machine = false;
@@ -195,7 +209,7 @@ function licenseSearch() {
     let licenses = [];
 
     try {
-        let file_licenses = fs.readFileSync(LICENSE_FILE, 'utf-8');
+        let file_licenses = fs.readFileSync(getLicenseFilePath(), 'utf-8');
         licenses = file_licenses.split(terms.NEW_LINE);
     } catch(e){
         if(e.code === 'ENOENT'){

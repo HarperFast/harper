@@ -1,5 +1,7 @@
 'use strict';
 
+const path = require('path');
+
 /**
  * This module should contain common variables/values that will be used across the project.  This should avoid
  * duplicate values making refactoring a little easier.
@@ -11,15 +13,53 @@ const CODE_EXTENSION = process.env.HDB_COMPILED === 'true' ? COMPILED_EXTENSION 
 
  // Name of the HDB process
 const HDB_PROC_NAME = `hdbServer.${CODE_EXTENSION}`;
-const SC_PROC_NAME = `Server.${CODE_EXTENSION}`;
-const CUSTOM_FUNCTION_PROC_NAME = `customFunctionServer.${CODE_EXTENSION}`;
+const CLUSTERING_PROC_NAME = `Server.${CODE_EXTENSION}`;
+const CONNECT_PROC_NAME = `interNodeConnectionLauncher.${CODE_EXTENSION}`;
+const CUSTOM_FUNCTION_PROC_NAME = `customFunctionsServer.${CODE_EXTENSION}`;
 const IPC_SERVER_MODULE = `hdbIpcServer.${CODE_EXTENSION}`;
-const HDB_RESTART_SCRIPT = `restartHDBServer.${CODE_EXTENSION}`;
-const CF_RESTART_SCRIPT = `restartCFServer.${CODE_EXTENSION}`;
+const HDB_RESTART_SCRIPT = `restartHdb.${CODE_EXTENSION}`;
 
 const HDB_PROC_DESCRIPTOR = 'HarperDB';
-const SC_PROC_DESCRIPTOR = 'Cluster Server';
 const CUSTOM_FUNCTION_PROC_DESCRIPTOR = 'Custom Functions';
+
+const PROCESS_DESCRIPTORS = {
+    HDB: 'HarperDB',
+    IPC: 'IPC',
+    CLUSTERING: 'Clustering',
+    CUSTOM_FUNCTIONS: 'Custom Functions',
+    CLUSTERING_CONNECTOR: 'Clustering Connector',
+    RESTART_HDB: 'Restart HDB'
+};
+
+const PROCESS_DESCRIPTORS_VALIDATE = {
+    'harperdb': 'HarperDB',
+    'ipc': 'IPC',
+    'clustering': 'Clustering',
+    'clustering_connector': 'Clustering Connector',
+    'custom functions': 'Custom Functions',
+    'custom_functions': 'Custom Functions'
+};
+
+const SERVICE_SERVERS_CWD = {
+    HDB: path.resolve(__dirname, `../server/harperdb`),
+    IPC: path.resolve(__dirname, `../server/ipc`),
+    CLUSTERING: path.resolve(__dirname, `../server/socketcluster`),
+    CUSTOM_FUNCTIONS: path.resolve(__dirname, `../server/customFunctions`)
+};
+
+const SERVICE_SERVERS = {
+    HDB: path.join(SERVICE_SERVERS_CWD.HDB, HDB_PROC_NAME),
+    IPC: path.join(SERVICE_SERVERS_CWD.IPC, IPC_SERVER_MODULE),
+    CLUSTERING: path.join(SERVICE_SERVERS_CWD.CLUSTERING, CLUSTERING_PROC_NAME),
+    CLUSTERING_CONNECTOR: path.join(SERVICE_SERVERS_CWD.CLUSTERING, CONNECT_PROC_NAME),
+    CUSTOM_FUNCTIONS: path.join(SERVICE_SERVERS_CWD.CUSTOM_FUNCTIONS, CUSTOM_FUNCTION_PROC_NAME)
+};
+
+const LAUNCH_SERVICE_SCRIPTS = {
+    HDB: path.resolve(__dirname, '../launchServiceScripts/launchHarperDB.js'),
+    CUSTOM_FUNCTIONS: path.resolve(__dirname, '../launchServiceScripts/launchCustomFunctions.js'),
+    JOB: path.resolve(__dirname, '../launchServiceScripts/launchJobThread.js')
+};
 
 const HDB_SUPPORT_ADDRESS = 'support@harperdb.io';
 const HDB_LICENSE_EMAIL_ADDRESS = 'customer-success@harperdb.io';
@@ -347,6 +387,7 @@ const HDB_SETTINGS_NAMES = {
     MAX_HDB_PROCESSES: 'MAX_HDB_PROCESSES',
     INSTALL_USER: 'install_user', // This value is used in the boot prop file not the settings file. It should stay lowercase.
     CLUSTERING_USER_KEY: 'CLUSTERING_USER',
+    MAX_CLUSTERING_PROCESSES: 'MAX_CLUSTERING_PROCESSES',
     SERVER_TIMEOUT_KEY: 'SERVER_TIMEOUT_MS',
     SERVER_KEEP_ALIVE_TIMEOUT_KEY: 'SERVER_KEEP_ALIVE_TIMEOUT',
     SERVER_HEADERS_TIMEOUT_KEY: 'SERVER_HEADERS_TIMEOUT',
@@ -397,7 +438,8 @@ const HDB_SETTINGS_DEFAULT_VALUES = {
     MAX_CUSTOM_FUNCTION_PROCESSES: 4,
     LOG_TO_FILE: true,
     LOG_TO_STDSTREAMS: false,
-    RUN_IN_FOREGROUND: false
+    RUN_IN_FOREGROUND: false,
+    MAX_CLUSTERING_PROCESSES: 1
 };
 
 // Describes all available job types
@@ -553,7 +595,9 @@ const IPC_EVENT_TYPES = {
     CHILD_STARTED: 'child_started',
     CHILD_STOPPED: 'child_stopped',
     SCHEMA: 'schema',
-    USER: 'user'
+    USER: 'user',
+    CLUSTER_STATUS_RESPONSE: 'cluster_status_response',
+    CLUSTER_STATUS_REQUEST: 'cluster_status_request'
 };
 
 const SERVICES = {
@@ -570,8 +614,7 @@ module.exports = {
     LICENSE_HELP_MSG,
     HDB_PROC_NAME,
     HDB_PROC_DESCRIPTOR,
-    SC_PROC_NAME,
-    SC_PROC_DESCRIPTOR,
+    CLUSTERING_PROC_NAME,
     SYSTEM_SCHEMA_NAME,
     HASH_FOLDER_NAME,
     HDB_HOME_DIR_NAME,
@@ -671,5 +714,9 @@ module.exports = {
     SERVICES,
     MEM_SETTING_KEY,
     HDB_RESTART_SCRIPT,
-    CF_RESTART_SCRIPT
+    PROCESS_DESCRIPTORS,
+    SERVICE_SERVERS,
+    SERVICE_SERVERS_CWD,
+    PROCESS_DESCRIPTORS_VALIDATE,
+    LAUNCH_SERVICE_SCRIPTS
 };
