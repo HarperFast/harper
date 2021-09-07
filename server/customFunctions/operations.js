@@ -16,11 +16,18 @@ const { HDB_ERROR_MSGS, HTTP_STATUS_CODES } = hdb_errors;
 const CUSTOM_FUNCTION_TEMPLATE = path.resolve(__dirname, '../../custom_function_template');
 
 function isCFEnabled() {
-    const custom_functions_enabled = env.getProperty(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_ENABLED_KEY);
-    if (custom_functions_enabled === 'true' || custom_functions_enabled === true || custom_functions_enabled === 'TRUE') {
-        return;
-    }
-    throw handleHDBError(new Error(), HDB_ERROR_MSGS.NOT_ENABLED, HTTP_STATUS_CODES.BAD_REQUEST, undefined, undefined, true);
+	const custom_functions_enabled = env.getProperty(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_ENABLED_KEY);
+	if (custom_functions_enabled === 'true' || custom_functions_enabled === true || custom_functions_enabled === 'TRUE') {
+		return;
+	}
+	throw handleHDBError(
+		new Error(),
+		HDB_ERROR_MSGS.NOT_ENABLED,
+		HTTP_STATUS_CODES.BAD_REQUEST,
+		undefined,
+		undefined,
+		true
+	);
 }
 
 /**
@@ -29,19 +36,25 @@ function isCFEnabled() {
  * @return Object.<String>
  */
 function customFunctionsStatus() {
-    log.trace(`getting custom api status`);
-    let response = {};
+	log.trace(`getting custom api status`);
+	let response = {};
 
-    try {
-        response = {
-            is_enabled: env.getProperty(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_ENABLED_KEY),
-            port: env.getProperty(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_PORT_KEY),
-            directory: env.getProperty(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY),
-        };
-    } catch (err) {
-        throw handleHDBError(new Error(), HDB_ERROR_MSGS.FUNCTION_STATUS, HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR, log.ERR, err);
-    }
-    return response;
+	try {
+		response = {
+			is_enabled: env.getProperty(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_ENABLED_KEY),
+			port: env.getProperty(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_PORT_KEY),
+			directory: env.getProperty(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY),
+		};
+	} catch (err) {
+		throw handleHDBError(
+			new Error(),
+			HDB_ERROR_MSGS.FUNCTION_STATUS,
+			HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR,
+			log.ERR,
+			err
+		);
+	}
+	return response;
 }
 
 /**
@@ -50,25 +63,31 @@ function customFunctionsStatus() {
  * @return Array.<String>
  */
 function getCustomFunctions() {
-    log.trace(`getting custom api endpoints`);
-    let response = {};
-    const dir = env.getProperty(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY);
+	log.trace(`getting custom api endpoints`);
+	let response = {};
+	const dir = env.getProperty(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY);
 
-    try {
-        const project_folders = fg.sync(`${dir}/*`, { onlyDirectories: true });
+	try {
+		const project_folders = fg.sync(`${dir}/*`, { onlyDirectories: true });
 
-        project_folders.forEach((project_folder) => {
-            const folderName = project_folder.split('/').pop();
-            response[folderName] = {
-                routes: fg.sync(`${project_folder}/routes/*.js`).map((filepath) => filepath.split('/').pop().split('.js')[0]),
-                helpers: fg.sync(`${project_folder}/helpers/*.js`).map((filepath) => filepath.split('/').pop().split('.js')[0]),
-                static: fs.existsSync(`${project_folder}/static`) && fg.sync(`${project_folder}/static/**/*`).length,
-            };
-        });
-    } catch (err) {
-        throw handleHDBError(new Error(), HDB_ERROR_MSGS.GET_FUNCTIONS, HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR, log.ERR, err);
-    }
-    return response;
+		project_folders.forEach((project_folder) => {
+			const folderName = project_folder.split('/').pop();
+			response[folderName] = {
+				routes: fg.sync(`${project_folder}/routes/*.js`).map((filepath) => filepath.split('/').pop().split('.js')[0]),
+				helpers: fg.sync(`${project_folder}/helpers/*.js`).map((filepath) => filepath.split('/').pop().split('.js')[0]),
+				static: fs.existsSync(`${project_folder}/static`) && fg.sync(`${project_folder}/static/**/*`).length,
+			};
+		});
+	} catch (err) {
+		throw handleHDBError(
+			new Error(),
+			HDB_ERROR_MSGS.GET_FUNCTIONS,
+			HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR,
+			log.ERR,
+			err
+		);
+	}
+	return response;
 }
 
 /**
@@ -78,29 +97,35 @@ function getCustomFunctions() {
  * @returns {string}
  */
 function getCustomFunction(req) {
-    if (req.project) {
-        req.project = path.parse(req.project).name;
-    }
+	if (req.project) {
+		req.project = path.parse(req.project).name;
+	}
 
-    if (req.file) {
-        req.file = path.parse(req.file).name;
-    }
+	if (req.file) {
+		req.file = path.parse(req.file).name;
+	}
 
-    const validation = validator.getDropCustomFunctionValidator(req);
-    if (validation) {
-        throw handleHDBError(validation, validation.message, HTTP_STATUS_CODES.BAD_REQUEST);
-    }
+	const validation = validator.getDropCustomFunctionValidator(req);
+	if (validation) {
+		throw handleHDBError(validation, validation.message, HTTP_STATUS_CODES.BAD_REQUEST);
+	}
 
-    log.trace(`getting custom api endpoint file content`);
-    const cf_dir = env.getProperty(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY);
-    const { project, type, file } = req;
-    const fileLocation = path.join(cf_dir, project, type, file + '.js');
+	log.trace(`getting custom api endpoint file content`);
+	const cf_dir = env.getProperty(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY);
+	const { project, type, file } = req;
+	const fileLocation = path.join(cf_dir, project, type, file + '.js');
 
-    try {
-        return fs.readFileSync(fileLocation, { encoding:'utf8' });
-    } catch (err) {
-        throw handleHDBError(new Error(), HDB_ERROR_MSGS.GET_FUNCTION, HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR, log.ERR, err);
-    }
+	try {
+		return fs.readFileSync(fileLocation, { encoding: 'utf8' });
+	} catch (err) {
+		throw handleHDBError(
+			new Error(),
+			HDB_ERROR_MSGS.GET_FUNCTION,
+			HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR,
+			log.ERR,
+			err
+		);
+	}
 }
 
 /**
@@ -110,30 +135,36 @@ function getCustomFunction(req) {
  * @returns {string}
  */
 function setCustomFunction(req) {
-    isCFEnabled();
-    if (req.project) {
-        req.project = path.parse(req.project).name;
-    }
+	isCFEnabled();
+	if (req.project) {
+		req.project = path.parse(req.project).name;
+	}
 
-    if (req.file) {
-        req.file = path.parse(req.file).name;
-    }
+	if (req.file) {
+		req.file = path.parse(req.file).name;
+	}
 
-    const validation = validator.setCustomFunctionValidator(req);
-    if (validation) {
-        throw handleHDBError(validation, validation.message, HTTP_STATUS_CODES.BAD_REQUEST);
-    }
+	const validation = validator.setCustomFunctionValidator(req);
+	if (validation) {
+		throw handleHDBError(validation, validation.message, HTTP_STATUS_CODES.BAD_REQUEST);
+	}
 
-    log.trace(`setting custom function file content`);
-    const cf_dir = env.getProperty(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY);
-    const { project, type, file, function_content } = req;
+	log.trace(`setting custom function file content`);
+	const cf_dir = env.getProperty(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY);
+	const { project, type, file, function_content } = req;
 
-    try {
-        fs.outputFileSync(path.join(cf_dir, project, type, file + '.js'), function_content);
-        return `Successfully updated custom function: ${file}.js`;
-    } catch (err) {
-        throw handleHDBError(new Error(), HDB_ERROR_MSGS.SET_FUNCTION, HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR, log.ERR, err);
-    }
+	try {
+		fs.outputFileSync(path.join(cf_dir, project, type, file + '.js'), function_content);
+		return `Successfully updated custom function: ${file}.js`;
+	} catch (err) {
+		throw handleHDBError(
+			new Error(),
+			HDB_ERROR_MSGS.SET_FUNCTION,
+			HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR,
+			log.ERR,
+			err
+		);
+	}
 }
 
 /**
@@ -143,29 +174,35 @@ function setCustomFunction(req) {
  * @returns {string}
  */
 function dropCustomFunction(req) {
-    if (req.project) {
-        req.project = path.parse(req.project).name;
-    }
+	if (req.project) {
+		req.project = path.parse(req.project).name;
+	}
 
-    if (req.file) {
-        req.file = path.parse(req.file).name;
-    }
+	if (req.file) {
+		req.file = path.parse(req.file).name;
+	}
 
-    const validation = validator.getDropCustomFunctionValidator(req);
-    if (validation) {
-        throw handleHDBError(validation, validation.message, HTTP_STATUS_CODES.BAD_REQUEST);
-    }
+	const validation = validator.getDropCustomFunctionValidator(req);
+	if (validation) {
+		throw handleHDBError(validation, validation.message, HTTP_STATUS_CODES.BAD_REQUEST);
+	}
 
-    log.trace(`dropping custom function file`);
-    const cf_dir = env.getProperty(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY);
-    const { project, type, file } = req;
+	log.trace(`dropping custom function file`);
+	const cf_dir = env.getProperty(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY);
+	const { project, type, file } = req;
 
-    try {
-        fs.unlinkSync(path.join(cf_dir, project, type, file + '.js'));
-        return `Successfully deleted custom function: ${file}.js`;
-    } catch (err) {
-        throw handleHDBError(new Error(), HDB_ERROR_MSGS.DROP_FUNCTION, HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR, log.ERR, err);
-    }
+	try {
+		fs.unlinkSync(path.join(cf_dir, project, type, file + '.js'));
+		return `Successfully deleted custom function: ${file}.js`;
+	} catch (err) {
+		throw handleHDBError(
+			new Error(),
+			HDB_ERROR_MSGS.DROP_FUNCTION,
+			HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR,
+			log.ERR,
+			err
+		);
+	}
 }
 
 /**
@@ -175,28 +212,34 @@ function dropCustomFunction(req) {
  * @returns {string}
  */
 function addCustomFunctionProject(req) {
-    isCFEnabled();
-    if (req.project) {
-        req.project = path.parse(req.project).name;
-    }
+	isCFEnabled();
+	if (req.project) {
+		req.project = path.parse(req.project).name;
+	}
 
-    const validation = validator.addCustomFunctionProjectValidator(req);
-    if (validation) {
-        throw handleHDBError(validation, validation.message, HTTP_STATUS_CODES.BAD_REQUEST);
-    }
+	const validation = validator.addCustomFunctionProjectValidator(req);
+	if (validation) {
+		throw handleHDBError(validation, validation.message, HTTP_STATUS_CODES.BAD_REQUEST);
+	}
 
-    log.trace(`adding custom function project`);
-    const cf_dir = env.getProperty(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY);
-    const { project } = req;
+	log.trace(`adding custom function project`);
+	const cf_dir = env.getProperty(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY);
+	const { project } = req;
 
-    try {
-        const project_dir = path.join(cf_dir, project);
-        fs.mkdirSync(project_dir, { recursive: true });
-        fs.copySync(CUSTOM_FUNCTION_TEMPLATE, project_dir);
-        return `Successfully created custom function project: ${project}`;
-    } catch (err) {
-        throw handleHDBError(new Error(), HDB_ERROR_MSGS.ADD_FUNCTION, HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR, log.ERR, err);
-    }
+	try {
+		const project_dir = path.join(cf_dir, project);
+		fs.mkdirSync(project_dir, { recursive: true });
+		fs.copySync(CUSTOM_FUNCTION_TEMPLATE, project_dir);
+		return `Successfully created custom function project: ${project}`;
+	} catch (err) {
+		throw handleHDBError(
+			new Error(),
+			HDB_ERROR_MSGS.ADD_FUNCTION,
+			HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR,
+			log.ERR,
+			err
+		);
+	}
 }
 
 /**
@@ -206,26 +249,32 @@ function addCustomFunctionProject(req) {
  * @returns {string}
  */
 function dropCustomFunctionProject(req) {
-    if (req.project) {
-        req.project = path.parse(req.project).name;
-    }
+	if (req.project) {
+		req.project = path.parse(req.project).name;
+	}
 
-    const validation = validator.dropCustomFunctionProjectValidator(req);
-    if (validation) {
-        throw handleHDBError(validation, validation.message, HTTP_STATUS_CODES.BAD_REQUEST);
-    }
+	const validation = validator.dropCustomFunctionProjectValidator(req);
+	if (validation) {
+		throw handleHDBError(validation, validation.message, HTTP_STATUS_CODES.BAD_REQUEST);
+	}
 
-    log.trace(`dropping custom function project`);
-    const cf_dir = env.getProperty(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY);
-    const { project } = req;
+	log.trace(`dropping custom function project`);
+	const cf_dir = env.getProperty(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY);
+	const { project } = req;
 
-    try {
-        const project_dir = path.join(cf_dir, project);
-        fs.rmdirSync(project_dir, { recursive: true });
-        return `Successfully deleted project: ${project}`;
-    } catch (err) {
-        throw handleHDBError(new Error(), HDB_ERROR_MSGS.DROP_FUNCTION_PROJECT, HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR, log.ERR, err);
-    }
+	try {
+		const project_dir = path.join(cf_dir, project);
+		fs.rmdirSync(project_dir, { recursive: true });
+		return `Successfully deleted project: ${project}`;
+	} catch (err) {
+		throw handleHDBError(
+			new Error(),
+			HDB_ERROR_MSGS.DROP_FUNCTION_PROJECT,
+			HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR,
+			log.ERR,
+			err
+		);
+	}
 }
 
 /**
@@ -235,52 +284,52 @@ function dropCustomFunctionProject(req) {
  * @returns Object package info: { project, payload, file }
  */
 async function packageCustomFunctionProject(req) {
-    if (req.project) {
-        req.project = path.parse(req.project).name;
-    }
+	if (req.project) {
+		req.project = path.parse(req.project).name;
+	}
 
-    const validation = validator.packageCustomFunctionProjectValidator(req);
-    if (validation) {
-        throw handleHDBError(validation, validation.message, HTTP_STATUS_CODES.BAD_REQUEST);
-    }
+	const validation = validator.packageCustomFunctionProjectValidator(req);
+	if (validation) {
+		throw handleHDBError(validation, validation.message, HTTP_STATUS_CODES.BAD_REQUEST);
+	}
 
-    log.trace(`packaging custom function project`);
-    const cf_dir = env.getProperty(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY);
-    const { project } = req;
-    const path_to_project = path.join(cf_dir, project);
-    const project_hash = uuidV4();
+	log.trace(`packaging custom function project`);
+	const cf_dir = env.getProperty(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY);
+	const { project } = req;
+	const path_to_project = path.join(cf_dir, project);
+	const project_hash = uuidV4();
 
-    // check if the project exists
-    const projectExists = fs.existsSync(path_to_project);
+	// check if the project exists
+	const projectExists = fs.existsSync(path_to_project);
 
-    if (!projectExists) {
-        const err_string = `Unable to locate custom function project: ${project}`;
-        log.error(err_string);
-        throw err_string;
-    }
+	if (!projectExists) {
+		const err_string = `Unable to locate custom function project: ${project}`;
+		log.error(err_string);
+		throw err_string;
+	}
 
-    // ensure /tmp exists
-    if (!fs.existsSync('/tmp')){
-        fs.mkdirSync('/tmp');
-    }
+	// ensure /tmp exists
+	if (!fs.existsSync('/tmp')) {
+		fs.mkdirSync('/tmp');
+	}
 
-    const file = `/tmp/${project_hash}.tar`;
+	const file = `/tmp/${project_hash}.tar`;
 
-    // pack the directory
-    tar.pack(path_to_project).pipe(fs.createWriteStream(file));
+	// pack the directory
+	tar.pack(path_to_project).pipe(fs.createWriteStream(file));
 
-    // wait for a second
-    // eslint-disable-next-line no-magic-numbers
-    await new Promise(resolve => setTimeout(resolve, 2000));
+	// wait for a second
+	// eslint-disable-next-line no-magic-numbers
+	await new Promise((resolve) => setTimeout(resolve, 2000));
 
-    // read the output into base64
-    const payload = fs.readFileSync(file, { encoding: 'base64' });
+	// read the output into base64
+	const payload = fs.readFileSync(file, { encoding: 'base64' });
 
-    // delete the file
-    fs.unlinkSync(file);
+	// delete the file
+	fs.unlinkSync(file);
 
-    // return the package payload as base64-encoded string
-    return { project, payload, file };
+	// return the package payload as base64-encoded string
+	return { project, payload, file };
 }
 
 /**
@@ -290,58 +339,58 @@ async function packageCustomFunctionProject(req) {
  * @returns {string}
  */
 async function deployCustomFunctionProject(req) {
-    isCFEnabled();
-    if (req.project) {
-        req.project = path.parse(req.project).name;
-    }
+	isCFEnabled();
+	if (req.project) {
+		req.project = path.parse(req.project).name;
+	}
 
-    const validation = validator.deployCustomFunctionProjectValidator(req);
-    if (validation) {
-        throw handleHDBError(validation, validation.message, HTTP_STATUS_CODES.BAD_REQUEST);
-    }
+	const validation = validator.deployCustomFunctionProjectValidator(req);
+	if (validation) {
+		throw handleHDBError(validation, validation.message, HTTP_STATUS_CODES.BAD_REQUEST);
+	}
 
-    log.trace(`deploying custom function project`);
-    const cf_dir = env.getProperty(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY);
-    const { project, payload, file } = req;
-    const path_to_project = path.join(cf_dir, project);
+	log.trace(`deploying custom function project`);
+	const cf_dir = env.getProperty(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY);
+	const { project, payload, file } = req;
+	const path_to_project = path.join(cf_dir, project);
 
-    // check if the project exists
-    const projectExists = fs.existsSync(path_to_project);
+	// check if the project exists
+	const projectExists = fs.existsSync(path_to_project);
 
-    if (!projectExists) {
-        fs.mkdirSync(path_to_project, { recursive: true });
-    }
+	if (!projectExists) {
+		fs.mkdirSync(path_to_project, { recursive: true });
+	}
 
-    // ensure /tmp exists
-    if (!fs.existsSync('/tmp')){
-        fs.mkdirSync('/tmp');
-    }
+	// ensure /tmp exists
+	if (!fs.existsSync('/tmp')) {
+		fs.mkdirSync('/tmp');
+	}
 
-    // pack the directory
-    fs.writeFileSync(file, payload, { encoding: 'base64' });
+	// pack the directory
+	fs.writeFileSync(file, payload, { encoding: 'base64' });
 
-    // wait for a second
-    // eslint-disable-next-line no-magic-numbers
-    await new Promise(resolve => setTimeout(resolve, 2000));
+	// wait for a second
+	// eslint-disable-next-line no-magic-numbers
+	await new Promise((resolve) => setTimeout(resolve, 2000));
 
-    // extract the reconstituted file to the proper project directory
-    fs.createReadStream(file).pipe(tar.extract(path_to_project));
+	// extract the reconstituted file to the proper project directory
+	fs.createReadStream(file).pipe(tar.extract(path_to_project));
 
-    // delete the file
-    fs.unlinkSync(file);
+	// delete the file
+	fs.unlinkSync(file);
 
-    // return the package payload as base64-encoded string
-    return `Successfully deployed project: ${project}`;
+	// return the package payload as base64-encoded string
+	return `Successfully deployed project: ${project}`;
 }
 
 module.exports = {
-    customFunctionsStatus,
-    getCustomFunctions,
-    getCustomFunction,
-    setCustomFunction,
-    dropCustomFunction,
-    addCustomFunctionProject,
-    dropCustomFunctionProject,
-    packageCustomFunctionProject,
-    deployCustomFunctionProject,
+	customFunctionsStatus,
+	getCustomFunctions,
+	getCustomFunction,
+	setCustomFunction,
+	dropCustomFunction,
+	addCustomFunctionProject,
+	dropCustomFunctionProject,
+	packageCustomFunctionProject,
+	deployCustomFunctionProject,
 };

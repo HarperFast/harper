@@ -6,7 +6,7 @@ class ClusterStatusEmitter extends EventEmitter {}
 
 let clusterEmitter = new ClusterStatusEmitter();
 module.exports = {
-    clusterEmitter,
-    EVENT_NAME,
-    ClusterStatusEmitter
+	clusterEmitter,
+	EVENT_NAME,
+	ClusterStatusEmitter,
 };

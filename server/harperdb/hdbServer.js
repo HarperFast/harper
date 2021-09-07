@@ -1,4 +1,4 @@
-"use strict";
+'use strict';
 
 const cluster = require('cluster');
 const env = require('../../utility/environment/environmentManager');
@@ -28,19 +28,19 @@ const IPCClient = require('../ipc/IPCClient');
 const p_schema_to_global = util.promisify(global_schema.setSchemaDataToGlobal);
 
 const {
-    authHandler,
-    handlePostRequest,
-    handleServerUncaughtException,
-    serverErrorHandler,
-    reqBodyValidationHandler,
-    handleBeforeExit,
-    handleExit,
-    handleSigint,
-    handleSigquit,
-    handleSigterm
+	authHandler,
+	handlePostRequest,
+	handleServerUncaughtException,
+	serverErrorHandler,
+	reqBodyValidationHandler,
+	handleBeforeExit,
+	handleExit,
+	handleSigint,
+	handleSigquit,
+	handleSigterm,
 } = require('../serverHelpers/serverHandlers');
 
-const REQ_MAX_BODY_SIZE = 1024*1024*1024; //this is 1GB in bytes
+const REQ_MAX_BODY_SIZE = 1024 * 1024 * 1024; //this is 1GB in bytes
 const TRUE_COMPARE_VAL = 'TRUE';
 
 const { HDB_SETTINGS_NAMES, HDB_SETTINGS_DEFAULT_VALUES } = terms;
@@ -65,58 +65,60 @@ let server = undefined;
  * @returns {Promise<void>}
  */
 async function hdbServer() {
-    try {
-        harper_logger.info('In Fastify server' + process.cwd());
-        harper_logger.info(`Running with NODE_ENV set as: ${process.env.NODE_ENV}`);
-        harper_logger.debug(`HarperDB server process ${process.pid} starting up.`);
+	try {
+		harper_logger.info('In Fastify server' + process.cwd());
+		harper_logger.info(`Running with NODE_ENV set as: ${process.env.NODE_ENV}`);
+		harper_logger.debug(`HarperDB server process ${process.pid} starting up.`);
 
-        global.clustering_on = false;
-        global.isMaster = cluster.isMaster;
+		global.clustering_on = false;
+		global.isMaster = cluster.isMaster;
 
-        // Instantiate new instance of HDB IPC client and assign it to global.
-        try {
-            global.hdb_ipc = new IPCClient(process.pid, ipc_server_handlers);
-        } catch(err) {
-            harper_logger.error('Error instantiating new instance of IPC client in HDB server');
-            harper_logger.error(err);
-            throw err;
-        }
+		// Instantiate new instance of HDB IPC client and assign it to global.
+		try {
+			global.hdb_ipc = new IPCClient(process.pid, ipc_server_handlers);
+		} catch (err) {
+			harper_logger.error('Error instantiating new instance of IPC client in HDB server');
+			harper_logger.error(err);
+			throw err;
+		}
 
-        process.on('uncaughtException', handleServerUncaughtException);
-        process.on('beforeExit', handleBeforeExit);
-        process.on('exit', handleExit);
-        process.on('SIGINT', handleSigint);
-        process.on('SIGQUIT', handleSigquit);
-        process.on('SIGTERM', handleSigterm);
+		process.on('uncaughtException', handleServerUncaughtException);
+		process.on('beforeExit', handleBeforeExit);
+		process.on('exit', handleExit);
+		process.on('SIGINT', handleSigint);
+		process.on('SIGQUIT', handleSigquit);
+		process.on('SIGTERM', handleSigterm);
 
-        await setUp();
+		await setUp();
 
-        const props_http_secure_on = env.get(PROPS_HTTP_SECURE_ON_KEY);
-        const props_server_port = env.get(PROPS_SERVER_PORT_KEY);
-        const is_https = props_http_secure_on && (props_http_secure_on === true || props_http_secure_on.toUpperCase() === TRUE_COMPARE_VAL);
+		const props_http_secure_on = env.get(PROPS_HTTP_SECURE_ON_KEY);
+		const props_server_port = env.get(PROPS_SERVER_PORT_KEY);
+		const is_https =
+			props_http_secure_on &&
+			(props_http_secure_on === true || props_http_secure_on.toUpperCase() === TRUE_COMPARE_VAL);
 
-        //generate a Fastify server instance
-        server = buildServer(is_https);
+		//generate a Fastify server instance
+		server = buildServer(is_https);
 
-        //make sure the process waits for the server to be fully instantiated before moving forward
-        await server.ready();
+		//make sure the process waits for the server to be fully instantiated before moving forward
+		await server.ready();
 
-        const server_type = is_https ? 'HTTPS' : 'HTTP';
-        try {
-            //now that server is fully loaded/ready, start listening on port provided in config settings
-            await server.listen(props_server_port, '::');
-            harper_logger.info(`HarperDB ${pjson.version} ${server_type} Server running on port ${props_server_port}`);
-        } catch(err) {
-            server.close();
-            harper_logger.error(err);
-            harper_logger.error(`Error configuring ${server_type} server`);
-            throw err;
-        }
-    } catch(err) {
-        harper_logger.error(`Failed to build server on ${process.pid}`);
-        harper_logger.fatal(err);
-        process.exit(1);
-    }
+		const server_type = is_https ? 'HTTPS' : 'HTTP';
+		try {
+			//now that server is fully loaded/ready, start listening on port provided in config settings
+			await server.listen(props_server_port, '::');
+			harper_logger.info(`HarperDB ${pjson.version} ${server_type} Server running on port ${props_server_port}`);
+		} catch (err) {
+			server.close();
+			harper_logger.error(err);
+			harper_logger.error(`Error configuring ${server_type} server`);
+			throw err;
+		}
+	} catch (err) {
+		harper_logger.error(`Failed to build server on ${process.pid}`);
+		harper_logger.fatal(err);
+		process.exit(1);
+	}
 }
 
 /**
@@ -124,15 +126,15 @@ async function hdbServer() {
  * @returns {Promise<void>}
  */
 async function setUp() {
-    try {
-        harper_logger.trace('Configuring HarperDB process.');
-        await p_schema_to_global();
-        await user_schema.setUsersToGlobal();
-        spawn_cluster_connection(true);
-        await hdb_license.getLicense();
-    } catch(e) {
-        harper_logger.error(e);
-    }
+	try {
+		harper_logger.trace('Configuring HarperDB process.');
+		await p_schema_to_global();
+		await user_schema.setUsersToGlobal();
+		spawn_cluster_connection(true);
+		await hdb_license.getLicense();
+	} catch (e) {
+		harper_logger.error(e);
+	}
 }
 
 /**
@@ -142,46 +144,48 @@ async function setUp() {
  * @returns {FastifyInstance}
  */
 function buildServer(is_https) {
-    harper_logger.debug(`HarperDB process starting to build ${is_https ? 'HTTPS' : 'HTTP'} server.`);
-    let server_opts = getServerOptions(is_https);
-    const app = fastify(server_opts);
-    //Fastify does not set this property in the initial app construction
-    app.server.headersTimeout = getHeaderTimeoutConfig();
+	harper_logger.debug(`HarperDB process starting to build ${is_https ? 'HTTPS' : 'HTTP'} server.`);
+	let server_opts = getServerOptions(is_https);
+	const app = fastify(server_opts);
+	//Fastify does not set this property in the initial app construction
+	app.server.headersTimeout = getHeaderTimeoutConfig();
 
-    //set top-level error handler for server - all errors caught/thrown within the API will bubble up to this handler so they
-    // can be handled in a coordinated way
-    app.setErrorHandler(serverErrorHandler);
+	//set top-level error handler for server - all errors caught/thrown within the API will bubble up to this handler so they
+	// can be handled in a coordinated way
+	app.setErrorHandler(serverErrorHandler);
 
-    const cors_options = getCORSOpts();
-    if (cors_options) {
-        app.register(fastify_cors, cors_options);
-    }
+	const cors_options = getCORSOpts();
+	if (cors_options) {
+		app.register(fastify_cors, cors_options);
+	}
 
-    //Register security headers for Fastify instance - https://helmetjs.github.io/
-    app.register(fastify_helmet);
+	//Register security headers for Fastify instance - https://helmetjs.github.io/
+	app.register(fastify_helmet);
 
-    app.register(request_time_plugin);
+	app.register(request_time_plugin);
 
-    // This handles all get requests for the studio
-    app.register(fastify_compress);
-    app.register(fastify_static, {root: guidePath.join(__dirname,'../../docs')});
-    app.get('/', function(req, res) {
-        return res.sendFile('index.html');
-    });
+	// This handles all get requests for the studio
+	app.register(fastify_compress);
+	app.register(fastify_static, { root: guidePath.join(__dirname, '../../docs') });
+	app.get('/', function (req, res) {
+		return res.sendFile('index.html');
+	});
 
-    // This handles all POST requests
-    app.post('/', {
-            preValidation: [reqBodyValidationHandler, authHandler]
-        },
-        async function (req, res) {
-            //if no error is thrown below, the response 'data' returned from the handler will be returned with 200/OK code
-            return handlePostRequest(req);
-        }
-    );
+	// This handles all POST requests
+	app.post(
+		'/',
+		{
+			preValidation: [reqBodyValidationHandler, authHandler],
+		},
+		async function (req, res) {
+			//if no error is thrown below, the response 'data' returned from the handler will be returned with 200/OK code
+			return handlePostRequest(req);
+		}
+	);
 
-    harper_logger.debug(`HarperDB process starting up ${is_https ? 'HTTPS' : 'HTTP'} server listener.`);
+	harper_logger.debug(`HarperDB process starting up ${is_https ? 'HTTPS' : 'HTTP'} server listener.`);
 
-    return app;
+	return app;
 }
 
 /**
@@ -191,24 +195,25 @@ function buildServer(is_https) {
  * @returns {{keepAliveTimeout: *, bodyLimit: number, connectionTimeout: *}}
  */
 function getServerOptions(is_https) {
-    const server_timeout = env.get(PROPS_SERVER_TIMEOUT_KEY) ? env.get(PROPS_SERVER_TIMEOUT_KEY) : DEFAULT_SERVER_TIMEOUT;
-    const keep_alive_timeout = env.get(PROPS_SERVER_KEEP_ALIVE_TIMEOUT_KEY) ?
-        env.get(PROPS_SERVER_KEEP_ALIVE_TIMEOUT_KEY) : DEFAULT_KEEP_ALIVE_TIMEOUT;
+	const server_timeout = env.get(PROPS_SERVER_TIMEOUT_KEY) ? env.get(PROPS_SERVER_TIMEOUT_KEY) : DEFAULT_SERVER_TIMEOUT;
+	const keep_alive_timeout = env.get(PROPS_SERVER_KEEP_ALIVE_TIMEOUT_KEY)
+		? env.get(PROPS_SERVER_KEEP_ALIVE_TIMEOUT_KEY)
+		: DEFAULT_KEEP_ALIVE_TIMEOUT;
 
-    const server_opts = {
-        bodyLimit: REQ_MAX_BODY_SIZE,
-        connectionTimeout: server_timeout,
-        keepAliveTimeout: keep_alive_timeout
-    };
+	const server_opts = {
+		bodyLimit: REQ_MAX_BODY_SIZE,
+		connectionTimeout: server_timeout,
+		keepAliveTimeout: keep_alive_timeout,
+	};
 
-    if (is_https) {
-        const privateKey = env.get(PROPS_PRIVATE_KEY);
-        const certificate = env.get(PROPS_CERT_KEY);
-        const credentials = {key: fs.readFileSync(`${privateKey}`), cert: fs.readFileSync(`${certificate}`)};
-        server_opts.https = credentials;
-    }
+	if (is_https) {
+		const privateKey = env.get(PROPS_PRIVATE_KEY);
+		const certificate = env.get(PROPS_CERT_KEY);
+		const credentials = { key: fs.readFileSync(`${privateKey}`), cert: fs.readFileSync(`${certificate}`) };
+		server_opts.https = credentials;
+	}
 
-    return server_opts;
+	return server_opts;
 }
 
 /**
@@ -217,27 +222,27 @@ function getServerOptions(is_https) {
  * @returns {{credentials: boolean, origin: boolean, allowedHeaders: [string, string]}}
  */
 function getCORSOpts() {
-    let props_cors = env.get(PROPS_CORS_KEY);
-    let props_cors_whitelist = env.get(PROPS_CORS_WHITELIST_KEY);
-    let cors_options;
+	let props_cors = env.get(PROPS_CORS_KEY);
+	let props_cors_whitelist = env.get(PROPS_CORS_WHITELIST_KEY);
+	let cors_options;
 
-    if (props_cors && (props_cors === true || props_cors.toUpperCase() === TRUE_COMPARE_VAL)) {
-        cors_options = {
-            origin: true,
-            allowedHeaders: ['Content-Type', 'Authorization'],
-            credentials: false
-        };
-        if (props_cors_whitelist && props_cors_whitelist.length > 0) {
-            let whitelist = props_cors_whitelist.split(',');
-            cors_options.origin = (origin, callback) => {
-                if (whitelist.indexOf(origin) !== -1) {
-                    return callback(null, true);
-                }
-                return callback(new Error(`domain ${origin} is not whitelisted`));
-            };
-        }
-    }
-    return cors_options;
+	if (props_cors && (props_cors === true || props_cors.toUpperCase() === TRUE_COMPARE_VAL)) {
+		cors_options = {
+			origin: true,
+			allowedHeaders: ['Content-Type', 'Authorization'],
+			credentials: false,
+		};
+		if (props_cors_whitelist && props_cors_whitelist.length > 0) {
+			let whitelist = props_cors_whitelist.split(',');
+			cors_options.origin = (origin, callback) => {
+				if (whitelist.indexOf(origin) !== -1) {
+					return callback(null, true);
+				}
+				return callback(new Error(`domain ${origin} is not whitelisted`));
+			};
+		}
+	}
+	return cors_options;
 }
 
 /**
@@ -246,9 +251,9 @@ function getCORSOpts() {
  * @returns {*}
  */
 function getHeaderTimeoutConfig() {
-    return env.get(PROPS_HEADER_TIMEOUT_KEY) ? env.get(PROPS_HEADER_TIMEOUT_KEY) : DEFAULT_HEADER_TIMEOUT;
+	return env.get(PROPS_HEADER_TIMEOUT_KEY) ? env.get(PROPS_HEADER_TIMEOUT_KEY) : DEFAULT_HEADER_TIMEOUT;
 }
 
-(async()=>{
-    await hdbServer();
+(async () => {
+	await hdbServer();
 })();

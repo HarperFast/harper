@@ -1,4 +1,4 @@
-"use strict";
+'use strict';
 
 const uuidV4 = require('uuid/v4');
 const types = require('../../types');
@@ -11,30 +11,30 @@ const log = require('../../../../utility/logging/harper_logger');
  */
 
 class RulesIF {
-    constructor() {
-        this.id = uuidV4();
-        this.command_order = types.COMMAND_EVAL_ORDER_ENUM.MID;
-        //Rules will default to a base type.
-        this.type = types.RULE_TYPE_ENUM.BASE_TYPE;
-    }
+	constructor() {
+		this.id = uuidV4();
+		this.command_order = types.COMMAND_EVAL_ORDER_ENUM.MID;
+		//Rules will default to a base type.
+		this.type = types.RULE_TYPE_ENUM.BASE_TYPE;
+	}
 
-    /**
-     * @returns boolean.
-     */
-    async evaluateRule(req, args, worker) {
-        throw new Error('Not Implemented.');
-    }
+	/**
+	 * @returns boolean.
+	 */
+	async evaluateRule(req, args, worker) {
+		throw new Error('Not Implemented.');
+	}
 
-    setRuleOrder(rule_eval_order_enum) {
-        log.trace(`setting rule order to: ${rule_eval_order_enum}`);
+	setRuleOrder(rule_eval_order_enum) {
+		log.trace(`setting rule order to: ${rule_eval_order_enum}`);
 
-        if(!rule_eval_order_enum) {
-            return;
-        }
-        if(rule_eval_order_enum >= 0) {
-            this.command_order = rule_eval_order_enum;
-        }
-    }
+		if (!rule_eval_order_enum) {
+			return;
+		}
+		if (rule_eval_order_enum >= 0) {
+			this.command_order = rule_eval_order_enum;
+		}
+	}
 }
 
 module.exports = RulesIF;

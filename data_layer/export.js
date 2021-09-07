@@ -1,4 +1,4 @@
-"use strict";
+'use strict';
 
 const search = require('./search');
 const sql = require('../sqlTranslator/index');
@@ -32,8 +32,8 @@ const p_sql = promisify(sql.evaluateSQL);
 const stream_finished = promisify(stream.finished);
 
 module.exports = {
-    export_to_s3: export_to_s3,
-    export_local: export_local
+	export_to_s3: export_to_s3,
+	export_local: export_local,
 };
 
 /**
@@ -42,35 +42,46 @@ module.exports = {
  * @param export_object
  */
 async function export_local(export_object) {
-    hdb_logger.trace(`export_local request to path: ${export_object.path}, filename: ${export_object.filename}, format: ${export_object.format}`);
-    let error_message = exportCoreValidation(export_object);
-    if(!hdb_utils.isEmpty(error_message)){
-        hdb_logger.error(error_message);
-        throw handleHDBError(new Error(), error_message, HTTP_STATUS_CODES.BAD_REQUEST, undefined, undefined, true);
-    }
+	hdb_logger.trace(
+		`export_local request to path: ${export_object.path}, filename: ${export_object.filename}, format: ${export_object.format}`
+	);
+	let error_message = exportCoreValidation(export_object);
+	if (!hdb_utils.isEmpty(error_message)) {
+		hdb_logger.error(error_message);
+		throw handleHDBError(new Error(), error_message, HTTP_STATUS_CODES.BAD_REQUEST, undefined, undefined, true);
+	}
 
-    if(hdb_utils.isEmpty(export_object.path)) {
-        hdb_logger.error(HDB_ERROR_MSGS.MISSING_VALUE('path'));
-        throw handleHDBError(new Error(), HDB_ERROR_MSGS.MISSING_VALUE('path'), HTTP_STATUS_CODES.BAD_REQUEST, undefined, undefined, true);
-    }
+	if (hdb_utils.isEmpty(export_object.path)) {
+		hdb_logger.error(HDB_ERROR_MSGS.MISSING_VALUE('path'));
+		throw handleHDBError(
+			new Error(),
+			HDB_ERROR_MSGS.MISSING_VALUE('path'),
+			HTTP_STATUS_CODES.BAD_REQUEST,
+			undefined,
+			undefined,
+			true
+		);
+	}
 
-    //we will allow for a missing filename and autogen one based on the epoch
-    let filename = (hdb_utils.isEmpty(export_object.filename) ? (new Date).getTime() : export_object.filename)
-        + '.' + export_object.format;
+	//we will allow for a missing filename and autogen one based on the epoch
+	let filename =
+		(hdb_utils.isEmpty(export_object.filename) ? new Date().getTime() : export_object.filename) +
+		'.' +
+		export_object.format;
 
-    if(export_object.path.endsWith(path.sep)){
-        export_object.path = export_object.path.substring(0, export_object.path.length - 1);
-    }
+	if (export_object.path.endsWith(path.sep)) {
+		export_object.path = export_object.path.substring(0, export_object.path.length - 1);
+	}
 
-    let file_path = hdb_utils.buildFolderPath(export_object.path, filename);
-    try {
-        await confirmPath(export_object.path);
-        let records = await getRecords(export_object);
-        return await saveToLocal(file_path, export_object.format, records);
-    } catch(err) {
-        hdb_logger.error(err);
-        throw new Error(err);
-    }
+	let file_path = hdb_utils.buildFolderPath(export_object.path, filename);
+	try {
+		await confirmPath(export_object.path);
+		let records = await getRecords(export_object);
+		return await saveToLocal(file_path, export_object.format, records);
+	} catch (err) {
+		hdb_logger.error(err);
+		throw new Error(err);
+	}
 }
 
 /**
@@ -78,31 +89,38 @@ async function export_local(export_object) {
  * @param directory_path
  */
 async function confirmPath(directory_path) {
-    hdb_logger.trace("in confirmPath");
-    if(hdb_utils.isEmptyOrZeroLength(directory_path)) {
-        throw handleHDBError(new Error(), `Invalid path: ${directory_path}`, HTTP_STATUS_CODES.BAD_REQUEST, undefined, undefined, true);
-    }
-    let stats = undefined;
-    try {
-        stats = await fs.stat(directory_path);
-    } catch(err) {
-        let error_message;
-        if (err.code === 'ENOENT') {
-            error_message = `path '${directory_path}' does not exist`;
-        } else if (err.code === 'EACCES') {
-            error_message = `access to path '${directory_path}' is denied`;
-        } else {
-            error_message = err.message;
-        }
-        hdb_logger.error(error_message);
-        throw handleHDBError(new Error(), error_message, HTTP_STATUS_CODES.BAD_REQUEST, undefined, undefined, true);
-    }
-    if (!stats.isDirectory()) {
-        let err = `path '${directory_path}' is not a directory, please supply a valid folder path`;
-        hdb_logger.error(err);
-        throw handleHDBError(new Error(), err, HTTP_STATUS_CODES.BAD_REQUEST, undefined, undefined, true);
-    }
-    return true;
+	hdb_logger.trace('in confirmPath');
+	if (hdb_utils.isEmptyOrZeroLength(directory_path)) {
+		throw handleHDBError(
+			new Error(),
+			`Invalid path: ${directory_path}`,
+			HTTP_STATUS_CODES.BAD_REQUEST,
+			undefined,
+			undefined,
+			true
+		);
+	}
+	let stats = undefined;
+	try {
+		stats = await fs.stat(directory_path);
+	} catch (err) {
+		let error_message;
+		if (err.code === 'ENOENT') {
+			error_message = `path '${directory_path}' does not exist`;
+		} else if (err.code === 'EACCES') {
+			error_message = `access to path '${directory_path}' is denied`;
+		} else {
+			error_message = err.message;
+		}
+		hdb_logger.error(error_message);
+		throw handleHDBError(new Error(), error_message, HTTP_STATUS_CODES.BAD_REQUEST, undefined, undefined, true);
+	}
+	if (!stats.isDirectory()) {
+		let err = `path '${directory_path}' is not a directory, please supply a valid folder path`;
+		hdb_logger.error(err);
+		throw handleHDBError(new Error(), err, HTTP_STATUS_CODES.BAD_REQUEST, undefined, undefined, true);
+	}
+	return true;
 }
 
 /**
@@ -112,66 +130,86 @@ async function confirmPath(directory_path) {
  * @param data
  */
 async function saveToLocal(file_path, source_data_format, data) {
-    hdb_logger.trace("in saveToLocal");
-    if(hdb_common.isEmptyOrZeroLength(file_path)) {
-        throw handleHDBError(new Error(), HDB_ERROR_MSGS.INVALID_VALUE('file_path'), HTTP_STATUS_CODES.BAD_REQUEST, undefined, undefined, true);
-    }
-    if(hdb_common.isEmptyOrZeroLength(source_data_format)) {
-        throw handleHDBError(new Error(), HDB_ERROR_MSGS.INVALID_VALUE('Source format'), HTTP_STATUS_CODES.BAD_REQUEST, undefined, undefined, true);
-    }
-    if(hdb_common.isEmpty(data)) {
-        throw handleHDBError(new Error(), HDB_ERROR_MSGS.NOT_FOUND('Data'), HTTP_STATUS_CODES.BAD_REQUEST, undefined, undefined, true);
-    }
+	hdb_logger.trace('in saveToLocal');
+	if (hdb_common.isEmptyOrZeroLength(file_path)) {
+		throw handleHDBError(
+			new Error(),
+			HDB_ERROR_MSGS.INVALID_VALUE('file_path'),
+			HTTP_STATUS_CODES.BAD_REQUEST,
+			undefined,
+			undefined,
+			true
+		);
+	}
+	if (hdb_common.isEmptyOrZeroLength(source_data_format)) {
+		throw handleHDBError(
+			new Error(),
+			HDB_ERROR_MSGS.INVALID_VALUE('Source format'),
+			HTTP_STATUS_CODES.BAD_REQUEST,
+			undefined,
+			undefined,
+			true
+		);
+	}
+	if (hdb_common.isEmpty(data)) {
+		throw handleHDBError(
+			new Error(),
+			HDB_ERROR_MSGS.NOT_FOUND('Data'),
+			HTTP_STATUS_CODES.BAD_REQUEST,
+			undefined,
+			undefined,
+			true
+		);
+	}
 
-    // Create a write stream to the local export file.
-    let write_stream = fs.createWriteStream(file_path);
+	// Create a write stream to the local export file.
+	let write_stream = fs.createWriteStream(file_path);
 
-    if (source_data_format === JSON_TEXT) {
-        let data_length = data.length;
-        // Start writing values to the write stream.
-        write_stream.write('[');
-        let chunk = '';
-        for await (const [index, record] of data.entries()) {
-            let string_chunk = index === (data_length - 1) ? JSON.stringify(record) : JSON.stringify(record) + ',';
-            chunk += string_chunk;
+	if (source_data_format === JSON_TEXT) {
+		let data_length = data.length;
+		// Start writing values to the write stream.
+		write_stream.write('[');
+		let chunk = '';
+		for await (const [index, record] of data.entries()) {
+			let string_chunk = index === data_length - 1 ? JSON.stringify(record) : JSON.stringify(record) + ',';
+			chunk += string_chunk;
 
-            if (index !== 0 && index % LOCAL_JSON_EXPORT_SIZE === 0) {
-                if (!write_stream.write(chunk)) {
-                    // Handle backpressure
-                    await events.once(write_stream, 'drain');
-                }
+			if (index !== 0 && index % LOCAL_JSON_EXPORT_SIZE === 0) {
+				if (!write_stream.write(chunk)) {
+					// Handle backpressure
+					await events.once(write_stream, 'drain');
+				}
 
-                // Once the chunk has been written we no longer need that data. Clear it out for the next lot.
-                chunk = '';
-            }
-        }
+				// Once the chunk has been written we no longer need that data. Clear it out for the next lot.
+				chunk = '';
+			}
+		}
 
-        // If the loop is finished and there are still items in the chunk var write it to stream.
-        if (chunk.length !== 0) {
-            write_stream.write(chunk);
-        }
+		// If the loop is finished and there are still items in the chunk var write it to stream.
+		if (chunk.length !== 0) {
+			write_stream.write(chunk);
+		}
 
-        write_stream.write(']');
-        write_stream.end();
-        // Wait until done. Throws if there are errors.
-        await stream_finished(write_stream);
+		write_stream.write(']');
+		write_stream.end();
+		// Wait until done. Throws if there are errors.
+		await stream_finished(write_stream);
 
-        return LOCAL_JSON_EXPORT_MSG;
+		return LOCAL_JSON_EXPORT_MSG;
+	} else if (source_data_format === CSV) {
+		// Create a read stream with the data.
+		let readable_stream = stream.Readable.from(data);
+		let options = {};
+		let transform_options = { objectMode: true };
+		// Initialize json2csv parser
+		let async_parser = new AsyncParser(options, transform_options);
+		let parsing_processor = async_parser.fromInput(readable_stream).toOutput(write_stream);
+		await parsing_processor.promise(false);
 
-    } else if (source_data_format === CSV) {
-        // Create a read stream with the data.
-        let readable_stream = stream.Readable.from(data);
-        let options = {};
-        let transform_options = { objectMode: true };
-        // Initialize json2csv parser
-        let async_parser = new AsyncParser(options, transform_options);
-        let parsing_processor = async_parser.fromInput(readable_stream).toOutput(write_stream);
-        await parsing_processor.promise(false);
+		return LOCAL_CSV_EXPORT_MSG;
+	}
 
-        return LOCAL_CSV_EXPORT_MSG;
-    }
-
-    throw handleHDBError(new Error(), HDB_ERROR_MSGS.INVALID_VALUE('format'), HTTP_STATUS_CODES.BAD_REQUEST);
+	throw handleHDBError(new Error(), HDB_ERROR_MSGS.INVALID_VALUE('format'), HTTP_STATUS_CODES.BAD_REQUEST);
 }
 
 /**
@@ -180,101 +218,112 @@ async function saveToLocal(file_path, source_data_format, data) {
  * @returns {*}
  */
 async function export_to_s3(export_object) {
-    if (!export_object.s3 || Object.keys(export_object.s3).length === 0) {
-        throw handleHDBError(new Error(), HDB_ERROR_MSGS.MISSING_VALUE('S3 object'), HTTP_STATUS_CODES.BAD_REQUEST);
-    }
+	if (!export_object.s3 || Object.keys(export_object.s3).length === 0) {
+		throw handleHDBError(new Error(), HDB_ERROR_MSGS.MISSING_VALUE('S3 object'), HTTP_STATUS_CODES.BAD_REQUEST);
+	}
 
-    if (hdb_utils.isEmptyOrZeroLength(export_object.s3.aws_access_key_id)) {
-        throw handleHDBError(new Error(), HDB_ERROR_MSGS.MISSING_VALUE('aws_access_key_id'), HTTP_STATUS_CODES.BAD_REQUEST);
-    }
+	if (hdb_utils.isEmptyOrZeroLength(export_object.s3.aws_access_key_id)) {
+		throw handleHDBError(new Error(), HDB_ERROR_MSGS.MISSING_VALUE('aws_access_key_id'), HTTP_STATUS_CODES.BAD_REQUEST);
+	}
 
-    if (hdb_utils.isEmptyOrZeroLength(export_object.s3.aws_secret_access_key)) {
-        throw handleHDBError(new Error(), HDB_ERROR_MSGS.MISSING_VALUE('aws_secret_access_key'), HTTP_STATUS_CODES.BAD_REQUEST);
-    }
+	if (hdb_utils.isEmptyOrZeroLength(export_object.s3.aws_secret_access_key)) {
+		throw handleHDBError(
+			new Error(),
+			HDB_ERROR_MSGS.MISSING_VALUE('aws_secret_access_key'),
+			HTTP_STATUS_CODES.BAD_REQUEST
+		);
+	}
 
-    if (hdb_utils.isEmptyOrZeroLength(export_object.s3.bucket)) {
-        throw handleHDBError(new Error(), HDB_ERROR_MSGS.MISSING_VALUE('bucket'), HTTP_STATUS_CODES.BAD_REQUEST);
-    }
+	if (hdb_utils.isEmptyOrZeroLength(export_object.s3.bucket)) {
+		throw handleHDBError(new Error(), HDB_ERROR_MSGS.MISSING_VALUE('bucket'), HTTP_STATUS_CODES.BAD_REQUEST);
+	}
 
-    if (hdb_utils.isEmptyOrZeroLength(export_object.s3.key)) {
-        throw handleHDBError(new Error(), HDB_ERROR_MSGS.MISSING_VALUE('key'), HTTP_STATUS_CODES.BAD_REQUEST);
-    }
+	if (hdb_utils.isEmptyOrZeroLength(export_object.s3.key)) {
+		throw handleHDBError(new Error(), HDB_ERROR_MSGS.MISSING_VALUE('key'), HTTP_STATUS_CODES.BAD_REQUEST);
+	}
 
-    let error_message = exportCoreValidation(export_object);
-    if(!hdb_utils.isEmpty(error_message)){
-        throw handleHDBError(new Error(), error_message, HTTP_STATUS_CODES.BAD_REQUEST);
-    }
-    hdb_logger.trace(`called export_to_s3 to bucket: ${export_object.s3.bucket} and query ${export_object.search_operation.sql}`);
+	let error_message = exportCoreValidation(export_object);
+	if (!hdb_utils.isEmpty(error_message)) {
+		throw handleHDBError(new Error(), error_message, HTTP_STATUS_CODES.BAD_REQUEST);
+	}
+	hdb_logger.trace(
+		`called export_to_s3 to bucket: ${export_object.s3.bucket} and query ${export_object.search_operation.sql}`
+	);
 
-    let data;
-    try {
-        data = await getRecords(export_object);
-    } catch(err) {
-        hdb_logger.error(err);
-        throw err;
-    }
+	let data;
+	try {
+		data = await getRecords(export_object);
+	} catch (err) {
+		hdb_logger.error(err);
+		throw err;
+	}
 
-    let s3_upload_results = undefined;
-    let s3 = AWSConnector.getS3AuthObj(export_object.s3.aws_access_key_id, export_object.s3.aws_secret_access_key);
-    let s3_name;
-    let pass_through = new stream.PassThrough();
+	let s3_upload_results = undefined;
+	let s3 = AWSConnector.getS3AuthObj(export_object.s3.aws_access_key_id, export_object.s3.aws_secret_access_key);
+	let s3_name;
+	let pass_through = new stream.PassThrough();
 
-    if(export_object.format === CSV){
-        s3_name = export_object.s3.key + ".csv";
-        // Create a read stream with the data.
-        let read_stream = stream.Readable.from(data);
-        let options = {};
-        let transform_options = { objectMode: true };
-        // Create a json2csv stream transform.
-        const json2csv = new Transform(options, transform_options);
-        json2csv.on('error', err => { throw err; });
-        // Pipe the data read stream through json2csv which converts it and then pipes it to a pass through which sends it to S3 upload method.
-        read_stream.pipe(json2csv).pipe(pass_through);
+	if (export_object.format === CSV) {
+		s3_name = export_object.s3.key + '.csv';
+		// Create a read stream with the data.
+		let read_stream = stream.Readable.from(data);
+		let options = {};
+		let transform_options = { objectMode: true };
+		// Create a json2csv stream transform.
+		const json2csv = new Transform(options, transform_options);
+		json2csv.on('error', (err) => {
+			throw err;
+		});
+		// Pipe the data read stream through json2csv which converts it and then pipes it to a pass through which sends it to S3 upload method.
+		read_stream.pipe(json2csv).pipe(pass_through);
+	} else if (export_object.format === JSON_TEXT) {
+		s3_name = export_object.s3.key + '.json';
+		// Initialize an empty read stream.
+		const readable_stream = new stream.Readable();
+		// Pipe the read stream to a pass through, this is what sends it to the S3 upload method.
+		readable_stream.pipe(pass_through);
+		readable_stream.on('error', (err) => {
+			throw err;
+		});
+		// Use push to add data into the read stream queue.
+		readable_stream.push('[');
+		let data_length = data.length;
+		let chunk = '';
+		// Loop through the data and build chunks to push to the read stream.
+		for (const [index, record] of data.entries()) {
+			let string_chunk = index === data_length - 1 ? JSON.stringify(record) : JSON.stringify(record) + ',';
+			chunk += string_chunk;
 
-    } else if(export_object.format === JSON_TEXT){
-        s3_name = export_object.s3.key + ".json";
-        // Initialize an empty read stream.
-        const readable_stream = new stream.Readable();
-        // Pipe the read stream to a pass through, this is what sends it to the S3 upload method.
-        readable_stream.pipe(pass_through);
-        readable_stream.on('error', err => { throw err; });
-        // Use push to add data into the read stream queue.
-        readable_stream.push('[');
-        let data_length = data.length;
-        let chunk = '';
-        // Loop through the data and build chunks to push to the read stream.
-        for (const [index, record] of data.entries()) {
-            let string_chunk = index === (data_length - 1) ? JSON.stringify(record) : JSON.stringify(record) + ',';
-            chunk += string_chunk;
+			if (index !== 0 && index % S3_JSON_EXPORT_CHUNK_SIZE === 0) {
+				// Use push to add data into the read stream queue.
+				readable_stream.push(chunk);
+				// Once the chunk has been pushed we no longer need that data. Clear it out for the next lot.
+				chunk = '';
+			}
+		}
 
-            if (index !== 0 && index % S3_JSON_EXPORT_CHUNK_SIZE === 0) {
-                // Use push to add data into the read stream queue.
-                readable_stream.push(chunk);
-                // Once the chunk has been pushed we no longer need that data. Clear it out for the next lot.
-                chunk = '';
-            }
-        }
+		// If the loop is finished and there are still items in the chunk var push it to stream.
+		if (chunk.length !== 0) {
+			readable_stream.push(chunk);
+		}
 
-        // If the loop is finished and there are still items in the chunk var push it to stream.
-        if (chunk.length !== 0) {
-            readable_stream.push(chunk);
-        }
+		readable_stream.push(']');
+		// Done writing data
+		readable_stream.push(null);
+	} else {
+		throw handleHDBError(new Error(), HDB_ERROR_MSGS.INVALID_VALUE('format'), HTTP_STATUS_CODES.BAD_REQUEST);
+	}
 
-        readable_stream.push(']');
-        // Done writing data
-        readable_stream.push(null);
-    } else {
-        throw handleHDBError(new Error(), HDB_ERROR_MSGS.INVALID_VALUE('format'), HTTP_STATUS_CODES.BAD_REQUEST);
-    }
-
-    try {
-        //The AWS API supports promises with the promise() ending.
-        s3_upload_results = await s3.upload({ Bucket: export_object.s3.bucket, Key: s3_name, Body: pass_through }).promise();
-    } catch(err) {
-        hdb_logger.error(err);
-        throw err;
-    }
-    return s3_upload_results;
+	try {
+		//The AWS API supports promises with the promise() ending.
+		s3_upload_results = await s3
+			.upload({ Bucket: export_object.s3.bucket, Key: s3_name, Body: pass_through })
+			.promise();
+	} catch (err) {
+		hdb_logger.error(err);
+		throw err;
+	}
+	return s3_upload_results;
 }
 
 /**
@@ -282,24 +331,24 @@ async function export_to_s3(export_object) {
  * @param export_object
  * @returns {string}
  */
-function exportCoreValidation(export_object){
-    hdb_logger.trace("in exportCoreValidation");
-    if (hdb_utils.isEmpty(export_object.format)) {
-        return "format missing";
-    }
+function exportCoreValidation(export_object) {
+	hdb_logger.trace('in exportCoreValidation');
+	if (hdb_utils.isEmpty(export_object.format)) {
+		return 'format missing';
+	}
 
-    if (VALID_EXPORT_FORMATS.indexOf(export_object.format) < 0) {
-        return `format invalid. must be one of the following values: ${VALID_EXPORT_FORMATS.join(', ')}`;
-    }
+	if (VALID_EXPORT_FORMATS.indexOf(export_object.format) < 0) {
+		return `format invalid. must be one of the following values: ${VALID_EXPORT_FORMATS.join(', ')}`;
+	}
 
-    let search_operation = export_object.search_operation.operation;
-    if (hdb_utils.isEmpty(search_operation)) {
-        return "search_operation.operation missing";
-    }
+	let search_operation = export_object.search_operation.operation;
+	if (hdb_utils.isEmpty(search_operation)) {
+		return 'search_operation.operation missing';
+	}
 
-    if(VALID_SEARCH_OPERATIONS.indexOf(search_operation) < 0 ){
-        return `search_operation.operation must be one of the following values: ${VALID_SEARCH_OPERATIONS.join(', ')}`;
-    }
+	if (VALID_SEARCH_OPERATIONS.indexOf(search_operation) < 0) {
+		return `search_operation.operation must be one of the following values: ${VALID_SEARCH_OPERATIONS.join(', ')}`;
+	}
 }
 
 /**
@@ -307,35 +356,38 @@ function exportCoreValidation(export_object){
  * @param export_object
  */
 async function getRecords(export_object) {
-    hdb_logger.trace("in getRecords");
-    let operation;
-    let err_msg = undefined;
-    if(hdb_common.isEmpty(export_object.search_operation) || hdb_common.isEmptyOrZeroLength(export_object.search_operation.operation)) {
-        throw handleHDBError(new Error(), HDB_ERROR_MSGS.INVALID_VALUE('Search operation'), HTTP_STATUS_CODES.BAD_REQUEST);
-    }
-    switch (export_object.search_operation.operation) {
-        case 'search_by_value':
-            operation = p_search_by_value;
-            break;
-        case 'search_by_hash':
-            operation = p_search_by_hash;
-            break;
-        case 'sql':
-            operation = p_sql;
-            break;
-        default:
-            err_msg = `Operation ${export_object.search_operation.operation} is not support by export.`;
-            hdb_logger.error(err_msg);
-            throw handleHDBError(new Error(), err_msg, HTTP_STATUS_CODES.BAD_REQUEST);
-    }
+	hdb_logger.trace('in getRecords');
+	let operation;
+	let err_msg = undefined;
+	if (
+		hdb_common.isEmpty(export_object.search_operation) ||
+		hdb_common.isEmptyOrZeroLength(export_object.search_operation.operation)
+	) {
+		throw handleHDBError(new Error(), HDB_ERROR_MSGS.INVALID_VALUE('Search operation'), HTTP_STATUS_CODES.BAD_REQUEST);
+	}
+	switch (export_object.search_operation.operation) {
+		case 'search_by_value':
+			operation = p_search_by_value;
+			break;
+		case 'search_by_hash':
+			operation = p_search_by_hash;
+			break;
+		case 'sql':
+			operation = p_sql;
+			break;
+		default:
+			err_msg = `Operation ${export_object.search_operation.operation} is not support by export.`;
+			hdb_logger.error(err_msg);
+			throw handleHDBError(new Error(), err_msg, HTTP_STATUS_CODES.BAD_REQUEST);
+	}
 
-    //in order to validate the search function and invoke permissions we need to add the hdb_user to the search_operation
-    export_object.search_operation.hdb_user = export_object.hdb_user;
+	//in order to validate the search function and invoke permissions we need to add the hdb_user to the search_operation
+	export_object.search_operation.hdb_user = export_object.hdb_user;
 
-    try {
-        return operation(export_object.search_operation);
-    } catch(e) {
-        hdb_logger.error(e);
-        throw e;
-    }
+	try {
+		return operation(export_object.search_operation);
+	} catch (e) {
+		hdb_logger.error(e);
+		throw e;
+	}
 }

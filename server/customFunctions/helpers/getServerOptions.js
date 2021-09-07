@@ -1,4 +1,4 @@
-"use strict";
+'use strict';
 
 const fs = require('fs');
 const env = require('../../../utility/environment/environmentManager');
@@ -24,27 +24,28 @@ const DEFAULT_KEEP_ALIVE_TIMEOUT = HDB_SETTINGS_DEFAULT_VALUES[PROPS_SERVER_KEEP
  * @returns {{ keepAliveTimeout: *, bodyLimit: number, connectionTimeout: *, ignoreTrailingSlash: boolean, https: Object }}
  */
 function getServerOptions(is_https) {
-  const server_timeout = env.get(PROPS_SERVER_TIMEOUT_KEY) ? env.get(PROPS_SERVER_TIMEOUT_KEY) : DEFAULT_SERVER_TIMEOUT;
-  const keep_alive_timeout = env.get(PROPS_SERVER_KEEP_ALIVE_TIMEOUT_KEY) ?
-    env.get(PROPS_SERVER_KEEP_ALIVE_TIMEOUT_KEY) : DEFAULT_KEEP_ALIVE_TIMEOUT;
+	const server_timeout = env.get(PROPS_SERVER_TIMEOUT_KEY) ? env.get(PROPS_SERVER_TIMEOUT_KEY) : DEFAULT_SERVER_TIMEOUT;
+	const keep_alive_timeout = env.get(PROPS_SERVER_KEEP_ALIVE_TIMEOUT_KEY)
+		? env.get(PROPS_SERVER_KEEP_ALIVE_TIMEOUT_KEY)
+		: DEFAULT_KEEP_ALIVE_TIMEOUT;
 
-  const server_opts = {
-    bodyLimit: REQ_MAX_BODY_SIZE,
-    connectionTimeout: server_timeout,
-    keepAliveTimeout: keep_alive_timeout,
-    ignoreTrailingSlash: true,
-  };
+	const server_opts = {
+		bodyLimit: REQ_MAX_BODY_SIZE,
+		connectionTimeout: server_timeout,
+		keepAliveTimeout: keep_alive_timeout,
+		ignoreTrailingSlash: true,
+	};
 
-  if (is_https) {
-    const privateKey = env.get(PROPS_PRIVATE_KEY);
-    const certificate = env.get(PROPS_CERT_KEY);
-    server_opts.https = {
-      key: fs.readFileSync(`${privateKey}`),
-      cert: fs.readFileSync(`${certificate}`)
-    };
-  }
+	if (is_https) {
+		const privateKey = env.get(PROPS_PRIVATE_KEY);
+		const certificate = env.get(PROPS_CERT_KEY);
+		server_opts.https = {
+			key: fs.readFileSync(`${privateKey}`),
+			cert: fs.readFileSync(`${certificate}`),
+		};
+	}
 
-  return server_opts;
+	return server_opts;
 }
 
 module.exports = getServerOptions;

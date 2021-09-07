@@ -29,6 +29,7 @@
   "scripts": {
     "submodules": "git submodule update --init --recursive",
     "build": "eslint -c ./.eslintbuild bin/ data_layer/ events/ security/ server/ sqlTranslator/ upgrade/ utility/ validation/",
+    "pretty": "eslint --fix bin/ data_layer/ events/ security/ server/ sqlTranslator/ upgrade/ utility/ validation/",
     "test": "rm -rf ./.nyc_output/* && npm run build && node utility/devops/register.js --reset_license --storage_type=lmdb && npm run cover:main && npm run cover:lmdbbridge && npm run cover:lmdbutility && npm run cover:hdbserver && npm run cover:cfserver && nyc merge .nyc_output coverage.json && node ./utility/devops/register.js --reset_license --storage_type=lmdb",
     "cover:main": "cd bin/ && nyc --no-clean --reporter=lcov ../node_modules/mocha/bin/_mocha '../unitTests/**/*.js' --config '../unitTests/.mocharc-main.json'",
     "cover:lmdbbridge": "cd bin/ && nyc --no-clean --reporter=lcov ../node_modules/mocha/bin/_mocha '../unitTests/data_layer/harperBridge/lmdbBridge/**/*.js' --parallel --config '../unitTests/.mocharc.json'",
@@ -113,6 +114,9 @@
     "chai": "^4.3.4",
     "chai-integer": "^0.1.0",
     "eslint": "^5.16.0",
+    "eslint-config-prettier": "^8.3.0",
+    "eslint-plugin-prettier": "^3.4.0",
+    "eslint-plugin-radar": "^0.2.1",
     "hook-std": "^2.0.0",
     "intercept-stdout": "^0.1.2",
     "mocha": "^8.3.2",
@@ -124,6 +128,7 @@
     "newman-reporter-htmlextra": "^1.21.0",
     "newman-reporter-teamcity": "^0.1.11",
     "nyc": "^15.1.0",
+    "prettier": "2.3.2",
     "rewire": "^5.0.0",
     "sinon": "^10.0.0",
     "sinon-chai": "^3.3.0"

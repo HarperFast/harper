@@ -11,25 +11,25 @@ module.exports = checkForNewAttributes;
  * @param data_attributes
  * @returns {Promise<void>}
  */
-function checkForNewAttributes(table_schema, data_attributes){
-    if (hdb_utils.isEmptyOrZeroLength(data_attributes)) {
-        return;
-    }
+function checkForNewAttributes(table_schema, data_attributes) {
+	if (hdb_utils.isEmptyOrZeroLength(data_attributes)) {
+		return;
+	}
 
-    let raw_attributes = [];
-    if (!hdb_utils.isEmptyOrZeroLength(table_schema.attributes)) {
-        table_schema.attributes.forEach((attribute) => {
-            raw_attributes.push(attribute.attribute);
-        });
-    }
+	let raw_attributes = [];
+	if (!hdb_utils.isEmptyOrZeroLength(table_schema.attributes)) {
+		table_schema.attributes.forEach((attribute) => {
+			raw_attributes.push(attribute.attribute);
+		});
+	}
 
-    let new_attributes = data_attributes.filter(attribute => {
-        return raw_attributes.indexOf(attribute) < 0;
-    });
+	let new_attributes = data_attributes.filter((attribute) => {
+		return raw_attributes.indexOf(attribute) < 0;
+	});
 
-    if (new_attributes.length === 0) {
-        return;
-    }
+	if (new_attributes.length === 0) {
+		return;
+	}
 
-    return new_attributes;
+	return new_attributes;
 }

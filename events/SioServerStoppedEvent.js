@@ -7,13 +7,11 @@ class SioServerStoppedEventEmitter extends EventEmitter {}
 let sioServerStoppedEmitter = new SioServerStoppedEventEmitter();
 
 class SioServerStoppedMessage {
-    constructor() {
-
-    }
+	constructor() {}
 }
 
 module.exports = {
-    sioServerStoppedEmitter,
-    SioServerStoppedMessage,
-    EVENT_NAME
+	sioServerStoppedEmitter,
+	SioServerStoppedMessage,
+	EVENT_NAME,
 };

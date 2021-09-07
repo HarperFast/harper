@@ -15,21 +15,20 @@ module.exports = lmdbSearchByValue;
  * @returns {Array.<Object>}
  */
 async function lmdbSearchByValue(search_object, comparator) {
-    let comparator_search = !common_utils.isEmpty(comparator);
-    if (comparator_search && hdb_terms.VALUE_SEARCH_COMPARATORS_REVERSE_LOOKUP[comparator] === undefined) {
-        throw new Error(`Value search comparator - ${comparator} - is not valid`);
-    }
+	let comparator_search = !common_utils.isEmpty(comparator);
+	if (comparator_search && hdb_terms.VALUE_SEARCH_COMPARATORS_REVERSE_LOOKUP[comparator] === undefined) {
+		throw new Error(`Value search comparator - ${comparator} - is not valid`);
+	}
 
-    let validation_error = search_validator(search_object, 'value');
-    if (validation_error) {
-        throw validation_error;
-    }
+	let validation_error = search_validator(search_object, 'value');
+	if (validation_error) {
+		throw validation_error;
+	}
 
-    let return_map = false;
-    try {
-        return await lmdb_search.prepSearch(search_object, comparator, return_map);
-    }catch(e){
-        throw e;
-    }
+	let return_map = false;
+	try {
+		return await lmdb_search.prepSearch(search_object, comparator, return_map);
+	} catch (e) {
+		throw e;
+	}
 }
-

@@ -1,4 +1,4 @@
-"use strict";
+'use strict';
 
 const moment = require('moment');
 const crypto = require('crypto');
@@ -13,33 +13,40 @@ const validation = require('../../validation/registration/license_key_object');
 const License = require('../registration/licenseObjects').BaseLicense;
 
 module.exports = {
-    generateLicense: generateLicense
+	generateLicense: generateLicense,
 };
 
 function generateLicense(license_object) {
-    try {
-        let validation_error = validation(license_object);
-        if (validation_error) {
-            throw validation_error;
-        }
+	try {
+		let validation_error = validation(license_object);
+		if (validation_error) {
+			throw validation_error;
+		}
 
-        let hash_license = password.hash(`${LICENSE_HASH_PREFIX}${license_object.fingerprint}${license_object.company}`);
-        let obj = new License(moment.utc(license_object.exp_date).valueOf(), license_object.storage_type, license_object.api_call, license_object.ram_allocation, license_object.version, license_object.fingerprint);
-        let encrypted = encrypt(obj, hash_license);
+		let hash_license = password.hash(`${LICENSE_HASH_PREFIX}${license_object.fingerprint}${license_object.company}`);
+		let obj = new License(
+			moment.utc(license_object.exp_date).valueOf(),
+			license_object.storage_type,
+			license_object.api_call,
+			license_object.ram_allocation,
+			license_object.version,
+			license_object.fingerprint
+		);
+		let encrypted = encrypt(obj, hash_license);
 
-        return `${encrypted}${LICENSE_KEY_DELIMITER}${hash_license}`;
-    } catch (err) {
-        log.error(`Error generating a license ${err}`);
-        throw err;
-    }
+		return `${encrypted}${LICENSE_KEY_DELIMITER}${hash_license}`;
+	} catch (err) {
+		log.error(`Error generating a license ${err}`);
+		throw err;
+	}
 }
 
 function encrypt(license_object, hash_license) {
-    let key = Buffer.concat([Buffer.from(license_object.fingerprint)], KEY_LENGTH);
-    let iv = Buffer.concat([Buffer.from(hash_license)], IV_LENGTH);
-    let cipher = crypto.createCipheriv(ALGORITHM, key, iv);
-    let encrypted = cipher.update(JSON.stringify(license_object), 'utf8', 'hex');
-    encrypted += cipher.final('hex');
+	let key = Buffer.concat([Buffer.from(license_object.fingerprint)], KEY_LENGTH);
+	let iv = Buffer.concat([Buffer.from(hash_license)], IV_LENGTH);
+	let cipher = crypto.createCipheriv(ALGORITHM, key, iv);
+	let encrypted = cipher.update(JSON.stringify(license_object), 'utf8', 'hex');
+	encrypted += cipher.final('hex');
 
-    return encrypted;
+	return encrypted;
 }

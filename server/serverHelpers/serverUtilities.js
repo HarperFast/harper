@@ -1,4 +1,4 @@
-"use strict";
+'use strict';
 
 const search = require('../../data_layer/search');
 const sql = require('../../sqlTranslator/index');
@@ -38,12 +38,12 @@ const p_sql_evaluate_sql = util.promisify(sql.evaluateSQL);
 const p_delete = util.promisify(delete_.delete);
 
 const GLOBAL_SCHEMA_UPDATE_OPERATIONS_ENUM = {
-    [terms.OPERATIONS_ENUM.CREATE_ATTRIBUTE]: true,
-    [terms.OPERATIONS_ENUM.CREATE_TABLE]: true,
-    [terms.OPERATIONS_ENUM.CREATE_SCHEMA]: true,
-    [terms.OPERATIONS_ENUM.DROP_ATTRIBUTE]: true,
-    [terms.OPERATIONS_ENUM.DROP_TABLE]: true,
-    [terms.OPERATIONS_ENUM.DROP_SCHEMA]: true
+	[terms.OPERATIONS_ENUM.CREATE_ATTRIBUTE]: true,
+	[terms.OPERATIONS_ENUM.CREATE_TABLE]: true,
+	[terms.OPERATIONS_ENUM.CREATE_SCHEMA]: true,
+	[terms.OPERATIONS_ENUM.DROP_ATTRIBUTE]: true,
+	[terms.OPERATIONS_ENUM.DROP_TABLE]: true,
+	[terms.OPERATIONS_ENUM.DROP_SCHEMA]: true,
 };
 
 const OperationFunctionObject = require('./OperationFunctionObject');
@@ -58,239 +58,305 @@ const OperationFunctionObject = require('./OperationFunctionObject');
  * @returns {*}
  */
 async function processLocalTransaction(req, operation_function) {
-    try {
-        if (req.body.operation !== 'read_log') {
-            if (harper_logger.log_level === harper_logger.INFO ||
-                harper_logger.log_level === harper_logger.DEBUG ||
-                harper_logger.log_level === harper_logger.TRACE) {
-                // Need to remove auth variables, but we don't want to create an object unless
-                // the logging is actually going to happen.
-                // eslint-disable-next-line no-unused-vars
-                const { hdb_user, hdb_auth_header, password, ...clean_body } = req.body;
-                harper_logger.info(JSON.stringify(clean_body));
-            }
-        }
-    } catch (e) {
-        harper_logger.error(e);
-    }
+	try {
+		if (
+			req.body.operation !== 'read_log' &&
+			(harper_logger.log_level === harper_logger.INFO ||
+				harper_logger.log_level === harper_logger.DEBUG ||
+				harper_logger.log_level === harper_logger.TRACE)
+		) {
+			// Need to remove auth variables, but we don't want to create an object unless
+			// the logging is actually going to happen.
+			// eslint-disable-next-line no-unused-vars
+			const { hdb_user, hdb_auth_header, password, ...clean_body } = req.body;
+			harper_logger.info(JSON.stringify(clean_body));
+		}
+	} catch (e) {
+		harper_logger.error(e);
+	}
 
-    let post_op_function = (terms.CLUSTER_OPERATIONS[req.body.operation] === undefined ? null : transact_to_clustering_utils.postOperationHandler);
+	let post_op_function =
+		terms.CLUSTER_OPERATIONS[req.body.operation] === undefined
+			? null
+			: transact_to_clustering_utils.postOperationHandler;
 
-    try {
-        let data = await operation_function_caller.callOperationFunctionAsAwait(operation_function, req.body, post_op_function);
+	try {
+		let data = await operation_function_caller.callOperationFunctionAsAwait(
+			operation_function,
+			req.body,
+			post_op_function
+		);
 
-        if (typeof data !== 'object') {
-            data = {"message": data};
-        }
-        if (data instanceof Error) {
-            throw data;
-        }
+		if (typeof data !== 'object') {
+			data = { message: data };
+		}
+		if (data instanceof Error) {
+			throw data;
+		}
 
-        if (GLOBAL_SCHEMA_UPDATE_OPERATIONS_ENUM[req.body.operation]) {
-            global_schema.setSchemaDataToGlobal(err => {
-                if (err) {
-                    harper_logger.error(err);
-                }
-            });
-        }
+		if (GLOBAL_SCHEMA_UPDATE_OPERATIONS_ENUM[req.body.operation]) {
+			global_schema.setSchemaDataToGlobal((err) => {
+				if (err) {
+					harper_logger.error(err);
+				}
+			});
+		}
 
-        return data;
-    } catch(error) {
-        harper_logger.info(error);
-        throw error;
-    }
+		return data;
+	} catch (error) {
+		harper_logger.info(error);
+		throw error;
+	}
 }
 
 const OPERATION_FUNCTION_MAP = initializeOperationFunctionMap();
 
 module.exports = {
-    chooseOperation,
-    getOperationFunction,
-    processLocalTransaction
+	chooseOperation,
+	getOperationFunction,
+	processLocalTransaction,
 };
 
 function chooseOperation(json) {
-    let getOpResult;
-    try {
-        getOpResult = getOperationFunction(json);
-    } catch(err) {
-        harper_logger.error(`Error when selecting operation function - ${err}`);
-        throw err;
-    }
+	let getOpResult;
+	try {
+		getOpResult = getOperationFunction(json);
+	} catch (err) {
+		harper_logger.error(`Error when selecting operation function - ${err}`);
+		throw err;
+	}
 
-    const { operation_function, job_operation_function } = getOpResult;
+	const { operation_function, job_operation_function } = getOpResult;
 
-    // Here there is a SQL statement in either the operation or the search_operation (from jobs like export_local).  Need to check the perms
-    // on all affected tables/attributes.
-    try {
-        if (json.operation === 'sql' || (json.search_operation && json.search_operation.operation === 'sql')) {
-            let sql_statement = (json.operation === 'sql' ? json.sql : json.search_operation.sql);
-            let parsed_sql_object = sql.convertSQLToAST(sql_statement);
-            json.parsed_sql_object = parsed_sql_object;
-            if (!json.bypass_auth) {
-                let ast_perm_check = sql.checkASTPermissions(json, parsed_sql_object);
-                if (ast_perm_check) {
-                    harper_logger.error(`${HTTP_STATUS_CODES.FORBIDDEN} from operation ${json.search_operation}`);
-                    throw handleHDBError(new Error(), ast_perm_check, hdb_errors.HTTP_STATUS_CODES.FORBIDDEN);
-                }
-            }
-        //we need to bypass permission checks to allow the create_authorization_tokens
-        } else if(!json.bypass_auth && json.operation !== terms.OPERATIONS_ENUM.CREATE_AUTHENTICATION_TOKENS){
-            let function_to_check = (job_operation_function === undefined ? operation_function : job_operation_function);
-            let operation_json = ((json.search_operation) ? json.search_operation : json);
-            if (!operation_json.hdb_user) {
-                operation_json.hdb_user = json.hdb_user;
-            }
+	// Here there is a SQL statement in either the operation or the search_operation (from jobs like export_local).  Need to check the perms
+	// on all affected tables/attributes.
+	try {
+		if (json.operation === 'sql' || (json.search_operation && json.search_operation.operation === 'sql')) {
+			let sql_statement = json.operation === 'sql' ? json.sql : json.search_operation.sql;
+			let parsed_sql_object = sql.convertSQLToAST(sql_statement);
+			json.parsed_sql_object = parsed_sql_object;
+			if (!json.bypass_auth) {
+				let ast_perm_check = sql.checkASTPermissions(json, parsed_sql_object);
+				if (ast_perm_check) {
+					harper_logger.error(`${HTTP_STATUS_CODES.FORBIDDEN} from operation ${json.search_operation}`);
+					throw handleHDBError(new Error(), ast_perm_check, hdb_errors.HTTP_STATUS_CODES.FORBIDDEN);
+				}
+			}
+			//we need to bypass permission checks to allow the create_authorization_tokens
+		} else if (!json.bypass_auth && json.operation !== terms.OPERATIONS_ENUM.CREATE_AUTHENTICATION_TOKENS) {
+			let function_to_check = job_operation_function === undefined ? operation_function : job_operation_function;
+			let operation_json = json.search_operation ? json.search_operation : json;
+			if (!operation_json.hdb_user) {
+				operation_json.hdb_user = json.hdb_user;
+			}
 
-            let verify_perms_result = op_auth.verifyPerms(operation_json, function_to_check);
+			let verify_perms_result = op_auth.verifyPerms(operation_json, function_to_check);
 
-            if (verify_perms_result) {
-                harper_logger.error(`${HTTP_STATUS_CODES.FORBIDDEN} from operation ${json.operation}`);
-                throw handleHDBError(new Error(), verify_perms_result, hdb_errors.HTTP_STATUS_CODES.FORBIDDEN);
-            }
-        }
-    } catch (err) {
-        throw handleHDBError(err, `There was an error when trying to choose an operation path`);
-    }
-    return operation_function;
+			if (verify_perms_result) {
+				harper_logger.error(`${HTTP_STATUS_CODES.FORBIDDEN} from operation ${json.operation}`);
+				throw handleHDBError(new Error(), verify_perms_result, hdb_errors.HTTP_STATUS_CODES.FORBIDDEN);
+			}
+		}
+	} catch (err) {
+		throw handleHDBError(err, `There was an error when trying to choose an operation path`);
+	}
+	return operation_function;
 }
 
-function getOperationFunction(json){
-    harper_logger.trace(`getOperationFunction with operation: ${json.operation}`);
+function getOperationFunction(json) {
+	harper_logger.trace(`getOperationFunction with operation: ${json.operation}`);
 
-    if (OPERATION_FUNCTION_MAP.has(json.operation)){
-        return OPERATION_FUNCTION_MAP.get(json.operation);
-    }
-    harper_logger.error(json);
-    throw handleHDBError(new Error(), hdb_errors.HDB_ERROR_MSGS.OP_NOT_FOUND(json.operation), hdb_errors.HTTP_STATUS_CODES.BAD_REQUEST, undefined, undefined, true);
+	if (OPERATION_FUNCTION_MAP.has(json.operation)) {
+		return OPERATION_FUNCTION_MAP.get(json.operation);
+	}
+	harper_logger.error(json);
+	throw handleHDBError(
+		new Error(),
+		hdb_errors.HDB_ERROR_MSGS.OP_NOT_FOUND(json.operation),
+		hdb_errors.HTTP_STATUS_CODES.BAD_REQUEST,
+		undefined,
+		undefined,
+		true
+	);
 }
 
 async function catchup(req) {
-    harper_logger.trace('In serverUtils.catchup');
-    let catchup_object = req.transaction;
-    let split_channel = catchup_object.channel.split(':');
+	harper_logger.trace('In serverUtils.catchup');
+	let catchup_object = req.transaction;
+	let split_channel = catchup_object.channel.split(':');
 
-    let _schema = split_channel[0];
-    let table = split_channel[1];
-    for (let transaction of catchup_object.transactions) {
-        try {
-            transaction.schema = _schema;
-            transaction.table = table;
-            transaction[terms.CLUSTERING_FLAG] = true;
-            let result;
-            switch (transaction.operation) {
-                case terms.OPERATIONS_ENUM.INSERT:
-                    result = await insert.insert(transaction);
-                    break;
-                case terms.OPERATIONS_ENUM.UPDATE:
-                    result = await insert.update(transaction);
-                    break;
-                case terms.OPERATIONS_ENUM.UPSERT:
-                    result = await insert.upsert(transaction);
-                    break;
-                case terms.OPERATIONS_ENUM.DELETE:
-                    result = await delete_.deleteRecord(transaction);
-                    break;
-                default:
-                    harper_logger.warn('invalid operation in catchup');
-                    break;
-            }
+	let _schema = split_channel[0];
+	let table = split_channel[1];
+	for (let transaction of catchup_object.transactions) {
+		try {
+			transaction.schema = _schema;
+			transaction.table = table;
+			transaction[terms.CLUSTERING_FLAG] = true;
+			let result;
+			switch (transaction.operation) {
+				case terms.OPERATIONS_ENUM.INSERT:
+					result = await insert.insert(transaction);
+					break;
+				case terms.OPERATIONS_ENUM.UPDATE:
+					result = await insert.update(transaction);
+					break;
+				case terms.OPERATIONS_ENUM.UPSERT:
+					result = await insert.upsert(transaction);
+					break;
+				case terms.OPERATIONS_ENUM.DELETE:
+					result = await delete_.deleteRecord(transaction);
+					break;
+				default:
+					harper_logger.warn('invalid operation in catchup');
+					break;
+			}
 
-            transact_to_clustering_utils.postOperationHandler(transaction, result, req);
-        } catch(e) {
-            harper_logger.info('Invalid operation in transaction');
-            harper_logger.error(e);
-        }
-    }
+			transact_to_clustering_utils.postOperationHandler(transaction, result, req);
+		} catch (e) {
+			harper_logger.info('Invalid operation in transaction');
+			harper_logger.error(e);
+		}
+	}
 }
 
 async function executeJob(json) {
-    let new_job_object = undefined;
-    let result = undefined;
-    try {
-        result = await jobs.addJob(json);
-        new_job_object = result.createdJob;
-        let job_runner_message = new job_runner.RunnerMessage(new_job_object, json);
-        // purposefully not waiting for await response as we want to callback immediately.
-        job_runner.parseMessage(job_runner_message).catch(e => {
-            harper_logger.error(`Got an error trying to run a job with message ${job_runner_message}. ${e}`);
-        });
+	let new_job_object = undefined;
+	let result = undefined;
+	try {
+		result = await jobs.addJob(json);
+		new_job_object = result.createdJob;
+		let job_runner_message = new job_runner.RunnerMessage(new_job_object, json);
+		// purposefully not waiting for await response as we want to callback immediately.
+		job_runner.parseMessage(job_runner_message).catch((e) => {
+			harper_logger.error(`Got an error trying to run a job with message ${job_runner_message}. ${e}`);
+		});
 
-        return `Starting job with id ${new_job_object.id}`;
-    } catch (err) {
-        let message = `There was an error adding a job: ${err.http_resp_msg ? err.http_resp_msg : err}`;
-        harper_logger.error(message);
-        throw handleHDBError(err, message);
-    }
+		return `Starting job with id ${new_job_object.id}`;
+	} catch (err) {
+		let message = `There was an error adding a job: ${err.http_resp_msg ? err.http_resp_msg : err}`;
+		harper_logger.error(message);
+		throw handleHDBError(err, message);
+	}
 }
 
-function initializeOperationFunctionMap(){
-    let op_func_map = new Map();
+function initializeOperationFunctionMap() {
+	let op_func_map = new Map();
 
-    op_func_map.set(terms.OPERATIONS_ENUM.INSERT, new OperationFunctionObject(insert.insert));
-    op_func_map.set(terms.OPERATIONS_ENUM.UPDATE, new OperationFunctionObject(insert.update));
-    op_func_map.set(terms.OPERATIONS_ENUM.UPSERT, new OperationFunctionObject(insert.upsert));
-    op_func_map.set(terms.OPERATIONS_ENUM.SEARCH_BY_CONDITIONS, new OperationFunctionObject(search.searchByConditions));
-    op_func_map.set(terms.OPERATIONS_ENUM.SEARCH_BY_HASH, new OperationFunctionObject(p_search_search_by_hash));
-    op_func_map.set(terms.OPERATIONS_ENUM.SEARCH_BY_VALUE, new OperationFunctionObject(p_search_search_by_value));
-    op_func_map.set(terms.OPERATIONS_ENUM.SEARCH, new OperationFunctionObject(p_search_search));
-    op_func_map.set(terms.OPERATIONS_ENUM.SQL, new OperationFunctionObject(p_sql_evaluate_sql));
-    op_func_map.set(terms.OPERATIONS_ENUM.CSV_DATA_LOAD, new OperationFunctionObject(executeJob, bulkLoad.csvDataLoad));
-    op_func_map.set(terms.OPERATIONS_ENUM.CSV_FILE_LOAD, new OperationFunctionObject(executeJob, bulkLoad.csvFileLoad));
-    op_func_map.set(terms.OPERATIONS_ENUM.CSV_URL_LOAD, new OperationFunctionObject(executeJob, bulkLoad.csvURLLoad));
-    op_func_map.set(terms.OPERATIONS_ENUM.IMPORT_FROM_S3, new OperationFunctionObject(executeJob, bulkLoad.importFromS3));
-    op_func_map.set(terms.OPERATIONS_ENUM.CREATE_SCHEMA, new OperationFunctionObject(schema.createSchema));
-    op_func_map.set(terms.OPERATIONS_ENUM.CREATE_TABLE, new OperationFunctionObject(schema.createTable));
-    op_func_map.set(terms.OPERATIONS_ENUM.CREATE_ATTRIBUTE, new OperationFunctionObject(schema.createAttribute));
-    op_func_map.set(terms.OPERATIONS_ENUM.DROP_SCHEMA, new OperationFunctionObject(schema.dropSchema));
-    op_func_map.set(terms.OPERATIONS_ENUM.DROP_TABLE, new OperationFunctionObject(schema.dropTable));
-    op_func_map.set(terms.OPERATIONS_ENUM.DROP_ATTRIBUTE, new OperationFunctionObject(schema.dropAttribute));
-    op_func_map.set(terms.OPERATIONS_ENUM.DESCRIBE_SCHEMA, new OperationFunctionObject(schema_describe.describeSchema));
-    op_func_map.set(terms.OPERATIONS_ENUM.DESCRIBE_TABLE, new OperationFunctionObject(schema_describe.describeTable));
-    op_func_map.set(terms.OPERATIONS_ENUM.DESCRIBE_ALL, new OperationFunctionObject(schema_describe.describeAll));
-    op_func_map.set(terms.OPERATIONS_ENUM.DELETE, new OperationFunctionObject(p_delete));
-    op_func_map.set(terms.OPERATIONS_ENUM.ADD_USER, new OperationFunctionObject(user.addUser));
-    op_func_map.set(terms.OPERATIONS_ENUM.ALTER_USER, new OperationFunctionObject(user.alterUser));
-    op_func_map.set(terms.OPERATIONS_ENUM.DROP_USER, new OperationFunctionObject(user.dropUser));
-    op_func_map.set(terms.OPERATIONS_ENUM.LIST_USERS, new OperationFunctionObject(user.listUsersExternal));
-    op_func_map.set(terms.OPERATIONS_ENUM.LIST_ROLES, new OperationFunctionObject(role.listRoles));
-    op_func_map.set(terms.OPERATIONS_ENUM.ADD_ROLE, new OperationFunctionObject(role.addRole));
-    op_func_map.set(terms.OPERATIONS_ENUM.ALTER_ROLE, new OperationFunctionObject(role.alterRole));
-    op_func_map.set(terms.OPERATIONS_ENUM.DROP_ROLE, new OperationFunctionObject(role.dropRole));
-    op_func_map.set(terms.OPERATIONS_ENUM.USER_INFO, new OperationFunctionObject(user.userInfo));
-    op_func_map.set(terms.OPERATIONS_ENUM.READ_LOG, new OperationFunctionObject(harper_logger.readLog));
-    op_func_map.set(terms.OPERATIONS_ENUM.ADD_NODE, new OperationFunctionObject(cluster_utilities.addNode));
-    op_func_map.set(terms.OPERATIONS_ENUM.UPDATE_NODE, new OperationFunctionObject(cluster_utilities.updateNode));
-    op_func_map.set(terms.OPERATIONS_ENUM.REMOVE_NODE, new OperationFunctionObject(cluster_utilities.removeNode));
-    op_func_map.set(terms.OPERATIONS_ENUM.CONFIGURE_CLUSTER, new OperationFunctionObject(cluster_utilities.configureCluster));
-    op_func_map.set(terms.OPERATIONS_ENUM.CLUSTER_STATUS, new OperationFunctionObject(cluster_utilities.clusterStatus));
-    op_func_map.set(terms.OPERATIONS_ENUM.EXPORT_TO_S3, new OperationFunctionObject(executeJob, export_.export_to_s3));
-    op_func_map.set(terms.OPERATIONS_ENUM.DELETE_FILES_BEFORE, new OperationFunctionObject(executeJob, delete_.deleteFilesBefore));
-    op_func_map.set(terms.OPERATIONS_ENUM.DELETE_RECORDS_BEFORE, new OperationFunctionObject(executeJob, delete_.deleteFilesBefore));
-    op_func_map.set(terms.OPERATIONS_ENUM.EXPORT_LOCAL, new OperationFunctionObject(executeJob, export_.export_local));
-    op_func_map.set(terms.OPERATIONS_ENUM.SEARCH_JOBS_BY_START_DATE, new OperationFunctionObject(jobs.handleGetJobsByStartDate));
-    op_func_map.set(terms.OPERATIONS_ENUM.GET_JOB, new OperationFunctionObject(jobs.handleGetJob));
-    op_func_map.set(terms.OPERATIONS_ENUM.GET_FINGERPRINT, new OperationFunctionObject(reg.getFingerprint));
-    op_func_map.set(terms.OPERATIONS_ENUM.SET_LICENSE, new OperationFunctionObject(reg.setLicense));
-    op_func_map.set(terms.OPERATIONS_ENUM.GET_REGISTRATION_INFO, new OperationFunctionObject(reg.getRegistrationInfo));
-    op_func_map.set(terms.OPERATIONS_ENUM.RESTART, new OperationFunctionObject(stop.restartProcesses));
-    op_func_map.set(terms.OPERATIONS_ENUM.RESTART_SERVICE, new OperationFunctionObject(stop.restartService));
-    op_func_map.set(terms.OPERATIONS_ENUM.CATCHUP, new OperationFunctionObject(catchup));
-    op_func_map.set(terms.OPERATIONS_ENUM.SYSTEM_INFORMATION, new OperationFunctionObject(system_information.systemInformation));
-    op_func_map.set(terms.OPERATIONS_ENUM.DELETE_TRANSACTION_LOGS_BEFORE, new OperationFunctionObject(executeJob, delete_.deleteTransactionLogsBefore));
-    op_func_map.set(terms.OPERATIONS_ENUM.READ_TRANSACTION_LOG, new OperationFunctionObject(read_transaction_log));
-    op_func_map.set(terms.OPERATIONS_ENUM.CREATE_AUTHENTICATION_TOKENS, new OperationFunctionObject(token_authentication.createTokens));
-    op_func_map.set(terms.OPERATIONS_ENUM.REFRESH_OPERATION_TOKEN, new OperationFunctionObject(token_authentication.refreshOperationToken));
-    op_func_map.set(terms.OPERATIONS_ENUM.GET_CONFIGURATION, new OperationFunctionObject(configuration.getConfiguration));
-    op_func_map.set(terms.OPERATIONS_ENUM.CUSTOM_FUNCTIONS_STATUS, new OperationFunctionObject(custom_function_operations.customFunctionsStatus));
-    op_func_map.set(terms.OPERATIONS_ENUM.GET_CUSTOM_FUNCTIONS, new OperationFunctionObject(custom_function_operations.getCustomFunctions));
-    op_func_map.set(terms.OPERATIONS_ENUM.GET_CUSTOM_FUNCTION, new OperationFunctionObject(custom_function_operations.getCustomFunction));
-    op_func_map.set(terms.OPERATIONS_ENUM.SET_CUSTOM_FUNCTION, new OperationFunctionObject(custom_function_operations.setCustomFunction));
-    op_func_map.set(terms.OPERATIONS_ENUM.DROP_CUSTOM_FUNCTION, new OperationFunctionObject(custom_function_operations.dropCustomFunction));
-    op_func_map.set(terms.OPERATIONS_ENUM.ADD_CUSTOM_FUNCTION_PROJECT, new OperationFunctionObject(custom_function_operations.addCustomFunctionProject));
-    op_func_map.set(terms.OPERATIONS_ENUM.DROP_CUSTOM_FUNCTION_PROJECT, new OperationFunctionObject(custom_function_operations.dropCustomFunctionProject));
-    op_func_map.set(terms.OPERATIONS_ENUM.PACKAGE_CUSTOM_FUNCTION_PROJECT, new OperationFunctionObject(custom_function_operations.packageCustomFunctionProject));
-    op_func_map.set(terms.OPERATIONS_ENUM.DEPLOY_CUSTOM_FUNCTION_PROJECT, new OperationFunctionObject(custom_function_operations.deployCustomFunctionProject));
+	op_func_map.set(terms.OPERATIONS_ENUM.INSERT, new OperationFunctionObject(insert.insert));
+	op_func_map.set(terms.OPERATIONS_ENUM.UPDATE, new OperationFunctionObject(insert.update));
+	op_func_map.set(terms.OPERATIONS_ENUM.UPSERT, new OperationFunctionObject(insert.upsert));
+	op_func_map.set(terms.OPERATIONS_ENUM.SEARCH_BY_CONDITIONS, new OperationFunctionObject(search.searchByConditions));
+	op_func_map.set(terms.OPERATIONS_ENUM.SEARCH_BY_HASH, new OperationFunctionObject(p_search_search_by_hash));
+	op_func_map.set(terms.OPERATIONS_ENUM.SEARCH_BY_VALUE, new OperationFunctionObject(p_search_search_by_value));
+	op_func_map.set(terms.OPERATIONS_ENUM.SEARCH, new OperationFunctionObject(p_search_search));
+	op_func_map.set(terms.OPERATIONS_ENUM.SQL, new OperationFunctionObject(p_sql_evaluate_sql));
+	op_func_map.set(terms.OPERATIONS_ENUM.CSV_DATA_LOAD, new OperationFunctionObject(executeJob, bulkLoad.csvDataLoad));
+	op_func_map.set(terms.OPERATIONS_ENUM.CSV_FILE_LOAD, new OperationFunctionObject(executeJob, bulkLoad.csvFileLoad));
+	op_func_map.set(terms.OPERATIONS_ENUM.CSV_URL_LOAD, new OperationFunctionObject(executeJob, bulkLoad.csvURLLoad));
+	op_func_map.set(terms.OPERATIONS_ENUM.IMPORT_FROM_S3, new OperationFunctionObject(executeJob, bulkLoad.importFromS3));
+	op_func_map.set(terms.OPERATIONS_ENUM.CREATE_SCHEMA, new OperationFunctionObject(schema.createSchema));
+	op_func_map.set(terms.OPERATIONS_ENUM.CREATE_TABLE, new OperationFunctionObject(schema.createTable));
+	op_func_map.set(terms.OPERATIONS_ENUM.CREATE_ATTRIBUTE, new OperationFunctionObject(schema.createAttribute));
+	op_func_map.set(terms.OPERATIONS_ENUM.DROP_SCHEMA, new OperationFunctionObject(schema.dropSchema));
+	op_func_map.set(terms.OPERATIONS_ENUM.DROP_TABLE, new OperationFunctionObject(schema.dropTable));
+	op_func_map.set(terms.OPERATIONS_ENUM.DROP_ATTRIBUTE, new OperationFunctionObject(schema.dropAttribute));
+	op_func_map.set(terms.OPERATIONS_ENUM.DESCRIBE_SCHEMA, new OperationFunctionObject(schema_describe.describeSchema));
+	op_func_map.set(terms.OPERATIONS_ENUM.DESCRIBE_TABLE, new OperationFunctionObject(schema_describe.describeTable));
+	op_func_map.set(terms.OPERATIONS_ENUM.DESCRIBE_ALL, new OperationFunctionObject(schema_describe.describeAll));
+	op_func_map.set(terms.OPERATIONS_ENUM.DELETE, new OperationFunctionObject(p_delete));
+	op_func_map.set(terms.OPERATIONS_ENUM.ADD_USER, new OperationFunctionObject(user.addUser));
+	op_func_map.set(terms.OPERATIONS_ENUM.ALTER_USER, new OperationFunctionObject(user.alterUser));
+	op_func_map.set(terms.OPERATIONS_ENUM.DROP_USER, new OperationFunctionObject(user.dropUser));
+	op_func_map.set(terms.OPERATIONS_ENUM.LIST_USERS, new OperationFunctionObject(user.listUsersExternal));
+	op_func_map.set(terms.OPERATIONS_ENUM.LIST_ROLES, new OperationFunctionObject(role.listRoles));
+	op_func_map.set(terms.OPERATIONS_ENUM.ADD_ROLE, new OperationFunctionObject(role.addRole));
+	op_func_map.set(terms.OPERATIONS_ENUM.ALTER_ROLE, new OperationFunctionObject(role.alterRole));
+	op_func_map.set(terms.OPERATIONS_ENUM.DROP_ROLE, new OperationFunctionObject(role.dropRole));
+	op_func_map.set(terms.OPERATIONS_ENUM.USER_INFO, new OperationFunctionObject(user.userInfo));
+	op_func_map.set(terms.OPERATIONS_ENUM.READ_LOG, new OperationFunctionObject(harper_logger.readLog));
+	op_func_map.set(terms.OPERATIONS_ENUM.ADD_NODE, new OperationFunctionObject(cluster_utilities.addNode));
+	op_func_map.set(terms.OPERATIONS_ENUM.UPDATE_NODE, new OperationFunctionObject(cluster_utilities.updateNode));
+	op_func_map.set(terms.OPERATIONS_ENUM.REMOVE_NODE, new OperationFunctionObject(cluster_utilities.removeNode));
+	op_func_map.set(
+		terms.OPERATIONS_ENUM.CONFIGURE_CLUSTER,
+		new OperationFunctionObject(cluster_utilities.configureCluster)
+	);
+	op_func_map.set(terms.OPERATIONS_ENUM.CLUSTER_STATUS, new OperationFunctionObject(cluster_utilities.clusterStatus));
+	op_func_map.set(terms.OPERATIONS_ENUM.EXPORT_TO_S3, new OperationFunctionObject(executeJob, export_.export_to_s3));
+	op_func_map.set(
+		terms.OPERATIONS_ENUM.DELETE_FILES_BEFORE,
+		new OperationFunctionObject(executeJob, delete_.deleteFilesBefore)
+	);
+	op_func_map.set(
+		terms.OPERATIONS_ENUM.DELETE_RECORDS_BEFORE,
+		new OperationFunctionObject(executeJob, delete_.deleteFilesBefore)
+	);
+	op_func_map.set(terms.OPERATIONS_ENUM.EXPORT_LOCAL, new OperationFunctionObject(executeJob, export_.export_local));
+	op_func_map.set(
+		terms.OPERATIONS_ENUM.SEARCH_JOBS_BY_START_DATE,
+		new OperationFunctionObject(jobs.handleGetJobsByStartDate)
+	);
+	op_func_map.set(terms.OPERATIONS_ENUM.GET_JOB, new OperationFunctionObject(jobs.handleGetJob));
+	op_func_map.set(terms.OPERATIONS_ENUM.GET_FINGERPRINT, new OperationFunctionObject(reg.getFingerprint));
+	op_func_map.set(terms.OPERATIONS_ENUM.SET_LICENSE, new OperationFunctionObject(reg.setLicense));
+	op_func_map.set(terms.OPERATIONS_ENUM.GET_REGISTRATION_INFO, new OperationFunctionObject(reg.getRegistrationInfo));
+	op_func_map.set(terms.OPERATIONS_ENUM.RESTART, new OperationFunctionObject(stop.restartProcesses));
+	op_func_map.set(terms.OPERATIONS_ENUM.RESTART_SERVICE, new OperationFunctionObject(stop.restartService));
+	op_func_map.set(terms.OPERATIONS_ENUM.CATCHUP, new OperationFunctionObject(catchup));
+	op_func_map.set(
+		terms.OPERATIONS_ENUM.SYSTEM_INFORMATION,
+		new OperationFunctionObject(system_information.systemInformation)
+	);
+	op_func_map.set(
+		terms.OPERATIONS_ENUM.DELETE_TRANSACTION_LOGS_BEFORE,
+		new OperationFunctionObject(executeJob, delete_.deleteTransactionLogsBefore)
+	);
+	op_func_map.set(terms.OPERATIONS_ENUM.READ_TRANSACTION_LOG, new OperationFunctionObject(read_transaction_log));
+	op_func_map.set(
+		terms.OPERATIONS_ENUM.CREATE_AUTHENTICATION_TOKENS,
+		new OperationFunctionObject(token_authentication.createTokens)
+	);
+	op_func_map.set(
+		terms.OPERATIONS_ENUM.REFRESH_OPERATION_TOKEN,
+		new OperationFunctionObject(token_authentication.refreshOperationToken)
+	);
+	op_func_map.set(terms.OPERATIONS_ENUM.GET_CONFIGURATION, new OperationFunctionObject(configuration.getConfiguration));
+	op_func_map.set(
+		terms.OPERATIONS_ENUM.CUSTOM_FUNCTIONS_STATUS,
+		new OperationFunctionObject(custom_function_operations.customFunctionsStatus)
+	);
+	op_func_map.set(
+		terms.OPERATIONS_ENUM.GET_CUSTOM_FUNCTIONS,
+		new OperationFunctionObject(custom_function_operations.getCustomFunctions)
+	);
+	op_func_map.set(
+		terms.OPERATIONS_ENUM.GET_CUSTOM_FUNCTION,
+		new OperationFunctionObject(custom_function_operations.getCustomFunction)
+	);
+	op_func_map.set(
+		terms.OPERATIONS_ENUM.SET_CUSTOM_FUNCTION,
+		new OperationFunctionObject(custom_function_operations.setCustomFunction)
+	);
+	op_func_map.set(
+		terms.OPERATIONS_ENUM.DROP_CUSTOM_FUNCTION,
+		new OperationFunctionObject(custom_function_operations.dropCustomFunction)
+	);
+	op_func_map.set(
+		terms.OPERATIONS_ENUM.ADD_CUSTOM_FUNCTION_PROJECT,
+		new OperationFunctionObject(custom_function_operations.addCustomFunctionProject)
+	);
+	op_func_map.set(
+		terms.OPERATIONS_ENUM.DROP_CUSTOM_FUNCTION_PROJECT,
+		new OperationFunctionObject(custom_function_operations.dropCustomFunctionProject)
+	);
+	op_func_map.set(
+		terms.OPERATIONS_ENUM.PACKAGE_CUSTOM_FUNCTION_PROJECT,
+		new OperationFunctionObject(custom_function_operations.packageCustomFunctionProject)
+	);
+	op_func_map.set(
+		terms.OPERATIONS_ENUM.DEPLOY_CUSTOM_FUNCTION_PROJECT,
+		new OperationFunctionObject(custom_function_operations.deployCustomFunctionProject)
+	);
 
-    return op_func_map;
+	return op_func_map;
 }

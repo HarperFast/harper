@@ -1,4 +1,4 @@
-"use strict";
+'use strict';
 
 /**
  * Eventable was meant to be used as an observer type pattern, but ended up being removed along with the messageQueue.
@@ -6,29 +6,27 @@
  */
 
 class EventableIF {
-    constructor() {
+	constructor() {}
 
-    }
+	/**
+	 * Notify all observers that something has happened.
+	 * @param content
+	 */
+	notify(content) {
+		throw new Error('Not implemented');
+	}
 
-    /**
-     * Notify all observers that something has happened.
-     * @param content
-     */
-    notify(content) {
-        throw new Error('Not implemented');
-    }
+	/**
+	 * This may not be implmentable depending on the technology used in the subclass.
+	 * @param messageIF_object
+	 */
+	onMessage(messageIF_object) {
+		throw new Error('Not Implemented');
+	}
 
-    /**
-     * This may not be implmentable depending on the technology used in the subclass.
-     * @param messageIF_object
-     */
-    onMessage(messageIF_object) {
-        throw new Error('Not Implemented');
-    }
-
-    emit(topic, messageIf_object) {
-        throw new Error('Not Implemented');
-    }
+	emit(topic, messageIf_object) {
+		throw new Error('Not Implemented');
+	}
 }
 
 module.exports = EventableIF;

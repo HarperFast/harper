@@ -4,7 +4,7 @@ const hdb_terms = require('../../../../utility/hdbTerms');
 const environment_utility = require('../../../../utility/lmdb/environmentUtility');
 const write_utility = require('../../../../utility/lmdb/writeUtility');
 const path = require('path');
-const {getSystemSchemaPath,getBaseSchemaPath} = require('../lmdbUtility/initializePaths');
+const { getSystemSchemaPath, getBaseSchemaPath } = require('../lmdbUtility/initializePaths');
 const system_schema = require('../../../../json/systemSchema');
 const lmdb_create_attribute = require('./lmdbCreateAttribute');
 const LMDBCreateAttributeObject = require('../lmdbUtility/LMDBCreateAttributeObject');
@@ -13,8 +13,8 @@ const create_txn_environments = require('../lmdbUtility/lmdbCreateTransactionsEn
 
 const HDB_TABLE_INFO = system_schema.hdb_table;
 let hdb_table_attributes = [];
-for(let x = 0; x < HDB_TABLE_INFO.attributes.length; x++){
-    hdb_table_attributes.push(HDB_TABLE_INFO.attributes[x].attribute);
+for (let x = 0; x < HDB_TABLE_INFO.attributes.length; x++) {
+	hdb_table_attributes.push(HDB_TABLE_INFO.attributes[x].attribute);
 }
 
 module.exports = lmdbCreateTable;
@@ -26,32 +26,56 @@ module.exports = lmdbCreateTable;
  * @param table_create_obj
  */
 async function lmdbCreateTable(table_system_data, table_create_obj) {
-    let schema_path = path.join(getBaseSchemaPath(), table_create_obj.schema.toString());
+	let schema_path = path.join(getBaseSchemaPath(), table_create_obj.schema.toString());
 
-    let created_time_attr = new LMDBCreateAttributeObject(table_create_obj.schema, table_create_obj.table, hdb_terms.TIME_STAMP_NAMES_ENUM.CREATED_TIME, undefined, true);
-    let updated_time_attr = new LMDBCreateAttributeObject(table_create_obj.schema, table_create_obj.table, hdb_terms.TIME_STAMP_NAMES_ENUM.UPDATED_TIME, undefined, true);
-    let hash_attr = new LMDBCreateAttributeObject(table_create_obj.schema, table_create_obj.table, table_create_obj.hash_attribute, undefined, false, true);
+	let created_time_attr = new LMDBCreateAttributeObject(
+		table_create_obj.schema,
+		table_create_obj.table,
+		hdb_terms.TIME_STAMP_NAMES_ENUM.CREATED_TIME,
+		undefined,
+		true
+	);
+	let updated_time_attr = new LMDBCreateAttributeObject(
+		table_create_obj.schema,
+		table_create_obj.table,
+		hdb_terms.TIME_STAMP_NAMES_ENUM.UPDATED_TIME,
+		undefined,
+		true
+	);
+	let hash_attr = new LMDBCreateAttributeObject(
+		table_create_obj.schema,
+		table_create_obj.table,
+		table_create_obj.hash_attribute,
+		undefined,
+		false,
+		true
+	);
 
-    try {
-        //create the new environment
-        await environment_utility.createEnvironment(schema_path, table_create_obj.table);
+	try {
+		//create the new environment
+		await environment_utility.createEnvironment(schema_path, table_create_obj.table);
 
-        if(table_system_data !== undefined) {
-            let hdb_table_env = await environment_utility.openEnvironment(getSystemSchemaPath(), hdb_terms.SYSTEM_TABLE_NAMES.TABLE_TABLE_NAME);
+		if (table_system_data !== undefined) {
+			let hdb_table_env = await environment_utility.openEnvironment(
+				getSystemSchemaPath(),
+				hdb_terms.SYSTEM_TABLE_NAMES.TABLE_TABLE_NAME
+			);
 
-            //add the meta data to system.hdb_table
-            await write_utility.insertRecords(hdb_table_env, HDB_TABLE_INFO.hash_attribute, hdb_table_attributes, [table_system_data]);
-            //create attributes for hash attribute created/updated time stamps
+			//add the meta data to system.hdb_table
+			await write_utility.insertRecords(hdb_table_env, HDB_TABLE_INFO.hash_attribute, hdb_table_attributes, [
+				table_system_data,
+			]);
+			//create attributes for hash attribute created/updated time stamps
 
-            await createAttribute(created_time_attr);
-            await createAttribute(updated_time_attr);
-            await createAttribute(hash_attr);
-        }
+			await createAttribute(created_time_attr);
+			await createAttribute(updated_time_attr);
+			await createAttribute(hash_attr);
+		}
 
-        await create_txn_environments(table_create_obj);
-    }catch (e) {
-        throw e;
-    }
+		await create_txn_environments(table_create_obj);
+	} catch (e) {
+		throw e;
+	}
 }
 
 /**
@@ -59,10 +83,10 @@ async function lmdbCreateTable(table_system_data, table_create_obj) {
  * @param {LMDBCreateAttributeObject} attribute_object
  * @returns {Promise<void>}
  */
-async function createAttribute(attribute_object){
-    try{
-        await lmdb_create_attribute(attribute_object);
-    }catch(e){
-        log.warn(`failed to create attribute ${attribute_object.attribute} due to ${e.message}`);
-    }
+async function createAttribute(attribute_object) {
+	try {
+		await lmdb_create_attribute(attribute_object);
+	} catch (e) {
+		log.warn(`failed to create attribute ${attribute_object.attribute} due to ${e.message}`);
+	}
 }

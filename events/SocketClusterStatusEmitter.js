@@ -7,7 +7,7 @@ class SocketClusterStatusEmitter extends EventEmitter {}
 let socketClusterEmitter = new SocketClusterStatusEmitter();
 
 module.exports = {
-    socketClusterEmitter,
-    EVENT_NAME,
-    SocketClusterStatusEmitter
+	socketClusterEmitter,
+	EVENT_NAME,
+	SocketClusterStatusEmitter,
 };

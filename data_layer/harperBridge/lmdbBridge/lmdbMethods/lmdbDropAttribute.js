@@ -9,7 +9,7 @@ const environment_utility = require('../../../../utility/lmdb/environmentUtility
 const system_schema = require('../../../../json/systemSchema.json');
 const search_by_value = require('./lmdbSearchByValue');
 const delete_records = require('./lmdbDeleteRecords');
-const {getBaseSchemaPath} = require('../lmdbUtility/initializePaths');
+const { getBaseSchemaPath } = require('../lmdbUtility/initializePaths');
 const path = require('path');
 
 module.exports = lmdbDropAttribute;
@@ -21,31 +21,31 @@ module.exports = lmdbDropAttribute;
  * @returns {undefined}
  */
 async function lmdbDropAttribute(drop_attribute_obj, remove_data = true) {
-    let table_info;
-    if (drop_attribute_obj.schema === hdb_terms.SYSTEM_SCHEMA_NAME) {
-        table_info = system_schema[drop_attribute_obj.table];
-    } else {
-        table_info = global.hdb_schema[drop_attribute_obj.schema][drop_attribute_obj.table];
-    }
+	let table_info;
+	if (drop_attribute_obj.schema === hdb_terms.SYSTEM_SCHEMA_NAME) {
+		table_info = system_schema[drop_attribute_obj.table];
+	} else {
+		table_info = global.hdb_schema[drop_attribute_obj.schema][drop_attribute_obj.table];
+	}
 
-    try {
-        //remove meta data
-        let delete_results = await dropAttributeFromSystem(drop_attribute_obj);
-        //drop dbi
-        let schema_path = path.join(getBaseSchemaPath(), drop_attribute_obj.schema.toString());
-        let env = await environment_utility.openEnvironment(schema_path, drop_attribute_obj.table);
+	try {
+		//remove meta data
+		let delete_results = await dropAttributeFromSystem(drop_attribute_obj);
+		//drop dbi
+		let schema_path = path.join(getBaseSchemaPath(), drop_attribute_obj.schema.toString());
+		let env = await environment_utility.openEnvironment(schema_path, drop_attribute_obj.table);
 
-        //in the scenario of drop table / schema we don't need to remove individual elements since we are removing entire environments
-        if(remove_data === true) {
-            await removeAttributeFromAllObjects(drop_attribute_obj, env, table_info.hash_attribute);
-        }
+		//in the scenario of drop table / schema we don't need to remove individual elements since we are removing entire environments
+		if (remove_data === true) {
+			await removeAttributeFromAllObjects(drop_attribute_obj, env, table_info.hash_attribute);
+		}
 
-        environment_utility.dropDBI(env, drop_attribute_obj.attribute);
+		environment_utility.dropDBI(env, drop_attribute_obj.attribute);
 
-        return delete_results;
-    } catch (e) {
-        throw e;
-    }
+		return delete_results;
+	} catch (e) {
+		throw e;
+	}
 }
 
 /**
@@ -54,18 +54,18 @@ async function lmdbDropAttribute(drop_attribute_obj, remove_data = true) {
  * @param {lmdb.RootDatabase} env
  * @param {String} hash_attribute
  */
-async function removeAttributeFromAllObjects(drop_attribute_obj, env, hash_attribute){
-    try {
-        let dbi = environment_utility.openDBI(env, hash_attribute);
-        let promise;
-        for(let {key, value} of dbi.getRange()){
-            delete value[drop_attribute_obj.attribute];
-            promise = env.dbis[hash_attribute].put(key, value);
-        }
-        await promise;
-    }catch(e){
-        throw e;
-    }
+async function removeAttributeFromAllObjects(drop_attribute_obj, env, hash_attribute) {
+	try {
+		let dbi = environment_utility.openDBI(env, hash_attribute);
+		let promise;
+		for (let { key, value } of dbi.getRange()) {
+			delete value[drop_attribute_obj.attribute];
+			promise = env.dbis[hash_attribute].put(key, value);
+		}
+		await promise;
+	} catch (e) {
+		throw e;
+	}
 }
 
 /**
@@ -74,23 +74,36 @@ async function removeAttributeFromAllObjects(drop_attribute_obj, env, hash_attri
  * @returns {undefined}
  */
 async function dropAttributeFromSystem(drop_attribute_obj) {
-    let search_obj = new SearchObject(hdb_terms.SYSTEM_SCHEMA_NAME, hdb_terms.SYSTEM_TABLE_NAMES.ATTRIBUTE_TABLE_NAME, hdb_terms.SYSTEM_DEFAULT_ATTRIBUTE_NAMES.ATTR_SCHEMA_TABLE_KEY,
-        `${drop_attribute_obj.schema}.${drop_attribute_obj.table}`, undefined,
-        [hdb_terms.SYSTEM_DEFAULT_ATTRIBUTE_NAMES.ATTR_ID_KEY, hdb_terms.SYSTEM_DEFAULT_ATTRIBUTE_NAMES.ATTR_ATTRIBUTE_KEY]);
+	let search_obj = new SearchObject(
+		hdb_terms.SYSTEM_SCHEMA_NAME,
+		hdb_terms.SYSTEM_TABLE_NAMES.ATTRIBUTE_TABLE_NAME,
+		hdb_terms.SYSTEM_DEFAULT_ATTRIBUTE_NAMES.ATTR_SCHEMA_TABLE_KEY,
+		`${drop_attribute_obj.schema}.${drop_attribute_obj.table}`,
+		undefined,
+		[hdb_terms.SYSTEM_DEFAULT_ATTRIBUTE_NAMES.ATTR_ID_KEY, hdb_terms.SYSTEM_DEFAULT_ATTRIBUTE_NAMES.ATTR_ATTRIBUTE_KEY]
+	);
 
-    try {
-        let table_attributes = await search_by_value(search_obj);
-        let attribute = table_attributes.filter(attr => attr[hdb_terms.SYSTEM_DEFAULT_ATTRIBUTE_NAMES.ATTR_ATTRIBUTE_KEY] === drop_attribute_obj.attribute);
-        if (common_utils.isEmptyOrZeroLength(attribute)) {
-            throw new Error(`Attribute '${drop_attribute_obj.attribute}' was not found in '${drop_attribute_obj.schema}.${drop_attribute_obj.table}'`);
-        }
+	try {
+		let table_attributes = await search_by_value(search_obj);
+		let attribute = table_attributes.filter(
+			(attr) => attr[hdb_terms.SYSTEM_DEFAULT_ATTRIBUTE_NAMES.ATTR_ATTRIBUTE_KEY] === drop_attribute_obj.attribute
+		);
+		if (common_utils.isEmptyOrZeroLength(attribute)) {
+			throw new Error(
+				`Attribute '${drop_attribute_obj.attribute}' was not found in '${drop_attribute_obj.schema}.${drop_attribute_obj.table}'`
+			);
+		}
 
-        let id = attribute.map(attr => attr[hdb_terms.SYSTEM_DEFAULT_ATTRIBUTE_NAMES.ATTR_ID_KEY]);
+		let id = attribute.map((attr) => attr[hdb_terms.SYSTEM_DEFAULT_ATTRIBUTE_NAMES.ATTR_ID_KEY]);
 
-        let delete_table_obj = new DeleteObject(hdb_terms.SYSTEM_SCHEMA_NAME, hdb_terms.SYSTEM_TABLE_NAMES.ATTRIBUTE_TABLE_NAME, id);
+		let delete_table_obj = new DeleteObject(
+			hdb_terms.SYSTEM_SCHEMA_NAME,
+			hdb_terms.SYSTEM_TABLE_NAMES.ATTRIBUTE_TABLE_NAME,
+			id
+		);
 
-        return await delete_records(delete_table_obj);
-    } catch(err) {
-        throw err;
-    }
+		return await delete_records(delete_table_obj);
+	} catch (err) {
+		throw err;
+	}
 }

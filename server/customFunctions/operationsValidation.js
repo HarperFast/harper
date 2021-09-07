@@ -14,12 +14,12 @@ const { HDB_ERROR_MSGS } = hdb_errors;
 const PROJECT_FILE_NAME_REGEX = /^[a-zA-Z0-9-_]+$/;
 
 module.exports = {
-    getDropCustomFunctionValidator,
-    setCustomFunctionValidator,
-    addCustomFunctionProjectValidator,
-    dropCustomFunctionProjectValidator,
-    packageCustomFunctionProjectValidator,
-    deployCustomFunctionProjectValidator
+	getDropCustomFunctionValidator,
+	setCustomFunctionValidator,
+	addCustomFunctionProjectValidator,
+	dropCustomFunctionProjectValidator,
+	packageCustomFunctionProjectValidator,
+	deployCustomFunctionProjectValidator,
 };
 
 /**
@@ -30,27 +30,27 @@ module.exports = {
  * @returns {*}
  */
 function checkProjectExists(check_exists, project, helpers) {
-    try {
-        const cf_dir = env_mangr.getProperty(hdb_terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY);
-        const project_dir = path.join(cf_dir, project);
+	try {
+		const cf_dir = env_mangr.getProperty(hdb_terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY);
+		const project_dir = path.join(cf_dir, project);
 
-        if (!fs.existsSync(project_dir)) {
-            if (check_exists) {
-                return helpers.message(HDB_ERROR_MSGS.NO_PROJECT);
-            }
+		if (!fs.existsSync(project_dir)) {
+			if (check_exists) {
+				return helpers.message(HDB_ERROR_MSGS.NO_PROJECT);
+			}
 
-            return project;
-        }
+			return project;
+		}
 
-        if (check_exists) {
-            return project;
-        }
+		if (check_exists) {
+			return project;
+		}
 
-        return helpers.message(HDB_ERROR_MSGS.PROJECT_EXISTS);
-    } catch(err) {
-        hdb_logger.error(err);
-        return helpers.message(HDB_ERROR_MSGS.VALIDATION_ERR);
-    }
+		return helpers.message(HDB_ERROR_MSGS.PROJECT_EXISTS);
+	} catch (err) {
+		hdb_logger.error(err);
+		return helpers.message(HDB_ERROR_MSGS.VALIDATION_ERR);
+	}
 }
 
 /**
@@ -62,18 +62,18 @@ function checkProjectExists(check_exists, project, helpers) {
  * @returns {*}
  */
 function checkFileExists(project, type, file, helpers) {
-    try {
-        const cf_dir = env_mangr.getProperty(hdb_terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY);
-        const file_path = path.join(cf_dir, project, type, file + '.js');
-        if (!fs.existsSync(file_path)) {
-            return helpers.message(HDB_ERROR_MSGS.NO_FILE);
-        }
+	try {
+		const cf_dir = env_mangr.getProperty(hdb_terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY);
+		const file_path = path.join(cf_dir, project, type, file + '.js');
+		if (!fs.existsSync(file_path)) {
+			return helpers.message(HDB_ERROR_MSGS.NO_FILE);
+		}
 
-        return file;
-    } catch(err) {
-        hdb_logger.error(err);
-        return helpers.message(HDB_ERROR_MSGS.VALIDATION_ERR);
-    }
+		return file;
+	} catch (err) {
+		hdb_logger.error(err);
+		return helpers.message(HDB_ERROR_MSGS.VALIDATION_ERR);
+	}
 }
 
 /**
@@ -82,15 +82,21 @@ function checkFileExists(project, type, file, helpers) {
  * @returns {*}
  */
 function getDropCustomFunctionValidator(req) {
-    const get_func_schema = Joi.object({
-        project: Joi.string().pattern(PROJECT_FILE_NAME_REGEX).custom(checkProjectExists.bind(null, true)).required()
-            .messages({'string.pattern.base': HDB_ERROR_MSGS.BAD_PROJECT_NAME}),
-        type: Joi.string().valid('helpers', 'routes').required(),
-        file: Joi.string().pattern(PROJECT_FILE_NAME_REGEX).custom(checkFileExists.bind(null, req.project, req.type)).required()
-            .messages({'string.pattern.base': HDB_ERROR_MSGS.BAD_FILE_NAME})
-    });
+	const get_func_schema = Joi.object({
+		project: Joi.string()
+			.pattern(PROJECT_FILE_NAME_REGEX)
+			.custom(checkProjectExists.bind(null, true))
+			.required()
+			.messages({ 'string.pattern.base': HDB_ERROR_MSGS.BAD_PROJECT_NAME }),
+		type: Joi.string().valid('helpers', 'routes').required(),
+		file: Joi.string()
+			.pattern(PROJECT_FILE_NAME_REGEX)
+			.custom(checkFileExists.bind(null, req.project, req.type))
+			.required()
+			.messages({ 'string.pattern.base': HDB_ERROR_MSGS.BAD_FILE_NAME }),
+	});
 
-    return validator.validateBySchema(req, get_func_schema);
+	return validator.validateBySchema(req, get_func_schema);
 }
 
 /**
@@ -99,16 +105,21 @@ function getDropCustomFunctionValidator(req) {
  * @returns {*}
  */
 function setCustomFunctionValidator(req) {
-    const set_func_schema = Joi.object({
-        project: Joi.string().pattern(PROJECT_FILE_NAME_REGEX).custom(checkProjectExists.bind(null, true)).required()
-            .messages({'string.pattern.base': HDB_ERROR_MSGS.BAD_PROJECT_NAME}),
-        type: Joi.string().valid('helpers', 'routes').required(),
-        file: Joi.string().pattern(PROJECT_FILE_NAME_REGEX).required()
-            .messages({'string.pattern.base': HDB_ERROR_MSGS.BAD_FILE_NAME}),
-        function_content: Joi.string().required()
-    });
+	const set_func_schema = Joi.object({
+		project: Joi.string()
+			.pattern(PROJECT_FILE_NAME_REGEX)
+			.custom(checkProjectExists.bind(null, true))
+			.required()
+			.messages({ 'string.pattern.base': HDB_ERROR_MSGS.BAD_PROJECT_NAME }),
+		type: Joi.string().valid('helpers', 'routes').required(),
+		file: Joi.string()
+			.pattern(PROJECT_FILE_NAME_REGEX)
+			.required()
+			.messages({ 'string.pattern.base': HDB_ERROR_MSGS.BAD_FILE_NAME }),
+		function_content: Joi.string().required(),
+	});
 
-    return validator.validateBySchema(req, set_func_schema);
+	return validator.validateBySchema(req, set_func_schema);
 }
 
 /**
@@ -117,12 +128,15 @@ function setCustomFunctionValidator(req) {
  * @returns {*}
  */
 function addCustomFunctionProjectValidator(req) {
-    const add_func_schema = Joi.object({
-        project: Joi.string().pattern(PROJECT_FILE_NAME_REGEX).custom(checkProjectExists.bind(null, false)).required()
-            .messages({'string.pattern.base': HDB_ERROR_MSGS.BAD_PROJECT_NAME}),
-    });
+	const add_func_schema = Joi.object({
+		project: Joi.string()
+			.pattern(PROJECT_FILE_NAME_REGEX)
+			.custom(checkProjectExists.bind(null, false))
+			.required()
+			.messages({ 'string.pattern.base': HDB_ERROR_MSGS.BAD_PROJECT_NAME }),
+	});
 
-    return validator.validateBySchema(req, add_func_schema);
+	return validator.validateBySchema(req, add_func_schema);
 }
 
 /**
@@ -131,12 +145,15 @@ function addCustomFunctionProjectValidator(req) {
  * @returns {*}
  */
 function dropCustomFunctionProjectValidator(req) {
-    const drop_func_schema = Joi.object({
-        project: Joi.string().pattern(PROJECT_FILE_NAME_REGEX).custom(checkProjectExists.bind(null, true)).required()
-            .messages({'string.pattern.base': HDB_ERROR_MSGS.BAD_PROJECT_NAME})
-    });
+	const drop_func_schema = Joi.object({
+		project: Joi.string()
+			.pattern(PROJECT_FILE_NAME_REGEX)
+			.custom(checkProjectExists.bind(null, true))
+			.required()
+			.messages({ 'string.pattern.base': HDB_ERROR_MSGS.BAD_PROJECT_NAME }),
+	});
 
-    return validator.validateBySchema(req, drop_func_schema);
+	return validator.validateBySchema(req, drop_func_schema);
 }
 
 /**
@@ -145,12 +162,15 @@ function dropCustomFunctionProjectValidator(req) {
  * @returns {*}
  */
 function packageCustomFunctionProjectValidator(req) {
-    const package_proj_schema = Joi.object({
-        project: Joi.string().pattern(PROJECT_FILE_NAME_REGEX).custom(checkProjectExists.bind(null, true)).required()
-        .messages({'string.pattern.base': HDB_ERROR_MSGS.BAD_PROJECT_NAME}),
-    });
+	const package_proj_schema = Joi.object({
+		project: Joi.string()
+			.pattern(PROJECT_FILE_NAME_REGEX)
+			.custom(checkProjectExists.bind(null, true))
+			.required()
+			.messages({ 'string.pattern.base': HDB_ERROR_MSGS.BAD_PROJECT_NAME }),
+	});
 
-    return validator.validateBySchema(req, package_proj_schema);
+	return validator.validateBySchema(req, package_proj_schema);
 }
 
 /**
@@ -159,14 +179,14 @@ function packageCustomFunctionProjectValidator(req) {
  * @returns {*}
  */
 function deployCustomFunctionProjectValidator(req) {
-    const deploy_proj_schema = Joi.object({
-        project: Joi.string().pattern(PROJECT_FILE_NAME_REGEX).required()
-        .messages({'string.pattern.base': HDB_ERROR_MSGS.BAD_PROJECT_NAME}),
-        payload: Joi.string().required()
-        .messages({'string.pattern.base': HDB_ERROR_MSGS.BAD_PACKAGE}),
-        file: Joi.string().required()
-        .messages({'string.pattern.base': HDB_ERROR_MSGS.BAD_FILE_PATH}),
-    });
+	const deploy_proj_schema = Joi.object({
+		project: Joi.string()
+			.pattern(PROJECT_FILE_NAME_REGEX)
+			.required()
+			.messages({ 'string.pattern.base': HDB_ERROR_MSGS.BAD_PROJECT_NAME }),
+		payload: Joi.string().required().messages({ 'string.pattern.base': HDB_ERROR_MSGS.BAD_PACKAGE }),
+		file: Joi.string().required().messages({ 'string.pattern.base': HDB_ERROR_MSGS.BAD_FILE_PATH }),
+	});
 
-    return validator.validateBySchema(req, deploy_proj_schema);
+	return validator.validateBySchema(req, deploy_proj_schema);
 }

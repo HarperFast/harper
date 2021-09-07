@@ -1,4 +1,4 @@
-"use strict";
+'use strict';
 
 const LMDB_ERRORS = require('../errors/commonErrors').LMDB_ERRORS_ENUM;
 // eslint-disable-next-line no-unused-vars
@@ -13,13 +13,13 @@ const PRIMITIVES = ['number', 'string', 'symbol', 'boolean', 'bigint'];
  * validates the env argument
  * @param {lmdb.RootDatabase} env - environment object used thigh level to interact with all data in an environment
  */
-function validateEnv(env){
-    if(!env){
-        throw new Error(LMDB_ERRORS.ENV_REQUIRED);
-    }
-    if(env.constructor.name !== 'LMDBStore'){
-        throw new Error(LMDB_ERRORS.INVALID_ENVIRONMENT);
-    }
+function validateEnv(env) {
+	if (!env) {
+		throw new Error(LMDB_ERRORS.ENV_REQUIRED);
+	}
+	if (env.constructor.name !== 'LMDBStore') {
+		throw new Error(LMDB_ERRORS.INVALID_ENVIRONMENT);
+	}
 }
 
 /**
@@ -27,20 +27,20 @@ function validateEnv(env){
  * @param raw_value
  * @returns {Number|String|null}
  */
-function stringifyData(raw_value){
-    if(raw_value === null || raw_value === undefined){
-        return null;
-    }
+function stringifyData(raw_value) {
+	if (raw_value === null || raw_value === undefined) {
+		return null;
+	}
 
-    let value;
+	let value;
 
-    try {
-        value = typeof raw_value === 'object' ? JSON.stringify(raw_value) : raw_value.toString();
-    } catch(e){
-        value = raw_value.toString();
-    }
+	try {
+		value = typeof raw_value === 'object' ? JSON.stringify(raw_value) : raw_value.toString();
+	} catch (e) {
+		value = raw_value.toString();
+	}
 
-    return value;
+	return value;
 }
 
 /**
@@ -49,38 +49,38 @@ function stringifyData(raw_value){
  * @param {*} key - raw value which needs to be converted
  * @returns {*}
  */
-function convertKeyValueToWrite(key){
-    //if this is a primitive return the value
-    if(primitiveCheck(key)){
-        return key;
-    }
+function convertKeyValueToWrite(key) {
+	//if this is a primitive return the value
+	if (primitiveCheck(key)) {
+		return key;
+	}
 
-    if(key instanceof Date){
-        return key.valueOf();
-    }
+	if (key instanceof Date) {
+		return key.valueOf();
+	}
 
-    //if this is an array, iterate the array and evalaute if it's contents are primitives. if they are return the array as is. if not we convert to string
-    if(Array.isArray(key)){
-        for(let x = 0, length = key.length; x < length; x++){
-            let array_entry = key[x];
+	//if this is an array, iterate the array and evalaute if it's contents are primitives. if they are return the array as is. if not we convert to string
+	if (Array.isArray(key)) {
+		for (let x = 0, length = key.length; x < length; x++) {
+			let array_entry = key[x];
 
-            if(array_entry === null){
-                continue;
-            }
+			if (array_entry === null) {
+				continue;
+			}
 
-            if(!primitiveCheck(array_entry) || array_entry === undefined){
-                return JSON.stringify(key);
-            }
-        }
-        return key;
-    }
+			if (!primitiveCheck(array_entry) || array_entry === undefined) {
+				return JSON.stringify(key);
+			}
+		}
+		return key;
+	}
 
-    //object cannot be a key, always stringify
-    if(typeof key === 'object'){
-        return JSON.stringify(key);
-    }
+	//object cannot be a key, always stringify
+	if (typeof key === 'object') {
+		return JSON.stringify(key);
+	}
 
-    return key;
+	return key;
 }
 
 /**
@@ -88,8 +88,8 @@ function convertKeyValueToWrite(key){
  * @param value
  * @returns {boolean}
  */
-function primitiveCheck(value){
-    return PRIMITIVES.indexOf(typeof value) >= 0 || value instanceof Buffer;
+function primitiveCheck(value) {
+	return PRIMITIVES.indexOf(typeof value) >= 0 || value instanceof Buffer;
 }
 
 /**
@@ -97,25 +97,28 @@ function primitiveCheck(value){
  * @param raw_value
  * @returns {*}
  */
-function convertKeyValueFromSearch(raw_value){
-    if(typeof raw_value === 'string' && ((raw_value.startsWith('{') && raw_value.endsWith('}')) || (raw_value.startsWith('[') && raw_value.endsWith(']')))){
-        try{
-            raw_value = JSON.parse(raw_value);
-        } catch(e) {
-            //no-op
-        }
-    }
-    return raw_value;
+function convertKeyValueFromSearch(raw_value) {
+	if (
+		typeof raw_value === 'string' &&
+		((raw_value.startsWith('{') && raw_value.endsWith('}')) || (raw_value.startsWith('[') && raw_value.endsWith(']')))
+	) {
+		try {
+			raw_value = JSON.parse(raw_value);
+		} catch (e) {
+			//no-op
+		}
+	}
+	return raw_value;
 }
 
 /**
  * Gets the time in sub milliseconds & converts it to a decimal number where the milliseconds from epoch are on the left of decimal & sub-millisecond time is on the right
  * @returns {number}
  */
-function getMicroTime(){
-    let full_micro = microtime.now().toString();
-    let pos = full_micro.length - 3;
-    return Number(full_micro.slice(0, pos) + '.' + full_micro.slice(pos));
+function getMicroTime() {
+	let full_micro = microtime.now().toString();
+	let pos = full_micro.length - 3;
+	return Number(full_micro.slice(0, pos) + '.' + full_micro.slice(pos));
 }
 
 /**
@@ -123,21 +126,19 @@ function getMicroTime(){
  * @param {any} value
  * @returns {boolean}
  */
-function checkIsBlob(value){
-    if(typeof value === 'string' && Buffer.byteLength(value) > MAX_BYTE_SIZE){
-        return true;
-    }
+function checkIsBlob(value) {
+	if (typeof value === 'string' && Buffer.byteLength(value) > MAX_BYTE_SIZE) {
+		return true;
+	}
 
-    return typeof value === 'object' && Buffer.byteLength(JSON.stringify(value)) > MAX_BYTE_SIZE;
-
-
+	return typeof value === 'object' && Buffer.byteLength(JSON.stringify(value)) > MAX_BYTE_SIZE;
 }
 
 module.exports = {
-    validateEnv,
-    stringifyData,
-    convertKeyValueToWrite,
-    convertKeyValueFromSearch,
-    getMicroTime,
-    checkIsBlob
+	validateEnv,
+	stringifyData,
+	convertKeyValueToWrite,
+	convertKeyValueFromSearch,
+	getMicroTime,
+	checkIsBlob,
 };

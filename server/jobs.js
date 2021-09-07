@@ -16,7 +16,7 @@ const UpdateObject = require('../data_layer/UpdateObject');
 const log = require('../utility/logging/harper_logger');
 const Insert_Object = require('../data_layer/InsertObject');
 const hdb_util = require('../utility/common_utils');
-const {promisify} = require('util');
+const { promisify } = require('util');
 const moment = require('moment');
 const hdb_sql = require('../sqlTranslator/index');
 const file_load_validator = require('../validation/fileLoadValidator');
@@ -31,54 +31,54 @@ const p_sql_evaluate = promisify(hdb_sql.evaluateSQL);
 const p_insert_update = insert.update;
 
 module.exports = {
-    addJob,
-    updateJob,
-    handleGetJob,
-    handleGetJobsByStartDate
+	addJob,
+	updateJob,
+	handleGetJob,
+	handleGetJobsByStartDate,
 };
 
 async function handleGetJob(json_body) {
-    try {
-        let result = await getJobById(json_body);
-        log.trace(`Searching for jobs from ${json_body.from_date} to ${json_body.to_date}`);
-        if(result && result.length > 0) {
-            for(let curr_res of result) {
-                if (curr_res.start_datetime) {
-                    curr_res.start_datetime_converted = moment(curr_res.start_datetime);
-                }
-                if (curr_res.end_datetime) {
-                    curr_res.end_datetime_converted = moment(curr_res.end_datetime);
-                }
-            }
-        }
-        return result;
-    } catch(err) {
-        let message = `There was an error searching jobs by date: ${err}`;
-        log.error(message);
-        throw new Error(message);
-    }
+	try {
+		let result = await getJobById(json_body);
+		log.trace(`Searching for jobs from ${json_body.from_date} to ${json_body.to_date}`);
+		if (result && result.length > 0) {
+			for (let curr_res of result) {
+				if (curr_res.start_datetime) {
+					curr_res.start_datetime_converted = moment(curr_res.start_datetime);
+				}
+				if (curr_res.end_datetime) {
+					curr_res.end_datetime_converted = moment(curr_res.end_datetime);
+				}
+			}
+		}
+		return result;
+	} catch (err) {
+		let message = `There was an error searching jobs by date: ${err}`;
+		log.error(message);
+		throw new Error(message);
+	}
 }
 
 async function handleGetJobsByStartDate(json_body) {
-    try {
-        let result = await getJobsInDateRange(json_body);
-        log.trace(`Searching for jobs from ${json_body.from_date} to ${json_body.to_date}`);
-        if(result && result.length > 0) {
-            for(let curr_res of result) {
-                if (curr_res.start_datetime) {
-                    curr_res.start_datetime_converted = moment(curr_res.start_datetime);
-                }
-                if (curr_res.end_datetime) {
-                    curr_res.end_datetime_converted = moment(curr_res.end_datetime);
-                }
-            }
-        }
-        return result;
-    } catch(err) {
-        let message = `There was an error searching jobs by date: ${err}`;
-        log.error(message);
-        throw new Error(message);
-    }
+	try {
+		let result = await getJobsInDateRange(json_body);
+		log.trace(`Searching for jobs from ${json_body.from_date} to ${json_body.to_date}`);
+		if (result && result.length > 0) {
+			for (let curr_res of result) {
+				if (curr_res.start_datetime) {
+					curr_res.start_datetime_converted = moment(curr_res.start_datetime);
+				}
+				if (curr_res.end_datetime) {
+					curr_res.end_datetime_converted = moment(curr_res.end_datetime);
+				}
+			}
+		}
+		return result;
+	} catch (err) {
+		let message = `There was an error searching jobs by date: ${err}`;
+		log.error(message);
+		throw new Error(message);
+	}
 }
 
 /**
@@ -87,106 +87,128 @@ async function handleGetJobsByStartDate(json_body) {
  * @returns {Promise<*>}
  */
 async function addJob(json_body) {
-    let result = { message: '', error: '', success: false, createdJob: undefined};
-    if(!json_body || Object.keys(json_body).length === 0 || hdb_util.isEmptyOrZeroLength(json_body.operation)) {
-        let err_msg = `job parameter is invalid`;
-        log.info(err_msg);
-        result.error = err_msg;
-        return result;
+	let result = { message: '', error: '', success: false, createdJob: undefined };
+	if (!json_body || Object.keys(json_body).length === 0 || hdb_util.isEmptyOrZeroLength(json_body.operation)) {
+		let err_msg = `job parameter is invalid`;
+		log.info(err_msg);
+		result.error = err_msg;
+		return result;
 	}
 
-    // Check for valid job type.
-    if(!hdb_terms.JOB_TYPE_ENUM[json_body.operation]) {
-        log.info(`invalid job type specified: ${json_body.operation}.`);
-        return result;
-    }
+	// Check for valid job type.
+	if (!hdb_terms.JOB_TYPE_ENUM[json_body.operation]) {
+		log.info(`invalid job type specified: ${json_body.operation}.`);
+		return result;
+	}
 
-    // Validate csv operation to ensure that action is valid, schema and table exist, and if file load - check file.
-    let operation = json_body.operation;
-    let validation_msg;
-    switch (operation) {
-        case hdb_terms.OPERATIONS_ENUM.CSV_FILE_LOAD:
-            validation_msg = file_load_validator.fileObject(json_body);
-            break;
-        case hdb_terms.OPERATIONS_ENUM.CSV_URL_LOAD:
-            validation_msg = file_load_validator.urlObject(json_body);
-            break;
-        case hdb_terms.OPERATIONS_ENUM.CSV_DATA_LOAD:
-            validation_msg = file_load_validator.dataObject(json_body);
-            break;
-        case hdb_terms.OPERATIONS_ENUM.IMPORT_FROM_S3:
-            validation_msg = file_load_validator.s3FileObject(json_body);
-            break;
-        case hdb_terms.OPERATIONS_ENUM.DELETE_FILES_BEFORE:
-        case hdb_terms.OPERATIONS_ENUM.DELETE_RECORDS_BEFORE:
-            validation_msg = bulkDeleteValidator(json_body, 'date');
-            break;
-        case hdb_terms.OPERATIONS_ENUM.DELETE_TRANSACTION_LOGS_BEFORE:
-            validation_msg = bulkDeleteValidator(json_body, 'timestamp');
-            break;
-        default:
-            break;
-    }
-    if (validation_msg) {
-        throw handleHDBError(validation_msg, validation_msg.message, HTTP_STATUS_CODES.BAD_REQUEST, undefined, undefined, true);
-    }
+	// Validate csv operation to ensure that action is valid, schema and table exist, and if file load - check file.
+	let operation = json_body.operation;
+	let validation_msg;
+	switch (operation) {
+		case hdb_terms.OPERATIONS_ENUM.CSV_FILE_LOAD:
+			validation_msg = file_load_validator.fileObject(json_body);
+			break;
+		case hdb_terms.OPERATIONS_ENUM.CSV_URL_LOAD:
+			validation_msg = file_load_validator.urlObject(json_body);
+			break;
+		case hdb_terms.OPERATIONS_ENUM.CSV_DATA_LOAD:
+			validation_msg = file_load_validator.dataObject(json_body);
+			break;
+		case hdb_terms.OPERATIONS_ENUM.IMPORT_FROM_S3:
+			validation_msg = file_load_validator.s3FileObject(json_body);
+			break;
+		case hdb_terms.OPERATIONS_ENUM.DELETE_FILES_BEFORE:
+		case hdb_terms.OPERATIONS_ENUM.DELETE_RECORDS_BEFORE:
+			validation_msg = bulkDeleteValidator(json_body, 'date');
+			break;
+		case hdb_terms.OPERATIONS_ENUM.DELETE_TRANSACTION_LOGS_BEFORE:
+			validation_msg = bulkDeleteValidator(json_body, 'timestamp');
+			break;
+		default:
+			break;
+	}
+	if (validation_msg) {
+		throw handleHDBError(
+			validation_msg,
+			validation_msg.message,
+			HTTP_STATUS_CODES.BAD_REQUEST,
+			undefined,
+			undefined,
+			true
+		);
+	}
 
-    let new_job = new JobObject();
-    new_job.type = json_body.operation === hdb_terms.OPERATIONS_ENUM.DELETE_RECORDS_BEFORE ? hdb_terms.OPERATIONS_ENUM.DELETE_FILES_BEFORE : json_body.operation;
-    new_job.type = json_body.operation;
-    new_job.user = json_body.hdb_user.username;
-	let search_obj = new Search_Object(hdb_terms.SYSTEM_SCHEMA_NAME, hdb_terms.SYSTEM_TABLE_NAMES.JOB_TABLE_NAME, 'id', new_job.id, 'id', ['id']);
+	let new_job = new JobObject();
+	new_job.type =
+		json_body.operation === hdb_terms.OPERATIONS_ENUM.DELETE_RECORDS_BEFORE
+			? hdb_terms.OPERATIONS_ENUM.DELETE_FILES_BEFORE
+			: json_body.operation;
+	new_job.type = json_body.operation;
+	new_job.user = json_body.hdb_user.username;
+	let search_obj = new Search_Object(
+		hdb_terms.SYSTEM_SCHEMA_NAME,
+		hdb_terms.SYSTEM_TABLE_NAMES.JOB_TABLE_NAME,
+		'id',
+		new_job.id,
+		'id',
+		['id']
+	);
 
 	let found_job = undefined;
 	try {
-        found_job = await p_search_by_value(search_obj);
-	} catch(e) {
-        let message = `There was an error inserting a new job: ${e}`;
-        log.error(message);
-        return result;
-    }
-    //TODO: Once https://harperdb.atlassian.net/browse/HDB-501 is resolved, this check is no longer needed.
-    let found_values = (Array.isArray(found_job) ? found_job : Object.keys(found_job));
+		found_job = await p_search_by_value(search_obj);
+	} catch (e) {
+		let message = `There was an error inserting a new job: ${e}`;
+		log.error(message);
+		return result;
+	}
+	//TODO: Once https://harperdb.atlassian.net/browse/HDB-501 is resolved, this check is no longer needed.
+	let found_values = Array.isArray(found_job) ? found_job : Object.keys(found_job);
 
-    // It is highly unlikely that we will ever get into this, as a UUID duplicate is very rare.  Just in case we
-    // do have a collision, we regenerate an ID and search again.  The odds of 2 collisions are so astronomically high
-    // that we will just throw an error assuming there is bad input causing the issue.
-    if(found_values && found_values.length > 0) {
-        new_job.id = uuidV4();
-        try {
-            found_job = await p_search_by_value(search_obj);
-        } catch(e) {
-            let message = `There was an error inserting a new job: ${e}`;
-            log.error(message);
-            return result;
-        }
-        //TODO: Once https://harperdb.atlassian.net/browse/HDB-501 is resolved, this check is no longer needed.
-        found_values = (Array.isArray(found_job) ? found_job : Object.keys(found_job));
-        if(found_values && found_values.length > 0) {
-            log.error('Error creating a job, could not find a unique job id.');
-            return result;
-        }
-    }
+	// It is highly unlikely that we will ever get into this, as a UUID duplicate is very rare.  Just in case we
+	// do have a collision, we regenerate an ID and search again.  The odds of 2 collisions are so astronomically high
+	// that we will just throw an error assuming there is bad input causing the issue.
+	if (found_values && found_values.length > 0) {
+		new_job.id = uuidV4();
+		try {
+			found_job = await p_search_by_value(search_obj);
+		} catch (e) {
+			let message = `There was an error inserting a new job: ${e}`;
+			log.error(message);
+			return result;
+		}
+		//TODO: Once https://harperdb.atlassian.net/browse/HDB-501 is resolved, this check is no longer needed.
+		found_values = Array.isArray(found_job) ? found_job : Object.keys(found_job);
+		if (found_values && found_values.length > 0) {
+			log.error('Error creating a job, could not find a unique job id.');
+			return result;
+		}
+	}
 
-    let insert_object = new Insert_Object(hdb_terms.SYSTEM_SCHEMA_NAME, hdb_terms.SYSTEM_TABLE_NAMES.JOB_TABLE_NAME, 'id', [new_job]);
-    let insert_result = undefined;
-    try {
-        insert_result = await p_insert(insert_object);
-    } catch(e) {
-        log.error(`There was an error inserting a job for job type: ${json_body.operation} -- ${e}`);
-        result.success = false;
-        return result;
-    }
+	let insert_object = new Insert_Object(
+		hdb_terms.SYSTEM_SCHEMA_NAME,
+		hdb_terms.SYSTEM_TABLE_NAMES.JOB_TABLE_NAME,
+		'id',
+		[new_job]
+	);
+	let insert_result = undefined;
+	try {
+		insert_result = await p_insert(insert_object);
+	} catch (e) {
+		log.error(`There was an error inserting a job for job type: ${json_body.operation} -- ${e}`);
+		result.success = false;
+		return result;
+	}
 
-	if(insert_result.inserted_hashes.length === 0) {
+	if (insert_result.inserted_hashes.length === 0) {
 		result.message = `Had a problem creating a job with type ${new_job.operation} and id ${new_job.id}`;
 	} else {
-        let result_msg = `Created a job with type ${new_job.type} and id ${new_job.id}`;
-        result.message = result_msg;
-        result.createdJob = new_job;
-        result.success = true;
-        log.trace(result_msg);
-    }
+		let result_msg = `Created a job with type ${new_job.type} and id ${new_job.id}`;
+		result.message = result_msg;
+		result.createdJob = new_job;
+		result.success = true;
+		log.trace(result_msg);
+	}
 	return result;
 }
 
@@ -199,22 +221,24 @@ async function getJobsInDateRange(json_body) {
 	let parsed_from_date = moment(json_body.from_date, moment.ISO_8601);
 	let parsed_to_date = moment(json_body.to_date, moment.ISO_8601);
 
-	if(!parsed_from_date.isValid()) {
-        throw new Error(`Invalid 'from' date, must be in ISO-8601 format (YYYY-MM-DD).`);
-    }
-    if(!parsed_to_date.isValid()) {
-        throw new Error(`Invalid 'to' date, must be in ISO-8601 format (YYYY-MM-DD)`);
-    }
+	if (!parsed_from_date.isValid()) {
+		throw new Error(`Invalid 'from' date, must be in ISO-8601 format (YYYY-MM-DD).`);
+	}
+	if (!parsed_to_date.isValid()) {
+		throw new Error(`Invalid 'to' date, must be in ISO-8601 format (YYYY-MM-DD)`);
+	}
 
-    let job_search_sql = `select * from system.hdb_job where start_datetime > '${parsed_from_date.valueOf()}' and start_datetime < '${parsed_to_date.valueOf()}'`;
-    let sql_search_obj = new SQL_Search_Object(job_search_sql, json_body.hdb_user);
+	let job_search_sql = `select * from system.hdb_job where start_datetime > '${parsed_from_date.valueOf()}' and start_datetime < '${parsed_to_date.valueOf()}'`;
+	let sql_search_obj = new SQL_Search_Object(job_search_sql, json_body.hdb_user);
 
-    try {
-        return await p_sql_evaluate(sql_search_obj);
-    } catch (e) {
-        log.error(`there was a problem searching for jobs from date ${json_body.from_date} to date ${json_body.to_date} ${e}` );
-        throw new Error(`there was an error searching for jobs.  Please check the log for details.`);
-    }
+	try {
+		return await p_sql_evaluate(sql_search_obj);
+	} catch (e) {
+		log.error(
+			`there was a problem searching for jobs from date ${json_body.from_date} to date ${json_body.to_date} ${e}`
+		);
+		throw new Error(`there was an error searching for jobs.  Please check the log for details.`);
+	}
 }
 
 /**
@@ -223,17 +247,24 @@ async function getJobsInDateRange(json_body) {
  * @returns {Promise<*>}
  */
 async function getJobById(json_body) {
-    if(hdb_util.isEmptyOrZeroLength(json_body.id)) {
-        return hdb_util.errorizeMessage('Invalid job ID specified.');
-    }
-    let search_obj = new Search_Object(hdb_terms.SYSTEM_SCHEMA_NAME, hdb_terms.SYSTEM_TABLE_NAMES.JOB_TABLE_NAME, 'id', json_body.id, 'id', ['*']);
-    try {
-        return await p_search_by_value(search_obj);
-    } catch(e) {
-        let message = `There was an error searching for a job by id: ${json_body.id} ${e}`;
-        log.error(message);
-        return hdb_util.errorizeMessage(`there was an error searching for jobs.  Please check the log for details.`);
-    }
+	if (hdb_util.isEmptyOrZeroLength(json_body.id)) {
+		return hdb_util.errorizeMessage('Invalid job ID specified.');
+	}
+	let search_obj = new Search_Object(
+		hdb_terms.SYSTEM_SCHEMA_NAME,
+		hdb_terms.SYSTEM_TABLE_NAMES.JOB_TABLE_NAME,
+		'id',
+		json_body.id,
+		'id',
+		['*']
+	);
+	try {
+		return await p_search_by_value(search_obj);
+	} catch (e) {
+		let message = `There was an error searching for a job by id: ${json_body.id} ${e}`;
+		log.error(message);
+		return hdb_util.errorizeMessage(`there was an error searching for jobs.  Please check the log for details.`);
+	}
 }
 
 /**
@@ -242,23 +273,28 @@ async function getJobById(json_body) {
  * @returns {Promise<*>}
  */
 async function updateJob(job_object) {
-    if(Object.keys(job_object).length === 0) {
-        throw new Error('invalid job object passed to updateJob');
-    }
-    if(hdb_util.isEmptyOrZeroLength(job_object.id)) {
-        throw new Error('invalid ID passed to updateJob');
-    }
+	if (Object.keys(job_object).length === 0) {
+		throw new Error('invalid job object passed to updateJob');
+	}
+	if (hdb_util.isEmptyOrZeroLength(job_object.id)) {
+		throw new Error('invalid ID passed to updateJob');
+	}
 
-    if(job_object.status === hdb_terms.JOB_STATUS_ENUM.COMPLETE || job_object.status === hdb_terms.JOB_STATUS_ENUM.ERROR) {
-        job_object.end_datetime = moment().valueOf();
-    }
+	if (
+		job_object.status === hdb_terms.JOB_STATUS_ENUM.COMPLETE ||
+		job_object.status === hdb_terms.JOB_STATUS_ENUM.ERROR
+	) {
+		job_object.end_datetime = moment().valueOf();
+	}
 
-    let update_object = new UpdateObject(hdb_terms.SYSTEM_SCHEMA_NAME, hdb_terms.SYSTEM_TABLE_NAMES.JOB_TABLE_NAME, [job_object]);
-    let update_result = undefined;
-    try {
-        update_result = await p_insert_update(update_object);
-    } catch(e) {
-        throw new Error(e);
-    }
-    return update_result;
+	let update_object = new UpdateObject(hdb_terms.SYSTEM_SCHEMA_NAME, hdb_terms.SYSTEM_TABLE_NAMES.JOB_TABLE_NAME, [
+		job_object,
+	]);
+	let update_result = undefined;
+	try {
+		update_result = await p_insert_update(update_object);
+	} catch (e) {
+		throw new Error(e);
+	}
+	return update_result;
 }

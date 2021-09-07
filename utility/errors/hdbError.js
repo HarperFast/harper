@@ -1,4 +1,4 @@
-"use strict";
+'use strict';
 const hdb_errors = require('./commonErrors');
 const logger = require('../logging/harper_logger');
 
@@ -8,41 +8,37 @@ const logger = require('../logging/harper_logger');
  * already been handled when the custom error was constructed.
  */
 class HdbError extends Error {
-    /**
-     * @param {Error} err_orig -  Error to be translated into HdbError. If manually throwing an error, pass `new Error()` to ensure stack trace is maintained
-     * @param {String} [http_msg] - optional -  response message that will be returned via the API
-     * @param {Number} [http_code] - optional -  response status code that will be returned via the API
-     * @param {String} [log_level] - optional -  log level that will be used IF a `log_msg` is provided.  If not, nothing will be logged
-     * @param {String} [log_msg] - optional - log message that, if provided, will be logged at the `log_level` above
-     */
-    constructor(
-        err_orig,
-        http_msg,
-        http_code,
-        log_level,
-        log_msg
-    ) {
-        super();
+	/**
+	 * @param {Error} err_orig -  Error to be translated into HdbError. If manually throwing an error, pass `new Error()` to ensure stack trace is maintained
+	 * @param {String} [http_msg] - optional -  response message that will be returned via the API
+	 * @param {Number} [http_code] - optional -  response status code that will be returned via the API
+	 * @param {String} [log_level] - optional -  log level that will be used IF a `log_msg` is provided.  If not, nothing will be logged
+	 * @param {String} [log_msg] - optional - log message that, if provided, will be logged at the `log_level` above
+	 */
+	constructor(err_orig, http_msg, http_code, log_level, log_msg) {
+		super();
 
-        //This line ensures the original stack trace is captured and does not include the 'handle' or 'constructor' methods
-        Error.captureStackTrace(this, handleHDBError);
+		//This line ensures the original stack trace is captured and does not include the 'handle' or 'constructor' methods
+		Error.captureStackTrace(this, handleHDBError);
 
-        this.http_resp_code = http_code ? http_code : hdb_errors.HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR;
-        this.http_resp_msg = http_msg ?
-            http_msg : hdb_errors.DEFAULT_ERROR_MSGS[http_code] ?
-            hdb_errors.DEFAULT_ERROR_MSGS[http_code] : hdb_errors.DEFAULT_ERROR_MSGS[hdb_errors.HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR];
-        this.message = err_orig.message ? err_orig.message : this.http_resp_msg;
-        this.type = err_orig.name;
+		this.http_resp_code = http_code ? http_code : hdb_errors.HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR;
+		this.http_resp_msg = http_msg
+			? http_msg
+			: hdb_errors.DEFAULT_ERROR_MSGS[http_code]
+			? hdb_errors.DEFAULT_ERROR_MSGS[http_code]
+			: hdb_errors.DEFAULT_ERROR_MSGS[hdb_errors.HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR];
+		this.message = err_orig.message ? err_orig.message : this.http_resp_msg;
+		this.type = err_orig.name;
 
-        //This ensures that the error stack does not include [object Object] if the error message is not a string
-        if (typeof this.message !== 'string') {
-            this.stack = err_orig.stack;
-        }
+		//This ensures that the error stack does not include [object Object] if the error message is not a string
+		if (typeof this.message !== 'string') {
+			this.stack = err_orig.stack;
+		}
 
-        if (log_msg) {
-            logger[log_level](log_msg);
-        }
-    }
+		if (log_msg) {
+			logger[log_level](log_msg);
+		}
+	}
 }
 
 /**
@@ -59,27 +55,27 @@ class HdbError extends Error {
  * @returns {HdbError|*}
  */
 function handleHDBError(e, http_msg, http_code, log_level = logger.ERR, log_msg = null, delete_stack = false) {
-    if (isHDBError(e)) {
-        return e;
-    }
+	if (isHDBError(e)) {
+		return e;
+	}
 
-    const error = new HdbError(e, http_msg, http_code, log_level, log_msg);
+	const error = new HdbError(e, http_msg, http_code, log_level, log_msg);
 
-    // In some situations, such as validation errors, the stack does not need to be thrown/logged.
-    if (delete_stack) {
-        delete error.stack;
-    }
+	// In some situations, such as validation errors, the stack does not need to be thrown/logged.
+	if (delete_stack) {
+		delete error.stack;
+	}
 
-    return error;
+	return error;
 }
 
 function isHDBError(e) {
-    return e.__proto__.constructor.name === HdbError.name;
+	return e.__proto__.constructor.name === HdbError.name;
 }
 
-module.exports =  {
-    isHDBError,
-    handleHDBError,
-    //Including common hdb_errors here so that they can be brought into modules on the same line where the handler method is brought in
-    hdb_errors
+module.exports = {
+	isHDBError,
+	handleHDBError,
+	//Including common hdb_errors here so that they can be brought into modules on the same line where the handler method is brought in
+	hdb_errors,
 };

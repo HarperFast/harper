@@ -11,7 +11,7 @@ const COMPILED_EXTENSION = 'jsc';
 const JAVASCRIPT_EXTENSION = 'js';
 const CODE_EXTENSION = process.env.HDB_COMPILED === 'true' ? COMPILED_EXTENSION : JAVASCRIPT_EXTENSION;
 
- // Name of the HDB process
+// Name of the HDB process
 const HDB_PROC_NAME = `hdbServer.${CODE_EXTENSION}`;
 const CLUSTERING_PROC_NAME = `Server.${CODE_EXTENSION}`;
 const CONNECT_PROC_NAME = `interNodeConnectionLauncher.${CODE_EXTENSION}`;
@@ -23,42 +23,42 @@ const HDB_PROC_DESCRIPTOR = 'HarperDB';
 const CUSTOM_FUNCTION_PROC_DESCRIPTOR = 'Custom Functions';
 
 const PROCESS_DESCRIPTORS = {
-    HDB: 'HarperDB',
-    IPC: 'IPC',
-    CLUSTERING: 'Clustering',
-    CUSTOM_FUNCTIONS: 'Custom Functions',
-    CLUSTERING_CONNECTOR: 'Clustering Connector',
-    RESTART_HDB: 'Restart HDB'
+	HDB: HDB_PROC_DESCRIPTOR,
+	IPC: 'IPC',
+	CLUSTERING: 'Clustering',
+	CUSTOM_FUNCTIONS: CUSTOM_FUNCTION_PROC_DESCRIPTOR,
+	CLUSTERING_CONNECTOR: 'Clustering Connector',
+	RESTART_HDB: 'Restart HDB',
 };
 
 const PROCESS_DESCRIPTORS_VALIDATE = {
-    'harperdb': 'HarperDB',
-    'ipc': 'IPC',
-    'clustering': 'Clustering',
-    'clustering_connector': 'Clustering Connector',
-    'custom functions': 'Custom Functions',
-    'custom_functions': 'Custom Functions'
+	'harperdb': HDB_PROC_DESCRIPTOR,
+	'ipc': 'IPC',
+	'clustering': 'Clustering',
+	'clustering_connector': 'Clustering Connector',
+	'custom functions': CUSTOM_FUNCTION_PROC_DESCRIPTOR,
+	'custom_functions': CUSTOM_FUNCTION_PROC_DESCRIPTOR,
 };
 
 const SERVICE_SERVERS_CWD = {
-    HDB: path.resolve(__dirname, `../server/harperdb`),
-    IPC: path.resolve(__dirname, `../server/ipc`),
-    CLUSTERING: path.resolve(__dirname, `../server/socketcluster`),
-    CUSTOM_FUNCTIONS: path.resolve(__dirname, `../server/customFunctions`)
+	HDB: path.resolve(__dirname, `../server/harperdb`),
+	IPC: path.resolve(__dirname, `../server/ipc`),
+	CLUSTERING: path.resolve(__dirname, `../server/socketcluster`),
+	CUSTOM_FUNCTIONS: path.resolve(__dirname, `../server/customFunctions`),
 };
 
 const SERVICE_SERVERS = {
-    HDB: path.join(SERVICE_SERVERS_CWD.HDB, HDB_PROC_NAME),
-    IPC: path.join(SERVICE_SERVERS_CWD.IPC, IPC_SERVER_MODULE),
-    CLUSTERING: path.join(SERVICE_SERVERS_CWD.CLUSTERING, CLUSTERING_PROC_NAME),
-    CLUSTERING_CONNECTOR: path.join(SERVICE_SERVERS_CWD.CLUSTERING, CONNECT_PROC_NAME),
-    CUSTOM_FUNCTIONS: path.join(SERVICE_SERVERS_CWD.CUSTOM_FUNCTIONS, CUSTOM_FUNCTION_PROC_NAME)
+	HDB: path.join(SERVICE_SERVERS_CWD.HDB, HDB_PROC_NAME),
+	IPC: path.join(SERVICE_SERVERS_CWD.IPC, IPC_SERVER_MODULE),
+	CLUSTERING: path.join(SERVICE_SERVERS_CWD.CLUSTERING, CLUSTERING_PROC_NAME),
+	CLUSTERING_CONNECTOR: path.join(SERVICE_SERVERS_CWD.CLUSTERING, CONNECT_PROC_NAME),
+	CUSTOM_FUNCTIONS: path.join(SERVICE_SERVERS_CWD.CUSTOM_FUNCTIONS, CUSTOM_FUNCTION_PROC_NAME),
 };
 
 const LAUNCH_SERVICE_SCRIPTS = {
-    HDB: path.resolve(__dirname, '../launchServiceScripts/launchHarperDB.js'),
-    CUSTOM_FUNCTIONS: path.resolve(__dirname, '../launchServiceScripts/launchCustomFunctions.js'),
-    JOB: path.resolve(__dirname, '../launchServiceScripts/launchJobThread.js')
+	HDB: path.resolve(__dirname, '../launchServiceScripts/launchHarperDB.js'),
+	CUSTOM_FUNCTIONS: path.resolve(__dirname, '../launchServiceScripts/launchCustomFunctions.js'),
+	JOB: path.resolve(__dirname, '../launchServiceScripts/launchJobThread.js'),
 };
 
 const HDB_SUPPORT_ADDRESS = 'support@harperdb.io';
@@ -71,7 +71,7 @@ const HDB_SUPPORT_URL = 'https://harperdbhelp.zendesk.com/hc/en-us/requests/new'
 const HDB_PRICING_URL = 'https://www.harperdb.io/product';
 const SUPPORT_HELP_MSG = `For support, please submit a request at ${HDB_SUPPORT_URL} or contact ${HDB_SUPPORT_ADDRESS}`;
 const LICENSE_HELP_MSG = `For license support, please contact ${HDB_LICENSE_EMAIL_ADDRESS}`;
-const SEARCH_NOT_FOUND_MESSAGE = "None of the specified records were found.";
+const SEARCH_NOT_FOUND_MESSAGE = 'None of the specified records were found.';
 const SEARCH_ATTRIBUTE_NOT_FOUND = `hash attribute not found`;
 const LICENSE_ROLE_DENIED_RESPONSE = `Your current license only supports ${BASIC_LICENSE_MAX_NON_CU_ROLES} role.  ${LICENSE_HELP_MSG}`;
 const LICENSE_MAX_CONNS_REACHED = 'Your current license only supports 3 connections to a node.';
@@ -118,9 +118,9 @@ const RUN_LOG = 'run_log.log';
 const CLUSTERING_PAYLOAD_FILE_NAME = '.scPayload.json';
 
 const CLUSTERING_FOLDER_NAMES_ENUM = {
-    CLUSTERING_FOLDER: 'clustering',
-    CONNECTIONS_FOLDER: 'connections',
-    TRANSACTION_LOG_FOLDER: 'transaction_log',
+	CLUSTERING_FOLDER: 'clustering',
+	CONNECTIONS_FOLDER: 'connections',
+	TRANSACTION_LOG_FOLDER: 'transaction_log',
 };
 
 // Trying to keep socket cluster as modular as possible, so we will create values in here that point to values
@@ -130,72 +130,72 @@ const ClusterMessageObjects = require('../server/socketcluster/room/RoomMessageO
 const _ = require('lodash');
 
 const INSERT_MODULE_ENUM = {
-    HDB_PATH_KEY: 'HDB_INTERNAL_PATH',
-    HDB_AUTH_HEADER: 'hdb_auth_header',
-    HDB_USER_DATA_KEY: 'hdb_user',
-    CHUNK_SIZE: 1000,
-    MAX_CHARACTER_SIZE: 250
+	HDB_PATH_KEY: 'HDB_INTERNAL_PATH',
+	HDB_AUTH_HEADER: 'hdb_auth_header',
+	HDB_USER_DATA_KEY: 'hdb_user',
+	CHUNK_SIZE: 1000,
+	MAX_CHARACTER_SIZE: 250,
 };
 
 const UPGRADE_JSON_FIELD_NAMES_ENUM = {
-    DATA_VERSION: 'data_version',
-    UPGRADE_VERSION: 'upgrade_version'
+	DATA_VERSION: 'data_version',
+	UPGRADE_VERSION: 'upgrade_version',
 };
 
 const SYSTEM_TABLE_NAMES = {
-    JOB_TABLE_NAME : 'hdb_job',
-    NODE_TABLE_NAME :'hdb_nodes',
-    ATTRIBUTE_TABLE_NAME : 'hdb_attribute',
-    LICENSE_TABLE_NAME: 'hdb_license',
-    ROLE_TABLE_NAME: 'hdb_role',
-    SCHEMA_TABLE_NAME: 'hdb_schema',
-    TABLE_TABLE_NAME: 'hdb_table',
-    USER_TABLE_NAME: 'hdb_user',
-    INFO_TABLE_NAME: 'hdb_info'
+	JOB_TABLE_NAME: 'hdb_job',
+	NODE_TABLE_NAME: 'hdb_nodes',
+	ATTRIBUTE_TABLE_NAME: 'hdb_attribute',
+	LICENSE_TABLE_NAME: 'hdb_license',
+	ROLE_TABLE_NAME: 'hdb_role',
+	SCHEMA_TABLE_NAME: 'hdb_schema',
+	TABLE_TABLE_NAME: 'hdb_table',
+	USER_TABLE_NAME: 'hdb_user',
+	INFO_TABLE_NAME: 'hdb_info',
 };
 
 const SYSTEM_TABLE_HASH_ATTRIBUTES = {
-    JOB_TABLE_HASH_ATTRIBUTE: 'id',
-    NODE_TABLE_HASH_ATTRIBUTE: 'name',
-    ATTRIBUTE_TABLE_HASH_ATTRIBUTE: 'id',
-    LICENSE_TABLE_HASH_ATTRIBUTE: 'license_key',
-    ROLE_TABLE_HASH_ATTRIBUTE: 'id',
-    SCHEMA_TABLE_HASH_ATTRIBUTE: 'name',
-    TABLE_TABLE_HASH_ATTRIBUTE: 'id',
-    USER_TABLE_HASH_ATTRIBUTE: 'username',
-    INFO_TABLE_ATTRIBUTE: 'info_id'
+	JOB_TABLE_HASH_ATTRIBUTE: 'id',
+	NODE_TABLE_HASH_ATTRIBUTE: 'name',
+	ATTRIBUTE_TABLE_HASH_ATTRIBUTE: 'id',
+	LICENSE_TABLE_HASH_ATTRIBUTE: 'license_key',
+	ROLE_TABLE_HASH_ATTRIBUTE: 'id',
+	SCHEMA_TABLE_HASH_ATTRIBUTE: 'name',
+	TABLE_TABLE_HASH_ATTRIBUTE: 'id',
+	USER_TABLE_HASH_ATTRIBUTE: 'username',
+	INFO_TABLE_ATTRIBUTE: 'info_id',
 };
 
 const HDB_INTERNAL_SC_CHANNEL_PREFIX = 'hdb_internal:';
 
 const INTERNAL_SC_CHANNELS = {
-    CREATE_SCHEMA: HDB_INTERNAL_SC_CHANNEL_PREFIX + 'create_schema',
-    CREATE_TABLE: HDB_INTERNAL_SC_CHANNEL_PREFIX + 'create_table',
-    CREATE_ATTRIBUTE: HDB_INTERNAL_SC_CHANNEL_PREFIX + 'create_attribute',
-    ADD_USER: HDB_INTERNAL_SC_CHANNEL_PREFIX + 'add_user',
-    ALTER_USER: HDB_INTERNAL_SC_CHANNEL_PREFIX + 'alter_user',
-    DROP_USER: HDB_INTERNAL_SC_CHANNEL_PREFIX + 'drop_user',
-    HDB_NODES: HDB_INTERNAL_SC_CHANNEL_PREFIX + 'hdb_nodes',
-    HDB_USERS: HDB_INTERNAL_SC_CHANNEL_PREFIX + 'hdb_users',
-    HDB_WORKERS: HDB_INTERNAL_SC_CHANNEL_PREFIX + 'hdb_workers',
-    CATCHUP: HDB_INTERNAL_SC_CHANNEL_PREFIX + 'catchup',
-    SCHEMA_CATCHUP: HDB_INTERNAL_SC_CHANNEL_PREFIX + 'schema_catchup',
-    WORKER_ROOM: HDB_INTERNAL_SC_CHANNEL_PREFIX + 'cluster_workers'
+	CREATE_SCHEMA: HDB_INTERNAL_SC_CHANNEL_PREFIX + 'create_schema',
+	CREATE_TABLE: HDB_INTERNAL_SC_CHANNEL_PREFIX + 'create_table',
+	CREATE_ATTRIBUTE: HDB_INTERNAL_SC_CHANNEL_PREFIX + 'create_attribute',
+	ADD_USER: HDB_INTERNAL_SC_CHANNEL_PREFIX + 'add_user',
+	ALTER_USER: HDB_INTERNAL_SC_CHANNEL_PREFIX + 'alter_user',
+	DROP_USER: HDB_INTERNAL_SC_CHANNEL_PREFIX + 'drop_user',
+	HDB_NODES: HDB_INTERNAL_SC_CHANNEL_PREFIX + 'hdb_nodes',
+	HDB_USERS: HDB_INTERNAL_SC_CHANNEL_PREFIX + 'hdb_users',
+	HDB_WORKERS: HDB_INTERNAL_SC_CHANNEL_PREFIX + 'hdb_workers',
+	CATCHUP: HDB_INTERNAL_SC_CHANNEL_PREFIX + 'catchup',
+	SCHEMA_CATCHUP: HDB_INTERNAL_SC_CHANNEL_PREFIX + 'schema_catchup',
+	WORKER_ROOM: HDB_INTERNAL_SC_CHANNEL_PREFIX + 'cluster_workers',
 };
 
 const SYSTEM_DEFAULT_ATTRIBUTE_NAMES = {
-    ATTR_ATTRIBUTE_KEY: "attribute",
-    ATTR_CREATEDDATE_KEY: "createddate",
-    ATTR_HASH_ATTRIBUTE_KEY: "hash_attribute",
-    ATTR_ID_KEY: "id",
-    ATTR_NAME_KEY: "name",
-    ATTR_PASSWORD_KEY: "password",
-    ATTR_RESIDENCE_KEY: "residence",
-    ATTR_ROLE_KEY: "role",
-    ATTR_SCHEMA_KEY: "schema",
-    ATTR_SCHEMA_TABLE_KEY: "schema_table",
-    ATTR_TABLE_KEY: "table",
-    ATTR_USERNAME_KEY: "username"
+	ATTR_ATTRIBUTE_KEY: 'attribute',
+	ATTR_CREATEDDATE_KEY: 'createddate',
+	ATTR_HASH_ATTRIBUTE_KEY: 'hash_attribute',
+	ATTR_ID_KEY: 'id',
+	ATTR_NAME_KEY: 'name',
+	ATTR_PASSWORD_KEY: 'password',
+	ATTR_RESIDENCE_KEY: 'residence',
+	ATTR_ROLE_KEY: 'role',
+	ATTR_SCHEMA_KEY: 'schema',
+	ATTR_SCHEMA_TABLE_KEY: 'schema_table',
+	ATTR_TABLE_KEY: 'table',
+	ATTR_USERNAME_KEY: 'username',
 };
 
 // Registration key file name
@@ -208,101 +208,101 @@ const JOB_STATUS_ENUM = {
 	CREATED: 'CREATED',
 	IN_PROGRESS: 'IN_PROGRESS',
 	COMPLETE: 'COMPLETE',
-	ERROR: 'ERROR'
+	ERROR: 'ERROR',
 };
 
 // Operations
 const OPERATIONS_ENUM = {
-    INSERT: 'insert',
-    UPDATE: 'update',
-    UPSERT: 'upsert',
-    SEARCH_BY_CONDITIONS: 'search_by_conditions',
-    SEARCH_BY_HASH: 'search_by_hash',
-    SEARCH_BY_VALUE: 'search_by_value',
-    SEARCH: 'search',
-    SQL: 'sql',
-    CSV_DATA_LOAD: 'csv_data_load',
-    CSV_FILE_LOAD: 'csv_file_load',
-    CSV_URL_LOAD: 'csv_url_load',
-    CREATE_SCHEMA: 'create_schema',
-    CREATE_TABLE: 'create_table',
-    CREATE_ATTRIBUTE: 'create_attribute',
-    DROP_SCHEMA: 'drop_schema',
-    DROP_TABLE: 'drop_table',
-    DESCRIBE_SCHEMA: 'describe_schema',
-    DESCRIBE_TABLE: 'describe_table',
-    DESCRIBE_ALL: 'describe_all',
-    DELETE: 'delete',
-    ADD_USER: 'add_user',
-    ALTER_USER: 'alter_user',
-    DROP_USER: 'drop_user',
-    LIST_USERS: 'list_users',
-    LIST_ROLES: 'list_roles',
-    ADD_ROLE: 'add_role',
-    ALTER_ROLE: 'alter_role',
-    DROP_ROLE: 'drop_role',
-    USER_INFO: 'user_info',
-    READ_LOG: 'read_log',
-    ADD_NODE: 'add_node',
-    UPDATE_NODE: 'update_node',
-    EXPORT_TO_S3: 'export_to_s3',
-    IMPORT_FROM_S3: 'import_from_s3',
-    DELETE_FILES_BEFORE: 'delete_files_before',
-    DELETE_RECORDS_BEFORE: 'delete_records_before',
-    EXPORT_LOCAL: 'export_local',
-    SEARCH_JOBS_BY_START_DATE: 'search_jobs_by_start_date',
-    GET_JOB: 'get_job',
-    DELETE_JOB: 'delete_job',
-    UPDATE_JOB: 'update_job',
-    GET_FINGERPRINT: 'get_fingerprint',
-    SET_LICENSE: 'set_license',
-    GET_REGISTRATION_INFO: 'registration_info',
-    CONFIGURE_CLUSTER: 'configure_cluster',
-    CLUSTER_STATUS: 'cluster_status',
-    DROP_ATTRIBUTE: 'drop_attribute',
-    REMOVE_NODE: 'remove_node',
-    RESTART: 'restart',
-    RESTART_SERVICE: 'restart_service',
-    CATCHUP: 'catchup',
-    SYSTEM_INFORMATION: 'system_information',
-    DELETE_TRANSACTION_LOGS_BEFORE: 'delete_transaction_logs_before',
-    READ_TRANSACTION_LOG: 'read_transaction_log',
-    CREATE_AUTHENTICATION_TOKENS: 'create_authentication_tokens',
-    REFRESH_OPERATION_TOKEN: 'refresh_operation_token',
-    GET_CONFIGURATION: 'get_configuration',
-    CUSTOM_FUNCTIONS_STATUS: 'custom_functions_status',
-    GET_CUSTOM_FUNCTIONS: 'get_custom_functions',
-    GET_CUSTOM_FUNCTION: 'get_custom_function',
-    SET_CUSTOM_FUNCTION: 'set_custom_function',
-    DROP_CUSTOM_FUNCTION: 'drop_custom_function',
-    ADD_CUSTOM_FUNCTION_PROJECT: 'add_custom_function_project',
-    DROP_CUSTOM_FUNCTION_PROJECT: 'drop_custom_function_project',
-    PACKAGE_CUSTOM_FUNCTION_PROJECT: 'package_custom_function_project',
-    DEPLOY_CUSTOM_FUNCTION_PROJECT: 'deploy_custom_function_project',
+	INSERT: 'insert',
+	UPDATE: 'update',
+	UPSERT: 'upsert',
+	SEARCH_BY_CONDITIONS: 'search_by_conditions',
+	SEARCH_BY_HASH: 'search_by_hash',
+	SEARCH_BY_VALUE: 'search_by_value',
+	SEARCH: 'search',
+	SQL: 'sql',
+	CSV_DATA_LOAD: 'csv_data_load',
+	CSV_FILE_LOAD: 'csv_file_load',
+	CSV_URL_LOAD: 'csv_url_load',
+	CREATE_SCHEMA: 'create_schema',
+	CREATE_TABLE: 'create_table',
+	CREATE_ATTRIBUTE: 'create_attribute',
+	DROP_SCHEMA: 'drop_schema',
+	DROP_TABLE: 'drop_table',
+	DESCRIBE_SCHEMA: 'describe_schema',
+	DESCRIBE_TABLE: 'describe_table',
+	DESCRIBE_ALL: 'describe_all',
+	DELETE: 'delete',
+	ADD_USER: 'add_user',
+	ALTER_USER: 'alter_user',
+	DROP_USER: 'drop_user',
+	LIST_USERS: 'list_users',
+	LIST_ROLES: 'list_roles',
+	ADD_ROLE: 'add_role',
+	ALTER_ROLE: 'alter_role',
+	DROP_ROLE: 'drop_role',
+	USER_INFO: 'user_info',
+	READ_LOG: 'read_log',
+	ADD_NODE: 'add_node',
+	UPDATE_NODE: 'update_node',
+	EXPORT_TO_S3: 'export_to_s3',
+	IMPORT_FROM_S3: 'import_from_s3',
+	DELETE_FILES_BEFORE: 'delete_files_before',
+	DELETE_RECORDS_BEFORE: 'delete_records_before',
+	EXPORT_LOCAL: 'export_local',
+	SEARCH_JOBS_BY_START_DATE: 'search_jobs_by_start_date',
+	GET_JOB: 'get_job',
+	DELETE_JOB: 'delete_job',
+	UPDATE_JOB: 'update_job',
+	GET_FINGERPRINT: 'get_fingerprint',
+	SET_LICENSE: 'set_license',
+	GET_REGISTRATION_INFO: 'registration_info',
+	CONFIGURE_CLUSTER: 'configure_cluster',
+	CLUSTER_STATUS: 'cluster_status',
+	DROP_ATTRIBUTE: 'drop_attribute',
+	REMOVE_NODE: 'remove_node',
+	RESTART: 'restart',
+	RESTART_SERVICE: 'restart_service',
+	CATCHUP: 'catchup',
+	SYSTEM_INFORMATION: 'system_information',
+	DELETE_TRANSACTION_LOGS_BEFORE: 'delete_transaction_logs_before',
+	READ_TRANSACTION_LOG: 'read_transaction_log',
+	CREATE_AUTHENTICATION_TOKENS: 'create_authentication_tokens',
+	REFRESH_OPERATION_TOKEN: 'refresh_operation_token',
+	GET_CONFIGURATION: 'get_configuration',
+	CUSTOM_FUNCTIONS_STATUS: 'custom_functions_status',
+	GET_CUSTOM_FUNCTIONS: 'get_custom_functions',
+	GET_CUSTOM_FUNCTION: 'get_custom_function',
+	SET_CUSTOM_FUNCTION: 'set_custom_function',
+	DROP_CUSTOM_FUNCTION: 'drop_custom_function',
+	ADD_CUSTOM_FUNCTION_PROJECT: 'add_custom_function_project',
+	DROP_CUSTOM_FUNCTION_PROJECT: 'drop_custom_function_project',
+	PACKAGE_CUSTOM_FUNCTION_PROJECT: 'package_custom_function_project',
+	DEPLOY_CUSTOM_FUNCTION_PROJECT: 'deploy_custom_function_project',
 };
 
 // Defines valid file types that we are able to handle in 'import_from_s3' ops
 const VALID_S3_FILE_TYPES = {
-    CSV: ".csv",
-    JSON: ".json"
+	CSV: '.csv',
+	JSON: '.json',
 };
 
 // Defines the keys required in a request body for accessing a S3 bucket
 const S3_BUCKET_AUTH_KEYS = {
-    AWS_ACCESS_KEY: "aws_access_key_id",
-    AWS_SECRET: "aws_secret_access_key",
-    AWS_BUCKET: "bucket",
-    AWS_FILE_KEY: "key"
+	AWS_ACCESS_KEY: 'aws_access_key_id',
+	AWS_SECRET: 'aws_secret_access_key',
+	AWS_BUCKET: 'bucket',
+	AWS_FILE_KEY: 'key',
 };
 
 // Defines valid SQL operations to be used in the processAST method - this ensure we have appropriate unit test coverage
 // for all SQL operations that are dynamically set after the chooseOperation method which behaves differently for the
 // evaluateSQL operation.
 const VALID_SQL_OPS_ENUM = {
-    SELECT: 'select',
-    INSERT: 'insert',
-    UPDATE: 'update',
-    DELETE: 'delete'
+	SELECT: 'select',
+	INSERT: 'insert',
+	UPDATE: 'update',
+	DELETE: 'delete',
 };
 
 // Defines operations that should be propagated to the cluster.
@@ -341,67 +341,69 @@ LOCAL_HARPERDB_OPERATIONS[OPERATIONS_ENUM.SET_CUSTOM_FUNCTION] = OPERATIONS_ENUM
 LOCAL_HARPERDB_OPERATIONS[OPERATIONS_ENUM.DROP_CUSTOM_FUNCTION] = OPERATIONS_ENUM.DROP_CUSTOM_FUNCTION;
 LOCAL_HARPERDB_OPERATIONS[OPERATIONS_ENUM.ADD_CUSTOM_FUNCTION_PROJECT] = OPERATIONS_ENUM.ADD_CUSTOM_FUNCTION_PROJECT;
 LOCAL_HARPERDB_OPERATIONS[OPERATIONS_ENUM.DROP_CUSTOM_FUNCTION_PROJECT] = OPERATIONS_ENUM.DROP_CUSTOM_FUNCTION_PROJECT;
-LOCAL_HARPERDB_OPERATIONS[OPERATIONS_ENUM.PACKAGE_CUSTOM_FUNCTION_PROJECT] = OPERATIONS_ENUM.PACKAGE_CUSTOM_FUNCTION_PROJECT;
-LOCAL_HARPERDB_OPERATIONS[OPERATIONS_ENUM.DEPLOY_CUSTOM_FUNCTION_PROJECT] = OPERATIONS_ENUM.DEPLOY_CUSTOM_FUNCTION_PROJECT;
+LOCAL_HARPERDB_OPERATIONS[OPERATIONS_ENUM.PACKAGE_CUSTOM_FUNCTION_PROJECT] =
+	OPERATIONS_ENUM.PACKAGE_CUSTOM_FUNCTION_PROJECT;
+LOCAL_HARPERDB_OPERATIONS[OPERATIONS_ENUM.DEPLOY_CUSTOM_FUNCTION_PROJECT] =
+	OPERATIONS_ENUM.DEPLOY_CUSTOM_FUNCTION_PROJECT;
 
 const SERVICE_ACTIONS_ENUM = {
-    RUN:'run',
-    INSTALL:'install',
-    REGISTER:'register',
-    STOP:'stop',
-    RESTART:'restart',
-    VERSION: 'version',
-    UPGRADE:'upgrade'
+	RUN: 'run',
+	INSTALL: 'install',
+	REGISTER: 'register',
+	STOP: 'stop',
+	RESTART: 'restart',
+	VERSION: 'version',
+	UPGRADE: 'upgrade',
 };
 
 //describes the Geo Conversion types
 const GEO_CONVERSION_ENUM = {
-    point: 'point',
-    lineString: 'lineString',
-    multiLineString: 'multiLineString',
-    multiPoint: 'multiPoint',
-    multiPolygon: 'multiPolygon',
-    polygon: 'polygon'
+	point: 'point',
+	lineString: 'lineString',
+	multiLineString: 'multiLineString',
+	multiPoint: 'multiPoint',
+	multiPolygon: 'multiPolygon',
+	polygon: 'polygon',
 };
 
 //NOTE - please be sure to add default values for new settings keys in the `HDB_SETTINGS_DEFAULT_VALUES` enum as well
 const HDB_SETTINGS_NAMES = {
-    HDB_ROOT_KEY: 'HDB_ROOT',
-    SERVER_PORT_KEY: 'SERVER_PORT',
-    CERT_KEY: 'CERTIFICATE',
-    PRIVATE_KEY_KEY: 'PRIVATE_KEY',
-    HTTP_SECURE_ENABLED_KEY: 'HTTPS_ON',
-    CORS_ENABLED_KEY: 'CORS_ON',
-    CORS_WHITELIST_KEY: 'CORS_WHITELIST',
-    LOG_LEVEL_KEY: 'LOG_LEVEL',
-    LOGGER_KEY: 'LOGGER',
-    LOG_PATH_KEY: 'LOG_PATH',
-    LOG_DAILY_ROTATE_KEY: 'LOG_DAILY_ROTATE',
-    LOG_MAX_DAILY_FILES_KEY: 'LOG_MAX_DAILY_FILES',
-    PROPS_ENV_KEY: 'NODE_ENV',
-    SETTINGS_PATH_KEY: 'settings_path', // This value is used in the boot prop file not the settings file. It should stay lowercase.
-    CLUSTERING_PORT_KEY: 'CLUSTERING_PORT',
-    CLUSTERING_NODE_NAME_KEY: 'NODE_NAME',
-    CLUSTERING_ENABLED_KEY: 'CLUSTERING',
-    ALLOW_SELF_SIGNED_SSL_CERTS: 'ALLOW_SELF_SIGNED_SSL_CERTS',
-    MAX_HDB_PROCESSES: 'MAX_HDB_PROCESSES',
-    INSTALL_USER: 'install_user', // This value is used in the boot prop file not the settings file. It should stay lowercase.
-    CLUSTERING_USER_KEY: 'CLUSTERING_USER',
-    MAX_CLUSTERING_PROCESSES: 'MAX_CLUSTERING_PROCESSES',
-    SERVER_TIMEOUT_KEY: 'SERVER_TIMEOUT_MS',
-    SERVER_KEEP_ALIVE_TIMEOUT_KEY: 'SERVER_KEEP_ALIVE_TIMEOUT',
-    SERVER_HEADERS_TIMEOUT_KEY: 'SERVER_HEADERS_TIMEOUT',
-    DISABLE_TRANSACTION_LOG_KEY: 'DISABLE_TRANSACTION_LOG',
-    OPERATION_TOKEN_TIMEOUT_KEY: 'OPERATION_TOKEN_TIMEOUT',
-    REFRESH_TOKEN_TIMEOUT_KEY: 'REFRESH_TOKEN_TIMEOUT',
-    IPC_SERVER_PORT: 'IPC_SERVER_PORT',
-    CUSTOM_FUNCTIONS_ENABLED_KEY: 'CUSTOM_FUNCTIONS',
-    CUSTOM_FUNCTIONS_PORT_KEY: 'CUSTOM_FUNCTIONS_PORT',
-    CUSTOM_FUNCTIONS_DIRECTORY_KEY: 'CUSTOM_FUNCTIONS_DIRECTORY',
-    MAX_CUSTOM_FUNCTION_PROCESSES: 'MAX_CUSTOM_FUNCTION_PROCESSES',
-    LOG_TO_FILE: 'LOG_TO_FILE',
-    LOG_TO_STDSTREAMS: 'LOG_TO_STDSTREAMS',
-    RUN_IN_FOREGROUND: 'RUN_IN_FOREGROUND'
+	HDB_ROOT_KEY: 'HDB_ROOT',
+	SERVER_PORT_KEY: 'SERVER_PORT',
+	CERT_KEY: 'CERTIFICATE',
+	PRIVATE_KEY_KEY: 'PRIVATE_KEY',
+	HTTP_SECURE_ENABLED_KEY: 'HTTPS_ON',
+	CORS_ENABLED_KEY: 'CORS_ON',
+	CORS_WHITELIST_KEY: 'CORS_WHITELIST',
+	LOG_LEVEL_KEY: 'LOG_LEVEL',
+	LOGGER_KEY: 'LOGGER',
+	LOG_PATH_KEY: 'LOG_PATH',
+	LOG_DAILY_ROTATE_KEY: 'LOG_DAILY_ROTATE',
+	LOG_MAX_DAILY_FILES_KEY: 'LOG_MAX_DAILY_FILES',
+	PROPS_ENV_KEY: 'NODE_ENV',
+	SETTINGS_PATH_KEY: 'settings_path', // This value is used in the boot prop file not the settings file. It should stay lowercase.
+	CLUSTERING_PORT_KEY: 'CLUSTERING_PORT',
+	CLUSTERING_NODE_NAME_KEY: 'NODE_NAME',
+	CLUSTERING_ENABLED_KEY: 'CLUSTERING',
+	ALLOW_SELF_SIGNED_SSL_CERTS: 'ALLOW_SELF_SIGNED_SSL_CERTS',
+	MAX_HDB_PROCESSES: 'MAX_HDB_PROCESSES',
+	INSTALL_USER: 'install_user', // This value is used in the boot prop file not the settings file. It should stay lowercase.
+	CLUSTERING_USER_KEY: 'CLUSTERING_USER',
+	MAX_CLUSTERING_PROCESSES: 'MAX_CLUSTERING_PROCESSES',
+	SERVER_TIMEOUT_KEY: 'SERVER_TIMEOUT_MS',
+	SERVER_KEEP_ALIVE_TIMEOUT_KEY: 'SERVER_KEEP_ALIVE_TIMEOUT',
+	SERVER_HEADERS_TIMEOUT_KEY: 'SERVER_HEADERS_TIMEOUT',
+	DISABLE_TRANSACTION_LOG_KEY: 'DISABLE_TRANSACTION_LOG',
+	OPERATION_TOKEN_TIMEOUT_KEY: 'OPERATION_TOKEN_TIMEOUT',
+	REFRESH_TOKEN_TIMEOUT_KEY: 'REFRESH_TOKEN_TIMEOUT',
+	IPC_SERVER_PORT: 'IPC_SERVER_PORT',
+	CUSTOM_FUNCTIONS_ENABLED_KEY: 'CUSTOM_FUNCTIONS',
+	CUSTOM_FUNCTIONS_PORT_KEY: 'CUSTOM_FUNCTIONS_PORT',
+	CUSTOM_FUNCTIONS_DIRECTORY_KEY: 'CUSTOM_FUNCTIONS_DIRECTORY',
+	MAX_CUSTOM_FUNCTION_PROCESSES: 'MAX_CUSTOM_FUNCTION_PROCESSES',
+	LOG_TO_FILE: 'LOG_TO_FILE',
+	LOG_TO_STDSTREAMS: 'LOG_TO_STDSTREAMS',
+	RUN_IN_FOREGROUND: 'RUN_IN_FOREGROUND',
 };
 
 /**
@@ -412,135 +414,135 @@ const HDB_SETTINGS_NAMES_REVERSE_LOOKUP = _.invert(HDB_SETTINGS_NAMES);
 
 // Default values for the Settings, some do not have a default.
 const HDB_SETTINGS_DEFAULT_VALUES = {
-    SERVER_PORT: 9925,
-    HTTPS_ON: false,
-    CORS_ON: true,
-    CORS_WHITELIST: '',
-    SERVER_TIMEOUT_MS: 120000,
-    SERVER_KEEP_ALIVE_TIMEOUT: 5000,
-    SERVER_HEADERS_TIMEOUT: 60000,
-    LOG_LEVEL: 'error',
-    LOG_PATH: 'log/hdb_log.log',
-    LOG_DAILY_ROTATE_KEY: false,
-    LOG_MAX_DAILY_FILES_KEY: '',
-    NODE_ENV: 'production',
-    CLUSTERING_PORT: 1111,
-    CLUSTERING: 'false',
-    MAX_HDB_PROCESSES: 4,
-    DISABLE_TRANSACTION_LOG: false,
-    OPERATION_TOKEN_TIMEOUT: '1d',
-    REFRESH_TOKEN_TIMEOUT: '30d',
-    IPC_SERVER_PORT: 9383,
-    ALLOW_SELF_SIGNED_SSL_CERTS: false,
-    CUSTOM_FUNCTIONS: false,
-    CUSTOM_FUNCTIONS_PORT: 9926,
-    CUSTOM_FUNCTIONS_DIRECTORY: 'custom_functions',
-    MAX_CUSTOM_FUNCTION_PROCESSES: 4,
-    LOG_TO_FILE: true,
-    LOG_TO_STDSTREAMS: false,
-    RUN_IN_FOREGROUND: false,
-    MAX_CLUSTERING_PROCESSES: 1
+	SERVER_PORT: 9925,
+	HTTPS_ON: false,
+	CORS_ON: true,
+	CORS_WHITELIST: '',
+	SERVER_TIMEOUT_MS: 120000,
+	SERVER_KEEP_ALIVE_TIMEOUT: 5000,
+	SERVER_HEADERS_TIMEOUT: 60000,
+	LOG_LEVEL: 'error',
+	LOG_PATH: 'log/hdb_log.log',
+	LOG_DAILY_ROTATE_KEY: false,
+	LOG_MAX_DAILY_FILES_KEY: '',
+	NODE_ENV: 'production',
+	CLUSTERING_PORT: 1111,
+	CLUSTERING: 'false',
+	MAX_HDB_PROCESSES: 4,
+	DISABLE_TRANSACTION_LOG: false,
+	OPERATION_TOKEN_TIMEOUT: '1d',
+	REFRESH_TOKEN_TIMEOUT: '30d',
+	IPC_SERVER_PORT: 9383,
+	ALLOW_SELF_SIGNED_SSL_CERTS: false,
+	CUSTOM_FUNCTIONS: false,
+	CUSTOM_FUNCTIONS_PORT: 9926,
+	CUSTOM_FUNCTIONS_DIRECTORY: 'custom_functions',
+	MAX_CUSTOM_FUNCTION_PROCESSES: 4,
+	LOG_TO_FILE: true,
+	LOG_TO_STDSTREAMS: false,
+	RUN_IN_FOREGROUND: false,
+	MAX_CLUSTERING_PROCESSES: 1,
 };
 
 // Describes all available job types
 const JOB_TYPE_ENUM = {
-    csv_file_load: 'csv_file_load',
-    csv_data_load: OPERATIONS_ENUM.CSV_DATA_LOAD,
-    csv_url_load: OPERATIONS_ENUM.CSV_URL_LOAD,
-    delete_files_before: 'delete_files_before',
-    delete_records_before: 'delete_records_before',
-    delete_transaction_logs_before: 'delete_transaction_logs_before',
-    empty_trash: 'empty_trash',
-    export_local: 'export_local',
-    export_to_s3: 'export_to_s3',
-    import_from_s3: 'import_from_s3'
+	csv_file_load: 'csv_file_load',
+	csv_data_load: OPERATIONS_ENUM.CSV_DATA_LOAD,
+	csv_url_load: OPERATIONS_ENUM.CSV_URL_LOAD,
+	delete_files_before: 'delete_files_before',
+	delete_records_before: 'delete_records_before',
+	delete_transaction_logs_before: 'delete_transaction_logs_before',
+	empty_trash: 'empty_trash',
+	export_local: 'export_local',
+	export_to_s3: 'export_to_s3',
+	import_from_s3: 'import_from_s3',
 };
 
 const CLUSTER_MESSAGE_TYPE_ENUM = {
-    CLUSTERING_PAYLOAD: 'clustering_payload',
-    DELEGATE_THREAD_RESPONSE: 'delegate_thread_response',
-    CLUSTERING: 'clustering',
-    SCHEMA: 'schema',
-    CLUSTER_STATUS: 'cluster_status',
-    JOB: 'job',
-    CHILD_STARTED: 'child_started',
-    CHILD_STOPPED: 'child_stopped',
-    USER: 'user',
-    RESTART: 'restart'
+	CLUSTERING_PAYLOAD: 'clustering_payload',
+	DELEGATE_THREAD_RESPONSE: 'delegate_thread_response',
+	CLUSTERING: 'clustering',
+	SCHEMA: 'schema',
+	CLUSTER_STATUS: 'cluster_status',
+	JOB: 'job',
+	CHILD_STARTED: 'child_started',
+	CHILD_STOPPED: 'child_stopped',
+	USER: 'user',
+	RESTART: 'restart',
 };
 const CLUSTER_CONNECTION_DIRECTION_ENUM = {
-    // Data flows to both the client and this server
-    BIDIRECTIONAL: "BIDIRECTIONAL",
-    // This server only sends data to its client, it doesn't up update from received data
-    OUTBOUND: "OUTBOUND",
-    // This server only receives data, it does not send updated data
-    INBOUND: "INBOUND"
+	// Data flows to both the client and this server
+	BIDIRECTIONAL: 'BIDIRECTIONAL',
+	// This server only sends data to its client, it doesn't up update from received data
+	OUTBOUND: 'OUTBOUND',
+	// This server only receives data, it does not send updated data
+	INBOUND: 'INBOUND',
 };
 
 const STORAGE_TYPES_ENUM = {
-    FILE_SYSTEM: 'fs',
-    LMDB: 'lmdb'
+	FILE_SYSTEM: 'fs',
+	LMDB: 'lmdb',
 };
 
 const LICENSE_VALUES = {
-    API_CALL_DEFAULT: 10000,
-    VERSION_DEFAULT: '2.2.0'
+	API_CALL_DEFAULT: 10000,
+	VERSION_DEFAULT: '2.2.0',
 };
 
 // The maximum ram allocation in MB per HDB child process
 const RAM_ALLOCATION_ENUM = {
-    DEVELOPMENT: 8192, //8GB
-    DEFAULT: 512 //.5GB
+	DEVELOPMENT: 8192, //8GB
+	DEFAULT: 512, //.5GB
 };
 
 const CLUSTER_EVENTS_DEFS_ENUM = {
-    IDENTIFY : 'identify',
-    AUTHENTICATE : 'authenticate',
-    AUTHENTICATE_OK: 'authenticated',
-    AUTHENTICATE_FAIL: 'authenticate_fail',
-    CONNECTION: 'connection',
-    CONNECT: 'connect',
-    CATCHUP_REQUEST : 'catchup_request',
-    CATCHUP_RESPONSE: 'catchup',
-    CONFIRM_MSG: 'confirm_msg',
-    ERROR: 'error',
-    DISCONNECT: 'disconnect',
-    SCHEMA_UPDATE_REQ: 'schema_update_request',
-    SCHEMA_UPDATE_RES: 'schema_update_response',
-    RECONNECT_ATTEMPT: 'reconnect_attempt',
-    CONNECT_ERROR: 'connect_error',
-    MESSAGE: 'msg',
-    VERSION_MISMATCH: 'version_mismatch',
-    DIRECTION_CHANGE: 'direction_change'
+	IDENTIFY: 'identify',
+	AUTHENTICATE: 'authenticate',
+	AUTHENTICATE_OK: 'authenticated',
+	AUTHENTICATE_FAIL: 'authenticate_fail',
+	CONNECTION: 'connection',
+	CONNECT: 'connect',
+	CATCHUP_REQUEST: 'catchup_request',
+	CATCHUP_RESPONSE: 'catchup',
+	CONFIRM_MSG: 'confirm_msg',
+	ERROR: 'error',
+	DISCONNECT: 'disconnect',
+	SCHEMA_UPDATE_REQ: 'schema_update_request',
+	SCHEMA_UPDATE_RES: 'schema_update_response',
+	RECONNECT_ATTEMPT: 'reconnect_attempt',
+	CONNECT_ERROR: 'connect_error',
+	MESSAGE: 'msg',
+	VERSION_MISMATCH: 'version_mismatch',
+	DIRECTION_CHANGE: 'direction_change',
 };
 
 const WEBSOCKET_CLOSE_CODE_DESCRIPTION_LOOKUP = {
-    1000 : 'SUCCESSFUL_SHUTDOWN',
-    1001 : 'CLOSE_GOING_AWAY',
-    1002 : 'CLOSE_PROTOCOL_ERROR',
-    1003 : 'CLOSE_UNSUPPORTED',
-    1005 : 'CLOSE_NO_STATUS',
-    1006 : 'CLOSE_ABNORMAL',
-    1007 : 'UNSUPPORTED_PAYLOAD',
-    1008 : 'POLICY_VIOLATION',
-    1009: 'CLOSE_TOO_LARGE',
-    1010: 'MANDATORY_EXTENSION',
-    1011: 'SERVER_ERROR',
-    1012: 'SERVICE_RESTART',
-    1013: 'SERVER_BUSY',
-    1014: 'BAD_GATEWAY',
-    1015: 'HANDSHAKE_FAIL',
-    4141: 'LICENSE_LIMIT_REACHED'
+	1000: 'SUCCESSFUL_SHUTDOWN',
+	1001: 'CLOSE_GOING_AWAY',
+	1002: 'CLOSE_PROTOCOL_ERROR',
+	1003: 'CLOSE_UNSUPPORTED',
+	1005: 'CLOSE_NO_STATUS',
+	1006: 'CLOSE_ABNORMAL',
+	1007: 'UNSUPPORTED_PAYLOAD',
+	1008: 'POLICY_VIOLATION',
+	1009: 'CLOSE_TOO_LARGE',
+	1010: 'MANDATORY_EXTENSION',
+	1011: 'SERVER_ERROR',
+	1012: 'SERVICE_RESTART',
+	1013: 'SERVER_BUSY',
+	1014: 'BAD_GATEWAY',
+	1015: 'HANDSHAKE_FAIL',
+	4141: 'LICENSE_LIMIT_REACHED',
 };
 
 const NODE_ERROR_CODES = {
-    ENOENT: 'ENOENT',
-    EACCES: 'EACCES'
+	ENOENT: 'ENOENT',
+	EACCES: 'EACCES',
 };
 
 const TIME_STAMP_NAMES_ENUM = {
-    CREATED_TIME: '__createdtime__',
-    UPDATED_TIME: '__updatedtime__'
+	CREATED_TIME: '__createdtime__',
+	UPDATED_TIME: '__updatedtime__',
 };
 const CLUSTERING_FLAG = '__clustering__';
 
@@ -551,11 +553,11 @@ const TIME_STAMP_NAMES = Object.values(TIME_STAMP_NAMES_ENUM);
 const PERMS_UPDATE_RELEASE_TIMESTAMP = 1598486400000;
 
 const VALUE_SEARCH_COMPARATORS = {
-    LESS: "<",
-    LESS_OR_EQ: "<=",
-    GREATER: ">",
-    GREATER_OR_EQ: ">=",
-    BETWEEN: '...'
+	LESS: '<',
+	LESS_OR_EQ: '<=',
+	GREATER: '>',
+	GREATER_OR_EQ: '>=',
+	BETWEEN: '...',
 };
 const VALUE_SEARCH_COMPARATORS_REVERSE_LOOKUP = _.invert(VALUE_SEARCH_COMPARATORS);
 
@@ -564,10 +566,10 @@ const ORIGINATOR_SET_VALUE = cluster_types.ORIGINATOR_SET_VALUE;
 const NEW_LINE = '\r\n';
 
 const PERMS_CRUD_ENUM = {
-    READ: 'read',
-    INSERT: 'insert',
-    UPDATE: 'update',
-    DELETE: 'delete'
+	READ: 'read',
+	INSERT: 'insert',
+	UPDATE: 'update',
+	DELETE: 'delete',
 };
 
 const SEARCH_WILDCARDS = ['*', '%'];
@@ -577,146 +579,146 @@ const UNAUTHORIZED_PERMISSION_NAME = 'unauthorized_access';
 const FUNC_VAL = 'func_val';
 
 const READ_TRANSACTION_LOG_SEARCH_TYPES_ENUM = {
-    HASH_VALUE: 'hash_value',
-    TIMESTAMP: 'timestamp',
-    USERNAME: 'username'
+	HASH_VALUE: 'hash_value',
+	TIMESTAMP: 'timestamp',
+	USERNAME: 'username',
 };
 
 const JWT_ENUM = {
-    JWT_PRIVATE_KEY_NAME: '.jwtPrivate.key',
-    JWT_PUBLIC_KEY_NAME: '.jwtPublic.key',
-    JWT_PASSPHRASE_NAME: '.jwtPass'
+	JWT_PRIVATE_KEY_NAME: '.jwtPrivate.key',
+	JWT_PUBLIC_KEY_NAME: '.jwtPublic.key',
+	JWT_PASSPHRASE_NAME: '.jwtPass',
 };
 
 const HDB_IPC_SERVER = 'hdb_ipc_server';
 const HDB_IPC_CLIENT_PREFIX = 'hdb_ipc_client_';
 const IPC_EVENT_TYPES = {
-    RESTART: 'restart',
-    CHILD_STARTED: 'child_started',
-    CHILD_STOPPED: 'child_stopped',
-    SCHEMA: 'schema',
-    USER: 'user',
-    CLUSTER_STATUS_RESPONSE: 'cluster_status_response',
-    CLUSTER_STATUS_REQUEST: 'cluster_status_request'
+	RESTART: 'restart',
+	CHILD_STARTED: 'child_started',
+	CHILD_STOPPED: 'child_stopped',
+	SCHEMA: 'schema',
+	USER: 'user',
+	CLUSTER_STATUS_RESPONSE: 'cluster_status_response',
+	CLUSTER_STATUS_REQUEST: 'cluster_status_request',
 };
 
 const SERVICES = {
-    HDB_CORE: 'hdb_core',
-    CUSTOM_FUNCTIONS: 'custom_functions'
+	HDB_CORE: 'hdb_core',
+	CUSTOM_FUNCTIONS: 'custom_functions',
 };
 
 module.exports = {
-    LOCAL_HARPERDB_OPERATIONS,
-    HDB_SUPPORT_ADDRESS,
-    HDB_SUPPORT_URL,
-    HDB_PRICING_URL,
-    SUPPORT_HELP_MSG,
-    LICENSE_HELP_MSG,
-    HDB_PROC_NAME,
-    HDB_PROC_DESCRIPTOR,
-    CLUSTERING_PROC_NAME,
-    SYSTEM_SCHEMA_NAME,
-    HASH_FOLDER_NAME,
-    HDB_HOME_DIR_NAME,
-    UPDATE_FILE_NAME,
-    LICENSE_KEY_DIR_NAME,
-    BOOT_PROPS_FILE_NAME,
-    JOB_TYPE_ENUM,
-    JOB_STATUS_ENUM,
-    SYSTEM_TABLE_NAMES,
-    SYSTEM_TABLE_HASH_ATTRIBUTES,
-    OPERATIONS_ENUM,
-    VALID_S3_FILE_TYPES,
-    S3_BUCKET_AUTH_KEYS,
-    VALID_SQL_OPS_ENUM,
-    GEO_CONVERSION_ENUM,
-    HDB_SETTINGS_NAMES,
-    HDB_SETTINGS_NAMES_REVERSE_LOOKUP,
-    HDB_SETTINGS_DEFAULT_VALUES,
-    SERVICE_ACTIONS_ENUM,
-    CLUSTER_MESSAGE_TYPE_ENUM,
-    CLUSTER_CONNECTION_DIRECTION_ENUM,
-    CLUSTER_EVENTS_DEFS_ENUM,
-    PERIOD_REGEX,
-    DOUBLE_PERIOD_REGEX,
-    UNICODE_PERIOD,
-    FORWARD_SLASH_REGEX,
-    UNICODE_FORWARD_SLASH,
-    ESCAPED_FORWARD_SLASH_REGEX,
-    ESCAPED_PERIOD_REGEX,
-    ESCAPED_DOUBLE_PERIOD_REGEX,
-    REG_KEY_FILE_NAME,
-    RESTART_TIMEOUT_MS,
-    HDB_FILE_PERMISSIONS,
-    SCHEMA_DIR_NAME,
-    TRANSACTIONS_DIR_NAME,
-    LIMIT_COUNT_NAME,
-    ID_ATTRIBUTE_STRING,
-    INSERT_MODULE_ENUM,
-    UPGRADE_JSON_FIELD_NAMES_ENUM,
-    RESTART_CODE,
-    RESTART_CODE_NUM,
-    CLUSTER_OPERATIONS,
-    SYSTEM_DEFAULT_ATTRIBUTE_NAMES,
-    HDB_INTERNAL_SC_CHANNEL_PREFIX,
-    INTERNAL_SC_CHANNELS,
-    CLUSTERING_MESSAGE_TYPES,
-    HDB_FILE_SUFFIX,
-    BLOB_FOLDER_NAME,
-    HDB_TRASH_DIR,
-    // Make the message objects available through hdbTerms to keep clustering as modular as possible.
-    ClusterMessageObjects,
-    ORIGINATOR_SET_VALUE,
-    CLUSTERING_PAYLOAD_FILE_NAME,
-    LICENSE_VALUES,
-    RAM_ALLOCATION_ENUM,
-    STORAGE_TYPES_ENUM,
-    TIME_STAMP_NAMES_ENUM,
-    TIME_STAMP_NAMES,
-    PERMS_UPDATE_RELEASE_TIMESTAMP,
-    SEARCH_NOT_FOUND_MESSAGE,
-    SEARCH_ATTRIBUTE_NOT_FOUND,
-    LICENSE_ROLE_DENIED_RESPONSE,
-    LICENSE_MAX_CONNS_REACHED,
-    BASIC_LICENSE_MAX_NON_CU_ROLES,
-    BASIC_LICENSE_MAX_CLUSTER_CONNS,
-    BASIC_LICENSE_CLUSTER_CONNECTION_LIMIT_WS_ERROR_CODE,
-    VALUE_SEARCH_COMPARATORS,
-    VALUE_SEARCH_COMPARATORS_REVERSE_LOOKUP,
-    LICENSE_FILE_NAME,
-    WEBSOCKET_CLOSE_CODE_DESCRIPTION_LOOKUP,
-    NEW_LINE,
-    BASIC_LICENSE_MAX_CLUSTER_USER_ROLES,
-    MOMENT_DAYS_TAG,
-    API_TURNOVER_SEC,
-    CLUSTERING_FOLDER_NAMES_ENUM,
-    LOOPBACK,
-    CODE_EXTENSION,
-    COMPILED_EXTENSION,
-    WILDCARD_SEARCH_VALUE,
-    NODE_ERROR_CODES,
-    JAVASCRIPT_EXTENSION,
-    PERMS_CRUD_ENUM,
-    UNAUTHORIZED_PERMISSION_NAME,
-    SEARCH_WILDCARDS,
-    FUNC_VAL,
-    READ_TRANSACTION_LOG_SEARCH_TYPES_ENUM,
-    JWT_ENUM,
-    CLUSTERING_FLAG,
-    RUN_LOG,
-    INSTALL_LOG,
-    IPC_SERVER_MODULE,
-    HDB_IPC_SERVER,
-    IPC_EVENT_TYPES,
-    HDB_IPC_CLIENT_PREFIX,
-    CUSTOM_FUNCTION_PROC_NAME,
-    CUSTOM_FUNCTION_PROC_DESCRIPTOR,
-    SERVICES,
-    MEM_SETTING_KEY,
-    HDB_RESTART_SCRIPT,
-    PROCESS_DESCRIPTORS,
-    SERVICE_SERVERS,
-    SERVICE_SERVERS_CWD,
-    PROCESS_DESCRIPTORS_VALIDATE,
-    LAUNCH_SERVICE_SCRIPTS
+	LOCAL_HARPERDB_OPERATIONS,
+	HDB_SUPPORT_ADDRESS,
+	HDB_SUPPORT_URL,
+	HDB_PRICING_URL,
+	SUPPORT_HELP_MSG,
+	LICENSE_HELP_MSG,
+	HDB_PROC_NAME,
+	HDB_PROC_DESCRIPTOR,
+	CLUSTERING_PROC_NAME,
+	SYSTEM_SCHEMA_NAME,
+	HASH_FOLDER_NAME,
+	HDB_HOME_DIR_NAME,
+	UPDATE_FILE_NAME,
+	LICENSE_KEY_DIR_NAME,
+	BOOT_PROPS_FILE_NAME,
+	JOB_TYPE_ENUM,
+	JOB_STATUS_ENUM,
+	SYSTEM_TABLE_NAMES,
+	SYSTEM_TABLE_HASH_ATTRIBUTES,
+	OPERATIONS_ENUM,
+	VALID_S3_FILE_TYPES,
+	S3_BUCKET_AUTH_KEYS,
+	VALID_SQL_OPS_ENUM,
+	GEO_CONVERSION_ENUM,
+	HDB_SETTINGS_NAMES,
+	HDB_SETTINGS_NAMES_REVERSE_LOOKUP,
+	HDB_SETTINGS_DEFAULT_VALUES,
+	SERVICE_ACTIONS_ENUM,
+	CLUSTER_MESSAGE_TYPE_ENUM,
+	CLUSTER_CONNECTION_DIRECTION_ENUM,
+	CLUSTER_EVENTS_DEFS_ENUM,
+	PERIOD_REGEX,
+	DOUBLE_PERIOD_REGEX,
+	UNICODE_PERIOD,
+	FORWARD_SLASH_REGEX,
+	UNICODE_FORWARD_SLASH,
+	ESCAPED_FORWARD_SLASH_REGEX,
+	ESCAPED_PERIOD_REGEX,
+	ESCAPED_DOUBLE_PERIOD_REGEX,
+	REG_KEY_FILE_NAME,
+	RESTART_TIMEOUT_MS,
+	HDB_FILE_PERMISSIONS,
+	SCHEMA_DIR_NAME,
+	TRANSACTIONS_DIR_NAME,
+	LIMIT_COUNT_NAME,
+	ID_ATTRIBUTE_STRING,
+	INSERT_MODULE_ENUM,
+	UPGRADE_JSON_FIELD_NAMES_ENUM,
+	RESTART_CODE,
+	RESTART_CODE_NUM,
+	CLUSTER_OPERATIONS,
+	SYSTEM_DEFAULT_ATTRIBUTE_NAMES,
+	HDB_INTERNAL_SC_CHANNEL_PREFIX,
+	INTERNAL_SC_CHANNELS,
+	CLUSTERING_MESSAGE_TYPES,
+	HDB_FILE_SUFFIX,
+	BLOB_FOLDER_NAME,
+	HDB_TRASH_DIR,
+	// Make the message objects available through hdbTerms to keep clustering as modular as possible.
+	ClusterMessageObjects,
+	ORIGINATOR_SET_VALUE,
+	CLUSTERING_PAYLOAD_FILE_NAME,
+	LICENSE_VALUES,
+	RAM_ALLOCATION_ENUM,
+	STORAGE_TYPES_ENUM,
+	TIME_STAMP_NAMES_ENUM,
+	TIME_STAMP_NAMES,
+	PERMS_UPDATE_RELEASE_TIMESTAMP,
+	SEARCH_NOT_FOUND_MESSAGE,
+	SEARCH_ATTRIBUTE_NOT_FOUND,
+	LICENSE_ROLE_DENIED_RESPONSE,
+	LICENSE_MAX_CONNS_REACHED,
+	BASIC_LICENSE_MAX_NON_CU_ROLES,
+	BASIC_LICENSE_MAX_CLUSTER_CONNS,
+	BASIC_LICENSE_CLUSTER_CONNECTION_LIMIT_WS_ERROR_CODE,
+	VALUE_SEARCH_COMPARATORS,
+	VALUE_SEARCH_COMPARATORS_REVERSE_LOOKUP,
+	LICENSE_FILE_NAME,
+	WEBSOCKET_CLOSE_CODE_DESCRIPTION_LOOKUP,
+	NEW_LINE,
+	BASIC_LICENSE_MAX_CLUSTER_USER_ROLES,
+	MOMENT_DAYS_TAG,
+	API_TURNOVER_SEC,
+	CLUSTERING_FOLDER_NAMES_ENUM,
+	LOOPBACK,
+	CODE_EXTENSION,
+	COMPILED_EXTENSION,
+	WILDCARD_SEARCH_VALUE,
+	NODE_ERROR_CODES,
+	JAVASCRIPT_EXTENSION,
+	PERMS_CRUD_ENUM,
+	UNAUTHORIZED_PERMISSION_NAME,
+	SEARCH_WILDCARDS,
+	FUNC_VAL,
+	READ_TRANSACTION_LOG_SEARCH_TYPES_ENUM,
+	JWT_ENUM,
+	CLUSTERING_FLAG,
+	RUN_LOG,
+	INSTALL_LOG,
+	IPC_SERVER_MODULE,
+	HDB_IPC_SERVER,
+	IPC_EVENT_TYPES,
+	HDB_IPC_CLIENT_PREFIX,
+	CUSTOM_FUNCTION_PROC_NAME,
+	CUSTOM_FUNCTION_PROC_DESCRIPTOR,
+	SERVICES,
+	MEM_SETTING_KEY,
+	HDB_RESTART_SCRIPT,
+	PROCESS_DESCRIPTORS,
+	SERVICE_SERVERS,
+	SERVICE_SERVERS_CWD,
+	PROCESS_DESCRIPTORS_VALIDATE,
+	LAUNCH_SERVICE_SCRIPTS,
 };

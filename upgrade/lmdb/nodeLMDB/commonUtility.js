@@ -1,4 +1,4 @@
-"use strict";
+'use strict';
 
 const LMDB_ERRORS = require('./commonErrors');
 const lmdb = require('node-lmdb');
@@ -10,15 +10,14 @@ const microtime = require('microtime');
  * validates the env argument
  * @param env - environment object used thigh level to interact with all data in an environment
  */
-function validateEnv(env){
-    if(!(env instanceof lmdb.Env)){
+function validateEnv(env) {
+	if (!(env instanceof lmdb.Env)) {
+		if (env === undefined) {
+			throw new Error(LMDB_ERRORS.ENV_REQUIRED);
+		}
 
-        if(env === undefined){
-            throw new Error(LMDB_ERRORS.ENV_REQUIRED);
-        }
-
-        throw new Error(LMDB_ERRORS.INVALID_ENVIRONMENT);
-    }
+		throw new Error(LMDB_ERRORS.INVALID_ENVIRONMENT);
+	}
 }
 
 /**
@@ -26,20 +25,20 @@ function validateEnv(env){
  * @param raw_value
  * @returns {Number|String|null}
  */
-function stringifyData(raw_value){
-    if(raw_value === null || raw_value === undefined){
-        return null;
-    }
+function stringifyData(raw_value) {
+	if (raw_value === null || raw_value === undefined) {
+		return null;
+	}
 
-    let value;
+	let value;
 
-    try {
-        value = typeof raw_value === 'object' ? JSON.stringify(raw_value) : raw_value.toString();
-    } catch(e){
-        value = raw_value.toString();
-    }
+	try {
+		value = typeof raw_value === 'object' ? JSON.stringify(raw_value) : raw_value.toString();
+	} catch (e) {
+		value = raw_value.toString();
+	}
 
-    return value;
+	return value;
 }
 
 /**
@@ -48,25 +47,25 @@ function stringifyData(raw_value){
  * @param {lmdb_terms.DBI_KEY_TYPES} key_type - determines how to convert the value for LMDB, defaults to STRING
  * @returns {String|Buffer}
  */
-function convertKeyValueToWrite(raw_value, key_type){
-    let buf;
-    let value = null;
-    switch(key_type){
-        case lmdb_terms.DBI_KEY_TYPES.STRING:
-            value = stringifyData(raw_value);
-            break;
-        case lmdb_terms.DBI_KEY_TYPES.NUMBER:
-            if(isNaN(raw_value) === false) {
-                buf = Buffer.alloc(8);
-                buf.writeDoubleBE(raw_value, 0);
-                value = buf;
-            }
-            break;
-        default:
-            value = stringifyData(raw_value);
-            break;
-    }
-    return value;
+function convertKeyValueToWrite(raw_value, key_type) {
+	let buf;
+	let value = null;
+	switch (key_type) {
+		case lmdb_terms.DBI_KEY_TYPES.STRING:
+			value = stringifyData(raw_value);
+			break;
+		case lmdb_terms.DBI_KEY_TYPES.NUMBER:
+			if (isNaN(raw_value) === false) {
+				buf = Buffer.alloc(8);
+				buf.writeDoubleBE(raw_value, 0);
+				value = buf;
+			}
+			break;
+		default:
+			value = stringifyData(raw_value);
+			break;
+	}
+	return value;
 }
 
 /**
@@ -75,36 +74,36 @@ function convertKeyValueToWrite(raw_value, key_type){
  * @param {lmdb_terms.DBI_KEY_TYPES} key_type - determines how to convert the value for LMDB, defaults to STRING
  * @returns {*}
  */
-function convertKeyValueFromSearch(raw_value, key_type){
-    let value = null;
-    switch(key_type){
-        case lmdb_terms.DBI_KEY_TYPES.STRING:
-            value = raw_value;
-            break;
-        case lmdb_terms.DBI_KEY_TYPES.NUMBER:
-            value = raw_value.readDoubleBE(0);
-            break;
-        default:
-            value = raw_value;
-            break;
-    }
-    return value;
+function convertKeyValueFromSearch(raw_value, key_type) {
+	let value = null;
+	switch (key_type) {
+		case lmdb_terms.DBI_KEY_TYPES.STRING:
+			value = raw_value;
+			break;
+		case lmdb_terms.DBI_KEY_TYPES.NUMBER:
+			value = raw_value.readDoubleBE(0);
+			break;
+		default:
+			value = raw_value;
+			break;
+	}
+	return value;
 }
 
 /**
  * Gets the time in sub milliseconds & converts it to a decimal number where the milliseconds from epoch are on the left of decimal & sub-millisecond time is on the right
  * @returns {number}
  */
-function getMicroTime(){
-    let full_micro = microtime.now().toString();
-    let pos = full_micro.length - 3;
-    return Number(full_micro.slice(0, pos) + '.' + full_micro.slice(pos));
+function getMicroTime() {
+	let full_micro = microtime.now().toString();
+	let pos = full_micro.length - 3;
+	return Number(full_micro.slice(0, pos) + '.' + full_micro.slice(pos));
 }
 
 module.exports = {
-    validateEnv,
-    stringifyData,
-    convertKeyValueToWrite,
-    convertKeyValueFromSearch,
-    getMicroTime
+	validateEnv,
+	stringifyData,
+	convertKeyValueToWrite,
+	convertKeyValueFromSearch,
+	getMicroTime,
 };

@@ -13,27 +13,30 @@ module.exports = lmdbDropAllAttributes;
  * @param drop_obj
  */
 async function lmdbDropAllAttributes(drop_obj) {
-    if(hdb_utils.isEmpty(global.hdb_schema[drop_obj.schema]) || hdb_utils.isEmpty(global.hdb_schema[drop_obj.schema][drop_obj.table])){
-        throw new Error(`unknown schema:${drop_obj.schema} and table ${drop_obj.table}`);
-    }
+	if (
+		hdb_utils.isEmpty(global.hdb_schema[drop_obj.schema]) ||
+		hdb_utils.isEmpty(global.hdb_schema[drop_obj.schema][drop_obj.table])
+	) {
+		throw new Error(`unknown schema:${drop_obj.schema} and table ${drop_obj.table}`);
+	}
 
-    let schema_table = global.hdb_schema[drop_obj.schema][drop_obj.table];
+	let schema_table = global.hdb_schema[drop_obj.schema][drop_obj.table];
 
-    let current_attribute;
-    try {
-        for (let i = 0; i < schema_table.attributes.length; i++) {
-            current_attribute = schema_table.attributes[i].attribute;
-            let drop_attr_object = new DropAttributeObject(drop_obj.schema, drop_obj.table, current_attribute);
-            try {
-                await drop_attribute(drop_attr_object, false);
-            } catch(e){
-                if(e.message !== LMDB_ERROR.DBI_DOES_NOT_EXIST){
-                    log.error(`unable to drop attribute ${drop_obj.schema}.${drop_obj.table}.${current_attribute}:` + e);
-                }
-            }
-        }
-    } catch(err) {
-        log.error(`Error dropping attribute ${current_attribute}`);
-        throw err;
-    }
+	let current_attribute;
+	try {
+		for (let i = 0; i < schema_table.attributes.length; i++) {
+			current_attribute = schema_table.attributes[i].attribute;
+			let drop_attr_object = new DropAttributeObject(drop_obj.schema, drop_obj.table, current_attribute);
+			try {
+				await drop_attribute(drop_attr_object, false);
+			} catch (e) {
+				if (e.message !== LMDB_ERROR.DBI_DOES_NOT_EXIST) {
+					log.error(`unable to drop attribute ${drop_obj.schema}.${drop_obj.table}.${current_attribute}:` + e);
+				}
+			}
+		}
+	} catch (err) {
+		log.error(`Error dropping attribute ${current_attribute}`);
+		throw err;
+	}
 }

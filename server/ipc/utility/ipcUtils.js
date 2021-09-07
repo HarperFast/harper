@@ -6,10 +6,10 @@ const hdb_terms = require('../../../utility/hdbTerms');
 const { IPC_ERRORS } = require('../../../utility/errors/commonErrors');
 
 module.exports = {
-    sendIpcEvent,
-    validateEvent,
-    SchemaEventMsg,
-    UserEventMsg
+	sendIpcEvent,
+	validateEvent,
+	SchemaEventMsg,
+	UserEventMsg,
 };
 
 /**
@@ -17,11 +17,11 @@ module.exports = {
  * @param event
  */
 function sendIpcEvent(event) {
-    if (global.hdb_ipc) {
-        global.hdb_ipc.emitToServer(event);
-    } else {
-        hdb_logger.warn(`Tried to send event: ${JSON.stringify(event)} to HDB IPC client but it does not exist`);
-    }
+	if (global.hdb_ipc) {
+		global.hdb_ipc.emitToServer(event);
+	} else {
+		hdb_logger.warn(`Tried to send event: ${JSON.stringify(event)} to HDB IPC client but it does not exist`);
+	}
 }
 
 /**
@@ -30,25 +30,25 @@ function sendIpcEvent(event) {
  * @returns {string}
  */
 function validateEvent(event) {
-    if (typeof event !== 'object') {
-        return IPC_ERRORS.INVALID_IPC_DATA_TYPE;
-    }
+	if (typeof event !== 'object') {
+		return IPC_ERRORS.INVALID_IPC_DATA_TYPE;
+	}
 
-    if (!event.hasOwnProperty('type') || hdb_utils.isEmpty(event.type)) {
-        return IPC_ERRORS.MISSING_TYPE;
-    }
+	if (!event.hasOwnProperty('type') || hdb_utils.isEmpty(event.type)) {
+		return IPC_ERRORS.MISSING_TYPE;
+	}
 
-    if (!event.hasOwnProperty('message') || hdb_utils.isEmpty(event.message)) {
-        return IPC_ERRORS.MISSING_MSG;
-    }
+	if (!event.hasOwnProperty('message') || hdb_utils.isEmpty(event.message)) {
+		return IPC_ERRORS.MISSING_MSG;
+	}
 
-    if (!event.message.hasOwnProperty('originator') || hdb_utils.isEmpty(event.message.originator)) {
-        return IPC_ERRORS.MISSING_ORIGIN;
-    }
+	if (!event.message.hasOwnProperty('originator') || hdb_utils.isEmpty(event.message.originator)) {
+		return IPC_ERRORS.MISSING_ORIGIN;
+	}
 
-    if (hdb_terms.IPC_EVENT_TYPES[event.type.toUpperCase()] === undefined) {
-        return IPC_ERRORS.INVALID_EVENT(event.type);
-    }
+	if (hdb_terms.IPC_EVENT_TYPES[event.type.toUpperCase()] === undefined) {
+		return IPC_ERRORS.INVALID_EVENT(event.type);
+	}
 }
 
 /**
@@ -61,11 +61,11 @@ function validateEvent(event) {
  * @constructor
  */
 function SchemaEventMsg(originator, operation, schema, table = undefined, attribute = undefined) {
-    this.originator = originator;
-    this.operation = operation;
-    this.schema = schema;
-    this.table = table;
-    this.attribute = attribute;
+	this.originator = originator;
+	this.operation = operation;
+	this.schema = schema;
+	this.table = table;
+	this.attribute = attribute;
 }
 
 /**
@@ -74,5 +74,5 @@ function SchemaEventMsg(originator, operation, schema, table = undefined, attrib
  * @constructor
  */
 function UserEventMsg(originator) {
-    this.originator = originator;
+	this.originator = originator;
 }

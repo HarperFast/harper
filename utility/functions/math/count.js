@@ -2,6 +2,5 @@
 
 exports.name = 'count';
 exports.factory = function (type, config, load, typed) {
-    let setSize = load(require('mathjs/lib/function/set/setSize'));
-    return setSize;
+	return load(require('mathjs/lib/function/set/setSize'));
 };

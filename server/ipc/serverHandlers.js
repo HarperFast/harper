@@ -13,8 +13,8 @@ const { validateEvent } = require('../../server/ipc/utility/ipcUtils');
  * @type {{schema: ((function(*): Promise<void>)|*), job: ((function(*): Promise<void>)|*), user: ((function(): Promise<void>)|*)}}
  */
 const server_ipc_handlers = {
-    [hdb_terms.IPC_EVENT_TYPES.SCHEMA]: schemaHandler,
-    [hdb_terms.IPC_EVENT_TYPES.USER]: userHandler
+	[hdb_terms.IPC_EVENT_TYPES.SCHEMA]: schemaHandler,
+	[hdb_terms.IPC_EVENT_TYPES.USER]: userHandler,
 };
 
 /**
@@ -23,15 +23,17 @@ const server_ipc_handlers = {
  * @returns {Promise<void>}
  */
 async function schemaHandler(event) {
-    const validate = validateEvent(event);
-    if (validate) {
-        hdb_logger.error(validate);
-        return;
-    }
+	const validate = validateEvent(event);
+	if (validate) {
+		hdb_logger.error(validate);
+		return;
+	}
 
-    hdb_logger.trace(`IPC schemaHandler ${hdb_terms.HDB_IPC_CLIENT_PREFIX}${process.pid} received schema event: ${JSON.stringify(event)}`);
-    clean_lmdb_map(event.message);
-    await syncSchemaMetadata(event.message);
+	hdb_logger.trace(
+		`IPC schemaHandler ${hdb_terms.HDB_IPC_CLIENT_PREFIX}${process.pid} received schema event: ${JSON.stringify(event)}`
+	);
+	clean_lmdb_map(event.message);
+	await syncSchemaMetadata(event.message);
 }
 
 /**
@@ -42,46 +44,49 @@ async function schemaHandler(event) {
  * @returns {Promise<void>}
  */
 async function syncSchemaMetadata(msg) {
-    try{
-        if (global.hdb_schema !== undefined && typeof global.hdb_schema === 'object' && msg.operation !== undefined) {
-            switch (msg.operation) {
-                case 'drop_schema':
-                    delete global.hdb_schema[msg.schema];
-                    break;
-                case 'drop_table':
-                    if (global.hdb_schema[msg.schema] !== undefined) {
-                        delete global.hdb_schema[msg.schema][msg.table];
-                    }
-                    break;
-                case 'create_schema':
-                    if (global.hdb_schema[msg.schema] === undefined) {
-                        global.hdb_schema[msg.schema] = {};
-                    }
-                    break;
-                case 'create_table':
-                case 'create_attribute':
-                    if (global.hdb_schema[msg.schema] === undefined) {
-                        global.hdb_schema[msg.schema] = {};
-                    }
+	try {
+		if (global.hdb_schema !== undefined && typeof global.hdb_schema === 'object' && msg.operation !== undefined) {
+			switch (msg.operation) {
+				case 'drop_schema':
+					delete global.hdb_schema[msg.schema];
+					break;
+				case 'drop_table':
+					if (global.hdb_schema[msg.schema] !== undefined) {
+						delete global.hdb_schema[msg.schema][msg.table];
+					}
+					break;
+				case 'create_schema':
+					if (global.hdb_schema[msg.schema] === undefined) {
+						global.hdb_schema[msg.schema] = {};
+					}
+					break;
+				case 'create_table':
+				case 'create_attribute':
+					if (global.hdb_schema[msg.schema] === undefined) {
+						global.hdb_schema[msg.schema] = {};
+					}
 
-                    global.hdb_schema[msg.schema][msg.table] = await schema_describe.describeTable({schema: msg.schema, table: msg.table});
-                    break;
-                default:
-                    global_schema.setSchemaDataToGlobal(handleErrorCallback);
-                    break;
-            }
-        } else{
-            global_schema.setSchemaDataToGlobal(handleErrorCallback);
-        }
-    } catch(e) {
-        hdb_logger.error(e);
-    }
+					global.hdb_schema[msg.schema][msg.table] = await schema_describe.describeTable({
+						schema: msg.schema,
+						table: msg.table,
+					});
+					break;
+				default:
+					global_schema.setSchemaDataToGlobal(handleErrorCallback);
+					break;
+			}
+		} else {
+			global_schema.setSchemaDataToGlobal(handleErrorCallback);
+		}
+	} catch (e) {
+		hdb_logger.error(e);
+	}
 }
 
 function handleErrorCallback(err) {
-    if (err) {
-        hdb_logger.error(err);
-    }
+	if (err) {
+		hdb_logger.error(err);
+	}
 }
 
 /**
@@ -90,18 +95,20 @@ function handleErrorCallback(err) {
  * @returns {Promise<void>}
  */
 async function userHandler(event) {
-    try {
-        const validate = validateEvent(event);
-        if (validate) {
-            hdb_logger.error(validate);
-            return;
-        }
+	try {
+		const validate = validateEvent(event);
+		if (validate) {
+			hdb_logger.error(validate);
+			return;
+		}
 
-        hdb_logger.trace(`IPC userHandler ${hdb_terms.HDB_IPC_CLIENT_PREFIX}${process.pid} received user event: ${JSON.stringify(event)}`);
-        await user_schema.setUsersToGlobal();
-    } catch(err){
-        hdb_logger.error(err);
-    }
+		hdb_logger.trace(
+			`IPC userHandler ${hdb_terms.HDB_IPC_CLIENT_PREFIX}${process.pid} received user event: ${JSON.stringify(event)}`
+		);
+		await user_schema.setUsersToGlobal();
+	} catch (err) {
+		hdb_logger.error(err);
+	}
 }
 
 module.exports = server_ipc_handlers;

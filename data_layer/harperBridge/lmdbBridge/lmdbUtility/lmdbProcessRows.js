@@ -18,17 +18,17 @@ module.exports = processRows;
  * @param {String} hash_attribute
  */
 function processRows(insert_obj, attributes, hash_attribute) {
-    for(let x = 0; x < attributes.length; x++){
-        validateAttribute(attributes[x]);
-    }
+	for (let x = 0; x < attributes.length; x++) {
+		validateAttribute(attributes[x]);
+	}
 
-    let {records} = insert_obj;
+	let { records } = insert_obj;
 
-    // Iterates through array of record objects and validates their hash
-    for (let x = 0; x < records.length; x++) {
-        let record = records[x];
-        validateHash(record, hash_attribute, insert_obj.operation);
-    }
+	// Iterates through array of record objects and validates their hash
+	for (let x = 0; x < records.length; x++) {
+		let record = records[x];
+		validateHash(record, hash_attribute, insert_obj.operation);
+	}
 }
 
 /**
@@ -36,13 +36,27 @@ function processRows(insert_obj, attributes, hash_attribute) {
  * @param attribute
  */
 function validateAttribute(attribute) {
-    if (Buffer.byteLength(String(attribute)) > hdb_terms.INSERT_MODULE_ENUM.MAX_CHARACTER_SIZE) {
-        throw handleHDBError(new Error(), HDB_ERROR_MSGS.ATTR_NAME_LENGTH_ERR(attribute), HTTP_STATUS_CODES.BAD_REQUEST, undefined, undefined, true);
-    }
+	if (Buffer.byteLength(String(attribute)) > hdb_terms.INSERT_MODULE_ENUM.MAX_CHARACTER_SIZE) {
+		throw handleHDBError(
+			new Error(),
+			HDB_ERROR_MSGS.ATTR_NAME_LENGTH_ERR(attribute),
+			HTTP_STATUS_CODES.BAD_REQUEST,
+			undefined,
+			undefined,
+			true
+		);
+	}
 
-    if (hdb_utils.isEmptyOrZeroLength(attribute) || hdb_utils.isEmpty(attribute.trim())) {
-        throw handleHDBError(new Error(), HDB_ERROR_MSGS.ATTR_NAME_NULLISH_ERR, HTTP_STATUS_CODES.BAD_REQUEST, undefined, undefined, true);
-    }
+	if (hdb_utils.isEmptyOrZeroLength(attribute) || hdb_utils.isEmpty(attribute.trim())) {
+		throw handleHDBError(
+			new Error(),
+			HDB_ERROR_MSGS.ATTR_NAME_NULLISH_ERR,
+			HTTP_STATUS_CODES.BAD_REQUEST,
+			undefined,
+			undefined,
+			true
+		);
+	}
 }
 
 /**
@@ -53,26 +67,46 @@ function validateAttribute(attribute) {
  * @param operation
  */
 function validateHash(record, hash_attribute, operation) {
-    if (!record.hasOwnProperty(hash_attribute) || hdb_utils.isEmptyOrZeroLength(record[hash_attribute])) {
-        if (operation === hdb_terms.OPERATIONS_ENUM.INSERT || operation === hdb_terms.OPERATIONS_ENUM.UPSERT) {
-            record[hash_attribute] = uuid.v4();
-            //return here since the rest of the validations do not apply
-            return;
-        }
+	if (!record.hasOwnProperty(hash_attribute) || hdb_utils.isEmptyOrZeroLength(record[hash_attribute])) {
+		if (operation === hdb_terms.OPERATIONS_ENUM.INSERT || operation === hdb_terms.OPERATIONS_ENUM.UPSERT) {
+			record[hash_attribute] = uuid.v4();
+			//return here since the rest of the validations do not apply
+			return;
+		}
 
-        log.error(`Update transaction aborted due to record with no hash value: ${JSON.stringify(record)}`);
-        throw handleHDBError(new Error(), HDB_ERROR_MSGS.RECORD_MISSING_HASH_ERR, HTTP_STATUS_CODES.BAD_REQUEST, undefined, undefined, true);
+		log.error(`Update transaction aborted due to record with no hash value: ${JSON.stringify(record)}`);
+		throw handleHDBError(
+			new Error(),
+			HDB_ERROR_MSGS.RECORD_MISSING_HASH_ERR,
+			HTTP_STATUS_CODES.BAD_REQUEST,
+			undefined,
+			undefined,
+			true
+		);
+	}
 
-    }
+	if (Buffer.byteLength(String(record[hash_attribute])) > hdb_terms.INSERT_MODULE_ENUM.MAX_CHARACTER_SIZE) {
+		log.error(record);
+		throw handleHDBError(
+			new Error(),
+			HDB_ERROR_MSGS.HASH_VAL_LENGTH_ERR,
+			HTTP_STATUS_CODES.BAD_REQUEST,
+			undefined,
+			undefined,
+			true
+		);
+	}
 
-    if (Buffer.byteLength(String(record[hash_attribute])) > hdb_terms.INSERT_MODULE_ENUM.MAX_CHARACTER_SIZE) {
-        log.error(record);
-        throw handleHDBError(new Error(), HDB_ERROR_MSGS.HASH_VAL_LENGTH_ERR, HTTP_STATUS_CODES.BAD_REQUEST, undefined, undefined, true);
-    }
-
-    //keep this validation as we cannot allow forward slashes for hdb fs
-    if (isNaN(record[hash_attribute]) && record[hash_attribute].includes('/')) {
-        log.error(record);
-        throw handleHDBError(new Error(), HDB_ERROR_MSGS.INVALID_FORWARD_SLASH_IN_HASH_ERR, HTTP_STATUS_CODES.BAD_REQUEST, undefined, undefined, true);
-    }
+	//keep this validation as we cannot allow forward slashes for hdb fs
+	if (isNaN(record[hash_attribute]) && record[hash_attribute].includes('/')) {
+		log.error(record);
+		throw handleHDBError(
+			new Error(),
+			HDB_ERROR_MSGS.INVALID_FORWARD_SLASH_IN_HASH_ERR,
+			HTTP_STATUS_CODES.BAD_REQUEST,
+			undefined,
+			undefined,
+			true
+		);
+	}
 }

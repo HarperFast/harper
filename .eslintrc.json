@@ -4,49 +4,21 @@
     "node": true,
     "mocha": true
   },
-  "extends": "eslint:recommended",
+  "extends": ["eslint:recommended", "plugin:prettier/recommended", "plugin:radar/recommended"],
+  "plugins": ["radar"],
   "parserOptions": {
     "sourceType": "module",
     "ecmaVersion": 2018
   },
   "rules": {
-    "linebreak-style": [
-      "error",
-      "unix"
-    ],
-    "quotes": [
-      "off"
-    ],
-    "semi": [
-      "error",
-      "always"
-    ],
-    "no-undef": [
-      "error"
-    ],
-    "no-use-before-define": ["error", { "functions": false, "classes": true, "variables":true }],
-    "consistent-return": ["off"],
-    "default-case": ["error"],
-    "block-scoped-var": ["error"],
-    "no-eval":"error",
-    "no-else-return":"error",
-    "no-magic-numbers": ["error", { "ignore": [-1, 0, 1] }],
-    "no-sequences":"error",
-    "no-useless-return":"error",
-    "require-await":"error",
-    "callback-return":"error",
-    "global-require":"error",
-    "no-mixed-requires":"error",
-    "no-multiple-empty-lines":"error",
-    "no-multi-spaces":"error",
-    "no-unreachable":"error",
-    "no-unexpected-multiline":"error",
-    "no-extra-semi":"error",
-    "arrow-body-style":"error",
-    "no-confusing-arrow":"error",
-    "no-const-assign":"error",
-    "no-var":"error",
-    "no-console":"off",
-    "no-mixed-spaces-and-tabs": "off"
+    "no-unused-vars": "off",
+    "no-console": "off",
+    "no-control-regex": "off",
+    "no-case-declarations": "off",
+    "radar/cognitive-complexity": ["error", 150],
+    "radar/no-useless-catch": "off",
+    "radar/no-identical-functions": "off",
+    "radar/no-duplicated-branches": "off",
+    "radar/no-redundant-jump": "off"
   }
 }

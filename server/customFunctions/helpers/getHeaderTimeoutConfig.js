@@ -1,4 +1,4 @@
-"use strict";
+'use strict';
 
 const env = require('../../../utility/environment/environmentManager');
 env.initSync();
@@ -14,7 +14,7 @@ const DEFAULT_HEADER_TIMEOUT = HDB_SETTINGS_DEFAULT_VALUES[PROPS_HEADER_TIMEOUT_
  * @returns {*}
  */
 function getHeaderTimeoutConfig() {
-  return env.get(PROPS_HEADER_TIMEOUT_KEY) ? env.get(PROPS_HEADER_TIMEOUT_KEY) : DEFAULT_HEADER_TIMEOUT;
+	return env.get(PROPS_HEADER_TIMEOUT_KEY) ? env.get(PROPS_HEADER_TIMEOUT_KEY) : DEFAULT_HEADER_TIMEOUT;
 }
 
 module.exports = getHeaderTimeoutConfig;

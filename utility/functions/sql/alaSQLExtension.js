@@ -11,39 +11,39 @@ const jsonata = require('jsonata');
 const hdb_utils = require('../../common_utils');
 
 module.exports = {
-    /***
-     * distinct_array takes in an array an dedupes its values using lodash. this works on complex as well as simple datatypes
-     * @param array
-     * @returns array
-     */
-    distinct_array:  (array)=>{
-        if(Array.isArray(array) && array.length > 1){
-            return _.uniqWith(array, _.isEqual);
-        }
+	/***
+	 * distinct_array takes in an array an dedupes its values using lodash. this works on complex as well as simple datatypes
+	 * @param array
+	 * @returns array
+	 */
+	distinct_array: (array) => {
+		if (Array.isArray(array) && array.length > 1) {
+			return _.uniqWith(array, _.isEqual);
+		}
 
-        return array;
-    },
-    searchJSON,
-    /***
-     * median absolute deviation aggregate function based on http://mathjs.org/docs/reference/functions/mad.html
-     */
-    mad:aggregateFunction.bind(null, mathjs.mad),
-    /***
-     * mean aggregate function based on http://mathjs.org/docs/reference/functions/mean.html
-     */
-    mean:aggregateFunction.bind(null, mathjs.mean),
-    /***
-     * computes the mode of values on http://mathjs.org/docs/reference/functions/mode.html
-     */
-    mode:aggregateFunction.bind(null, mathjs.mode),
-    /***
-     * compute the product based on http://mathjs.org/docs/reference/functions/prod.html
-     */
-    prod:aggregateFunction.bind(null, mathjs.prod),
-    /***
-     * compute the median based on http://mathjs.org/docs/reference/functions/median.html
-     */
-    median:aggregateFunction.bind(null, mathjs.median)
+		return array;
+	},
+	searchJSON,
+	/***
+	 * median absolute deviation aggregate function based on http://mathjs.org/docs/reference/functions/mad.html
+	 */
+	mad: aggregateFunction.bind(null, mathjs.mad),
+	/***
+	 * mean aggregate function based on http://mathjs.org/docs/reference/functions/mean.html
+	 */
+	mean: aggregateFunction.bind(null, mathjs.mean),
+	/***
+	 * computes the mode of values on http://mathjs.org/docs/reference/functions/mode.html
+	 */
+	mode: aggregateFunction.bind(null, mathjs.mode),
+	/***
+	 * compute the product based on http://mathjs.org/docs/reference/functions/prod.html
+	 */
+	prod: aggregateFunction.bind(null, mathjs.prod),
+	/***
+	 * compute the median based on http://mathjs.org/docs/reference/functions/median.html
+	 */
+	median: aggregateFunction.bind(null, mathjs.median),
 };
 
 /***
@@ -58,25 +58,25 @@ module.exports = {
  * @param stage - defines the stage in processing see description above
  * @returns {*}
  */
-function aggregateFunction(calculation_function, value, array, stage){
-    if(stage === 1){
-        if(value === null || value === undefined){
-            return [];
-        }
+function aggregateFunction(calculation_function, value, array, stage) {
+	if (stage === 1) {
+		if (value === null || value === undefined) {
+			return [];
+		}
 
-        return [value];
-    } else if(stage === 2){
-        if(value !== null && value !== undefined){
-            array.push(value);
-        }
-        return array;
-    } else {
-        if(array !== null && array !== undefined && array.length > 0){
-            return calculation_function(array);
-        }
+		return [value];
+	} else if (stage === 2) {
+		if (value !== null && value !== undefined) {
+			array.push(value);
+		}
+		return array;
+	} else {
+		if (array !== null && array !== undefined && array.length > 0) {
+			return calculation_function(array);
+		}
 
-        return null;
-    }
+		return null;
+	}
 }
 
 /**
@@ -85,20 +85,20 @@ function aggregateFunction(calculation_function, value, array, stage){
  * @param {any} data - data which will be evaluated
  * @returns {any}
  */
-function searchJSON(jsonata_expression, data){
-    if(typeof jsonata_expression !== 'string' || jsonata_expression.length === 0){
-        throw new Error('search json expression must be a non-empty string');
-    }
+function searchJSON(jsonata_expression, data) {
+	if (typeof jsonata_expression !== 'string' || jsonata_expression.length === 0) {
+		throw new Error('search json expression must be a non-empty string');
+	}
 
-    let alias = '__' + jsonata_expression + '__';
+	let alias = '__' + jsonata_expression + '__';
 
-    if(hdb_utils.isEmpty(this.__ala__.res)){
-        this.__ala__.res = {};
-    }
+	if (hdb_utils.isEmpty(this.__ala__.res)) {
+		this.__ala__.res = {};
+	}
 
-    if(hdb_utils.isEmpty(this.__ala__.res[alias])) {
-        let expression = jsonata(jsonata_expression);
-        this.__ala__.res[alias] = expression;
-    }
-    return this.__ala__.res[alias].evaluate(data);
+	if (hdb_utils.isEmpty(this.__ala__.res[alias])) {
+		let expression = jsonata(jsonata_expression);
+		this.__ala__.res[alias] = expression;
+	}
+	return this.__ala__.res[alias].evaluate(data);
 }

@@ -1,4 +1,4 @@
-"use strict";
+'use strict';
 
 const search = require('../data_layer/search');
 const global_schema = require('../utility/globalSchema');
@@ -21,7 +21,7 @@ const transact_to_clustering_utilities = require('../server/transactToClustering
 alasql_function_importer(alasql);
 
 module.exports = {
-    update: update
+	update: update,
 };
 
 const SQL_UPDATE_ERROR_MSG = 'There was a problem performing this update. Please check the logs and try again.';
@@ -33,50 +33,52 @@ const SQL_UPDATE_ERROR_MSG = 'There was a problem performing this update. Please
  * @param hdb_user
  * @return
  */
-async function update({statement, hdb_user}){
-    try {
-        let table_info = await p_get_table_schema(statement.table.databaseid, statement.table.tableid);
-        let update_record = createUpdateRecord(statement.columns);
+async function update({ statement, hdb_user }) {
+	try {
+		let table_info = await p_get_table_schema(statement.table.databaseid, statement.table.tableid);
+		let update_record = createUpdateRecord(statement.columns);
 
-        //convert this update statement to a SQL search capable statement
-        hdb_utils.backtickASTSchemaItems(statement);
-        let {table: from, where} = statement;
-        let table_clone = clone(from);
+		//convert this update statement to a SQL search capable statement
+		hdb_utils.backtickASTSchemaItems(statement);
+		let { table: from, where } = statement;
+		let table_clone = clone(from);
 
-        let where_string = hdb_utils.isEmpty(where) ? '' : ` WHERE ${where.toString()}`;
+		let where_string = hdb_utils.isEmpty(where) ? '' : ` WHERE ${where.toString()}`;
 
-        let select_string = `SELECT ${table_info.hash_attribute} FROM ${from.toString()} ${where_string}`;
-        let search_statement = alasql.parse(select_string).statements[0];
+		let select_string = `SELECT ${table_info.hash_attribute} FROM ${from.toString()} ${where_string}`;
+		let search_statement = alasql.parse(select_string).statements[0];
 
-        let records = await p_search(search_statement);
-        let new_records = buildUpdateRecords(update_record, records);
-        return await updateRecords(table_clone, new_records, hdb_user);
-    } catch(e){
-        throw e;
-    }
+		let records = await p_search(search_statement);
+		let new_records = buildUpdateRecords(update_record, records);
+		return await updateRecords(table_clone, new_records, hdb_user);
+	} catch (e) {
+		throw e;
+	}
 }
 
 /**
  * creates a json object based on the AST
  * @param columns
  */
-function createUpdateRecord(columns){
-    try {
-        let record = {};
+function createUpdateRecord(columns) {
+	try {
+		let record = {};
 
-        columns.forEach((column)=>{
-            if("value" in column.expression){
-                record[column.column.columnid] = column.expression.value;
-            } else{
-                record[column.column.columnid] = alasql.compile(`SELECT ${column.expression.toString()} AS [${terms.FUNC_VAL}] FROM ?`);
-            }
-        });
+		columns.forEach((column) => {
+			if ('value' in column.expression) {
+				record[column.column.columnid] = column.expression.value;
+			} else {
+				record[column.column.columnid] = alasql.compile(
+					`SELECT ${column.expression.toString()} AS [${terms.FUNC_VAL}] FROM ?`
+				);
+			}
+		});
 
-        return record;
-    } catch (err) {
-        logger.error(err);
-        throw new Error(SQL_UPDATE_ERROR_MSG);
-    }
+		return record;
+	} catch (err) {
+		logger.error(err);
+		throw new Error(SQL_UPDATE_ERROR_MSG);
+	}
 }
 
 /**
@@ -86,12 +88,12 @@ function createUpdateRecord(columns){
  * @param {[]} records
  * @return
  */
-function buildUpdateRecords(update_record, records){
-    if(hdb_utils.isEmptyOrZeroLength(records)){
-        return [];
-    }
+function buildUpdateRecords(update_record, records) {
+	if (hdb_utils.isEmptyOrZeroLength(records)) {
+		return [];
+	}
 
-    return records.map((record)=>Object.assign(record, update_record));
+	return records.map((record) => Object.assign(record, update_record));
 }
 
 /**
@@ -102,31 +104,31 @@ function buildUpdateRecords(update_record, records){
  * @param {{}} hdb_user
  * @return
  */
-async function updateRecords(table, records, hdb_user){
-    let update_object = {
-        operation:'update',
-        schema: table.databaseid_orig,
-        table: table.tableid_orig,
-        records:records,
-        hdb_user
-    };
+async function updateRecords(table, records, hdb_user) {
+	let update_object = {
+		operation: 'update',
+		schema: table.databaseid_orig,
+		table: table.tableid_orig,
+		records: records,
+		hdb_user,
+	};
 
-    try {
-        let res = await write.update(update_object);
+	try {
+		let res = await write.update(update_object);
 
-        // With non SQL CUD actions, the `post` operation passed into OperationFunctionCaller would send the transaction to the cluster.
-        // Since we don`t send Most SQL options to the cluster, we need to explicitly send it.
-        transact_to_clustering_utilities.postOperationHandler(update_object, res);
-        try {
-            // We do not want the API returning the new attributes property.
-            delete res.new_attributes;
-            delete res.txn_time;
-        } catch (delete_err) {
-            logger.error(`Error delete new_attributes from update response: ${delete_err}`);
-        }
+		// With non SQL CUD actions, the `post` operation passed into OperationFunctionCaller would send the transaction to the cluster.
+		// Since we don`t send Most SQL options to the cluster, we need to explicitly send it.
+		transact_to_clustering_utilities.postOperationHandler(update_object, res);
+		try {
+			// We do not want the API returning the new attributes property.
+			delete res.new_attributes;
+			delete res.txn_time;
+		} catch (delete_err) {
+			logger.error(`Error delete new_attributes from update response: ${delete_err}`);
+		}
 
-        return res;
-    } catch(e){
-        throw e;
-    }
+		return res;
+	} catch (e) {
+		throw e;
+	}
 }

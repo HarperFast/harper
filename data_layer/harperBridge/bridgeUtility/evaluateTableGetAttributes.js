@@ -1,4 +1,4 @@
-"use strict";
+'use strict';
 
 const _ = require('lodash');
 
@@ -8,23 +8,23 @@ module.exports = evaluateTableGetAttributes;
 // and the second time when a star exists we iterate to remove it.
 // This is (O)n^2, and not needed - update during next performance pass.
 function evaluateTableGetAttributes(get_attributes, table_attributes) {
-    let star_attribute =  _.filter(get_attributes, attribute => {
-        return attribute === '*' || attribute.attribute === '*';
-    });
+	let star_attribute = _.filter(get_attributes, (attribute) => {
+		return attribute === '*' || attribute.attribute === '*';
+	});
 
-    if (star_attribute && star_attribute.length > 0) {
-        get_attributes = _.filter(get_attributes, attribute => {
-            return attribute !== '*' && attribute.attribute !== '*';
-        });
+	if (star_attribute && star_attribute.length > 0) {
+		get_attributes = _.filter(get_attributes, (attribute) => {
+			return attribute !== '*' && attribute.attribute !== '*';
+		});
 
-        table_attributes.forEach(attribute => {
-            get_attributes.push(attribute.attribute);
-        });
+		table_attributes.forEach((attribute) => {
+			get_attributes.push(attribute.attribute);
+		});
 
-        //TODO - remove this toString step after schema is always string - fix from CORE-609
-        return _.uniqBy(get_attributes.map(attr => attr.toString()));
-    }
+		//TODO - remove this toString step after schema is always string - fix from CORE-609
+		return _.uniqBy(get_attributes.map((attr) => attr.toString()));
+	}
 
-    //TODO - remove this toString step after schema is always string - fix from CORE-609
-    return get_attributes.map(attr => attr.toString());
+	//TODO - remove this toString step after schema is always string - fix from CORE-609
+	return get_attributes.map((attr) => attr.toString());
 }

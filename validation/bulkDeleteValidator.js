@@ -3,20 +3,23 @@ const Joi = require('joi');
 const { hdb_schema_table } = require('./common_validators');
 
 const validation_schema = {
-    schema: hdb_schema_table,
-    table: hdb_schema_table
+	schema: hdb_schema_table,
+	table: hdb_schema_table,
 };
 
 const date_schema = {
-    date: Joi.date().iso().required()
+	date: Joi.date().iso().required(),
 };
 
 const timestamp_schema = {
-    timestamp: Joi.date().timestamp().required().messages({ "date.format": "'timestamp' is invalid" })
+	timestamp: Joi.date().timestamp().required().messages({ 'date.format': "'timestamp' is invalid" }),
 };
 
 module.exports = function (delete_object, date_format) {
-    const final_schema = date_format === 'timestamp' ? {...validation_schema, ...timestamp_schema} : {...validation_schema, ...date_schema};
-    const bulk_delete_schema = Joi.object(final_schema);
-    return validator.validateBySchema(delete_object, bulk_delete_schema);
+	const final_schema =
+		date_format === 'timestamp'
+			? { ...validation_schema, ...timestamp_schema }
+			: { ...validation_schema, ...date_schema };
+	const bulk_delete_schema = Joi.object(final_schema);
+	return validator.validateBySchema(delete_object, bulk_delete_schema);
 };

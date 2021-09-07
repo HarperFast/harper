@@ -19,15 +19,15 @@ let versions = new Map();
 
 //ALL VERSION UPGRADE DIRECTIVES MUST BE IMPORTED TO THIS MODULE AND ADDED TO VERSIONS MAP
 if (version_3_0_0) {
-    version_3_0_0.forEach((version) => {
-        versions.set(version.version, version);
-    });
+	version_3_0_0.forEach((version) => {
+		versions.set(version.version, version);
+	});
 }
 
 if (version_3_1_0) {
-    version_3_1_0.forEach((version) => {
-        versions.set(version.version, version);
-    });
+	version_3_1_0.forEach((version) => {
+		versions.set(version.version, version);
+	});
 }
 
 /**
@@ -37,7 +37,7 @@ if (version_3_1_0) {
  * @returns {this}
  */
 function getSortedVersions() {
-    return [...versions.keys()].sort(hdb_utils.compareVersions);
+	return [...versions.keys()].sort(hdb_utils.compareVersions);
 }
 
 /**
@@ -48,21 +48,25 @@ function getSortedVersions() {
  * @returns {any[]|*[]}
  */
 function getVersionsForUpgrade(upgrade_obj) {
-    let curr_version = upgrade_obj[DATA_VERSION];
-    let new_version = upgrade_obj[UPGRADE_VERSION];
+	let curr_version = upgrade_obj[DATA_VERSION];
+	let new_version = upgrade_obj[UPGRADE_VERSION];
 
-    if (hdb_utils.isEmptyOrZeroLength(curr_version) || hdb_utils.isEmptyOrZeroLength(new_version)) {
-        //we should never get to this scenario but if so, we will return empty array so that server can try to start
-        // with current install and data
-        hdb_log.info(`There is an issue with the version data in your instance of HDB.  Current version data: ${upgrade_obj}`);
-        hdb_log.error('There was an error when trying to evaluate the version information for your instance.  Trying to ' +
-            'start the server anyways but it may fail. If you continue to have this problem, please contact support@harperdb.io.');
-        return [];
-    }
+	if (hdb_utils.isEmptyOrZeroLength(curr_version) || hdb_utils.isEmptyOrZeroLength(new_version)) {
+		//we should never get to this scenario but if so, we will return empty array so that server can try to start
+		// with current install and data
+		hdb_log.info(
+			`There is an issue with the version data in your instance of HDB.  Current version data: ${upgrade_obj}`
+		);
+		hdb_log.error(
+			'There was an error when trying to evaluate the version information for your instance.  Trying to ' +
+				'start the server anyways but it may fail. If you continue to have this problem, please contact support@harperdb.io.'
+		);
+		return [];
+	}
 
-    return [...versions.keys()].sort(hdb_utils.compareVersions).filter( function(this_version) {
-        return this_version > curr_version && this_version <= new_version;
-    });
+	return [...versions.keys()].sort(hdb_utils.compareVersions).filter(function (this_version) {
+		return this_version > curr_version && this_version <= new_version;
+	});
 }
 
 /**
@@ -73,8 +77,8 @@ function getVersionsForUpgrade(upgrade_obj) {
  * @returns {boolean} - returns true if an upgrade/s is/are required
  */
 function hasUpgradesRequired(upgrade_obj) {
-    const valid_versions = getVersionsForUpgrade(upgrade_obj);
-    return valid_versions.length > 0;
+	const valid_versions = getVersionsForUpgrade(upgrade_obj);
+	return valid_versions.length > 0;
 }
 
 /**
@@ -84,18 +88,18 @@ function hasUpgradesRequired(upgrade_obj) {
  * @returns {null|any}
  */
 function getDirectiveByVersion(version) {
-    if(hdb_utils.isEmptyOrZeroLength(version)) {
-        return null;
-    }
-    if(versions.has(version)) {
-        return versions.get(version);
-    }
-    return null;
+	if (hdb_utils.isEmptyOrZeroLength(version)) {
+		return null;
+	}
+	if (versions.has(version)) {
+		return versions.get(version);
+	}
+	return null;
 }
 
 module.exports = {
-    getSortedVersions,
-    getDirectiveByVersion,
-    getVersionsForUpgrade,
-    hasUpgradesRequired
+	getSortedVersions,
+	getDirectiveByVersion,
+	getVersionsForUpgrade,
+	hasUpgradesRequired,
 };

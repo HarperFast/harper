@@ -16,52 +16,54 @@ const validate = require('validate.js');
 //This validator is added here b/c we are still on version 0.11.1 that does not include this build in functionality.  When
 // we do update, we can remove.  The reason we have not is related to a breaking change on the "presence" validator rule
 // that will require a lot of fixes on our.  More here - https://validatejs.org/#changelog-0-12-0
-validate.validators.type = function(value, options, key, attributes) {
-    // allow empty values by default (needs to be checked by "presence" check)
-    if(value === null || typeof value === 'undefined') {
-        return null;
-    }
+validate.validators.type = function (value, options, key, attributes) {
+	// allow empty values by default (needs to be checked by "presence" check)
+	if (value === null || typeof value === 'undefined') {
+		return null;
+	}
 
-    return validate.validators.type.checks[options](value) ? null : ' must be a ' + `'${options}' value`;
+	return validate.validators.type.checks[options](value) ? null : ' must be a ' + `'${options}' value`;
 };
 
 validate.validators.type.checks = {
-    Object: function(value) {
-        return validate.isObject(value) && !validate.isArray(value);
-    },
-    Array: validate.isArray,
-    Integer: validate.isInteger,
-    Number: validate.isNumber,
-    String: validate.isString,
-    Date: validate.isDate,
-    Boolean: function(value) {
-        return typeof value === 'boolean';
-    }
+	Object: function (value) {
+		return validate.isObject(value) && !validate.isArray(value);
+	},
+	Array: validate.isArray,
+	Integer: validate.isInteger,
+	Number: validate.isNumber,
+	String: validate.isString,
+	Date: validate.isDate,
+	Boolean: function (value) {
+		return typeof value === 'boolean';
+	},
 };
 
-validate.validators.hasValidFileExt = function(value, options) {
-    // allow non-string values by default (needs to be checked by "presence" and "type" checks)
-    if(!validate.isString(value) || value === "") {
-        return null;
-    }
+validate.validators.hasValidFileExt = function (value, options) {
+	// allow non-string values by default (needs to be checked by "presence" and "type" checks)
+	if (!validate.isString(value) || value === '') {
+		return null;
+	}
 
-    return options.filter(ext => value.endsWith(ext)).length > 0 ? null : `must include one of the following valid file extensions - '${options.join("', '")}'`;
+	return options.filter((ext) => value.endsWith(ext)).length > 0
+		? null
+		: `must include one of the following valid file extensions - '${options.join("', '")}'`;
 };
 
 module.exports = {
-    validateObject,
-    validateObjectAsync,
-    validateBySchema
+	validateObject,
+	validateObjectAsync,
+	validateBySchema,
 };
 
 function validateObject(object, file_constraints) {
-    if(!object || !file_constraints) {
-        return new Error('validateObject parameters were null');
-    }
+	if (!object || !file_constraints) {
+		return new Error('validateObject parameters were null');
+	}
 
-    let validate_result = validate(object, file_constraints, {format: 'flat'});
-    if (!validate_result) return null;
-    return new Error(validate_result);
+	let validate_result = validate(object, file_constraints, { format: 'flat' });
+	if (!validate_result) return null;
+	return new Error(validate_result);
 }
 
 /**
@@ -71,19 +73,19 @@ function validateObject(object, file_constraints) {
  * @returns {Promise<Error|null>}
  */
 async function validateObjectAsync(object, file_constraints) {
-    if(!object || !file_constraints) {
-        return new Error('validateObject parameters were null');
-    }
+	if (!object || !file_constraints) {
+		return new Error('validateObject parameters were null');
+	}
 
-    try {
-        await validate.async(object, file_constraints, {format: 'flat'});
-    } catch(err) {
-        // unroll the array and make a full error message.
-        let msg = err.join(`,`);
-        return new Error(msg);
-    }
-    // If no error, just return null so this will behave as the non async version.
-    return null;
+	try {
+		await validate.async(object, file_constraints, { format: 'flat' });
+	} catch (err) {
+		// unroll the array and make a full error message.
+		let msg = err.join(`,`);
+		return new Error(msg);
+	}
+	// If no error, just return null so this will behave as the non async version.
+	return null;
 }
 
 /**
@@ -92,10 +94,10 @@ async function validateObjectAsync(object, file_constraints) {
  * @param {Joi.ObjectSchema} schema
  * @returns {*}
  */
-function validateBySchema(object, schema){
-    let result = schema.validate(object, { allowUnknown:true, abortEarly:false, errors: { wrap: { label:"'" } } });
+function validateBySchema(object, schema) {
+	let result = schema.validate(object, { allowUnknown: true, abortEarly: false, errors: { wrap: { label: "'" } } });
 
-    if(result.error){
-        return new Error(result.error.message);
-    }
+	if (result.error) {
+		return new Error(result.error.message);
+	}
 }

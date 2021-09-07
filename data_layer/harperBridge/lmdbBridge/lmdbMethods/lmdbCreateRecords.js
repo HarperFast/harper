@@ -11,7 +11,7 @@ const path = require('path');
 const logger = require('../../../../utility/logging/harper_logger');
 
 const lmdb_check_new_attributes = require('../lmdbUtility/lmdbCheckForNewAttributes');
-const {getBaseSchemaPath} = require('../lmdbUtility/initializePaths');
+const { getBaseSchemaPath } = require('../lmdbUtility/initializePaths');
 const write_transaction = require('../lmdbUtility/lmdbWriteTransaction');
 
 module.exports = lmdbCreateRecords;
@@ -23,40 +23,46 @@ module.exports = lmdbCreateRecords;
  * @returns {Promise<{skipped_hashes: *, written_hashes: *, schema_table: *}>}
  */
 async function lmdbCreateRecords(insert_obj) {
-    try {
-        let { schema_table, attributes } = insertUpdateValidate(insert_obj);
+	try {
+		let { schema_table, attributes } = insertUpdateValidate(insert_obj);
 
-        lmdbProcessRows(insert_obj, attributes, schema_table.hash_attribute);
+		lmdbProcessRows(insert_obj, attributes, schema_table.hash_attribute);
 
-        if (insert_obj.schema !== hdb_terms.SYSTEM_SCHEMA_NAME) {
-            if (!attributes.includes(hdb_terms.TIME_STAMP_NAMES_ENUM.CREATED_TIME)) {
-                attributes.push(hdb_terms.TIME_STAMP_NAMES_ENUM.CREATED_TIME);
-            }
+		if (insert_obj.schema !== hdb_terms.SYSTEM_SCHEMA_NAME) {
+			if (!attributes.includes(hdb_terms.TIME_STAMP_NAMES_ENUM.CREATED_TIME)) {
+				attributes.push(hdb_terms.TIME_STAMP_NAMES_ENUM.CREATED_TIME);
+			}
 
-            if (!attributes.includes(hdb_terms.TIME_STAMP_NAMES_ENUM.UPDATED_TIME)) {
-                attributes.push(hdb_terms.TIME_STAMP_NAMES_ENUM.UPDATED_TIME);
-            }
-        }
+			if (!attributes.includes(hdb_terms.TIME_STAMP_NAMES_ENUM.UPDATED_TIME)) {
+				attributes.push(hdb_terms.TIME_STAMP_NAMES_ENUM.UPDATED_TIME);
+			}
+		}
 
-        let new_attributes = await lmdb_check_new_attributes(insert_obj.hdb_auth_header, schema_table, attributes);
-        let env_base_path = path.join(getBaseSchemaPath(), insert_obj.schema.toString());
-        let environment = await environment_utility.openEnvironment(env_base_path, insert_obj.table);
-        let lmdb_response = await lmdb_insert_records(environment, schema_table.hash_attribute, attributes, insert_obj.records, insert_obj[hdb_terms.CLUSTERING_FLAG] !== true);
+		let new_attributes = await lmdb_check_new_attributes(insert_obj.hdb_auth_header, schema_table, attributes);
+		let env_base_path = path.join(getBaseSchemaPath(), insert_obj.schema.toString());
+		let environment = await environment_utility.openEnvironment(env_base_path, insert_obj.table);
+		let lmdb_response = await lmdb_insert_records(
+			environment,
+			schema_table.hash_attribute,
+			attributes,
+			insert_obj.records,
+			insert_obj[hdb_terms.CLUSTERING_FLAG] !== true
+		);
 
-        try {
-            await write_transaction(insert_obj, lmdb_response);
-        }catch(e){
-            logger.error(`unable to write transaction due to ${e.message}`);
-        }
+		try {
+			await write_transaction(insert_obj, lmdb_response);
+		} catch (e) {
+			logger.error(`unable to write transaction due to ${e.message}`);
+		}
 
-        return {
-            written_hashes: lmdb_response.written_hashes,
-            skipped_hashes: lmdb_response.skipped_hashes,
-            schema_table,
-            new_attributes,
-            txn_time: lmdb_response.txn_time
-        };
-    } catch(err) {
-        throw err;
-    }
+		return {
+			written_hashes: lmdb_response.written_hashes,
+			skipped_hashes: lmdb_response.skipped_hashes,
+			schema_table,
+			new_attributes,
+			txn_time: lmdb_response.txn_time,
+		};
+	} catch (err) {
+		throw err;
+	}
 }
