@@ -20,6 +20,7 @@ const request_time_plugin = require('../serverHelpers/requestTimePlugin');
 const guidePath = require('path');
 
 const global_schema = require('../../utility/globalSchema');
+const common_utils = require('../../utility/common_utils');
 const user_schema = require('../../security/user');
 const hdb_license = require('../../utility/registration/hdb_license');
 const ipc_server_handlers = require('../ipc/serverHandlers');
@@ -162,13 +163,26 @@ function buildServer(is_https) {
 	//Register security headers for Fastify instance - https://helmetjs.github.io/
 	app.register(fastify_helmet);
 
+	app.register(function (instance, options, done) {
+		instance.setNotFoundHandler(function (request, reply) {
+			reply.code(404).send({ error: 'Not Found', statusCode: 404 });
+		});
+		done();
+	});
+
 	app.register(request_time_plugin);
 
 	// This handles all get requests for the studio
 	app.register(fastify_compress);
 	app.register(fastify_static, { root: guidePath.join(__dirname, '../../docs') });
+
+	let studio_on = env.get(terms.HDB_SETTINGS_NAMES.LOCAL_STUDIO_ON);
 	app.get('/', function (req, res) {
-		return res.sendFile('index.html');
+		//if the local studio is enabled we will serve it, otherwise return 404
+		if (!common_utils.isEmpty(studio_on) && studio_on.toString().toLowerCase() === 'true') {
+			return res.sendFile('index.html');
+		}
+		return res.callNotFound();
 	});
 
 	// This handles all POST requests

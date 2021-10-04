@@ -25,6 +25,7 @@ const hdbInfoController = require('../data_layer/hdbInfoController');
 const SYSTEM_SCHEMA = require('../json/systemSchema.json');
 const schema_describe = require('../data_layer/schemaDescribe');
 const lmdb_create_txn_environment = require('../data_layer/harperBridge/lmdbBridge/lmdbUtility/lmdbCreateTransactionsEnvironment');
+const bin_utility = require('./utility');
 
 const CreateTableObject = require('../data_layer/CreateTableObject');
 
@@ -60,6 +61,7 @@ async function run() {
 			}
 		}
 
+		bin_utility.changeSettingsFile();
 		env.initSync();
 
 		// Check to see if an upgrade is needed based on existing hdb_info data.  If so, we need to force the user to upgrade

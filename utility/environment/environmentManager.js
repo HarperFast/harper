@@ -354,10 +354,17 @@ function initSync() {
 
 function initTestEnvironment(test_config_obj = {}) {
 	try {
-		const { keep_alive_timeout, headers_timeout, server_timeout, https_enabled, cors_enabled, cors_whitelist } =
-			test_config_obj;
+		const {
+			keep_alive_timeout,
+			headers_timeout,
+			server_timeout,
+			https_enabled,
+			cors_enabled,
+			cors_whitelist,
+			local_studio_on,
+		} = test_config_obj;
 		let props_path = process.cwd();
-		props_path = path.join(props_path, '../', 'unitTests');
+		props_path = path.join(__dirname, '../../', 'unitTests');
 		setPropsFilePath(`${props_path}/hdb_boot_properties.file`);
 		setProperty(hdb_terms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY, `${props_path}/settings.test`);
 		setProperty(hdb_terms.HDB_SETTINGS_NAMES.INSTALL_USER, os.userInfo().username);
@@ -387,6 +394,10 @@ function initTestEnvironment(test_config_obj = {}) {
 			hdb_terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY,
 			path.resolve(__dirname, '../../unitTests/server/customFunctions/custom_functions')
 		);
+		setProperty(
+			hdb_terms.HDB_SETTINGS_NAMES.LOCAL_STUDIO_ON,
+			common_utils.isEmpty(local_studio_on) ? false : local_studio_on
+		);
 		if (cors_whitelist) {
 			setProperty(hdb_terms.HDB_SETTINGS_NAMES.CORS_WHITELIST_KEY, cors_whitelist);
 		}
@@ -399,6 +410,7 @@ function initTestEnvironment(test_config_obj = {}) {
 		if (headers_timeout) {
 			setProperty(hdb_terms.HDB_SETTINGS_NAMES.SERVER_HEADERS_TIMEOUT_KEY, headers_timeout);
 		}
+		initialized = true;
 	} catch (err) {
 		let msg = `Error reading in HDB environment variables from path ${BOOT_PROPS_FILE_PATH}.  Please check your boot props and settings files`;
 		log.fatal(msg);

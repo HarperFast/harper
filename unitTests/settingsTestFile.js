@@ -70,11 +70,16 @@ const SETTINGS = (settings_values = {}) => (
 module.exports = {
     buildFile,
     deleteFile,
-    getSettingsFilePath
+    getSettingsFilePath,
+    getSettingsFileBakPath
 };
 
 function getSettingsFilePath() {
     return TEST_SETTINGS_FILE_PATH;
+}
+
+function getSettingsFileBakPath() {
+    return `${__dirname}/${TEST_SETTINGS_FILE_BAK}`;
 }
 
 function buildFile(settings_values = {}) {

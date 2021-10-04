@@ -681,7 +681,9 @@ function createSettingsFile(mount_status, callback) {
 			`${HDB_SETTINGS_NAMES.MAX_CLUSTERING_PROCESSES} = ${generateSettingsValue(
 				ARGS,
 				HDB_SETTINGS_NAMES.MAX_CLUSTERING_PROCESSES
-			)}\n`;
+			)}\n` +
+			`   ;Enable the route which allows for accessing the Studio from this instance of HarperDB (true) or not (false)\n` +
+			`${HDB_SETTINGS_NAMES.LOCAL_STUDIO_ON} = ${generateSettingsValue(ARGS, HDB_SETTINGS_NAMES.LOCAL_STUDIO_ON)}\n`;
 		install_logger.info('info', `hdb_props_value ${JSON.stringify(hdb_props_value)}`);
 		install_logger.info('info', `settings path: ${env.get('settings_path')}`);
 		try {

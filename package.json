@@ -1,6 +1,6 @@
 {
   "name": "harperdb",
-  "version": "3.1.0",
+  "version": "3.1.1",
   "description": "HarperDB no-SQL SQL database written in node.js",
   "keywords": [
     "database",
@@ -96,7 +96,7 @@
     "pino": "^6.11.2",
     "pm2": "^5.1.0",
     "prompt": "^1.1.0",
-    "properties-reader": "0.0.15",
+    "properties-reader": "^2.2.0",
     "recursive-iterator": "^3.3.0",
     "socketcluster": "^14.4.2",
     "socketcluster-client": "^14.2.2",

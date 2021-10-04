@@ -7,6 +7,8 @@ const pm2_utils = require('../utility/pm2/utilityFunctions');
 const env_mngr = require('../utility/environment/environmentManager');
 const minimist = require('minimist');
 const { handleHDBError, hdb_errors } = require('../utility/errors/hdbError');
+const bin_utility = require('./utility');
+const env = require('../utility/environment/environmentManager');
 const { HTTP_STATUS_CODES } = hdb_errors;
 
 const RESTART_RESPONSE = `Restarting HarperDB. This may take up to ${hdb_terms.RESTART_TIMEOUT_MS / 1000} seconds.`;
@@ -26,6 +28,9 @@ module.exports = {
  */
 async function restartProcesses() {
 	try {
+		bin_utility.changeSettingsFile();
+		env.initSync();
+
 		const { clustering_enabled, custom_func_enabled } = checkEnvSettings();
 		// Restart can be called with a --service argument which allows designated services to be restarted.
 		const cmd_args = minimist(process.argv);

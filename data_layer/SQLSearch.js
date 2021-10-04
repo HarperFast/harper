@@ -358,7 +358,7 @@ class SQLSearch {
 			}
 
 			if (!col.aggregatorid && col.funcid && col.args) {
-				col.as_orig = col.as ? col.as : col.toString();
+				col.as_orig = col.as ? col.as : col.toString().replace(/'/g, '"');
 				col.as = `[${col.as_orig}]`;
 			}
 
@@ -444,7 +444,8 @@ class SQLSearch {
 		) {
 			//this scenario is reached by doing a select with only calculations
 			try {
-				results = await alasql.promise(this.statement.toString());
+				let sql = this._buildSQL(false);
+				results = await alasql.promise(sql);
 			} catch (e) {
 				log.error('Error thrown from AlaSQL in SQLSearch class method checkEmptySQL.');
 				log.error(e);
@@ -1250,7 +1251,7 @@ class SQLSearch {
 	 * @returns {string}
 	 * @private
 	 */
-	_buildSQL() {
+	_buildSQL(call_convert_to_indexes = true) {
 		let sql = this.statement.toString();
 
 		this.statement.columns.forEach((column) => {
@@ -1260,7 +1261,11 @@ class SQLSearch {
 			}
 		});
 
-		return this._convertColumnsToIndexes(sql, this.tables);
+		if (call_convert_to_indexes === true) {
+			return this._convertColumnsToIndexes(sql, this.tables);
+		}
+
+		return sql;
 	}
 
 	/**

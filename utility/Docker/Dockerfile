@@ -1,45 +1,55 @@
-FROM node:12.16.2-alpine
+FROM ubuntu:20.04
+ARG NVM_VERSION
+ARG NODE_VERSION
+ARG HARPERDB_TARBALL
 
-#Expose harperdb Default ports
-EXPOSE 9925 1111 31283
+#Expose HarperDB port
+EXPOSE 9925
 
-#Installing pre-req.
-RUN apk update && apk upgrade && apk add --no-cache bash && apk add --no-cache g++ && \
-   apk add --no-cache make && apk add --no-cache python && apk add --no-cache rsync && apk add --no-cache tini
-   
-#COPY harperdb INIT script
-COPY --chown=node:node ./hdb_docker_init.sh /usr/local/bin/
+#Install prerequisites
+RUN apt-get update  && apt-get install -y curl g++ make python3 tini
 
-#REMOVE after NPM UPDATED also remove file mv at line 26
-ADD --chown=node:node ./docs.tar /home/node/
+#Create non-root user
+RUN adduser --home /home/ubuntu --gecos "" --shell /bin/bash --disabled-password ubuntu
 
-#COPY entrypoint.sh
-COPY --chown=node:node ./entrypoint.sh /usr/local/bin/
+#Copy HarperDB tarball
+COPY --chown=ubuntu:ubuntu ./$HARPERDB_TARBALL /home/ubuntu/
 
-#Install harperdb and clean up un needed bulk
-RUN npm config set unsafe-perm true && cd /usr/local/bin/ && \
-  if [ $(arch) = "x86_64" ]; then npm install -g harperdb;arch="harperdb"; else npm install -g harperdb-32;arch="harperdb-32"; fi && \
-  npm install -g modclean && cd /usr/local/lib/node_modules/$arch && npm dedupe && modclean -r -D node_modules && \
-  npm remove -g modclean && rm -rf /usr/local/lib/node_modules/$arch/node_modules/socketcluster/sample/ && \
-  npm cache clean --force && \
-  mkdir -p /opt/harperdb/hdb && chown -R node:node /opt/harperdb/hdb && chown -R node:node /usr/local/lib/node_modules/$arch && \
-  rm -rf /usr/local/lib/node_modules/$arch/docs && mv /home/node/docs /usr/local/lib/node_modules/$arch/
+#Create installation directory, .harperdb directory and hdb_boot_properties.file
+RUN mkdir -p /opt/harperdb/hdb && chown -R ubuntu:ubuntu /opt/harperdb/hdb && \
+  mkdir /home/ubuntu/.harperdb && touch /home/ubuntu/.harperdb/hdb_boot_properties.file && \
+  echo 'settings_path = /opt/harperdb/hdb/config/settings.js\ninstall_user = ubuntu' > /home/ubuntu/.harperdb/hdb_boot_properties.file && \
+  chown -R ubuntu:ubuntu /home/ubuntu/.harperdb
 
-USER node
+#Set the user for the below instructions
+USER ubuntu
 
-#Install harperdb and move to tmp directory for docker bind-mount updates
-RUN mkdir /home/node/hdb_tmp && /usr/local/bin/harperdb install --TC_AGREEMENT yes --HDB_ROOT /opt/harperdb/hdb --HTTP_PORT 9925 --HTTPS_PORT 31283 --HDB_ADMIN_USERNAME HDB_ADMIN --HDB_ADMIN_PASSWORD password --CLUSTERING_USERNAME cluster_user --CLUSTERING_PASSWORD password --CLUSTERING_PORT 1111 --NODE_NAME docker_node && \
-   rsync -r /opt/harperdb/hdb/* /home/node/hdb_tmp/ &&  rm -rf /opt/harperdb/hdb/*
+#Set HarperDB installation parameters
+ENV TC_AGREEMENT=yes
+ENV HDB_ROOT=/opt/harperdb/hdb
+ENV SERVER_PORT=9925
+ENV HDB_ADMIN_USERNAME=HDB_ADMIN
+ENV HDB_ADMIN_PASSWORD=password
+ENV LOG_TO_STDSTREAMS=true
+ENV RUN_IN_FOREGROUND=true
 
-#Expose container directory to be mountable onto host directory
+#Install nvm, Node.js, and HarperDB
+ENV NVM_DIR=/home/ubuntu/.nvm
+ENV PATH=/home/ubuntu/.nvm/versions/node/v$NODE_VERSION/bin:$PATH
+RUN curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v$NVM_VERSION/install.sh | bash \
+    && . $NVM_DIR/nvm.sh \
+    && nvm install $NODE_VERSION \
+    && cd /home/ubuntu/ \
+    && npm install -g $HARPERDB_TARBALL
+
+#Create mount point
 VOLUME /opt/harperdb/hdb
 
-#When login ssh the container will do all commands relative to this directory
-WORKDIR /home/node/
+#Set the  working directory for the below instructions
+WORKDIR /home/ubuntu/
 
-#entrypoint script to handle env arg and cmd args.
-ENTRYPOINT ["/sbin/tini","--","entrypoint.sh"]
+#Execute Tini when container starts
+ENTRYPOINT ["tini","--"]
 
-#default command when, docker run <image name> with no other arguments.
-CMD ["/usr/local/bin/hdb_docker_init.sh"]
-
+#If no arguments are passed to docker run, Tini will execute HarperDB
+CMD ["harperdb"]
