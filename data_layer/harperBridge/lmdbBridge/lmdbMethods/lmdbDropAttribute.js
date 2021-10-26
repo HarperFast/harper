@@ -56,12 +56,21 @@ async function lmdbDropAttribute(drop_attribute_obj, remove_data = true) {
  */
 async function removeAttributeFromAllObjects(drop_attribute_obj, env, hash_attribute) {
 	try {
+		//get reference to hash attribute index (dbi)
 		let dbi = environment_utility.openDBI(env, hash_attribute);
+
+		//declare just one promise for the bulk write, read the await below
 		let promise;
+		//iterate the entire hash attribute index to remove the dropped attribute and update the entry
 		for (let { key, value } of dbi.getRange()) {
+			//delete the attribute being dropped from the record
 			delete value[drop_attribute_obj.attribute];
-			promise = env.dbis[hash_attribute].put(key, value);
+
+			//WE MUST ALWAYS SET THE VERSION TO 1 (when update / delete occurs we always assume the version is 1 if it is not set the update /delte will fail),
+			// this saves the updated entry back into the index.
+			promise = env.dbis[hash_attribute].put(key, value, 1);
 		}
+		//since lmdb processes all promised writes in order we only need to wait for the last promise to execute to know all the previous ones have also finished
 		await promise;
 	} catch (e) {
 		throw e;
