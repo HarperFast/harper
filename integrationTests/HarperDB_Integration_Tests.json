@@ -11181,6 +11181,906 @@
 					]
 				},
 				{
+					"name": "SQL Update dev.cat",
+					"item": [
+						{
+							"name": "Create table dev.cat for Update",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"Tests successfully created table\", () => {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData.message).to.eql(\"table 'dev.cat' successfully created.\");",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "admin",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "Abc1234!",
+											"type": "string"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\t\"operation\":\"create_table\",\n\t\"schema\":\"dev\",\n\t\"table\":\"cat\",\n\t\"hash_attribute\": \"id\"\n}",
+									"options": {
+										"raw": {
+											"language": "json"
+										}
+									}
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "Insert data into dev.cat",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"inserted 9 records\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData.message).to.eql(\"inserted 9 of 9 records\");",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "admin",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "Abc1234!",
+											"type": "string"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n    \"operation\":\"insert\",\n    \"schema\" :  \"dev\",\n    \"table\":\"cat\",\n\t\"records\": [\n    {\n        \"id\": 1,\n        \"weight_lbs\": 8,\n        \"cat_name\": \"Sophie\",\n        \"age\": 21,\n        \"adorable\": true,\n        \"outdoor_privilages\": null,\n        \"owner_id\": 2\n    },\n    {\n        \"id\": 2,\n        \"weight_lbs\": 12,\n        \"cat_name\": \"George\",\n        \"age\": 11,\n        \"adorable\": true,\n        \"outdoor_privilages\": null,\n        \"owner_id\": 2\n    },\n    {\n        \"id\": 3,\n        \"weight_lbs\": 20,\n        \"cat_name\": \"Biggie Paws\",\n        \"age\": 5,\n        \"adorable\": true,\n        \"outdoor_privilages\": null,\n        \"owner_id\": 4\n    },\n    {\n        \"id\": 4,\n        \"weight_lbs\": 6,\n        \"cat_name\": \"Willow\",\n        \"age\": 4,\n        \"adorable\": true,\n        \"outdoor_privilages\": null,\n        \"owner_id\": 1\n    },\n    {\n        \"id\": 5,\n        \"weight_lbs\": 15,\n        \"cat_name\": \"Bird\",\n        \"age\": 6,\n        \"adorable\": true,\n        \"outdoor_privilages\": null,\n        \"owner_id\": 2\n    },\n    {\n        \"id\": 6,\n        \"weight_lbs\": 8,\n        \"cat_name\": \"Murph\",\n        \"age\": 4,\n        \"adorable\": true,\n        \"outdoor_privilages\": null,\n        \"owner_id\": 3\n    },\n    {\n        \"id\": 7,\n        \"weight_lbs\": 16,\n        \"cat_name\": \"Simba\",\n        \"age\": 1,\n        \"adorable\": true,\n        \"outdoor_privilages\": null,\n        \"owner_id\": 4\n    },\n    {\n        \"id\": 8,\n        \"weight_lbs\": 12,\n        \"cat_name\": \"Gemma\",\n        \"age\": 3,\n        \"adorable\": true,\n        \"outdoor_privilages\": null,\n        \"owner_id\": 1\n    },\n    {\n        \"id\": 9,\n        \"weight_lbs\": 10,\n        \"cat_name\": \"Bob\",\n        \"age\": 8,\n        \"adorable\": true,\n        \"outdoor_privilages\": null\n    }\n]\n}",
+									"options": {
+										"raw": {
+											"language": "json"
+										}
+									}
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "Update record basic where dev.cat",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"SQL update successful response\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData.message).to.eql(\"updated 1 of 1 records\");",
+											"    pm.expect(jsonData.update_hashes[0]).to.eql(9);",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "admin",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "Abc1234!",
+											"type": "string"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"operation\":\"sql\",\n  \"sql\": \"UPDATE dev.cat SET cat_name = 'Bobby' WHERE id = 9\"\n}",
+									"options": {
+										"raw": {
+											"language": "json"
+										}
+									}
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "Confirm update record basic where dev.cat",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"SQL update value exists\", function () {",
+											"    const jsonData = pm.response.json()[0];",
+											"    ",
+											"    pm.expect(jsonData.id).equals(9);",
+											"    pm.expect(jsonData.weight_lbs).equals(10);",
+											"    pm.expect(jsonData.cat_name).to.eql(\"Bobby\");",
+											"    pm.expect(jsonData.age).equals(8);",
+											"});",
+											"    "
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "admin",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "Abc1234!",
+											"type": "string"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"operation\":\"sql\",\n  \"sql\": \"SELECT cat_name, weight_lbs, age, id FROM dev.cat WHERE id = 9\"\n}",
+									"options": {
+										"raw": {
+											"language": "json"
+										}
+									}
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "Update record \"where x != y\" dev.cat",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"SQL update successful reponse\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData.message).to.eql(\"updated 5 of 5 records\");",
+											"    pm.expect(jsonData.update_hashes).to.contain(3,4,6,7,8);",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "admin",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "Abc1234!",
+											"type": "string"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"operation\":\"sql\",\n  \"sql\": \"UPDATE dev.cat SET adorable = false WHERE owner_id != 2\"\n}",
+									"options": {
+										"raw": {
+											"language": "json"
+										}
+									}
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "Confirm update record \"where x != y\" dev.cat",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"SQL update value exists\", function () {",
+											"    const jsonData = pm.response.json();",
+											"    pm.expect(jsonData.length).to.equal(5)",
+											"",
+											"   jsonData.forEach(obj => {",
+											"        pm.expect(Object.keys(obj).length).equals(3)",
+											"        pm.expect(obj.adorable).to.equal(false)",
+											"        pm.expect(obj.cat_name).to.be.oneOf([\"Biggie Paws\", \"Willow\", \"Murph\", \"Simba\", \"Gemma\"])",
+											"        pm.expect(obj.id).to.be.oneOf([3,4,6,7,8])",
+											"    })",
+											"});",
+											"    "
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "admin",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "Abc1234!",
+											"type": "string"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"operation\":\"sql\",\n  \"sql\": \"SELECT cat_name, adorable, id FROM dev.cat WHERE owner_id != 2\"\n}",
+									"options": {
+										"raw": {
+											"language": "json"
+										}
+									}
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "Update record No where dev.cat",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"SQL update successful reponse\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData.message).to.eql(\"updated 9 of 9 records\");",
+											"    pm.expect(jsonData.update_hashes).to.contain(1,2,3,4,5,6,7,8,9);",
+											"    pm.expect(jsonData.skipped_hashes).to.eql([]);",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "admin",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "Abc1234!",
+											"type": "string"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"operation\":\"sql\",\n  \"sql\": \"UPDATE dev.cat SET adorable = true\"\n}",
+									"options": {
+										"raw": {
+											"language": "json"
+										}
+									}
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "Confirm update record No where dev.cat",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"SQL updated all records in dev.cat\", function () {",
+											"    const jsonData = pm.response.json();",
+											"    ",
+											"    pm.expect(jsonData.length).equals(9);",
+											"",
+											"    jsonData.forEach(obj => {",
+											"        pm.expect(Object.keys(obj).length).equals(3)",
+											"        pm.expect(obj.adorable).to.equal(true)",
+											"        pm.expect(obj.cat_name).to.be.oneOf([\"Sophie\", \"George\", \"Biggie Paws\", \"Willow\", \"Bird\", \"Murph\", \"Simba\", \"Gemma\", \"Bobby\"])",
+											"        pm.expect(obj.id).to.be.oneOf([1,2,3,4,5,6,7,8,9])",
+											"    })",
+											"});",
+											"    "
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "admin",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "Abc1234!",
+											"type": "string"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"operation\":\"sql\",\n  \"sql\": \"SELECT cat_name, adorable, id FROM dev.cat\"\n}",
+									"options": {
+										"raw": {
+											"language": "json"
+										}
+									}
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "Update record multiple wheres, multiple columns dev.cat",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"SQL update successful response\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData.message).to.eql(\"updated 1 of 1 records\");",
+											"    pm.expect(jsonData.update_hashes[0]).to.eql(1);",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "admin",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "Abc1234!",
+											"type": "string"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"operation\":\"sql\",\n  \"sql\": \"UPDATE dev.cat SET outdoor_privilages = false, weight_lbs = 6 WHERE owner_id = 2 AND cat_name = 'Sophie'\"\n}",
+									"options": {
+										"raw": {
+											"language": "json"
+										}
+									}
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "Confirm update record multiple wheres, multiple columns dev.cat",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"SQL update value exists\", function () {",
+											"    const jsonData = pm.response.json()[0];",
+											"    ",
+											"    pm.expect(jsonData.id).equals(1);",
+											"    pm.expect(jsonData.weight_lbs).equals(6);",
+											"    pm.expect(jsonData.cat_name).to.eql(\"Sophie\");",
+											"    pm.expect(jsonData.owner_id).equals(2);",
+											"    pm.expect(jsonData.outdoor_privilages).equals(false);",
+											"    ",
+											"});",
+											"    "
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "admin",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "Abc1234!",
+											"type": "string"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"operation\":\"sql\",\n  \"sql\": \"SELECT cat_name, weight_lbs, owner_id, outdoor_privilages, id FROM dev.cat WHERE owner_id = 2 AND cat_name = 'Sophie'\"\n}",
+									"options": {
+										"raw": {
+											"language": "json"
+										}
+									}
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "Update record \"where x is NULL\" dev.cat",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"SQL update successful response\", function () {",
+											"    var jsonData = pm.response.json();",
+											"",
+											"    pm.expect(jsonData.message).to.eql(\"updated 8 of 8 records\");",
+											"    pm.expect(jsonData.update_hashes).to.contain(2,3,4,5,6,7,8,9);",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "admin",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "Abc1234!",
+											"type": "string"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"operation\":\"sql\",\n  \"sql\": \"UPDATE dev.cat SET outdoor_privilages = true WHERE outdoor_privilages IS null\"\n}",
+									"options": {
+										"raw": {
+											"language": "json"
+										}
+									}
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "Confirm update record \"where x is NULL\" dev.cat",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"SQL update null values no longer exist\", function () {",
+											"    const jsonData = pm.response.json();",
+											"    ",
+											"    pm.expect(jsonData).to.eql([]);",
+											"});",
+											"    "
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "admin",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "Abc1234!",
+											"type": "string"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"operation\":\"sql\",\n  \"sql\": \"SELECT cat_name, outdoor_privilages, id FROM dev.cat WHERE outdoor_privilages IS null\"\n}",
+									"options": {
+										"raw": {
+											"language": "json"
+										}
+									}
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "Update record with nonexistant id dev.cat",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"SQL update unsuccessful response\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData.message).to.eql(\"updated 0 of 0 records\");",
+											"    pm.expect(jsonData.update_hashes).to.eql([]);",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "admin",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "Abc1234!",
+											"type": "string"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"operation\":\"sql\",\n  \"sql\": \"UPDATE dev.cat SET cat_name = 'Garfield' WHERE id = 75\"\n}",
+									"options": {
+										"raw": {
+											"language": "json"
+										}
+									}
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "Confirm update record with nonexistant id dev.cat",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"SQL update with nonexistant value returns empty array\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData).to.eql([]);",
+											"    ",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "admin",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "Abc1234!",
+											"type": "string"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"operation\":\"sql\",\n  \"sql\": \"SELECT cat_name, weight_lbs, age FROM dev.cat WHERE id = 75\"\n}",
+									"options": {
+										"raw": {
+											"language": "json"
+										}
+									}
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "Drop table cat from dev.cat",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"pm.test(\"Status code is 200\", () => {",
+											"  pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"Tests successfully deleted table\", () => {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData.message).to.eql(\"successfully deleted table 'dev.cat'\");",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "admin",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "Abc1234!",
+											"type": "string"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n     \"operation\": \"drop_table\",\n     \"schema\": \"dev\",\n     \"table\": \"cat\"\n}",
+									"options": {
+										"raw": {
+											"language": "json"
+										}
+									}
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						}
+					]
+				},
+				{
 					"name": "insert value into table",
 					"event": [
 						{
