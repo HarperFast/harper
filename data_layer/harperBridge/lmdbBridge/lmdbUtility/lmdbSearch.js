@@ -17,8 +17,6 @@ const WILDCARDS = hdb_terms.SEARCH_WILDCARDS;
 
 const LMDB_THREAD_SEARCH_MODULE_PATH = path.join(__dirname, 'lmdbThreadSearch');
 
-const DBI_ENTRY_COUNT_LIMIT = 1000000;
-
 /**
  * gets the search_type & based on the size of the dbi being searched will either perform an in process search or launch a new process to perform a search
  * @param {SearchObject} search_object
@@ -36,21 +34,7 @@ async function prepSearch(search_object, comparator, return_map) {
 
 	let search_type = createSearchTypeFromSearchObject(search_object, table_info.hash_attribute, return_map, comparator);
 
-	let schema_path = path.join(getBaseSchemaPath(), search_object.schema.toString());
-	let env = await environment_utility.openEnvironment(schema_path, search_object.table);
-	let stat = environment_utility.statDBI(env, search_object.search_attribute);
-	let results;
-
-	if (
-		(search_type === lmdb_terms.SEARCH_TYPES.SEARCH_ALL || search_type === lmdb_terms.SEARCH_TYPES.SEARCH_ALL_TO_MAP) &&
-		stat.entryCount > DBI_ENTRY_COUNT_LIMIT
-	) {
-		results = await threadSearch(search_object, search_type, table_info.hash_attribute, return_map);
-	} else {
-		results = await executeSearch(search_object, search_type, table_info.hash_attribute, return_map);
-	}
-
-	return results;
+	return await executeSearch(search_object, search_type, table_info.hash_attribute, return_map);
 }
 
 /**
