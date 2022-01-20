@@ -11,7 +11,7 @@ const hdb_utils = require('../common_utils');
 const hdb_terms = require('../hdbTerms');
 const cursor_functions = require('./searchCursorFunctions');
 // eslint-disable-next-line no-unused-vars
-const lmdb = require('lmdb-store');
+const lmdb = require('lmdb');
 
 /** UTILITY CURSOR FUNCTIONS **/
 
@@ -47,7 +47,7 @@ function iterateFullIndex(
 	}
 
 	try {
-		for (let { key, value } of dbi.getRange({ limit: limit, offset: offset, reverse: reverse })) {
+		for (let { key, value } of dbi.getRange({ start: false, limit: limit, offset: offset, reverse: reverse })) {
 			eval_function(key, value, results, hash_attribute, attribute);
 		}
 		return results;
@@ -220,7 +220,7 @@ function searchAll(env, hash_attribute, fetch_attributes, reverse = false, limit
 	let dbi = environment_utility.openDBI(env, hash_attribute);
 
 	try {
-		for (let { key, value } of dbi.getRange({ limit: limit, offset: offset, reverse: reverse })) {
+		for (let { key, value } of dbi.getRange({ start: false, limit: limit, offset: offset, reverse: reverse })) {
 			cursor_functions.searchAll(fetch_attributes, key, value, results);
 		}
 		return results;

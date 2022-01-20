@@ -62,7 +62,7 @@ async function removeAttributeFromAllObjects(drop_attribute_obj, env, hash_attri
 		//declare just one promise for the bulk write, read the await below
 		let promise;
 		//iterate the entire hash attribute index to remove the dropped attribute and update the entry
-		for (let { key, value } of dbi.getRange()) {
+		for (let { key, value } of dbi.getRange({ start: false })) {
 			//delete the attribute being dropped from the record
 			delete value[drop_attribute_obj.attribute];
 

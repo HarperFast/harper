@@ -1,6 +1,6 @@
 'use strict';
 
-const lmdb = require('lmdb-store');
+const lmdb = require('lmdb');
 const fs = require('fs-extra');
 const path = require('path');
 const common = require('./commonUtility');
@@ -289,7 +289,7 @@ function listDBIDefinitions(env) {
 		let dbis = Object.create(null);
 
 		let dbi = openDBI(env, INTERNAL_DBIS_NAME);
-		for (let { key, value } of dbi.getRange({})) {
+		for (let { key, value } of dbi.getRange({ start: false })) {
 			if (key !== INTERNAL_DBIS_NAME) {
 				try {
 					dbis[key] = Object.assign(new DBIDefinition(), value);
@@ -317,7 +317,7 @@ function listDBIs(env) {
 
 		let dbi = openDBI(env, INTERNAL_DBIS_NAME);
 
-		for (let { key } of dbi.getRange({})) {
+		for (let { key } of dbi.getRange({ start: false })) {
 			if (key !== INTERNAL_DBIS_NAME) {
 				dbis.push(key);
 			}

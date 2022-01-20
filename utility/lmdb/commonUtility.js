@@ -2,7 +2,7 @@
 
 const LMDB_ERRORS = require('../errors/commonErrors').LMDB_ERRORS_ENUM;
 // eslint-disable-next-line no-unused-vars
-const lmdb = require('lmdb-store');
+const lmdb = require('lmdb');
 const lmdb_terms = require('./terms');
 const Buffer = require('buffer').Buffer;
 const microtime = require('microtime');

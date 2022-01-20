@@ -11,7 +11,7 @@ const hdb_terms = require('../hdbTerms');
 const hdb_utils = require('../common_utils');
 const uuid = require('uuid');
 // eslint-disable-next-line no-unused-vars
-const lmdb = require('lmdb-store');
+const lmdb = require('lmdb');
 const { handleHDBError, hdb_errors } = require('../errors/hdbError');
 
 const CREATED_TIME_ATTRIBUTE_NAME = hdb_terms.TIME_STAMP_NAMES_ENUM.CREATED_TIME;

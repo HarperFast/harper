@@ -253,7 +253,7 @@ describe('Test deleteUtility', ()=>{
 
 function iterateIndex(env, attribute){
     let records = {};
-    for (let { key, value } of env.dbis[attribute].getRange({ })) {
+    for (let { key, value } of env.dbis[attribute].getRange({ start: false })) {
         if(!records[key]){
             records[key] = [];
         }
