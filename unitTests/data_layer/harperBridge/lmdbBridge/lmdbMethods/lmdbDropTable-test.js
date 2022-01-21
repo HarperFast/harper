@@ -37,308 +37,335 @@ const sandbox = sinon.createSandbox();
 const drop_table_from_system = lmdb_drop_table.__get__('dropTableFromSystem');
 
 const CREATE_SCHEMA_DEV = {
-    operation: 'create_schema',
-    schema: 'dev'
+	operation: 'create_schema',
+	schema: 'dev',
 };
 
 const CREATE_TABLE_OBJ_TEST_A = {
-    operation: 'create_table',
-    schema: 'dev',
-    table: 'test',
-    hash_attribute: 'id'
+	operation: 'create_table',
+	schema: 'dev',
+	table: 'test',
+	hash_attribute: 'id',
 };
 
 const TABLE_SYSTEM_DATA_TEST_A = {
-    name: CREATE_TABLE_OBJ_TEST_A.table,
-    schema: CREATE_TABLE_OBJ_TEST_A.schema,
-    id: '82j3r4',
-    hash_attribute: CREATE_TABLE_OBJ_TEST_A.hash_attribute,
-    residence: '*'
+	name: CREATE_TABLE_OBJ_TEST_A.table,
+	schema: CREATE_TABLE_OBJ_TEST_A.schema,
+	id: '82j3r4',
+	hash_attribute: CREATE_TABLE_OBJ_TEST_A.hash_attribute,
+	residence: '*',
 };
 
 const INSERT_OBJECT_TEST = {
-    operation: "insert",
-    schema: 'dev',
-    table: 'test',
-    records: test_data
+	operation: 'insert',
+	schema: 'dev',
+	table: 'test',
+	records: test_data,
 };
 
-describe('test lmdbDropTable module', ()=>{
-    let date_stub;
-    before(async ()=>{
-        await fs.remove(test_utils.getMockLMDBPath());
-        date_stub = sandbox.stub(Date, 'now').returns(TIMESTAMP);
-    });
+describe('test lmdbDropTable module', () => {
+	let date_stub;
+	before(async () => {
+		await fs.remove(test_utils.getMockLMDBPath());
+		date_stub = sandbox.stub(Date, 'now').returns(TIMESTAMP);
+	});
 
-    after(()=>{
-        date_stub.restore();
-    });
+	after(() => {
+		date_stub.restore();
+	});
 
-    describe('test dropTableFromSystem method', ()=>{
-        let hdb_schema_env;
-        let hdb_table_env;
-        let hdb_attribute_env;
-        before(async () => {
-            global.lmdb_map = undefined;
-            await fs.remove(test_utils.getMockLMDBPath());
-            await fs.mkdirp(SYSTEM_SCHEMA_PATH);
-            await fs.mkdirp(DEV_SCHEMA_PATH);
+	describe('test dropTableFromSystem method', () => {
+		let hdb_schema_env;
+		let hdb_table_env;
+		let hdb_attribute_env;
+		before(async () => {
+			global.lmdb_map = undefined;
+			await fs.remove(test_utils.getMockLMDBPath());
+			await fs.mkdirp(SYSTEM_SCHEMA_PATH);
+			await fs.mkdirp(DEV_SCHEMA_PATH);
 
-            global.hdb_schema = {
-                dev: {
-                    test: {
-                        attributes: [],
-                        hash_attribute: 'id',
-                        schema: 'dev',
-                        name: 'test'
-                    }
-                },
-                system: systemSchema};
+			global.hdb_schema = {
+				dev: {
+					test: {
+						attributes: [],
+						hash_attribute: 'id',
+						schema: 'dev',
+						name: 'test',
+					},
+				},
+				system: systemSchema,
+			};
 
-            hdb_schema_env = await environment_utility.createEnvironment(SYSTEM_SCHEMA_PATH, systemSchema.hdb_schema.name);
-            environment_utility.createDBI(hdb_schema_env, systemSchema.hdb_schema.hash_attribute, false);
+			hdb_schema_env = await environment_utility.createEnvironment(SYSTEM_SCHEMA_PATH, systemSchema.hdb_schema.name);
+			environment_utility.createDBI(hdb_schema_env, systemSchema.hdb_schema.hash_attribute, false, true);
 
-            hdb_table_env = await environment_utility.createEnvironment(SYSTEM_SCHEMA_PATH, systemSchema.hdb_table.name);
-            environment_utility.createDBI(hdb_table_env, systemSchema.hdb_table.hash_attribute, false);
+			hdb_table_env = await environment_utility.createEnvironment(SYSTEM_SCHEMA_PATH, systemSchema.hdb_table.name);
+			environment_utility.createDBI(hdb_table_env, systemSchema.hdb_table.hash_attribute, false, true);
 
-            hdb_attribute_env = await environment_utility.createEnvironment(SYSTEM_SCHEMA_PATH, systemSchema.hdb_attribute.name);
-            environment_utility.createDBI(hdb_attribute_env, systemSchema.hdb_attribute.hash_attribute, false);
+			hdb_attribute_env = await environment_utility.createEnvironment(
+				SYSTEM_SCHEMA_PATH,
+				systemSchema.hdb_attribute.name
+			);
+			environment_utility.createDBI(hdb_attribute_env, systemSchema.hdb_attribute.hash_attribute, false, true);
 
-            await lmdb_create_schema(CREATE_SCHEMA_DEV);
+			await lmdb_create_schema(CREATE_SCHEMA_DEV);
 
-            await lmdb_create_table(TABLE_SYSTEM_DATA_TEST_A, CREATE_TABLE_OBJ_TEST_A);
-            global.hdb_schema.dev.test.attributes = [
-                {attribute:'id'},
-                {attribute:'__updatedtime__'},
-                {attribute:'__createdtime__'}
-            ];
+			await lmdb_create_table(TABLE_SYSTEM_DATA_TEST_A, CREATE_TABLE_OBJ_TEST_A);
+			global.hdb_schema.dev.test.attributes = [
+				{ attribute: 'id' },
+				{ attribute: '__updatedtime__' },
+				{ attribute: '__createdtime__' },
+			];
 
-            await lmdb_create_records(INSERT_OBJECT_TEST);
+			await lmdb_create_records(INSERT_OBJECT_TEST);
 
-            global.hdb_schema.dev.test.attributes = [
-                {attribute:'id'},
-                {attribute:'temperature'},
-                {attribute:'temperature_str'},
-                {attribute:'city'},
-                {attribute:'state'},
-                {attribute:'__updatedtime__'},
-                {attribute:'__createdtime__'}
-            ];
-        });
+			global.hdb_schema.dev.test.attributes = [
+				{ attribute: 'id' },
+				{ attribute: 'temperature' },
+				{ attribute: 'temperature_str' },
+				{ attribute: 'city' },
+				{ attribute: 'state' },
+				{ attribute: '__updatedtime__' },
+				{ attribute: '__createdtime__' },
+			];
+		});
 
-        after(async () => {
-            let env2 = await environment_utility.openEnvironment(path.join(BASE_SCHEMA_PATH, CREATE_TABLE_OBJ_TEST_A.schema), CREATE_TABLE_OBJ_TEST_A.table);
-            env2.close();
+		after(async () => {
+			let env2 = await environment_utility.openEnvironment(
+				path.join(BASE_SCHEMA_PATH, CREATE_TABLE_OBJ_TEST_A.schema),
+				CREATE_TABLE_OBJ_TEST_A.table
+			);
+			await env2.close();
 
-            let txn_env1 = await environment_utility.openEnvironment(path.join(BASE_TXN_PATH, CREATE_TABLE_OBJ_TEST_A.schema), CREATE_TABLE_OBJ_TEST_A.table, true);
-            txn_env1.close();
+			let txn_env1 = await environment_utility.openEnvironment(
+				path.join(BASE_TXN_PATH, CREATE_TABLE_OBJ_TEST_A.schema),
+				CREATE_TABLE_OBJ_TEST_A.table,
+				true
+			);
+			await txn_env1.close();
 
-            hdb_attribute_env.close();
-            hdb_schema_env.close();
-            hdb_table_env.close();
+			await hdb_attribute_env.close();
+			await hdb_schema_env.close();
+			await hdb_table_env.close();
 
-            global.lmdb_map = undefined;
-            await fs.remove(test_utils.getMockLMDBPath());
-        });
+			global.lmdb_map = undefined;
+			await fs.remove(test_utils.getMockLMDBPath());
+		});
 
-        it('test invalid schema', async()=>{
-            let drop_object = new DropAttributeObject('faker', 'test');
-            await test_utils.assertErrorAsync(drop_table_from_system, [drop_object],
-                new Error(`${drop_object.schema}.${drop_object.table} was not found`));
-        });
+		it('test invalid schema', async () => {
+			let drop_object = new DropAttributeObject('faker', 'test');
+			await test_utils.assertErrorAsync(
+				drop_table_from_system,
+				[drop_object],
+				new Error(`${drop_object.schema}.${drop_object.table} was not found`)
+			);
+		});
 
-        it('test invalid table', async()=>{
-            let drop_object = new DropAttributeObject('dev', 'fake');
-            await test_utils.assertErrorAsync(drop_table_from_system, [drop_object],
-                new Error(`${drop_object.schema}.${drop_object.table} was not found`));
-        });
+		it('test invalid table', async () => {
+			let drop_object = new DropAttributeObject('dev', 'fake');
+			await test_utils.assertErrorAsync(
+				drop_table_from_system,
+				[drop_object],
+				new Error(`${drop_object.schema}.${drop_object.table} was not found`)
+			);
+		});
 
-        it('test delete table metadata', async()=>{
-            let search_obj = new SearchObject('system', 'hdb_table', 'name', 'test', undefined, ['*']);
-            let search_table_results = await search_by_value(search_obj);
-            let found_tbl;
-            for(let x = 0; x < search_table_results.length; x++){
-                if(search_table_results[x].schema === 'dev' && search_table_results[x].name === 'test'){
-                    found_tbl = search_table_results[x];
-                }
-            }
-            assert.deepStrictEqual(`${found_tbl.schema}.${found_tbl.name}`, 'dev.test');
+		it('test delete table metadata', async () => {
+			let search_obj = new SearchObject('system', 'hdb_table', 'name', 'test', undefined, ['*']);
+			let search_table_results = await search_by_value(search_obj);
+			let found_tbl;
+			for (let x = 0; x < search_table_results.length; x++) {
+				if (search_table_results[x].schema === 'dev' && search_table_results[x].name === 'test') {
+					found_tbl = search_table_results[x];
+				}
+			}
+			assert.deepStrictEqual(`${found_tbl.schema}.${found_tbl.name}`, 'dev.test');
 
-            let drop_object = new DropAttributeObject('dev', 'test');
-            await test_utils.assertErrorAsync(drop_table_from_system, [drop_object], undefined);
+			let drop_object = new DropAttributeObject('dev', 'test');
+			await test_utils.assertErrorAsync(drop_table_from_system, [drop_object], undefined);
 
-            search_table_results = await search_by_value(search_obj);
-            found_tbl = undefined;
-            for(let x = 0; x < search_table_results.length; x++){
-                if(search_table_results[x].schema === 'dev' && search_table_results[x].name === 'test'){
-                    found_tbl = search_table_results[x];
-                }
-            }
+			search_table_results = await search_by_value(search_obj);
+			found_tbl = undefined;
+			for (let x = 0; x < search_table_results.length; x++) {
+				if (search_table_results[x].schema === 'dev' && search_table_results[x].name === 'test') {
+					found_tbl = search_table_results[x];
+				}
+			}
 
-            assert.deepStrictEqual(found_tbl, undefined);
+			assert.deepStrictEqual(found_tbl, undefined);
+		});
+	});
 
-        });
-    });
+	describe('test lmdbDropTable method', () => {
+		let hdb_schema_env;
+		let hdb_table_env;
+		let hdb_attribute_env;
+		before(async () => {
+			global.lmdb_map = undefined;
+			await fs.remove(test_utils.getMockLMDBPath());
+			await fs.mkdirp(SYSTEM_SCHEMA_PATH);
+			await fs.mkdirp(DEV_SCHEMA_PATH);
 
-    describe('test lmdbDropTable method', ()=>{
-        let hdb_schema_env;
-        let hdb_table_env;
-        let hdb_attribute_env;
-        before(async () => {
-            global.lmdb_map = undefined;
-            await fs.remove(test_utils.getMockLMDBPath());
-            await fs.mkdirp(SYSTEM_SCHEMA_PATH);
-            await fs.mkdirp(DEV_SCHEMA_PATH);
+			global.hdb_schema = {
+				dev: {
+					test: {
+						attributes: [],
+						hash_attribute: 'id',
+						schema: 'dev',
+						name: 'test',
+					},
+				},
+				system: systemSchema,
+			};
 
-            global.hdb_schema = {
-                dev: {
-                    test: {
-                        attributes: [],
-                        hash_attribute: 'id',
-                        schema: 'dev',
-                        name: 'test'
-                    }
-                },
-                system: systemSchema};
+			hdb_schema_env = await environment_utility.createEnvironment(SYSTEM_SCHEMA_PATH, systemSchema.hdb_schema.name);
+			environment_utility.createDBI(hdb_schema_env, systemSchema.hdb_schema.hash_attribute, false, true);
 
-            hdb_schema_env = await environment_utility.createEnvironment(SYSTEM_SCHEMA_PATH, systemSchema.hdb_schema.name);
-            environment_utility.createDBI(hdb_schema_env, systemSchema.hdb_schema.hash_attribute, false);
+			hdb_table_env = await environment_utility.createEnvironment(SYSTEM_SCHEMA_PATH, systemSchema.hdb_table.name);
+			environment_utility.createDBI(hdb_table_env, systemSchema.hdb_table.hash_attribute, false, true);
 
-            hdb_table_env = await environment_utility.createEnvironment(SYSTEM_SCHEMA_PATH, systemSchema.hdb_table.name);
-            environment_utility.createDBI(hdb_table_env, systemSchema.hdb_table.hash_attribute, false);
+			hdb_attribute_env = await environment_utility.createEnvironment(
+				SYSTEM_SCHEMA_PATH,
+				systemSchema.hdb_attribute.name
+			);
+			environment_utility.createDBI(hdb_attribute_env, systemSchema.hdb_attribute.hash_attribute, false, true);
 
-            hdb_attribute_env = await environment_utility.createEnvironment(SYSTEM_SCHEMA_PATH, systemSchema.hdb_attribute.name);
-            environment_utility.createDBI(hdb_attribute_env, systemSchema.hdb_attribute.hash_attribute, false);
+			await lmdb_create_schema(CREATE_SCHEMA_DEV);
 
-            await lmdb_create_schema(CREATE_SCHEMA_DEV);
+			await lmdb_create_table(TABLE_SYSTEM_DATA_TEST_A, CREATE_TABLE_OBJ_TEST_A);
+			global.hdb_schema.dev.test.attributes = [
+				{ attribute: 'id' },
+				{ attribute: '__updatedtime__' },
+				{ attribute: '__createdtime__' },
+			];
+			await lmdb_create_records(INSERT_OBJECT_TEST);
+			global.hdb_schema.dev.test.attributes = [
+				{ attribute: 'id' },
+				{ attribute: 'temperature' },
+				{ attribute: 'temperature_double' },
+				{ attribute: 'temperature_pos' },
+				{ attribute: 'temperature_neg' },
+				{ attribute: 'temperature_str' },
+				{ attribute: 'city' },
+				{ attribute: 'state' },
+				{ attribute: '__updatedtime__' },
+				{ attribute: '__createdtime__' },
+			];
+		});
 
-            await lmdb_create_table(TABLE_SYSTEM_DATA_TEST_A, CREATE_TABLE_OBJ_TEST_A);
-            global.hdb_schema.dev.test.attributes = [
-                {attribute:'id'},
-                {attribute:'__updatedtime__'},
-                {attribute:'__createdtime__'}
-            ];
-            await lmdb_create_records(INSERT_OBJECT_TEST);
-            global.hdb_schema.dev.test.attributes = [
-                {attribute:'id'},
-                {attribute:'temperature'},
-                {attribute:'temperature_double'},
-                {attribute:'temperature_pos'},
-                {attribute:'temperature_neg'},
-                {attribute:'temperature_str'},
-                {attribute:'city'},
-                {attribute:'state'},
-                {attribute:'__updatedtime__'},
-                {attribute:'__createdtime__'}
-            ];
-        });
+		after(async () => {
+			await hdb_attribute_env.close();
+			await hdb_schema_env.close();
+			await hdb_table_env.close();
 
-        after(async () => {
+			global.lmdb_map = undefined;
+			await fs.remove(test_utils.getMockLMDBPath());
+		});
 
-            hdb_attribute_env.close();
-            hdb_schema_env.close();
-            hdb_table_env.close();
+		it('test invalid schema', async () => {
+			let drop_object = new DropAttributeObject('faker', 'test');
+			await test_utils.assertErrorAsync(
+				lmdb_drop_table,
+				[drop_object],
+				new Error(`unknown schema:faker and table test`)
+			);
+		});
 
-            global.lmdb_map = undefined;
-            await fs.remove(test_utils.getMockLMDBPath());
-        });
+		it('test invalid table', async () => {
+			let drop_object = new DropAttributeObject('dev', 'fake');
+			await test_utils.assertErrorAsync(lmdb_drop_table, [drop_object], new Error(`unknown schema:dev and table fake`));
+		});
 
-        it('test invalid schema', async()=>{
-            let drop_object = new DropAttributeObject('faker', 'test');
-            await test_utils.assertErrorAsync(lmdb_drop_table, [drop_object],
-                new Error(`unknown schema:faker and table test`));
-        });
+		it('test delete table', async () => {
+			let search_obj = new SearchObject('system', 'hdb_table', 'name', 'test', undefined, ['*']);
+			let search_table_results = await search_by_value(search_obj);
+			let found_tbl;
+			for (let x = 0; x < search_table_results.length; x++) {
+				if (search_table_results[x].schema === 'dev' && search_table_results[x].name === 'test') {
+					found_tbl = search_table_results[x];
+				}
+			}
+			assert.deepStrictEqual(`${found_tbl.schema}.${found_tbl.name}`, 'dev.test');
 
-        it('test invalid table', async()=>{
-            let drop_object = new DropAttributeObject('dev', 'fake');
-            await test_utils.assertErrorAsync(lmdb_drop_table, [drop_object],
-                new Error(`unknown schema:dev and table fake`));
-        });
+			let search_attr_obj = new SearchObject('system', 'hdb_attribute', 'schema_table', 'dev.test', undefined, [
+				'attribute',
+			]);
+			let search_attr_results = await search_by_value(search_attr_obj);
+			assert.deepStrictEqual(search_attr_results.length, global.hdb_schema.dev.test.attributes.length);
 
-        it('test delete table', async()=>{
-            let search_obj = new SearchObject('system', 'hdb_table', 'name', 'test', undefined, ['*']);
-            let search_table_results = await search_by_value(search_obj);
-            let found_tbl;
-            for(let x = 0; x < search_table_results.length; x++){
-                if(search_table_results[x].schema === 'dev' && search_table_results[x].name === 'test'){
-                    found_tbl = search_table_results[x];
-                }
-            }
-            assert.deepStrictEqual(`${found_tbl.schema}.${found_tbl.name}`, 'dev.test');
+			for (let x = 0; x < search_attr_results.length; x++) {
+				let actual = search_attr_results[x];
+				let expected;
+				global.hdb_schema.dev.test.attributes.forEach((attr) => {
+					if (actual.attribute === attr.attribute) {
+						expected = attr;
+					}
+				});
+				assert.deepEqual(actual, expected);
+			}
 
-            let search_attr_obj = new SearchObject('system', 'hdb_attribute', 'schema_table', 'dev.test', undefined, ['attribute']);
-            let search_attr_results = await search_by_value(search_attr_obj);
-            assert.deepStrictEqual(search_attr_results.length, global.hdb_schema.dev.test.attributes.length);
+			await test_utils.assertErrorAsync(fs.access, [path.join(DEV_SCHEMA_PATH, 'test')], undefined);
 
-            for(let x = 0; x < search_attr_results.length; x++){
-                let actual = search_attr_results[x];
-                let expected;
-                global.hdb_schema.dev.test.attributes.forEach(attr=>{
-                    if(actual.attribute === attr.attribute){
-                        expected = attr;
-                    }
+			//validate the transactions environments
+			let transaction_path = path.join(BASE_PATH, 'transactions', 'dev');
+			let table_transaction_path = path.join(transaction_path, 'test', 'data.mdb');
+			let expected_txn_dbis = ['__blob__', 'hash_value', 'timestamp', 'user_name'];
+			await test_utils.assertErrorAsync(fs.access, [table_transaction_path], undefined);
+			let txn_env = await test_utils.assertErrorAsync(
+				environment_utility.openEnvironment,
+				[transaction_path, 'test', true],
+				undefined
+			);
+			let txn_dbis = test_utils.assertErrorSync(environment_utility.listDBIs, [txn_env], undefined);
 
-                });
-                assert.deepEqual(actual, expected);
-            }
+			assert.deepStrictEqual(txn_dbis, expected_txn_dbis);
 
-            await test_utils.assertErrorAsync(fs.access, [path.join(DEV_SCHEMA_PATH, 'test')], undefined);
+			let drop_object = new DropAttributeObject('dev', 'test');
+			await test_utils.assertErrorAsync(lmdb_drop_table, [drop_object], undefined);
 
-            //validate the transactions environments
-            let transaction_path = path.join(BASE_PATH, 'transactions', 'dev');
-            let table_transaction_path = path.join(transaction_path, 'test', 'data.mdb');
-            let expected_txn_dbis = ['__blob__' , 'hash_value', 'timestamp', 'user_name'];
-            await test_utils.assertErrorAsync(fs.access, [table_transaction_path], undefined);
-            let txn_env = await test_utils.assertErrorAsync(environment_utility.openEnvironment, [transaction_path, 'test', true], undefined);
-            let txn_dbis = test_utils.assertErrorSync(environment_utility.listDBIs, [txn_env], undefined);
+			search_table_results = await search_by_value(search_obj);
+			found_tbl = undefined;
+			for (let x = 0; x < search_table_results.length; x++) {
+				if (search_table_results[x].schema === 'dev' && search_table_results[x].name === 'test') {
+					found_tbl = search_table_results[x];
+				}
+			}
 
-            assert.deepStrictEqual(txn_dbis, expected_txn_dbis);
+			assert.deepStrictEqual(found_tbl, undefined);
 
+			//search for the table by id
+			let hash_search = new SearchByHashObject('system', 'hdb_attribute', [TABLE_SYSTEM_DATA_TEST_A.id], ['*']);
+			search_table_results = await search_by_hash(hash_search);
+			assert.deepStrictEqual(search_table_results, []);
 
-            let drop_object = new DropAttributeObject('dev', 'test');
-            await test_utils.assertErrorAsync(lmdb_drop_table, [drop_object], undefined);
+			search_attr_obj = new SearchObject('system', 'hdb_attribute', 'schema_table', 'dev.test', undefined, [
+				'attribute',
+			]);
+			search_attr_results = await search_by_value(search_attr_obj);
+			assert.deepStrictEqual(search_attr_results, []);
 
-            search_table_results = await search_by_value(search_obj);
-            found_tbl = undefined;
-            for(let x = 0; x < search_table_results.length; x++){
-                if(search_table_results[x].schema === 'dev' && search_table_results[x].name === 'test'){
-                    found_tbl = search_table_results[x];
-                }
-            }
+			let error = undefined;
+			try {
+				await fs.access(path.join(DEV_SCHEMA_PATH, 'test')).catch((e) => {
+					error = e;
+				});
+			} catch (e) {
+				error = e;
+			}
 
-            assert.deepStrictEqual(found_tbl, undefined);
+			assert(error.message.startsWith('ENOENT: no such file or directory'));
 
-            //search for the table by id
-            let hash_search = new SearchByHashObject('system', 'hdb_attribute', [TABLE_SYSTEM_DATA_TEST_A.id], ['*']);
-            search_table_results = await search_by_hash(hash_search);
-            assert.deepStrictEqual(search_table_results, []);
+			//verify transaction environment is deleted
+			error = undefined;
+			try {
+				await fs.access(table_transaction_path).catch((e) => {
+					error = e;
+				});
+			} catch (e) {
+				error = e;
+			}
 
-            search_attr_obj = new SearchObject('system', 'hdb_attribute', 'schema_table', 'dev.test', undefined, ['attribute']);
-            search_attr_results = await search_by_value(search_attr_obj);
-            assert.deepStrictEqual(search_attr_results, []);
-
-            let error = undefined;
-            try{
-                await fs.access(path.join(DEV_SCHEMA_PATH, 'test')).catch(e=>{
-                    error = e;
-                });
-            } catch (e) {
-                error = e;
-            }
-
-            assert(error.message.startsWith("ENOENT: no such file or directory"));
-
-            //verify transaction environment is deleted
-            error = undefined;
-            try{
-                await fs.access(table_transaction_path).catch(e=>{
-                    error = e;
-                });
-            } catch (e) {
-                error = e;
-            }
-
-            assert(error.message.startsWith("ENOENT: no such file or directory"));
-        });
-    });
+			assert(error.message.startsWith('ENOENT: no such file or directory'));
+		});
+	});
 });

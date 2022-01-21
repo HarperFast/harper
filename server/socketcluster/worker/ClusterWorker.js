@@ -178,7 +178,7 @@ class ClusterWorker extends WorkerIF {
 			}
 
 			if (event.type && event.type === 'schema') {
-				clean_lmdb(event.message, true);
+				await clean_lmdb(event.message, true);
 				await ipc_schema_handler(event);
 			}
 		} catch (e) {

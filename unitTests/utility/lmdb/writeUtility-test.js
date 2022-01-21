@@ -77,7 +77,7 @@ describe('Test writeUtility module', () => {
 		});
 
 		after(async () => {
-			env.close();
+			await env.close();
 			sandbox.restore();
 
 			global.lmdb_map = undefined;
@@ -219,7 +219,7 @@ describe('Test writeUtility module', () => {
 		});
 
 		afterEach(async () => {
-			env.close();
+			await env.close();
 			date_stub.restore();
 
 			global.lmdb_map = undefined;
@@ -571,7 +571,7 @@ describe('Test writeUtility module', () => {
 		});
 
 		afterEach(async () => {
-			env.close();
+			await env.close();
 			date_stub.restore();
 
 			global.lmdb_map = undefined;
@@ -1082,7 +1082,7 @@ describe('Test writeUtility module', () => {
 		});
 
 		afterEach(async () => {
-			env.close();
+			await env.close();
 			date_stub.restore();
 
 			global.lmdb_map = undefined;

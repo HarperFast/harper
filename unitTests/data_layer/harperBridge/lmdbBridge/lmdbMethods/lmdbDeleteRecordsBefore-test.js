@@ -168,20 +168,20 @@ describe('test validateDropSchema module', ()=>{
 
         after(async () => {
             let env1 = await environment_utility.openEnvironment(path.join(BASE_SCHEMA_PATH, CREATE_TABLE_OBJ_TEST_A.schema), CREATE_TABLE_OBJ_TEST_A.table);
-            env1.close();
+            await env1.close();
 
             let env2 = await environment_utility.openEnvironment(path.join(BASE_SCHEMA_PATH, CREATE_TABLE_OBJ_TEST_B.schema), CREATE_TABLE_OBJ_TEST_B.table);
-            env2.close();
+            await env2.close();
 
             let txn_env1 = await environment_utility.openEnvironment(path.join(BASE_TXN_PATH, CREATE_TABLE_OBJ_TEST_A.schema), CREATE_TABLE_OBJ_TEST_A.table, true);
-            txn_env1.close();
+            await txn_env1.close();
 
             let txn_env2 = await environment_utility.openEnvironment(path.join(BASE_TXN_PATH, CREATE_TABLE_OBJ_TEST_B.schema), CREATE_TABLE_OBJ_TEST_B.table, true);
-            txn_env2.close();
+            await txn_env2.close();
 
-            hdb_table_env.close();
-            hdb_schema_env.close();
-            hdb_attribute_env.close();
+            await hdb_table_env.close();
+            await hdb_schema_env.close();
+            await hdb_attribute_env.close();
 
             global.lmdb_map = undefined;
             await fs.remove(test_utils.getMockLMDBPath());

@@ -47,7 +47,13 @@ function iterateFullIndex(
 	}
 
 	try {
-		for (let { key, value } of dbi.getRange({ start: false, limit: limit, offset: offset, reverse: reverse })) {
+		for (let { key, value } of dbi.getRange({
+			start: reverse ? undefined : false,
+			end: !reverse ? undefined : false,
+			limit: limit,
+			offset: offset,
+			reverse: reverse,
+		})) {
 			eval_function(key, value, results, hash_attribute, attribute);
 		}
 		return results;
@@ -91,7 +97,7 @@ function iterateRangeNext(
 		}
 
 		//because reversing only returns 1 entry from a dup sorted key we get all entries for the search value
-		let start_value = reverse === true ? undefined : search_value;
+		let start_value = reverse === true ? undefined : search_value === undefined ? false : search_value;
 		let end_value = reverse === true ? search_value : undefined;
 
 		for (let { key, value } of dbi.getRange({ start: start_value, end: end_value, reverse, limit, offset })) {
@@ -161,11 +167,11 @@ function iterateRangeBetween(
 
 		//get first key
 		let first;
-		for (let key of dbi.getKeys({ limit: 1 })) {
+		for (let key of dbi.getKeys({ start: false, limit: 1 })) {
 			first = key;
 		}
 		if (start_value <= first) {
-			start_value = undefined;
+			start_value = false;
 		}
 
 		//advance the end_value by 1 key
@@ -220,7 +226,13 @@ function searchAll(env, hash_attribute, fetch_attributes, reverse = false, limit
 	let dbi = environment_utility.openDBI(env, hash_attribute);
 
 	try {
-		for (let { key, value } of dbi.getRange({ start: false, limit: limit, offset: offset, reverse: reverse })) {
+		for (let { key, value } of dbi.getRange({
+			start: reverse ? undefined : false,
+			end: !reverse ? undefined : false,
+			limit: limit,
+			offset: offset,
+			reverse: reverse,
+		})) {
 			cursor_functions.searchAll(fetch_attributes, key, value, results);
 		}
 		return results;
@@ -531,7 +543,7 @@ function endsWith(
 
 	try {
 		//we iterate just the keys as it is faster (no access of the value & less iterations in dupsorted dbis)
-		for (let key of dbi.getKeys({ reverse })) {
+		for (let key of dbi.getKeys({ end: reverse ? false : undefined, reverse })) {
 			if (limit === 0) {
 				break;
 			}
@@ -608,7 +620,7 @@ function contains(
 	offset = Number.isInteger(offset) ? offset : 0;
 
 	try {
-		for (let key of dbi.getKeys({ reverse })) {
+		for (let key of dbi.getKeys({ end: reverse ? false : undefined, reverse })) {
 			if (limit === 0) {
 				break;
 			}
@@ -682,7 +694,7 @@ function greaterThan(
 		next_value = search_value;
 	} else {
 		let dbi = environment_utility.openDBI(env, attribute);
-		for (let key of dbi.getKeys({ start: search_value })) {
+		for (let key of dbi.getKeys({ start: search_value === undefined ? false : search_value })) {
 			if (key > search_value) {
 				next_value = key;
 				break;
@@ -741,7 +753,7 @@ function greaterThanEqual(
 
 		//get the first key
 		let first;
-		for (let key of dbi.getKeys({ limit: 1 })) {
+		for (let key of dbi.getKeys({ start: false, limit: 1 })) {
 			first = key;
 		}
 
@@ -765,8 +777,8 @@ function greaterThanEqual(
 		}
 
 		//because reversing only returns 1 entry from a dup sorted key we get all entries for the search value
-		let start_value = reverse === true ? undefined : next_value;
-		let end_value = reverse === true ? next_value : undefined;
+		let start_value = reverse === true ? undefined : next_value === undefined ? false : next_value;
+		let end_value = reverse === true ? (next_value === undefined ? false : next_value) : undefined;
 
 		for (let { key, value } of dbi.getRange({ start: start_value, end: end_value, reverse, limit, offset })) {
 			cursor_functions.greaterThanEqualCompare(search_value, key, value, results, hash_attribute, attribute);
@@ -828,10 +840,10 @@ function lessThan(
 				}
 			}
 
-			end = undefined;
+			end = false;
 			start = search_value;
 		} else {
-			start = undefined;
+			start = false;
 			end = search_value;
 		}
 
@@ -900,10 +912,10 @@ function lessThanEqual(
 				limit = limit === undefined ? undefined : limit + 1;
 			}
 
-			end = undefined;
+			end = false;
 			start = next_value;
 		} else {
-			start = undefined;
+			start = false;
 			end = next_value;
 		}
 

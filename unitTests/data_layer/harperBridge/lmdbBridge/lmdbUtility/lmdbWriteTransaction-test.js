@@ -44,514 +44,589 @@ const orig_disable_txn_setting = env_mngr.get('DISABLE_TRANSACTION_LOG');
 
 const CREATE_TABLE_OBJ = new CreateTableObject('dev', 'test', 'id');
 
-const INSERT_RECORDS = [{id: 1, name: 'Penny'}, {id: 2, name: 'Kato', age: '6'}, {id: 3, name: 'Riley', age: '7'}, {id: 'blerrrrr', name: 'Rosco'}];
+const INSERT_RECORDS = [
+	{ id: 1, name: 'Penny' },
+	{ id: 2, name: 'Kato', age: '6' },
+	{ id: 3, name: 'Riley', age: '7' },
+	{ id: 'blerrrrr', name: 'Rosco' },
+];
 
-const UPDATE_RECORDS = [{id: 1, name: 'Penny B'}, {id: 2, name: 'Kato B', age: '6'}, {id: 3, name: 'Riley S', age: '7'}, {id: 'blerrrrr', name: 'Rosco ?'}];
+const UPDATE_RECORDS = [
+	{ id: 1, name: 'Penny B' },
+	{ id: 2, name: 'Kato B', age: '6' },
+	{ id: 3, name: 'Riley S', age: '7' },
+	{ id: 'blerrrrr', name: 'Rosco ?' },
+];
 
-const UPSERT_RECORDS = [{id: 1, name: 'Penny B', age: '10'}, {id: 2, name: 'Kato B', age: '7'}, {id: 3, name: 'Riley S', age: '8'}, {id: 'blerrrrr', name: 'Rosco ?'}];
+const UPSERT_RECORDS = [
+	{ id: 1, name: 'Penny B', age: '10' },
+	{ id: 2, name: 'Kato B', age: '7' },
+	{ id: 3, name: 'Riley S', age: '8' },
+	{ id: 'blerrrrr', name: 'Rosco ?' },
+];
 
-let INSERT_HASHES = [1,2,3, 'blerrrrr'];
+let INSERT_HASHES = [1, 2, 3, 'blerrrrr'];
 const HDB_USER = {
-    username: 'kyle'
+	username: 'kyle',
 };
 
-describe('test lmdbWriteTransaction module', ()=>{
-    before(async ()=>{
-        await fs.remove(BASE_PATH);
-    });
-
-    after(()=>{
-
-    });
-
-    describe('test getDisableTxnLogSetting function', ()=>{
-        let rw_func = undefined;
-        before(() => {
-            rw_func = rw_lmdb_write_txn.__get__('getDisableTxnLogSetting');
-            global.lmdb_map = undefined;
-        });
-
-        afterEach(()=>{
-            env_mngr.setProperty('CLUSTERING', orig_clustering_setting);
-            env_mngr.setProperty('DISABLE_TRANSACTION_LOG', orig_disable_txn_setting);
-        });
-
-        after(async () => {
-            env_mngr.setProperty('CLUSTERING', orig_clustering_setting);
-            env_mngr.setProperty('DISABLE_TRANSACTION_LOG', orig_disable_txn_setting);
-            await fs.remove(BASE_PATH);
-            global.lmdb_map = undefined;
-        });
-
-        it('test if DISABLE_TRANSACTION_LOG undefined & CLUSTERING undefined', ()=>{
-            env_mngr.setProperty('DISABLE_TRANSACTION_LOG', undefined);
-            let result = rw_func();
-            assert.deepStrictEqual(result, false);
-        });
-
-        it('test if DISABLE_TRANSACTION_LOG null & CLUSTERING undefined', ()=>{
-            env_mngr.setProperty('DISABLE_TRANSACTION_LOG', null);
-            let result = rw_func();
-            assert.deepStrictEqual(result, false);
-        });
-
-        it('test if DISABLE_TRANSACTION_LOG "" & CLUSTERING undefined', ()=>{
-            env_mngr.setProperty('DISABLE_TRANSACTION_LOG', "");
-            let result = rw_func();
-            assert.deepStrictEqual(result, false);
-        });
-
-        it('test if DISABLE_TRANSACTION_LOG true & CLUSTERING undefined', ()=>{
-            env_mngr.setProperty('DISABLE_TRANSACTION_LOG', true);
-            let result = rw_func();
-            assert.deepStrictEqual(result, true);
-        });
-
-        it('test if DISABLE_TRANSACTION_LOG false & CLUSTERING undefined', ()=>{
-            env_mngr.setProperty('CLUSTERING', undefined);
-            env_mngr.setProperty('DISABLE_TRANSACTION_LOG', false);
-            let result = rw_func();
-            assert.deepStrictEqual(result, false);
-        });
-
-        it('test if DISABLE_TRANSACTION_LOG "true" & CLUSTERING undefined', ()=>{
-            env_mngr.setProperty('DISABLE_TRANSACTION_LOG', "true");
-            let result = rw_func();
-            assert.deepStrictEqual(result, true);
-        });
-
-        it('test if DISABLE_TRANSACTION_LOG "TRUE" & CLUSTERING undefined', ()=>{
-            env_mngr.setProperty('DISABLE_TRANSACTION_LOG', "TRUE");
-            let result = rw_func();
-            assert.deepStrictEqual(result, true);
-        });
-
-        it('test if DISABLE_TRANSACTION_LOG "false" & CLUSTERING not exist', ()=>{
-            env_mngr.setProperty('DISABLE_TRANSACTION_LOG', "false");
-            let result = rw_func();
-            assert.deepStrictEqual(result, false);
-        });
-
-        it('test if DISABLE_TRANSACTION_LOG "FALSE" & CLUSTERING not exist', ()=>{
-            env_mngr.setProperty('DISABLE_TRANSACTION_LOG', "FALSE");
-            let result = rw_func();
-            assert.deepStrictEqual(result, false);
-        });
-
-        it('test if DISABLE_TRANSACTION_LOG "true" & CLUSTERING false', ()=>{
-            env_mngr.setProperty('DISABLE_TRANSACTION_LOG', "true");
-            let result = rw_func();
-            assert.deepStrictEqual(result, true);
-        });
-
-        it('test if DISABLE_TRANSACTION_LOG "TRUE" & CLUSTERING false', ()=>{
-            env_mngr.setProperty('DISABLE_TRANSACTION_LOG', "TRUE");
-            let result = rw_func();
-            assert.deepStrictEqual(result, true);
-        });
-
-        it('test if DISABLE_TRANSACTION_LOG true & CLUSTERING false', ()=>{
-            env_mngr.setProperty('DISABLE_TRANSACTION_LOG', true);
-            let result = rw_func();
-            assert.deepStrictEqual(result, true);
-        });
-    });
-
-    describe('test createTransactionObject function', ()=>{
-        before(async () => {
-            global.lmdb_map = undefined;
-            await fs.remove(test_utils.getMockLMDBPath());
-        });
-
-        after(async () => {
-
-            global.lmdb_map = undefined;
-            await fs.remove(test_utils.getMockLMDBPath());
-        });
-
-        it('test for insert operation no user on operation', async()=>{
-            let insert_obj = new InsertObject('dev', 'test', 'id', INSERT_RECORDS);
-            let insert_response = new InsertRecordsResponseObject(INSERT_HASHES, [], common.getMicroTime());
-
-            let insert_txn_obj = new LMDBInsertTransactionObject(INSERT_RECORDS, undefined, insert_response.txn_time, INSERT_HASHES);
-
-            let error = undefined;
-            let response = undefined;
-            try {
-                response = create_transaction_object_func(insert_obj, insert_response);
-            }catch(e){
-                error = e;
-            }
-            assert.deepStrictEqual(error, undefined);
-
-            assert.deepStrictEqual(response, insert_txn_obj);
-        });
-        it('test for insert operation with user on operation', async()=>{
-            let insert_obj = new InsertObject('dev', 'test', 'id', INSERT_RECORDS);
-            insert_obj.hdb_user = HDB_USER;
-            let insert_response = new InsertRecordsResponseObject(INSERT_HASHES, [], common.getMicroTime());
-
-            let insert_txn_obj = new LMDBInsertTransactionObject(INSERT_RECORDS, HDB_USER.username, insert_response.txn_time, INSERT_HASHES);
-
-            let error = undefined;
-            let response = undefined;
-            try {
-                response = create_transaction_object_func(insert_obj, insert_response);
-            }catch(e){
-                error = e;
-            }
-            assert.deepStrictEqual(error, undefined);
-
-            assert.deepStrictEqual(response, insert_txn_obj);
-        });
-
-        it('test for update operation', async()=>{
-            let update_obj = new UpdateObject('dev', 'test', UPDATE_RECORDS);
-            update_obj.hdb_user = HDB_USER;
-            let update_response = new UpdateRecordsResponseObject(INSERT_HASHES, [], common.getMicroTime(), INSERT_RECORDS);
-
-            let update_txn_obj = new LMDBUpdateTransactionObject(UPDATE_RECORDS, INSERT_RECORDS, HDB_USER.username, update_response.txn_time, INSERT_HASHES);
-
-            let error = undefined;
-            let response = undefined;
-            try {
-                response = create_transaction_object_func(update_obj, update_response);
-            }catch(e){
-                error = e;
-            }
-            assert.deepStrictEqual(error, undefined);
-
-            assert.deepStrictEqual(response, update_txn_obj);
-        });
-
-        it('test for upsert operation', async()=>{
-            let upsert_obj = new UpsertObject('dev', 'test', UPSERT_RECORDS);
-            upsert_obj.hdb_user = HDB_USER;
-            let upsert_response = new UpsertRecordsResponseObject(INSERT_HASHES, common.getMicroTime(), INSERT_RECORDS);
-
-            let upsert_txn_obj = new LMDBUpsertTransactionObject(UPSERT_RECORDS, INSERT_RECORDS, HDB_USER.username, upsert_response.txn_time, INSERT_HASHES);
-
-            let error = undefined;
-            let response = undefined;
-            try {
-                response = create_transaction_object_func(upsert_obj, upsert_response);
-            }catch(e){
-                error = e;
-            }
-            assert.deepStrictEqual(error, undefined);
-
-            assert.deepStrictEqual(response, upsert_txn_obj);
-        });
-
-        it('test for delete operation', async()=>{
-            let delete_obj = new DeleteObject('dev', 'test', INSERT_HASHES);
-            delete_obj.hdb_user = HDB_USER;
-            let delete_response = new DeleteRecordsResponseObject(INSERT_HASHES, [], common.getMicroTime(), UPDATE_RECORDS);
-
-            let delete_txn_obj = new LMDBDeleteTransactionObject(INSERT_HASHES, UPDATE_RECORDS, HDB_USER.username, delete_response.txn_time);
-
-            let error = undefined;
-            let response = undefined;
-            try {
-                response = create_transaction_object_func(delete_obj, delete_response);
-            }catch(e){
-                error = e;
-            }
-            assert.deepStrictEqual(error, undefined);
-
-            assert.deepStrictEqual(response, delete_txn_obj);
-        });
-
-        it('test for unknown operation', async()=>{
-            let delete_obj = {operation:'other'};
-            delete_obj.hdb_user = HDB_USER;
-            let delete_response = new DeleteRecordsResponseObject(INSERT_HASHES, [], common.getMicroTime(), UPDATE_RECORDS);
-
-            let error = undefined;
-            let response = undefined;
-            try {
-                response = create_transaction_object_func(delete_obj, delete_response);
-            }catch(e){
-                error = e;
-            }
-            assert.deepStrictEqual(error, undefined);
-
-            assert.deepStrictEqual(response, undefined);
-        });
-    });
-
-    describe('test writeTransaction function', ()=> {
-        let env;
-        beforeEach(async ()=>{
-            await fs.mkdirp(BASE_PATH);
-            global.lmdb_map = undefined;
-            env = await lmdb_create_txn_envs(CREATE_TABLE_OBJ);
-        });
-
-        afterEach(async ()=>{
-            env.close();
-            await fs.remove(BASE_PATH);
-            global.lmdb_map = undefined;
-        });
-
-        it('test writing insert no user on operation', async()=>{
-            let insert_obj = new InsertObject('dev', 'test', 'id', INSERT_RECORDS);
-            let insert_response = new InsertRecordsResponseObject(INSERT_HASHES, [], common.getMicroTime());
-
-            //call the write txn function
-            let error = undefined;
-            try {
-                await lmdb_write_txn(insert_obj, insert_response);
-            }catch(e){
-                error = e;
-            }
-            assert.deepStrictEqual(error, undefined);
-
-            //test expected entries exist
-            let transaction_path = path.join(BASE_TRANSACTIONS_PATH, CREATE_TABLE_OBJ.schema);
-            let txn_env = undefined;
-            try {
-                txn_env = await environment_utility.openEnvironment(transaction_path, CREATE_TABLE_OBJ.table, true);
-            }catch(e){
-                error = e;
-            }
-            assert.deepStrictEqual(error, undefined);
-            assert.notStrictEqual(txn_env, undefined);
-
-            let insert_txn_obj = Object.assign({}, new LMDBInsertTransactionObject(INSERT_RECORDS, undefined, insert_response.txn_time, INSERT_HASHES));
-            let expected_timestamp_results = test_utils.assignObjecttoNullObject({[insert_response.txn_time]: [insert_txn_obj]});
-
-            let results = search_util.iterateDBI(txn_env, 'timestamp');
-            assert.deepStrictEqual(results, expected_timestamp_results);
-
-            let expected_hash_value_results = Object.create(null);
-            INSERT_HASHES.forEach(hash=>{
-                expected_hash_value_results[hash] = [insert_response.txn_time];
-            });
-            results = search_util.iterateDBI(txn_env, 'hash_value');
-            assert.deepStrictEqual(results, expected_hash_value_results);
-
-            results = search_util.iterateDBI(txn_env, 'user_name');
-            assert.deepStrictEqual(results, Object.create(null));
-        });
-
-        it('test writing insert with DISABLE_TRANSACTION_LOG true', async()=>{
-            let disable_txn = rw_lmdb_write_txn.__set__('DISABLE_TRANSACTION_LOG', true);
-
-            let insert_obj = new InsertObject('dev', 'test', 'id', INSERT_RECORDS);
-            let insert_response = new InsertRecordsResponseObject(INSERT_HASHES, [], common.getMicroTime());
-
-            //call the write txn function
-            let error = undefined;
-            try {
-                await rw_lmdb_write_txn(insert_obj, insert_response);
-            }catch(e){
-                error = e;
-            }
-            assert.deepStrictEqual(error, undefined);
-
-            //test expected entries exist
-            let transaction_path = path.join(BASE_TRANSACTIONS_PATH, CREATE_TABLE_OBJ.schema);
-            let txn_env = undefined;
-            try {
-                txn_env = await environment_utility.openEnvironment(transaction_path, CREATE_TABLE_OBJ.table, true);
-            }catch(e){
-                error = e;
-            }
-            assert.deepStrictEqual(error, undefined);
-            assert.notStrictEqual(txn_env, undefined);
-
-            let results = search_util.iterateDBI(txn_env, 'timestamp');
-            assert.deepStrictEqual(results, Object.create(null));
-
-            results = search_util.iterateDBI(txn_env, 'hash_value');
-            assert.deepStrictEqual(results, Object.create(null));
-
-            results = search_util.iterateDBI(txn_env, 'user_name');
-            assert.deepStrictEqual(results, Object.create(null));
-
-            disable_txn();
-        });
-
-        it('test writing insert with user on operation', async()=>{
-            let insert_obj = new InsertObject('dev', 'test', 'id', INSERT_RECORDS);
-            insert_obj.hdb_user = HDB_USER;
-            let insert_response = new InsertRecordsResponseObject(INSERT_HASHES, [], common.getMicroTime());
-
-            //call the write txn function
-            let error = undefined;
-            try {
-                await lmdb_write_txn(insert_obj, insert_response);
-            }catch(e){
-                error = e;
-            }
-            assert.deepStrictEqual(error, undefined);
-
-            //test expected entries exist
-            let transaction_path = path.join(BASE_TRANSACTIONS_PATH, CREATE_TABLE_OBJ.schema);
-            let txn_env = undefined;
-            try {
-                txn_env = await environment_utility.openEnvironment(transaction_path, CREATE_TABLE_OBJ.table, true);
-            }catch(e){
-                error = e;
-            }
-            assert.deepStrictEqual(error, undefined);
-            assert.notStrictEqual(txn_env, undefined);
-
-            let insert_txn_obj = Object.assign({}, new LMDBInsertTransactionObject(INSERT_RECORDS, HDB_USER.username, insert_response.txn_time, INSERT_HASHES));
-            let expected_timestamp_results = test_utils.assignObjecttoNullObject({[insert_response.txn_time]: [insert_txn_obj]});
-
-            let results = search_util.iterateDBI(txn_env, 'timestamp');
-            assert.deepStrictEqual(results, expected_timestamp_results);
-
-            let expected_hash_value_results = Object.create(null);
-            INSERT_HASHES.forEach(hash=>{
-                expected_hash_value_results[hash] = [insert_response.txn_time];
-            });
-            results = search_util.iterateDBI(txn_env, 'hash_value');
-            assert.deepStrictEqual(results, expected_hash_value_results);
-
-            let expected_username_results = Object.create(null);
-            expected_username_results[HDB_USER.username] = [insert_response.txn_time];
-
-            results = search_util.iterateDBI(txn_env, 'user_name');
-            assert.deepStrictEqual(results, expected_username_results);
-        });
-
-        it('test writing update with user on operation', async()=>{
-            let update_obj = new UpdateObject('dev', 'test', UPDATE_RECORDS);
-            update_obj.hdb_user = HDB_USER;
-            let update_response = new UpdateRecordsResponseObject(INSERT_HASHES, [], common.getMicroTime(), INSERT_RECORDS);
-
-            //call the write txn function
-            let error = undefined;
-            try {
-                await lmdb_write_txn(update_obj, update_response);
-            }catch(e){
-                error = e;
-            }
-            assert.deepStrictEqual(error, undefined);
-
-            //test expected entries exist
-            let transaction_path = path.join(BASE_TRANSACTIONS_PATH, CREATE_TABLE_OBJ.schema);
-            let txn_env = undefined;
-            try {
-                txn_env = await environment_utility.openEnvironment(transaction_path, CREATE_TABLE_OBJ.table, true);
-            }catch(e){
-                error = e;
-            }
-            assert.deepStrictEqual(error, undefined);
-            assert.notStrictEqual(txn_env, undefined);
-
-            let update_txn_obj = Object.assign({}, new LMDBUpdateTransactionObject(UPDATE_RECORDS, INSERT_RECORDS, HDB_USER.username, update_response.txn_time, INSERT_HASHES));
-            let expected_timestamp_results = test_utils.assignObjecttoNullObject({[update_response.txn_time]: [update_txn_obj]});
-
-            let results = search_util.iterateDBI(txn_env, 'timestamp');
-            assert.deepStrictEqual(results, expected_timestamp_results);
-
-            let expected_hash_value_results = Object.create(null);
-            INSERT_HASHES.forEach(hash=>{
-                expected_hash_value_results[hash] = [update_response.txn_time];
-            });
-            results = search_util.iterateDBI(txn_env, 'hash_value');
-            assert.deepStrictEqual(results, expected_hash_value_results);
-
-            let expected_username_results = Object.create(null);
-            expected_username_results[HDB_USER.username] = [update_response.txn_time];
-
-            results = search_util.iterateDBI(txn_env, 'user_name');
-            assert.deepStrictEqual(results, expected_username_results);
-        });
-
-        it('test writing upsert with user on operation', async()=>{
-            let upsert_obj = new UpsertObject('dev', 'test', UPSERT_RECORDS);
-            upsert_obj.hdb_user = HDB_USER;
-            let upsert_response = new UpsertRecordsResponseObject(INSERT_HASHES, common.getMicroTime(), UPDATE_RECORDS);
-
-            //call the write txn function
-            let error = undefined;
-            try {
-                await lmdb_write_txn(upsert_obj, upsert_response);
-            }catch(e){
-                error = e;
-            }
-            assert.deepStrictEqual(error, undefined);
-
-            //test expected entries exist
-            let transaction_path = path.join(BASE_TRANSACTIONS_PATH, CREATE_TABLE_OBJ.schema);
-            let txn_env = undefined;
-            try {
-                txn_env = await environment_utility.openEnvironment(transaction_path, CREATE_TABLE_OBJ.table, true);
-            }catch(e){
-                error = e;
-            }
-            assert.deepStrictEqual(error, undefined);
-            assert.notStrictEqual(txn_env, undefined);
-
-            let upsert_txn_obj = Object.assign({}, new LMDBUpsertTransactionObject(UPSERT_RECORDS, UPDATE_RECORDS, HDB_USER.username, upsert_response.txn_time, INSERT_HASHES));
-            let expected_timestamp_results = test_utils.assignObjecttoNullObject({[upsert_response.txn_time]: [upsert_txn_obj]});
-
-            let results = search_util.iterateDBI(txn_env, 'timestamp');
-            assert.deepStrictEqual(results, expected_timestamp_results);
-
-            let expected_hash_value_results = Object.create(null);
-            INSERT_HASHES.forEach(hash=>{
-                expected_hash_value_results[hash] = [upsert_response.txn_time];
-            });
-            results = search_util.iterateDBI(txn_env, 'hash_value');
-            assert.deepStrictEqual(results, expected_hash_value_results);
-
-            let expected_username_results = Object.create(null);
-            expected_username_results[HDB_USER.username] = [upsert_response.txn_time];
-
-            results = search_util.iterateDBI(txn_env, 'user_name');
-            assert.deepStrictEqual(results, expected_username_results);
-        });
-
-        it('test writing delete with user on operation', async()=>{
-            let delete_obj = new DeleteObject('dev', 'test', UPDATE_RECORDS);
-            delete_obj.hdb_user = HDB_USER;
-            let delete_response = new DeleteRecordsResponseObject(INSERT_HASHES, [], common.getMicroTime(), UPDATE_RECORDS);
-
-            //call the write txn function
-            let error = undefined;
-            try {
-                await lmdb_write_txn(delete_obj, delete_response);
-            }catch(e){
-                error = e;
-            }
-            assert.deepStrictEqual(error, undefined);
-
-            //test expected entries exist
-            let transaction_path = path.join(BASE_TRANSACTIONS_PATH, CREATE_TABLE_OBJ.schema);
-            let txn_env = undefined;
-            try {
-                txn_env = await environment_utility.openEnvironment(transaction_path, CREATE_TABLE_OBJ.table, true);
-            }catch(e){
-                error = e;
-            }
-            assert.deepStrictEqual(error, undefined);
-            assert.notStrictEqual(txn_env, undefined);
-
-            let delete_txn_obj = Object.assign({}, new LMDBDeleteTransactionObject(INSERT_HASHES, UPDATE_RECORDS, HDB_USER.username, delete_response.txn_time));
-            let expected_timestamp_results = test_utils.assignObjecttoNullObject({[delete_response.txn_time]: [delete_txn_obj]});
-
-            let results = search_util.iterateDBI(txn_env, 'timestamp');
-            assert.deepStrictEqual(results, expected_timestamp_results);
-
-            let expected_hash_value_results = Object.create(null);
-            INSERT_HASHES.forEach(hash=>{
-                expected_hash_value_results[hash] = [delete_response.txn_time];
-            });
-            results = search_util.iterateDBI(txn_env, 'hash_value');
-            assert.deepStrictEqual(results, expected_hash_value_results);
-
-            let expected_username_results = Object.create(null);
-            expected_username_results[HDB_USER.username] = [delete_response.txn_time];
-
-            results = search_util.iterateDBI(txn_env, 'user_name');
-            assert.deepStrictEqual(results, expected_username_results);
-        });
-    });
-
+describe('test lmdbWriteTransaction module', () => {
+	before(async () => {
+		await fs.remove(BASE_PATH);
+	});
+
+	after(() => {});
+
+	describe('test getDisableTxnLogSetting function', () => {
+		let rw_func = undefined;
+		before(() => {
+			rw_func = rw_lmdb_write_txn.__get__('getDisableTxnLogSetting');
+			global.lmdb_map = undefined;
+		});
+
+		afterEach(() => {
+			env_mngr.setProperty('CLUSTERING', orig_clustering_setting);
+			env_mngr.setProperty('DISABLE_TRANSACTION_LOG', orig_disable_txn_setting);
+		});
+
+		after(async () => {
+			env_mngr.setProperty('CLUSTERING', orig_clustering_setting);
+			env_mngr.setProperty('DISABLE_TRANSACTION_LOG', orig_disable_txn_setting);
+			await fs.remove(BASE_PATH);
+			global.lmdb_map = undefined;
+		});
+
+		it('test if DISABLE_TRANSACTION_LOG undefined & CLUSTERING undefined', () => {
+			env_mngr.setProperty('DISABLE_TRANSACTION_LOG', undefined);
+			let result = rw_func();
+			assert.deepStrictEqual(result, false);
+		});
+
+		it('test if DISABLE_TRANSACTION_LOG null & CLUSTERING undefined', () => {
+			env_mngr.setProperty('DISABLE_TRANSACTION_LOG', null);
+			let result = rw_func();
+			assert.deepStrictEqual(result, false);
+		});
+
+		it('test if DISABLE_TRANSACTION_LOG "" & CLUSTERING undefined', () => {
+			env_mngr.setProperty('DISABLE_TRANSACTION_LOG', '');
+			let result = rw_func();
+			assert.deepStrictEqual(result, false);
+		});
+
+		it('test if DISABLE_TRANSACTION_LOG true & CLUSTERING undefined', () => {
+			env_mngr.setProperty('DISABLE_TRANSACTION_LOG', true);
+			let result = rw_func();
+			assert.deepStrictEqual(result, true);
+		});
+
+		it('test if DISABLE_TRANSACTION_LOG false & CLUSTERING undefined', () => {
+			env_mngr.setProperty('CLUSTERING', undefined);
+			env_mngr.setProperty('DISABLE_TRANSACTION_LOG', false);
+			let result = rw_func();
+			assert.deepStrictEqual(result, false);
+		});
+
+		it('test if DISABLE_TRANSACTION_LOG "true" & CLUSTERING undefined', () => {
+			env_mngr.setProperty('DISABLE_TRANSACTION_LOG', 'true');
+			let result = rw_func();
+			assert.deepStrictEqual(result, true);
+		});
+
+		it('test if DISABLE_TRANSACTION_LOG "TRUE" & CLUSTERING undefined', () => {
+			env_mngr.setProperty('DISABLE_TRANSACTION_LOG', 'TRUE');
+			let result = rw_func();
+			assert.deepStrictEqual(result, true);
+		});
+
+		it('test if DISABLE_TRANSACTION_LOG "false" & CLUSTERING not exist', () => {
+			env_mngr.setProperty('DISABLE_TRANSACTION_LOG', 'false');
+			let result = rw_func();
+			assert.deepStrictEqual(result, false);
+		});
+
+		it('test if DISABLE_TRANSACTION_LOG "FALSE" & CLUSTERING not exist', () => {
+			env_mngr.setProperty('DISABLE_TRANSACTION_LOG', 'FALSE');
+			let result = rw_func();
+			assert.deepStrictEqual(result, false);
+		});
+
+		it('test if DISABLE_TRANSACTION_LOG "true" & CLUSTERING false', () => {
+			env_mngr.setProperty('DISABLE_TRANSACTION_LOG', 'true');
+			let result = rw_func();
+			assert.deepStrictEqual(result, true);
+		});
+
+		it('test if DISABLE_TRANSACTION_LOG "TRUE" & CLUSTERING false', () => {
+			env_mngr.setProperty('DISABLE_TRANSACTION_LOG', 'TRUE');
+			let result = rw_func();
+			assert.deepStrictEqual(result, true);
+		});
+
+		it('test if DISABLE_TRANSACTION_LOG true & CLUSTERING false', () => {
+			env_mngr.setProperty('DISABLE_TRANSACTION_LOG', true);
+			let result = rw_func();
+			assert.deepStrictEqual(result, true);
+		});
+	});
+
+	describe('test createTransactionObject function', () => {
+		before(async () => {
+			global.lmdb_map = undefined;
+			await fs.remove(test_utils.getMockLMDBPath());
+		});
+
+		after(async () => {
+			global.lmdb_map = undefined;
+			await fs.remove(test_utils.getMockLMDBPath());
+		});
+
+		it('test for insert operation no user on operation', async () => {
+			let insert_obj = new InsertObject('dev', 'test', 'id', INSERT_RECORDS);
+			let insert_response = new InsertRecordsResponseObject(INSERT_HASHES, [], common.getMicroTime());
+
+			let insert_txn_obj = new LMDBInsertTransactionObject(
+				INSERT_RECORDS,
+				undefined,
+				insert_response.txn_time,
+				INSERT_HASHES
+			);
+
+			let error = undefined;
+			let response = undefined;
+			try {
+				response = create_transaction_object_func(insert_obj, insert_response);
+			} catch (e) {
+				error = e;
+			}
+			assert.deepStrictEqual(error, undefined);
+
+			assert.deepStrictEqual(response, insert_txn_obj);
+		});
+		it('test for insert operation with user on operation', async () => {
+			let insert_obj = new InsertObject('dev', 'test', 'id', INSERT_RECORDS);
+			insert_obj.hdb_user = HDB_USER;
+			let insert_response = new InsertRecordsResponseObject(INSERT_HASHES, [], common.getMicroTime());
+
+			let insert_txn_obj = new LMDBInsertTransactionObject(
+				INSERT_RECORDS,
+				HDB_USER.username,
+				insert_response.txn_time,
+				INSERT_HASHES
+			);
+
+			let error = undefined;
+			let response = undefined;
+			try {
+				response = create_transaction_object_func(insert_obj, insert_response);
+			} catch (e) {
+				error = e;
+			}
+			assert.deepStrictEqual(error, undefined);
+
+			assert.deepStrictEqual(response, insert_txn_obj);
+		});
+
+		it('test for update operation', async () => {
+			let update_obj = new UpdateObject('dev', 'test', UPDATE_RECORDS);
+			update_obj.hdb_user = HDB_USER;
+			let update_response = new UpdateRecordsResponseObject(INSERT_HASHES, [], common.getMicroTime(), INSERT_RECORDS);
+
+			let update_txn_obj = new LMDBUpdateTransactionObject(
+				UPDATE_RECORDS,
+				INSERT_RECORDS,
+				HDB_USER.username,
+				update_response.txn_time,
+				INSERT_HASHES
+			);
+
+			let error = undefined;
+			let response = undefined;
+			try {
+				response = create_transaction_object_func(update_obj, update_response);
+			} catch (e) {
+				error = e;
+			}
+			assert.deepStrictEqual(error, undefined);
+
+			assert.deepStrictEqual(response, update_txn_obj);
+		});
+
+		it('test for upsert operation', async () => {
+			let upsert_obj = new UpsertObject('dev', 'test', UPSERT_RECORDS);
+			upsert_obj.hdb_user = HDB_USER;
+			let upsert_response = new UpsertRecordsResponseObject(INSERT_HASHES, common.getMicroTime(), INSERT_RECORDS);
+
+			let upsert_txn_obj = new LMDBUpsertTransactionObject(
+				UPSERT_RECORDS,
+				INSERT_RECORDS,
+				HDB_USER.username,
+				upsert_response.txn_time,
+				INSERT_HASHES
+			);
+
+			let error = undefined;
+			let response = undefined;
+			try {
+				response = create_transaction_object_func(upsert_obj, upsert_response);
+			} catch (e) {
+				error = e;
+			}
+			assert.deepStrictEqual(error, undefined);
+
+			assert.deepStrictEqual(response, upsert_txn_obj);
+		});
+
+		it('test for delete operation', async () => {
+			let delete_obj = new DeleteObject('dev', 'test', INSERT_HASHES);
+			delete_obj.hdb_user = HDB_USER;
+			let delete_response = new DeleteRecordsResponseObject(INSERT_HASHES, [], common.getMicroTime(), UPDATE_RECORDS);
+
+			let delete_txn_obj = new LMDBDeleteTransactionObject(
+				INSERT_HASHES,
+				UPDATE_RECORDS,
+				HDB_USER.username,
+				delete_response.txn_time
+			);
+
+			let error = undefined;
+			let response = undefined;
+			try {
+				response = create_transaction_object_func(delete_obj, delete_response);
+			} catch (e) {
+				error = e;
+			}
+			assert.deepStrictEqual(error, undefined);
+
+			assert.deepStrictEqual(response, delete_txn_obj);
+		});
+
+		it('test for unknown operation', async () => {
+			let delete_obj = { operation: 'other' };
+			delete_obj.hdb_user = HDB_USER;
+			let delete_response = new DeleteRecordsResponseObject(INSERT_HASHES, [], common.getMicroTime(), UPDATE_RECORDS);
+
+			let error = undefined;
+			let response = undefined;
+			try {
+				response = create_transaction_object_func(delete_obj, delete_response);
+			} catch (e) {
+				error = e;
+			}
+			assert.deepStrictEqual(error, undefined);
+
+			assert.deepStrictEqual(response, undefined);
+		});
+	});
+
+	describe('test writeTransaction function', () => {
+		let env;
+		beforeEach(async () => {
+			await fs.mkdirp(BASE_PATH);
+			global.lmdb_map = undefined;
+			env = await lmdb_create_txn_envs(CREATE_TABLE_OBJ);
+		});
+
+		afterEach(async () => {
+			await env.close();
+			await fs.remove(BASE_PATH);
+			global.lmdb_map = undefined;
+		});
+
+		it('test writing insert no user on operation', async () => {
+			let insert_obj = new InsertObject('dev', 'test', 'id', INSERT_RECORDS);
+			let insert_response = new InsertRecordsResponseObject(INSERT_HASHES, [], common.getMicroTime());
+
+			//call the write txn function
+			let error = undefined;
+			try {
+				await lmdb_write_txn(insert_obj, insert_response);
+			} catch (e) {
+				error = e;
+			}
+			assert.deepStrictEqual(error, undefined);
+
+			//test expected entries exist
+			let transaction_path = path.join(BASE_TRANSACTIONS_PATH, CREATE_TABLE_OBJ.schema);
+			let txn_env = undefined;
+			try {
+				txn_env = await environment_utility.openEnvironment(transaction_path, CREATE_TABLE_OBJ.table, true);
+			} catch (e) {
+				error = e;
+			}
+			assert.deepStrictEqual(error, undefined);
+			assert.notStrictEqual(txn_env, undefined);
+
+			let insert_txn_obj = Object.assign(
+				{},
+				new LMDBInsertTransactionObject(INSERT_RECORDS, undefined, insert_response.txn_time, INSERT_HASHES)
+			);
+			let expected_timestamp_results = test_utils.assignObjecttoNullObject({
+				[insert_response.txn_time]: [insert_txn_obj],
+			});
+
+			let results = search_util.iterateDBI(txn_env, 'timestamp');
+			assert.deepStrictEqual(results, expected_timestamp_results);
+
+			let expected_hash_value_results = Object.create(null);
+			INSERT_HASHES.forEach((hash) => {
+				expected_hash_value_results[hash] = [insert_response.txn_time];
+			});
+			results = search_util.iterateDBI(txn_env, 'hash_value');
+			assert.deepStrictEqual(results, expected_hash_value_results);
+
+			results = search_util.iterateDBI(txn_env, 'user_name');
+			assert.deepStrictEqual(results, Object.create(null));
+		});
+
+		it('test writing insert with DISABLE_TRANSACTION_LOG true', async () => {
+			let disable_txn = rw_lmdb_write_txn.__set__('DISABLE_TRANSACTION_LOG', true);
+
+			let insert_obj = new InsertObject('dev', 'test', 'id', INSERT_RECORDS);
+			let insert_response = new InsertRecordsResponseObject(INSERT_HASHES, [], common.getMicroTime());
+
+			//call the write txn function
+			let error = undefined;
+			try {
+				await rw_lmdb_write_txn(insert_obj, insert_response);
+			} catch (e) {
+				error = e;
+			}
+			assert.deepStrictEqual(error, undefined);
+
+			//test expected entries exist
+			let transaction_path = path.join(BASE_TRANSACTIONS_PATH, CREATE_TABLE_OBJ.schema);
+			let txn_env = undefined;
+			try {
+				txn_env = await environment_utility.openEnvironment(transaction_path, CREATE_TABLE_OBJ.table, true);
+			} catch (e) {
+				error = e;
+			}
+			assert.deepStrictEqual(error, undefined);
+			assert.notStrictEqual(txn_env, undefined);
+
+			let results = search_util.iterateDBI(txn_env, 'timestamp');
+			assert.deepStrictEqual(results, Object.create(null));
+
+			results = search_util.iterateDBI(txn_env, 'hash_value');
+			assert.deepStrictEqual(results, Object.create(null));
+
+			results = search_util.iterateDBI(txn_env, 'user_name');
+			assert.deepStrictEqual(results, Object.create(null));
+
+			disable_txn();
+		});
+
+		it('test writing insert with user on operation', async () => {
+			let insert_obj = new InsertObject('dev', 'test', 'id', INSERT_RECORDS);
+			insert_obj.hdb_user = HDB_USER;
+			let insert_response = new InsertRecordsResponseObject(INSERT_HASHES, [], common.getMicroTime());
+
+			//call the write txn function
+			let error = undefined;
+			try {
+				await lmdb_write_txn(insert_obj, insert_response);
+			} catch (e) {
+				error = e;
+			}
+			assert.deepStrictEqual(error, undefined);
+
+			//test expected entries exist
+			let transaction_path = path.join(BASE_TRANSACTIONS_PATH, CREATE_TABLE_OBJ.schema);
+			let txn_env = undefined;
+			try {
+				txn_env = await environment_utility.openEnvironment(transaction_path, CREATE_TABLE_OBJ.table, true);
+			} catch (e) {
+				error = e;
+			}
+			assert.deepStrictEqual(error, undefined);
+			assert.notStrictEqual(txn_env, undefined);
+
+			let insert_txn_obj = Object.assign(
+				{},
+				new LMDBInsertTransactionObject(INSERT_RECORDS, HDB_USER.username, insert_response.txn_time, INSERT_HASHES)
+			);
+			let expected_timestamp_results = test_utils.assignObjecttoNullObject({
+				[insert_response.txn_time]: [insert_txn_obj],
+			});
+
+			let results = search_util.iterateDBI(txn_env, 'timestamp');
+			assert.deepStrictEqual(results, expected_timestamp_results);
+
+			let expected_hash_value_results = Object.create(null);
+			INSERT_HASHES.forEach((hash) => {
+				expected_hash_value_results[hash] = [insert_response.txn_time];
+			});
+			results = search_util.iterateDBI(txn_env, 'hash_value');
+			assert.deepStrictEqual(results, expected_hash_value_results);
+
+			let expected_username_results = Object.create(null);
+			expected_username_results[HDB_USER.username] = [insert_response.txn_time];
+
+			results = search_util.iterateDBI(txn_env, 'user_name');
+			assert.deepStrictEqual(results, expected_username_results);
+		});
+
+		it('test writing update with user on operation', async () => {
+			let update_obj = new UpdateObject('dev', 'test', UPDATE_RECORDS);
+			update_obj.hdb_user = HDB_USER;
+			let update_response = new UpdateRecordsResponseObject(INSERT_HASHES, [], common.getMicroTime(), INSERT_RECORDS);
+
+			//call the write txn function
+			let error = undefined;
+			try {
+				await lmdb_write_txn(update_obj, update_response);
+			} catch (e) {
+				error = e;
+			}
+			assert.deepStrictEqual(error, undefined);
+
+			//test expected entries exist
+			let transaction_path = path.join(BASE_TRANSACTIONS_PATH, CREATE_TABLE_OBJ.schema);
+			let txn_env = undefined;
+			try {
+				txn_env = await environment_utility.openEnvironment(transaction_path, CREATE_TABLE_OBJ.table, true);
+			} catch (e) {
+				error = e;
+			}
+			assert.deepStrictEqual(error, undefined);
+			assert.notStrictEqual(txn_env, undefined);
+
+			let update_txn_obj = Object.assign(
+				{},
+				new LMDBUpdateTransactionObject(
+					UPDATE_RECORDS,
+					INSERT_RECORDS,
+					HDB_USER.username,
+					update_response.txn_time,
+					INSERT_HASHES
+				)
+			);
+			let expected_timestamp_results = test_utils.assignObjecttoNullObject({
+				[update_response.txn_time]: [update_txn_obj],
+			});
+
+			let results = search_util.iterateDBI(txn_env, 'timestamp');
+			assert.deepStrictEqual(results, expected_timestamp_results);
+
+			let expected_hash_value_results = Object.create(null);
+			INSERT_HASHES.forEach((hash) => {
+				expected_hash_value_results[hash] = [update_response.txn_time];
+			});
+			results = search_util.iterateDBI(txn_env, 'hash_value');
+			assert.deepStrictEqual(results, expected_hash_value_results);
+
+			let expected_username_results = Object.create(null);
+			expected_username_results[HDB_USER.username] = [update_response.txn_time];
+
+			results = search_util.iterateDBI(txn_env, 'user_name');
+			assert.deepStrictEqual(results, expected_username_results);
+		});
+
+		it('test writing upsert with user on operation', async () => {
+			let upsert_obj = new UpsertObject('dev', 'test', UPSERT_RECORDS);
+			upsert_obj.hdb_user = HDB_USER;
+			let upsert_response = new UpsertRecordsResponseObject(INSERT_HASHES, common.getMicroTime(), UPDATE_RECORDS);
+
+			//call the write txn function
+			let error = undefined;
+			try {
+				await lmdb_write_txn(upsert_obj, upsert_response);
+			} catch (e) {
+				error = e;
+			}
+			assert.deepStrictEqual(error, undefined);
+
+			//test expected entries exist
+			let transaction_path = path.join(BASE_TRANSACTIONS_PATH, CREATE_TABLE_OBJ.schema);
+			let txn_env = undefined;
+			try {
+				txn_env = await environment_utility.openEnvironment(transaction_path, CREATE_TABLE_OBJ.table, true);
+			} catch (e) {
+				error = e;
+			}
+			assert.deepStrictEqual(error, undefined);
+			assert.notStrictEqual(txn_env, undefined);
+
+			let upsert_txn_obj = Object.assign(
+				{},
+				new LMDBUpsertTransactionObject(
+					UPSERT_RECORDS,
+					UPDATE_RECORDS,
+					HDB_USER.username,
+					upsert_response.txn_time,
+					INSERT_HASHES
+				)
+			);
+			let expected_timestamp_results = test_utils.assignObjecttoNullObject({
+				[upsert_response.txn_time]: [upsert_txn_obj],
+			});
+
+			let results = search_util.iterateDBI(txn_env, 'timestamp');
+			assert.deepStrictEqual(results, expected_timestamp_results);
+
+			let expected_hash_value_results = Object.create(null);
+			INSERT_HASHES.forEach((hash) => {
+				expected_hash_value_results[hash] = [upsert_response.txn_time];
+			});
+			results = search_util.iterateDBI(txn_env, 'hash_value');
+			assert.deepStrictEqual(results, expected_hash_value_results);
+
+			let expected_username_results = Object.create(null);
+			expected_username_results[HDB_USER.username] = [upsert_response.txn_time];
+
+			results = search_util.iterateDBI(txn_env, 'user_name');
+			assert.deepStrictEqual(results, expected_username_results);
+		});
+
+		it('test writing delete with user on operation', async () => {
+			let delete_obj = new DeleteObject('dev', 'test', UPDATE_RECORDS);
+			delete_obj.hdb_user = HDB_USER;
+			let delete_response = new DeleteRecordsResponseObject(INSERT_HASHES, [], common.getMicroTime(), UPDATE_RECORDS);
+
+			//call the write txn function
+			let error = undefined;
+			try {
+				await lmdb_write_txn(delete_obj, delete_response);
+			} catch (e) {
+				error = e;
+			}
+			assert.deepStrictEqual(error, undefined);
+
+			//test expected entries exist
+			let transaction_path = path.join(BASE_TRANSACTIONS_PATH, CREATE_TABLE_OBJ.schema);
+			let txn_env = undefined;
+			try {
+				txn_env = await environment_utility.openEnvironment(transaction_path, CREATE_TABLE_OBJ.table, true);
+			} catch (e) {
+				error = e;
+			}
+			assert.deepStrictEqual(error, undefined);
+			assert.notStrictEqual(txn_env, undefined);
+
+			let delete_txn_obj = Object.assign(
+				{},
+				new LMDBDeleteTransactionObject(INSERT_HASHES, UPDATE_RECORDS, HDB_USER.username, delete_response.txn_time)
+			);
+			let expected_timestamp_results = test_utils.assignObjecttoNullObject({
+				[delete_response.txn_time]: [delete_txn_obj],
+			});
+
+			let results = search_util.iterateDBI(txn_env, 'timestamp');
+			assert.deepStrictEqual(results, expected_timestamp_results);
+
+			let expected_hash_value_results = Object.create(null);
+			INSERT_HASHES.forEach((hash) => {
+				expected_hash_value_results[hash] = [delete_response.txn_time];
+			});
+			results = search_util.iterateDBI(txn_env, 'hash_value');
+			assert.deepStrictEqual(results, expected_hash_value_results);
+
+			let expected_username_results = Object.create(null);
+			expected_username_results[HDB_USER.username] = [delete_response.txn_time];
+
+			results = search_util.iterateDBI(txn_env, 'user_name');
+			assert.deepStrictEqual(results, expected_username_results);
+		});
+	});
 });

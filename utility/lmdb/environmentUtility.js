@@ -237,7 +237,7 @@ async function deleteEnvironment(base_path, env_name, is_txn = false) {
 		let full_name = getCachedEnvironmentName(base_path, env_name, is_txn);
 		if (global.lmdb_map[full_name]) {
 			let env = global.lmdb_map[full_name];
-			closeEnvironment(env);
+			await closeEnvironment(env);
 			delete global.lmdb_map[full_name];
 		}
 	}
@@ -245,14 +245,14 @@ async function deleteEnvironment(base_path, env_name, is_txn = false) {
 
 /**
  * takes an environment and closes it
- * @param env
+ * @param {lmdb.RootDatabase} env
  */
-function closeEnvironment(env) {
+async function closeEnvironment(env) {
 	//make sure env is actually a reference to the lmdb environment class so we don't blow anything up
 	common.validateEnv(env);
 	let environment_name = env[lmdb_terms.ENVIRONMENT_NAME_KEY];
 	//we need to close the environment to release the file from the process
-	env.close();
+	await env.close();
 	if (environment_name !== undefined && global.lmdb_map !== undefined) {
 		delete global.lmdb_map[environment_name];
 	}
@@ -420,6 +420,10 @@ function openDBI(env, dbi_name) {
 	try {
 		let dbi_init = new OpenDBIObject(false, dbi_definition.dup_sort, dbi_definition.useVersions);
 		dbi = env.openDB(dbi_name, dbi_init);
+		//current version of lmdb no longer throws an error if you attempt to open a non-existent dbi, simulating old behavior
+		if (dbi.db === undefined) {
+			throw new Error('MDB_NOTFOUND');
+		}
 	} catch (e) {
 		if (e.message.includes('MDB_NOTFOUND') === true) {
 			throw new Error(LMDB_ERRORS.DBI_DOES_NOT_EXIST);
@@ -480,7 +484,7 @@ function dropDBI(env, dbi_name) {
 	}
 
 	let dbi = openDBI(env, dbi_name);
-	dbi.deleteDB();
+	dbi.dropSync();
 
 	if (env.dbis !== undefined) {
 		delete env.dbis[dbi_name];

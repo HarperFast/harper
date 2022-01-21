@@ -260,7 +260,7 @@ async function processTable(schema, table, the_schema_path, is_transaction_reind
 
 	//close old & new environments, manually delete the global reference to the new env
 	old_environment_utility.closeEnvironment(old_env);
-	new_environment_utility.closeEnvironment(new_env);
+	await new_environment_utility.closeEnvironment(new_env);
 	delete global.lmdb_map[`${schema}.${table}`];
 
 	//move environment to correct location
@@ -273,7 +273,7 @@ async function processTable(schema, table, the_schema_path, is_transaction_reind
 	let stat = new_environment_utility.statDBI(env, hash);
 	pino_logger.info(`New stats: ${JSON.stringify(new_stats)}. New stats after move: ${JSON.stringify(stat)}`);
 	assert.deepStrictEqual(stat, new_stats);
-	new_environment_utility.closeEnvironment(env);
+	await new_environment_utility.closeEnvironment(env);
 }
 
 /**
