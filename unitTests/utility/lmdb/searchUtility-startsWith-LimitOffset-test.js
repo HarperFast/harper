@@ -54,7 +54,7 @@ describe('test startsWith function', ()=> {
     });
 
     after(async () => {
-        env.close();
+        await env.close();
 
         global.lmdb_map = undefined;
         await fs.remove(test_utils.getMockLMDBPath());
@@ -146,7 +146,7 @@ describe('test startsWith function reverse offset limit', ()=> {
 
     after(async () => {
         date_stub.restore();
-        env.close();
+        await env.close();
 
         global.lmdb_map = undefined;
         await fs.remove(test_utils.getMockLMDBPath());

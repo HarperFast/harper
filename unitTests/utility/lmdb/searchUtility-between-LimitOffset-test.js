@@ -40,7 +40,7 @@ describe('test between function', ()=> {
     });
 
     after(async () => {
-        env.close();
+        await env.close();
         global.lmdb_map = undefined;
         await fs.remove(test_utils.getMockLMDBPath());
     });
@@ -340,7 +340,7 @@ describe('test between function', ()=> {
 
         after(async () => {
             date_stub.restore();
-            env.close();
+            await env.close();
             global.lmdb_map = undefined;
             await fs.remove(test_utils.getMockLMDBPath());
         });

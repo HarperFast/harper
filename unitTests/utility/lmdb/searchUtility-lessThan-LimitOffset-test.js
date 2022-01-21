@@ -38,7 +38,7 @@ describe('test lessThan function', ()=> {
     });
 
     after(async () => {
-        env.close();
+        await env.close();
         global.lmdb_map = undefined;
         await fs.remove(test_utils.getMockLMDBPath());
     });
@@ -308,7 +308,7 @@ describe('test lessThan function reverse limit offset', ()=> {
 
     after(async () => {
         date_stub.restore();
-        env.close();
+        await env.close();
         global.lmdb_map = undefined;
         await fs.remove(test_utils.getMockLMDBPath());
     });

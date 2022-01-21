@@ -68,7 +68,7 @@ describe('Test searchUtility module', ()=>{
         });
 
         after(async ()=>{
-            env.close();
+            await env.close();
             global.lmdb_map = undefined;
             await fs.remove(test_utils.getMockLMDBPath());
         });
@@ -133,7 +133,7 @@ describe('Test searchUtility module', ()=>{
         });
 
         after(async ()=>{
-            env.close();
+            await env.close();
             global.lmdb_map = undefined;
             await fs.remove(test_utils.getMockLMDBPath());
         });
@@ -206,7 +206,7 @@ describe('Test searchUtility module', ()=>{
         });
 
         after(async ()=>{
-            env.close();
+            await env.close();
 
             global.lmdb_map = undefined;
             await fs.remove(test_utils.getMockLMDBPath());
@@ -268,7 +268,7 @@ describe('Test searchUtility module', ()=>{
         });
 
         after(async () => {
-            env.close();
+            await env.close();
 
             global.lmdb_map = undefined;
             await fs.remove(test_utils.getMockLMDBPath());
@@ -311,7 +311,7 @@ describe('Test searchUtility module', ()=>{
         });
 
         after(async () => {
-            env.close();
+            await env.close();
 
             global.lmdb_map = undefined;
             await fs.remove(test_utils.getMockLMDBPath());
@@ -362,7 +362,7 @@ describe('Test searchUtility module', ()=>{
         });
 
         after(async () => {
-            env.close();
+            await env.close();
 
             global.lmdb_map = undefined;
             await fs.remove(test_utils.getMockLMDBPath());
@@ -403,7 +403,7 @@ describe('Test searchUtility module', ()=>{
         });
 
         after(async () => {
-            env.close();
+            await env.close();
 
             global.lmdb_map = undefined;
             await fs.remove(test_utils.getMockLMDBPath());
@@ -435,7 +435,7 @@ describe('Test searchUtility module', ()=>{
         });
 
         after(async () => {
-            env.close();
+            await env.close();
 
             global.lmdb_map = undefined;
             await fs.remove(test_utils.getMockLMDBPath());
