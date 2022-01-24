@@ -61,6 +61,10 @@ function convertKeyValueToWrite(key) {
 
 	//if this is an array, iterate the array and evalaute if it's contents are primitives. if they are return the array as is. if not we convert to string
 	if (Array.isArray(key)) {
+		if (key.length === 0) {
+			return JSON.stringify(key);
+		}
+
 		for (let x = 0, length = key.length; x < length; x++) {
 			let array_entry = key[x];
 
