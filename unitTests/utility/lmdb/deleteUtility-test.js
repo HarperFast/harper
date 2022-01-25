@@ -12,10 +12,11 @@ const test_utils = require('../../test_utils');
 const path = require('path');
 const assert = require('assert');
 const sinon = require('sinon');
+const uuid = require('uuid/v4');
 const LMDB_TEST_ERRORS = require('../../commonTestErrors').LMDB_ERRORS_ENUM;
 
 const BASE_TEST_PATH = path.join(test_utils.getMockLMDBPath(), 'lmdbTest');
-const TEST_ENVIRONMENT_NAME = 'test';
+let TEST_ENVIRONMENT_NAME = 'test';
 const HASH_ATTRIBUTE_NAME = 'id';
 const All_ATTRIBUTES = ['id', 'name', 'age', 'city', 'text'];
 
@@ -69,6 +70,7 @@ describe('Test deleteUtility', () => {
 
 		await fs.remove(test_utils.getMockLMDBPath());
 		await fs.mkdirp(BASE_TEST_PATH);
+		TEST_ENVIRONMENT_NAME = uuid();
 		env = await environment_utility.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
 		await environment_utility.createDBI(env, '__blob__', false);
 		let clone_records = test_utils.deepClone(MULTI_RECORD_ARRAY);

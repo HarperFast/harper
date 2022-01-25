@@ -23,7 +23,7 @@ const TIMESTAMP = Date.now();
 const UUID_VALUE = 'aaa-111-bbb-222';
 
 const BASE_TEST_PATH = path.join(test_utils.getMockLMDBPath(), 'lmdbTest');
-const TEST_ENVIRONMENT_NAME = 'test';
+let TEST_ENVIRONMENT_NAME = 'test';
 const HASH_ATTRIBUTE_NAME = 'id';
 const ALL_ATTRIBUTES = ['id', 'name', 'age', '__createdtime__', '__updatedtime__', '__blob__'];
 const ONE_RECORD_ARRAY = [{ id: '1', name: 'Kyle', age: '46' }];
@@ -72,7 +72,7 @@ describe('Test writeUtility module', () => {
 			global.lmdb_map = undefined;
 			await fs.remove(test_utils.getMockLMDBPath());
 			await fs.mkdirp(BASE_TEST_PATH);
-
+			TEST_ENVIRONMENT_NAME = uuid();
 			env = await environment_utility.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
 		});
 
@@ -210,7 +210,7 @@ describe('Test writeUtility module', () => {
 			global.lmdb_map = undefined;
 			await fs.remove(test_utils.getMockLMDBPath());
 			await fs.mkdirp(BASE_TEST_PATH);
-
+			TEST_ENVIRONMENT_NAME = uuid();
 			env = await environment_utility.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
 			await environment_utility.createDBI(env, 'id', false, true);
 			await environment_utility.createDBI(env, 'name', true);
@@ -562,7 +562,7 @@ describe('Test writeUtility module', () => {
 			global.lmdb_map = undefined;
 			await fs.remove(test_utils.getMockLMDBPath());
 			await fs.mkdirp(BASE_TEST_PATH);
-
+			TEST_ENVIRONMENT_NAME = uuid();
 			env = await environment_utility.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
 			await environment_utility.createDBI(env, 'id', false, true);
 			await environment_utility.createDBI(env, '__blob__', false);
@@ -1073,7 +1073,7 @@ describe('Test writeUtility module', () => {
 			global.lmdb_map = undefined;
 			await fs.remove(test_utils.getMockLMDBPath());
 			await fs.mkdirp(BASE_TEST_PATH);
-
+			TEST_ENVIRONMENT_NAME = uuid();
 			env = await environment_utility.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
 			await environment_utility.createDBI(env, 'id', false, true);
 			await environment_utility.createDBI(env, '__blob__', false);
