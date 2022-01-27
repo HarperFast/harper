@@ -10,6 +10,17 @@ const DBIDefinition = require('./DBIDefinition');
 const OpenDBIObject = require('./OpenDBIObject');
 const OpenEnvironmentObject = require('./OpenEnvironmentObject');
 const lmdb_terms = require('./terms');
+
+const env_mngr = require('../environment/environmentManager');
+if (!env_mngr.isInitialized()) {
+	env_mngr.initSync();
+}
+
+const LMDB_NOSYNC =
+	env_mngr.get('STORAGE_WRITE_ASYNC') === true ||
+	env_mngr.get('STORAGE_WRITE_ASYNC') === 'true' ||
+	env_mngr.get('STORAGE_WRITE_ASYNC') === 'TRUE';
+
 //Set initial map size to 1Gb
 // eslint-disable-next-line no-magic-numbers
 const MAP_SIZE = 1024 * 1024 * 1024;
@@ -137,7 +148,7 @@ async function createEnvironment(base_path, env_name, is_txn = false) {
 		if (e.code === 'ENOENT') {
 			let environment_path = path.join(base_path, env_name);
 			await fs.mkdirp(environment_path);
-			let env_init = new OpenEnvironmentObject(environment_path, MAP_SIZE, MAX_DBS, MAX_READERS);
+			let env_init = new OpenEnvironmentObject(environment_path, MAP_SIZE, MAX_DBS, MAX_READERS, LMDB_NOSYNC);
 			let env = lmdb.open(env_init);
 
 			env.dbis = Object.create(null);
@@ -205,7 +216,7 @@ async function openEnvironment(base_path, env_name, is_txn = false) {
 	await validateEnvironmentPath(base_path, env_name);
 
 	let env_path = path.join(base_path, env_name);
-	let env_init = new OpenEnvironmentObject(env_path, MAP_SIZE, MAX_DBS, MAX_READERS);
+	let env_init = new OpenEnvironmentObject(env_path, MAP_SIZE, MAX_DBS, MAX_READERS, LMDB_NOSYNC);
 	let env = lmdb.open(env_init);
 
 	env.dbis = Object.create(null);
