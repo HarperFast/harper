@@ -14,7 +14,7 @@ const lmdb_terms = require('../../../utility/lmdb/terms');
 const LMDB_TEST_FOLDER_NAME = 'lmdbTest';
 const BACKUP_FOLDER_NAME = 'backup';
 const BASE_TEST_PATH = path.join(test_utils.getMockLMDBPath(), LMDB_TEST_FOLDER_NAME);
-const TEST_ENVIRONMENT_NAME = 'test';
+let TEST_ENVIRONMENT_NAME = 'test';
 const BACKUP_PATH = path.join(test_utils.getMockLMDBPath(), BACKUP_FOLDER_NAME);
 const BACKUP_TEST_ENV_PATH = path.join(BACKUP_PATH, TEST_ENVIRONMENT_NAME);
 
@@ -906,6 +906,64 @@ describe('Test LMDB environmentUtility module', () => {
 			expected.name = new DBIDefinition(true);
 			assert.deepStrictEqual(list_err, undefined);
 			assert.deepStrictEqual(dbis, expected);
+		});
+	});
+
+	describe('Test nosync settings', () => {
+		let env;
+		let revert;
+		beforeEach(async () => {
+			global.lmdb_map = undefined;
+			await fs.remove(test_utils.getMockLMDBPath());
+			await fs.mkdirp(BASE_TEST_PATH);
+		});
+
+		after(async () => {
+			global.lmdb_map = undefined;
+			await fs.remove(test_utils.getMockLMDBPath());
+		});
+
+		it('test createEnvironment: setting is false, assert noSYnc is false', async () => {
+			revert = rw_lmdb_env_util.__set__('LMDB_NOSYNC', false);
+			env = await rw_lmdb_env_util.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
+			assert.deepStrictEqual(env.noSync, false);
+			await rw_lmdb_env_util.closeEnvironment(env);
+			revert();
+		});
+
+		it('test createEnvironment: setting is true, assert noSYnc is true', async () => {
+			revert = rw_lmdb_env_util.__set__('LMDB_NOSYNC', true);
+			env = await rw_lmdb_env_util.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
+
+			assert.deepStrictEqual(env.noSync, true);
+			await rw_lmdb_env_util.closeEnvironment(env);
+			revert();
+		});
+
+		it('test openEnvironment: setting is false, assert noSYnc is false', async () => {
+			revert = rw_lmdb_env_util.__set__('LMDB_NOSYNC', true);
+			env = await rw_lmdb_env_util.createEnvironment(BASE_TEST_PATH, 'noSYnc_false');
+			assert.deepStrictEqual(env.noSync, true);
+			revert();
+			global.lmdb_map = undefined;
+			revert = rw_lmdb_env_util.__set__('LMDB_NOSYNC', false);
+			env = await rw_lmdb_env_util.openEnvironment(BASE_TEST_PATH, 'noSYnc_false');
+			assert.deepStrictEqual(env.noSync, false);
+			await rw_lmdb_env_util.closeEnvironment(env);
+			revert();
+		});
+
+		it('test openEnvironment: setting is true, assert noSYnc is true', async () => {
+			revert = rw_lmdb_env_util.__set__('LMDB_NOSYNC', false);
+			env = await rw_lmdb_env_util.createEnvironment(BASE_TEST_PATH, 'noSYnc_true');
+			assert.deepStrictEqual(env.noSync, false);
+			revert();
+			global.lmdb_map = undefined;
+			revert = rw_lmdb_env_util.__set__('LMDB_NOSYNC', true);
+			env = await rw_lmdb_env_util.openEnvironment(BASE_TEST_PATH, 'noSYnc_true');
+			assert.deepStrictEqual(env.noSync, true);
+			await rw_lmdb_env_util.closeEnvironment(env);
+			revert();
 		});
 	});
 });
