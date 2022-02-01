@@ -10,9 +10,8 @@ const path = require('path');
 const hdb_utils = require('../common_utils');
 const version = require('../../bin/version');
 const env_utility = require('../environment/environmentManager');
-if (!env_utility.isInitialized()) {
-	env_utility.initSync();
-}
+env_utility.initSync();
+
 const moment = require('moment');
 
 //Promisified function

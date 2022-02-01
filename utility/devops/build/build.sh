@@ -32,7 +32,8 @@ declare -a folders=("bin/*.js"
   "utility/pm2/*.js"
   "utility/scripts/*.js"
   "validation/*.js"
-  "validation/**/*.js")
+  "validation/**/*.js"
+  "config/*.js")
 
 #verify dependencies are installed
 node_version_installed="$(node -v)"

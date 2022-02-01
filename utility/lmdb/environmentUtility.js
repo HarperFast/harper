@@ -10,16 +10,12 @@ const DBIDefinition = require('./DBIDefinition');
 const OpenDBIObject = require('./OpenDBIObject');
 const OpenEnvironmentObject = require('./OpenEnvironmentObject');
 const lmdb_terms = require('./terms');
+const hdb_terms = require('../hdbTerms');
 
 const env_mngr = require('../environment/environmentManager');
-if (!env_mngr.isInitialized()) {
-	env_mngr.initSync();
-}
+env_mngr.initSync();
 
-const LMDB_NOSYNC =
-	env_mngr.get('STORAGE_WRITE_ASYNC') === true ||
-	env_mngr.get('STORAGE_WRITE_ASYNC') === 'true' ||
-	env_mngr.get('STORAGE_WRITE_ASYNC') === 'TRUE';
+const LMDB_NOSYNC = env_mngr.get(hdb_terms.CONFIG_PARAMS.OPERATIONSAPI_STORAGE_WRITEASYNC);
 
 //Set initial map size to 1Gb
 // eslint-disable-next-line no-magic-numbers

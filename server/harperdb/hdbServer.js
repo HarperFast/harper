@@ -44,7 +44,7 @@ const {
 const REQ_MAX_BODY_SIZE = 1024 * 1024 * 1024; //this is 1GB in bytes
 const TRUE_COMPARE_VAL = 'TRUE';
 
-const { HDB_SETTINGS_NAMES, HDB_SETTINGS_DEFAULT_VALUES } = terms;
+const { HDB_SETTINGS_NAMES } = terms;
 const PROPS_CORS_KEY = HDB_SETTINGS_NAMES.CORS_ENABLED_KEY;
 const PROPS_CORS_WHITELIST_KEY = HDB_SETTINGS_NAMES.CORS_WHITELIST_KEY;
 const PROPS_SERVER_TIMEOUT_KEY = HDB_SETTINGS_NAMES.SERVER_TIMEOUT_KEY;
@@ -54,10 +54,6 @@ const PROPS_PRIVATE_KEY = HDB_SETTINGS_NAMES.PRIVATE_KEY_KEY;
 const PROPS_CERT_KEY = HDB_SETTINGS_NAMES.CERT_KEY;
 const PROPS_HTTP_SECURE_ON_KEY = HDB_SETTINGS_NAMES.HTTP_SECURE_ENABLED_KEY;
 const PROPS_SERVER_PORT_KEY = HDB_SETTINGS_NAMES.SERVER_PORT_KEY;
-
-const DEFAULT_SERVER_TIMEOUT = HDB_SETTINGS_DEFAULT_VALUES[PROPS_SERVER_TIMEOUT_KEY];
-const DEFAULT_KEEP_ALIVE_TIMEOUT = HDB_SETTINGS_DEFAULT_VALUES[PROPS_SERVER_KEEP_ALIVE_TIMEOUT_KEY];
-const DEFAULT_HEADER_TIMEOUT = HDB_SETTINGS_DEFAULT_VALUES[PROPS_HEADER_TIMEOUT_KEY];
 
 let server = undefined;
 
@@ -209,11 +205,8 @@ function buildServer(is_https) {
  * @returns {{keepAliveTimeout: *, bodyLimit: number, connectionTimeout: *}}
  */
 function getServerOptions(is_https) {
-	const server_timeout = env.get(PROPS_SERVER_TIMEOUT_KEY) ? env.get(PROPS_SERVER_TIMEOUT_KEY) : DEFAULT_SERVER_TIMEOUT;
-	const keep_alive_timeout = env.get(PROPS_SERVER_KEEP_ALIVE_TIMEOUT_KEY)
-		? env.get(PROPS_SERVER_KEEP_ALIVE_TIMEOUT_KEY)
-		: DEFAULT_KEEP_ALIVE_TIMEOUT;
-
+	const server_timeout = env.get(PROPS_SERVER_TIMEOUT_KEY);
+	const keep_alive_timeout = env.get(PROPS_SERVER_KEEP_ALIVE_TIMEOUT_KEY);
 	const server_opts = {
 		bodyLimit: REQ_MAX_BODY_SIZE,
 		connectionTimeout: server_timeout,
@@ -246,7 +239,7 @@ function getCORSOpts() {
 			allowedHeaders: ['Content-Type', 'Authorization'],
 			credentials: false,
 		};
-		if (props_cors_whitelist && props_cors_whitelist.length > 0) {
+		if (props_cors_whitelist && props_cors_whitelist.length > 0 && props_cors_whitelist[0] !== null) {
 			let whitelist = props_cors_whitelist.split(',');
 			cors_options.origin = (origin, callback) => {
 				if (whitelist.indexOf(origin) !== -1) {
@@ -265,7 +258,7 @@ function getCORSOpts() {
  * @returns {*}
  */
 function getHeaderTimeoutConfig() {
-	return env.get(PROPS_HEADER_TIMEOUT_KEY) ? env.get(PROPS_HEADER_TIMEOUT_KEY) : DEFAULT_HEADER_TIMEOUT;
+	return env.get(PROPS_HEADER_TIMEOUT_KEY);
 }
 
 (async () => {

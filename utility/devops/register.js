@@ -15,9 +15,8 @@ const terms = require('../hdbTerms');
 
 const moment = require('moment');
 const env = require('../environment/environmentManager');
-if (!env.isInitialized()) {
-	env.initSync();
-}
+env.initSync();
+
 const LICENSE_PATH = path.join(env.getHdbBasePath(), terms.LICENSE_KEY_DIR_NAME, terms.LICENSE_FILE_NAME);
 const LICENSE_FILE = path.join(LICENSE_PATH, terms.LICENSE_FILE_NAME);
 

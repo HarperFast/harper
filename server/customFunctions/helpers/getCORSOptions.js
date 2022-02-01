@@ -2,12 +2,7 @@
 
 const env = require('../../../utility/environment/environmentManager');
 env.initSync();
-const terms = require('../../../utility/hdbTerms');
-
-const { HDB_SETTINGS_NAMES } = terms;
-const PROPS_CORS_KEY = HDB_SETTINGS_NAMES.CORS_ENABLED_KEY;
-const PROPS_CORS_WHITELIST_KEY = HDB_SETTINGS_NAMES.CORS_WHITELIST_KEY;
-const TRUE_COMPARE_VAL = 'TRUE';
+const { CONFIG_PARAMS } = require('../../../utility/hdbTerms');
 
 /**
  * Builds CORS options object to pass to cors plugin when/if it needs to be registered with Fastify
@@ -15,17 +10,16 @@ const TRUE_COMPARE_VAL = 'TRUE';
  * @returns {{credentials: boolean, origin: boolean, allowedHeaders: [string, string]}}
  */
 function getCORSOptions() {
-	let props_cors = env.get(PROPS_CORS_KEY);
-	let props_cors_whitelist = env.get(PROPS_CORS_WHITELIST_KEY);
+	let props_cors_whitelist = env.get(CONFIG_PARAMS.CUSTOMFUNCTIONS_NETWORK_CORSWHITELIST);
+	let props_cors = env.get(CONFIG_PARAMS.CUSTOMFUNCTIONS_NETWORK_CORS);
 	let cors_options;
-
-	if (props_cors && (props_cors === true || props_cors.toUpperCase() === TRUE_COMPARE_VAL)) {
+	if (props_cors) {
 		cors_options = {
 			origin: true,
 			allowedHeaders: ['Content-Type', 'Authorization'],
 			credentials: false,
 		};
-		if (props_cors_whitelist && props_cors_whitelist.length > 0) {
+		if (props_cors_whitelist && props_cors_whitelist.length > 0 && props_cors_whitelist[0] !== null) {
 			let whitelist = props_cors_whitelist.split(',');
 			cors_options.origin = (origin, callback) => {
 				if (whitelist.indexOf(origin) !== -1) {

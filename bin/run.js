@@ -14,6 +14,7 @@ const terms = require('../utility/hdbTerms');
 const install_user_permission = require('../utility/install_user_permission');
 const hdb_utils = require('../utility/common_utils');
 const pm2_utils = require('../utility/pm2/utilityFunctions');
+const config_utils = require('../config/configUtils');
 const { promisify } = require('util');
 const stop = require('./stop');
 const upgrade = require('./upgrade');
@@ -41,11 +42,14 @@ const HDB_STARTED = 'HarperDB successfully started.';
 // promisified functions
 const p_install_install = promisify(install.install);
 
-/***
+/**
  * Starts Harper DB.
  * If the hdb_boot_props file is not found, it is assumed an install needs to be performed.
+ * @param called_by_install - If run is called by install we want to ignore any
+ * cmd/env args as they would have already been written to config on install.
+ * @returns {Promise<void>}
  */
-async function run() {
+async function run(called_by_install = false) {
 	// Check to see if HDB is installed, if it isn't we call install.
 	try {
 		console.log(colors.magenta('Starting HarperDB...'));
@@ -61,8 +65,15 @@ async function run() {
 			}
 		}
 
-		bin_utility.changeSettingsFile();
-		env.initSync();
+		// The called by install check is here because if cmd/env args are passed to install (which calls run when done)
+		// we do not need to update/backup the config file on run.
+		if (!called_by_install) {
+			// If run is called with cmd/env vars we create a backup of config and update config file.
+			const parsed_args = hdb_utils.assignCMDENVVariables(Object.keys(terms.CONFIG_PARAM_MAP), true);
+			if (!hdb_utils.isEmpty(parsed_args) && !hdb_utils.isEmptyOrZeroLength(Object.keys(parsed_args))) {
+				config_utils.updateConfigValue(undefined, undefined, parsed_args, true);
+			}
+		}
 
 		// Check to see if an upgrade is needed based on existing hdb_info data.  If so, we need to force the user to upgrade
 		// before the server can be started.
@@ -100,10 +111,10 @@ async function run() {
 			process.exit(1);
 		}
 
-		const sc_env = env.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_ENABLED_KEY).toString().toLowerCase();
-		const cf_env = env.getProperty(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_ENABLED_KEY).toString().toLowerCase();
-		const clustering_enabled = sc_env === 'true' || sc_env === "'true'";
-		const custom_func_enabled = cf_env === 'true' || cf_env === "'true'";
+		const clustering_enabled = hdb_utils.autoCastBoolean(env.get(terms.HDB_SETTINGS_NAMES.CLUSTERING_ENABLED_KEY));
+		const custom_func_enabled = hdb_utils.autoCastBoolean(
+			env.get(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_ENABLED_KEY)
+		);
 
 		// Run can be called with a --service argument which allows designated services to be started.
 		const cmd_args = minimist(process.argv);
@@ -330,6 +341,6 @@ async function isHdbInstalled() {
 }
 
 function getRunInForeground() {
-	const FOREGROUND_ENV = env.getProperty(terms.HDB_SETTINGS_NAMES.RUN_IN_FOREGROUND);
+	const FOREGROUND_ENV = env.get(terms.HDB_SETTINGS_NAMES.RUN_IN_FOREGROUND);
 	return FOREGROUND_ENV === 'true' || FOREGROUND_ENV === true || FOREGROUND_ENV === 'TRUE';
 }

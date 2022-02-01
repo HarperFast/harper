@@ -21,9 +21,10 @@ const path = require('path');
 const InsertObject = require('../../data_layer/DataLayerObjects').InsertObject;
 const search = require('../../data_layer/search');
 const hdb_license = require('../../utility/registration/hdb_license');
+const config_utils = require('../../config/configUtils');
 const NodeObject = require('./NodeObject').Node;
 
-const CLUSTER_PORT = env_mgr.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_PORT_KEY);
+const CLUSTER_PORT = env_mgr.get(terms.HDB_SETTINGS_NAMES.CLUSTERING_PORT_KEY);
 const CONFIGURE_SUCCESS_RESPONSE =
 	'Successfully configured and loaded clustering configuration.  Some configurations may require a restart of HarperDB to take effect.';
 
@@ -48,9 +49,7 @@ for (let k in iface) {
 }
 
 let CLUSTER_PROCESSES = env_mgr.get(terms.HDB_SETTINGS_NAMES.MAX_CLUSTERING_PROCESSES);
-if (!CLUSTER_PROCESSES || isNaN(CLUSTER_PROCESSES)) {
-	CLUSTER_PROCESSES = terms.HDB_SETTINGS_DEFAULT_VALUES.MAX_CLUSTERING_PROCESSES;
-}
+
 //we add 1 as we need to get responses from the cluster workers & the clustering connector process
 const STATUS_CALL_COUNT = CLUSTER_PROCESSES + 1;
 const STATUS_CALL_TIMEOUT = 5000;
@@ -114,7 +113,7 @@ async function addNode(new_node) {
 		hdb_utils.sendTransactionToSocketCluster(
 			terms.INTERNAL_SC_CHANNELS.HDB_NODES,
 			add_node_msg,
-			env_mgr.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY)
+			env_mgr.get(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY)
 		);
 	} catch (e) {
 		throw new Error(e);
@@ -247,7 +246,7 @@ async function updateNode(update_node) {
 		hdb_utils.sendTransactionToSocketCluster(
 			terms.INTERNAL_SC_CHANNELS.HDB_NODES,
 			update_node_msg,
-			env_mgr.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY)
+			env_mgr.get(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY)
 		);
 	} catch (e) {
 		throw new Error(e);
@@ -290,7 +289,7 @@ async function removeNode(remove_json_message) {
 	hdb_utils.sendTransactionToSocketCluster(
 		terms.INTERNAL_SC_CHANNELS.HDB_NODES,
 		remove_node_msg,
-		env_mgr.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY)
+		env_mgr.get(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY)
 	);
 	return `successfully removed ${remove_json_message.name} from manifest`;
 }
@@ -330,28 +329,26 @@ async function configureCluster(enable_cluster_json) {
 	if (config_fields.NODE_NAME !== undefined) {
 		config_fields.NODE_NAME = config_fields.NODE_NAME.toString();
 	}
-	let validation = await configure_validator(config_fields);
-	let should_reload = false;
-	if (validation) {
-		log.error(`Validation error in configureCluster validation. ${validation}`);
-		throw new Error(validation);
-	}
+
+	// TODO - this full function will be refactored as part of config upgrade epic
+	// let validation = await configure_validator(config_fields);
+	// if (validation) {
+	// 	log.error(`Validation error in configureCluster validation. ${validation}`);
+	// 	throw new Error(validation);
+	// }
 
 	try {
 		let msg_keys = Object.keys(config_fields);
 		for (let i = 0; i < msg_keys.length; ++i) {
 			let curr = msg_keys[i];
 
-			if (curr && !hdb_utils.isEmptyOrZeroLength(terms.HDB_SETTINGS_NAMES_REVERSE_LOOKUP[curr])) {
+			if (curr) {
 				log.info(`Setting property ${curr} to value ${enable_cluster_json[curr]}`);
-				env_mgr.setProperty(curr, enable_cluster_json[curr]);
-				should_reload = true;
+				config_utils.updateConfigValue(curr, enable_cluster_json[curr], undefined, true);
+				log.info('Completed writing new settings to file and reloading the manager.');
 			}
 		}
-		if (should_reload) {
-			await env_mgr.writeSettingsFileSync(true);
-			log.info('Completed writing new settings to file and reloading the manager.');
-		}
+
 		return CONFIGURE_SUCCESS_RESPONSE;
 	} catch (err) {
 		log.error(err);
@@ -370,7 +367,7 @@ async function clusterStatus(cluster_status_json) {
 	log.trace(`getting cluster status`);
 	let response = {};
 	try {
-		let clustering_enabled = env_mgr.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_ENABLED_KEY);
+		let clustering_enabled = env_mgr.get(terms.HDB_SETTINGS_NAMES.CLUSTERING_ENABLED_KEY);
 		response['is_enabled'] = clustering_enabled;
 		response.node_name = env_mgr.get('NODE_NAME');
 		if (!clustering_enabled) {

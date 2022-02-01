@@ -806,7 +806,7 @@ async function postCSVLoadFunction(fields, orig_bulk_msg, result, orig_req) {
 	hdb_utils.sendTransactionToSocketCluster(
 		`${orig_bulk_msg.schema}:${orig_bulk_msg.table}`,
 		transaction_msg,
-		env.getProperty(hdb_terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY)
+		env.get(hdb_terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY)
 	);
 
 	transact_to_clustering_utils.sendAttributeTransaction(result, orig_bulk_msg, transaction_msg, orig_req);

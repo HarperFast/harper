@@ -79,7 +79,7 @@ function harperDBService() {
 						console.error(install_err);
 					} else {
 						console.log(response);
-						run.run();
+						run.run(true);
 					}
 				});
 				break;

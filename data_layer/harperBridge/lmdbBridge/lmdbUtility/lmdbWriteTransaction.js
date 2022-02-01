@@ -9,13 +9,9 @@ const LMDBDeleteTransactionObject = require('./LMDBDeleteTransactionObject');
 
 const lmdb_terms = require('../../../../utility/lmdb/terms');
 const hdb_util = require('../../../../utility/common_utils');
-const { HDB_SETTINGS_NAMES } = require('../../../../utility/hdbTerms');
+const { CONFIG_PARAMS } = require('../../../../utility/hdbTerms');
 const env_mngr = require('../../../../utility/environment/environmentManager');
-if (!env_mngr.isInitialized()) {
-	env_mngr.initSync();
-}
-
-const DISABLE_TRANSACTION_LOG = getDisableTxnLogSetting();
+env_mngr.initSync();
 
 const OPERATIONS_ENUM = require('../../../../utility/hdbTerms').OPERATIONS_ENUM;
 const { getTransactionStorePath } = require('./initializePaths');
@@ -29,7 +25,7 @@ module.exports = writeTransaction;
  * @returns {Promise<void>}
  */
 async function writeTransaction(hdb_operation, lmdb_response) {
-	if (DISABLE_TRANSACTION_LOG === true) {
+	if (env_mngr.get(CONFIG_PARAMS.LOGGING_AUDITLOG) === false) {
 		return;
 	}
 
@@ -115,13 +111,4 @@ function createTransactionObject(hdb_operation, lmdb_response) {
 			hdb_operation.__origin
 		);
 	}
-}
-
-function getDisableTxnLogSetting() {
-	let disable_txn_setting = env_mngr.get(HDB_SETTINGS_NAMES.DISABLE_TRANSACTION_LOG_KEY);
-
-	return (
-		!hdb_util.isEmptyOrZeroLength(disable_txn_setting) &&
-		(disable_txn_setting === true || disable_txn_setting.toString().toLowerCase() === 'true')
-	);
 }

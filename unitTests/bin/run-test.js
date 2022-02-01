@@ -10,7 +10,6 @@ const rewire = require('rewire');
 const fs = require('fs-extra');
 const path = require('path');
 const test_util = require('../test_utils');
-const harper_logger = require('../../utility/logging/harper_logger');
 const env_mangr = require('../../utility/environment/environmentManager');
 const install_user_permission = require('../../utility/install_user_permission');
 const hdb_utils = require('../../utility/common_utils');
@@ -65,7 +64,7 @@ describe('Test run module', () => {
 		upgrade = require('../../bin/upgrade');
 		stop = require('../../bin/stop');
 
-		get_prob_stub = sandbox.stub(env_mangr, 'getProperty');
+		get_prob_stub = sandbox.stub(env_mangr, 'get');
 		spawn_stub = sandbox.stub(child_process, 'spawn').returns(fake_spawn);
 		check_perms_stub = sandbox.stub(install_user_permission, 'checkPermission');
 		start_all_services_stub = sandbox.stub(pm2_utils, 'startAllServices').resolves();
@@ -529,6 +528,7 @@ describe('Test run module', () => {
 		let fs_stat_stub;
 
 		before(() => {
+			get_prob_stub.restore();
 			fs_stat_stub = sandbox.stub(fs, 'stat');
 			isHdbInstalled = run_rw.__get__('isHdbInstalled');
 		});

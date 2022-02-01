@@ -223,7 +223,7 @@ async function getVersionUpdateInfo() {
  */
 function checkIfInstallIsSupported() {
 	try {
-		env.getProperty(hdb_terms.HDB_SETTINGS_NAMES.CLUSTERING_USER_KEY);
+		env.get(hdb_terms.HDB_SETTINGS_NAMES.CLUSTERING_USER_KEY);
 	} catch (err) {
 		const err_msg =
 			'You are attempting to upgrade from a very old instance of HDB that is no longer supported. ' +

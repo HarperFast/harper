@@ -1,10 +1,11 @@
 'use strict';
 
-const HDB_SETTINGS_KEYS = Object.keys(require('../utility/hdbTerms').HDB_SETTINGS_NAMES_REVERSE_LOOKUP);
+const YAML = require('yaml');
+const path = require('path');
+const hdb_terms = require('../utility/hdbTerms');
 const env = require('../utility/environment/environmentManager');
-if (!env.isInitialized()) {
-	env.initSync();
-}
+const fs = require('fs-extra');
+env.initSync();
 
 module.exports = {
 	getConfiguration,
@@ -15,11 +16,9 @@ module.exports = {
  * @returns {{}}
  */
 function getConfiguration() {
-	let result = {};
-	for (let x = 0, length = HDB_SETTINGS_KEYS.length; x < length; x++) {
-		let key = HDB_SETTINGS_KEYS[x];
-		result[key] = env.getProperty(key);
-	}
+	const config_doc = YAML.parseDocument(
+		fs.readFileSync(path.join(env.get(hdb_terms.CONFIG_PARAMS.OPERATIONSAPI_ROOT), hdb_terms.HDB_CONFIG_FILE), 'utf8')
+	);
 
-	return result;
+	return config_doc.toJSON();
 }

@@ -24,6 +24,7 @@ const version = require('../../bin/version');
 // Location of the install log - the harperdb dir.
 const LOG_LOCATION = path.resolve(__dirname, `../../${hdb_terms.INSTALL_LOG}`);
 const check_jwt_tokens = require('./checkJWTTokensExist');
+const config_utils = require('../../config/configUtils');
 
 module.exports = {
 	install: run_install,
@@ -37,6 +38,7 @@ let check_install_path = false;
 let install_logger;
 const KEY_PAIR_BITS = 2048;
 const UPGRADE_MSG = 'Please use `harperdb upgrade` to update your existing instance of HDB. Exiting install...';
+const ABORT_MSG = 'Aborting install';
 
 env.initSync();
 
@@ -73,20 +75,7 @@ function run_install(callback) {
 		return callback(msg, null);
 	}
 
-	prompt.override = comm.assignCMDENVVariables([
-		'TC_AGREEMENT',
-		'HDB_ROOT',
-		'SERVER_PORT',
-		'HDB_ADMIN_USERNAME',
-		'HDB_ADMIN_PASSWORD',
-		'CLUSTERING_USER',
-		'CLUSTERING_PASSWORD',
-		'CLUSTERING_PORT',
-		'NODE_NAME',
-		'CLUSTERING',
-		'REINSTALL',
-		'REINSTALL',
-	]);
+	prompt.override = checkForPromptOverride();
 	prompt.start();
 	install_logger.info('starting install');
 	checkInstall(function (err, keepGoing) {
@@ -104,7 +93,6 @@ function run_install(callback) {
 					(data, callback2) => {
 						check_jwt_tokens();
 
-						console.log('HarperDB Installation was successful');
 						install_logger.info('Installation Successful');
 						callback2();
 					},
@@ -121,6 +109,49 @@ function run_install(callback) {
 			process.exit(0);
 		}
 	});
+}
+
+/**
+ * Check the cmd/env vars for any values that should override the install wizard prompts.
+ */
+function checkForPromptOverride() {
+	const all_prompts = [
+		'TC_AGREEMENT',
+		'HDB_ROOT',
+		'SERVER_PORT',
+		'HDB_ADMIN_USERNAME',
+		'HDB_ADMIN_PASSWORD',
+		'CLUSTERING_USER',
+		'CLUSTERING_PASSWORD',
+		'CLUSTERING_PORT',
+		'NODE_NAME',
+		'CLUSTERING',
+		'REINSTALL',
+	];
+
+	// The config refactor meant that some config values have multiple key names (old and new). Also some of the
+	// prompts are not config file values. For this reason we search twice for any matching cmd/env vars.
+	const prompt_cmdenv_args = comm.assignCMDENVVariables(all_prompts);
+	const config_cmdenv_args = comm.assignCMDENVVariables(Object.keys(hdb_terms.CONFIG_PARAM_MAP), true);
+	const override_values = {};
+
+	for (const install_prompt of all_prompts) {
+		// Get the config param for a prompt. There will be only one config param for a config value, this is the value
+		// that corresponds to a position in the config yaml file. This can be undefined because some of the prompts are
+		// not config file values.
+		const config_param = hdb_terms.CONFIG_PARAM_MAP[install_prompt.toLowerCase()];
+
+		// If cmd/env var is passed that matches one of the install wizard prompts add it to override values object.
+		if (prompt_cmdenv_args[install_prompt]) {
+			override_values[install_prompt] = prompt_cmdenv_args[install_prompt];
+			// If the prompt has a corresponding config param and that config param is present in the cmd/env vars, set that value
+			// to its corresponding prompt value.
+		} else if (config_param !== undefined && config_cmdenv_args[config_param.toLowerCase()]) {
+			override_values[install_prompt] = config_cmdenv_args[config_param.toLowerCase()];
+		}
+	}
+
+	return override_values;
 }
 
 /**
@@ -192,7 +223,7 @@ function checkInstall(callback) {
 	try {
 		let boot_prop_path = comm.getPropsFilePath();
 		fs.accessSync(boot_prop_path, fs.constants.F_OK | fs.constants.R_OK);
-		env.setPropsFilePath(boot_prop_path);
+		env.setProperty(env.BOOT_PROPS_FILE_PATH, boot_prop_path);
 		env.initSync();
 		if (!env.get('HDB_ROOT')) {
 			return callback(null, true);
@@ -247,7 +278,7 @@ function promptForReinstall(callback) {
 				prompt.get(overwrite_schema, function (prompt_err, overwrite_result) {
 					if (overwrite_result.KEEP_DATA === 'no' || overwrite_result.KEEP_DATA === 'n') {
 						// don't keep data, tear it all out.
-						fs.remove(env.get('HDB_ROOT'), function (fs_remove_err) {
+						fs.remove(env.getHdbBasePath(), function (fs_remove_err) {
 							if (fs_remove_err) {
 								install_logger.error(fs_remove_err);
 								console.log(
@@ -256,7 +287,7 @@ function promptForReinstall(callback) {
 								return callback(fs_remove_err);
 							}
 
-							fs.unlink(env.BOOT_PROPS_FILE_PATH, function (fs_unlink_err) {
+							fs.unlink(env.get(env.BOOT_PROPS_FILE_PATH), function (fs_unlink_err) {
 								if (fs_unlink_err) {
 									install_logger.error(fs_unlink_err);
 									console.log(
@@ -493,7 +524,7 @@ function createSettingsFile(mount_status, callback) {
 		return callback('mount failed');
 	}
 
-	let settings_path = `${wizard_result.HDB_ROOT}/config/settings.js`;
+	let settings_path = `${wizard_result.HDB_ROOT}/${hdb_terms.HDB_CONFIG_FILE}`;
 	createBootPropertiesFile(settings_path, (err) => {
 		install_logger.info('info', `creating settings file....`);
 		if (err) {
@@ -501,218 +532,42 @@ function createSettingsFile(mount_status, callback) {
 			console.error('There was a problem creating the boot file.  Please check the install log for details.');
 			return callback(err);
 		}
-		let HDB_SETTINGS_NAMES = hdb_terms.HDB_SETTINGS_NAMES;
-		let HDB_SETTINGS_DEFAULT = hdb_terms.HDB_SETTINGS_DEFAULT_VALUES;
-		const ARGS = comm.assignCMDENVVariables(Object.keys(hdb_terms.HDB_SETTINGS_NAMES_REVERSE_LOOKUP));
 
-		let num_cores = 4;
-		let os_cpus = undefined;
-		if (
-			ARGS[HDB_SETTINGS_NAMES.MAX_HDB_PROCESSES] &&
-			!isNaN(ARGS[HDB_SETTINGS_NAMES.MAX_HDB_PROCESSES]) &&
-			Number.isInteger(parseFloat(ARGS[HDB_SETTINGS_NAMES.MAX_HDB_PROCESSES]))
-		) {
-			num_cores = ARGS[HDB_SETTINGS_NAMES.MAX_HDB_PROCESSES];
-		} else {
-			try {
-				os_cpus = os.cpus().length;
-				num_cores = os_cpus;
-				install_logger.info(
-					`Detected ${os_cpus} on this machine, defaulting MAX_HDB_PROCESSES to that.  This can be changed later in the settings.js file.`
-				);
-			} catch (cpus_err) {
-				//No-op, should only get here in the case of android.  Defaulted to 4.
-			}
-		}
-
-		let num_cf_processes;
-		if (
-			ARGS[HDB_SETTINGS_NAMES.MAX_CUSTOM_FUNCTION_PROCESSES] &&
-			!isNaN(ARGS[HDB_SETTINGS_NAMES.MAX_CUSTOM_FUNCTION_PROCESSES]) &&
-			Number.isInteger(parseFloat(ARGS[HDB_SETTINGS_NAMES.MAX_CUSTOM_FUNCTION_PROCESSES]))
-		) {
-			num_cf_processes = ARGS[HDB_SETTINGS_NAMES.MAX_CUSTOM_FUNCTION_PROCESSES];
-		} else {
-			try {
-				num_cf_processes = os_cpus === undefined ? os.cpus().length : os_cpus;
-				install_logger.info(
-					`Detected ${os_cpus} on this machine, defaulting MAX_CUSTOM_FUNCTION_PROCESSES to that.  This can be changed later in the settings.js file.`
-				);
-			} catch (cpus_err) {
-				//No-op, should only get here in the case of android.  Defaulted to 4.
-				num_cf_processes = num_cores;
-			}
-		}
-
-		let log_path = ARGS[HDB_SETTINGS_NAMES.LOG_PATH_KEY];
-		if (!log_path) {
-			log_path = `${wizard_result.HDB_ROOT}/${HDB_SETTINGS_DEFAULT.LOG_PATH}`;
-		}
-		//set any
+		const ARGS = comm.assignCMDENVVariables(Object.keys(hdb_terms.CONFIG_PARAM_MAP), true);
 		Object.assign(ARGS, wizard_result);
-		let hdb_props_value =
-			`   ;Settings for the HarperDB process.\n` +
-			`\n` +
-			`   ;The directory selected during install where the database files reside.\n` +
-			`${HDB_SETTINGS_NAMES.HDB_ROOT_KEY} = ${wizard_result.HDB_ROOT}\n` +
-			`   ;The port the HarperDB REST interface will listen on.\n` +
-			`${HDB_SETTINGS_NAMES.SERVER_PORT_KEY} = ${wizard_result.SERVER_PORT}\n` +
-			`   ;The path to the SSL certificate used when running with HTTPS enabled.\n` +
-			`${HDB_SETTINGS_NAMES.CERT_KEY} = ${wizard_result.HDB_ROOT}/keys/certificate.pem\n` +
-			`   ;The path to the SSL private key used when running with HTTPS enabled.\n` +
-			`${HDB_SETTINGS_NAMES.PRIVATE_KEY_KEY} = ${wizard_result.HDB_ROOT}/keys/privateKey.pem\n` +
-			`   ;Set to true to enable HTTPS on the HarperDB REST endpoint.  Requires a valid certificate and key.\n` +
-			`${HDB_SETTINGS_NAMES.HTTP_SECURE_ENABLED_KEY} = ${generateSettingsValue(
-				ARGS,
-				HDB_SETTINGS_NAMES.HTTP_SECURE_ENABLED_KEY
-			)}\n` +
-			`   ;Set to true to enable Cross Origin Resource Sharing, which allows requests across a domain.\n` +
-			`${HDB_SETTINGS_NAMES.CORS_ENABLED_KEY} = ${generateSettingsValue(ARGS, HDB_SETTINGS_NAMES.CORS_ENABLED_KEY)}\n` +
-			`   ;Allows for setting allowable domains with CORS. Comma separated list.\n` +
-			`${HDB_SETTINGS_NAMES.CORS_WHITELIST_KEY} = ${generateSettingsValue(
-				ARGS,
-				HDB_SETTINGS_NAMES.CORS_WHITELIST_KEY
-			)}\n` +
-			`   ;Length of time in milliseconds after which a request will timeout.  Defaults to 120,000 ms (2 minutes).\n` +
-			`${HDB_SETTINGS_NAMES.SERVER_TIMEOUT_KEY} = ${generateSettingsValue(
-				ARGS,
-				HDB_SETTINGS_NAMES.SERVER_TIMEOUT_KEY
-			)}\n` +
-			`   ;The number of milliseconds of inactivity a server needs to wait for additional incoming data, after it has finished writing the last response.  Defaults to 5,000 ms (5 seconds).\n` +
-			`${HDB_SETTINGS_NAMES.SERVER_KEEP_ALIVE_TIMEOUT_KEY} = ${generateSettingsValue(
-				ARGS,
-				HDB_SETTINGS_NAMES.SERVER_KEEP_ALIVE_TIMEOUT_KEY
-			)}\n` +
-			`   ;Limit the amount of time the parser will wait to receive the complete HTTP headers..  Defaults to 60,000 ms (1 minute).\n` +
-			`${HDB_SETTINGS_NAMES.SERVER_HEADERS_TIMEOUT_KEY} = ${generateSettingsValue(
-				ARGS,
-				HDB_SETTINGS_NAMES.SERVER_HEADERS_TIMEOUT_KEY
-			)}\n` +
-			`   ;Define whether to log to a file or not.\n` +
-			`${HDB_SETTINGS_NAMES.LOG_TO_FILE} = ${generateSettingsValue(ARGS, HDB_SETTINGS_NAMES.LOG_TO_FILE)}\n` +
-			`   ;Define whether to log to stdout/stderr or not. NOTE HarperDB must run in foreground in order to receive the std stream from HarperDB.\n` +
-			`${HDB_SETTINGS_NAMES.LOG_TO_STDSTREAMS} = ${generateSettingsValue(
-				ARGS,
-				HDB_SETTINGS_NAMES.LOG_TO_STDSTREAMS
-			)}\n` +
-			`   ;Set to control amount of logging generated.  Accepted levels are trace, debug, warn, error, fatal.\n` +
-			`${HDB_SETTINGS_NAMES.LOG_LEVEL_KEY} = ${generateSettingsValue(ARGS, HDB_SETTINGS_NAMES.LOG_LEVEL_KEY)}\n` +
-			`   ;The path where log files will be written. If there is no file name included in the path, the log file will be created by default as 'hdb_log.log' \n` +
-			`${HDB_SETTINGS_NAMES.LOG_PATH_KEY} = ${log_path}\n` +
-			`   ;Set to true to enable daily log file rotations - each log file name will be prepended with YYYY-MM-DD.\n` +
-			`${HDB_SETTINGS_NAMES.LOG_DAILY_ROTATE_KEY} = ${generateSettingsValue(
-				ARGS,
-				HDB_SETTINGS_NAMES.LOG_DAILY_ROTATE_KEY
-			)}\n` +
-			`   ;Set the number of daily log files to maintain when LOG_DAILY_ROTATE is enabled. If no integer value is set, no limit will be set for\n` +
-			`   ;daily log files which may consume a large amount of storage depending on your log settings.\n` +
-			`${HDB_SETTINGS_NAMES.LOG_MAX_DAILY_FILES_KEY} = ${generateSettingsValue(
-				ARGS,
-				HDB_SETTINGS_NAMES.LOG_MAX_DAILY_FILES_KEY
-			)}\n` +
-			`   ;The environment used by NodeJS.  Setting to production will be the most performant, settings to development will generate more logging.\n` +
-			`${HDB_SETTINGS_NAMES.PROPS_ENV_KEY} = ${generateSettingsValue(ARGS, HDB_SETTINGS_NAMES.PROPS_ENV_KEY)}\n` +
-			`   ;This allows self signed certificates to be used in clustering.  This is a security risk\n` +
-			`   ;as clustering will not validate the cert, so should only be used internally.\n` +
-			`   ;The HDB install creates a self signed certificate, if you use that cert this must be set to true.\n` +
-			`${HDB_SETTINGS_NAMES.ALLOW_SELF_SIGNED_SSL_CERTS} = ${generateSettingsValue(
-				ARGS,
-				HDB_SETTINGS_NAMES.ALLOW_SELF_SIGNED_SSL_CERTS
-			)}\n` +
-			`   ;Set the max number of processes HarperDB will start.  This can also be limited by number of cores and licenses.\n` +
-			`${HDB_SETTINGS_NAMES.MAX_HDB_PROCESSES} = ${num_cores}\n` +
-			`   ;Set to true to enable clustering.  Requires a valid enterprise license.\n` +
-			`${HDB_SETTINGS_NAMES.CLUSTERING_ENABLED_KEY} = ${generateSettingsValue(
-				ARGS,
-				HDB_SETTINGS_NAMES.CLUSTERING_ENABLED_KEY
-			)}\n` +
-			`   ;The port that will be used for HarperDB clustering.\n` +
-			`${HDB_SETTINGS_NAMES.CLUSTERING_PORT_KEY} = ${generateSettingsValue(
-				ARGS,
-				HDB_SETTINGS_NAMES.CLUSTERING_PORT_KEY
-			)}\n` +
-			`   ;The name of this node in your HarperDB cluster topology.  This must be a value unique from the rest of your cluster node names.\n` +
-			`${HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY} = ${generateSettingsValue(
-				ARGS,
-				HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY
-			)}\n` +
-			`   ;The user used to connect to other instances of HarperDB, this user must have a role of cluster_user. \n` +
-			`${HDB_SETTINGS_NAMES.CLUSTERING_USER_KEY} = ${generateSettingsValue(
-				ARGS,
-				HDB_SETTINGS_NAMES.CLUSTERING_USER_KEY
-			)}\n` +
-			`   ;Defines if this instance does not record transactions. Note, if Clustering is enabled and Transaction Log is disabled your nodes will not catch up.  \n` +
-			`${HDB_SETTINGS_NAMES.DISABLE_TRANSACTION_LOG_KEY} = ${generateSettingsValue(
-				ARGS,
-				HDB_SETTINGS_NAMES.DISABLE_TRANSACTION_LOG_KEY
-			)}\n` +
-			`   ;Defines the length of time an operation token will be valid until it expires. Example values: https://github.com/vercel/ms  \n` +
-			`${HDB_SETTINGS_NAMES.OPERATION_TOKEN_TIMEOUT_KEY} = ${generateSettingsValue(
-				ARGS,
-				HDB_SETTINGS_NAMES.OPERATION_TOKEN_TIMEOUT_KEY
-			)}\n` +
-			`   ;Defines the length of time a refresh token will be valid until it expires. Example values: https://github.com/vercel/ms  \n` +
-			`${HDB_SETTINGS_NAMES.REFRESH_TOKEN_TIMEOUT_KEY} = ${generateSettingsValue(
-				ARGS,
-				HDB_SETTINGS_NAMES.REFRESH_TOKEN_TIMEOUT_KEY
-			)}\n` +
-			`   ;The port the IPC server will run on.\n` +
-			`${HDB_SETTINGS_NAMES.IPC_SERVER_PORT} = ${generateSettingsValue(ARGS, HDB_SETTINGS_NAMES.IPC_SERVER_PORT)}\n` +
-			`   ;Run HDB in the foreground.\n` +
-			`${HDB_SETTINGS_NAMES.RUN_IN_FOREGROUND} = ${generateSettingsValue(
-				ARGS,
-				HDB_SETTINGS_NAMES.RUN_IN_FOREGROUND
-			)}\n` +
-			`   ;Set to true to enable custom API endpoints.  Requires a valid enterprise license.  \n` +
-			`${HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_ENABLED_KEY} = ${generateSettingsValue(
-				ARGS,
-				HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_ENABLED_KEY
-			)}\n` +
-			`   ;The port used to access the custom functions server.\n` +
-			`${HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_PORT_KEY} = ${generateSettingsValue(
-				ARGS,
-				HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_PORT_KEY
-			)}\n` +
-			`   ;The path to the folder containing HarperDB custom function files.\n` +
-			`${HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY} = ${wizard_result.HDB_ROOT}/custom_functions\n` +
-			`   ;Set the max number of processes HarperDB will start for the Custom Functions server\n` +
-			`${HDB_SETTINGS_NAMES.MAX_CUSTOM_FUNCTION_PROCESSES} = ${num_cf_processes}\n` +
-			`   ;Set the max number of processes HarperDB will start for the Clustering Server\n` +
-			`${HDB_SETTINGS_NAMES.MAX_CLUSTERING_PROCESSES} = ${generateSettingsValue(
-				ARGS,
-				HDB_SETTINGS_NAMES.MAX_CLUSTERING_PROCESSES
-			)}\n` +
-			`   ;Enable the route which allows for accessing the Studio from this instance of HarperDB (true) or not (false)\n` +
-			`${HDB_SETTINGS_NAMES.LOCAL_STUDIO_ON} = ${generateSettingsValue(ARGS, HDB_SETTINGS_NAMES.LOCAL_STUDIO_ON)}\n`;
-		install_logger.info('info', `hdb_props_value ${JSON.stringify(hdb_props_value)}`);
-		install_logger.info('info', `settings path: ${env.get('settings_path')}`);
+
 		try {
-			fs.writeFile(env.get('settings_path'), hdb_props_value, function (fs_write_file_err) {
-				if (fs_write_file_err) {
-					console.error('There was a problem writing the settings file.  Please check the install log for details.');
-					install_logger.error(fs_write_file_err);
-					return callback(fs_write_file_err);
-				}
-				// load props
-				env.initSync();
-				return callback(null);
-			});
-		} catch (e) {
-			install_logger.info(e);
+			// Create the HarperDB config file.
+			config_utils.createConfigFile(ARGS);
+			env.initSync();
+		} catch (config_err) {
+			rollbackInstall(config_err, ARGS);
 		}
+
+		return callback(null);
 	});
 }
 
-function generateSettingsValue(args, setting_name) {
-	if (args[setting_name] !== undefined) {
-		return args[setting_name];
+/**
+ * Used to remove the .harperdb and hdb folder if there is an error with creating the config file.
+ * @param err_msg
+ * @param install_args
+ */
+function rollbackInstall(err_msg, install_args) {
+	console.error(err_msg);
+	console.error(ABORT_MSG);
+
+	const harperdb_boot_folder = path.resolve(env.get(env.BOOT_PROPS_FILE_PATH), '../');
+	if (harperdb_boot_folder) {
+		fs.removeSync(harperdb_boot_folder);
 	}
 
-	if (hdb_terms.HDB_SETTINGS_DEFAULT_VALUES[setting_name] !== undefined) {
-		return hdb_terms.HDB_SETTINGS_DEFAULT_VALUES[setting_name];
+	const hdb_root = env.getHdbBasePath();
+	if (hdb_root) {
+		fs.removeSync(hdb_root);
 	}
 
-	return '';
+	process.exit(1);
 }
 
 function generateKeys(callback) {
@@ -827,7 +682,7 @@ function createBootPropertiesFile(settings_path, callback) {
 	install_logger.info('info', 'creating boot file');
 	if (!settings_path) {
 		install_logger.error('info', 'missing settings path');
-		return callback('missing setings');
+		return callback('missing settings');
 	}
 	let install_user = undefined;
 	try {
@@ -869,7 +724,7 @@ function createBootPropertiesFile(settings_path, callback) {
 		install_logger.info('info', `props path ${props_file_path}`);
 		env.setProperty(hdb_terms.HDB_SETTINGS_NAMES.INSTALL_USER, `${install_user}`);
 		env.setProperty(hdb_terms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY, settings_path);
-		env.setPropsFilePath(props_file_path);
+		env.setProperty(env.BOOT_PROPS_FILE_PATH, props_file_path);
 		return callback(null, 'success');
 	});
 }

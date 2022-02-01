@@ -7,8 +7,7 @@ const pm2_utils = require('../utility/pm2/utilityFunctions');
 const env_mngr = require('../utility/environment/environmentManager');
 const minimist = require('minimist');
 const { handleHDBError, hdb_errors } = require('../utility/errors/hdbError');
-const bin_utility = require('./utility');
-const env = require('../utility/environment/environmentManager');
+const config_utils = require('../config/configUtils');
 const { HTTP_STATUS_CODES } = hdb_errors;
 
 const RESTART_RESPONSE = `Restarting HarperDB. This may take up to ${hdb_terms.RESTART_TIMEOUT_MS / 1000} seconds.`;
@@ -28,8 +27,11 @@ module.exports = {
  */
 async function restartProcesses() {
 	try {
-		bin_utility.changeSettingsFile();
-		env.initSync();
+		// If restart is called with cmd/env vars we create a backup of config and update config file.
+		const parsed_args = hdb_utils.assignCMDENVVariables(Object.keys(hdb_terms.CONFIG_PARAM_MAP), true);
+		if (!hdb_utils.isEmptyOrZeroLength(Object.keys(parsed_args))) {
+			config_utils.updateConfigValue(undefined, undefined, parsed_args, true);
+		}
 
 		const { clustering_enabled, custom_func_enabled } = checkEnvSettings();
 		// Restart can be called with a --service argument which allows designated services to be restarted.
@@ -256,11 +258,8 @@ async function stop() {
  */
 function checkEnvSettings() {
 	env_mngr.initSync();
-	const sc_env = env_mngr.getProperty(hdb_terms.HDB_SETTINGS_NAMES.CLUSTERING_ENABLED_KEY).toString().toLowerCase();
-	const cf_env = env_mngr
-		.getProperty(hdb_terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_ENABLED_KEY)
-		.toString()
-		.toLowerCase();
+	const sc_env = env_mngr.get(hdb_terms.HDB_SETTINGS_NAMES.CLUSTERING_ENABLED_KEY).toString().toLowerCase();
+	const cf_env = env_mngr.get(hdb_terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_ENABLED_KEY).toString().toLowerCase();
 	const clustering_enabled = sc_env === 'true' || sc_env === "'true'";
 	const custom_func_enabled = cf_env === 'true' || cf_env === "'true'";
 

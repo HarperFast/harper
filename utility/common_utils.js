@@ -15,6 +15,7 @@ const cluster_messages = require('../server/socketcluster/room/RoomMessageObject
 const moment = require('moment');
 const { inspect } = require('util');
 const is_number = require('is-number');
+const _ = require('lodash');
 const { hdb_errors } = require('./errors/hdbError');
 
 const async_set_timeout = require('util').promisify(setTimeout);
@@ -75,6 +76,7 @@ module.exports = {
 	stopProcess,
 	assignCMDENVVariables,
 	createForkArgs,
+	autoCastBoolean,
 };
 
 /**
@@ -783,16 +785,26 @@ async function stopProcess(module) {
 /**
  * This function receives a list of keys used to find if they exist in command line args &/or environment variables (command line always supercedes env vars).
  * if found they key/value is assigned to the return object
- * @param {[string]} keys - arrays of keys to search for and assign to the return object
+ * @param keys - arrays of keys to search for and assign to the return object
+ * @param is_config_param
  * @returns {{}}
  */
-function assignCMDENVVariables(keys = []) {
+function assignCMDENVVariables(keys = [], is_config_param = false) {
 	if (!Array.isArray(keys)) {
 		return {};
 	}
 
-	let env_args = process.env;
-	let cmd_args = minimist(process.argv);
+	let env_args;
+	let cmd_args;
+	if (is_config_param) {
+		// Lowercase keys to make mapping to config params work
+		env_args = objKeysToLowerCase(process.env);
+		cmd_args = objKeysToLowerCase(minimist(process.argv));
+	} else {
+		env_args = process.env;
+		cmd_args = minimist(process.argv);
+	}
+
 	let hdb_settings = {};
 	for (let x = 0, length = keys.length; x < length; x++) {
 		let setting = keys[x];
@@ -808,6 +820,25 @@ function assignCMDENVVariables(keys = []) {
 }
 
 /**
+ * Creates a new object where all its keys are lowercase
+ * @param obj
+ * @returns {{}}
+ */
+function objKeysToLowerCase(obj) {
+	let key,
+		keys = Object.keys(obj);
+	let i = keys.length;
+	const result = {};
+
+	while (i--) {
+		key = keys[i];
+		result[key.toLowerCase()] = obj[key];
+	}
+
+	return result;
+}
+
+/**
  * Create arguments for child_process fork
  * @param module_path
  * @returns {*[]}
@@ -819,4 +850,13 @@ function createForkArgs(module_path) {
 	}
 	args.push(module_path);
 	return args;
+}
+
+/**
+ * Takes a boolean string/value and casts it to a boolean
+ * @param boolean
+ * @returns {boolean}
+ */
+function autoCastBoolean(boolean) {
+	return boolean === true || (typeof boolean === 'string' && boolean.toLowerCase() === 'true');
 }

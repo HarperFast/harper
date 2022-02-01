@@ -6,7 +6,8 @@ const PropertiesReader = require('properties-reader');
 const UpgradeDirective = require('../UpgradeDirective');
 const hdb_log = require('../../utility/logging/harper_logger');
 const { getOldPropsValue } = require('../upgradeUtilities');
-const { HDB_SETTINGS_NAMES, HDB_SETTINGS_DEFAULT_VALUES } = require('../../utility/hdbTerms');
+const { HDB_SETTINGS_NAMES, CONFIG_PARAMS } = require('../../utility/hdbTerms');
+const config_utils = require('../../config/configUtils');
 const env = require('../../utility/environment/environmentManager');
 const hdb_utils = require('../../utility/common_utils');
 const terms = require('../../utility/hdbTerms');
@@ -20,7 +21,7 @@ let directives = [];
  * @returns {string}
  */
 function updateSettingsFile_3_1_0() {
-	const old_hdb_props = PropertiesReader(env.getProperty(HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY));
+	const old_hdb_props = PropertiesReader(env.get(HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY));
 	const settings_update_msg = 'Updating settings file for version 3.1.0';
 	console.log(settings_update_msg);
 	hdb_log.info(settings_update_msg);
@@ -70,9 +71,9 @@ function updateSettingsFile_3_1_0() {
 			true
 		)}\n` +
 		`   ;Define whether to log to file or not.\n` +
-		`${HDB_SETTINGS_NAMES.LOG_TO_FILE} = ${HDB_SETTINGS_DEFAULT_VALUES.LOG_TO_FILE}\n` +
+		`${HDB_SETTINGS_NAMES.LOG_TO_FILE} = ${config_utils.getDefaultConfig(CONFIG_PARAMS.LOGGING_FILE)}\n` +
 		`   ;Define whether to log to stdout/stderr or not. NOTE HarperDB must run in foreground in order to receive the std stream from HarperDB.\n` +
-		`${HDB_SETTINGS_NAMES.LOG_TO_STDSTREAMS} = ${HDB_SETTINGS_DEFAULT_VALUES.LOG_TO_STDSTREAMS}\n` +
+		`${HDB_SETTINGS_NAMES.LOG_TO_STDSTREAMS} = ${config_utils.getDefaultConfig(CONFIG_PARAMS.LOGGING_STDSTREAMS)}\n` +
 		`   ;Set to control amount of logging generated.  Accepted levels are trace, debug, warn, error, fatal.\n` +
 		`${HDB_SETTINGS_NAMES.LOG_LEVEL_KEY} = ${getOldPropsValue(HDB_SETTINGS_NAMES.LOG_LEVEL_KEY, old_hdb_props)}\n` +
 		`   ;The path where log files will be written. If there is no file name included in the path, the log file will be created by default as 'hdb_log.log' \n` +
@@ -143,20 +144,28 @@ function updateSettingsFile_3_1_0() {
 			true
 		)}\n` +
 		`   ;The port the IPC server will run on.\n` +
-		`${HDB_SETTINGS_NAMES.IPC_SERVER_PORT} = ${HDB_SETTINGS_DEFAULT_VALUES.IPC_SERVER_PORT}\n` +
+		`${HDB_SETTINGS_NAMES.IPC_SERVER_PORT} = ${config_utils.getDefaultConfig(CONFIG_PARAMS.IPC_NETWORK_PORT)}\n` +
 		`   ;Run HDB in the foreground.\n` +
-		`${HDB_SETTINGS_NAMES.RUN_IN_FOREGROUND} = ${HDB_SETTINGS_DEFAULT_VALUES.RUN_IN_FOREGROUND}\n` +
+		`${HDB_SETTINGS_NAMES.RUN_IN_FOREGROUND} = ${config_utils.getDefaultConfig(
+			CONFIG_PARAMS.OPERATIONSAPI_FOREGROUND
+		)}\n` +
 		`   ;Set to true to enable custom API endpoints.  Requires a valid enterprise license.  \n` +
-		`${HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_ENABLED_KEY} = ${HDB_SETTINGS_DEFAULT_VALUES.CUSTOM_FUNCTIONS}\n` +
+		`${HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_ENABLED_KEY} = ${config_utils.getDefaultConfig(
+			CONFIG_PARAMS.CUSTOMFUNCTIONS_ENABLED
+		)}\n` +
 		`   ;The port used to access the custom functions server.\n` +
-		`${HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_PORT_KEY} = ${HDB_SETTINGS_DEFAULT_VALUES.CUSTOM_FUNCTIONS_PORT}\n` +
+		`${HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_PORT_KEY} = ${config_utils.getDefaultConfig(
+			CONFIG_PARAMS.CUSTOMFUNCTIONS_NETWORK_PORT
+		)}\n` +
 		`   ;The path to the folder containing HarperDB custom function files.\n` +
 		`${HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY} = ${path.join(
 			getOldPropsValue(HDB_SETTINGS_NAMES.HDB_ROOT_KEY, old_hdb_props),
-			HDB_SETTINGS_DEFAULT_VALUES.CUSTOM_FUNCTIONS_DIRECTORY
+			'custom_functions'
 		)}\n` +
 		`   ;Set the max number of processes HarperDB will start for the Custom Functions server\n` +
-		`${HDB_SETTINGS_NAMES.MAX_CUSTOM_FUNCTION_PROCESSES} = ${HDB_SETTINGS_DEFAULT_VALUES.MAX_CUSTOM_FUNCTION_PROCESSES}\n`;
+		`${HDB_SETTINGS_NAMES.MAX_CUSTOM_FUNCTION_PROCESSES} = ${config_utils.getDefaultConfig(
+			CONFIG_PARAMS.CUSTOMFUNCTIONS_PROCESSES
+		)}\n`;
 	const settings_path = env.get('settings_path');
 	const settings_dir = path.dirname(settings_path);
 	const settings_backup_path = path.join(settings_dir, '3_1_0_upgrade_settings.bak');

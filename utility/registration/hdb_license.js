@@ -17,9 +17,7 @@ const ALGORITHM = 'aes-256-cbc';
 const IV_LENGTH = 16;
 const KEY_LENGTH = 32;
 const env = require('../../utility/environment/environmentManager');
-if (!env.isInitialized()) {
-	env.initSync();
-}
+env.initSync();
 
 let current_license = undefined;
 

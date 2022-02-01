@@ -159,7 +159,7 @@ async function addUser(user) {
 	hdb_utility.sendTransactionToSocketCluster(
 		terms.INTERNAL_SC_CHANNELS.ADD_USER,
 		add_user_msg,
-		env.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY)
+		env.get(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY)
 	);
 	signalling.signalUserChange(new UserEventMsg(process.pid));
 	return `${new_user.username} successfully added`;
@@ -271,7 +271,7 @@ async function alterUser(json_message) {
 	hdb_utility.sendTransactionToSocketCluster(
 		terms.INTERNAL_SC_CHANNELS.ALTER_USER,
 		alter_user_msg,
-		env.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY)
+		env.get(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY)
 	);
 	signalling.signalUserChange(new UserEventMsg(process.pid));
 	return success;
@@ -335,7 +335,7 @@ async function dropUser(user) {
 		hdb_utility.sendTransactionToSocketCluster(
 			terms.INTERNAL_SC_CHANNELS.DROP_USER,
 			alter_user_msg,
-			env.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY)
+			env.get(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY)
 		);
 		signalling.signalUserChange(new UserEventMsg(process.pid));
 		return `${user.username} successfully deleted`;

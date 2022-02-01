@@ -1,9 +1,8 @@
 'use strict';
 
 const env_mngr = require('../utility/environment/environmentManager');
-if (!env_mngr.isInitialized()) {
-	env_mngr.initSync();
-}
+env_mngr.initSync();
+
 const comm = require('../utility/common_utils');
 const hdb_terms = require('../utility/hdbTerms');
 const PropertiesReader = require('properties-reader');

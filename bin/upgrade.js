@@ -35,7 +35,7 @@ module.exports = {
  */
 async function upgrade(upgrade_obj) {
 	//We have to make sure HDB is installed before doing anything else
-	if (!fs.existsSync(env.BOOT_PROPS_FILE_PATH)) {
+	if (!fs.existsSync(env.get(env.BOOT_PROPS_FILE_PATH))) {
 		const hdb_not_found_msg = 'The hdb_boot_properties file was not found. Please install HDB.';
 		printToLogAndConsole(hdb_not_found_msg, hdb_logger.ERR);
 		process.exit(1);

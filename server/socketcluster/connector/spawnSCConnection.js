@@ -6,11 +6,8 @@ const crypto_hash = require('../../../security/cryptoHash');
 let connector_options = require('../../../json/hdbConnectorOptions');
 const log = require('../../../utility/logging/harper_logger');
 const utils = require('../../../utility/common_utils');
-
 const env = require('../../../utility/environment/environmentManager');
-if (!env.isInitialized()) {
-	env.initSync();
-}
+env.initSync();
 
 const SC_WORKER_NAME_PREFIX = 'worker_';
 

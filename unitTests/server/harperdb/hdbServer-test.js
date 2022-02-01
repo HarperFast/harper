@@ -20,8 +20,9 @@ const user_schema = require('../../../security/user');
 const global_schema = require('../../../utility/globalSchema');
 const hdb_license = require('../../../utility/registration/hdb_license');
 const env = require('../../../utility/environment/environmentManager');
+const config_utils = require('../../../config/configUtils');
 
-const DEFAULT_CONFIG = require('../../../utility/hdbTerms').HDB_SETTINGS_DEFAULT_VALUES;
+const { CONFIG_PARAMS } = require('../../../utility/hdbTerms');
 const HDB_SERVER_PATH = '../../../server/harperdb/hdbServer';
 const KEYS_PATH = path.join(test_utils.getMockTestPath(), 'utility/keys');
 const PRIVATE_KEY_PATH = path.join(KEYS_PATH, 'privateKey.pem');
@@ -221,8 +222,12 @@ describe('Test hdbServer module', () => {
 			const test_max_body_size = hdbServer_rw.__get__('REQ_MAX_BODY_SIZE');
 
 			expect(server.initialConfig.bodyLimit).to.equal(test_max_body_size);
-			expect(server.initialConfig.connectionTimeout).to.equal(DEFAULT_CONFIG.SERVER_TIMEOUT_MS);
-			expect(server.initialConfig.keepAliveTimeout).to.equal(DEFAULT_CONFIG.SERVER_KEEP_ALIVE_TIMEOUT);
+			expect(server.initialConfig.connectionTimeout).to.equal(
+				config_utils.getDefaultConfig(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_TIMEOUT)
+			);
+			expect(server.initialConfig.keepAliveTimeout).to.equal(
+				config_utils.getDefaultConfig(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_KEEPALIVETIMEOUT)
+			);
 
 			server.close();
 		});
@@ -238,8 +243,12 @@ describe('Test hdbServer module', () => {
 			const test_max_body_size = hdbServer_rw.__get__('REQ_MAX_BODY_SIZE');
 
 			expect(server.initialConfig.bodyLimit).to.equal(test_max_body_size);
-			expect(server.initialConfig.connectionTimeout).to.equal(DEFAULT_CONFIG.SERVER_TIMEOUT_MS);
-			expect(server.initialConfig.keepAliveTimeout).to.equal(DEFAULT_CONFIG.SERVER_KEEP_ALIVE_TIMEOUT);
+			expect(server.initialConfig.connectionTimeout).to.equal(
+				config_utils.getDefaultConfig(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_TIMEOUT)
+			);
+			expect(server.initialConfig.keepAliveTimeout).to.equal(
+				config_utils.getDefaultConfig(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_KEEPALIVETIMEOUT)
+			);
 
 			server.close();
 		});

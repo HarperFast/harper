@@ -2,13 +2,14 @@
 
 const winston = require('winston');
 const pino = require('pino');
-const fs = require('fs');
+const fs = require('fs-extra');
 const moment = require('moment');
 const path = require('path');
 const util = require('util');
 const validator = require('../../validation/readLogValidator');
 const PropertiesReader = require('properties-reader');
 const os = require('os');
+const YAML = require('yaml');
 const terms = require('../hdbTerms');
 
 // Set interval that log buffer flushes at.
@@ -62,6 +63,7 @@ let default_log_directory = undefined;
 let daily_max = undefined;
 let hdb_properties = undefined;
 let tomorrows_date = undefined;
+let hdb_root;
 
 /**
  * Immediately invoked function that gets log parameters.
@@ -71,18 +73,21 @@ let tomorrows_date = undefined;
 		try {
 			const boot_props_file_path = getPropsFilePath();
 			hdb_properties = PropertiesReader(boot_props_file_path);
-			hdb_properties.append(hdb_properties.get('settings_path'));
-			daily_rotate = `${hdb_properties.get('LOG_DAILY_ROTATE')}`.toLowerCase() === 'true';
-			daily_max = hdb_properties.get('LOG_MAX_DAILY_FILES');
-			log_level = hdb_properties.get('LOG_LEVEL');
-			log_path = hdb_properties.get('LOG_PATH');
+			({
+				rotate: daily_rotate,
+				level: log_level,
+				config_log_path: log_path,
+				to_file: log_to_file,
+				to_stream: log_to_stdstreams,
+				root: hdb_root,
+			} = getLogConfig(hdb_properties.get('settings_path')));
 
-			log_to_file = hdb_properties.get('LOG_TO_FILE');
+			daily_max = 10; // TODO - this will change with log updates
+
 			if (log_to_file !== undefined && log_to_file !== null) {
 				log_to_file = log_to_file.toString().toLowerCase() === 'true';
 			}
 
-			log_to_stdstreams = hdb_properties.get('LOG_TO_STDSTREAMS');
 			if (log_to_stdstreams !== undefined && log_to_stdstreams !== null) {
 				log_to_stdstreams = log_to_stdstreams.toString().toLowerCase() === 'true';
 			}
@@ -91,7 +96,7 @@ let tomorrows_date = undefined;
 				log_to_file = true;
 			}
 
-			default_log_directory = hdb_properties.get('HDB_ROOT') + '/log/';
+			default_log_directory = hdb_root + '/log/';
 
 			createLog(log_path);
 		} catch (err) {
@@ -589,4 +594,26 @@ function getPropsFilePath() {
 		_boot_props_file_path = path.join(__dirname, '../', 'hdb_boot_properties.file');
 	}
 	return _boot_props_file_path;
+}
+
+function getLogConfig(hdb_config_path) {
+	try {
+		const config_doc = YAML.parseDocument(fs.readFileSync(hdb_config_path, 'utf8'));
+		const rotate = config_doc.getIn(['logging', 'rotation', 'rotate']);
+		const level = config_doc.getIn(['logging', 'level']);
+		const config_log_path = config_doc.getIn(['logging', 'root']);
+		const to_file = config_doc.getIn(['logging', 'file']);
+		const to_stream = config_doc.getIn(['logging', 'stdStreams']);
+		const root = config_doc.getIn(['operationsApi', 'root']);
+		return {
+			rotate,
+			level,
+			config_log_path,
+			to_file,
+			to_stream,
+			root,
+		};
+	} catch (err) {
+		console.error('Error accessing config file for logging');
+	}
 }

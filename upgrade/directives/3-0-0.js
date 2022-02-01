@@ -6,7 +6,8 @@ const fs = require('fs-extra');
 const PropertiesReader = require('properties-reader');
 const UpgradeDirective = require('../UpgradeDirective');
 const hdb_log = require('../../utility/logging/harper_logger');
-const { HDB_SETTINGS_NAMES, HDB_SETTINGS_DEFAULT_VALUES } = require('../../utility/hdbTerms');
+const config_utils = require('../../config/configUtils');
+const { HDB_SETTINGS_NAMES } = require('../../utility/hdbTerms');
 const env = require('../../utility/environment/environmentManager');
 const common_utils = require('../../utility/common_utils');
 
@@ -34,13 +35,13 @@ function getOldPropsValue(prop_name, value_required = false) {
 		return old_val;
 	}
 	if (value_required) {
-		return HDB_SETTINGS_DEFAULT_VALUES[prop_name];
+		return config_utils.getDefaultConfig(prop_name);
 	}
 	return '';
 }
 
 function updateSettingsFile_3_0_0() {
-	old_hdb_props = PropertiesReader(env.getProperty(HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY));
+	old_hdb_props = PropertiesReader(env.get(HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY));
 
 	//check to see if the new SERVER_PORT settings key from 3.0.0 is already there - this means the settings file has been updated but
 	// there may have been an error/fail during the reindexing step so we can skip this part of the upgrade

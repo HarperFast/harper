@@ -23,7 +23,6 @@ class StampRequestMiddleware extends MiddlewareIF {
 			if (!req.data.__originator) {
 				req.data.__originator = {};
 			}
-			//req.data.__originator[env.getProperty(hdb_terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY)] = '';
 			log.debug('Stamped request with unique info.');
 		};
 		super(middleware_type_enum, eval_function);

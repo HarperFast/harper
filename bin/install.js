@@ -13,7 +13,7 @@ function install(callback) {
 			return callback(err);
 		}
 
-		callback(null, 'Installation successful');
+		callback(null, 'HarperDB Installation was successful');
 	});
 }
 module.exports = {
