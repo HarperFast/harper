@@ -1,4 +1,4 @@
-"use strict";
+'use strict';
 
 const test_util = require('../test_utils');
 test_util.preTestPrep();
@@ -17,7 +17,6 @@ const colors = require('colors/safe');
 const version = require('../../bin/version');
 const { UpgradeObject } = require('../../upgrade/UpgradeObjects');
 const fs = require('fs-extra');
-const pm2_utils = require('../../utility/pm2/utilityFunctions');
 const ps_list = require('../../utility/psList');
 
 const TEST_CURR_VERS = '3.0.0';
@@ -25,352 +24,388 @@ const TEST_DATA_VERS = '2.9.9';
 const TEST_UPGRADE_OBJ = new UpgradeObject(TEST_DATA_VERS, TEST_CURR_VERS);
 
 describe('Test upgrade.js', () => {
-    let sandbox = sinon.createSandbox();
-    let consoleLog_stub;
-    let processExit_stub;
-    let printToLogAndConsole_stub;
-    let getVersionUpdateInfo_stub;
-    let version_stub;
-    let forceUpdatePrompt_stub;
-    const log_notify_stub = sandbox.stub().callsFake(() => {});
-    const log_error_stub = sandbox.stub().callsFake(() => {});
-    const log_info_stub = sandbox.stub().callsFake(() => {});
-    const logger_fake = {
-        notify: log_notify_stub,
-        error: log_error_stub,
-        info: log_info_stub,
-    };
-    let log_rw;
+	let sandbox = sinon.createSandbox();
+	let consoleLog_stub;
+	let processExit_stub;
+	let printToLogAndConsole_stub;
+	let getVersionUpdateInfo_stub;
+	let version_stub;
+	let forceUpdatePrompt_stub;
+	const log_notify_stub = sandbox.stub().callsFake(() => {});
+	const log_error_stub = sandbox.stub().callsFake(() => {});
+	const log_info_stub = sandbox.stub().callsFake(() => {});
+	const logger_fake = {
+		notify: log_notify_stub,
+		error: log_error_stub,
+		info: log_info_stub,
+	};
+	let log_rw;
 
-    before(() => {
-        upgrade_rw = rewire(`../../bin/upgrade`);
-        log_rw = upgrade_rw.__set__('hdb_logger', logger_fake);
-        consoleLog_stub = sandbox.stub(console, 'log').returns();
-        printToLogAndConsole_stub = sandbox.stub().returns();
-        upgrade_rw.__set__('printToLogAndConsole', printToLogAndConsole_stub);
-        processExit_stub = sandbox.stub(process, "exit");
-        version_stub = sandbox.stub(version, "version").returns(TEST_CURR_VERS);
-    });
+	before(() => {
+		upgrade_rw = rewire(`../../bin/upgrade`);
+		log_rw = upgrade_rw.__set__('hdb_logger', logger_fake);
+		consoleLog_stub = sandbox.stub(console, 'log').returns();
+		printToLogAndConsole_stub = sandbox.stub().returns();
+		upgrade_rw.__set__('printToLogAndConsole', printToLogAndConsole_stub);
+		processExit_stub = sandbox.stub(process, 'exit');
+		version_stub = sandbox.stub(version, 'version').returns(TEST_CURR_VERS);
+	});
 
-    afterEach(() => {
-        sandbox.resetHistory();
-    });
+	afterEach(() => {
+		sandbox.resetHistory();
+	});
 
-    after(() => {
-        sandbox.restore();
-        rewire(`../../bin/upgrade`);
-    });
+	after(() => {
+		sandbox.restore();
+		rewire(`../../bin/upgrade`);
+	});
 
-    describe('checkIfRunning()', function() {
-        let checkIfRunning_rw;
-        let find_ps_stub;
-        let pm2_list_stub;
+	describe('checkIfRunning()', function () {
+		let checkIfRunning_rw;
+		let find_ps_stub;
+		let pm2_list_stub = sandbox.stub();
+		let pm2_list_rw;
+		let fake_pm2_utils = {
+			list: pm2_list_stub,
+		};
 
-        before(() => {
-            find_ps_stub = sandbox.stub(ps_list, 'findPs');
-            pm2_list_stub = sandbox.stub(pm2_utils, 'list');
-            checkIfRunning_rw = upgrade_rw.__get__('checkIfRunning');
-        });
+		before(() => {
+			find_ps_stub = sandbox.stub(ps_list, 'findPs');
+			pm2_list_rw = upgrade_rw.__set__('pm2_utils', fake_pm2_utils);
+			checkIfRunning_rw = upgrade_rw.__get__('checkIfRunning');
+		});
 
-        it('Nominal case - should return undefined if HDB is NOT running', async () => {
-            find_ps_stub.resolves([]);
-            pm2_list_stub.resolves([]);
-            const result = await checkIfRunning_rw();
-            expect(result).to.be.undefined;
-        });
+		it('Nominal case - should return undefined if HDB is NOT running', async () => {
+			find_ps_stub.resolves([]);
+			pm2_list_stub.resolves([]);
+			const result = await checkIfRunning_rw();
+			expect(result).to.be.undefined;
+		});
 
-        it('Exception case - should catch exception and exit process if hdbServer is running', async () => {
-            find_ps_stub.resolves(['a process']);
-            await checkIfRunning_rw();
+		it('Exception case - should catch exception and exit process if hdbServer is running', async () => {
+			find_ps_stub.resolves(['a process']);
+			await checkIfRunning_rw();
 
-            expect(log_error_stub.calledOnce).to.be.true;
-            expect(log_error_stub.args[0][0]).to.eql("HarperDB is running, please stop all HarperDB services with 'harperdb stop' and run the upgrade command again.");
-            expect(consoleLog_stub.calledOnce).to.be.true;
-            expect(consoleLog_stub.args[0][0]).to.eql(colors.red("HarperDB is running, please stop all HarperDB services with 'harperdb stop' and run the upgrade command again."));
-            expect(processExit_stub.calledOnce).to.be.true;
-            expect(processExit_stub.args[0][0]).to.eql(1);
-        });
+			expect(log_error_stub.calledOnce).to.be.true;
+			expect(log_error_stub.args[0][0]).to.eql(
+				"HarperDB is running, please stop all HarperDB services with 'harperdb stop' and run the upgrade command again."
+			);
+			expect(consoleLog_stub.calledOnce).to.be.true;
+			expect(consoleLog_stub.args[0][0]).to.eql(
+				colors.red(
+					"HarperDB is running, please stop all HarperDB services with 'harperdb stop' and run the upgrade command again."
+				)
+			);
+			expect(processExit_stub.calledOnce).to.be.true;
+			expect(processExit_stub.args[0][0]).to.eql(1);
+		});
 
-        it('Exception case - should catch exception and exit process if hdb_express is running', async () => {
-            find_ps_stub.withArgs('hdbServer.js').resolves([]);
-            find_ps_stub.withArgs('hdb_express').resolves(['process']);
-            await checkIfRunning_rw();
-            find_ps_stub.reset();
+		it('Exception case - should catch exception and exit process if hdb_express is running', async () => {
+			find_ps_stub.withArgs('hdbServer.js').resolves([]);
+			find_ps_stub.withArgs('hdb_express').resolves(['process']);
+			await checkIfRunning_rw();
+			find_ps_stub.reset();
 
-            expect(log_error_stub.calledOnce).to.be.true;
-            expect(log_error_stub.args[0][0]).to.eql("HarperDB is running, please stop all HarperDB services with 'harperdb stop' and run the upgrade command again.");
-            expect(consoleLog_stub.calledOnce).to.be.true;
-            expect(consoleLog_stub.args[0][0]).to.eql(colors.red("HarperDB is running, please stop all HarperDB services with 'harperdb stop' and run the upgrade command again."));
-            expect(processExit_stub.calledOnce).to.be.true;
-            expect(processExit_stub.args[0][0]).to.eql(1);
-        });
+			expect(log_error_stub.calledOnce).to.be.true;
+			expect(log_error_stub.args[0][0]).to.eql(
+				"HarperDB is running, please stop all HarperDB services with 'harperdb stop' and run the upgrade command again."
+			);
+			expect(consoleLog_stub.calledOnce).to.be.true;
+			expect(consoleLog_stub.args[0][0]).to.eql(
+				colors.red(
+					"HarperDB is running, please stop all HarperDB services with 'harperdb stop' and run the upgrade command again."
+				)
+			);
+			expect(processExit_stub.calledOnce).to.be.true;
+			expect(processExit_stub.args[0][0]).to.eql(1);
+		});
 
-        it('Exception case - should catch exception and exit process if pm2 process is running', async () => {
-            find_ps_stub.resolves([]);
-            pm2_list_stub.resolves(['a process']);
-            await checkIfRunning_rw();
+		it('Exception case - should catch exception and exit process if pm2 process is running', async () => {
+			find_ps_stub.resolves([]);
+			pm2_list_stub.resolves(['a process']);
+			await checkIfRunning_rw();
 
-            expect(log_error_stub.calledOnce).to.be.true;
-            expect(log_error_stub.args[0][0]).to.eql("HarperDB is running, please stop all HarperDB services with 'harperdb stop' and run the upgrade command again.");
-            expect(consoleLog_stub.calledOnce).to.be.true;
-            expect(consoleLog_stub.args[0][0]).to.eql(colors.red("HarperDB is running, please stop all HarperDB services with 'harperdb stop' and run the upgrade command again."));
-            expect(processExit_stub.calledOnce).to.be.true;
-            expect(processExit_stub.args[0][0]).to.eql(1);
-        });
+			expect(log_error_stub.calledOnce).to.be.true;
+			expect(log_error_stub.args[0][0]).to.eql(
+				"HarperDB is running, please stop all HarperDB services with 'harperdb stop' and run the upgrade command again."
+			);
+			expect(consoleLog_stub.calledOnce).to.be.true;
+			expect(consoleLog_stub.args[0][0]).to.eql(
+				colors.red(
+					"HarperDB is running, please stop all HarperDB services with 'harperdb stop' and run the upgrade command again."
+				)
+			);
+			expect(processExit_stub.calledOnce).to.be.true;
+			expect(processExit_stub.args[0][0]).to.eql(1);
+		});
+	});
 
+	describe('upgrade()', async () => {
+		const create_log_file_stub = sandbox.stub();
+		let runUpgrade_orig;
+		let runUpgrade_stub;
+		let checkIfRunning_stub;
+		let fsExistsSync_stub;
 
-    });
+		before(() => {
+			runUpgrade_orig = upgrade_rw.__get__('runUpgrade');
+			runUpgrade_stub = sandbox.stub().resolves();
+			upgrade_rw.__set__('hdb_logger.createLogFile', create_log_file_stub);
+			upgrade_rw.__set__('runUpgrade', runUpgrade_stub);
+			checkIfRunning_stub = sandbox.stub().resolves();
+			upgrade_rw.__set__('checkIfRunning', checkIfRunning_stub);
+			getVersionUpdateInfo_stub = sandbox.stub(hdbInfoController, 'getVersionUpdateInfo').resolves(TEST_UPGRADE_OBJ);
+			forceUpdatePrompt_stub = sandbox.stub(updatePrompt, 'forceUpdatePrompt').resolves(true);
+			fsExistsSync_stub = sandbox.stub(fs, 'existsSync').returns(true);
+		});
 
-    describe('upgrade()', async () => {
-        let runUpgrade_orig;
-        let runUpgrade_stub;
-        let checkIfRunning_stub;
-        let fsExistsSync_stub;
+		beforeEach(() => {
+			processExit_stub.throws('This is the only way to stub an end to the call stack');
+		});
 
-        before(() => {
-            runUpgrade_orig = upgrade_rw.__get__('runUpgrade');
-            runUpgrade_stub = sandbox.stub().resolves();
-            upgrade_rw.__set__('runUpgrade', runUpgrade_stub);
-            checkIfRunning_stub = sandbox.stub().resolves();
-            upgrade_rw.__set__('checkIfRunning', checkIfRunning_stub);
-            getVersionUpdateInfo_stub = sandbox.stub(hdbInfoController, 'getVersionUpdateInfo').resolves(TEST_UPGRADE_OBJ);
-            forceUpdatePrompt_stub = sandbox.stub(updatePrompt, 'forceUpdatePrompt').resolves(true);
-            fsExistsSync_stub = sandbox.stub(fs, 'existsSync').returns(true);
-        })
+		afterEach(() => {
+			getVersionUpdateInfo_stub.resolves(TEST_UPGRADE_OBJ);
+			version_stub.returns(TEST_CURR_VERS);
+			forceUpdatePrompt_stub.resolves(true);
+			processExit_stub.reset();
+			sandbox.resetHistory();
+		});
 
-        beforeEach(() => {
-            processExit_stub.throws('This is the only way to stub an end to the call stack');
-        })
+		after(() => {
+			upgrade_rw.__set__('runUpgrade', runUpgrade_orig);
+			fsExistsSync_stub.reset();
+		});
 
-        afterEach(() => {
-            getVersionUpdateInfo_stub.resolves(TEST_UPGRADE_OBJ);
-            version_stub.returns(TEST_CURR_VERS);
-            forceUpdatePrompt_stub.resolves(true);
-            processExit_stub.reset();
-            sandbox.resetHistory();
-        })
+		it('Nominal case - upgrade runs to completion w/o update obj passed in as arg', async () => {
+			await upgrade_rw.upgrade();
 
-        after(() => {
-            upgrade_rw.__set__('runUpgrade', runUpgrade_orig);
-            fsExistsSync_stub.reset();
-        })
+			expect(getVersionUpdateInfo_stub.calledOnce).to.be.true;
+			expect(checkIfRunning_stub.calledOnce).to.be.true;
+			expect(forceUpdatePrompt_stub.calledOnce).to.be.true;
+			expect(forceUpdatePrompt_stub.args[0][0]).to.deep.equal(TEST_UPGRADE_OBJ);
+			expect(runUpgrade_stub.calledOnce).to.be.true;
+			expect(runUpgrade_stub.args[0][0]).to.deep.equal(TEST_UPGRADE_OBJ);
+			expect(printToLogAndConsole_stub.args[1][0]).to.equal(
+				`HarperDB was successfully upgraded to version ${TEST_CURR_VERS}`
+			);
+		});
 
-        it('Nominal case - upgrade runs to completion w/o update obj passed in as arg', async () => {
-            await upgrade_rw.upgrade();
+		it('Nominal case - upgrade runs to completion w update obj passed in as arg', async () => {
+			await upgrade_rw.upgrade(TEST_UPGRADE_OBJ);
 
-            expect(getVersionUpdateInfo_stub.calledOnce).to.be.true;
-            expect(checkIfRunning_stub.calledOnce).to.be.true;
-            expect(forceUpdatePrompt_stub.calledOnce).to.be.true;
-            expect(forceUpdatePrompt_stub.args[0][0]).to.deep.equal(TEST_UPGRADE_OBJ);
-            expect(runUpgrade_stub.calledOnce).to.be.true;
-            expect(runUpgrade_stub.args[0][0]).to.deep.equal(TEST_UPGRADE_OBJ);
-            expect(printToLogAndConsole_stub.args[1][0]).to.equal(`HarperDB was successfully upgraded to version ${TEST_CURR_VERS}`)
-        });
+			expect(getVersionUpdateInfo_stub.calledOnce).to.be.false;
+			expect(checkIfRunning_stub.calledOnce).to.be.true;
+			expect(forceUpdatePrompt_stub.calledOnce).to.be.true;
+			expect(forceUpdatePrompt_stub.args[0][0]).to.deep.equal(TEST_UPGRADE_OBJ);
+			expect(runUpgrade_stub.calledOnce).to.be.true;
+			expect(runUpgrade_stub.args[0][0]).to.deep.equal(TEST_UPGRADE_OBJ);
+			expect(printToLogAndConsole_stub.args[1][0]).to.equal(
+				`HarperDB was successfully upgraded to version ${TEST_CURR_VERS}`
+			);
+		});
 
-        it('Nominal case - upgrade runs to completion w update obj passed in as arg', async () => {
-            await upgrade_rw.upgrade(TEST_UPGRADE_OBJ);
+		it('Should exit process if no upgrade obj arg is passed AND getVersionUpdateInfo returns null - i.e. versions are current', async () => {
+			getVersionUpdateInfo_stub.resolves();
+			try {
+				await upgrade_rw.upgrade();
+			} catch (e) {
+				//this is here to catch the error the exit stub is throwing so tests do not fail
+			}
 
-            expect(getVersionUpdateInfo_stub.calledOnce).to.be.false;
-            expect(checkIfRunning_stub.calledOnce).to.be.true;
-            expect(forceUpdatePrompt_stub.calledOnce).to.be.true;
-            expect(forceUpdatePrompt_stub.args[0][0]).to.deep.equal(TEST_UPGRADE_OBJ);
-            expect(runUpgrade_stub.calledOnce).to.be.true;
-            expect(runUpgrade_stub.args[0][0]).to.deep.equal(TEST_UPGRADE_OBJ);
-            expect(printToLogAndConsole_stub.args[1][0]).to.equal(`HarperDB was successfully upgraded to version ${TEST_CURR_VERS}`)
-        });
+			expect(getVersionUpdateInfo_stub.calledOnce).to.be.true;
+			expect(processExit_stub.calledOnce).to.be.true;
+			expect(processExit_stub.args[0][0]).to.equal(0);
+			expect(consoleLog_stub.args[0][0]).to.equal('HarperDB version is current');
+			expect(checkIfRunning_stub.calledOnce).to.be.false;
+			expect(forceUpdatePrompt_stub.calledOnce).to.be.false;
+			expect(runUpgrade_stub.calledOnce).to.be.false;
+		});
 
-        it('Should exit process if no upgrade obj arg is passed AND getVersionUpdateInfo returns null - i.e. versions are current', async () => {
-            getVersionUpdateInfo_stub.resolves();
-            try {
-                await upgrade_rw.upgrade();
-            } catch(e) {
-                //this is here to catch the error the exit stub is throwing so tests do not fail
-            }
+		it('Should exit process if no upgrade obj arg is passed AND there is an issue getting the current version', async () => {
+			getVersionUpdateInfo_stub.resolves(new UpgradeObject());
+			version_stub.returns(null);
+			try {
+				await upgrade_rw.upgrade();
+			} catch (e) {
+				//this is here to catch the error the exit stub is throwing so tests do not fail
+			}
 
-            expect(getVersionUpdateInfo_stub.calledOnce).to.be.true;
-            expect(processExit_stub.calledOnce).to.be.true;
-            expect(processExit_stub.args[0][0]).to.equal(0);
-            expect(consoleLog_stub.args[0][0]).to.equal("HarperDB version is current");
-            expect(checkIfRunning_stub.calledOnce).to.be.false;
-            expect(forceUpdatePrompt_stub.calledOnce).to.be.false;
-            expect(runUpgrade_stub.calledOnce).to.be.false;
-        });
+			expect(getVersionUpdateInfo_stub.calledOnce).to.be.true;
+			expect(processExit_stub.calledOnce).to.be.true;
+			expect(processExit_stub.args[0][0]).to.equal(1);
+			expect(consoleLog_stub.args[0][0]).to.equal(
+				'Current Version field missing from the package.json file.  Cannot continue with upgrade.  If you need support, please contact support@harperdb.io'
+			);
+			expect(log_notify_stub.args[0][0]).to.equal('Missing new version field from upgrade info object');
+			expect(checkIfRunning_stub.calledOnce).to.be.false;
+			expect(forceUpdatePrompt_stub.calledOnce).to.be.false;
+			expect(runUpgrade_stub.calledOnce).to.be.false;
+		});
 
-        it('Should exit process if no upgrade obj arg is passed AND there is an issue getting the current version', async () => {
-            getVersionUpdateInfo_stub.resolves(new UpgradeObject());
-            version_stub.returns(null);
-            try {
-                await upgrade_rw.upgrade();
-            } catch(e) {
-                //this is here to catch the error the exit stub is throwing so tests do not fail
-            }
+		it('Should exit process if upgradePrompt returns false', async () => {
+			forceUpdatePrompt_stub.resolves(false);
 
-            expect(getVersionUpdateInfo_stub.calledOnce).to.be.true;
-            expect(processExit_stub.calledOnce).to.be.true;
-            expect(processExit_stub.args[0][0]).to.equal(1);
-            expect(consoleLog_stub.args[0][0]).to.equal('Current Version field missing from the package.json file.  Cannot continue with upgrade.  If you need support, please contact support@harperdb.io');
-            expect(log_notify_stub.args[0][0]).to.equal('Missing new version field from upgrade info object');
-            expect(checkIfRunning_stub.calledOnce).to.be.false;
-            expect(forceUpdatePrompt_stub.calledOnce).to.be.false;
-            expect(runUpgrade_stub.calledOnce).to.be.false;
-        });
+			try {
+				await upgrade_rw.upgrade();
+			} catch (e) {
+				//this is here to catch the error the exit stub is throwing so tests do not fail
+			}
 
-        it('Should exit process if upgradePrompt returns false', async () => {
-            forceUpdatePrompt_stub.resolves(false);
+			expect(getVersionUpdateInfo_stub.calledOnce).to.be.true;
+			expect(checkIfRunning_stub.calledOnce).to.be.true;
+			expect(forceUpdatePrompt_stub.calledOnce).to.be.true;
+			expect(processExit_stub.calledOnce).to.be.true;
+			expect(processExit_stub.args[0][0]).to.equal(0);
+			expect(consoleLog_stub.args[0][0]).to.equal('Cancelled upgrade, closing HarperDB');
+			expect(runUpgrade_stub.calledOnce).to.be.false;
+		});
 
-            try {
-                await upgrade_rw.upgrade();
-            } catch(e) {
-                //this is here to catch the error the exit stub is throwing so tests do not fail
-            }
+		it('Should exit process with code 1 if upgradePrompt throws an exception', async () => {
+			const test_err = new Error('AAHHH!  ERROR!');
+			forceUpdatePrompt_stub.throws(test_err);
 
-            expect(getVersionUpdateInfo_stub.calledOnce).to.be.true;
-            expect(checkIfRunning_stub.calledOnce).to.be.true;
-            expect(forceUpdatePrompt_stub.calledOnce).to.be.true;
-            expect(processExit_stub.calledOnce).to.be.true;
-            expect(processExit_stub.args[0][0]).to.equal(0);
-            expect(consoleLog_stub.args[0][0]).to.equal('Cancelled upgrade, closing HarperDB');
-            expect(runUpgrade_stub.calledOnce).to.be.false;
-        });
+			try {
+				await upgrade_rw.upgrade();
+			} catch (e) {
+				//this is here to catch the error the exit stub is throwing so tests do not fail
+			}
 
-        it('Should exit process with code 1 if upgradePrompt throws an exception', async () => {
-            const test_err = new Error('AAHHH!  ERROR!');
-            forceUpdatePrompt_stub.throws(test_err);
+			expect(getVersionUpdateInfo_stub.calledOnce).to.be.true;
+			expect(checkIfRunning_stub.calledOnce).to.be.true;
+			expect(forceUpdatePrompt_stub.calledOnce).to.be.true;
+			expect(log_error_stub.args[0][0]).to.eql('There was an error when prompting user about upgrade.');
+			expect(log_error_stub.args[1][0]).to.eql(test_err);
+			expect(processExit_stub.calledOnce).to.be.true;
+			expect(processExit_stub.args[0][0]).to.equal(1);
+			expect(consoleLog_stub.args[0][0]).to.equal('Cancelled upgrade, closing HarperDB');
+			expect(runUpgrade_stub.calledOnce).to.be.false;
+		});
 
-            try {
-                await upgrade_rw.upgrade();
-            } catch(e) {
-                //this is here to catch the error the exit stub is throwing so tests do not fail
-            }
+		it('Should exit process with code 1 if boot prop file does not exist - i.e. HDB has not been installed', async () => {
+			fsExistsSync_stub.onFirstCall().returns(false);
 
-            expect(getVersionUpdateInfo_stub.calledOnce).to.be.true;
-            expect(checkIfRunning_stub.calledOnce).to.be.true;
-            expect(forceUpdatePrompt_stub.calledOnce).to.be.true;
-            expect(log_error_stub.args[0][0]).to.eql('There was an error when prompting user about upgrade.');
-            expect(log_error_stub.args[1][0]).to.eql(test_err);
-            expect(processExit_stub.calledOnce).to.be.true;
-            expect(processExit_stub.args[0][0]).to.equal(1);
-            expect(consoleLog_stub.args[0][0]).to.equal('Cancelled upgrade, closing HarperDB');
-            expect(runUpgrade_stub.calledOnce).to.be.false;
-        });
+			try {
+				await upgrade_rw.upgrade();
+			} catch (e) {
+				//this is here to catch the error the exit stub is throwing so tests do not fail
+			}
 
-        it('Should exit process with code 1 if boot prop file does not exist - i.e. HDB has not been installed', async () => {
-            fsExistsSync_stub.onFirstCall().returns(false);
+			expect(getVersionUpdateInfo_stub.calledOnce).to.be.false;
+			expect(checkIfRunning_stub.calledOnce).to.be.false;
+			expect(forceUpdatePrompt_stub.calledOnce).to.be.false;
+			expect(runUpgrade_stub.calledOnce).to.be.false;
+			expect(printToLogAndConsole_stub.args[0][0]).to.eql(
+				'The hdb_boot_properties file was not found. Please install HDB.'
+			);
+			expect(processExit_stub.calledOnce).to.be.true;
+			expect(processExit_stub.args[0][0]).to.equal(1);
+		});
 
-            try {
-                await upgrade_rw.upgrade();
-            } catch(e) {
-                //this is here to catch the error the exit stub is throwing so tests do not fail
-            }
+		it('Should exit process with code 1 if settings file does not exist - i.e. HDB has not been installed', async () => {
+			fsExistsSync_stub.onFirstCall().returns(true);
+			fsExistsSync_stub.onSecondCall().returns(false);
 
-            expect(getVersionUpdateInfo_stub.calledOnce).to.be.false;
-            expect(checkIfRunning_stub.calledOnce).to.be.false;
-            expect(forceUpdatePrompt_stub.calledOnce).to.be.false;
-            expect(runUpgrade_stub.calledOnce).to.be.false;
-            expect(printToLogAndConsole_stub.args[0][0]).to.eql('The hdb_boot_properties file was not found. Please install HDB.');
-            expect(processExit_stub.calledOnce).to.be.true;
-            expect(processExit_stub.args[0][0]).to.equal(1);
-        });
+			try {
+				await upgrade_rw.upgrade();
+			} catch (e) {
+				//this is here to catch the error the exit stub is throwing so tests do not fail
+			}
 
-        it('Should exit process with code 1 if settings file does not exist - i.e. HDB has not been installed', async () => {
-            fsExistsSync_stub.onFirstCall().returns(true);
-            fsExistsSync_stub.onSecondCall().returns(false);
+			expect(getVersionUpdateInfo_stub.calledOnce).to.be.false;
+			expect(checkIfRunning_stub.calledOnce).to.be.false;
+			expect(forceUpdatePrompt_stub.calledOnce).to.be.false;
+			expect(runUpgrade_stub.calledOnce).to.be.false;
+			expect(printToLogAndConsole_stub.args[0][0]).to.eql(
+				'The hdb settings file was not found. Please make sure HDB is installed.'
+			);
+			expect(processExit_stub.calledOnce).to.be.true;
+			expect(processExit_stub.args[0][0]).to.equal(1);
+			fsExistsSync_stub.reset();
+		});
 
-            try {
-                await upgrade_rw.upgrade();
-            } catch(e) {
-                //this is here to catch the error the exit stub is throwing so tests do not fail
-            }
+		it('Test error from runUpgrade is handled', async () => {
+			fsExistsSync_stub.returns(true);
+			runUpgrade_stub.throws(new Error('Error upgrading'));
 
-            expect(getVersionUpdateInfo_stub.calledOnce).to.be.false;
-            expect(checkIfRunning_stub.calledOnce).to.be.false;
-            expect(forceUpdatePrompt_stub.calledOnce).to.be.false;
-            expect(runUpgrade_stub.calledOnce).to.be.false;
-            expect(printToLogAndConsole_stub.args[0][0]).to.eql('The hdb settings file was not found. Please make sure HDB is installed.');
-            expect(processExit_stub.calledOnce).to.be.true;
-            expect(processExit_stub.args[0][0]).to.equal(1);
-            fsExistsSync_stub.reset()
-        });
+			let error;
+			try {
+				await upgrade_rw.upgrade();
+			} catch (err) {
+				error = err;
+			}
 
-        it('Test error from runUpgrade is handled', async () => {
-            fsExistsSync_stub.returns(true);
-            runUpgrade_stub.throws(new Error('Error upgrading'));
+			expect(error.message).to.equal('Error upgrading');
+			expect(log_error_stub.getCall(0).args[0]).to.eql(
+				'There was an error when upgrading your HDB instance. Check logs for more details.'
+			);
+		});
+	});
 
-            let error;
-            try {
-                await upgrade_rw.upgrade();
-            } catch(err) {
-                error = err;
-            }
+	describe('runUpgrade()', () => {
+		let processDirectives_stub;
+		let insertHdbUpgradeInfo_stub;
+		let runUpgrade_rw;
+		const test_error = new Error('Oh boy...it is an error');
 
-            expect(error.message).to.equal('Error upgrading');
-            expect(log_error_stub.getCall(0).args[0]).to.eql('There was an error when upgrading your HDB instance. Check logs for more details.');
-        });
-    });
+		before(() => {
+			processDirectives_stub = sandbox.stub(directivesManager, 'processDirectives').resolves();
+			insertHdbUpgradeInfo_stub = sandbox.stub(hdbInfoController, 'insertHdbUpgradeInfo').resolves();
+			runUpgrade_rw = upgrade_rw.__get__('runUpgrade');
+		});
 
-    describe('runUpgrade()', () => {
-        let processDirectives_stub;
-        let insertHdbUpgradeInfo_stub;
-        let runUpgrade_rw;
-        const test_error = new Error('Oh boy...it is an error');
+		it('Nominal case', async () => {
+			await runUpgrade_rw(TEST_UPGRADE_OBJ);
+			expect(processDirectives_stub.calledOnce).to.be.true;
+			expect(processDirectives_stub.args[0][0]).to.deep.equal(TEST_UPGRADE_OBJ);
+			expect(insertHdbUpgradeInfo_stub.calledOnce).to.be.true;
+			expect(insertHdbUpgradeInfo_stub.args[0][0]).to.deep.equal(TEST_CURR_VERS);
+		});
 
-        before(() => {
-            processDirectives_stub = sandbox.stub(directivesManager, 'processDirectives').resolves();
-            insertHdbUpgradeInfo_stub = sandbox.stub(hdbInfoController, 'insertHdbUpgradeInfo').resolves();
-            runUpgrade_rw = upgrade_rw.__get__('runUpgrade');
-        })
+		it('Should catch and throw exception from runUpgradeDirectives', async () => {
+			processDirectives_stub.throws(test_error);
 
-        it('Nominal case', async () => {
-            await runUpgrade_rw(TEST_UPGRADE_OBJ);
-            expect(processDirectives_stub.calledOnce).to.be.true;
-            expect(processDirectives_stub.args[0][0]).to.deep.equal(TEST_UPGRADE_OBJ);
-            expect(insertHdbUpgradeInfo_stub.calledOnce).to.be.true;
-            expect(insertHdbUpgradeInfo_stub.args[0][0]).to.deep.equal(TEST_CURR_VERS);
-        });
+			let test_result;
 
-        it('Should catch and throw exception from runUpgradeDirectives', async () => {
-            processDirectives_stub.throws(test_error);
+			try {
+				await runUpgrade_rw(TEST_UPGRADE_OBJ);
+			} catch (e) {
+				test_result = e;
+			}
+			expect(printToLogAndConsole_stub.calledOnce).to.be.true;
+			expect(printToLogAndConsole_stub.args[0][0]).to.eql(
+				'There was an error during the data upgrade.  Please check the logs.'
+			);
+			expect(test_result instanceof Error).to.be.true;
+			expect(processDirectives_stub.calledOnce).to.be.true;
+			expect(insertHdbUpgradeInfo_stub.called).to.be.false;
 
-            let test_result
+			processDirectives_stub.resolves();
+		});
 
-            try {
-                await runUpgrade_rw(TEST_UPGRADE_OBJ);
-            } catch(e) {
-                test_result = e;
-            }
-            expect(printToLogAndConsole_stub.calledOnce).to.be.true;
-            expect(printToLogAndConsole_stub.args[0][0]).to.eql('There was an error during the data upgrade.  Please check the logs.');
-            expect(test_result instanceof Error).to.be.true;
-            expect(processDirectives_stub.calledOnce).to.be.true;
-            expect(insertHdbUpgradeInfo_stub.called).to.be.false;
+		it('Should catch an exception from insertHdbUpgradeInfo and continue - i.e. NOT rethrow', async () => {
+			insertHdbUpgradeInfo_stub.throws(test_error);
 
-            processDirectives_stub.resolves();
-        });
+			await runUpgrade_rw(TEST_UPGRADE_OBJ);
 
-        it('Should catch an exception from insertHdbUpgradeInfo and continue - i.e. NOT rethrow', async () => {
-            insertHdbUpgradeInfo_stub.throws(test_error);
+			expect(log_error_stub.calledTwice).to.be.true;
+			expect(log_error_stub.args[0][0]).to.eql("Error updating the 'hdb_info' system table.");
+			expect(log_error_stub.args[1][0]).to.deep.equal(test_error);
+			expect(processDirectives_stub.calledOnce).to.be.true;
+			expect(insertHdbUpgradeInfo_stub.called).to.be.true;
+		});
+	});
 
-            await runUpgrade_rw(TEST_UPGRADE_OBJ);
+	describe('Test printToLogAndConsole', () => {
+		let printToLogAndConsole;
 
-            expect(log_error_stub.calledTwice).to.be.true;
-            expect(log_error_stub.args[0][0]).to.eql("Error updating the 'hdb_info' system table.");
-            expect(log_error_stub.args[1][0]).to.deep.equal(test_error);
-            expect(processDirectives_stub.calledOnce).to.be.true;
-            expect(insertHdbUpgradeInfo_stub.called).to.be.true;
-        });
-    });
+		before(() => {
+			let upgrade_rw = rewire(`../../bin/upgrade`);
+			printToLogAndConsole = upgrade_rw.__get__('printToLogAndConsole');
+		});
 
-    describe('Test printToLogAndConsole', () => {
-        let printToLogAndConsole;
-
-        before(() => {
-            let upgrade_rw = rewire(`../../bin/upgrade`);
-            printToLogAndConsole = upgrade_rw.__get__('printToLogAndConsole');
-        });
-
-        it('Should log to console and final logger', () => {
-            printToLogAndConsole('I am a log', 'error');
-            expect(consoleLog_stub.calledOnce).to.be.true;
-        });
-    });
+		it('Should log to console and final logger', () => {
+			printToLogAndConsole('I am a log', 'error');
+			expect(consoleLog_stub.calledOnce).to.be.true;
+		});
+	});
 });

@@ -121,7 +121,7 @@ function harperDBService() {
 				version.printVersion();
 				break;
 			case hdb_terms.SERVICE_ACTIONS_ENUM.UPGRADE:
-				logger.setLogLevel(logger.INFO);
+				logger.setLogLevel(hdb_terms.LOG_LEVELS.INFO);
 				upgrade
 					.upgrade(null)
 					.then(() => {

@@ -12,6 +12,7 @@ const role = require('../../security/role');
 const cluster_utilities = require('./../clustering/clusterUtilities');
 const custom_function_operations = require('./../customFunctions/operations');
 const harper_logger = require('../../utility/logging/harper_logger');
+const read_log = require('../../utility/logging/readLog');
 const export_ = require('../../data_layer/export');
 const op_auth = require('../../utility/operation_authorization');
 const jobs = require('./../jobs');
@@ -61,9 +62,9 @@ async function processLocalTransaction(req, operation_function) {
 	try {
 		if (
 			req.body.operation !== 'read_log' &&
-			(harper_logger.log_level === harper_logger.INFO ||
-				harper_logger.log_level === harper_logger.DEBUG ||
-				harper_logger.log_level === harper_logger.TRACE)
+			(harper_logger.log_level === terms.LOG_LEVELS.INFO ||
+				harper_logger.log_level === terms.LOG_LEVELS.DEBUG ||
+				harper_logger.log_level === terms.LOG_LEVELS.TRACE)
 		) {
 			// Need to remove auth variables, but we don't want to create an object unless
 			// the logging is actually going to happen.
@@ -273,7 +274,7 @@ function initializeOperationFunctionMap() {
 	op_func_map.set(terms.OPERATIONS_ENUM.ALTER_ROLE, new OperationFunctionObject(role.alterRole));
 	op_func_map.set(terms.OPERATIONS_ENUM.DROP_ROLE, new OperationFunctionObject(role.dropRole));
 	op_func_map.set(terms.OPERATIONS_ENUM.USER_INFO, new OperationFunctionObject(user.userInfo));
-	op_func_map.set(terms.OPERATIONS_ENUM.READ_LOG, new OperationFunctionObject(harper_logger.readLog));
+	op_func_map.set(terms.OPERATIONS_ENUM.READ_LOG, new OperationFunctionObject(read_log));
 	op_func_map.set(terms.OPERATIONS_ENUM.ADD_NODE, new OperationFunctionObject(cluster_utilities.addNode));
 	op_func_map.set(terms.OPERATIONS_ENUM.UPDATE_NODE, new OperationFunctionObject(cluster_utilities.updateNode));
 	op_func_map.set(terms.OPERATIONS_ENUM.REMOVE_NODE, new OperationFunctionObject(cluster_utilities.removeNode));

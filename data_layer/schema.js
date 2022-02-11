@@ -57,7 +57,7 @@ async function createSchemaStructure(schema_create_object) {
 			new Error(),
 			HDB_ERROR_MSGS.SCHEMA_EXISTS_ERR(schema_create_object.schema),
 			HTTP_STATUS_CODES.BAD_REQUEST,
-			logger.ERR,
+			hdb_terms.LOG_LEVELS.ERROR,
 			HDB_ERROR_MSGS.SCHEMA_EXISTS_ERR(schema_create_object.schema),
 			true
 		);
@@ -112,7 +112,7 @@ async function createTableStructure(create_table_object) {
 			new Error(),
 			invalid_schema_msg,
 			HTTP_STATUS_CODES.NOT_FOUND,
-			logger.ERR,
+			hdb_terms.LOG_LEVELS.ERROR,
 			invalid_schema_msg,
 			true
 		);
@@ -127,7 +127,7 @@ async function createTableStructure(create_table_object) {
 			new Error(),
 			HDB_ERROR_MSGS.TABLE_EXISTS_ERR(create_table_object.schema, create_table_object.table),
 			HTTP_STATUS_CODES.BAD_REQUEST,
-			logger.ERR,
+			hdb_terms.LOG_LEVELS.ERROR,
 			HDB_ERROR_MSGS.TABLE_EXISTS_ERR(create_table_object.schema, create_table_object.table),
 			true
 		);
@@ -181,7 +181,7 @@ async function dropSchema(drop_schema_object) {
 			new Error(),
 			invalid_schema_msg,
 			HTTP_STATUS_CODES.NOT_FOUND,
-			logger.ERR,
+			hdb_terms.LOG_LEVELS.ERROR,
 			invalid_schema_msg,
 			true
 		);
@@ -225,7 +225,7 @@ async function dropTable(drop_table_object) {
 			new Error(),
 			invalid_schema_table_msg,
 			HTTP_STATUS_CODES.NOT_FOUND,
-			logger.ERR,
+			hdb_terms.LOG_LEVELS.ERROR,
 			invalid_schema_table_msg,
 			true
 		);
@@ -276,7 +276,7 @@ async function dropAttribute(drop_attribute_object) {
 			new Error(),
 			invalid_schema_table_msg,
 			HTTP_STATUS_CODES.NOT_FOUND,
-			logger.ERR,
+			hdb_terms.LOG_LEVELS.ERROR,
 			invalid_schema_table_msg,
 			true
 		);

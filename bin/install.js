@@ -9,7 +9,7 @@ function install(callback) {
 				return callback(err, null);
 			}
 			console.log('There was an error during the install.  Please check the install logs. \n ERROR: ' + err);
-			hdb_logger.error(err, true);
+			hdb_logger.error(err);
 			return callback(err);
 		}
 

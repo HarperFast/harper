@@ -1,6 +1,7 @@
 'use strict';
 const hdb_errors = require('./commonErrors');
 const logger = require('../logging/harper_logger');
+const hdb_terms = require('../hdbTerms');
 
 /**
  * Custom error class used for better error and log handling.  Caught errors that evaluate to an instanceof HdbError can
@@ -54,7 +55,14 @@ class HdbError extends Error {
  * @param delete_stack
  * @returns {HdbError|*}
  */
-function handleHDBError(e, http_msg, http_code, log_level = logger.ERR, log_msg = null, delete_stack = false) {
+function handleHDBError(
+	e,
+	http_msg,
+	http_code,
+	log_level = hdb_terms.LOG_LEVELS.ERROR,
+	log_msg = null,
+	delete_stack = false
+) {
 	if (isHDBError(e)) {
 		return e;
 	}

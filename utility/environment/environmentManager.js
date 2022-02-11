@@ -126,7 +126,8 @@ function initSync(force = false) {
 	} catch (err) {
 		log.error(INIT_ERR);
 		log.error(err);
-		throw err;
+		console.error(err);
+		process.exit(1);
 	}
 }
 
@@ -161,7 +162,7 @@ function initTestEnvironment(test_config_obj = {}) {
 			`${props_path}/envDir/utility/keys/certificate.pem`
 		);
 		setProperty(hdb_terms.HDB_SETTINGS_NAMES.LOG_LEVEL_KEY, `debug`);
-		setProperty(hdb_terms.HDB_SETTINGS_NAMES.LOG_PATH_KEY, `${props_path}/envDir/log/hdb_log.log`);
+		setProperty(hdb_terms.HDB_SETTINGS_NAMES.LOG_PATH_KEY, `${props_path}/envDir/log`);
 		setProperty(hdb_terms.HDB_SETTINGS_NAMES.LOG_DAILY_ROTATE_KEY, false);
 		setProperty(hdb_terms.HDB_SETTINGS_NAMES.CLUSTERING_ENABLED_KEY, true);
 		setProperty(hdb_terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY, '1231412de213');

@@ -1,574 +1,316 @@
 'use strict';
 
-const winston = require('winston');
-const pino = require('pino');
+// Note - do not import/use common_utils.js in this module, it will cause circular dependencies.
 const fs = require('fs-extra');
-const moment = require('moment');
 const path = require('path');
-const util = require('util');
-const validator = require('../../validation/readLogValidator');
-const PropertiesReader = require('properties-reader');
-const os = require('os');
 const YAML = require('yaml');
-const terms = require('../hdbTerms');
+const PropertiesReader = require('properties-reader');
+const hdb_terms = require('../hdbTerms');
+const assignCMDENVVariables = require('../assignCmdEnvVariables');
+const os = require('os');
 
-// Set interval that log buffer flushes at.
-const LOG_BUFFER_FLUSH_INTERVAL = 5000;
-const DATE_FORMAT = 'YYYY-MM-DD';
-
-const NOTIFY = 'notify';
-const FATAL = 'fatal';
-const ERR = 'error';
-const WARN = 'warn';
-const INFO = 'info';
-const DEBUG = 'debug';
-const TRACE = 'trace';
-
-const LOGGER_TYPE = {
-	RUN_LOG: 'run_log',
-	INSTALL_LOG: 'install_log',
-	HDB_LOG: 'hdb_log',
+const LOG_LEVEL_HIERARCHY = {
+	notify: 7,
+	fatal: 6,
+	error: 5,
+	warn: 4,
+	info: 3,
+	debug: 2,
+	trace: 1,
 };
 
-const LOGGER_PATH = {
-	INSTALL_LOG: '../install_log.log',
-	RUN_LOG: '../run_log.log',
+// Install log is created in harperdb/logs because the hdb folder doesn't exist initially during the install process.
+const INSTALL_LOG_LOCATION = path.resolve(__dirname, `../../logs`);
+
+// If harper_logger is called by a non-pm2 managed process it will not have a pm id.
+const NON_PM2_PROCESS = process.env.pm_id === undefined;
+
+// Location of default config YAML.
+const DEFAULT_CONFIG_FILE = path.resolve(__dirname, '../../config/yaml/', hdb_terms.HDB_DEFAULT_CONFIG_FILE);
+
+let process_name =
+	process.env.PROCESS_NAME === undefined ? hdb_terms.PROCESS_DESCRIPTORS.INSTALL : process.env.PROCESS_NAME;
+let log_stream;
+let log_to_file;
+let log_to_stdstreams;
+let log_level;
+let log_path;
+
+// If this is the first time logger is called by process, hdb props will be undefined.
+// Call init to get all the required log settings.
+let hdb_properties;
+if (hdb_properties === undefined) initLogSettings();
+
+module.exports = {
+	createLogFile,
+	notify,
+	fatal,
+	error,
+	warn,
+	info,
+	debug,
+	trace,
+	setLogLevel,
+	log_level,
 };
-
-const CUSTOM_LOG_LEVELS = {
-	notify: 70,
-	fatal: 60,
-	error: 50,
-	warn: 40,
-	info: 30,
-	debug: 20,
-	trace: 10,
-};
-
-const DEFAULT_LOG_FILE_NAME = 'hdb_log.log';
-
-let pino_logger = undefined;
-let std_out_logger = undefined;
-let std_err_logger = undefined;
-let final_logger = undefined;
-let log_directory = undefined;
-let log_file_name = undefined;
-let log_location = undefined;
-let daily_rotate = undefined;
-let log_to_file = undefined;
-let log_to_stdstreams = undefined;
-let log_level = undefined;
-let log_path = undefined;
-let default_log_directory = undefined;
-let daily_max = undefined;
-let hdb_properties = undefined;
-let tomorrows_date = undefined;
-let hdb_root;
 
 /**
- * Immediately invoked function that gets log parameters.
+ * Get the log settings from the settings file.
+ * If the settings file doesn't exist (during install) check for command or env vars, if there aren't
+ * any, use default values.
  */
-(function loadLogParams() {
-	if (hdb_properties === undefined) {
-		try {
+function initLogSettings() {
+	try {
+		if (hdb_properties === undefined) {
 			const boot_props_file_path = getPropsFilePath();
 			hdb_properties = PropertiesReader(boot_props_file_path);
 			({
-				rotate: daily_rotate,
 				level: log_level,
 				config_log_path: log_path,
 				to_file: log_to_file,
 				to_stream: log_to_stdstreams,
-				root: hdb_root,
 			} = getLogConfig(hdb_properties.get('settings_path')));
-
-			daily_max = 10; // TODO - this will change with log updates
-
-			if (log_to_file !== undefined && log_to_file !== null) {
-				log_to_file = log_to_file.toString().toLowerCase() === 'true';
-			}
-
-			if (log_to_stdstreams !== undefined && log_to_stdstreams !== null) {
-				log_to_stdstreams = log_to_stdstreams.toString().toLowerCase() === 'true';
-			}
-
-			if (log_to_file === false && log_to_stdstreams === false) {
-				log_to_file = true;
-			}
-
-			default_log_directory = hdb_root + '/log/';
-
-			createLog(log_path);
-		} catch (err) {
-			// In early stage like install or run, settings file and folder is not available yet so let it takes default settings below
 		}
-	}
-})();
-
-if (log_level === undefined || log_level === 0 || log_level === null) {
-	log_level = 'error';
-}
-
-if (log_path === undefined || log_path === null) {
-	// Location of the run log - the harperdb dir.
-	log_location = path.resolve(__dirname, `../../${terms.RUN_LOG}`);
-}
-
-module.exports = {
-	trace: trace,
-	debug: debug,
-	info: info,
-	warn: warn,
-	error: error,
-	fatal: fatal,
-	notify: notify,
-	setLogLevel: setLogLevel,
-	writeLog: writeLog,
-	readLog: readLog,
-	log_level,
-	NOTIFY,
-	FATAL,
-	ERR,
-	WARN,
-	INFO,
-	DEBUG,
-	TRACE,
-};
-
-/**
- * Set a location for the log file to be written.  Will stop writing to any existing logs and start writing to the new location.
- * @param log_location_setting
- */
-function createLog(log_location_setting) {
-	if (daily_rotate) {
-		// If the logs are set to daily rotate we get tomorrows date so that we know when to create a new log file.
-		tomorrows_date = moment().utc().set({ hour: 0, minute: 0, second: 0, millisecond: 0 }).add(1, 'days').valueOf();
-	}
-
-	//if log location isn't defined, assume HDB_ROOT/log/hdb_log.log
-	if (log_location_setting === undefined || log_location_setting === 0 || log_location_setting === null) {
-		log_directory = default_log_directory;
-		log_file_name = DEFAULT_LOG_FILE_NAME;
-	} else {
-		try {
-			const has_log_ext = path.extname(log_location_setting).length > 1;
-			if (has_log_ext) {
-				const log_settings_directory = path.parse(log_location_setting).dir;
-				const log_settings_name = path.parse(log_location_setting).base;
-
-				if (fs.existsSync(log_settings_directory)) {
-					log_directory = log_settings_directory;
-					log_file_name = log_settings_name;
-				} else {
-					log_directory = log_settings_directory;
-					log_file_name = log_settings_name;
-					try {
-						fs.mkdirSync(log_settings_directory, { recursive: true });
-					} catch (err) {
-						log_directory = default_log_directory;
-						log_file_name = DEFAULT_LOG_FILE_NAME;
-						log_location = path.join(log_directory, log_file_name);
-						writeLog(
-							INFO,
-							`Attempted to create log directory from settings file but failed.  Using default log path - 'hdb/log/hdb_log.log'`
-						);
-					}
-				}
-			} else {
-				if (fs.existsSync(log_location_setting)) {
-					log_directory = log_location_setting;
-					log_file_name = DEFAULT_LOG_FILE_NAME;
-				} else {
-					log_directory = log_location_setting;
-					log_file_name = DEFAULT_LOG_FILE_NAME;
-					try {
-						fs.mkdirSync(log_location_setting, { recursive: true });
-					} catch (err) {
-						log_directory = default_log_directory;
-						log_location = path.join(log_directory, log_file_name);
-						writeLog(
-							INFO,
-							`Attempted to create log directory from settings file but failed.  Using default log path - 'hdb/log/hdb_log.log'`
-						);
-					}
-				}
-			}
-		} catch (e) {
-			log_directory = default_log_directory;
-			log_file_name = DEFAULT_LOG_FILE_NAME;
-			log_location = path.join(log_directory, log_file_name);
-			writeLog(
-				INFO,
-				`Attempted to create log directory from settings file but failed.  Using default log path - 'hdb/log/hdb_log.log'`
-			);
-		}
-	}
-
-	if (log_location === undefined) {
-		log_location = daily_rotate
-			? path.join(log_directory, `${moment().utc().format(DATE_FORMAT)}_${log_file_name}`)
-			: path.join(log_directory, log_file_name);
-	}
-
-	if (!pino_logger) {
-		initPinoLogger();
-		trace(`Initialized pino logger writing to ${log_location} process pid ${process.pid}`);
-	}
-}
-
-/**
- * Initialize asynchronous Pino logger
- */
-function initPinoLogger() {
-	try {
-		const pino_args = {
-			customLevels: CUSTOM_LOG_LEVELS,
-			useOnlyCustomLevels: true,
-			level: log_level,
-			name: 'HarperDB',
-			messageKey: 'message',
-			timestamp: () => `,"timestamp":"${new Date(Date.now()).toISOString()}"`,
-			formatters: {
-				bindings() {
-					return undefined; // Removes pid and hostname from log
-				},
-				level(label) {
-					return { level: label };
-				},
-			},
-		};
-
-		pino_logger = pino(
-			pino_args,
-			pino.destination({
-				dest: log_location,
-				minLength: 4096, // Buffer before writing
-				sync: false, // Asynchronous logging
-			})
-		);
-
-		// asynchronously flush every to keep the buffer empty
-		// in periods of low activity
-		setInterval(function () {
-			if (pino_logger !== undefined) pino_logger.flush();
-		}, LOG_BUFFER_FLUSH_INTERVAL).unref();
-
-		final_logger = pino.final(pino_logger);
-
-		std_out_logger = pino(pino_args);
-		std_err_logger = pino(pino_args, process.stderr);
 	} catch (err) {
-		console.error(err);
+		hdb_properties = undefined;
+		if (err.code === hdb_terms.NODE_ERROR_CODES.ENOENT) {
+			// If the env settings haven't been initialized check cmd/env vars for values. If values not found used default.
+			const cmd_envs = assignCMDENVVariables([
+				hdb_terms.HDB_SETTINGS_NAMES.LOG_TO_FILE,
+				hdb_terms.HDB_SETTINGS_NAMES.LOG_TO_STDSTREAMS,
+				hdb_terms.HDB_SETTINGS_NAMES.LOG_LEVEL_KEY,
+			]);
+
+			const { default_level, default_to_file, default_to_stream } = getDefaultConfig();
+
+			log_to_file = cmd_envs[hdb_terms.HDB_SETTINGS_NAMES.LOG_TO_FILE]
+				? cmd_envs[hdb_terms.HDB_SETTINGS_NAMES.LOG_TO_FILE]
+				: default_to_file;
+			log_to_file = autoCastBoolean(log_to_file);
+
+			log_to_stdstreams = cmd_envs[hdb_terms.HDB_SETTINGS_NAMES.LOG_TO_STDSTREAMS]
+				? cmd_envs[hdb_terms.HDB_SETTINGS_NAMES.LOG_TO_STDSTREAMS]
+				: default_to_stream;
+			log_to_stdstreams = autoCastBoolean(log_to_stdstreams);
+
+			log_level = cmd_envs[hdb_terms.HDB_SETTINGS_NAMES.LOG_LEVEL_KEY]
+				? cmd_envs[hdb_terms.HDB_SETTINGS_NAMES.LOG_LEVEL_KEY]
+				: default_level;
+
+			// If env hasn't been initialized process is likely install.
+			log_path = INSTALL_LOG_LOCATION;
+
+			return;
+		}
+
+		error('Error initializing log settings');
+		error(err);
 		throw err;
 	}
 }
 
 /**
- * final log is a specialist logger that synchronously flushes on every write
- * @returns {undefined|*|(function(*=, ...[*]): *)}
+ * If a process is not run by pm2 (like the bin modules) create a log file/stream.
+ * @param log_name
+ * @param log_process_name
  */
-function writeToFinalLog(level, message) {
-	if (pino_logger === undefined) {
-		initPinoLogger();
+function createLogFile(log_name, log_process_name) {
+	if (!NON_PM2_PROCESS) {
+		error('createLogFile should only be used if the process is not being managed by pm2');
+		return;
 	}
 
-	if (final_logger === undefined) {
-		final_logger = pino.final(pino_logger);
+	if (hdb_properties === undefined) initLogSettings();
+	process_name = log_process_name;
+	let log_dir;
+	if (log_name === hdb_terms.PROCESS_LOG_NAMES.INSTALL) {
+		log_dir = INSTALL_LOG_LOCATION;
+	} else {
+		log_dir = log_path;
 	}
 
 	if (log_to_file) {
-		final_logger[level](message);
-	}
+		log_stream = fs.createWriteStream(path.join(log_dir, log_name), {
+			autoClose: true,
+			flags: 'a',
+		});
 
-	if (log_to_stdstreams) {
-		logToStdStream(level, message);
+		log_stream.on('error', (err) => {
+			console.error(err);
+		});
 	}
 }
 
 /**
- * This helper function will take the log level and message as parameters, and write to the log using
- * the logger configured in the settings file.
- * @param {string|number|null} level - The log level this message should be written to
- * @param {String} message - The message to be written to the log
+ * Builds the record that will be written to the log and/or stdout/err.
+ * @param level
+ * @param message
+ * @returns {string}
  */
-function writeLog(level, message) {
-	try {
-		if (level === undefined || level === 0 || level === null) {
-			level = 'error';
+function createLogRecord(level, message) {
+	const date_now = new Date(Date.now()).toISOString();
+
+	// If an error instance is stringified it returns an empty object. Also, adding the error instance to a sting
+	// only logs the error message and not the stack, that is why we need to set message to stack.
+	if (message instanceof Error && message.stack) {
+		message = message.stack;
+	} else if (typeof message === 'object') {
+		message = JSON.stringify(message);
+	}
+
+	return `{"process_name": "${process_name}", "level": "${level}", "timestamp": "${date_now}", "message": "${message}"}\n`;
+}
+
+/**
+ * If the stream doesn't exist, write to the install log. The only time the log stream should be undefined is initially
+ * during install or before any of the bin modules have had a chance to create their own log.
+ * @param log
+ */
+function writeToLogStream(log) {
+	if (log_stream === undefined) {
+		process_name = hdb_terms.PROCESS_DESCRIPTORS.INSTALL;
+		fs.ensureDirSync(INSTALL_LOG_LOCATION);
+		log_stream = fs.createWriteStream(path.join(INSTALL_LOG_LOCATION, hdb_terms.PROCESS_LOG_NAMES.INSTALL), {
+			autoClose: true,
+			flags: 'a',
+		});
+
+		log_stream.on('error', (err) => {
+			console.error(err);
+		});
+	}
+
+	log_stream.write(log);
+}
+
+/**
+ * Determine if non-pm2 managed log should go to std out and/or file
+ * @param log
+ */
+function nonPm2LogStdOut(log) {
+	if (log_to_file) writeToLogStream(log);
+	if (log_to_stdstreams) process.stdout.write(log);
+}
+
+/**
+ * Determine if non-pm2 managed log should go to std err and/or file
+ * @param log
+ */
+function nonPm2LogStdErr(log) {
+	if (log_to_file) writeToLogStream(log);
+	if (log_to_stdstreams) process.stderr.write(log);
+}
+
+/**
+ * Log a info level log.
+ * @param message
+ */
+function info(message) {
+	if (LOG_LEVEL_HIERARCHY[log_level] <= LOG_LEVEL_HIERARCHY['info']) {
+		const log = createLogRecord('info', message);
+		if (NON_PM2_PROCESS) {
+			nonPm2LogStdOut(log);
+			return;
 		}
 
-		if (!pino_logger) {
-			initPinoLogger();
-			trace(`Initialized pino logger writing to ${log_location} process pid ${process.pid}`);
+		process.stdout.write(log);
+	}
+}
+
+/**
+ * Log a trace level log.
+ * @param message
+ */
+function trace(message) {
+	if (LOG_LEVEL_HIERARCHY[log_level] <= LOG_LEVEL_HIERARCHY['trace']) {
+		const log = createLogRecord('trace', message);
+		if (NON_PM2_PROCESS) {
+			nonPm2LogStdOut(log);
+			return;
 		}
 
-		// Daily rotate is set in HDB config
-		if (daily_rotate && Date.now() > tomorrows_date) {
-			// Anything in the the current logs buffer is flushed to the log file.
-			if (pino_logger) {
-				pino_logger.flush();
-			}
+		process.stdout.write(log);
+	}
+}
 
-			// Update the tomorrow date value
-			tomorrows_date = moment().utc().set({ hour: 0, minute: 0, second: 0, millisecond: 0 }).add(1, 'days').valueOf();
-			const new_log_location = path.join(log_directory, `${moment().utc().format(DATE_FORMAT)}_${log_file_name}`);
-
-			// Create a new pino logger instance under new file name.
-			if (new_log_location !== log_location) {
-				log_location = new_log_location;
-				initPinoLogger();
-				pino_logger.notify(`Initialized pino logger writing to ${log_location} process pid ${process.pid}`);
-			}
-
-			// If the config has a value for dail max we must check to see any old logs need to be removed.
-			if (Number.isInteger(daily_max) && daily_max > 0) {
-				removeOldLogs();
-			}
+/**
+ * Log a error level log.
+ * @param message
+ */
+function error(message) {
+	if (LOG_LEVEL_HIERARCHY[log_level] <= LOG_LEVEL_HIERARCHY['error']) {
+		const log = createLogRecord('error', message);
+		if (NON_PM2_PROCESS) {
+			nonPm2LogStdErr(log);
+			return;
 		}
 
-		if (log_to_file === true) {
-			pino_logger[level](message);
+		process.stderr.write(log);
+	}
+}
+
+/**
+ * Log a debug level log.
+ * @param message
+ */
+function debug(message) {
+	if (LOG_LEVEL_HIERARCHY[log_level] <= LOG_LEVEL_HIERARCHY['debug']) {
+		const log = createLogRecord('debug', message);
+		if (NON_PM2_PROCESS) {
+			nonPm2LogStdOut(log);
+			return;
 		}
 
-		logToStdStream(level, message);
-	} catch (err) {
-		console.error(err);
-		throw err;
+		process.stdout.write(log);
 	}
 }
 
 /**
- * logs to stdout / stderr if logging to std streams is enabled
- * @param {string} level - log level
- * @param {string} message - message to log
+ * Log a notify level log.
+ * @param message
  */
-function logToStdStream(level, message) {
-	if (log_to_stdstreams !== true) {
-		return;
-	}
-
-	if (!std_err_logger || !std_out_logger) {
-		initPinoLogger();
-	}
-
-	if (level === FATAL || level === ERR) {
-		std_err_logger[level](message);
-	} else {
-		std_out_logger[level](message);
-	}
-}
-
-/**
- * Gets all the log files in the log dir and extracts the date from the file names.
- * From there it will remove the oldest log if the total number of logs is greater than daily max.
- */
-function removeOldLogs() {
-	const all_log_files = fs.readdirSync(log_directory, { withFileTypes: true });
-	let all_valid_dates = [];
-	const array_length = all_log_files.length;
-	for (let x = 0; x < array_length; x++) {
-		const file_name = all_log_files[x].name;
-		const log_date = file_name.split('_')[0];
-
-		// If the file has a .log extension and a valid date at the beginning of its name push it to array.
-		if (path.extname(file_name) === '.log' && moment(log_date, DATE_FORMAT, true).isValid()) {
-			all_valid_dates.push({ date: log_date, file_name });
+function notify(message) {
+	if (LOG_LEVEL_HIERARCHY[log_level] <= LOG_LEVEL_HIERARCHY['notify']) {
+		const log = createLogRecord('notify', message);
+		if (NON_PM2_PROCESS) {
+			nonPm2LogStdOut(log);
+			return;
 		}
-	}
 
-	if (all_valid_dates.length > daily_max) {
-		// Sort array of log file dates so that we know the oldest log.
-		const sorted_dates = all_valid_dates.sort(
-			(a, b) => moment(a.date, DATE_FORMAT, true) - moment(b.date, DATE_FORMAT, true)
-		);
-		// Oldest log will be the one at the start of array.
-		const log_to_remove = sorted_dates[0].file_name;
-		fs.unlinkSync(path.join(log_directory, log_to_remove));
-		pino_logger.info(`${log_to_remove} deleted`);
+		process.stdout.write(log);
 	}
 }
 
 /**
- * Writes a info message to the log.
- * @param {string} message - The string message to write to the log
- * @param {boolean} final_log - Write to final_log
+ * Log a fatal level log.
+ * @param message
  */
-function info(message, final_log = false) {
-	if (final_log) {
-		writeToFinalLog(INFO, message);
-	} else {
-		writeLog(INFO, message);
+function fatal(message) {
+	if (LOG_LEVEL_HIERARCHY[log_level] <= LOG_LEVEL_HIERARCHY['fatal']) {
+		const log = createLogRecord('fatal', message);
+		if (NON_PM2_PROCESS) {
+			nonPm2LogStdErr(log);
+			return;
+		}
+
+		process.stderr.write(log);
 	}
 }
 
 /**
- * Writes a trace message to the log.
- * @param {string} message - The string message to write to the log
- * @param {boolean} final_log - Write to final_log
+ * Log a warn level log.
+ * @param message
  */
-function trace(message, final_log = false) {
-	if (final_log) {
-		writeToFinalLog(TRACE, message);
-	} else {
-		writeLog(TRACE, message);
+function warn(message) {
+	if (LOG_LEVEL_HIERARCHY[log_level] <= LOG_LEVEL_HIERARCHY['warn']) {
+		const log = createLogRecord('warn', message);
+		if (NON_PM2_PROCESS) {
+			nonPm2LogStdErr(log);
+			return;
+		}
+
+		process.stderr.write(log);
 	}
-}
-
-/**
- * Writes a error message to the log.
- * @param {string} message - The string message to write to the log
- * @param {boolean} final_log - Write to final_log
- */
-function error(message, final_log = false) {
-	if (final_log) {
-		writeToFinalLog(ERR, message);
-	} else {
-		writeLog(ERR, message);
-	}
-}
-
-/**
- * Writes a fatal message to the log.
- * @param {string} message - The string message to write to the log
- * @param {boolean} final_log - Write to final_log
- */
-function fatal(message, final_log = false) {
-	if (final_log) {
-		writeToFinalLog(FATAL, message);
-	} else {
-		writeLog(FATAL, message);
-	}
-}
-
-/**
- * Writes a debug message to the log.
- * @param {string} message - The string message to write to the log
- * @param {boolean} final_log - Write to final_log
- */
-function debug(message, final_log = false) {
-	if (final_log) {
-		writeToFinalLog(DEBUG, message);
-	} else {
-		writeLog(DEBUG, message);
-	}
-}
-
-/**
- * Writes a warn message to the log.
- * @param {string} message - The string message to write to the log
- * @param {boolean} final_log - Write to final_log
- */
-function warn(message, final_log = false) {
-	if (final_log) {
-		writeToFinalLog(WARN, message);
-	} else {
-		writeLog(WARN, message);
-	}
-}
-
-/**
- * Writes a notify message to the log.
- * @param {string} message - The string message to write to the log
- * @param {boolean} final_log - Write to final_log
- */
-function notify(message, final_log = false) {
-	if (final_log) {
-		writeToFinalLog(NOTIFY, message);
-	} else {
-		writeLog(NOTIFY, message);
-	}
-}
-
-/**
- * Set the log level for the HDB Processes.  Default is error.  Options are trace, debug, info, error, fatal.
- * @param {string} level - The logging level for the HDB processes.
- */
-function setLogLevel(level) {
-	if (pino_logger === undefined) {
-		log_level = level;
-		return;
-	}
-
-	pino_logger.level = level;
-	log_level = level;
-}
-
-async function readLog(read_log_object) {
-	const validation = validator(read_log_object);
-	if (validation) {
-		throw validation;
-	}
-
-	const options = {
-		limit: 100,
-		fields: ['level', 'message', 'timestamp'],
-		// Winston adds a default 'from' value if one is not passed. The default is one day from today, this is silly so we
-		// override it. If a 'from' date is included in the request it will be added below.
-		from: new Date('1970-01-01T00:00:00'),
-	};
-
-	switch (read_log_object.log) {
-		case LOGGER_TYPE.INSTALL_LOG:
-			configureWinstonForQuery(LOGGER_PATH.INSTALL_LOG);
-			break;
-
-		case LOGGER_TYPE.RUN_LOG:
-			configureWinstonForQuery(LOGGER_PATH.RUN_LOG);
-			break;
-
-		default:
-			configureWinstonForQuery();
-			break;
-	}
-
-	if (read_log_object.from) {
-		options.from = moment(read_log_object.from);
-	}
-
-	if (read_log_object.until) {
-		options.until = moment(read_log_object.until);
-	}
-
-	if (read_log_object.level) {
-		options.level = read_log_object.level;
-	}
-
-	if (read_log_object.limit) {
-		options.limit = read_log_object.limit;
-	}
-
-	if (read_log_object.order) {
-		options.order = read_log_object.order;
-	}
-
-	if (read_log_object.start) {
-		options.start = read_log_object.start;
-	}
-
-	const p_query = util.promisify(winston.query);
-
-	try {
-		return await p_query(options);
-	} catch (e) {
-		error(e);
-		throw e;
-	}
-}
-
-/**
- * Winston is used to query the Pino log.
- * @param query_log_path
- */
-function configureWinstonForQuery(query_log_path) {
-	const query_path = query_log_path ? query_log_path : log_location;
-	winston.configure({
-		transports: [
-			new winston.transports.File({
-				filename: query_path,
-			}),
-		],
-		exitOnError: false,
-	});
 }
 
 /**
@@ -588,7 +330,7 @@ function getPropsFilePath() {
 		home_dir = '~/';
 	}
 
-	let _boot_props_file_path = path.join(home_dir, terms.HDB_HOME_DIR_NAME, terms.BOOT_PROPS_FILE_NAME);
+	let _boot_props_file_path = path.join(home_dir, hdb_terms.HDB_HOME_DIR_NAME, hdb_terms.BOOT_PROPS_FILE_NAME);
 	// this checks how we used to store the boot props file for older installations.
 	if (!fs.existsSync(_boot_props_file_path)) {
 		_boot_props_file_path = path.join(__dirname, '../', 'hdb_boot_properties.file');
@@ -596,24 +338,66 @@ function getPropsFilePath() {
 	return _boot_props_file_path;
 }
 
+function setLogLevel(level) {
+	log_level = level;
+}
+
+/**
+ * Takes a boolean string/value and casts it to a boolean
+ * @param boolean
+ * @returns {boolean}
+ */
+function autoCastBoolean(boolean) {
+	return boolean === true || (typeof boolean === 'string' && boolean.toLowerCase() === 'true');
+}
+
+/**
+ * Reads the harperdb.conf file for log settings.
+ * @param hdb_config_path
+ * @returns {{config_log_path: any, rotate: any, level: any, to_file: any, root: any, to_stream: any}}
+ */
 function getLogConfig(hdb_config_path) {
 	try {
 		const config_doc = YAML.parseDocument(fs.readFileSync(hdb_config_path, 'utf8'));
-		const rotate = config_doc.getIn(['logging', 'rotation', 'rotate']);
 		const level = config_doc.getIn(['logging', 'level']);
 		const config_log_path = config_doc.getIn(['logging', 'root']);
 		const to_file = config_doc.getIn(['logging', 'file']);
 		const to_stream = config_doc.getIn(['logging', 'stdStreams']);
-		const root = config_doc.getIn(['operationsApi', 'root']);
 		return {
-			rotate,
 			level,
 			config_log_path,
 			to_file,
 			to_stream,
-			root,
 		};
 	} catch (err) {
+		// If the config file doesn't exist throw ENOENT error and parent function will use default log settings
+		if (err.code === hdb_terms.NODE_ERROR_CODES.ENOENT) {
+			throw err;
+		}
+
 		console.error('Error accessing config file for logging');
+		console.error(err);
+	}
+}
+
+/**
+ * Read the default harperdb yaml file for default log settings.
+ * Used in early install stages before harperdb.conf exists
+ * @returns {{default_to_file: any, default_level: any, default_to_stream: any}}
+ */
+function getDefaultConfig() {
+	try {
+		const default_config_doc = YAML.parseDocument(fs.readFileSync(DEFAULT_CONFIG_FILE, 'utf8'));
+		const default_level = default_config_doc.getIn(['logging', 'level']);
+		const default_to_file = default_config_doc.getIn(['logging', 'file']);
+		const default_to_stream = default_config_doc.getIn(['logging', 'stdStreams']);
+		return {
+			default_level,
+			default_to_file,
+			default_to_stream,
+		};
+	} catch (err) {
+		console.error('Error accessing default config file for logging');
+		console.error(err);
 	}
 }

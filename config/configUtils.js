@@ -13,7 +13,7 @@ const UNINIT_GET_CONFIG_ERR = 'Unable to get config value because config is unin
 const CONFIG_INIT_MSG = 'Config successfully initialized';
 const BACKUP_ERR = 'Error backing up config file';
 const EMPTY_GET_VALUE = 'Empty parameter sent to getConfigValue';
-const DEFAULT_CONFIG_FILE_PATH = path.join(__dirname, 'yaml/defaultConfig.yaml');
+const DEFAULT_CONFIG_FILE_PATH = path.join(__dirname, 'yaml', hdb_terms.HDB_DEFAULT_CONFIG_FILE);
 
 let flat_default_config_obj;
 let flat_config_obj;

@@ -45,7 +45,7 @@ async function deleteFilesBefore(delete_obj) {
 			new Error(),
 			HDB_ERROR_MSGS.INVALID_DATE,
 			HTTP_STATUS_CODES.BAD_REQUEST,
-			harper_logger.ERR,
+			terms.LOG_LEVELS.ERROR,
 			HDB_ERROR_MSGS.INVALID_DATE,
 			true
 		);
@@ -57,7 +57,7 @@ async function deleteFilesBefore(delete_obj) {
 			new Error(),
 			invalid_schema_table_msg,
 			HTTP_STATUS_CODES.NOT_FOUND,
-			harper_logger.ERR,
+			terms.LOG_LEVELS.ERROR,
 			invalid_schema_table_msg,
 			true
 		);
@@ -91,7 +91,7 @@ async function deleteTransactionLogsBefore(delete_obj) {
 			new Error(),
 			HDB_ERROR_MSGS.INVALID_VALUE('Timestamp'),
 			HTTP_STATUS_CODES.BAD_REQUEST,
-			harper_logger.ERR,
+			terms.LOG_LEVELS.ERROR,
 			HDB_ERROR_MSGS.INVALID_VALUE('Timestamp'),
 			true
 		);
@@ -103,7 +103,7 @@ async function deleteTransactionLogsBefore(delete_obj) {
 			new Error(),
 			invalid_schema_table_msg,
 			HTTP_STATUS_CODES.NOT_FOUND,
-			harper_logger.ERR,
+			terms.LOG_LEVELS.ERROR,
 			invalid_schema_table_msg,
 			true
 		);
@@ -137,7 +137,7 @@ async function deleteRecord(delete_object) {
 			new Error(),
 			invalid_schema_table_msg,
 			HTTP_STATUS_CODES.NOT_FOUND,
-			harper_logger.ERR,
+			terms.LOG_LEVELS.ERROR,
 			invalid_schema_table_msg,
 			true
 		);

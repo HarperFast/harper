@@ -12,6 +12,7 @@ const JAVASCRIPT_EXTENSION = 'js';
 const CODE_EXTENSION = process.env.HDB_COMPILED === 'true' ? COMPILED_EXTENSION : JAVASCRIPT_EXTENSION;
 
 const HDB_CONFIG_FILE = 'harperdb.conf';
+const HDB_DEFAULT_CONFIG_FILE = 'defaultConfig.yaml';
 
 // Name of the HDB process
 const HDB_PROC_NAME = `hdbServer.${CODE_EXTENSION}`;
@@ -31,6 +32,34 @@ const PROCESS_DESCRIPTORS = {
 	CUSTOM_FUNCTIONS: CUSTOM_FUNCTION_PROC_DESCRIPTOR,
 	CLUSTERING_CONNECTOR: 'Clustering Connector',
 	RESTART_HDB: 'Restart HDB',
+	INSTALL: 'Install',
+	RUN: 'Run',
+	STOP: 'Stop',
+	UPGRADE: 'Upgrade',
+	REGISTER: 'Register',
+	JOB: 'Job',
+	PM2_LOGROTATE: 'pm2-logrotate',
+};
+
+const PROCESS_LOG_NAMES = {
+	HDB: 'hdb.log',
+	IPC: 'ipc.log',
+	CLUSTERING: 'clustering.log',
+	CLUSTERING_CONNECTOR: 'clustering_connector.log',
+	CUSTOM_FUNCTIONS: 'custom_functions.log',
+	INSTALL: 'install.log',
+	CLI: 'cli.log',
+	PM2: 'pm2.log',
+};
+
+const LOG_LEVELS = {
+	NOTIFY: 'notify',
+	FATAL: 'fatal',
+	ERROR: 'error',
+	WARN: 'warn',
+	INFO: 'info',
+	DEBUG: 'debug',
+	TRACE: 'trace',
 };
 
 const PROCESS_DESCRIPTORS_VALIDATE = {
@@ -40,6 +69,8 @@ const PROCESS_DESCRIPTORS_VALIDATE = {
 	'clustering_connector': 'Clustering Connector',
 	'custom functions': CUSTOM_FUNCTION_PROC_DESCRIPTOR,
 	'custom_functions': CUSTOM_FUNCTION_PROC_DESCRIPTOR,
+	'pm2-logrotate': PROCESS_DESCRIPTORS.PM2_LOGROTATE,
+	'logrotate': PROCESS_DESCRIPTORS.PM2_LOGROTATE,
 };
 
 const SERVICE_SERVERS_CWD = {
@@ -116,6 +147,8 @@ const ID_ATTRIBUTE_STRING = 'id';
 
 const INSTALL_LOG = 'install_log.log';
 const RUN_LOG = 'run_log.log';
+
+const PROCESS_NAME_ENV_PROP = 'PROCESS_NAME';
 
 const CLUSTERING_PAYLOAD_FILE_NAME = '.scPayload.json';
 
@@ -381,6 +414,15 @@ const HDB_SETTINGS_NAMES = {
 	LOG_LEVEL_KEY: 'LOG_LEVEL',
 	LOGGER_KEY: 'LOGGER',
 	LOG_PATH_KEY: 'LOG_PATH',
+	LOG_ROTATE: 'LOG_ROTATE',
+	LOG_ROTATE_MAX_SIZE: 'LOG_ROTATE_MAX_SIZE',
+	LOG_ROTATE_RETAIN: 'LOG_ROTATE_RETAIN',
+	LOG_ROTATE_COMPRESS: 'LOG_ROTATE_COMPRESS',
+	LOG_ROTATE_DATE_FORMAT: 'LOG_ROTATE_DATE_FORMAT',
+	LOG_ROTATE_ROTATE_MODULE: 'LOG_ROTATE_ROTATE_MODULE',
+	LOG_ROTATE_WORKER_INTERVAL: 'LOG_ROTATE_WORKER_INTERVAL',
+	LOG_ROTATE_ROTATE_INTERVAL: 'LOG_ROTATE_ROTATE_INTERVAL',
+	LOG_ROTATE_TIMEZONE: 'LOG_ROTATE_TIMEZONE',
 	LOG_DAILY_ROTATE_KEY: 'LOG_DAILY_ROTATE',
 	LOG_MAX_DAILY_FILES_KEY: 'LOG_MAX_DAILY_FILES',
 	PROPS_ENV_KEY: 'NODE_ENV',
@@ -684,8 +726,8 @@ const WEBSOCKET_CLOSE_CODE_DESCRIPTION_LOOKUP = {
 };
 
 const NODE_ERROR_CODES = {
-	ENOENT: 'ENOENT',
-	EACCES: 'EACCES',
+	ENOENT: 'ENOENT', // No such file or directory.
+	EACCES: 'EACCES', // Permission denied.
 };
 
 const TIME_STAMP_NAMES_ENUM = {
@@ -753,6 +795,11 @@ const IPC_EVENT_TYPES = {
 const SERVICES = {
 	HDB_CORE: 'hdb_core',
 	CUSTOM_FUNCTIONS: 'custom_functions',
+};
+
+const PM2_PROCESS_STATUSES = {
+	STOPPED: 'stopped',
+	ONLINE: 'online',
 };
 
 module.exports = {
@@ -868,7 +915,12 @@ module.exports = {
 	SERVICE_SERVERS_CWD,
 	PROCESS_DESCRIPTORS_VALIDATE,
 	LAUNCH_SERVICE_SCRIPTS,
+	LOG_LEVELS,
+	PROCESS_NAME_ENV_PROP,
+	PROCESS_LOG_NAMES,
+	PM2_PROCESS_STATUSES,
 	CONFIG_PARAM_MAP,
 	CONFIG_PARAMS,
 	HDB_CONFIG_FILE,
+	HDB_DEFAULT_CONFIG_FILE,
 };

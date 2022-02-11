@@ -12,7 +12,6 @@ const path = require('path');
 const test_util = require('../test_utils');
 const env_mangr = require('../../utility/environment/environmentManager');
 const install_user_permission = require('../../utility/install_user_permission');
-const hdb_utils = require('../../utility/common_utils');
 const pm2_utils = require('../../utility/pm2/utilityFunctions');
 const child_process = require('child_process');
 const settings_test_file = require('../settingsTestFile');
@@ -87,6 +86,7 @@ describe('Test run module', () => {
 
 	describe('Test run function', () => {
 		const is_hdb_installed_stub = sandbox.stub();
+		const create_log_file_stub = sandbox.stub();
 		const check_trans_log_env_exists_stub = sandbox.stub();
 		const check_jwt_tokens_stub = sandbox.stub();
 		const p_install_install_stub = sandbox.stub();
@@ -99,6 +99,7 @@ describe('Test run module', () => {
 
 		before(() => {
 			run_rw.__set__('check_jwt_tokens', check_jwt_tokens_stub);
+			run_rw.__set__('hdb_logger.createLogFile', create_log_file_stub);
 			is_hdb_installed_rw = run_rw.__set__('isHdbInstalled', is_hdb_installed_stub);
 			check_trans_log_env_exists_rw = run_rw.__set__(
 				'checkTransactionLogEnvironmentsExist',
@@ -235,8 +236,8 @@ describe('Test run module', () => {
 		it('Test error is thrown if check perms fails', async () => {
 			check_perms_stub.throws(new Error(TEST_ERROR));
 			await run();
-			expect(console_error_stub.getCall(1).firstArg).to.equal(TEST_ERROR);
-			expect(log_error_stub.getCall(1).firstArg.message).to.equal(TEST_ERROR);
+			expect(console_error_stub.getCall(0).firstArg).to.equal(TEST_ERROR);
+			expect(log_error_stub.getCall(0).firstArg.message).to.equal(TEST_ERROR);
 			expect(process_exit_stub.getCall(0).firstArg).to.equal(1);
 		});
 	});
@@ -245,20 +246,19 @@ describe('Test run module', () => {
 		let fs_mkdirpSync_spy;
 		let fs_writeFileSync_spy;
 		let rw_writeLicenseFromVars;
+		let assign_CMD_ENV_variables_rw;
 		const LICENSE_PATH = path.join(test_util.getMockTestPath(), 'keys/.license');
 		const REG_PATH = path.join(LICENSE_PATH, '060493.ks');
 		const LIC_PATH = path.join(LICENSE_PATH, '.license');
-		let assignCMDENVVariables_stub = sandbox.stub(hdb_utils, 'assignCMDENVVariables');
+		let assignCMDENVVariables_stub = sandbox.stub();
+
 		before(() => {
 			sandbox.resetHistory();
 			fs.removeSync(LICENSE_PATH);
 			fs_mkdirpSync_spy = sandbox.spy(fs, 'mkdirpSync');
 			fs_writeFileSync_spy = sandbox.spy(fs, 'writeFileSync');
 			rw_writeLicenseFromVars = run_rw.__get__('writeLicenseFromVars');
-		});
-
-		beforeEach(() => {
-			assignCMDENVVariables_stub.restore();
+			assign_CMD_ENV_variables_rw = run_rw.__set__('assignCMDENVVariables', assignCMDENVVariables_stub);
 		});
 
 		afterEach(() => {
@@ -267,9 +267,10 @@ describe('Test run module', () => {
 		});
 
 		it('test happy path', () => {
-			let assignCMDENVVariables_stub = sandbox
-				.stub(hdb_utils, 'assignCMDENVVariables')
-				.returns({ HARPERDB_FINGERPRINT: 'the fingerprint', HARPERDB_LICENSE: 'the best license ever' });
+			assignCMDENVVariables_stub.returns({
+				HARPERDB_FINGERPRINT: 'the fingerprint',
+				HARPERDB_LICENSE: 'the best license ever',
+			});
 
 			rw_writeLicenseFromVars();
 			expect(console_error_stub.callCount).to.equal(0);
@@ -317,9 +318,9 @@ describe('Test run module', () => {
 		});
 
 		it('test no license', () => {
-			let assignCMDENVVariables_stub = sandbox
-				.stub(hdb_utils, 'assignCMDENVVariables')
-				.returns({ HARPERDB_FINGERPRINT: 'the fingerprint' });
+			assignCMDENVVariables_stub.returns({
+				HARPERDB_FINGERPRINT: 'the fingerprint',
+			});
 
 			rw_writeLicenseFromVars();
 			expect(console_error_stub.callCount).to.equal(0);
@@ -338,9 +339,9 @@ describe('Test run module', () => {
 		});
 
 		it('test no fingerprint', () => {
-			let assignCMDENVVariables_stub = sandbox
-				.stub(hdb_utils, 'assignCMDENVVariables')
-				.returns({ HARPERDB_LICENSE: 'the license' });
+			assignCMDENVVariables_stub.returns({
+				HARPERDB_LICENSE: 'the license',
+			});
 
 			rw_writeLicenseFromVars();
 			expect(console_error_stub.callCount).to.equal(0);
@@ -359,9 +360,10 @@ describe('Test run module', () => {
 		});
 
 		it('test writefile errors', () => {
-			let assignCMDENVVariables_stub = sandbox
-				.stub(hdb_utils, 'assignCMDENVVariables')
-				.returns({ HARPERDB_LICENSE: 'the license', HARPERDB_FINGERPRINT: 'the fingerprint' });
+			assignCMDENVVariables_stub.returns({
+				HARPERDB_FINGERPRINT: 'the fingerprint',
+				HARPERDB_LICENSE: 'the license',
+			});
 
 			fs_writeFileSync_spy.restore();
 			let fs_writeFileSync_stub = sandbox.stub(fs, 'writeFileSync').throws('fail!');

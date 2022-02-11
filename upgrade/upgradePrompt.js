@@ -4,7 +4,7 @@ const prompt = require('prompt');
 const colors = require('colors/safe');
 const log = require('../utility/logging/harper_logger');
 const os = require('os');
-const hdb_utils = require('../utility/common_utils');
+const assignCMDENVVariables = require('../utility/assignCmdEnvVariables');
 
 const UPGRADE_PROCEED = ['yes', 'y'];
 
@@ -22,7 +22,7 @@ async function forceUpdatePrompt(upgrade_obj) {
 		`${os.EOL}${os.EOL}` +
 		'You can read more about the changes in this upgrade at https://harperdb.io/developers/release-notes/' +
 		`${os.EOL}`;
-	prompt.override = hdb_utils.assignCMDENVVariables(['CONFIRM_UPGRADE']);
+	prompt.override = assignCMDENVVariables(['CONFIRM_UPGRADE']);
 	prompt.start();
 	prompt.message = upgrade_message;
 	let upgrade_confirmation = {

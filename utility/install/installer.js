@@ -10,7 +10,6 @@ const path = require('path');
 const mount = require('./../mount_hdb');
 const fs = require('fs-extra');
 const colors = require('colors/safe');
-const pino = require('pino');
 const async = require('async');
 const forge = require('node-forge');
 const hri = require('human-readable-ids').hri;
@@ -18,11 +17,11 @@ const terms_address = 'https://harperdb.io/legal/end-user-license-agreement';
 const env = require('../../utility/environment/environmentManager');
 const os = require('os');
 const comm = require('../common_utils');
+const assignCMDENVVariables = require('../../utility/assignCmdEnvVariables');
 const hdb_terms = require('../hdbTerms');
 const hdbInfoController = require('../../data_layer/hdbInfoController');
 const version = require('../../bin/version');
-// Location of the install log - the harperdb dir.
-const LOG_LOCATION = path.resolve(__dirname, `../../${hdb_terms.INSTALL_LOG}`);
+const hdb_logger = require('../logging/harper_logger');
 const check_jwt_tokens = require('./checkJWTTokensExist');
 const config_utils = require('../../config/configUtils');
 
@@ -35,7 +34,6 @@ const schema = require('../../utility/globalSchema');
 
 let wizard_result;
 let check_install_path = false;
-let install_logger;
 const KEY_PAIR_BITS = 2048;
 const UPGRADE_MSG = 'Please use `harperdb upgrade` to update your existing instance of HDB. Exiting install...';
 const ABORT_MSG = 'Aborting install';
@@ -48,43 +46,27 @@ env.initSync();
  * @param callback
  */
 function run_install(callback) {
-	install_logger = pino(
-		{
-			level: 'trace',
-			name: 'Install-log',
-			messageKey: 'message',
-			timestamp: () => `,"timestamp":"${new Date(Date.now()).toISOString()}"`,
-			formatters: {
-				bindings() {
-					return undefined; // Removes pid and hostname from log
-				},
-				level(label) {
-					return { level: label };
-				},
-			},
-		},
-		LOG_LOCATION
-	);
+	hdb_logger.createLogFile(hdb_terms.PROCESS_LOG_NAMES.INSTALL, hdb_terms.PROCESS_DESCRIPTORS.INSTALL);
 
 	if (comm.isEmptyOrZeroLength(os.userInfo().uid)) {
 		let msg = `Installing user: ${
 			os.userInfo().username
 		} has no pid.  Please install with a properly created user. Cancelling install.`;
-		install_logger.error(msg);
+		hdb_logger.error(msg);
 		console.log(msg);
 		return callback(msg, null);
 	}
 
 	prompt.override = checkForPromptOverride();
 	prompt.start();
-	install_logger.info('starting install');
+	hdb_logger.info('starting install');
 	checkInstall(function (err, keepGoing) {
 		if (keepGoing) {
 			async.waterfall(
 				[
 					termsAgreement,
 					wizard,
-					async.apply(mount, install_logger),
+					async.apply(mount, hdb_logger),
 					createSettingsFile,
 					createSuperUser,
 					createClusterUser,
@@ -93,7 +75,7 @@ function run_install(callback) {
 					(data, callback2) => {
 						check_jwt_tokens();
 
-						install_logger.info('Installation Successful');
+						hdb_logger.info('Installation Successful');
 						callback2();
 					},
 				],
@@ -131,8 +113,8 @@ function checkForPromptOverride() {
 
 	// The config refactor meant that some config values have multiple key names (old and new). Also some of the
 	// prompts are not config file values. For this reason we search twice for any matching cmd/env vars.
-	const prompt_cmdenv_args = comm.assignCMDENVVariables(all_prompts);
-	const config_cmdenv_args = comm.assignCMDENVVariables(Object.keys(hdb_terms.CONFIG_PARAM_MAP), true);
+	const prompt_cmdenv_args = assignCMDENVVariables(all_prompts);
+	const config_cmdenv_args = assignCMDENVVariables(Object.keys(hdb_terms.CONFIG_PARAM_MAP), true);
 	const override_values = {};
 
 	for (const install_prompt of all_prompts) {
@@ -167,17 +149,17 @@ function insertHdbInfo(callback) {
 		hdbInfoController
 			.insertHdbInstallInfo(vers)
 			.then((res) => {
-				install_logger.info('Product version info was properly inserted');
+				hdb_logger.info('Product version info was properly inserted');
 				return callback(null, res);
 			})
 			.catch((err) => {
-				install_logger.error('Error inserting product version info');
-				install_logger.error(err);
+				hdb_logger.error('Error inserting product version info');
+				hdb_logger.error(err);
 				return callback(err, null);
 			});
 	} else {
 		const err_msg = 'The version is missing/removed from package.json';
-		install_logger.error(err_msg);
+		hdb_logger.error(err_msg);
 		console.log(err_msg);
 		return callback(err_msg, null);
 	}
@@ -188,7 +170,7 @@ function insertHdbInfo(callback) {
  * @param {*} callback
  */
 function termsAgreement(callback) {
-	install_logger.info('Asking for terms agreement.');
+	hdb_logger.info('Asking for terms agreement.');
 	prompt.message = ``;
 	const line_break = os.EOL;
 	let terms_schema = {
@@ -208,7 +190,7 @@ function termsAgreement(callback) {
 			return callback(null, true);
 		}
 		console.log(colors.yellow(`Terms & Conditions acceptance is required to proceed with installation.`));
-		install_logger.error('Terms and Conditions agreement was refused.');
+		hdb_logger.error('Terms and Conditions agreement was refused.');
 		return callback('REFUSED', false);
 	});
 }
@@ -219,7 +201,7 @@ function termsAgreement(callback) {
  * @param callback
  */
 function checkInstall(callback) {
-	install_logger.info('Checking for previous installation.');
+	hdb_logger.info('Checking for previous installation.');
 	try {
 		let boot_prop_path = comm.getPropsFilePath();
 		fs.accessSync(boot_prop_path, fs.constants.F_OK | fs.constants.R_OK);
@@ -242,7 +224,7 @@ function promptForReinstall(callback) {
 			process.exit(0);
 		}
 
-		install_logger.info('Previous install detected, asking for reinstall.');
+		hdb_logger.info('Previous install detected, asking for reinstall.');
 		let reinstall_schema = {
 			properties: {
 				REINSTALL: {
@@ -280,7 +262,7 @@ function promptForReinstall(callback) {
 						// don't keep data, tear it all out.
 						fs.remove(env.getHdbBasePath(), function (fs_remove_err) {
 							if (fs_remove_err) {
-								install_logger.error(fs_remove_err);
+								hdb_logger.error(fs_remove_err);
 								console.log(
 									'There was a problem removing the existing installation.  Please check the install log for details.'
 								);
@@ -289,7 +271,7 @@ function promptForReinstall(callback) {
 
 							fs.unlink(env.get(env.BOOT_PROPS_FILE_PATH), function (fs_unlink_err) {
 								if (fs_unlink_err) {
-									install_logger.error(fs_unlink_err);
+									hdb_logger.error(fs_unlink_err);
 									console.log(
 										'There was a problem removing the existing installation.  Please check the install log for details.'
 									);
@@ -318,7 +300,7 @@ function promptForReinstall(callback) {
  */
 function wizard(err, callback) {
 	prompt.message = ``;
-	install_logger.info('Starting install wizard');
+	hdb_logger.info('Starting install wizard');
 	let admin_username;
 	let install_schema = {
 		properties: {
@@ -383,7 +365,7 @@ function wizard(err, callback) {
 		},
 	};
 	//Assign any results from the install wizard to ARGS (which holds results from command line, environment)
-	let ARGS = comm.assignCMDENVVariables(['CLUSTERING']);
+	let ARGS = assignCMDENVVariables(['CLUSTERING']);
 	if (ARGS.CLUSTERING === undefined) {
 		delete install_schema.properties.NODE_NAME;
 		delete install_schema.properties.CLUSTERING_PASSWORD;
@@ -409,6 +391,7 @@ function wizard(err, callback) {
 				return callback('~ was specified in the path, but the HOME environment variable is not defined.');
 			}
 		}
+
 		if (!check_install_path) {
 			// Only if reinstall not detected by presence of hdb_boot_props file.  Dig around the provided path to see if an existing install is already there.
 			if (
@@ -430,7 +413,7 @@ function wizard(err, callback) {
 }
 
 function createSuperUser(callback) {
-	install_logger.info('Creating Super user.');
+	hdb_logger.info('Creating Super user.');
 	let role = {
 		role: 'super_user',
 		permission: {
@@ -454,7 +437,7 @@ function createSuperUser(callback) {
 }
 
 function createClusterUser(callback) {
-	install_logger.info('Creating Cluster user.');
+	hdb_logger.info('Creating Cluster user.');
 	let role = {
 		role: 'cluster_user',
 		permission: {
@@ -481,7 +464,7 @@ function createClusterUser(callback) {
 }
 
 function createAdminUser(role, admin_user, callback) {
-	install_logger.info('Creating admin user.');
+	hdb_logger.info('Creating admin user.');
 	// These need to be defined here since they use the hdb_boot_properties file, but it has not yet been created
 	// in the installer.
 	const user_ops = require('../../security/user');
@@ -493,7 +476,7 @@ function createAdminUser(role, admin_user, callback) {
 	schema.setSchemaDataToGlobal(() => {
 		cb_role_add_role(role, (err, res) => {
 			if (err) {
-				install_logger.error('role failed to create ' + err);
+				hdb_logger.error('role failed to create ' + err);
 				console.log('There was a problem creating the default role.  Please check the install log for details.');
 				return callback(err);
 			}
@@ -506,7 +489,7 @@ function createAdminUser(role, admin_user, callback) {
 
 			cb_user_add_user(admin_user, (add_user_err) => {
 				if (add_user_err) {
-					install_logger.error('user creation error' + add_user_err);
+					hdb_logger.error('user creation error' + add_user_err);
 					console.error('There was a problem creating the admin user.  Please check the install log for details.');
 					return callback(add_user_err);
 				}
@@ -518,22 +501,22 @@ function createAdminUser(role, admin_user, callback) {
 
 function createSettingsFile(mount_status, callback) {
 	console.log('Starting HarperDB Install...');
-	install_logger.info('Creating settings file.');
+	hdb_logger.info('Creating settings file.');
 	if (mount_status !== 'complete') {
-		install_logger.error('mount failed.');
+		hdb_logger.error('mount failed.');
 		return callback('mount failed');
 	}
 
 	let settings_path = `${wizard_result.HDB_ROOT}/${hdb_terms.HDB_CONFIG_FILE}`;
 	createBootPropertiesFile(settings_path, (err) => {
-		install_logger.info('info', `creating settings file....`);
+		hdb_logger.info('info', `creating settings file....`);
 		if (err) {
-			install_logger.info('info', 'boot properties error' + err);
+			hdb_logger.info('info', 'boot properties error' + err);
 			console.error('There was a problem creating the boot file.  Please check the install log for details.');
 			return callback(err);
 		}
 
-		const ARGS = comm.assignCMDENVVariables(Object.keys(hdb_terms.CONFIG_PARAM_MAP), true);
+		const ARGS = assignCMDENVVariables(Object.keys(hdb_terms.CONFIG_PARAM_MAP), true);
 		Object.assign(ARGS, wizard_result);
 
 		try {
@@ -571,7 +554,7 @@ function rollbackInstall(err_msg, install_args) {
 }
 
 function generateKeys(callback) {
-	install_logger.info('Generating keys files.');
+	hdb_logger.info('Generating keys files.');
 	let pki = forge.pki;
 	let keys = pki.rsa.generateKeyPair(KEY_PAIR_BITS);
 	let cert = pki.createCertificate();
@@ -663,13 +646,13 @@ function generateKeys(callback) {
 	// convert a Forge certificate to PEM
 	fs.writeFile(env.get('CERTIFICATE'), pki.certificateToPem(cert), function (err) {
 		if (err) {
-			install_logger.error(err);
+			hdb_logger.error(err);
 			console.error('There was a problem creating the PEM file.  Please check the install log for details.');
 			return callback(err);
 		}
 		fs.writeFile(env.get('PRIVATE_KEY'), forge.pki.privateKeyToPem(keys.privateKey), function (fs_write_file_err) {
 			if (fs_write_file_err) {
-				install_logger.error(fs_write_file_err);
+				hdb_logger.error(fs_write_file_err);
 				console.error('There was a problem creating the private key file.  Please check the install log for details.');
 				return callback(fs_write_file_err);
 			}
@@ -679,10 +662,10 @@ function generateKeys(callback) {
 }
 
 function createBootPropertiesFile(settings_path, callback) {
-	install_logger.info('info', 'creating boot file');
+	hdb_logger.info('info', 'creating boot file');
 	if (!settings_path) {
-		install_logger.error('info', 'missing settings path');
-		return callback('missing settings');
+		hdb_logger.error('info', 'missing settings path');
+		return callback('missing setings');
 	}
 	let install_user = undefined;
 	try {
@@ -696,7 +679,7 @@ function createBootPropertiesFile(settings_path, callback) {
 		let msg =
 			'Could not determine current username in this environment.  Please set the USERNAME environment variable in your OS and try install again.';
 		console.error(msg);
-		install_logger.error(msg);
+		hdb_logger.error(msg);
 		return callback(msg, null);
 	}
 	let boot_props_value = `settings_path = ${settings_path}
@@ -717,11 +700,11 @@ function createBootPropertiesFile(settings_path, callback) {
 	let props_file_path = path.join(home_dir_path, hdb_terms.BOOT_PROPS_FILE_NAME);
 	fs.writeFile(props_file_path, boot_props_value, function (err) {
 		if (err) {
-			install_logger.error('info', `Bootloader error ${err}`);
+			hdb_logger.error('info', `Bootloader error ${err}`);
 			console.error('There was a problem creating the boot file.  Please check the install log for details.');
 			return callback(err);
 		}
-		install_logger.info('info', `props path ${props_file_path}`);
+		hdb_logger.info('info', `props path ${props_file_path}`);
 		env.setProperty(hdb_terms.HDB_SETTINGS_NAMES.INSTALL_USER, `${install_user}`);
 		env.setProperty(hdb_terms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY, settings_path);
 		env.setProperty(env.BOOT_PROPS_FILE_PATH, props_file_path);

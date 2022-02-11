@@ -277,7 +277,13 @@ async function downloadCSVFile(url, csv_file_name) {
 		response = await needle('get', url);
 	} catch (err) {
 		const err_msg = `Error downloading CSV file from ${url}, status code: ${err.statusCode}. Check the log for more information.`;
-		throw handleHDBError(err, err_msg, err.statusCode, logger.ERR, 'Error downloading CSV file - ' + err);
+		throw handleHDBError(
+			err,
+			err_msg,
+			err.statusCode,
+			hdb_terms.LOG_LEVELS.ERROR,
+			'Error downloading CSV file - ' + err
+		);
 	}
 
 	validateURLResponse(response, url);
@@ -411,7 +417,7 @@ async function fileLoad(json_message) {
 					new Error(),
 					HDB_ERROR_MSGS.DEFAULT_BULK_LOAD_ERR,
 					HTTP_STATUS_CODES.BAD_REQUEST,
-					logger.ERR,
+					hdb_terms.LOG_LEVELS.ERROR,
 					HDB_ERROR_MSGS.INVALID_FILE_EXT_ERR(json_message)
 				);
 		}
@@ -535,7 +541,7 @@ async function insertChunk(json_message, insert_results, reject, results, parser
 			err,
 			CHECK_LOGS_WRAPPER(HDB_ERROR_MSGS.INSERT_CSV_ERR),
 			HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR,
-			logger.ERR,
+			hdb_terms.LOG_LEVELS.ERROR,
 			HDB_ERROR_MSGS.INSERT_CSV_ERR + ' - ' + err
 		);
 		reject(err_resp);
@@ -580,7 +586,7 @@ async function callPapaParse(json_message) {
 			err,
 			CHECK_LOGS_WRAPPER(HDB_ERROR_MSGS.PAPA_PARSE_ERR),
 			HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR,
-			logger.ERR,
+			hdb_terms.LOG_LEVELS.ERROR,
 			HDB_ERROR_MSGS.PAPA_PARSE_ERR + err
 		);
 	}
@@ -652,7 +658,7 @@ async function insertJson(json_message) {
 			err,
 			CHECK_LOGS_WRAPPER(HDB_ERROR_MSGS.INSERT_JSON_ERR),
 			HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR,
-			logger.ERR,
+			hdb_terms.LOG_LEVELS.ERROR,
 			HDB_ERROR_MSGS.INSERT_JSON_ERR + err
 		);
 	}
@@ -725,7 +731,7 @@ async function bulkFileLoad(records, schema, table, action) {
 				new Error(),
 				HDB_ERROR_MSGS.INVALID_ACTION_PARAM_ERR(action),
 				HTTP_STATUS_CODES.BAD_REQUEST,
-				logger.ERR,
+				hdb_terms.LOG_LEVELS.ERROR,
 				HDB_ERROR_MSGS.INVALID_ACTION_PARAM_ERR(action)
 			);
 	}
@@ -835,7 +841,7 @@ function buildTopLevelErrMsg(err) {
 		err,
 		CHECK_LOGS_WRAPPER(HDB_ERROR_MSGS.DEFAULT_BULK_LOAD_ERR),
 		HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR,
-		logger.ERR,
+		hdb_terms.LOG_LEVELS.ERROR,
 		HDB_ERROR_MSGS.DEFAULT_BULK_LOAD_ERR + ' - ' + err
 	);
 }
