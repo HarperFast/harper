@@ -126,8 +126,14 @@ function initConfig(force = false) {
 		try {
 			config_doc = YAML.parseDocument(fs.readFileSync(config_file_path, 'utf8'));
 		} catch (err) {
-			logger.error(err);
-			throw new Error(`Error reading HarperDB config file at ${config_file_path}`);
+			if (err.code === hdb_terms.NODE_ERROR_CODES.ENOENT) {
+				logger.trace(`HarperDB config file not found at ${config_file_path}. 
+				This can occur during early stages of install where the config file has not yet been created`);
+				return;
+			} else {
+				logger.error(err);
+				throw new Error(`Error reading HarperDB config file at ${config_file_path}`);
+			}
 		}
 
 		// Validates config doc and if required sets default values for some parameters.
