@@ -11,8 +11,33 @@ const test_utils = require('../../test_utils');
 const env_mngr = require('../../../utility/environment/environmentManager');
 const services_config = require('../../../utility/pm2/servicesConfig');
 const hdb_terms = require('../../../utility/hdbTerms');
+const hdb_logger = require('../../../utility/logging/harper_logger');
+const util = require('util');
+const exec = util.promisify(require('child_process').exec);
 const utility_functions = rewire('../../../utility/pm2/utilityFunctions');
 
+const PM2_LOGROTATE = 'pm2-logrotate';
+const PM2_MODULE_LOCATION = path.resolve(__dirname, '../../../node_modules/pm2/bin/pm2');
+const LOG_ROTATE_UNINSTALLED = 'Log rotate uninstalled.';
+const LOG_ROTATE_UNINSTALL_ERR = 'Error uninstalling log rotate.';
+const FAKE_LOCATION_ERROR_MSG = '/fakelocation: No such file or directory';
+const FAKE_LOCATION_ERROR_MSG2 = '/fakelocation: not found\n';
+
+/**
+ * Uninstalls pm2's logrotate module.
+ * @returns {Promise<void>}
+ */
+async function uninstallLogRotate() {
+	const { stdout, stderr } = await exec(`${PM2_MODULE_LOCATION} uninstall pm2-logrotate`);
+	hdb_logger.debug(`loadLogRotate stdout: ${stdout}`);
+
+	if (stderr) {
+		hdb_logger.error(LOG_ROTATE_UNINSTALL_ERR);
+		throw stderr;
+	}
+
+	hdb_logger.info(LOG_ROTATE_UNINSTALLED);
+}
 /**
  * Deletes a process from pm2
  * @param proc
@@ -54,6 +79,7 @@ async function stopDeleteAllServices() {
 	await stopDeleteProcess('Clustering');
 	await stopDeleteProcess('Custom Functions');
 	await stopDeleteProcess('Clustering Connector');
+	await stopDeleteProcess('pm2-logrotate');
 }
 
 describe('Test pm2 utilityFunctions module', () => {
@@ -75,7 +101,8 @@ describe('Test pm2 utilityFunctions module', () => {
 	});
 
 	describe('Test start function', () => {
-		afterEach(async () => {
+		afterEach(async function () {
+			this.timeout(10000);
 			await stopDeleteAllServices();
 		});
 
@@ -143,14 +170,14 @@ describe('Test pm2 utilityFunctions module', () => {
 			await utility_functions.stop('IPC');
 			const process_meta = await utility_functions.list('IPC');
 			expect(process_meta.length).to.equal(0);
-		});
+		}).timeout(20000);
 
 		it('Test that multiple processes are stopped', async () => {
 			await utility_functions.start(services_config.generateHDBServerConfig());
 			await utility_functions.stop('HarperDB');
 			const process_meta = await utility_functions.list('HarperDB');
 			expect(process_meta.length).to.equal(0);
-		});
+		}).timeout(20000);
 
 		it('Test error is handled as expected', async () => {
 			await test_utils.assertErrorAsync(
@@ -158,7 +185,7 @@ describe('Test pm2 utilityFunctions module', () => {
 				['HarperACDC'],
 				new Error('process or namespace not found')
 			);
-		});
+		}).timeout(20000);
 
 		it('Test error from connect causes promise to reject', async () => {
 			const connect_rw = utility_functions.__set__('connect', sandbox.stub().throws(new Error(test_err)));
@@ -168,7 +195,8 @@ describe('Test pm2 utilityFunctions module', () => {
 	});
 
 	describe('Test reload function', () => {
-		afterEach(async () => {
+		afterEach(async function () {
+			this.timeout(10000);
 			await stopDeleteAllServices();
 		});
 
@@ -203,7 +231,8 @@ describe('Test pm2 utilityFunctions module', () => {
 	});
 
 	describe('Test restart function', () => {
-		afterEach(async () => {
+		afterEach(async function () {
+			this.timeout(10000);
 			await stopDeleteAllServices();
 		});
 
@@ -237,7 +266,8 @@ describe('Test pm2 utilityFunctions module', () => {
 	});
 
 	describe('Test list function', () => {
-		afterEach(async () => {
+		afterEach(async function () {
+			this.timeout(10000);
 			await stopDeleteAllServices();
 		});
 
@@ -324,7 +354,8 @@ describe('Test pm2 utilityFunctions module', () => {
 	});
 
 	describe('Test startService function', () => {
-		afterEach(async () => {
+		afterEach(async function () {
+			this.timeout(10000);
 			await stopDeleteAllServices();
 		});
 
@@ -334,7 +365,7 @@ describe('Test pm2 utilityFunctions module', () => {
 			expect(process_meta.length).to.equal(1);
 			expect(process_meta[0].name).to.equal('IPC');
 			expect(process_meta[0].pm2_env.status).to.equal('online');
-		});
+		}).timeout(20000);
 
 		it('Test starts clustering connector service', async () => {
 			await utility_functions.startService('clustering connector');
@@ -342,7 +373,7 @@ describe('Test pm2 utilityFunctions module', () => {
 			expect(process_meta.length).to.equal(1);
 			expect(process_meta[0].name).to.equal('Clustering Connector');
 			expect(process_meta[0].pm2_env.status).to.equal('online');
-		});
+		}).timeout(20000);
 
 		it('Test starts Clustering service', async () => {
 			await utility_functions.startService('clustering');
@@ -350,7 +381,7 @@ describe('Test pm2 utilityFunctions module', () => {
 			expect(process_meta.length).to.equal(1);
 			expect(process_meta[0].name).to.equal('Clustering');
 			expect(process_meta[0].pm2_env.status).to.equal('online');
-		});
+		}).timeout(20000);
 
 		it('Test starts HarperDB service', async () => {
 			afterEach(async () => {
@@ -368,7 +399,7 @@ describe('Test pm2 utilityFunctions module', () => {
 			expect(process_meta[1].pm2_env.status).to.equal('online');
 			expect(process_meta[2].pm2_env.status).to.equal('online');
 			expect(process_meta[3].pm2_env.status).to.equal('online');
-		});
+		}).timeout(20000);
 
 		it('Test starts custom function service', async () => {
 			await utility_functions.startService('custom FUNCTIONS');
@@ -378,7 +409,7 @@ describe('Test pm2 utilityFunctions module', () => {
 			expect(process_meta[1].name).to.equal('Custom Functions');
 			expect(process_meta[0].pm2_env.status).to.equal('online');
 			expect(process_meta[1].pm2_env.status).to.equal('online');
-		});
+		}).timeout(20000);
 
 		it('Test error handled as expected', async () => {
 			await test_utils.assertErrorAsync(
@@ -386,7 +417,7 @@ describe('Test pm2 utilityFunctions module', () => {
 				['DarperDB'],
 				new Error('Start service called with unknown service config: DarperDB')
 			);
-		});
+		}).timeout(20000);
 	});
 
 	describe('Test getUniqueServicesList function', () => {
@@ -445,7 +476,8 @@ describe('Test pm2 utilityFunctions module', () => {
 	});
 
 	describe('Test isServiceRegistered', () => {
-		afterEach(async () => {
+		afterEach(async function () {
+			this.timeout(10000);
 			await stopDeleteAllServices();
 		});
 
@@ -475,6 +507,7 @@ describe('Test pm2 utilityFunctions module', () => {
 		after(() => {
 			reload_rw();
 			restart_rw();
+			sandbox.restore();
 		});
 
 		// This afterEach is like this because it was the only way to get the timeout increase working.
@@ -482,10 +515,6 @@ describe('Test pm2 utilityFunctions module', () => {
 		afterEach(async function () {
 			this.timeout(10000);
 			await stopDeleteAllServices();
-		});
-
-		after(() => {
-			sandbox.restore();
 		});
 
 		it('Test all services are restarted', async () => {
@@ -561,7 +590,8 @@ describe('Test pm2 utilityFunctions module', () => {
 	});
 
 	describe('Test kill function', () => {
-		after(async () => {
+		afterEach(async function () {
+			this.timeout(10000);
 			await stopDeleteAllServices();
 		});
 
@@ -571,7 +601,7 @@ describe('Test pm2 utilityFunctions module', () => {
 			await utility_functions.kill();
 			const result = await utility_functions.list();
 			expect(result).to.eql([]);
-		});
+		}).timeout(20000);
 
 		it('Test error from connect causes promise to reject', async () => {
 			const connect_rw = utility_functions.__set__('connect', sandbox.stub().throws(new Error(test_err)));
@@ -605,7 +635,8 @@ describe('Test pm2 utilityFunctions module', () => {
 	});
 
 	describe('Test deleteProcess function', () => {
-		after(async () => {
+		afterEach(async function () {
+			this.timeout(10000);
 			await stopDeleteAllServices();
 		});
 
@@ -621,5 +652,273 @@ describe('Test pm2 utilityFunctions module', () => {
 			await test_utils.assertErrorAsync(utility_functions.deleteProcess, ['IPC'], new Error(test_err));
 			connect_rw();
 		});
+
+		it('Test error from connect causes promise to reject', async () => {
+			const connect_rw = utility_functions.__set__('connect', sandbox.stub().throws(new Error(test_err)));
+			await test_utils.assertErrorAsync(utility_functions.deleteProcess, ['IPC'], new Error(test_err));
+			connect_rw();
+		});
+	});
+
+	describe('Test stopLogrotate function', () => {
+		let stop_logrotate;
+		let install_log_rotate;
+
+		before(() => {
+			stop_logrotate = utility_functions.__get__('stopLogrotate');
+			install_log_rotate = utility_functions.__get__('installLogRotate');
+		});
+
+		after(async () => {
+			try {
+				await uninstallLogRotate();
+			} catch (error) {
+				// swallow the error to allow test to run
+			}
+		});
+
+		afterEach(async function () {
+			this.timeout(10000);
+			await stopDeleteAllServices();
+		});
+
+		it('Test pm2-logrotate module is stopped', async () => {
+			try {
+				await install_log_rotate();
+			} catch (error) {
+				// swallow the error to allow test to run
+			}
+
+			await stop_logrotate();
+			const process_meta = await utility_functions.list(PM2_LOGROTATE);
+			expect(process_meta[0].name).to.equal(PM2_LOGROTATE);
+			expect(process_meta[0].pm2_env.status).to.equal('stopped');
+		}).timeout(20000);
+
+		it('Test error from connect causes promise to reject', async () => {
+			const connect_rw = utility_functions.__set__('connect', sandbox.stub().throws(new Error(test_err)));
+			await test_utils.assertErrorAsync(stop_logrotate, [], new Error(test_err));
+			connect_rw();
+		});
+	});
+
+	describe('Test installLogRotate function', () => {
+		let install_log_rotate;
+		let module_location_rw;
+
+		before(() => {
+			install_log_rotate = utility_functions.__get__('installLogRotate');
+		});
+
+		after(async () => {
+			try {
+				await uninstallLogRotate();
+			} catch (error) {
+				// swallow the error to allow test to run
+			}
+		});
+
+		afterEach(async function () {
+			this.timeout(10000);
+			await stopDeleteAllServices();
+		});
+
+		it('Test pm2-logrotate module is installed', async () => {
+			try {
+				await install_log_rotate();
+			} catch (error) {
+				// in some cases, logrotate is already installed and stderr is logged; swallow the error to allow test to run
+			}
+
+			const process_meta = await utility_functions.list(PM2_LOGROTATE);
+			expect(process_meta[0].name).to.equal(PM2_LOGROTATE);
+			expect(process_meta[0].pm2_env.status).to.equal('online');
+		}).timeout(20000);
+
+		it('Test logger throws error', async () => {
+			module_location_rw = utility_functions.__set__('PM2_MODULE_LOCATION', '/fakelocation');
+
+			let error;
+			try {
+				await install_log_rotate();
+			} catch (err) {
+				error = err;
+			}
+
+			expect(error).to.be.instanceof(Error);
+			expect(error.message).to.contain.oneOf([FAKE_LOCATION_ERROR_MSG, FAKE_LOCATION_ERROR_MSG2]);
+			module_location_rw();
+		}).timeout(20000);
+	});
+
+	describe('Test updateLogRotateConfig function', () => {
+		let install_log_rotate;
+		let update_log_rotate_config;
+
+		before(() => {
+			install_log_rotate = utility_functions.__get__('installLogRotate');
+			update_log_rotate_config = utility_functions.__get__('updateLogRotateConfig');
+		});
+
+		after(async () => {
+			try {
+				await uninstallLogRotate();
+			} catch (error) {
+				// swallow the error to allow test to run
+			}
+		});
+
+		afterEach(async () => {
+			await stopDeleteProcess(PM2_LOGROTATE);
+		});
+
+		it('Test confirm  rotate config settings are updated', async () => {
+			try {
+				await install_log_rotate();
+			} catch (error) {
+				// in some cases, logrotate is already installed and stderr is logged; swallow the error to allow test to run
+			}
+
+			env_mngr.setProperty('LOG_ROTATE_MAX_SIZE', '5M');
+			env_mngr.setProperty('LOG_ROTATE_RETAIN', 20);
+			env_mngr.setProperty('LOG_ROTATE_COMPRESS', true);
+			env_mngr.setProperty('LOG_ROTATE_DATE_FORMAT', 'YYYY-MM-DD');
+			env_mngr.setProperty('LOG_ROTATE_ROTATE_MODULE', false);
+			env_mngr.setProperty('LOG_ROTATE_WORKER_INTERVAL', 15);
+			env_mngr.setProperty('LOG_ROTATE_ROTATE_INTERVAL', 2);
+			env_mngr.setProperty('LOG_ROTATE_TIMEZONE', 'CST');
+
+			try {
+				await update_log_rotate_config();
+			} catch (error) {
+				// swallow error so test will run
+			}
+
+			const process_meta = await utility_functions.list(PM2_LOGROTATE);
+			expect(process_meta[0].pm2_env.max_size).to.equal('5M');
+			expect(process_meta[0].pm2_env.retain).to.equal('20');
+			expect(process_meta[0].pm2_env.compress).to.equal('true');
+			expect(process_meta[0].pm2_env.dateFormat).to.equal('YYYY-MM-DD');
+			expect(process_meta[0].pm2_env.workerInterval).to.equal('15');
+			expect(process_meta[0].pm2_env.rotateInterval).to.equal('2');
+			expect(process_meta[0].pm2_env.rotateModule).to.equal('false');
+			expect(process_meta[0].pm2_env.TZ).to.equal('CST');
+		}).timeout(20000);
+	});
+
+	describe('Test configureLogRotate function', () => {
+		let install_log_rotate;
+		let update_log_rotate_config;
+		let stop_log_rotate;
+		let install_log_rotate_stub;
+		let update_log_rotate_config_stub;
+		let start_stub;
+		let stop_log_rotate_stub;
+		let install_log_rotate_rw;
+		let update_log_rotate_config_rw;
+		let start_rw;
+		let stop_log_rotate_rw;
+		let env_init_stub;
+		let env_rw;
+
+		before(async () => {
+			try {
+				await uninstallLogRotate();
+			} catch (error) {
+				// swallow the error to allow test to run
+			}
+			install_log_rotate = utility_functions.__get__('installLogRotate');
+			update_log_rotate_config = utility_functions.__get__('updateLogRotateConfig');
+			stop_log_rotate = utility_functions.__get__('stopLogrotate');
+			install_log_rotate_stub = sandbox.stub().resolves();
+			update_log_rotate_config_stub = sandbox.stub().resolves();
+			start_stub = sandbox.stub().resolves();
+			stop_log_rotate_stub = sandbox.stub().resolves();
+			install_log_rotate_rw = utility_functions.__set__('installLogRotate', install_log_rotate_stub);
+			update_log_rotate_config_rw = utility_functions.__set__('updateLogRotateConfig', update_log_rotate_config_stub);
+			start_rw = utility_functions.__set__('start', start_stub);
+			stop_log_rotate_rw = utility_functions.__set__('stopLogrotate', stop_log_rotate_stub);
+			env_init_stub = sandbox.stub();
+		});
+
+		afterEach(async () => {
+			sandbox.resetHistory();
+			await stopDeleteProcess(PM2_LOGROTATE);
+			try {
+				await uninstallLogRotate();
+			} catch (error) {
+				// swallow the error to allow test to run
+			}
+		});
+
+		after(() => {
+			update_log_rotate_config_rw();
+			install_log_rotate_rw();
+			stop_log_rotate_rw();
+			start_rw();
+		});
+
+		it('Test that it installs pm2-logrotate if log rotate set to true AND NOT already installed', async () => {
+			env_rw = utility_functions.__set__('env_mangr', {
+				initSync: env_init_stub,
+				get: (arg) => {
+					return true;
+				},
+			});
+
+			try {
+				await utility_functions.configureLogRotate();
+			} catch (error) {
+				// swallow the error to allow test to run
+			}
+
+			expect(install_log_rotate_stub.called, 'expected install_log_rotate_stub to be called ').to.be.true;
+			expect(update_log_rotate_config_stub.called, 'expected update_log_rotate_config_stub to be called ').to.be.true;
+
+			env_rw();
+		}).timeout(20000);
+
+		it('Test that it starts pm2-logrotate if log rotate set to true AND already installed', async () => {
+			env_rw = utility_functions.__set__('env_mangr', {
+				initSync: env_init_stub,
+				get: (arg) => {
+					return true;
+				},
+			});
+
+			try {
+				await install_log_rotate();
+			} catch (error) {
+				// in some cases, logrotate is already installed and stderr is logged; swallow the error to allow test to run
+			}
+
+			await utility_functions.configureLogRotate();
+
+			expect(start_stub.called, 'expected start_stub to be called ').to.be.true;
+			expect(start_stub.firstCall.args[0]).to.equal(PM2_LOGROTATE);
+			expect(update_log_rotate_config_stub.called).to.be.true;
+
+			env_rw();
+		}).timeout(20000);
+
+		it('Test that it stops pm2-logrotate if LOG_ROTATE is false, and logrotate is online', async () => {
+			env_rw = utility_functions.__set__('env_mangr', {
+				initSync: env_init_stub,
+				get: (arg) => {
+					return false;
+				},
+			});
+
+			try {
+				await install_log_rotate();
+			} catch (error) {
+				// in some cases, logrotate is already installed and stderr is logged; swallow the error to allow test to run
+			}
+
+			await utility_functions.configureLogRotate();
+			expect(stop_log_rotate_stub.called).to.be.true;
+
+			env_rw();
+		}).timeout(20000);
 	});
 });
