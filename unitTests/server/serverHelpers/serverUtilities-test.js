@@ -292,7 +292,14 @@ describe('Test serverUtilities_rw.js module ', () => {
 		it('test CONFIGURE_CLUSTER', () => {
 			let result = serverUtilities_rw.getOperationFunction({ operation: 'configure_cluster' });
 
-			assert.deepStrictEqual(result.operation_function.name, 'configureCluster');
+			assert.deepStrictEqual(result.operation_function.name, 'setConfiguration');
+			assert.deepStrictEqual(result.job_operation_function, undefined);
+		});
+
+		it('test SET_CONGIGURATION', () => {
+			let result = serverUtilities_rw.getOperationFunction({ operation: 'set_configuration' });
+
+			assert.deepStrictEqual(result.operation_function.name, 'setConfiguration');
 			assert.deepStrictEqual(result.job_operation_function, undefined);
 		});
 

@@ -293,6 +293,7 @@ const OPERATIONS_ENUM = {
 	SET_LICENSE: 'set_license',
 	GET_REGISTRATION_INFO: 'registration_info',
 	CONFIGURE_CLUSTER: 'configure_cluster',
+	SET_CONFIGURATION: 'set_configuration',
 	CLUSTER_STATUS: 'cluster_status',
 	DROP_ATTRIBUTE: 'drop_attribute',
 	REMOVE_NODE: 'remove_node',

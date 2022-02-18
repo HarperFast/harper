@@ -14,19 +14,15 @@ const terms = require('../../utility/hdbTerms');
 const env_mgr = require('../../utility/environment/environmentManager');
 env_mgr.initSync();
 const os = require('os');
-const configure_validator = require('../../validation/clustering/configureValidator');
 const auth = require('../../security/auth');
 const child_process = require('child_process');
 const path = require('path');
 const InsertObject = require('../../data_layer/DataLayerObjects').InsertObject;
 const search = require('../../data_layer/search');
 const hdb_license = require('../../utility/registration/hdb_license');
-const config_utils = require('../../config/configUtils');
 const NodeObject = require('./NodeObject').Node;
 
 const CLUSTER_PORT = env_mgr.get(terms.HDB_SETTINGS_NAMES.CLUSTERING_PORT_KEY);
-const CONFIGURE_SUCCESS_RESPONSE =
-	'Successfully configured and loaded clustering configuration.  Some configurations may require a restart of HarperDB to take effect.';
 
 //Promisified functions
 const p_delete_delete = util.promisify(del.delete);
@@ -295,68 +291,6 @@ async function removeNode(remove_json_message) {
 }
 
 /**
- * Configure clustering by updating the config settings file with the specified paramters in the message, and then
- * start or stop clustering depending on the enabled value.
- * @param enable_cluster_json
- * @returns {Promise<void>}
- */
-async function configureCluster(enable_cluster_json) {
-	log.debug('In configureCluster');
-	let { operation, hdb_user, hdb_auth_header, ...config_fields } = enable_cluster_json;
-
-	// We need to make all fields upper case so they will match in the validator.  It is less efficient to do this in its
-	// own loop, but we dont want to update the file unless all fields pass validation, and we can't validate until all
-	// fields are converted.
-	let field_keys = Object.keys(config_fields);
-	for (let i = 0; i < field_keys.length; ++i) {
-		let orig_field_name = field_keys[i];
-
-		// if the field is not all uppercase in the config_fields object, then add the all uppercase field
-		// and remove the old not uppercase field.
-		if (config_fields[orig_field_name.toUpperCase()] === undefined) {
-			config_fields[orig_field_name.toUpperCase()] = config_fields[orig_field_name];
-			delete config_fields[orig_field_name];
-		}
-
-		// if the field is not all uppercase in the config_fields object, then add the all uppercase field
-		// and remove the old not uppercase field.
-		if (enable_cluster_json[orig_field_name.toUpperCase()] === undefined) {
-			enable_cluster_json[orig_field_name.toUpperCase()] = enable_cluster_json[orig_field_name];
-			delete enable_cluster_json[orig_field_name];
-		}
-	}
-
-	if (config_fields.NODE_NAME !== undefined) {
-		config_fields.NODE_NAME = config_fields.NODE_NAME.toString();
-	}
-
-	// TODO - this full function will be refactored as part of config upgrade epic
-	// let validation = await configure_validator(config_fields);
-	// if (validation) {
-	// 	log.error(`Validation error in configureCluster validation. ${validation}`);
-	// 	throw new Error(validation);
-	// }
-
-	try {
-		let msg_keys = Object.keys(config_fields);
-		for (let i = 0; i < msg_keys.length; ++i) {
-			let curr = msg_keys[i];
-
-			if (curr) {
-				log.info(`Setting property ${curr} to value ${enable_cluster_json[curr]}`);
-				config_utils.updateConfigValue(curr, enable_cluster_json[curr], undefined, true);
-				log.info('Completed writing new settings to file and reloading the manager.');
-			}
-		}
-
-		return CONFIGURE_SUCCESS_RESPONSE;
-	} catch (err) {
-		log.error(err);
-		throw 'There was an error storing the configuration information.  Please check the logs and try again.';
-	}
-}
-
-/**
  * Get the status of this hosts clustering configuration and connections.  This will send a message to a socket cluster worker,
  * who will request status from all other workers.  Once all workers have reported status, the worker will respond to the
  * HDB Child via the ClusterStatusEmitter.
@@ -475,7 +409,6 @@ module.exports = {
 	addNode,
 	updateNode: updateNode,
 	// The reference to the callback functions can be removed once processLocalTransaction has been refactored
-	configureCluster,
 	clusterStatus,
 	removeNode: removeNode,
 	authHeaderToUser: authHeaderToUser,

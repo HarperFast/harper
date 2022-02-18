@@ -28,7 +28,7 @@ const system_information = require('../../utility/environment/systemInformation'
 const transact_to_clustering_utils = require('./../transactToClusteringUtilities');
 const job_runner = require('./../jobRunner');
 const token_authentication = require('../../security/tokenAuthentication');
-const configuration = require('../../server/configuration');
+const config_utils = require('../../config/configUtils');
 
 const operation_function_caller = require(`../../utility/OperationFunctionCaller`);
 
@@ -278,10 +278,8 @@ function initializeOperationFunctionMap() {
 	op_func_map.set(terms.OPERATIONS_ENUM.ADD_NODE, new OperationFunctionObject(cluster_utilities.addNode));
 	op_func_map.set(terms.OPERATIONS_ENUM.UPDATE_NODE, new OperationFunctionObject(cluster_utilities.updateNode));
 	op_func_map.set(terms.OPERATIONS_ENUM.REMOVE_NODE, new OperationFunctionObject(cluster_utilities.removeNode));
-	op_func_map.set(
-		terms.OPERATIONS_ENUM.CONFIGURE_CLUSTER,
-		new OperationFunctionObject(cluster_utilities.configureCluster)
-	);
+	op_func_map.set(terms.OPERATIONS_ENUM.CONFIGURE_CLUSTER, new OperationFunctionObject(config_utils.setConfiguration));
+	op_func_map.set(terms.OPERATIONS_ENUM.SET_CONFIGURATION, new OperationFunctionObject(config_utils.setConfiguration));
 	op_func_map.set(terms.OPERATIONS_ENUM.CLUSTER_STATUS, new OperationFunctionObject(cluster_utilities.clusterStatus));
 	op_func_map.set(terms.OPERATIONS_ENUM.EXPORT_TO_S3, new OperationFunctionObject(executeJob, export_.export_to_s3));
 	op_func_map.set(
@@ -321,7 +319,7 @@ function initializeOperationFunctionMap() {
 		terms.OPERATIONS_ENUM.REFRESH_OPERATION_TOKEN,
 		new OperationFunctionObject(token_authentication.refreshOperationToken)
 	);
-	op_func_map.set(terms.OPERATIONS_ENUM.GET_CONFIGURATION, new OperationFunctionObject(configuration.getConfiguration));
+	op_func_map.set(terms.OPERATIONS_ENUM.GET_CONFIGURATION, new OperationFunctionObject(config_utils.getConfiguration));
 	op_func_map.set(
 		terms.OPERATIONS_ENUM.CUSTOM_FUNCTIONS_STATUS,
 		new OperationFunctionObject(custom_function_operations.customFunctionsStatus)

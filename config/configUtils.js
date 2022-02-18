@@ -8,12 +8,15 @@ const fs = require('fs-extra');
 const YAML = require('yaml');
 const path = require('path');
 const PropertiesReader = require('properties-reader');
+const env = require('../utility/environment/environmentManager');
 
 const UNINIT_GET_CONFIG_ERR = 'Unable to get config value because config is uninitialized';
 const CONFIG_INIT_MSG = 'Config successfully initialized';
 const BACKUP_ERR = 'Error backing up config file';
 const EMPTY_GET_VALUE = 'Empty parameter sent to getConfigValue';
 const DEFAULT_CONFIG_FILE_PATH = path.join(__dirname, 'yaml', hdb_terms.HDB_DEFAULT_CONFIG_FILE);
+const CONFIGURE_SUCCESS_RESPONSE =
+	'Successfully configured and loaded clustering configuration.  Some configurations may require a restart of HarperDB to take effect.';
 
 let flat_default_config_obj;
 let flat_config_obj;
@@ -26,6 +29,8 @@ module.exports = {
 	flattenConfig,
 	updateConfigValue,
 	updateConfigObject,
+	getConfiguration,
+	setConfiguration,
 };
 
 /**
@@ -318,4 +323,78 @@ function castConfigValue(param, value) {
 	}
 
 	return hdb_utils.autoCast(value);
+}
+
+/**
+ * this function returns all of the config settings
+ * @returns {{}}
+ */
+function getConfiguration() {
+	const config_doc = YAML.parseDocument(
+		fs.readFileSync(path.join(env.get(hdb_terms.CONFIG_PARAMS.OPERATIONSAPI_ROOT), hdb_terms.HDB_CONFIG_FILE), 'utf8')
+	);
+
+	return config_doc.toJSON();
+}
+
+/**
+ * Configure clustering by updating the config settings file with the specified parameters in the message, and then
+ * start or stop clustering depending on the enabled value.
+ * @param enable_cluster_json
+ * @returns {Promise<void>}
+ */
+async function setConfiguration(enable_cluster_json) {
+	logger.debug('In setConfiguration');
+	let { operation, hdb_user, hdb_auth_header, ...config_fields } = enable_cluster_json;
+
+	// We need to make all fields upper case so they will match in the validator.  It is less efficient to do this in its
+	// own loop, but we dont want to update the file unless all fields pass validation, and we can't validate until all
+	// fields are converted.
+	let field_keys = Object.keys(config_fields);
+	for (let i = 0; i < field_keys.length; ++i) {
+		let orig_field_name = field_keys[i];
+
+		// if the field is not all uppercase in the config_fields object, then add the all uppercase field
+		// and remove the old not uppercase field.
+		if (config_fields[orig_field_name.toUpperCase()] === undefined) {
+			config_fields[orig_field_name.toUpperCase()] = config_fields[orig_field_name];
+			delete config_fields[orig_field_name];
+		}
+
+		// if the field is not all uppercase in the config_fields object, then add the all uppercase field
+		// and remove the old not uppercase field.
+		if (enable_cluster_json[orig_field_name.toUpperCase()] === undefined) {
+			enable_cluster_json[orig_field_name.toUpperCase()] = enable_cluster_json[orig_field_name];
+			delete enable_cluster_json[orig_field_name];
+		}
+	}
+
+	if (config_fields.NODE_NAME !== undefined) {
+		config_fields.NODE_NAME = config_fields.NODE_NAME.toString();
+	}
+
+	// TODO - this full function will be refactored as part of config upgrade epic
+	// let validation = await configure_validator(config_fields);
+	// if (validation) {
+	// 	log.error(`Validation error in setConfiguration validation. ${validation}`);
+	// 	throw new Error(validation);
+	// }
+
+	try {
+		let msg_keys = Object.keys(config_fields);
+		for (let i = 0; i < msg_keys.length; ++i) {
+			let curr = msg_keys[i];
+
+			if (curr) {
+				logger.info(`Setting property ${curr} to value ${enable_cluster_json[curr]}`);
+				updateConfigValue(curr, enable_cluster_json[curr], undefined, true);
+				logger.info('Completed writing new settings to file and reloading the manager.');
+			}
+		}
+
+		return CONFIGURE_SUCCESS_RESPONSE;
+	} catch (err) {
+		logger.error(err);
+		throw 'There was an error storing the configuration information.  Please check the logs and try again.';
+	}
 }
