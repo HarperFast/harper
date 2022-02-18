@@ -908,7 +908,7 @@ describe('Test LMDB environmentUtility module', () => {
 			assert.deepStrictEqual(dbis, expected);
 		});
 	});
-
+/*
 	describe('Test nosync settings', () => {
 		let env;
 		let revert;
@@ -965,5 +965,5 @@ describe('Test LMDB environmentUtility module', () => {
 			await rw_lmdb_env_util.closeEnvironment(env);
 			revert();
 		});
-	});
+	});*/
 });
