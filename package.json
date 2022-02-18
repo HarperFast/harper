@@ -17,7 +17,7 @@
     "harperdb": "./bin/harperdb.js"
   },
   "engines": {
-    "node": "14.17.3"
+    "node": "16.14.0"
   },
   "homepage": "https://www.harperdb.io/",
   "bugs": "support@harperdb.io",
@@ -87,7 +87,7 @@
     "needle": "2.6.0",
     "node-forge": "0.10.0",
     "node-ipc": "9.1.4",
-    "node-lmdb": "0.9.4",
+    "node-lmdb": "0.9.6",
     "p-event": "4.2.0",
     "papaparse": "5.2.0",
     "passport": "0.3.2",
