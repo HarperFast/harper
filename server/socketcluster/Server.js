@@ -11,11 +11,7 @@ const CERTIFICATE = env.get(PROPS_CERT_KEY);
 
 const log = require('../../utility/logging/harper_logger');
 const PORT = env.get('CLUSTERING_PORT');
-const DEFAULT_PORT = terms.HDB_SETTINGS_DEFAULT_VALUES.CLUSTERING_PORT;
-let CLUSTER_PROCESSES = env.get(terms.HDB_SETTINGS_NAMES.MAX_CLUSTERING_PROCESSES);
-if (!CLUSTER_PROCESSES || isNaN(CLUSTER_PROCESSES)) {
-	CLUSTER_PROCESSES = terms.HDB_SETTINGS_DEFAULT_VALUES.MAX_CLUSTERING_PROCESSES;
-}
+const CLUSTER_PROCESSES = env.get(terms.HDB_SETTINGS_NAMES.MAX_CLUSTERING_PROCESSES);
 
 //initializes a new socket cluster all options can be seen here: https://socketcluster.io/#!/docs/api-socketcluster
 let socketCluster = undefined;
@@ -29,7 +25,7 @@ try {
 		brokers: 1,
 
 		// The port number on which your server should listen, this is config based
-		port: PORT ? PORT : DEFAULT_PORT,
+		port: PORT,
 
 		appName: 'socket_server',
 

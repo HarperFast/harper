@@ -7,7 +7,6 @@ declare -a folders=("bin/*.js"
   "data_layer/**/**/*.js"
   "data_layer/**/**/**/*.js"
   "events/*.js"
-  "lib/**/*.js"
   "security/*.js"
   "security/data_objects/*.js"
   "server/*.js"
@@ -20,7 +19,6 @@ declare -a folders=("bin/*.js"
   "upgrade/**/**/*.js"
   "utility/*.js"
   "utility/environment/*.js"
-  "utility/fs/*.js"
   "utility/functions/*.js"
   "utility/functions/**/*.js"
   "utility/install/*.js"
@@ -32,7 +30,8 @@ declare -a folders=("bin/*.js"
   "utility/pm2/*.js"
   "utility/scripts/*.js"
   "validation/*.js"
-  "validation/**/*.js")
+  "validation/**/*.js"
+  "config/*.js")
 
 #verify dependencies are installed
 node_version_installed="$(node -v)"
@@ -43,11 +42,18 @@ if ! [ "$node_version_installed" = "$node_version" ]; then
     exit
 fi
 
-bytenode_version_installed="$(bytenode -v | grep bytenode)"
-bytenode_version="bytenode $(npm run env | grep npm_package_dependencies_bytenode | cut -d '=' -f 2)"
+if ! command -v jq &> /dev/null
+then
+  echo "jq must be installed, install jq using your OS package manager"
+  exit
+fi
 
-if ! [ "$bytenode_version_installed" = "$bytenode_version" ]; then
-    echo "$bytenode_version must be installed, run command 'npm install bytenode@<version> -g'"
+bytenode_version_installed="$(bytenode -v | grep bytenode | cut -d ' ' -f 2)"
+bytenode_version="$(jq -r ".dependencies.bytenode" package.json)"
+
+if ! [ "$bytenode_version_installed" = "$bytenode_version" ]
+then
+    echo "bytenode $bytenode_version must be installed, run command 'npm install bytenode@<version> -g'"
     exit
 fi
 

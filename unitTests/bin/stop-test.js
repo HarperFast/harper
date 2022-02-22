@@ -7,7 +7,6 @@ const sinon = require('sinon');
 const sinon_chai = require('sinon-chai');
 const expect = chai.expect;
 const settings_test_file = require('../settingsTestFile');
-const logger = require('../../utility/logging/harper_logger');
 const pm2_utils = require('../../utility/pm2/utilityFunctions');
 const rewire = require('rewire');
 let stop;

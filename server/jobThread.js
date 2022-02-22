@@ -1,4 +1,8 @@
 'use strict';
+
+const hdb_terms = require('../utility/hdbTerms');
+process.env[hdb_terms.PROCESS_NAME_ENV_PROP] = hdb_terms.PROCESS_DESCRIPTORS.JOB;
+
 const harper_logger = require('../utility/logging/harper_logger');
 const global_schema = require('../utility/globalSchema');
 const user = require('../security/user');
@@ -28,8 +32,8 @@ async function thread(argument) {
 			// Because this client is on the job thread it doesn't need any handlers, hence the empty object param
 			global.hdb_ipc = new IPCClient(process.pid, {});
 		} catch (err) {
-			harper_logger.error('Error instantiating new instance of IPC client in HDB job thread', true);
-			harper_logger.error(err, true);
+			harper_logger.error('Error instantiating new instance of IPC client in HDB job thread');
+			harper_logger.error(err);
 			throw err;
 		}
 
@@ -51,27 +55,27 @@ async function thread(argument) {
  * @returns {Promise<void>}
  */
 async function waitForSocketToConnect() {
-	harper_logger.info('thread socket connection waiting to connect', true);
+	harper_logger.info('thread socket connection waiting to connect');
 	if (global.hdb_socket_client === undefined || global.hdb_socket_client.socket === undefined) {
-		harper_logger.info('no thread socket connection to confirm', true);
+		harper_logger.info('no thread socket connection to confirm');
 		return;
 	}
 
 	let socket = global.hdb_socket_client.socket;
 	if (socket.state === socket.CLOSED) {
-		harper_logger.warn('thread socket connection could not connect to server', true);
+		harper_logger.warn('thread socket connection could not connect to server');
 		return;
 	}
 
 	for (let x = 0; x < CONNECT_TRIES; x++) {
 		if (socket.state === socket.OPEN && socket.authState === socket.AUTHENTICATED) {
-			harper_logger.info('thread socket connection successfully authenticated', true);
+			harper_logger.info('thread socket connection successfully authenticated');
 			break;
 		}
 		await p_timeout(TIMEOUT_MS);
 	}
 
-	harper_logger.info(`thread socket connection exiting confirmation: ${socket.state}, ${socket.authState}`, true);
+	harper_logger.info(`thread socket connection exiting confirmation: ${socket.state}, ${socket.authState}`);
 }
 
 module.exports = thread;

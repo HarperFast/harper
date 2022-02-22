@@ -21,7 +21,7 @@ class OriginatorCheckMiddleware extends MiddlewareIF {
 				}
 				if (
 					!req.data.__originator ||
-					req.data.__originator[env.getProperty(hdb_terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY)] !==
+					req.data.__originator[env.get(hdb_terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY)] !==
 						types.ORIGINATOR_SET_VALUE
 				) {
 					log.debug('Passed Originator Middleware');
@@ -35,7 +35,7 @@ class OriginatorCheckMiddleware extends MiddlewareIF {
 			log.debug(
 				`Failed Originator Middleware check on channel: ${req.channel} for request type: ${
 					req.data.type
-				} and originator id: ${env.getProperty(hdb_terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY)}`
+				} and originator id: ${env.get(hdb_terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY)}`
 			);
 			return types.ERROR_CODES.MIDDLEWARE_SWALLOW;
 		};

@@ -14,7 +14,6 @@ const terms = require('../../utility/hdbTerms');
 const env_mgr = require('../../utility/environment/environmentManager');
 env_mgr.initSync();
 const os = require('os');
-const configure_validator = require('../../validation/clustering/configureValidator');
 const auth = require('../../security/auth');
 const child_process = require('child_process');
 const path = require('path');
@@ -23,9 +22,7 @@ const search = require('../../data_layer/search');
 const hdb_license = require('../../utility/registration/hdb_license');
 const NodeObject = require('./NodeObject').Node;
 
-const CLUSTER_PORT = env_mgr.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_PORT_KEY);
-const CONFIGURE_SUCCESS_RESPONSE =
-	'Successfully configured and loaded clustering configuration.  Some configurations may require a restart of HarperDB to take effect.';
+const CLUSTER_PORT = env_mgr.get(terms.HDB_SETTINGS_NAMES.CLUSTERING_PORT_KEY);
 
 //Promisified functions
 const p_delete_delete = util.promisify(del.delete);
@@ -48,9 +45,7 @@ for (let k in iface) {
 }
 
 let CLUSTER_PROCESSES = env_mgr.get(terms.HDB_SETTINGS_NAMES.MAX_CLUSTERING_PROCESSES);
-if (!CLUSTER_PROCESSES || isNaN(CLUSTER_PROCESSES)) {
-	CLUSTER_PROCESSES = terms.HDB_SETTINGS_DEFAULT_VALUES.MAX_CLUSTERING_PROCESSES;
-}
+
 //we add 1 as we need to get responses from the cluster workers & the clustering connector process
 const STATUS_CALL_COUNT = CLUSTER_PROCESSES + 1;
 const STATUS_CALL_TIMEOUT = 5000;
@@ -114,7 +109,7 @@ async function addNode(new_node) {
 		hdb_utils.sendTransactionToSocketCluster(
 			terms.INTERNAL_SC_CHANNELS.HDB_NODES,
 			add_node_msg,
-			env_mgr.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY)
+			env_mgr.get(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY)
 		);
 	} catch (e) {
 		throw new Error(e);
@@ -247,7 +242,7 @@ async function updateNode(update_node) {
 		hdb_utils.sendTransactionToSocketCluster(
 			terms.INTERNAL_SC_CHANNELS.HDB_NODES,
 			update_node_msg,
-			env_mgr.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY)
+			env_mgr.get(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY)
 		);
 	} catch (e) {
 		throw new Error(e);
@@ -290,73 +285,9 @@ async function removeNode(remove_json_message) {
 	hdb_utils.sendTransactionToSocketCluster(
 		terms.INTERNAL_SC_CHANNELS.HDB_NODES,
 		remove_node_msg,
-		env_mgr.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY)
+		env_mgr.get(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY)
 	);
 	return `successfully removed ${remove_json_message.name} from manifest`;
-}
-
-/**
- * Configure clustering by updating the config settings file with the specified paramters in the message, and then
- * start or stop clustering depending on the enabled value.
- * @param enable_cluster_json
- * @returns {Promise<void>}
- */
-async function configureCluster(enable_cluster_json) {
-	log.debug('In configureCluster');
-	let { operation, hdb_user, hdb_auth_header, ...config_fields } = enable_cluster_json;
-
-	// We need to make all fields upper case so they will match in the validator.  It is less efficient to do this in its
-	// own loop, but we dont want to update the file unless all fields pass validation, and we can't validate until all
-	// fields are converted.
-	let field_keys = Object.keys(config_fields);
-	for (let i = 0; i < field_keys.length; ++i) {
-		let orig_field_name = field_keys[i];
-
-		// if the field is not all uppercase in the config_fields object, then add the all uppercase field
-		// and remove the old not uppercase field.
-		if (config_fields[orig_field_name.toUpperCase()] === undefined) {
-			config_fields[orig_field_name.toUpperCase()] = config_fields[orig_field_name];
-			delete config_fields[orig_field_name];
-		}
-
-		// if the field is not all uppercase in the config_fields object, then add the all uppercase field
-		// and remove the old not uppercase field.
-		if (enable_cluster_json[orig_field_name.toUpperCase()] === undefined) {
-			enable_cluster_json[orig_field_name.toUpperCase()] = enable_cluster_json[orig_field_name];
-			delete enable_cluster_json[orig_field_name];
-		}
-	}
-
-	if (config_fields.NODE_NAME !== undefined) {
-		config_fields.NODE_NAME = config_fields.NODE_NAME.toString();
-	}
-	let validation = await configure_validator(config_fields);
-	let should_reload = false;
-	if (validation) {
-		log.error(`Validation error in configureCluster validation. ${validation}`);
-		throw new Error(validation);
-	}
-
-	try {
-		let msg_keys = Object.keys(config_fields);
-		for (let i = 0; i < msg_keys.length; ++i) {
-			let curr = msg_keys[i];
-
-			if (curr && !hdb_utils.isEmptyOrZeroLength(terms.HDB_SETTINGS_NAMES_REVERSE_LOOKUP[curr])) {
-				log.info(`Setting property ${curr} to value ${enable_cluster_json[curr]}`);
-				env_mgr.setProperty(curr, enable_cluster_json[curr]);
-				should_reload = true;
-			}
-		}
-		if (should_reload) {
-			await env_mgr.writeSettingsFileSync(true);
-			log.info('Completed writing new settings to file and reloading the manager.');
-		}
-		return CONFIGURE_SUCCESS_RESPONSE;
-	} catch (err) {
-		log.error(err);
-		throw 'There was an error storing the configuration information.  Please check the logs and try again.';
-	}
 }
 
 /**
@@ -370,7 +301,7 @@ async function clusterStatus(cluster_status_json) {
 	log.trace(`getting cluster status`);
 	let response = {};
 	try {
-		let clustering_enabled = env_mgr.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_ENABLED_KEY);
+		let clustering_enabled = env_mgr.get(terms.HDB_SETTINGS_NAMES.CLUSTERING_ENABLED_KEY);
 		response['is_enabled'] = clustering_enabled;
 		response.node_name = env_mgr.get('NODE_NAME');
 		if (!clustering_enabled) {
@@ -478,7 +409,6 @@ module.exports = {
 	addNode,
 	updateNode: updateNode,
 	// The reference to the callback functions can be removed once processLocalTransaction has been refactored
-	configureCluster,
 	clusterStatus,
 	removeNode: removeNode,
 	authHeaderToUser: authHeaderToUser,

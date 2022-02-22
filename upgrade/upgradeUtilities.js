@@ -1,6 +1,7 @@
 'use strict';
 
 const hdb_util = require('../utility/common_utils');
+const config_utils = require('../config/configUtils');
 const log = require('../utility/logging/harper_logger');
 const path = require('path');
 const fs = require('fs');
@@ -98,7 +99,7 @@ function getOldPropsValue(prop_name, old_hdb_props, value_required = false) {
 		return old_val;
 	}
 	if (value_required) {
-		return terms.HDB_SETTINGS_DEFAULT_VALUES[prop_name];
+		return config_utils.getDefaultConfig(prop_name);
 	}
 	return '';
 }

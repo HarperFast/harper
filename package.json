@@ -17,7 +17,7 @@
     "harperdb": "./bin/harperdb.js"
   },
   "engines": {
-    "node": "14.17.3"
+    "node": "16.14.0"
   },
   "homepage": "https://www.harperdb.io/",
   "bugs": "support@harperdb.io",
@@ -59,9 +59,9 @@
     "async": "2.6.3",
     "aws-sdk": "2.389.0",
     "bytenode": "1.2.3",
+    "chalk": "4.1.2",
     "cli-progress": "3.9.0",
     "clone": "2.1.2",
-    "colors": "1.4.0",
     "fast-glob": "3.2.5",
     "fastify": "3.14.0",
     "fastify-autoload": "3.7.1",
@@ -87,7 +87,7 @@
     "needle": "2.6.0",
     "node-forge": "0.10.0",
     "node-ipc": "9.1.4",
-    "node-lmdb": "0.9.4",
+    "node-lmdb": "0.9.6",
     "p-event": "4.2.0",
     "papaparse": "5.2.0",
     "passport": "0.3.2",
@@ -107,7 +107,8 @@
     "truncate-utf8-bytes": "1.0.2",
     "uuid": "3.3.2",
     "validate.js": "0.11.1",
-    "winston": "3.3.3"
+    "winston": "3.3.3",
+    "yaml": "1.10.2"
   },
   "devDependencies": {
     "axios": "0.21.1",

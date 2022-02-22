@@ -1,0 +1,68 @@
+# HarperDB configuration file. Refer to https://harperdb.io/docs/reference/configuration-file/
+---
+clustering:
+  enabled: false
+  network:
+    port: 12345
+    selfSignedSslCerts: false
+  nodeName: null
+  processes: 1
+  user: null
+customFunctions:
+  enabled: false
+  network:
+    certificate: null
+    cors: true
+    corsWhitelist:
+      - null
+    headersTimeout: 60000
+    https: false
+    keepAliveTimeout: 5000
+    port: 9926
+    privateKey: null
+    timeout: 120000
+  nodeEnv: production
+  processes: null
+  root: null
+ipc:
+  network:
+    port: 9383
+localStudio:
+  enabled: false
+logging:
+  auditLog: false
+  file: true
+  level: error
+  rotation:
+    compress: false
+    dateFormat: YYYY-MM-DD_HH-mm-ss
+    maxSize: 10M
+    retain: 30
+    rotate: false
+    rotateInterval: 0 0 * * *
+    rotateModule: true
+    timezone: GMT
+    workerInterval: 30
+  root: null
+  stdStreams: false
+operationsApi:
+  authentication:
+    operationTokenTimeout: 1d
+    refreshTokenTimeout: 30d
+  foreground: false
+  network:
+    certificate: null
+    cors: true
+    corsWhitelist:
+      - null
+    headersTimeout: 60000
+    https: false
+    keepAliveTimeout: 5000
+    port: 9925
+    privateKey: null
+    timeout: 120000
+  nodeEnv: production
+  processes: null
+  root: null
+  storage:
+    writeAsync: false

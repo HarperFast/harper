@@ -1,5 +1,5 @@
 const hdb_license = require('./hdb_license');
-const colors = require('colors/safe');
+const chalk = require('chalk');
 const log = require('../logging/harper_logger');
 const install_user_permission = require('../install_user_permission');
 const prompt = require('prompt');
@@ -10,9 +10,8 @@ const path = require('path');
 const hdb_utils = require('../common_utils');
 const version = require('../../bin/version');
 const env_utility = require('../environment/environmentManager');
-if (!env_utility.isInitialized()) {
-	env_utility.initSync();
-}
+env_utility.initSync();
+
 const moment = require('moment');
 
 //Promisified function
@@ -135,11 +134,11 @@ async function promptForRegistration() {
 	let register_schema = {
 		properties: {
 			CUSTOMER_COMPANY: {
-				description: colors.magenta(`[COMPANY] Please enter your company name`),
+				description: chalk.magenta(`[COMPANY] Please enter your company name`),
 				required: true,
 			},
 			HDB_LICENSE: {
-				description: colors.magenta(`[HDB_LICENSE] Your fingerprint is ${fingerprint} Please enter your license key`),
+				description: chalk.magenta(`[HDB_LICENSE] Your fingerprint is ${fingerprint} Please enter your license key`),
 				required: true,
 			},
 		},

@@ -11,6 +11,8 @@ const rw_bridge = rw_read_txn_log.__set__('harperBridge', new LMDBBridge());
 const assert = require('assert');
 const fs = require('fs-extra');
 const sc_utils = rewire('../../../../server/socketcluster/util/socketClusterUtils');
+const env_manager = require('../../../../utility/environment/environmentManager');
+const hdb_terms = require('../../../../utility/hdbTerms');
 const rw_sc = sc_utils.__set__('read_transaction_log', rw_read_txn_log);
 const path = require('path');
 
@@ -57,7 +59,8 @@ describe('Test socketClusterUtils', () => {
 		let test_env;
 
 		before(async () => {
-			await fs.remove(BASE_PATH);
+			env_manager.setProperty(hdb_terms.CONFIG_PARAMS.LOGGING_AUDITLOG, true);
+      await fs.remove(BASE_PATH);
 			await fs.remove(ENV_DIR_PATH);
 			await fs.mkdirp(BASE_PATH);
 			global.lmdb_map = undefined;

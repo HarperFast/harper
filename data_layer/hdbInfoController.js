@@ -5,7 +5,7 @@
  */
 
 const util = require('util');
-const colors = require('colors/safe');
+const chalk = require('chalk');
 const os = require('os');
 
 const insert = require('./insert');
@@ -165,9 +165,9 @@ async function getVersionUpdateInfo() {
 		if (!hdb_utils.isEmpty(latest_info_record)) {
 			data_version_num = latest_info_record.data_version_num;
 			if (hdb_utils.compareVersions(data_version_num.toString(), current_version.toString()) > 0) {
-				console.log(colors.yellow(`This instance's data was last run on version ${data_version_num}`));
+				console.log(chalk.yellow(`This instance's data was last run on version ${data_version_num}`));
 				console.error(
-					colors.red(
+					chalk.red(
 						`You have installed a version lower than the version that your data was created on or was upgraded to.  This may cause issues and is currently not supported.${os.EOL}${hdb_terms.SUPPORT_HELP_MSG}`
 					)
 				);
@@ -223,7 +223,7 @@ async function getVersionUpdateInfo() {
  */
 function checkIfInstallIsSupported() {
 	try {
-		env.getProperty(hdb_terms.HDB_SETTINGS_NAMES.CLUSTERING_USER_KEY);
+		env.get(hdb_terms.HDB_SETTINGS_NAMES.CLUSTERING_USER_KEY);
 	} catch (err) {
 		const err_msg =
 			'You are attempting to upgrade from a very old instance of HDB that is no longer supported. ' +

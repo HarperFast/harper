@@ -6,7 +6,7 @@ const hdb_terms = require('../../utility/hdbTerms');
 const hdb_logger = require('../../utility/logging/harper_logger');
 const { IPC_ERRORS } = require('../../utility/errors/commonErrors');
 const env = require('../../utility/environment/environmentManager');
-if (!env.isInitialized()) env.initSync();
+env.initSync();
 
 ipc.config.id = hdb_terms.HDB_IPC_SERVER;
 ipc.config.networkPort = env.get(hdb_terms.HDB_SETTINGS_NAMES.IPC_SERVER_PORT);

@@ -325,6 +325,7 @@ describe('test lmdbWriteTransaction module', () => {
 			await fs.mkdirp(BASE_PATH);
 			global.lmdb_map = undefined;
 			env = await lmdb_create_txn_envs(CREATE_TABLE_OBJ);
+		env_mngr.setProperty('logging_auditlog', true);
 		});
 
 		afterEach(async () => {
@@ -379,8 +380,8 @@ describe('test lmdbWriteTransaction module', () => {
 			assert.deepStrictEqual(results, Object.create(null));
 		});
 
-		it('test writing insert with DISABLE_TRANSACTION_LOG true', async () => {
-			let disable_txn = rw_lmdb_write_txn.__set__('DISABLE_TRANSACTION_LOG', true);
+		it('test writing insert with transaction log disabled', async () => {
+			env_mngr.setProperty('logging_auditlog', false);
 
 			let insert_obj = new InsertObject('dev', 'test', 'id', INSERT_RECORDS);
 			let insert_response = new InsertRecordsResponseObject(INSERT_HASHES, [], common.getMicroTime());
@@ -414,7 +415,7 @@ describe('test lmdbWriteTransaction module', () => {
 			results = search_util.iterateDBI(txn_env, 'user_name');
 			assert.deepStrictEqual(results, Object.create(null));
 
-			disable_txn();
+
 		});
 
 		it('test writing insert with user on operation', async () => {

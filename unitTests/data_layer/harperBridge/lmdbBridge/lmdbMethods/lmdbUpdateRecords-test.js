@@ -19,6 +19,8 @@ const lmdb_create_table = require('../../../../../data_layer/harperBridge/lmdbBr
 const lmdb_common = require('../../../../../utility/lmdb/commonUtility');
 const environment_utility = rewire('../../../../../utility/lmdb/environmentUtility');
 const search_utility = require('../../../../../utility/lmdb/searchUtility');
+const env_manager = require('../../../../../utility/environment/environmentManager');
+const hdb_terms = require('../../../../../utility/hdbTerms');
 const assert = require('assert');
 const fs = require('fs-extra');
 const sinon = require('sinon');
@@ -135,6 +137,7 @@ describe('Test lmdbUpdateRecords module', () => {
 	let hdb_attribute_env;
 	before(() => {
 		date_stub = sandbox.stub(Date, 'now').returns(TIMESTAMP);
+	  env_manager.setProperty(hdb_terms.CONFIG_PARAMS.LOGGING_AUDITLOG, true);
 	});
 
 	after(() => {

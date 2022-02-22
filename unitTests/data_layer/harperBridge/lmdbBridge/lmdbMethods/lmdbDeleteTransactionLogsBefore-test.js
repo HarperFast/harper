@@ -15,6 +15,8 @@ const lmdb_write_txn = require('../../../../../data_layer/harperBridge/lmdbBridg
 const common = require('../../../../../utility/lmdb/commonUtility');
 const fs = require('fs-extra');
 const search_util = require('../../../../../utility/lmdb/searchUtility');
+const env_manager = require('../../../../../utility/environment/environmentManager');
+const hdb_terms = require('../../../../../utility/hdbTerms');
 
 const CreateTableObject = require('../../../../../data_layer/CreateTableObject');
 const InsertObject = require('../../../../../data_layer/InsertObject');
@@ -43,6 +45,7 @@ const HDB_USER = {
 
 describe('test lmdbDeleteTransactionLogsBefore module', () => {
 	before(async () => {
+		env_manager.setProperty(hdb_terms.CONFIG_PARAMS.LOGGING_AUDITLOG, true);
 		await fs.remove(BASE_PATH);
 	});
 

@@ -38,7 +38,7 @@ const {
 
 const TRUE_COMPARE_VAL = 'TRUE';
 let server = undefined;
-let CF_ROUTES_DIR = env.getProperty(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY);
+let CF_ROUTES_DIR = env.get(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY);
 
 /**
  * Function called to start up server instance on a forked process - this method is called from customFunctionServer after process is
@@ -70,8 +70,8 @@ async function customFunctionsServer() {
 
 		await setUp();
 
-		const props_http_secure_on = env.getProperty(terms.HDB_SETTINGS_NAMES.HTTP_SECURE_ENABLED_KEY);
-		const props_server_port = parseInt(env.getProperty(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_PORT_KEY), 10);
+		const props_http_secure_on = env.get(terms.CONFIG_PARAMS.CUSTOMFUNCTIONS_NETWORK_HTTPS);
+		const props_server_port = parseInt(env.get(terms.CONFIG_PARAMS.CUSTOMFUNCTIONS_NETWORK_PORT), 10);
 		const is_https =
 			props_http_secure_on &&
 			(props_http_secure_on === true || props_http_secure_on.toUpperCase() === TRUE_COMPARE_VAL);

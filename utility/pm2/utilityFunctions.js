@@ -7,6 +7,9 @@ const services_config = require('./servicesConfig');
 const env_mangr = require('../environment/environmentManager');
 const hdb_logger = require('../../utility/logging/harper_logger');
 const config = require('../../utility/pm2/servicesConfig');
+const util = require('util');
+const exec = util.promisify(require('child_process').exec);
+const path = require('path');
 
 module.exports = {
 	start,
@@ -26,8 +29,15 @@ module.exports = {
 	reloadStopStart,
 	restartHdb,
 	deleteProcess,
+	configureLogRotate,
 };
 
+const PM2_LOGROTATE_VERSION = '2.7.0';
+const PM2_MODULE_LOCATION = path.resolve(__dirname, '../../node_modules/pm2/bin/pm2');
+const LOG_ROTATE_INSTALLED = 'Log rotate installed.';
+const LOG_ROTATE_INSTALL_ERR = 'Error installing log rotate.';
+const LOG_ROTATE_UPDATE = 'Log rotate updated.';
+const LOG_ROTATE_UPDATE_ERR = 'Error updating log rotate.';
 const RELOAD_HDB_ERR =
 	'The number of HarperDB processes running is different from the settings value. ' +
 	'To restart and update the number HarperDB processes running you must stop and then start HarperDB';
@@ -366,7 +376,8 @@ async function stopAllServices() {
 		const services = await getUniqueServicesList();
 		for (let x = 0, length = Object.values(services).length; x < length; x++) {
 			let service = Object.values(services)[x];
-			await stop(service.name);
+			if (service.name === hdb_terms.PROCESS_DESCRIPTORS.PM2_LOGROTATE) await stopLogrotate();
+			else await stop(service.name);
 		}
 	} catch (err) {
 		pm2.disconnect();
@@ -408,5 +419,115 @@ async function reloadStopStart(service_name) {
 	} else {
 		// If no change to the max process values just call reload.
 		await reload(service_name);
+	}
+}
+
+/**
+ * Stops the pm2-logrotate module but does not delete it like the other stop function does.
+ * @returns {Promise<unknown>}
+ */
+function stopLogrotate() {
+	return new Promise(async (resolve, reject) => {
+		try {
+			await connect();
+		} catch (err) {
+			reject(err);
+		}
+		pm2.stop(hdb_terms.PROCESS_DESCRIPTORS.PM2_LOGROTATE, (err, res) => {
+			if (err) {
+				pm2.disconnect();
+				reject(err);
+			}
+
+			pm2.disconnect();
+			resolve(res);
+		});
+	});
+}
+
+/**
+ * Install pm2's logrotate module.
+ * @returns {Promise<void>}
+ */
+async function installLogRotate() {
+	const { stdout, stderr } = await exec(`${PM2_MODULE_LOCATION} install pm2-logrotate@${PM2_LOGROTATE_VERSION}`);
+	hdb_logger.debug(`loadLogRotate stdout: ${stdout}`);
+
+	if (stderr) {
+		hdb_logger.error(LOG_ROTATE_INSTALL_ERR);
+		throw stderr;
+	}
+
+	hdb_logger.info(LOG_ROTATE_INSTALLED);
+}
+
+/**
+ * Update pm2's logrotate module.
+ * @returns {Promise<void>}
+ */
+async function updateLogRotateConfig() {
+	const log_rotate_config = {
+		max_size: env_mangr.get(hdb_terms.HDB_SETTINGS_NAMES.LOG_ROTATE_MAX_SIZE),
+		retain: env_mangr.get(hdb_terms.HDB_SETTINGS_NAMES.LOG_ROTATE_RETAIN),
+		compress: env_mangr.get(hdb_terms.HDB_SETTINGS_NAMES.LOG_ROTATE_COMPRESS),
+		dateFormat: env_mangr.get(hdb_terms.HDB_SETTINGS_NAMES.LOG_ROTATE_DATE_FORMAT),
+		rotateModule: env_mangr.get(hdb_terms.HDB_SETTINGS_NAMES.LOG_ROTATE_ROTATE_MODULE),
+		workerInterval: env_mangr.get(hdb_terms.HDB_SETTINGS_NAMES.LOG_ROTATE_WORKER_INTERVAL),
+		rotateInterval: env_mangr.get(hdb_terms.HDB_SETTINGS_NAMES.LOG_ROTATE_ROTATE_INTERVAL),
+		TZ: env_mangr.get(hdb_terms.HDB_SETTINGS_NAMES.LOG_ROTATE_TIMEZONE),
+	};
+
+	// Loop through all the rotate config params and build a command that is executed in a child process.
+	let update_command = '';
+	for (const param in log_rotate_config) {
+		update_command += `${PM2_MODULE_LOCATION} set pm2-logrotate:${param} ${log_rotate_config[param]}`;
+		if (param !== 'TZ') update_command += ' && ';
+	}
+
+	const { stdout, stderr } = await exec(update_command);
+	hdb_logger.debug(`updateLogRotateConfig stdout: ${stdout}`);
+
+	if (stderr) {
+		hdb_logger.error(LOG_ROTATE_UPDATE_ERR);
+		throw stderr;
+	}
+
+	hdb_logger.info(LOG_ROTATE_UPDATE);
+}
+
+/**
+ * If pm2-logrotate is already installed, start it. If it isn't, install it.
+ * If LOG_ROTATE is set to false and logrotate is online, stop it.
+ * After this is done run its config.
+ * @returns {Promise<void>}
+ */
+async function configureLogRotate() {
+	env_mangr.initSync();
+	const logrotate_env = hdb_utils.autoCastBoolean(env_mangr.get(hdb_terms.HDB_SETTINGS_NAMES.LOG_ROTATE));
+	const logrotate_des = await describe(hdb_terms.PROCESS_DESCRIPTORS.PM2_LOGROTATE);
+	let logrotate_status;
+	let logrotate_installed = false;
+	if (!hdb_utils.isEmptyOrZeroLength(logrotate_des)) {
+		logrotate_installed = true;
+		logrotate_status = logrotate_des[0].pm2_env.status;
+	}
+
+	// If log rotate set to true in settings but not installed, call install.
+	if (logrotate_env && !logrotate_installed) {
+		await installLogRotate();
+		await updateLogRotateConfig();
+		return;
+	}
+
+	// If log rotate set to true in settings and is installed call start.
+	if (logrotate_env && logrotate_installed) {
+		await start(hdb_terms.PROCESS_DESCRIPTORS.PM2_LOGROTATE);
+		await updateLogRotateConfig();
+		return;
+	}
+
+	// If log rotate is set to false and it is running, stop it.
+	if (!logrotate_env && logrotate_status === hdb_terms.PM2_PROCESS_STATUSES.ONLINE) {
+		await stopLogrotate();
 	}
 }

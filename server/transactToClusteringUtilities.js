@@ -5,9 +5,7 @@ const env = require(`../utility/environment/environmentManager`);
 const terms = require('../utility/hdbTerms');
 const harper_logger = require('../utility/logging/harper_logger');
 const ClusteringOriginObject = require('./ClusteringOriginObject');
-if (!env.isInitialized()) {
-	env.initSync();
-}
+env.initSync();
 
 module.exports = {
 	concatSourceMessageHeader,
@@ -51,7 +49,7 @@ function sendSchemaTransaction(transaction_msg, operation, request_body, orig_re
 	common_utils.sendTransactionToSocketCluster(
 		operation,
 		transaction_msg,
-		env.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY)
+		env.get(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY)
 	);
 }
 
@@ -156,7 +154,7 @@ function postOperationHandler(request_body, result, orig_req) {
 				common_utils.sendTransactionToSocketCluster(
 					terms.INTERNAL_SC_CHANNELS.CREATE_ATTRIBUTE,
 					transaction_msg,
-					env.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY)
+					env.get(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY)
 				);
 			} catch (err) {
 				harper_logger.error(problem_string);
@@ -200,7 +198,7 @@ function sendOperationTransaction(transaction_msg, request_body, hashes_to_send,
 		common_utils.sendTransactionToSocketCluster(
 			`${request_body.schema}:${request_body.table}`,
 			transaction_msg,
-			env.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY)
+			env.get(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY)
 		);
 	}
 }
@@ -229,7 +227,7 @@ function convertCRUDOperationToTransaction(source_json, affected_hashes, txn_tim
 		__origin: new ClusteringOriginObject(
 			txn_timestamp,
 			username,
-			env.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY)
+			env.get(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY)
 		),
 	};
 

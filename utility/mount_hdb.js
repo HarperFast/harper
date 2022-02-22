@@ -22,7 +22,6 @@ module.exports = function (logger, hdb_path, callback) {
 	makeDirectory(logger, path.join(hdb_path, 'keys'));
 	makeDirectory(logger, path.join(hdb_path, 'keys', terms.LICENSE_FILE_NAME));
 	makeDirectory(logger, path.join(hdb_path, 'log'));
-	makeDirectory(logger, path.join(hdb_path, 'config'));
 	makeDirectory(logger, path.join(hdb_path, 'doc'));
 	makeDirectory(logger, path.join(hdb_path, 'schema'));
 	makeDirectory(logger, system_schema_path);
@@ -31,7 +30,7 @@ module.exports = function (logger, hdb_path, callback) {
 	makeDirectory(logger, path.join(hdb_path, 'clustering', 'transaction_log'));
 	makeDirectory(logger, path.join(hdb_path, 'clustering', 'connections'));
 
-	env_mngr.setProperty(terms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY, hdb_path);
+	env_mngr.setHdbBasePath(hdb_path);
 	createLMDBTables(system_schema_path, transactions_path, logger)
 		.then(() => {
 			callback(null, 'complete');
@@ -40,24 +39,6 @@ module.exports = function (logger, hdb_path, callback) {
 			callback(e);
 		});
 };
-
-/**
- * creates the directory structure needed for the fs data store based on the systemSchema
- * @param schema_path
- * @param logger
- */
-function createFSTables(schema_path, logger) {
-	let tables = Object.keys(system_schema);
-	for (let x = 0; x < tables.length; x++) {
-		let table_name = tables[x];
-		makeDirectory(logger, path.join(schema_path.toString(), table_name.toString()));
-		let attributes = system_schema[table_name].attributes;
-
-		for (let y = 0; y < attributes.length; y++) {
-			makeDirectory(logger, path.join(schema_path, table_name, attributes[y].attribute));
-		}
-	}
-}
 
 /**
  * creates the environments & dbis needed for lmdb  based on the systemSchema

@@ -11,6 +11,7 @@ const lmdb_create_txn_envs = require('../../../../../data_layer/harperBridge/lmd
 const lmdb_write_txn = require('../../../../../data_layer/harperBridge/lmdbBridge/lmdbUtility/lmdbWriteTransaction');
 const common = require('../../../../../utility/lmdb/commonUtility');
 const hdb_terms = require('../../../../../utility/hdbTerms');
+const env_manager = require('../../../../../utility/environment/environmentManager');
 const fs = require('fs-extra');
 
 const CreateTableObject = require('../../../../../data_layer/CreateTableObject');
@@ -73,6 +74,7 @@ const HDB_USER_3 = {
 
 describe('Test lmdbReadTransactionLog module', () => {
 	before(async () => {
+		env_manager.setProperty(hdb_terms.CONFIG_PARAMS.LOGGING_AUDITLOG, true);
 		await fs.remove(BASE_PATH);
 	});
 

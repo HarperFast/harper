@@ -35,7 +35,7 @@ class ConnectionNameCheckMiddleware extends MiddlewareIF {
 				return;
 			}
 			let remote_host_name =
-				env.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY) === this.client_node_name
+				env.get(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY) === this.client_node_name
 					? this.server_node_name
 					: this.client_node_name;
 

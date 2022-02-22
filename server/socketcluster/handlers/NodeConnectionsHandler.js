@@ -43,9 +43,6 @@ class NodeConnectionsHandler {
 		delete connector_options.query;
 
 		this.cluster_processes = env.get(terms.HDB_SETTINGS_NAMES.MAX_CLUSTERING_PROCESSES);
-		if (!this.cluster_processes || isNaN(this.cluster_processes)) {
-			this.cluster_processes = terms.HDB_SETTINGS_DEFAULT_VALUES.MAX_CLUSTERING_PROCESSES;
-		}
 
 		this.local_sc_connection = new SocketConnector(socket_client, { name: process.pid }, connector_options, this.creds);
 
@@ -108,7 +105,7 @@ class NodeConnectionsHandler {
 		options.port = node.port;
 		let additional_info = {
 			server_name: node.name,
-			client_name: env.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY),
+			client_name: env.get(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY),
 			subscriptions: node.subscriptions,
 			connected_timestamp: null,
 		};
@@ -258,8 +255,7 @@ class NodeConnectionsHandler {
 					connection.socket.authState === connection.socket.AUTHENTICATED
 				) {
 					let remote_host_name =
-						env.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY) ===
-						connection.socket.additional_info.client_name
+						env.get(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY) === connection.socket.additional_info.client_name
 							? connection.socket.additional_info.server_name
 							: connection.socket.additional_info.client_name;
 					if (data.__originator && data.__originator[remote_host_name] === types.ORIGINATOR_SET_VALUE) {

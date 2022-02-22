@@ -16,7 +16,7 @@ const { HDB_ERROR_MSGS, HTTP_STATUS_CODES } = hdb_errors;
 const CUSTOM_FUNCTION_TEMPLATE = path.resolve(__dirname, '../../custom_function_template');
 
 function isCFEnabled() {
-	const custom_functions_enabled = env.getProperty(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_ENABLED_KEY);
+	const custom_functions_enabled = env.get(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_ENABLED_KEY);
 	if (custom_functions_enabled === 'true' || custom_functions_enabled === true || custom_functions_enabled === 'TRUE') {
 		return;
 	}
@@ -41,9 +41,9 @@ function customFunctionsStatus() {
 
 	try {
 		response = {
-			is_enabled: env.getProperty(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_ENABLED_KEY),
-			port: env.getProperty(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_PORT_KEY),
-			directory: env.getProperty(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY),
+			is_enabled: env.get(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_ENABLED_KEY),
+			port: env.get(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_PORT_KEY),
+			directory: env.get(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY),
 		};
 	} catch (err) {
 		throw handleHDBError(
@@ -65,7 +65,7 @@ function customFunctionsStatus() {
 function getCustomFunctions() {
 	log.trace(`getting custom api endpoints`);
 	let response = {};
-	const dir = env.getProperty(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY);
+	const dir = env.get(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY);
 
 	try {
 		const project_folders = fg.sync(`${dir}/*`, { onlyDirectories: true });
@@ -111,7 +111,7 @@ function getCustomFunction(req) {
 	}
 
 	log.trace(`getting custom api endpoint file content`);
-	const cf_dir = env.getProperty(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY);
+	const cf_dir = env.get(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY);
 	const { project, type, file } = req;
 	const fileLocation = path.join(cf_dir, project, type, file + '.js');
 
@@ -150,7 +150,7 @@ function setCustomFunction(req) {
 	}
 
 	log.trace(`setting custom function file content`);
-	const cf_dir = env.getProperty(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY);
+	const cf_dir = env.get(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY);
 	const { project, type, file, function_content } = req;
 
 	try {
@@ -188,7 +188,7 @@ function dropCustomFunction(req) {
 	}
 
 	log.trace(`dropping custom function file`);
-	const cf_dir = env.getProperty(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY);
+	const cf_dir = env.get(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY);
 	const { project, type, file } = req;
 
 	try {
@@ -223,7 +223,7 @@ function addCustomFunctionProject(req) {
 	}
 
 	log.trace(`adding custom function project`);
-	const cf_dir = env.getProperty(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY);
+	const cf_dir = env.get(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY);
 	const { project } = req;
 
 	try {
@@ -259,7 +259,7 @@ function dropCustomFunctionProject(req) {
 	}
 
 	log.trace(`dropping custom function project`);
-	const cf_dir = env.getProperty(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY);
+	const cf_dir = env.get(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY);
 	const { project } = req;
 
 	try {
@@ -294,7 +294,7 @@ async function packageCustomFunctionProject(req) {
 	}
 
 	log.trace(`packaging custom function project`);
-	const cf_dir = env.getProperty(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY);
+	const cf_dir = env.get(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY);
 	const { project } = req;
 	const path_to_project = path.join(cf_dir, project);
 	const project_hash = uuidV4();
@@ -350,7 +350,7 @@ async function deployCustomFunctionProject(req) {
 	}
 
 	log.trace(`deploying custom function project`);
-	const cf_dir = env.getProperty(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY);
+	const cf_dir = env.get(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY);
 	const { project, payload, file } = req;
 	const path_to_project = path.join(cf_dir, project);
 

@@ -26,6 +26,8 @@ const fs = require('fs-extra');
 const sinon = require('sinon');
 const systemSchema = require('../../../../../json/systemSchema');
 const verify_txn = require('../_verifyTxns');
+const env_manager = require('../../../../../utility/environment/environmentManager');
+const hdb_terms = require('../../../../../utility/hdbTerms');
 
 const LMDBInsertTransactionObject = require('../../../../../data_layer/harperBridge/lmdbBridge/lmdbUtility/LMDBInsertTransactionObject');
 const LMDBDeleteTransactionObject = require('../../../../../data_layer/harperBridge/lmdbBridge/lmdbUtility/LMDBDeleteTransactionObject');
@@ -109,6 +111,7 @@ describe('Test lmdbDeleteRecords module', () => {
 
 	before(() => {
 		date_stub = sandbox.stub(Date, 'now').returns(TIMESTAMP);
+		env_manager.setProperty(hdb_terms.CONFIG_PARAMS.LOGGING_AUDITLOG, true);
 	});
 
 	after(() => {

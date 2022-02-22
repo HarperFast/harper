@@ -19,9 +19,7 @@ const assert = require('assert');
 const pino = require('pino');
 const minimist = require('minimist');
 const env_mngr = require('../../../utility/environment/environmentManager');
-if (!env_mngr.isInitialized()) {
-	env_mngr.initSync();
-}
+env_mngr.initSync();
 
 module.exports = reindexUpgrade;
 

@@ -108,22 +108,6 @@ const constraints = {
 			tooLong: length_limit_string,
 		},
 	},
-	LOG_DAILY_ROTATE: {
-		presence: false,
-		inclusion: {
-			within: [true, false, 'true', 'false'],
-			message: must_be_boolean_string,
-		},
-	},
-	LOG_MAX_DAILY_FILES: {
-		presence: false,
-		numericality: {
-			onlyInteger: true,
-			greaterThan: 0,
-			lessThanOrEqualTo: 100,
-			message: 'must specify a valid integer greater than 0 and less than 100',
-		},
-	},
 	ALLOW_SELF_SIGNED_SSL_CERTS: {
 		presence: false,
 		inclusion: {

@@ -11,6 +11,9 @@ const COMPILED_EXTENSION = 'jsc';
 const JAVASCRIPT_EXTENSION = 'js';
 const CODE_EXTENSION = process.env.HDB_COMPILED === 'true' ? COMPILED_EXTENSION : JAVASCRIPT_EXTENSION;
 
+const HDB_CONFIG_FILE = 'harperdb.conf';
+const HDB_DEFAULT_CONFIG_FILE = 'defaultConfig.yaml';
+
 // Name of the HDB process
 const HDB_PROC_NAME = `hdbServer.${CODE_EXTENSION}`;
 const CLUSTERING_PROC_NAME = `Server.${CODE_EXTENSION}`;
@@ -29,6 +32,34 @@ const PROCESS_DESCRIPTORS = {
 	CUSTOM_FUNCTIONS: CUSTOM_FUNCTION_PROC_DESCRIPTOR,
 	CLUSTERING_CONNECTOR: 'Clustering Connector',
 	RESTART_HDB: 'Restart HDB',
+	INSTALL: 'Install',
+	RUN: 'Run',
+	STOP: 'Stop',
+	UPGRADE: 'Upgrade',
+	REGISTER: 'Register',
+	JOB: 'Job',
+	PM2_LOGROTATE: 'pm2-logrotate',
+};
+
+const PROCESS_LOG_NAMES = {
+	HDB: 'hdb.log',
+	IPC: 'ipc.log',
+	CLUSTERING: 'clustering.log',
+	CLUSTERING_CONNECTOR: 'clustering_connector.log',
+	CUSTOM_FUNCTIONS: 'custom_functions.log',
+	INSTALL: 'install.log',
+	CLI: 'cli.log',
+	PM2: 'pm2.log',
+};
+
+const LOG_LEVELS = {
+	NOTIFY: 'notify',
+	FATAL: 'fatal',
+	ERROR: 'error',
+	WARN: 'warn',
+	INFO: 'info',
+	DEBUG: 'debug',
+	TRACE: 'trace',
 };
 
 const PROCESS_DESCRIPTORS_VALIDATE = {
@@ -38,6 +69,8 @@ const PROCESS_DESCRIPTORS_VALIDATE = {
 	'clustering_connector': 'Clustering Connector',
 	'custom functions': CUSTOM_FUNCTION_PROC_DESCRIPTOR,
 	'custom_functions': CUSTOM_FUNCTION_PROC_DESCRIPTOR,
+	'pm2-logrotate': PROCESS_DESCRIPTORS.PM2_LOGROTATE,
+	'logrotate': PROCESS_DESCRIPTORS.PM2_LOGROTATE,
 };
 
 const SERVICE_SERVERS_CWD = {
@@ -114,6 +147,8 @@ const ID_ATTRIBUTE_STRING = 'id';
 
 const INSTALL_LOG = 'install_log.log';
 const RUN_LOG = 'run_log.log';
+
+const PROCESS_NAME_ENV_PROP = 'PROCESS_NAME';
 
 const CLUSTERING_PAYLOAD_FILE_NAME = '.scPayload.json';
 
@@ -258,6 +293,7 @@ const OPERATIONS_ENUM = {
 	SET_LICENSE: 'set_license',
 	GET_REGISTRATION_INFO: 'registration_info',
 	CONFIGURE_CLUSTER: 'configure_cluster',
+	SET_CONFIGURATION: 'set_configuration',
 	CLUSTER_STATUS: 'cluster_status',
 	DROP_ATTRIBUTE: 'drop_attribute',
 	REMOVE_NODE: 'remove_node',
@@ -366,7 +402,8 @@ const GEO_CONVERSION_ENUM = {
 	polygon: 'polygon',
 };
 
-//NOTE - please be sure to add default values for new settings keys in the `HDB_SETTINGS_DEFAULT_VALUES` enum as well
+// These values are relics of before the config was converted to yaml.
+// The should no longer be used. Instead use CONFIG_PARAMS.
 const HDB_SETTINGS_NAMES = {
 	HDB_ROOT_KEY: 'HDB_ROOT',
 	SERVER_PORT_KEY: 'SERVER_PORT',
@@ -378,6 +415,15 @@ const HDB_SETTINGS_NAMES = {
 	LOG_LEVEL_KEY: 'LOG_LEVEL',
 	LOGGER_KEY: 'LOGGER',
 	LOG_PATH_KEY: 'LOG_PATH',
+	LOG_ROTATE: 'LOG_ROTATE',
+	LOG_ROTATE_MAX_SIZE: 'LOG_ROTATE_MAX_SIZE',
+	LOG_ROTATE_RETAIN: 'LOG_ROTATE_RETAIN',
+	LOG_ROTATE_COMPRESS: 'LOG_ROTATE_COMPRESS',
+	LOG_ROTATE_DATE_FORMAT: 'LOG_ROTATE_DATE_FORMAT',
+	LOG_ROTATE_ROTATE_MODULE: 'LOG_ROTATE_ROTATE_MODULE',
+	LOG_ROTATE_WORKER_INTERVAL: 'LOG_ROTATE_WORKER_INTERVAL',
+	LOG_ROTATE_ROTATE_INTERVAL: 'LOG_ROTATE_ROTATE_INTERVAL',
+	LOG_ROTATE_TIMEZONE: 'LOG_ROTATE_TIMEZONE',
 	LOG_DAILY_ROTATE_KEY: 'LOG_DAILY_ROTATE',
 	LOG_MAX_DAILY_FILES_KEY: 'LOG_MAX_DAILY_FILES',
 	PROPS_ENV_KEY: 'NODE_ENV',
@@ -414,38 +460,179 @@ const HDB_SETTINGS_NAMES = {
 
 const HDB_SETTINGS_NAMES_REVERSE_LOOKUP = _.invert(HDB_SETTINGS_NAMES);
 
-// Default values for the Settings, some do not have a default.
-const HDB_SETTINGS_DEFAULT_VALUES = {
-	SERVER_PORT: 9925,
-	HTTPS_ON: false,
-	CORS_ON: true,
-	CORS_WHITELIST: '',
-	SERVER_TIMEOUT_MS: 120000,
-	SERVER_KEEP_ALIVE_TIMEOUT: 5000,
-	SERVER_HEADERS_TIMEOUT: 60000,
-	LOG_LEVEL: 'error',
-	LOG_PATH: 'log/hdb_log.log',
-	LOG_DAILY_ROTATE_KEY: false,
-	LOG_MAX_DAILY_FILES_KEY: '',
-	NODE_ENV: 'production',
-	CLUSTERING_PORT: 1111,
-	CLUSTERING: 'false',
-	MAX_HDB_PROCESSES: 4,
-	DISABLE_TRANSACTION_LOG: false,
-	OPERATION_TOKEN_TIMEOUT: '1d',
-	REFRESH_TOKEN_TIMEOUT: '30d',
-	IPC_SERVER_PORT: 9383,
-	ALLOW_SELF_SIGNED_SSL_CERTS: false,
-	CUSTOM_FUNCTIONS: false,
-	CUSTOM_FUNCTIONS_PORT: 9926,
-	CUSTOM_FUNCTIONS_DIRECTORY: 'custom_functions',
-	MAX_CUSTOM_FUNCTION_PROCESSES: 4,
-	LOG_TO_FILE: true,
-	LOG_TO_STDSTREAMS: false,
-	RUN_IN_FOREGROUND: false,
-	MAX_CLUSTERING_PROCESSES: 1,
-	LOCAL_STUDIO_ON: false,
-	STORAGE_WRITE_ASYNC: false,
+// Config parameters flattened.
+// If a param is added to config it must also be added here.
+const CONFIG_PARAMS = {
+	CLUSTERING_ENABLED: 'clustering_enabled',
+	CLUSTERING_NETWORK_PORT: 'clustering_network_port',
+	CLUSTERING_NETWORK_SELFSIGNEDSSLCERTS: 'clustering_network_selfSignedSslCerts',
+	CLUSTERING_NODENAME: 'clustering_nodeName',
+	CLUSTERING_PROCESSES: 'clustering_processes',
+	CLUSTERING_USER: 'clustering_user',
+	CUSTOMFUNCTIONS_ENABLED: 'customFunctions_enabled',
+	CUSTOMFUNCTIONS_NETWORK_PORT: 'customFunctions_network_port',
+	CUSTOMFUNCTIONS_NETWORK_CERTIFICATE: 'customFunctions_network_certificate',
+	CUSTOMFUNCTIONS_NETWORK_CORS: 'customFunctions_network_cors',
+	CUSTOMFUNCTIONS_NETWORK_CORSWHITELIST: 'customFunctions_network_corsWhitelist',
+	CUSTOMFUNCTIONS_NETWORK_HEADERSTIMEOUT: 'customFunctions_network_headersTimeout',
+	CUSTOMFUNCTIONS_NETWORK_HTTPS: 'customFunctions_network_https',
+	CUSTOMFUNCTIONS_NETWORK_KEEPALIVETIMEOUT: 'customFunctions_network_keepAliveTimeout',
+	CUSTOMFUNCTIONS_NETWORK_PRIVATEKEY: 'customFunctions_network_privateKey',
+	CUSTOMFUNCTIONS_NETWORK_TIMEOUT: 'customFunctions_network_timeout',
+	CUSTOMFUNCTIONS_NODEENV: 'customFunctions_nodeEnv',
+	CUSTOMFUNCTIONS_PROCESSES: 'customFunctions_processes',
+	CUSTOMFUNCTIONS_ROOT: 'customFunctions_root',
+	IPC_NETWORK_PORT: 'ipc_network_port',
+	LOCALSTUDIO_ENABLED: 'localStudio_enabled',
+	LOGGING_FILE: 'logging_file',
+	LOGGING_LEVEL: 'logging_level',
+	LOGGING_ROOT: 'logging_root',
+	LOGGING_ROTATION_COMPRESS: 'logging_rotation_compress',
+	LOGGING_ROTATION_DATEFORMAT: 'logging_rotation_dateFormat',
+	LOGGING_ROTATION_MAXSIZE: 'logging_rotation_maxSize',
+	LOGGING_ROTATION_RETAIN: 'logging_rotation_retain',
+	LOGGING_ROTATION_ROTATE: 'logging_rotation_rotate',
+	LOGGING_ROTATION_ROTATEINTERVAL: 'logging_rotation_rotateInterval',
+	LOGGING_ROTATION_ROTATEMODULE: 'logging_rotation_rotateModule',
+	LOGGING_ROTATION_TIMEZONE: 'logging_rotation_timezone',
+	LOGGING_ROTATION_WORKERINTERVAL: 'logging_rotation_workerInterval',
+	LOGGING_STDSTREAMS: 'logging_stdStreams',
+	LOGGING_AUDITLOG: 'logging_auditLog',
+	OPERATIONSAPI_AUTHENTICATION_OPERATIONTOKENTIMEOUT: 'operationsApi_authentication_operationTokenTimeout',
+	OPERATIONSAPI_AUTHENTICATION_REFRESHTOKENTIMEOUT: 'operationsApi_authentication_refreshTokenTimeout',
+	OPERATIONSAPI_FOREGROUND: 'operationsApi_foreground',
+	OPERATIONSAPI_NETWORK_CERTIFICATE: 'operationsApi_network_certificate',
+	OPERATIONSAPI_NETWORK_CORS: 'operationsApi_network_cors',
+	OPERATIONSAPI_NETWORK_CORSWHITELIST: 'operationsApi_network_corsWhiteList',
+	OPERATIONSAPI_NETWORK_HEADERSTIMEOUT: 'operationsApi_network_headersTimeout',
+	OPERATIONSAPI_NETWORK_HTTPS: 'operationsApi_network_https',
+	OPERATIONSAPI_NETWORK_KEEPALIVETIMEOUT: 'operationsApi_network_keepAliveTimeout',
+	OPERATIONSAPI_NETWORK_PORT: 'operationsApi_network_port',
+	OPERATIONSAPI_NETWORK_PRIVATEKEY: 'operationsApi_network_privateKey',
+	OPERATIONSAPI_NETWORK_TIMEOUT: 'operationsApi_network_timeout',
+	OPERATIONSAPI_NODEENV: 'operationsApi_nodeEnv',
+	OPERATIONSAPI_PROCESSES: 'operationsApi_processes',
+	OPERATIONSAPI_ROOT: 'operationsApi_root',
+	OPERATIONSAPI_STORAGE_WRITEASYNC: 'operationsApi_storage_writeAsync',
+};
+
+// If a param is added to the config file it needs to be added here also. Keep all keys lowercase.
+const CONFIG_PARAM_MAP = {
+	hdb_root_key: CONFIG_PARAMS.OPERATIONSAPI_ROOT,
+	hdb_root: CONFIG_PARAMS.OPERATIONSAPI_ROOT,
+	server_port_key: CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PORT,
+	server_port: CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PORT,
+	cert_key: CONFIG_PARAMS.OPERATIONSAPI_NETWORK_CERTIFICATE,
+	certificate: CONFIG_PARAMS.OPERATIONSAPI_NETWORK_CERTIFICATE,
+	private_key_key: CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PRIVATEKEY,
+	private_key: CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PRIVATEKEY,
+	http_secure_enabled_key: CONFIG_PARAMS.OPERATIONSAPI_NETWORK_HTTPS,
+	https_on: CONFIG_PARAMS.OPERATIONSAPI_NETWORK_HTTPS,
+	cors_enabled_key: CONFIG_PARAMS.OPERATIONSAPI_NETWORK_CORS,
+	cors_on: CONFIG_PARAMS.OPERATIONSAPI_NETWORK_CORS,
+	cors_whitelist_key: CONFIG_PARAMS.OPERATIONSAPI_NETWORK_CORSWHITELIST,
+	cors_whitelist: CONFIG_PARAMS.OPERATIONSAPI_NETWORK_CORSWHITELIST,
+	log_level_key: CONFIG_PARAMS.LOGGING_LEVEL,
+	log_level: CONFIG_PARAMS.LOGGING_LEVEL,
+	log_path_key: CONFIG_PARAMS.LOGGING_ROOT,
+	log_path: CONFIG_PARAMS.LOGGING_ROOT,
+	log_daily_rotate: CONFIG_PARAMS.LOGGING_ROTATION_ROTATE,
+	log_rotate: CONFIG_PARAMS.LOGGING_ROTATION_ROTATE,
+	log_rotate_max_size: CONFIG_PARAMS.LOGGING_ROTATION_MAXSIZE,
+	log_rotate_retain: CONFIG_PARAMS.LOGGING_ROTATION_RETAIN,
+	log_rotate_compress: CONFIG_PARAMS.LOGGING_ROTATION_COMPRESS,
+	log_rotate_date_format: CONFIG_PARAMS.LOGGING_ROTATION_DATEFORMAT,
+	log_rotate_rotate_module: CONFIG_PARAMS.LOGGING_ROTATION_ROTATEMODULE,
+	log_rotate_worker_interval: CONFIG_PARAMS.LOGGING_ROTATION_WORKERINTERVAL,
+	log_rotate_rotate_interval: CONFIG_PARAMS.LOGGING_ROTATION_ROTATEINTERVAL,
+	log_rotate_timezone: CONFIG_PARAMS.LOGGING_ROTATION_TIMEZONE,
+	props_env_key: CONFIG_PARAMS.OPERATIONSAPI_NODEENV,
+	node_env: CONFIG_PARAMS.OPERATIONSAPI_NODEENV,
+	clustering_port_key: CONFIG_PARAMS.CLUSTERING_NETWORK_PORT,
+	clustering_port: CONFIG_PARAMS.CLUSTERING_NETWORK_PORT,
+	clustering_node_name_key: CONFIG_PARAMS.CLUSTERING_NODENAME,
+	node_name: CONFIG_PARAMS.CLUSTERING_NODENAME,
+	clustering_enabled_key: CONFIG_PARAMS.CLUSTERING_ENABLED,
+	clustering: CONFIG_PARAMS.CLUSTERING_ENABLED,
+	allow_self_signed_ssl_certs: CONFIG_PARAMS.CLUSTERING_NETWORK_SELFSIGNEDSSLCERTS,
+	max_hdb_processes: CONFIG_PARAMS.OPERATIONSAPI_PROCESSES,
+	clustering_user_key: CONFIG_PARAMS.CLUSTERING_USER,
+	max_clustering_processes: CONFIG_PARAMS.CLUSTERING_PROCESSES,
+	server_timeout_key: CONFIG_PARAMS.OPERATIONSAPI_NETWORK_TIMEOUT,
+	server_timeout_ms: CONFIG_PARAMS.OPERATIONSAPI_NETWORK_TIMEOUT,
+	server_keep_alive_timeout_key: CONFIG_PARAMS.OPERATIONSAPI_NETWORK_KEEPALIVETIMEOUT,
+	server_keep_alive_timeout: CONFIG_PARAMS.OPERATIONSAPI_NETWORK_KEEPALIVETIMEOUT,
+	server_headers_timeout_key: CONFIG_PARAMS.OPERATIONSAPI_NETWORK_HEADERSTIMEOUT,
+	server_headers_timeout: CONFIG_PARAMS.OPERATIONSAPI_NETWORK_HEADERSTIMEOUT,
+	disable_transaction_log_key: CONFIG_PARAMS.LOGGING_AUDITLOG,
+	disable_transaction_log: CONFIG_PARAMS.LOGGING_AUDITLOG,
+	operation_token_timeout_key: CONFIG_PARAMS.OPERATIONSAPI_AUTHENTICATION_OPERATIONTOKENTIMEOUT,
+	operation_token_timeout: CONFIG_PARAMS.OPERATIONSAPI_AUTHENTICATION_OPERATIONTOKENTIMEOUT,
+	refresh_token_timeout_key: CONFIG_PARAMS.OPERATIONSAPI_AUTHENTICATION_REFRESHTOKENTIMEOUT,
+	refresh_token_timeout: CONFIG_PARAMS.OPERATIONSAPI_AUTHENTICATION_REFRESHTOKENTIMEOUT,
+	ipc_server_port: CONFIG_PARAMS.IPC_NETWORK_PORT,
+	custom_functions_enabled_key: CONFIG_PARAMS.CUSTOMFUNCTIONS_ENABLED,
+	custom_functions: CONFIG_PARAMS.CUSTOMFUNCTIONS_ENABLED,
+	custom_functions_port_key: CONFIG_PARAMS.CUSTOMFUNCTIONS_NETWORK_PORT,
+	custom_functions_port: CONFIG_PARAMS.CUSTOMFUNCTIONS_NETWORK_PORT,
+	custom_functions_directory_key: CONFIG_PARAMS.CUSTOMFUNCTIONS_ROOT,
+	custom_functions_directory: CONFIG_PARAMS.CUSTOMFUNCTIONS_ROOT,
+	max_custom_function_processes: CONFIG_PARAMS.CUSTOMFUNCTIONS_PROCESSES,
+	log_to_file: CONFIG_PARAMS.LOGGING_FILE,
+	log_to_stdstreams: CONFIG_PARAMS.LOGGING_STDSTREAMS,
+	run_in_foreground: CONFIG_PARAMS.OPERATIONSAPI_FOREGROUND,
+	local_studio_on: CONFIG_PARAMS.LOCALSTUDIO_ENABLED,
+	clustering_enabled: CONFIG_PARAMS.CLUSTERING_ENABLED,
+	clustering_network_port: CONFIG_PARAMS.CLUSTERING_NETWORK_PORT,
+	clustering_network_selfsignedsslcerts: CONFIG_PARAMS.CLUSTERING_NETWORK_SELFSIGNEDSSLCERTS,
+	clustering_nodename: CONFIG_PARAMS.CLUSTERING_NODENAME,
+	clustering_processes: CONFIG_PARAMS.CLUSTERING_PROCESSES,
+	clustering_user: CONFIG_PARAMS.CLUSTERING_USER,
+	customfunctions_enabled: CONFIG_PARAMS.CUSTOMFUNCTIONS_ENABLED,
+	customfunctions_network_port: CONFIG_PARAMS.CUSTOMFUNCTIONS_NETWORK_PORT,
+	customfunctions_network_certificate: CONFIG_PARAMS.CUSTOMFUNCTIONS_NETWORK_CERTIFICATE,
+	customfunctions_network_cors: CONFIG_PARAMS.CUSTOMFUNCTIONS_NETWORK_CORS,
+	customfunctions_network_corswhitelist: CONFIG_PARAMS.CUSTOMFUNCTIONS_NETWORK_CORSWHITELIST,
+	customfunctions_network_headerstimeout: CONFIG_PARAMS.CUSTOMFUNCTIONS_NETWORK_HEADERSTIMEOUT,
+	customfunctions_network_https: CONFIG_PARAMS.CUSTOMFUNCTIONS_NETWORK_HTTPS,
+	customfunctions_network_keepalivetimeout: CONFIG_PARAMS.CUSTOMFUNCTIONS_NETWORK_KEEPALIVETIMEOUT,
+	customfunctions_network_privatekey: CONFIG_PARAMS.CUSTOMFUNCTIONS_NETWORK_PRIVATEKEY,
+	customfunctions_network_timeout: CONFIG_PARAMS.CUSTOMFUNCTIONS_NETWORK_TIMEOUT,
+	customfunctions_nodeenv: CONFIG_PARAMS.CUSTOMFUNCTIONS_NODEENV,
+	customfunctions_processes: CONFIG_PARAMS.CUSTOMFUNCTIONS_PROCESSES,
+	customfunctions_root: CONFIG_PARAMS.CUSTOMFUNCTIONS_ROOT,
+	ipc_network_port: CONFIG_PARAMS.IPC_NETWORK_PORT,
+	localstudio_enabled: CONFIG_PARAMS.LOCALSTUDIO_ENABLED,
+	logging_file: CONFIG_PARAMS.LOGGING_FILE,
+	logging_level: CONFIG_PARAMS.LOGGING_LEVEL,
+	logging_root: CONFIG_PARAMS.LOGGING_ROOT,
+	logging_rotation_compress: CONFIG_PARAMS.LOGGING_ROTATION_COMPRESS,
+	logging_rotation_dateformat: CONFIG_PARAMS.LOGGING_ROTATION_DATEFORMAT,
+	logging_rotation_maxsize: CONFIG_PARAMS.LOGGING_ROTATION_MAXSIZE,
+	logging_rotation_retain: CONFIG_PARAMS.LOGGING_ROTATION_RETAIN,
+	logging_rotation_rotate: CONFIG_PARAMS.LOGGING_ROTATION_ROTATE,
+	logging_rotation_rotateinterval: CONFIG_PARAMS.LOGGING_ROTATION_ROTATEINTERVAL,
+	logging_rotation_rotatemodule: CONFIG_PARAMS.LOGGING_ROTATION_ROTATEMODULE,
+	logging_rotation_timezone: CONFIG_PARAMS.LOGGING_ROTATION_TIMEZONE,
+	logging_rotation_workerinterval: CONFIG_PARAMS.LOGGING_ROTATION_WORKERINTERVAL,
+	logging_stdstreams: CONFIG_PARAMS.LOGGING_STDSTREAMS,
+	logging_auditlog: CONFIG_PARAMS.LOGGING_AUDITLOG,
+	operationsapi_authentication_operationtokentimeout: CONFIG_PARAMS.OPERATIONSAPI_AUTHENTICATION_OPERATIONTOKENTIMEOUT,
+	operationsapi_authentication_refreshtokentimeout: CONFIG_PARAMS.OPERATIONSAPI_AUTHENTICATION_REFRESHTOKENTIMEOUT,
+	operationsapi_foreground: CONFIG_PARAMS.OPERATIONSAPI_FOREGROUND,
+	operationsapi_network_certificate: CONFIG_PARAMS.OPERATIONSAPI_NETWORK_CERTIFICATE,
+	operationsapi_network_cors: CONFIG_PARAMS.OPERATIONSAPI_NETWORK_CORS,
+	operationsapi_network_corswhitelist: CONFIG_PARAMS.OPERATIONSAPI_NETWORK_CORSWHITELIST,
+	operationsapi_network_headerstimeout: CONFIG_PARAMS.OPERATIONSAPI_NETWORK_HEADERSTIMEOUT,
+	operationsapi_network_https: CONFIG_PARAMS.OPERATIONSAPI_NETWORK_HTTPS,
+	operationsapi_network_keepalivetimeout: CONFIG_PARAMS.OPERATIONSAPI_NETWORK_KEEPALIVETIMEOUT,
+	operationsapi_network_port: CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PORT,
+	operationsapi_network_privatekey: CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PRIVATEKEY,
+	operationsapi_network_timeout: CONFIG_PARAMS.OPERATIONSAPI_NETWORK_TIMEOUT,
+	operationsapi_nodeenv: CONFIG_PARAMS.OPERATIONSAPI_NODEENV,
+	operationsapi_processes: CONFIG_PARAMS.OPERATIONSAPI_PROCESSES,
+	operationsapi_root: CONFIG_PARAMS.OPERATIONSAPI_ROOT,
+	operationsapi_storage_writeasync: CONFIG_PARAMS.OPERATIONSAPI_STORAGE_WRITEASYNC,
 };
 
 // Describes all available job types
@@ -540,8 +727,8 @@ const WEBSOCKET_CLOSE_CODE_DESCRIPTION_LOOKUP = {
 };
 
 const NODE_ERROR_CODES = {
-	ENOENT: 'ENOENT',
-	EACCES: 'EACCES',
+	ENOENT: 'ENOENT', // No such file or directory.
+	EACCES: 'EACCES', // Permission denied.
 };
 
 const TIME_STAMP_NAMES_ENUM = {
@@ -611,6 +798,11 @@ const SERVICES = {
 	CUSTOM_FUNCTIONS: 'custom_functions',
 };
 
+const PM2_PROCESS_STATUSES = {
+	STOPPED: 'stopped',
+	ONLINE: 'online',
+};
+
 module.exports = {
 	LOCAL_HARPERDB_OPERATIONS,
 	HDB_SUPPORT_ADDRESS,
@@ -638,7 +830,6 @@ module.exports = {
 	GEO_CONVERSION_ENUM,
 	HDB_SETTINGS_NAMES,
 	HDB_SETTINGS_NAMES_REVERSE_LOOKUP,
-	HDB_SETTINGS_DEFAULT_VALUES,
 	SERVICE_ACTIONS_ENUM,
 	CLUSTER_MESSAGE_TYPE_ENUM,
 	CLUSTER_CONNECTION_DIRECTION_ENUM,
@@ -725,4 +916,12 @@ module.exports = {
 	SERVICE_SERVERS_CWD,
 	PROCESS_DESCRIPTORS_VALIDATE,
 	LAUNCH_SERVICE_SCRIPTS,
+	LOG_LEVELS,
+	PROCESS_NAME_ENV_PROP,
+	PROCESS_LOG_NAMES,
+	PM2_PROCESS_STATUSES,
+	CONFIG_PARAM_MAP,
+	CONFIG_PARAMS,
+	HDB_CONFIG_FILE,
+	HDB_DEFAULT_CONFIG_FILE,
 };

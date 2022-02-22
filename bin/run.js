@@ -3,17 +3,18 @@
 const env = require('../utility/environment/environmentManager');
 env.initSync();
 
+const terms = require('../utility/hdbTerms');
+const hdb_logger = require('../utility/logging/harper_logger');
 const fs = require('fs-extra');
 const path = require('path');
 const check_jwt_tokens = require('../utility/install/checkJWTTokensExist');
 const install = require('../utility/install/installer');
-const colors = require('colors/safe');
-const hdb_logger = require('../utility/logging/harper_logger');
+const chalk = require('chalk');
 const pjson = require(`${__dirname}/../package.json`);
-const terms = require('../utility/hdbTerms');
 const install_user_permission = require('../utility/install_user_permission');
 const hdb_utils = require('../utility/common_utils');
-const pm2_utils = require('../utility/pm2/utilityFunctions');
+const config_utils = require('../config/configUtils');
+const assignCMDENVVariables = require('../utility/assignCmdEnvVariables');
 const { promisify } = require('util');
 const stop = require('./stop');
 const upgrade = require('./upgrade');
@@ -25,7 +26,8 @@ const hdbInfoController = require('../data_layer/hdbInfoController');
 const SYSTEM_SCHEMA = require('../json/systemSchema.json');
 const schema_describe = require('../data_layer/schemaDescribe');
 const lmdb_create_txn_environment = require('../data_layer/harperBridge/lmdbBridge/lmdbUtility/lmdbCreateTransactionsEnvironment');
-const bin_utility = require('./utility');
+
+let pm2_utils;
 
 const CreateTableObject = require('../data_layer/CreateTableObject');
 
@@ -41,14 +43,17 @@ const HDB_STARTED = 'HarperDB successfully started.';
 // promisified functions
 const p_install_install = promisify(install.install);
 
-/***
+/**
  * Starts Harper DB.
  * If the hdb_boot_props file is not found, it is assumed an install needs to be performed.
+ * @param called_by_install - If run is called by install we want to ignore any
+ * cmd/env args as they would have already been written to config on install.
+ * @returns {Promise<void>}
  */
-async function run() {
+async function run(called_by_install = false) {
 	// Check to see if HDB is installed, if it isn't we call install.
 	try {
-		console.log(colors.magenta('Starting HarperDB...'));
+		console.log(chalk.magenta('Starting HarperDB...'));
 
 		if ((await isHdbInstalled()) === false) {
 			console.log(HDB_NOT_FOUND_MSG);
@@ -56,13 +61,24 @@ async function run() {
 				await p_install_install();
 			} catch (err) {
 				console.error(INSTALL_ERR);
-				hdb_logger.error(err, true);
+				hdb_logger.error(err);
 				process.exit(1);
 			}
 		}
+		// Requiring the pm2 mod will create the .pm2 dir. This code is here to allow install to set pm2 env vars before that is done.
+		if (pm2_utils === undefined) pm2_utils = require('../utility/pm2/utilityFunctions');
 
-		bin_utility.changeSettingsFile();
-		env.initSync();
+		hdb_logger.createLogFile(terms.PROCESS_LOG_NAMES.CLI, terms.PROCESS_DESCRIPTORS.RUN);
+
+		// The called by install check is here because if cmd/env args are passed to install (which calls run when done)
+		// we do not need to update/backup the config file on run.
+		if (!called_by_install) {
+			// If run is called with cmd/env vars we create a backup of config and update config file.
+			const parsed_args = assignCMDENVVariables(Object.keys(terms.CONFIG_PARAM_MAP), true);
+			if (!hdb_utils.isEmpty(parsed_args) && !hdb_utils.isEmptyOrZeroLength(Object.keys(parsed_args))) {
+				config_utils.updateConfigValue(undefined, undefined, parsed_args, true);
+			}
+		}
 
 		// Check to see if an upgrade is needed based on existing hdb_info data.  If so, we need to force the user to upgrade
 		// before the server can be started.
@@ -79,10 +95,10 @@ async function run() {
 				console.error(
 					`Got an error while trying to upgrade your HarperDB instance to version ${upgrade_vers}.  Exiting HarperDB.`
 				);
-				hdb_logger.error(err, true);
+				hdb_logger.error(err);
 			} else {
 				console.error(UPGRADE_ERR);
-				hdb_logger.error(err, true);
+				hdb_logger.error(err);
 			}
 			process.exit(1);
 		}
@@ -95,22 +111,24 @@ async function run() {
 		try {
 			install_user_permission.checkPermission();
 		} catch (err) {
-			hdb_logger.error(err, true);
+			hdb_logger.error(err);
 			console.error(err.message);
 			process.exit(1);
 		}
 
-		const sc_env = env.getProperty(terms.HDB_SETTINGS_NAMES.CLUSTERING_ENABLED_KEY).toString().toLowerCase();
-		const cf_env = env.getProperty(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_ENABLED_KEY).toString().toLowerCase();
-		const clustering_enabled = sc_env === 'true' || sc_env === "'true'";
-		const custom_func_enabled = cf_env === 'true' || cf_env === "'true'";
+		const clustering_enabled = hdb_utils.autoCastBoolean(env.get(terms.HDB_SETTINGS_NAMES.CLUSTERING_ENABLED_KEY));
+		const custom_func_enabled = hdb_utils.autoCastBoolean(
+			env.get(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_ENABLED_KEY)
+		);
+
+		await pm2_utils.configureLogRotate();
 
 		// Run can be called with a --service argument which allows designated services to be started.
 		const cmd_args = minimist(process.argv);
 		if (!hdb_utils.isEmpty(cmd_args.service)) {
 			if (typeof cmd_args.service !== 'string') {
 				const service_err_msg = `Run service argument expected a string but received: ${cmd_args.service}`;
-				hdb_logger.error(service_err_msg, true);
+				hdb_logger.error(service_err_msg);
 				console.log(service_err_msg);
 				process.exit(1);
 			}
@@ -119,25 +137,25 @@ async function run() {
 			for (const args of cmd_args_array) {
 				const service = args.toLowerCase();
 				if (terms.PROCESS_DESCRIPTORS_VALIDATE[service] === undefined) {
-					hdb_logger.error(`Run received unrecognized service command argument: ${service}`, true);
+					hdb_logger.error(`Run received unrecognized service command argument: ${service}`);
 					continue;
 				}
 
 				// If custom functions not enabled in settings.js do not start.
 				if (service === terms.PROCESS_DESCRIPTORS.CUSTOM_FUNCTIONS.toLowerCase() && !custom_func_enabled) {
-					hdb_logger.error(`${service} is not enabled in settings`, true);
+					hdb_logger.error(`${service} is not enabled in settings`);
 					continue;
 				}
 
 				// If clustering not enabled in settings.js do not start.
 				if (service === terms.PROCESS_DESCRIPTORS.CLUSTERING.toLowerCase() && !clustering_enabled) {
-					hdb_logger.error(`${service} is not enabled in settings`, true);
+					hdb_logger.error(`${service} is not enabled in settings`);
 					continue;
 				}
 
 				await pm2_utils.startService(terms.PROCESS_DESCRIPTORS_VALIDATE[service]);
 				const log_msg = `${terms.PROCESS_DESCRIPTORS_VALIDATE[service]} successfully started.`;
-				hdb_logger.notify(log_msg, true);
+				hdb_logger.notify(log_msg);
 				console.log(log_msg);
 			}
 
@@ -156,14 +174,14 @@ async function run() {
 		}
 
 		// Console log Harper dog logo
-		console.log(colors.magenta('' + fs.readFileSync(path.join(__dirname, '../utility/install/ascii_logo.txt'))));
-		console.log(colors.magenta(`|------------- HarperDB ${pjson.version} successfully started ------------|`));
+		console.log(chalk.magenta('' + fs.readFileSync(path.join(__dirname, '../utility/install/ascii_logo.txt'))));
+		console.log(chalk.magenta(`|------------- HarperDB ${pjson.version} successfully started ------------|`));
 
-		hdb_logger.notify(HDB_STARTED, true);
+		hdb_logger.notify(HDB_STARTED);
 		foregroundHandler();
 	} catch (err) {
 		console.error(err);
-		hdb_logger.error(err, true);
+		hdb_logger.error(err);
 		process.exit(1);
 	}
 }
@@ -187,7 +205,7 @@ function writeLicenseFromVars() {
 	const FINGER_PRINT_FILE = path.join(LICENSE_PATH, terms.REG_KEY_FILE_NAME);
 
 	try {
-		const { HARPERDB_FINGERPRINT, HARPERDB_LICENSE } = hdb_utils.assignCMDENVVariables([
+		const { HARPERDB_FINGERPRINT, HARPERDB_LICENSE } = assignCMDENVVariables([
 			'HARPERDB_FINGERPRINT',
 			'HARPERDB_LICENSE',
 		]);
@@ -201,7 +219,7 @@ function writeLicenseFromVars() {
 	} catch (e) {
 		const ERROR_MSG = `Failed to write license & fingerprint due to: ${e.message}`;
 		console.error(ERROR_MSG);
-		hdb_logger.error(ERROR_MSG, true);
+		hdb_logger.error(ERROR_MSG);
 	}
 }
 
@@ -211,7 +229,7 @@ function writeLicenseFromVars() {
  */
 async function checkTransactionLogEnvironmentsExist() {
 	if (env.getHdbBasePath() !== undefined) {
-		hdb_logger.info('Checking Transaction Environments exist', true);
+		hdb_logger.info('Checking Transaction Environments exist');
 
 		for (const table_name of Object.keys(SYSTEM_SCHEMA)) {
 			await openCreateTransactionEnvironment(terms.SYSTEM_SCHEMA_NAME, table_name);
@@ -225,7 +243,7 @@ async function checkTransactionLogEnvironmentsExist() {
 			}
 		}
 
-		hdb_logger.info('Finished checking Transaction Environments exist', true);
+		hdb_logger.info('Finished checking Transaction Environments exist');
 	}
 }
 
@@ -242,7 +260,7 @@ async function openCreateTransactionEnvironment(schema, table_name) {
 	} catch (e) {
 		let error_msg = `Unable to create the transaction environment for ${schema}.${table_name}, due to: ${e.message}`;
 		console.error(error_msg);
-		hdb_logger.error(error_msg, true);
+		hdb_logger.error(error_msg);
 	}
 }
 
@@ -256,7 +274,7 @@ function foregroundHandler() {
 		process.exit(0);
 	}
 
-	hdb_logger.trace('Running in foreground', true);
+	hdb_logger.trace('Running in foreground');
 
 	process.on('exit', processExitHandler);
 
@@ -322,7 +340,7 @@ async function isHdbInstalled() {
 			return false;
 		}
 
-		hdb_logger.error(`Error checking for HDB install - ${err}`, true);
+		hdb_logger.error(`Error checking for HDB install - ${err}`);
 		throw err;
 	}
 
@@ -330,6 +348,5 @@ async function isHdbInstalled() {
 }
 
 function getRunInForeground() {
-	const FOREGROUND_ENV = env.getProperty(terms.HDB_SETTINGS_NAMES.RUN_IN_FOREGROUND);
-	return FOREGROUND_ENV === 'true' || FOREGROUND_ENV === true || FOREGROUND_ENV === 'TRUE';
+	return hdb_utils.autoCastBoolean(env.get(terms.HDB_SETTINGS_NAMES.RUN_IN_FOREGROUND));
 }
