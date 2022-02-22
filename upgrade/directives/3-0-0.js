@@ -1,7 +1,7 @@
 'use strict';
 
 const path = require('path');
-const colors = require('colors/safe');
+const chalk = require('chalk');
 const fs = require('fs-extra');
 const PropertiesReader = require('properties-reader');
 const UpgradeDirective = require('../UpgradeDirective');
@@ -66,7 +66,7 @@ function updateSettingsFile_3_0_0() {
 
 	if (http_enabled_old && http_secure_enabled_old) {
 		console.log(
-			colors.magenta(
+			chalk.magenta(
 				'HarperDB 3.0.0 does not allow HTTP and HTTPS to be enabled at the same time. This upgrade has enabled ' +
 					'HTTPS and disabled HTTP. You can modify this in config/settings.js.'
 			)

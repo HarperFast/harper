@@ -9,7 +9,7 @@
 const env = require('../utility/environment/environmentManager');
 env.initSync();
 
-const colors = require('colors/safe');
+const chalk = require('chalk');
 const fs = require('fs-extra');
 const hdb_logger = require('../utility/logging/harper_logger');
 const hdb_terms = require('../utility/hdbTerms');
@@ -141,7 +141,7 @@ async function checkIfRunning() {
 	if (hdb_running) {
 		let run_err =
 			"HarperDB is running, please stop all HarperDB services with 'harperdb stop' and run the upgrade command again.";
-		console.log(colors.red(run_err));
+		console.log(chalk.red(run_err));
 		hdb_logger.error(run_err, true);
 		process.exit(1);
 	}
@@ -179,5 +179,5 @@ function printToLogAndConsole(msg, log_level = undefined) {
 		log_level = hdb_logger.info;
 	}
 	hdb_logger[log_level](msg, true);
-	console.log(colors.magenta(msg));
+	console.log(chalk.magenta(msg));
 }

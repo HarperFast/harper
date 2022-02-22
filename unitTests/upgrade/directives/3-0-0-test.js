@@ -9,7 +9,7 @@ const { buildFile, deleteFile, getSettingsFilePath } = require('../../settingsTe
 const fs = require('fs-extra');
 const path = require('path');
 const hdb_logger = require('../../../utility/logging/harper_logger');
-const colors = require('colors/safe');
+const chalk = require('chalk');
 const PropertiesReader = require('properties-reader');
 const env = require('../../../utility/environment/environmentManager');
 
@@ -142,7 +142,7 @@ describe('3.0.0 Upgrade Directive', () => {
 			updateSettingsFile_3_0_0();
 
 			expect(consoleLog_spy.args[1][0]).to.equal(
-				colors.magenta(
+				chalk.magenta(
 					'HarperDB 3.0.0 does not allow HTTP and HTTPS to be enabled at the same time. This upgrade has enabled ' +
 						'HTTPS and disabled HTTP. You can modify this in config/settings.js.'
 				)

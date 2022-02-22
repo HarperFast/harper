@@ -1,7 +1,7 @@
 'use strict';
 
 const { promisify } = require('util');
-const colors = require("colors/safe");
+const chalk = require("chalk");
 const axios = require('axios');
 const instance = axios.create();
 const lmdb_util = require('../../utility/lmdb/commonUtility');
@@ -74,7 +74,7 @@ function pause(ms = 500) {
 }
 
 async function setupBenchmarkData() {
-    console.log(colors.blue(`Setting up benchmark data for ${USE_JWT ? 'TOKEN' : 'BASIC' } AUTH`));
+    console.log(chalk.blue(`Setting up benchmark data for ${USE_JWT ? 'TOKEN' : 'BASIC' } AUTH`));
     if (USE_JWT) {
         try {
             const token_resp = await instance.post(BASE_ROUTE,
@@ -92,7 +92,7 @@ async function setupBenchmarkData() {
                 });
             TEST_AUTH_METHOD = `Bearer ${token_resp.data.operation_token}`;
         } catch(e) {
-            console.log(colors.red('There was an error setting the operation token - ', e));
+            console.log(chalk.red('There was an error setting the operation token - ', e));
             process.exit();
         }
     }
@@ -111,7 +111,7 @@ async function setupBenchmarkData() {
                 }
             });
     } catch(e) {
-        console.log(colors.red('There was an error setting up benchmark schema - ', e));
+        console.log(chalk.red('There was an error setting up benchmark schema - ', e));
     }
 
     await pause();
@@ -131,7 +131,7 @@ async function setupBenchmarkData() {
                 }
             });
     } catch(e) {
-        console.log(colors.red('There was an error setting up benchmark table `dog` - ', e));
+        console.log(chalk.red('There was an error setting up benchmark table `dog` - ', e));
     }
 
     try {
@@ -150,7 +150,7 @@ async function setupBenchmarkData() {
                 }
             });
     } catch(e) {
-        console.log(colors.red('There was an error setting up benchmark table `sensor` - ', e));
+        console.log(chalk.red('There was an error setting up benchmark table `sensor` - ', e));
     }
 
     await pause();
@@ -171,7 +171,7 @@ async function setupBenchmarkData() {
                 }
             });
     } catch(e) {
-        console.log(colors.red('There was an error inserting benchmark data - ', e));
+        console.log(chalk.red('There was an error inserting benchmark data - ', e));
     }
 
     await pause(4000);
@@ -191,15 +191,15 @@ async function setupBenchmarkData() {
                 }
             });
     } catch(e) {
-        console.log(colors.red('There was an error inserting benchmark data - ', e));
+        console.log(chalk.red('There was an error inserting benchmark data - ', e));
     }
 
     await pause();
-    console.log(colors.blue('Benchmark data setup COMPLETE'));
+    console.log(chalk.blue('Benchmark data setup COMPLETE'));
 }
 
 async function dropBenchmarkData() {
-    console.log(colors.blue('Dropping benchmark data'));
+    console.log(chalk.blue('Dropping benchmark data'));
     try {
         await instance.post(BASE_ROUTE,
             {
@@ -214,9 +214,9 @@ async function dropBenchmarkData() {
                 }
             });
     } catch(e) {
-        console.log(colors.red('There was an error dropping benchmark data - ', e));
+        console.log(chalk.red('There was an error dropping benchmark data - ', e));
     }
-    console.log(colors.blue('Dropping benchmark data COMPLETE'));
+    console.log(chalk.blue('Dropping benchmark data COMPLETE'));
 }
 
 async function rawDataFunctionBenchmark() {
@@ -283,12 +283,12 @@ async function httpBenchmark() {
 function evalBenchmarks() {
     for (const key in benchmarkResults) {
         const bench = benchmarkResults[key];
-        console.log(colors.green.bold(`|------------- ${key} ------------|`));
-        console.log(colors.magenta.italic(`API: ${bench.api}`));
-        console.log(colors.magenta.italic(`Data: ${bench.data}`));
-        console.log(colors.magenta(`Diff: ${bench.api - bench.data}`, '\n'));
+        console.log(chalk.green.bold(`|------------- ${key} ------------|`));
+        console.log(chalk.magenta.italic(`API: ${bench.api}`));
+        console.log(chalk.magenta.italic(`Data: ${bench.data}`));
+        console.log(chalk.magenta(`Diff: ${bench.api - bench.data}`, '\n'));
         const diff = Math.round(((bench.api - bench.data)/bench.api) * 10000) / 100
-        console.log(colors.magenta.bold(`DIFF %: ${diff}`, '\n'));
+        console.log(chalk.magenta.bold(`DIFF %: ${diff}`, '\n'));
     }
 }
 

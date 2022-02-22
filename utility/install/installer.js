@@ -9,7 +9,7 @@ const prompt = require('prompt');
 const path = require('path');
 const mount = require('./../mount_hdb');
 const fs = require('fs-extra');
-const colors = require('colors/safe');
+const chalk = require('chalk');
 const async = require('async');
 const forge = require('node-forge');
 const hri = require('human-readable-ids').hri;
@@ -176,7 +176,7 @@ function termsAgreement(callback) {
 	let terms_schema = {
 		properties: {
 			TC_AGREEMENT: {
-				description: colors.magenta(
+				description: chalk.magenta(
 					`Terms & Conditions can be found at ${terms_address}${line_break}and can be viewed by typing or copying and pasting the URL into your web browser.${line_break}${'[TC_AGREEMENT] I Agree to the HarperDB Terms and Conditions. (yes/no)'}`
 				),
 			},
@@ -189,7 +189,7 @@ function termsAgreement(callback) {
 		if (result.TC_AGREEMENT === 'yes') {
 			return callback(null, true);
 		}
-		console.log(colors.yellow(`Terms & Conditions acceptance is required to proceed with installation.`));
+		console.log(chalk.yellow(`Terms & Conditions acceptance is required to proceed with installation.`));
 		hdb_logger.error('Terms and Conditions agreement was refused.');
 		return callback('REFUSED', false);
 	});
@@ -220,7 +220,7 @@ function promptForReinstall(callback) {
 	hdbInfoController.getVersionUpdateInfo().then((res) => {
 		// Check
 		if (res !== undefined) {
-			console.log(`${os.EOL}` + colors.magenta.bold(UPGRADE_MSG));
+			console.log(`${os.EOL}` + chalk.magenta.bold(UPGRADE_MSG));
 			process.exit(0);
 		}
 
@@ -228,7 +228,7 @@ function promptForReinstall(callback) {
 		let reinstall_schema = {
 			properties: {
 				REINSTALL: {
-					description: colors.red(
+					description: chalk.red(
 						`It appears HarperDB version ${version.version()} is already installed.  Enter 'y/yes'to reinstall. (yes/no)`
 					),
 					pattern: /y(es)?$|n(o)?$/,
@@ -241,7 +241,7 @@ function promptForReinstall(callback) {
 		let overwrite_schema = {
 			properties: {
 				KEEP_DATA: {
-					description: `${os.EOL}` + colors.red.bold('Would you like to keep your existing data in HDB?  (yes/no)'),
+					description: `${os.EOL}` + chalk.red.bold('Would you like to keep your existing data in HDB?  (yes/no)'),
 					pattern: /y(es)?$|n(o)?$/,
 					message: "Must respond 'yes' or 'no'",
 					required: true,
@@ -282,7 +282,7 @@ function promptForReinstall(callback) {
 						});
 					} else {
 						// keep data - this means they should be using the upgrade command
-						console.log(`${os.EOL}` + colors.magenta.bold(UPGRADE_MSG));
+						console.log(`${os.EOL}` + chalk.magenta.bold(UPGRADE_MSG));
 						process.exit(0);
 					}
 				});
@@ -305,7 +305,7 @@ function wizard(err, callback) {
 	let install_schema = {
 		properties: {
 			HDB_ROOT: {
-				description: colors.magenta(`[HDB_ROOT] Please enter the destination for HarperDB`),
+				description: chalk.magenta(`[HDB_ROOT] Please enter the destination for HarperDB`),
 				message: 'HDB_ROOT cannot contain /',
 				default: env.getHdbBasePath() ? env.getHdbBasePath() : process.env['HOME'] + '/hdb',
 				ask: function () {
@@ -319,36 +319,36 @@ function wizard(err, callback) {
 				required: false,
 			},
 			NODE_NAME: {
-				description: colors.magenta(`[NODE_NAME] Please enter a unique name for this node`),
+				description: chalk.magenta(`[NODE_NAME] Please enter a unique name for this node`),
 				default: hri.random(),
 				required: false,
 			},
 			SERVER_PORT: {
 				pattern: /^([0-9]{1,4}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5])$/,
-				description: colors.magenta(`[SERVER_PORT] Please enter a server listening port for HarperDB`),
+				description: chalk.magenta(`[SERVER_PORT] Please enter a server listening port for HarperDB`),
 				message: 'Invalid port.',
 				default: 9925,
 				required: false,
 			},
 			CLUSTERING_PORT: {
 				pattern: /^([0-9]{1,4}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5])$/,
-				description: colors.magenta(`[CLUSTERING_PORT] Please enter a listening port for Clustering`),
+				description: chalk.magenta(`[CLUSTERING_PORT] Please enter a listening port for Clustering`),
 				message: 'Invalid port.',
 				default: 1111,
 				required: false,
 			},
 			HDB_ADMIN_USERNAME: {
-				description: colors.magenta('[HDB_ADMIN_USERNAME] Please enter a username for the HDB_ADMIN'),
+				description: chalk.magenta('[HDB_ADMIN_USERNAME] Please enter a username for the HDB_ADMIN'),
 				default: 'HDB_ADMIN',
 				required: true,
 			},
 			HDB_ADMIN_PASSWORD: {
-				description: colors.magenta('[HDB_ADMIN_PASSWORD] Please enter a password for the HDB_ADMIN'),
+				description: chalk.magenta('[HDB_ADMIN_PASSWORD] Please enter a password for the HDB_ADMIN'),
 				hidden: true,
 				required: true,
 			},
 			CLUSTERING_USER: {
-				description: colors.magenta('[CLUSTERING_USER] Please enter a username for the CLUSTERING USER'),
+				description: chalk.magenta('[CLUSTERING_USER] Please enter a username for the CLUSTERING USER'),
 				default: 'CLUSTER_USER',
 				message: 'Specified username is invalid or already in use.',
 				required: true,
@@ -358,7 +358,7 @@ function wizard(err, callback) {
 				},
 			},
 			CLUSTERING_PASSWORD: {
-				description: colors.magenta('[CLUSTERING_PASSWORD] Please enter a password for the CLUSTERING USER'),
+				description: chalk.magenta('[CLUSTERING_PASSWORD] Please enter a password for the CLUSTERING USER'),
 				hidden: true,
 				required: true,
 			},
@@ -373,8 +373,8 @@ function wizard(err, callback) {
 		delete install_schema.properties.CLUSTERING_USER;
 	}
 
-	console.log(colors.magenta('' + fs.readFileSync(path.join(__dirname, './ascii_logo.txt'))));
-	console.log(colors.magenta('                    Installer'));
+	console.log(chalk.magenta('' + fs.readFileSync(path.join(__dirname, './ascii_logo.txt'))));
+	console.log(chalk.magenta('                    Installer'));
 
 	prompt.get(install_schema, function (prompt_err, result) {
 		wizard_result = result;

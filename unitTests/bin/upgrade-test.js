@@ -13,7 +13,7 @@ let upgrade_rw;
 const hdbInfoController = require('../../data_layer/hdbInfoController');
 const updatePrompt = require('../../upgrade/upgradePrompt');
 const directivesManager = require('../../upgrade/directivesManager');
-const colors = require('colors/safe');
+const chalk = require('chalk');
 const version = require('../../bin/version');
 const { UpgradeObject } = require('../../upgrade/UpgradeObjects');
 const fs = require('fs-extra');
@@ -92,7 +92,7 @@ describe('Test upgrade.js', () => {
 			);
 			expect(consoleLog_stub.calledOnce).to.be.true;
 			expect(consoleLog_stub.args[0][0]).to.eql(
-				colors.red(
+				chalk.red(
 					"HarperDB is running, please stop all HarperDB services with 'harperdb stop' and run the upgrade command again."
 				)
 			);
@@ -112,7 +112,7 @@ describe('Test upgrade.js', () => {
 			);
 			expect(consoleLog_stub.calledOnce).to.be.true;
 			expect(consoleLog_stub.args[0][0]).to.eql(
-				colors.red(
+				chalk.red(
 					"HarperDB is running, please stop all HarperDB services with 'harperdb stop' and run the upgrade command again."
 				)
 			);
@@ -131,7 +131,7 @@ describe('Test upgrade.js', () => {
 			);
 			expect(consoleLog_stub.calledOnce).to.be.true;
 			expect(consoleLog_stub.args[0][0]).to.eql(
-				colors.red(
+				chalk.red(
 					"HarperDB is running, please stop all HarperDB services with 'harperdb stop' and run the upgrade command again."
 				)
 			);

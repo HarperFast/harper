@@ -9,7 +9,7 @@ const fs = require('fs-extra');
 const path = require('path');
 const check_jwt_tokens = require('../utility/install/checkJWTTokensExist');
 const install = require('../utility/install/installer');
-const colors = require('colors/safe');
+const chalk = require('chalk');
 const pjson = require(`${__dirname}/../package.json`);
 const install_user_permission = require('../utility/install_user_permission');
 const hdb_utils = require('../utility/common_utils');
@@ -53,7 +53,7 @@ const p_install_install = promisify(install.install);
 async function run(called_by_install = false) {
 	// Check to see if HDB is installed, if it isn't we call install.
 	try {
-		console.log(colors.magenta('Starting HarperDB...'));
+		console.log(chalk.magenta('Starting HarperDB...'));
 
 		if ((await isHdbInstalled()) === false) {
 			console.log(HDB_NOT_FOUND_MSG);
@@ -174,8 +174,8 @@ async function run(called_by_install = false) {
 		}
 
 		// Console log Harper dog logo
-		console.log(colors.magenta('' + fs.readFileSync(path.join(__dirname, '../utility/install/ascii_logo.txt'))));
-		console.log(colors.magenta(`|------------- HarperDB ${pjson.version} successfully started ------------|`));
+		console.log(chalk.magenta('' + fs.readFileSync(path.join(__dirname, '../utility/install/ascii_logo.txt'))));
+		console.log(chalk.magenta(`|------------- HarperDB ${pjson.version} successfully started ------------|`));
 
 		hdb_logger.notify(HDB_STARTED);
 		foregroundHandler();
