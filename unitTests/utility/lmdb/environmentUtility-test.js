@@ -908,7 +908,6 @@ describe('Test LMDB environmentUtility module', () => {
 			assert.deepStrictEqual(dbis, expected);
 		});
 	});
-/*
 	describe('Test nosync settings', () => {
 		let env;
 		let revert;
@@ -926,7 +925,7 @@ describe('Test LMDB environmentUtility module', () => {
 		it('test createEnvironment: setting is false, assert noSYnc is false', async () => {
 			revert = rw_lmdb_env_util.__set__('LMDB_NOSYNC', false);
 			env = await rw_lmdb_env_util.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
-			assert.deepStrictEqual(env.noSync, false);
+			assert.deepStrictEqual(env.noSync, undefined);
 			await rw_lmdb_env_util.closeEnvironment(env);
 			revert();
 		});
@@ -948,7 +947,7 @@ describe('Test LMDB environmentUtility module', () => {
 			global.lmdb_map = undefined;
 			revert = rw_lmdb_env_util.__set__('LMDB_NOSYNC', false);
 			env = await rw_lmdb_env_util.openEnvironment(BASE_TEST_PATH, 'noSYnc_false');
-			assert.deepStrictEqual(env.noSync, false);
+			assert.deepStrictEqual(env.noSync, undefined);
 			await rw_lmdb_env_util.closeEnvironment(env);
 			revert();
 		});
@@ -956,7 +955,7 @@ describe('Test LMDB environmentUtility module', () => {
 		it('test openEnvironment: setting is true, assert noSYnc is true', async () => {
 			revert = rw_lmdb_env_util.__set__('LMDB_NOSYNC', false);
 			env = await rw_lmdb_env_util.createEnvironment(BASE_TEST_PATH, 'noSYnc_true');
-			assert.deepStrictEqual(env.noSync, false);
+			assert.deepStrictEqual(env.noSync, undefined);
 			revert();
 			global.lmdb_map = undefined;
 			revert = rw_lmdb_env_util.__set__('LMDB_NOSYNC', true);
@@ -965,5 +964,5 @@ describe('Test LMDB environmentUtility module', () => {
 			await rw_lmdb_env_util.closeEnvironment(env);
 			revert();
 		});
-	});*/
+	});
 });
