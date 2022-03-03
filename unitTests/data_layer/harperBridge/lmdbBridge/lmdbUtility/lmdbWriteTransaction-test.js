@@ -232,11 +232,11 @@ describe('test lmdbWriteTransaction module', () => {
 			await fs.mkdirp(BASE_PATH);
 			global.lmdb_map = undefined;
 			env = await lmdb_create_txn_envs(CREATE_TABLE_OBJ);
-			env_mngr.setProperty('logging_auditlog', true);
+		env_mngr.setProperty('logging_auditlog', true);
 		});
 
 		afterEach(async () => {
-			env.close();
+			await env.close();
 			await fs.remove(BASE_PATH);
 			global.lmdb_map = undefined;
 		});
@@ -321,6 +321,8 @@ describe('test lmdbWriteTransaction module', () => {
 
 			results = search_util.iterateDBI(txn_env, 'user_name');
 			assert.deepStrictEqual(results, Object.create(null));
+
+
 		});
 
 		it('test writing insert with user on operation', async () => {

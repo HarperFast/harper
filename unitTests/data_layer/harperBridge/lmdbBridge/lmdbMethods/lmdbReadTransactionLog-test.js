@@ -92,7 +92,7 @@ describe('Test lmdbReadTransactionLog module', () => {
 		});
 
 		afterEach(async () => {
-			txn_env.close();
+			await txn_env.close();
 
 			global.lmdb_map = undefined;
 			await fs.remove(test_utils.getMockLMDBPath());
@@ -146,7 +146,7 @@ describe('Test lmdbReadTransactionLog module', () => {
 		});
 
 		afterEach(async () => {
-			txn_env.close();
+			await txn_env.close();
 
 			global.lmdb_map = undefined;
 			await fs.remove(test_utils.getMockLMDBPath());
@@ -263,7 +263,7 @@ describe('Test lmdbReadTransactionLog module', () => {
 		});
 
 		afterEach(async () => {
-			txn_env.close();
+			await txn_env.close();
 
 			global.lmdb_map = undefined;
 			await fs.remove(test_utils.getMockLMDBPath());
@@ -329,7 +329,7 @@ describe('Test lmdbReadTransactionLog module', () => {
 		});
 
 		afterEach(async () => {
-			txn_env.close();
+			await txn_env.close();
 
 			global.lmdb_map = undefined;
 			await fs.remove(test_utils.getMockLMDBPath());

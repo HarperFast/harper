@@ -137,7 +137,7 @@ describe('Test lmdbUpdateRecords module', () => {
 	let hdb_attribute_env;
 	before(() => {
 		date_stub = sandbox.stub(Date, 'now').returns(TIMESTAMP);
-		env_manager.setProperty(hdb_terms.CONFIG_PARAMS.LOGGING_AUDITLOG, true);
+	  env_manager.setProperty(hdb_terms.CONFIG_PARAMS.LOGGING_AUDITLOG, true);
 	});
 
 	after(() => {
@@ -217,18 +217,18 @@ describe('Test lmdbUpdateRecords module', () => {
 				path.join(BASE_SCHEMA_PATH, CREATE_TABLE_OBJ_TEST_A.schema),
 				CREATE_TABLE_OBJ_TEST_A.table
 			);
-			env.close();
+			await env.close();
 
 			let txn_env1 = await environment_utility.openEnvironment(
 				path.join(BASE_TXN_PATH, CREATE_TABLE_OBJ_TEST_A.schema),
 				CREATE_TABLE_OBJ_TEST_A.table,
 				true
 			);
-			txn_env1.close();
+			await txn_env1.close();
 
-			hdb_schema_env.close();
-			hdb_table_env.close();
-			hdb_attribute_env.close();
+			await hdb_schema_env.close();
+			await hdb_table_env.close();
+			await hdb_attribute_env.close();
 			m_time_stub.restore();
 
 			global.lmdb_map = undefined;

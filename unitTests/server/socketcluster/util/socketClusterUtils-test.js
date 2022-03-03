@@ -60,7 +60,7 @@ describe('Test socketClusterUtils', () => {
 
 		before(async () => {
 			env_manager.setProperty(hdb_terms.CONFIG_PARAMS.LOGGING_AUDITLOG, true);
-			await fs.remove(BASE_PATH);
+      await fs.remove(BASE_PATH);
 			await fs.remove(ENV_DIR_PATH);
 			await fs.mkdirp(BASE_PATH);
 			global.lmdb_map = undefined;
@@ -107,7 +107,7 @@ describe('Test socketClusterUtils', () => {
 		});
 
 		after(async () => {
-			test_env.close();
+			await test_env.close();
 			global.lmdb_map = undefined;
 			global.hdb_schema = undefined;
 			await fs.remove(BASE_PATH);

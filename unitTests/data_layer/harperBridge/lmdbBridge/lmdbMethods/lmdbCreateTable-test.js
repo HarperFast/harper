@@ -97,9 +97,9 @@ describe("test lmdbCreateTable module", ()=>{
     });
 
     after(async ()=>{
-        hdb_table_env.close();
-        hdb_schema_env.close();
-        hdb_attribute_env.close();
+        await hdb_table_env.close();
+        await hdb_schema_env.close();
+        await hdb_attribute_env.close();
 
         date_stub.restore();
         delete global.hdb_schema;
@@ -138,7 +138,7 @@ describe("test lmdbCreateTable module", ()=>{
             assert(expected_attributes.indexOf(record.attribute) > -1);
         });
 
-        new_env.close();
+        await new_env.close();
 
         //validate the transactions environments
         let transaction_path = path.join(transactions_path, CREATE_TABLE_OBJ_TEST_A.schema);
@@ -150,7 +150,7 @@ describe("test lmdbCreateTable module", ()=>{
 
         assert.deepStrictEqual(txn_dbis, expected_txn_dbis);
 
-        txn_env.close();
+        await txn_env.close();
     });
 
     it('Test creating a table under the prod schema', async ()=>{
@@ -183,7 +183,7 @@ describe("test lmdbCreateTable module", ()=>{
             assert(expected_attributes.indexOf(record.attribute) > -1);
         });
 
-        new_env.close();
+        await new_env.close();
 
         //validate the transactions environments
         let transaction_path = path.join(transactions_path, CREATE_TABLE_OBJ_TEST_B.schema);
@@ -192,7 +192,7 @@ describe("test lmdbCreateTable module", ()=>{
         await test_utils.assertErrorAsync(fs.access, [table_transaction_path], undefined);
         let txn_env = await test_utils.assertErrorAsync(environment_utility.openEnvironment, [transaction_path, CREATE_TABLE_OBJ_TEST_B.table, true], undefined);
         let txn_dbis = test_utils.assertErrorSync(environment_utility.listDBIs, [txn_env], undefined);
-        txn_env.close();
+        await txn_env.close();
         assert.deepStrictEqual(txn_dbis, expected_txn_dbis);
     });
 

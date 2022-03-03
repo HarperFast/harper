@@ -11,9 +11,10 @@ const assert = require('assert');
 const test_data = require('../../personData.json');
 const test_data2 = require('../../testData');
 const sinon = require('sinon');
+const uuid = require('uuid/v4');
 const sandbox = sinon.createSandbox();
 const BASE_TEST_PATH = path.join(test_utils.getMockLMDBPath(), 'lmdbTest');
-const TEST_ENVIRONMENT_NAME = 'test';
+let TEST_ENVIRONMENT_NAME = 'test';
 const HASH_ATTRIBUTE_NAME = 'id';
 const LMDB_TEST_ERRORS = require('../../commonTestErrors').LMDB_ERRORS_ENUM;
 const PERSON_ATTRIBUTES = ['id', 'first_name', 'state', 'age', 'alive', 'birth_month'];
@@ -27,7 +28,7 @@ describe('test greaterThan function', ()=> {
         global.lmdb_map = undefined;
         await fs.remove(test_utils.getMockLMDBPath());
         await fs.mkdirp(BASE_TEST_PATH);
-
+        TEST_ENVIRONMENT_NAME = uuid();
         env = await environment_utility.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
         await environment_utility.createDBI(env, 'id', false, true);
         await environment_utility.createDBI(env, 'temperature', true);
@@ -39,7 +40,7 @@ describe('test greaterThan function', ()=> {
     });
 
     after(async () => {
-        env.close();
+        await env.close();
 
         global.lmdb_map = undefined;
         await fs.remove(test_utils.getMockLMDBPath());
@@ -272,7 +273,7 @@ describe('test greaterThan function rreverse limit offset', ()=> {
         global.lmdb_map = undefined;
         await fs.remove(test_utils.getMockLMDBPath());
         await fs.mkdirp(BASE_TEST_PATH);
-
+        TEST_ENVIRONMENT_NAME = uuid();
         env = await environment_utility.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
         await environment_utility.createDBI(env, 'id', false, true);
         await write_utility.insertRecords(env, HASH_ATTRIBUTE_NAME, test_utils.deepClone(PERSON_ATTRIBUTES), test_utils.deepClone(test_data));
@@ -280,7 +281,7 @@ describe('test greaterThan function rreverse limit offset', ()=> {
 
     after(async () => {
         date_stub.restore();
-        env.close();
+        await env.close();
         global.lmdb_map = undefined;
         await fs.remove(test_utils.getMockLMDBPath());
     });

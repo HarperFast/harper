@@ -60,7 +60,7 @@ async function deleteTransactions(env, timestamp) {
 		let timestamp_dbi = env.dbis[lmdb_terms.TRANSACTIONS_DBI_NAMES_ENUM.TIMESTAMP];
 
 		let promise;
-		for (let { key, value: txn_record } of timestamp_dbi.getRange()) {
+		for (let { key, value: txn_record } of timestamp_dbi.getRange({ start: false })) {
 			if (key >= timestamp) {
 				break;
 			}

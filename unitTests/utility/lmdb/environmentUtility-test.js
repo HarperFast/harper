@@ -14,7 +14,7 @@ const lmdb_terms = require('../../../utility/lmdb/terms');
 const LMDB_TEST_FOLDER_NAME = 'lmdbTest';
 const BACKUP_FOLDER_NAME = 'backup';
 const BASE_TEST_PATH = path.join(test_utils.getMockLMDBPath(), LMDB_TEST_FOLDER_NAME);
-const TEST_ENVIRONMENT_NAME = 'test';
+let TEST_ENVIRONMENT_NAME = 'test';
 const BACKUP_PATH = path.join(test_utils.getMockLMDBPath(), BACKUP_FOLDER_NAME);
 const BACKUP_TEST_ENV_PATH = path.join(BACKUP_PATH, TEST_ENVIRONMENT_NAME);
 
@@ -75,7 +75,7 @@ describe('Test LMDB environmentUtility module', () => {
 		});
 
 		after(async () => {
-			env.close();
+			await env.close();
 			global.lmdb_map = undefined;
 			await fs.remove(test_utils.getMockLMDBPath());
 		});
@@ -106,7 +106,7 @@ describe('Test LMDB environmentUtility module', () => {
 		});
 
 		after(async () => {
-			lmdb_env_util.closeEnvironment(env);
+			await lmdb_env_util.closeEnvironment(env);
 			global.lmdb_map = undefined;
 			await fs.remove(test_utils.getMockLMDBPath());
 		});
@@ -184,7 +184,7 @@ describe('Test LMDB environmentUtility module', () => {
 			//test to make sure the internal dbi exists
 			await test_utils.assertErrorAsync(lmdb_env_util.openDBI, [env, lmdb_terms.INTERNAL_DBIS_NAME], undefined);
 			assert.deepStrictEqual(env[lmdb_terms.ENVIRONMENT_NAME_KEY], 'lmdbTest.test');
-			lmdb_env_util.closeEnvironment(env);
+			await lmdb_env_util.closeEnvironment(env);
 		});
 
 		it('create existing environment', async () => {
@@ -209,7 +209,7 @@ describe('Test LMDB environmentUtility module', () => {
 
 			//test to make sure the internal dbi exists
 			await test_utils.assertErrorAsync(lmdb_env_util.openDBI, [env, lmdb_terms.INTERNAL_DBIS_NAME], undefined);
-			env.close();
+			await env.close();
 		});
 	});
 
@@ -225,7 +225,7 @@ describe('Test LMDB environmentUtility module', () => {
 		});
 
 		after(async () => {
-			env.close();
+			await env.close();
 			global.lmdb_map = undefined;
 			await fs.remove(test_utils.getMockLMDBPath());
 		});
@@ -286,7 +286,7 @@ describe('Test LMDB environmentUtility module', () => {
 		});
 
 		after(async () => {
-			lmdb_env_util.closeEnvironment(env_orig);
+			await lmdb_env_util.closeEnvironment(env_orig);
 			global.lmdb_map = undefined;
 			await fs.remove(test_utils.getMockLMDBPath());
 		});
@@ -353,7 +353,7 @@ describe('Test LMDB environmentUtility module', () => {
 			assert.deepStrictEqual(err, undefined);
 			assert.deepStrictEqual(typeof env_copy, 'object');
 
-			lmdb_env_util.closeEnvironment(env_copy);
+			await lmdb_env_util.closeEnvironment(env_copy);
 		});
 	});
 
@@ -369,7 +369,7 @@ describe('Test LMDB environmentUtility module', () => {
 
 		after(async () => {
 			try {
-				env_orig.close();
+				await env_orig.close();
 			} catch (e) {}
 			global.lmdb_map = undefined;
 			await fs.remove(test_utils.getMockLMDBPath());
@@ -433,7 +433,7 @@ describe('Test LMDB environmentUtility module', () => {
 		});
 
 		afterEach(async () => {
-			lmdb_env_util.closeEnvironment(env);
+			await lmdb_env_util.closeEnvironment(env);
 			global.lmdb_map = undefined;
 			await fs.remove(test_utils.getMockLMDBPath());
 		});
@@ -532,7 +532,7 @@ describe('Test LMDB environmentUtility module', () => {
 		});
 
 		after(async () => {
-			lmdb_env_util.closeEnvironment(env);
+			await lmdb_env_util.closeEnvironment(env);
 			global.lmdb_map = undefined;
 			await fs.remove(test_utils.getMockLMDBPath());
 		});
@@ -607,8 +607,8 @@ describe('Test LMDB environmentUtility module', () => {
 		});
 
 		after(async () => {
-			lmdb_env_util.closeEnvironment(env);
-			lmdb_env_util.closeEnvironment(env2);
+			await lmdb_env_util.closeEnvironment(env);
+			await lmdb_env_util.closeEnvironment(env2);
 
 			global.lmdb_map = undefined;
 			await fs.remove(test_utils.getMockLMDBPath());
@@ -652,8 +652,8 @@ describe('Test LMDB environmentUtility module', () => {
 		});
 
 		after(async () => {
-			lmdb_env_util.closeEnvironment(env);
-			lmdb_env_util.closeEnvironment(env2);
+			await lmdb_env_util.closeEnvironment(env);
+			await lmdb_env_util.closeEnvironment(env2);
 
 			global.lmdb_map = undefined;
 			await fs.remove(test_utils.getMockLMDBPath());
@@ -672,6 +672,41 @@ describe('Test LMDB environmentUtility module', () => {
 		it('call function no dbis', async () => {
 			let dbis = await test_utils.assertErrorAsync(lmdb_env_util.listDBIs, [env2], undefined);
 			assert.deepStrictEqual(dbis, [lmdb_terms.BLOB_DBI_NAME]);
+		});
+	});
+
+	describe('Test environmentDataSize function', () => {
+		let env;
+
+		before(async () => {
+			global.lmdb_map = undefined;
+			await fs.remove(test_utils.getMockLMDBPath());
+			await fs.mkdirp(BASE_TEST_PATH);
+
+			env = await lmdb_env_util.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
+			await lmdb_env_util.createDBI(env, ID_DBI_NAME);
+		});
+
+		after(async () => {
+			await lmdb_env_util.closeEnvironment(env);
+			global.lmdb_map = undefined;
+			await fs.remove(test_utils.getMockLMDBPath());
+		});
+
+		it('call function no args', async () => {
+			await test_utils.assertErrorAsync(lmdb_env_util.environmentDataSize, [], LMDB_TEST_ERRORS.INVALID_ENVIRONMENT);
+		});
+
+		it('call function happy path no data', async () => {
+			let paths = fs.readdirSync(path.join(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME));
+			let data_size = fs.statSync(path.join(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME, 'data.mdb'));
+			let stat = await test_utils.assertErrorAsync(
+				lmdb_env_util.environmentDataSize,
+				[BASE_TEST_PATH, TEST_ENVIRONMENT_NAME],
+				undefined
+			);
+			assert.notDeepStrictEqual(stat, undefined);
+			assert.deepStrictEqual(stat, data_size['size']);
 		});
 	});
 
@@ -720,7 +755,7 @@ describe('Test LMDB environmentUtility module', () => {
 		});
 
 		after(async () => {
-			lmdb_env_util.closeEnvironment(env);
+			await lmdb_env_util.closeEnvironment(env);
 
 			global.lmdb_map = undefined;
 			await fs.remove(test_utils.getMockLMDBPath());
@@ -757,40 +792,6 @@ describe('Test LMDB environmentUtility module', () => {
 		});
 	});
 
-	describe('Test environmentDataSize function', () => {
-		let env;
-
-		before(async () => {
-			global.lmdb_map = undefined;
-			await fs.remove(test_utils.getMockLMDBPath());
-			await fs.mkdirp(BASE_TEST_PATH);
-
-			env = await lmdb_env_util.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
-			await lmdb_env_util.createDBI(env, ID_DBI_NAME);
-		});
-
-		after(async () => {
-			lmdb_env_util.closeEnvironment(env);
-			global.lmdb_map = undefined;
-			await fs.remove(test_utils.getMockLMDBPath());
-		});
-
-		it('call function no args', async () => {
-			await test_utils.assertErrorAsync(lmdb_env_util.environmentDataSize, [], LMDB_TEST_ERRORS.INVALID_ENVIRONMENT);
-		});
-
-		it('call function happy path no data', async () => {
-			let data_size = fs.statSync(path.join(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME, 'data.mdb'));
-			let stat = await test_utils.assertErrorAsync(
-				lmdb_env_util.environmentDataSize,
-				[BASE_TEST_PATH, TEST_ENVIRONMENT_NAME],
-				undefined
-			);
-			assert.notDeepStrictEqual(stat, undefined);
-			assert.deepStrictEqual(stat, data_size['size']);
-		});
-	});
-
 	describe('Test dropDBI function', () => {
 		let env;
 		before(async () => {
@@ -803,7 +804,7 @@ describe('Test LMDB environmentUtility module', () => {
 		});
 
 		after(async () => {
-			lmdb_env_util.closeEnvironment(env);
+			await lmdb_env_util.closeEnvironment(env);
 
 			global.lmdb_map = undefined;
 			await fs.remove(test_utils.getMockLMDBPath());
@@ -859,7 +860,7 @@ describe('Test LMDB environmentUtility module', () => {
 		});
 
 		after(async () => {
-			lmdb_env_util.closeEnvironment(env);
+			await lmdb_env_util.closeEnvironment(env);
 
 			global.lmdb_map = undefined;
 			await fs.remove(test_utils.getMockLMDBPath());
@@ -907,7 +908,6 @@ describe('Test LMDB environmentUtility module', () => {
 			assert.deepStrictEqual(dbis, expected);
 		});
 	});
-
 	describe('Test nosync settings', () => {
 		let env;
 		let revert;
@@ -925,8 +925,8 @@ describe('Test LMDB environmentUtility module', () => {
 		it('test createEnvironment: setting is false, assert noSYnc is false', async () => {
 			revert = rw_lmdb_env_util.__set__('LMDB_NOSYNC', false);
 			env = await rw_lmdb_env_util.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
-			assert.deepStrictEqual(env.noSync, false);
-			rw_lmdb_env_util.closeEnvironment(env);
+			assert.deepStrictEqual(env.noSync, undefined);
+			await rw_lmdb_env_util.closeEnvironment(env);
 			revert();
 		});
 
@@ -935,33 +935,33 @@ describe('Test LMDB environmentUtility module', () => {
 			env = await rw_lmdb_env_util.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
 
 			assert.deepStrictEqual(env.noSync, true);
-			rw_lmdb_env_util.closeEnvironment(env);
+			await rw_lmdb_env_util.closeEnvironment(env);
 			revert();
 		});
 
 		it('test openEnvironment: setting is false, assert noSYnc is false', async () => {
 			revert = rw_lmdb_env_util.__set__('LMDB_NOSYNC', true);
-			env = await rw_lmdb_env_util.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
+			env = await rw_lmdb_env_util.createEnvironment(BASE_TEST_PATH, 'noSYnc_false');
 			assert.deepStrictEqual(env.noSync, true);
 			revert();
 			global.lmdb_map = undefined;
 			revert = rw_lmdb_env_util.__set__('LMDB_NOSYNC', false);
-			env = await rw_lmdb_env_util.openEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
-			assert.deepStrictEqual(env.noSync, false);
-			rw_lmdb_env_util.closeEnvironment(env);
+			env = await rw_lmdb_env_util.openEnvironment(BASE_TEST_PATH, 'noSYnc_false');
+			assert.deepStrictEqual(env.noSync, undefined);
+			await rw_lmdb_env_util.closeEnvironment(env);
 			revert();
 		});
 
 		it('test openEnvironment: setting is true, assert noSYnc is true', async () => {
 			revert = rw_lmdb_env_util.__set__('LMDB_NOSYNC', false);
-			env = await rw_lmdb_env_util.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
-			assert.deepStrictEqual(env.noSync, false);
+			env = await rw_lmdb_env_util.createEnvironment(BASE_TEST_PATH, 'noSYnc_true');
+			assert.deepStrictEqual(env.noSync, undefined);
 			revert();
 			global.lmdb_map = undefined;
 			revert = rw_lmdb_env_util.__set__('LMDB_NOSYNC', true);
-			env = await rw_lmdb_env_util.openEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
+			env = await rw_lmdb_env_util.openEnvironment(BASE_TEST_PATH, 'noSYnc_true');
 			assert.deepStrictEqual(env.noSync, true);
-			rw_lmdb_env_util.closeEnvironment(env);
+			await rw_lmdb_env_util.closeEnvironment(env);
 			revert();
 		});
 	});

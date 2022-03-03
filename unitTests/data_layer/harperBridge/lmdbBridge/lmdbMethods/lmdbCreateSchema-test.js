@@ -45,7 +45,7 @@ describe('test lmdbCreateSchema module', ()=>{
     });
 
     after(async ()=>{
-        env.close();
+        await env.close();
         date_stub.restore();
         delete global.hdb_schema;
 

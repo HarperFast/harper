@@ -42,7 +42,7 @@
     "prebuild": "date",
     "coverage": "nyc --reporter=lcov npm test",
     "package": "./utility/devops/build/build.sh",
-    "integrationtests:source": "node utility/devops/register.js --reset_license --storage_type=lmdb && cd ./bin && node harperdb restart && sleep 2 && cd ../integrationTests && ../node_modules/newman/bin/newman.js run HarperDB_Integration_Tests.json -e ./Int_test_env_var.json --reporters teamcity,cli,html,htmlextra --reporter-html-export newman/report.html --reporter-htmlextra-export newman/extra_report.html --insecure",
+    "integrationtests:source": "node utility/devops/register.js --reset_license --storage_type=lmdb && cd ./bin && node harperdb restart && sleep 10 && cd ../integrationTests && ../node_modules/newman/bin/newman.js run HarperDB_Integration_Tests.json -e ./Int_test_env_var.json --reporters teamcity,cli,html,htmlextra --reporter-html-export newman/report.html --reporter-htmlextra-export newman/extra_report.html --insecure",
     "integrationtests:package": "node utility/devops/register.js --reset_license --storage_type=lmdb && cd ./npm_pack/bin && node harperdb restart && sleep 2 && cd ../../integrationTests && ../node_modules/newman/bin/newman.js run HarperDB_Integration_Tests.json -e ./Int_test_env_var.json --reporters teamcity,cli,html,htmlextra --reporter-html-export newman/report.html --reporter-htmlextra-export newman/extra_report.html --insecure"
   },
   "dependencies": {
@@ -78,7 +78,7 @@
     "json2csv": "5.0.6",
     "jsonata": "1.8.3",
     "jsonwebtoken": "8.5.1",
-    "lmdb-store": "1.5.5",
+    "lmdb": "2.2.3",
     "lodash": "4.17.21",
     "mathjs": "9.4.2",
     "microtime": "3.0.0",

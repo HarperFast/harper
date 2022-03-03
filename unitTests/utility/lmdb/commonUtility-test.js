@@ -190,7 +190,7 @@ describe("Test commonUtility module", ()=>{
             let buff = Buffer.from('test');
             let arr = [2, 'test', 2.22, buff, false, null, Symbol.for('cool')];
             assert.deepStrictEqual(common.convertKeyValueToWrite(arr), arr);
-            assert.deepStrictEqual(common.convertKeyValueToWrite([]), []);
+            assert.deepStrictEqual(common.convertKeyValueToWrite([]), '[]');
         });
 
         it('test array with non-primitive returns string', ()=>{

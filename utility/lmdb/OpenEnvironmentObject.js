@@ -7,7 +7,12 @@ class OpenEnvironmentObject {
 		this.maxDbs = max_dbs;
 		this.maxReaders = max_readers;
 		this.sharedStructuresKey = Symbol.for('structures');
-		this.noSync = no_sync;
+
+		//TODO figure out how to get overlappingSync = true to pass ci tests, suspect it is something with AWS storage.
+		this.overlappingSync = false;
+		if (no_sync === true) {
+			this.noSync = true;
+		}
 	}
 }
 

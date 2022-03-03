@@ -7,7 +7,7 @@ const lmdb_terms = require('./terms');
 const log = require('../logging/harper_logger');
 const hdb_utils = require('../common_utils');
 // eslint-disable-next-line no-unused-vars
-const lmdb = require('lmdb-store');
+const lmdb = require('lmdb');
 const DeleteRecordsResponseObject = require('./DeleteRecordsResponseObject');
 
 /**

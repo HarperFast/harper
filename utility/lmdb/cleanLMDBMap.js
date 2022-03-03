@@ -10,7 +10,7 @@ module.exports = cleanLMDBMap;
  * this function strips away the cached environments from global when a schema item is removed
  * @param msg
  */
-function cleanLMDBMap(msg) {
+async function cleanLMDBMap(msg) {
 	try {
 		if (global.lmdb_map !== undefined && msg.operation !== undefined) {
 			let keys = Object.keys(global.lmdb_map);
@@ -22,7 +22,7 @@ function cleanLMDBMap(msg) {
 						let key = keys[x];
 						if (key.startsWith(`${msg.schema}.`) || key.startsWith(`txn.${msg.schema}.`)) {
 							try {
-								environment_utility.closeEnvironment(global.lmdb_map[key]);
+								await environment_utility.closeEnvironment(global.lmdb_map[key]);
 							} catch (err) {
 								if (err.message !== LMDB_ERRORS.ENV_REQUIRED) {
 									throw err;
@@ -37,8 +37,8 @@ function cleanLMDBMap(msg) {
 					// eslint-disable-next-line no-case-declarations
 					let txn_schema_table_name = `txn.${schema_table_name}`;
 					try {
-						environment_utility.closeEnvironment(global.lmdb_map[schema_table_name]);
-						environment_utility.closeEnvironment(global.lmdb_map[txn_schema_table_name]);
+						await environment_utility.closeEnvironment(global.lmdb_map[schema_table_name]);
+						await environment_utility.closeEnvironment(global.lmdb_map[txn_schema_table_name]);
 					} catch (err) {
 						if (err.message !== LMDB_ERRORS.ENV_REQUIRED) {
 							throw err;

@@ -8699,12 +8699,12 @@
 						"basic": [
 							{
 								"key": "password",
-								"value": "admin",
+								"value": "{{password}}",
 								"type": "string"
 							},
 							{
 								"key": "username",
-								"value": "admin",
+								"value": "{{username}}",
 								"type": "string"
 							}
 						]
@@ -11209,12 +11209,12 @@
 									"basic": [
 										{
 											"key": "username",
-											"value": "admin",
+											"value": "{{username}}",
 											"type": "string"
 										},
 										{
 											"key": "password",
-											"value": "Abc1234!",
+											"value": "{{password}}",
 											"type": "string"
 										}
 									]
@@ -11258,7 +11258,16 @@
 										],
 										"type": "text/javascript"
 									}
-								}
+								},
+                                {
+                                  "listen": "prerequest",
+                                  "script": {
+                                    "exec": [
+                                      "setTimeout(() => {}, 100);"
+                                    ],
+                                    "type": "text/javascript"
+                                  }
+                                }
 							],
 							"request": {
 								"auth": {
@@ -11266,12 +11275,12 @@
 									"basic": [
 										{
 											"key": "username",
-											"value": "admin",
+											"value": "{{username}}",
 											"type": "string"
 										},
 										{
 											"key": "password",
-											"value": "Abc1234!",
+											"value": "{{password}}",
 											"type": "string"
 										}
 									]
@@ -11316,7 +11325,16 @@
 										],
 										"type": "text/javascript"
 									}
-								}
+								},
+                                {
+                                  "listen": "prerequest",
+                                  "script": {
+                                    "exec": [
+                                      "setTimeout(() => {}, 100);"
+                                    ],
+                                    "type": "text/javascript"
+                                  }
+                                }
 							],
 							"request": {
 								"auth": {
@@ -11324,12 +11342,12 @@
 									"basic": [
 										{
 											"key": "username",
-											"value": "admin",
+											"value": "{{username}}",
 											"type": "string"
 										},
 										{
 											"key": "password",
-											"value": "Abc1234!",
+											"value": "{{password}}",
 											"type": "string"
 										}
 									]
@@ -11386,12 +11404,12 @@
 									"basic": [
 										{
 											"key": "username",
-											"value": "admin",
+											"value": "{{username}}",
 											"type": "string"
 										},
 										{
 											"key": "password",
-											"value": "Abc1234!",
+											"value": "{{password}}",
 											"type": "string"
 										}
 									]
@@ -11444,12 +11462,12 @@
 									"basic": [
 										{
 											"key": "username",
-											"value": "admin",
+											"value": "{{username}}",
 											"type": "string"
 										},
 										{
 											"key": "password",
-											"value": "Abc1234!",
+											"value": "{{password}}",
 											"type": "string"
 										}
 									]
@@ -11509,12 +11527,12 @@
 									"basic": [
 										{
 											"key": "username",
-											"value": "admin",
+											"value": "{{username}}",
 											"type": "string"
 										},
 										{
 											"key": "password",
-											"value": "Abc1234!",
+											"value": "{{password}}",
 											"type": "string"
 										}
 									]
@@ -11568,12 +11586,12 @@
 									"basic": [
 										{
 											"key": "username",
-											"value": "admin",
+											"value": "{{username}}",
 											"type": "string"
 										},
 										{
 											"key": "password",
-											"value": "Abc1234!",
+											"value": "{{password}}",
 											"type": "string"
 										}
 									]
@@ -11634,12 +11652,12 @@
 									"basic": [
 										{
 											"key": "username",
-											"value": "admin",
+											"value": "{{username}}",
 											"type": "string"
 										},
 										{
 											"key": "password",
-											"value": "Abc1234!",
+											"value": "{{password}}",
 											"type": "string"
 										}
 									]
@@ -11692,12 +11710,12 @@
 									"basic": [
 										{
 											"key": "username",
-											"value": "admin",
+											"value": "{{username}}",
 											"type": "string"
 										},
 										{
 											"key": "password",
-											"value": "Abc1234!",
+											"value": "{{password}}",
 											"type": "string"
 										}
 									]
@@ -11756,12 +11774,12 @@
 									"basic": [
 										{
 											"key": "username",
-											"value": "admin",
+											"value": "{{username}}",
 											"type": "string"
 										},
 										{
 											"key": "password",
-											"value": "Abc1234!",
+											"value": "{{password}}",
 											"type": "string"
 										}
 									]
@@ -11815,12 +11833,12 @@
 									"basic": [
 										{
 											"key": "username",
-											"value": "admin",
+											"value": "{{username}}",
 											"type": "string"
 										},
 										{
 											"key": "password",
-											"value": "Abc1234!",
+											"value": "{{password}}",
 											"type": "string"
 										}
 									]
@@ -11874,12 +11892,12 @@
 									"basic": [
 										{
 											"key": "username",
-											"value": "admin",
+											"value": "{{username}}",
 											"type": "string"
 										},
 										{
 											"key": "password",
-											"value": "Abc1234!",
+											"value": "{{password}}",
 											"type": "string"
 										}
 									]
@@ -11932,12 +11950,12 @@
 									"basic": [
 										{
 											"key": "username",
-											"value": "admin",
+											"value": "{{username}}",
 											"type": "string"
 										},
 										{
 											"key": "password",
-											"value": "Abc1234!",
+											"value": "{{password}}",
 											"type": "string"
 										}
 									]
@@ -11990,12 +12008,12 @@
 									"basic": [
 										{
 											"key": "username",
-											"value": "admin",
+											"value": "{{username}}",
 											"type": "string"
 										},
 										{
 											"key": "password",
-											"value": "Abc1234!",
+											"value": "{{password}}",
 											"type": "string"
 										}
 									]
@@ -12047,12 +12065,12 @@
 									"basic": [
 										{
 											"key": "username",
-											"value": "admin",
+											"value": "{{username}}",
 											"type": "string"
 										},
 										{
 											"key": "password",
-											"value": "Abc1234!",
+											"value": "{{password}}",
 											"type": "string"
 										}
 									]
@@ -38410,7 +38428,7 @@
 									"listen": "prerequest",
 									"script": {
 										"exec": [
-											"setTimeout(()=>{}, 200);",
+											"setTimeout(()=>{}, 2000);",
 											"console.log(\"Checking Job CSV URL load\" + pm.environment.get(\"job_id\"));"
 										],
 										"type": "text/javascript"
