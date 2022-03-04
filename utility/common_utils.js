@@ -240,7 +240,7 @@ function autoCast(data) {
  * @returns {boolean}
  */
 function autoCasterIsNumberCheck(data) {
-	if (data.startsWith('0.')) {
+	if (data.startsWith('0.') && is_number(data)) {
 		return true;
 	}
 

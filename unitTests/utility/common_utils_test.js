@@ -254,6 +254,24 @@ describe('Test common_utils module', () => {
 			assert.deepStrictEqual(result, 0.10056344792246819);
 		});
 
+		it(`Pass in "0.059_111.519", expect "0.059_111.519" as string`, function () {
+			let result = cu.autoCast('0.059_111.519');
+			assert.deepStrictEqual(typeof result, 'string');
+			assert.deepStrictEqual(result, '0.059_111.519');
+		});
+
+		it(`Pass in "0.059,111.519", expect "0.059,111.519" as string`, function () {
+			let result = cu.autoCast('0.059,111.519');
+			assert.deepStrictEqual(typeof result, 'string');
+			assert.deepStrictEqual(result, '0.059,111.519');
+		});
+
+		it(`Pass in "0.059.111.519", expect "0.059.111.519" as string`, function () {
+			let result = cu.autoCast('0.059.111.519');
+			assert.deepStrictEqual(typeof result, 'string');
+			assert.deepStrictEqual(result, '0.059.111.519');
+		});
+
 		it(`Pass in undefined, expect undefined`, function () {
 			assert.strictEqual(cu.autoCast(undefined), undefined);
 		});
