@@ -76,7 +76,7 @@ async function run(called_by_install = false) {
 			// If run is called with cmd/env vars we create a backup of config and update config file.
 			const parsed_args = assignCMDENVVariables(Object.keys(terms.CONFIG_PARAM_MAP), true);
 			if (!hdb_utils.isEmpty(parsed_args) && !hdb_utils.isEmptyOrZeroLength(Object.keys(parsed_args))) {
-				config_utils.updateConfigValue(undefined, undefined, parsed_args, true);
+				config_utils.updateConfigValue(undefined, undefined, parsed_args, true, true);
 			}
 		}
 

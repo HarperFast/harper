@@ -9,6 +9,8 @@ const expect = chai.expect;
 const settings_test_file = require('../settingsTestFile');
 const pm2_utils = require('../../utility/pm2/utilityFunctions');
 const rewire = require('rewire');
+const config_utils = require('../../config/configUtils');
+
 let stop;
 
 chai.use(sinon_chai);
@@ -302,6 +304,9 @@ describe('Test stop.js', () => {
 	describe('Test checkEnvSettings function', () => {
 		it('Test correct env settings are returned', () => {
 			check_env_settings_rw();
+			sandbox
+				.stub(config_utils, 'readConfigFile')
+				.returns({ clustering: { enabled: true }, customFunctions: { enabled: true } });
 			const checkEnvSettings = stop.__get__('checkEnvSettings');
 			const result = checkEnvSettings();
 			const expected_obj = {

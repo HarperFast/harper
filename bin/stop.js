@@ -4,7 +4,6 @@ const hdb_terms = require('../utility/hdbTerms');
 const hdb_logger = require('../utility/logging/harper_logger');
 const hdb_utils = require('../utility/common_utils');
 const assignCMDENVVariables = require('../utility/assignCmdEnvVariables');
-const env_mngr = require('../utility/environment/environmentManager');
 const minimist = require('minimist');
 const { handleHDBError, hdb_errors } = require('../utility/errors/hdbError');
 const config_utils = require('../config/configUtils');
@@ -37,7 +36,7 @@ async function restartProcesses() {
 		// If restart is called with cmd/env vars we create a backup of config and update config file.
 		const parsed_args = assignCMDENVVariables(Object.keys(hdb_terms.CONFIG_PARAM_MAP), true);
 		if (!hdb_utils.isEmptyOrZeroLength(Object.keys(parsed_args))) {
-			config_utils.updateConfigValue(undefined, undefined, parsed_args, true);
+			config_utils.updateConfigValue(undefined, undefined, parsed_args, true, true);
 		}
 
 		const { clustering_enabled, custom_func_enabled } = checkEnvSettings();
@@ -282,11 +281,9 @@ async function stop() {
  * @returns {{clustering_enabled: boolean, custom_func_enabled: boolean}}
  */
 function checkEnvSettings() {
-	env_mngr.initSync();
-	const sc_env = env_mngr.get(hdb_terms.HDB_SETTINGS_NAMES.CLUSTERING_ENABLED_KEY).toString().toLowerCase();
-	const cf_env = env_mngr.get(hdb_terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_ENABLED_KEY).toString().toLowerCase();
-	const clustering_enabled = sc_env === 'true' || sc_env === "'true'";
-	const custom_func_enabled = cf_env === 'true' || cf_env === "'true'";
+	const config_file = config_utils.readConfigFile();
+	const clustering_enabled = config_file.clustering.enabled;
+	const custom_func_enabled = config_file.customFunctions.enabled;
 
 	return {
 		clustering_enabled,
