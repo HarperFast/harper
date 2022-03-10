@@ -1,8 +1,7 @@
 /**
  * INSTALLER.JS
  *
- * This module is used to install HarperDB.  It is meant to be a self contained module which is why it configures
- * it's own pino instance.
+ * This module is used to install HarperDB.
  */
 
 const prompt = require('prompt');

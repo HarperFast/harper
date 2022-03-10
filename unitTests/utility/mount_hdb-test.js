@@ -14,7 +14,6 @@ const mount = require('../../utility/mount_hdb');
 const promisify = require('util').promisify;
 const p_mount = promisify(mount);
 const rw_mount = rewire('../../utility/mount_hdb');
-const winston = require('winston');
 
 const create_lmdb_tables = rw_mount.__get__('createLMDBTables');
 
@@ -25,18 +24,6 @@ const SYSTEM_SCHEMA_PATH = path.join(BASE_SCHEMA_PATH, hdb_terms.SYSTEM_SCHEMA_N
 describe('test mount_hdb module', () => {
 	before(async () => {
 		await fs.mkdirp(BASE_BATH);
-
-		winston.configure({
-			transports: [
-				new winston.transports.File({
-					filename: path.join(BASE_BATH, 'install.log'),
-					level: 'verbose',
-					handleExceptions: true,
-					prettyPrint: true,
-				}),
-			],
-			exitOnError: false,
-		});
 	});
 
 	after(async () => {
@@ -55,7 +42,7 @@ describe('test mount_hdb module', () => {
 		it('happy path', async () => {
 			let err;
 			try {
-				await create_lmdb_tables(SYSTEM_SCHEMA_PATH, winston);
+				await create_lmdb_tables(SYSTEM_SCHEMA_PATH);
 			} catch (e) {
 				err = e;
 			}
