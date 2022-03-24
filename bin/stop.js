@@ -12,6 +12,8 @@ const { HTTP_STATUS_CODES } = hdb_errors;
 let pm2_utils;
 
 const RESTART_RESPONSE = `Restarting HarperDB. This may take up to ${hdb_terms.RESTART_TIMEOUT_MS / 1000} seconds.`;
+const RESTART_RUNNING_RESPONSE =
+	'HarperDB is currently restarting and must complete before another HarperDB restart can be initialized.';
 const INVALID_SERVICE_ERR = 'Invalid service';
 const MISSING_SERVICE = "'service' is required";
 const RESTART_MSG = 'Restarting all services';
@@ -51,6 +53,17 @@ async function restartProcesses() {
 			const cmd_args_array = cmd_args.service.split(',');
 			for (const args of cmd_args_array) {
 				const service_req = args.toLowerCase();
+
+				// Check to see if the HDB restart script is running, if it is do not restart HDB
+				if (
+					service_req === hdb_terms.HDB_PROC_DESCRIPTOR.toLowerCase() &&
+					(await pm2_utils.isHdbRestartRunning()) === true
+				) {
+					hdb_logger.notify(RESTART_RUNNING_RESPONSE);
+					console.error(RESTART_RUNNING_RESPONSE);
+					continue;
+				}
+
 				if (hdb_terms.PROCESS_DESCRIPTORS_VALIDATE[service_req] === undefined) {
 					console.error(`Restart received unrecognized service command argument: ${service_req}`);
 					hdb_logger.error(`Restart received unrecognized service command argument: ${service_req}`);
@@ -102,6 +115,13 @@ async function restartProcesses() {
 				hdb_logger.notify(`${service} successfully restarted.`);
 			}
 			return;
+		}
+
+		// Check to see if the HDB restart script is running, if it is abort the restart.
+		if ((await pm2_utils.isHdbRestartRunning()) === true) {
+			hdb_logger.notify(RESTART_RUNNING_RESPONSE);
+			console.error(RESTART_RUNNING_RESPONSE);
+			return RESTART_RUNNING_RESPONSE;
 		}
 
 		console.log(RESTART_RESPONSE);
@@ -176,6 +196,12 @@ async function restartService(json_message) {
 
 	// For clustered services a rolling restart is available.
 	if (service === hdb_terms.PROCESS_DESCRIPTORS.HDB) {
+		// Check to see if the HDB restart script is running, if it is abort the restart.
+		if ((await pm2_utils.isHdbRestartRunning()) === true) {
+			hdb_logger.notify(RESTART_RUNNING_RESPONSE);
+			return RESTART_RUNNING_RESPONSE;
+		}
+
 		await pm2_utils.reloadStopStart(service);
 	} else if (service === hdb_terms.PROCESS_DESCRIPTORS.PM2_LOGROTATE) {
 		await pm2_utils.configureLogRotate();

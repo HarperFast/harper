@@ -7,6 +7,7 @@ const sinon = require('sinon');
 const sinon_chai = require('sinon-chai');
 const expect = chai.expect;
 const settings_test_file = require('../settingsTestFile');
+const logger = require('../../utility/logging/harper_logger');
 const pm2_utils = require('../../utility/pm2/utilityFunctions');
 const rewire = require('rewire');
 const config_utils = require('../../config/configUtils');
@@ -32,6 +33,7 @@ describe('Test stop.js', () => {
 	let is_service_reg_stub;
 	let check_env_setting_stub = sandbox.stub().returns({ clustering_enabled: true, custom_func_enabled: true });
 	let check_env_settings_rw;
+	let is_hdb_restart_running_stub;
 
 	afterEach(() => {
 		sandbox.resetHistory();
@@ -43,6 +45,7 @@ describe('Test stop.js', () => {
 		// I had console.log as a stub but it was stopping npm test from running on the command line.
 		stop = rewire('../../bin/stop');
 		check_env_settings_rw = stop.__set__('checkEnvSettings', check_env_setting_stub);
+		is_hdb_restart_running_stub = sandbox.stub(pm2_utils, 'isHdbRestartRunning');
 	});
 
 	after(() => {
@@ -61,12 +64,18 @@ describe('Test stop.js', () => {
 		let restart_all_services_stub;
 		let pm2_stop_stub;
 		let start_service_stub;
+		let log_notify_stub;
 
 		before(() => {
 			restart_service_rw = stop.__set__('restartService', restart_service_stub);
 			restart_all_services_stub = sandbox.stub(pm2_utils, 'restartAllServices').resolves();
 			pm2_stop_stub = sandbox.stub(pm2_utils, 'stop').resolves();
 			start_service_stub = sandbox.stub(pm2_utils, 'startService').resolves();
+			log_notify_stub = sandbox.stub(logger, 'notify');
+		});
+
+		beforeEach(() => {
+			is_hdb_restart_running_stub.resolves(false);
 		});
 
 		after(() => {
@@ -159,10 +168,39 @@ describe('Test stop.js', () => {
 			expect(pm2_stop_stub.getCall(0).args[0]).to.equal('Custom Functions');
 		});
 
+		it('Test restart is aborted if arg passed to restart', async () => {
+			clearServiceArgs();
+			is_hdb_restart_running_stub.resolves(true);
+			let test_args = ['--service', 'harperdb'];
+			process.argv.push(...test_args);
+			await stop.restartProcesses();
+			expect(log_notify_stub.args[0][0]).to.equal(
+				'HarperDB is currently restarting and must complete before another HarperDB restart can be initialized.'
+			);
+		});
+
+		it('Test restart is aborted if restart all', async () => {
+			clearServiceArgs();
+			is_hdb_restart_running_stub.resolves(true);
+			const result = await stop.restartProcesses();
+			expect(log_notify_stub.args[0][0]).to.equal(
+				'HarperDB is currently restarting and must complete before another HarperDB restart can be initialized.'
+			);
+
+			expect(result).to.equal(
+				'HarperDB is currently restarting and must complete before another HarperDB restart can be initialized.'
+			);
+		});
+
 		it('Test error message is returned', async () => {
+			clearServiceArgs();
+			let test_args = ['--service', 'harperdb'];
+			process.argv.push(...test_args);
 			restart_service_stub.throws(TEST_ERROR);
+			const is_reg_rw = stop.__set__('pm2_utils.isServiceRegistered', sandbox.stub().resolves(true));
 			const response = await stop.restartProcesses();
 			expect(response).to.equal('There was an error restarting HarperDB. Test error stop tests');
+			is_reg_rw();
 		});
 	});
 
@@ -262,6 +300,14 @@ describe('Test stop.js', () => {
 			const result = await stop.restartService({ service: 'Clustering' });
 			expect(restart_stub.called).to.be.true;
 			expect(result).to.equal('Restarting Clustering');
+		});
+
+		it('Test HarperDB is not restarted if restart script is running', async () => {
+			is_hdb_restart_running_stub.resolves(true);
+			const result = await stop.restartService({ service: 'HarperDB' });
+			expect(result).to.equal(
+				'HarperDB is currently restarting and must complete before another HarperDB restart can be initialized.'
+			);
 		});
 	});
 

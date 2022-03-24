@@ -921,4 +921,22 @@ describe('Test pm2 utilityFunctions module', () => {
 			env_rw();
 		}).timeout(20000);
 	});
+
+	describe('Test isHdbRestartRunning function', () => {
+		it('Test true is returned if hdb restart running', async () => {
+			const fake_list = [{ name: 'IPC' }, { name: 'Custom Functions' }, { name: 'Restart HDB' }];
+			const list_rw = utility_functions.__set__('list', sandbox.stub().resolves(fake_list));
+			const result = await utility_functions.isHdbRestartRunning();
+			expect(result).to.be.true;
+			list_rw();
+		});
+
+		it('Test false is returned if hdb restart not running', async () => {
+			const fake_list = [{ name: 'IPC' }, { name: 'Custom Functions' }, { name: 'HarperDB' }];
+			const list_rw = utility_functions.__set__('list', sandbox.stub().resolves(fake_list));
+			const result = await utility_functions.isHdbRestartRunning();
+			expect(result).to.be.false;
+			list_rw();
+		});
+	});
 });

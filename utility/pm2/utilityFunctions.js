@@ -30,6 +30,7 @@ module.exports = {
 	restartHdb,
 	deleteProcess,
 	configureLogRotate,
+	isHdbRestartRunning,
 };
 
 const PM2_LOGROTATE_VERSION = '2.7.0';
@@ -194,6 +195,22 @@ function deleteProcess(service_name) {
  */
 async function restartHdb() {
 	await start(config.generateRestart());
+}
+
+/**
+ * Checks to see if the HDB restart script is currently running.
+ * @returns {Promise<boolean>}
+ */
+async function isHdbRestartRunning() {
+	const all_processes = await list();
+	for (const p in all_processes) {
+		const proc = all_processes[p];
+		if (proc.name === hdb_terms.PROCESS_DESCRIPTORS.RESTART_HDB) {
+			return true;
+		}
+	}
+
+	return false;
 }
 
 /**
