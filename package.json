@@ -1,6 +1,6 @@
 {
   "name": "harperdb",
-  "version": "3.1.5",
+  "version": "4.0.0",
   "description": "HarperDB no-SQL SQL database written in node.js",
   "keywords": [
     "database",
@@ -17,7 +17,7 @@
     "harperdb": "./bin/harperdb.js"
   },
   "engines": {
-    "node": "16.14.0"
+    "node": "16.14.2"
   },
   "homepage": "https://www.harperdb.io/",
   "bugs": "support@harperdb.io",

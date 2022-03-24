@@ -7,7 +7,7 @@ const hdb_terms = require('../hdbTerms');
 const path = require('path');
 
 const DISABLE_FILE_LOG = '/dev/null';
-const BYTENODE_MOD_CLI = path.resolve(__dirname, '../../node_modules/bytenode/cli.js');
+const BYTENODE_MOD_CLI = path.resolve(__dirname, '../../node_modules/bytenode/lib/cli.js');
 const LAUNCH_SCRIPTS_DIR = path.resolve(__dirname, '../../launchServiceScripts');
 const SCRIPTS_DIR = path.resolve(__dirname, '../scripts');
 const RESTART_SCRIPT = path.join(SCRIPTS_DIR, hdb_terms.HDB_RESTART_SCRIPT);

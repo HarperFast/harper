@@ -788,7 +788,7 @@ async function stopProcess(module) {
 function createForkArgs(module_path) {
 	let args = [];
 	if (terms.CODE_EXTENSION === terms.COMPILED_EXTENSION) {
-		args.push(path.resolve(__dirname, '../', 'node_modules', 'bytenode', 'cli.js'));
+		args.push(path.resolve(__dirname, '../', 'node_modules', 'bytenode', 'lib', 'cli.js'));
 	}
 	args.push(module_path);
 	return args;
