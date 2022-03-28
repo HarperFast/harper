@@ -354,7 +354,7 @@ describe('Test customFunctionsServer module', () => {
 
 			const template_routes = `└── /
     ├── test (GET)
-        test (POST)
+    │   test (POST)
     │   └── / (GET)
     │       / (POST)
     │       ├── :id (GET)
@@ -362,6 +362,7 @@ describe('Test customFunctionsServer module', () => {
     │       └── static (GET)
     │           └── / (GET)
     └── * (GET)
+        * (HEAD)
 `;
 
 			const routes = server.printRoutes();

@@ -11,6 +11,7 @@ const logger = require('../utility/logging/harper_logger');
 const hdb_terms = require('../utility/hdbTerms');
 const path = require('path');
 const os = require('os');
+const check_node = require('../launchServiceScripts/utility/checkNodeVersion');
 
 harperDBService();
 
@@ -34,16 +35,11 @@ function checkCallingUserSync() {
 }
 
 function harperDBService() {
-	const current_hdb_node_version = version.nodeVersion();
-	if (
-		process.versions &&
-		process.versions.node &&
-		current_hdb_node_version &&
-		process.versions.node !== current_hdb_node_version
-	) {
-		const version_error = `This version of HarperDB is designed to run on Node ${current_hdb_node_version}.  Please change to this version of Node to proceed.`;
-		logger.error(version_error);
-		console.error(version_error);
+	let node_results = check_node();
+
+	if (node_results && node_results.error) {
+		console.error(node_results.error);
+		logger.error(node_results.error);
 		return;
 	}
 
