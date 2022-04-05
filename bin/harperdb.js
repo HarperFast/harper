@@ -1,14 +1,10 @@
 #!/usr/bin/env node
 'use strict';
-const run = require('./run');
-const install = require('./install');
-const stop = require('./stop');
 
-const version = require('./version');
-const upgrade = require('./upgrade');
-const fs = require('fs');
 const logger = require('../utility/logging/harper_logger');
+const version = require('./version');
 const hdb_terms = require('../utility/hdbTerms');
+const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const check_node = require('../launchServiceScripts/utility/checkNodeVersion');
@@ -45,7 +41,7 @@ function harperDBService() {
 
 	let service;
 
-	fs.readdir(__dirname, (err, files) => {
+	fs.readdir(__dirname, (err) => {
 		if (err) {
 			return logger.error(err);
 		}
@@ -67,17 +63,21 @@ function harperDBService() {
 		let result = undefined;
 		switch (service) {
 			case hdb_terms.SERVICE_ACTIONS_ENUM.RUN:
+				// The require is here to better control the flow of imports when this module is called.
+				const run = require('./run');
 				result = run.run();
 				break;
 			case hdb_terms.SERVICE_ACTIONS_ENUM.INSTALL:
-				install.install((install_err, response) => {
-					if (install_err) {
+				const install = require('./install');
+				install()
+					.then(() => {
+						// The require is here to better control the flow of imports when this module is called.
+						const install_run = require('./run');
+						install_run.run(true);
+					})
+					.catch((install_err) => {
 						console.error(install_err);
-					} else {
-						console.log(response);
-						run.run(true);
-					}
-				});
+					});
 				break;
 			case hdb_terms.SERVICE_ACTIONS_ENUM.REGISTER:
 				// register requires a lot of imports that could fail during install, so only bring it in when needed.
@@ -92,6 +92,8 @@ function harperDBService() {
 					});
 				break;
 			case hdb_terms.SERVICE_ACTIONS_ENUM.STOP:
+				// The require is here to better control the flow of imports when this module is called.
+				const stop = require('./stop');
 				stop
 					.stop()
 					.then(() => {
@@ -102,7 +104,9 @@ function harperDBService() {
 					});
 				break;
 			case hdb_terms.SERVICE_ACTIONS_ENUM.RESTART:
-				stop
+				// The require is here to better control the flow of imports when this module is called.
+				const stop_for_restart = require('./stop');
+				stop_for_restart
 					.restartProcesses()
 					.then()
 					.catch((restart_err) => {
@@ -118,6 +122,8 @@ function harperDBService() {
 				break;
 			case hdb_terms.SERVICE_ACTIONS_ENUM.UPGRADE:
 				logger.setLogLevel(hdb_terms.LOG_LEVELS.INFO);
+				// The require is here to better control the flow of imports when this module is called.
+				const upgrade = require('./upgrade');
 				upgrade
 					.upgrade(null)
 					.then(() => {
@@ -129,7 +135,9 @@ function harperDBService() {
 					});
 				break;
 			default:
-				run.run();
+				// The require is here to better control the flow of imports when this module is called.
+				const run_default = require('./run');
+				run_default.run();
 				break;
 		}
 	});

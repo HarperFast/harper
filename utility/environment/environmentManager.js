@@ -105,7 +105,7 @@ function doesPropFileExist() {
 
 		return true;
 	} catch (e) {
-		log.trace(`The properties file at path ${boot_prop_path} does not exist.`);
+		log.trace(`Environment manager found no properties file at ${boot_prop_path}`);
 		return false;
 	}
 }

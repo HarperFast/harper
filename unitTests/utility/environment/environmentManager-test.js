@@ -119,7 +119,7 @@ describe('Test environmentManager module', () => {
 			const result = does_prop_file_exist();
 
 			expect(result).to.be.false;
-			expect(trace_stub.args[0]).to.eql(['The properties file at path undefined does not exist.']);
+			expect(trace_stub.args[0]).to.eql(['Environment manager found no properties file at undefined']);
 		});
 	});
 

@@ -1,18 +1,19 @@
 'use strict';
 
+const chai = require('chai');
+const { expect } = chai;
 const test_utils = require('../test_utils');
 test_utils.preTestPrep();
 const path = require('path');
-const fs = require('fs-extra');
+const fs_extra = require('fs-extra');
+const fs = require('fs');
 const env_mngr = require('../../utility/environment/environmentManager');
 const environment_utility = require('../../utility/lmdb/environmentUtility');
 const hdb_terms = require('../../utility/hdbTerms');
 const system_schema = require('../../json/systemSchema');
 const assert = require('assert');
 const rewire = require('rewire');
-const mount = require('../../utility/mount_hdb');
-const promisify = require('util').promisify;
-const p_mount = promisify(mount);
+const sinon = require('sinon');
 const rw_mount = rewire('../../utility/mount_hdb');
 
 const create_lmdb_tables = rw_mount.__get__('createLMDBTables');
@@ -22,21 +23,57 @@ const BASE_SCHEMA_PATH = path.join(BASE_BATH, hdb_terms.SCHEMA_DIR_NAME);
 const SYSTEM_SCHEMA_PATH = path.join(BASE_SCHEMA_PATH, hdb_terms.SYSTEM_SCHEMA_NAME);
 
 describe('test mount_hdb module', () => {
+	const sandbox = sinon.createSandbox();
+
 	before(async () => {
-		await fs.mkdirp(BASE_BATH);
+		await fs_extra.mkdirp(BASE_BATH);
 	});
 
 	after(async () => {
-		await fs.remove(BASE_BATH);
+		await fs_extra.remove(BASE_BATH);
+		sandbox.restore();
+	});
+
+	it('Test mountHdb function calls makeDirectory with correct params', async () => {
+		const test_hdb_path = 'mount/test/hdb';
+		const make_dir_stub = sandbox.stub();
+		const create_lmdb_tables_stub = sandbox.stub();
+		const mk_dir_rw = rw_mount.__set__('makeDirectory', make_dir_stub);
+		const create_lmdb_table_rw = rw_mount.__set__('createLMDBTables', create_lmdb_tables_stub);
+		await rw_mount(test_hdb_path);
+		expect(make_dir_stub.getCall(0).args[0]).to.equal('mount/test/hdb');
+		expect(make_dir_stub.getCall(1).args[0]).to.equal('mount/test/hdb/backup');
+		expect(make_dir_stub.getCall(2).args[0]).to.equal('mount/test/hdb/trash');
+		expect(make_dir_stub.getCall(3).args[0]).to.equal('mount/test/hdb/keys');
+		expect(make_dir_stub.getCall(4).args[0]).to.equal('mount/test/hdb/keys/.license');
+		expect(make_dir_stub.getCall(5).args[0]).to.equal('mount/test/hdb/log');
+		expect(make_dir_stub.getCall(6).args[0]).to.equal('mount/test/hdb/doc');
+		expect(make_dir_stub.getCall(7).args[0]).to.equal('mount/test/hdb/schema');
+		expect(make_dir_stub.getCall(8).args[0]).to.equal('mount/test/hdb/schema/system');
+		expect(make_dir_stub.getCall(9).args[0]).to.equal('mount/test/hdb/transactions');
+		expect(make_dir_stub.getCall(10).args[0]).to.equal('mount/test/hdb/clustering');
+		expect(make_dir_stub.getCall(11).args[0]).to.equal('mount/test/hdb/clustering/transaction_log');
+		expect(make_dir_stub.getCall(12).args[0]).to.equal('mount/test/hdb/clustering/connections');
+		expect(create_lmdb_tables_stub.args[0][0]).to.equal('mount/test/hdb/schema/system');
+		mk_dir_rw();
+		create_lmdb_table_rw();
+	});
+
+	it('Test makeDirectory function call mkdirSync as expected', () => {
+		const mkdir_sync_stub = sandbox.stub(fs, 'mkdirSync');
+		const makeDirectory = rw_mount.__get__('makeDirectory');
+		makeDirectory('mount/test/hdb');
+		expect(mkdir_sync_stub.called).to.be.true;
+		mkdir_sync_stub.restore();
 	});
 
 	describe('test createLMDBTables', () => {
 		before(async () => {
-			await fs.mkdirp(SYSTEM_SCHEMA_PATH);
+			await fs_extra.mkdirp(SYSTEM_SCHEMA_PATH);
 		});
 
 		after(async () => {
-			await fs.remove(BASE_SCHEMA_PATH);
+			await fs_extra.remove(BASE_SCHEMA_PATH);
 		});
 
 		it('happy path', async () => {
@@ -67,6 +104,6 @@ describe('test mount_hdb module', () => {
 					assert(all_dbis.indexOf(attribute.attribute) >= 0);
 				});
 			}
-		});
+		}).timeout(20000);
 	});
 });

@@ -1,21 +1,17 @@
 const installer = require('../utility/install/installer');
 const hdb_logger = require('../utility/logging/harper_logger');
+const hdb_terms = require('../utility/hdbTerms');
 
-function install(callback) {
-	installer.install(function (err) {
-		if (err) {
-			if (err === 'REFUSED') {
-				console.log('Terms & Conditions refused, closing installer.');
-				return callback(err, null);
-			}
-			console.log('There was an error during the install.  Please check the install logs. \n ERROR: ' + err);
-			hdb_logger.error(err);
-			return callback(err);
-		}
+module.exports = install;
 
-		callback(null, 'HarperDB Installation was successful');
-	});
+async function install() {
+	try {
+		hdb_logger.createLogFile(hdb_terms.PROCESS_LOG_NAMES.INSTALL, hdb_terms.PROCESS_DESCRIPTORS.INSTALL);
+		await installer();
+	} catch (err) {
+		console.error('There was an error during the install.');
+		console.error(err);
+		hdb_logger.error(err);
+		process.exit(1);
+	}
 }
-module.exports = {
-	install: install,
-};

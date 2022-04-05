@@ -89,10 +89,10 @@ describe('Test run module', () => {
 		const create_log_file_stub = sandbox.stub();
 		const check_trans_log_env_exists_stub = sandbox.stub();
 		const check_jwt_tokens_stub = sandbox.stub();
-		const p_install_install_stub = sandbox.stub();
+		const install_stub = sandbox.stub();
 		let is_hdb_installed_rw;
 		let check_trans_log_env_exists_rw;
-		let p_install_install_rw;
+		let install_rw;
 		let get_ver_update_info_stub;
 		let upgrade_stub;
 		let run;
@@ -105,7 +105,7 @@ describe('Test run module', () => {
 				'checkTransactionLogEnvironmentsExist',
 				check_trans_log_env_exists_stub
 			);
-			p_install_install_rw = run_rw.__set__('p_install_install', p_install_install_stub);
+			install_rw = run_rw.__set__('install', install_stub);
 			get_ver_update_info_stub = sandbox.stub(hdbInfoController, 'getVersionUpdateInfo');
 			upgrade_stub = sandbox.stub(upgrade, 'upgrade');
 			run = run_rw.__get__('run');
@@ -118,7 +118,7 @@ describe('Test run module', () => {
 		after(() => {
 			is_hdb_installed_rw();
 			check_trans_log_env_exists_rw();
-			p_install_install_rw();
+			install_rw();
 			const service_index = process.argv.indexOf('--service');
 			if (service_index > -1) process.argv.splice(service_index, 1);
 			const names_index = process.argv.indexOf('not service,harperdb,ipc,custom functions');
@@ -209,12 +209,12 @@ describe('Test run module', () => {
 		it('Test install is called if HDB not installed', async () => {
 			is_hdb_installed_stub.resolves(false);
 			await run();
-			expect(p_install_install_stub).to.have.been.called;
+			expect(install_stub).to.have.been.called;
 		});
 
 		it('Test error from install is handled as expected', async () => {
 			is_hdb_installed_stub.resolves(false);
-			p_install_install_stub.throws(TEST_ERROR);
+			install_stub.throws(TEST_ERROR);
 			await run();
 
 			expect(console_error_stub.getCall(0).firstArg).to.equal(

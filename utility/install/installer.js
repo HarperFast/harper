@@ -1,122 +1,345 @@
-/**
- * INSTALLER.JS
- *
- * This module is used to install HarperDB.
- */
+'use strict';
 
-const prompt = require('prompt');
-const path = require('path');
-const mount = require('./../mount_hdb');
+const os = require('os');
+const inquirer = require('inquirer');
 const fs = require('fs-extra');
+const PropertiesReader = require('properties-reader');
 const chalk = require('chalk');
-const async = require('async');
+const path = require('path');
 const forge = require('node-forge');
 const hri = require('human-readable-ids').hri;
-const terms_address = 'https://harperdb.io/legal/end-user-license-agreement';
-const env = require('../../utility/environment/environmentManager');
-const os = require('os');
-const comm = require('../common_utils');
-const assignCMDENVVariables = require('../../utility/assignCmdEnvVariables');
-const hdb_terms = require('../hdbTerms');
-const hdbInfoController = require('../../data_layer/hdbInfoController');
-const version = require('../../bin/version');
-const hdb_logger = require('../logging/harper_logger');
-const check_jwt_tokens = require('./checkJWTTokensExist');
-const config_utils = require('../../config/configUtils');
+const ora = require('ora');
 
-module.exports = {
-	install: run_install,
+const hdb_logger = require('../logging/harper_logger');
+const env_manager = require('../environment/environmentManager');
+const hdb_utils = require('../common_utils');
+const assignCMDENVVariables = require('../../utility/assignCmdEnvVariables');
+const hdb_info_controller = require('../../data_layer/hdbInfoController');
+const version = require('../../bin/version');
+const hdb_terms = require('../hdbTerms');
+const install_validator = require('../../validation/installValidator');
+const mount_hdb = require('../mount_hdb');
+const config_utils = require('../../config/configUtils');
+const user_ops = require('../../security/user');
+const role_ops = require('../../security/role');
+const check_jwt_tokens = require('./checkJWTTokensExist');
+const global_schema = require('../../utility/globalSchema');
+const promisify = require('util').promisify;
+const p_schema_to_global = promisify(global_schema.setSchemaDataToGlobal);
+
+// Removes the color formatting that was being applied to the prompt answer.
+const PROMPT_ANSWER_TRANSFORMER = (answer) => answer;
+const HDB_PROMPT_MSG = (msg) => chalk.magenta.bold(msg);
+const TERMS_ADDRESS = 'https://harperdb.io/legal/end-user-license-agreement';
+const LINE_BREAK = os.EOL;
+const PROMPT_PREFIX = '';
+const ACCEPTABLE_TC_RESPONSE = 'yes';
+const INSTALL_START_MSG = 'Starting HarperDB install...';
+const INSTALL_COMPLETE_MSG = 'HarperDB installation was successful.';
+const TC_NOT_ACCEPTED = 'Terms & Conditions acceptance is required to proceed with installation. Exiting install...';
+const UPGRADE_MSG = 'An out of date version of HarperDB is already installed.';
+const HDB_EXISTS_MSG = 'It appears HarperDB is already installed. Exiting install...';
+const ABORT_MSG = 'Aborting install';
+const HDB_PORT_REGEX = new RegExp(
+	/^([0-9]{1,4}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5])$/
+);
+const KEY_PAIR_BITS = 2048;
+const NODE_NAME_REGEX = new RegExp(/^[^\s.,*>]+$/);
+const PROCESS_HOME = process.env['HOME'];
+const DEFAULT_HDB_ROOT = path.join(PROCESS_HOME, hdb_terms.HDB_ROOT_DIR_NAME);
+const DEFAULT_HDB_PORT = 9925;
+const DEFAULT_ADMIN_USERNAME = 'HDB_ADMIN';
+const DEFAULT_CLUSTER_USERNAME = 'CLUSTER_USER';
+
+// Install prompts
+const INSTALL_PROMPTS = {
+	DESTINATION: 'Please enter a destination for HarperDB:',
+	HDB_PORT: 'Please enter a server listening port for HarperDB:',
+	HDB_USERNAME: 'Please enter a username for the HDB_ADMIN:',
+	HDB_PASS: 'Please enter a password for the HDB_ADMIN:',
+	NODE_NAME: 'Please enter a unique name for this node:',
+	CLUSTER_USERNAME: 'Please enter a username for the CLUSTER_USER:',
+	CLUSTER_PASS: 'Please enter a password for the CLUSTER_USER:',
 };
 
-// These require statements were moved below the module.exports to resolve circular dependencies within the harperBridge module.
-const schema = require('../../utility/globalSchema');
-
-let wizard_result;
-let check_install_path = false;
-const KEY_PAIR_BITS = 2048;
-const UPGRADE_MSG = 'Please use `harperdb upgrade` to update your existing instance of HDB. Exiting install...';
-const ABORT_MSG = 'Aborting install';
-
-env.initSync();
+let hdb_root = undefined;
 
 /**
- * Stars the install process by first checking for an existing installation, then firing the steps to complete the install.
- * Information required to complete the install is root path, desired harper port, TCP port, username, and password.
- * @param callback
+ * This module orchestrates the installation of HarperDB.
  */
-function run_install(callback) {
-	hdb_logger.createLogFile(hdb_terms.PROCESS_LOG_NAMES.INSTALL, hdb_terms.PROCESS_DESCRIPTORS.INSTALL);
 
-	if (comm.isEmptyOrZeroLength(os.userInfo().uid)) {
-		let msg = `Installing user: ${
+module.exports = install;
+
+/**
+ * Calls all the functions that are needed to install HarperDB.
+ * @returns {Promise<void>}
+ */
+async function install() {
+	console.log(HDB_PROMPT_MSG(LINE_BREAK + INSTALL_START_MSG + LINE_BREAK));
+	hdb_logger.notify(INSTALL_START_MSG);
+
+	if (hdb_utils.isEmptyOrZeroLength(os.userInfo().uid)) {
+		throw `Installing user: ${
 			os.userInfo().username
-		} has no pid.  Please install with a properly created user. Cancelling install.`;
-		hdb_logger.error(msg);
-		console.log(msg);
-		return callback(msg, null);
+		} has no pid. Please install with a properly created user. Cancelling install.`;
 	}
 
-	prompt.override = checkForPromptOverride();
-	prompt.start();
-	hdb_logger.info('starting install');
-	checkInstall(function (err, keepGoing) {
-		if (keepGoing) {
-			async.waterfall(
-				[
-					termsAgreement,
-					wizard,
-					async.apply(mount, hdb_logger),
-					createSettingsFile,
-					createSuperUser,
-					createClusterUser,
-					generateKeys,
-					insertHdbInfo,
-					(data, callback2) => {
-						check_jwt_tokens();
+	// Check to see if any cmd/env vars are passed that override install prompts.
+	const prompt_override = checkForPromptOverride();
 
-						hdb_logger.info('Installation Successful');
-						callback2();
-					},
-				],
-				function (install_err) {
-					if (install_err) {
-						return callback(install_err, null);
-					}
-					return callback(null, null);
-				}
-			);
-		} else {
-			console.log('Exiting installer');
-			process.exit(0);
-		}
+	// Validate any cmd/env params passed to install
+	const validation_error = install_validator(prompt_override);
+	if (validation_error) {
+		throw validation_error.message;
+	}
+
+	// Check for an existing install of HarperDB.
+	await checkForExistingInstall();
+
+	// Ask the user to accept terms & conditions.
+	await termsAgreement(prompt_override);
+
+	// Prompt the user with params needed for install.
+	const install_params = await installPrompts(prompt_override);
+
+	const spinner = ora({
+		prefixText: HDB_PROMPT_MSG('Installing'),
+		color: 'magenta',
+		spinner: 'simpleDots',
 	});
+	spinner.start();
+
+	// HDB root is the one of the first params we need for install.
+	hdb_root = install_params[hdb_terms.INSTALL_PROMPTS.OPERATIONSAPI_ROOT];
+	if (hdb_utils.isEmpty(hdb_root)) {
+		throw new Error('Installer should have the HDB root param at the stage it is in but it does not.');
+	}
+	env_manager.setHdbBasePath(hdb_root);
+
+	// Creates the HarperDB project folder structure and the LMDB environments/dbis.
+	await mount_hdb(hdb_root);
+
+	// Creates the boot prop file in user home dir. Boot prop file contains location of hdb config.
+	await createBootPropertiesFile();
+
+	// Create the harperdb.conf file
+	await createConfigFile(install_params);
+
+	// Create the super user.
+	await createSuperUser(install_params);
+
+	// Create cluster user if clustering params are passed to install.
+	await createClusterUser(install_params);
+
+	// Create cert and private keys and write to file.
+	await generateKeys();
+
+	// Insert current version of HarperDB into versions table.
+	await insertHdbVersionInfo();
+
+	// Checks that the RSA keys exist for JWT generation, if not we create them.
+	check_jwt_tokens();
+
+	spinner.stop();
+
+	console.log(HDB_PROMPT_MSG(LINE_BREAK + INSTALL_COMPLETE_MSG + LINE_BREAK));
+	hdb_logger.notify(INSTALL_COMPLETE_MSG);
 }
 
 /**
- * Check the cmd/env vars for any values that should override the install wizard prompts.
+ * Asks the user the questions needed to get HarperDB installed.
+ * If cmd/env vats are passed to install the prompts will not be asked.
+ * @param prompt_override - an object that contains all the params needed to install.
+ * @returns {Promise<*>}
  */
-function checkForPromptOverride() {
-	const all_prompts = [
-		'TC_AGREEMENT',
-		'HDB_ROOT',
-		'SERVER_PORT',
-		'HDB_ADMIN_USERNAME',
-		'HDB_ADMIN_PASSWORD',
-		'CLUSTERING_USER',
-		'CLUSTERING_PASSWORD',
-		'CLUSTERING_PORT',
-		'NODE_NAME',
-		'CLUSTERING',
-		'REINSTALL',
+async function installPrompts(prompt_override) {
+	hdb_logger.trace('Getting install prompts and params.');
+
+	let admin_username;
+	const prompts_schema = [
+		{
+			type: 'input',
+			transformer: PROMPT_ANSWER_TRANSFORMER,
+			when: displayCmdEnvVar(
+				prompt_override[hdb_terms.INSTALL_PROMPTS.OPERATIONSAPI_ROOT],
+				INSTALL_PROMPTS.DESTINATION
+			),
+			name: hdb_terms.INSTALL_PROMPTS.OPERATIONSAPI_ROOT,
+			prefix: PROMPT_PREFIX,
+			default: DEFAULT_HDB_ROOT,
+			validate: async (value) => {
+				if (checkForEmptyValue(value)) return checkForEmptyValue(value);
+				if (await fs.pathExists(value)) return `'${value}' is already in use. Please enter a different path.`;
+				return true;
+			},
+			message: HDB_PROMPT_MSG(INSTALL_PROMPTS.DESTINATION),
+		},
+		{
+			type: 'input',
+			transformer: PROMPT_ANSWER_TRANSFORMER,
+			when: displayCmdEnvVar(
+				prompt_override[hdb_terms.INSTALL_PROMPTS.OPERATIONSAPI_NETWORK_PORT],
+				INSTALL_PROMPTS.HDB_PORT
+			),
+			name: hdb_terms.INSTALL_PROMPTS.OPERATIONSAPI_NETWORK_PORT,
+			prefix: PROMPT_PREFIX,
+			default: DEFAULT_HDB_PORT,
+			validate: (value) => {
+				if (HDB_PORT_REGEX.test(value)) return true;
+				return 'Invalid port.';
+			},
+			message: HDB_PROMPT_MSG(INSTALL_PROMPTS.HDB_PORT),
+		},
+		{
+			type: 'input',
+			transformer: PROMPT_ANSWER_TRANSFORMER,
+			when: displayCmdEnvVar(
+				prompt_override[hdb_terms.INSTALL_PROMPTS.HDB_ADMIN_USERNAME],
+				INSTALL_PROMPTS.HDB_USERNAME
+			),
+			name: hdb_terms.INSTALL_PROMPTS.HDB_ADMIN_USERNAME,
+			prefix: PROMPT_PREFIX,
+			default: DEFAULT_ADMIN_USERNAME,
+			validate: (value) => {
+				if (checkForEmptyValue(value)) return checkForEmptyValue(value);
+				// Saving username so it can be used for clustering username validation.
+				admin_username = value;
+				return true;
+			},
+			message: HDB_PROMPT_MSG(INSTALL_PROMPTS.HDB_USERNAME),
+		},
+		{
+			type: 'password',
+			when: displayCmdEnvVar(prompt_override[hdb_terms.INSTALL_PROMPTS.HDB_ADMIN_PASSWORD], INSTALL_PROMPTS.HDB_PASS),
+			name: hdb_terms.INSTALL_PROMPTS.HDB_ADMIN_PASSWORD,
+			prefix: PROMPT_PREFIX,
+			validate: (value) => {
+				if (checkForEmptyValue(value)) return checkForEmptyValue(value);
+				return true;
+			},
+			message: HDB_PROMPT_MSG(INSTALL_PROMPTS.HDB_PASS),
+		},
 	];
 
+	// If clustering is enabled we add a couple more clustering question to the install.
+	if (hdb_utils.autoCastBoolean(prompt_override[hdb_terms.INSTALL_PROMPTS.CLUSTERING_ENABLED]) === true) {
+		const clustering_prompt_schema = [
+			{
+				type: 'input',
+				transformer: PROMPT_ANSWER_TRANSFORMER,
+				when: displayCmdEnvVar(
+					prompt_override[hdb_terms.INSTALL_PROMPTS.CLUSTERING_NODENAME],
+					INSTALL_PROMPTS.NODE_NAME
+				),
+				name: hdb_terms.INSTALL_PROMPTS.CLUSTERING_NODENAME,
+				prefix: PROMPT_PREFIX,
+				default: hri.random(),
+				validate: (value) => {
+					if (!NODE_NAME_REGEX.test(value)) return 'Invalid node name, must not contain ., * or >';
+					return true;
+				},
+				message: HDB_PROMPT_MSG(INSTALL_PROMPTS.NODE_NAME),
+			},
+			{
+				type: 'input',
+				transformer: PROMPT_ANSWER_TRANSFORMER,
+				when: displayCmdEnvVar(
+					prompt_override[hdb_terms.INSTALL_PROMPTS.CLUSTERING_USER],
+					INSTALL_PROMPTS.CLUSTER_USERNAME
+				),
+				name: hdb_terms.INSTALL_PROMPTS.CLUSTERING_USER,
+				prefix: PROMPT_PREFIX,
+				default: DEFAULT_CLUSTER_USERNAME,
+				validate: (value) => {
+					if (checkForEmptyValue(value)) return checkForEmptyValue(value);
+					if (value.toLowerCase() === admin_username.toLowerCase()) return 'Username is already in use.';
+					return true;
+				},
+				message: HDB_PROMPT_MSG(INSTALL_PROMPTS.CLUSTER_USERNAME),
+			},
+			{
+				type: 'password',
+				when: displayCmdEnvVar(
+					prompt_override[hdb_terms.INSTALL_PROMPTS.CLUSTERING_PASSWORD],
+					INSTALL_PROMPTS.CLUSTER_PASS
+				),
+				name: hdb_terms.INSTALL_PROMPTS.CLUSTERING_PASSWORD,
+				prefix: PROMPT_PREFIX,
+				validate: (value) => {
+					if (checkForEmptyValue(value)) return checkForEmptyValue(value);
+					return true;
+				},
+				message: HDB_PROMPT_MSG(INSTALL_PROMPTS.CLUSTER_PASS),
+			},
+		];
+
+		prompts_schema.push(...clustering_prompt_schema);
+	}
+
+	const answers = await inquirer.prompt(prompts_schema);
+	// If there are no answers all the prompts have been overridden.
+	if (Object.keys(answers).length === 0) {
+		return prompt_override;
+	}
+
+	// Loop through the answers and if they dont exist in the prompt_override obj add them.
+	for (const param in answers) {
+		if (prompt_override[param] === undefined) {
+			prompt_override[param] = answers[param];
+		}
+	}
+
+	return prompt_override;
+}
+
+/**
+ * Used to log prompt override values. A boolean is returned because this will
+ * determine if the prompt is called or not.
+ * @param value
+ * @param msg
+ * @returns {boolean}
+ */
+function displayCmdEnvVar(value, msg) {
+	if (value !== undefined) {
+		if (msg.includes('password')) {
+			console.log(`${HDB_PROMPT_MSG(msg)} ${chalk.gray('[hidden]')}`);
+			hdb_logger.trace(`${HDB_PROMPT_MSG(msg)} [hidden]`);
+		} else {
+			console.log(`${HDB_PROMPT_MSG(msg)} ${value}`);
+			hdb_logger.trace(`${HDB_PROMPT_MSG(msg)} ${value}`);
+		}
+		return false;
+	}
+
+	return true;
+}
+
+/**
+ * Checks for an empty value.
+ * @param value
+ * @returns {string|undefined}
+ */
+function checkForEmptyValue(value) {
+	const val = value.replace(/ /g, '');
+	if (val === '' || val === "''" || val === '""') {
+		return 'Value cannot be empty.';
+	}
+
+	return undefined;
+}
+
+/**
+ * Check the cmd/env vars for any values that should override the install prompts.
+ */
+function checkForPromptOverride() {
+	const install_prompts_array = Object.keys(hdb_terms.INSTALL_PROMPTS);
 	// The config refactor meant that some config values have multiple key names (old and new). Also some of the
 	// prompts are not config file values. For this reason we search twice for any matching cmd/env vars.
-	const prompt_cmdenv_args = assignCMDENVVariables(all_prompts);
+	const prompt_cmdenv_args = assignCMDENVVariables(install_prompts_array);
 	const config_cmdenv_args = assignCMDENVVariables(Object.keys(hdb_terms.CONFIG_PARAM_MAP), true);
 	const override_values = {};
 
-	for (const install_prompt of all_prompts) {
+	for (const install_prompt of install_prompts_array) {
 		// Get the config param for a prompt. There will be only one config param for a config value, this is the value
 		// that corresponds to a position in the config yaml file. This can be undefined because some of the prompts are
 		// not config file values.
@@ -124,7 +347,12 @@ function checkForPromptOverride() {
 
 		// If cmd/env var is passed that matches one of the install wizard prompts add it to override values object.
 		if (prompt_cmdenv_args[install_prompt]) {
-			override_values[install_prompt] = prompt_cmdenv_args[install_prompt];
+			if (config_param === undefined) {
+				override_values[install_prompt] = prompt_cmdenv_args[install_prompt];
+			} else {
+				override_values[config_param.toUpperCase()] = prompt_cmdenv_args[install_prompt];
+			}
+
 			// If the prompt has a corresponding config param and that config param is present in the cmd/env vars, set that value
 			// to its corresponding prompt value.
 		} else if (config_param !== undefined && config_cmdenv_args[config_param.toLowerCase()]) {
@@ -136,415 +364,160 @@ function checkForPromptOverride() {
 }
 
 /**
- * Makes a call to insert the hdb_info table with the newly installed version.  This is written as a callback function
- * as we can't make the installer async until we pick a new CLI base.
- *
- * @param callback
+ * Checks for an existing install of HarperDB and prompts user accordingly.
+ * @returns {Promise<void>}
  */
-function insertHdbInfo(callback) {
-	let vers = version.version();
-	if (vers) {
-		//Add initial hdb_info record for new install
-		hdbInfoController
-			.insertHdbInstallInfo(vers)
-			.then((res) => {
-				hdb_logger.info('Product version info was properly inserted');
-				return callback(null, res);
-			})
-			.catch((err) => {
-				hdb_logger.error('Error inserting product version info');
-				hdb_logger.error(err);
-				return callback(err, null);
-			});
-	} else {
-		const err_msg = 'The version is missing/removed from package.json';
-		hdb_logger.error(err_msg);
-		console.log(err_msg);
-		return callback(err_msg, null);
-	}
-}
+async function checkForExistingInstall() {
+	hdb_logger.trace('Checking for existing install.');
+	const boot_prop_path = hdb_utils.getPropsFilePath();
+	const boot_file_exists = await fs.pathExists(boot_prop_path);
 
-/**
- * Prompts the user to accept the linked Terms & Conditions.  If the user does not agree, install process is killed.
- * @param {*} callback
- */
-function termsAgreement(callback) {
-	hdb_logger.info('Asking for terms agreement.');
-	prompt.message = ``;
-	const line_break = os.EOL;
-	let terms_schema = {
-		properties: {
-			TC_AGREEMENT: {
-				description: chalk.magenta(
-					`Terms & Conditions can be found at ${terms_address}${line_break}and can be viewed by typing or copying and pasting the URL into your web browser.${line_break}${'[TC_AGREEMENT] I Agree to the HarperDB Terms and Conditions. (yes/no)'}`
-				),
-			},
-		},
-	};
-	prompt.get(terms_schema, function (err, result) {
-		if (err) {
-			return callback(err);
-		}
-		if (result.TC_AGREEMENT === 'yes') {
-			return callback(null, true);
-		}
-		console.log(chalk.yellow(`Terms & Conditions acceptance is required to proceed with installation.`));
-		hdb_logger.error('Terms and Conditions agreement was refused.');
-		return callback('REFUSED', false);
-	});
-}
-
-/**
- * Checks for the presence of an existing install by finding the hdb_boot props file.  If the file is found, the user
- * is prompted for a decision to reinstall over the existing installation.
- * @param callback
- */
-function checkInstall(callback) {
-	hdb_logger.info('Checking for previous installation.');
-	try {
-		let boot_prop_path = comm.getPropsFilePath();
-		fs.accessSync(boot_prop_path, fs.constants.F_OK | fs.constants.R_OK);
-		env.setProperty(env.BOOT_PROPS_FILE_PATH, boot_prop_path);
-		env.initSync();
-		if (!env.get('HDB_ROOT')) {
-			return callback(null, true);
-		}
-		promptForReinstall((err, result) => callback(err, result));
-	} catch (err) {
-		return callback(err, true);
-	}
-}
-
-function promptForReinstall(callback) {
-	hdbInfoController.getVersionUpdateInfo().then((res) => {
-		// Check
-		if (res !== undefined) {
-			console.log(`${os.EOL}` + chalk.magenta.bold(UPGRADE_MSG));
-			process.exit(0);
-		}
-
-		hdb_logger.info('Previous install detected, asking for reinstall.');
-		let reinstall_schema = {
-			properties: {
-				REINSTALL: {
-					description: chalk.red(
-						`It appears HarperDB version ${version.version()} is already installed.  Enter 'y/yes'to reinstall. (yes/no)`
-					),
-					pattern: /y(es)?$|n(o)?$/,
-					message: "Must respond 'yes' or 'no'",
-					default: 'no',
-					required: true,
-				},
-			},
-		};
-		let overwrite_schema = {
-			properties: {
-				KEEP_DATA: {
-					description: `${os.EOL}` + chalk.red.bold('Would you like to keep your existing data in HDB?  (yes/no)'),
-					pattern: /y(es)?$|n(o)?$/,
-					message: "Must respond 'yes' or 'no'",
-					required: true,
-				},
-			},
-		};
-
-		prompt.message = '';
-		prompt.get(reinstall_schema, function (err, reinstall_result) {
-			if (err) {
-				return callback(err);
-			}
-
-			if (reinstall_result.REINSTALL === 'yes' || reinstall_result.REINSTALL === 'y') {
-				check_install_path = true;
-				prompt.get(overwrite_schema, function (prompt_err, overwrite_result) {
-					if (overwrite_result.KEEP_DATA === 'no' || overwrite_result.KEEP_DATA === 'n') {
-						// don't keep data, tear it all out.
-						fs.remove(env.getHdbBasePath(), function (fs_remove_err) {
-							if (fs_remove_err) {
-								hdb_logger.error(fs_remove_err);
-								console.log(
-									'There was a problem removing the existing installation.  Please check the install log for details.'
-								);
-								return callback(fs_remove_err);
-							}
-
-							fs.unlink(env.get(env.BOOT_PROPS_FILE_PATH), function (fs_unlink_err) {
-								if (fs_unlink_err) {
-									hdb_logger.error(fs_unlink_err);
-									console.log(
-										'There was a problem removing the existing installation.  Please check the install log for details.'
-									);
-									return callback(fs_unlink_err);
-								}
-								return callback(null, true);
-							});
-						});
-					} else {
-						// keep data - this means they should be using the upgrade command
-						console.log(`${os.EOL}` + chalk.magenta.bold(UPGRADE_MSG));
-						process.exit(0);
-					}
-				});
-			} else {
-				return callback(null, false);
-			}
-		});
-	});
-}
-
-/**
- * The install wizard will guide the user through the required data needed for the install.
- * @param err - Errors from the previous (Terms and Conditions) waterfall function.
- * @param callback
- */
-function wizard(err, callback) {
-	prompt.message = ``;
-	hdb_logger.info('Starting install wizard');
-	let admin_username;
-	let install_schema = {
-		properties: {
-			HDB_ROOT: {
-				description: chalk.magenta(`[HDB_ROOT] Please enter the destination for HarperDB`),
-				message: 'HDB_ROOT cannot contain /',
-				default: env.getHdbBasePath() ? env.getHdbBasePath() : process.env['HOME'] + '/hdb',
-				ask: function () {
-					// only ask for HDB_ROOT if it is not defined.
-					if (env.getHdbBasePath()) {
-						console.log(`Using previous install path: ${env.getHdbBasePath()}`);
-						return false;
-					}
-					return true;
-				},
-				required: false,
-			},
-			NODE_NAME: {
-				description: chalk.magenta(`[NODE_NAME] Please enter a unique name for this node`),
-				default: hri.random(),
-				required: false,
-			},
-			SERVER_PORT: {
-				pattern: /^([0-9]{1,4}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5])$/,
-				description: chalk.magenta(`[SERVER_PORT] Please enter a server listening port for HarperDB`),
-				message: 'Invalid port.',
-				default: 9925,
-				required: false,
-			},
-			CLUSTERING_PORT: {
-				pattern: /^([0-9]{1,4}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5])$/,
-				description: chalk.magenta(`[CLUSTERING_PORT] Please enter a listening port for Clustering`),
-				message: 'Invalid port.',
-				default: 1111,
-				required: false,
-			},
-			HDB_ADMIN_USERNAME: {
-				description: chalk.magenta('[HDB_ADMIN_USERNAME] Please enter a username for the HDB_ADMIN'),
-				default: 'HDB_ADMIN',
-				required: true,
-			},
-			HDB_ADMIN_PASSWORD: {
-				description: chalk.magenta('[HDB_ADMIN_PASSWORD] Please enter a password for the HDB_ADMIN'),
-				hidden: true,
-				required: true,
-			},
-			CLUSTERING_USER: {
-				description: chalk.magenta('[CLUSTERING_USER] Please enter a username for the CLUSTERING USER'),
-				default: 'CLUSTER_USER',
-				message: 'Specified username is invalid or already in use.',
-				required: true,
-				// check clustering user name not the same as admin user name
-				conform: function (username) {
-					return username !== admin_username;
-				},
-			},
-			CLUSTERING_PASSWORD: {
-				description: chalk.magenta('[CLUSTERING_PASSWORD] Please enter a password for the CLUSTERING USER'),
-				hidden: true,
-				required: true,
-			},
-		},
-	};
-	//Assign any results from the install wizard to ARGS (which holds results from command line, environment)
-	let ARGS = assignCMDENVVariables(['CLUSTERING']);
-	if (ARGS.CLUSTERING === undefined) {
-		delete install_schema.properties.NODE_NAME;
-		delete install_schema.properties.CLUSTERING_PASSWORD;
-		delete install_schema.properties.CLUSTERING_PORT;
-		delete install_schema.properties.CLUSTERING_USER;
+	let hdb_exists;
+	if (boot_file_exists) {
+		hdb_logger.trace(`Install found an existing boot prop file at:${boot_prop_path}`);
+		const hdb_properties = PropertiesReader(boot_prop_path);
+		const config_file_path = hdb_properties.get(hdb_terms.BOOT_PROP_PARAMS.SETTINGS_PATH_KEY);
+		hdb_exists = await fs.pathExists(config_file_path);
 	}
 
-	console.log(chalk.magenta('' + fs.readFileSync(path.join(__dirname, './ascii_logo.txt'))));
-	console.log(chalk.magenta('                    Installer'));
-
-	prompt.get(install_schema, function (prompt_err, result) {
-		wizard_result = result;
-		//Support the tilde command for HOME.
-		if (wizard_result.HDB_ROOT.indexOf('~') > -1) {
-			let home = process.env['HOME'];
-			if (home !== undefined) {
-				// Replaces ~ with env home and removes any tabs created from user hoping to use autocomplete.
-				let replacement = wizard_result.HDB_ROOT.replace('~', process.env['HOME']).replace(new RegExp('\t', 'g'), '');
-				if (replacement && replacement.length > 0) {
-					wizard_result.HDB_ROOT = replacement;
-				}
-			} else {
-				return callback('~ was specified in the path, but the HOME environment variable is not defined.');
-			}
-		}
-
-		if (!check_install_path) {
-			// Only if reinstall not detected by presence of hdb_boot_props file.  Dig around the provided path to see if an existing install is already there.
-			if (
-				!fs.existsSync(wizard_result.HDB_ROOT) ||
-				!fs.existsSync(wizard_result.HDB_ROOT + '/config/settings.js') ||
-				!fs.existsSync(wizard_result.HDB_ROOT + '/schema/system')
-			) {
-				return callback(prompt_err, wizard_result.HDB_ROOT);
-			}
-			// we have an existing install, prompt for reinstall.
-			promptForReinstall((reinstall_err, reinstall) => {
-				//the process will exit in `promptForReinstall` if they choose not to proceed
-				return callback(null, wizard_result.HDB_ROOT);
-			});
+	if (hdb_exists) {
+		hdb_logger.trace(`Install found existing HDB config at:${boot_prop_path}`);
+		// getVersionUpdateInfo will only return an obj if there is an upgrade directive for the new version.
+		const upgrade_obj = await hdb_info_controller.getVersionUpdateInfo();
+		if (upgrade_obj) {
+			const upgrade_to_ver_msg = `Please use \`harperdb upgrade\` to update to ${version.version()}. Exiting install...`;
+			console.log(LINE_BREAK + chalk.magenta.bold(UPGRADE_MSG));
+			console.log(chalk.magenta.bold(upgrade_to_ver_msg));
+			hdb_logger.error(upgrade_to_ver_msg);
 		} else {
-			return callback(null, wizard_result.HDB_ROOT);
+			console.log(LINE_BREAK + chalk.magenta.bold(HDB_EXISTS_MSG));
+			hdb_logger.error(HDB_EXISTS_MSG);
 		}
-	});
+		process.exit(0);
+	}
 }
 
-function createSuperUser(callback) {
-	hdb_logger.info('Creating Super user.');
-	let role = {
-		role: 'super_user',
-		permission: {
-			super_user: true,
+/**
+ * Prompt the use to accept terms & conditions.
+ * Prompt can be overridden by env/cmd var.
+ * If 'yes' is not provided install process is exited.
+ * @param prompt_override
+ * @returns {Promise<void>}
+ */
+async function termsAgreement(prompt_override) {
+	hdb_logger.info('Asking for terms agreement.');
+	const tc_msg = `Terms & Conditions can be found at ${TERMS_ADDRESS}${LINE_BREAK}and can be viewed by typing or copying and pasting the URL into your web browser.${LINE_BREAK}I Agree to the HarperDB Terms and Conditions. (yes/no)`;
+
+	const terms_question = {
+		prefix: PROMPT_PREFIX,
+		transformer: PROMPT_ANSWER_TRANSFORMER,
+		when: displayCmdEnvVar(prompt_override[hdb_terms.INSTALL_PROMPTS.TC_AGREEMENT], tc_msg),
+		name: hdb_terms.INSTALL_PROMPTS.TC_AGREEMENT,
+		message: HDB_PROMPT_MSG(tc_msg),
+		validate: (input) => {
+			if (input.toLowerCase() === 'yes' || input.toLowerCase() === 'no') {
+				return true;
+			}
+
+			return chalk.yellow(`Please enter 'yes' or 'no'`);
 		},
 	};
 
-	let user = {
-		username: wizard_result.HDB_ADMIN_USERNAME.toString(),
-		password: wizard_result.HDB_ADMIN_PASSWORD.toString(),
-		active: true,
-	};
-
-	createAdminUser(role, user, (err) => {
-		if (err) {
-			return callback(err);
-		}
-
-		callback();
-	});
+	// If the TCs aren't accepted the install process is exited.
+	const tc_result = await inquirer.prompt([terms_question]);
+	if (
+		tc_result[hdb_terms.INSTALL_PROMPTS.TC_AGREEMENT] &&
+		tc_result[hdb_terms.INSTALL_PROMPTS.TC_AGREEMENT].toLowerCase() !== ACCEPTABLE_TC_RESPONSE
+	) {
+		console.log(chalk.yellow(TC_NOT_ACCEPTED));
+		hdb_logger.error(TC_NOT_ACCEPTED);
+		process.exit(0);
+	}
 }
 
-function createClusterUser(callback) {
-	hdb_logger.info('Creating Cluster user.');
-	let role = {
-		role: 'cluster_user',
-		permission: {
-			cluster_user: true,
-		},
-	};
+async function createBootPropertiesFile() {
+	const config_file_path = path.join(hdb_root, hdb_terms.HDB_CONFIG_FILE);
 
-	let user = undefined;
-	if (wizard_result.CLUSTERING_USER !== undefined && wizard_result.CLUSTERING_PASSWORD !== undefined) {
-		user = {
-			username: wizard_result.CLUSTERING_USER.toString(),
-			password: wizard_result.CLUSTERING_PASSWORD.toString(),
-			active: true,
-		};
+	let install_user;
+	try {
+		install_user = os.userInfo().username;
+	} catch (err) {
+		// this could fail on android, try env variables
+		install_user =
+			process.env.USERNAME || process.env.USER || process.env.LOGNAME || process.env.LNAME || process.env.SUDO_USER;
 	}
 
-	createAdminUser(role, user, (err) => {
-		if (err) {
-			return callback(err);
-		}
-
-		callback();
-	});
-}
-
-function createAdminUser(role, admin_user, callback) {
-	hdb_logger.info('Creating admin user.');
-	// These need to be defined here since they use the hdb_boot_properties file, but it has not yet been created
-	// in the installer.
-	const user_ops = require('../../security/user');
-	const role_ops = require('../../security/role');
-	const util = require('util');
-	const cb_role_add_role = util.callbackify(role_ops.addRole);
-	const cb_user_add_user = util.callbackify(user_ops.addUser);
-
-	schema.setSchemaDataToGlobal(() => {
-		cb_role_add_role(role, (err, res) => {
-			if (err) {
-				hdb_logger.error('role failed to create ' + err);
-				console.log('There was a problem creating the default role.  Please check the install log for details.');
-				return callback(err);
-			}
-
-			if (admin_user === undefined) {
-				return callback(null);
-			}
-
-			admin_user.role = res.role;
-
-			cb_user_add_user(admin_user, (add_user_err) => {
-				if (add_user_err) {
-					hdb_logger.error('user creation error' + add_user_err);
-					console.error('There was a problem creating the admin user.  Please check the install log for details.');
-					return callback(add_user_err);
-				}
-				return callback(null);
-			});
-		});
-	});
-}
-
-function createSettingsFile(mount_status, callback) {
-	console.log('Starting HarperDB Install...');
-	hdb_logger.info('Creating settings file.');
-	if (mount_status !== 'complete') {
-		hdb_logger.error('mount failed.');
-		return callback('mount failed');
+	if (!install_user) {
+		throw new Error(
+			'Could not determine current username in this environment.  Please set the USERNAME environment variable in your OS and try install again.'
+		);
 	}
 
-	let settings_path = `${wizard_result.HDB_ROOT}/${hdb_terms.HDB_CONFIG_FILE}`;
-	createBootPropertiesFile(settings_path, (err) => {
-		hdb_logger.info('info', `creating settings file....`);
-		if (err) {
-			hdb_logger.info('info', 'boot properties error' + err);
-			console.error('There was a problem creating the boot file.  Please check the install log for details.');
-			return callback(err);
-		}
+	const boot_props_value = `settings_path = ${config_file_path}
+    install_user = ${install_user}`;
 
-		const ARGS = assignCMDENVVariables(Object.keys(hdb_terms.CONFIG_PARAM_MAP), true);
-		Object.assign(ARGS, wizard_result);
+	const home_dir = hdb_utils.getHomeDir();
+	const home_dir_path = path.join(home_dir, hdb_terms.HDB_HOME_DIR_NAME);
+	const home_dir_keys_dir_path = path.join(home_dir_path, hdb_terms.LICENSE_KEY_DIR_NAME);
 
-		try {
-			// Create the HarperDB config file.
-			config_utils.createConfigFile(ARGS);
-			env.initSync();
-		} catch (config_err) {
-			rollbackInstall(config_err, ARGS);
-		}
+	try {
+		fs.mkdirpSync(home_dir_path, { mode: hdb_terms.HDB_FILE_PERMISSIONS });
+		fs.mkdirpSync(home_dir_keys_dir_path, { mode: hdb_terms.HDB_FILE_PERMISSIONS });
+	} catch (err) {
+		console.error(
+			`Could not make settings directory ${hdb_terms.HDB_HOME_DIR_NAME} in home directory.  Please check your permissions and try again.`
+		);
+	}
 
-		return callback(null);
-	});
+	const props_file_path = path.join(home_dir_path, hdb_terms.BOOT_PROPS_FILE_NAME);
+	try {
+		await fs.writeFile(props_file_path, boot_props_value);
+	} catch (err) {
+		hdb_logger.error(`There was an error creating the boot file at path: ${props_file_path}`);
+		throw err;
+	}
+
+	env_manager.setProperty(hdb_terms.HDB_SETTINGS_NAMES.INSTALL_USER, `${install_user}`);
+	env_manager.setProperty(hdb_terms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY, config_file_path);
+	env_manager.setProperty(env_manager.BOOT_PROPS_FILE_PATH, props_file_path);
+}
+
+/**
+ * Calls the util function that creates the HarperDB config file.
+ * If an error occurs during the create install is rolled backed.
+ * @param install_params
+ * @returns {Promise<void>}
+ */
+async function createConfigFile(install_params) {
+	hdb_logger.trace('Creating HarperDB config file');
+	const args = assignCMDENVVariables(Object.keys(hdb_terms.CONFIG_PARAM_MAP), true);
+	Object.assign(args, install_params);
+
+	try {
+		// Create the HarperDB config file.
+		config_utils.createConfigFile(args);
+		env_manager.initSync();
+	} catch (config_err) {
+		rollbackInstall(config_err);
+	}
 }
 
 /**
  * Used to remove the .harperdb and hdb folder if there is an error with creating the config file.
  * @param err_msg
- * @param install_args
  */
-function rollbackInstall(err_msg, install_args) {
+function rollbackInstall(err_msg) {
+	hdb_logger.error(`Error creating HarperDB config file. Rolling back install - ${err_msg}`);
 	console.error(err_msg);
 	console.error(ABORT_MSG);
 
-	const harperdb_boot_folder = path.resolve(env.get(env.BOOT_PROPS_FILE_PATH), '../');
+	// Remove boot file folder.
+	const harperdb_boot_folder = path.resolve(env_manager.get(env_manager.BOOT_PROPS_FILE_PATH), '../');
 	if (harperdb_boot_folder) {
 		fs.removeSync(harperdb_boot_folder);
 	}
 
-	const hdb_root = env.getHdbBasePath();
+	// Remove HDB.
 	if (hdb_root) {
 		fs.removeSync(hdb_root);
 	}
@@ -552,7 +525,87 @@ function rollbackInstall(err_msg, install_args) {
 	process.exit(1);
 }
 
-function generateKeys(callback) {
+/**
+ * Creates a HarperDB role and then adds a use to that role.
+ * @param role
+ * @param admin_user
+ * @returns {Promise<void>}
+ */
+async function createAdminUser(role, admin_user) {
+	hdb_logger.trace('Creating admin user');
+
+	await p_schema_to_global();
+	let role_response;
+	try {
+		role_response = await role_ops.addRole(role);
+	} catch (err) {
+		throw new Error(`Error creating role - ${err}`);
+	}
+
+	try {
+		admin_user.role = role_response.role;
+		await user_ops.addUser(admin_user);
+	} catch (err) {
+		throw new Error(`Error creating user - ${err}`);
+	}
+}
+
+/**
+ * Create HDB admin user with input from user.
+ * @param install_params
+ * @returns {Promise<void>}
+ */
+async function createSuperUser(install_params) {
+	hdb_logger.trace('Creating Super user.');
+	const role = {
+		role: 'super_user',
+		permission: {
+			super_user: true,
+		},
+	};
+
+	const user = {
+		username: install_params[hdb_terms.INSTALL_PROMPTS.HDB_ADMIN_USERNAME].toString(),
+		password: install_params[hdb_terms.INSTALL_PROMPTS.HDB_ADMIN_PASSWORD].toString(),
+		active: true,
+	};
+
+	await createAdminUser(role, user);
+	delete install_params[hdb_terms.INSTALL_PROMPTS.HDB_ADMIN_USERNAME];
+	delete install_params[hdb_terms.INSTALL_PROMPTS.HDB_ADMIN_PASSWORD];
+}
+
+/**
+ * Creates cluster user if input from user.
+ * @param install_params
+ * @returns {Promise<void>}
+ */
+async function createClusterUser(install_params) {
+	if (
+		install_params[hdb_terms.INSTALL_PROMPTS.CLUSTERING_USER] &&
+		install_params[hdb_terms.INSTALL_PROMPTS.CLUSTERING_PASSWORD]
+	) {
+		hdb_logger.trace('Creating Cluster user.');
+		const role = {
+			role: 'cluster_user',
+			permission: {
+				cluster_user: true,
+			},
+		};
+
+		const user = {
+			username: install_params[hdb_terms.INSTALL_PROMPTS.CLUSTERING_USER].toString(),
+			password: install_params[hdb_terms.INSTALL_PROMPTS.CLUSTERING_PASSWORD].toString(),
+			active: true,
+		};
+
+		await createAdminUser(role, user);
+		delete install_params[hdb_terms.INSTALL_PROMPTS.CLUSTERING_USER];
+		delete install_params[hdb_terms.INSTALL_PROMPTS.CLUSTERING_PASSWORD];
+	}
+}
+
+async function generateKeys() {
 	hdb_logger.info('Generating keys files.');
 	let pki = forge.pki;
 	let keys = pki.rsa.generateKeyPair(KEY_PAIR_BITS);
@@ -641,72 +694,34 @@ function generateKeys(callback) {
 	]);
 
 	cert.sign(keys.privateKey);
+	try {
+		await fs.writeFile(
+			env_manager.get(hdb_terms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_CERTIFICATE),
+			pki.certificateToPem(cert)
+		);
+	} catch (err) {
+		throw new Error(`There was a problem creating the PEM file - ${err}`);
+	}
 
-	// convert a Forge certificate to PEM
-	fs.writeFile(env.get('CERTIFICATE'), pki.certificateToPem(cert), function (err) {
-		if (err) {
-			hdb_logger.error(err);
-			console.error('There was a problem creating the PEM file.  Please check the install log for details.');
-			return callback(err);
-		}
-		fs.writeFile(env.get('PRIVATE_KEY'), forge.pki.privateKeyToPem(keys.privateKey), function (fs_write_file_err) {
-			if (fs_write_file_err) {
-				hdb_logger.error(fs_write_file_err);
-				console.error('There was a problem creating the private key file.  Please check the install log for details.');
-				return callback(fs_write_file_err);
-			}
-			return callback();
-		});
-	});
+	try {
+		await fs.writeFile(
+			env_manager.get(hdb_terms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PRIVATEKEY),
+			forge.pki.privateKeyToPem(keys.privateKey)
+		);
+	} catch (err) {
+		throw new Error(`There was a problem creating the private key file - ${err}`);
+	}
 }
 
-function createBootPropertiesFile(settings_path, callback) {
-	hdb_logger.info('info', 'creating boot file');
-	if (!settings_path) {
-		hdb_logger.error('info', 'missing settings path');
-		return callback('missing setings');
+/**
+ * Makes a call to insert the hdb_info table with the newly installed version,
+ * @returns {Promise<void>}
+ */
+async function insertHdbVersionInfo() {
+	const vers = version.version();
+	if (vers) {
+		await hdb_info_controller.insertHdbInstallInfo(vers);
+	} else {
+		throw new Error('The version is missing/removed from HarperDB package.json');
 	}
-	let install_user = undefined;
-	try {
-		install_user = os.userInfo().username;
-	} catch (err) {
-		// this could fail on android, try env variables
-		install_user =
-			process.env.USERNAME || process.env.USER || process.env.LOGNAME || process.env.LNAME || process.env.SUDO_USER;
-	}
-	if (!install_user) {
-		let msg =
-			'Could not determine current username in this environment.  Please set the USERNAME environment variable in your OS and try install again.';
-		console.error(msg);
-		hdb_logger.error(msg);
-		return callback(msg, null);
-	}
-	let boot_props_value = `settings_path = ${settings_path}
-    install_user = ${install_user}`;
-
-	let home_dir = comm.getHomeDir();
-	let home_dir_path = path.join(home_dir, hdb_terms.HDB_HOME_DIR_NAME);
-	let home_dir_keys_dir_path = path.join(home_dir_path, hdb_terms.LICENSE_KEY_DIR_NAME);
-	try {
-		fs.mkdirpSync(home_dir_path, { mode: hdb_terms.HDB_FILE_PERMISSIONS });
-		fs.mkdirpSync(home_dir_keys_dir_path, { mode: hdb_terms.HDB_FILE_PERMISSIONS });
-	} catch (err) {
-		console.log(
-			`Could not make settings directory ${hdb_terms.HDB_HOME_DIR_NAME} in home directory.  Please check your permissions and try again.`
-		);
-	}
-
-	let props_file_path = path.join(home_dir_path, hdb_terms.BOOT_PROPS_FILE_NAME);
-	fs.writeFile(props_file_path, boot_props_value, function (err) {
-		if (err) {
-			hdb_logger.error('info', `Bootloader error ${err}`);
-			console.error('There was a problem creating the boot file.  Please check the install log for details.');
-			return callback(err);
-		}
-		hdb_logger.info('info', `props path ${props_file_path}`);
-		env.setProperty(hdb_terms.HDB_SETTINGS_NAMES.INSTALL_USER, `${install_user}`);
-		env.setProperty(hdb_terms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY, settings_path);
-		env.setProperty(env.BOOT_PROPS_FILE_PATH, props_file_path);
-		return callback(null, 'success');
-	});
 }

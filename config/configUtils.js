@@ -7,6 +7,7 @@ const config_validator = require('../validation/configValidator');
 const fs = require('fs-extra');
 const YAML = require('yaml');
 const path = require('path');
+const is_number = require('is-number');
 const PropertiesReader = require('properties-reader');
 const { handleHDBError } = require('../utility/errors/hdbError');
 const { HTTP_STATUS_CODES } = require('../utility/errors/commonErrors');
@@ -309,6 +310,10 @@ function castConfigValue(param, value) {
 			return value;
 		}
 	} else {
+		if (is_number(value)) {
+			return parseFloat(value);
+		}
+
 		if (value === true || value === false) {
 			return value;
 		}

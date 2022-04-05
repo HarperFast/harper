@@ -75,27 +75,35 @@ function initLogSettings() {
 		hdb_properties = undefined;
 		if (err.code === hdb_terms.NODE_ERROR_CODES.ENOENT) {
 			// If the env settings haven't been initialized check cmd/env vars for values. If values not found used default.
-			const cmd_envs = assignCMDENVVariables([
-				hdb_terms.HDB_SETTINGS_NAMES.LOG_TO_FILE,
-				hdb_terms.HDB_SETTINGS_NAMES.LOG_TO_STDSTREAMS,
-				hdb_terms.HDB_SETTINGS_NAMES.LOG_LEVEL_KEY,
-			]);
+			const cmd_envs = assignCMDENVVariables(Object.keys(hdb_terms.CONFIG_PARAM_MAP), true);
+			for (const key in cmd_envs) {
+				const config_param = hdb_terms.CONFIG_PARAM_MAP[key];
+				if (config_param) config_param.toLowerCase();
+				const config_value = cmd_envs[key];
+				if (config_param === hdb_terms.CONFIG_PARAMS.LOGGING_LEVEL) {
+					log_level = config_value;
+					continue;
+				}
+
+				if (config_param === hdb_terms.CONFIG_PARAMS.LOGGING_STDSTREAMS) {
+					log_to_stdstreams = config_value;
+					continue;
+				}
+
+				if (config_param === hdb_terms.CONFIG_PARAMS.LOGGING_FILE) {
+					log_to_file = config_param;
+				}
+			}
 
 			const { default_level, default_to_file, default_to_stream } = getDefaultConfig();
 
-			log_to_file = cmd_envs[hdb_terms.HDB_SETTINGS_NAMES.LOG_TO_FILE]
-				? cmd_envs[hdb_terms.HDB_SETTINGS_NAMES.LOG_TO_FILE]
-				: default_to_file;
+			log_to_file = log_to_file === undefined ? default_to_file : log_to_file;
 			log_to_file = autoCastBoolean(log_to_file);
 
-			log_to_stdstreams = cmd_envs[hdb_terms.HDB_SETTINGS_NAMES.LOG_TO_STDSTREAMS]
-				? cmd_envs[hdb_terms.HDB_SETTINGS_NAMES.LOG_TO_STDSTREAMS]
-				: default_to_stream;
+			log_to_stdstreams = log_to_stdstreams === undefined ? default_to_stream : log_to_stdstreams;
 			log_to_stdstreams = autoCastBoolean(log_to_stdstreams);
 
-			log_level = cmd_envs[hdb_terms.HDB_SETTINGS_NAMES.LOG_LEVEL_KEY]
-				? cmd_envs[hdb_terms.HDB_SETTINGS_NAMES.LOG_LEVEL_KEY]
-				: default_level;
+			log_level = log_level === undefined ? default_level : log_level;
 
 			// If env hasn't been initialized process is likely install.
 			log_path = INSTALL_LOG_LOCATION;

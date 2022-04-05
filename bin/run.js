@@ -40,9 +40,6 @@ const HDB_NOT_FOUND_MSG = 'HarperDB not found, starting install process.';
 const INSTALL_ERR = 'There was an error during install, check install_log.log for more details.  Exiting.';
 const HDB_STARTED = 'HarperDB successfully started.';
 
-// promisified functions
-const p_install_install = promisify(install.install);
-
 /**
  * Starts Harper DB.
  * If the hdb_boot_props file is not found, it is assumed an install needs to be performed.
@@ -58,7 +55,7 @@ async function run(called_by_install = false) {
 		if ((await isHdbInstalled()) === false) {
 			console.log(HDB_NOT_FOUND_MSG);
 			try {
-				await p_install_install();
+				await install();
 			} catch (err) {
 				console.error(INSTALL_ERR);
 				hdb_logger.error(err);
