@@ -611,7 +611,7 @@ async function createClusterUser(install_params) {
 }
 
 async function generateKeys() {
-	const hdb_root = env_manager.getHdbBasePath();
+	hdb_root = env_manager.getHdbBasePath();
 	const keys_path = path.join(hdb_root, hdb_terms.LICENSE_KEY_DIR_NAME);
 
 	let cert = await mkcert.createCert({
