@@ -17,6 +17,7 @@ const assignCMDENVVariables = require('../../utility/assignCmdEnvVariables');
 const hdb_info_controller = require('../../data_layer/hdbInfoController');
 const version = require('../../bin/version');
 const hdb_terms = require('../hdbTerms');
+const certificates_terms = require('../../utility/terms/certificates');
 const install_validator = require('../../validation/installValidator');
 const mount_hdb = require('../mount_hdb');
 const config_utils = require('../../config/configUtils');
@@ -63,11 +64,6 @@ const INSTALL_PROMPTS = {
 };
 
 let hdb_root = undefined;
-
-const CA = {
-	key: '-----BEGIN RSA PRIVATE KEY-----\r\nMIIEowIBAAKCAQEArBFJQRfFiJku/KwhV1Ssp7cX61vvuKmd4Rp6A9jB2QLgx8nj\r\n/+Xhp2hPRkISnOA8BuAxr4dMD9syGJwX4kNy9mbZ5Q0fWZCiEGBpVcU1J+k+N5K4\r\nSuZ2SqgxeN2IN2RLzt3GyQY4imcdHgNv7aHoXUrEwBx0MeYEw3IIDXtrYKCR2D8I\r\nvWBfwMUgWa24G8lpWILWA5hd9srRz9NxlAiHSjhbgT7B0xruEpHRCHSyKjvaIJVt\r\nWBR+amejYsAKVrD/hgrqjsA1123Y6++YqvU6vwg64xhS2kz5r3dkNKhvwbWgpZdI\r\nIaRvsiB77f4kLGo0vi8RFgJ1ZRjGg3RRK2w1LQIDAQABAoIBAQCEOmh78EOpnGZC\r\nYBjjHrvrysVD5gvLcfVUtl8Ls7gMB60re1eOIF+PoZZCHKZnDd6zPfiQtj1adg0C\r\nYnnsM/8VoaZS4gm0b3RLd3ubIQifWhuo40RissY2yxfxlPSH9LhZCY8ojnJG0cTL\r\nesK579E8WCfopjUY33XLqEbN7Ylv39J+DSqInjqV3efJZUa+HqUJ98VxxzodcKMD\r\nP3bwUU4gHoSSp4pAsOFH5sQhaIWH1IcNjrAwpee2cJQuh4G157RRIuuUpagtaEG/\r\nXJIiAyBguJyu3JQFnIBQF01N5+omJgXYJ1L0m54543/iIRThmF3zDCDgCyUzmOk+\r\nH6As9fv1AoGBANOpOtOZLSAScjGsgJamT3ceJ2wCa86g2j8Oxu8lJUmUp5s3tA0v\r\nBFW5O3S4KR1EXwkLMBUMrfFM8YvzHWxsXBI6XV8azGLvyqPHxr65OhmpGYkGZMXu\r\nn9okgjkqlewnY2I073gvyK7ppX51UL5y9fF1vlsk+UlW+Rgx/vMHbdcjAoGBANAc\r\nxRUsxs4QJpbS4zD3JOkHjr24a97TrS3kCybAHUMpR2NrEHPZw9zex0/aphOJUHfL\r\nIMkOZdpfDqMfxWy4FAEmqBEMkO2SB+h0Wp4P+qp81ax4vGFiB0cD3wtixr11U1tt\r\nlZ/ZTdv4VDpDFNK1KaplhTDeyuCjeYfS3/GJia9vAoGAcOsAgjBevZR5rXx84WH6\r\nVO8WUu37u7FenXNxt9VWTinrPMh72uixZFY8nOk+rely1e1NCn3IMko9Ns9NbDFm\r\n8SaH95vhXArXTYbfxZIlp9jp0YtCqcHDL+p4Oq04bFMbFyJseu7rHj1x18QYfnHw\r\nOY/6LL/N6k1m+Hx7qgXVmIcCgYB/w0nTCBw84XlvWqSTqQaF8VfWbWP79mP5KmkW\r\nLxdH5g2noVEGbohqDnK6OXd/wusdwByukiJBf94Skyy25AOT+VFwthA7aU1ljhkb\r\ntJ+lDuJ28eBkwLPLCzthWBC+u0qjdJFJAzVjd/7tjcU43nNn4s90AzL12iaAFhvZ\r\nwyA+DQKBgGc/4cdyGJ3YkcA8150gQBawgJZ7q8V1JND87ggWA8wnK3cHn7rMZQl2\r\n3emDp9HEFXFex5dbGDDqZFAoesZCDxjknIn9oNfW4PvaWS8q7b6ZKLZG1p03Pu7/\r\ntYaD0kPbo0kysfFT/co+NgHbdykvIyboomfGdNLTUjYuy6lpwpvs\r\n-----END RSA PRIVATE KEY-----\r\n',
-	cert: '-----BEGIN CERTIFICATE-----\r\nMIIDXDCCAkSgAwIBAgIFNTE4MzQwDQYJKoZIhvcNAQELBQAwXTEXMBUGA1UEAxMO\r\nSGFycGVyREIsIEluYy4xCzAJBgNVBAYTAlVTMQswCQYDVQQIEwJDTzEPMA0GA1UE\r\nBxMGRGVudmVyMRcwFQYDVQQKEw5IYXJwZXJEQiwgSW5jLjAeFw0yMjAzMTEyMzAz\r\nNDlaFw0yNzAzMTAyMzAzNDlaMF0xFzAVBgNVBAMTDkhhcnBlckRCLCBJbmMuMQsw\r\nCQYDVQQGEwJVUzELMAkGA1UECBMCQ08xDzANBgNVBAcTBkRlbnZlcjEXMBUGA1UE\r\nChMOSGFycGVyREIsIEluYy4wggEiMA0GCSqGSIb3DQEBAQUAA4IBDwAwggEKAoIB\r\nAQCsEUlBF8WImS78rCFXVKyntxfrW++4qZ3hGnoD2MHZAuDHyeP/5eGnaE9GQhKc\r\n4DwG4DGvh0wP2zIYnBfiQ3L2ZtnlDR9ZkKIQYGlVxTUn6T43krhK5nZKqDF43Yg3\r\nZEvO3cbJBjiKZx0eA2/toehdSsTAHHQx5gTDcggNe2tgoJHYPwi9YF/AxSBZrbgb\r\nyWlYgtYDmF32ytHP03GUCIdKOFuBPsHTGu4SkdEIdLIqO9oglW1YFH5qZ6NiwApW\r\nsP+GCuqOwDXXbdjr75iq9Tq/CDrjGFLaTPmvd2Q0qG/BtaCll0ghpG+yIHvt/iQs\r\najS+LxEWAnVlGMaDdFErbDUtAgMBAAGjIzAhMA8GA1UdEwEB/wQFMAMBAf8wDgYD\r\nVR0PAQH/BAQDAgIEMA0GCSqGSIb3DQEBCwUAA4IBAQASR4YW/rPK7PNArHVe9zzM\r\nb0rKNX/2T9/0nybRhmE/+hdlSgliTAeebmwkUS2APckmekYt/q2ZY2NS65Fo/jjp\r\nG8TJrtcF4h+ylVqUp0ZXQLFtIsr7r2JZA7hJ6njW6G4DHSZ0gxtECLi4CBlTjzm5\r\nNmnmIDObvGRTuqmcdAZmXeObbta/He2XIzietukPAYX062pNM+G5XT5UM1eG/Vlp\r\nN86vjhpyI+ffKy+C60SJqxmKM3ydgN7oLscE7+2wLPN25XqN4W99OwGsp5dTdu/f\r\n5lPtFayXdJ55e/sNQKmGN+UGLrL05c2MWgjb8U/LFilnupUianceoeSERZmVjzKX\r\n-----END CERTIFICATE-----\r\n',
-};
 
 /**
  * This module orchestrates the installation of HarperDB.
@@ -617,12 +613,12 @@ async function generateKeys() {
 	let cert = await mkcert.createCert({
 		domains: ['127.0.0.1', 'localhost', '::1'],
 		validityDays: 365,
-		caKey: CA.key,
-		caCert: CA.cert,
+		caKey: certificates_terms.CERTIFICATE_VALUES.key,
+		caCert: certificates_terms.CERTIFICATE_VALUES.cert,
 	});
 	//write certificate
 	try {
-		await fs.writeFile(path.join(keys_path, 'certificate.pem'), cert.cert);
+		await fs.writeFile(path.join(keys_path, certificates_terms.CERTIFICATE_PEM_NAME), cert.cert);
 	} catch (e) {
 		hdb_logger.error(e);
 		console.error('There was a problem creating the certificate file.  Please check the install log for details.');
@@ -631,7 +627,7 @@ async function generateKeys() {
 
 	//write private key
 	try {
-		await fs.writeFile(path.join(keys_path, 'privateKey.pem'), cert.key);
+		await fs.writeFile(path.join(keys_path, certificates_terms.PRIVATEKEY_PEM_NAME), cert.key);
 	} catch (e) {
 		hdb_logger.error(e);
 		console.error('There was a problem creating the private key file.  Please check the install log for details.');
@@ -640,7 +636,10 @@ async function generateKeys() {
 
 	//write certificate authority key
 	try {
-		await fs.writeFile(path.join(keys_path, 'ca.pem'), CA.cert);
+		await fs.writeFile(
+			path.join(keys_path, certificates_terms.CA_PEM_NAME),
+			certificates_terms.CERTIFICATE_VALUES.cert
+		);
 	} catch (e) {
 		hdb_logger.error(e);
 		console.error(
