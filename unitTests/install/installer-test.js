@@ -6,7 +6,6 @@ const { expect } = chai;
 const rewire = require('rewire');
 const hdb_utils = require('../../utility/common_utils');
 const fs = require('fs-extra');
-const forge = require('node-forge');
 const inquirer = require('inquirer');
 const path = require('path');
 const hdb_info_controller = require('../../data_layer/hdbInfoController');
@@ -349,6 +348,8 @@ describe('Test installer module', () => {
 		expect(write_file_stub.getCall(0).args[1]).to.include('BEGIN CERTIFICATE');
 		expect(write_file_stub.getCall(1).args[0]).to.include('privateKey.pem');
 		expect(write_file_stub.getCall(1).args[1]).to.include('BEGIN RSA PRIVATE KEY');
+		expect(write_file_stub.getCall(2).args[0]).to.include('ca.pem');
+		expect(write_file_stub.getCall(2).args[1]).to.include('BEGIN CERTIFICATE');
 	});
 
 	it('Test insertHdbVersionInfo calls insert with correct param', async () => {

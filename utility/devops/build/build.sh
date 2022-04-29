@@ -29,6 +29,7 @@ declare -a folders=("bin/*.js"
   "utility/AWS/*.js"
   "utility/pm2/*.js"
   "utility/scripts/*.js"
+  "utility/terms/*.js"
   "validation/*.js"
   "validation/**/*.js"
   "config/*.js")

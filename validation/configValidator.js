@@ -7,12 +7,13 @@ const { boolean, string, number, array } = Joi.types();
 const path = require('path');
 const hdb_logger = require('../utility/logging/harper_logger');
 const hdb_utils = require('../utility/common_utils');
+const certificates_terms = require('../utility/terms/certificates');
 
 const DEFAULT_KEY_DIR = 'keys';
-const DEFAULT_HDB_CERT = 'certificate.pem';
-const DEFAULT_HDB_PRIVATE_KEY = 'privateKey.pem';
-const DEFAULT_CF_CERT = 'certificate.pem';
-const DEFAULT_CF_PRIVATE_KEY = 'privateKey.pem';
+const DEFAULT_HDB_CERT = certificates_terms.CERTIFICATE_PEM_NAME;
+const DEFAULT_HDB_PRIVATE_KEY = certificates_terms.PRIVATEKEY_PEM_NAME;
+const DEFAULT_CF_CERT = certificates_terms.CERTIFICATE_PEM_NAME;
+const DEFAULT_CF_PRIVATE_KEY = certificates_terms.PRIVATEKEY_PEM_NAME;
 const DEFAULT_LOG_FOLDER = 'log';
 const DEFAULT_CUSTOM_FUNCTIONS_FOLDER = 'custom_functions';
 const DEFAULT_CORES_IF_ERR = 4;

@@ -6,7 +6,7 @@ const fs = require('fs-extra');
 const PropertiesReader = require('properties-reader');
 const chalk = require('chalk');
 const path = require('path');
-const forge = require('node-forge');
+const mkcert = require('mkcert');
 const hri = require('human-readable-ids').hri;
 const ora = require('ora');
 
@@ -17,6 +17,7 @@ const assignCMDENVVariables = require('../../utility/assignCmdEnvVariables');
 const hdb_info_controller = require('../../data_layer/hdbInfoController');
 const version = require('../../bin/version');
 const hdb_terms = require('../hdbTerms');
+const certificates_terms = require('../../utility/terms/certificates');
 const install_validator = require('../../validation/installValidator');
 const mount_hdb = require('../mount_hdb');
 const config_utils = require('../../config/configUtils');
@@ -606,110 +607,45 @@ async function createClusterUser(install_params) {
 }
 
 async function generateKeys() {
-	hdb_logger.info('Generating keys files.');
-	let pki = forge.pki;
-	let keys = pki.rsa.generateKeyPair(KEY_PAIR_BITS);
-	let cert = pki.createCertificate();
-	cert.publicKey = keys.publicKey;
-	cert.serialNumber = '01';
-	cert.validity.notBefore = new Date();
-	cert.validity.notAfter = new Date();
-	cert.validity.notAfter.setFullYear(cert.validity.notBefore.getFullYear() + 1);
-	let attrs = [
-		{
-			name: 'commonName',
-			value: 'harperdb.io',
-		},
-		{
-			name: 'countryName',
-			value: 'US',
-		},
-		{
-			shortName: 'ST',
-			value: 'Colorado',
-		},
-		{
-			name: 'localityName',
-			value: 'Denver',
-		},
-		{
-			name: 'organizationName',
-			value: 'HarperDB, Inc',
-		},
-		{
-			shortName: 'OU',
-			value: 'HDB',
-		},
-	];
-	cert.setSubject(attrs);
-	cert.setIssuer(attrs);
-	cert.setExtensions([
-		{
-			name: 'basicConstraints',
-			cA: true,
-			id: 'hdb_1.0',
-		},
-		{
-			name: 'keyUsage',
-			keyCertSign: true,
-			digitalSignature: true,
-			nonRepudiation: true,
-			keyEncipherment: true,
-			dataEncipherment: true,
-		},
-		{
-			name: 'extKeyUsage',
-			serverAuth: true,
-			clientAuth: true,
-			codeSigning: true,
-			emailProtection: true,
-			timeStamping: true,
-		},
-		{
-			name: 'nsCertType',
-			client: true,
-			server: true,
-			email: true,
-			objsign: true,
-			sslCA: true,
-			emailCA: true,
-			objCA: true,
-		},
-		{
-			name: 'subjectAltName',
-			altNames: [
-				{
-					type: 6, // URI
-					value: 'http://example.org/webid#me',
-				},
-				{
-					type: 7, // IP
-					ip: '127.0.0.1',
-				},
-			],
-		},
-		{
-			name: 'subjectKeyIdentifier',
-		},
-	]);
+	hdb_root = env_manager.getHdbBasePath();
+	const keys_path = path.join(hdb_root, hdb_terms.LICENSE_KEY_DIR_NAME);
 
-	cert.sign(keys.privateKey);
+	let cert = await mkcert.createCert({
+		domains: ['127.0.0.1', 'localhost', '::1'],
+		validityDays: 365,
+		caKey: certificates_terms.CERTIFICATE_VALUES.key,
+		caCert: certificates_terms.CERTIFICATE_VALUES.cert,
+	});
+	//write certificate
 	try {
-		await fs.writeFile(
-			env_manager.get(hdb_terms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_CERTIFICATE),
-			pki.certificateToPem(cert)
-		);
-	} catch (err) {
-		throw new Error(`There was a problem creating the PEM file - ${err}`);
+		await fs.writeFile(path.join(keys_path, certificates_terms.CERTIFICATE_PEM_NAME), cert.cert);
+	} catch (e) {
+		hdb_logger.error(e);
+		console.error('There was a problem creating the certificate file.  Please check the install log for details.');
+		throw e;
 	}
 
+	//write private key
+	try {
+		await fs.writeFile(path.join(keys_path, certificates_terms.PRIVATEKEY_PEM_NAME), cert.key);
+	} catch (e) {
+		hdb_logger.error(e);
+		console.error('There was a problem creating the private key file.  Please check the install log for details.');
+		throw e;
+	}
+
+	//write certificate authority key
 	try {
 		await fs.writeFile(
-			env_manager.get(hdb_terms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PRIVATEKEY),
-			forge.pki.privateKeyToPem(keys.privateKey)
+			path.join(keys_path, certificates_terms.CA_PEM_NAME),
+			certificates_terms.CERTIFICATE_VALUES.cert
 		);
-	} catch (err) {
-		throw new Error(`There was a problem creating the private key file - ${err}`);
+	} catch (e) {
+		hdb_logger.error(e);
+		console.error(
+			'There was a problem creating the certificate authority file.  Please check the install log for details.'
+		);
+		throw e;
 	}
 }
 
