@@ -17,7 +17,7 @@
     "harperdb": "./bin/harperdb.js"
   },
   "engines": {
-    "node": "16.14.2"
+    "node": "16.15.0"
   },
   "homepage": "https://www.harperdb.io/",
   "bugs": "support@harperdb.io",
@@ -79,7 +79,7 @@
     "json2csv": "5.0.7",
     "jsonata": "1.8.6",
     "jsonwebtoken": "8.5.1",
-    "lmdb": "2.2.5",
+    "lmdb": "2.3.10",
     "lodash": "4.17.21",
     "mathjs": "10.4.0",
     "microtime": "3.0.0",

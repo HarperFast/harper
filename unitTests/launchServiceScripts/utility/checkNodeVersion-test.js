@@ -22,7 +22,7 @@ describe('test checkNodeVersion', () => {
 		let result = check_node();
 		expect(result).to.eql({
 			error:
-				'This version of HarperDB is designed to run on Node 3.0.0, the currently installed Node.js version is: 16.14.2.  Please change to version of Node.js 3.0.0 to proceed.',
+				'This version of HarperDB is designed to run on Node 3.0.0, the currently installed Node.js version is: 16.15.0.  Please change to version of Node.js 3.0.0 to proceed.',
 		});
 
 		rw_json();

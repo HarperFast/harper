@@ -149,7 +149,7 @@ async function createEnvironment(base_path, env_name, is_txn = false) {
 
 			env.dbis = Object.create(null);
 			//next we create an internal dbi to track the named databases
-			let dbi_init = new OpenDBIObject(true, false);
+			let dbi_init = new OpenDBIObject(false);
 			env.openDB(INTERNAL_DBIS_NAME, dbi_init);
 
 			createDBI(env, lmdb_terms.BLOB_DBI_NAME, false, false);
@@ -339,7 +339,7 @@ function listDBIs(env) {
  * fetches an individual dbi definition from the internal dbi
  * @param {lmdb.RootDatabase} env
  * @param dbi_name
- * @returns {DBIDefinition}
+ * @returns {undefined|DBIDefinition}
  */
 function getDBIDefinition(env, dbi_name) {
 	try {
@@ -349,7 +349,7 @@ function getDBIDefinition(env, dbi_name) {
 		let dbi_definition = new DBIDefinition();
 
 		if (found === undefined) {
-			return dbi_definition;
+			return;
 		}
 
 		try {
@@ -386,7 +386,7 @@ function createDBI(env, dbi_name, dup_sort, is_hash_attribute = false) {
 		//if not create it
 		if (e.message === LMDB_ERRORS.DBI_DOES_NOT_EXIST) {
 			//we version just the hash attribute index
-			let dbi_init = new OpenDBIObject(true, dup_sort, is_hash_attribute === true);
+			let dbi_init = new OpenDBIObject(dup_sort, is_hash_attribute === true);
 
 			let new_dbi = env.openDB(dbi_name, dbi_init);
 
@@ -418,14 +418,19 @@ function openDBI(env, dbi_name) {
 		return env.dbis[dbi_name];
 	}
 
-	let dbi_definition = new DBIDefinition();
+	let dbi_definition;
 	if (dbi_name !== INTERNAL_DBIS_NAME) {
 		dbi_definition = getDBIDefinition(env, dbi_name);
+	} else {
+		dbi_definition = new DBIDefinition();
+	}
+	if (dbi_definition === undefined) {
+		throw new Error(LMDB_ERRORS.DBI_DOES_NOT_EXIST);
 	}
 
 	let dbi;
 	try {
-		let dbi_init = new OpenDBIObject(false, dbi_definition.dup_sort, dbi_definition.useVersions);
+		let dbi_init = new OpenDBIObject(dbi_definition.dup_sort, dbi_definition.useVersions);
 		dbi = env.openDB(dbi_name, dbi_init);
 		//current version of lmdb no longer throws an error if you attempt to open a non-existent dbi, simulating old behavior
 		if (dbi.db === undefined) {
