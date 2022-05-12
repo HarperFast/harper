@@ -170,7 +170,8 @@ async function installPrompts(prompt_override) {
 			default: DEFAULT_HDB_ROOT,
 			validate: async (value) => {
 				if (checkForEmptyValue(value)) return checkForEmptyValue(value);
-				if (await fs.pathExists(value)) return `'${value}' is already in use. Please enter a different path.`;
+				if (await fs.pathExists(path.join(value, 'system/hdb_user/data.mdb')))
+					return `'${value}' is already in use. Please enter a different path.`;
 				return true;
 			},
 			message: HDB_PROMPT_MSG(INSTALL_PROMPTS.DESTINATION),

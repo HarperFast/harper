@@ -4,6 +4,7 @@ const Joi = require('joi');
 const { boolean, string, number } = Joi.types();
 const fs = require('fs-extra');
 const hdb_terms = require('../utility/hdbTerms');
+const path = require('path');
 const validator = require('../validation/validationWrapper');
 
 module.exports = installValidator;
@@ -31,7 +32,7 @@ function installValidator(param) {
 }
 
 function validateRootAvailable(value, helpers) {
-	if (fs.existsSync(value)) {
+	if (fs.existsSync(path.join(value, 'system/hdb_user/data.mdb'))) {
 		return helpers.message(`'${value}' is already in use. Please enter a different path.`);
 	}
 }
