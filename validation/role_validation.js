@@ -19,11 +19,7 @@ const constraintsTemplate = () => ({
 	},
 });
 
-const ROLE_TYPES_ENUM = {
-	SUPER_USER: 'super_user',
-	CLUSTER_USER: 'cluster_user',
-};
-const ROLE_TYPES = Object.values(ROLE_TYPES_ENUM);
+const ROLE_TYPES = Object.values(terms.ROLE_TYPES_ENUM);
 const ATTR_PERMS_KEY = 'attribute_permissions';
 const ATTR_NAME_KEY = 'attribute_name';
 const { PERMS_CRUD_ENUM } = terms;
@@ -233,7 +229,7 @@ function validateNoSUPerms(obj) {
 			if (is_cu_role && is_su_role) {
 				return HDB_ERROR_MSGS.SU_CU_ROLE_COMBINED_ERROR;
 			} else {
-				const role_type = permission.super_user ? ROLE_TYPES_ENUM.SUPER_USER : ROLE_TYPES_ENUM.CLUSTER_USER;
+				const role_type = permission.super_user ? terms.ROLE_TYPES_ENUM.SUPER_USER : terms.ROLE_TYPES_ENUM.CLUSTER_USER;
 				return HDB_ERROR_MSGS.SU_CU_ROLE_NO_PERMS_ALLOWED(role_type);
 			}
 		}

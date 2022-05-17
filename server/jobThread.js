@@ -9,7 +9,6 @@ const user = require('../security/user');
 const promisify = require('util').promisify;
 const p_schema_to_global = promisify(global_schema.setSchemaDataToGlobal);
 const server_utils = require('../server/serverHelpers/serverUtilities');
-const spawn_cluster_connection = require('../server/socketcluster/connector/spawnSCConnection');
 const IPCClient = require('../server/ipc/IPCClient');
 const p_timeout = promisify(setTimeout);
 const CONNECT_TRIES = 5;
@@ -37,7 +36,6 @@ async function thread(argument) {
 			throw err;
 		}
 
-		spawn_cluster_connection(false);
 		await waitForSocketToConnect();
 		let operation = server_utils.getOperationFunction(argument);
 		let results = await operation.job_operation_function(argument);

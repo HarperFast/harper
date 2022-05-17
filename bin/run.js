@@ -15,6 +15,7 @@ const install_user_permission = require('../utility/install_user_permission');
 const hdb_utils = require('../utility/common_utils');
 const config_utils = require('../config/configUtils');
 const assignCMDENVVariables = require('../utility/assignCmdEnvVariables');
+const nats_config = require('../server/nats/utility/natsConfig');
 const { promisify } = require('util');
 const stop = require('./stop');
 const upgrade = require('./upgrade');
@@ -114,6 +115,10 @@ async function run(called_by_install = false) {
 		}
 
 		const clustering_enabled = hdb_utils.autoCastBoolean(env.get(terms.HDB_SETTINGS_NAMES.CLUSTERING_ENABLED_KEY));
+		if (clustering_enabled) {
+			await nats_config.generateNatsConfig();
+		}
+
 		const custom_func_enabled = hdb_utils.autoCastBoolean(
 			env.get(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_ENABLED_KEY)
 		);
@@ -145,12 +150,18 @@ async function run(called_by_install = false) {
 				}
 
 				// If clustering not enabled in settings.js do not start.
-				if (service === terms.PROCESS_DESCRIPTORS.CLUSTERING.toLowerCase() && !clustering_enabled) {
+				if (service.includes('clustering') && !clustering_enabled) {
 					hdb_logger.error(`${service} is not enabled in settings`);
 					continue;
 				}
 
-				await pm2_utils.startService(terms.PROCESS_DESCRIPTORS_VALIDATE[service]);
+				if (service === 'clustering') {
+					// Start all services that are required for clustering
+					await pm2_utils.startClustering();
+				} else {
+					await pm2_utils.startService(terms.PROCESS_DESCRIPTORS_VALIDATE[service]);
+				}
+
 				const log_msg = `${terms.PROCESS_DESCRIPTORS_VALIDATE[service]} successfully started.`;
 				hdb_logger.notify(log_msg);
 				console.log(log_msg);
@@ -161,8 +172,7 @@ async function run(called_by_install = false) {
 			await pm2_utils.startAllServices();
 		} else if (clustering_enabled) {
 			await startHdbIpc();
-			await pm2_utils.startService(terms.PROCESS_DESCRIPTORS.CLUSTERING);
-			await pm2_utils.startService(terms.PROCESS_DESCRIPTORS.CLUSTERING_CONNECTOR);
+			await pm2_utils.startClustering();
 		} else if (custom_func_enabled) {
 			await startHdbIpc();
 			await pm2_utils.startService(terms.PROCESS_DESCRIPTORS.CUSTOM_FUNCTIONS);

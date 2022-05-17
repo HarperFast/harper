@@ -18,13 +18,14 @@ const Batch = require('stream-json/utils/Batch');
 const comp = require('stream-chain/utils/comp');
 const { finished } = require('stream');
 const env = require('../utility/environment/environmentManager');
-const socket_cluster_util = require('../server/socketcluster/util/socketClusterUtils');
-const transact_to_clustering_utils = require('../server/transactToClusteringUtilities');
+const transact_to_clustering_utils = require('../utility/clustering/transactToClusteringUtilities');
 const op_func_caller = require('../utility/OperationFunctionCaller');
 const AWSConnector = require('../utility/AWS/AWSConnector');
 const { BulkLoadFileObject, BulkLoadDataObject } = require('./data_objects/BulkLoadObjects');
 const PermissionResponseObject = require('../security/data_objects/PermissionResponseObject');
 const { verifyBulkLoadAttributePerms } = require('../utility/operation_authorization');
+const ClusteringOriginObject = require('../utility/clustering/ClusteringOriginObject');
+const nats_utils = require('../server/nats/utility/natsUtils');
 
 const CSV_NO_RECORDS_MSG = 'No records parsed from csv file.';
 const TEMP_DOWNLOAD_DIR = `${env.get('HDB_ROOT')}/tmp`;
@@ -48,14 +49,11 @@ module.exports = {
 
 /**
  * Load csv values specified as a string in the message 'data' field.
- *
- * @param json_message - An object representing the CSV file.
- * @returns validation_msg - Contains any validation errors found
- * @returns error - any errors found reading the csv file
- * @returns err - any errors found during the bulk load
- *
+ * @param json_message
+ * @param originators
+ * @returns {Promise<string>}
  */
-async function csvDataLoad(json_message) {
+async function csvDataLoad(json_message, originators = []) {
 	let validation_msg = validator.dataObject(json_message);
 	if (validation_msg) {
 		throw handleHDBError(
@@ -111,7 +109,8 @@ async function csvDataLoad(json_message) {
 		bulk_load_result = await op_func_caller.callOperationFunctionAsAwait(
 			callBulkFileLoad,
 			converted_msg,
-			postCSVLoadFunction.bind(null, parse_results.meta.fields)
+			postCSVLoadFunction.bind(null, parse_results.meta.fields),
+			originators
 		);
 
 		if (bulk_load_result.message === CSV_NO_RECORDS_MSG) {
@@ -778,12 +777,9 @@ async function bulkFileLoad(records, schema, table, action) {
 	}
 }
 
-async function postCSVLoadFunction(fields, orig_bulk_msg, result, orig_req) {
-	let transaction_msg = hdb_utils.getClusterMessage(hdb_terms.CLUSTERING_MESSAGE_TYPES.HDB_TRANSACTION);
-	transaction_msg.__transacted = true;
-
+async function postCSVLoadFunction(fields, orig_bulk_msg, result, originators = []) {
 	if (!orig_bulk_msg.transact_to_cluster) {
-		transact_to_clustering_utils.sendAttributeTransaction(result, orig_bulk_msg, transaction_msg, orig_req);
+		await transact_to_clustering_utils.sendAttributeTransaction(result, orig_bulk_msg, originators);
 		delete result.new_attributes;
 		return result;
 	}
@@ -798,24 +794,33 @@ async function postCSVLoadFunction(fields, orig_bulk_msg, result, orig_req) {
 		columns: fields,
 	});
 
-	transaction_msg.transaction = {
+	let username = undefined;
+	if (orig_bulk_msg.hdb_user && orig_bulk_msg.hdb_user.username) {
+		username = orig_bulk_msg.hdb_user.username;
+	}
+
+	let transaction = {
 		operation: 'csv_data_load',
 		action: orig_bulk_msg.action ? orig_bulk_msg.action : 'insert',
 		schema: orig_bulk_msg.schema,
 		table: orig_bulk_msg.table,
 		transact_to_cluster: orig_bulk_msg.transact_to_cluster,
 		data: unparse_results,
+		__origin: new ClusteringOriginObject(
+			result.txn_time,
+			username,
+			env.get(hdb_terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY)
+		),
 	};
-	if (orig_req) {
-		socket_cluster_util.concatSourceMessageHeader(transaction_msg, orig_req);
-	}
-	hdb_utils.sendTransactionToSocketCluster(
-		`${orig_bulk_msg.schema}:${orig_bulk_msg.table}`,
-		transaction_msg,
-		env.get(hdb_terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY)
+
+	await nats_utils.publishToStream(
+		`${orig_bulk_msg.schema}.${orig_bulk_msg.table}`,
+		`${orig_bulk_msg.schema}_${orig_bulk_msg.table}`,
+		[transaction],
+		originators
 	);
 
-	transact_to_clustering_utils.sendAttributeTransaction(result, orig_bulk_msg, transaction_msg, orig_req);
+	await transact_to_clustering_utils.sendAttributeTransaction(result, orig_bulk_msg, originators);
 	delete result.new_attributes;
 }
 

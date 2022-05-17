@@ -1,3 +1,7 @@
+'use strict';
+
+const hdb_utils = require('../utility/common_utils');
+const hdb_terms = require('../utility/hdbTerms');
 const schema_regex = /^[\x20-\x2E|\x30-\x5F|\x61-\x7E]*$/;
 const Joi = require('joi');
 
@@ -22,8 +26,38 @@ const hdb_schema_table = Joi.alternatives(
 	Joi.number()
 ).required();
 
+function validateSchemaExists(value, helpers) {
+	if (!hdb_utils.doesSchemaExist(value)) {
+		return helpers.message(`Schema '${value}' does not exist`);
+	}
+
+	return value;
+}
+
+function validateTableExists(value, helpers) {
+	const schema = helpers.state.ancestors[0].schema;
+	if (!hdb_utils.doesTableExist(schema, value)) {
+		return helpers.message(`Table '${value}' does not exist`);
+	}
+
+	return value;
+}
+
+function validateSchemaName(value, helpers) {
+	if (value.toLowerCase() === hdb_terms.SYSTEM_SCHEMA_NAME) {
+		return helpers.message(
+			`'subscriptions[${helpers.state.path[1]}]' invalid schema name, '${hdb_terms.SYSTEM_SCHEMA_NAME}' name is reserved`
+		);
+	}
+
+	return value;
+}
+
 module.exports = {
 	common_validators,
 	schema_regex,
 	hdb_schema_table,
+	validateSchemaExists,
+	validateTableExists,
+	validateSchemaName,
 };

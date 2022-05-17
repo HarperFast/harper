@@ -9,7 +9,7 @@ const sql = require('../../sqlTranslator/index');
 const update = rewire('../../data_layer/update');
 const insert = require('../../data_layer/insert');
 const test_utils = require('../test_utils');
-const transact_to_clustering_utilities = require('../../server/transactToClusteringUtilities');
+const transact_to_clustering_utilities = require('../../utility/clustering/transactToClusteringUtilities');
 
 describe('Test update module', () => {
 	const sandbox = sinon.createSandbox();

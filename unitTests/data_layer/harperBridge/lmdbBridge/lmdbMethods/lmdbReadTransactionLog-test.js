@@ -20,7 +20,7 @@ const UpdateObject = require('../../../../../data_layer/UpdateObject');
 const DeleteObject = require('../../../../../data_layer/DeleteObject');
 const ReadTransactionLogObject = require('../../../../../data_layer/ReadTransactionLogObject');
 
-const ClusteringOriginObject = require('../../../../../server/ClusteringOriginObject');
+const ClusteringOriginObject = require('../../../../../utility/clustering/ClusteringOriginObject');
 const InsertRecordsResponseObject = require('../../../../../utility/lmdb/InsertRecordsResponseObject');
 const UpdateRecordsResponseObject = require('../../../../../utility/lmdb/UpdateRecordsResponseObject');
 const DeleteRecordsResponseObject = require('../../../../../utility/lmdb/DeleteRecordsResponseObject');

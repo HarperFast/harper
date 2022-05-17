@@ -41,7 +41,7 @@ module.exports = {
  * @param args - any args that the user provided.
  */
 function createConfigFile(args) {
-	const config_doc = YAML.parseDocument(fs.readFileSync(DEFAULT_CONFIG_FILE_PATH, 'utf8'));
+	const config_doc = parseYamlDoc(DEFAULT_CONFIG_FILE_PATH);
 	flat_default_config_obj = flattenConfig(config_doc.toJSON());
 
 	// Loop through the user inputted args. Match them to a parameter in the default config file and update value.
@@ -79,7 +79,7 @@ function createConfigFile(args) {
  */
 function getDefaultConfig(param) {
 	if (flat_default_config_obj === undefined) {
-		const config_doc = YAML.parseDocument(fs.readFileSync(DEFAULT_CONFIG_FILE_PATH, 'utf8'));
+		const config_doc = parseYamlDoc(DEFAULT_CONFIG_FILE_PATH);
 		flat_default_config_obj = flattenConfig(config_doc.toJSON());
 	}
 
@@ -132,7 +132,7 @@ function initConfig(force = false) {
 		const config_file_path = hdb_properties.get(hdb_terms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY);
 		let config_doc;
 		try {
-			config_doc = YAML.parseDocument(fs.readFileSync(config_file_path, 'utf8'));
+			config_doc = parseYamlDoc(config_file_path);
 		} catch (err) {
 			if (err.code === hdb_terms.NODE_ERROR_CODES.ENOENT) {
 				logger.trace(`HarperDB config file not found at ${config_file_path}. 
@@ -171,10 +171,25 @@ function validateConfig(config_doc) {
 	config_doc.setIn(['operationsApi', 'processes'], validation.value.operationsApi.processes);
 	config_doc.setIn(['customFunctions', 'root'], validation.value.customFunctions.root);
 	config_doc.setIn(['logging', 'root'], validation.value.logging.root);
-	config_doc.setIn(['operationsApi', 'network', 'certificate'], validation.value.operationsApi.network.certificate);
-	config_doc.setIn(['operationsApi', 'network', 'privateKey'], validation.value.operationsApi.network.privateKey);
-	config_doc.setIn(['customFunctions', 'network', 'certificate'], validation.value.customFunctions.network.certificate);
-	config_doc.setIn(['customFunctions', 'network', 'privateKey'], validation.value.customFunctions.network.privateKey);
+	config_doc.setIn(['operationsApi', 'tls', 'certificate'], validation.value.operationsApi.tls.certificate);
+	config_doc.setIn(['operationsApi', 'tls', 'privateKey'], validation.value.operationsApi.tls.privateKey);
+	config_doc.setIn(['customFunctions', 'tls', 'certificate'], validation.value.customFunctions.tls.certificate);
+	config_doc.setIn(['customFunctions', 'tls', 'privateKey'], validation.value.customFunctions.tls.privateKey);
+
+	if (!hdb_utils.isEmpty(validation.value?.clustering?.tls?.certificate)) {
+		config_doc.setIn(['clustering', 'tls', 'certificate'], validation.value.clustering.tls.certificate);
+	}
+
+	if (!hdb_utils.isEmpty(validation.value?.clustering?.tls?.privateKey)) {
+		config_doc.setIn(['clustering', 'tls', 'privateKey'], validation.value.clustering.tls.privateKey);
+	}
+
+	if (!hdb_utils.isEmpty(validation.value?.clustering?.tls?.certificateAuthority)) {
+		config_doc.setIn(
+			['clustering', 'tls', 'certificateAuthority'],
+			validation.value.clustering.tls.certificateAuthority
+		);
+	}
 }
 
 /**
@@ -202,7 +217,7 @@ function updateConfigObject(param, value) {
  * Updates and validates a config value in config file. Can also create a backup of config before updating.
  * @param param - the config value to update
  * @param value - the value to set the config to
- * @param parsed_args - an array of param/values to update
+ * @param parsed_args - an object of param/values to update
  * @param create_backup - if true backup file is created
  * @param update_config_obj - if true updates the in memory flattened config object
  */
@@ -214,7 +229,7 @@ function updateConfigValue(param, value, parsed_args = undefined, create_backup 
 	// Old root/path is used just in case they are updating the operations api root.
 	const old_hdb_root = getConfigValue(hdb_terms.CONFIG_PARAM_MAP.hdb_root);
 	const old_config_path = path.join(old_hdb_root, hdb_terms.HDB_CONFIG_FILE);
-	const config_doc = YAML.parseDocument(fs.readFileSync(old_config_path, 'utf8'));
+	const config_doc = parseYamlDoc(old_config_path);
 
 	if (parsed_args === undefined) {
 		const config_param = hdb_terms.CONFIG_PARAM_MAP[param.toLowerCase()];
@@ -318,6 +333,14 @@ function castConfigValue(param, value) {
 			return value;
 		}
 
+		if (Array.isArray(value)) {
+			return value;
+		}
+
+		if (hdb_utils.isObject(value)) {
+			return value;
+		}
+
 		if (typeof value === 'string' && value.toLowerCase() === 'true') {
 			return true;
 		}
@@ -328,7 +351,7 @@ function castConfigValue(param, value) {
 	}
 
 	// undefined is not used in our yaml, just null.
-	if (value.toLowerCase() === 'undefined' || value.toLowerCase() === undefined) {
+	if (value === undefined || value.toLowerCase() === 'undefined') {
 		return null;
 	}
 
@@ -343,7 +366,7 @@ function getConfiguration() {
 	const boot_props_file_path = hdb_utils.getPropsFilePath();
 	const hdb_properties = PropertiesReader(boot_props_file_path);
 	const config_file_path = hdb_properties.get(hdb_terms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY);
-	const config_doc = YAML.parseDocument(fs.readFileSync(config_file_path, 'utf8'));
+	const config_doc = parseYamlDoc(config_file_path);
 
 	return config_doc.toJSON();
 }
@@ -377,7 +400,11 @@ function readConfigFile() {
 
 	const hdb_properties = PropertiesReader(boot_props_file_path);
 	const config_file_path = hdb_properties.get(hdb_terms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY);
-	const config_doc = YAML.parseDocument(fs.readFileSync(config_file_path, 'utf8'));
+	const config_doc = parseYamlDoc(config_file_path);
 
 	return config_doc.toJSON();
+}
+
+function parseYamlDoc(file_path) {
+	return YAML.parseDocument(fs.readFileSync(file_path, 'utf8'), { simpleKeys: true });
 }

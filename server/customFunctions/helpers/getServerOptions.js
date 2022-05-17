@@ -24,8 +24,8 @@ function getServerOptions(is_https) {
 	};
 
 	if (is_https) {
-		const privateKey = env.get(CONFIG_PARAMS.CUSTOMFUNCTIONS_NETWORK_PRIVATEKEY);
-		const certificate = env.get(CONFIG_PARAMS.CUSTOMFUNCTIONS_NETWORK_CERTIFICATE);
+		const privateKey = env.get(CONFIG_PARAMS.CUSTOMFUNCTIONS_TLS_PRIVATEKEY);
+		const certificate = env.get(CONFIG_PARAMS.CUSTOMFUNCTIONS_TLS_CERTIFICATE);
 		server_opts.https = {
 			key: fs.readFileSync(`${privateKey}`),
 			cert: fs.readFileSync(`${certificate}`),

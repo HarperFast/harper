@@ -15,12 +15,12 @@ const BYTENODE_MOD_CLI = path.resolve(__dirname, '../../../node_modules/bytenode
 const LAUNCH_SCRIPTS_DIR = path.resolve(__dirname, '../../../launchServiceScripts');
 const SCRIPTS_DIR = path.resolve(__dirname, '../../../utility/scripts');
 const RESTART_SCRIPT = path.join(SCRIPTS_DIR, hdb_terms.HDB_RESTART_SCRIPT);
+const NATS_SERVER_BINARY_PATH = path.resolve(__dirname, '../../../dependencies', 'nats-server');
 
 let LOG_PATH;
 
 describe('Test pm2 servicesConfig module', () => {
 	const sandbox = sinon.createSandbox();
-	// const getInstanceCount = services_config.__get__('getInstanceCount');
 	let os_cpus_stub;
 
 	before(() => {
@@ -71,84 +71,6 @@ describe('Test pm2 servicesConfig module', () => {
 			},
 		};
 		const result = services_config.generateIPCServerConfig();
-		expect(result).to.eql(expected_result);
-	});
-
-	it('Test result from generateClusteringConnectorConfig function is correct non compiled', () => {
-		process.env.HDB_COMPILED = 'false';
-		const expected_result = {
-			name: 'Clustering Connector',
-			script: hdb_terms.SERVICE_SERVERS.CLUSTERING_CONNECTOR,
-			exec_mode: 'fork',
-			out_file: path.join(LOG_PATH, hdb_terms.PROCESS_LOG_NAMES.CLUSTERING_CONNECTOR),
-			error_file: path.join(LOG_PATH, hdb_terms.PROCESS_LOG_NAMES.CLUSTERING_CONNECTOR),
-			instances: 1,
-			cwd: hdb_terms.SERVICE_SERVERS_CWD.CLUSTERING,
-			merge_logs: true,
-			env: {
-				PROCESS_NAME: hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_CONNECTOR,
-			},
-		};
-		const result = services_config.generateClusteringConnectorConfig();
-		expect(result).to.eql(expected_result);
-	});
-
-	it('Test result from generateClusteringConnectorConfig function is correct compiled', () => {
-		process.env.HDB_COMPILED = 'true';
-		const expected_result = {
-			name: 'Clustering Connector',
-			script: BYTENODE_MOD_CLI,
-			args: hdb_terms.SERVICE_SERVERS.CLUSTERING_CONNECTOR,
-			exec_mode: 'fork',
-			out_file: path.join(LOG_PATH, hdb_terms.PROCESS_LOG_NAMES.CLUSTERING_CONNECTOR),
-			error_file: path.join(LOG_PATH, hdb_terms.PROCESS_LOG_NAMES.CLUSTERING_CONNECTOR),
-			instances: 1,
-			cwd: hdb_terms.SERVICE_SERVERS_CWD.CLUSTERING,
-			merge_logs: true,
-			env: {
-				PROCESS_NAME: hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_CONNECTOR,
-			},
-		};
-		const result = services_config.generateClusteringConnectorConfig();
-		expect(result).to.eql(expected_result);
-	});
-
-	it('Test result from generateClusteringServerConfig function is correct non compiled', () => {
-		process.env.HDB_COMPILED = 'false';
-		const expected_result = {
-			name: 'Clustering',
-			script: hdb_terms.SERVICE_SERVERS.CLUSTERING,
-			exec_mode: 'fork',
-			out_file: path.join(LOG_PATH, hdb_terms.PROCESS_LOG_NAMES.CLUSTERING),
-			error_file: path.join(LOG_PATH, hdb_terms.PROCESS_LOG_NAMES.CLUSTERING),
-			instances: 1,
-			cwd: hdb_terms.SERVICE_SERVERS_CWD.CLUSTERING,
-			merge_logs: true,
-			env: {
-				PROCESS_NAME: hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING,
-			},
-		};
-		const result = services_config.generateClusteringServerConfig();
-		expect(result).to.eql(expected_result);
-	});
-
-	it('Test result from generateClusteringServerConfig function is correct compiled', () => {
-		process.env.HDB_COMPILED = 'true';
-		const expected_result = {
-			name: 'Clustering',
-			script: BYTENODE_MOD_CLI,
-			args: hdb_terms.SERVICE_SERVERS.CLUSTERING,
-			exec_mode: 'fork',
-			out_file: path.join(LOG_PATH, hdb_terms.PROCESS_LOG_NAMES.CLUSTERING),
-			error_file: path.join(LOG_PATH, hdb_terms.PROCESS_LOG_NAMES.CLUSTERING),
-			instances: 1,
-			cwd: hdb_terms.SERVICE_SERVERS_CWD.CLUSTERING,
-			merge_logs: true,
-			env: {
-				PROCESS_NAME: hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING,
-			},
-		};
-		const result = services_config.generateClusteringServerConfig();
 		expect(result).to.eql(expected_result);
 	});
 
@@ -230,6 +152,82 @@ describe('Test pm2 servicesConfig module', () => {
 			},
 		};
 		const result = services_config.generateRestart();
+		expect(result).to.eql(expected_result);
+	});
+
+	it('Test result from generateNatsHubServerConfig function is correct', () => {
+		const hdb_root = env.get(hdb_terms.CONFIG_PARAMS.OPERATIONSAPI_ROOT);
+		const hub_config_path = path.join(hdb_root, 'clustering', 'hub.json');
+		const expected_result = {
+			name: 'Clustering Hub',
+			script: `${NATS_SERVER_BINARY_PATH} -c ${hub_config_path}`,
+			exec_mode: 'fork',
+			env: {
+				PROCESS_NAME: 'Clustering Hub',
+			},
+			merge_logs: true,
+			out_file: path.join(LOG_PATH, hdb_terms.PROCESS_LOG_NAMES.CLUSTERING_HUB),
+			error_file: path.join(LOG_PATH, hdb_terms.PROCESS_LOG_NAMES.CLUSTERING_HUB),
+			instances: 1,
+			cwd: hdb_terms.SERVICE_SERVERS_CWD.CLUSTERING_HUB,
+		};
+		const result = services_config.generateNatsHubServerConfig();
+		expect(result).to.eql(expected_result);
+	});
+
+	it('Test result from generateNatsLeafServerConfig function is correct', () => {
+		const hdb_root = env.get(hdb_terms.CONFIG_PARAMS.OPERATIONSAPI_ROOT);
+		const leaf_config_path = path.join(hdb_root, 'clustering', 'leaf.json');
+		const expected_result = {
+			name: 'Clustering Leaf',
+			script: `${NATS_SERVER_BINARY_PATH} -c ${leaf_config_path}`,
+			exec_mode: 'fork',
+			env: {
+				PROCESS_NAME: 'Clustering Leaf',
+			},
+			merge_logs: true,
+			out_file: path.join(LOG_PATH, hdb_terms.PROCESS_LOG_NAMES.CLUSTERING_LEAF),
+			error_file: path.join(LOG_PATH, hdb_terms.PROCESS_LOG_NAMES.CLUSTERING_LEAF),
+			instances: 1,
+			cwd: hdb_terms.SERVICE_SERVERS_CWD.CLUSTERING_LEAF,
+		};
+		const result = services_config.generateNatsLeafServerConfig();
+		expect(result).to.eql(expected_result);
+	});
+
+	it('Test result from generateNatsIngestServiceConfig is correct', () => {
+		const expected_result = {
+			name: 'Clustering Ingest Service',
+			script: path.join(LAUNCH_SCRIPTS_DIR, 'launchNatsIngestService.js'),
+			exec_mode: 'cluster',
+			env: {
+				PROCESS_NAME: 'Clustering Ingest Service',
+			},
+			merge_logs: true,
+			out_file: path.join(LOG_PATH, hdb_terms.PROCESS_LOG_NAMES.CLUSTERING_INGEST_SERVICE),
+			error_file: path.join(LOG_PATH, hdb_terms.PROCESS_LOG_NAMES.CLUSTERING_INGEST_SERVICE),
+			instances: 1,
+			cwd: LAUNCH_SCRIPTS_DIR,
+		};
+		const result = services_config.generateNatsIngestServiceConfig();
+		expect(result).to.eql(expected_result);
+	});
+
+	it('Test result from generateNatsReplyServiceConfig is correct', () => {
+		const expected_result = {
+			name: 'Clustering Reply Service',
+			script: path.join(LAUNCH_SCRIPTS_DIR, 'launchNatsReplyService.js'),
+			exec_mode: 'cluster',
+			env: {
+				PROCESS_NAME: 'Clustering Reply Service',
+			},
+			merge_logs: true,
+			out_file: path.join(LOG_PATH, hdb_terms.PROCESS_LOG_NAMES.CLUSTERING_REPLY_SERVICE),
+			error_file: path.join(LOG_PATH, hdb_terms.PROCESS_LOG_NAMES.CLUSTERING_REPLY_SERVICE),
+			instances: 1,
+			cwd: LAUNCH_SCRIPTS_DIR,
+		};
+		const result = services_config.generateNatsReplyServiceConfig();
 		expect(result).to.eql(expected_result);
 	});
 });

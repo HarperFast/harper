@@ -292,7 +292,7 @@ describe('Test serverUtilities_rw.js module ', () => {
 		it('test CONFIGURE_CLUSTER', () => {
 			let result = serverUtilities_rw.getOperationFunction({ operation: 'configure_cluster' });
 
-			assert.deepStrictEqual(result.operation_function.name, 'setConfiguration');
+			assert.deepStrictEqual(result.operation_function.name, 'configureCluster');
 			assert.deepStrictEqual(result.job_operation_function, undefined);
 		});
 
@@ -506,11 +506,14 @@ describe('Test serverUtilities_rw.js module ', () => {
 			serverUtilities_rw.__set__('harper_logger', logger_stub);
 
 			info_log_stub.throws(TEST_ERR);
-
 			const test_result = await serverUtilities_rw.processLocalTransaction(MOCK_REQUEST, test_func);
 
-			assert.ok(error_log_stub.calledOnce, 'The error should be logged');
-			assert.equal(error_log_stub.args[0][0], TEST_ERR, 'The correct error should be logged');
+			assert.ok(info_log_stub.calledOnce, 'The error should be logged');
+			assert.equal(
+				info_log_stub.args[0][0],
+				'{"operation":"create_schema","schema":"test"}',
+				'The correct error should be logged'
+			);
 
 			assert.equal(
 				test_result,

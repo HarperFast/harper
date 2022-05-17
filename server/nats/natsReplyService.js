@@ -1,0 +1,91 @@
+'use strict';
+
+const env_manager = require('../../utility/environment/environmentManager');
+env_manager.initSync();
+
+const nats_utils = require('./utility/natsUtils');
+const ipc_server_handlers = require('../ipc/serverHandlers');
+const IPCClient = require('../ipc/IPCClient');
+const harper_logger = require('../../utility/logging/harper_logger');
+const hdb_terms = require('../../utility/hdbTerms');
+const nats_terms = require('./utility/natsTerms');
+const hdb_utils = require('../../utility/common_utils');
+const update_remote_source = require('../../utility/clustering/updateRemoteSource');
+const remove_remote_source = require('../../utility/clustering/removeRemoteSource');
+const get_remote_source_config = require('../../utility/clustering/getRemoteSourceConfig');
+const UpdateRemoteResponseObject = require('../../utility/clustering/UpdateRemoteResponseObject');
+const { JSONCodec } = require('nats');
+const jc = JSONCodec();
+const global_schema = require('../../utility/globalSchema');
+const util = require('util');
+
+const p_schema_to_global = util.promisify(global_schema.setSchemaDataToGlobal);
+const node_name = env_manager.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_NODENAME);
+
+module.exports = initialize;
+
+/**
+ * This module is designed to handle requests from other nodes, such as add, update or delete node.
+ * It runs in its own process managed by pm2.
+ * The nats connection is what keeps the process open/running.
+ * @returns {Promise<void>}
+ */
+async function initialize() {
+	try {
+		harper_logger.notify('Starting reply service.');
+		await p_schema_to_global();
+
+		// Instantiate new instance of HDB IPC client and assign it to global.
+		try {
+			global.hdb_ipc = new IPCClient(process.pid, ipc_server_handlers);
+		} catch (err) {
+			harper_logger.error('Error instantiating new instance of IPC client in natsReplyService');
+			throw err;
+		}
+
+		const connection = await nats_utils.getConnection();
+		const subject_name = `${node_name}.__request__`;
+
+		// We define a queue name to allow multiple processes to subscribe to the same subject but only one process will receive the message.
+		// This allows for scale, more on queue groups here: https://github.com/nats-io/nats.js#queue-groups
+		const sub = connection.subscribe(subject_name, { queue: node_name });
+		await handleRequest(sub);
+	} catch (err) {
+		harper_logger.error(err);
+	}
+}
+
+/**
+ * Handle the request coming in from other node.
+ * Once the operation in the request has completed respond to originator.
+ * If something goes wrong during the operation we try to respond but with an error status.
+ * @param sub
+ * @returns {Promise<void>}
+ */
+async function handleRequest(sub) {
+	for await (const msg of sub) {
+		const msg_data = jc.decode(msg.data);
+		harper_logger.trace(`Received request: ${hdb_utils.stringifyObj(msg_data)}`);
+		let reply;
+
+		switch (msg_data.operation) {
+			case hdb_terms.OPERATIONS_ENUM.ADD_NODE:
+			case hdb_terms.OPERATIONS_ENUM.UPDATE_NODE:
+				reply = await update_remote_source(msg_data);
+				break;
+			case hdb_terms.OPERATIONS_ENUM.REMOVE_NODE:
+				reply = await remove_remote_source(msg_data);
+				break;
+			case hdb_terms.OPERATIONS_ENUM.CLUSTER_STATUS:
+				reply = await get_remote_source_config();
+				break;
+			default:
+				const err_msg = `node '${node_name}' reply service received unrecognized request operation`;
+				harper_logger.error(err_msg);
+				reply = new UpdateRemoteResponseObject(nats_terms.UPDATE_REMOTE_RESPONSE_STATUSES.ERROR, err_msg);
+		}
+
+		harper_logger.trace(hdb_utils.stringifyObj(reply));
+		msg.respond(jc.encode(reply));
+	}
+}

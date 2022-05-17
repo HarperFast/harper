@@ -22,7 +22,8 @@ const hdb_utils = require('../utility/common_utils');
 const terms = require('../utility/hdbTerms');
 const { hdb_errors, handleHDBError } = require('../utility/errors/hdbError');
 const { HTTP_STATUS_CODES } = hdb_errors;
-const transact_to_clustering_utilities = require('../server/transactToClusteringUtilities');
+const transact_to_clustering_utilities = require('../utility/clustering/transactToClusteringUtilities');
+const cb_post_operation_handler = util.callbackify(transact_to_clustering_utilities.postOperationHandler);
 
 //here we call to define and import custom functions to alasql
 alasql_function_importer(alasql);
@@ -204,7 +205,11 @@ function convertInsert({ statement, hdb_user }, callback) {
 
 		// With non SQL CUD actions, the `post` operation passed into OperationFunctionCaller would send the transaction to the cluster.
 		// Since we don`t send Most SQL options to the cluster, we need to explicitly send it.
-		transact_to_clustering_utilities.postOperationHandler(insert_object, res);
+		cb_post_operation_handler(insert_object, res, (post_op_err) => {
+			if (post_op_err) {
+				logger.error(post_op_err);
+			}
+		});
 
 		try {
 			// We do not want the API returning the new attributes property.

@@ -120,6 +120,6 @@ describe('Test readLogValidator module', () => {
 		};
 
 		const result = read_log_validator(test_read_log_object);
-		expect(result.message).to.equal("'log_name' 'clustering_connector.log' does not exist.");
+		expect(result.message).to.equal("'log_name' 'clustering_connector.log' is invalid.");
 	});
 });

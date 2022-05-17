@@ -14,19 +14,28 @@ const DEFAULT_HDB_CERT = certificates_terms.CERTIFICATE_PEM_NAME;
 const DEFAULT_HDB_PRIVATE_KEY = certificates_terms.PRIVATEKEY_PEM_NAME;
 const DEFAULT_CF_CERT = certificates_terms.CERTIFICATE_PEM_NAME;
 const DEFAULT_CF_PRIVATE_KEY = certificates_terms.PRIVATEKEY_PEM_NAME;
+const DEFAULT_CLUSTERING_CERT = certificates_terms.CERTIFICATE_PEM_NAME;
+const DEFAULT_CLUSTERING_PRIVATE_KEY = certificates_terms.PRIVATEKEY_PEM_NAME;
+const DEFAULT_CLUSTERING_CERT_AUTH = certificates_terms.CA_PEM_NAME;
 const DEFAULT_LOG_FOLDER = 'log';
 const DEFAULT_CUSTOM_FUNCTIONS_FOLDER = 'custom_functions';
 const DEFAULT_CORES_IF_ERR = 4;
 const INVALID_SIZE_UNIT_MSG = 'Invalid logging.rotation.maxSize unit. Available units are G, M or K';
 const INVALID_MAX_SIZE_VALUE_MSG =
 	"Invalid logging.rotation.maxSize value. Value should be a number followed by unit e.g. '10M'";
+const UNDEFINED_OPS_API = 'operationsApi.root config parameter is undefined';
+const UNDEFINED_NATS_ENABLED = 'clustering.enabled config parameter is undefined';
 
 let hdb_root;
 
 module.exports = configValidator;
 
 function configValidator(config_json) {
-	hdb_root = config_json.operationsApi.root;
+	hdb_root = config_json.operationsApi?.root;
+	if (hdb_utils.isEmpty(hdb_root)) {
+		throw UNDEFINED_OPS_API;
+	}
+
 	const enabled_constraints = boolean.required();
 	const port_constraints = number.min(0).required();
 	const node_env_constraints = Joi.valid('production', 'development').required();
@@ -39,33 +48,95 @@ function configValidator(config_json) {
 		.messages({ 'any.custom': '{:#label} {:#error}' })
 		.empty(null)
 		.default(setDefaultRoot);
-	const config_schema = Joi.object({
-		clustering: Joi.object({
+	const nats_term_constraints = string
+		.pattern(/^[^\s.,*>]+$/)
+		.messages({ 'string.pattern.base': '{:#label} invalid, must not contain ., * or >' })
+		.empty(null);
+
+	const clustering_enabled = config_json.clustering?.enabled;
+	if (hdb_utils.isEmpty(clustering_enabled)) {
+		throw UNDEFINED_NATS_ENABLED;
+	}
+
+	// If clustering is enabled validate clustering config
+	let clustering_validation_schema;
+	if (clustering_enabled === true) {
+		clustering_validation_schema = Joi.object({
 			enabled: enabled_constraints,
-			network: Joi.object({
-				port: port_constraints,
-				selfSignedSslCerts: boolean.required(),
+			hubServer: Joi.object({
+				cluster: Joi.object({
+					name: Joi.required().empty(null),
+					network: Joi.object({
+						port: port_constraints,
+						routes: array
+							.items({
+								ip: string
+									.ip({ version: ['ipv4', 'ipv6'] })
+									.messages({
+										'string.ipVersion': '{:#label} invalid IP address',
+										'string.ip': '{:#label} invalid IP address',
+									})
+									.required(),
+								port: port_constraints,
+							})
+							.empty(null),
+					}).required(),
+				}).required(),
+				leafNodes: Joi.object({
+					network: Joi.object({
+						port: port_constraints,
+					}).required(),
+				}).required(),
+				network: Joi.object({
+					port: port_constraints,
+				}).required(),
 			}).required(),
-			nodeName: Joi.required(),
-			processes: number.min(1).max(1000).required(),
-			user: Joi.alternatives(string.pattern(/^[\w]+$/, 'HarperDB username').required(), Joi.valid(null)),
-		}).required(),
+			ingestService: Joi.object({
+				processes: number.min(1).max(1000),
+			}).required(),
+			leafServer: Joi.object({
+				network: Joi.object({
+					port: port_constraints,
+				}).required(),
+			}).required(),
+			nodeName: nats_term_constraints,
+			replyService: Joi.object({
+				processes: number.min(1).max(1000),
+			}).required(),
+			tls: Joi.object({
+				certificate: pem_file_constraints,
+				certificateAuthority: Joi.required(),
+				privateKey: pem_file_constraints,
+			}),
+			user: Joi.string().required(),
+		}).required();
+	} else {
+		clustering_validation_schema = Joi.object({
+			enabled: enabled_constraints,
+		}).required();
+	}
+
+	const config_schema = Joi.object({
+		clustering: clustering_validation_schema,
 		customFunctions: Joi.object({
 			enabled: enabled_constraints,
 			network: Joi.object({
-				certificate: pem_file_constraints,
 				cors: boolean.required(),
 				corsWhitelist: array.required(),
 				headersTimeout: number.min(1).required(),
 				https: boolean.required(),
 				keepAliveTimeout: number.min(1).required(),
 				port: port_constraints,
-				privateKey: pem_file_constraints,
 				timeout: number.min(1).required(),
 			}),
 			nodeEnv: node_env_constraints,
 			processes: processes_constraints,
 			root: root_constraints,
+			tls: Joi.object({
+				certificate: pem_file_constraints,
+				certificateAuthority: Joi.required(),
+				privateKey: pem_file_constraints,
+			}),
 		}).required(),
 		ipc: Joi.object({
 			network: Joi.object({
@@ -100,14 +171,12 @@ function configValidator(config_json) {
 			}).required(),
 			foreground: boolean.required(),
 			network: Joi.object({
-				certificate: pem_file_constraints,
 				cors: boolean.required(),
 				corsWhitelist: array.required(),
 				headersTimeout: number.min(1).required(),
 				https: boolean.required(),
 				keepAliveTimeout: number.min(1).required(),
 				port: port_constraints,
-				privateKey: pem_file_constraints,
 				timeout: number.min(1).required(),
 			}).required(),
 			nodeEnv: node_env_constraints,
@@ -116,6 +185,11 @@ function configValidator(config_json) {
 			storage: Joi.object({
 				writeAsync: boolean.required(),
 			}).required(),
+			tls: Joi.object({
+				certificate: pem_file_constraints,
+				certificateAuthority: Joi.required(),
+				privateKey: pem_file_constraints,
+			}),
 		}).required(),
 	});
 
@@ -196,14 +270,20 @@ function setDefaultRoot(parent, helpers) {
 			return path.join(hdb_root, DEFAULT_CUSTOM_FUNCTIONS_FOLDER);
 		case 'logging.root':
 			return path.join(hdb_root, DEFAULT_LOG_FOLDER);
-		case 'operationsApi.network.certificate':
+		case 'operationsApi.tls.certificate':
 			return path.join(hdb_root, DEFAULT_KEY_DIR, DEFAULT_HDB_CERT);
-		case 'operationsApi.network.privateKey':
+		case 'operationsApi.tls.privateKey':
 			return path.join(hdb_root, DEFAULT_KEY_DIR, DEFAULT_HDB_PRIVATE_KEY);
-		case 'customFunctions.network.certificate':
+		case 'customFunctions.tls.certificate':
 			return path.join(hdb_root, DEFAULT_KEY_DIR, DEFAULT_CF_CERT);
-		case 'customFunctions.network.privateKey':
+		case 'customFunctions.tls.privateKey':
 			return path.join(hdb_root, DEFAULT_KEY_DIR, DEFAULT_CF_PRIVATE_KEY);
+		case 'clustering.tls.certificate':
+			return path.join(hdb_root, DEFAULT_KEY_DIR, DEFAULT_CLUSTERING_CERT);
+		case 'clustering.tls.privateKey':
+			return path.join(hdb_root, DEFAULT_KEY_DIR, DEFAULT_CLUSTERING_PRIVATE_KEY);
+		case 'clustering.tls.certificateAuthority':
+			return path.join(hdb_root, DEFAULT_KEY_DIR, DEFAULT_CLUSTERING_CERT_AUTH);
 		default:
 			throw new Error(
 				`Error setting default root for config parameter: ${config_param}. Unrecognized config parameter`

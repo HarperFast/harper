@@ -17,21 +17,25 @@ const HDB_ROOT_DIR_NAME = 'hdb';
 
 // Name of the HDB process
 const HDB_PROC_NAME = `hdbServer.${CODE_EXTENSION}`;
-const CLUSTERING_PROC_NAME = `Server.${CODE_EXTENSION}`;
-const CONNECT_PROC_NAME = `interNodeConnectionLauncher.${CODE_EXTENSION}`;
 const CUSTOM_FUNCTION_PROC_NAME = `customFunctionsServer.${CODE_EXTENSION}`;
 const IPC_SERVER_MODULE = `hdbIpcServer.${CODE_EXTENSION}`;
 const HDB_RESTART_SCRIPT = `restartHdb.${CODE_EXTENSION}`;
 
 const HDB_PROC_DESCRIPTOR = 'HarperDB';
 const CUSTOM_FUNCTION_PROC_DESCRIPTOR = 'Custom Functions';
+const CLUSTERING_HUB_PROC_DESCRIPTOR = 'Clustering Hub';
+const CLUSTERING_LEAF_PROC_DESCRIPTOR = 'Clustering Leaf';
+const CLUSTERING_INGEST_PROC_DESCRIPTOR = 'Clustering Ingest Service';
+const CLUSTERING_REPLY_SERVICE_DESCRIPTOR = 'Clustering Reply Service';
 
 const PROCESS_DESCRIPTORS = {
 	HDB: HDB_PROC_DESCRIPTOR,
 	IPC: 'IPC',
-	CLUSTERING: 'Clustering',
+	CLUSTERING_HUB: CLUSTERING_HUB_PROC_DESCRIPTOR,
+	CLUSTERING_LEAF: CLUSTERING_LEAF_PROC_DESCRIPTOR,
+	CLUSTERING_INGEST_SERVICE: CLUSTERING_INGEST_PROC_DESCRIPTOR,
+	CLUSTERING_REPLY_SERVICE: CLUSTERING_REPLY_SERVICE_DESCRIPTOR,
 	CUSTOM_FUNCTIONS: CUSTOM_FUNCTION_PROC_DESCRIPTOR,
-	CLUSTERING_CONNECTOR: 'Clustering Connector',
 	RESTART_HDB: 'Restart HDB',
 	INSTALL: 'Install',
 	RUN: 'Run',
@@ -45,8 +49,10 @@ const PROCESS_DESCRIPTORS = {
 const PROCESS_LOG_NAMES = {
 	HDB: 'hdb.log',
 	IPC: 'ipc.log',
-	CLUSTERING: 'clustering.log',
-	CLUSTERING_CONNECTOR: 'clustering_connector.log',
+	CLUSTERING_HUB: 'clustering_hub.log',
+	CLUSTERING_LEAF: 'clustering_leaf.log',
+	CLUSTERING_INGEST_SERVICE: 'clustering_ingest_service.log',
+	CLUSTERING_REPLY_SERVICE: 'clustering_reply_service.log',
 	CUSTOM_FUNCTIONS: 'custom_functions.log',
 	INSTALL: 'install.log',
 	CLI: 'cli.log',
@@ -66,26 +72,36 @@ const LOG_LEVELS = {
 const PROCESS_DESCRIPTORS_VALIDATE = {
 	'harperdb': HDB_PROC_DESCRIPTOR,
 	'ipc': 'IPC',
-	'clustering': 'Clustering',
-	'clustering_connector': 'Clustering Connector',
+	'clustering hub': CLUSTERING_HUB_PROC_DESCRIPTOR,
+	'clustering leaf': CLUSTERING_LEAF_PROC_DESCRIPTOR,
+	'clustering ingest service': CLUSTERING_INGEST_PROC_DESCRIPTOR,
+	'clustering reply service': CLUSTERING_REPLY_SERVICE_DESCRIPTOR,
 	'custom functions': CUSTOM_FUNCTION_PROC_DESCRIPTOR,
 	'custom_functions': CUSTOM_FUNCTION_PROC_DESCRIPTOR,
 	'pm2-logrotate': PROCESS_DESCRIPTORS.PM2_LOGROTATE,
 	'logrotate': PROCESS_DESCRIPTORS.PM2_LOGROTATE,
+	'clustering': 'clustering',
+};
+
+// All the processes that make up clustering
+const CLUSTERING_PROCESSES = {
+	CLUSTERING_HUB_PROC_DESCRIPTOR,
+	CLUSTERING_LEAF_PROC_DESCRIPTOR,
+	CLUSTERING_INGEST_PROC_DESCRIPTOR,
+	CLUSTERING_REPLY_SERVICE_DESCRIPTOR,
 };
 
 const SERVICE_SERVERS_CWD = {
 	HDB: path.resolve(__dirname, `../server/harperdb`),
 	IPC: path.resolve(__dirname, `../server/ipc`),
-	CLUSTERING: path.resolve(__dirname, `../server/socketcluster`),
 	CUSTOM_FUNCTIONS: path.resolve(__dirname, `../server/customFunctions`),
+	CLUSTERING_HUB: path.resolve(__dirname, '../server/nats'),
+	CLUSTERING_LEAF: path.resolve(__dirname, '../server/nats'),
 };
 
 const SERVICE_SERVERS = {
 	HDB: path.join(SERVICE_SERVERS_CWD.HDB, HDB_PROC_NAME),
 	IPC: path.join(SERVICE_SERVERS_CWD.IPC, IPC_SERVER_MODULE),
-	CLUSTERING: path.join(SERVICE_SERVERS_CWD.CLUSTERING, CLUSTERING_PROC_NAME),
-	CLUSTERING_CONNECTOR: path.join(SERVICE_SERVERS_CWD.CLUSTERING, CONNECT_PROC_NAME),
 	CUSTOM_FUNCTIONS: path.join(SERVICE_SERVERS_CWD.CUSTOM_FUNCTIONS, CUSTOM_FUNCTION_PROC_NAME),
 };
 
@@ -93,13 +109,19 @@ const LAUNCH_SERVICE_SCRIPTS = {
 	HDB: path.resolve(__dirname, '../launchServiceScripts/launchHarperDB.js'),
 	CUSTOM_FUNCTIONS: path.resolve(__dirname, '../launchServiceScripts/launchCustomFunctions.js'),
 	JOB: path.resolve(__dirname, '../launchServiceScripts/launchJobThread.js'),
+	NATS_INGEST_SERVICE: path.resolve(__dirname, '../launchServiceScripts/launchNatsIngestService.js'),
+	NATS_REPLY_SERVICE: path.resolve(__dirname, '../launchServiceScripts/launchNatsReplyService.js'),
+};
+
+const ROLE_TYPES_ENUM = {
+	SUPER_USER: 'super_user',
+	CLUSTER_USER: 'cluster_user',
 };
 
 const HDB_SUPPORT_ADDRESS = 'support@harperdb.io';
 const HDB_LICENSE_EMAIL_ADDRESS = 'customer-success@harperdb.io';
 
 const BASIC_LICENSE_MAX_NON_CU_ROLES = 1;
-const BASIC_LICENSE_MAX_CLUSTER_CONNS = 3;
 const BASIC_LICENSE_CLUSTER_CONNECTION_LIMIT_WS_ERROR_CODE = 4141;
 const HDB_SUPPORT_URL = 'https://harperdbhelp.zendesk.com/hc/en-us/requests/new';
 const HDB_PRICING_URL = 'https://www.harperdb.io/product';
@@ -151,22 +173,10 @@ const RUN_LOG = 'run_log.log';
 
 const PROCESS_NAME_ENV_PROP = 'PROCESS_NAME';
 
-const CLUSTERING_PAYLOAD_FILE_NAME = '.scPayload.json';
-
 const BOOT_PROP_PARAMS = {
 	SETTINGS_PATH_KEY: 'settings_path',
 };
 
-const CLUSTERING_FOLDER_NAMES_ENUM = {
-	CLUSTERING_FOLDER: 'clustering',
-	CONNECTIONS_FOLDER: 'connections',
-	TRANSACTION_LOG_FOLDER: 'transaction_log',
-};
-
-// Trying to keep socket cluster as modular as possible, so we will create values in here that point to values
-// inside of the socketcluster types module.
-const cluster_types = require('../server/socketcluster/types');
-const ClusterMessageObjects = require('../server/socketcluster/room/RoomMessageObjects');
 const _ = require('lodash');
 
 const INSTALL_PROMPTS = {
@@ -486,21 +496,30 @@ const HDB_SETTINGS_NAMES_REVERSE_LOOKUP = _.invert(HDB_SETTINGS_NAMES);
 // Config parameters flattened.
 // If a param is added to config it must also be added here.
 const CONFIG_PARAMS = {
-	CLUSTERING_ENABLED: 'clustering_enabled',
-	CLUSTERING_NETWORK_PORT: 'clustering_network_port',
-	CLUSTERING_NETWORK_SELFSIGNEDSSLCERTS: 'clustering_network_selfSignedSslCerts',
-	CLUSTERING_NODENAME: 'clustering_nodeName',
-	CLUSTERING_PROCESSES: 'clustering_processes',
 	CLUSTERING_USER: 'clustering_user',
+	CLUSTERING_ENABLED: 'clustering_enabled',
+	CLUSTERING_HUBSERVER_CLUSTER_NAME: 'clustering_hubServer_cluster_name',
+	CLUSTERING_HUBSERVER_CLUSTER_NETWORK_PORT: 'clustering_hubServer_cluster_network_port',
+	CLUSTERING_HUBSERVER_CLUSTER_NETWORK_ROUTES: 'clustering_hubServer_cluster_network_routes',
+	CLUSTERING_HUBSERVER_LEAFNODES_NETWORK_PORT: 'clustering_hubServer_leafNodes_network_port',
+	CLUSTERING_HUBSERVER_NETWORK_PORT: 'clustering_hubServer_network_port',
+	CLUSTERING_LEAFSERVER_NETWORK_PORT: 'clustering_leafServer_network_port',
+	CLUSTERING_NODENAME: 'clustering_nodeName',
+	CLUSTERING_INGEST_SERVICE_PROCESSES: 'clustering_ingestService_processes',
+	CLUSTERING_REPLY_SERVICE_PROCESSES: 'clustering_replyService_processes',
+	CLUSTERING_TLS_CERTIFICATE: 'clustering_tls_certificate',
+	CLUSTERING_TLS_PRIVATEKEY: 'clustering_tls_privateKey',
+	CLUSTERING_TLS_CERT_AUTH: 'clustering_tls_certificateAuthority',
 	CUSTOMFUNCTIONS_ENABLED: 'customFunctions_enabled',
 	CUSTOMFUNCTIONS_NETWORK_PORT: 'customFunctions_network_port',
-	CUSTOMFUNCTIONS_NETWORK_CERTIFICATE: 'customFunctions_network_certificate',
+	CUSTOMFUNCTIONS_TLS_CERTIFICATE: 'customFunctions_tls_certificate',
 	CUSTOMFUNCTIONS_NETWORK_CORS: 'customFunctions_network_cors',
 	CUSTOMFUNCTIONS_NETWORK_CORSWHITELIST: 'customFunctions_network_corsWhitelist',
 	CUSTOMFUNCTIONS_NETWORK_HEADERSTIMEOUT: 'customFunctions_network_headersTimeout',
 	CUSTOMFUNCTIONS_NETWORK_HTTPS: 'customFunctions_network_https',
 	CUSTOMFUNCTIONS_NETWORK_KEEPALIVETIMEOUT: 'customFunctions_network_keepAliveTimeout',
-	CUSTOMFUNCTIONS_NETWORK_PRIVATEKEY: 'customFunctions_network_privateKey',
+	CUSTOMFUNCTIONS_TLS_PRIVATEKEY: 'customFunctions_tls_privateKey',
+	CUSTOMFUNCTIONS_TLS_CERT_AUTH: 'customFunctions_tls_certificateAuthority',
 	CUSTOMFUNCTIONS_NETWORK_TIMEOUT: 'customFunctions_network_timeout',
 	CUSTOMFUNCTIONS_NODEENV: 'customFunctions_nodeEnv',
 	CUSTOMFUNCTIONS_PROCESSES: 'customFunctions_processes',
@@ -524,14 +543,15 @@ const CONFIG_PARAMS = {
 	OPERATIONSAPI_AUTHENTICATION_OPERATIONTOKENTIMEOUT: 'operationsApi_authentication_operationTokenTimeout',
 	OPERATIONSAPI_AUTHENTICATION_REFRESHTOKENTIMEOUT: 'operationsApi_authentication_refreshTokenTimeout',
 	OPERATIONSAPI_FOREGROUND: 'operationsApi_foreground',
-	OPERATIONSAPI_NETWORK_CERTIFICATE: 'operationsApi_network_certificate',
+	OPERATIONSAPI_TLS_CERTIFICATE: 'operationsApi_tls_certificate',
 	OPERATIONSAPI_NETWORK_CORS: 'operationsApi_network_cors',
-	OPERATIONSAPI_NETWORK_CORSWHITELIST: 'operationsApi_network_corsWhiteList',
+	OPERATIONSAPI_NETWORK_CORSWHITELIST: 'operationsApi_network_corsWhitelist',
 	OPERATIONSAPI_NETWORK_HEADERSTIMEOUT: 'operationsApi_network_headersTimeout',
 	OPERATIONSAPI_NETWORK_HTTPS: 'operationsApi_network_https',
 	OPERATIONSAPI_NETWORK_KEEPALIVETIMEOUT: 'operationsApi_network_keepAliveTimeout',
 	OPERATIONSAPI_NETWORK_PORT: 'operationsApi_network_port',
-	OPERATIONSAPI_NETWORK_PRIVATEKEY: 'operationsApi_network_privateKey',
+	OPERATIONSAPI_TLS_PRIVATEKEY: 'operationsApi_tls_privateKey',
+	OPERATIONSAPI_TLS_CERT_AUTH: 'operationsApi_tls_certificateAuthority',
 	OPERATIONSAPI_NETWORK_TIMEOUT: 'operationsApi_network_timeout',
 	OPERATIONSAPI_NODEENV: 'operationsApi_nodeEnv',
 	OPERATIONSAPI_PROCESSES: 'operationsApi_processes',
@@ -545,10 +565,10 @@ const CONFIG_PARAM_MAP = {
 	hdb_root: CONFIG_PARAMS.OPERATIONSAPI_ROOT,
 	server_port_key: CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PORT,
 	server_port: CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PORT,
-	cert_key: CONFIG_PARAMS.OPERATIONSAPI_NETWORK_CERTIFICATE,
-	certificate: CONFIG_PARAMS.OPERATIONSAPI_NETWORK_CERTIFICATE,
-	private_key_key: CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PRIVATEKEY,
-	private_key: CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PRIVATEKEY,
+	cert_key: CONFIG_PARAMS.OPERATIONSAPI_TLS_CERTIFICATE,
+	certificate: CONFIG_PARAMS.OPERATIONSAPI_TLS_CERTIFICATE,
+	private_key_key: CONFIG_PARAMS.OPERATIONSAPI_TLS_PRIVATEKEY,
+	private_key: CONFIG_PARAMS.OPERATIONSAPI_TLS_PRIVATEKEY,
 	http_secure_enabled_key: CONFIG_PARAMS.OPERATIONSAPI_NETWORK_HTTPS,
 	https_on: CONFIG_PARAMS.OPERATIONSAPI_NETWORK_HTTPS,
 	cors_enabled_key: CONFIG_PARAMS.OPERATIONSAPI_NETWORK_CORS,
@@ -571,16 +591,11 @@ const CONFIG_PARAM_MAP = {
 	log_rotate_timezone: CONFIG_PARAMS.LOGGING_ROTATION_TIMEZONE,
 	props_env_key: CONFIG_PARAMS.OPERATIONSAPI_NODEENV,
 	node_env: CONFIG_PARAMS.OPERATIONSAPI_NODEENV,
-	clustering_port_key: CONFIG_PARAMS.CLUSTERING_NETWORK_PORT,
-	clustering_port: CONFIG_PARAMS.CLUSTERING_NETWORK_PORT,
 	clustering_node_name_key: CONFIG_PARAMS.CLUSTERING_NODENAME,
 	node_name: CONFIG_PARAMS.CLUSTERING_NODENAME,
 	clustering_enabled_key: CONFIG_PARAMS.CLUSTERING_ENABLED,
 	clustering: CONFIG_PARAMS.CLUSTERING_ENABLED,
-	allow_self_signed_ssl_certs: CONFIG_PARAMS.CLUSTERING_NETWORK_SELFSIGNEDSSLCERTS,
 	max_hdb_processes: CONFIG_PARAMS.OPERATIONSAPI_PROCESSES,
-	clustering_user_key: CONFIG_PARAMS.CLUSTERING_USER,
-	max_clustering_processes: CONFIG_PARAMS.CLUSTERING_PROCESSES,
 	server_timeout_key: CONFIG_PARAMS.OPERATIONSAPI_NETWORK_TIMEOUT,
 	server_timeout_ms: CONFIG_PARAMS.OPERATIONSAPI_NETWORK_TIMEOUT,
 	server_keep_alive_timeout_key: CONFIG_PARAMS.OPERATIONSAPI_NETWORK_KEEPALIVETIMEOUT,
@@ -605,21 +620,30 @@ const CONFIG_PARAM_MAP = {
 	log_to_stdstreams: CONFIG_PARAMS.LOGGING_STDSTREAMS,
 	run_in_foreground: CONFIG_PARAMS.OPERATIONSAPI_FOREGROUND,
 	local_studio_on: CONFIG_PARAMS.LOCALSTUDIO_ENABLED,
-	clustering_enabled: CONFIG_PARAMS.CLUSTERING_ENABLED,
-	clustering_network_port: CONFIG_PARAMS.CLUSTERING_NETWORK_PORT,
-	clustering_network_selfsignedsslcerts: CONFIG_PARAMS.CLUSTERING_NETWORK_SELFSIGNEDSSLCERTS,
-	clustering_nodename: CONFIG_PARAMS.CLUSTERING_NODENAME,
-	clustering_processes: CONFIG_PARAMS.CLUSTERING_PROCESSES,
 	clustering_user: CONFIG_PARAMS.CLUSTERING_USER,
+	clustering_enabled: CONFIG_PARAMS.CLUSTERING_ENABLED,
+	clustering_hubserver_cluster_name: CONFIG_PARAMS.CLUSTERING_HUBSERVER_CLUSTER_NAME,
+	clustering_hubserver_cluster_network_port: CONFIG_PARAMS.CLUSTERING_HUBSERVER_CLUSTER_NETWORK_PORT,
+	clustering_hubserver_cluster_network_routes: CONFIG_PARAMS.CLUSTERING_HUBSERVER_CLUSTER_NETWORK_ROUTES,
+	clustering_hubserver_leafnodes_network_port: CONFIG_PARAMS.CLUSTERING_HUBSERVER_LEAFNODES_NETWORK_PORT,
+	clustering_hubserver_network_port: CONFIG_PARAMS.CLUSTERING_HUBSERVER_NETWORK_PORT,
+	clustering_leafserver_network_port: CONFIG_PARAMS.CLUSTERING_LEAFSERVER_NETWORK_PORT,
+	clustering_nodename: CONFIG_PARAMS.CLUSTERING_NODENAME,
+	clustering_tls_certificate: CONFIG_PARAMS.CLUSTERING_TLS_CERTIFICATE,
+	clustering_tls_privatekey: CONFIG_PARAMS.CLUSTERING_TLS_PRIVATEKEY,
+	clustering_tls_certificateauthority: CONFIG_PARAMS.CLUSTERING_TLS_CERT_AUTH,
+	clustering_ingestservice_processes: CONFIG_PARAMS.CLUSTERING_INGEST_SERVICE_PROCESSES,
+	clustering_replyservice_processes: CONFIG_PARAMS.CLUSTERING_REPLY_SERVICE_PROCESSES,
 	customfunctions_enabled: CONFIG_PARAMS.CUSTOMFUNCTIONS_ENABLED,
 	customfunctions_network_port: CONFIG_PARAMS.CUSTOMFUNCTIONS_NETWORK_PORT,
-	customfunctions_network_certificate: CONFIG_PARAMS.CUSTOMFUNCTIONS_NETWORK_CERTIFICATE,
+	customfunctions_tls_certificate: CONFIG_PARAMS.CUSTOMFUNCTIONS_TLS_CERTIFICATE,
 	customfunctions_network_cors: CONFIG_PARAMS.CUSTOMFUNCTIONS_NETWORK_CORS,
 	customfunctions_network_corswhitelist: CONFIG_PARAMS.CUSTOMFUNCTIONS_NETWORK_CORSWHITELIST,
 	customfunctions_network_headerstimeout: CONFIG_PARAMS.CUSTOMFUNCTIONS_NETWORK_HEADERSTIMEOUT,
 	customfunctions_network_https: CONFIG_PARAMS.CUSTOMFUNCTIONS_NETWORK_HTTPS,
 	customfunctions_network_keepalivetimeout: CONFIG_PARAMS.CUSTOMFUNCTIONS_NETWORK_KEEPALIVETIMEOUT,
-	customfunctions_network_privatekey: CONFIG_PARAMS.CUSTOMFUNCTIONS_NETWORK_PRIVATEKEY,
+	customfunctions_tls_privatekey: CONFIG_PARAMS.CUSTOMFUNCTIONS_TLS_PRIVATEKEY,
+	customfunctions_tls_certificateauthority: CONFIG_PARAMS.CUSTOMFUNCTIONS_TLS_CERT_AUTH,
 	customfunctions_network_timeout: CONFIG_PARAMS.CUSTOMFUNCTIONS_NETWORK_TIMEOUT,
 	customfunctions_nodeenv: CONFIG_PARAMS.CUSTOMFUNCTIONS_NODEENV,
 	customfunctions_processes: CONFIG_PARAMS.CUSTOMFUNCTIONS_PROCESSES,
@@ -643,14 +667,14 @@ const CONFIG_PARAM_MAP = {
 	operationsapi_authentication_operationtokentimeout: CONFIG_PARAMS.OPERATIONSAPI_AUTHENTICATION_OPERATIONTOKENTIMEOUT,
 	operationsapi_authentication_refreshtokentimeout: CONFIG_PARAMS.OPERATIONSAPI_AUTHENTICATION_REFRESHTOKENTIMEOUT,
 	operationsapi_foreground: CONFIG_PARAMS.OPERATIONSAPI_FOREGROUND,
-	operationsapi_network_certificate: CONFIG_PARAMS.OPERATIONSAPI_NETWORK_CERTIFICATE,
+	operationsapi_tls_certificate: CONFIG_PARAMS.OPERATIONSAPI_TLS_CERTIFICATE,
 	operationsapi_network_cors: CONFIG_PARAMS.OPERATIONSAPI_NETWORK_CORS,
 	operationsapi_network_corswhitelist: CONFIG_PARAMS.OPERATIONSAPI_NETWORK_CORSWHITELIST,
 	operationsapi_network_headerstimeout: CONFIG_PARAMS.OPERATIONSAPI_NETWORK_HEADERSTIMEOUT,
 	operationsapi_network_https: CONFIG_PARAMS.OPERATIONSAPI_NETWORK_HTTPS,
 	operationsapi_network_keepalivetimeout: CONFIG_PARAMS.OPERATIONSAPI_NETWORK_KEEPALIVETIMEOUT,
 	operationsapi_network_port: CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PORT,
-	operationsapi_network_privatekey: CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PRIVATEKEY,
+	operationsapi_tls_privatekey: CONFIG_PARAMS.OPERATIONSAPI_TLS_PRIVATEKEY,
 	operationsapi_network_timeout: CONFIG_PARAMS.OPERATIONSAPI_NETWORK_TIMEOUT,
 	operationsapi_nodeenv: CONFIG_PARAMS.OPERATIONSAPI_NODEENV,
 	operationsapi_processes: CONFIG_PARAMS.OPERATIONSAPI_PROCESSES,
@@ -775,8 +799,24 @@ const VALUE_SEARCH_COMPARATORS = {
 };
 const VALUE_SEARCH_COMPARATORS_REVERSE_LOOKUP = _.invert(VALUE_SEARCH_COMPARATORS);
 
-const CLUSTERING_MESSAGE_TYPES = cluster_types.CORE_ROOM_MSG_TYPE_ENUM;
-const ORIGINATOR_SET_VALUE = cluster_types.ORIGINATOR_SET_VALUE;
+// Message types that will flow through the HDB Child and Cluster rooms.
+const CLUSTERING_MESSAGE_TYPES = {
+	GET_CLUSTER_STATUS: 'GET_CLUSTER_STATUS',
+	CLUSTER_STATUS_RESPONSE: 'CLUSTER_STATUS_RESPONSE',
+	ERROR_RESPONSE: 'ERROR',
+	ADD_USER: 'ADD_USER',
+	ALTER_USER: 'ALTER_USER',
+	DROP_USER: 'DROP_USER',
+	HDB_OPERATION: 'HDB_OPERATION',
+	ADD_NODE: 'ADD_NODE',
+	UPDATE_NODE: 'UPDATE_NODE',
+	REMOVE_NODE: 'REMOVE_NODE',
+	HDB_USERS_MSG: 'HDB_USERS_MSG',
+	HDB_WORKERS: 'HDB_WORKERS',
+	HDB_TRANSACTION: 'HDB_TRANSACTION',
+};
+
+const ORIGINATOR_SET_VALUE = 111;
 const NEW_LINE = '\r\n';
 
 const PERMS_CRUD_ENUM = {
@@ -835,7 +875,8 @@ module.exports = {
 	LICENSE_HELP_MSG,
 	HDB_PROC_NAME,
 	HDB_PROC_DESCRIPTOR,
-	CLUSTERING_PROC_NAME,
+	CLUSTERING_LEAF_PROC_DESCRIPTOR,
+	CLUSTERING_HUB_PROC_DESCRIPTOR,
 	SYSTEM_SCHEMA_NAME,
 	HASH_FOLDER_NAME,
 	HDB_HOME_DIR_NAME,
@@ -885,9 +926,7 @@ module.exports = {
 	BLOB_FOLDER_NAME,
 	HDB_TRASH_DIR,
 	// Make the message objects available through hdbTerms to keep clustering as modular as possible.
-	ClusterMessageObjects,
 	ORIGINATOR_SET_VALUE,
-	CLUSTERING_PAYLOAD_FILE_NAME,
 	LICENSE_VALUES,
 	RAM_ALLOCATION_ENUM,
 	STORAGE_TYPES_ENUM,
@@ -899,7 +938,6 @@ module.exports = {
 	LICENSE_ROLE_DENIED_RESPONSE,
 	LICENSE_MAX_CONNS_REACHED,
 	BASIC_LICENSE_MAX_NON_CU_ROLES,
-	BASIC_LICENSE_MAX_CLUSTER_CONNS,
 	BASIC_LICENSE_CLUSTER_CONNECTION_LIMIT_WS_ERROR_CODE,
 	VALUE_SEARCH_COMPARATORS,
 	VALUE_SEARCH_COMPARATORS_REVERSE_LOOKUP,
@@ -909,7 +947,6 @@ module.exports = {
 	BASIC_LICENSE_MAX_CLUSTER_USER_ROLES,
 	MOMENT_DAYS_TAG,
 	API_TURNOVER_SEC,
-	CLUSTERING_FOLDER_NAMES_ENUM,
 	LOOPBACK,
 	CODE_EXTENSION,
 	COMPILED_EXTENSION,
@@ -947,7 +984,9 @@ module.exports = {
 	CONFIG_PARAMS,
 	HDB_CONFIG_FILE,
 	HDB_DEFAULT_CONFIG_FILE,
+	ROLE_TYPES_ENUM,
 	BOOT_PROP_PARAMS,
 	INSTALL_PROMPTS,
 	HDB_ROOT_DIR_NAME,
+	CLUSTERING_PROCESSES,
 };

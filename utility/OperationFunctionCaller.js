@@ -9,10 +9,15 @@ const terms = require('./hdbTerms');
  * @param promisified_function - The operation which is in async/await format
  * @param function_input - The input needed for the operation_function_as_callback function.
  * @param followup_async_func - The response function that will be called with the operation function response as an input.  The function is expected to be promisifed, callbacks not supported.
- * @param orig_req - The original request which may need to be accessed to propagate data.
- * @returns {Promise<void>}
+ * @param originators
+ * @returns {Promise<{}>}
  */
-async function callOperationFunctionAsAwait(promisified_function, function_input, followup_async_func, orig_req) {
+async function callOperationFunctionAsAwait(
+	promisified_function,
+	function_input,
+	followup_async_func,
+	originators = []
+) {
 	if (!promisified_function || typeof promisified_function !== 'function') {
 		throw new Error('Invalid function parameter');
 	}
@@ -23,7 +28,7 @@ async function callOperationFunctionAsAwait(promisified_function, function_input
 		// necessary.
 		if (followup_async_func) {
 			//TODO: Passing result twice seems silly, why is this a thing?
-			await followup_async_func(function_input, result, orig_req);
+			await followup_async_func(function_input, result, originators);
 		}
 
 		// The result from insert, update, or upsert contains a properties new_attributes/txn_time. It is used by postOperationHandler to propagate

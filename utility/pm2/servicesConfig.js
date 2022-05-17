@@ -4,6 +4,7 @@ const env = require('../environment/environmentManager');
 
 const hdb_license = require('../../utility/registration/hdb_license');
 const hdb_terms = require('../hdbTerms');
+const nats_terms = require('../../server/nats/utility/natsTerms');
 const path = require('path');
 
 const DISABLE_FILE_LOG = '/dev/null';
@@ -11,6 +12,7 @@ const BYTENODE_MOD_CLI = path.resolve(__dirname, '../../node_modules/bytenode/li
 const LAUNCH_SCRIPTS_DIR = path.resolve(__dirname, '../../launchServiceScripts');
 const SCRIPTS_DIR = path.resolve(__dirname, '../scripts');
 const RESTART_SCRIPT = path.join(SCRIPTS_DIR, hdb_terms.HDB_RESTART_SCRIPT);
+const NATS_SERVER_BINARY_PATH = path.resolve(__dirname, '../../dependencies', nats_terms.NATS_SERVER_NAME);
 let log_to_file = undefined;
 let log_path = undefined;
 
@@ -53,74 +55,6 @@ function generateIPCServerConfig() {
 	return {
 		...ipc_config,
 		script: hdb_terms.SERVICE_SERVERS.IPC,
-	};
-}
-
-function generateClusteringConnectorConfig() {
-	initLogConfig();
-
-	const cc_log = path.join(log_path, hdb_terms.PROCESS_LOG_NAMES.CLUSTERING_CONNECTOR);
-	const cc_config = {
-		name: hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_CONNECTOR,
-		exec_mode: 'fork',
-		env: { [hdb_terms.PROCESS_NAME_ENV_PROP]: hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_CONNECTOR },
-		merge_logs: true,
-		out_file: cc_log,
-		error_file: cc_log,
-		instances: 1,
-		cwd: hdb_terms.SERVICE_SERVERS_CWD.CLUSTERING,
-	};
-
-	if (!log_to_file) {
-		cc_config.out_file = DISABLE_FILE_LOG;
-		cc_config.error_file = DISABLE_FILE_LOG;
-	}
-
-	if (process.env.HDB_COMPILED === 'true') {
-		return {
-			...cc_config,
-			script: BYTENODE_MOD_CLI,
-			args: hdb_terms.SERVICE_SERVERS.CLUSTERING_CONNECTOR,
-		};
-	}
-
-	return {
-		...cc_config,
-		script: hdb_terms.SERVICE_SERVERS.CLUSTERING_CONNECTOR,
-	};
-}
-
-function generateClusteringServerConfig() {
-	initLogConfig();
-
-	const cluster_log = path.join(log_path, hdb_terms.PROCESS_LOG_NAMES.CLUSTERING);
-	const cluster_config = {
-		name: hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING,
-		exec_mode: 'fork',
-		env: { [hdb_terms.PROCESS_NAME_ENV_PROP]: hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING },
-		merge_logs: true,
-		out_file: cluster_log,
-		error_file: cluster_log,
-		instances: 1,
-		cwd: hdb_terms.SERVICE_SERVERS_CWD.CLUSTERING,
-	};
-
-	if (!log_to_file) {
-		cluster_config.out_file = DISABLE_FILE_LOG;
-		cluster_config.error_file = DISABLE_FILE_LOG;
-	}
-
-	if (process.env.HDB_COMPILED === 'true') {
-		return {
-			...cluster_config,
-			script: BYTENODE_MOD_CLI,
-			args: hdb_terms.SERVICE_SERVERS.CLUSTERING,
-		};
-	}
-
-	return {
-		...cluster_config,
-		script: hdb_terms.SERVICE_SERVERS.CLUSTERING,
 	};
 }
 
@@ -194,6 +128,110 @@ function generateCFServerConfig() {
 	return cf_config;
 }
 
+function generateNatsHubServerConfig() {
+	initLogConfig();
+	env.initSync();
+	log_to_file = env.get(hdb_terms.HDB_SETTINGS_NAMES.LOG_TO_FILE);
+	log_path = env.get(hdb_terms.HDB_SETTINGS_NAMES.LOG_PATH_KEY);
+	const hdb_root = env.get(hdb_terms.CONFIG_PARAMS.OPERATIONSAPI_ROOT);
+	const hub_config_path = path.join(hdb_root, 'clustering', nats_terms.NATS_CONFIG_FILES.HUB_SERVER);
+	const hub_logs = path.join(log_path, hdb_terms.PROCESS_LOG_NAMES.CLUSTERING_HUB);
+	const hs_config = {
+		name: hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_HUB,
+		script: `${NATS_SERVER_BINARY_PATH} -c ${hub_config_path}`,
+		exec_mode: 'fork',
+		env: { [hdb_terms.PROCESS_NAME_ENV_PROP]: hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_HUB },
+		merge_logs: true,
+		out_file: hub_logs,
+		error_file: hub_logs,
+		instances: 1,
+		cwd: hdb_terms.SERVICE_SERVERS_CWD.CLUSTERING_HUB,
+	};
+
+	if (!log_to_file) {
+		hs_config.out_file = DISABLE_FILE_LOG;
+		hs_config.error_file = DISABLE_FILE_LOG;
+	}
+
+	return hs_config;
+}
+
+function generateNatsLeafServerConfig() {
+	initLogConfig();
+	env.initSync();
+	log_to_file = env.get(hdb_terms.HDB_SETTINGS_NAMES.LOG_TO_FILE);
+	log_path = env.get(hdb_terms.HDB_SETTINGS_NAMES.LOG_PATH_KEY);
+	const hdb_root = env.get(hdb_terms.CONFIG_PARAMS.OPERATIONSAPI_ROOT);
+	const leaf_config_path = path.join(hdb_root, 'clustering', nats_terms.NATS_CONFIG_FILES.LEAF_SERVER);
+	const leaf_logs = path.join(log_path, hdb_terms.PROCESS_LOG_NAMES.CLUSTERING_LEAF);
+	const ls_config = {
+		name: hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_LEAF,
+		script: `${NATS_SERVER_BINARY_PATH} -c ${leaf_config_path}`,
+		exec_mode: 'fork',
+		env: { [hdb_terms.PROCESS_NAME_ENV_PROP]: hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_LEAF },
+		merge_logs: true,
+		out_file: leaf_logs,
+		error_file: leaf_logs,
+		instances: 1,
+		cwd: hdb_terms.SERVICE_SERVERS_CWD.CLUSTERING_LEAF,
+	};
+
+	if (!log_to_file) {
+		ls_config.out_file = DISABLE_FILE_LOG;
+		ls_config.error_file = DISABLE_FILE_LOG;
+	}
+
+	return ls_config;
+}
+
+function generateNatsIngestServiceConfig() {
+	initLogConfig();
+	env.initSync();
+	const ingest_service_logs = path.join(log_path, hdb_terms.PROCESS_LOG_NAMES.CLUSTERING_INGEST_SERVICE);
+	const ingest_ser_config = {
+		name: hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_INGEST_SERVICE,
+		script: hdb_terms.LAUNCH_SERVICE_SCRIPTS.NATS_INGEST_SERVICE,
+		exec_mode: 'cluster',
+		env: { [hdb_terms.PROCESS_NAME_ENV_PROP]: hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_INGEST_SERVICE },
+		merge_logs: true,
+		out_file: ingest_service_logs,
+		error_file: ingest_service_logs,
+		instances: env.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_INGEST_SERVICE_PROCESSES),
+		cwd: LAUNCH_SCRIPTS_DIR,
+	};
+
+	if (!log_to_file) {
+		ingest_ser_config.out_file = DISABLE_FILE_LOG;
+		ingest_ser_config.error_file = DISABLE_FILE_LOG;
+	}
+
+	return ingest_ser_config;
+}
+
+function generateNatsReplyServiceConfig() {
+	initLogConfig();
+	env.initSync();
+	const reply_service_logs = path.join(log_path, hdb_terms.PROCESS_LOG_NAMES.CLUSTERING_REPLY_SERVICE);
+	const reply_ser_config = {
+		name: hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_REPLY_SERVICE,
+		script: hdb_terms.LAUNCH_SERVICE_SCRIPTS.NATS_REPLY_SERVICE,
+		exec_mode: 'cluster',
+		env: { [hdb_terms.PROCESS_NAME_ENV_PROP]: hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_REPLY_SERVICE },
+		merge_logs: true,
+		out_file: reply_service_logs,
+		error_file: reply_service_logs,
+		instances: env.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_REPLY_SERVICE_PROCESSES),
+		cwd: LAUNCH_SCRIPTS_DIR,
+	};
+
+	if (!log_to_file) {
+		reply_ser_config.out_file = DISABLE_FILE_LOG;
+		reply_ser_config.error_file = DISABLE_FILE_LOG;
+	}
+
+	return reply_ser_config;
+}
+
 function generateRestart() {
 	initLogConfig();
 
@@ -231,22 +269,18 @@ function generateRestart() {
 
 function generateAllServiceConfigs() {
 	return {
-		apps: [
-			generateIPCServerConfig(),
-			generateHDBServerConfig(),
-			generateClusteringServerConfig(),
-			generateClusteringConnectorConfig(),
-			generateCFServerConfig(),
-		],
+		apps: [generateIPCServerConfig(), generateHDBServerConfig(), generateCFServerConfig()],
 	};
 }
 
 module.exports = {
 	generateAllServiceConfigs,
 	generateIPCServerConfig,
-	generateClusteringServerConfig,
 	generateHDBServerConfig,
 	generateCFServerConfig,
-	generateClusteringConnectorConfig,
 	generateRestart,
+	generateNatsHubServerConfig,
+	generateNatsLeafServerConfig,
+	generateNatsIngestServiceConfig,
+	generateNatsReplyServiceConfig,
 };

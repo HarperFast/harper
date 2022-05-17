@@ -14,7 +14,8 @@ let bulkLoad_rewire = rewire('../../data_layer/bulkLoad');
 const PermissionResponseObject = require('../../security/data_objects/PermissionResponseObject');
 const hdb_terms = require('../../utility/hdbTerms');
 const hdb_utils = require('../../utility/common_utils');
-const sc_utils = require('../../server/socketcluster/util/socketClusterUtils');
+const nats_utils = require('../../server/nats/utility/natsUtils');
+const transact_to_clustering_utils = require('../../utility/clustering/transactToClusteringUtilities');
 const validator = require('../../validation/fileLoadValidator');
 const insert = require('../../data_layer/insert');
 const logger = require('../../utility/logging/harper_logger');
@@ -1079,6 +1080,8 @@ describe('Test bulkLoad.js', () => {
 	describe('test postCSVLoadFunction', async () => {
 		let sandbox = sinon.createSandbox();
 		let post_to_cluster_stub = undefined;
+		let publish_to_stream_stub;
+		let send_attribute_transaction_stub;
 		let expected_result = {
 			records: 2,
 			number_written: 3,
@@ -1086,6 +1089,10 @@ describe('Test bulkLoad.js', () => {
 
 		let postCSVLoadFunction = bulkLoad_rewire.__get__('postCSVLoadFunction');
 		beforeEach(() => {
+			publish_to_stream_stub = sandbox.stub(nats_utils, 'publishToStream').resolves();
+			send_attribute_transaction_stub = sandbox
+				.stub(transact_to_clustering_utils, 'sendAttributeTransaction')
+				.resolves();
 			post_to_cluster_stub = sandbox.stub(hdb_utils, `sendTransactionToSocketCluster`).returns();
 		});
 		afterEach(() => {
@@ -1096,24 +1103,39 @@ describe('Test bulkLoad.js', () => {
 			msg.transact_to_cluster = true;
 			let msg_with_originator = test_utils.deepClone(json_message_fake);
 			msg_with_originator.__originator = { ORIGINATOR_NAME: 111 };
-			let result = postCSVLoadFunction(['blah'], msg, expected_result, msg_with_originator);
-			assert.strictEqual(post_to_cluster_stub.calledOnce, true, 'expected sendTranaction to be called');
+			let result = await postCSVLoadFunction(['blah'], msg, expected_result, msg_with_originator);
+			assert.strictEqual(publish_to_stream_stub.calledOnce, true, 'expected publishToStream to be called');
+			assert.strictEqual(
+				send_attribute_transaction_stub.calledOnce,
+				true,
+				'expected sendAttributeTransaction to be called'
+			);
 		});
 		it('nominal case, see not sent to cluster', async () => {
 			let msg = test_utils.deepClone(json_message_fake);
 			msg.transact_to_cluster = false;
 			let msg_with_originator = test_utils.deepClone(json_message_fake);
 			msg_with_originator.__originator = { ORIGINATOR_NAME: 111 };
-			let result = postCSVLoadFunction(msg, expected_result, msg_with_originator);
-			assert.strictEqual(post_to_cluster_stub.calledOnce, false, 'expected sendTranaction to NOT be called');
+			let result = await postCSVLoadFunction(msg, expected_result, msg_with_originator);
+			assert.strictEqual(publish_to_stream_stub.notCalled, true, 'expected publishToStream to NOT be called');
+			assert.strictEqual(
+				send_attribute_transaction_stub.calledOnce,
+				true,
+				'expected sendAttributeTransaction to be called'
+			);
 		});
 		it('Undefined transact flag, see not sent to cluster', async () => {
 			let msg = test_utils.deepClone(json_message_fake);
 			msg.transact_to_cluster = undefined;
 			let msg_with_originator = test_utils.deepClone(json_message_fake);
 			msg_with_originator.__originator = { ORIGINATOR_NAME: 111 };
-			let result = postCSVLoadFunction(msg, expected_result, msg_with_originator);
-			assert.strictEqual(post_to_cluster_stub.calledOnce, false, 'expected sendTranaction to NOT be called');
+			let result = await postCSVLoadFunction(msg, expected_result, msg_with_originator);
+			assert.strictEqual(publish_to_stream_stub.notCalled, true, 'expected publishToStream to NOT be called');
+			assert.strictEqual(
+				send_attribute_transaction_stub.calledOnce,
+				true,
+				'expected sendAttributeTransaction to be called'
+			);
 		});
 		it('Completely missing transact flag, see not sent to cluster', async () => {
 			let msg = test_utils.deepClone(json_message_fake);
@@ -1121,7 +1143,12 @@ describe('Test bulkLoad.js', () => {
 			let msg_with_originator = test_utils.deepClone(json_message_fake);
 			msg_with_originator.__originator = { ORIGINATOR_NAME: 111 };
 			let result = postCSVLoadFunction(msg, expected_result, msg_with_originator);
-			assert.strictEqual(post_to_cluster_stub.calledOnce, false, 'expected sendTranaction to NOT be called');
+			assert.strictEqual(publish_to_stream_stub.notCalled, true, 'expected publishToStream to NOT be called');
+			assert.strictEqual(
+				send_attribute_transaction_stub.calledOnce,
+				true,
+				'expected sendAttributeTransaction to be called'
+			);
 		});
 	});
 });

@@ -15,7 +15,6 @@ const fastify_cors = require('fastify-cors');
 const fastify_compress = require('fastify-compress');
 const fastify_static = require('fastify-static');
 const fastify_helmet = require('fastify-helmet');
-const spawn_cluster_connection = require('../socketcluster/connector/spawnSCConnection');
 const request_time_plugin = require('../serverHelpers/requestTimePlugin');
 const guidePath = require('path');
 
@@ -127,7 +126,6 @@ async function setUp() {
 		harper_logger.trace('Configuring HarperDB process.');
 		await p_schema_to_global();
 		await user_schema.setUsersToGlobal();
-		spawn_cluster_connection(true);
 		await hdb_license.getLicense();
 	} catch (e) {
 		harper_logger.error(e);

@@ -10,7 +10,6 @@ const RecursiveIterator = require('recursive-iterator');
 const terms = require('./hdbTerms');
 const ps_list = require('./psList');
 const papa_parse = require('papaparse');
-const cluster_messages = require('../server/socketcluster/room/RoomMessageObjects');
 const moment = require('moment');
 const { inspect } = require('util');
 const is_number = require('is-number');
@@ -59,7 +58,6 @@ module.exports = {
 	getPropsFilePath: getPropsFilePath,
 	promisifyPapaParse,
 	removeBOM,
-	getClusterMessage,
 	createEventPromise,
 	checkProcessRunning,
 	checkSchemaTableExist,
@@ -75,6 +73,12 @@ module.exports = {
 	stopProcess,
 	createForkArgs,
 	autoCastBoolean,
+	async_set_timeout,
+	getTableHashAttribute,
+	doesSchemaExist,
+	doesTableExist,
+	stringifyObj,
+	ms_to_time,
 };
 
 /**
@@ -464,7 +468,7 @@ function timeoutPromise(ms, msg) {
  * @param port
  * @returns {Promise<unknown>}
  */
-function isPortTaken(port) {
+async function isPortTaken(port) {
 	if (!port) {
 		throw new Error(`Invalid port passed as parameter`);
 	}
@@ -619,28 +623,6 @@ function createEventPromise(event_name, event_emitter_object, timeout_promise) {
 			resolve(msg);
 		});
 	});
-}
-
-function getClusterMessage(cluster_msg_type_enum) {
-	if (!cluster_msg_type_enum) {
-		log.info('Invalid clustering message type passed to getClusterMessage.');
-		return null;
-	}
-	let built_msg = undefined;
-	switch (cluster_msg_type_enum) {
-		case terms.CLUSTERING_MESSAGE_TYPES.GET_CLUSTER_STATUS: {
-			built_msg = new cluster_messages.HdbCoreClusterStatusRequestMessage();
-			break;
-		}
-		case terms.CLUSTERING_MESSAGE_TYPES.HDB_TRANSACTION: {
-			built_msg = new cluster_messages.HdbCoreTransactionMessage();
-			break;
-		}
-		default:
-			log.info('Invalid cluster message type sent to getClusterMessage');
-			break;
-	}
-	return built_msg;
 }
 
 /**
@@ -801,4 +783,59 @@ function createForkArgs(module_path) {
  */
 function autoCastBoolean(boolean) {
 	return boolean === true || (typeof boolean === 'string' && boolean.toLowerCase() === 'true');
+}
+
+/**
+ * Gets a tables hash attribute from the global schema
+ */
+function getTableHashAttribute(schema, table) {
+	return global.hdb_schema?.[schema]?.[table]?.hash_attribute;
+}
+
+/**
+ * Checks the global schema to see if schema exists
+ * @param schema
+ * @returns {boolean} - returns true if schema exists
+ */
+function doesSchemaExist(schema) {
+	return global?.hdb_schema?.[schema] !== undefined;
+}
+
+/**
+ * Checks the global schema to see if schema exists
+ * @param schema
+ * @param table
+ * @returns {boolean} - returns true if table exists
+ */
+function doesTableExist(schema, table) {
+	return global?.hdb_schema?.[schema]?.[table] !== undefined;
+}
+
+/**
+ * Tries to stringify an object, if it cant just return that value unchanged.
+ * @param value
+ * @returns {any}
+ */
+function stringifyObj(value) {
+	try {
+		return JSON.stringify(value);
+	} catch (err) {
+		return value;
+	}
+}
+
+/**
+ * Converts milliseconds to a readable time, e.g. 2d 3h 12m 1s
+ * @param ms
+ * @returns {*}
+ */
+function ms_to_time(ms) {
+	const duration = moment.duration(ms);
+	const sec = duration.seconds() > 0 ? duration.seconds() + 's' : '';
+	const min = duration.minutes() > 0 ? duration.minutes() + 'm ' : '';
+	const hrs = duration.hours() > 0 ? duration.hours() + 'h ' : '';
+	const day = duration.days() > 0 ? duration.days() + 'd ' : '';
+	const year = duration.years() > 0 ? duration.years() + 'y ' : '';
+
+	return year + day + hrs + min + sec;
 }

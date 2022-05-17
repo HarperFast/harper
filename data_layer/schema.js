@@ -12,6 +12,7 @@ const harperBridge = require('./harperBridge/harperBridge');
 const { handleHDBError, hdb_errors } = require('../utility/errors/hdbError');
 const { HDB_ERROR_MSGS, HTTP_STATUS_CODES } = hdb_errors;
 const { SchemaEventMsg } = require('../server/ipc/utility/ipcUtils');
+const nats_utils = require('../server/nats/utility/natsUtils');
 
 module.exports = {
 	createSchema: createSchema,
@@ -191,16 +192,21 @@ async function dropSchema(drop_schema_object) {
 	let schema = await schema_metadata_validator.schema_describe.describeSchema({ schema: drop_schema_object.schema });
 	global.hdb_schema[drop_schema_object.schema] = schema;
 
-	try {
-		await harperBridge.dropSchema(drop_schema_object);
-		signalling.signalSchemaChange(
-			new SchemaEventMsg(process.pid, drop_schema_object.operation, drop_schema_object.schema)
-		);
-		delete global.hdb_schema[drop_schema_object.schema];
-		return `successfully deleted schema '${drop_schema_object.schema}'`;
-	} catch (err) {
-		throw err;
-	}
+	// Get all the tables that belong to schema.
+	const tables = Object.keys(global.hdb_schema[drop_schema_object.schema]);
+
+	await harperBridge.dropSchema(drop_schema_object);
+	signalling.signalSchemaChange(
+		new SchemaEventMsg(process.pid, drop_schema_object.operation, drop_schema_object.schema)
+	);
+
+	delete global.hdb_schema[drop_schema_object.schema];
+
+	// Purge the streams for all tables that were part of schema.
+	// Streams are part of Nats and are used by clustering, they are 'message stores' that track transactions on a table.
+	await nats_utils.purgeSchemaTableStreams(drop_schema_object.schema, tables);
+
+	return `successfully deleted schema '${drop_schema_object.schema}'`;
 }
 
 async function dropTable(drop_table_object) {
@@ -238,15 +244,15 @@ async function dropTable(drop_table_object) {
 	});
 	global.hdb_schema[drop_table_object.schema][drop_table_object.table] = table;
 
-	try {
-		await harperBridge.dropTable(drop_table_object);
-		signalling.signalSchemaChange(
-			new SchemaEventMsg(process.pid, drop_table_object.operation, drop_table_object.schema, drop_table_object.table)
-		);
-		return `successfully deleted table '${drop_table_object.schema}.${drop_table_object.table}'`;
-	} catch (err) {
-		throw err;
-	}
+	await harperBridge.dropTable(drop_table_object);
+	signalling.signalSchemaChange(
+		new SchemaEventMsg(process.pid, drop_table_object.operation, drop_table_object.schema, drop_table_object.table)
+	);
+
+	// Purge tables local stream. Streams are part of Nats and are used by clustering, they are 'message stores' that track transactions on a table.
+	await nats_utils.purgeTableStream(drop_table_object.schema, drop_table_object.table);
+
+	return `successfully deleted table '${drop_table_object.schema}.${drop_table_object.table}'`;
 }
 
 /**

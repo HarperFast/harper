@@ -52,8 +52,6 @@ describe('test mount_hdb module', () => {
 		expect(make_dir_stub.getCall(8).args[0]).to.equal('mount/test/hdb/schema/system');
 		expect(make_dir_stub.getCall(9).args[0]).to.equal('mount/test/hdb/transactions');
 		expect(make_dir_stub.getCall(10).args[0]).to.equal('mount/test/hdb/clustering');
-		expect(make_dir_stub.getCall(11).args[0]).to.equal('mount/test/hdb/clustering/transaction_log');
-		expect(make_dir_stub.getCall(12).args[0]).to.equal('mount/test/hdb/clustering/connections');
 		expect(create_lmdb_tables_stub.args[0][0]).to.equal('mount/test/hdb/schema/system');
 		mk_dir_rw();
 		create_lmdb_table_rw();

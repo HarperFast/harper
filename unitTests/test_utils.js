@@ -4,21 +4,33 @@ const fs = require('fs-extra');
 const sinon = require('sinon');
 const uuid = require('uuid/v4');
 const assert = require('assert');
+const rewire = require('rewire');
+const util = require('util');
+const exec = util.promisify(require('child_process').exec);
 const COMMON_TEST_TERMS = require('./commonTestTerms');
 
+const LeafConfigObject = require('../server/nats/utility/LeafConfigObject');
+const SysUserObject = require('../server/nats/utility/SysUserObject');
+const HdbUserObject = require('../server/nats/utility/HdbUserObject');
 const systemSchema = require('../json/systemSchema.json');
 const env = require('../utility/environment/environmentManager');
 const terms = require('../utility/hdbTerms');
+const nats_terms = rewire('../server/nats/utility/natsTerms');
+const crypto_hash = require('../security/cryptoHash');
 const { handleHDBError } = require('../utility/errors/hdbError');
 const environment_utility = require('../utility/lmdb/environmentUtility');
 const lmdb_create_schema = require('../data_layer/harperBridge/lmdbBridge/lmdbMethods/lmdbCreateSchema');
 const lmdb_create_table = require('../data_layer/harperBridge/lmdbBridge/lmdbMethods/lmdbCreateTable');
 const lmdb_create_records = require('../data_layer/harperBridge/lmdbBridge/lmdbMethods/lmdbCreateRecords');
+const pm2_utils = require('../utility/pm2/utilityFunctions');
+const user = require('../security/user');
 let lmdb_schema_env = undefined;
 let lmdb_table_env = undefined;
 let lmdb_attribute_env = undefined;
 
 let env_mgr_init_sync_stub = undefined;
+let sandbox;
+let leaf_server_term_rw;
 
 const MOCK_ARGS_ERROR_MSG =
 	'Null, undefined, and/or empty string argument values not allowed when building mock HDB for testing';
@@ -28,6 +40,20 @@ const ENV_DIR_PATH = path.join(__dirname, 'envDir');
 const BASE_SCHEMA_PATH = path.join(ENV_DIR_PATH, 'schema');
 const BASE_TXN_PATH = path.join(ENV_DIR_PATH, 'transactions');
 const BASE_SYSTEM_PATH = path.join(BASE_SCHEMA_PATH, 'system');
+
+const TEMP_TEST_DIR = path.resolve(__dirname, './server/nats/tempTestDir');
+const TEMP_CLUSTERING_TEST_DIR = path.join(TEMP_TEST_DIR, 'clustering');
+const DEPENDENCIES_PATH = path.resolve(__dirname, '../dependencies');
+const NATS_SERVER_PATH = path.join(DEPENDENCIES_PATH, nats_terms.NATS_SERVER_NAME);
+const NATS_TEST_SERVER_VALUES = {
+	CLUSTER_USER: 'unit-Test!Cluster@User',
+	CLUSTER_USER_PASS: 'p@ssWor/@d',
+};
+
+const NATS_TEST_CONFIG_FILES = {
+	HUB_SERVER: 'hub_test.json',
+	LEAF_SERVER: 'leaf_test.json',
+};
 
 /**
  * This needs to be called near the top of our unit tests.  Most will fail when loading harper modules due to the
@@ -610,6 +636,131 @@ function requireUncached(module) {
 	return require(module);
 }
 
+/**
+ * Starts a Nats leaf server that can be used for testing.
+ * @param ls_net_port
+ * @param node_name
+ * @param hsln_net_port
+ * @returns {Promise<void>}
+ */
+async function launchTestLeafServer(ls_net_port = 9991, node_name = 'testLeafServer', hsln_net_port = 9992) {
+	await fs.mkdirp(TEMP_CLUSTERING_TEST_DIR);
+	const test_leaf_pid_path = path.join(TEMP_CLUSTERING_TEST_DIR, 'leaf.pid');
+	const test_leaf_js_store_path = path.join(TEMP_CLUSTERING_TEST_DIR, 'leaf');
+	const user1_name_encoded = encodeURIComponent(NATS_TEST_SERVER_VALUES.CLUSTER_USER);
+	const user1_pass_uri = encodeURIComponent(NATS_TEST_SERVER_VALUES.CLUSTER_USER_PASS);
+	const user2_pass = 'passwordAgain';
+	const leafnode_remotes_url_sys = `nats-leaf://${user1_name_encoded}-admin:${user1_pass_uri}@0.0.0.0:${hsln_net_port}`;
+	const leafnode_remotes_url_hdb = `nats-leaf://${user1_name_encoded}:${user1_pass_uri}@0.0.0.0:${hsln_net_port}`;
+	const sys_users = [
+		new SysUserObject(NATS_TEST_SERVER_VALUES.CLUSTER_USER, NATS_TEST_SERVER_VALUES.CLUSTER_USER_PASS),
+		new SysUserObject('secondaryTestClusterUser', user2_pass),
+	];
+
+	const hdb_users = [
+		new HdbUserObject(NATS_TEST_SERVER_VALUES.CLUSTER_USER, NATS_TEST_SERVER_VALUES.CLUSTER_USER_PASS),
+		new HdbUserObject('secondaryTestClusterUser', user2_pass),
+	];
+
+	const new_leaf_config = new LeafConfigObject(
+		ls_net_port,
+		node_name,
+		test_leaf_pid_path,
+		test_leaf_js_store_path,
+		[leafnode_remotes_url_sys],
+		[leafnode_remotes_url_hdb],
+		sys_users,
+		hdb_users
+	);
+
+	const leaf_config_path = path.join(TEMP_CLUSTERING_TEST_DIR, NATS_TEST_CONFIG_FILES.LEAF_SERVER);
+	await fs.writeJson(leaf_config_path, new_leaf_config);
+
+	const pm2_leaf_server_config = {
+		name: 'nats_test_leaf_server',
+		script: `${NATS_SERVER_PATH} -c ${leaf_config_path}`,
+		exec_mode: 'fork',
+		env: { [terms.PROCESS_NAME_ENV_PROP]: terms.PROCESS_DESCRIPTORS.CLUSTERING_LEAF },
+		out_file: '/dev/null',
+		error_file: '/dev/null',
+		instances: 1,
+	};
+
+	await pm2_utils.start(pm2_leaf_server_config);
+}
+
+function setFakeClusterUser() {
+	const fake_cluster_user = {
+		active: true,
+		hash: crypto_hash.encrypt(NATS_TEST_SERVER_VALUES.CLUSTER_USER_PASS),
+		decrypt_hash: NATS_TEST_SERVER_VALUES.CLUSTER_USER_PASS,
+		uri_encoded_d_hash: encodeURIComponent(NATS_TEST_SERVER_VALUES.CLUSTER_USER_PASS),
+		password: 'somepass',
+		role: {
+			id: '58aa11-b761-4ade-8a7d-e9123',
+			permission: {
+				cluster_user: true,
+			},
+			role: 'cluster_user',
+		},
+		username: NATS_TEST_SERVER_VALUES.CLUSTER_USER,
+		uri_encoded_name: encodeURIComponent(NATS_TEST_SERVER_VALUES.CLUSTER_USER),
+		sys_name: NATS_TEST_SERVER_VALUES.CLUSTER_USER + '-admin',
+		sys_name_encoded: encodeURIComponent(NATS_TEST_SERVER_VALUES.CLUSTER_USER) + '-admin',
+	};
+
+	sandbox = sinon.createSandbox();
+	sandbox.stub(user, 'getClusterUser').resolves(fake_cluster_user);
+	env.setProperty(terms.CONFIG_PARAMS.OPERATIONSAPI_ROOT, TEMP_CLUSTERING_TEST_DIR);
+	env.setProperty(terms.CONFIG_PARAMS.CLUSTERING_LEAFSERVER_NETWORK_PORT, 9991);
+	env.setProperty(terms.CONFIG_PARAMS.CLUSTERING_USER, 'test_cluster_user');
+	env.setProperty(terms.CONFIG_PARAMS.CLUSTERING_NODENAME, 'testLeafServer');
+	leaf_server_term_rw = nats_terms.__set__('NATS_CONFIG_FILES', NATS_TEST_CONFIG_FILES);
+}
+
+function unsetFakeClusterUser() {
+	sandbox.restore();
+	leaf_server_term_rw();
+}
+
+/**
+ * Stops the Nats test leaf server.
+ * @returns {Promise<void>}
+ */
+async function stopTestLeafServer() {
+	if (global.NATSConnection) {
+		try {
+			await global.NATSConnection.close();
+			delete global.NATSConnection;
+			// eslint-disable-next-line no-empty
+		} catch (err) {}
+	}
+
+	try {
+		await runCommand(`${NATS_SERVER_PATH} --signal stop`, undefined);
+		await pm2_utils.stop('nats_test_leaf_server');
+		await fs.remove(TEMP_TEST_DIR);
+	} catch (err) {
+		console.error(err);
+	}
+}
+
+/**
+ * Runs a bash script in a new shell
+ * @param {String} command - the command to execute
+ * @param {String=} cwd - path to the current working directory
+ * @returns {Promise<*>}
+ */
+async function runCommand(command, cwd = undefined) {
+	const { stdout, stderr } = await exec(command, { cwd });
+
+	if (stderr) {
+		throw new Error(stderr.replace('\n', ''));
+	}
+
+	return stdout.replace('\n', '');
+}
+
 module.exports = {
 	changeProcessToBinDir,
 	deepClone,
@@ -635,5 +786,10 @@ module.exports = {
 	generateUpgradeObj,
 	assignObjecttoNullObject: assignObjectToNullObject,
 	requireUncached,
+	stopTestLeafServer,
+	launchTestLeafServer,
+	setFakeClusterUser,
+	unsetFakeClusterUser,
 	COMMON_TEST_TERMS,
+	NATS_TEST_SERVER_VALUES,
 };

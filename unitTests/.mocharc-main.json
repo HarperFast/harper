@@ -10,6 +10,7 @@
         "../unitTests/data_layer/harperBridge/lmdbBridge/**/*.js",
         "../unitTests/utility/lmdb/**/*.js",
         "../unitTests/server/harperdb/hdbServer-test.js",
-        "../unitTests/server/customFunctions/customFunctionsServer-test.js"
+        "../unitTests/server/customFunctions/customFunctionsServer-test.js",
+        "../unitTests/server/nats/**/*.js"
     ]
 }

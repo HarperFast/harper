@@ -222,15 +222,6 @@
         "attribute":"name"
       },
       {
-        "attribute":"host"
-      },
-      {
-        "attribute":"operation"
-      },
-      {
-        "attribute":"port"
-      },
-      {
         "attribute":"subscriptions"
       },
       {

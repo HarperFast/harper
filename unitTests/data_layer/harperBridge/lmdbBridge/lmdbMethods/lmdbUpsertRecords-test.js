@@ -138,7 +138,8 @@ describe('Test lmdbUpsertRecords module', () => {
 		let expected_timestamp_txn;
 		let expected_hashes_txn;
 
-		beforeEach(async () => {
+		beforeEach(async function () {
+			this.timeout(10000);
 			date_stub.restore();
 			date_stub = sandbox.stub(Date, 'now').returns(INSERT_TIMESTAMP);
 			global.hdb_schema = {

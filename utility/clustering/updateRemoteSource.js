@@ -1,0 +1,115 @@
+'use strict';
+
+const update_remote_source_validator = require('../../validation/clustering/updateRemoteSourceValidator');
+const hdb_logger = require('../logging/harper_logger');
+const nats_terms = require('../../server/nats/utility/natsTerms');
+const hdb_terms = require('../hdbTerms');
+const cluster_utils = require('../../utility/clustering/clusterUtilities');
+const nats_utils = require('../../server/nats/utility/natsUtils');
+const schema_mod = require('../../data_layer/schema');
+const CreateTableObject = require('../../data_layer/CreateTableObject');
+const { Node, NodeSubscription } = require('./NodeObject');
+const UpdateRemoteResponseObject = require('./UpdateRemoteResponseObject');
+const hdb_utils = require('../common_utils');
+const env_manager = require('../environment/environmentManager');
+
+module.exports = updateRemoteSource;
+
+/**
+ * Used by a "remote node" when an update_remote_sources request is sent.
+ * Will add or update a node connection/subscription.
+ * @param request
+ * @returns {Promise<UpdateRemoteResponseObject>}
+ */
+async function updateRemoteSource(request) {
+	try {
+		const validation = update_remote_source_validator(request);
+		if (validation) {
+			hdb_logger.error(`Validation error in updateRemoteSource: ${validation.message}`);
+
+			// If a validation error occurs return it to the originator node.
+			return new UpdateRemoteResponseObject(nats_terms.UPDATE_REMOTE_RESPONSE_STATUSES.ERROR, validation.message);
+		}
+
+		const subscriptions = request.subscriptions;
+		const node_name = request.node_name;
+		let new_subs_array = [];
+		let node_record = await cluster_utils.getNodeRecord(node_name);
+		const update_record = !hdb_utils.isEmptyOrZeroLength(node_record);
+		node_record = update_record ? node_record[0] : node_record;
+		if (update_record) hdb_logger.trace(`Existing record found for ${node_name}, updating records subscriptions`);
+
+		// For each subscription in the subscriptions array.
+		for (let j = 0, sub_length = subscriptions.length; j < sub_length; j++) {
+			const sub = subscriptions[j];
+			const schema = sub.schema;
+			const table = sub.table;
+
+			// If the schema doesn't exist it is created.
+			if (!hdb_utils.doesSchemaExist(schema)) {
+				hdb_logger.trace(`updateRemoteSource creating schema: ${schema}`);
+				await schema_mod.createSchema({ operation: 'create_schema', schema });
+			}
+
+			// If the table doesn't exist it is created.
+			if (!hdb_utils.doesTableExist(schema, table)) {
+				hdb_logger.trace(`updateRemoteSource creating table: ${table} in schema: ${schema}`);
+				const table_obj = new CreateTableObject(schema, table, sub.hash_attribute);
+				await schema_mod.createTable(table_obj);
+
+				// Create a stream for the new table
+				hdb_logger.trace(`Creating local stream for ${schema}.${table}`);
+				await nats_utils.createLocalTableStream(schema, table);
+			}
+
+			// Add or remove remote source from the work queue stream.
+			await nats_utils.updateWorkStream(sub, node_name);
+
+			// If a record for remote node already exists in hdb_nodes table we update the subscriptions in it.
+			if (update_record) {
+				let match_found = false;
+				for (let x = 0, r_length = node_record.subscriptions.length; x < r_length; x++) {
+					const existing_sub = node_record.subscriptions[x];
+
+					// If there is an existing matching subscription in the hdb_nodes table update it.
+					if (existing_sub.schema === schema && existing_sub.table === table) {
+						existing_sub.publish = sub.publish;
+						existing_sub.subscribe = sub.subscribe;
+						match_found = true;
+						break;
+					}
+				}
+
+				// If no matching subscription is found but there is a record in the table for the node push new sub to subscriptions array.
+				if (!match_found) {
+					node_record.subscriptions.push(new NodeSubscription(schema, table, sub.publish, sub.subscribe));
+				}
+			} else {
+				// If there is no existing record for node push new sub to sub array.
+				new_subs_array.push(new NodeSubscription(schema, table, sub.publish, sub.subscribe));
+			}
+		}
+
+		// If there is no existing record for node in hdb_nodes create a new one
+		if (!update_record) {
+			node_record = new Node(node_name, new_subs_array);
+			hdb_logger.trace(`No record found for ${node_name}, creating a new one`);
+		}
+
+		// node_record doesnt have required prototypes which are required down the line, for this reason a new object is created.
+		const upsert_record = Object.create({});
+		Object.assign(upsert_record, node_record);
+		await cluster_utils.upsertNodeRecord(upsert_record);
+
+		return new UpdateRemoteResponseObject(
+			nats_terms.UPDATE_REMOTE_RESPONSE_STATUSES.SUCCESS,
+			`Node ${env_manager.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_NODENAME)} successfully updated remote source`
+		);
+	} catch (err) {
+		hdb_logger.error(err);
+		const err_msg = err.message ? err.message : err;
+
+		// If an error occurs return it to the originator node.
+		return new UpdateRemoteResponseObject(nats_terms.UPDATE_REMOTE_RESPONSE_STATUSES.ERROR, err_msg);
+	}
+}

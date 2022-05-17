@@ -56,7 +56,8 @@ describe('test lmdbSearchByConditions module', () => {
 
 	describe('test method', () => {
 		let env;
-		before(async () => {
+		before(async function () {
+			this.timeout(10000);
 			global.lmdb_map = undefined;
 			await fs.remove(test_utils.getMockLMDBPath());
 			await fs.mkdirp(SYSTEM_SCHEMA_PATH);

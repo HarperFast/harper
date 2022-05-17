@@ -9,10 +9,14 @@ const delete_ = require('../../data_layer/delete');
 const read_transaction_log = require('../../data_layer/readTransactionLog');
 const user = require('../../security/user');
 const role = require('../../security/role');
-const cluster_utilities = require('./../clustering/clusterUtilities');
 const custom_function_operations = require('./../customFunctions/operations');
 const harper_logger = require('../../utility/logging/harper_logger');
 const read_log = require('../../utility/logging/readLog');
+const add_node = require('../../utility/clustering/addNode');
+const update_node = require('../../utility/clustering/updateNode');
+const remove_node = require('../../utility/clustering/removeNode');
+const configure_cluster = require('../../utility/clustering/configureCluster');
+const cluster_status = require('../../utility/clustering/clusterStatus');
 const export_ = require('../../data_layer/export');
 const op_auth = require('../../utility/operation_authorization');
 const jobs = require('./../jobs');
@@ -25,7 +29,7 @@ const util = require('util');
 const insert = require('../../data_layer/insert');
 const global_schema = require('../../utility/globalSchema');
 const system_information = require('../../utility/environment/systemInformation');
-const transact_to_clustering_utils = require('./../transactToClusteringUtilities');
+const transact_to_clustering_utils = require('../../utility/clustering/transactToClusteringUtilities');
 const job_runner = require('./../jobRunner');
 const token_authentication = require('../../security/tokenAuthentication');
 const config_utils = require('../../config/configUtils');
@@ -212,7 +216,7 @@ async function catchup(req) {
 					break;
 			}
 
-			transact_to_clustering_utils.postOperationHandler(transaction, result, req);
+			await transact_to_clustering_utils.postOperationHandler(transaction, result, req);
 		} catch (e) {
 			harper_logger.info('Invalid operation in transaction');
 			harper_logger.error(e);
@@ -275,12 +279,12 @@ function initializeOperationFunctionMap() {
 	op_func_map.set(terms.OPERATIONS_ENUM.DROP_ROLE, new OperationFunctionObject(role.dropRole));
 	op_func_map.set(terms.OPERATIONS_ENUM.USER_INFO, new OperationFunctionObject(user.userInfo));
 	op_func_map.set(terms.OPERATIONS_ENUM.READ_LOG, new OperationFunctionObject(read_log));
-	op_func_map.set(terms.OPERATIONS_ENUM.ADD_NODE, new OperationFunctionObject(cluster_utilities.addNode));
-	op_func_map.set(terms.OPERATIONS_ENUM.UPDATE_NODE, new OperationFunctionObject(cluster_utilities.updateNode));
-	op_func_map.set(terms.OPERATIONS_ENUM.REMOVE_NODE, new OperationFunctionObject(cluster_utilities.removeNode));
-	op_func_map.set(terms.OPERATIONS_ENUM.CONFIGURE_CLUSTER, new OperationFunctionObject(config_utils.setConfiguration));
+	op_func_map.set(terms.OPERATIONS_ENUM.ADD_NODE, new OperationFunctionObject(add_node));
+	op_func_map.set(terms.OPERATIONS_ENUM.UPDATE_NODE, new OperationFunctionObject(update_node));
+	op_func_map.set(terms.OPERATIONS_ENUM.REMOVE_NODE, new OperationFunctionObject(remove_node));
+	op_func_map.set(terms.OPERATIONS_ENUM.CONFIGURE_CLUSTER, new OperationFunctionObject(configure_cluster));
 	op_func_map.set(terms.OPERATIONS_ENUM.SET_CONFIGURATION, new OperationFunctionObject(config_utils.setConfiguration));
-	op_func_map.set(terms.OPERATIONS_ENUM.CLUSTER_STATUS, new OperationFunctionObject(cluster_utilities.clusterStatus));
+	op_func_map.set(terms.OPERATIONS_ENUM.CLUSTER_STATUS, new OperationFunctionObject(cluster_status));
 	op_func_map.set(terms.OPERATIONS_ENUM.EXPORT_TO_S3, new OperationFunctionObject(executeJob, export_.export_to_s3));
 	op_func_map.set(
 		terms.OPERATIONS_ENUM.DELETE_FILES_BEFORE,

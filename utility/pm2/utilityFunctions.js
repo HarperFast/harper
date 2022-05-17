@@ -2,6 +2,9 @@
 
 const hdb_terms = require('../hdbTerms');
 const hdb_utils = require('../common_utils');
+const nats_config = require('../../server/nats/utility/natsConfig');
+const nats_utils = require('../../server/nats/utility/natsUtils');
+const nats_terms = require('../../server/nats/utility/natsTerms');
 const pm2 = require('pm2');
 const services_config = require('./servicesConfig');
 const env_mangr = require('../environment/environmentManager');
@@ -30,7 +33,10 @@ module.exports = {
 	restartHdb,
 	deleteProcess,
 	configureLogRotate,
+	startClustering,
 	isHdbRestartRunning,
+	isClusteringRunning,
+	stopClustering,
 };
 
 const PM2_LOGROTATE_VERSION = '2.7.0';
@@ -284,6 +290,11 @@ function kill() {
  */
 async function startAllServices() {
 	try {
+		// The clustering services are started separately because their config is
+		// removed for security reasons after they are connected.
+		// Also we create the work queue stream when we start clustering
+		await startClustering();
+
 		await start(services_config.generateAllServiceConfigs());
 	} catch (err) {
 		pm2.disconnect();
@@ -299,15 +310,10 @@ async function startAllServices() {
 async function startService(service_name) {
 	try {
 		let start_config;
-		switch (service_name.toLowerCase()) {
+		service_name = service_name.toLowerCase();
+		switch (service_name) {
 			case hdb_terms.PROCESS_DESCRIPTORS.IPC.toLowerCase():
 				start_config = services_config.generateIPCServerConfig();
-				break;
-			case hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING.toLowerCase():
-				start_config = services_config.generateClusteringServerConfig();
-				break;
-			case hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_CONNECTOR.toLowerCase():
-				start_config = services_config.generateClusteringConnectorConfig();
 				break;
 			case hdb_terms.PROCESS_DESCRIPTORS.HDB.toLowerCase():
 				start_config = services_config.generateHDBServerConfig();
@@ -315,6 +321,24 @@ async function startService(service_name) {
 			case hdb_terms.PROCESS_DESCRIPTORS.CUSTOM_FUNCTIONS.toLowerCase():
 				start_config = services_config.generateCFServerConfig();
 				break;
+			case hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_INGEST_SERVICE.toLowerCase():
+				start_config = services_config.generateNatsIngestServiceConfig();
+				break;
+			case hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_REPLY_SERVICE.toLowerCase():
+				start_config = services_config.generateNatsReplyServiceConfig();
+				break;
+			case hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_HUB.toLowerCase():
+				start_config = services_config.generateNatsHubServerConfig();
+				await start(start_config);
+				// For security reasons remove the Nats servers config file from disk after service has started.
+				await nats_config.removeNatsConfig(service_name);
+				return;
+			case hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_LEAF.toLowerCase():
+				start_config = services_config.generateNatsLeafServerConfig();
+				await start(start_config);
+				// For security reasons remove the Nats servers config file from disk after service has started.
+				await nats_config.removeNatsConfig(service_name);
+				return;
 			default:
 				throw new Error(`Start service called with unknown service config: ${service_name}`);
 		}
@@ -547,4 +571,43 @@ async function configureLogRotate() {
 	if (!logrotate_env && logrotate_status === hdb_terms.PM2_PROCESS_STATUSES.ONLINE) {
 		await stopLogrotate();
 	}
+}
+
+/**
+ * Starts all the services that make up clustering
+ * @returns {Promise<void>}
+ */
+async function startClustering() {
+	for (const proc in hdb_terms.CLUSTERING_PROCESSES) {
+		const service = hdb_terms.CLUSTERING_PROCESSES[proc];
+		await startService(service);
+	}
+	await nats_utils.createWorkQueueStream(nats_terms.WORK_QUEUE_CONSUMER_NAMES);
+}
+
+/**
+ * Stop all the services that make up clustering
+ */
+async function stopClustering() {
+	for (const proc in hdb_terms.CLUSTERING_PROCESSES) {
+		const service = hdb_terms.CLUSTERING_PROCESSES[proc];
+		await stop(service);
+	}
+}
+
+/**
+ * Checks all the processes that make up clustering to see if they are running.
+ * All required processes must be running for function to return true.
+ * @returns {Promise<boolean>}
+ */
+async function isClusteringRunning() {
+	for (const proc in hdb_terms.CLUSTERING_PROCESSES) {
+		const service = hdb_terms.CLUSTERING_PROCESSES[proc];
+		const is_currently_running = await isServiceRegistered(service);
+		if (is_currently_running === false) {
+			return false;
+		}
+	}
+
+	return true;
 }

@@ -7,13 +7,18 @@ const pm2 = require('pm2');
 const sinon = require('sinon');
 const os = require('os');
 const path = require('path');
+const fs = require('fs-extra');
 const test_utils = require('../../test_utils');
 const env_mngr = require('../../../utility/environment/environmentManager');
 const services_config = require('../../../utility/pm2/servicesConfig');
 const hdb_terms = require('../../../utility/hdbTerms');
 const hdb_logger = require('../../../utility/logging/harper_logger');
+const nats_config = require('../../../server/nats/utility/natsConfig');
+const nats_utils = require('../../../server/nats/utility/natsUtils');
 const util = require('util');
 const exec = util.promisify(require('child_process').exec);
+const user = require('../../../security/user');
+const crypto_hash = require('../../../security/cryptoHash');
 const utility_functions = rewire('../../../utility/pm2/utilityFunctions');
 
 const PM2_LOGROTATE = 'pm2-logrotate';
@@ -22,6 +27,32 @@ const LOG_ROTATE_UNINSTALLED = 'Log rotate uninstalled.';
 const LOG_ROTATE_UNINSTALL_ERR = 'Error uninstalling log rotate.';
 const FAKE_LOCATION_ERROR_MSG = '/fakelocation: No such file or directory';
 const FAKE_LOCATION_ERROR_MSG2 = '/fakelocation: not found\n';
+const FAKE_CLUSTER_USER1 = 'clusterUser1';
+const FAKE_USER_LIST = new Map([
+	[
+		FAKE_CLUSTER_USER1,
+		{
+			active: true,
+			hash: crypto_hash.encrypt('blahbblah'),
+			password: 'somepass',
+			role: {
+				id: '58aa0e11-b761-4ade-8a7d-e9111',
+				permission: {
+					cluster_user: true,
+				},
+				role: 'cluster_user',
+			},
+			username: FAKE_CLUSTER_USER1,
+		},
+	],
+]);
+
+const fake_cluster_user = FAKE_USER_LIST.get(FAKE_CLUSTER_USER1);
+fake_cluster_user.decrypt_hash = 'blahbblah';
+fake_cluster_user.uri_encoded_d_hash = 'how%25day-2123ncv%234';
+fake_cluster_user.uri_encoded_name = 'name%25day-2123ncv%234';
+fake_cluster_user.sys_name = fake_cluster_user.username + '-admin';
+fake_cluster_user.sys_name_encoded = fake_cluster_user.uri_encoded_name + '-admin';
 
 /**
  * Uninstalls pm2's logrotate module.
@@ -76,9 +107,11 @@ async function stopDeleteProcess(service_name) {
 async function stopDeleteAllServices() {
 	await stopDeleteProcess('HarperDB');
 	await stopDeleteProcess('IPC');
-	await stopDeleteProcess('Clustering');
 	await stopDeleteProcess('Custom Functions');
-	await stopDeleteProcess('Clustering Connector');
+	await stopDeleteProcess('Clustering Hub');
+	await stopDeleteProcess('Clustering Leaf');
+	await stopDeleteProcess('Clustering Ingest Service');
+	await stopDeleteProcess('Clustering Reply Service');
 	await stopDeleteProcess('pm2-logrotate');
 }
 
@@ -86,10 +119,33 @@ describe('Test pm2 utilityFunctions module', () => {
 	const sandbox = sinon.createSandbox();
 	const test_err = 'Utility functions test error';
 	let os_cpus_stub;
+	let create_work_stream_stub;
 
 	before(() => {
+		fs.mkdirpSync(path.resolve(__dirname, '../../envDir/clustering'));
 		os_cpus_stub = sandbox.stub(os, 'cpus').returns([1, 2, 3, 4, 5, 6]);
+		create_work_stream_stub = sandbox.stub(nats_utils, 'createWorkQueueStream').resolves();
 		env_mngr.initTestEnvironment();
+		sandbox.stub(user, 'listUsers').resolves(FAKE_USER_LIST);
+		sandbox.stub(user, 'getClusterUser').resolves(fake_cluster_user);
+		env_mngr.setProperty(hdb_terms.CONFIG_PARAMS.CLUSTERING_USER, FAKE_CLUSTER_USER1);
+		env_mngr.setProperty(hdb_terms.CONFIG_PARAMS.CLUSTERING_HUBSERVER_NETWORK_PORT, 7711);
+		env_mngr.setProperty(hdb_terms.CONFIG_PARAMS.CLUSTERING_NODENAME, 'unitTestNodeName');
+		env_mngr.setProperty(hdb_terms.CONFIG_PARAMS.CLUSTERING_HUBSERVER_LEAFNODES_NETWORK_PORT, 7712);
+		env_mngr.setProperty(hdb_terms.CONFIG_PARAMS.CLUSTERING_HUBSERVER_CLUSTER_NAME, 'harperdb_unit_test');
+		env_mngr.setProperty(hdb_terms.CONFIG_PARAMS.CLUSTERING_HUBSERVER_CLUSTER_NETWORK_PORT, 7713);
+		env_mngr.setProperty(hdb_terms.CONFIG_PARAMS.CLUSTERING_HUBSERVER_LEAFNODES_NETWORK_PORT, 7714);
+		env_mngr.setProperty(hdb_terms.CONFIG_PARAMS.CLUSTERING_LEAFSERVER_NETWORK_PORT, 7715);
+		env_mngr.setProperty(hdb_terms.CONFIG_PARAMS.CLUSTERING_HUBSERVER_CLUSTER_NETWORK_ROUTES, [
+			{
+				ip: '3.3.3.3',
+				port: 7716,
+			},
+			{
+				ip: '4.4.4.4',
+				port: 7717,
+			},
+		]);
 	});
 
 	beforeEach(async () => {
@@ -113,7 +169,7 @@ describe('Test pm2 utilityFunctions module', () => {
 			expect(process_meta[0].name).to.equal('IPC');
 			expect(process_meta[0].pm2_env.status).to.equal('online');
 			expect(process_meta[0].pm2_env.exec_mode).to.equal('fork_mode');
-		});
+		}).timeout(10000);
 
 		it('Test the HarperDB server is started on multiple processes', async () => {
 			await utility_functions.start(services_config.generateHDBServerConfig());
@@ -135,7 +191,7 @@ describe('Test pm2 utilityFunctions module', () => {
 			expect(process_meta[1].pm2_env.node_args[0]).includes('--max-old-space-size=');
 			expect(process_meta[2].pm2_env.node_args[0]).includes('--max-old-space-size=');
 			expect(process_meta[3].pm2_env.node_args[0]).includes('--max-old-space-size=');
-		});
+		}).timeout(10000);
 
 		it('Test error is handled as expected', async () => {
 			const test_script_path = `${__dirname}/imnothere.js`;
@@ -155,14 +211,14 @@ describe('Test pm2 utilityFunctions module', () => {
 			}
 
 			expect(error[0].message).to.equal(`Script not found: ${test_script_path}`);
-		});
+		}).timeout(10000);
 
 		it('Test error from connect causes promise to reject', async () => {
 			const connect_rw = utility_functions.__set__('connect', sandbox.stub().throws(new Error(test_err)));
 			await test_utils.assertErrorAsync(utility_functions.start, [], new Error(test_err));
 			connect_rw();
-		});
-	});
+		}).timeout(10000);
+	}).timeout(10000);
 
 	describe('Test stop function', () => {
 		it('Test that a single online process is stopped', async () => {
@@ -329,27 +385,34 @@ describe('Test pm2 utilityFunctions module', () => {
 		});
 
 		it('Test all services are started', async () => {
+			await nats_config.generateNatsConfig();
 			await utility_functions.startAllServices();
 			const list = await utility_functions.list();
 			let hdb_name_found = false;
 			let ipc_name_found = false;
-			let sc_name_found = false;
 			let cf_name_found = false;
-			let cc_name_found = false;
+			let hub_name_found = false;
+			let leaf_name_found = false;
+			let ingest_name_found = false;
+			let reply_name_found = false;
 			list.forEach((proc) => {
 				if (proc.name === 'HarperDB') hdb_name_found = true;
 				if (proc.name === 'IPC') ipc_name_found = true;
-				if (proc.name === 'Clustering') sc_name_found = true;
 				if (proc.name === 'Custom Functions') cf_name_found = true;
-				if (proc.name === 'Clustering Connector') cc_name_found = true;
+				if (proc.name === 'Clustering Hub') hub_name_found = true;
+				if (proc.name === 'Clustering Leaf') leaf_name_found = true;
+				if (proc.name === 'Clustering Ingest Service') ingest_name_found = true;
+				if (proc.name === 'Clustering Reply Service') reply_name_found = true;
 			});
 
-			expect(list.length).to.equal(9);
+			expect(list.length).to.equal(11);
 			expect(hdb_name_found).to.be.true;
 			expect(ipc_name_found).to.be.true;
-			expect(sc_name_found).to.be.true;
 			expect(cf_name_found).to.be.true;
-			expect(cc_name_found).to.be.true;
+			expect(hub_name_found).to.be.true;
+			expect(leaf_name_found).to.be.true;
+			expect(ingest_name_found).to.be.true;
+			expect(reply_name_found).to.be.true;
 		}).timeout(20000);
 	});
 
@@ -367,19 +430,11 @@ describe('Test pm2 utilityFunctions module', () => {
 			expect(process_meta[0].pm2_env.status).to.equal('online');
 		}).timeout(20000);
 
-		it('Test starts clustering connector service', async () => {
-			await utility_functions.startService('clustering connector');
-			const process_meta = await utility_functions.describe('Clustering Connector');
+		it('Test starts reply service', async () => {
+			await utility_functions.startService('Clustering Reply Service');
+			const process_meta = await utility_functions.describe('Clustering Reply Service');
 			expect(process_meta.length).to.equal(1);
-			expect(process_meta[0].name).to.equal('Clustering Connector');
-			expect(process_meta[0].pm2_env.status).to.equal('online');
-		}).timeout(20000);
-
-		it('Test starts Clustering service', async () => {
-			await utility_functions.startService('clustering');
-			const process_meta = await utility_functions.describe('Clustering');
-			expect(process_meta.length).to.equal(1);
-			expect(process_meta[0].name).to.equal('Clustering');
+			expect(process_meta[0].name).to.equal('Clustering Reply Service');
 			expect(process_meta[0].pm2_env.status).to.equal('online');
 		}).timeout(20000);
 
@@ -415,7 +470,7 @@ describe('Test pm2 utilityFunctions module', () => {
 			await test_utils.assertErrorAsync(
 				utility_functions.startService,
 				['DarperDB'],
-				new Error('Start service called with unknown service config: DarperDB')
+				new Error('Start service called with unknown service config: darperdb')
 			);
 		}).timeout(20000);
 	});
@@ -430,12 +485,24 @@ describe('Test pm2 utilityFunctions module', () => {
 
 		it('Test a unique set of services is returned', async () => {
 			const expected_obj = {
+				'Clustering Hub': {
+					exec_mode: 'fork_mode',
+					name: 'Clustering Hub',
+				},
+				'Clustering Leaf': {
+					exec_mode: 'fork_mode',
+					name: 'Clustering Leaf',
+				},
+				'Clustering Ingest Service': {
+					exec_mode: 'cluster_mode',
+					name: 'Clustering Ingest Service',
+				},
+				'Clustering Reply Service': {
+					exec_mode: 'cluster_mode',
+					name: 'Clustering Reply Service',
+				},
 				'IPC': {
 					name: 'IPC',
-					exec_mode: 'fork_mode',
-				},
-				'Clustering': {
-					name: 'Clustering',
 					exec_mode: 'fork_mode',
 				},
 				'HarperDB': {
@@ -446,15 +513,12 @@ describe('Test pm2 utilityFunctions module', () => {
 					name: 'Custom Functions',
 					exec_mode: 'cluster_mode',
 				},
-				'Clustering Connector': {
-					name: 'Clustering Connector',
-					exec_mode: 'fork_mode',
-				},
 			};
+			await nats_config.generateNatsConfig();
 			await utility_functions.startAllServices();
 			const list = await utility_functions.getUniqueServicesList();
 			expect(list).to.eql(expected_obj);
-		});
+		}).timeout(20000);
 	});
 
 	describe('Test stopAllServices function', () => {
@@ -463,6 +527,7 @@ describe('Test pm2 utilityFunctions module', () => {
 		});
 
 		it('Test all services are stopped', async () => {
+			await nats_config.generateNatsConfig();
 			await utility_functions.startAllServices();
 			await utility_functions.stopAllServices();
 			const list = await utility_functions.list();
@@ -515,16 +580,30 @@ describe('Test pm2 utilityFunctions module', () => {
 		afterEach(async function () {
 			this.timeout(10000);
 			await stopDeleteAllServices();
+			sandbox.resetHistory();
 		});
 
 		it('Test all services are restarted', async () => {
+			await nats_config.generateNatsConfig();
 			await utility_functions.startAllServices();
 			await utility_functions.restartAllServices();
-			expect(reload_stub.getCall(1).args[0]).to.equal('HarperDB');
-			expect(reload_stub.getCall(0).args[0]).to.equal('Custom Functions');
-			expect(restart_stub.getCall(0).args[0]).to.equal('IPC');
-			expect(restart_stub.getCall(1).args[0]).to.equal('Clustering');
-		});
+			const reload_calls = [
+				...reload_stub.args[0],
+				...reload_stub.args[1],
+				...reload_stub.args[2],
+				...reload_stub.args[3],
+			];
+			const restart_calls = [...restart_stub.args[0], ...restart_stub.args[1], ...restart_stub.args[2]];
+			expect(reload_calls).to.include('HarperDB');
+			expect(reload_calls).to.include('Custom Functions');
+			expect(reload_calls).to.include('Clustering Ingest Service');
+			expect(reload_calls).to.include('Clustering Reply Service');
+			expect(reload_calls.length).to.equal(4);
+			expect(restart_calls).to.include('Clustering Hub');
+			expect(restart_calls).to.include('Clustering Leaf');
+			expect(restart_calls).to.include('IPC');
+			expect(restart_calls.length).to.equal(3);
+		}).timeout(20000);
 	});
 
 	describe('Test reloadStopStart function', () => {
@@ -922,6 +1001,26 @@ describe('Test pm2 utilityFunctions module', () => {
 		}).timeout(20000);
 	});
 
+	it('Test startClustering functions calls startService for all the clustering services', async () => {
+		const start_service_stub = sandbox.stub();
+		const create_queue_stub = sandbox.stub();
+		const start_service_rw = utility_functions.__set__('startService', start_service_stub);
+		const create_queue_rw = utility_functions.__set__('nats_utils.createWorkQueueStream', create_queue_stub);
+		await utility_functions.startClustering();
+		expect(start_service_stub.getCall(0).args[0]).to.equal('Clustering Hub');
+		expect(start_service_stub.getCall(1).args[0]).to.equal('Clustering Leaf');
+		expect(start_service_stub.getCall(2).args[0]).to.equal('Clustering Ingest Service');
+		expect(start_service_stub.getCall(3).args[0]).to.equal('Clustering Reply Service');
+		expect(create_queue_stub.args[0][0]).to.eql({
+			stream_name: '__HARPERDB_WORK_QUEUE__',
+			durable_name: 'HDB_WORK_QUEUE',
+			deliver_group: 'HDB',
+			deliver_subject: 'HDB.WORKQUEUE',
+		});
+		start_service_rw();
+		create_queue_rw();
+	});
+
 	describe('Test isHdbRestartRunning function', () => {
 		it('Test true is returned if hdb restart running', async () => {
 			const fake_list = [{ name: 'IPC' }, { name: 'Custom Functions' }, { name: 'Restart HDB' }];
@@ -939,4 +1038,31 @@ describe('Test pm2 utilityFunctions module', () => {
 			list_rw();
 		});
 	});
-});
+
+	it('Test stopClustering calls stop for all the clustering processes', async () => {
+		const stop_stub = sandbox.stub();
+		const stop_rw = utility_functions.__set__('stop', stop_stub);
+		await utility_functions.stopClustering();
+		expect(stop_stub.getCall(0).args[0]).to.equal('Clustering Hub');
+		expect(stop_stub.getCall(1).args[0]).to.equal('Clustering Leaf');
+		expect(stop_stub.getCall(2).args[0]).to.equal('Clustering Ingest Service');
+		expect(stop_stub.getCall(3).args[0]).to.equal('Clustering Reply Service');
+		stop_rw();
+	});
+
+	it('Test isClusteringRunning returns true if all clustering services running', async () => {
+		const is_reg_stub = sandbox.stub().resolves(true);
+		const is_reg_rw = utility_functions.__set__('isServiceRegistered', is_reg_stub);
+		const result = await utility_functions.isClusteringRunning();
+		expect(result).to.be.true;
+		is_reg_rw();
+	});
+
+	it('Test isClusteringRunning returns false if all clustering services not running', async () => {
+		const is_reg_stub = sandbox.stub().resolves(false);
+		const is_reg_rw = utility_functions.__set__('isServiceRegistered', is_reg_stub);
+		const result = await utility_functions.isClusteringRunning();
+		expect(result).to.be.false;
+		is_reg_rw();
+	});
+}).timeout(10000);

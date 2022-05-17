@@ -154,11 +154,11 @@ function initTestEnvironment(test_config_obj = {}) {
 		setProperty(hdb_terms.HDB_SETTINGS_NAMES.PRIVATE_KEY_KEY, `${props_path}/envDir/utility/keys/privateKey.pem`);
 		setProperty(hdb_terms.HDB_SETTINGS_NAMES.CERT_KEY, `${props_path}/envDir/utility/keys/certificate.pem`);
 		setProperty(
-			hdb_terms.CONFIG_PARAMS.CUSTOMFUNCTIONS_NETWORK_PRIVATEKEY,
+			hdb_terms.CONFIG_PARAMS.CUSTOMFUNCTIONS_TLS_PRIVATEKEY,
 			`${props_path}/envDir/utility/keys/privateKey.pem`
 		);
 		setProperty(
-			hdb_terms.CONFIG_PARAMS.CUSTOMFUNCTIONS_NETWORK_CERTIFICATE,
+			hdb_terms.CONFIG_PARAMS.CUSTOMFUNCTIONS_TLS_CERTIFICATE,
 			`${props_path}/envDir/utility/keys/certificate.pem`
 		);
 		setProperty(hdb_terms.HDB_SETTINGS_NAMES.LOG_LEVEL_KEY, `debug`);

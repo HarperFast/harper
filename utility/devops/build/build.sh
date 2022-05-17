@@ -6,13 +6,11 @@ declare -a folders=("bin/*.js"
   "data_layer/**/*.js"
   "data_layer/**/**/*.js"
   "data_layer/**/**/**/*.js"
-  "events/*.js"
   "security/*.js"
   "security/data_objects/*.js"
   "server/*.js"
   "server/**/*.js"
   "server/**/**/*.js"
-  "server/**/**/**/*.js"
   "sqlTranslator/*.js"
   "upgrade/*.js"
   "upgrade/**/*.js"
@@ -29,12 +27,21 @@ declare -a folders=("bin/*.js"
   "utility/AWS/*.js"
   "utility/pm2/*.js"
   "utility/scripts/*.js"
+  "utility/clustering/*.js"
   "utility/terms/*.js"
   "validation/*.js"
   "validation/**/*.js"
   "config/*.js")
 
 #verify dependencies are installed
+go_version_installed="$(go version | cut -d ' ' -f 3 | cut -c 3-99)"
+go_version=$(jq -r '.engines."go-lang"' package.json)
+
+if ! [ "$go_version_installed" = "$go_version" ]; then
+    echo "Go $go_version must be installed"
+    exit
+fi
+
 node_version_installed="$(node -v)"
 node_version="v$(npm run env | grep npm_package_engines_node | cut -d '=' -f 2)"
 

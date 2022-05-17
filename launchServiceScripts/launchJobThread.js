@@ -2,8 +2,8 @@
 
 const is_compiled = process.env.HDB_COMPILED === 'true';
 if (is_compiled) {
-    require('bytenode');
-    require('../server/jobThread.jsc');
+	require('bytenode');
+	require('../server/jobThread.jsc');
 } else {
-    require('../server/jobThread');
+	require('../server/jobThread');
 }

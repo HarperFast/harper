@@ -1,1 +1,8 @@
 /custom_function_template/*
+/validation/configValidator.js
+/server/nats/utility/natsUtils.js
+/utility/clustering/transactToClusteringUtilities.js
+/utility/clustering/clusterStatus.js
+/config/configUtils.js
+/validation/common_validators.js
+/utility/common_utils.js

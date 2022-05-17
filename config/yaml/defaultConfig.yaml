@@ -2,16 +2,33 @@
 ---
 clustering:
   enabled: false
-  network:
-    port: 12345
-    selfSignedSslCerts: false
+  hubServer:
+    cluster:
+      name: harperdb
+      network:
+        port: 9932
+        routes:
+    leafNodes:
+      network:
+        port: 9931
+    network:
+      port: 9930
+  ingestService:
+    processes: 1
+  leafServer:
+    network:
+      port: 9940
   nodeName: null
-  processes: 1
+  replyService:
+    processes: 1
+  tls:
+    certificate: null
+    certificateAuthority: null
+    privateKey: null
   user: null
 customFunctions:
   enabled: false
   network:
-    certificate: null
     cors: true
     corsWhitelist:
       - null
@@ -19,11 +36,14 @@ customFunctions:
     https: false
     keepAliveTimeout: 5000
     port: 9926
-    privateKey: null
     timeout: 120000
   nodeEnv: production
   processes: null
   root: null
+  tls:
+    certificate: null
+    certificateAuthority: null
+    privateKey: null
 ipc:
   network:
     port: 9383
@@ -33,6 +53,7 @@ logging:
   auditLog: false
   file: true
   level: error
+  root: null
   rotation:
     compress: false
     dateFormat: YYYY-MM-DD_HH-mm-ss
@@ -43,7 +64,6 @@ logging:
     rotateModule: true
     timezone: GMT
     workerInterval: 30
-  root: null
   stdStreams: false
 operationsApi:
   authentication:
@@ -51,7 +71,6 @@ operationsApi:
     refreshTokenTimeout: 30d
   foreground: false
   network:
-    certificate: null
     cors: true
     corsWhitelist:
       - null
@@ -59,10 +78,13 @@ operationsApi:
     https: false
     keepAliveTimeout: 5000
     port: 9925
-    privateKey: null
     timeout: 120000
   nodeEnv: production
   processes: null
   root: null
   storage:
     writeAsync: false
+  tls:
+    certificate: null
+    certificateAuthority: null
+    privateKey: null

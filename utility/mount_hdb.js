@@ -24,8 +24,6 @@ async function mountHdb(hdb_path) {
 	makeDirectory(system_schema_path);
 	makeDirectory(path.join(hdb_path, terms.TRANSACTIONS_DIR_NAME));
 	makeDirectory(path.join(hdb_path, 'clustering'));
-	makeDirectory(path.join(hdb_path, 'clustering', 'transaction_log'));
-	makeDirectory(path.join(hdb_path, 'clustering', 'connections'));
 
 	await createLMDBTables(system_schema_path);
 }

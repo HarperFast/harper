@@ -15,6 +15,7 @@ module.exports = {
 	listUsersExternal,
 	setUsersToGlobal,
 	findAndValidateUser,
+	getClusterUser,
 	USERNAME_REQUIRED,
 	ALTERUSER_NOTHING_TO_UPDATE,
 	EMPTY_PASSWORD,
@@ -35,6 +36,7 @@ const logger = require('../utility/logging/harper_logger');
 const { promisify } = require('util');
 const crypto_hash = require('./cryptoHash');
 const terms = require('../utility/hdbTerms');
+const nats_terms = require('../server/nats/utility/natsTerms');
 const env = require('../utility/environment/environmentManager');
 const license = require('../utility/registration/hdb_license');
 const systemSchema = require('../json/systemSchema');
@@ -153,7 +155,7 @@ async function addUser(user) {
 
 	const new_user = Object.assign({}, clean_user);
 	new_user.role = search_role[0];
-	let add_user_msg = new terms.ClusterMessageObjects.HdbCoreClusterAddUserRequestMessage();
+	let add_user_msg = { user: null }; // This is temp code as a result of removing SC
 	add_user_msg.user = new_user;
 	// TODO: Check if this should be removed, postOperation
 	hdb_utility.sendTransactionToSocketCluster(
@@ -266,7 +268,7 @@ async function alterUser(json_message) {
 		throw err;
 	}
 
-	let alter_user_msg = new terms.ClusterMessageObjects.HdbCoreClusterAlterUserRequestMessage();
+	let alter_user_msg = { user: null }; // This is temp code as a result of removing SC
 	alter_user_msg.user = clean_user;
 	hdb_utility.sendTransactionToSocketCluster(
 		terms.INTERNAL_SC_CHANNELS.ALTER_USER,
@@ -330,7 +332,7 @@ async function dropUser(user) {
 			throw err;
 		}
 
-		let alter_user_msg = new terms.ClusterMessageObjects.HdbCoreClusterDropUserRequestMessage();
+		let alter_user_msg = { user: null }; // This is temp code as a result of removing SC
 		alter_user_msg.user = user;
 		hdb_utility.sendTransactionToSocketCluster(
 			terms.INTERNAL_SC_CHANNELS.DROP_USER,
@@ -618,4 +620,27 @@ async function findAndValidateUser(username, pw, validate_password = true) {
 	delete user.password;
 	delete user.hash;
 	return user;
+}
+
+/**
+ * Gets the cluster user provided in harperdb.conf from the map of all user.
+ * Nats requires plain test passwords, this is why we pass decrypt_hash.
+ * The Nats routes require the decrypt_hash to be uri encoded.
+ * @returns {Promise<Object>}
+ */
+async function getClusterUser() {
+	const users = await listUsers();
+	const cluster_username = env.get(terms.CONFIG_PARAMS.CLUSTERING_USER);
+	const cluster_user = users.get(cluster_username);
+	if (hdb_utility.isEmpty(cluster_user)) {
+		return undefined;
+	}
+
+	cluster_user.decrypt_hash = crypto_hash.decrypt(cluster_user.hash);
+	cluster_user.uri_encoded_d_hash = encodeURIComponent(cluster_user.decrypt_hash);
+	cluster_user.uri_encoded_name = encodeURIComponent(cluster_user.username);
+	cluster_user.sys_name = cluster_user.username + nats_terms.SERVER_SUFFIX.ADMIN;
+	cluster_user.sys_name_encoded = cluster_user.uri_encoded_name + nats_terms.SERVER_SUFFIX.ADMIN;
+
+	return cluster_user;
 }

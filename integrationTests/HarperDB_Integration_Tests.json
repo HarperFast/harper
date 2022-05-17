@@ -47993,7 +47993,7 @@
 								],
 								"body": {
 									"mode": "raw",
-									"raw": "{\n\t\"operation\": \"configure_cluster\",\n\t\"logging_auditLog\": \"true\"\n}"
+									"raw": "{\n\t\"operation\": \"set_configuration\",\n\t\"logging_auditLog\": \"true\"\n}"
 								},
 								"url": {
 									"raw": "{{host}}:{{port}}",
@@ -58407,7 +58407,7 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\t\"operation\": \"configure_cluster\",\n\t\"clustering\": \"true\",\n\t\"clustering_PORT\": \"12345\",\n\t\"NODE_NAME\":\"server\"\n}"
+							"raw": "{\n\t\"operation\": \"set_configuration\",\n\t\"clustering\": \"true\",\n\t\"clustering_PORT\": \"12345\",\n\t\"NODE_NAME\":\"server\"\n}"
 						},
 						"url": {
 							"raw": "{{host}}:{{port}}",
@@ -58924,7 +58924,7 @@
 						"header": [],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n    \"operation\": \"configure_cluster\",\n    \"clustering_port\": 99999\n}",
+							"raw": "{\n    \"operation\": \"set_configuration\",\n    \"clustering_port\": 99999\n}",
 							"options": {
 								"raw": {
 									"language": "json"

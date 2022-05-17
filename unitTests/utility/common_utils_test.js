@@ -5,8 +5,6 @@
 
 const assert = require('assert');
 const chai = require('chai');
-const sinon = require('sinon');
-const { spawn } = require('child_process');
 const cu = require('../../utility/common_utils');
 const test_utils = require('../test_utils');
 const stream = require('stream');
@@ -16,9 +14,6 @@ test_utils.changeProcessToBinDir();
 const rewire = require('rewire');
 const cu_rewire = rewire('../../utility/common_utils');
 const upgrade_directive = require('../../upgrade/UpgradeDirective');
-const env_variable = require('../../upgrade/EnvironmentVariable');
-const os = require('os');
-const ps_list = require('../../utility/psList');
 const { expect } = chai;
 const ALL_SPACES = '     ';
 
@@ -794,6 +789,15 @@ describe('Test common_utils module', () => {
 			let result = cu_rewire.isObject(null);
 			expect(result).to.be.false;
 		});
+	});
+
+	it('Test ms_to_time', () => {
+		const a = cu_rewire.ms_to_time(123456);
+		expect(a).to.equal('2m 3s');
+		const b = cu_rewire.ms_to_time(123456345);
+		expect(b).to.equal('1d 10h 17m 36s');
+		const c = cu_rewire.ms_to_time(1672345634534);
+		expect(c).to.equal('52y 27d 20h 27m 14s');
 	});
 });
 

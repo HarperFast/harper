@@ -13,6 +13,7 @@ const test_util = require('../test_utils');
 const env_mangr = require('../../utility/environment/environmentManager');
 const install_user_permission = require('../../utility/install_user_permission');
 const pm2_utils = require('../../utility/pm2/utilityFunctions');
+const nats_config = require('../../server/nats/utility/natsConfig');
 const child_process = require('child_process');
 const settings_test_file = require('../settingsTestFile');
 let hdbInfoController;
@@ -43,8 +44,10 @@ describe('Test run module', () => {
 	let start_all_services_stub;
 	let start_service_stub;
 	let check_perms_stub;
+	let config_log_rotate_stub;
 	let spawn_stub;
 	let get_prob_stub;
+	let start_clustering_stub;
 	let fake_spawn = {
 		on: () => {},
 		stdout: {
@@ -68,12 +71,15 @@ describe('Test run module', () => {
 		check_perms_stub = sandbox.stub(install_user_permission, 'checkPermission');
 		start_all_services_stub = sandbox.stub(pm2_utils, 'startAllServices').resolves();
 		start_service_stub = sandbox.stub(pm2_utils, 'startService').resolves();
+		start_clustering_stub = sandbox.stub(pm2_utils, 'startClustering').resolves();
 		process_exit_stub = sandbox.stub(process, 'exit');
 		console_log_stub = sandbox.stub(console, 'log');
 		console_error_stub = sandbox.stub(console, 'error');
+		config_log_rotate_stub = sandbox.stub(pm2_utils, 'configureLogRotate');
 		test_util.preTestPrep();
 		run_rw = rewire('../../bin/run');
 		log_rw = run_rw.__set__('hdb_logger', logger_fake);
+		sandbox.stub(nats_config, 'generateNatsConfig');
 	});
 
 	after(() => {
@@ -136,18 +142,6 @@ describe('Test run module', () => {
 			expect(start_all_services_stub).to.have.been.called;
 		});
 
-		it('Test run happy path all services started just clustering enabled', async () => {
-			get_prob_stub.withArgs('CLUSTERING').returns(true);
-			get_prob_stub.withArgs('CUSTOM_FUNCTIONS').returns(false);
-			is_hdb_installed_stub.resolves(true);
-			get_ver_update_info_stub.resolves(undefined);
-			await run();
-
-			expect(start_service_stub.getCall(0).args[0]).to.equal('IPC');
-			expect(start_service_stub.getCall(1).args[0]).to.equal('HarperDB');
-			expect(start_service_stub.getCall(2).args[0]).to.equal('Clustering');
-		});
-
 		it('Test run happy path all services started just custom functions enabled', async () => {
 			is_hdb_installed_stub.resolves(true);
 			get_ver_update_info_stub.resolves(undefined);
@@ -169,6 +163,21 @@ describe('Test run module', () => {
 			expect(start_service_stub.getCall(0).args[0]).to.equal('HarperDB');
 			expect(start_service_stub.getCall(1).args[0]).to.equal('IPC');
 			expect(start_service_stub.getCall(2).args[0]).to.equal('Custom Functions');
+		});
+
+		it('Test clustering hub and leaf servers are started if clustering enabled', async () => {
+			const service_index = process.argv.indexOf('--service');
+			if (service_index > -1) process.argv.splice(service_index, 1);
+			const names_index = process.argv.indexOf('not service,harperdb,ipc,custom functions');
+			if (names_index > -1) process.argv.splice(names_index, 1);
+
+			get_prob_stub.withArgs('CLUSTERING').returns(true);
+			get_prob_stub.withArgs('CUSTOM_FUNCTIONS').returns(false);
+			await run();
+
+			expect(start_service_stub.getCall(0).args[0]).to.equal('IPC');
+			expect(start_service_stub.getCall(1).args[0]).to.equal('HarperDB');
+			expect(start_clustering_stub.called).to.be.true;
 		});
 
 		it('Test upgrade is called if upgrade version permits', async () => {

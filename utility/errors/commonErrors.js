@@ -225,6 +225,10 @@ const CUSTOM_FUNCTIONS_ERROR_MSGS = {
 	NOT_ENABLED: 'Custom functions is not enabled, to enable set CUSTOM_FUNCTIONS = true in HDB config/settings.js file.',
 };
 
+const CLUSTERING_ERROR_MSGS = {
+	CLUSTERING_NOT_ENABLED: 'Clustering must be enabled to perform this operation.',
+};
+
 //into a single export while still allowing us to group them here in a more readable/searchable way
 const HDB_ERROR_MSGS = {
 	...AUTHENTICATION_ERROR_MSGS,
@@ -239,6 +243,7 @@ const HDB_ERROR_MSGS = {
 	...VALIDATION_ERROR_MSGS,
 	...IPC_ERRORS,
 	...CUSTOM_FUNCTIONS_ERROR_MSGS,
+	...CLUSTERING_ERROR_MSGS,
 };
 
 // All error messages should be added to the HDB_ERROR_MSGS ENUM for export - this helps to organize all error messages

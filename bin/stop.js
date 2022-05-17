@@ -4,6 +4,8 @@ const hdb_terms = require('../utility/hdbTerms');
 const hdb_logger = require('../utility/logging/harper_logger');
 const hdb_utils = require('../utility/common_utils');
 const assignCMDENVVariables = require('../utility/assignCmdEnvVariables');
+const env_mngr = require('../utility/environment/environmentManager');
+const nats_config = require('../server/nats/utility/natsConfig');
 const minimist = require('minimist');
 const { handleHDBError, hdb_errors } = require('../utility/errors/hdbError');
 const config_utils = require('../config/configUtils');
@@ -30,6 +32,7 @@ module.exports = {
  */
 async function restartProcesses() {
 	hdb_logger.createLogFile(hdb_terms.PROCESS_LOG_NAMES.CLI, hdb_terms.PROCESS_DESCRIPTORS.STOP);
+	env_mngr.initSync(true);
 
 	try {
 		// Requiring the pm2 mod will create the .pm2 dir. This code is here to allow install to set pm2 env vars before that is done.
@@ -41,7 +44,7 @@ async function restartProcesses() {
 			config_utils.updateConfigValue(undefined, undefined, parsed_args, true, true);
 		}
 
-		const { clustering_enabled, custom_func_enabled } = checkEnvSettings();
+		const { custom_func_enabled } = checkEnvSettings();
 		// Restart can be called with a --service argument which allows designated services to be restarted.
 		const cmd_args = minimist(process.argv);
 		if (!hdb_utils.isEmpty(cmd_args.service)) {
@@ -76,35 +79,25 @@ async function restartProcesses() {
 
 				if (service === hdb_terms.PROCESS_DESCRIPTORS.PM2_LOGROTATE) {
 					await pm2_utils.configureLogRotate();
+				} else if (service_req.toLowerCase().includes('clustering')) {
+					await restartClustering(service_req);
 				} else if (await pm2_utils.isServiceRegistered(service)) {
 					// We need to allow for restart to be called on services that arent registered/managed by pm2. If restart is called on a
 					// service that isn't registered that service will be started by pm2.
 
 					// If the service is registered but the settings value is not set to enabled, stop the service.
-					if (service === hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING && !clustering_enabled) {
-						await pm2_utils.stop(hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING);
-						hdb_logger.trace(`Stopping ${hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING}`);
-					} else if (service === hdb_terms.PROCESS_DESCRIPTORS.CUSTOM_FUNCTIONS && !custom_func_enabled) {
+					if (service === hdb_terms.PROCESS_DESCRIPTORS.CUSTOM_FUNCTIONS && !custom_func_enabled) {
 						await pm2_utils.stop(hdb_terms.PROCESS_DESCRIPTORS.CUSTOM_FUNCTIONS);
 						hdb_logger.trace(`Stopping ${hdb_terms.PROCESS_DESCRIPTORS.CUSTOM_FUNCTIONS}`);
 					} else {
 						await restartService({ service });
-					}
-				} else if (service === hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING) {
-					if (clustering_enabled) {
-						await pm2_utils.startService(service);
-						hdb_logger.trace(`Starting ${service}`);
-					} else {
-						const sc_err_msg = `${service} is not enabled in hdb/setting.js and cannot be restarted.`;
-						hdb_logger.error(sc_err_msg);
-						console.log(sc_err_msg);
 					}
 				} else if (service === hdb_terms.PROCESS_DESCRIPTORS.CUSTOM_FUNCTIONS) {
 					if (custom_func_enabled) {
 						await pm2_utils.startService(service);
 						hdb_logger.trace(`Starting ${service}`);
 					} else {
-						const cf_err_msg = `${service} is not enabled in hdb/setting.js and cannot be restarted.`;
+						const cf_err_msg = `${service} is not enabled in harperdb.conf and cannot be restarted.`;
 						hdb_logger.error(cf_err_msg);
 						console.log(cf_err_msg);
 					}
@@ -126,13 +119,7 @@ async function restartProcesses() {
 
 		console.log(RESTART_RESPONSE);
 
-		const is_sc_reg = await pm2_utils.isServiceRegistered(hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING);
-		// If clustering is enabled in setting.js but is not registered to pm2, start service.
-		if (clustering_enabled && !is_sc_reg) {
-			await pm2_utils.startService(hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING);
-			await pm2_utils.startService(hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_CONNECTOR);
-			hdb_logger.trace(`Starting ${hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING}`);
-		}
+		await restartAllClusteringServices();
 
 		const is_cf_reg = await pm2_utils.isServiceRegistered(hdb_terms.PROCESS_DESCRIPTORS.CUSTOM_FUNCTIONS);
 		// If custom functions is enabled in setting.js but is not registered to pm2, start service.
@@ -141,14 +128,13 @@ async function restartProcesses() {
 			hdb_logger.trace(`Starting ${hdb_terms.PROCESS_DESCRIPTORS.CUSTOM_FUNCTIONS}`);
 		}
 
-		let exclude_from_restart = [];
-		// If clustering is disabled in setting.js and is registered to pm2, stop service.
-		if (!clustering_enabled && is_sc_reg) {
-			exclude_from_restart.push(hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING);
-			await pm2_utils.stop(hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING);
-			await pm2_utils.stop(hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_CONNECTOR);
-			hdb_logger.trace(`Stopping ${hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING}`);
-		}
+		// The clustering processes are here because they are handled by the restartAllClusteringServices function above and dont need to be restarted again.
+		let exclude_from_restart = [
+			hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_HUB,
+			hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_LEAF,
+			hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_INGEST_SERVICE,
+			hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_REPLY_SERVICE,
+		];
 
 		// If custom functions is disabled in setting.js and is registered to pm2, stop service.
 		if (!custom_func_enabled && is_cf_reg) {
@@ -175,10 +161,11 @@ async function restartProcesses() {
 /**
  * Restarts servers for a specific service.
  * @param json_message
- * @returns {string}
+ * @returns {Promise<string>}
  */
 async function restartService(json_message) {
 	hdb_logger.createLogFile(hdb_terms.PROCESS_LOG_NAMES.CLI, hdb_terms.PROCESS_DESCRIPTORS.STOP);
+	env_mngr.initSync(true);
 
 	// Requiring the pm2 mod will create the .pm2 dir. This code is here to allow install to set pm2 env vars before that is done.
 	if (pm2_utils === undefined) pm2_utils = require('../utility/pm2/utilityFunctions');
@@ -191,7 +178,7 @@ async function restartService(json_message) {
 		throw handleHDBError(new Error(), INVALID_SERVICE_ERR, HTTP_STATUS_CODES.BAD_REQUEST, undefined, undefined, true);
 	}
 
-	const { clustering_enabled, custom_func_enabled } = checkEnvSettings();
+	const { custom_func_enabled } = checkEnvSettings();
 	const service = hdb_terms.PROCESS_DESCRIPTORS_VALIDATE[service_req];
 
 	// For clustered services a rolling restart is available.
@@ -205,6 +192,8 @@ async function restartService(json_message) {
 		await pm2_utils.reloadStopStart(service);
 	} else if (service === hdb_terms.PROCESS_DESCRIPTORS.PM2_LOGROTATE) {
 		await pm2_utils.configureLogRotate();
+	} else if (service.toLowerCase().includes('clustering')) {
+		await restartClustering(service);
 	} else if (
 		service === hdb_terms.PROCESS_DESCRIPTORS.CUSTOM_FUNCTIONS ||
 		service === hdb_terms.SERVICES.CUSTOM_FUNCTIONS
@@ -224,27 +213,7 @@ async function restartService(json_message) {
 			await pm2_utils.stop(service);
 			hdb_logger.trace(`Stopping ${service}`);
 		} else {
-			const cf_err_msg = `${service} is not enabled in hdb/setting.js and cannot be restarted.`;
-			hdb_logger.error(cf_err_msg);
-			throw handleHDBError(new Error(), cf_err_msg, HTTP_STATUS_CODES.BAD_REQUEST, undefined, undefined, true);
-		}
-	} else if (service === hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING) {
-		const is_sc_reg = await pm2_utils.isServiceRegistered(service);
-		if (clustering_enabled) {
-			// If the service is registered to pm2 it can be restarted, if it isn't it must me started.
-			if (is_sc_reg) {
-				await pm2_utils.restart(service);
-				hdb_logger.trace(`Restarting ${service}`);
-			} else {
-				await pm2_utils.startService(service);
-				hdb_logger.trace(`Starting ${service}`);
-			}
-		} else if (!clustering_enabled && is_sc_reg) {
-			// If the service is registered but not enabled in settings, stop service.
-			await pm2_utils.stop(service);
-			hdb_logger.trace(`Stopping ${service}`);
-		} else {
-			const cf_err_msg = `${service} is not enabled in hdb/setting.js and cannot be restarted.`;
+			const cf_err_msg = `${service} is not enabled in harperdb.conf and cannot be restarted.`;
 			hdb_logger.error(cf_err_msg);
 			throw handleHDBError(new Error(), cf_err_msg, HTTP_STATUS_CODES.BAD_REQUEST, undefined, undefined, true);
 		}
@@ -272,7 +241,7 @@ async function stop() {
 		const cmd_args = minimist(process.argv);
 		if (!hdb_utils.isEmpty(cmd_args.service)) {
 			if (typeof cmd_args.service !== 'string') {
-				const service_err_msg = `Restart service argument expected a string but received: ${cmd_args.service}`;
+				const service_err_msg = `Stop service argument expected a string but received: ${cmd_args.service}`;
 				hdb_logger.error(service_err_msg);
 				console.log(service_err_msg);
 			}
@@ -285,7 +254,12 @@ async function stop() {
 					continue;
 				}
 
-				await pm2_utils.stop(hdb_terms.PROCESS_DESCRIPTORS_VALIDATE[service]);
+				if (service === 'clustering') {
+					await pm2_utils.stopClustering();
+				} else {
+					await pm2_utils.stop(hdb_terms.PROCESS_DESCRIPTORS_VALIDATE[service]);
+				}
+
 				const log_msg = `${hdb_terms.PROCESS_DESCRIPTORS_VALIDATE[service]} successfully stopped.`;
 				hdb_logger.notify(log_msg);
 				console.log(log_msg);
@@ -315,4 +289,77 @@ function checkEnvSettings() {
 		clustering_enabled,
 		custom_func_enabled,
 	};
+}
+
+async function restartAllClusteringServices() {
+	await restartClustering(hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_HUB);
+	await restartClustering(hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_LEAF);
+	await restartClustering(hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_INGEST_SERVICE);
+	await restartClustering(hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_REPLY_SERVICE);
+}
+
+async function restartClustering(service) {
+	service = hdb_terms.PROCESS_DESCRIPTORS_VALIDATE[service.toLowerCase()];
+	const clustering_enabled = env_mngr.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_ENABLED);
+	const restarting_clustering = service === 'clustering';
+	const is_currently_running = !restarting_clustering ? await pm2_utils.isServiceRegistered(service) : undefined;
+
+	// If 'clustering' is passed to restart we are restarting all processes that make up clustering
+	const clustering_running = restarting_clustering ? await pm2_utils.isClusteringRunning() : undefined;
+
+	switch (true) {
+		// If service is 'clustering' and clustering is running but not enabled, stop all the clustering processes.
+		case restarting_clustering && clustering_running && !clustering_enabled:
+			await pm2_utils.stopClustering();
+			break;
+		// If service is 'clustering' and clustering is not running but enabled, start all the clustering processes.
+		case restarting_clustering && !clustering_running && clustering_enabled:
+			await pm2_utils.startClustering();
+			break;
+		case restarting_clustering && clustering_running && clustering_enabled:
+			await restartAllClusteringServices();
+			break;
+		// If service is 'clustering' and clustering is running and enabled, restart all the clustering processes.
+		case restarting_clustering && !clustering_running && !clustering_enabled:
+			hdb_logger.error(`${service} is not enabled in harperdb.conf and cannot be restarted.`);
+			break;
+		// If the service is running but clustering has been disabled, stop the service.
+		case is_currently_running && !clustering_enabled:
+			await pm2_utils.stop(service);
+			hdb_logger.trace(`Stopping ${service}`);
+			break;
+		// If the service is not running and clustering is enabled, start it.
+		case !is_currently_running && clustering_enabled:
+			if (
+				service !== hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_INGEST_SERVICE &&
+				service !== hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_REPLY_SERVICE
+			) {
+				await nats_config.generateNatsConfig(true, service);
+			}
+
+			await pm2_utils.startService(service);
+			hdb_logger.trace(`Starting ${service}`);
+			break;
+		// If the service is not running and not clustering is not enable throw error.
+		case !is_currently_running && !clustering_enabled:
+			hdb_logger.error(`${service} is not enabled in harperdb.conf and cannot be restarted.`);
+			break;
+		// If service is running and is enabled, restart it.
+		case is_currently_running && clustering_enabled:
+			if (
+				service === hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_INGEST_SERVICE ||
+				service === hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_REPLY_SERVICE
+			) {
+				await pm2_utils.reload(service);
+			} else {
+				await nats_config.generateNatsConfig(true, service);
+				await pm2_utils.restart(service);
+				// For security reasons we remove the server config after the server has connected
+				await nats_config.removeNatsConfig(service);
+			}
+
+			break;
+		default:
+			hdb_logger.error(`Error restarting ${service}`);
+	}
 }

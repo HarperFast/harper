@@ -570,7 +570,6 @@ const GEO_JSON_POLYGON_RADIUS_DIFFERENCE = {
 		],
 	},
 };
-
 const GEO_JSON_POINT_ENTERPRISE_COWORKING = {
 	type: 'Feature',
 	properties: {},

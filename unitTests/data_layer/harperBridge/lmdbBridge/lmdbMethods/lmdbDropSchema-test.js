@@ -101,7 +101,8 @@ describe('test validateDropSchema module', () => {
 		let hdb_schema_env;
 		let hdb_table_env;
 		let hdb_attribute_env;
-		before(async () => {
+		before(async function () {
+			this.timeout(20000);
 			global.lmdb_map = undefined;
 			await fs.remove(test_utils.getMockLMDBPath());
 			await fs.mkdirp(SYSTEM_SCHEMA_PATH);
