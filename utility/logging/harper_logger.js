@@ -149,24 +149,23 @@ function createLogFile(log_name, log_process_name) {
 	}
 }
 
-/**
- * Builds the record that will be written to the log and/or stdout/err.
- * @param level
- * @param message
- * @returns {string}
- */
-function createLogRecord(level, message) {
+function createLogRecord(level, args) {
 	const date_now = new Date(Date.now()).toISOString();
 
-	// If an error instance is stringified it returns an empty object. Also, adding the error instance to a sting
+	// If an error instance is stringified it returns an empty object. Also, adding the error instance to a string
 	// only logs the error message and not the stack, that is why we need to set message to stack.
-	if (message instanceof Error && message.stack) {
-		message = message.stack;
-	} else if (typeof message === 'object') {
-		message = JSON.stringify(message);
+	let log_msg = '';
+	for (let x = 0, length = args.length; x < length; x++) {
+		let arg = args[x];
+		if (arg instanceof Error && arg.stack) {
+			log_msg = arg.stack;
+		} else if (typeof arg === 'object') {
+			log_msg += JSON.stringify(arg);
+		} else {
+			log_msg += arg;
+		}
 	}
-
-	return `{"process_name": "${process_name}", "level": "${level}", "timestamp": "${date_now}", "message": "${message}"}\n`;
+	return `{"process_name": "${process_name}", "level": "${level}", "timestamp": "${date_now}", "message": "${log_msg}"}\n`;
 }
 
 /**
@@ -211,11 +210,11 @@ function nonPm2LogStdErr(log) {
 
 /**
  * Log a info level log.
- * @param message
+ * @param args - an array of log messages(strings/objects)
  */
-function info(message) {
+function info(...args) {
 	if (LOG_LEVEL_HIERARCHY[log_level] <= LOG_LEVEL_HIERARCHY['info']) {
-		const log = createLogRecord('info', message);
+		const log = createLogRecord('info', args);
 		if (NON_PM2_PROCESS) {
 			nonPm2LogStdOut(log);
 			return;
@@ -227,11 +226,11 @@ function info(message) {
 
 /**
  * Log a trace level log.
- * @param message
+ * @param args - an array of log messages(strings/objects)
  */
-function trace(message) {
+function trace(...args) {
 	if (LOG_LEVEL_HIERARCHY[log_level] <= LOG_LEVEL_HIERARCHY['trace']) {
-		const log = createLogRecord('trace', message);
+		const log = createLogRecord('trace', args);
 		if (NON_PM2_PROCESS) {
 			nonPm2LogStdOut(log);
 			return;
@@ -243,11 +242,11 @@ function trace(message) {
 
 /**
  * Log a error level log.
- * @param message
+ * @param args - an array of log messages(strings/objects)
  */
-function error(message) {
+function error(...args) {
 	if (LOG_LEVEL_HIERARCHY[log_level] <= LOG_LEVEL_HIERARCHY['error']) {
-		const log = createLogRecord('error', message);
+		const log = createLogRecord('error', args);
 		if (NON_PM2_PROCESS) {
 			nonPm2LogStdErr(log);
 			return;
@@ -259,11 +258,11 @@ function error(message) {
 
 /**
  * Log a debug level log.
- * @param message
+ * @param args - an array of log messages(strings/objects)
  */
-function debug(message) {
+function debug(...args) {
 	if (LOG_LEVEL_HIERARCHY[log_level] <= LOG_LEVEL_HIERARCHY['debug']) {
-		const log = createLogRecord('debug', message);
+		const log = createLogRecord('debug', args);
 		if (NON_PM2_PROCESS) {
 			nonPm2LogStdOut(log);
 			return;
@@ -275,11 +274,11 @@ function debug(message) {
 
 /**
  * Log a notify level log.
- * @param message
+ * @param args - an array of log messages(strings/objects)
  */
-function notify(message) {
+function notify(...args) {
 	if (LOG_LEVEL_HIERARCHY[log_level] <= LOG_LEVEL_HIERARCHY['notify']) {
-		const log = createLogRecord('notify', message);
+		const log = createLogRecord('notify', args);
 		if (NON_PM2_PROCESS) {
 			nonPm2LogStdOut(log);
 			return;
@@ -291,11 +290,11 @@ function notify(message) {
 
 /**
  * Log a fatal level log.
- * @param message
+ * @param args - an array of log messages(strings/objects)
  */
-function fatal(message) {
+function fatal(...args) {
 	if (LOG_LEVEL_HIERARCHY[log_level] <= LOG_LEVEL_HIERARCHY['fatal']) {
-		const log = createLogRecord('fatal', message);
+		const log = createLogRecord('fatal', args);
 		if (NON_PM2_PROCESS) {
 			nonPm2LogStdErr(log);
 			return;
@@ -307,11 +306,11 @@ function fatal(message) {
 
 /**
  * Log a warn level log.
- * @param message
+ * @param args - an array of log messages(strings/objects)
  */
-function warn(message) {
+function warn(...args) {
 	if (LOG_LEVEL_HIERARCHY[log_level] <= LOG_LEVEL_HIERARCHY['warn']) {
-		const log = createLogRecord('warn', message);
+		const log = createLogRecord('warn', args);
 		if (NON_PM2_PROCESS) {
 			nonPm2LogStdErr(log);
 			return;

@@ -43,14 +43,19 @@ function requireUncached(module) {
 	return rewire(module);
 }
 
-function createLogRecord(level, message, process_name, date_now) {
-	if (message instanceof Error && message.stack) {
-		message = message.stack;
-	} else if (typeof message === 'object') {
-		message = JSON.stringify(message);
+function createLogRecord(level, process_name, date_now, args) {
+	let log_msg = '';
+	for (let x = 0, length = args.length; x < length; x++) {
+		let arg = args[x];
+		if (arg instanceof Error && arg.stack) {
+			log_msg = arg.stack;
+		} else if (typeof arg === 'object') {
+			log_msg += JSON.stringify(arg);
+		} else {
+			log_msg += arg;
+		}
 	}
-
-	return `{"process_name": "${process_name}", "level": "${level}", "timestamp": "${date_now}", "message": "${message}"}\n`;
+	return `{"process_name": "${process_name}", "level": "${level}", "timestamp": "${date_now}", "message": "${log_msg}"}\n`;
 }
 
 let captured_stdout = '';
@@ -262,12 +267,12 @@ describe('Test harper_logger module', () => {
 	});
 
 	describe('Test createLogRecord function', () => {
-		let createLogRecord;
+		let createLogRecord_rw;
 		let fake_timer;
 
 		before(() => {
 			const harper_logger = requireUncached(HARPER_LOGGER_MODULE);
-			createLogRecord = harper_logger.__get__('createLogRecord');
+			createLogRecord_rw = harper_logger.__get__('createLogRecord');
 			// Fake timer is used so that we can control the date for these test
 			fake_timer = sandbox.useFakeTimers({ now: 1538592633675 });
 		});
@@ -276,17 +281,25 @@ describe('Test harper_logger module', () => {
 			fake_timer.restore();
 		});
 
-		it('Test record is correctly returned if message is a regular string', () => {
-			const result = createLogRecord('info', LOG_MSGS_TEST.INFO);
+		it('Test record is correctly returned if message is array', () => {
+			const result = createLogRecord_rw('info', [LOG_MSGS_TEST.INFO]);
 
 			expect(result).to.equal(
 				`{"process_name": "Install", "level": "info", "timestamp": "2018-10-03T18:50:33.675Z", "message": "info log"}\n`
 			);
 		});
 
+		it('Test record is correctly returned if message array has multiple args with object', () => {
+			const result = createLogRecord_rw('info', [LOG_MSGS_TEST.INFO, ': ', { foo: 'bar' }]);
+
+			expect(result).to.equal(
+				`{"process_name": "Install", "level": "info", "timestamp": "2018-10-03T18:50:33.675Z", "message": "info log: {"foo":"bar"}"}\n`
+			);
+		});
+
 		it('Test record is correctly returned if called by an instance of an error', () => {
 			const test_error = new Error(LOG_MSGS_TEST.INFO);
-			const result = createLogRecord('info', test_error);
+			const result = createLogRecord_rw('info', [test_error]);
 
 			expect(result).to.equal(
 				`{"process_name": "Install", "level": "info", "timestamp": "2018-10-03T18:50:33.675Z", "message": "${test_error.stack}"}\n`
@@ -294,10 +307,7 @@ describe('Test harper_logger module', () => {
 		});
 
 		it('Test record is correctly returned if message is an object', () => {
-			const harper_logger = requireUncached(HARPER_LOGGER_MODULE);
-			const createLogRecord = harper_logger.__get__('createLogRecord');
-
-			const result = createLogRecord('info', { foo: 'bar' });
+			const result = createLogRecord_rw('info', [{ foo: 'bar' }]);
 
 			expect(result).to.equal(
 				`{"process_name": "Install", "level": "info", "timestamp": "2018-10-03T18:50:33.675Z", "message": "{"foo":"bar"}"}\n`
@@ -308,7 +318,7 @@ describe('Test harper_logger module', () => {
 	describe('Test writeToLogStream function', () => {
 		let harper_logger;
 		let writeToLogStream;
-		const test_log = createLogRecord('error', 'unit test error message', 'unit_tests', '2021-12-03T15:13:05.823Z');
+		const test_log = createLogRecord('error', '2021-12-03T15:13:05.823Z', 'unit_tests', 'unit test error message');
 		const fake_stream_writer = sandbox.stub().callsFake(() => {});
 		const fake_stream = {
 			on: () => {},
@@ -350,7 +360,7 @@ describe('Test harper_logger module', () => {
 		let harper_logger;
 		let nonPm2LogStdOut;
 		let nonPm2LogStdErr;
-		const test_log = createLogRecord('error', 'unit test error message', 'unit_tests', '2021-12-03T15:13:05.823Z');
+		const test_log = createLogRecord('error', '2021-12-03T15:13:05.823Z', 'unit_tests', 'unit test error message');
 
 		const write_to_log_stream_stub = sandbox.stub();
 
@@ -386,6 +396,9 @@ describe('Test harper_logger module', () => {
 
 	describe('Test notify, fatal, error, warn, info, debug, and trace functions', () => {
 		let harper_logger;
+		const test_arg_1 = 'Fake logging announcement: ';
+		const test_arg_2 = { foo: 'bar' };
+		const test_message = 'Fake logging announcement: {"foo":"bar"}';
 		const date_test = new Date(2021, 1, 1, 0, 0);
 		const date_test_string = new Date(date_test).toISOString();
 		let expected_log;
@@ -409,9 +422,11 @@ describe('Test harper_logger module', () => {
 
 		it('Test info log logs to file and stream for non-pm2 process', (done) => {
 			harper_logger.createLogFile(LOG_NAME_TEST, LOG_PROCESS_NAME_TEST);
-			expected_log = createLogRecord(LOG_LEVEL.INFO, LOG_MSGS_TEST.INFO, LOG_PROCESS_NAME_TEST, date_test_string);
+			expected_log = `{"process_name": "${LOG_PROCESS_NAME_TEST}", "level": "${LOG_LEVEL.INFO}", "timestamp": "${date_test_string}", "message": "${test_message}"}\n`;
 			fake_timer = sandbox.useFakeTimers({ now: date_test });
-			harper_logger.info(LOG_MSGS_TEST.INFO);
+
+			harper_logger.info(test_arg_1, test_arg_2);
+
 			// We need to restore the timer here or it will interfere with the setTimeout.
 			fake_timer.restore();
 
@@ -425,7 +440,7 @@ describe('Test harper_logger module', () => {
 		it('Test info log writes to stdout for pm2 process', () => {
 			harper_logger.__set__('NON_PM2_PROCESS', false);
 			harper_logger.__set__('process_name', 'unit_tests');
-			expected_log = createLogRecord(LOG_LEVEL.INFO, LOG_MSGS_TEST.INFO, LOG_PROCESS_NAME_TEST, date_test_string);
+			expected_log = `{"process_name": "${LOG_PROCESS_NAME_TEST}", "level": "${LOG_LEVEL.INFO}", "timestamp": "${date_test_string}", "message": "${LOG_MSGS_TEST.INFO}"}\n`;
 			capturedStdOutErr();
 			fake_timer = sandbox.useFakeTimers({ now: date_test });
 			harper_logger.info(LOG_MSGS_TEST.INFO);
@@ -438,7 +453,7 @@ describe('Test harper_logger module', () => {
 
 		it('Test trace log logs to file and stream for non-pm2 process', (done) => {
 			harper_logger.createLogFile(LOG_NAME_TEST, LOG_PROCESS_NAME_TEST);
-			expected_log = createLogRecord(LOG_LEVEL.TRACE, LOG_MSGS_TEST.TRACE, LOG_PROCESS_NAME_TEST, date_test_string);
+			expected_log = `{"process_name": "${LOG_PROCESS_NAME_TEST}", "level": "${LOG_LEVEL.TRACE}", "timestamp": "${date_test_string}", "message": "${LOG_MSGS_TEST.TRACE}"}\n`;
 			fake_timer = sandbox.useFakeTimers({ now: date_test });
 			harper_logger.trace(LOG_MSGS_TEST.TRACE);
 
@@ -454,7 +469,7 @@ describe('Test harper_logger module', () => {
 		it('Test trace log writes to stdout for pm2 process', () => {
 			harper_logger.__set__('NON_PM2_PROCESS', false);
 			harper_logger.__set__('process_name', 'unit_tests');
-			expected_log = createLogRecord(LOG_LEVEL.TRACE, LOG_MSGS_TEST.TRACE, LOG_PROCESS_NAME_TEST, date_test_string);
+			expected_log = `{"process_name": "${LOG_PROCESS_NAME_TEST}", "level": "${LOG_LEVEL.TRACE}", "timestamp": "${date_test_string}", "message": "${LOG_MSGS_TEST.TRACE}"}\n`;
 			capturedStdOutErr();
 			fake_timer = sandbox.useFakeTimers({ now: date_test });
 			harper_logger.trace(LOG_MSGS_TEST.TRACE);
@@ -467,7 +482,7 @@ describe('Test harper_logger module', () => {
 
 		it('Test error log logs to file and stream for non-pm2 process', (done) => {
 			harper_logger.createLogFile(LOG_NAME_TEST, LOG_PROCESS_NAME_TEST);
-			expected_log = createLogRecord(LOG_LEVEL.ERROR, LOG_MSGS_TEST.ERROR, LOG_PROCESS_NAME_TEST, date_test_string);
+			expected_log = `{"process_name": "${LOG_PROCESS_NAME_TEST}", "level": "${LOG_LEVEL.ERROR}", "timestamp": "${date_test_string}", "message": "${LOG_MSGS_TEST.ERROR}"}\n`;
 			fake_timer = sandbox.useFakeTimers({ now: date_test });
 			harper_logger.error(LOG_MSGS_TEST.ERROR);
 
@@ -483,7 +498,7 @@ describe('Test harper_logger module', () => {
 		it('Test error log writes to stdout for pm2 process', () => {
 			harper_logger.__set__('NON_PM2_PROCESS', false);
 			harper_logger.__set__('process_name', 'unit_tests');
-			expected_log = createLogRecord(LOG_LEVEL.ERROR, LOG_MSGS_TEST.ERROR, LOG_PROCESS_NAME_TEST, date_test_string);
+			expected_log = `{"process_name": "${LOG_PROCESS_NAME_TEST}", "level": "${LOG_LEVEL.ERROR}", "timestamp": "${date_test_string}", "message": "${LOG_MSGS_TEST.ERROR}"}\n`;
 			capturedStdOutErr();
 			fake_timer = sandbox.useFakeTimers({ now: date_test });
 			harper_logger.error(LOG_MSGS_TEST.ERROR);
@@ -496,7 +511,7 @@ describe('Test harper_logger module', () => {
 
 		it('Test debug log logs to file and stream for non-pm2 process', (done) => {
 			harper_logger.createLogFile(LOG_NAME_TEST, LOG_PROCESS_NAME_TEST);
-			expected_log = createLogRecord(LOG_LEVEL.DEBUG, LOG_MSGS_TEST.DEBUG, LOG_PROCESS_NAME_TEST, date_test_string);
+			expected_log = `{"process_name": "${LOG_PROCESS_NAME_TEST}", "level": "${LOG_LEVEL.DEBUG}", "timestamp": "${date_test_string}", "message": "${LOG_MSGS_TEST.DEBUG}"}\n`;
 			fake_timer = sandbox.useFakeTimers({ now: date_test });
 			harper_logger.debug(LOG_MSGS_TEST.DEBUG);
 			fake_timer.restore();
@@ -511,7 +526,7 @@ describe('Test harper_logger module', () => {
 		it('Test debug log writes to stdout for pm2 process', () => {
 			harper_logger.__set__('NON_PM2_PROCESS', false);
 			harper_logger.__set__('process_name', 'unit_tests');
-			expected_log = createLogRecord(LOG_LEVEL.DEBUG, LOG_MSGS_TEST.DEBUG, LOG_PROCESS_NAME_TEST, date_test_string);
+			expected_log = `{"process_name": "${LOG_PROCESS_NAME_TEST}", "level": "${LOG_LEVEL.DEBUG}", "timestamp": "${date_test_string}", "message": "${LOG_MSGS_TEST.DEBUG}"}\n`;
 			capturedStdOutErr();
 			fake_timer = sandbox.useFakeTimers({ now: date_test });
 			harper_logger.debug(LOG_MSGS_TEST.DEBUG);
@@ -524,7 +539,7 @@ describe('Test harper_logger module', () => {
 
 		it('Test notify log logs to file and stream for non-pm2 process', (done) => {
 			harper_logger.createLogFile(LOG_NAME_TEST, LOG_PROCESS_NAME_TEST);
-			expected_log = createLogRecord(LOG_LEVEL.NOTIFY, LOG_MSGS_TEST.NOTIFY, LOG_PROCESS_NAME_TEST, date_test_string);
+			expected_log = `{"process_name": "${LOG_PROCESS_NAME_TEST}", "level": "${LOG_LEVEL.NOTIFY}", "timestamp": "${date_test_string}", "message": "${LOG_MSGS_TEST.NOTIFY}"}\n`;
 			fake_timer = sandbox.useFakeTimers({ now: date_test });
 			harper_logger.notify(LOG_MSGS_TEST.NOTIFY);
 			fake_timer.restore();
@@ -539,7 +554,7 @@ describe('Test harper_logger module', () => {
 		it('Test notify log writes to stdout for pm2 process', () => {
 			harper_logger.__set__('NON_PM2_PROCESS', false);
 			harper_logger.__set__('process_name', 'unit_tests');
-			expected_log = createLogRecord(LOG_LEVEL.NOTIFY, LOG_MSGS_TEST.NOTIFY, LOG_PROCESS_NAME_TEST, date_test_string);
+			expected_log = `{"process_name": "${LOG_PROCESS_NAME_TEST}", "level": "${LOG_LEVEL.NOTIFY}", "timestamp": "${date_test_string}", "message": "${LOG_MSGS_TEST.NOTIFY}"}\n`;
 			capturedStdOutErr();
 			fake_timer = sandbox.useFakeTimers({ now: date_test });
 			harper_logger.notify(LOG_MSGS_TEST.NOTIFY);
@@ -552,7 +567,7 @@ describe('Test harper_logger module', () => {
 
 		it('Test fatal log logs to file and stream for non-pm2 process', (done) => {
 			harper_logger.createLogFile(LOG_NAME_TEST, LOG_PROCESS_NAME_TEST);
-			expected_log = createLogRecord(LOG_LEVEL.FATAL, LOG_MSGS_TEST.FATAL, LOG_PROCESS_NAME_TEST, date_test_string);
+			expected_log = `{"process_name": "${LOG_PROCESS_NAME_TEST}", "level": "${LOG_LEVEL.FATAL}", "timestamp": "${date_test_string}", "message": "${LOG_MSGS_TEST.FATAL}"}\n`;
 			fake_timer = sandbox.useFakeTimers({ now: date_test });
 			harper_logger.fatal(LOG_MSGS_TEST.FATAL);
 			fake_timer.restore();
@@ -567,7 +582,7 @@ describe('Test harper_logger module', () => {
 		it('Test fatal log writes to stdout for pm2 process', () => {
 			harper_logger.__set__('NON_PM2_PROCESS', false);
 			harper_logger.__set__('process_name', 'unit_tests');
-			expected_log = createLogRecord(LOG_LEVEL.FATAL, LOG_MSGS_TEST.FATAL, LOG_PROCESS_NAME_TEST, date_test_string);
+			expected_log = `{"process_name": "${LOG_PROCESS_NAME_TEST}", "level": "${LOG_LEVEL.FATAL}", "timestamp": "${date_test_string}", "message": "${LOG_MSGS_TEST.FATAL}"}\n`;
 			capturedStdOutErr();
 			fake_timer = sandbox.useFakeTimers({ now: date_test });
 			harper_logger.fatal(LOG_MSGS_TEST.FATAL);
@@ -580,7 +595,7 @@ describe('Test harper_logger module', () => {
 
 		it('Test warn log logs to file and stream for non-pm2 process', (done) => {
 			harper_logger.createLogFile(LOG_NAME_TEST, LOG_PROCESS_NAME_TEST);
-			expected_log = createLogRecord(LOG_LEVEL.WARN, LOG_MSGS_TEST.WARN, LOG_PROCESS_NAME_TEST, date_test_string);
+			expected_log = `{"process_name": "${LOG_PROCESS_NAME_TEST}", "level": "${LOG_LEVEL.WARN}", "timestamp": "${date_test_string}", "message": "${LOG_MSGS_TEST.WARN}"}\n`;
 			fake_timer = sandbox.useFakeTimers({ now: date_test });
 			harper_logger.warn(LOG_MSGS_TEST.WARN);
 			fake_timer.restore();
@@ -595,7 +610,7 @@ describe('Test harper_logger module', () => {
 		it('Test warn log writes to stdout for pm2 process', () => {
 			harper_logger.__set__('NON_PM2_PROCESS', false);
 			harper_logger.__set__('process_name', 'unit_tests');
-			expected_log = createLogRecord(LOG_LEVEL.WARN, LOG_MSGS_TEST.WARN, LOG_PROCESS_NAME_TEST, date_test_string);
+			expected_log = `{"process_name": "${LOG_PROCESS_NAME_TEST}", "level": "${LOG_LEVEL.WARN}", "timestamp": "${date_test_string}", "message": "${LOG_MSGS_TEST.WARN}"}\n`;
 			capturedStdOutErr();
 			fake_timer = sandbox.useFakeTimers({ now: date_test });
 			harper_logger.warn(LOG_MSGS_TEST.WARN);
