@@ -5,8 +5,10 @@ const path = require('path');
 const chalk = require('chalk');
 const StreamZip = require('node-stream-zip');
 const semver = require('semver');
-const nats_utils = require('./natsUtils');
 const nats_terms = require('./natsTerms');
+const util = require('util');
+const child_process = require('child_process');
+const exec = util.promisify(child_process.exec);
 
 const DEPENDENCIES_PATH = path.resolve(__dirname, '../../../dependencies');
 const ZIP_PATH = path.join(DEPENDENCIES_PATH, nats_terms.NATS_SERVER_ZIP);
@@ -17,6 +19,41 @@ let pkg_json = require(pkg_json_path);
 const REQUIRED_GO_VERSION = pkg_json.engines['go-lang'];
 const REQUIRED_NATS_SERVER_VERSION = pkg_json.engines[nats_terms.NATS_SERVER_NAME];
 const NATS_SERVER_BINARY = path.join(DEPENDENCIES_PATH, `${nats_terms.NATS_SERVER_NAME}`);
+const NATS_SERVER_PATH = path.join(DEPENDENCIES_PATH, nats_terms.NATS_SERVER_NAME);
+
+/**
+ * Runs a bash script in a new shell
+ * @param {String} command - the command to execute
+ * @param {String=} cwd - path to the current working directory
+ * @returns {Promise<*>}
+ */
+async function runCommand(command, cwd = undefined) {
+	const { stdout, stderr } = await exec(command, { cwd });
+
+	if (stderr) {
+		throw new Error(stderr.replace('\n', ''));
+	}
+
+	return stdout.replace('\n', '');
+}
+
+/**
+ * checks if the NATS Server binary is present, if so is it the correct version
+ * @returns {Promise<boolean>}
+ */
+async function checkNATSServerInstalled() {
+	try {
+		//check if binary exists
+		await fs.access(NATS_SERVER_PATH);
+	} catch (e) {
+		return false;
+	}
+
+	//if nats-server exists check the version
+	let version_str = await runCommand(`${NATS_SERVER_PATH} --version`, undefined);
+	let version = version_str.substring(version_str.lastIndexOf('v') + 1, version_str.length);
+	return semver.eq(version, REQUIRED_NATS_SERVER_VERSION);
+}
 
 /**
  * Checks the go version, this pulls double duty to see if go is installed / in the PATH
@@ -26,7 +63,7 @@ async function checkGoVersion() {
 	console.log(chalk.green(`Verifying go v${REQUIRED_GO_VERSION} is on system.`));
 	let version;
 	try {
-		version = await nats_utils.runCommand('go version | { read _ _ v _; echo ${v#go}; }', undefined);
+		version = await runCommand('go version | { read _ _ v _; echo ${v#go}; }', undefined);
 	} catch (e) {
 		throw Error('go does not appear to be installed or is not in the PATH, cannot install clustering dependencies.');
 	}
@@ -71,7 +108,7 @@ async function cleanUp(full_nats_source_path) {
  */
 async function installer() {
 	console.log(chalk.green('****Starting install of NATS Server.****'));
-	let installed = await nats_utils.checkNATSServerInstalled();
+	let installed = await checkNATSServerInstalled();
 	if (installed) {
 		console.log(chalk.green(`****NATS Server v${REQUIRED_NATS_SERVER_VERSION} installed.****`));
 		return;
@@ -86,7 +123,7 @@ async function installer() {
 
 	let nats_source_folder = await extractNATSServer();
 	console.log(chalk.green('Building NATS Server binary.'));
-	await nats_utils.runCommand(`export GOPATH=${DEPENDENCIES_PATH} && go build`, nats_source_folder);
+	await runCommand(`export GOPATH=${DEPENDENCIES_PATH} && go build`, nats_source_folder);
 	console.log(chalk.green('Building NATS Server binary complete.'));
 	await cleanUp(nats_source_folder);
 	console.log(chalk.green(`****NATS Server v${REQUIRED_NATS_SERVER_VERSION} is installed.****`));

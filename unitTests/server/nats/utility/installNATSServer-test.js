@@ -17,7 +17,7 @@ describe('test checkGoVersion', () => {
 		});
 
 		// eslint-disable-next-line radar/no-duplicate-string
-		let cmd_restore = installer.__set__('nats_utils.runCommand', cmd_stub);
+		let cmd_restore = installer.__set__('runCommand', cmd_stub);
 		let semver_spy = sandbox.spy(installer.__get__('semver'), 'gte');
 		let console_log_spy = sandbox.spy(console, 'log');
 
@@ -55,7 +55,7 @@ describe('test checkGoVersion', () => {
 			return '1.0.0';
 		});
 
-		let cmd_restore = installer.__set__('nats_utils.runCommand', cmd_stub);
+		let cmd_restore = installer.__set__('runCommand', cmd_stub);
 		let go_version_restore = installer.__set__('REQUIRED_GO_VERSION', '1.17.6');
 		let semver_spy = sandbox.spy(installer.__get__('semver'), 'gte');
 
@@ -90,7 +90,7 @@ describe('test checkGoVersion', () => {
 			return '1.17.6';
 		});
 
-		let cmd_restore = installer.__set__('nats_utils.runCommand', cmd_stub);
+		let cmd_restore = installer.__set__('runCommand', cmd_stub);
 		let go_version_restore = installer.__set__('REQUIRED_GO_VERSION', '1.17.6');
 		let semver_spy = sandbox.spy(installer.__get__('semver'), 'gte');
 
@@ -124,7 +124,7 @@ describe('test checkGoVersion', () => {
 			return '2.0.0';
 		});
 
-		let cmd_restore = installer.__set__('nats_utils.runCommand', cmd_stub);
+		let cmd_restore = installer.__set__('runCommand', cmd_stub);
 		let go_version_restore = installer.__set__('REQUIRED_GO_VERSION', '1.17.6');
 		let semver_spy = sandbox.spy(installer.__get__('semver'), 'gte');
 
@@ -265,10 +265,10 @@ describe('test installer function', () => {
 		let run_cmd_stub = sandbox.stub();
 		let cleanup_stub = sandbox.stub();
 
-		let check_nats_installed_restore = installer.__set__('nats_utils.checkNATSServerInstalled', nats_installed_stub);
+		let check_nats_installed_restore = installer.__set__('checkNATSServerInstalled', nats_installed_stub);
 		let check_go_restore = installer.__set__('checkGoVersion', check_go_stub);
 		let extract_restore = installer.__set__('extractNATSServer', extract_stub);
-		let run_cmd_restore = installer.__set__('nats_utils.runCommand', run_cmd_stub);
+		let run_cmd_restore = installer.__set__('runCommand', run_cmd_stub);
 		let cleanup_restore = installer.__set__('cleanUp', cleanup_stub);
 
 		await installer_func();
@@ -305,10 +305,10 @@ describe('test installer function', () => {
 		let run_cmd_stub = sandbox.stub();
 		let cleanup_stub = sandbox.stub();
 
-		let check_nats_installed_restore = installer.__set__('nats_utils.checkNATSServerInstalled', nats_installed_stub);
+		let check_nats_installed_restore = installer.__set__('checkNATSServerInstalled', nats_installed_stub);
 		let check_go_restore = installer.__set__('checkGoVersion', check_go_stub);
 		let extract_restore = installer.__set__('extractNATSServer', extract_stub);
-		let run_cmd_restore = installer.__set__('nats_utils.runCommand', run_cmd_stub);
+		let run_cmd_restore = installer.__set__('runCommand', run_cmd_stub);
 		let cleanup_restore = installer.__set__('cleanUp', cleanup_stub);
 
 		await installer_func();
@@ -343,10 +343,10 @@ describe('test installer function', () => {
 		let run_cmd_stub = sandbox.stub().callsFake(async (cmd, cwd) => {});
 		let cleanup_stub = sandbox.stub().callsFake(async (folder) => {});
 
-		let check_nats_installed_restore = installer.__set__('nats_utils.checkNATSServerInstalled', nats_installed_stub);
+		let check_nats_installed_restore = installer.__set__('checkNATSServerInstalled', nats_installed_stub);
 		let check_go_restore = installer.__set__('checkGoVersion', check_go_stub);
 		let extract_restore = installer.__set__('extractNATSServer', extract_stub);
-		let run_cmd_restore = installer.__set__('nats_utils.runCommand', run_cmd_stub);
+		let run_cmd_restore = installer.__set__('runCommand', run_cmd_stub);
 		let cleanup_restore = installer.__set__('cleanUp', cleanup_stub);
 
 		await installer_func();
@@ -370,5 +370,217 @@ describe('test installer function', () => {
 		extract_restore();
 		run_cmd_restore();
 		cleanup_restore();
+	});
+});
+
+describe('test checkNATSServerInstalled', () => {
+	const check_server_sandbox = sinon.createSandbox();
+	let check_installed = installer.__get__('checkNATSServerInstalled');
+
+	it('test nats-server binary does not exist', async () => {
+		let access_stub = check_server_sandbox.stub().callsFake(async (path) => {
+			throw Error('ENONT');
+		});
+
+		let cmd_stub = check_server_sandbox.stub();
+		let semver_stub = check_server_sandbox.spy(installer.__get__('semver'), 'eq');
+
+		let fs_restore = installer.__set__('fs', {
+			access: access_stub,
+		});
+		let cmd_restore = installer.__set__('runCommand', cmd_stub);
+
+		let result = await check_installed();
+		expect(result).to.equal(false);
+		expect(access_stub.callCount).to.equal(1);
+		let expected_err;
+		try {
+			let rez = await access_stub.returnValues[0];
+		} catch (e) {
+			expected_err = e;
+		}
+		expect(expected_err.message).to.equal('ENONT');
+		expect(cmd_stub.callCount).to.equal(0);
+		expect(semver_stub.callCount).to.equal(0);
+		fs_restore();
+		cmd_restore();
+		check_server_sandbox.restore();
+	});
+
+	it('test nats-server binary does exist, wrong version of nats-server', async () => {
+		let access_stub = check_server_sandbox.stub().callsFake(async (path) => {
+			return;
+		});
+
+		let cmd_stub = check_server_sandbox.stub().callsFake(async (cmd, cwd) => {
+			return 'nats-server v2.7.0';
+		});
+
+		let nats_version_restore = installer.__set__('REQUIRED_NATS_SERVER_VERSION', '2.7.2');
+
+		let fs_restore = installer.__set__('fs', {
+			access: access_stub,
+		});
+		let cmd_restore = installer.__set__('runCommand', cmd_stub);
+		let semver_spy = check_server_sandbox.spy(installer.__get__('semver'), 'eq');
+
+		let result = await check_installed();
+		expect(result).to.equal(false);
+		expect(access_stub.callCount).to.equal(1);
+		let expected_err;
+		let rez;
+		try {
+			rez = await access_stub.returnValues[0];
+		} catch (e) {
+			expected_err = e;
+		}
+		expect(expected_err).to.equal(undefined);
+		expect(rez).to.equal(undefined);
+		expect(cmd_stub.callCount).to.equal(1);
+
+		let cmd_result = await cmd_stub.returnValues[0];
+		expect(cmd_result).to.equal('nats-server v2.7.0');
+
+		expect(semver_spy.callCount).to.equal(1);
+		expect(semver_spy.returnValues[0]).to.equal(false);
+		fs_restore();
+		cmd_restore();
+		nats_version_restore();
+		check_server_sandbox.restore();
+	});
+
+	it('test nats-server binary does exist, same version of nats-server returned as expected', async () => {
+		let access_stub = check_server_sandbox.stub().callsFake(async (path) => {
+			return;
+		});
+
+		let cmd_stub = check_server_sandbox.stub().callsFake(async (cmd, cwd) => {
+			return 'nats-server v2.7.2';
+		});
+
+		let nats_version_restore = installer.__set__('REQUIRED_NATS_SERVER_VERSION', '2.7.2');
+
+		let fs_restore = installer.__set__('fs', {
+			access: access_stub,
+		});
+		let cmd_restore = installer.__set__('runCommand', cmd_stub);
+		let semver_spy = check_server_sandbox.spy(installer.__get__('semver'), 'eq');
+
+		let result = await check_installed();
+		expect(result).to.equal(true);
+		expect(access_stub.callCount).to.equal(1);
+		let expected_err;
+		let rez;
+		try {
+			rez = await access_stub.returnValues[0];
+		} catch (e) {
+			expected_err = e;
+		}
+		expect(expected_err).to.equal(undefined);
+		expect(rez).to.equal(undefined);
+		expect(cmd_stub.callCount).to.equal(1);
+
+		let cmd_result = await cmd_stub.returnValues[0];
+		expect(cmd_result).to.equal('nats-server v2.7.2');
+
+		expect(semver_spy.callCount).to.equal(1);
+		expect(semver_spy.returnValues[0]).to.equal(true);
+		fs_restore();
+		cmd_restore();
+		nats_version_restore();
+		check_server_sandbox.restore();
+	});
+
+	it('test nats-server binary does exist, greater version of nats-server returned as expected', async () => {
+		let access_stub = check_server_sandbox.stub().callsFake(async (path) => {
+			return;
+		});
+
+		let cmd_stub = check_server_sandbox.stub().callsFake(async (cmd, cwd) => {
+			return 'nats-server v2.7.3';
+		});
+
+		let nats_version_restore = installer.__set__('REQUIRED_NATS_SERVER_VERSION', '2.7.2');
+
+		let fs_restore = installer.__set__('fs', {
+			access: access_stub,
+		});
+		let cmd_restore = installer.__set__('runCommand', cmd_stub);
+		let semver_spy = check_server_sandbox.spy(installer.__get__('semver'), 'eq');
+
+		let result = await check_installed();
+		expect(result).to.equal(false);
+		expect(access_stub.callCount).to.equal(1);
+		let expected_err;
+		let rez;
+		try {
+			rez = await access_stub.returnValues[0];
+		} catch (e) {
+			expected_err = e;
+		}
+		expect(expected_err).to.equal(undefined);
+		expect(rez).to.equal(undefined);
+		expect(cmd_stub.callCount).to.equal(1);
+
+		let cmd_result = await cmd_stub.returnValues[0];
+		expect(cmd_result).to.equal('nats-server v2.7.3');
+
+		expect(semver_spy.callCount).to.equal(1);
+		expect(semver_spy.returnValues[0]).to.equal(false);
+		fs_restore();
+		cmd_restore();
+		nats_version_restore();
+		check_server_sandbox.restore();
+	});
+});
+
+describe('test runCommand function', () => {
+	const run_command_sandbox = sinon.createSandbox();
+	let run_command = installer.__get__('runCommand');
+
+	it('test function, with error', async () => {
+		let exec_stub = run_command_sandbox.stub().callsFake(async (cmd, opts) => {
+			return { stderr: 'this is bad\n' };
+		});
+
+		let exec_restore = installer.__set__('exec', exec_stub);
+
+		let error;
+		try {
+			await run_command('cool command');
+		} catch (e) {
+			error = e;
+		}
+
+		expect(error.message).to.equal('this is bad');
+		expect(exec_stub.callCount).to.equal(1);
+		expect(exec_stub.firstCall.args).to.eql(['cool command', { cwd: undefined }]);
+
+		exec_restore();
+		run_command_sandbox.restore();
+	});
+
+	it('test function, without error', async () => {
+		let exec_stub = run_command_sandbox.stub().callsFake(async (cmd, opts) => {
+			return { stdout: 'all good\n' };
+		});
+
+		let exec_restore = installer.__set__('exec', exec_stub);
+
+		let error;
+		let result;
+		try {
+			result = await run_command('cool command', '/tmp/nats-server-2.7.1/');
+		} catch (e) {
+			error = e;
+		}
+
+		expect(error).to.equal(undefined);
+		expect(result).to.equal('all good');
+		expect(exec_stub.callCount).to.equal(1);
+		expect(exec_stub.firstCall.args).to.eql(['cool command', { cwd: '/tmp/nats-server-2.7.1/' }]);
+
+		exec_restore();
+		run_command_sandbox.restore();
 	});
 });
