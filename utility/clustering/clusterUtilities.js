@@ -174,11 +174,11 @@ function buildNodePayloads(subscriptions, local_node_name, remote_node_name, ope
  * @returns {string}
  */
 function createTableStreamName(schema, table) {
-	return `${schema}_${table}`;
+	return `${schema}/${table}`;
 }
 
 /**
- * Check to see fi clustering is enabled in hdb config. If it is not an error is thrown.
+ * Check to see if clustering is enabled in hdb config. If it is not an error is thrown.
  */
 function checkClusteringEnabled() {
 	if (!env_mgr.get(terms.CONFIG_PARAMS.CLUSTERING_ENABLED)) {

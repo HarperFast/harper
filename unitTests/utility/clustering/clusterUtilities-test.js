@@ -192,6 +192,6 @@ describe('Test clusterUtilities', () => {
 
 	it('Test createTableStreamName function returns correct stream name', () => {
 		const result = cluster_utils.createTableStreamName('funky', 'chicken');
-		expect(result).to.equal('funky_chicken');
+		expect(result).to.equal('funky/chicken');
 	});
 });

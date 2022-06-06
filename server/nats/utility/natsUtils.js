@@ -458,6 +458,7 @@ async function createWorkQueueStream(CONSUMER_NAMES) {
 			name: CONSUMER_NAMES.stream_name,
 			storage: StorageType.File,
 			retention: RetentionPolicy.Limits,
+			subjects: [`${CONSUMER_NAMES.stream_name}.${env_manager.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_NODENAME)}`],
 		});
 	} catch (err) {
 		// If the stream already exists ignore error that is thrown.

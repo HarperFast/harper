@@ -595,7 +595,7 @@ describe('Test natsUtils module', () => {
 			},
 			'node_i_am'
 		);
-		expect(add_source_to_work_stream_stub.args[0]).to.eql(['node_i_am-leaf', '__HARPERDB_WORK_QUEUE__', 'dog_poodle']);
+		expect(add_source_to_work_stream_stub.args[0]).to.eql(['node_i_am-leaf', '__HARPERDB_WORK_QUEUE__', 'dog/poodle']);
 		add_source_rw();
 	});
 
@@ -614,7 +614,7 @@ describe('Test natsUtils module', () => {
 		expect(remove_source_from_work_stream_stub.args[0]).to.eql([
 			'node_i_am-leaf',
 			'__HARPERDB_WORK_QUEUE__',
-			'dog_poodle',
+			'dog/poodle',
 		]);
 		remove_source_rw();
 	});
@@ -627,7 +627,7 @@ describe('Test natsUtils module', () => {
 		const create_local_stream_rw = nats_utils.__set__('createLocalStream', create_local_stream_stub);
 		const get_nats_ref_rw = nats_utils.__set__('getNATSReferences', get_nats_ref_stub);
 		await nats_utils.createLocalTableStream('dev', 'chicken');
-		expect(create_local_stream_stub.args[0][0]).to.equal('dev_chicken');
+		expect(create_local_stream_stub.args[0][0]).to.equal('dev/chicken');
 		expect(create_local_stream_stub.args[0][1][0]).to.equal('dev.chicken.unit_test-leaf');
 		create_local_stream_rw();
 		get_nats_ref_rw();
@@ -663,7 +663,7 @@ describe('Test natsUtils module', () => {
 		const get_nats_ref_stub = sandbox.stub().resolves({ jsm });
 		const get_nats_ref_rw = nats_utils.__set__('getNATSReferences', get_nats_ref_stub);
 		await nats_utils.purgeTableStream('dev', 'chicken');
-		expect(purge_stub.args[0][0]).to.equal('dev_chicken');
+		expect(purge_stub.args[0][0]).to.equal('dev/chicken');
 		get_nats_ref_rw();
 	});
 
