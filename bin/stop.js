@@ -120,7 +120,9 @@ async function restartProcesses() {
 
 		console.log(RESTART_RESPONSE);
 
-		await restartAllClusteringServices();
+		if (env_mngr.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_ENABLED)) {
+			await restartAllClusteringServices();
+		}
 
 		const is_cf_reg = await pm2_utils.isServiceRegistered(hdb_terms.PROCESS_DESCRIPTORS.CUSTOM_FUNCTIONS);
 		// If custom functions is enabled in setting.js but is not registered to pm2, start service.
