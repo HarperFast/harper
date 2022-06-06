@@ -81,6 +81,7 @@ const PROCESS_DESCRIPTORS_VALIDATE = {
 	'pm2-logrotate': PROCESS_DESCRIPTORS.PM2_LOGROTATE,
 	'logrotate': PROCESS_DESCRIPTORS.PM2_LOGROTATE,
 	'clustering': 'clustering',
+	'clustering config': 'clustering config',
 };
 
 // All the processes that make up clustering

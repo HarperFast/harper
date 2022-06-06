@@ -4,7 +4,8 @@ const chai = require('chai');
 const { expect } = chai;
 const sinon = require('sinon');
 const rewire = require('rewire');
-const configValidator = rewire('../../validation/configValidator');
+const config_val = rewire('../../validation/configValidator');
+const { configValidator, routesValidator } = config_val;
 const path = require('path');
 const test_utils = require('../test_utils');
 const hdb_utils = require('../../utility/common_utils');
@@ -141,7 +142,7 @@ describe('Test configValidator module', () => {
 
 		beforeEach(() => {
 			validate_pem_file_stub = sandbox.stub();
-			validate_pem_file_rw = configValidator.__set__('validatePemFile', validate_pem_file_stub);
+			validate_pem_file_rw = config_val.__set__('validatePemFile', validate_pem_file_stub);
 		});
 
 		afterEach(() => {
@@ -377,7 +378,7 @@ describe('Test configValidator module', () => {
 
 		beforeEach(() => {
 			validate_pem_file_stub = sandbox.stub();
-			validate_pem_file_rw = configValidator.__set__('validatePemFile', validate_pem_file_stub);
+			validate_pem_file_rw = config_val.__set__('validatePemFile', validate_pem_file_stub);
 		});
 
 		afterEach(() => {
@@ -477,7 +478,7 @@ describe('Test configValidator module', () => {
 
 	describe('Test doesPathExist function', () => {
 		let exists_sync_stub;
-		let does_path_exist_rw = configValidator.__get__('doesPathExist');
+		let does_path_exist_rw = config_val.__get__('doesPathExist');
 
 		beforeEach(() => {
 			exists_sync_stub = sandbox.stub(fs, 'existsSync');
@@ -505,10 +506,10 @@ describe('Test configValidator module', () => {
 	describe('Test validatePemFile function', () => {
 		let does_path_exist_stub = sandbox.stub();
 		let does_path_exist_rw;
-		let validate_pem_file = configValidator.__get__('validatePemFile');
+		let validate_pem_file = config_val.__get__('validatePemFile');
 
 		beforeEach(() => {
-			does_path_exist_rw = configValidator.__set__('doesPathExist', does_path_exist_stub);
+			does_path_exist_rw = config_val.__set__('doesPathExist', does_path_exist_stub);
 		});
 
 		afterEach(() => {
@@ -517,7 +518,7 @@ describe('Test configValidator module', () => {
 
 		it('Test happy path with correct pattern and data type', () => {
 			does_path_exist_stub.returns(null);
-			const does_path_exist_rw = configValidator.__set__('doesPathExist', does_path_exist_stub);
+			const does_path_exist_rw = config_val.__set__('doesPathExist', does_path_exist_stub);
 			validate_pem_file('/totally/real.pem');
 
 			expect(does_path_exist_stub.firstCall.args[0]).to.equal('/totally/real.pem');
@@ -550,7 +551,7 @@ describe('Test configValidator module', () => {
 
 	describe('Test validateRotationMaxSize function', () => {
 		it('Test it returns a helper message if value isnt a number', () => {
-			const validate_rotation_max_size = configValidator.__get__('validateRotationMaxSize');
+			const validate_rotation_max_size = config_val.__get__('validateRotationMaxSize');
 			const message_stub = sinon
 				.stub()
 				.callsFake(
@@ -567,7 +568,7 @@ describe('Test configValidator module', () => {
 	});
 
 	describe('Test setDefaultProcesses function', () => {
-		const set_default_processes = configValidator.__get__('setDefaultProcesses');
+		const set_default_processes = config_val.__get__('setDefaultProcesses');
 		const parent = {
 			enabled: true,
 			network: {
@@ -625,10 +626,10 @@ describe('Test configValidator module', () => {
 	describe('Test setDefaultRoot function', () => {
 		let hdb_root_rw;
 		const parent = {};
-		const set_default_root = configValidator.__get__('setDefaultRoot');
+		const set_default_root = config_val.__get__('setDefaultRoot');
 
 		it('Test throws error if hdb_root is undefined', () => {
-			hdb_root_rw = configValidator.__set__('hdb_root', undefined);
+			hdb_root_rw = config_val.__set__('hdb_root', undefined);
 			const helpers = { state: { path: ['customFunctions', 'root'] } };
 
 			let error;
@@ -642,7 +643,7 @@ describe('Test configValidator module', () => {
 		});
 
 		it('Test error throws if config param isnt real', () => {
-			hdb_root_rw = configValidator.__set__('hdb_root', HDB_ROOT);
+			hdb_root_rw = config_val.__set__('hdb_root', HDB_ROOT);
 			const helpers = { state: { path: ['customFunctiones', 'root'] } };
 
 			let error;
@@ -658,7 +659,7 @@ describe('Test configValidator module', () => {
 		});
 
 		it('Test that if customFunctions.root is undefined, one is created', () => {
-			hdb_root_rw = configValidator.__set__('hdb_root', HDB_ROOT);
+			hdb_root_rw = config_val.__set__('hdb_root', HDB_ROOT);
 			const helpers = { state: { path: ['customFunctions', 'root'] } };
 			const result = set_default_root(parent, helpers);
 
@@ -666,7 +667,7 @@ describe('Test configValidator module', () => {
 		});
 
 		it('Test that if logging.root is undefined, one is created', () => {
-			hdb_root_rw = configValidator.__set__('hdb_root', HDB_ROOT);
+			hdb_root_rw = config_val.__set__('hdb_root', HDB_ROOT);
 			const helpers = { state: { path: ['logging', 'root'] } };
 			const result = set_default_root(parent, helpers);
 
@@ -674,7 +675,7 @@ describe('Test configValidator module', () => {
 		});
 
 		it('Test that if operationsApi.tls.certificate is undefined, one is created', () => {
-			hdb_root_rw = configValidator.__set__('hdb_root', HDB_ROOT);
+			hdb_root_rw = config_val.__set__('hdb_root', HDB_ROOT);
 			const helpers = { state: { path: ['operationsApi', 'tls', 'certificate'] } };
 			const result = set_default_root(parent, helpers);
 
@@ -682,7 +683,7 @@ describe('Test configValidator module', () => {
 		});
 
 		it('Test that if operationsApi.tls.privateKey is undefined, one is created', () => {
-			hdb_root_rw = configValidator.__set__('hdb_root', HDB_ROOT);
+			hdb_root_rw = config_val.__set__('hdb_root', HDB_ROOT);
 			const helpers = { state: { path: ['operationsApi', 'tls', 'privateKey'] } };
 			const result = set_default_root(parent, helpers);
 
@@ -690,7 +691,7 @@ describe('Test configValidator module', () => {
 		});
 
 		it('Test that if customFunctions.tls.certificate is undefined, one is created', () => {
-			hdb_root_rw = configValidator.__set__('hdb_root', HDB_ROOT);
+			hdb_root_rw = config_val.__set__('hdb_root', HDB_ROOT);
 			const helpers = { state: { path: ['customFunctions', 'tls', 'certificate'] } };
 			const result = set_default_root(parent, helpers);
 
@@ -698,7 +699,7 @@ describe('Test configValidator module', () => {
 		});
 
 		it('Test that if customFunctions.tls.privateKey is undefined, one is created', () => {
-			hdb_root_rw = configValidator.__set__('hdb_root', HDB_ROOT);
+			hdb_root_rw = config_val.__set__('hdb_root', HDB_ROOT);
 			const helpers = { state: { path: ['customFunctions', 'tls', 'privateKey'] } };
 			const result = set_default_root(parent, helpers);
 
@@ -706,7 +707,7 @@ describe('Test configValidator module', () => {
 		});
 
 		it('Test that if clustering.tls.certificate is undefined, one is created', () => {
-			hdb_root_rw = configValidator.__set__('hdb_root', HDB_ROOT);
+			hdb_root_rw = config_val.__set__('hdb_root', HDB_ROOT);
 			const helpers = { state: { path: ['clustering', 'tls', 'certificate'] } };
 			const result = set_default_root(parent, helpers);
 
@@ -714,7 +715,7 @@ describe('Test configValidator module', () => {
 		});
 
 		it('Test that if clustering.tls.privateKey is undefined, one is created', () => {
-			hdb_root_rw = configValidator.__set__('hdb_root', HDB_ROOT);
+			hdb_root_rw = config_val.__set__('hdb_root', HDB_ROOT);
 			const helpers = { state: { path: ['clustering', 'tls', 'privateKey'] } };
 			const result = set_default_root(parent, helpers);
 
@@ -722,11 +723,39 @@ describe('Test configValidator module', () => {
 		});
 
 		it('Test that if clustering.tls.certificateAuthority is undefined, one is created', () => {
-			hdb_root_rw = configValidator.__set__('hdb_root', HDB_ROOT);
+			hdb_root_rw = config_val.__set__('hdb_root', HDB_ROOT);
 			const helpers = { state: { path: ['clustering', 'tls', 'certificateAuthority'] } };
 			const result = set_default_root(parent, helpers);
 
 			expect(result).to.equal(path.join(HDB_ROOT, '/keys/ca.pem'));
 		});
+	});
+
+	it('Test routesValidator validation bad values', () => {
+		const test_array = [
+			{
+				ip: '3.6.3.3x',
+				port: 7916,
+			},
+			{
+				ip: '4.4.4.6',
+				port: '711a',
+			},
+		];
+		const result = routesValidator(test_array);
+		expect(result.message).to.equal("'routes[0].ip' invalid IP address. 'routes[1].port' must be a number");
+	});
+
+	it('Test routesValidator validation more bad values', () => {
+		const test_array = [
+			{
+				port: 7916,
+			},
+			{
+				ip: '4.4.4.6',
+			},
+		];
+		const result = routesValidator(test_array);
+		expect(result.message).to.equal("'routes[0].ip' is required. 'routes[1].port' is required");
 	});
 });

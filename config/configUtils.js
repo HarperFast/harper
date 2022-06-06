@@ -3,7 +3,7 @@
 const hdb_terms = require('../utility/hdbTerms');
 const hdb_utils = require('../utility/common_utils');
 const logger = require('../utility/logging/harper_logger');
-const config_validator = require('../validation/configValidator');
+const { configValidator, routesValidator } = require('../validation/configValidator');
 const fs = require('fs-extra');
 const YAML = require('yaml');
 const path = require('path');
@@ -34,6 +34,7 @@ module.exports = {
 	getConfiguration,
 	setConfiguration,
 	readConfigFile,
+	getClusteringRoutes,
 };
 
 /**
@@ -160,7 +161,7 @@ function initConfig(force = false) {
  */
 function validateConfig(config_doc) {
 	const config_json = config_doc.toJSON();
-	const validation = config_validator(config_json);
+	const validation = configValidator(config_json);
 	if (validation.error) {
 		throw `HarperDB config file validation error: ${validation.error.message}`;
 	}
@@ -407,4 +408,20 @@ function readConfigFile() {
 
 function parseYamlDoc(file_path) {
 	return YAML.parseDocument(fs.readFileSync(file_path, 'utf8'), { simpleKeys: true });
+}
+
+/**
+ * Gets and validates the clustering routes from harperdb conf file.
+ * @returns {*[]|any}
+ */
+function getClusteringRoutes() {
+	const json_doc = readConfigFile();
+	let routes = json_doc?.clustering?.hubServer?.cluster?.network?.routes;
+	routes = hdb_utils.isEmptyOrZeroLength(routes) ? [] : routes;
+	const validation = routesValidator(routes);
+	if (validation) {
+		throw `HarperDB config file validation error: ${validation.error.message}`;
+	}
+
+	return routes;
 }

@@ -706,7 +706,7 @@ describe('Test configUtils module', () => {
 			const test_config_doc = YAML.parseDocument(fs.readFileSync(CONFIG_FILE_PATH, 'utf8'));
 			const test_config_json = test_config_doc.toJSON();
 			config_validator_stub = sandbox.stub().returns(test_val_config_obj);
-			config_utils_rw.__set__('config_validator', config_validator_stub);
+			config_utils_rw.__set__('configValidator', config_validator_stub);
 
 			let error;
 			try {
@@ -766,7 +766,7 @@ describe('Test configUtils module', () => {
 				setIn: set_in_stub,
 			};
 			config_validator_stub = sandbox.stub().returns(fake_validation);
-			config_utils_rw.__set__('config_validator', config_validator_stub);
+			config_utils_rw.__set__('configValidator', config_validator_stub);
 
 			let error;
 			try {
@@ -1189,5 +1189,59 @@ describe('Test configUtils module', () => {
 				`ENOENT: no such file or directory, access '${BAD_CONFIG_FILE_PATH}'`
 			);
 		});
+	});
+
+	it('Test getClusteringRoutes returns the correct routes', () => {
+		const fake_json_config = {
+			clustering: {
+				hubServer: {
+					cluster: {
+						network: {
+							routes: [
+								{
+									ip: '3.6.3.3',
+									port: 7916,
+								},
+								{
+									ip: '4.4.4.6',
+									port: 7117,
+								},
+							],
+						},
+					},
+				},
+			},
+		};
+		const read_config_file_stub = sandbox.stub().returns(fake_json_config);
+		config_utils_rw.__set__('readConfigFile', read_config_file_stub);
+		const routes = config_utils_rw.getClusteringRoutes();
+		expect(routes).to.eql([
+			{
+				ip: '3.6.3.3',
+				port: 7916,
+			},
+			{
+				ip: '4.4.4.6',
+				port: 7117,
+			},
+		]);
+	});
+
+	it('Test getClusteringRoutes returns empty array if no routes', () => {
+		const fake_json_config = {
+			clustering: {
+				hubServer: {
+					cluster: {
+						network: {
+							routes: null,
+						},
+					},
+				},
+			},
+		};
+		const read_config_file_stub = sandbox.stub().returns(fake_json_config);
+		config_utils_rw.__set__('readConfigFile', read_config_file_stub);
+		const routes = config_utils_rw.getClusteringRoutes();
+		expect(routes).to.eql([]);
 	});
 });

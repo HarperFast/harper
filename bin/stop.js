@@ -19,6 +19,7 @@ const RESTART_RUNNING_RESPONSE =
 const INVALID_SERVICE_ERR = 'Invalid service';
 const MISSING_SERVICE = "'service' is required";
 const RESTART_MSG = 'Restarting all services';
+const CLUSTERING_NOT_ENABLED_ERR = 'Clustering is not enabled so cannot be restarted';
 
 module.exports = {
 	stop,
@@ -302,12 +303,23 @@ async function restartClustering(service) {
 	service = hdb_terms.PROCESS_DESCRIPTORS_VALIDATE[service.toLowerCase()];
 	const clustering_enabled = env_mngr.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_ENABLED);
 	const restarting_clustering = service === 'clustering';
+	const reloading_clustering = service === 'clustering config';
 	const is_currently_running = !restarting_clustering ? await pm2_utils.isServiceRegistered(service) : undefined;
 
 	// If 'clustering' is passed to restart we are restarting all processes that make up clustering
-	const clustering_running = restarting_clustering ? await pm2_utils.isClusteringRunning() : undefined;
+	const clustering_running =
+		restarting_clustering || reloading_clustering ? await pm2_utils.isClusteringRunning() : undefined;
 
 	switch (true) {
+		case reloading_clustering:
+			if (!clustering_running) {
+				hdb_logger.error(CLUSTERING_NOT_ENABLED_ERR);
+				break;
+			}
+
+			await pm2_utils.reloadClustering();
+
+			break;
 		// If service is 'clustering' and clustering is running but not enabled, stop all the clustering processes.
 		case restarting_clustering && clustering_running && !clustering_enabled:
 			await pm2_utils.stopClustering();

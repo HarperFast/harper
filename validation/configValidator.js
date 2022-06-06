@@ -8,6 +8,7 @@ const path = require('path');
 const hdb_logger = require('../utility/logging/harper_logger');
 const hdb_utils = require('../utility/common_utils');
 const certificates_terms = require('../utility/terms/certificates');
+const validator = require('./validationWrapper');
 
 const DEFAULT_KEY_DIR = 'keys';
 const DEFAULT_HDB_CERT = certificates_terms.CERTIFICATE_PEM_NAME;
@@ -26,9 +27,23 @@ const INVALID_MAX_SIZE_VALUE_MSG =
 const UNDEFINED_OPS_API = 'operationsApi.root config parameter is undefined';
 const UNDEFINED_NATS_ENABLED = 'clustering.enabled config parameter is undefined';
 
+const port_constraints = number.min(0).required();
+const route_constraints = array
+	.items({
+		ip: string
+			.ip({ version: ['ipv4', 'ipv6'] })
+			.messages({
+				'string.ipVersion': '{:#label} invalid IP address',
+				'string.ip': '{:#label} invalid IP address',
+			})
+			.required(),
+		port: port_constraints,
+	})
+	.empty(null);
+
 let hdb_root;
 
-module.exports = configValidator;
+module.exports = { configValidator, routesValidator };
 
 function configValidator(config_json) {
 	hdb_root = config_json.operationsApi?.root;
@@ -37,7 +52,6 @@ function configValidator(config_json) {
 	}
 
 	const enabled_constraints = boolean.required();
-	const port_constraints = number.min(0).required();
 	const node_env_constraints = Joi.valid('production', 'development').required();
 	const processes_constraints = number.min(1).max(1000).empty(null).default(setDefaultProcesses);
 	const root_constraints = string
@@ -68,18 +82,7 @@ function configValidator(config_json) {
 					name: Joi.required().empty(null),
 					network: Joi.object({
 						port: port_constraints,
-						routes: array
-							.items({
-								ip: string
-									.ip({ version: ['ipv4', 'ipv6'] })
-									.messages({
-										'string.ipVersion': '{:#label} invalid IP address',
-										'string.ip': '{:#label} invalid IP address',
-									})
-									.required(),
-								port: port_constraints,
-							})
-							.empty(null),
+						routes: route_constraints,
 					}).required(),
 				}).required(),
 				leafNodes: Joi.object({
@@ -289,4 +292,16 @@ function setDefaultRoot(parent, helpers) {
 				`Error setting default root for config parameter: ${config_param}. Unrecognized config parameter`
 			);
 	}
+}
+
+/**
+ * Validates just the routes array.
+ * @param routes_array
+ * @returns {*}
+ */
+function routesValidator(routes_array) {
+	const schema = Joi.object({
+		routes: route_constraints,
+	});
+	return validator.validateBySchema({ routes: routes_array }, schema);
 }

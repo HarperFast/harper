@@ -120,6 +120,7 @@ describe('Test pm2 utilityFunctions module', () => {
 	const test_err = 'Utility functions test error';
 	let os_cpus_stub;
 	let create_work_stream_stub;
+	let remove_nats_config_stub;
 
 	before(() => {
 		fs.mkdirpSync(path.resolve(__dirname, '../../envDir/clustering'));
@@ -128,6 +129,7 @@ describe('Test pm2 utilityFunctions module', () => {
 		env_mngr.initTestEnvironment();
 		sandbox.stub(user, 'listUsers').resolves(FAKE_USER_LIST);
 		sandbox.stub(user, 'getClusterUser').resolves(fake_cluster_user);
+		remove_nats_config_stub = sandbox.stub(nats_config, 'removeNatsConfig');
 		env_mngr.setProperty(hdb_terms.CONFIG_PARAMS.CLUSTERING_USER, FAKE_CLUSTER_USER1);
 		env_mngr.setProperty(hdb_terms.CONFIG_PARAMS.CLUSTERING_HUBSERVER_NETWORK_PORT, 7711);
 		env_mngr.setProperty(hdb_terms.CONFIG_PARAMS.CLUSTERING_NODENAME, 'unitTestNodeName');
@@ -1064,5 +1066,18 @@ describe('Test pm2 utilityFunctions module', () => {
 		const result = await utility_functions.isClusteringRunning();
 		expect(result).to.be.false;
 		is_reg_rw();
+	});
+
+	it('Test reloadClustering calls all the functions needed to run happy path', async () => {
+		const generate_nats_config_stub = sandbox.stub(nats_config, 'generateNatsConfig');
+		const reload_nats_hub_stub = sandbox.stub(nats_utils, 'reloadNATSHub');
+		const reload_nats_leaf_stub = sandbox.stub(nats_utils, 'reloadNATSLeaf');
+		await utility_functions.reloadClustering();
+
+		expect(generate_nats_config_stub.args[0][0]).to.equal(true);
+		expect(reload_nats_hub_stub.called).to.be.true;
+		expect(reload_nats_leaf_stub.called).to.be.true;
+		expect(remove_nats_config_stub.getCall(0).args[0]).to.equal('clustering hub');
+		expect(remove_nats_config_stub.getCall(1).args[0]).to.equal('clustering leaf');
 	});
 }).timeout(10000);

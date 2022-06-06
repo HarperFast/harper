@@ -377,12 +377,14 @@ describe('Test stop.js', () => {
 		const is_clustering_running_stub = sandbox.stub();
 		const stop_clustering_stub = sandbox.stub();
 		const restart_all_stub = sandbox.stub();
+		const reload_clustering_stub = sandbox.stub();
 		let restartClustering;
 
 		before(() => {
 			restartClustering = stop.__get__('restartClustering');
 			stop.__set__('pm2_utils.isClusteringRunning', is_clustering_running_stub);
 			stop.__set__('pm2_utils.stopClustering', stop_clustering_stub);
+			stop.__set__('pm2_utils.reloadClustering', reload_clustering_stub);
 		});
 
 		after(() => {
@@ -401,6 +403,12 @@ describe('Test stop.js', () => {
 			env_manager.setProperty('clustering_enabled', true);
 			await restartClustering('clustering');
 			expect(start_clustering_stub.called).to.be.true;
+		});
+
+		it('Test clustering config reloads clustering', async () => {
+			is_clustering_running_stub.resolves(true);
+			await restartClustering('clustering config');
+			expect(reload_clustering_stub.called).to.be.true;
 		});
 	});
 });

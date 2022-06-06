@@ -10,6 +10,7 @@ const user = require('../../../../security/user');
 const env_manager = require('../../../../utility/environment/environmentManager');
 const hdb_terms = require('../../../../utility/hdbTerms');
 const hdb_utils = require('../../../../utility/common_utils');
+const config_utils = require('../../../../config/configUtils');
 const nats_utils = require('../../../../server/nats/utility/natsUtils');
 const crypto_hash = require('../../../../security/cryptoHash');
 const natsConfig = rewire('../../../../server/nats/utility/natsConfig');
@@ -96,12 +97,24 @@ const FAKE_SERVER_CONFIG = {
 
 const FAKE_CONNECTION_RESPONSE = { protocol: { connected: true }, close: () => {} };
 
+const FAKE_ROUTES = [
+	{
+		ip: '3.3.3.3',
+		port: 7716,
+	},
+	{
+		ip: '4.4.4.4',
+		port: 7717,
+	},
+];
+
 describe('Test natsConfig module', () => {
 	const sandbox = sinon.createSandbox();
 	const init_sync_stub = sandbox.stub();
 	let list_users_stub;
 	let port_taken_stub;
 	let create_connection_stub;
+	let get_clustering_routes_stub;
 
 	before(() => {
 		fs.mkdirpSync(TEMP_TEST_ROOT_DIR);
@@ -109,6 +122,7 @@ describe('Test natsConfig module', () => {
 		natsConfig.__set__('env_manager.initSync', init_sync_stub);
 		list_users_stub = sandbox.stub(user, 'listUsers').resolves(FAKE_USER_LIST);
 		port_taken_stub = sandbox.stub(hdb_utils, 'isPortTaken').resolves(false);
+		get_clustering_routes_stub = sandbox.stub(config_utils, 'getClusteringRoutes').returns(FAKE_ROUTES);
 		sandbox.stub(user, 'getClusterUser').resolves(fake_cluster_user);
 		sandbox.stub(nats_utils, 'checkNATSServerInstalled').resolves(true);
 		sandbox.stub(nats_utils, 'getServerConfig').returns(FAKE_SERVER_CONFIG);
@@ -123,16 +137,7 @@ describe('Test natsConfig module', () => {
 		env_manager.setProperty(hdb_terms.CONFIG_PARAMS.CLUSTERING_HUBSERVER_CLUSTER_NETWORK_PORT, 7713);
 		env_manager.setProperty(hdb_terms.CONFIG_PARAMS.CLUSTERING_HUBSERVER_LEAFNODES_NETWORK_PORT, 7714);
 		env_manager.setProperty(hdb_terms.CONFIG_PARAMS.CLUSTERING_LEAFSERVER_NETWORK_PORT, 7715);
-		env_manager.setProperty(hdb_terms.CONFIG_PARAMS.CLUSTERING_HUBSERVER_CLUSTER_NETWORK_ROUTES, [
-			{
-				ip: '3.3.3.3',
-				port: 7716,
-			},
-			{
-				ip: '4.4.4.4',
-				port: 7717,
-			},
-		]);
+		env_manager.setProperty(hdb_terms.CONFIG_PARAMS.CLUSTERING_HUBSERVER_CLUSTER_NETWORK_ROUTES, FAKE_ROUTES);
 	});
 
 	afterEach(() => {

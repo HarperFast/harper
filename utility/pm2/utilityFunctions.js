@@ -37,6 +37,7 @@ module.exports = {
 	isHdbRestartRunning,
 	isClusteringRunning,
 	stopClustering,
+	reloadClustering,
 };
 
 const PM2_LOGROTATE_VERSION = '2.7.0';
@@ -610,4 +611,19 @@ async function isClusteringRunning() {
 	}
 
 	return true;
+}
+
+/**
+ * Calls a native Nats method to reload the Hub & Leaf servers.
+ * This will NOT restart the pm2 process.
+ * @returns {Promise<void>}
+ */
+async function reloadClustering() {
+	await nats_config.generateNatsConfig(true);
+	await nats_utils.reloadNATSHub();
+	await nats_utils.reloadNATSLeaf();
+
+	// For security reasons remove the Hub & Leaf config after they have been reloaded
+	await nats_config.removeNatsConfig(hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_HUB.toLowerCase());
+	await nats_config.removeNatsConfig(hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_LEAF.toLowerCase());
 }

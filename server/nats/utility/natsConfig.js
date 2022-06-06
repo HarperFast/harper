@@ -8,6 +8,7 @@ const HdbUserObject = require('./HdbUserObject');
 const SysUserObject = require('./SysUserObject');
 const user = require('../../../security/user');
 const hdb_utils = require('../../../utility/common_utils');
+const config_utils = require('../../../config/configUtils');
 const hdb_terms = require('../../../utility/hdbTerms');
 const nats_terms = require('./natsTerms');
 const { CONFIG_PARAMS } = hdb_terms;
@@ -72,8 +73,9 @@ async function generateNatsConfig(is_restart = false, process_name = undefined) 
 
 	// Build hub server cluster routes from cluster user and ip/ports
 	let cluster_routes = [];
-	if (!hdb_utils.isEmpty(env_manager.get(CONFIG_PARAMS.CLUSTERING_HUBSERVER_CLUSTER_NETWORK_ROUTES))) {
-		for (const route of env_manager.get(CONFIG_PARAMS.CLUSTERING_HUBSERVER_CLUSTER_NETWORK_ROUTES)) {
+	const hub_server_cluster_routes = config_utils.getClusteringRoutes();
+	if (!hdb_utils.isEmptyOrZeroLength(hub_server_cluster_routes)) {
+		for (const route of hub_server_cluster_routes) {
 			cluster_routes.push(
 				`nats-route://${cluster_user.sys_name_encoded}:${cluster_user.uri_encoded_d_hash}@${route.ip}:${route.port}`
 			);
