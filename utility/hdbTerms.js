@@ -28,6 +28,8 @@ const CLUSTERING_LEAF_PROC_DESCRIPTOR = 'Clustering Leaf';
 const CLUSTERING_INGEST_PROC_DESCRIPTOR = 'Clustering Ingest Service';
 const CLUSTERING_REPLY_SERVICE_DESCRIPTOR = 'Clustering Reply Service';
 
+const FOREGROUND_PID_FILE = 'foreground.pid';
+
 const PROCESS_DESCRIPTORS = {
 	HDB: HDB_PROC_DESCRIPTOR,
 	IPC: 'IPC',
@@ -990,4 +992,5 @@ module.exports = {
 	INSTALL_PROMPTS,
 	HDB_ROOT_DIR_NAME,
 	CLUSTERING_PROCESSES,
+	FOREGROUND_PID_FILE,
 };

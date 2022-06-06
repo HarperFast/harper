@@ -296,10 +296,18 @@ function foregroundHandler() {
 }
 
 /**
- * Spawn a pm2 log process
+ * Spawn a pm2 log process.
+ * This process stays alive and keeps process in foreground.
+ * Its main purpose is to direct all accumulate all the logs in one process
  */
 function spawnLogProcess() {
 	const proc = spawn('node', [path.resolve(__dirname, '../node_modules/pm2/bin/pm2'), 'logs']);
+
+	// We track the process pid so that stop can use it to kill the process.
+	fs.writeFileSync(
+		path.join(env.get(terms.CONFIG_PARAMS.OPERATIONSAPI_ROOT), terms.FOREGROUND_PID_FILE),
+		proc.pid.toString()
+	);
 
 	proc.on('error', (err) => {
 		console.log(err);
@@ -355,5 +363,5 @@ async function isHdbInstalled() {
 }
 
 function getRunInForeground() {
-	return hdb_utils.autoCastBoolean(env.get(terms.HDB_SETTINGS_NAMES.RUN_IN_FOREGROUND));
+	return hdb_utils.autoCastBoolean(env.get(terms.CONFIG_PARAMS.OPERATIONSAPI_FOREGROUND));
 }

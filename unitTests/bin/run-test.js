@@ -56,6 +56,7 @@ describe('Test run module', () => {
 		stderr: {
 			on: () => {},
 		},
+		pid: 1234789,
 	};
 
 	before(() => {
@@ -580,11 +581,14 @@ describe('Test run module', () => {
 
 	describe('Test spawnLogProcess function', () => {
 		it('Test spawn is called with correct arguments', () => {
+			const write_file_stub = sandbox.stub();
+			run_rw.__set__('fs.writeFileSync', write_file_stub);
 			const spawnLogProcess = run_rw.__get__('spawnLogProcess');
 			spawnLogProcess();
 			expect(spawn_stub.getCall(0).args[0]).to.equal('node');
 			expect(spawn_stub.getCall(0).args[1][0]).to.equal(path.resolve(__dirname, '../../node_modules/pm2/bin/pm2'));
 			expect(spawn_stub.getCall(0).args[1][1]).to.equal('logs');
+			expect(write_file_stub.called).to.be.true;
 		});
 	});
 });

@@ -524,6 +524,19 @@ describe('Test pm2 utilityFunctions module', () => {
 	});
 
 	describe('Test stopAllServices function', () => {
+		let read_file_stub;
+		let process_kill_stub;
+
+		before(() => {
+			read_file_stub = sandbox.stub(fs, 'readFile').resolves(12345678);
+			process_kill_stub = sandbox.stub(process, 'kill');
+			env_mngr.setProperty(hdb_terms.CONFIG_PARAMS.OPERATIONSAPI_FOREGROUND, true);
+		});
+
+		after(() => {
+			process_kill_stub.restore();
+		});
+
 		afterEach(async () => {
 			await stopDeleteAllServices();
 		});

@@ -6,6 +6,7 @@ const nats_config = require('../../server/nats/utility/natsConfig');
 const nats_utils = require('../../server/nats/utility/natsUtils');
 const nats_terms = require('../../server/nats/utility/natsTerms');
 const pm2 = require('pm2');
+const fs = require('fs-extra');
 const services_config = require('./servicesConfig');
 const env_mangr = require('../environment/environmentManager');
 const hdb_logger = require('../../utility/logging/harper_logger');
@@ -410,7 +411,7 @@ async function restartAllServices(excluding = []) {
 }
 
 /**
- * stops all services
+ * stops all services then kills the pm2 daemon
  * @returns {Promise<void>}
  */
 async function stopAllServices() {
@@ -418,8 +419,25 @@ async function stopAllServices() {
 		const services = await getUniqueServicesList();
 		for (let x = 0, length = Object.values(services).length; x < length; x++) {
 			let service = Object.values(services)[x];
-			if (service.name === hdb_terms.PROCESS_DESCRIPTORS.PM2_LOGROTATE) await stopLogrotate();
-			else await stop(service.name);
+			await stop(service.name);
+		}
+
+		// Kill pm2 daemon
+		await kill();
+
+		// If running in foreground get the pid of foreground process and kill it.
+		if (env_mangr.get(hdb_terms.CONFIG_PARAMS.OPERATIONSAPI_FOREGROUND) === true) {
+			// eslint-disable-next-line prettier/prettier
+			const foreground_pid = (
+				await fs.readFile(
+					path.join(env_mangr.get(hdb_terms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY), hdb_terms.FOREGROUND_PID_FILE)
+				)
+			).toString();
+			try {
+				process.kill(foreground_pid, 'SIGTERM');
+			} catch (pid_err) {
+				hdb_logger.warn(`Error terminating foreground process: ${pid_err}`);
+			}
 		}
 	} catch (err) {
 		pm2.disconnect();
