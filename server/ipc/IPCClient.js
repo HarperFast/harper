@@ -67,7 +67,7 @@ class IPCClient {
 			throw new Error(IPC_ERRORS.MISSING_MSG);
 		}
 
-		hdb_logger.trace(`IPC client ${this.ipc.config.id} emitting ${JSON.stringify(data)}`);
+		hdb_logger.trace(`IPC client ${this.ipc.config.id} emitting`, data);
 
 		this.ipc.of[this.server_name].emit('message', data);
 	}

@@ -149,13 +149,22 @@ function createLogFile(log_name, log_process_name) {
 	}
 }
 
+/**
+ * This function iterates given args array to ensure objects are stringified as needed; spaces are added after each arg except for the last one
+ * @param {string} level - the logging level
+ * @param {[*]} args - the array of arguments that will be converted into a single log line
+ * @returns {string} - a complete log
+ */
+
 function createLogRecord(level, args) {
 	const date_now = new Date(Date.now()).toISOString();
 
 	// If an error instance is stringified it returns an empty object. Also, adding the error instance to a string
 	// only logs the error message and not the stack, that is why we need to set message to stack.
 	let log_msg = '';
-	for (let x = 0, length = args.length; x < length; x++) {
+	let length = args.length;
+	const last_arg = length - 1;
+	for (let x = 0; x < length; x++) {
 		let arg = args[x];
 		if (arg instanceof Error && arg.stack) {
 			log_msg = arg.stack;
@@ -163,6 +172,9 @@ function createLogRecord(level, args) {
 			log_msg += JSON.stringify(arg);
 		} else {
 			log_msg += arg;
+		}
+		if (x < last_arg) {
+			log_msg += ' ';
 		}
 	}
 	return `{"process_name": "${process_name}", "level": "${level}", "timestamp": "${date_now}", "message": "${log_msg}"}\n`;
@@ -210,7 +222,8 @@ function nonPm2LogStdErr(log) {
 
 /**
  * Log a info level log.
- * @param args - an array of log messages(strings/objects)
+ * @param {[*]} args - rest parameter syntax (...args), allows function to accept indefinite number of args as an array of log messages(strings/objects).
+ * Provide args separated by commas. No need to stringify objects. createLogRecord will do that
  */
 function info(...args) {
 	if (LOG_LEVEL_HIERARCHY[log_level] <= LOG_LEVEL_HIERARCHY['info']) {
@@ -226,7 +239,8 @@ function info(...args) {
 
 /**
  * Log a trace level log.
- * @param args - an array of log messages(strings/objects)
+ * @param {[*]} args - rest parameter syntax (...args), allows function to accept indefinite number of args as an array of log messages(strings/objects).
+ * Provide args separated by commas. No need to stringify objects. createLogRecord will do that
  */
 function trace(...args) {
 	if (LOG_LEVEL_HIERARCHY[log_level] <= LOG_LEVEL_HIERARCHY['trace']) {
@@ -242,7 +256,8 @@ function trace(...args) {
 
 /**
  * Log a error level log.
- * @param args - an array of log messages(strings/objects)
+ * @param {[*]} args - rest parameter syntax (...args), allows function to accept indefinite number of args as an array of log messages(strings/objects).
+ * Provide args separated by commas. No need to stringify objects. createLogRecord will do that
  */
 function error(...args) {
 	if (LOG_LEVEL_HIERARCHY[log_level] <= LOG_LEVEL_HIERARCHY['error']) {
@@ -258,7 +273,8 @@ function error(...args) {
 
 /**
  * Log a debug level log.
- * @param args - an array of log messages(strings/objects)
+ * @param {[*]} args - rest parameter syntax (...args), allows function to accept indefinite number of args as an array of log messages(strings/objects).
+ * Provide args separated by commas. No need to stringify objects. createLogRecord will do that
  */
 function debug(...args) {
 	if (LOG_LEVEL_HIERARCHY[log_level] <= LOG_LEVEL_HIERARCHY['debug']) {
@@ -274,7 +290,8 @@ function debug(...args) {
 
 /**
  * Log a notify level log.
- * @param args - an array of log messages(strings/objects)
+ * @param {[*]} args - rest parameter syntax (...args), allows function to accept indefinite number of args as an array of log messages(strings/objects).
+ * Provide args separated by commas. No need to stringify objects. createLogRecord will do that
  */
 function notify(...args) {
 	if (LOG_LEVEL_HIERARCHY[log_level] <= LOG_LEVEL_HIERARCHY['notify']) {
@@ -290,7 +307,8 @@ function notify(...args) {
 
 /**
  * Log a fatal level log.
- * @param args - an array of log messages(strings/objects)
+ * @param {[*]} args - rest parameter syntax (...args), allows function to accept indefinite number of args as an array of log messages(strings/objects).
+ * Provide args separated by commas. No need to stringify objects. createLogRecord will do that
  */
 function fatal(...args) {
 	if (LOG_LEVEL_HIERARCHY[log_level] <= LOG_LEVEL_HIERARCHY['fatal']) {
@@ -306,7 +324,8 @@ function fatal(...args) {
 
 /**
  * Log a warn level log.
- * @param args - an array of log messages(strings/objects)
+ * @param {[*]} args - rest parameter syntax (...args), allows function to accept indefinite number of args as an array of log messages(strings/objects).
+ * Provide args separated by commas. No need to stringify objects. createLogRecord will do that
  */
 function warn(...args) {
 	if (LOG_LEVEL_HIERARCHY[log_level] <= LOG_LEVEL_HIERARCHY['warn']) {

@@ -368,9 +368,10 @@ async function viewStream(stream_name) {
  */
 async function publishToStream(subject_name, stream_name, entries = [], originators = []) {
 	hdb_logger.trace(
-		`publishToStream called with subject: ${subject_name}, stream: ${subject_name}, entries: ${hdb_utils.stringifyObj(
-			entries
-		)}, originators: ${originators}`
+		`publishToStream called with subject: ${subject_name}, stream: ${stream_name}, entries:`,
+		entries,
+		`originators:`,
+		originators
 	);
 	const { connection, js, jsm } = await getNATSReferences();
 	const nats_server = jsm?.nc?.info?.server_name;
@@ -381,9 +382,7 @@ async function publishToStream(subject_name, stream_name, entries = [], originat
 		h.append('originators', originators.join());
 		for (let x = 0, length = entries.length; x < length; x++) {
 			try {
-				hdb_logger.trace(
-					`publishToStream publishing to subject: ${subject}, data: ${hdb_utils.stringifyObj(entries[x])}`
-				);
+				hdb_logger.trace(`publishToStream publishing to subject: ${subject}, data:`, entries[x]);
 				await js.publish(subject, jc.encode(entries[x]), { headers: h });
 			} catch (err) {
 				// If the stream doesn't exist it is created and published to

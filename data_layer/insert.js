@@ -73,7 +73,7 @@ async function validation(write_object) {
 
 	write_object.records.forEach((record) => {
 		if (is_update && hdb_utils.isEmptyOrZeroLength(record[hash_attribute])) {
-			log.error(`a valid hash attribute must be provided with update record: ${JSON.stringify(record)}`);
+			log.error('a valid hash attribute must be provided with update record:', record);
 			throw new Error('a valid hash attribute must be provided with update record');
 		}
 
@@ -81,7 +81,7 @@ async function validation(write_object) {
 			!hdb_utils.isEmptyOrZeroLength(record[hash_attribute]) &&
 			(record[hash_attribute] === 'null' || record[hash_attribute] === 'undefined')
 		) {
-			log.error(`a valid hash value must be provided with ${write_object.operation} record: ${JSON.stringify(record)}`);
+			log.error(`a valid hash value must be provided with ${write_object.operation} record:`, record);
 			throw new Error(`"${record[hash_attribute]}" is not a valid hash attribute value`);
 		}
 

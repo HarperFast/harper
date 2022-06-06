@@ -74,7 +74,7 @@ async function processLocalTransaction(req, operation_function) {
 			// the logging is actually going to happen.
 			// eslint-disable-next-line no-unused-vars
 			const { hdb_user, hdb_auth_header, password, ...clean_body } = req.body;
-			harper_logger.info(JSON.stringify(clean_body));
+			harper_logger.info(clean_body);
 		}
 	} catch (e) {
 		harper_logger.error(e);

@@ -45,7 +45,7 @@ async function configureCluster(request) {
 		);
 	}
 	const remove_result = await Promise.allSettled(remove_node_promises);
-	hdb_logger.trace(`All results from configure_cluster remove node: ${hdb_utils.stringifyObj(remove_result)}`);
+	hdb_logger.trace(`All results from configure_cluster remove node:`, remove_result);
 
 	// For each connection in the request, call add node
 	let add_node_promises = [];
@@ -56,7 +56,7 @@ async function configureCluster(request) {
 	}
 
 	const add_result = await Promise.allSettled(add_node_promises);
-	hdb_logger.trace(`All results from configure_cluster add node: ${hdb_utils.stringifyObj(add_result)}`);
+	hdb_logger.trace('All results from configure_cluster add node:', add_result);
 
 	// Promise.allSettled will return an array with all the result from promises it called.
 	// We loop through that array to find if any operations have errored, if they have we log and track them
@@ -67,7 +67,7 @@ async function configureCluster(request) {
 	for (let j = 0, res_length = results.length; j < res_length; j++) {
 		const result = results[j];
 		if (result.status === 'rejected') {
-			hdb_logger.error(hdb_utils.stringifyObj(result.reason));
+			hdb_logger.error(result.reason);
 			if (!failed_nodes.includes(result.reason.node_name)) {
 				failed_nodes.push(result.reason.node_name);
 			}

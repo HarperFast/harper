@@ -458,7 +458,7 @@ describe('Test serverUtilities_rw.js module ', () => {
 			await serverUtilities_rw.processLocalTransaction(MOCK_REQUEST, test_func);
 
 			assert.ok(info_log_stub.calledOnce, 'The cleaned body should be logged');
-			assert.equal(info_log_stub.args[0][0], JSON.stringify(test_clean_body));
+			assert.deepEqual(info_log_stub.args[0][0], test_clean_body);
 		});
 
 		it('Test `clean body` log scenario for DEBUG log level', async function () {
@@ -471,7 +471,7 @@ describe('Test serverUtilities_rw.js module ', () => {
 			await serverUtilities_rw.processLocalTransaction(MOCK_REQUEST, test_func);
 
 			assert.ok(info_log_stub.calledOnce, 'The cleaned body should be logged');
-			assert.equal(info_log_stub.args[0][0], JSON.stringify(test_clean_body));
+			assert.deepEqual(info_log_stub.args[0][0], test_clean_body);
 		});
 
 		it('Test `clean body` log scenario for TRACE log level', async function () {
@@ -484,7 +484,7 @@ describe('Test serverUtilities_rw.js module ', () => {
 			await serverUtilities_rw.processLocalTransaction(MOCK_REQUEST, test_func);
 
 			assert.ok(info_log_stub.calledOnce, 'The cleaned body should be logged');
-			assert.equal(info_log_stub.args[0][0], JSON.stringify(test_clean_body));
+			assert.deepEqual(info_log_stub.args[0][0], test_clean_body);
 		});
 
 		it('Test `clean body` log scenario not run for `read_log` operation', async function () {
@@ -509,9 +509,9 @@ describe('Test serverUtilities_rw.js module ', () => {
 			const test_result = await serverUtilities_rw.processLocalTransaction(MOCK_REQUEST, test_func);
 
 			assert.ok(info_log_stub.calledOnce, 'The error should be logged');
-			assert.equal(
+			assert.deepEqual(
 				info_log_stub.args[0][0],
-				'{"operation":"create_schema","schema":"test"}',
+				{ operation: 'create_schema', schema: 'test' },
 				'The correct error should be logged'
 			);
 

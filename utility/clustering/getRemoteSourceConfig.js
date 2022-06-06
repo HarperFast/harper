@@ -29,7 +29,7 @@ async function getRemoteSourceConfig() {
 			time_elapsed
 		);
 
-		hdb_logger.trace(`getRemoteSourceConfig response: ${hdb_utils.stringifyObj(response)}`);
+		hdb_logger.trace('getRemoteSourceConfig response:', response);
 		return new UpdateRemoteResponseObject(nats_terms.UPDATE_REMOTE_RESPONSE_STATUSES.SUCCESS, response);
 	} catch (err) {
 		hdb_logger.error(err);

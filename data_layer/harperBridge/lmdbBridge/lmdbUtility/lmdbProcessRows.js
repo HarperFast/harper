@@ -74,7 +74,7 @@ function validateHash(record, hash_attribute, operation) {
 			return;
 		}
 
-		log.error(`Update transaction aborted due to record with no hash value: ${JSON.stringify(record)}`);
+		log.error('Update transaction aborted due to record with no hash value:', record);
 		throw handleHDBError(
 			new Error(),
 			HDB_ERROR_MSGS.RECORD_MISSING_HASH_ERR,

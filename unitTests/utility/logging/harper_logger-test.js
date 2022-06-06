@@ -290,7 +290,7 @@ describe('Test harper_logger module', () => {
 		});
 
 		it('Test record is correctly returned if message array has multiple args with object', () => {
-			const result = createLogRecord_rw('info', [LOG_MSGS_TEST.INFO, ': ', { foo: 'bar' }]);
+			const result = createLogRecord_rw('info', [`${LOG_MSGS_TEST.INFO}:`, { foo: 'bar' }]);
 
 			expect(result).to.equal(
 				`{"process_name": "Install", "level": "info", "timestamp": "2018-10-03T18:50:33.675Z", "message": "info log: {"foo":"bar"}"}\n`
@@ -396,7 +396,7 @@ describe('Test harper_logger module', () => {
 
 	describe('Test notify, fatal, error, warn, info, debug, and trace functions', () => {
 		let harper_logger;
-		const test_arg_1 = 'Fake logging announcement: ';
+		const test_arg_1 = 'Fake logging announcement:';
 		const test_arg_2 = { foo: 'bar' };
 		const test_message = 'Fake logging announcement: {"foo":"bar"}';
 		const date_test = new Date(2021, 1, 1, 0, 0);

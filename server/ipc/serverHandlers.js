@@ -29,9 +29,7 @@ async function schemaHandler(event) {
 		return;
 	}
 
-	hdb_logger.trace(
-		`IPC schemaHandler ${hdb_terms.HDB_IPC_CLIENT_PREFIX}${process.pid} received schema event: ${JSON.stringify(event)}`
-	);
+	hdb_logger.trace(`IPC schemaHandler ${hdb_terms.HDB_IPC_CLIENT_PREFIX}${process.pid} received schema event:`, event);
 	await clean_lmdb_map(event.message);
 	await syncSchemaMetadata(event.message);
 }
@@ -102,9 +100,7 @@ async function userHandler(event) {
 			return;
 		}
 
-		hdb_logger.trace(
-			`IPC userHandler ${hdb_terms.HDB_IPC_CLIENT_PREFIX}${process.pid} received user event: ${JSON.stringify(event)}`
-		);
+		hdb_logger.trace(`IPC userHandler ${hdb_terms.HDB_IPC_CLIENT_PREFIX}${process.pid} received user event:`, event);
 		await user_schema.setUsersToGlobal();
 	} catch (err) {
 		hdb_logger.error(err);

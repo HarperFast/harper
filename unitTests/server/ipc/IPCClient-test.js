@@ -10,66 +10,81 @@ const harper_logger = require('../../../utility/logging/harper_logger');
 const IPCClient = require('../../../server/ipc/IPCClient');
 
 describe('Test IPCClient class', () => {
-    const sandbox = sinon.createSandbox();
-    const event_handlers_test = {
-        'add': () => {},
-        'remove': () => {}
-    };
+	const sandbox = sinon.createSandbox();
+	const event_handlers_test = {
+		add: () => {},
+		remove: () => {},
+	};
 
-    let client_test;
-    let log_warn_stub;
-    let log_trace_stub;
+	let client_test;
+	let log_warn_stub;
+	let log_trace_stub;
 
-    before(() => {
-        log_trace_stub = sandbox.stub(harper_logger, 'trace');
-        log_warn_stub = sandbox.stub(harper_logger, 'warn');
-    });
+	before(() => {
+		log_trace_stub = sandbox.stub(harper_logger, 'trace');
+		log_warn_stub = sandbox.stub(harper_logger, 'warn');
+	});
 
-    after(() => {
-        sandbox.restore();
-    });
+	after(() => {
+		sandbox.restore();
+	});
 
-    afterEach(() => {
-        client_test.ipc.disconnect('hdb_ipc_server');
-    });
-    
-    it('Test client class is constructed as expected', () => {
-        client_test = new IPCClient(123, event_handlers_test);
-        expect(client_test.server_name).to.equal('hdb_ipc_server');
-        expect(client_test.ipc.config.retry).to.equal(100);
-        expect(client_test.ipc.config.id).to.equal('hdb_ipc_client_123');
-        expect(typeof client_test.event_handlers.add).to.equal('function');
-        expect(typeof client_test.event_handlers.remove).to.equal('function');
-    });
+	afterEach(() => {
+		client_test.ipc.disconnect('hdb_ipc_server');
+	});
 
-    it('Test data is emitted to server', () => {
-        client_test = new IPCClient(123, event_handlers_test);
-        let error;
-        try {
-            client_test.emitToServer({ type: 'schema', message: 'dog'});
-        } catch(err) {
-            error = err;
-        }
+	it('Test client class is constructed as expected', () => {
+		client_test = new IPCClient(123, event_handlers_test);
+		expect(client_test.server_name).to.equal('hdb_ipc_server');
+		expect(client_test.ipc.config.retry).to.equal(100);
+		expect(client_test.ipc.config.id).to.equal('hdb_ipc_client_123');
+		expect(typeof client_test.event_handlers.add).to.equal('function');
+		expect(typeof client_test.event_handlers.remove).to.equal('function');
+	});
 
-        expect(error).to.be.undefined;
-        expect(log_trace_stub).to.have.been.calledWith('IPC client hdb_ipc_client_123 emitting {"type":"schema","message":"dog"}');
-    });
+	it('Test data is emitted to server', () => {
+		client_test = new IPCClient(123, event_handlers_test);
+		let error;
+		try {
+			client_test.emitToServer({ type: 'schema', message: 'dog' });
+		} catch (err) {
+			error = err;
+		}
 
-    it('Test invalid IPC msg type is logged and thrown', () => {
-        client_test = new IPCClient(123, event_handlers_test);
-        test_util.assertErrorSync(client_test.emitToServer, ['delete all the data'], new Error('Invalid IPC event data type, must be an object'));
-        expect(log_warn_stub).to.have.been.calledWith('Invalid IPC event data type, must be an object');
-    });
+		expect(error).to.be.undefined;
+		expect(log_trace_stub).to.have.been.calledWith('IPC client hdb_ipc_client_123 emitting', {
+			type: 'schema',
+			message: 'dog',
+		});
+	});
 
-    it('Test missing type is logged and thrown', () => {
-        client_test = new IPCClient(123, event_handlers_test);
-        test_util.assertErrorSync(client_test.emitToServer, [{ message: 'i am a message' }], new Error("IPC event missing 'type'"));
-        expect(log_warn_stub).to.have.been.calledWith("IPC event missing 'type'");
-    });
+	it('Test invalid IPC msg type is logged and thrown', () => {
+		client_test = new IPCClient(123, event_handlers_test);
+		test_util.assertErrorSync(
+			client_test.emitToServer,
+			['delete all the data'],
+			new Error('Invalid IPC event data type, must be an object')
+		);
+		expect(log_warn_stub).to.have.been.calledWith('Invalid IPC event data type, must be an object');
+	});
 
-    it('Test missing message is logged and thrown', () => {
-        client_test = new IPCClient(123, event_handlers_test);
-        test_util.assertErrorSync(client_test.emitToServer, [{ type: 'create_table' }], new Error("IPC event missing 'message'"));
-        expect(log_warn_stub).to.have.been.calledWith("IPC event missing 'message'");
-    });
+	it('Test missing type is logged and thrown', () => {
+		client_test = new IPCClient(123, event_handlers_test);
+		test_util.assertErrorSync(
+			client_test.emitToServer,
+			[{ message: 'i am a message' }],
+			new Error("IPC event missing 'type'")
+		);
+		expect(log_warn_stub).to.have.been.calledWith("IPC event missing 'type'");
+	});
+
+	it('Test missing message is logged and thrown', () => {
+		client_test = new IPCClient(123, event_handlers_test);
+		test_util.assertErrorSync(
+			client_test.emitToServer,
+			[{ type: 'create_table' }],
+			new Error("IPC event missing 'message'")
+		);
+		expect(log_warn_stub).to.have.been.calledWith("IPC event missing 'message'");
+	});
 });

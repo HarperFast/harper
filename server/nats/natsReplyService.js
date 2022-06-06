@@ -65,7 +65,7 @@ async function initialize() {
 async function handleRequest(sub) {
 	for await (const msg of sub) {
 		const msg_data = jc.decode(msg.data);
-		harper_logger.trace(`Received request: ${hdb_utils.stringifyObj(msg_data)}`);
+		harper_logger.trace('Received request:', msg_data);
 		let reply;
 
 		switch (msg_data.operation) {
@@ -85,7 +85,7 @@ async function handleRequest(sub) {
 				reply = new UpdateRemoteResponseObject(nats_terms.UPDATE_REMOTE_RESPONSE_STATUSES.ERROR, err_msg);
 		}
 
-		harper_logger.trace(hdb_utils.stringifyObj(reply));
+		harper_logger.trace(reply);
 		msg.respond(jc.encode(reply));
 	}
 }

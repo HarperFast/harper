@@ -11,201 +11,242 @@ const { expect } = chai;
 chai.use(sinon_chai);
 
 const WRITE_OBJECT_TEST = {
-    operation: "insert",
-    schema: "system",
-    table: "hdb_attribute",
-    hash_attribute: "id",
-    records: [
-        {
-            schema: "attrUnitTest",
-            table: "dog",
-            attribute: "another_attribute",
-            id: "6d9bdde4-2a82-4f96-bc85-4515fda0be0b",
-            schema_table: "attrUnitTest.dog"
-        }
-    ]
+	operation: 'insert',
+	schema: 'system',
+	table: 'hdb_attribute',
+	hash_attribute: 'id',
+	records: [
+		{
+			schema: 'attrUnitTest',
+			table: 'dog',
+			attribute: 'another_attribute',
+			id: '6d9bdde4-2a82-4f96-bc85-4515fda0be0b',
+			schema_table: 'attrUnitTest.dog',
+		},
+	],
 };
 
 const SCHEMA_TABLE_TEST = {
-    hash_attribute: "id",
-    name: "hdb_attribute",
-    schema: "system",
-    residence: [
-        "*"
-    ],
-    attributes: [
-        {
-            attribute: "id"
-        },
-        {
-            attribute: "schema"
-        },
-        {
-            attribute: "table"
-        },
-        {
-            attribute: "attribute"
-        },
-        {
-            attribute: "schema_table"
-        }
-    ]
+	hash_attribute: 'id',
+	name: 'hdb_attribute',
+	schema: 'system',
+	residence: ['*'],
+	attributes: [
+		{
+			attribute: 'id',
+		},
+		{
+			attribute: 'schema',
+		},
+		{
+			attribute: 'table',
+		},
+		{
+			attribute: 'attribute',
+		},
+		{
+			attribute: 'schema_table',
+		},
+	],
 };
 
 describe('Tests for fsUtility function insertUpdateValidate', () => {
-    let sandbox = sinon.createSandbox();
-    let log_spy;
+	let sandbox = sinon.createSandbox();
+	let log_spy;
 
-    before(() => {
-        global.hdb_schema = {
-            [SCHEMA_TABLE_TEST.schema]: {
-                [SCHEMA_TABLE_TEST.name]: {
-                    attributes: SCHEMA_TABLE_TEST.attributes,
-                    hash_attribute: SCHEMA_TABLE_TEST.hash_attribute,
-                    residence: SCHEMA_TABLE_TEST.residence,
-                    schema: SCHEMA_TABLE_TEST.schema,
-                    name: SCHEMA_TABLE_TEST.name
-                }
-            }
-        };
-        log_spy = sandbox.spy(log, 'error');
+	before(() => {
+		global.hdb_schema = {
+			[SCHEMA_TABLE_TEST.schema]: {
+				[SCHEMA_TABLE_TEST.name]: {
+					attributes: SCHEMA_TABLE_TEST.attributes,
+					hash_attribute: SCHEMA_TABLE_TEST.hash_attribute,
+					residence: SCHEMA_TABLE_TEST.residence,
+					schema: SCHEMA_TABLE_TEST.schema,
+					name: SCHEMA_TABLE_TEST.name,
+				},
+			},
+		};
+		log_spy = sandbox.spy(log, 'error');
+	});
 
-    });
+	after(() => {
+		delete global.hdb_schema[SCHEMA_TABLE_TEST.schema];
+		sandbox.restore();
+	});
 
-    after(() => {
-        delete global.hdb_schema[SCHEMA_TABLE_TEST.schema];
-        sandbox.restore();
-    });
+	afterEach(() => {
+		log_spy.resetHistory();
+	});
 
-    it('Test invalid update parameters defined error is thrown',() => {
-        let error;
-        try {
-            insertUpdateValidate(null);
-        } catch(err) {
-            error = err;
-        }
+	it('Test invalid update parameters defined error is thrown', () => {
+		let error;
+		try {
+			insertUpdateValidate(null);
+		} catch (err) {
+			error = err;
+		}
 
-        expect(error.message).to.equal('invalid update parameters defined.');
-        expect(error).to.be.instanceOf(Error);
-    });
+		expect(error.message).to.equal('invalid update parameters defined.');
+		expect(error).to.be.instanceOf(Error);
+	});
 
-    it('Test invalid schema specified error is thrown',() => {
-        let error;
-        try {
-            insertUpdateValidate({schema: ''});
-        } catch(err) {
-            error = err;
-        }
+	it('Test invalid schema specified error is thrown', () => {
+		let error;
+		try {
+			insertUpdateValidate({ schema: '' });
+		} catch (err) {
+			error = err;
+		}
 
-        expect(error.message).to.equal('invalid schema specified.');
-        expect(error).to.be.instanceOf(Error);
-    });
+		expect(error.message).to.equal('invalid schema specified.');
+		expect(error).to.be.instanceOf(Error);
+	});
 
-    it('Test invalid table specified error is thrown',() => {
-        let error;
-        try {
-            insertUpdateValidate({schema: 'present', table: ''});
-        } catch(err) {
-            error = err;
-        }
+	it('Test invalid table specified error is thrown', () => {
+		let error;
+		try {
+			insertUpdateValidate({ schema: 'present', table: '' });
+		} catch (err) {
+			error = err;
+		}
 
-        expect(error.message).to.equal('invalid table specified.');
-        expect(error).to.be.instanceOf(Error);
-    });
+		expect(error.message).to.equal('invalid table specified.');
+		expect(error).to.be.instanceOf(Error);
+	});
 
-    it('Test that valid hash must be provided error is thrown',() => {
-        let write_object_clone = test_utils.deepClone(WRITE_OBJECT_TEST);
-        write_object_clone.operation = 'update';
-        write_object_clone.records[0].id = '';
-        let error;
-        try {
-            insertUpdateValidate(write_object_clone);
-        } catch(err) {
-            error = err;
-        }
+	it('Test that valid hash must be provided error is thrown', () => {
+		let write_object_clone = test_utils.deepClone(WRITE_OBJECT_TEST);
+		write_object_clone.operation = 'update';
+		write_object_clone.records[0].id = '';
+		let error;
+		try {
+			insertUpdateValidate(write_object_clone);
+		} catch (err) {
+			error = err;
+		}
 
-        expect(error.message).to.equal('a valid hash attribute must be provided with update record, check log for more info');
-        expect(log_spy).to.have.been.calledWith('a valid hash attribute must be provided with update record: {"schema":"attrUnitTest","table":"dog","attribute":"another_attribute","id":"","schema_table":"attrUnitTest.dog"}');
-        expect(error).to.be.instanceOf(Error);
-    });
+		expect(error.message).to.equal(
+			'a valid hash attribute must be provided with update record, check log for more info'
+		);
+		expect(log_spy.args[0][0]).to.equal('a valid hash attribute must be provided with update record:');
+		expect(log_spy.args[0][1]).to.eql({
+			schema: 'attrUnitTest',
+			table: 'dog',
+			attribute: 'another_attribute',
+			id: '',
+			schema_table: 'attrUnitTest.dog',
+		});
+		expect(error).to.be.instanceOf(Error);
+	});
 
-    it('Test that insert with null string value for hash throws error',() => {
-        let write_object_clone = test_utils.deepClone(WRITE_OBJECT_TEST);
-        write_object_clone.operation = 'insert';
-        write_object_clone.records[0].id = "null";
-        let error;
-        try {
-            insertUpdateValidate(write_object_clone);
-        } catch(err) {
-            error = err;
-        }
+	it('Test that insert with null string value for hash throws error', () => {
+		let write_object_clone = test_utils.deepClone(WRITE_OBJECT_TEST);
+		write_object_clone.operation = 'insert';
+		write_object_clone.records[0].id = 'null';
+		let error;
+		try {
+			insertUpdateValidate(write_object_clone);
+		} catch (err) {
+			error = err;
+		}
 
-        expect(error.message).to.equal("Invalid hash value: 'null' is not a valid hash attribute value, check log for more info");
-        expect(log_spy).to.have.been.calledWith('a valid hash value must be provided with insert record: {"schema":"attrUnitTest","table":"dog","attribute":"another_attribute","id":"null","schema_table":"attrUnitTest.dog"}');
-        expect(error).to.be.instanceOf(Error);
-    });
+		expect(error.message).to.equal(
+			"Invalid hash value: 'null' is not a valid hash attribute value, check log for more info"
+		);
+		expect(log_spy.args[0][0]).to.equal(`a valid hash value must be provided with insert record:`);
+		expect(log_spy.args[0][1]).to.eql({
+			schema: 'attrUnitTest',
+			table: 'dog',
+			attribute: 'another_attribute',
+			id: 'null',
+			schema_table: 'attrUnitTest.dog',
+		});
+		expect(error).to.be.instanceOf(Error);
+	});
 
-    it('Test that insert with undefined string value for hash throws error',() => {
-        let write_object_clone = test_utils.deepClone(WRITE_OBJECT_TEST);
-        write_object_clone.operation = 'insert';
-        write_object_clone.records[0].id = "undefined";
-        let error;
-        try {
-            insertUpdateValidate(write_object_clone);
-        } catch(err) {
-            error = err;
-        }
+	it('Test that insert with undefined string value for hash throws error', () => {
+		let write_object_clone = test_utils.deepClone(WRITE_OBJECT_TEST);
+		write_object_clone.operation = 'insert';
+		write_object_clone.records[0].id = 'undefined';
+		let error;
+		try {
+			insertUpdateValidate(write_object_clone);
+		} catch (err) {
+			error = err;
+		}
 
-        expect(error.message).to.equal("Invalid hash value: 'undefined' is not a valid hash attribute value, check log for more info");
-        expect(log_spy).to.have.been.calledWith('a valid hash value must be provided with insert record: {"schema":"attrUnitTest","table":"dog","attribute":"another_attribute","id":"undefined","schema_table":"attrUnitTest.dog"}');
-        expect(error).to.be.instanceOf(Error);
-    });
+		expect(error.message).to.equal(
+			"Invalid hash value: 'undefined' is not a valid hash attribute value, check log for more info"
+		);
+		expect(log_spy.args[0][0]).to.equal(`a valid hash value must be provided with insert record:`);
+		expect(log_spy.args[0][1]).to.eql({
+			schema: 'attrUnitTest',
+			table: 'dog',
+			attribute: 'another_attribute',
+			id: 'undefined',
+			schema_table: 'attrUnitTest.dog',
+		});
 
-    it('Test that update with null string value for hash throws error',() => {
-        let write_object_clone = test_utils.deepClone(WRITE_OBJECT_TEST);
-        write_object_clone.operation = 'update';
-        write_object_clone.records[0].id = "null";
-        let error;
-        try {
-            insertUpdateValidate(write_object_clone);
-        } catch(err) {
-            error = err;
-        }
+		expect(error).to.be.instanceOf(Error);
+	});
 
-        expect(error.message).to.equal("Invalid hash value: 'null' is not a valid hash attribute value, check log for more info");
-        expect(log_spy).to.have.been.calledWith('a valid hash value must be provided with update record: {"schema":"attrUnitTest","table":"dog","attribute":"another_attribute","id":"null","schema_table":"attrUnitTest.dog"}');
-        expect(error).to.be.instanceOf(Error);
-    });
+	it('Test that update with null string value for hash throws error', () => {
+		let write_object_clone = test_utils.deepClone(WRITE_OBJECT_TEST);
+		write_object_clone.operation = 'update';
+		write_object_clone.records[0].id = 'null';
+		let error;
+		try {
+			insertUpdateValidate(write_object_clone);
+		} catch (err) {
+			error = err;
+		}
 
-    it('Test that update with undefined string value for hash throws error',() => {
-        let write_object_clone = test_utils.deepClone(WRITE_OBJECT_TEST);
-        write_object_clone.operation = 'update';
-        write_object_clone.records[0].id = "undefined";
-        let error;
-        try {
-            insertUpdateValidate(write_object_clone);
-        } catch(err) {
-            error = err;
-        }
+		expect(error.message).to.equal(
+			"Invalid hash value: 'null' is not a valid hash attribute value, check log for more info"
+		);
+		expect(log_spy.args[0][0]).to.equal(`a valid hash value must be provided with update record:`);
+		expect(log_spy.args[0][1]).to.eql({
+			schema: 'attrUnitTest',
+			table: 'dog',
+			attribute: 'another_attribute',
+			id: 'null',
+			schema_table: 'attrUnitTest.dog',
+		});
+		expect(error).to.be.instanceOf(Error);
+	});
 
-        expect(error.message).to.equal("Invalid hash value: 'undefined' is not a valid hash attribute value, check log for more info");
-        expect(log_spy).to.have.been.calledWith('a valid hash value must be provided with update record: {"schema":"attrUnitTest","table":"dog","attribute":"another_attribute","id":"undefined","schema_table":"attrUnitTest.dog"}');
-        expect(error).to.be.instanceOf(Error);
-    });
+	it('Test that update with undefined string value for hash throws error', () => {
+		let write_object_clone = test_utils.deepClone(WRITE_OBJECT_TEST);
+		write_object_clone.operation = 'update';
+		write_object_clone.records[0].id = 'undefined';
+		let error;
+		try {
+			insertUpdateValidate(write_object_clone);
+		} catch (err) {
+			error = err;
+		}
 
-    it('Test nominal operation and correct value returned', async () => {
-        let result = await insertUpdateValidate(WRITE_OBJECT_TEST);
-        let attributes_expected = [
-            "schema",
-            "table",
-            "attribute",
-            "id",
-            "schema_table"
-        ];
-        let hashes_expected = ["6d9bdde4-2a82-4f96-bc85-4515fda0be0b"];
+		expect(error.message).to.equal(
+			"Invalid hash value: 'undefined' is not a valid hash attribute value, check log for more info"
+		);
+		expect(log_spy.args[0][0]).to.equal(`a valid hash value must be provided with update record:`);
+		expect(log_spy.args[0][1]).to.eql({
+			schema: 'attrUnitTest',
+			table: 'dog',
+			attribute: 'another_attribute',
+			id: 'undefined',
+			schema_table: 'attrUnitTest.dog',
+		});
+		expect(error).to.be.instanceOf(Error);
+	});
 
-        expect(result.schema_table).to.eql(SCHEMA_TABLE_TEST);
-        expect(result.attributes).to.eql(attributes_expected);
-        expect(result.hashes).to.eql(hashes_expected);
-    });
+	it('Test nominal operation and correct value returned', async () => {
+		let result = await insertUpdateValidate(WRITE_OBJECT_TEST);
+		let attributes_expected = ['schema', 'table', 'attribute', 'id', 'schema_table'];
+		let hashes_expected = ['6d9bdde4-2a82-4f96-bc85-4515fda0be0b'];
+
+		expect(result.schema_table).to.eql(SCHEMA_TABLE_TEST);
+		expect(result.attributes).to.eql(attributes_expected);
+		expect(result.hashes).to.eql(hashes_expected);
+	});
 });

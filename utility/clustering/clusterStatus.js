@@ -63,11 +63,11 @@ async function buildNodeStatus(node_record, connections) {
 		// If the remote node replies with an error, set status to closed and log error.
 		if (reply.status === nats_terms.UPDATE_REMOTE_RESPONSE_STATUSES.ERROR) {
 			status = nats_terms.CLUSTER_STATUS_STATUSES.CLOSED;
-			hdb_logger.error(`Error getting node status from ${remote_node_name} ${hdb_utils.stringifyObj(reply)}`);
+			hdb_logger.error(`Error getting node status from ${remote_node_name} `, reply);
 		}
 	} catch (err) {
 		// If the request to the remote node fails set status accordingly and log error.
-		hdb_logger.error(`Error getting node status from ${remote_node_name} ${hdb_utils.stringifyObj(err)}`);
+		hdb_logger.error(`Error getting node status from ${remote_node_name}`, err);
 		if (err.code === ErrorCode.NoResponders) status = nats_terms.CLUSTER_STATUS_STATUSES.NO_RESPONDERS;
 		else if (err.code === ErrorCode.Timeout) status = nats_terms.CLUSTER_STATUS_STATUSES.TIMEOUT;
 		else status = nats_terms.CLUSTER_STATUS_STATUSES.CLOSED;

@@ -48,7 +48,7 @@ function messageListener(data) {
 	}
 
 	const event_type = data.type;
-	hdb_logger.trace(`IPC server received a message type ${event_type}, with message ${JSON.stringify(data.message)}`);
+	hdb_logger.trace(`IPC server received a message type ${event_type}, with message`, data.message);
 
 	ipc.server.broadcast(event_type, data);
 }

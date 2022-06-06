@@ -90,7 +90,7 @@ async function workQueueListener() {
 			let processed_records = 0;
 			const done = (async () => {
 				for await (const m of iter) {
-					harper_logger.trace(`workQueueListener calling messageProcessor with message: ${hdb_utils.stringifyObj(m)}`);
+					harper_logger.trace('workQueueListener calling messageProcessor with message:', m);
 					await messageProcessor(m);
 					processed_records++;
 					harper_logger.trace(
@@ -122,7 +122,7 @@ async function workQueueListener() {
 async function messageProcessor(msg) {
 	const js_msg = toJsMsg(msg);
 	const entry = jc.decode(js_msg.data);
-	harper_logger.trace(`messageProcessor entry: ${hdb_utils.stringifyObj(entry)}`);
+	harper_logger.trace('messageProcessor entry:', entry);
 
 	// Originators are tracked to makes sure a transaction doesnt get processed more than once.
 	let originators = [];

@@ -171,7 +171,7 @@ function updateSettingsFile_3_0_0() {
 	}
 
 	try {
-		hdb_log.info(`New settings file values for 3.0.0 upgrade: ${JSON.stringify(new_hdb_settings_vals)}`);
+		hdb_log.info('New settings file values for 3.0.0 upgrade:', new_hdb_settings_vals);
 		hdb_log.info(`Creating new/upgraded settings file at '${settings_path}'`);
 
 		fs.writeFileSync(settings_path, new_hdb_settings_vals);
