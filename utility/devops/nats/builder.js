@@ -52,7 +52,7 @@ const NATS_SERVER_VERSION = package_json.engines[NATS_SERVER_NAME];
 	await fs.promises.rm(BUILT_NATS_SERVER_PATH);
 
 	console.log('update permissions for files in pkg folder to full access');
-	await exec(`sudo chmod 777 -R ./pkg`);
+	await exec(`sudo chmod -R 777 ./pkg`);
 
 	console.log('create zip of nats-server & pkg folders');
 	await exec(`zip -r ${NATS_SERVER_ZIP_PATH} ./${NATS_SERVER_SRC_NAME} ./${PKG_FOLDER_NAME}`, { cwd: __dirname });

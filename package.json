@@ -18,8 +18,8 @@
   },
   "engines": {
     "node": "16.15.0",
-    "go-lang": "1.17.9",
-    "nats-server": "2.8.1"
+    "go-lang": "1.17.10",
+    "nats-server": "2.8.4"
   },
   "homepage": "https://www.harperdb.io/",
   "bugs": "support@harperdb.io",
