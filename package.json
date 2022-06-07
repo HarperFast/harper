@@ -91,7 +91,7 @@
     "minimist": "1.2.5",
     "mkcert": "1.5.0",
     "moment": "2.29.1",
-    "nats": "2.6.1",
+    "nats": "2.7.1",
     "needle": "3.0.0",
     "node-ipc": "9.1.4",
     "node-lmdb": "0.9.7",
