@@ -8,7 +8,6 @@ const ipc_server_handlers = require('../ipc/serverHandlers');
 const nats_utils = require('./utility/natsUtils');
 const nats_terms = require('./utility/natsTerms');
 const hdb_terms = require('../../utility/hdbTerms');
-const hdb_utils = require('../../utility/common_utils');
 const harper_logger = require('../../utility/logging/harper_logger');
 const server_utilities = require('../serverHelpers/serverUtilities');
 const IPCClient = require('../ipc/IPCClient');
@@ -77,39 +76,20 @@ async function workQueueListener() {
 	// A do/while loop (instead of a while) is used to allow for unit testing of one iteration.
 	do {
 		try {
-			// Using a work queue consumer fetch a batch of messages from the work queue stream.
-			harper_logger.trace(`workQueueListener fetching from work queue. Fetch expire set to ${expire}`);
-
-			const iter = await js_client.fetch(
-				nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name,
-				nats_terms.WORK_QUEUE_CONSUMER_NAMES.durable_name,
-				{ batch: MESSAGE_BATCH_SIZE, expires: expire }
-			);
-
-			// Loop through the messages fetched from the stream and process each one.
-			let processed_records = 0;
-			const done = (async () => {
-				for await (const m of iter) {
-					harper_logger.trace('workQueueListener calling messageProcessor with message:', m);
-					await messageProcessor(m);
-					processed_records++;
-					harper_logger.trace(
-						`workQueueListener deleting message from stream: ${m.info.stream} and stream sequence: ${m.info.streamSequence}`
-					);
-				}
-			})();
-			// The iterator completed
-			await done;
-
-			//this manages the expire time on our pull request to the consumer and allows us to back off if there is no traffic.
-			if (processed_records > 0) {
-				expire = MIN_EXPIRE;
-			} else {
-				expire = expire * 2 > MAX_EXPIRE ? MAX_EXPIRE : expire * 2;
+			let m;
+			try {
+				m = await js_client.pull(
+					nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name,
+					nats_terms.WORK_QUEUE_CONSUMER_NAMES.durable_name
+				);
+			} catch (e) {
+				// Pull will error if there are no messages in stream, this catch is here to squash those errors.
 			}
+			await messageProcessor(m);
 		} catch (e) {
 			harper_logger.error(e);
 		}
+
 		// eslint-disable-next-line
 	} while (QUEUE_FETCH_LOOP_CONDITION);
 }
@@ -122,9 +102,9 @@ async function workQueueListener() {
 async function messageProcessor(msg) {
 	const js_msg = toJsMsg(msg);
 	const entry = jc.decode(js_msg.data);
-	harper_logger.trace('messageProcessor entry:', entry);
+	harper_logger.trace('processing message:', entry);
 
-	// Originators are tracked to makes sure a transaction doesnt get processed more than once.
+	// Originators are tracked to make sure a transaction doesn't get processed more than once.
 	let originators = [];
 	let orig = [];
 	if (js_msg.headers) {
@@ -164,10 +144,6 @@ async function messageProcessor(msg) {
 		}
 	}
 
-	// The message is no longer needed in the stream so it is deleted.
-	harper_logger.trace(
-		`workQueueListener deleting message from stream: ${js_msg.info.stream} sequence: ${js_msg.info.streamSequence}`
-	);
-	const del_result = await js_manager.streams.deleteMessage(js_msg.info.stream, js_msg.info.streamSequence);
-	harper_logger.trace(del_result);
+	// Delete the message from the work queue stream once we have transacted it.
+	await js_manager.streams.deleteMessage(js_msg.info.stream, js_msg.info.streamSequence);
 }

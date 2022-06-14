@@ -10,8 +10,11 @@ const nats_terms = require('../../../../server/nats/utility/natsTerms');
 const env_manager = require('../../../../utility/environment/environmentManager');
 const nats_utils = rewire('../../../../server/nats/utility/natsUtils');
 const hdb_logger = require('../../../../utility/logging/harper_logger');
+const harper_logger = require('../../../../utility/logging/harper_logger');
+const { JSONCodec, toJsMsg } = require('nats');
 
 const TEST_TIMEOUT = 30000;
+const TEST_STREAM_NAME = 'dev/chicken';
 
 async function closeDeleteNatsCon() {
 	await global.NATSConnection.close();

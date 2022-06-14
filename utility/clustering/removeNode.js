@@ -25,7 +25,7 @@ module.exports = removeNode;
  * @returns {Promise<string>}
  */
 async function removeNode(req) {
-	hdb_logger.trace(`removeNode called with ${JSON.stringify(req)}`);
+	hdb_logger.trace('removeNode called with:', req);
 	clustering_utils.checkClusteringEnabled();
 	const validation = remove_node_validator(req);
 	if (validation) {

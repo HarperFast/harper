@@ -473,9 +473,10 @@ async function createWorkQueueStream(CONSUMER_NAMES) {
 	} catch (e) {
 		if (e.code.toString() === '404') {
 			await jsm.consumers.add(CONSUMER_NAMES.stream_name, {
-				ack_policy: AckPolicy.All,
+				ack_policy: AckPolicy.Explicit,
 				durable_name: CONSUMER_NAMES.durable_name,
-				deliver_policy: DeliverPolicy.New,
+				deliver_policy: DeliverPolicy.All,
+				max_ack_pending: 100000000,
 			});
 		} else {
 			throw e;

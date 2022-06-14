@@ -222,7 +222,7 @@ function nonPm2LogStdErr(log) {
 
 /**
  * Log a info level log.
- * @param {[*]} args - rest parameter syntax (...args), allows function to accept indefinite number of args as an array of log messages(strings/objects).
+ * @param args - rest parameter syntax (...args), allows function to accept indefinite number of args as an array of log messages(strings/objects).
  * Provide args separated by commas. No need to stringify objects. createLogRecord will do that
  */
 function info(...args) {
@@ -239,7 +239,7 @@ function info(...args) {
 
 /**
  * Log a trace level log.
- * @param {[*]} args - rest parameter syntax (...args), allows function to accept indefinite number of args as an array of log messages(strings/objects).
+ * @param args - rest parameter syntax (...args), allows function to accept indefinite number of args as an array of log messages(strings/objects).
  * Provide args separated by commas. No need to stringify objects. createLogRecord will do that
  */
 function trace(...args) {
@@ -256,7 +256,7 @@ function trace(...args) {
 
 /**
  * Log a error level log.
- * @param {[*]} args - rest parameter syntax (...args), allows function to accept indefinite number of args as an array of log messages(strings/objects).
+ * @param args - rest parameter syntax (...args), allows function to accept indefinite number of args as an array of log messages(strings/objects).
  * Provide args separated by commas. No need to stringify objects. createLogRecord will do that
  */
 function error(...args) {
@@ -273,7 +273,7 @@ function error(...args) {
 
 /**
  * Log a debug level log.
- * @param {[*]} args - rest parameter syntax (...args), allows function to accept indefinite number of args as an array of log messages(strings/objects).
+ * @param args - rest parameter syntax (...args), allows function to accept indefinite number of args as an array of log messages(strings/objects).
  * Provide args separated by commas. No need to stringify objects. createLogRecord will do that
  */
 function debug(...args) {
@@ -290,7 +290,7 @@ function debug(...args) {
 
 /**
  * Log a notify level log.
- * @param {[*]} args - rest parameter syntax (...args), allows function to accept indefinite number of args as an array of log messages(strings/objects).
+ * @param args - rest parameter syntax (...args), allows function to accept indefinite number of args as an array of log messages(strings/objects).
  * Provide args separated by commas. No need to stringify objects. createLogRecord will do that
  */
 function notify(...args) {
@@ -307,7 +307,7 @@ function notify(...args) {
 
 /**
  * Log a fatal level log.
- * @param {[*]} args - rest parameter syntax (...args), allows function to accept indefinite number of args as an array of log messages(strings/objects).
+ * @param args - rest parameter syntax (...args), allows function to accept indefinite number of args as an array of log messages(strings/objects).
  * Provide args separated by commas. No need to stringify objects. createLogRecord will do that
  */
 function fatal(...args) {
@@ -324,7 +324,7 @@ function fatal(...args) {
 
 /**
  * Log a warn level log.
- * @param {[*]} args - rest parameter syntax (...args), allows function to accept indefinite number of args as an array of log messages(strings/objects).
+ * @param args - rest parameter syntax (...args), allows function to accept indefinite number of args as an array of log messages(strings/objects).
  * Provide args separated by commas. No need to stringify objects. createLogRecord will do that
  */
 function warn(...args) {

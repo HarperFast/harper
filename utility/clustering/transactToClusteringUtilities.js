@@ -7,6 +7,7 @@ const nats_terms = require('../../server/nats/utility/natsTerms');
 const nats_utils = require('../../server/nats/utility/natsUtils');
 const harper_logger = require('../logging/harper_logger');
 const ClusteringOriginObject = require('./ClusteringOriginObject');
+const clustering_utils = require('./clusterUtilities');
 env.initSync();
 
 const HDB_SCHEMA_STREAM_NAME = nats_terms.SCHEMA_QUEUE_CONSUMER_NAMES.stream_name;
@@ -48,9 +49,7 @@ async function sendAttributeTransaction(result, request_body, originators = []) 
 				__origin: new ClusteringOriginObject(result.txn_time, username, this_node_name),
 			};
 
-			harper_logger.trace(
-				`sendAttributeTransaction publishing ${HDB_SCHEMA_STREAM_NAME}, ${JSON.stringify(transaction)}`
-			);
+			harper_logger.trace(`sendAttributeTransaction publishing ${HDB_SCHEMA_STREAM_NAME}`, transaction);
 			await nats_utils.publishToStream(HDB_SCHEMA_SUBJECT_NAME, HDB_SCHEMA_STREAM_NAME, [transaction], originators);
 		}
 	}
@@ -72,13 +71,12 @@ async function sendOperationTransaction(request_body, hashes_to_send, origin, or
 	const transaction_msg = convertCRUDOperationToTransaction(request_body, hashes_to_send, origin);
 	if (transaction_msg) {
 		harper_logger.trace(
-			`sendOperationTransaction publishing to schema ${request_body.schema} table ${
-				request_body.table
-			} following transaction ${JSON.stringify(transaction_msg)}`
+			`sendOperationTransaction publishing to schema ${request_body.schema} table ${request_body.table} following transaction:`,
+			transaction_msg
 		);
 		await nats_utils.publishToStream(
 			`${request_body.schema}.${request_body.table}`,
-			`${request_body.schema}_${request_body.table}`,
+			clustering_utils.createTableStreamName(request_body.schema, request_body.table),
 			[transaction_msg],
 			originators
 		);

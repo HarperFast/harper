@@ -21,7 +21,7 @@ module.exports = updateNode;
  * @returns {Promise<string>}
  */
 async function updateNode(req) {
-	hdb_logger.trace(`updateNode called with ${JSON.stringify(req)}`);
+	hdb_logger.trace('updateNode called with:', req);
 	clustering_utils.checkClusteringEnabled();
 	const validation = addUpdateNodeValidator(req);
 	if (validation) {
@@ -56,7 +56,7 @@ async function updateNode(req) {
 	// If the stream has already been created nothing will happen.
 	await nats_utils.createTableStreams(req.subscriptions);
 
-	hdb_logger.trace(`updateNode sending remote payload: ${JSON.stringify(remote_payload)}`);
+	hdb_logger.trace('updateNode sending remote payload:', remote_payload);
 	let reply;
 	try {
 		// Send update node request to remote node.
@@ -79,9 +79,8 @@ async function updateNode(req) {
 	// Update the work queue stream with the new subscriptions.
 	for (let i = 0, sub_length = req.subscriptions.length; i < sub_length; i++) {
 		hdb_logger.trace(
-			`update node updating work stream for node: ${remote_node_name} subscription: ${JSON.stringify(
-				req.subscriptions[i]
-			)}`
+			`update node updating work stream for node: ${remote_node_name} subscription:`,
+			req.subscriptions[i]
 		);
 		await nats_utils.updateWorkStream(req.subscriptions[i], remote_node_name);
 	}

@@ -25,7 +25,7 @@ module.exports = configureCluster;
  * @returns {Promise<string>}
  */
 async function configureCluster(request) {
-	hdb_logger.trace(`addNode called with ${JSON.stringify(request)}`);
+	hdb_logger.trace('configure cluster called with:', request);
 	clustering_utils.checkClusteringEnabled();
 	const validation = config_cluster_validator(request);
 	if (validation) {
