@@ -233,6 +233,7 @@ const LOG_ROOT = '/yaml/log';
 
 const TEST_DIR = HDB_ROOT;
 const CONFIG_FILE_PATH = path.join(DIRNAME, 'yaml', 'harperdb.conf');
+const OLD_CONFIG_PATH = 'test-config/settings.js';
 const BAD_CONFIG_FILE_PATH = path.join(DIRNAME, 'yaml', 'harperdb.doesntexist');
 const BACKUP_FILE_PATH = path.join(DIRNAME, 'yaml/backup', 'harperdb.conf.bak');
 const BACKUP_FOLDER_PATH = path.join(DIRNAME, 'yaml/backup');
@@ -1243,5 +1244,88 @@ describe('Test configUtils module', () => {
 		config_utils_rw.__set__('readConfigFile', read_config_file_stub);
 		const routes = config_utils_rw.getClusteringRoutes();
 		expect(routes).to.eql([]);
+	});
+
+	describe('Test initOldConfig function', () => {
+		function matchParam(param, config_obj) {
+			for (const [key, value] of Object.entries(config_obj)) {
+				if (key === param) {
+					return value;
+				}
+			}
+		}
+		const old_props = {
+			'HDB_ROOT': path.join(__dirname, '../../'),
+			'SERVER_PORT': 9925,
+			'CERTIFICATE': path.join(__dirname, '../../keys/certificate.pem'),
+			'PRIVATE_KEY': path.join(__dirname, '../../keys/privateKey.pem'),
+			'HTTPS_ON': false,
+			'CORS_ON': true,
+			'LOG_LEVEL': 'error',
+			'LOG_PATH': path.join(__dirname, '../../log/hdb_log.log'),
+			'NODE_ENV': 'production',
+			'CLUSTERING': false,
+			'MAX_HDB_PROCESSES': 12,
+			'SERVER_TIMEOUT_MS': 120000,
+			'SERVER_KEEP_ALIVE_TIMEOUT': 5000,
+			'SERVER_HEADERS_TIMEOUT': 60000,
+			'DISABLE_TRANSACTION_LOG': false,
+			'OPERATION_TOKEN_TIMEOUT': '1d',
+			'REFRESH_TOKEN_TIMEOUT': '30d',
+			'IPC_SERVER_PORT': 9383,
+			'CUSTOM_FUNCTIONS': false,
+			'CUSTOM_FUNCTIONS_PORT': 9926,
+			'CUSTOM_FUNCTIONS_DIRECTORY': path.join(__dirname, '../../custom_functions'),
+			'MAX_CUSTOM_FUNCTION_PROCESSES': 12,
+			'LOG_TO_FILE': true,
+			'LOG_TO_STDSTREAMS': false,
+			'RUN_IN_FOREGROUND': false,
+			';Settings for the HarperDB process.': '',
+		};
+		const EXPECTED_CONFIG_OBJ = {
+			operationsapi_root: path.join(__dirname, '../../'),
+			operationsapi_network_port: 9925,
+			operationsapi_tls_certificate: path.join(__dirname, '../../keys/certificate.pem'),
+			operationsapi_tls_privatekey: path.join(__dirname, '../../keys/privateKey.pem'),
+			operationsapi_network_https: false,
+			operationsapi_network_cors: true,
+			logging_level: 'error',
+			logging_root: path.join(__dirname, '../../log/hdb_log.log'),
+			operationsapi_nodeenv: 'production',
+			clustering_enabled: false,
+			operationsapi_processes: 12,
+			operationsapi_network_timeout: 120000,
+			operationsapi_network_keepalivetimeout: 5000,
+			operationsapi_network_headerstimeout: 60000,
+			logging_auditlog: false,
+			operationsapi_authentication_operationtokentimeout: '1d',
+			operationsapi_authentication_refreshtokentimeout: '30d',
+			ipc_network_port: 9383,
+			customfunctions_enabled: false,
+			customfunctions_network_port: 9926,
+			customfunctions_root: path.join(__dirname, '../../custom_functions'),
+			customfunctions_processes: 12,
+			logging_file: true,
+			logging_stdstreams: false,
+			operationsapi_foreground: false,
+		};
+
+		after(() => {
+			sandbox.restore();
+		});
+
+		it('Test updates in-memory config object', () => {
+			let properties_reader_stub = sandbox.stub();
+			config_utils_rw.__set__('PropertiesReader', properties_reader_stub);
+			properties_reader_stub.returns({
+				get: (x) => matchParam(x, old_props),
+			});
+			config_utils_rw.__set__('PropertiesReader', properties_reader_stub);
+
+			config_utils_rw.initOldConfig(OLD_CONFIG_PATH);
+			let flat_config_obj_rw = config_utils_rw.__get__('flat_config_obj');
+
+			expect(flat_config_obj_rw).to.eql(EXPECTED_CONFIG_OBJ);
+		});
 	});
 });

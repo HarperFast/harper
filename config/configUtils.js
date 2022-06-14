@@ -11,7 +11,6 @@ const is_number = require('is-number');
 const PropertiesReader = require('properties-reader');
 const { handleHDBError } = require('../utility/errors/hdbError');
 const { HTTP_STATUS_CODES } = require('../utility/errors/commonErrors');
-
 const UNINIT_GET_CONFIG_ERR = 'Unable to get config value because config is uninitialized';
 const CONFIG_INIT_MSG = 'Config successfully initialized';
 const BACKUP_ERR = 'Error backing up config file';
@@ -35,6 +34,7 @@ module.exports = {
 	setConfiguration,
 	readConfigFile,
 	getClusteringRoutes,
+	initOldConfig,
 };
 
 /**
@@ -132,6 +132,13 @@ function initConfig(force = false) {
 		const hdb_properties = PropertiesReader(boot_props_file_path);
 		const config_file_path = hdb_properties.get(hdb_terms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY);
 		let config_doc;
+
+		// if this is true, user is upgrading from version prior to 4.0.0. We need to initialize existing
+		// params.
+		if (config_file_path.includes('config/settings.js')) {
+			initOldConfig(config_file_path);
+			return;
+		}
 		try {
 			config_doc = parseYamlDoc(config_file_path);
 		} catch (err) {
@@ -424,4 +431,23 @@ function getClusteringRoutes() {
 	}
 
 	return routes;
+}
+
+/**
+ * This function reads config settings from old settings file(before 4.0.0), aligns old keys to new keys, gets old
+ * values, and updates the in-memory object.
+ * --Located here instead of upgradeUtilities.js to prevent circular dependency--
+ * @param old_config_path - a string with the old settings path ending in config/settings.js
+ */
+function initOldConfig(old_config_path) {
+	const old_hdb_properties = PropertiesReader(old_config_path);
+	flat_config_obj = {};
+
+	for (const config_param in hdb_terms.CONFIG_PARAM_MAP) {
+		const value = old_hdb_properties.get(config_param.toUpperCase());
+		const param_key = hdb_terms.CONFIG_PARAM_MAP[config_param].toLowerCase();
+		if (!hdb_utils.isEmptyOrZeroLength(value)) {
+			flat_config_obj[param_key] = value;
+		}
+	}
 }
