@@ -10,7 +10,8 @@ const path = require('path');
 const is_number = require('is-number');
 const PropertiesReader = require('properties-reader');
 const { handleHDBError } = require('../utility/errors/hdbError');
-const { HTTP_STATUS_CODES } = require('../utility/errors/commonErrors');
+const { HTTP_STATUS_CODES, HDB_ERROR_MSGS } = require('../utility/errors/commonErrors');
+
 const UNINIT_GET_CONFIG_ERR = 'Unable to get config value because config is uninitialized';
 const CONFIG_INIT_MSG = 'Config successfully initialized';
 const BACKUP_ERR = 'Error backing up config file';
@@ -170,7 +171,7 @@ function validateConfig(config_doc) {
 	const config_json = config_doc.toJSON();
 	const validation = configValidator(config_json);
 	if (validation.error) {
-		throw `HarperDB config file validation error: ${validation.error.message}`;
+		throw HDB_ERROR_MSGS.CONFIG_VALIDATION(validation.error.message);
 	}
 
 	// These parameters can be set by the validator if they arent provided by user,
@@ -418,19 +419,40 @@ function parseYamlDoc(file_path) {
 }
 
 /**
- * Gets and validates the clustering routes from harperdb conf file.
- * @returns {*[]|any}
+ * Gets and validates the clustering hub and leaf routes from harperdb conf file.
+ * @returns {{leaf_routes: (*[]|any), hub_routes: (*[]|any)}}
  */
 function getClusteringRoutes() {
 	const json_doc = readConfigFile();
-	let routes = json_doc?.clustering?.hubServer?.cluster?.network?.routes;
-	routes = hdb_utils.isEmptyOrZeroLength(routes) ? [] : routes;
-	const validation = routesValidator(routes);
-	if (validation) {
-		throw `HarperDB config file validation error: ${validation.error.message}`;
+	let hub_routes = json_doc?.clustering?.hubServer?.cluster?.network?.routes;
+	hub_routes = hdb_utils.isEmptyOrZeroLength(hub_routes) ? [] : hub_routes;
+	const hub_validation = routesValidator(hub_routes);
+	if (hub_validation) {
+		throw HDB_ERROR_MSGS.CONFIG_VALIDATION(hub_validation.message);
 	}
 
-	return routes;
+	let leaf_routes = json_doc?.clustering?.leafServer?.network?.routes;
+	leaf_routes = hdb_utils.isEmptyOrZeroLength(leaf_routes) ? [] : leaf_routes;
+	const leaf_validation = routesValidator(leaf_routes);
+	if (leaf_validation) {
+		throw HDB_ERROR_MSGS.CONFIG_VALIDATION(leaf_validation.message);
+	}
+
+	if (!hdb_utils.isEmptyOrZeroLength(leaf_routes) && !hdb_utils.isEmptyOrZeroLength(hub_routes)) {
+		const duplicates = hub_routes.filter((hub_route) =>
+			leaf_routes.some((leaf_route) => leaf_route.host === hub_route.host && leaf_route.port === hub_route.port)
+		);
+
+		if (!hdb_utils.isEmptyOrZeroLength(duplicates)) {
+			const dups_msg = `Duplicate hub and leaf routes found ${JSON.stringify(duplicates)}`;
+			throw HDB_ERROR_MSGS.CONFIG_VALIDATION(dups_msg);
+		}
+	}
+
+	return {
+		hub_routes,
+		leaf_routes,
+	};
 }
 
 /**

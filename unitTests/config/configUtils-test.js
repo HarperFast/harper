@@ -28,6 +28,7 @@ const TEST_ARGS = {
 	CLUSTERING_HUBSERVER_LEAFNODES_NETWORK_PORT: '9911',
 	CLUSTERING_HUBSERVER_NETWORK_PORT: '9900',
 	CLUSTERING_LEAFSERVER_NETWORK_PORT: '9944',
+	CLUSTERING_LEAFSERVER_NETWORK_ROUTES: '[]',
 	CLUSTERING_INGEST_SERVICE_PROCESSES: '1',
 	CLUSTERING_REPLY_SERVICE_PROCESSES: '1',
 	CLUSTERING_TLS_CERTIFICATE: TEST_CERT,
@@ -303,6 +304,7 @@ describe('Test configUtils module', () => {
 					leafServer: {
 						network: {
 							port: 9944,
+							routes: [],
 						},
 					},
 					nodeName: 'test_node_name',
@@ -399,6 +401,7 @@ describe('Test configUtils module', () => {
 				clustering_hubserver_network_port: 9900,
 				clustering_ingestservice_processes: 1,
 				clustering_leafserver_network_port: 9944,
+				clustering_leafserver_network_routes: [],
 				clustering_nodename: 'test_node_name',
 				clustering_replyservice_processes: 1,
 				clustering_tls_certificate: TEST_CERT,
@@ -475,6 +478,7 @@ describe('Test configUtils module', () => {
 			clustering_hubserver_network_port: 9930,
 			clustering_ingestservice_processes: 1,
 			clustering_leafserver_network_port: 9940,
+			clustering_leafserver_network_routes: null,
 			clustering_nodename: null,
 			clustering_replyservice_processes: 1,
 			clustering_tls_certificate: null,
@@ -1200,15 +1204,20 @@ describe('Test configUtils module', () => {
 						network: {
 							routes: [
 								{
-									ip: '3.6.3.3',
+									host: '3.6.3.3',
 									port: 7916,
 								},
 								{
-									ip: '4.4.4.6',
+									host: '4.4.4.6',
 									port: 7117,
 								},
 							],
 						},
+					},
+				},
+				leafServer: {
+					network: {
+						routes: [{ host: 'leaf.server', port: 1111 }],
 					},
 				},
 			},
@@ -1216,16 +1225,19 @@ describe('Test configUtils module', () => {
 		const read_config_file_stub = sandbox.stub().returns(fake_json_config);
 		config_utils_rw.__set__('readConfigFile', read_config_file_stub);
 		const routes = config_utils_rw.getClusteringRoutes();
-		expect(routes).to.eql([
-			{
-				ip: '3.6.3.3',
-				port: 7916,
-			},
-			{
-				ip: '4.4.4.6',
-				port: 7117,
-			},
-		]);
+		expect(routes).to.eql({
+			hub_routes: [
+				{
+					host: '3.6.3.3',
+					port: 7916,
+				},
+				{
+					host: '4.4.4.6',
+					port: 7117,
+				},
+			],
+			leaf_routes: [{ host: 'leaf.server', port: 1111 }],
+		});
 	});
 
 	it('Test getClusteringRoutes returns empty array if no routes', () => {
@@ -1243,7 +1255,55 @@ describe('Test configUtils module', () => {
 		const read_config_file_stub = sandbox.stub().returns(fake_json_config);
 		config_utils_rw.__set__('readConfigFile', read_config_file_stub);
 		const routes = config_utils_rw.getClusteringRoutes();
-		expect(routes).to.eql([]);
+		expect(routes).to.eql({
+			hub_routes: [],
+			leaf_routes: [],
+		});
+	});
+
+	it('Test validation error thrown if there are duplicate hub/leaf routes', () => {
+		const fake_json_config = {
+			clustering: {
+				hubServer: {
+					cluster: {
+						network: {
+							routes: [
+								{
+									host: '3.6.3.3',
+									port: 7916,
+								},
+								{
+									host: '4.4.4.6',
+									port: 7117,
+								},
+							],
+						},
+					},
+				},
+				leafServer: {
+					network: {
+						routes: [
+							{
+								host: '3.6.3.3',
+								port: 7916,
+							},
+						],
+					},
+				},
+			},
+		};
+		const read_config_file_stub = sandbox.stub().returns(fake_json_config);
+		config_utils_rw.__set__('readConfigFile', read_config_file_stub);
+		let error;
+		try {
+			config_utils_rw.getClusteringRoutes();
+		} catch (err) {
+			error = err;
+		}
+
+		expect(error).to.equal(
+			'HarperDB config file validation error: Duplicate hub and leaf routes found [{"host":"3.6.3.3","port":7916}]'
+		);
 	});
 
 	describe('Test initOldConfig function', () => {

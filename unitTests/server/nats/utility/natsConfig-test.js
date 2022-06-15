@@ -96,17 +96,19 @@ const FAKE_SERVER_CONFIG = {
 };
 
 const FAKE_CONNECTION_RESPONSE = { protocol: { connected: true }, close: () => {} };
-
-const FAKE_ROUTES = [
-	{
-		ip: '3.3.3.3',
-		port: 7716,
-	},
-	{
-		ip: '4.4.4.4',
-		port: 7717,
-	},
-];
+const FAKE_ROUTES = {
+	hub_routes: [
+		{
+			host: '3.3.3.3',
+			port: 7716,
+		},
+		{
+			host: '4.4.4.4',
+			port: 7717,
+		},
+	],
+	leaf_routes: [],
+};
 
 describe('Test natsConfig module', () => {
 	const sandbox = sinon.createSandbox();

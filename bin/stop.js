@@ -33,7 +33,6 @@ module.exports = {
  */
 async function restartProcesses() {
 	hdb_logger.createLogFile(hdb_terms.PROCESS_LOG_NAMES.CLI, hdb_terms.PROCESS_DESCRIPTORS.STOP);
-	env_mngr.initSync(true);
 
 	try {
 		// Requiring the pm2 mod will create the .pm2 dir. This code is here to allow install to set pm2 env vars before that is done.
@@ -168,7 +167,6 @@ async function restartProcesses() {
  */
 async function restartService(json_message) {
 	hdb_logger.createLogFile(hdb_terms.PROCESS_LOG_NAMES.CLI, hdb_terms.PROCESS_DESCRIPTORS.STOP);
-	env_mngr.initSync(true);
 
 	// Requiring the pm2 mod will create the .pm2 dir. This code is here to allow install to set pm2 env vars before that is done.
 	if (pm2_utils === undefined) pm2_utils = require('../utility/pm2/utilityFunctions');

@@ -45,6 +45,10 @@ const COMMON_ERROR_MSGS = {
 	NOT_FOUND: (value) => `${value} not found.`,
 };
 
+const CONFIG_ERROR_MSGS = {
+	CONFIG_VALIDATION: (msg) => `HarperDB config file validation error: ${msg}`,
+};
+
 const BULK_LOAD_ERROR_MSGS = {
 	DEFAULT_BULK_LOAD_ERR: 'There was an error during your bulk load into HarperDB.',
 	DOWNLOAD_FILE_ERR: (file_name) => `There was an error downloading '${file_name}'.`,
@@ -244,6 +248,7 @@ const HDB_ERROR_MSGS = {
 	...IPC_ERRORS,
 	...CUSTOM_FUNCTIONS_ERROR_MSGS,
 	...CLUSTERING_ERROR_MSGS,
+	...CONFIG_ERROR_MSGS,
 };
 
 // All error messages should be added to the HDB_ERROR_MSGS ENUM for export - this helps to organize all error messages

@@ -18,6 +18,7 @@ clustering:
   leafServer:
     network:
       port: 9940
+      routes:
   nodeName: null
   replyService:
     processes: 1

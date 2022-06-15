@@ -73,11 +73,11 @@ async function generateNatsConfig(is_restart = false, process_name = undefined) 
 
 	// Build hub server cluster routes from cluster user and ip/ports
 	let cluster_routes = [];
-	const hub_server_cluster_routes = config_utils.getClusteringRoutes();
-	if (!hdb_utils.isEmptyOrZeroLength(hub_server_cluster_routes)) {
-		for (const route of hub_server_cluster_routes) {
+	const { hub_routes, leaf_routes } = config_utils.getClusteringRoutes();
+	if (!hdb_utils.isEmptyOrZeroLength(hub_routes)) {
+		for (const route of hub_routes) {
 			cluster_routes.push(
-				`nats-route://${cluster_user.sys_name_encoded}:${cluster_user.uri_encoded_d_hash}@${route.ip}:${route.port}`
+				`nats-route://${cluster_user.sys_name_encoded}:${cluster_user.uri_encoded_d_hash}@${route.host}:${route.port}`
 			);
 		}
 	}

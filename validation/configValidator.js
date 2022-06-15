@@ -30,13 +30,7 @@ const UNDEFINED_NATS_ENABLED = 'clustering.enabled config parameter is undefined
 const port_constraints = number.min(0).required();
 const route_constraints = array
 	.items({
-		ip: string
-			.ip({ version: ['ipv4', 'ipv6'] })
-			.messages({
-				'string.ipVersion': '{:#label} invalid IP address',
-				'string.ip': '{:#label} invalid IP address',
-			})
-			.required(),
+		host: string.required(),
 		port: port_constraints,
 	})
 	.empty(null);
@@ -100,6 +94,7 @@ function configValidator(config_json) {
 			leafServer: Joi.object({
 				network: Joi.object({
 					port: port_constraints,
+					routes: route_constraints,
 				}).required(),
 			}).required(),
 			nodeName: nats_term_constraints,

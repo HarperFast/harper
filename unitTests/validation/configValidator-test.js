@@ -27,7 +27,7 @@ const FAKE_CONFIG = {
 				name: 'test_cluster_name',
 				network: {
 					port: 4444,
-					routes: [{ ip: '0.0.0.0', port: 2222 }],
+					routes: [{ host: '0.0.0.0', port: 2222 }],
 				},
 			},
 			leafNodes: {
@@ -163,7 +163,7 @@ describe('Test configValidator module', () => {
 									port: 4444,
 									routes: [
 										{
-											ip: '0.0.0.0',
+											host: '0.0.0.0',
 											port: 2222,
 										},
 									],
@@ -279,13 +279,13 @@ describe('Test configValidator module', () => {
 			let bad_config_obj = test_utils.deepClone(FAKE_CONFIG);
 			bad_config_obj.clustering.hubServer.cluster.name = null;
 			bad_config_obj.clustering.hubServer.cluster.network.port = 'bad_port';
-			bad_config_obj.clustering.hubServer.cluster.network.routes[0].ip = 75;
+			bad_config_obj.clustering.hubServer.cluster.network.routes[0].host = 75;
 			bad_config_obj.clustering.hubServer.leafNodes.network.port = { testing: 'another_bad_port' };
 			bad_config_obj.clustering.hubServer.network.port = -14;
 
 			const schema = configValidator(bad_config_obj);
 			const expected_schema_message =
-				"'clustering.hubServer.cluster.name' is required. 'clustering.hubServer.cluster.network.port' must be a number. 'clustering.hubServer.cluster.network.routes[0].ip' must be a string. 'clustering.hubServer.leafNodes.network.port' must be a number. 'clustering.hubServer.network.port' must be greater than or equal to 0";
+				"'clustering.hubServer.cluster.name' is required. 'clustering.hubServer.cluster.network.port' must be a number. 'clustering.hubServer.cluster.network.routes[0].host' must be a string. 'clustering.hubServer.leafNodes.network.port' must be a number. 'clustering.hubServer.network.port' must be greater than or equal to 0";
 
 			expect(schema.error.message).to.eql(expected_schema_message);
 		});
@@ -734,16 +734,16 @@ describe('Test configValidator module', () => {
 	it('Test routesValidator validation bad values', () => {
 		const test_array = [
 			{
-				ip: '3.6.3.3x',
+				host: 123,
 				port: 7916,
 			},
 			{
-				ip: '4.4.4.6',
+				host: '4.4.4.6',
 				port: '711a',
 			},
 		];
 		const result = routesValidator(test_array);
-		expect(result.message).to.equal("'routes[0].ip' invalid IP address. 'routes[1].port' must be a number");
+		expect(result.message).to.equal("'routes[0].host' must be a string. 'routes[1].port' must be a number");
 	});
 
 	it('Test routesValidator validation more bad values', () => {
@@ -752,10 +752,10 @@ describe('Test configValidator module', () => {
 				port: 7916,
 			},
 			{
-				ip: '4.4.4.6',
+				host: '4.4.4.6',
 			},
 		];
 		const result = routesValidator(test_array);
-		expect(result.message).to.equal("'routes[0].ip' is required. 'routes[1].port' is required");
+		expect(result.message).to.equal("'routes[0].host' is required. 'routes[1].port' is required");
 	});
 });
