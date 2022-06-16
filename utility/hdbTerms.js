@@ -351,6 +351,9 @@ const OPERATIONS_ENUM = {
 	DROP_CUSTOM_FUNCTION_PROJECT: 'drop_custom_function_project',
 	PACKAGE_CUSTOM_FUNCTION_PROJECT: 'package_custom_function_project',
 	DEPLOY_CUSTOM_FUNCTION_PROJECT: 'deploy_custom_function_project',
+	CLUSTER_SET_ROUTES: 'cluster_set_routes',
+	CLUSTER_DELETE_ROUTES: 'cluster_delete_routes',
+	CLUSTER_GET_ROUTES: 'cluster_get_routes',
 };
 
 // Defines valid file types that we are able to handle in 'import_from_s3' ops

@@ -37,7 +37,11 @@ const route_constraints = array
 
 let hdb_root;
 
-module.exports = { configValidator, routesValidator };
+module.exports = {
+	configValidator,
+	routesValidator,
+	route_constraints,
+};
 
 function configValidator(config_json) {
 	hdb_root = config_json.operationsApi?.root;

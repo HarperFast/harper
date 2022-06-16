@@ -17,6 +17,7 @@ const update_node = require('../../utility/clustering/updateNode');
 const remove_node = require('../../utility/clustering/removeNode');
 const configure_cluster = require('../../utility/clustering/configureCluster');
 const cluster_status = require('../../utility/clustering/clusterStatus');
+const routes = require('../../utility/clustering/routes');
 const export_ = require('../../data_layer/export');
 const op_auth = require('../../utility/operation_authorization');
 const jobs = require('./../jobs');
@@ -285,6 +286,9 @@ function initializeOperationFunctionMap() {
 	op_func_map.set(terms.OPERATIONS_ENUM.CONFIGURE_CLUSTER, new OperationFunctionObject(configure_cluster));
 	op_func_map.set(terms.OPERATIONS_ENUM.SET_CONFIGURATION, new OperationFunctionObject(config_utils.setConfiguration));
 	op_func_map.set(terms.OPERATIONS_ENUM.CLUSTER_STATUS, new OperationFunctionObject(cluster_status));
+	op_func_map.set(terms.OPERATIONS_ENUM.CLUSTER_SET_ROUTES, new OperationFunctionObject(routes.setRoutes));
+	op_func_map.set(terms.OPERATIONS_ENUM.CLUSTER_GET_ROUTES, new OperationFunctionObject(routes.getRoutes));
+	op_func_map.set(terms.OPERATIONS_ENUM.CLUSTER_DELETE_ROUTES, new OperationFunctionObject(routes.deleteRoutes));
 	op_func_map.set(terms.OPERATIONS_ENUM.EXPORT_TO_S3, new OperationFunctionObject(executeJob, export_.export_to_s3));
 	op_func_map.set(
 		terms.OPERATIONS_ENUM.DELETE_FILES_BEFORE,

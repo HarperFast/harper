@@ -58437,6 +58437,270 @@
 					"response": []
 				},
 				{
+					"name": "Cluster set routes hub",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"Test both routes are set\", ()=>{",
+									"    const json_data = pm.response.json();",
+									"    const expected_result = {",
+									"    \"message\": \"cluster routes successfully set\",",
+									"    \"set\": [",
+									"        {",
+									"            \"host\": \"dev.chicken\",",
+									"            \"port\": 11334",
+									"        },",
+									"        {",
+									"            \"host\": \"dev.wing\",",
+									"            \"port\": 11335",
+									"        }",
+									"    ],",
+									"    \"skipped\": []",
+									"    }",
+									"",
+									"    pm.expect(json_data).to.eql(expected_result);",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"type": "any"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"name": "Content-Type",
+								"type": "text",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic YWRtaW46MTQwMA=="
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\": \"cluster_set_routes\",\n    \"server\": \"hub\",\n    \"routes\": [\n        {\n            \"host\": \"dev.chicken\",\n            \"port\": 11334\n        },\n        {\n            \"host\": \"dev.wing\",\n            \"port\": 11335\n        }\n    ]\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						},
+						"description": "We first need to create a Schema.  A Schema can be thought of as a container of tables that are independent from tables in other schemas.  An example might be the Schema dev with a table called dog.  The Schema prod may also have a table dog. \n\nNote that if you see the error response \"Cannot complete request: User 'admin' not found\", you need to set the basic auth to the user and password you entered during the install process.  What the heck is basic auth?  Read our article on it here: https://harperdbhelp.zendesk.com/hc/en-us/articles/115010250207-Basic-Auth-with-Postman"
+					},
+					"response": []
+				},
+				{
+					"name": "Cluster set routes leaf",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"Test both routes are set\", ()=>{",
+									"    const json_data = pm.response.json();",
+									"    const expected_result = {",
+									"    \"message\": \"cluster routes successfully set\",",
+									"    \"set\": [",
+									"        {",
+									"            \"host\": \"dev.pie\",",
+									"            \"port\": 11335",
+									"        }",
+									"    ],",
+									"    \"skipped\": [",
+									"        {",
+									"            \"host\": \"dev.chicken\",",
+									"            \"port\": 11334",
+									"        }",
+									"    ]",
+									"}",
+									"    pm.expect(json_data).to.eql(expected_result);",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"type": "any"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"name": "Content-Type",
+								"type": "text",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic YWRtaW46MTQwMA=="
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\": \"cluster_set_routes\",\n    \"server\": \"leaf\",\n    \"routes\": [\n        {\n            \"host\": \"dev.chicken\",\n            \"port\": 11334\n        },\n        {\n            \"host\": \"dev.pie\",\n            \"port\": 11335\n        }\n    ]\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						},
+						"description": "We first need to create a Schema.  A Schema can be thought of as a container of tables that are independent from tables in other schemas.  An example might be the Schema dev with a table called dog.  The Schema prod may also have a table dog. \n\nNote that if you see the error response \"Cannot complete request: User 'admin' not found\", you need to set the basic auth to the user and password you entered during the install process.  What the heck is basic auth?  Read our article on it here: https://harperdbhelp.zendesk.com/hc/en-us/articles/115010250207-Basic-Auth-with-Postman"
+					},
+					"response": []
+				},
+				{
+					"name": "Confirm routes set",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"Test hub cluster routes are correct\", ()=>{",
+									"    const json_data = pm.response.json();",
+									"    pm.expect(json_data.clustering.hubServer.cluster.network.routes).to.eql([",
+									"                        {",
+									"                            \"host\": \"dev.chicken\",",
+									"                            \"port\": 11334",
+									"                        },",
+									"                        {",
+									"                            \"host\": \"dev.wing\",",
+									"                            \"port\": 11335",
+									"                        }",
+									"                    ]);",
+									"    pm.expect(json_data.clustering.leafServer.network.routes).to.eql([",
+									"                    {",
+									"                        \"host\": \"dev.pie\",",
+									"                        \"port\": 11335",
+									"                    }",
+									"                ])",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"type": "any"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"name": "Content-Type",
+								"type": "text",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic YWRtaW46MTQwMA=="
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\": \"get_configuration\"\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						},
+						"description": "We first need to create a Schema.  A Schema can be thought of as a container of tables that are independent from tables in other schemas.  An example might be the Schema dev with a table called dog.  The Schema prod may also have a table dog. \n\nNote that if you see the error response \"Cannot complete request: User 'admin' not found\", you need to set the basic auth to the user and password you entered during the install process.  What the heck is basic auth?  Read our article on it here: https://harperdbhelp.zendesk.com/hc/en-us/articles/115010250207-Basic-Auth-with-Postman"
+					},
+					"response": []
+				},
+				{
 					"name": "Read log",
 					"event": [
 						{
