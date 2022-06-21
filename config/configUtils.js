@@ -350,6 +350,10 @@ function castConfigValue(param, value) {
 			return value;
 		}
 
+		if (value === null) {
+			return value;
+		}
+
 		if (typeof value === 'string' && value.toLowerCase() === 'true') {
 			return true;
 		}

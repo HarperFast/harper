@@ -194,4 +194,76 @@ describe('Test routes module', () => {
 			});
 		});
 	});
+
+	describe('Test deleteRoutes function', () => {
+		it('Test hub and leaf routes are correctly removed from config', () => {
+			get_clustering_routes_stub.returns({
+				hub_routes: [
+					{
+						host: 'dev.chicken',
+						port: 7718,
+					},
+					{
+						host: 'dev.foot',
+						port: 7718,
+					},
+				],
+				leaf_routes: [
+					{
+						host: 'dev.wing',
+						port: 7716,
+					},
+				],
+			});
+
+			const test_req = {
+				operation: 'cluster_delete_routes',
+				routes: [
+					{
+						host: 'dev.chicken',
+						port: 7718,
+					},
+					{
+						host: 'dev.wing',
+						port: 7716,
+					},
+					{
+						host: '1.2.44.244',
+						port: 7719,
+					},
+				],
+			};
+
+			const result = routes.deleteRoutes(test_req);
+
+			expect(update_config_stud.getCall(0).args[0]).to.equal('clustering_hubServer_cluster_network_routes');
+			expect(update_config_stud.getCall(0).args[1]).to.eql([
+				{
+					host: 'dev.foot',
+					port: 7718,
+				},
+			]);
+			expect(update_config_stud.getCall(1).args[0]).to.equal('clustering_leafServer_network_routes');
+			expect(update_config_stud.getCall(1).args[1]).to.be.null;
+			expect(result).to.eql({
+				message: 'cluster routes successfully deleted',
+				deleted: [
+					{
+						host: 'dev.chicken',
+						port: 7718,
+					},
+					{
+						host: 'dev.wing',
+						port: 7716,
+					},
+				],
+				skipped: [
+					{
+						host: '1.2.44.244',
+						port: 7719,
+					},
+				],
+			});
+		});
+	});
 });
