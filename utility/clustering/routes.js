@@ -71,6 +71,12 @@ function setRoutes(req) {
 	};
 }
 
-function getRoutes() {}
+function getRoutes() {
+	const all_existing_routes = config_utils.getClusteringRoutes();
+	return {
+		hub: all_existing_routes.hub_routes,
+		leaf: all_existing_routes.leaf_routes,
+	};
+}
 
 function deleteRoutes(req) {}

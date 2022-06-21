@@ -160,4 +160,38 @@ describe('Test routes module', () => {
 			});
 		});
 	});
+
+	describe('Test getRoutes function', () => {
+		it('Test hub and leaf routes are returned', () => {
+			get_clustering_routes_stub.returns({
+				hub_routes: [
+					{
+						host: 'dev.chicken',
+						port: 7718,
+					},
+				],
+				leaf_routes: [
+					{
+						host: 'dev.wing',
+						port: 7716,
+					},
+				],
+			});
+			const result = routes.getRoutes();
+			expect(result).to.eql({
+				hub: [
+					{
+						host: 'dev.chicken',
+						port: 7718,
+					},
+				],
+				leaf: [
+					{
+						host: 'dev.wing',
+						port: 7716,
+					},
+				],
+			});
+		});
+	});
 });
