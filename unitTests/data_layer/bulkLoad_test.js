@@ -102,7 +102,6 @@ describe('Test bulkLoad.js', () => {
 		action: 'insert',
 		schema: 'golden',
 		table: 'retriever',
-		transact_to_cluster_to_cluster: 'false',
 		file_path: 'fake/file/path.csv',
 		data: '[{"blah":"blah"}]',
 	};
@@ -113,7 +112,6 @@ describe('Test bulkLoad.js', () => {
 		action: 'insert',
 		schema: 'golden',
 		table: 'retriever',
-		transact_to_cluster_to_cluster: 'false',
 		file_path: 'fake/file/path.csv',
 		data: '[{"blah":"blah"}]',
 	};
@@ -182,6 +180,10 @@ describe('Test bulkLoad.js', () => {
 	let reject_fake = (err) => {
 		throw err;
 	};
+
+	before(() => {
+		env.setProperty(hdb_terms.CONFIG_PARAMS.CLUSTERING_ENABLED, false);
+	});
 
 	describe('Test csvDataLoad', function () {
 		let sandbox = sinon.createSandbox();
@@ -1099,6 +1101,7 @@ describe('Test bulkLoad.js', () => {
 			sandbox.restore();
 		});
 		it('nominal case, see sent to cluster', async () => {
+			env.setProperty(hdb_terms.CONFIG_PARAMS.CLUSTERING_ENABLED, true);
 			let msg = test_utils.deepClone(json_message_fake);
 			msg.transact_to_cluster = true;
 			let msg_with_originator = test_utils.deepClone(json_message_fake);
@@ -1112,43 +1115,11 @@ describe('Test bulkLoad.js', () => {
 			);
 		});
 		it('nominal case, see not sent to cluster', async () => {
-			let msg = test_utils.deepClone(json_message_fake);
-			msg.transact_to_cluster = false;
+			env.setProperty(hdb_terms.CONFIG_PARAMS.CLUSTERING_ENABLED, false);
 			let msg_with_originator = test_utils.deepClone(json_message_fake);
 			msg_with_originator.__originator = { ORIGINATOR_NAME: 111 };
-			let result = await postCSVLoadFunction(msg, expected_result, msg_with_originator);
+			let result = await postCSVLoadFunction(['blah'], json_message_fake, expected_result, msg_with_originator);
 			assert.strictEqual(publish_to_stream_stub.notCalled, true, 'expected publishToStream to NOT be called');
-			assert.strictEqual(
-				send_attribute_transaction_stub.calledOnce,
-				true,
-				'expected sendAttributeTransaction to be called'
-			);
-		});
-		it('Undefined transact flag, see not sent to cluster', async () => {
-			let msg = test_utils.deepClone(json_message_fake);
-			msg.transact_to_cluster = undefined;
-			let msg_with_originator = test_utils.deepClone(json_message_fake);
-			msg_with_originator.__originator = { ORIGINATOR_NAME: 111 };
-			let result = await postCSVLoadFunction(msg, expected_result, msg_with_originator);
-			assert.strictEqual(publish_to_stream_stub.notCalled, true, 'expected publishToStream to NOT be called');
-			assert.strictEqual(
-				send_attribute_transaction_stub.calledOnce,
-				true,
-				'expected sendAttributeTransaction to be called'
-			);
-		});
-		it('Completely missing transact flag, see not sent to cluster', async () => {
-			let msg = test_utils.deepClone(json_message_fake);
-			delete msg.transact_to_cluster;
-			let msg_with_originator = test_utils.deepClone(json_message_fake);
-			msg_with_originator.__originator = { ORIGINATOR_NAME: 111 };
-			let result = postCSVLoadFunction(msg, expected_result, msg_with_originator);
-			assert.strictEqual(publish_to_stream_stub.notCalled, true, 'expected publishToStream to NOT be called');
-			assert.strictEqual(
-				send_attribute_transaction_stub.calledOnce,
-				true,
-				'expected sendAttributeTransaction to be called'
-			);
 		});
 	});
 });

@@ -103,8 +103,7 @@ async function csvDataLoad(json_message, originators = []) {
 			json_message.action,
 			json_message.schema,
 			json_message.table,
-			parse_results.data,
-			json_message.transact_to_cluster
+			parse_results.data
 		);
 
 		bulk_load_result = await op_func_caller.callOperationFunctionAsAwait(
@@ -161,8 +160,7 @@ async function csvURLLoad(json_message) {
 			json_message.table,
 			temp_file_path,
 			hdb_terms.VALID_S3_FILE_TYPES.CSV,
-			json_message.hdb_user.role.permission,
-			json_message.transact_to_cluster
+			json_message.hdb_user.role.permission
 		);
 
 		let bulk_load_result = await fileLoad(csv_file_load_obj);
@@ -203,8 +201,7 @@ async function csvFileLoad(json_message) {
 		json_message.table,
 		json_message.file_path,
 		hdb_terms.VALID_S3_FILE_TYPES.CSV,
-		json_message.hdb_user.role.permission,
-		json_message.transact_to_cluster
+		json_message.hdb_user.role.permission
 	);
 
 	try {
@@ -247,8 +244,7 @@ async function importFromS3(json_message) {
 			json_message.table,
 			temp_file_path,
 			s3_file_type,
-			json_message.hdb_user.role.permission,
-			json_message.transact_to_cluster
+			json_message.hdb_user.role.permission
 		);
 
 		await downloadFileFromS3(s3_file_name, json_message);
@@ -521,7 +517,6 @@ async function insertChunk(json_message, insert_results, reject, results, parser
 			schema: json_message.schema,
 			table: json_message.table,
 			action: json_message.action,
-			transact_to_cluster: json_message.transact_to_cluster,
 			data: results_data,
 		};
 		let bulk_load_chunk_result = await op_func_caller.callOperationFunctionAsAwait(
@@ -779,50 +774,52 @@ async function bulkFileLoad(records, schema, table, action) {
 }
 
 async function postCSVLoadFunction(fields, orig_bulk_msg, result, originators = []) {
-	if (!orig_bulk_msg.transact_to_cluster) {
+	try {
+		if (orig_bulk_msg.data.length === 0) {
+			return;
+		}
+
+		if (!env.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_ENABLED)) {
+			return;
+		}
+
+		let unparse_results = papa_parse.unparse(orig_bulk_msg.data, {
+			header: true,
+			skipEmptyLines: true,
+			columns: fields,
+		});
+
+		let username = undefined;
+		if (orig_bulk_msg.hdb_user && orig_bulk_msg.hdb_user.username) {
+			username = orig_bulk_msg.hdb_user.username;
+		}
+
+		let transaction = {
+			operation: 'csv_data_load',
+			action: orig_bulk_msg.action ? orig_bulk_msg.action : 'insert',
+			schema: orig_bulk_msg.schema,
+			table: orig_bulk_msg.table,
+			data: unparse_results,
+			__origin: new ClusteringOriginObject(
+				result.txn_time,
+				username,
+				env.get(hdb_terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY)
+			),
+		};
+
+		await nats_utils.publishToStream(
+			`${orig_bulk_msg.schema}.${orig_bulk_msg.table}`,
+			clustering_utils.createTableStreamName(orig_bulk_msg.schema, orig_bulk_msg.table),
+			[transaction],
+			originators
+		);
+
 		await transact_to_clustering_utils.sendAttributeTransaction(result, orig_bulk_msg, originators);
 		delete result.new_attributes;
-		return result;
+	} catch (err) {
+		// If an error occurs after the CSV load has happened we don't want to interfere with the original operation so the error is just logged.
+		logger.error(err);
 	}
-
-	if (orig_bulk_msg.data.length === 0) {
-		return;
-	}
-
-	let unparse_results = papa_parse.unparse(orig_bulk_msg.data, {
-		header: true,
-		skipEmptyLines: true,
-		columns: fields,
-	});
-
-	let username = undefined;
-	if (orig_bulk_msg.hdb_user && orig_bulk_msg.hdb_user.username) {
-		username = orig_bulk_msg.hdb_user.username;
-	}
-
-	let transaction = {
-		operation: 'csv_data_load',
-		action: orig_bulk_msg.action ? orig_bulk_msg.action : 'insert',
-		schema: orig_bulk_msg.schema,
-		table: orig_bulk_msg.table,
-		transact_to_cluster: orig_bulk_msg.transact_to_cluster,
-		data: unparse_results,
-		__origin: new ClusteringOriginObject(
-			result.txn_time,
-			username,
-			env.get(hdb_terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY)
-		),
-	};
-
-	await nats_utils.publishToStream(
-		`${orig_bulk_msg.schema}.${orig_bulk_msg.table}`,
-		clustering_utils.createTableStreamName(orig_bulk_msg.schema, orig_bulk_msg.table),
-		[transaction],
-		originators
-	);
-
-	await transact_to_clustering_utils.sendAttributeTransaction(result, orig_bulk_msg, originators);
-	delete result.new_attributes;
 }
 
 /**
