@@ -6,6 +6,7 @@ const logger = require('../utility/logging/harper_logger');
 const validator = require('../validation/schema_validator');
 const _ = require('lodash');
 const path = require('path');
+const crypto_hash = require('../security/cryptoHash');
 const hdb_utils = require('../utility/common_utils');
 const { promisify } = require('util');
 const terms = require('../utility/hdbTerms');
@@ -226,6 +227,10 @@ async function descTable(describe_table_object, attr_perms) {
 			}
 
 			table_result.attributes = attributes;
+
+			// Nats/clustering stream names are hashed to ensure constant length alphanumeric values.
+			// String will always hash to the same value.
+			table_result.clustering_stream_name = crypto_hash.createNatsTableStreamName(table1.schema, table1.schema);
 
 			try {
 				let schema_path = path.join(lmdb_init_paths.getBaseSchemaPath(), table_result.schema.toString());

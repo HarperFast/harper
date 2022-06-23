@@ -11,6 +11,7 @@ const ENCRYPTED_STRING_START = KEY_STRING_LENGTH + IV_STRING_LENGTH;
 module.exports = {
 	encrypt: encrypt,
 	decrypt: decrypt,
+	createNatsTableStreamName,
 };
 
 function encrypt(text) {
@@ -38,4 +39,15 @@ function decrypt(text) {
 	let decrypted = decipher.update(encryptedText);
 	decrypted = Buffer.concat([decrypted, decipher.final()]);
 	return decrypted.toString();
+}
+
+/**
+ * Hashes the schema and table names to create a unique alphanumeric hash that will always
+ * be the same length and the same value.
+ * @param schema
+ * @param table
+ * @returns {string}
+ */
+function createNatsTableStreamName(schema, table) {
+	return crypto.createHash('md5').update(`${schema}.${table}`).digest('hex');
 }

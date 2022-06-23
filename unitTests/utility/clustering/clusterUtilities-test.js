@@ -189,9 +189,4 @@ describe('Test clusterUtilities', () => {
 		expect(result.node_record).to.eql(expected_node_record);
 		expect(result.remote_payload).to.eql(expected_remote_payload);
 	});
-
-	it('Test createTableStreamName function returns correct stream name', () => {
-		const result = cluster_utils.createTableStreamName('funky', 'chicken');
-		expect(result).to.equal('funky/chicken');
-	});
 });

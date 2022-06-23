@@ -10,11 +10,13 @@ const nats_terms = require('../../../../server/nats/utility/natsTerms');
 const env_manager = require('../../../../utility/environment/environmentManager');
 const nats_utils = rewire('../../../../server/nats/utility/natsUtils');
 const hdb_logger = require('../../../../utility/logging/harper_logger');
-const harper_logger = require('../../../../utility/logging/harper_logger');
-const { JSONCodec, toJsMsg } = require('nats');
+const crypto_hash = require('../../../../security/cryptoHash');
 
 const TEST_TIMEOUT = 30000;
-const TEST_STREAM_NAME = 'dev/chicken';
+const TEST_SUBJECT_NAME = 'devTest.Chicken1.testLeafServer-leaf';
+const TEST_STREAM_NAME = crypto_hash.createNatsTableStreamName('devTest', 'Chicken1');
+const TEST_SUBJECT_NAME_2 = 'devTest.capybara.testLeafServer-leaf';
+const TEST_STREAM_NAME_2 = crypto_hash.createNatsTableStreamName('devTest', 'capybara');
 
 async function closeDeleteNatsCon() {
 	await global.NATSConnection.close();
@@ -325,50 +327,50 @@ describe('Test natsUtils module', () => {
 		}).timeout(TEST_TIMEOUT);
 
 		it('Test createLocalStream creates a stream', async () => {
-			await nats_utils.createLocalStream('dev_dog', ['dev.dog.testLeafServer-leaf']);
+			await nats_utils.createLocalStream(TEST_STREAM_NAME, [TEST_SUBJECT_NAME]);
 			const all_streams = await nats_utils.listStreams();
 			let stream_found = false;
 			for (const stream of all_streams) {
-				if (stream.config.name === 'dev_dog') {
+				if (stream.config.name === TEST_STREAM_NAME) {
 					stream_found = true;
 					break;
 				}
 			}
 			expect(stream_found, 'createLocalStream failed to create a stream').to.be.true;
-			await nats_utils.deleteLocalStream('dev_dog');
+			await nats_utils.deleteLocalStream(TEST_STREAM_NAME);
 		}).timeout(TEST_TIMEOUT);
 
 		it('Test listStreams returns a list of streams', async () => {
-			await nats_utils.createLocalStream('dev_dog', ['dev.dog.testLeafServer-leaf']);
-			await nats_utils.createLocalStream('dev_capybara', ['dev.capybara.testLeafServer-leaf']);
+			await nats_utils.createLocalStream(TEST_STREAM_NAME, [TEST_SUBJECT_NAME]);
+			await nats_utils.createLocalStream(TEST_STREAM_NAME_2, [TEST_SUBJECT_NAME_2]);
 			const all_streams = await nats_utils.listStreams();
 			let dog_found = false;
 			let capybara_found = false;
 			for (const stream of all_streams) {
-				if (stream.config.name === 'dev_dog') {
+				if (stream.config.name === TEST_STREAM_NAME) {
 					dog_found = true;
-					expect(stream.config.subjects[0]).to.equal('dev.dog.testLeafServer-leaf');
+					expect(stream.config.subjects[0]).to.equal(TEST_SUBJECT_NAME);
 				}
 
-				if (stream.config.name === 'dev_capybara') {
+				if (stream.config.name === TEST_STREAM_NAME_2) {
 					capybara_found = true;
-					expect(stream.config.subjects[0]).to.equal('dev.capybara.testLeafServer-leaf');
+					expect(stream.config.subjects[0]).to.equal(TEST_SUBJECT_NAME_2);
 				}
 			}
 
 			expect(dog_found, 'listStreams failed to return dog_found stream').to.be.true;
 			expect(capybara_found, 'listStreams failed to return capybara_found stream').to.be.true;
-			await nats_utils.deleteLocalStream('dev_dog');
-			await nats_utils.deleteLocalStream('dev_capybara');
+			await nats_utils.deleteLocalStream(TEST_STREAM_NAME);
+			await nats_utils.deleteLocalStream(TEST_STREAM_NAME_2);
 		}).timeout(TEST_TIMEOUT);
 
 		it('Test deleteLocalStream deletes a local stream', async () => {
-			await nats_utils.createLocalStream('dev_capybara', ['dev.capybara.testLeafServer-leaf']);
-			await nats_utils.deleteLocalStream('dev_capybara');
+			await nats_utils.createLocalStream(TEST_STREAM_NAME_2, [TEST_SUBJECT_NAME_2]);
+			await nats_utils.deleteLocalStream(TEST_STREAM_NAME_2);
 			const all_streams = await nats_utils.listStreams();
 			let capybara_found = false;
 			for (const stream of all_streams) {
-				if (stream.config.name === 'dev_capybara') {
+				if (stream.config.name === TEST_STREAM_NAME_2) {
 					capybara_found = true;
 					break;
 				}
@@ -395,17 +397,17 @@ describe('Test natsUtils module', () => {
 
 		// Testing this with a local stream because that's all the test servers we have.
 		it('Test listRemoteStreams returns a stream', async () => {
-			await nats_utils.createLocalStream('dev_capybara', ['dev.capybara.testLeafServer-leaf']);
+			await nats_utils.createLocalStream(TEST_STREAM_NAME_2, [TEST_SUBJECT_NAME_2]);
 			const result = await nats_utils.listRemoteStreams('testLeafServer-leaf');
 			expect(result[0].total).to.equal(1);
-			expect(result[0].streams[0].config.name).to.equal('dev_capybara');
-			await nats_utils.deleteLocalStream('dev_capybara');
+			expect(result[0].streams[0].config.name).to.equal(TEST_STREAM_NAME_2);
+			await nats_utils.deleteLocalStream(TEST_STREAM_NAME_2);
 		}).timeout(TEST_TIMEOUT);
 
 		it('Test viewStream returns three entries from a stream', async () => {
-			await nats_utils.createLocalStream('dev_capybara', ['dev.capybara.testLeafServer-leaf']);
-			await nats_utils.publishToStream('dev.capybara', 'dev_capybara', [{ id: 2 }, { id: 3 }, { id: 4 }]);
-			const result = await nats_utils.viewStream('dev_capybara');
+			await nats_utils.createLocalStream(TEST_STREAM_NAME_2, [TEST_SUBJECT_NAME_2]);
+			await nats_utils.publishToStream('devTest.capybara', TEST_STREAM_NAME_2, [{ id: 2 }, { id: 3 }, { id: 4 }]);
+			const result = await nats_utils.viewStream(TEST_STREAM_NAME_2);
 
 			expect(result.length).to.equal(3);
 			expect(result[0].originators[0]).to.equal('testLeafServer-leaf');
@@ -415,12 +417,12 @@ describe('Test natsUtils module', () => {
 			expect(result[2].originators[0]).to.equal('testLeafServer-leaf');
 			expect(result[2].entry).to.eql({ id: 4 });
 
-			await nats_utils.deleteLocalStream('dev_capybara');
+			await nats_utils.deleteLocalStream(TEST_STREAM_NAME_2);
 		}).timeout(TEST_TIMEOUT);
 
 		it('Test viewStream returns zero entries ', async () => {
-			await nats_utils.createLocalStream('dev_capybara', ['dev.capybara.testLeafServer-leaf']);
-			const result = await nats_utils.viewStream('dev_capybara');
+			await nats_utils.createLocalStream(TEST_STREAM_NAME_2, [TEST_SUBJECT_NAME_2]);
+			const result = await nats_utils.viewStream(TEST_STREAM_NAME_2);
 			expect(result.length).to.equal(0);
 		}).timeout(TEST_TIMEOUT);
 
@@ -429,16 +431,16 @@ describe('Test natsUtils module', () => {
 				{ id: 2, name: 'big bird' },
 				{ id: 3, alive: true },
 			];
-			await nats_utils.createLocalStream('dev_capybara', ['dev.capybara.testLeafServer-leaf']);
-			await nats_utils.publishToStream('dev.capybara', 'dev_capybara', test_entry);
-			const stream_view = await nats_utils.viewStream('dev_capybara');
+			await nats_utils.createLocalStream(TEST_STREAM_NAME_2, [TEST_SUBJECT_NAME_2]);
+			await nats_utils.publishToStream('devTest.capybara', TEST_STREAM_NAME_2, test_entry);
+			const stream_view = await nats_utils.viewStream(TEST_STREAM_NAME_2);
 
 			expect(stream_view[0].originators[0]).to.equal('testLeafServer-leaf');
 			expect(stream_view[0].entry).to.eql(test_entry[0]);
 			expect(stream_view[1].originators[0]).to.equal('testLeafServer-leaf');
 			expect(stream_view[1].entry).to.eql(test_entry[1]);
 
-			await nats_utils.deleteLocalStream('dev_capybara');
+			await nats_utils.deleteLocalStream(TEST_STREAM_NAME_2);
 		}).timeout(TEST_TIMEOUT);
 
 		it('Test publish to stream when the stream doesnt exist', async () => {
@@ -478,13 +480,13 @@ describe('Test natsUtils module', () => {
 			await nats_utils.addSourceToWorkStream(
 				'unit_test_node',
 				nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name,
-				'dev_giraffe'
+				TEST_STREAM_NAME
 			);
 
 			const { jsm } = await nats_utils.getNATSReferences();
 			const wq_stream = await jsm.streams.info('__HARPERDB_WORK_QUEUE__');
 
-			expect(wq_stream.config.sources[0].name).to.equal('dev_giraffe');
+			expect(wq_stream.config.sources[0].name).to.equal(TEST_STREAM_NAME);
 			expect(wq_stream.config.sources[0].external.api).to.equal('$JS.unit_test_node.API');
 			expect(wq_stream.config.sources[0].external.deliver).to.equal('');
 
@@ -497,7 +499,7 @@ describe('Test natsUtils module', () => {
 			await nats_utils.addSourceToWorkStream(
 				'unit_test_node',
 				nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name,
-				'dev_giraffe'
+				TEST_STREAM_NAME
 			);
 
 			await nats_utils.addSourceToWorkStream(
@@ -509,7 +511,7 @@ describe('Test natsUtils module', () => {
 			await nats_utils.removeSourceFromWorkStream(
 				'unit_test_node',
 				nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name,
-				'dev_giraffe'
+				TEST_STREAM_NAME
 			);
 
 			const jsm = await nats_utils.getJetStreamManager();
@@ -598,7 +600,11 @@ describe('Test natsUtils module', () => {
 			},
 			'node_i_am'
 		);
-		expect(add_source_to_work_stream_stub.args[0]).to.eql(['node_i_am-leaf', '__HARPERDB_WORK_QUEUE__', 'dog/poodle']);
+		expect(add_source_to_work_stream_stub.args[0]).to.eql([
+			'node_i_am-leaf',
+			'__HARPERDB_WORK_QUEUE__',
+			'd17550f31ac493889f2df5963586d31a',
+		]);
 		add_source_rw();
 	});
 
@@ -617,7 +623,7 @@ describe('Test natsUtils module', () => {
 		expect(remove_source_from_work_stream_stub.args[0]).to.eql([
 			'node_i_am-leaf',
 			'__HARPERDB_WORK_QUEUE__',
-			'dog/poodle',
+			'd17550f31ac493889f2df5963586d31a',
 		]);
 		remove_source_rw();
 	});
@@ -630,7 +636,7 @@ describe('Test natsUtils module', () => {
 		const create_local_stream_rw = nats_utils.__set__('createLocalStream', create_local_stream_stub);
 		const get_nats_ref_rw = nats_utils.__set__('getNATSReferences', get_nats_ref_stub);
 		await nats_utils.createLocalTableStream('dev', 'chicken');
-		expect(create_local_stream_stub.args[0][0]).to.equal('dev/chicken');
+		expect(create_local_stream_stub.args[0][0]).to.equal('87a0f14775b2cdab9b437370b79abc4c');
 		expect(create_local_stream_stub.args[0][1][0]).to.equal('dev.chicken.unit_test-leaf');
 		create_local_stream_rw();
 		get_nats_ref_rw();
@@ -666,7 +672,7 @@ describe('Test natsUtils module', () => {
 		const get_nats_ref_stub = sandbox.stub().resolves({ jsm });
 		const get_nats_ref_rw = nats_utils.__set__('getNATSReferences', get_nats_ref_stub);
 		await nats_utils.purgeTableStream('dev', 'chicken');
-		expect(purge_stub.args[0][0]).to.equal('dev/chicken');
+		expect(purge_stub.args[0][0]).to.equal('87a0f14775b2cdab9b437370b79abc4c');
 		get_nats_ref_rw();
 	});
 

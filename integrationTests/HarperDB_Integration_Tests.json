@@ -2772,6 +2772,7 @@
 									"",
 									"    pm.expect(json_data.schema).to.equal(123);",
 									"    pm.expect(json_data.name).to.equal(4);",
+									"    pm.expect(json_data.clustering_stream_name).to.equal('fd61a99bcb976678ea817aa185e49f8b');",
 									"});"
 								],
 								"type": "text/javascript"

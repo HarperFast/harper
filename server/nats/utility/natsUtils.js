@@ -16,7 +16,7 @@ const nats_terms = require('./natsTerms');
 const hdb_terms = require('../../../utility/hdbTerms');
 const hdb_utils = require('../../../utility/common_utils');
 const hdb_logger = require('../../../utility/logging/harper_logger');
-const clustering_utils = require('../../../utility/clustering/clusterUtilities');
+const crypto_hash = require('../../../security/cryptoHash');
 
 const { isEmpty } = hdb_utils;
 const user = require('../../../security/user');
@@ -688,7 +688,7 @@ function requestErrorHandler(err, operation, remote_node) {
  * @returns {Promise<void>}
  */
 async function updateWorkStream(subscription, node_name) {
-	const stream_name = clustering_utils.createTableStreamName(subscription.schema, subscription.table);
+	const stream_name = crypto_hash.createNatsTableStreamName(subscription.schema, subscription.table);
 	const node_domain_name = node_name + nats_terms.SERVER_SUFFIX.LEAF;
 
 	// The connection between nodes can only be a "pull" relationship. This means we only care about the subscribe param.
@@ -708,7 +708,7 @@ async function updateWorkStream(subscription, node_name) {
  */
 async function createLocalTableStream(schema, table) {
 	const subject_name = `${schema}.${table}`;
-	const stream_name = clustering_utils.createTableStreamName(schema, table);
+	const stream_name = crypto_hash.createNatsTableStreamName(schema, table);
 	const { jsm } = await getNATSReferences();
 	const nats_server = jsm?.nc?.info?.server_name;
 	const subject = `${subject_name}.${nats_server}`;
@@ -737,7 +737,7 @@ async function createTableStreams(subscriptions) {
 async function purgeTableStream(schema, table) {
 	if (env_manager.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_ENABLED)) {
 		try {
-			const stream_name = clustering_utils.createTableStreamName(schema, table);
+			const stream_name = crypto_hash.createNatsTableStreamName(schema, table);
 			const { jsm } = await getNATSReferences();
 			await jsm.streams.purge(stream_name);
 		} catch (err) {

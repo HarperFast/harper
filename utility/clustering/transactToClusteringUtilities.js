@@ -7,7 +7,7 @@ const nats_terms = require('../../server/nats/utility/natsTerms');
 const nats_utils = require('../../server/nats/utility/natsUtils');
 const harper_logger = require('../logging/harper_logger');
 const ClusteringOriginObject = require('./ClusteringOriginObject');
-const clustering_utils = require('./clusterUtilities');
+const crypto_hash = require('../../security/cryptoHash');
 env.initSync();
 
 const HDB_SCHEMA_STREAM_NAME = nats_terms.SCHEMA_QUEUE_CONSUMER_NAMES.stream_name;
@@ -76,7 +76,7 @@ async function sendOperationTransaction(request_body, hashes_to_send, origin, or
 		);
 		await nats_utils.publishToStream(
 			`${request_body.schema}.${request_body.table}`,
-			clustering_utils.createTableStreamName(request_body.schema, request_body.table),
+			crypto_hash.createNatsTableStreamName(request_body.schema, request_body.table),
 			[transaction_msg],
 			originators
 		);

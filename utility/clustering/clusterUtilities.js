@@ -27,7 +27,6 @@ module.exports = {
 	getNodeRecord,
 	upsertNodeRecord,
 	buildNodePayloads,
-	createTableStreamName,
 	checkClusteringEnabled,
 	getAllNodeRecords,
 };
@@ -165,16 +164,6 @@ function buildNodePayloads(subscriptions, local_node_name, remote_node_name, ope
 		node_record,
 		remote_payload,
 	};
-}
-
-/**
- * Combines schema and table to make stream name
- * @param schema
- * @param table
- * @returns {string}
- */
-function createTableStreamName(schema, table) {
-	return `${schema}/${table}`;
 }
 
 /**

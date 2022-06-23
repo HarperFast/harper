@@ -26,7 +26,7 @@ const PermissionResponseObject = require('../security/data_objects/PermissionRes
 const { verifyBulkLoadAttributePerms } = require('../utility/operation_authorization');
 const ClusteringOriginObject = require('../utility/clustering/ClusteringOriginObject');
 const nats_utils = require('../server/nats/utility/natsUtils');
-const clustering_utils = require('../utility/clustering/clusterUtilities');
+const crypto_hash = require('../security/cryptoHash');
 
 const CSV_NO_RECORDS_MSG = 'No records parsed from csv file.';
 const TEMP_DOWNLOAD_DIR = `${env.get('HDB_ROOT')}/tmp`;
@@ -809,7 +809,7 @@ async function postCSVLoadFunction(fields, orig_bulk_msg, result, originators = 
 
 		await nats_utils.publishToStream(
 			`${orig_bulk_msg.schema}.${orig_bulk_msg.table}`,
-			clustering_utils.createTableStreamName(orig_bulk_msg.schema, orig_bulk_msg.table),
+			crypto_hash.createNatsTableStreamName(orig_bulk_msg.schema, orig_bulk_msg.table),
 			[transaction],
 			originators
 		);
