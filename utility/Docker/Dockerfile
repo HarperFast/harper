@@ -18,7 +18,7 @@ COPY --chown=ubuntu:ubuntu ./$HARPERDB_TARBALL /home/ubuntu/
 #Create installation directory, .harperdb directory and hdb_boot_properties.file
 RUN mkdir -p /opt/harperdb/hdb && chown -R ubuntu:ubuntu /opt/harperdb/hdb && \
   mkdir /home/ubuntu/.harperdb && touch /home/ubuntu/.harperdb/hdb_boot_properties.file && \
-  echo 'settings_path = /opt/harperdb/hdb/config/settings.js\ninstall_user = ubuntu' > /home/ubuntu/.harperdb/hdb_boot_properties.file && \
+  echo 'settings_path = /opt/harperdb/hdb/harperdb.conf\ninstall_user = ubuntu' > /home/ubuntu/.harperdb/hdb_boot_properties.file && \
   chown -R ubuntu:ubuntu /home/ubuntu/.harperdb
 
 #Set the user for the below instructions
