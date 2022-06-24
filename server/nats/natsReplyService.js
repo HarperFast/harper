@@ -9,7 +9,6 @@ const IPCClient = require('../ipc/IPCClient');
 const harper_logger = require('../../utility/logging/harper_logger');
 const hdb_terms = require('../../utility/hdbTerms');
 const nats_terms = require('./utility/natsTerms');
-const hdb_utils = require('../../utility/common_utils');
 const update_remote_source = require('../../utility/clustering/updateRemoteSource');
 const remove_remote_source = require('../../utility/clustering/removeRemoteSource');
 const get_remote_source_config = require('../../utility/clustering/getRemoteSourceConfig');

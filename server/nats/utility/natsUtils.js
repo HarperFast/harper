@@ -219,16 +219,18 @@ async function getServerList() {
 	const subj = createInbox();
 	const sub = connection.subscribe(subj);
 	let servers = [];
-	(async () => {
+	const get_servers = (async () => {
+		// get the servers in parallel
 		for await (const m of sub) {
 			servers.push(jc.decode(m.data));
 		}
-	})().then();
+	})();
 
 	await connection.publish('$SYS.REQ.SERVER.PING.VARZ', undefined, { reply: subj });
 	await connection.flush();
 	await sub.drain();
 	await connection.close();
+	await get_servers; // make sure we have finished getting the servers
 
 	return servers;
 }
@@ -285,15 +287,17 @@ async function listRemoteStreams(domain_name) {
 	const subj = createInbox();
 	const sub = connection.subscribe(subj);
 
-	(async () => {
+	const get_streams = (async () => {
 		for await (const m of sub) {
 			streams.push(jc.decode(m.data));
 		}
-	})().then();
+	})();
 
 	await connection.publish(`$JS.${domain_name}.API.STREAM.LIST`, undefined, { reply: subj });
 	await connection.flush();
 	await sub.drain();
+	// Make sure we have got all the streams
+	await get_streams;
 
 	return streams;
 }

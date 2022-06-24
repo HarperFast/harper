@@ -8,7 +8,7 @@ class OpenEnvironmentObject {
 		this.maxReaders = max_readers;
 		this.sharedStructuresKey = Symbol.for('structures');
 
-		this.overlappingSync = false;
+		this.overlappingSync = true;
 	}
 }
 
