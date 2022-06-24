@@ -35,12 +35,12 @@ Reduce or eliminate complexity by using HarperDB’s built-in API. Create and ma
 [HarperDB configuration settings](https://harperdb.io/docs/reference/configuration-file/) can be passed as `docker run` environment variables.
 
 If no environment variables are passed to `docker run`, HarperDB will run with default configuration settings, except for the following:
-- `HDB_ROOT=/opt/harperdb/hdb`
-- `SERVER_PORT=9925`
+- `OPERATIONSAPI_ROOT=/opt/harperdb/hdb`
+- `OPERATIONSAPI_NETWORK_PORT=9925`
 - `HDB_ADMIN_USERNAME=HDB_ADMIN`
 - `HDB_ADMIN_PASSWORD=password`
-- `LOG_TO_STDSTREAMS=true`
-- `RUN_IN_FOREGROUND=true`
+- `LOGGING_STDSTREAMS=true`
+- `OPERATIONSAPI_FOREGROUND=true`
 
 ### Persisting Data
 Containers created from this image will store all data and HarperDB configuration at `/opt/harperdb/hdb`. To persist this data beyond the lifecycle of a container, use a Docker volume to mount this directory to the container host.
@@ -63,7 +63,7 @@ docker run -d \
   -v /host/directory:/opt/harperdb/hdb \
   -e HDB_ADMIN_USERNAME=HDB_ADMIN \
   -e HDB_ADMIN_PASSWORD=password \
-  -e CUSTOM_FUNCTIONS=true \
+  -e CUSTOMFUNCTIONS_ENABLED=true \
   -p 9925:9925 \
   -p 9926:9926 \
   harperdb/harperdb
@@ -75,13 +75,13 @@ docker run -d \
   -v /host/directory:/opt/harperdb/hdb \
   -e HDB_ADMIN_USERNAME=HDB_ADMIN \
   -e HDB_ADMIN_PASSWORD=password \
-  -e CUSTOM_FUNCTIONS=true \
-  -e HTTPS_ON=true \
-  -e CLUSTERING=true \
+  -e CUSTOMFUNCTIONS_ENABLED=true \
+  -e OPERATIONSAPI_NETWORK_HTTPS=true \
+  -e CLUSTERING_ENABLED=true \
   -e CLUSTERING_USER=cluster_user \
   -e CLUSTERING_PASSWORD=password \
-  -e CLUSTERING_PORT=12345 \
-  -e NODE_NAME=hdb1 \
+  -e CLUSTERING_HUBSERVER_NETWORK_PORT=12345 \
+  -e CLUSTERING_NODENAME=hdb1 \
   -p 9925:9925 \
   -p 9926:9926 \
   -p 12345:12345 \
