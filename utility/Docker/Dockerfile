@@ -18,7 +18,7 @@ COPY --chown=ubuntu:ubuntu ./$HARPERDB_TARBALL /home/ubuntu/
 #Create installation directory, .harperdb directory and hdb_boot_properties.file
 RUN mkdir -p /opt/harperdb/hdb && chown -R ubuntu:ubuntu /opt/harperdb/hdb && \
   mkdir /home/ubuntu/.harperdb && touch /home/ubuntu/.harperdb/hdb_boot_properties.file && \
-  echo 'settings_path = /opt/harperdb/hdb/harperdb.conf\ninstall_user = ubuntu' > /home/ubuntu/.harperdb/hdb_boot_properties.file && \
+  echo 'settings_path = /opt/harperdb/hdb/config/settings.js\ninstall_user = ubuntu' > /home/ubuntu/.harperdb/hdb_boot_properties.file && \
   chown -R ubuntu:ubuntu /home/ubuntu/.harperdb
 
 #Set the user for the below instructions
@@ -26,12 +26,12 @@ USER ubuntu
 
 #Set HarperDB installation parameters
 ENV TC_AGREEMENT=yes
-ENV HDB_ROOT=/opt/harperdb/hdb
-ENV SERVER_PORT=9925
+ENV OPERATIONSAPI_ROOT=/opt/harperdb/hdb
+ENV OPERATIONSAPI_PORT=9925
 ENV HDB_ADMIN_USERNAME=HDB_ADMIN
 ENV HDB_ADMIN_PASSWORD=password
-ENV LOG_TO_STDSTREAMS=true
-ENV RUN_IN_FOREGROUND=true
+ENV LOGGING_STDSTREAMS=true
+ENV OPERATIONSAPI_FOREGROUND=true
 
 #Install nvm, Node.js, and HarperDB
 ENV NVM_DIR=/home/ubuntu/.nvm
