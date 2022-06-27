@@ -337,8 +337,8 @@ const OPERATIONS_ENUM = {
 	RESTART_SERVICE: 'restart_service',
 	CATCHUP: 'catchup',
 	SYSTEM_INFORMATION: 'system_information',
-	DELETE_TRANSACTION_LOGS_BEFORE: 'delete_transaction_logs_before',
-	READ_TRANSACTION_LOG: 'read_transaction_log',
+	DELETE_AUDIT_LOGS_BEFORE: 'delete_audit_logs_before',
+	READ_AUDIT_LOG: 'read_audit_log',
 	CREATE_AUTHENTICATION_TOKENS: 'create_authentication_tokens',
 	REFRESH_OPERATION_TOKEN: 'refresh_operation_token',
 	GET_CONFIGURATION: 'get_configuration',
@@ -697,7 +697,7 @@ const JOB_TYPE_ENUM = {
 	csv_url_load: OPERATIONS_ENUM.CSV_URL_LOAD,
 	delete_files_before: 'delete_files_before',
 	delete_records_before: 'delete_records_before',
-	delete_transaction_logs_before: 'delete_transaction_logs_before',
+	delete_audit_logs_before: 'delete_audit_logs_before',
 	empty_trash: 'empty_trash',
 	export_local: 'export_local',
 	export_to_s3: 'export_to_s3',
@@ -840,7 +840,7 @@ const UNAUTHORIZED_PERMISSION_NAME = 'unauthorized_access';
 
 const FUNC_VAL = 'func_val';
 
-const READ_TRANSACTION_LOG_SEARCH_TYPES_ENUM = {
+const READ_AUDIT_LOG_SEARCH_TYPES_ENUM = {
 	HASH_VALUE: 'hash_value',
 	TIMESTAMP: 'timestamp',
 	USERNAME: 'username',
@@ -965,7 +965,7 @@ module.exports = {
 	UNAUTHORIZED_PERMISSION_NAME,
 	SEARCH_WILDCARDS,
 	FUNC_VAL,
-	READ_TRANSACTION_LOG_SEARCH_TYPES_ENUM,
+	READ_AUDIT_LOG_SEARCH_TYPES_ENUM,
 	JWT_ENUM,
 	CLUSTERING_FLAG,
 	RUN_LOG,

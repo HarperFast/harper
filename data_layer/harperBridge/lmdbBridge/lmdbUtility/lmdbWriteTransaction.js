@@ -14,7 +14,7 @@ const env_mngr = require('../../../../utility/environment/environmentManager');
 env_mngr.initSync();
 
 const OPERATIONS_ENUM = require('../../../../utility/hdbTerms').OPERATIONS_ENUM;
-const { getTransactionStorePath } = require('./initializePaths');
+const { getTransactionAuditStorePath } = require('./initializePaths');
 
 module.exports = writeTransaction;
 
@@ -29,7 +29,7 @@ async function writeTransaction(hdb_operation, lmdb_response) {
 		return;
 	}
 
-	let txn_env_base_path = path.join(getTransactionStorePath(), hdb_operation.schema.toString());
+	let txn_env_base_path = path.join(getTransactionAuditStorePath(), hdb_operation.schema.toString());
 	let txn_env = await environment_util.openEnvironment(txn_env_base_path, hdb_operation.table, true);
 
 	let txn_object = createTransactionObject(hdb_operation, lmdb_response);

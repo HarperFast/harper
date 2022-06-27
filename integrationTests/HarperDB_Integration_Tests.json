@@ -2772,7 +2772,7 @@
 									"",
 									"    pm.expect(json_data.schema).to.equal(123);",
 									"    pm.expect(json_data.name).to.equal(4);",
-									"    pm.expect(json_data.clustering_stream_name).to.equal('fd61a99bcb976678ea817aa185e49f8b');",
+									"    pm.expect(json_data.clustering_stream_name).to.equal('46ddc40585caa8abc07c460b3485781e');",
 									"});"
 								],
 								"type": "text/javascript"
@@ -47502,7 +47502,7 @@
 			"name": "9. Transactions",
 			"item": [
 				{
-					"name": "Delete Transaction Logs Before Tests",
+					"name": "Delete Audit Logs Before Tests",
 					"item": [
 						{
 							"name": "create test table",
@@ -47788,7 +47788,7 @@
 								],
 								"body": {
 									"mode": "raw",
-									"raw": "{\n\t\"operation\":\"delete_transaction_logs_before\",\n\t\"timestamp\":\"{{insert_timestamp}}\",\n\t\"schema\":\"test_delete_before\",\n\t\"table\":\"testerama\"\n}\n"
+									"raw": "{\n\t\"operation\":\"delete_audit_logs_before\",\n\t\"timestamp\":\"{{insert_timestamp}}\",\n\t\"schema\":\"test_delete_before\",\n\t\"table\":\"testerama\"\n}\n"
 								},
 								"url": {
 									"raw": "{{host}}:{{port}}",
@@ -47801,7 +47801,7 @@
 							"response": []
 						},
 						{
-							"name": "Check Delete Transaction Logs Job Completed",
+							"name": "Check Delete Audit Logs Job Completed",
 							"event": [
 								{
 									"listen": "test",
@@ -47839,11 +47839,11 @@
 											"        case 0:",
 											"        case 'IN_PROGRESS':",
 											"            console.log('in progress, checking again');",
-											"            postman.setNextRequest('Check Delete Transaction Logs Job Completed');",
+											"            postman.setNextRequest('Check Delete Audit Logs Job Completed');",
 											"            pm.expect(status).to.be.oneOf(['IN_PROGRESS', 0, '0']);",
 											"            break;",
 											"        default:",
-											"            postman.setNextRequest('Check Delete Transaction Logs Job Completed');",
+											"            postman.setNextRequest('Check Delete Audit Logs Job Completed');",
 											"            pm.expect(status).to.be.oneOf(['IN_PROGRESS', 0, '0', 'ERROR', 'COMPLETE']);",
 											"            break;",
 											"    }",
@@ -47931,7 +47931,7 @@
 									"    let parsedId = jsonData.message.substr(id_index + 3, jsonData.message.length);",
 									"    pm.environment.set(\"job_id\", parsedId);",
 									"    pm.environment.set(\"next_request\", next_req);",
-									"    postman.setNextRequest(\"Check Delete Transaction Logs Job Completed\");",
+									"    postman.setNextRequest(\"Check Delete Audit Logs Job Completed\");",
 									"});"
 								]
 							}
@@ -47941,72 +47941,6 @@
 				{
 					"name": "Read Transaction Logs",
 					"item": [
-						{
-							"name": "Turn on log audit",
-							"event": [
-								{
-									"listen": "test",
-									"script": {
-										"exec": [
-											"pm.test(\"Status code is 200\", function () {",
-											"    pm.response.to.have.status(200);",
-											"});"
-										],
-										"type": "text/javascript"
-									}
-								}
-							],
-							"request": {
-								"auth": {
-									"type": "basic",
-									"basic": [
-										{
-											"key": "password",
-											"value": "{{password}}",
-											"type": "string"
-										},
-										{
-											"key": "username",
-											"value": "{{username}}",
-											"type": "string"
-										},
-										{
-											"key": "saveHelperData",
-											"type": "any"
-										},
-										{
-											"key": "showPassword",
-											"value": false,
-											"type": "boolean"
-										}
-									]
-								},
-								"method": "POST",
-								"header": [
-									{
-										"key": "Content-Type",
-										"value": "application/json"
-									},
-									{
-										"key": "Authorization",
-										"value": "Basic YWRtaW46MTQwMA=="
-									}
-								],
-								"body": {
-									"mode": "raw",
-									"raw": "{\n\t\"operation\": \"set_configuration\",\n\t\"logging_auditLog\": \"true\"\n}"
-								},
-								"url": {
-									"raw": "{{host}}:{{port}}",
-									"host": [
-										"{{host}}"
-									],
-									"port": "{{port}}"
-								},
-								"description": "We first need to create a Schema.  A Schema can be thought of as a container of tables that are independent from tables in other schemas.  An example might be the Schema dev with a table called dog.  The Schema prod may also have a table dog. \n\nNote that if you see the error response \"Cannot complete request: User 'admin' not found\", you need to set the basic auth to the user and password you entered during the install process.  What the heck is basic auth?  Read our article on it here: https://harperdbhelp.zendesk.com/hc/en-us/articles/115010250207-Basic-Auth-with-Postman"
-							},
-							"response": []
-						},
 						{
 							"name": "create test table",
 							"event": [
@@ -48768,7 +48702,7 @@
 								],
 								"body": {
 									"mode": "raw",
-									"raw": "{\n    \"operation\": \"read_transaction_log\",\n    \"schema\": \"test_delete_before\",\n    \"table\": \"test_read\",\n    \"search_type\": \"hash_value\",\n    \"search_values\": [5]\n}"
+									"raw": "{\n    \"operation\": \"read_audit_log\",\n    \"schema\": \"test_delete_before\",\n    \"table\": \"test_read\",\n    \"search_type\": \"hash_value\",\n    \"search_values\": [5]\n}"
 								},
 								"url": {
 									"raw": "{{host}}:{{port}}",
@@ -48875,7 +48809,7 @@
 								],
 								"body": {
 									"mode": "raw",
-									"raw": "{\n\"operation\":\"read_transaction_log\",\n\"schema\":\"test_delete_before\",\n\"table\":\"test_read\"\n}"
+									"raw": "{\n\"operation\":\"read_audit_log\",\n\"schema\":\"test_delete_before\",\n\"table\":\"test_read\"\n}"
 								},
 								"url": {
 									"raw": "{{host}}:{{port}}",
@@ -48953,7 +48887,7 @@
 								],
 								"body": {
 									"mode": "raw",
-									"raw": "{\n\"operation\":\"read_transaction_log\",\n\"schema\":\"test_delete_before\",\n\"table\":\"test_read\",\n\"search_type\": \"timestamp\",\n\"search_values\":[]\n}"
+									"raw": "{\n\"operation\":\"read_audit_log\",\n\"schema\":\"test_delete_before\",\n\"table\":\"test_read\",\n\"search_type\": \"timestamp\",\n\"search_values\":[]\n}"
 								},
 								"url": {
 									"raw": "{{host}}:{{port}}",
@@ -49032,7 +48966,7 @@
 								],
 								"body": {
 									"mode": "raw",
-									"raw": "{\n\"operation\":\"read_transaction_log\",\n\"schema\":\"test_delete_before\",\n\"table\":\"test_read\",\n\"search_type\": \"username\",\n\"search_values\":[\"{{username}}\"]\n}"
+									"raw": "{\n\"operation\":\"read_audit_log\",\n\"schema\":\"test_delete_before\",\n\"table\":\"test_read\",\n\"search_type\": \"username\",\n\"search_values\":[\"{{username}}\"]\n}"
 								},
 								"url": {
 									"raw": "{{host}}:{{port}}",
@@ -49110,7 +49044,7 @@
 								],
 								"body": {
 									"mode": "raw",
-									"raw": "{\n    \"operation\": \"read_transaction_log\",\n    \"schema\": \"test_delete_before\",\n    \"table\": \"test_read\",\n    \"search_type\": \"hash_value\",\n    \"search_values\": [\n        1,\n        \"blerrrrr\"\n    ]\n}"
+									"raw": "{\n    \"operation\": \"read_audit_log\",\n    \"schema\": \"test_delete_before\",\n    \"table\": \"test_read\",\n    \"search_type\": \"hash_value\",\n    \"search_values\": [\n        1,\n        \"blerrrrr\"\n    ]\n}"
 								},
 								"url": {
 									"raw": "{{host}}:{{port}}",

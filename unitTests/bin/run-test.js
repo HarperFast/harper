@@ -98,7 +98,7 @@ describe('Test run module', () => {
 		const check_jwt_tokens_stub = sandbox.stub();
 		const install_stub = sandbox.stub();
 		let is_hdb_installed_rw;
-		let check_trans_log_env_exists_rw;
+		let check_audit_log_env_exists_rw;
 		let install_rw;
 		let get_ver_update_info_stub;
 		let upgrade_stub;
@@ -108,10 +108,7 @@ describe('Test run module', () => {
 			run_rw.__set__('check_jwt_tokens', check_jwt_tokens_stub);
 			run_rw.__set__('hdb_logger.createLogFile', create_log_file_stub);
 			is_hdb_installed_rw = run_rw.__set__('isHdbInstalled', is_hdb_installed_stub);
-			check_trans_log_env_exists_rw = run_rw.__set__(
-				'checkTransactionLogEnvironmentsExist',
-				check_trans_log_env_exists_stub
-			);
+			check_audit_log_env_exists_rw = run_rw.__set__('checkAuditLogEnvironmentsExist', check_trans_log_env_exists_stub);
 			install_rw = run_rw.__set__('install', install_stub);
 			get_ver_update_info_stub = sandbox.stub(hdbInfoController, 'getVersionUpdateInfo');
 			upgrade_stub = sandbox.stub(upgrade, 'upgrade');
@@ -124,7 +121,7 @@ describe('Test run module', () => {
 
 		after(() => {
 			is_hdb_installed_rw();
-			check_trans_log_env_exists_rw();
+			check_audit_log_env_exists_rw();
 			install_rw();
 			const service_index = process.argv.indexOf('--service');
 			if (service_index > -1) process.argv.splice(service_index, 1);
@@ -399,28 +396,28 @@ describe('Test run module', () => {
 		});
 	});
 
-	describe('Test checkTransactionLogEnvironmentsExist function', async () => {
+	describe('Test checkAuditLogEnvironmentsExist function', async () => {
 		const open_create_trans_env_stub = sandbox.stub();
 		const describe_results_test = {
 			northnwd: {
 				customers: {},
 			},
 		};
-		let open_create_trans_env_rw;
-		let checkTransactionLogEnvironmentsExist;
+		let open_create_audit_env_rw;
+		let checkAuditLogEnvironmentsExist;
 
 		before(() => {
 			sandbox.stub(schema_describe, 'describeAll').resolves(describe_results_test);
-			open_create_trans_env_rw = run_rw.__set__('openCreateTransactionEnvironment', open_create_trans_env_stub);
-			checkTransactionLogEnvironmentsExist = run_rw.__get__('checkTransactionLogEnvironmentsExist');
+			open_create_audit_env_rw = run_rw.__set__('openCreateAuditEnvironment', open_create_trans_env_stub);
+			checkAuditLogEnvironmentsExist = run_rw.__get__('checkAuditLogEnvironmentsExist');
 		});
 
 		after(() => {
-			open_create_trans_env_rw();
+			open_create_audit_env_rw();
 		});
 
-		it('Test checkTransactionLogEnvironmentsExist happy path', async () => {
-			await checkTransactionLogEnvironmentsExist();
+		it('Test checkAuditLogEnvironmentsExist happy path', async () => {
+			await checkAuditLogEnvironmentsExist();
 			expect(open_create_trans_env_stub.getCall(0).args).to.eql(['system', 'hdb_table']);
 			expect(open_create_trans_env_stub.getCall(1).args).to.eql(['system', 'hdb_attribute']);
 			expect(open_create_trans_env_stub.getCall(2).args).to.eql(['system', 'hdb_schema']);
@@ -432,44 +429,44 @@ describe('Test run module', () => {
 			expect(open_create_trans_env_stub.getCall(8).args).to.eql(['system', 'hdb_nodes']);
 			expect(open_create_trans_env_stub.getCall(9).args).to.eql(['system', 'hdb_temp']);
 			expect(open_create_trans_env_stub.getCall(10).args).to.eql(['northnwd', 'customers']);
-			expect(log_info_stub.getCall(0).firstArg).to.equal('Checking Transaction Environments exist');
-			expect(log_info_stub.getCall(1).firstArg).to.equal('Finished checking Transaction Environments exist');
+			expect(log_info_stub.getCall(0).firstArg).to.equal('Checking Transaction Audit Environments exist');
+			expect(log_info_stub.getCall(1).firstArg).to.equal('Finished checking Transaction Audit Environments exist');
 		});
 	});
 
-	describe('Test openCreateTransactionEnvironment function', () => {
+	describe('Test openCreateAuditEnvironment function', () => {
 		let lmdb_create_txn_env_stub = sandbox.stub();
-		let openCreateTransactionEnvironment;
+		let openCreateAuditEnvironment;
 
 		before(() => {
 			run_rw.__set__('lmdb_create_txn_environment', lmdb_create_txn_env_stub);
-			openCreateTransactionEnvironment = run_rw.__get__('openCreateTransactionEnvironment');
+			openCreateAuditEnvironment = run_rw.__get__('openCreateAuditEnvironment');
 		});
 
 		beforeEach(() => {
 			sandbox.resetHistory();
 		});
 
-		it('Test openCreateTransactionEnvironment happy path', async () => {
+		it('Test openCreateAuditEnvironment happy path', async () => {
 			const expected_obj = {
 				schema: 'unit_tests',
 				table: 'are_amazing',
 				hash_attribute: undefined,
 			};
-			await openCreateTransactionEnvironment('unit_tests', 'are_amazing');
+			await openCreateAuditEnvironment('unit_tests', 'are_amazing');
 
 			expect(lmdb_create_txn_env_stub).to.have.been.calledWith(sandbox.match(expected_obj));
 		});
 
-		it('Test openCreateTransactionEnvironment sad path', async () => {
+		it('Test openCreateAuditEnvironment sad path', async () => {
 			lmdb_create_txn_env_stub.throws(new Error(TEST_ERROR));
-			await openCreateTransactionEnvironment('unit_tests', 'are_amazing');
+			await openCreateAuditEnvironment('unit_tests', 'are_amazing');
 
 			expect(console_error_stub.getCall(0).firstArg).to.equal(
-				'Unable to create the transaction environment for unit_tests.are_amazing, due to: I am a unit test error test'
+				'Unable to create the transaction audit environment for unit_tests.are_amazing, due to: I am a unit test error test'
 			);
 			expect(log_error_stub.getCall(0).firstArg).to.equal(
-				'Unable to create the transaction environment for unit_tests.are_amazing, due to: I am a unit test error test'
+				'Unable to create the transaction audit environment for unit_tests.are_amazing, due to: I am a unit test error test'
 			);
 		});
 	});

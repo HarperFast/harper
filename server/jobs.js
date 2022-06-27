@@ -121,7 +121,7 @@ async function addJob(json_body) {
 		case hdb_terms.OPERATIONS_ENUM.DELETE_RECORDS_BEFORE:
 			validation_msg = bulkDeleteValidator(json_body, 'date');
 			break;
-		case hdb_terms.OPERATIONS_ENUM.DELETE_TRANSACTION_LOGS_BEFORE:
+		case hdb_terms.OPERATIONS_ENUM.DELETE_AUDIT_LOGS_BEFORE:
 			validation_msg = bulkDeleteValidator(json_body, 'timestamp');
 			break;
 		default:

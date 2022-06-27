@@ -387,17 +387,17 @@ describe('Test serverUtilities_rw.js module ', () => {
 			assert.deepStrictEqual(result.job_operation_function, undefined);
 		});
 
-		it('test DELETE_TRANSACTION_LOGS_BEFORE', () => {
-			let result = serverUtilities_rw.getOperationFunction({ operation: 'delete_transaction_logs_before' });
+		it('test DELETE_AUDIT_LOGS_BEFORE', () => {
+			let result = serverUtilities_rw.getOperationFunction({ operation: 'delete_audit_logs_before' });
 
 			assert.deepStrictEqual(result.operation_function.name, 'executeJob');
-			assert.deepStrictEqual(result.job_operation_function.name, 'deleteTransactionLogsBefore');
+			assert.deepStrictEqual(result.job_operation_function.name, 'deleteAuditLogsBefore');
 		});
 
-		it('test READ_TRANSACTION_LOG', () => {
-			let result = serverUtilities_rw.getOperationFunction({ operation: 'read_transaction_log' });
+		it('test READ_AUDIT_LOG', () => {
+			let result = serverUtilities_rw.getOperationFunction({ operation: 'read_audit_log' });
 
-			assert.deepStrictEqual(result.operation_function.name, 'readTransactionLog');
+			assert.deepStrictEqual(result.operation_function.name, 'readAuditLog');
 			assert.deepStrictEqual(result.job_operation_function, undefined);
 		});
 	});

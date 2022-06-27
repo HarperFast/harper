@@ -10,7 +10,7 @@ const BASE_TRANSACTIONS_PATH = path.join(BASE_PATH, TRANSACTIONS_NAME, 'dev');
 
 const rewire = require('rewire');
 const environment_utility = rewire('../../../../../utility/lmdb/environmentUtility');
-const lmdb_create_txn_envs = require('../../../../../data_layer/harperBridge/lmdbBridge/lmdbUtility/lmdbCreateTransactionsEnvironment');
+const lmdb_create_txn_envs = require('../../../../../data_layer/harperBridge/lmdbBridge/lmdbUtility/lmdbCreateTransactionsAuditEnvironment');
 const lmdb_write_txn = require('../../../../../data_layer/harperBridge/lmdbBridge/lmdbUtility/lmdbWriteTransaction');
 const common = require('../../../../../utility/lmdb/commonUtility');
 const fs = require('fs-extra');
@@ -21,13 +21,13 @@ const hdb_terms = require('../../../../../utility/hdbTerms');
 const CreateTableObject = require('../../../../../data_layer/CreateTableObject');
 const InsertObject = require('../../../../../data_layer/InsertObject');
 const InsertRecordsResponseObject = require('../../../../../utility/lmdb/InsertRecordsResponseObject');
-const DeleteTransactionsBeforeResults = require('../../../../../data_layer/harperBridge/lmdbBridge/lmdbMethods/DeleteTransactionsBeforeResults');
+const DeleteAuditLogsBeforeResults = require('../../../../../data_layer/harperBridge/lmdbBridge/lmdbMethods/DeleteAuditLogsBeforeResults');
 const DeleteBeforeObject = require('../../../../../data_layer/DeleteBeforeObject');
-const delete_txn_logs_before = require('../../../../../data_layer/harperBridge/lmdbBridge/lmdbMethods/lmdbDeleteTransactionLogsBefore');
-const rw_delete_txn_logs_before = rewire(
-	'../../../../../data_layer/harperBridge/lmdbBridge/lmdbMethods/lmdbDeleteTransactionLogsBefore'
+const delete_audit_logs_before = require('../../../../../data_layer/harperBridge/lmdbBridge/lmdbMethods/lmdbDeleteAuditLogsBefore');
+const rw_delete_audit_logs_before = rewire(
+	'../../../../../data_layer/harperBridge/lmdbBridge/lmdbMethods/lmdbDeleteAuditLogsBefore'
 );
-const delete_txns_function = rw_delete_txn_logs_before.__get__('deleteTransactions');
+const delete_txns_function = rw_delete_audit_logs_before.__get__('deleteTransactions');
 const assert = require('assert');
 
 const CREATE_TABLE_OBJ = new CreateTableObject('dev', 'test', 'id');
@@ -43,7 +43,7 @@ const HDB_USER = {
 	username: 'kyle',
 };
 
-describe('test lmdbDeleteTransactionLogsBefore module', () => {
+describe('test lmdbDeleteAuditLogsBefore module', () => {
 	before(async () => {
 		env_manager.setProperty(hdb_terms.CONFIG_PARAMS.LOGGING_AUDITLOG, true);
 		await fs.remove(BASE_PATH);
@@ -72,7 +72,7 @@ describe('test lmdbDeleteTransactionLogsBefore module', () => {
 			let stat = environment_utility.statDBI(env, 'timestamp');
 			assert.deepStrictEqual(stat.entryCount, 5000);
 			let results = await delete_txns_function(env, m_times[1000]);
-			let expected_results = new DeleteTransactionsBeforeResults(m_times[0], m_times[999], 1000);
+			let expected_results = new DeleteAuditLogsBeforeResults(m_times[0], m_times[999], 1000);
 			assert.deepStrictEqual(results, expected_results);
 
 			let iterate_results = search_util.iterateDBI(env, 'timestamp');
@@ -97,7 +97,7 @@ describe('test lmdbDeleteTransactionLogsBefore module', () => {
 		it('test deleting when there are no txns', async () => {
 			let env = await environment_utility.openEnvironment(BASE_TRANSACTIONS_PATH, 'test', true);
 			let results = await delete_txns_function(env, common.getMicroTime());
-			assert.deepStrictEqual(results, new DeleteTransactionsBeforeResults());
+			assert.deepStrictEqual(results, new DeleteAuditLogsBeforeResults());
 
 			let iterate_results = search_util.iterateDBI(env, 'timestamp');
 			assert.deepStrictEqual(iterate_results, Object.create(null));
@@ -114,7 +114,7 @@ describe('test lmdbDeleteTransactionLogsBefore module', () => {
 
 			let env = await environment_utility.openEnvironment(BASE_TRANSACTIONS_PATH, 'test', true);
 			let results = await delete_txns_function(env, m_times[0] - 1);
-			let expected_results = new DeleteTransactionsBeforeResults(undefined, undefined, 0);
+			let expected_results = new DeleteAuditLogsBeforeResults(undefined, undefined, 0);
 			assert.deepStrictEqual(results, expected_results);
 
 			let iterate_results = search_util.iterateDBI(env, 'timestamp');
@@ -141,7 +141,7 @@ describe('test lmdbDeleteTransactionLogsBefore module', () => {
 
 			let env = await environment_utility.openEnvironment(BASE_TRANSACTIONS_PATH, 'test', true);
 			let results = await delete_txns_function(env, m_times[4999] + 1);
-			let expected_results = new DeleteTransactionsBeforeResults(m_times[0], m_times[4999], 5000);
+			let expected_results = new DeleteAuditLogsBeforeResults(m_times[0], m_times[4999], 5000);
 			assert.deepStrictEqual(results, expected_results);
 
 			let iterate_results = search_util.iterateDBI(env, 'timestamp');
@@ -176,8 +176,8 @@ describe('test lmdbDeleteTransactionLogsBefore module', () => {
 			let m_times = await createTransactions(20000);
 			let env = await environment_utility.openEnvironment(BASE_TRANSACTIONS_PATH, 'test', true);
 			let delete_before_obj = new DeleteBeforeObject('dev', 'test', m_times[19000]);
-			let results = await delete_txn_logs_before(delete_before_obj);
-			let expected_results = new DeleteTransactionsBeforeResults(m_times[0], m_times[18999], 19000);
+			let results = await delete_audit_logs_before(delete_before_obj);
+			let expected_results = new DeleteAuditLogsBeforeResults(m_times[0], m_times[18999], 19000);
 			assert.deepStrictEqual(results, expected_results);
 
 			let iterate_results = search_util.iterateDBI(env, 'timestamp');

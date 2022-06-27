@@ -17,10 +17,10 @@ const lmdbCreateTable = require('./lmdbMethods/lmdbCreateTable');
 const lmdbUpdateRecords = require('./lmdbMethods/lmdbUpdateRecords');
 const lmdbUpsertRecords = require('./lmdbMethods/lmdbUpsertRecords');
 const lmdbDeleteRecordsBefore = require('./lmdbMethods/lmdbDeleteRecordsBefore');
-const lmdbDeleteTransactionLogsBefore = require('./lmdbMethods/lmdbDeleteTransactionLogsBefore');
+const lmdbDeleteAuditLogsBefore = require('./lmdbMethods/lmdbDeleteAuditLogsBefore');
 const lmdbDropTable = require('./lmdbMethods/lmdbDropTable');
 const lmdbDropAttribute = require('./lmdbMethods/lmdbDropAttribute');
-const lmdbReadTransactionLog = require('./lmdbMethods/lmdbReadTransactionLog');
+const lmdbReadAuditLog = require('./lmdbMethods/lmdbReadAuditLog');
 
 class LMDBBridge extends BridgeMethods {
 	async searchByConditions(search_object) {
@@ -169,18 +169,18 @@ class LMDBBridge extends BridgeMethods {
 		}
 	}
 
-	async deleteTransactionLogsBefore(delete_obj) {
+	async deleteAuditLogsBefore(delete_obj) {
 		try {
-			return await lmdbDeleteTransactionLogsBefore(delete_obj);
+			return await lmdbDeleteAuditLogsBefore(delete_obj);
 		} catch (err) {
 			log.error(err);
 			throw err;
 		}
 	}
 
-	async readTransactionLog(read_transaction_log_obj) {
+	async readAuditLog(read_audit_log_obj) {
 		try {
-			return await lmdbReadTransactionLog(read_transaction_log_obj);
+			return await lmdbReadAuditLog(read_audit_log_obj);
 		} catch (err) {
 			log.error(err);
 			throw err;

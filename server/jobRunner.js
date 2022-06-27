@@ -106,9 +106,9 @@ async function parseMessage(runner_message) {
 				log.error(e);
 			}
 			break;
-		case hdb_terms.JOB_TYPE_ENUM.delete_transaction_logs_before:
+		case hdb_terms.JOB_TYPE_ENUM.delete_audit_logs_before:
 			try {
-				response = await runCSVJob(runner_message, hdb_delete.deleteTransactionLogsBefore, runner_message.json);
+				response = await runCSVJob(runner_message, hdb_delete.deleteAuditLogsBefore, runner_message.json);
 			} catch (e) {
 				log.error(e);
 			}

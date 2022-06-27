@@ -9,7 +9,7 @@ const BASE_TRANSACTIONS_PATH = path.join(BASE_PATH, TRANSACTIONS_NAME);
 
 const rewire = require('rewire');
 const environment_utility = rewire('../../../../../utility/lmdb/environmentUtility');
-const lmdb_create_txn_envs = require('../../../../../data_layer/harperBridge/lmdbBridge/lmdbUtility/lmdbCreateTransactionsEnvironment');
+const lmdb_create_txn_envs = require('../../../../../data_layer/harperBridge/lmdbBridge/lmdbUtility/lmdbCreateTransactionsAuditEnvironment');
 const lmdb_write_txn = require('../../../../../data_layer/harperBridge/lmdbBridge/lmdbUtility/lmdbWriteTransaction');
 const rw_lmdb_write_txn = rewire('../../../../../data_layer/harperBridge/lmdbBridge/lmdbUtility/lmdbWriteTransaction');
 const search_util = require('../../../../../utility/lmdb/searchUtility');
@@ -232,7 +232,7 @@ describe('test lmdbWriteTransaction module', () => {
 			await fs.mkdirp(BASE_PATH);
 			global.lmdb_map = undefined;
 			env = await lmdb_create_txn_envs(CREATE_TABLE_OBJ);
-		env_mngr.setProperty('logging_auditlog', true);
+			env_mngr.setProperty('logging_auditlog', true);
 		});
 
 		afterEach(async () => {
@@ -321,8 +321,6 @@ describe('test lmdbWriteTransaction module', () => {
 
 			results = search_util.iterateDBI(txn_env, 'user_name');
 			assert.deepStrictEqual(results, Object.create(null));
-
-
 		});
 
 		it('test writing insert with user on operation', async () => {

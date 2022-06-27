@@ -26,7 +26,7 @@ const hdbInfoController = require('../data_layer/hdbInfoController');
 
 const SYSTEM_SCHEMA = require('../json/systemSchema.json');
 const schema_describe = require('../data_layer/schemaDescribe');
-const lmdb_create_txn_environment = require('../data_layer/harperBridge/lmdbBridge/lmdbUtility/lmdbCreateTransactionsEnvironment');
+const lmdb_create_txn_environment = require('../data_layer/harperBridge/lmdbBridge/lmdbUtility/lmdbCreateTransactionsAuditEnvironment');
 
 let pm2_utils;
 
@@ -102,7 +102,7 @@ async function run(called_by_install = false) {
 		}
 
 		check_jwt_tokens();
-		await checkTransactionLogEnvironmentsExist();
+		await checkAuditLogEnvironmentsExist();
 		writeLicenseFromVars();
 
 		// Check user has required permissions to start HDB.
@@ -231,26 +231,26 @@ function writeLicenseFromVars() {
 }
 
 /**
- * iterates the system schema & all other schemas and makes sure there is a transaction environment for the schema.table
+ * iterates the system schema & all other schemas and makes sure there is a transaction audit environment for the schema.table
  * @returns {Promise<void>}
  */
-async function checkTransactionLogEnvironmentsExist() {
+async function checkAuditLogEnvironmentsExist() {
 	if (env.getHdbBasePath() !== undefined) {
-		hdb_logger.info('Checking Transaction Environments exist');
+		hdb_logger.info('Checking Transaction Audit Environments exist');
 
 		for (const table_name of Object.keys(SYSTEM_SCHEMA)) {
-			await openCreateTransactionEnvironment(terms.SYSTEM_SCHEMA_NAME, table_name);
+			await openCreateAuditEnvironment(terms.SYSTEM_SCHEMA_NAME, table_name);
 		}
 
 		let describe_results = await schema_describe.describeAll();
 
 		for (const schema_name of Object.keys(describe_results)) {
 			for (const table_name of Object.keys(describe_results[schema_name])) {
-				await openCreateTransactionEnvironment(schema_name, table_name);
+				await openCreateAuditEnvironment(schema_name, table_name);
 			}
 		}
 
-		hdb_logger.info('Finished checking Transaction Environments exist');
+		hdb_logger.info('Finished checking Transaction Audit Environments exist');
 	}
 }
 
@@ -260,12 +260,12 @@ async function checkTransactionLogEnvironmentsExist() {
  * @param {string} table_name
  * @returns {Promise<void>}
  */
-async function openCreateTransactionEnvironment(schema, table_name) {
+async function openCreateAuditEnvironment(schema, table_name) {
 	try {
 		let create_tbl_obj = new CreateTableObject(schema, table_name);
 		await lmdb_create_txn_environment(create_tbl_obj);
 	} catch (e) {
-		let error_msg = `Unable to create the transaction environment for ${schema}.${table_name}, due to: ${e.message}`;
+		let error_msg = `Unable to create the transaction audit environment for ${schema}.${table_name}, due to: ${e.message}`;
 		console.error(error_msg);
 		hdb_logger.error(error_msg);
 	}

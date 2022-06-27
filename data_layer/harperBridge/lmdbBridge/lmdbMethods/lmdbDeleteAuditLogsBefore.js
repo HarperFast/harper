@@ -1,36 +1,36 @@
 'use strict';
 
 const environment_utility = require('../../../../utility/lmdb/environmentUtility');
-const { getTransactionStorePath } = require('../lmdbUtility/initializePaths');
+const { getTransactionAuditStorePath } = require('../lmdbUtility/initializePaths');
 // eslint-disable-next-line no-unused-vars
 const DeleteBeforeObject = require('../../../DeleteBeforeObject');
 const path = require('path');
 const lmdb_terms = require('../../../../utility/lmdb/terms');
 const hdb_utils = require('../../../../utility/common_utils');
-const DeleteTransactionsBeforeResults = require('./DeleteTransactionsBeforeResults');
+const DeleteAuditLogsBeforeResults = require('./DeleteAuditLogsBeforeResults');
 const promisify = require('util').promisify;
 const p_settimeout = promisify(setTimeout);
 
 const BATCH_SIZE = 10000;
 const SLEEP_TIME_MS = 100;
 
-module.exports = deleteTransactionLogsBefore;
+module.exports = deleteAuditLogsBefore;
 
 /**
  *
- * @param {DeleteBeforeObject} delete_txn_logs_obj
+ * @param {DeleteBeforeObject} delete_audit_logs_obj
  */
-async function deleteTransactionLogsBefore(delete_txn_logs_obj) {
-	let schema_path = path.join(getTransactionStorePath(), delete_txn_logs_obj.schema);
-	let env = await environment_utility.openEnvironment(schema_path, delete_txn_logs_obj.table, true);
+async function deleteAuditLogsBefore(delete_audit_logs_obj) {
+	let schema_path = path.join(getTransactionAuditStorePath(), delete_audit_logs_obj.schema);
+	let env = await environment_utility.openEnvironment(schema_path, delete_audit_logs_obj.table, true);
 	let all_dbis = environment_utility.listDBIs(env);
 	environment_utility.initializeDBIs(env, lmdb_terms.TRANSACTIONS_DBI_NAMES_ENUM.TIMESTAMP, all_dbis);
 
 	let chunk_results;
-	let total_results = new DeleteTransactionsBeforeResults();
+	let total_results = new DeleteAuditLogsBeforeResults();
 
 	do {
-		chunk_results = await deleteTransactions(env, delete_txn_logs_obj.timestamp);
+		chunk_results = await deleteTransactions(env, delete_audit_logs_obj.timestamp);
 		if (total_results.start_timestamp === undefined) {
 			total_results.start_timestamp = chunk_results.start_timestamp;
 		}
@@ -52,10 +52,10 @@ async function deleteTransactionLogsBefore(delete_txn_logs_obj) {
  *
  * @param env
  * @param {number} timestamp
- * @returns {Promise<DeleteTransactionsBeforeResults>}
+ * @returns {Promise<DeleteAuditLogsBeforeResults>}
  */
 async function deleteTransactions(env, timestamp) {
-	let results = new DeleteTransactionsBeforeResults();
+	let results = new DeleteAuditLogsBeforeResults();
 	try {
 		let timestamp_dbi = env.dbis[lmdb_terms.TRANSACTIONS_DBI_NAMES_ENUM.TIMESTAMP];
 

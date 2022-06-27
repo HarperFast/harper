@@ -24,12 +24,12 @@ const search_by_value = require('../../../../../data_layer/harperBridge/lmdbBrid
 const lmdb_create_schema = require('../../../../../data_layer/harperBridge/lmdbBridge/lmdbMethods/lmdbCreateSchema');
 const lmdb_create_table = require('../../../../../data_layer/harperBridge/lmdbBridge/lmdbMethods/lmdbCreateTable');
 const lmdb_create_records = require('../../../../../data_layer/harperBridge/lmdbBridge/lmdbMethods/lmdbCreateRecords');
-const lmdb_read_txn_log = require('../../../../../data_layer/harperBridge/lmdbBridge/lmdbMethods/lmdbReadTransactionLog');
+const lmdb_read_audit_log = require('../../../../../data_layer/harperBridge/lmdbBridge/lmdbMethods/lmdbReadAuditLog');
 const hdb_terms = require('../../../../../utility/hdbTerms');
 const assert = require('assert');
 const fs = require('fs-extra');
 const systemSchema = require('../../../../../json/systemSchema');
-const ReadTransactionLogObject = require('../../../../../data_layer/ReadTransactionLogObject');
+const ReadAuditLogObject = require('../../../../../data_layer/ReadAuditLogObject');
 const { promisify } = require('util');
 const sleep = promisify(setTimeout);
 
@@ -243,7 +243,7 @@ describe('test validateDropSchema module', () => {
 			assert.deepStrictEqual(search_result.length, 200);
 
 			//test no delete entry in txn log
-			let txn_results = await lmdb_read_txn_log(new ReadTransactionLogObject('dev', 'test'));
+			let txn_results = await lmdb_read_audit_log(new ReadAuditLogObject('dev', 'test'));
 			for (let x = 0, length = txn_results.length; x < length; x++) {
 				assert(txn_results[x].operation !== 'delete');
 			}

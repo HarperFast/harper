@@ -22,8 +22,8 @@ const cb_delete_record = callbackify(deleteRecord);
 module.exports = {
 	delete: cb_delete_record,
 	deleteRecord,
-	deleteFilesBefore: deleteFilesBefore,
-	deleteTransactionLogsBefore,
+	deleteFilesBefore,
+	deleteAuditLogsBefore,
 };
 
 /**
@@ -76,11 +76,11 @@ async function deleteFilesBefore(delete_obj) {
 }
 
 /**
- * Deletes transaction logs which are older than a specific date
+ * Deletes audit logs which are older than a specific date
  *
  * @param {DeleteBeforeObject} delete_obj - the request passed from chooseOperation.
  */
-async function deleteTransactionLogsBefore(delete_obj) {
+async function deleteAuditLogsBefore(delete_obj) {
 	let validation = bulkDeleteValidator(delete_obj, 'timestamp');
 	if (validation) {
 		throw handleHDBError(validation, validation.message, HTTP_STATUS_CODES.BAD_REQUEST, undefined, undefined, true);
@@ -110,9 +110,9 @@ async function deleteTransactionLogsBefore(delete_obj) {
 	}
 
 	try {
-		let results = await harperBridge.deleteTransactionLogsBefore(delete_obj);
+		let results = await harperBridge.deleteAuditLogsBefore(delete_obj);
 		await p_global_schema(delete_obj.schema, delete_obj.table);
-		harper_logger.info(`Finished deleting transaction logs before ${delete_obj.timestamp}`);
+		harper_logger.info(`Finished deleting audit logs before ${delete_obj.timestamp}`);
 
 		return results;
 	} catch (err) {

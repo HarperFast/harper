@@ -9,7 +9,7 @@ const system_schema = require('../../../../json/systemSchema');
 const lmdb_create_attribute = require('./lmdbCreateAttribute');
 const LMDBCreateAttributeObject = require('../lmdbUtility/LMDBCreateAttributeObject');
 const log = require('../../../../utility/logging/harper_logger');
-const create_txn_environments = require('../lmdbUtility/lmdbCreateTransactionsEnvironment');
+const create_txn_environments = require('../lmdbUtility/lmdbCreateTransactionsAuditEnvironment');
 
 const HDB_TABLE_INFO = system_schema.hdb_table;
 let hdb_table_attributes = [];

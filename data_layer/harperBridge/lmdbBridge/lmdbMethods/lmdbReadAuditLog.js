@@ -5,35 +5,35 @@ const lmdb_terms = require('../../../../utility/lmdb/terms');
 const lmdb_utils = require('../../../../utility/lmdb/commonUtility');
 const hdb_terms = require('../../../../utility/hdbTerms');
 const hdb_utils = require('../../../../utility/common_utils');
-const { getTransactionStorePath } = require('../lmdbUtility/initializePaths');
+const { getTransactionAuditStorePath } = require('../lmdbUtility/initializePaths');
 const path = require('path');
 const search_utility = require('../../../../utility/lmdb/searchUtility');
 const LMDBTransactionObject = require('../lmdbUtility/LMDBTransactionObject');
 const log = require('../../../../utility/logging/harper_logger');
 
-module.exports = readTransactionLog;
+module.exports = readAuditLog;
 
 /**
  * function execute the read_transaction_log operation
- * @param {ReadTransactionLogObject} read_txn_log_obj
+ * @param {ReadAuditLogObject} read_audit_log_obj
  * @returns {Promise<[]>}
  */
-async function readTransactionLog(read_txn_log_obj) {
-	let base_path = path.join(getTransactionStorePath(), read_txn_log_obj.schema);
-	let env = await environment_utility.openEnvironment(base_path, read_txn_log_obj.table, true);
+async function readAuditLog(read_audit_log_obj) {
+	let base_path = path.join(getTransactionAuditStorePath(), read_audit_log_obj.schema);
+	let env = await environment_utility.openEnvironment(base_path, read_audit_log_obj.table, true);
 	let all_dbis = environment_utility.listDBIs(env);
 
 	environment_utility.initializeDBIs(env, lmdb_terms.TRANSACTIONS_DBI_NAMES_ENUM.TIMESTAMP, all_dbis);
 	let hash_attribute;
-	switch (read_txn_log_obj.search_type) {
-		case hdb_terms.READ_TRANSACTION_LOG_SEARCH_TYPES_ENUM.TIMESTAMP:
-			return searchTransactionsByTimestamp(env, read_txn_log_obj.search_values);
-		case hdb_terms.READ_TRANSACTION_LOG_SEARCH_TYPES_ENUM.HASH_VALUE:
+	switch (read_audit_log_obj.search_type) {
+		case hdb_terms.READ_AUDIT_LOG_SEARCH_TYPES_ENUM.TIMESTAMP:
+			return searchTransactionsByTimestamp(env, read_audit_log_obj.search_values);
+		case hdb_terms.READ_AUDIT_LOG_SEARCH_TYPES_ENUM.HASH_VALUE:
 			//get the hash attribute
-			hash_attribute = global.hdb_schema[read_txn_log_obj.schema][read_txn_log_obj.table].hash_attribute;
-			return searchTransactionsByHashValues(env, read_txn_log_obj.search_values, hash_attribute);
-		case hdb_terms.READ_TRANSACTION_LOG_SEARCH_TYPES_ENUM.USERNAME:
-			return searchTransactionsByUsername(env, read_txn_log_obj.search_values);
+			hash_attribute = global.hdb_schema[read_audit_log_obj.schema][read_audit_log_obj.table].hash_attribute;
+			return searchTransactionsByHashValues(env, read_audit_log_obj.search_values, hash_attribute);
+		case hdb_terms.READ_AUDIT_LOG_SEARCH_TYPES_ENUM.USERNAME:
+			return searchTransactionsByUsername(env, read_audit_log_obj.search_values);
 		default:
 			return searchTransactionsByTimestamp(env);
 	}

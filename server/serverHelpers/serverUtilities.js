@@ -6,7 +6,7 @@ const bulkLoad = require('../../data_layer/bulkLoad');
 const schema = require('../../data_layer/schema');
 const schema_describe = require('../../data_layer/schemaDescribe');
 const delete_ = require('../../data_layer/delete');
-const read_transaction_log = require('../../data_layer/readTransactionLog');
+const read_audit_log = require('../../data_layer/readAuditLog');
 const user = require('../../security/user');
 const role = require('../../security/role');
 const custom_function_operations = require('./../customFunctions/operations');
@@ -175,7 +175,7 @@ function getOperationFunction(json) {
 	if (OPERATION_FUNCTION_MAP.has(json.operation)) {
 		return OPERATION_FUNCTION_MAP.get(json.operation);
 	}
-	harper_logger.error(json);
+
 	throw handleHDBError(
 		new Error(),
 		hdb_errors.HDB_ERROR_MSGS.OP_NOT_FOUND(json.operation),
@@ -315,10 +315,10 @@ function initializeOperationFunctionMap() {
 		new OperationFunctionObject(system_information.systemInformation)
 	);
 	op_func_map.set(
-		terms.OPERATIONS_ENUM.DELETE_TRANSACTION_LOGS_BEFORE,
-		new OperationFunctionObject(executeJob, delete_.deleteTransactionLogsBefore)
+		terms.OPERATIONS_ENUM.DELETE_AUDIT_LOGS_BEFORE,
+		new OperationFunctionObject(executeJob, delete_.deleteAuditLogsBefore)
 	);
-	op_func_map.set(terms.OPERATIONS_ENUM.READ_TRANSACTION_LOG, new OperationFunctionObject(read_transaction_log));
+	op_func_map.set(terms.OPERATIONS_ENUM.READ_AUDIT_LOG, new OperationFunctionObject(read_audit_log));
 	op_func_map.set(
 		terms.OPERATIONS_ENUM.CREATE_AUTHENTICATION_TOKENS,
 		new OperationFunctionObject(token_authentication.createTokens)

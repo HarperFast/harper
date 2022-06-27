@@ -1,9 +1,9 @@
 'use strict';
 
 /**
- * represents the response object from Delete Transactions Before
+ * represents the response object from Delete audit logs Before
  */
-class DeleteTransactionsBeforeResults {
+class DeleteAuditLogsBeforeResults {
 	/**
 	 * @param {number} start_timestamp
 	 * @param {number} end_timestamp
@@ -16,4 +16,4 @@ class DeleteTransactionsBeforeResults {
 	}
 }
 
-module.exports = DeleteTransactionsBeforeResults;
+module.exports = DeleteAuditLogsBeforeResults;

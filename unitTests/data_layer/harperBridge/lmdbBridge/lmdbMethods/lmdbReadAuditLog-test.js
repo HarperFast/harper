@@ -6,7 +6,7 @@ const BASE_PATH = test_utils.getMockLMDBPath();
 
 const rewire = require('rewire');
 const environment_utility = rewire('../../../../../utility/lmdb/environmentUtility');
-const lmdb_create_txn_envs = require('../../../../../data_layer/harperBridge/lmdbBridge/lmdbUtility/lmdbCreateTransactionsEnvironment');
+const lmdb_create_txn_envs = require('../../../../../data_layer/harperBridge/lmdbBridge/lmdbUtility/lmdbCreateTransactionsAuditEnvironment');
 
 const lmdb_write_txn = require('../../../../../data_layer/harperBridge/lmdbBridge/lmdbUtility/lmdbWriteTransaction');
 const common = require('../../../../../utility/lmdb/commonUtility');
@@ -18,7 +18,7 @@ const CreateTableObject = require('../../../../../data_layer/CreateTableObject')
 const InsertObject = require('../../../../../data_layer/InsertObject');
 const UpdateObject = require('../../../../../data_layer/UpdateObject');
 const DeleteObject = require('../../../../../data_layer/DeleteObject');
-const ReadTransactionLogObject = require('../../../../../data_layer/ReadTransactionLogObject');
+const ReadAuditLogObject = require('../../../../../data_layer/ReadAuditLogObject');
 
 const ClusteringOriginObject = require('../../../../../utility/clustering/ClusteringOriginObject');
 const InsertRecordsResponseObject = require('../../../../../utility/lmdb/InsertRecordsResponseObject');
@@ -29,8 +29,8 @@ const LMDBInsertTransactionObject = require('../../../../../data_layer/harperBri
 const LMDBUpdateTransactionObject = require('../../../../../data_layer/harperBridge/lmdbBridge/lmdbUtility/LMDBUpdateTransactionObject');
 const LMDBDeleteTransactionObject = require('../../../../../data_layer/harperBridge/lmdbBridge/lmdbUtility/LMDBDeleteTransactionObject');
 
-const read_txn_log = require('../../../../../data_layer/harperBridge/lmdbBridge/lmdbMethods/lmdbReadTransactionLog');
-const rw_read_txn_log = rewire('../../../../../data_layer/harperBridge/lmdbBridge/lmdbMethods/lmdbReadTransactionLog');
+const read_audit_log = require('../../../../../data_layer/harperBridge/lmdbBridge/lmdbMethods/lmdbReadAuditLog');
+const rw_read_audit_log = rewire('../../../../../data_layer/harperBridge/lmdbBridge/lmdbMethods/lmdbReadAuditLog');
 const assert = require('assert');
 
 const CREATE_TABLE_OBJ = new CreateTableObject('dev', 'test', 'id');
@@ -72,7 +72,7 @@ const HDB_USER_3 = {
 	username: 'joy',
 };
 
-describe('Test lmdbReadTransactionLog module', () => {
+describe('Test lmdbReadAuditLog module', () => {
 	before(async () => {
 		env_manager.setProperty(hdb_terms.CONFIG_PARAMS.LOGGING_AUDITLOG, true);
 		await fs.remove(BASE_PATH);
@@ -81,7 +81,7 @@ describe('Test lmdbReadTransactionLog module', () => {
 	after(() => {});
 
 	describe('test searchTransactionsByUsername function', () => {
-		let search_txn_by_user_func = rw_read_txn_log.__get__('searchTransactionsByUsername');
+		let search_txn_by_user_func = rw_read_audit_log.__get__('searchTransactionsByUsername');
 		let txn_env;
 		beforeEach(async () => {
 			global.lmdb_map = undefined;
@@ -135,7 +135,7 @@ describe('Test lmdbReadTransactionLog module', () => {
 	});
 
 	describe('test searchTransactionsByHashvalues function', () => {
-		let search_txn_by_hash_func = rw_read_txn_log.__get__('searchTransactionsByHashValues');
+		let search_txn_by_hash_func = rw_read_audit_log.__get__('searchTransactionsByHashValues');
 		let txn_env;
 		beforeEach(async () => {
 			global.lmdb_map = undefined;
@@ -252,7 +252,7 @@ describe('Test lmdbReadTransactionLog module', () => {
 	});
 
 	describe('test searchTransactionsByTimestamp function', () => {
-		let search_txn_by_timestamp_func = rw_read_txn_log.__get__('searchTransactionsByTimestamp');
+		let search_txn_by_timestamp_func = rw_read_audit_log.__get__('searchTransactionsByTimestamp');
 		let txn_env;
 		beforeEach(async () => {
 			global.lmdb_map = undefined;
@@ -311,7 +311,7 @@ describe('Test lmdbReadTransactionLog module', () => {
 		});
 	});
 
-	describe('test readTransactionLog function', () => {
+	describe('test readAuditLog function', () => {
 		let txn_env;
 		beforeEach(async () => {
 			global.lmdb_map = undefined;
@@ -337,50 +337,44 @@ describe('Test lmdbReadTransactionLog module', () => {
 		});
 
 		it('test reading timestamps, should return all', async () => {
-			let read_txn_obj = new ReadTransactionLogObject(
-				'dev',
-				'test',
-				hdb_terms.READ_TRANSACTION_LOG_SEARCH_TYPES_ENUM.TIMESTAMP
-			);
+			let read_txn_obj = new ReadAuditLogObject('dev', 'test', hdb_terms.READ_AUDIT_LOG_SEARCH_TYPES_ENUM.TIMESTAMP);
 
 			let txns = await createTransactions();
-			let results = await read_txn_log(read_txn_obj);
+			let results = await read_audit_log(read_txn_obj);
 
 			assert.deepEqual(results, txns);
 		});
 
 		it('test reading timestamps with no type specified, should return all', async () => {
-			let read_txn_obj = new ReadTransactionLogObject('dev', 'test');
+			let read_txn_obj = new ReadAuditLogObject('dev', 'test');
 
 			let txns = await createTransactions();
-			let results = await read_txn_log(read_txn_obj);
+			let results = await read_audit_log(read_txn_obj);
 
 			assert.deepEqual(results, txns);
 		});
 
 		it('test reading by username', async () => {
-			let read_txn_obj = new ReadTransactionLogObject(
-				'dev',
-				'test',
-				hdb_terms.READ_TRANSACTION_LOG_SEARCH_TYPES_ENUM.USERNAME,
-				['kyle', 'joy']
-			);
+			let read_txn_obj = new ReadAuditLogObject('dev', 'test', hdb_terms.READ_AUDIT_LOG_SEARCH_TYPES_ENUM.USERNAME, [
+				'kyle',
+				'joy',
+			]);
 
 			let txns = await createTransactions();
 			let expected = new Map();
 			expected.set('kyle', [txns[0], txns[3], txns[6]]);
 			expected.set('joy', [txns[2], txns[5]]);
 
-			let results = await read_txn_log(read_txn_obj);
+			let results = await read_audit_log(read_txn_obj);
 
 			assert.deepEqual(results, Object.fromEntries(expected));
 		});
 
 		it('test reading by hash value', async () => {
-			let read_txn_obj = new ReadTransactionLogObject(
+			let read_txn_obj = new ReadAuditLogObject(
 				'dev',
 				'test',
-				hdb_terms.READ_TRANSACTION_LOG_SEARCH_TYPES_ENUM.HASH_VALUE,
+				hdb_terms.READ_AUDIT_LOG_SEARCH_TYPES_ENUM.HASH_VALUE,
 				[1, 2]
 			);
 
@@ -424,7 +418,7 @@ describe('Test lmdbReadTransactionLog module', () => {
 			expected.set(1, [txn1_1, txn1_2, txn1_3]);
 			expected.set(2, [txn2_1, txn2_2]);
 
-			let results = await read_txn_log(read_txn_obj);
+			let results = await read_audit_log(read_txn_obj);
 
 			assert.deepEqual(results, Object.fromEntries(expected));
 		});

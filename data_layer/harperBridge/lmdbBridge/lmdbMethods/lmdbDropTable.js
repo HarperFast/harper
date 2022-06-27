@@ -8,7 +8,7 @@ const drop_all_attributes = require('../lmdbUtility/lmdbDropAllAttributes');
 const hdb_terms = require('../../../../utility/hdbTerms');
 const hdb_utils = require('../../../../utility/common_utils');
 const environment_utility = require('../../../../utility/lmdb/environmentUtility');
-const { getBaseSchemaPath, getTransactionStorePath } = require('../lmdbUtility/initializePaths');
+const { getBaseSchemaPath, getTransactionAuditStorePath } = require('../lmdbUtility/initializePaths');
 const path = require('path');
 const log = require('../../../../utility/logging/harper_logger');
 
@@ -37,7 +37,7 @@ async function lmdbDropTable(drop_table_obj) {
 		}
 
 		try {
-			let transaction_path = path.join(getTransactionStorePath(), drop_table_obj.schema.toString());
+			let transaction_path = path.join(getTransactionAuditStorePath(), drop_table_obj.schema.toString());
 			await environment_utility.deleteEnvironment(transaction_path, drop_table_obj.table, true);
 		} catch (e) {
 			if (e.message === 'invalid environment') {

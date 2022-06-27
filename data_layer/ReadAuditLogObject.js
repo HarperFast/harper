@@ -3,9 +3,9 @@
 const { OPERATIONS_ENUM } = require('../utility/hdbTerms');
 
 /**
- * class that represents the read_transaction_log operation
+ * class that represents the read_audit_log operation
  */
-class ReadTransactionLogObject {
+class ReadAuditLogObject {
 	/**
 	 * @param {string} schema
 	 * @param {string} table
@@ -13,7 +13,7 @@ class ReadTransactionLogObject {
 	 * @param {[string|number]} search_values
 	 */
 	constructor(schema, table, search_type = undefined, search_values = undefined) {
-		this.operation = OPERATIONS_ENUM.READ_TRANSACTION_LOG;
+		this.operation = OPERATIONS_ENUM.READ_AUDIT_LOG;
 		this.schema = schema;
 		this.table = table;
 		this.search_type = search_type;
@@ -21,4 +21,4 @@ class ReadTransactionLogObject {
 	}
 }
 
-module.exports = ReadTransactionLogObject;
+module.exports = ReadAuditLogObject;

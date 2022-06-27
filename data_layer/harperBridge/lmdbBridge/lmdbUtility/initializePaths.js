@@ -39,7 +39,7 @@ function getSystemSchemaPath() {
 	}
 }
 
-function getTransactionStorePath() {
+function getTransactionAuditStorePath() {
 	if (TRANSACTION_STORE_PATH !== undefined) {
 		return TRANSACTION_STORE_PATH;
 	}
@@ -53,5 +53,5 @@ function getTransactionStorePath() {
 module.exports = {
 	getBaseSchemaPath,
 	getSystemSchemaPath,
-	getTransactionStorePath,
+	getTransactionAuditStorePath,
 };
