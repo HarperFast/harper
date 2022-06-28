@@ -1,11 +1,14 @@
 'use strict';
 
-const is_compiled = process.env.HDB_COMPILED === 'true';
+const fs = require('fs');
+const path = require('path');
+const compiled_nats_install_script = path.resolve(__dirname, '../server/nats/utility/installNATSServer.jsc');
 let installer;
-if (is_compiled) {
+try {
+	fs.accessSync(compiled_nats_install_script);
 	require('bytenode');
-	installer = require('../dependencies/installNATSServer.jsc');
-} else {
+	installer = require(compiled_nats_install_script);
+} catch (e) {
 	installer = require('../server/nats/utility/installNATSServer');
 }
 

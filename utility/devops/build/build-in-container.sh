@@ -1,6 +1,6 @@
 #!/bin/bash
 
-set -x
+set -ex
 
 #create array of folder patterns to compile
 declare -a folders=("bin/*.js"
@@ -35,9 +35,29 @@ declare -a folders=("bin/*.js"
   "validation/**/*.js"
   "config/*.js")
 
+pwd
+apt-get update && apt-get install -y build-essential jq sudo rsync
+
+bytenode_version="$(jq -r ".dependencies.bytenode" package.json)"
+
+npm install -g bytenode@$bytenode_version
+npm install -g dot-json
+npm install -g bundle-dependencies
+
+go_version=$(jq -r '.engines."go-lang"' package.json)
+echo $go_version
+
+wget https://go.dev/dl/go${go_version}.linux-amd64.tar.gz
+tar -C /usr/local -xzf go${go_version}.linux-amd64.tar.gz
+rm -f go${go_version}.linux-amd64.tar.gz
+
+export PATH=$PATH:/usr/local/go/bin
+echo 'export PATH=$PATH:/usr/local/go/bin' >> ~/.bashrc
+echo 'export PATH=$PATH:/usr/local/go/bin' >> ~/.profile
+
 #verify dependencies are installed
 go_version_installed="$(go version | cut -d ' ' -f 3 | cut -c 3-99)"
-go_version=$(jq -r '.engines."go-lang"' package.json)
+echo $go_version_installed
 
 if ! [ "$go_version_installed" = "$go_version" ]; then
     echo "Go $go_version must be installed"
@@ -46,6 +66,7 @@ fi
 
 node_version_installed="$(node -v)"
 node_version="v$(npm run env | grep npm_package_engines_node | cut -d '=' -f 2)"
+echo $node_version_installed
 
 if ! [ "$node_version_installed" = "$node_version" ]; then
     echo "Node.js $node_version must be installed"
@@ -59,7 +80,6 @@ then
 fi
 
 bytenode_version_installed="$(bytenode -v | grep bytenode | cut -d ' ' -f 2)"
-bytenode_version="$(jq -r ".dependencies.bytenode" package.json)"
 
 if ! [ "$bytenode_version_installed" = "$bytenode_version" ]
 then
@@ -82,14 +102,17 @@ fi
 #remove existing node_modules
 rm -rf ./node_modules/
 
+mkdir /root/.cache
+export GOCACHE=/tmp/
+chmod -R 777 /root/.npm/_logs
+chown -R root ./
 # npm install from source
 # --silent sets npm log level to silent
 # --production prevents install of dev dependencies
+
+# NOTE: Make sure nats server binary doesn't get included in the tar.
 npm --silent install --production
 sleep 2
-
-# Remove the nats-server binary
-rm dependencies/nats-server
 
 # Pull in custom_function_template repo
 git submodule update --init --recursive
@@ -134,9 +157,9 @@ dot-json ./npm_pack/package.json scripts --delete
 
 # Create bundledDependencies in ./npm_pack/package.json
 cd ./npm_pack/
+bundle-dependencies update
 # Add the postinstall script back
 npm set-script postinstall "$post_install"
-bundle-dependencies update
 cd ../
 
 # Move LICENSE file to ./license dir

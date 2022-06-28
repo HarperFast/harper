@@ -41,12 +41,12 @@
     "cover:nats": "cd bin/ && nyc --no-clean --reporter=lcov ../node_modules/mocha/bin/_mocha '../unitTests/server/nats/**/*.js' --config '../unitTests/.mocharc.json'",
     "test:ci": " cd bin/ && ../node_modules/mocha/bin/_mocha '../unitTests/**/*.js' --retries 3 --config '../unitTests/.mocharc-main.json' --reporter mocha-teamcity-reporter && ../node_modules/mocha/bin/_mocha '../unitTests/data_layer/harperBridge/lmdbBridge/**/*.js' --parallel --retries 3 --config '../unitTests/.mocharc.json' --reporter mocha-teamcity-reporter && ../node_modules/mocha/bin/_mocha '../unitTests/utility/lmdb/**/*.js' --parallel --retries 3 --config '../unitTests/.mocharc.json' --reporter mocha-teamcity-reporter && ../node_modules/mocha/bin/_mocha '../unitTests/server/harperdb/hdbServer-test.js' --parallel --retries 3 --config '../unitTests/.mocharc.json' --reporter mocha-teamcity-reporter && ../node_modules/mocha/bin/_mocha '../unitTests/server/customFunctions/customFunctionsServer-test.js' --parallel --retries 3 --config '../unitTests/.mocharc.json' --reporter mocha-teamcity-reporter && ../node_modules/mocha/bin/_mocha '../unitTests/server/nats/**/*.js' --config '../unitTests/.mocharc.json' --reporter mocha-teamcity-reporter",
     "hdb-check": "./utility/devops/hdb-check.sh",
-    "prepublish": "npm run build",
     "prebuild": "date",
     "postinstall": "node ./launchServiceScripts/launchInstallNATSServer.js",
     "build_nats_dependency": "node ./utility/devops/nats/builder.js",
     "coverage": "nyc --reporter=lcov npm test",
     "package": "./utility/devops/build/build.sh",
+    "package-in-container": "./utility/devops/build/build-in-container.sh",
     "integrationtests:source": "node utility/devops/register.js --reset_license --storage_type=lmdb && cd ./bin && node harperdb restart && sleep 10 && cd ../integrationTests && ../node_modules/newman/bin/newman.js run HarperDB_Integration_Tests.json -e ./Int_test_env_var.json --reporters teamcity,cli,html,htmlextra --reporter-html-export newman/report.html --reporter-htmlextra-export newman/extra_report.html --insecure",
     "integrationtests:package": "node utility/devops/register.js --reset_license --storage_type=lmdb && cd ./npm_pack/bin && node harperdb restart && sleep 2 && cd ../../integrationTests && ../node_modules/newman/bin/newman.js run HarperDB_Integration_Tests.json -e ./Int_test_env_var.json --reporters teamcity,cli,html,htmlextra --reporter-html-export newman/report.html --reporter-htmlextra-export newman/extra_report.html --insecure"
   },
