@@ -168,6 +168,7 @@ function packageCustomFunctionProjectValidator(req) {
 			.custom(checkProjectExists.bind(null, true))
 			.required()
 			.messages({ 'string.pattern.base': HDB_ERROR_MSGS.BAD_PROJECT_NAME }),
+		skip_node_modules: Joi.boolean(),
 	});
 
 	return validator.validateBySchema(req, package_proj_schema);

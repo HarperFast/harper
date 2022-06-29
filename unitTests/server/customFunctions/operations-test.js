@@ -5,6 +5,7 @@ const sinon = require('sinon');
 const rewire = require('rewire');
 const fs = require('fs-extra');
 const path = require('path');
+const tar = require('tar-fs');
 
 const operations = rewire('../../../server/customFunctions/operations');
 const env = require('../../../utility/environment/environmentManager');
@@ -67,7 +68,8 @@ describe('Test custom functions operations', () => {
 	});
 
 	it('Test packageCustomFunctionProject properly tars up a project directory', async () => {
-		const response = await operations.packageCustomFunctionProject({ project: 'unit_test' });
+		const tar_spy = sinon.spy(tar, 'pack');
+		const response = await operations.packageCustomFunctionProject({ project: 'unit_test', skip_node_modules: true });
 
 		expect(response).to.be.instanceOf(Object);
 
@@ -77,6 +79,8 @@ describe('Test custom functions operations', () => {
 		expect(Object.keys(response)).to.include('payload');
 
 		expect(response.project).to.equal('unit_test');
+
+		expect(tar_spy.args[0][1].hasOwnProperty('ignore')).to.be.true;
 	}).timeout(5000);
 
 	it('Test deployCustomFunctionProject properly deploys a project', async () => {

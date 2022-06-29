@@ -315,8 +315,18 @@ async function packageCustomFunctionProject(req) {
 
 	const file = `/tmp/${project_hash}.tar`;
 
+	let tar_opts = {};
+	if (req.skip_node_modules === true || req.skip_node_modules === 'true') {
+		// Create options for tar module that will exclude the CF projects node_modules directory.
+		tar_opts = {
+			ignore: (name) => {
+				return name.includes(path.join(path_to_project, 'node_modules'));
+			},
+		};
+	}
+
 	// pack the directory
-	tar.pack(path_to_project).pipe(fs.createWriteStream(file));
+	tar.pack(path_to_project, tar_opts).pipe(fs.createWriteStream(file));
 
 	// wait for a second
 	// eslint-disable-next-line no-magic-numbers
