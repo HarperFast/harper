@@ -1,3 +1,5 @@
+FROM golang:1.17.10 AS gobinary
+
 FROM ubuntu:20.04
 ARG NVM_VERSION
 ARG NODE_VERSION
@@ -22,12 +24,8 @@ RUN mkdir -p /opt/harperdb/hdb && chown -R ubuntu:ubuntu /opt/harperdb/hdb && \
   echo 'settings_path = /opt/harperdb/hdb/harperdb.conf\ninstall_user = ubuntu' > /home/ubuntu/.harperdb/hdb_boot_properties.file && \
   chown -R ubuntu:ubuntu /home/ubuntu/.harperdb
 
-RUN wget https://go.dev/dl/go$GO_VERSION.linux-amd64.tar.gz -P /home/ubuntu \
-    && tar -C /home/ubuntu -xzf /home/ubuntu/go$GO_VERSION.linux-amd64.tar.gz \
-    && rm -f /home/ubuntu/go$GO_VERSION.linux-amd64.tar.gz \
-    && chown -R ubuntu:ubuntu /home/ubuntu/go \
-    && export PATH=$PATH:/home/ubuntu/go/bin \
-    && echo 'export PATH=$PATH:/home/ubuntu/go/bin' >> ~/.bashrc
+COPY --from=gobinary /usr/local/go/ /home/ubuntu/go/
+RUN chown -R ubuntu:ubuntu /home/ubuntu/go
 
 #Set the user for the below instructions
 USER ubuntu
@@ -50,7 +48,7 @@ RUN export PATH=$PATH:/home/ubuntu/go/bin \
     && . $NVM_DIR/nvm.sh \
     && nvm install $NODE_VERSION \
     && cd /home/ubuntu/ \
-    && npm install -g $HARPERDB_TARBALL
+    && npm install -g $HARPERDB_TARBALL --foreground-scripts
 
 #Create mount point
 VOLUME /opt/harperdb/hdb
