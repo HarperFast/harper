@@ -49,7 +49,7 @@ RUN export PATH=$PATH:/home/ubuntu/go/bin \
     && . $NVM_DIR/nvm.sh \
     && nvm install $NODE_VERSION \
     && cd /home/ubuntu/ \
-    && npm install -g $HARPERDB_TARBALL --foreground-scripts
+    && npm install -g $HARPERDB_TARBALL
 
 #Create mount point
 VOLUME /opt/harperdb/hdb
