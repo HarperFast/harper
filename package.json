@@ -32,7 +32,7 @@
     "submodules": "git submodule update --init --recursive",
     "build": "eslint -c ./.eslintbuild bin/ data_layer/ security/ server/ sqlTranslator/ upgrade/ utility/ validation/",
     "pretty": "eslint --fix bin/ data_layer/ security/ server/ sqlTranslator/ upgrade/ utility/ validation/",
-    "test": "rm -rf ./.nyc_output/* && npm run build && node utility/devops/register.js --reset_license --storage_type=lmdb && npm run cover:main && npm run cover:lmdbbridge && npm run cover:lmdbutility && npm run cover:hdbserver && npm run cover:cfserver && npm run cover:nats && nyc merge .nyc_output coverage.json && node ./utility/devops/register.js --reset_license --storage_type=lmdb",
+    "test": "rm -rf ./.nyc_output/* && node utility/devops/register.js --reset_license --storage_type=lmdb && npm run cover:main && npm run cover:lmdbbridge && npm run cover:lmdbutility && npm run cover:hdbserver && npm run cover:cfserver && npm run cover:nats && nyc merge .nyc_output coverage.json && node ./utility/devops/register.js --reset_license --storage_type=lmdb",
     "cover:main": "cd bin/ && nyc --no-clean --reporter=lcov ../node_modules/mocha/bin/_mocha '../unitTests/**/*.js' --config '../unitTests/.mocharc-main.json'",
     "cover:lmdbbridge": "cd bin/ && nyc --no-clean --reporter=lcov ../node_modules/mocha/bin/_mocha '../unitTests/data_layer/harperBridge/lmdbBridge/**/*.js' --parallel --config '../unitTests/.mocharc.json'",
     "cover:lmdbutility": "cd bin/ && nyc --no-clean --reporter=lcov ../node_modules/mocha/bin/_mocha '../unitTests/utility/lmdb/**/*.js' --parallel --config '../unitTests/.mocharc.json'",
