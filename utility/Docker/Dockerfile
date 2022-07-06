@@ -11,7 +11,7 @@ ARG HARPERDB_TARBALL
 EXPOSE 9925
 
 #Install prerequisites
-RUN apt-get update  && apt-get install -y curl g++ make python3 tini wget
+RUN apt-get update  && apt-get install -y curl g++ make python3 tini
 
 #Create non-root user
 RUN adduser --home /home/ubuntu --gecos "" --shell /bin/bash --disabled-password ubuntu
