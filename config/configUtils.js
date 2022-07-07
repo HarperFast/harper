@@ -137,8 +137,14 @@ function initConfig(force = false) {
 		// if this is true, user is upgrading from version prior to 4.0.0. We need to initialize existing
 		// params.
 		if (config_file_path.includes('config/settings.js')) {
-			initOldConfig(config_file_path);
-			return;
+			try {
+				initOldConfig(config_file_path);
+				return;
+			} catch (init_err) {
+				// If user has an old boot prop file but hdb is not installed init old config will throw ENOENT error.
+				// We want to squash that error so that new version of HDB can be installed.
+				if (init_err.code !== hdb_terms.NODE_ERROR_CODES.ENOENT) throw init_err;
+			}
 		}
 		try {
 			config_doc = parseYamlDoc(config_file_path);
