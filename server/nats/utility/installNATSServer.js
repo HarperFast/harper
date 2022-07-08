@@ -118,7 +118,7 @@ async function installer() {
 		await checkGoVersion();
 	} catch (e) {
 		console.error(chalk.red(e.message));
-		return;
+		process.exit(1);
 	}
 
 	let nats_source_folder = await extractNATSServer();

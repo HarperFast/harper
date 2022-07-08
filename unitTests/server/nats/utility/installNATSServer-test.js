@@ -293,6 +293,8 @@ describe('test installer function', () => {
 	});
 
 	it('test already not installed, go check fails', async () => {
+		const process_exit_stub = sandbox.stub(process, 'exit');
+
 		let nats_installed_stub = sandbox.stub().callsFake(async () => {
 			return false;
 		});
@@ -312,22 +314,20 @@ describe('test installer function', () => {
 		let cleanup_restore = installer.__set__('cleanUp', cleanup_stub);
 
 		await installer_func();
-		expect(console_log_spy.callCount).to.equal(1);
+		expect(console_log_spy.callCount).to.equal(4);
 		expect(console_error_spy.callCount).to.equal(1);
-		expect(console_log_spy.args).to.eql([[chalk.green('****Starting install of NATS Server.****')]]);
+		expect(console_log_spy.args[0]).to.eql([chalk.green('****Starting install of NATS Server.****')]);
 		expect(console_error_spy.args).to.eql([[chalk.red('no go')]]);
-
+		expect(process_exit_stub.called).to.be.true;
 		expect(nats_installed_stub.callCount).to.equal(1);
 		expect(check_go_stub.callCount).to.equal(1);
-		expect(extract_stub.callCount).to.equal(0);
-		expect(run_cmd_stub.callCount).to.equal(0);
-		expect(cleanup_stub.callCount).to.equal(0);
 
 		check_nats_installed_restore();
 		check_go_restore();
 		extract_restore();
 		run_cmd_restore();
 		cleanup_restore();
+		process_exit_stub.restore();
 	});
 
 	it('test happy path', async () => {
