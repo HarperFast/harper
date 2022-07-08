@@ -305,23 +305,35 @@ async function listRemoteStreams(domain_name) {
 /**
  * returns the contents of a stream
  * @param stream_name
+ * @param start_time - get messages from this time onward
+ * @param max - maximum number of messages to receive
  * @returns {Promise<*[]>}
  */
-async function viewStream(stream_name) {
+async function viewStream(stream_name, start_time = undefined, max = undefined) {
 	const { jsm, connection } = await getNATSReferences();
 	const consumer_name = ulid();
 	let entries = [];
 
-	try {
-		await jsm.consumers.add(stream_name, {
-			ack_policy: AckPolicy.None,
-			durable_name: consumer_name,
-			deliver_subject: consumer_name,
-			deliver_policy: DeliverPolicy.All,
-			filter_subject: '',
-		});
+	const consumer_config = {
+		ack_policy: AckPolicy.None,
+		durable_name: consumer_name,
+		deliver_subject: consumer_name,
+		deliver_policy: DeliverPolicy.All,
+		filter_subject: '',
+	};
 
-		const sub = await connection.subscribe(consumer_name, { timeout: 2000 });
+	// If a start time is passed add a policy that will receive msgs from that time onward.
+	if (start_time) {
+		consumer_config.deliver_policy = DeliverPolicy.StartTime;
+		consumer_config.opt_start_time = new Date(start_time).toISOString();
+	}
+
+	try {
+		await jsm.consumers.add(stream_name, consumer_config);
+
+		const sub_config = { timeout: 2000 };
+		if (max) sub_config.max = max;
+		const sub = await connection.subscribe(consumer_name, sub_config);
 
 		for await (const m of sub) {
 			const jmsg = toJsMsg(m);

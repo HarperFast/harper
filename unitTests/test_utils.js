@@ -739,6 +739,7 @@ async function stopTestLeafServer() {
 	try {
 		await runCommand(`${NATS_SERVER_PATH} --signal stop`, undefined);
 		await pm2_utils.stop('nats_test_leaf_server');
+		await pm2_utils.kill();
 		await fs.remove(TEMP_TEST_DIR);
 	} catch (err) {
 		console.error(err);

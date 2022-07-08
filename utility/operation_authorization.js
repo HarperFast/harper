@@ -37,6 +37,7 @@ const token_authentication = require('../security/tokenAuthentication');
 const config_utils = require('../config/configUtils');
 const functions_operations = require('../server/customFunctions/operations');
 const alasql = require('alasql');
+const transaction_log = require('../utility/logging/transactionLog');
 
 const PermissionResponseObject = require('../security/data_objects/PermissionResponseObject');
 const { handleHDBError, hdb_errors } = require('../utility/errors/hdbError');
@@ -130,6 +131,8 @@ required_permissions.set(stop.restartService.name, new permission(true, []));
 required_permissions.set(read_audit_log.name, new permission(true, []));
 required_permissions.set(system_information.systemInformation.name, new permission(true, []));
 required_permissions.set(config_utils.getConfiguration.name, new permission(true, []));
+required_permissions.set(transaction_log.readTransactionLog.name, new permission(true, []));
+required_permissions.set(transaction_log.deleteTransactionLogsBefore.name, new permission(true, []));
 
 //this operation must be available to all users so they can create authentication tokens
 required_permissions.set(token_authentication.createTokens.name, new permission(false, []));

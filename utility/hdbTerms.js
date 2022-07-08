@@ -354,6 +354,8 @@ const OPERATIONS_ENUM = {
 	CLUSTER_SET_ROUTES: 'cluster_set_routes',
 	CLUSTER_DELETE_ROUTES: 'cluster_delete_routes',
 	CLUSTER_GET_ROUTES: 'cluster_get_routes',
+	READ_TRANSACTION_LOG: 'read_transaction_log',
+	DELETE_TRANSACTION_LOGS_BEFORE: 'delete_transaction_logs_before',
 };
 
 // Defines valid file types that we are able to handle in 'import_from_s3' ops

@@ -34,6 +34,7 @@ const transact_to_clustering_utils = require('../../utility/clustering/transactT
 const job_runner = require('./../jobRunner');
 const token_authentication = require('../../security/tokenAuthentication');
 const config_utils = require('../../config/configUtils');
+const transaction_log = require('../../utility/logging/transactionLog');
 
 const operation_function_caller = require(`../../utility/OperationFunctionCaller`);
 
@@ -363,6 +364,14 @@ function initializeOperationFunctionMap() {
 	op_func_map.set(
 		terms.OPERATIONS_ENUM.DEPLOY_CUSTOM_FUNCTION_PROJECT,
 		new OperationFunctionObject(custom_function_operations.deployCustomFunctionProject)
+	);
+	op_func_map.set(
+		terms.OPERATIONS_ENUM.READ_TRANSACTION_LOG,
+		new OperationFunctionObject(transaction_log.readTransactionLog)
+	);
+	op_func_map.set(
+		terms.OPERATIONS_ENUM.DELETE_TRANSACTION_LOGS_BEFORE,
+		new OperationFunctionObject(executeJob, transaction_log.deleteTransactionLogsBefore)
 	);
 
 	return op_func_map;
