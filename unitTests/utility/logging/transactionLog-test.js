@@ -13,12 +13,19 @@ const transaction_log = require('../../../utility/logging/transactionLog');
 const TEST_SCHEMA = 'unit_test';
 const TEST_TABLE = 'panda';
 const TEST_STREAM_NAME = crypto_hash.createNatsTableStreamName(TEST_SCHEMA, TEST_TABLE);
+const TEST_TIMEOUT = 10000;
 
 async function closeDeleteNatsCon() {
-	await global.NATSConnection.close();
-	delete global.NATSConnection;
+	try {
+		await global.NATSConnection.close();
+		delete global.NATSConnection;
+	} catch (e) {}
 }
 
+/**
+ * Create a test stream and publishes 100 messages to it.
+ * @returns {Promise<void>}
+ */
 async function createTestStream() {
 	await nats_utils.createLocalStream(TEST_STREAM_NAME, [`unit_test.panda.testLeafServer-leaf`]);
 	for (let x = 0; x < 99; x++) {
@@ -59,8 +66,14 @@ async function createTestStream() {
 
 	await nats_utils.publishToStream('unit_test.panda', TEST_STREAM_NAME, del_entry);
 }
-let timestamps = [];
+
+/**
+ * Get all the timestamps in the test stream so that they can be used for testing.
+ * @type {*[]}
+ */
+let timestamps;
 async function getTimeStamps() {
+	timestamps = [];
 	const result = await transaction_log.readTransactionLog({
 		operation: 'read_transaction_log',
 		schema: TEST_SCHEMA,
@@ -72,12 +85,22 @@ async function getTimeStamps() {
 	});
 }
 
+/**
+ * Reset the state of the test stream.
+ * @returns {Promise<void>}
+ */
+async function resetStream() {
+	const jsm = await nats_utils.getJetStreamManager();
+	await jsm.streams.purge(TEST_STREAM_NAME);
+	await createTestStream();
+	await getTimeStamps();
+}
 describe('Test transactionLog module', () => {
 	const sandbox = sinon.createSandbox();
 
 	// These tests rely on Nats streams, so we spin up a test nats leaf server.
 	before(async function () {
-		this.timeout(10000);
+		this.timeout(TEST_TIMEOUT);
 		env_mgr.setProperty(hdb_terms.CONFIG_PARAMS.CLUSTERING_ENABLED, true);
 		await test_utils.launchTestLeafServer();
 		test_utils.setFakeClusterUser();
@@ -87,10 +110,11 @@ describe('Test transactionLog module', () => {
 	});
 
 	after(async function () {
-		this.timeout(10000);
+		this.timeout(TEST_TIMEOUT);
 		await nats_utils.deleteLocalStream(TEST_STREAM_NAME);
 		test_utils.unsetFakeClusterUser();
 		await test_utils.stopTestLeafServer();
+		await closeDeleteNatsCon();
 		sandbox.restore();
 	});
 
@@ -118,7 +142,7 @@ describe('Test transactionLog module', () => {
 					expect(tx.hash_values).to.eql([1, 4, 6]);
 				}
 			}
-		}).timeout(10000);
+		}).timeout(TEST_TIMEOUT);
 
 		it('Test limit filter works', async () => {
 			const test_req = {
@@ -133,7 +157,7 @@ describe('Test transactionLog module', () => {
 			expect(result[0].timestamp).to.equal(timestamps[0]);
 			expect(result[25].timestamp).to.equal(timestamps[25]);
 			expect(result[49].timestamp).to.equal(timestamps[49]);
-		}).timeout(10000);
+		}).timeout(TEST_TIMEOUT);
 
 		it('Test to filter works', async () => {
 			const test_req = {
@@ -147,7 +171,7 @@ describe('Test transactionLog module', () => {
 			expect(result[result.length - 1].records[0]).to.eql({ record: 20 });
 			expect(result[result.length - 1].timestamp).to.equal(timestamps[20]);
 			expect(result[0].timestamp).to.equal(timestamps[0]);
-		});
+		}).timeout(TEST_TIMEOUT);
 
 		it('Test from filter works', async () => {
 			const test_req = {
@@ -160,7 +184,7 @@ describe('Test transactionLog module', () => {
 
 			expect(result[0].timestamp).to.equal(timestamps[90]);
 			expect(result[result.length - 1].timestamp).to.equal(timestamps[99]);
-		});
+		}).timeout(TEST_TIMEOUT);
 
 		it('Test to and from filters', async () => {
 			const test_req = {
@@ -176,7 +200,7 @@ describe('Test transactionLog module', () => {
 			expect(result[0].records[0]).to.eql({ record: 40 });
 			expect(result[result.length - 1].timestamp).to.equal(timestamps[55]);
 			expect(result[result.length - 1].records[0]).to.eql({ record: 55 });
-		});
+		}).timeout(TEST_TIMEOUT);
 
 		it('Test limit and from filters', async () => {
 			const test_req = {
@@ -193,7 +217,7 @@ describe('Test transactionLog module', () => {
 			expect(result[0].records[0]).to.eql({ record: 40 });
 			expect(result[result.length - 1].timestamp).to.equal(timestamps[59]);
 			expect(result[result.length - 1].records[0]).to.eql({ record: 59 });
-		});
+		}).timeout(TEST_TIMEOUT);
 
 		it('Test limit and from filters end of log', async () => {
 			const test_req = {
@@ -210,7 +234,7 @@ describe('Test transactionLog module', () => {
 			expect(result[0].records[0]).to.eql({ record: 90 });
 			expect(result[result.length - 1].timestamp).to.equal(timestamps[99]);
 			expect(result[result.length - 1].hash_values).to.eql([1, 4, 6]);
-		});
+		}).timeout(TEST_TIMEOUT);
 
 		it('Test to, from and limit filter', async () => {
 			const test_req = {
@@ -225,7 +249,7 @@ describe('Test transactionLog module', () => {
 			expect(result[0].records[0]).to.eql({ record: 0 });
 			expect(result[0].timestamp).to.equal(timestamps[0]);
 			expect(result[result.length - 1].timestamp).to.equal(timestamps[12]);
-		});
+		}).timeout(TEST_TIMEOUT);
 
 		it('Test to and limit filter', async () => {
 			const test_req = {
@@ -237,6 +261,91 @@ describe('Test transactionLog module', () => {
 			};
 			const result = await transaction_log.readTransactionLog(test_req);
 			expect(result.length).to.equal(23);
+		}).timeout(TEST_TIMEOUT);
+	});
+
+	describe('Test deleteTransactionLogsBefore function', () => {
+		let reset_stream = false;
+		it('Test that no logs are deleted if timestamp less than oldest log', async () => {
+			const test_req = {
+				operation: 'delete_transaction_logs_before',
+				schema: TEST_SCHEMA,
+				table: TEST_TABLE,
+				timestamp: timestamps[0],
+			};
+			const result = await transaction_log.deleteTransactionLogsBefore(test_req);
+			const stream = await nats_utils.viewStream(TEST_STREAM_NAME);
+
+			expect(result).to.equal(`No transactions exist before: ${timestamps[0]}`);
+			expect(stream.length).to.equal(100);
+		}).timeout(TEST_TIMEOUT);
+
+		it('Test all logs are deleted if timestamp greater than most recent logs', async () => {
+			reset_stream = true;
+			const test_req = {
+				operation: 'delete_transaction_logs_before',
+				schema: TEST_SCHEMA,
+				table: TEST_TABLE,
+				timestamp: timestamps[99] + 1,
+			};
+			const result = await transaction_log.deleteTransactionLogsBefore(test_req);
+			const stream = await nats_utils.viewStream(TEST_STREAM_NAME);
+
+			expect(result).to.equal('All logs successfully deleted from transaction log.');
+			expect(stream.length).to.equal(0);
+		}).timeout(TEST_TIMEOUT);
+
+		it('Test partial deletion of logs', async () => {
+			if (reset_stream) {
+				await resetStream();
+			}
+
+			const test_req = {
+				operation: 'delete_transaction_logs_before',
+				schema: TEST_SCHEMA,
+				table: TEST_TABLE,
+				timestamp: timestamps[50],
+			};
+
+			const result = await transaction_log.deleteTransactionLogsBefore(test_req);
+			const stream = await nats_utils.viewStream(TEST_STREAM_NAME);
+			reset_stream = true;
+
+			expect(result).to.equal('Logs successfully deleted from transaction log.');
+			expect(stream.length).to.equal(50);
+		}).timeout(TEST_TIMEOUT);
+
+		it('Two partial deletes of logs', async () => {
+			if (reset_stream) {
+				await resetStream();
+			}
+
+			const test_req = {
+				operation: 'delete_transaction_logs_before',
+				schema: TEST_SCHEMA,
+				table: TEST_TABLE,
+				timestamp: timestamps[25],
+			};
+
+			const result = await transaction_log.deleteTransactionLogsBefore(test_req);
+			const stream = await nats_utils.viewStream(TEST_STREAM_NAME);
+
+			expect(result).to.equal('Logs successfully deleted from transaction log.');
+			expect(stream.length).to.equal(75);
+
+			const test_req_b = {
+				operation: 'delete_transaction_logs_before',
+				schema: TEST_SCHEMA,
+				table: TEST_TABLE,
+				timestamp: timestamps[30],
+			};
+
+			const result_b = await transaction_log.deleteTransactionLogsBefore(test_req_b);
+			const stream_b = await nats_utils.viewStream(TEST_STREAM_NAME);
+			reset_stream = true;
+
+			expect(result_b).to.equal('Logs successfully deleted from transaction log.');
+			expect(stream_b.length).to.equal(70);
 		});
 	});
 });

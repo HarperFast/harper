@@ -21,6 +21,7 @@ const moment = require('moment');
 const hdb_sql = require('../sqlTranslator/index');
 const file_load_validator = require('../validation/fileLoadValidator');
 const bulkDeleteValidator = require('../validation/bulkDeleteValidator');
+const { deleteTransactionLogsBeforeValidator } = require('../validation/transactionLogValidator');
 const { handleHDBError, hdb_errors } = require('../utility/errors/hdbError');
 const { HTTP_STATUS_CODES } = hdb_errors;
 
@@ -123,6 +124,9 @@ async function addJob(json_body) {
 			break;
 		case hdb_terms.OPERATIONS_ENUM.DELETE_AUDIT_LOGS_BEFORE:
 			validation_msg = bulkDeleteValidator(json_body, 'timestamp');
+			break;
+		case hdb_terms.OPERATIONS_ENUM.DELETE_TRANSACTION_LOGS_BEFORE:
+			validation_msg = deleteTransactionLogsBeforeValidator(json_body);
 			break;
 		default:
 			break;

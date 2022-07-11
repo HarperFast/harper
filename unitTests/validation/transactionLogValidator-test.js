@@ -19,4 +19,13 @@ describe('Test transactionLogValidator', () => {
 			"'schema' must be a string. 'table' is required. 'from' must be in timestamp or number of milliseconds format. 'to' must be in timestamp or number of milliseconds format"
 		);
 	});
+
+	it('Test deleteTransactionLogsBeforeValidator', () => {
+		const bad_req = {
+			table: true,
+			timestamp: 1598290200117000000,
+		};
+		const result = deleteTransactionLogsBeforeValidator(bad_req);
+		expect(result.message).to.equal("'schema' is required. 'table' must be a string. 'timestamp' must be a valid date");
+	});
 });

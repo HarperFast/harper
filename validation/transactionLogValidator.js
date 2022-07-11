@@ -20,4 +20,12 @@ function readTransactionLogValidator(req) {
 	return validator.validateBySchema(req, schema);
 }
 
-function deleteTransactionLogsBeforeValidator(req) {}
+function deleteTransactionLogsBeforeValidator(req) {
+	const schema = Joi.object({
+		schema: Joi.string().required(),
+		table: Joi.string().required(),
+		timestamp: Joi.date().timestamp().required(),
+	});
+
+	return validator.validateBySchema(req, schema);
+}

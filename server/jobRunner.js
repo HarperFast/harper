@@ -11,6 +11,7 @@ const hdb_delete = require('../data_layer/delete');
 const fork = require('child_process').fork;
 const signal = require('../utility/signalling');
 const { SchemaEventMsg } = require('../server/ipc/utility/ipcUtils');
+const transaction_log = require('../utility/logging/transactionLog');
 
 class RunnerResponse {
 	constructor(success, message, error) {
@@ -111,6 +112,13 @@ async function parseMessage(runner_message) {
 				response = await runCSVJob(runner_message, hdb_delete.deleteAuditLogsBefore, runner_message.json);
 			} catch (e) {
 				log.error(e);
+			}
+			break;
+		case hdb_terms.JOB_TYPE_ENUM.delete_transaction_logs_before:
+			try {
+				response = await runCSVJob(runner_message, transaction_log.deleteTransactionLogsBefore, runner_message.json);
+			} catch (err) {
+				log.error(err);
 			}
 			break;
 		default:

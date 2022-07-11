@@ -83,6 +83,7 @@ module.exports = {
 	createTableStreams,
 	purgeTableStream,
 	purgeSchemaTableStreams,
+	getStreamInfo,
 };
 
 /**
@@ -780,4 +781,14 @@ async function purgeSchemaTableStreams(schema, tables) {
 			await purgeTableStream(schema, tables[x]);
 		}
 	}
+}
+
+/**
+ * Retrieve info about a stream by its name
+ * @param stream_name
+ * @returns {Promise<StreamInfo>}
+ */
+async function getStreamInfo(stream_name) {
+	const jsm = await getJetStreamManager();
+	return jsm.streams.info(stream_name);
 }

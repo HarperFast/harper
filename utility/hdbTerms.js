@@ -701,6 +701,7 @@ const JOB_TYPE_ENUM = {
 	delete_files_before: 'delete_files_before',
 	delete_records_before: 'delete_records_before',
 	delete_audit_logs_before: 'delete_audit_logs_before',
+	delete_transaction_logs_before: 'delete_transaction_logs_before',
 	empty_trash: 'empty_trash',
 	export_local: 'export_local',
 	export_to_s3: 'export_to_s3',
