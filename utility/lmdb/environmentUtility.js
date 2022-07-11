@@ -196,7 +196,7 @@ async function copyEnvironment(base_path, env_name, destination_path, compact_en
  * @param {String} env_name -  the name of the environment
  * @param {Boolean} is_txn - defines if is a transactions environemnt
  */
-async function openEnvironment(base_path, env_name, is_txn = false) {
+async function openEnvironment(base_path, env_name, is_txn = false, is_directory = false) {
 	pathEnvNameValidation(base_path, env_name);
 	env_name = env_name.toString();
 	let full_name = getCachedEnvironmentName(base_path, env_name, is_txn);
@@ -211,7 +211,7 @@ async function openEnvironment(base_path, env_name, is_txn = false) {
 	await verifyEnvironmentBasePath(base_path);
 	await validateEnvironmentPath(base_path, env_name);
 
-	let env_path = path.join(base_path, env_name);
+	let env_path = path.join(base_path, env_name + (is_directory ? '' : '.mdb'));
 	let env_init = new OpenEnvironmentObject(env_path, MAP_SIZE, MAX_DBS, MAX_READERS, LMDB_NOSYNC);
 	let env = lmdb.open(env_init);
 
