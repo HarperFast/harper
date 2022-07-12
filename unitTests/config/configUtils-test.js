@@ -1319,11 +1319,11 @@ describe('Test configUtils module', () => {
 			'SERVER_PORT': 9925,
 			'CERTIFICATE': path.join(__dirname, '../../keys/certificate.pem'),
 			'PRIVATE_KEY': path.join(__dirname, '../../keys/privateKey.pem'),
-			'HTTPS_ON': false,
+			'HTTPS_ON': '',
 			'CORS_ON': true,
 			'LOG_LEVEL': 'error',
 			'LOG_PATH': path.join(__dirname, '../../log/hdb_log.log'),
-			'NODE_ENV': 'production',
+			'NODE_ENV': [],
 			'CLUSTERING': false,
 			'MAX_HDB_PROCESSES': 12,
 			'SERVER_TIMEOUT_MS': 120000,
@@ -1347,11 +1347,10 @@ describe('Test configUtils module', () => {
 			operationsapi_network_port: 9925,
 			operationsapi_tls_certificate: path.join(__dirname, '../../keys/certificate.pem'),
 			operationsapi_tls_privatekey: path.join(__dirname, '../../keys/privateKey.pem'),
-			operationsapi_network_https: false,
 			operationsapi_network_cors: true,
 			logging_level: 'error',
-			logging_root: path.join(__dirname, '../../log/hdb_log.log'),
-			operationsapi_nodeenv: 'production',
+			logging_root: path.join(__dirname, '../../log'),
+			operationsapi_nodeenv: [],
 			clustering_enabled: false,
 			operationsapi_processes: 12,
 			operationsapi_network_timeout: 120000,
@@ -1382,10 +1381,9 @@ describe('Test configUtils module', () => {
 			});
 			config_utils_rw.__set__('PropertiesReader', properties_reader_stub);
 
-			config_utils_rw.initOldConfig(OLD_CONFIG_PATH);
-			let flat_config_obj_rw = config_utils_rw.__get__('flat_config_obj');
+			const result = config_utils_rw.initOldConfig(OLD_CONFIG_PATH);
 
-			expect(flat_config_obj_rw).to.eql(EXPECTED_CONFIG_OBJ);
+			expect(result).to.eql(EXPECTED_CONFIG_OBJ);
 		});
 	});
 });

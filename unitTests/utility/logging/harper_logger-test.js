@@ -168,11 +168,15 @@ describe('Test harper_logger module', () => {
 		});
 
 		it('Test that all log settings initialized with default values if settings file does not exist', () => {
-			test_error.code = 'ENOENT';
 			const harper_logger = requireUncached(HARPER_LOGGER_MODULE);
+			harper_logger.__set__('hdb_properties', undefined);
+			test_error.code = 'ENOENT';
 			const properties_reader_stub = sandbox.stub().throws(test_error);
 			harper_logger.__set__('PropertiesReader', properties_reader_stub);
-			harper_logger.__set__('hdb_properties', undefined);
+			harper_logger.__set__('log_to_file', undefined);
+			harper_logger.__set__('log_to_stdstreams', undefined);
+			harper_logger.__set__('log_level', undefined);
+			harper_logger.__set__('log_path', undefined);
 
 			const initLogSettings = harper_logger.__get__('initLogSettings');
 			initLogSettings();

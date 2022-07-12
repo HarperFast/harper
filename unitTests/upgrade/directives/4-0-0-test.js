@@ -1,0 +1,221 @@
+'use strict';
+
+const sinon = require('sinon');
+const chai = require('chai');
+const expect = chai.expect;
+const rewire = require('rewire');
+const directive_4_0_0_rw = rewire('../../../upgrade/directives/4-0-0');
+const config_utils = require('../../../config/configUtils');
+const path = require('path');
+const fs = require('fs-extra');
+const env = require('../../../utility/environment/environmentManager');
+const logger = require('../../../utility/logging/harper_logger');
+const test_utils = require('../../../unitTests/test_utils');
+const common_utils = require('../../../utility/common_utils');
+
+const ROOT = 'yourcomputer/hdb';
+
+describe('Test 4-0-0 module', () => {
+	const sandbox = sinon.createSandbox();
+	const TEST_ERROR = 'Unit test error';
+
+	before(() => {
+		test_utils.restoreInitStub();
+	});
+
+	after(() => {
+		sandbox.restore();
+	});
+	describe('Test updateSettingsFile_4_0_0 function', () => {
+		let updateSettingsFile_4_0_0;
+		const old_config_obj = {
+			operationsapi_root: 'yourcomputer/hdb',
+			operationsapi_network_port: 9900,
+			operationsapi_tls_certificate: 'yourcomputer/keys/certificate.pem',
+			operationsapi_tls_privatekey: 'yourcomputer/keys/privateKey.pem',
+			operationsapi_network_https: true,
+			operationsapi_network_cors: false,
+			logging_level: 'fatal',
+			logging_root: 'yourcomputer/log/hdb_log.log',
+			operationsapi_nodeenv: 'production',
+			clustering_enabled: false,
+			operationsapi_processes: 12,
+			operationsapi_network_timeout: 120000,
+			operationsapi_network_keepalivetimeout: 5000,
+			operationsapi_network_headerstimeout: 60000,
+			logging_auditlog: false,
+			operationsapi_authentication_operationtokentimeout: '1d',
+			operationsapi_authentication_refreshtokentimeout: '30d',
+			ipc_network_port: 9384,
+			customfunctions_enabled: false,
+			customfunctions_network_port: 9926,
+			customfunctions_root: 'yourcomputer/custom_functions',
+			customfunctions_processes: 12,
+			logging_file: true,
+			logging_stdstreams: false,
+			operationsapi_foreground: false,
+		};
+		const expected_settings_path = path.join(ROOT, '/config/settings.js');
+		const expected_backup_path = path.join(ROOT, '/backup/4_0_0_upgrade_settings.bak');
+		const old_settings_path = path.join(ROOT, '/config/settings.js');
+		const expected_boot_props_path = path.join(ROOT, '/hdb_boot_properties.file');
+		const test_user = 'test_user';
+
+		let create_config_file_stub;
+		let init_old_config_stub;
+		let copy_sync_stub;
+		let get_stub;
+		let remove_sync_stub;
+		let write_file_stub;
+		let log_error_stub;
+		let console_error_stub;
+		let console_log_stub;
+		let init_sync_stub;
+		let get_props_file_path_stub;
+		let access_sync_stub;
+		let properties_reader_stub;
+
+		before(() => {
+			updateSettingsFile_4_0_0 = directive_4_0_0_rw.__get__('updateSettingsFile_4_0_0');
+		});
+
+		beforeEach(() => {
+			get_stub = sandbox.stub(env, 'get').onFirstCall().returns(old_settings_path).onSecondCall().returns(ROOT);
+			create_config_file_stub = sandbox.stub(config_utils, 'createConfigFile');
+			init_old_config_stub = sandbox.stub(config_utils, 'initOldConfig');
+			copy_sync_stub = sandbox.stub(fs, 'copySync');
+			remove_sync_stub = sandbox.stub(fs, 'removeSync');
+			write_file_stub = sandbox.stub(fs, 'writeFileSync');
+			log_error_stub = sandbox.stub(logger, 'error');
+			console_error_stub = sandbox.stub(console, 'error');
+			console_log_stub = sandbox.stub(console, 'log');
+			init_sync_stub = sandbox.stub(env, 'initSync');
+			get_props_file_path_stub = sandbox.stub(common_utils, 'getPropsFilePath').returns(expected_boot_props_path);
+			access_sync_stub = sandbox.stub(fs, 'accessSync');
+			properties_reader_stub = sandbox.stub().returns({
+				get: () => test_user,
+			});
+			directive_4_0_0_rw.__set__('PropertiesReader', properties_reader_stub);
+		});
+
+		afterEach(() => {
+			sandbox.restore();
+			sandbox.resetHistory();
+		});
+
+		it('Test correct params are being passed to createConfigFile', () => {
+			init_old_config_stub.returns(old_config_obj);
+			updateSettingsFile_4_0_0();
+
+			expect(create_config_file_stub.args[0][0]).to.eql(old_config_obj);
+		});
+
+		it('Test correct params are being passed to copySync', () => {
+			updateSettingsFile_4_0_0();
+			expect(copy_sync_stub.args[0][0]).to.eql(expected_settings_path);
+			expect(copy_sync_stub.args[0][1]).to.eql(expected_backup_path);
+		});
+
+		it('Test correct params are being passed to initOldConfig', () => {
+			updateSettingsFile_4_0_0();
+			expect(init_old_config_stub.args[0][0]).to.eql(old_settings_path);
+		});
+
+		it('Test correct params are being passed to writeFileSync', () => {
+			updateSettingsFile_4_0_0();
+			expect(write_file_stub.args[0][0]).to.eql(expected_boot_props_path);
+		});
+
+		it('Test initSync is called with force = true', () => {
+			updateSettingsFile_4_0_0();
+			expect(init_sync_stub.args[0][0]).to.be.true;
+		});
+
+		it('Test correct params are being passed to removeSync', () => {
+			updateSettingsFile_4_0_0();
+			expect(remove_sync_stub.called).to.be.true;
+			expect(remove_sync_stub.args[0][0]).to.eql(path.join(ROOT, '/config'));
+		});
+
+		it('Test error is logged and thrown if backup fails', () => {
+			copy_sync_stub.throws(TEST_ERROR);
+			let error;
+			try {
+				updateSettingsFile_4_0_0();
+			} catch (err) {
+				error = err;
+			}
+			expect(error.name).to.equal(TEST_ERROR);
+			expect(console_error_stub.args[0][0]).to.equal(
+				'There was a problem writing the backup for the old settings file. Please check the log for details.'
+			);
+		});
+
+		it('Test error is thrown if initOldConfig fails', () => {
+			init_old_config_stub.throws(TEST_ERROR);
+			let error;
+			try {
+				updateSettingsFile_4_0_0();
+			} catch (err) {
+				error = err;
+			}
+			expect(error.name).to.equal(TEST_ERROR);
+		});
+
+		it('Test error is thrown if createConfigFile fails', () => {
+			create_config_file_stub.throws(TEST_ERROR);
+			let error;
+			try {
+				updateSettingsFile_4_0_0();
+			} catch (err) {
+				error = err;
+			}
+			expect(error.name).to.equal(TEST_ERROR);
+		});
+
+		it('Test error is logged and thrown if writing boot props file fails', () => {
+			write_file_stub.throws(TEST_ERROR);
+			let error;
+			try {
+				updateSettingsFile_4_0_0();
+			} catch (err) {
+				error = err;
+			}
+			expect(error.name).to.equal(TEST_ERROR);
+			expect(log_error_stub.args[0][0].name).to.equal('Unit test error');
+			expect(console_log_stub.args[3][0]).to.equal(
+				'There was a problem updating the HarperDB boot properties file. Please check the log for details.'
+			);
+		});
+
+		it('Test error is logged and thrown if initSync fails', () => {
+			init_sync_stub.throws(TEST_ERROR);
+			let error;
+			try {
+				updateSettingsFile_4_0_0();
+			} catch (err) {
+				error = err;
+			}
+			expect(error.name).to.equal(TEST_ERROR);
+			expect(log_error_stub.args[0][0]).to.equal(error);
+			expect(console_error_stub.firstCall.args[0]).to.equal(
+				'Unable to initialize new properties. Please check the log for details.'
+			);
+		});
+
+		it('Test error is logged and thrown if deleting old config dir fails', () => {
+			remove_sync_stub.throws(TEST_ERROR);
+			let error;
+			try {
+				updateSettingsFile_4_0_0();
+			} catch (err) {
+				error = err;
+			}
+			expect(error.name).to.equal(TEST_ERROR);
+			expect(log_error_stub.args[0][0]).to.equal(error);
+			expect(console_error_stub.args[0][0]).to.equal(
+				'There was a problem deleting the old settings file and directory. Please check the log for details.'
+			);
+		});
+	});
+});

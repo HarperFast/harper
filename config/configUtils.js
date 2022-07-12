@@ -477,9 +477,15 @@ function initOldConfig(old_config_path) {
 
 	for (const config_param in hdb_terms.CONFIG_PARAM_MAP) {
 		const value = old_hdb_properties.get(config_param.toUpperCase());
+		if (hdb_utils.isEmpty(value) || (typeof value === 'string' && value.trim().length === 0)) {
+			continue;
+		}
 		const param_key = hdb_terms.CONFIG_PARAM_MAP[config_param].toLowerCase();
-		if (!hdb_utils.isEmptyOrZeroLength(value)) {
+		if (param_key === hdb_terms.CONFIG_PARAMS.LOGGING_ROOT) {
+			flat_config_obj[param_key] = path.dirname(value);
+		} else {
 			flat_config_obj[param_key] = value;
 		}
 	}
+	return flat_config_obj;
 }

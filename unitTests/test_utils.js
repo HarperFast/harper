@@ -762,7 +762,14 @@ async function runCommand(command, cwd = undefined) {
 	return stdout.replace('\n', '');
 }
 
+function restoreInitStub() {
+	if (env_mgr_init_sync_stub) {
+		env_mgr_init_sync_stub.restore();
+	}
+}
+
 module.exports = {
+	restoreInitStub,
 	changeProcessToBinDir,
 	deepClone,
 	mochaAsyncWrapper,

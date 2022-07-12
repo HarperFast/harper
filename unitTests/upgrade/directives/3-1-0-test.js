@@ -59,6 +59,7 @@ describe('Test 3.1.0 Upgrade Directive', () => {
 
 	after(() => {
 		sandbox.restore();
+		test_util.restoreInitStub();
 		fs.unlinkSync(SETTINGS_PATH);
 	});
 

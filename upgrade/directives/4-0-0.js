@@ -1,0 +1,98 @@
+'use strict';
+
+const path = require('path');
+const fs = require('fs-extra');
+const UpgradeDirective = require('../UpgradeDirective');
+const hdb_log = require('../../utility/logging/harper_logger');
+const config_utils = require('../../config/configUtils');
+const env = require('../../utility/environment/environmentManager');
+const terms = require('../../utility/hdbTerms');
+const common_utils = require('../../utility/common_utils');
+const PropertiesReader = require('properties-reader');
+
+let directive4_0_0 = new UpgradeDirective('4.0.0');
+let directives = [];
+
+function updateSettingsFile_4_0_0() {
+	const settings_update_msg = 'Updating settings file for version 4.0.0';
+	console.log(settings_update_msg);
+	hdb_log.info(settings_update_msg);
+
+	const settings_path = env.get(terms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY);
+	const settings_dir = path.dirname(settings_path);
+	const hdb_root = env.get(terms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY);
+	const settings_backup_path = path.join(hdb_root, 'backup', '4_0_0_upgrade_settings.bak');
+	const new_settings_path = path.join(hdb_root, terms.HDB_CONFIG_FILE);
+
+	try {
+		// Create backup of old settings file.
+		hdb_log.info(`Backing up old settings file to: ${settings_backup_path}`);
+		console.log(`Backing up old settings file to: ${settings_backup_path}`);
+		fs.copySync(settings_path, settings_backup_path);
+	} catch (err) {
+		hdb_log.error(err);
+		console.error(
+			'There was a problem writing the backup for the old settings file. Please check the log for details.'
+		);
+		throw err;
+	}
+
+	// Create the new config file with old settings info.
+	try {
+		hdb_log.info(`Creating new/upgraded settings file at '${new_settings_path}'`);
+		console.log(`Creating new/upgraded settings file at '${new_settings_path}'`);
+		hdb_log.info('Updating env variables with new settings values');
+		const flat_config_obj = config_utils.initOldConfig(settings_path);
+		config_utils.createConfigFile(flat_config_obj);
+	} catch (err) {
+		hdb_log.error(err);
+		console.log('There was a problem creating the new HarperDB config file. Please check the log for details.');
+		throw err;
+	}
+
+	// Rewrite the boot properties file with user and new settings path before initSync is called
+	const boot_prop_path = common_utils.getPropsFilePath();
+	fs.accessSync(boot_prop_path, fs.constants.F_OK | fs.constants.R_OK);
+
+	const hdb_props_file = PropertiesReader(boot_prop_path);
+	const install_user = hdb_props_file.get(terms.HDB_SETTINGS_NAMES.INSTALL_USER);
+	const boot_props_update = `settings_path = ${new_settings_path}
+	install_user = ${install_user}`;
+
+	try {
+		fs.writeFileSync(boot_prop_path, boot_props_update);
+	} catch (err) {
+		hdb_log.error(err);
+		console.log('There was a problem updating the HarperDB boot properties file. Please check the log for details.');
+		throw err;
+	}
+
+	// load new props into env
+	try {
+		env.initSync(true);
+	} catch (err) {
+		hdb_log.error(err);
+		console.error('Unable to initialize new properties. Please check the log for details.');
+		throw err;
+	}
+
+	const upgrade_success_msg = 'New settings file for 4.0.0 upgrade successfully created.';
+
+	try {
+		fs.removeSync(settings_dir);
+		console.log(upgrade_success_msg);
+		hdb_log.info(upgrade_success_msg);
+	} catch (err) {
+		hdb_log.error(err);
+		console.error(
+			'There was a problem deleting the old settings file and directory. Please check the log for details.'
+		);
+		throw err;
+	}
+}
+
+directive4_0_0.sync_functions.push(updateSettingsFile_4_0_0);
+
+directives.push(directive4_0_0);
+
+module.exports = directives;
