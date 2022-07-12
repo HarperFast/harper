@@ -502,8 +502,6 @@ function startsWith(
 			}
 		}
 	}
-
-	results = blobSearch(env, hash_attribute, attribute, search_value, lmdb_terms.SEARCH_TYPES.STARTS_WITH, results);
 	return results;
 }
 
@@ -527,61 +525,7 @@ function endsWith(
 	limit = undefined,
 	offset = undefined
 ) {
-	validateComparisonFunctions(env, attribute, search_value);
-	let results = [[], []];
-	let stat = environment_utility.statDBI(env, attribute);
-	if (stat.entryCount === 0) {
-		return results;
-	}
-
-	let dbi = environment_utility.openDBI(env, attribute);
-	if (dbi[lmdb_terms.DBI_DEFINITION_NAME].is_hash_attribute) {
-		hash_attribute = attribute;
-	}
-
-	offset = Number.isInteger(offset) ? offset : 0;
-
-	try {
-		//we iterate just the keys as it is faster (no access of the value & less iterations in dupsorted dbis)
-		for (let key of dbi.getKeys({ end: reverse ? false : undefined, reverse })) {
-			if (limit === 0) {
-				break;
-			}
-			let key_str = common.convertKeyValueFromSearch(key).toString();
-			if (key_str.endsWith(search_value)) {
-				if (dbi[lmdb_terms.DBI_DEFINITION_NAME].is_hash_attribute) {
-					if (offset > 0) {
-						offset--;
-						continue;
-					}
-
-					if (limit === 0) {
-						break;
-					}
-					cursor_functions.pushResults(key, key, results, hash_attribute, attribute);
-					limit--;
-				} else {
-					//if there is a match we iterate the values of the key
-					for (let value of dbi.getValues(key)) {
-						if (offset > 0) {
-							offset--;
-							continue;
-						}
-
-						if (limit === 0) {
-							break;
-						}
-						cursor_functions.pushResults(key, value, results, hash_attribute, attribute);
-						limit--;
-					}
-				}
-			}
-		}
-		results = blobSearch(env, hash_attribute, attribute, search_value, lmdb_terms.SEARCH_TYPES.ENDS_WITH, results);
-		return results;
-	} catch (e) {
-		throw e;
-	}
+	return contains(env, hash_attribute, attribute, search_value, reverse, limit, offset, true);
 }
 
 /**
@@ -602,64 +546,54 @@ function contains(
 	search_value,
 	reverse = false,
 	limit = undefined,
-	offset = undefined
+	offset = undefined,
+	ends_with = false
 ) {
 	validateComparisonFunctions(env, attribute, search_value);
 
 	let results = [[], []];
-	let stat = environment_utility.statDBI(env, attribute);
-	if (stat.entryCount === 0) {
-		return results;
-	}
-
-	let dbi = environment_utility.openDBI(env, attribute);
-	if (dbi[lmdb_terms.DBI_DEFINITION_NAME].is_hash_attribute) {
+	let dbi = environment_utility.openDBI(env, attribute); // verify existence of the attribute
+	if (dbi[lmdb_terms.DBI_DEFINITION_NAME].is_hash_attribute)
 		hash_attribute = attribute;
+	else {
+		if (hash_attribute)
+			dbi = environment_utility.openDBI(env, hash_attribute);
+		else {
+			let dbis = environment_utility.listDBIs(env);
+			for (let i = 0, l = dbis.length; i < l; i++) {
+				dbi = environment_utility.openDBI(env, dbis[i]);
+				if (dbi[lmdb_terms.DBI_DEFINITION_NAME].is_hash_attribute)
+					break;
+			}
+		}
 	}
 
 	offset = Number.isInteger(offset) ? offset : 0;
 
-	try {
-		for (let key of dbi.getKeys({ end: reverse ? false : undefined, reverse })) {
+	for (let { key, value: record } of dbi.getRange({
+		start: reverse ? undefined : false,
+		end: !reverse ? undefined : false,
+		reverse: reverse,
+	})) {
+		let value = record[attribute];
+		if (ends_with ? value?.toString().endsWith(search_value) : value?.toString().includes(search_value)) {
+			if (offset > 0) {
+				offset--;
+				continue;
+			}
+
 			if (limit === 0) {
 				break;
 			}
-
-			let found_str = key.toString();
-			if (found_str.includes(search_value)) {
-				if (dbi[lmdb_terms.DBI_DEFINITION_NAME].is_hash_attribute) {
-					if (offset > 0) {
-						offset--;
-						continue;
-					}
-
-					if (limit === 0) {
-						break;
-					}
-					cursor_functions.pushResults(key, key, results, hash_attribute, attribute);
-					limit--;
-				} else {
-					for (let value of dbi.getValues(key)) {
-						if (offset > 0) {
-							offset--;
-							continue;
-						}
-
-						if (limit === 0) {
-							break;
-						}
-
-						cursor_functions.pushResults(key, value, results, hash_attribute, attribute);
-						limit--;
-					}
-				}
-			}
+			results[0].push(key);
+			let object = hash_attribute ? { [hash_attribute]: key } : {};
+			if (hash_attribute != attribute)
+				object[attribute] = value;
+			results[1].push(object);
+			limit--;
 		}
-		results = blobSearch(env, hash_attribute, attribute, search_value, lmdb_terms.SEARCH_TYPES.CONTAINS, results);
-		return results;
-	} catch (e) {
-		throw e;
 	}
+	return results;
 }
 
 /** RANGE FUNCTIONS **/

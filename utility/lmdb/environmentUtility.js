@@ -233,13 +233,14 @@ async function openEnvironment(base_path, env_name, is_txn = false, is_directory
  * @param {String} env_name - name of environment
  * @param {Boolean} is_txn - defines if is a transactions environemnt
  */
-async function deleteEnvironment(base_path, env_name, is_txn = false) {
+async function deleteEnvironment(base_path, env_name, is_txn = false, is_directory = false) {
 	pathEnvNameValidation(base_path, env_name);
 	env_name = env_name.toString();
 	await verifyEnvironmentBasePath(base_path);
 	await validateEnvironmentPath(base_path, env_name);
 
-	await fs.remove(path.join(base_path, env_name));
+	await fs.remove(path.join(base_path, env_name + (is_directory ? '' : '.mdb')));
+	await fs.remove(path.join(base_path, env_name + (is_directory ? '' : '.mdb-lock')));
 	if (global.lmdb_map !== undefined) {
 		let full_name = getCachedEnvironmentName(base_path, env_name, is_txn);
 		if (global.lmdb_map[full_name]) {

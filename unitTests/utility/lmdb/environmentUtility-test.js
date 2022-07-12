@@ -772,14 +772,12 @@ describe('Test LMDB environmentUtility module', () => {
 		it('call function happy path', async () => {
 			let stat = await test_utils.assertErrorAsync(lmdb_env_util.statDBI, [env, ID_DBI_NAME], undefined);
 			assert.notDeepStrictEqual(stat, undefined);
-			assert.deepStrictEqual(stat, {
-				pageSize: 4096,
-				treeDepth: 0,
-				treeBranchPageCount: 0,
-				treeLeafPageCount: 0,
-				entryCount: 0,
-				overflowPages: 0,
-			});
+			assert.strictEqual(stat.pageSize, 4096);
+			assert.strictEqual(stat.treeDepth, 0);
+			assert.strictEqual(stat.treeBranchPageCount, 0);
+			assert.strictEqual(stat.treeLeafPageCount, 0);
+			assert.strictEqual(stat.entryCount, 0);
+			assert.strictEqual(stat.overflowPages, 0);
 		});
 
 		it('call function on dbi no exist', async () => {
