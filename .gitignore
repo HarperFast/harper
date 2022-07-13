@@ -3,7 +3,7 @@
 
 /node_modules/*
 hdb/*
-*.log
+logs/*.log
 .nyc_output/*
 .vs_code/*
 /bin/coverage/*
