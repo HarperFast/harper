@@ -9,7 +9,8 @@ try {
 	require('bytenode');
 	installer = require(compiled_nats_install_script);
 } catch (e) {
-	installer = require('../server/nats/utility/installNATSServer');
+	const nats_install_script = path.resolve(__dirname, '../server/nats/utility/installNATSServer');
+	installer = require(nats_install_script);
 }
 
 (async () => {

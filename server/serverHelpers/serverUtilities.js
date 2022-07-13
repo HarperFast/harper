@@ -35,6 +35,7 @@ const job_runner = require('./../jobRunner');
 const token_authentication = require('../../security/tokenAuthentication');
 const config_utils = require('../../config/configUtils');
 const transaction_log = require('../../utility/logging/transactionLog');
+const npm_utilities = require('../../utility/npmUtilities');
 
 const operation_function_caller = require(`../../utility/OperationFunctionCaller`);
 
@@ -373,6 +374,11 @@ function initializeOperationFunctionMap() {
 		terms.OPERATIONS_ENUM.DELETE_TRANSACTION_LOGS_BEFORE,
 		new OperationFunctionObject(executeJob, transaction_log.deleteTransactionLogsBefore)
 	);
+	op_func_map.set(
+		terms.OPERATIONS_ENUM.INSTALL_NODE_MODULES,
+		new OperationFunctionObject(npm_utilities.installModules)
+	);
+	op_func_map.set(terms.OPERATIONS_ENUM.AUDIT_NODE_MODULES, new OperationFunctionObject(npm_utilities.auditModules));
 
 	return op_func_map;
 }

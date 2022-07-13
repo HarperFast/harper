@@ -85,7 +85,7 @@ rm -rf ./node_modules/
 # npm install from source
 # --silent sets npm log level to silent
 # --production prevents install of dev dependencies
-npm --silent install --production
+npm --silent install --production --legacy-peer-deps
 sleep 2
 
 # Remove the nats-server binary
