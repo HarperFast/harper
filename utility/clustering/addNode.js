@@ -42,12 +42,13 @@ async function addNode(req) {
 	}
 
 	// Sanitize the input from API and build two objects, one that will be inserted into the hdb_nodes table
-	// the other that will be sent to the remote node. The remote node subscriptions have the reverse of the the local node subs.
+	// the other that will be sent to the remote node. The remote node subscriptions have the reverse of the local node subs.
 	const { node_record, remote_payload } = clustering_utils.buildNodePayloads(
 		req.subscriptions,
 		local_node_name,
 		remote_node_name,
-		hdb_terms.OPERATIONS_ENUM.ADD_NODE
+		hdb_terms.OPERATIONS_ENUM.ADD_NODE,
+		await clustering_utils.getSystemInfo()
 	);
 
 	// Create local streams for all the tables in the subscriptions array.
@@ -85,6 +86,9 @@ async function addNode(req) {
 		);
 		await nats_utils.updateWorkStream(req.subscriptions[i], remote_node_name);
 	}
+
+	// The node being added will respond with its system info, add this to its record.
+	node_record.system_info = reply.system_info;
 
 	// Add new node record to hdb_nodes table.
 	await clustering_utils.upsertNodeRecord(node_record);

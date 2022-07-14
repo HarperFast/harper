@@ -225,6 +225,9 @@
         "attribute":"subscriptions"
       },
       {
+        "attribute": "system_info"
+      },
+      {
         "attribute":"__createdtime__"
       },
       {

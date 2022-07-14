@@ -31,8 +31,7 @@ async function updateRemoteSource(request) {
 			return new UpdateRemoteResponseObject(nats_terms.UPDATE_REMOTE_RESPONSE_STATUSES.ERROR, validation.message);
 		}
 
-		const subscriptions = request.subscriptions;
-		const node_name = request.node_name;
+		const { subscriptions, node_name, system_info } = request;
 		let new_subs_array = [];
 		let node_record = await cluster_utils.getNodeRecord(node_name);
 		const update_record = !hdb_utils.isEmptyOrZeroLength(node_record);
@@ -92,18 +91,22 @@ async function updateRemoteSource(request) {
 
 		// If there is no existing record for node in hdb_nodes create a new one
 		if (!update_record) {
-			node_record = new Node(node_name, new_subs_array);
+			node_record = new Node(node_name, new_subs_array, undefined);
 			hdb_logger.trace(`No record found for ${node_name}, creating a new one`);
 		}
 
 		// node_record doesnt have required prototypes which are required down the line, for this reason a new object is created.
 		const upsert_record = Object.create({});
 		Object.assign(upsert_record, node_record);
+		// Regardless of if record exists or not we add/update its system_info param.
+		upsert_record.system_info = system_info;
 		await cluster_utils.upsertNodeRecord(upsert_record);
 
 		return new UpdateRemoteResponseObject(
 			nats_terms.UPDATE_REMOTE_RESPONSE_STATUSES.SUCCESS,
-			`Node ${env_manager.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_NODENAME)} successfully updated remote source`
+			`Node ${env_manager.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_NODENAME)} successfully updated remote source`,
+			// Send this nodes system info back to the node the request came from
+			await cluster_utils.getSystemInfo()
 		);
 	} catch (err) {
 		hdb_logger.error(err);

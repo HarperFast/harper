@@ -83,6 +83,7 @@ describe('Test removeRemoteSource module', () => {
 		expect(result).to.eql({
 			message: "Node local_test_node successfully removed node 'nodeAbc-test'.",
 			status: 'success',
+			system_info: undefined,
 		});
 	});
 
@@ -92,6 +93,7 @@ describe('Test removeRemoteSource module', () => {
 		expect(result).to.eql({
 			message: "No record found for node 'nodeAbc-test'",
 			status: 'error',
+			system_info: undefined,
 		});
 	});
 
@@ -101,6 +103,7 @@ describe('Test removeRemoteSource module', () => {
 		expect(result).to.eql({
 			message: 'Error in HDB',
 			status: 'error',
+			system_info: undefined,
 		});
 	});
 });

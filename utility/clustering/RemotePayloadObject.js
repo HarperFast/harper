@@ -4,10 +4,11 @@
  * The class represents the payload sent to another node when updating remote sources.
  */
 class RemotePayloadObject {
-	constructor(operation, node_name, subscriptions) {
+	constructor(operation, node_name, subscriptions, system_info) {
 		this.operation = operation;
 		this.node_name = node_name;
 		this.subscriptions = subscriptions;
+		this.system_info = system_info;
 	}
 }
 

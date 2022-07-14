@@ -76,7 +76,7 @@ async function handleRequest(sub) {
 				reply = await remove_remote_source(msg_data);
 				break;
 			case hdb_terms.OPERATIONS_ENUM.CLUSTER_STATUS:
-				reply = await get_remote_source_config();
+				reply = await get_remote_source_config(msg_data);
 				break;
 			default:
 				const err_msg = `node '${node_name}' reply service received unrecognized request operation`;

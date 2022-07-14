@@ -64,9 +64,15 @@ describe('Test updateNode module', () => {
 			],
 		},
 	];
-	const fake_reply = new UpdateRemoteResponseObject('success', 'Test node successfully updated');
+	const test_sys_info = {
+		hdb_version: '4.0.0test',
+		node_version: '16.15.0',
+		platform: 'test platform',
+	};
+	const fake_reply = new UpdateRemoteResponseObject('success', 'Test node successfully updated', test_sys_info);
 
 	before(() => {
+		sandbox.stub(clustering_utils, 'getSystemInfo').resolves(test_sys_info);
 		updateNode.__set__('local_node_name', 'local_node');
 		delete global.hdb_schema;
 		test_utils.setGlobalSchema('name', 'reptile', 'crocodilia', ['name', 'age']);
@@ -109,6 +115,11 @@ describe('Test updateNode module', () => {
 					table: 'poodle',
 				},
 			],
+			system_info: {
+				hdb_version: '4.0.0test',
+				node_version: '16.15.0',
+				platform: 'test platform',
+			},
 		};
 		const expected_node_record = {
 			name: 'remote_node_test',
@@ -132,6 +143,11 @@ describe('Test updateNode module', () => {
 					publish: false,
 				},
 			],
+			system_info: {
+				hdb_version: '4.0.0test',
+				node_version: '16.15.0',
+				platform: 'test platform',
+			},
 		};
 		const result = await updateNode(test_request);
 		expect(create_table_streams_stub.called).to.be.true;

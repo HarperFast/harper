@@ -15,6 +15,8 @@ const { RemotePayloadObject, RemotePayloadSubscription } = require('./RemotePayl
 const { handleHDBError, hdb_errors } = require('../errors/hdbError');
 const { HTTP_STATUS_CODES, HDB_ERROR_MSGS } = hdb_errors;
 const SearchObject = require('../../data_layer/SearchObject');
+const system_information = require('../environment/systemInformation');
+const version = require('../../bin/version');
 
 //Promisified functions
 const p_auth_authorize = util.promisify(auth.authorize);
@@ -29,6 +31,7 @@ module.exports = {
 	buildNodePayloads,
 	checkClusteringEnabled,
 	getAllNodeRecords,
+	getSystemInfo,
 };
 
 async function authHeaderToUser(json_body) {
@@ -108,10 +111,18 @@ function reverseSubscription(subscription) {
  * @param local_node_name
  * @param remote_node_name
  * @param operation
+ * @param system_info
  * @param existing_subs - array of nodes existing subscriptions if they exist.
  * @returns {{remote_payload: RemotePayloadObject, node_record: Node}}
  */
-function buildNodePayloads(subscriptions, local_node_name, remote_node_name, operation, existing_subs = undefined) {
+function buildNodePayloads(
+	subscriptions,
+	local_node_name,
+	remote_node_name,
+	operation,
+	system_info,
+	existing_subs = undefined
+) {
 	let local_node_subs = [];
 	let remote_node_subs = [];
 	const update_record = !hdb_utils.isEmptyOrZeroLength(existing_subs);
@@ -157,8 +168,9 @@ function buildNodePayloads(subscriptions, local_node_name, remote_node_name, ope
 	}
 
 	const node_subs = update_record ? existing_subs : local_node_subs;
-	const node_record = new Node(remote_node_name, node_subs);
-	const remote_payload = new RemotePayloadObject(operation, local_node_name, remote_node_subs);
+	// system info is undefined here because we have nto yet received it from the remote node
+	const node_record = new Node(remote_node_name, node_subs, undefined);
+	const remote_payload = new RemotePayloadObject(operation, local_node_name, remote_node_subs, system_info);
 
 	return {
 		node_record,
@@ -197,4 +209,17 @@ async function getAllNodeRecords() {
 	);
 
 	return p_search_by_value(search_obj);
+}
+
+/**
+ * Builds the system info param that is used in hdb_nodes table and cluster status.
+ * @returns {Promise<{node_version: *, platform: string, hdb_version: *}>}
+ */
+async function getSystemInfo() {
+	const sys_info = await system_information.getSystemInformation();
+	return {
+		hdb_version: version.version(),
+		node_version: sys_info.node_version,
+		platform: sys_info.platform,
+	};
 }

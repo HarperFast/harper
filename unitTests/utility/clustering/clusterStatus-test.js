@@ -4,7 +4,6 @@ const chai = require('chai');
 const { expect } = chai;
 const sinon = require('sinon');
 const rewire = require('rewire');
-const test_utils = require('../../test_utils');
 const nats_utils = require('../../../server/nats/utility/natsUtils');
 const clustering_utils = require('../../../utility/clustering/clusterUtilities');
 const hdb_logger = require('../../../utility/logging/harper_logger');
@@ -15,6 +14,12 @@ describe('Test clusterStatus module', () => {
 	let get_all_node_records_stub;
 	let request_stub;
 	let log_error_stub;
+	let upsert_node_record_stub;
+	const test_sys_info = {
+		hdb_version: '4.0.0test',
+		node_version: '16.15.0',
+		platform: 'test platform',
+	};
 	const test_existing_record = [
 		{
 			name: 'nodeA',
@@ -54,6 +59,7 @@ describe('Test clusterStatus module', () => {
 				clustering: 2456,
 				operations_api: 9990,
 			},
+			system_info: test_sys_info,
 		},
 	};
 
@@ -65,10 +71,13 @@ describe('Test clusterStatus module', () => {
 				clustering: 2456,
 				operations_api: 3345,
 			},
+			system_info: test_sys_info,
 		},
 	};
 
 	before(() => {
+		upsert_node_record_stub = sandbox.stub(clustering_utils, 'upsertNodeRecord');
+		sandbox.stub(clustering_utils, 'getSystemInfo').resolves(test_sys_info);
 		cluster_status.__set__('clustering_enabled', true);
 		cluster_status.__set__('this_node_name', 'localTestNode');
 		get_all_node_records_stub = sandbox.stub(clustering_utils, 'getAllNodeRecords').resolves(test_existing_record);
@@ -112,6 +121,7 @@ describe('Test clusterStatus module', () => {
 							publish: true,
 						},
 					],
+					system_info: undefined,
 				},
 				{
 					node_name: 'nodeB',
@@ -130,6 +140,7 @@ describe('Test clusterStatus module', () => {
 							publish: false,
 						},
 					],
+					system_info: undefined,
 				},
 			],
 		};
@@ -167,6 +178,11 @@ describe('Test clusterStatus module', () => {
 							publish: true,
 						},
 					],
+					system_info: {
+						hdb_version: '4.0.0test',
+						node_version: '16.15.0',
+						platform: 'test platform',
+					},
 				},
 				{
 					node_name: 'nodeB',
@@ -184,6 +200,11 @@ describe('Test clusterStatus module', () => {
 							publish: false,
 						},
 					],
+					system_info: {
+						hdb_version: '4.0.0test',
+						node_version: '16.15.0',
+						platform: 'test platform',
+					},
 				},
 			],
 		};
@@ -196,6 +217,22 @@ describe('Test clusterStatus module', () => {
 		delete result.connections[0].latency_ms;
 		delete result.connections[1].latency_ms;
 		expect(result).to.eql(expected_result);
+		expect(upsert_node_record_stub.getCall(0).args[0]).to.eql({
+			name: 'nodeA',
+			system_info: {
+				hdb_version: '4.0.0test',
+				node_version: '16.15.0',
+				platform: 'test platform',
+			},
+		});
+		expect(upsert_node_record_stub.getCall(1).args[0]).to.eql({
+			name: 'nodeB',
+			system_info: {
+				hdb_version: '4.0.0test',
+				node_version: '16.15.0',
+				platform: 'test platform',
+			},
+		});
 	});
 
 	it('Test cluster status returns two nodes, one with open status the other closed due to error', async () => {
@@ -225,6 +262,11 @@ describe('Test clusterStatus module', () => {
 							publish: true,
 						},
 					],
+					system_info: {
+						hdb_version: '4.0.0test',
+						node_version: '16.15.0',
+						platform: 'test platform',
+					},
 				},
 				{
 					node_name: 'nodeB',
@@ -242,6 +284,7 @@ describe('Test clusterStatus module', () => {
 							publish: false,
 						},
 					],
+					system_info: undefined,
 				},
 			],
 		};

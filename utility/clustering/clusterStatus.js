@@ -50,7 +50,12 @@ async function clusterStatus() {
 
 async function buildNodeStatus(node_record, connections) {
 	const remote_node_name = node_record.name;
-	const remote_payload = new RemotePayloadObject(hdb_terms.OPERATIONS_ENUM.CLUSTER_STATUS, this_node_name, undefined);
+	const remote_payload = new RemotePayloadObject(
+		hdb_terms.OPERATIONS_ENUM.CLUSTER_STATUS,
+		this_node_name,
+		undefined,
+		await cluster_utils.getSystemInfo()
+	);
 	let reply;
 	let elapsed_time;
 	let status = nats_terms.CLUSTER_STATUS_STATUSES.OPEN;
@@ -80,8 +85,21 @@ async function buildNodeStatus(node_record, connections) {
 		reply?.message?.ports?.operations_api,
 		elapsed_time,
 		reply?.message?.uptime,
-		node_record.subscriptions
+		node_record.subscriptions,
+		reply?.message?.system_info
 	);
+
+	try {
+		// Each node responding to the status request should send its system info back.
+		// Update its system info in hdb nodes table.
+		const update_record = {
+			name: remote_node_name,
+			system_info: reply?.message?.system_info,
+		};
+		await cluster_utils.upsertNodeRecord(update_record);
+	} catch (err) {
+		hdb_logger.error('Cluster status encountered an error updating system info for node:', remote_node_name, err);
+	}
 
 	connections.push(node_status);
 }
@@ -95,9 +113,10 @@ async function buildNodeStatus(node_record, connections) {
  * @param latency
  * @param uptime
  * @param subs
+ * @param system_info
  * @constructor
  */
-function NodeStatusObject(node_name, status, port_clustering, port_operations_api, latency, uptime, subs) {
+function NodeStatusObject(node_name, status, port_clustering, port_operations_api, latency, uptime, subs, system_info) {
 	this.node_name = node_name;
 	this.status = status;
 	this.ports = {
@@ -107,4 +126,5 @@ function NodeStatusObject(node_name, status, port_clustering, port_operations_ap
 	this.latency_ms = latency;
 	this.uptime = uptime;
 	this.subscriptions = subs;
+	this.system_info = system_info;
 }

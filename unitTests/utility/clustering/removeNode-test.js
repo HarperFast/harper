@@ -73,6 +73,7 @@ describe('Test removeNode module', () => {
 			operation: 'remove_node',
 			node_name: 'node1_test',
 			subscriptions: [],
+			system_info: undefined,
 		};
 		const result = await remove_node(test_request);
 		expect(request_stub.args[0][0]).to.eql('node1_test.__request__');

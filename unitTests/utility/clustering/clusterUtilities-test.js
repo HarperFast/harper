@@ -11,10 +11,16 @@ let cluster_utils = rewire('../../../utility/clustering/clusterUtilities');
 
 describe('Test clusterUtilities', () => {
 	const sandbox = sinon.createSandbox();
+	const test_sys_info = {
+		hdb_version: '4.0.0test',
+		node_version: '16.15.0',
+		platform: 'test platform',
+	};
 	let reverseSubscription;
 
 	before(() => {
 		reverseSubscription = cluster_utils.__get__('reverseSubscription');
+		sandbox.stub(cluster_utils, 'getSystemInfo').resolves(test_sys_info);
 	});
 
 	after(() => {
@@ -156,6 +162,7 @@ describe('Test clusterUtilities', () => {
 					subscribe: false,
 				},
 			],
+			system_info: undefined,
 		};
 
 		const expected_remote_payload = {
@@ -184,9 +191,30 @@ describe('Test clusterUtilities', () => {
 					table: 'poodle',
 				},
 			],
+			system_info: {
+				hdb_version: '4.0.0test',
+				node_version: '16.15.0',
+				platform: 'test platform',
+			},
 		};
-		const result = cluster_utils.buildNodePayloads(test_subs, 'im_the_local_node', 'remote_node', 'add_node');
+		const result = cluster_utils.buildNodePayloads(
+			test_subs,
+			'im_the_local_node',
+			'remote_node',
+			'add_node',
+			test_sys_info
+		);
 		expect(result.node_record).to.eql(expected_node_record);
 		expect(result.remote_payload).to.eql(expected_remote_payload);
+	});
+
+	it('Test getSystemInfo gets system info', async () => {
+		const result = await cluster_utils.getSystemInfo();
+		expect(result).to.haveOwnProperty('hdb_version');
+		expect(result).to.haveOwnProperty('node_version');
+		expect(result).to.haveOwnProperty('platform');
+		expect(result.hdb_version).to.not.be.empty;
+		expect(result.node_version).to.not.be.empty;
+		expect(result.platform).to.not.be.empty;
 	});
 });

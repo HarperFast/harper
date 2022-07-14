@@ -20,6 +20,12 @@ describe('Test addNode module', () => {
 	let hdb_log_error_stub;
 	let update_work_stream_stub;
 	let create_table_streams_stub;
+	let get_sys_info_sub;
+	const test_sys_info = {
+		hdb_version: '4.0.0test',
+		node_version: '16.15.0',
+		platform: 'test platform',
+	};
 	const test_request = {
 		operation: 'add_node',
 		node_name: 'remote_node',
@@ -44,9 +50,10 @@ describe('Test addNode module', () => {
 			},
 		],
 	};
-	const fake_reply = new UpdateRemoteResponseObject('success', 'Test node successfully added');
+	const fake_reply = new UpdateRemoteResponseObject('success', 'Test node successfully added', test_sys_info);
 
 	before(() => {
+		get_sys_info_sub = sandbox.stub(clustering_utils, 'getSystemInfo').resolves(test_sys_info);
 		addNode.__set__('local_node_name', 'local_node');
 		test_utils.setGlobalSchema('name', 'breed', 'beagle', ['name', 'age']);
 		test_utils.setGlobalSchema('id', 'country', 'england', ['id', 'county']);
@@ -95,6 +102,11 @@ describe('Test addNode module', () => {
 					table: 'poodle',
 				},
 			],
+			system_info: {
+				hdb_version: '4.0.0test',
+				node_version: '16.15.0',
+				platform: 'test platform',
+			},
 		};
 
 		const expected_node_record = {
@@ -119,6 +131,11 @@ describe('Test addNode module', () => {
 					subscribe: false,
 				},
 			],
+			system_info: {
+				hdb_version: '4.0.0test',
+				node_version: '16.15.0',
+				platform: 'test platform',
+			},
 		};
 		const result = await addNode(test_request);
 		expect(create_table_streams_stub.called).to.be.true;

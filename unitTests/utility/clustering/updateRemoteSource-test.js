@@ -24,6 +24,11 @@ describe('Test updateRemoteSource module', () => {
 	let log_error_stub;
 	let create_local_table_streams_stub;
 	const test_node_name = 'unit_test_node';
+	const test_sys_info = {
+		hdb_version: '4.0.0test',
+		node_version: '16.15.0',
+		platform: 'test platform',
+	};
 	const test_payload = {
 		operation: 'update_node',
 		node_name: 'cowabunga',
@@ -50,10 +55,12 @@ describe('Test updateRemoteSource module', () => {
 				subscribe: true,
 			},
 		],
+		system_info: test_sys_info,
 	};
 
 	before(() => {
 		delete global.hdb_schema;
+		sandbox.stub(cluster_utils, 'getSystemInfo').resolves(test_sys_info);
 		env_manager.setProperty(hdb_terms.CONFIG_PARAMS.CLUSTERING_NODENAME, test_node_name);
 		create_local_table_streams_stub = sandbox.stub(nats_utils, 'createLocalTableStream').resolves();
 		create_table_stub = sandbox.stub();
@@ -105,6 +112,11 @@ describe('Test updateRemoteSource module', () => {
 						table: 'poodle',
 					},
 				],
+				system_info: {
+					hdb_version: '4.0.0test',
+					node_version: '16.15.0',
+					platform: 'test platform',
+				},
 			},
 		];
 		const result = await updateRemoteSource(test_payload);
@@ -148,6 +160,11 @@ describe('Test updateRemoteSource module', () => {
 		expect(result).to.eql({
 			message: 'Node unit_test_node successfully updated remote source',
 			status: 'success',
+			system_info: {
+				hdb_version: '4.0.0test',
+				node_version: '16.15.0',
+				platform: 'test platform',
+			},
 		});
 
 		create_schema_rw();
@@ -184,6 +201,11 @@ describe('Test updateRemoteSource module', () => {
 					subscribe: false,
 				},
 			],
+			system_info: {
+				hdb_version: '4.0.0test',
+				node_version: '16.15.0',
+				platform: 'test platform',
+			},
 		};
 		test_utils.setGlobalSchema('name', 'breed', 'beagle', ['breed', 'color']);
 		test_utils.setGlobalSchema('number', 'dog', 'poodle', ['number']);
@@ -245,6 +267,11 @@ describe('Test updateRemoteSource module', () => {
 		expect(result).to.eql({
 			message: 'Node unit_test_node successfully updated remote source',
 			status: 'success',
+			system_info: {
+				hdb_version: '4.0.0test',
+				node_version: '16.15.0',
+				platform: 'test platform',
+			},
 		});
 
 		create_schema_rw();
@@ -256,6 +283,7 @@ describe('Test updateRemoteSource module', () => {
 		expect(result).to.eql({
 			status: 'error',
 			message: 'Error getting node record',
+			system_info: undefined,
 		});
 	});
 
@@ -265,6 +293,7 @@ describe('Test updateRemoteSource module', () => {
 		expect(result).to.eql({
 			status: 'error',
 			message: "'node_name' is required",
+			system_info: undefined,
 		});
 	});
 });
