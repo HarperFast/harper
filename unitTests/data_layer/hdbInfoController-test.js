@@ -14,6 +14,8 @@ const hdb_terms = require('../../utility/hdbTerms');
 const directiveManager = require('../../upgrade/directives/directivesController');
 const os = require('os');
 const chalk = require('chalk');
+const util = require('util');
+const global_schema = require('../../utility/globalSchema');
 
 let sandbox;
 let search_stub;
@@ -25,9 +27,12 @@ let checkIfInstallIsSupported_stub;
 let consoleLog_stub;
 let consoleError_stub;
 let log_info_stub;
-const FULL_ARRAY = [1, 2, 3];
-const EMPTY_ARRAY = [];
 const OLD_VERSION_NUM = '2.0.1';
+const NEWER_VERSION_NUM = '5.0.1';
+const OLD_VERSION_ERR =
+	'You are attempting to upgrade from an old instance of HarperDB that is no longer supported. ' +
+	'In order to upgrade to this version, you must do a fresh install. If you need support, ' +
+	'please contact support@harperdb.io';
 const INFO_SEARCH_RESULT = [
 	{
 		info_id: 1,
@@ -40,6 +45,7 @@ const INFO_SEARCH_RESULT = [
 		hdb_version_num: '3.1.0',
 	},
 ];
+let p_setSchemaDataToGlobal = util.promisify(global_schema.setSchemaDataToGlobal);
 
 describe('Test hdbInfoController module ', function () {
 	before(() => {
@@ -50,6 +56,8 @@ describe('Test hdbInfoController module ', function () {
 		consoleLog_stub = sandbox.stub(console, 'log').returns();
 		consoleError_stub = sandbox.stub(console, 'error').returns();
 		log_info_stub = sandbox.stub(harper_logger, 'info').returns();
+		hdb_info_controller_rw.__set__('MINIMUM_SUPPORTED_VERSION_NUM', '2.9.9');
+		hdb_info_controller_rw.__set__('DEFAULT_DATA_VERSION_NUM', '2.3.0');
 	});
 
 	afterEach(() => {
@@ -206,9 +214,12 @@ describe('Test hdbInfoController module ', function () {
 	});
 
 	describe('Test getVersionUpdateInfo() ', () => {
-		before(() => {
+		beforeEach(() => {
 			getLatestHdbInfoRecord_stub = sandbox.stub().resolves(INFO_SEARCH_RESULT[1]);
 			hdb_info_controller_rw.__set__('getLatestHdbInfoRecord', getLatestHdbInfoRecord_stub);
+		});
+
+		before(() => {
 			version_stub = sandbox.stub(version, 'version').returns('3.2.0');
 			hasUpgradesRequired_stub = sandbox.stub(directiveManager, 'hasUpgradesRequired').returns(true);
 			checkIfInstallIsSupported_stub = sandbox.stub().returns();
@@ -227,7 +238,7 @@ describe('Test hdbInfoController module ', function () {
 			assert.deepEqual(result, expected_result, 'Expected UpgradeObject result not returned');
 		});
 
-		it('getVersionUpdateInfo - data version equal to current version', async () => {
+		it('getVersionUpdateInfo - no result returned if versions are the same', async () => {
 			const expected_result = null;
 			version_stub.returns(INFO_SEARCH_RESULT[1].hdb_version_num);
 
@@ -241,7 +252,7 @@ describe('Test hdbInfoController module ', function () {
 			assert.deepEqual(result, expected_result, 'Expected null result not returned');
 		});
 
-		it('getVersionUpdateInfo - data version newer than current version', async () => {
+		it('getVersionUpdateInfo - pre-upgrade version newer than upgrade version', async () => {
 			const expected_err_msg = 'Trying to downgrade HDB versions is not supported.';
 			version_stub.returns(INFO_SEARCH_RESULT[0].hdb_version_num);
 
@@ -264,28 +275,40 @@ describe('Test hdbInfoController module ', function () {
 			assert.equal(
 				consoleError_stub.args[0][0],
 				chalk.red(
-					`You have installed a version lower than the version that your data was created on or was upgraded to.  This may cause issues and is currently not supported.${os.EOL}${hdb_terms.SUPPORT_HELP_MSG}`
+					`You have installed a version lower than the version that your data was created on or was upgraded to. This may cause issues and is currently not supported.${os.EOL}${hdb_terms.SUPPORT_HELP_MSG}`
 				),
 				'Console message not correct'
 			);
 		});
 
-		it('getVersionUpdateInfo - current version is before 3.0.0 so no upgrade required', async () => {
-			getLatestHdbInfoRecord_stub.resolves();
+		it('getVersionUpdateInfo - error thrown if downgrading version', async () => {
+			const test_error = 'Trying to downgrade HDB versions is not supported.';
 			version_stub.returns(OLD_VERSION_NUM);
 
-			let result = await hdb_info_controller_rw.getVersionUpdateInfo();
+			let result;
+			try {
+				await hdb_info_controller_rw.getVersionUpdateInfo();
+			} catch (err) {
+				result = err;
+			}
 
-			assert.equal(result, undefined, 'Expected undefined to be returned from function');
-			getLatestHdbInfoRecord_stub.reset();
+			assert.ok(result instanceof Error, 'Expected error to be thrown');
+			assert.equal(result.message, test_error, 'Expected error message to be thrown');
 		});
 
-		it('getVersionUpdateInfo - current version was downgraded after being upgraded to 3.0.2 - error thrown', async () => {
-			version_stub.returns(OLD_VERSION_NUM);
+		it('getVersionUpdateInfo - error thrown if version is too old', async () => {
+			getLatestHdbInfoRecord_stub.resolves(undefined);
+			version_stub.returns(NEWER_VERSION_NUM);
 
-			let result = await hdb_info_controller_rw.getVersionUpdateInfo();
+			let result;
+			try {
+				await hdb_info_controller_rw.getVersionUpdateInfo();
+			} catch (err) {
+				result = err;
+			}
 
-			assert.equal(result, undefined, 'Expected undefined to be returned from function');
+			assert.ok(result instanceof Error, 'Expected error to be thrown');
+			assert.equal(result.message, OLD_VERSION_ERR, 'Expected error message to be thrown');
 		});
 
 		it('test getVersionUpdateInfo - version throws exception', async function () {
@@ -301,6 +324,47 @@ describe('Test hdbInfoController module ', function () {
 
 			assert.ok(result instanceof Error, 'Expected error to be thrown');
 			assert.equal(result.message, test_error, 'Expected error message to be re-thrown');
+		});
+	});
+
+	describe('Test checkIfInstallIsSupported()', () => {
+		before(() => {
+			insert_stub.resolves();
+		});
+
+		it('Test it throws error message if hdb_info table doesnt exist', async () => {
+			const check_if_install_supported_rw = hdb_info_controller_rw.__get__('checkIfInstallIsSupported');
+
+			await p_setSchemaDataToGlobal();
+			if (global.hdb_schema.system.hdb_info) {
+				delete global.hdb_schema.system.hdb_info;
+			}
+
+			let result;
+			try {
+				check_if_install_supported_rw();
+			} catch (err) {
+				result = err;
+			}
+
+			assert.ok(result instanceof Error, 'Expected error to be thrown');
+			assert.equal(result.message, OLD_VERSION_ERR, 'Expected error message to be thrown');
+		});
+
+		it('Test it throws error message if data version is too old', async () => {
+			const has_own_property_stub = sandbox.stub(global.hdb_schema.system, 'hasOwnProperty').returns(true);
+			const check_if_install_supported_rw = hdb_info_controller_rw.__get__('checkIfInstallIsSupported');
+
+			let result;
+			try {
+				check_if_install_supported_rw('2.9.0');
+			} catch (err) {
+				result = err;
+			}
+
+			assert.ok(result instanceof Error, 'Expected error to be thrown');
+			assert.equal(result.message, OLD_VERSION_ERR, 'Expected error message to be thrown');
+			assert.equal(has_own_property_stub.returnValues[0], true, 'expected hasOwnProperty stub to return true');
 		});
 	});
 });

@@ -1,7 +1,9 @@
 'use strict';
 
-// const test_util = require('../../../test_utils');
-// test_util.preTestPrep();
+/**
+ * This is a stub file that is used in directivesManager-test.js
+ */
+
 const test_vers3_0_0 = require('./testDirectives/3-0-0_stub');
 const test_vers3_1_0 = require('./testDirectives/3-1-0_stub');
 const test_vers4_1_1 = require('./testDirectives/4-1-1_stub');

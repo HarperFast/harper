@@ -415,6 +415,23 @@ function setGlobalSchema(hash_attribute, schema, table, attributes_keys) {
 					name: 'hdb_license',
 					schema: 'system',
 				},
+				hdb_info: {
+					hash_attribute: 'info_id',
+					name: 'hdb_info',
+					schema: 'system',
+					residence: ['*'],
+					attributes: [
+						{
+							attribute: 'info_id',
+						},
+						{
+							attribute: 'data_version_num',
+						},
+						{
+							attribute: 'hdb_version_num',
+						},
+					],
+				},
 				hdb_nodes: {
 					hash_attribute: 'name',
 					residence: ['*'],
