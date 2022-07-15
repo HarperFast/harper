@@ -7,7 +7,7 @@ const lmdb_terms = require('./terms');
 const Buffer = require('buffer').Buffer;
 const microtime = require('microtime');
 
-const MAX_BYTE_SIZE = lmdb_terms.MAX_BYTE_SIZE;
+const MAX_SEARCH_KEY_LENGTH = lmdb_terms.MAX_SEARCH_KEY_LENGTH;
 const PRIMITIVES = ['number', 'string', 'symbol', 'boolean', 'bigint'];
 /**
  * validates the env argument
@@ -145,4 +145,5 @@ module.exports = {
 	convertKeyValueFromSearch,
 	getMicroTime,
 	checkIsBlob,
+	primitiveCheck,
 };

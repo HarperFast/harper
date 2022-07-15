@@ -2,9 +2,8 @@
 
 const INTERNAL_DBIS_NAME = '__dbis__';
 const ENVIRONMENT_NAME_KEY = '__environment_name__';
-const BLOB_DBI_NAME = '__blob__';
 const DBI_DEFINITION_NAME = '__dbi_defintion__';
-const MAX_BYTE_SIZE = 254;
+const MAX_SEARCH_KEY_LENGTH = 256;
 
 const SEARCH_TYPES = {
 	EQUALS: 'equals',
@@ -29,6 +28,7 @@ const SEARCH_TYPES = {
 };
 
 const TIMESTAMP_NAMES = ['__createdtime__', '__updatedtime__'];
+const OVERFLOW_MARKER = '\uffff';
 
 const TRANSACTIONS_DBI_NAMES_ENUM = {
 	TIMESTAMP: 'timestamp',
@@ -43,9 +43,9 @@ module.exports = {
 	DBI_DEFINITION_NAME,
 	SEARCH_TYPES,
 	TIMESTAMP_NAMES,
-	BLOB_DBI_NAME,
-	MAX_BYTE_SIZE,
+	MAX_SEARCH_KEY_LENGTH,
 	ENVIRONMENT_NAME_KEY,
 	TRANSACTIONS_DBI_NAMES_ENUM,
 	TRANSACTIONS_DBIS,
+	OVERFLOW_MARKER
 };

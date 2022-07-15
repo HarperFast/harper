@@ -112,7 +112,6 @@ describe('test lmdbDropAllAttributes module', () => {
 				{ attribute: 'id' },
 				{ attribute: '__updatedtime__' },
 				{ attribute: '__createdtime__' },
-				{ attribute: '__blob__' },
 			];
 
 			await lmdb_create_records(INSERT_OBJECT_TEST);
@@ -128,7 +127,6 @@ describe('test lmdbDropAllAttributes module', () => {
 				{ attribute: 'state' },
 				{ attribute: '__updatedtime__' },
 				{ attribute: '__createdtime__' },
-				{ attribute: '__blob__' },
 			];
 		});
 

@@ -13,10 +13,10 @@ const uuid = require('uuid');
 // eslint-disable-next-line no-unused-vars
 const lmdb = require('lmdb');
 const { handleHDBError, hdb_errors } = require('../errors/hdbError');
+const { OVERFLOW_MARKER, MAX_SEARCH_KEY_LENGTH } = lmdb_terms;
 
 const CREATED_TIME_ATTRIBUTE_NAME = hdb_terms.TIME_STAMP_NAMES_ENUM.CREATED_TIME;
 const UPDATED_TIME_ATTRIBUTE_NAME = hdb_terms.TIME_STAMP_NAMES_ENUM.UPDATED_TIME;
-const LMDB_MDB_NOTFOUND_CODE = -30798;
 
 /**
  * inserts records into LMDB
@@ -64,49 +64,40 @@ async function insertRecords(env, hash_attribute, write_attributes, records, gen
 function insertRecord(env, hash_attribute, write_attributes, record) {
 	let cast_hash_value = hdb_utils.autoCast(record[hash_attribute]);
 	record[hash_attribute] = cast_hash_value;
-	let put_values = [];
-	put_values.push([env.dbis[hash_attribute], cast_hash_value, record, 1]);
-	for (let x = 0; x < write_attributes.length; x++) {
-		let attribute = write_attributes[x];
-
-		//we do not process the write to the hash attribute, blob as they are handled differently.  Also skip if the attribute does not exist on the object
-		if (
-			attribute === hash_attribute ||
-			attribute === lmdb_terms.BLOB_DBI_NAME ||
-			record.hasOwnProperty(attribute) === false
-		) {
-			continue;
-		}
-
-		let value = record[attribute];
-		if (typeof value === 'function') {
-			let value_results = value([[{}]]);
-			if (Array.isArray(value_results)) {
-				value = value_results[0][hdb_terms.FUNC_VAL];
-				record[attribute] = value;
-			}
-		}
-
-		value = hdb_utils.autoCast(value);
-		value = value === undefined ? null : value;
-		record[attribute] = value;
-		if (value !== null && value !== undefined) {
-			//LMDB has a 254 byte limit for keys, so we return null if the byte size is larger than 254 to not index that value
-			if (common.checkIsBlob(value)) {
-				let key = `${attribute}/${cast_hash_value}`;
-				put_values.push([env.dbis[lmdb_terms.BLOB_DBI_NAME], key, value]);
-			} else {
-				let converted_key = common.convertKeyValueToWrite(value);
-				put_values.push([env.dbis[attribute], converted_key, cast_hash_value]);
-			}
-		}
-	}
-
 	return env.dbis[hash_attribute].ifNoExists(cast_hash_value, () => {
-		for (let x = 0, length = put_values.length; x < length; x++) {
-			let put_value = put_values[x];
-			put_value[0].put(put_value[1], put_value[2], put_value[3]);
+		for (let x = 0; x < write_attributes.length; x++) {
+			let attribute = write_attributes[x];
+
+			//we do not process the write to the hash attribute as they are handled differently.  Also skip if the attribute does not exist on the object
+			if (attribute === hash_attribute ||
+				record.hasOwnProperty(attribute) === false
+			) {
+				continue;
+			}
+
+			let value = record[attribute];
+			if (typeof value === 'function') {
+				let value_results = value([[{}]]);
+				if (Array.isArray(value_results)) {
+					value = value_results[0][hdb_terms.FUNC_VAL];
+					record[attribute] = value;
+				}
+			}
+
+			value = hdb_utils.autoCast(value);
+			value = value === undefined ? null : value;
+			record[attribute] = value;
+			if (value !== null && value !== undefined) {
+				//LMDB has a 1978 byte limit for keys, but we try to retain plenty of padding so we don't have to calculate encoded byte length
+				if (common.primitiveCheck(value)) {
+					if (value.length > MAX_SEARCH_KEY_LENGTH) {
+						value = value.slice(0, MAX_SEARCH_KEY_LENGTH) + OVERFLOW_MARKER;
+					}
+					env.dbis[attribute].put(value, cast_hash_value);
+				}
+			}
 		}
+		env.dbis[hash_attribute].put(cast_hash_value, record, record[UPDATED_TIME_ATTRIBUTE_NAME]);
 	});
 }
 
@@ -165,10 +156,6 @@ function initializeTransaction(env, hash_attribute, write_attributes) {
 		write_attributes.push(hdb_terms.TIME_STAMP_NAMES_ENUM.UPDATED_TIME);
 	}
 
-	if (write_attributes.indexOf(lmdb_terms.BLOB_DBI_NAME) < 0) {
-		write_attributes.push(lmdb_terms.BLOB_DBI_NAME);
-	}
-
 	environment_util.initializeDBIs(env, hash_attribute, write_attributes);
 }
 
@@ -185,39 +172,35 @@ async function updateRecords(env, hash_attribute, write_attributes, records, gen
 	//validate
 	validateWrite(env, hash_attribute, write_attributes, records);
 
-	try {
-		initializeTransaction(env, hash_attribute, write_attributes);
+	initializeTransaction(env, hash_attribute, write_attributes);
 
-		let result = new UpdateRecordsResponseObject();
+	let result = new UpdateRecordsResponseObject();
 
-		//iterate update records
-		let remove_indices = [];
-		let puts = [];
-		let keys = [];
-		for (let index = 0; index < records.length; index++) {
-			let record = records[index];
-			setTimestamps(record, false, generate_timestamps);
+	//iterate update records
+	let remove_indices = [];
+	let puts = [];
+	let keys = [];
+	for (let index = 0; index < records.length; index++) {
+		let record = records[index];
+		setTimestamps(record, false, generate_timestamps);
 
-			let cast_hash_value = hdb_utils.autoCast(record[hash_attribute]);
+		let cast_hash_value = hdb_utils.autoCast(record[hash_attribute]);
 
-			let promise;
-			try {
-				promise = env.dbis[hash_attribute].ifVersion(cast_hash_value, 1, () => {
-					updateUpsertRecord(env, hash_attribute, record, cast_hash_value, result);
-				});
-			} catch (e) {
-				result.skipped_hashes.push(cast_hash_value);
-				remove_indices.push(index);
-				continue;
-			}
-			puts.push(promise);
-			keys.push(cast_hash_value);
+		let promise;
+		try {
+			promise = //env.dbis[hash_attribute].ifVersion(cast_hash_value, record[UPDATED_TIME_ATTRIBUTE_NAME], () => {
+				updateUpsertRecord(env, hash_attribute, record, cast_hash_value, result);
+			//}, { ifLessThan: true });
+		} catch (e) {
+			result.skipped_hashes.push(cast_hash_value);
+			remove_indices.push(index);
+			continue;
 		}
-
-		return await finalizeWrite(puts, keys, records, result, remove_indices);
-	} catch (e) {
-		throw e;
+		puts.push(promise);
+		keys.push(cast_hash_value);
 	}
+
+	return await finalizeWrite(puts, keys, records, result, remove_indices);
 }
 
 /**
@@ -268,9 +251,9 @@ async function upsertRecords(env, hash_attribute, write_attributes, records, gen
 				promise = insertRecord(env, hash_attribute, write_attributes, record);
 			} else {
 				setTimestamps(record, is_insert, generate_timestamps);
-				promise = env.dbis[hash_attribute].ifVersion(hash_value, 1, () => {
+				promise = //env.dbis[hash_attribute].ifVersion(hash_value, 1, () => {
 					updateUpsertRecord(env, hash_attribute, record, hash_value, result);
-				});
+				//});
 			}
 
 			puts.push(promise);
@@ -320,7 +303,7 @@ function updateUpsertRecord(env, hash_attribute, record, cast_hash_value, result
 
 	//iterate the entries from the record
 	for (let [key, value] of Object.entries(record)) {
-		if (key === hash_attribute || key === lmdb_terms.BLOB_DBI_NAME) {
+		if (key === hash_attribute) {
 			continue;
 		}
 		let dbi = env.dbis[key];
@@ -348,36 +331,28 @@ function updateUpsertRecord(env, hash_attribute, record, cast_hash_value, result
 
 		//if the update cleared out the attribute value we need to delete it from the index
 		if (existing_value !== null && existing_value !== undefined) {
-			try {
-				if (common.checkIsBlob(existing_value)) {
-					let key_value = `${key}/${cast_hash_value}`;
-					env.dbis[lmdb_terms.BLOB_DBI_NAME].remove(key_value);
-				} else {
-					let converted_key = common.convertKeyValueToWrite(existing_value);
-					dbi.remove(converted_key, cast_hash_value);
+			if (common.primitiveCheck(existing_value)) {
+				if (existing_value.length > MAX_SEARCH_KEY_LENGTH) {
+					existing_value = existing_value.slice(0, MAX_SEARCH_KEY_LENGTH) + OVERFLOW_MARKER;
 				}
-			} catch (e) {
-				//this is the code for attempting to delete an entry that does not exist
-				if (e.code !== LMDB_MDB_NOTFOUND_CODE) {
-					throw e;
-				}
+				dbi.remove(existing_value, cast_hash_value);
 			}
 		}
 
 		if (value !== null && value !== undefined) {
-			//LMDB has a 254 byte limit for keys, so we return null if the byte size is larger than 254 to not index that value
-			if (common.checkIsBlob(value)) {
-				let key_value = `${key}/${cast_hash_value}`;
-				env.dbis[lmdb_terms.BLOB_DBI_NAME].put(key_value, value);
-			} else {
-				let converted_key = common.convertKeyValueToWrite(value);
-				dbi.put(converted_key, cast_hash_value);
+			//LMDB has a 1978 byte limit for keys, but we try to retain plenty of padding so we don't have to calculate encoded byte length
+			if (common.primitiveCheck(value)) {
+				if (value.length > MAX_SEARCH_KEY_LENGTH) {
+					value = value.slice(0, MAX_SEARCH_KEY_LENGTH) + OVERFLOW_MARKER;
+				}
+				dbi.put(value, cast_hash_value);
 			}
 		}
 	}
 
 	let merged_record = Object.assign({}, existing_record, record);
-	env.dbis[hash_attribute].put(cast_hash_value, merged_record, 1);
+	// TODO: Don't return this promise once this is embedded in ifVersion
+	return env.dbis[hash_attribute].put(cast_hash_value, merged_record, merged_record[UPDATED_TIME_ATTRIBUTE_NAME]);
 }
 
 /**

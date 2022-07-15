@@ -132,27 +132,25 @@ function validateEnvDBIName(env, dbi_name) {
  * @param {Boolean} is_txn - defines if is a transactions environemnt
  * @returns {Promise<lmdb.RootDatabase>} - LMDB environment object
  */
-async function createEnvironment(base_path, env_name, is_txn = false) {
+async function createEnvironment(base_path, env_name, is_txn = false, is_directory = false) {
 	pathEnvNameValidation(base_path, env_name);
 	await verifyEnvironmentBasePath(base_path);
 	env_name = env_name.toString();
 	try {
 		await fs.access(path.join(base_path, env_name, MDB_FILE_NAME), fs.constants.R_OK | fs.constants.F_OK);
 		//if no error is thrown the environment already exists so we return the handle to that environment
-		return await openEnvironment(base_path, env_name, is_txn);
+		return await openEnvironment(base_path, env_name, is_txn, is_directory);
 	} catch (e) {
 		if (e.code === 'ENOENT') {
 			let environment_path = path.join(base_path, env_name);
-			await fs.mkdirp(environment_path);
-			let env_init = new OpenEnvironmentObject(environment_path, MAP_SIZE, MAX_DBS, MAX_READERS, LMDB_NOSYNC);
+			await fs.mkdirp(is_directory ? environment_path : base_path);
+			let env_init = new OpenEnvironmentObject(environment_path + (is_directory ? '' : '.mdb'), MAP_SIZE, MAX_DBS, MAX_READERS, LMDB_NOSYNC);
 			let env = lmdb.open(env_init);
 
 			env.dbis = Object.create(null);
 			//next we create an internal dbi to track the named databases
 			let dbi_init = new OpenDBIObject(false);
 			env.openDB(INTERNAL_DBIS_NAME, dbi_init);
-
-			createDBI(env, lmdb_terms.BLOB_DBI_NAME, false, false);
 
 			//add environment to global variable to cache reference to environment & named databases
 			if (global.lmdb_map === undefined) {

@@ -12,6 +12,7 @@ const hdb_terms = require('../hdbTerms');
 const cursor_functions = require('./searchCursorFunctions');
 // eslint-disable-next-line no-unused-vars
 const lmdb = require('lmdb');
+const { OVERFLOW_MARKER, MAX_SEARCH_KEY_LENGTH } = lmdb_terms;
 
 /** UTILITY CURSOR FUNCTIONS **/
 
@@ -552,25 +553,75 @@ function contains(
 	validateComparisonFunctions(env, attribute, search_value);
 
 	let results = [[], []];
-	let dbi = environment_utility.openDBI(env, attribute); // verify existence of the attribute
-	if (dbi[lmdb_terms.DBI_DEFINITION_NAME].is_hash_attribute)
+	let primary_dbi;
+	let attr_dbi = environment_utility.openDBI(env, attribute); // verify existence of the attribute
+	if (attr_dbi[lmdb_terms.DBI_DEFINITION_NAME].is_hash_attribute) {
 		hash_attribute = attribute;
-	else {
-		if (hash_attribute)
-			dbi = environment_utility.openDBI(env, hash_attribute);
-		else {
-			let dbis = environment_utility.listDBIs(env);
-			for (let i = 0, l = dbis.length; i < l; i++) {
-				dbi = environment_utility.openDBI(env, dbis[i]);
-				if (dbi[lmdb_terms.DBI_DEFINITION_NAME].is_hash_attribute)
+		primary_dbi = attr_dbi;
+	}
+
+	offset = Number.isInteger(offset) ? offset : 0;
+	for (let key of attr_dbi.getKeys({ end: reverse ? false : undefined, reverse })) {
+		if (limit === 0) {
+			break;
+		}
+
+		let matching_keys;
+		let found_str = key.toString();
+		if (ends_with ? found_str.endsWith(search_value) : found_str.includes(search_value)) {
+			if (attr_dbi[lmdb_terms.DBI_DEFINITION_NAME].is_hash_attribute)
+				matching_keys = [key];
+			else
+				matching_keys = attr_dbi.getValues(key);
+		} else if (found_str.endsWith(OVERFLOW_MARKER)) {
+			// the entire value couldn't be encoded because it was too long, so need to search the attribute from
+			// the original record.
+			// first get the hash/primary dbi
+			if (!primary_dbi) { // only have to open once per search
+				if (hash_attribute)
+					primary_dbi = environment_utility.openDBI(env, hash_attribute);
+				else {
+					// not sure how often this gets called without a hash_attribute, as this would be kind of expensive
+					// if done frequently
+					let dbis = environment_utility.listDBIs(env);
+					for (let i = 0, l = dbis.length; i < l; i++) {
+						primary_dbi = environment_utility.openDBI(env, dbis[i]);
+						if (primary_dbi[lmdb_terms.DBI_DEFINITION_NAME].is_hash_attribute)
+							break;
+					}
+				}
+			}
+			// now get each record so we can check the full value
+			for (let primary_key of attr_dbi.getValues(key)) {
+				let record = primary_dbi.get(primary_key);
+				let found_str = record[attribute].toString();
+				if (ends_with ? found_str.endsWith(search_value) : found_str.includes(search_value)) {
+					if (!matching_keys)
+						matching_keys = [];
+					matching_keys.push(primary_key);
+				}
+			}
+		}
+		if (matching_keys) {
+			for (let primary_key of matching_keys) {
+				if (offset > 0) {
+					offset--;
+					continue;
+				}
+
+				if (limit === 0) {
 					break;
+				}
+
+				cursor_functions.pushResults(key, primary_key, results, hash_attribute, attribute);
+				limit--;
 			}
 		}
 	}
 
-	offset = Number.isInteger(offset) ? offset : 0;
 
-	for (let { key, value: record } of dbi.getRange({
+/*
+	for (let { key, value: record } of attr_dbi.getRange({
 		start: reverse ? undefined : false,
 		end: !reverse ? undefined : false,
 		reverse: reverse,
@@ -592,7 +643,7 @@ function contains(
 			results[1].push(object);
 			limit--;
 		}
-	}
+	}*/
 	return results;
 }
 
@@ -1101,6 +1152,10 @@ function validateComparisonFunctions(env, attribute, search_value) {
 
 	if (search_value === undefined) {
 		throw new Error(LMDB_ERRORS.SEARCH_VALUE_REQUIRED);
+	}
+
+	if (search_value?.length > MAX_SEARCH_KEY_LENGTH) {
+		throw new Error(LMDB_ERRORS.SEARCH_VALUE_TOO_LARGE);
 	}
 }
 

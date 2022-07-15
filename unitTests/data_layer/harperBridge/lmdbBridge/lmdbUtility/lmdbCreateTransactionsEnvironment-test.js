@@ -41,7 +41,7 @@ describe('test lmdbCreateTransactionsEnvironment module', () => {
 
 		it('test adding a transaction environment', async () => {
 			let transaction_path = path.join(BASE_TRANSACTIONS_PATH, CREATE_TABLE_OBJ.schema);
-			let expected_txn_dbis = ['__blob__', 'hash_value', 'timestamp', 'user_name'];
+			let expected_txn_dbis = ['hash_value', 'timestamp', 'user_name'];
 
 			await test_utils.assertErrorAsync(
 				environment_utility.openEnvironment,
