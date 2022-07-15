@@ -335,9 +335,6 @@ describe('Test upgrade.js', () => {
 			}
 
 			expect(error.message).to.equal('Error upgrading');
-			expect(log_error_stub.getCall(0).args[0]).to.eql(
-				'There was an error when upgrading your HDB instance. Check logs for more details.'
-			);
 		});
 	});
 

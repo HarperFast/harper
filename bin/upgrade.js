@@ -19,6 +19,9 @@ const hdb_utils = require('../utility/common_utils');
 const hdbInfoController = require('../data_layer/hdbInfoController');
 const upgradePrompt = require('../upgrade/upgradePrompt');
 const ps_list = require('../utility/psList');
+const global_schema = require('../utility/globalSchema');
+const promisify = require('util').promisify;
+const p_schema_to_global = promisify(global_schema.setSchemaDataToGlobal);
 let pm2_utils;
 
 const { UPGRADE_VERSION } = hdb_terms.UPGRADE_JSON_FIELD_NAMES_ENUM;
@@ -35,6 +38,7 @@ module.exports = {
  */
 async function upgrade(upgrade_obj) {
 	hdb_logger.createLogFile(hdb_terms.PROCESS_LOG_NAMES.CLI, hdb_terms.PROCESS_DESCRIPTORS.UPGRADE);
+	await p_schema_to_global();
 
 	// Requiring the pm2 mod will create the .pm2 dir. This code is here to allow install to set pm2 env vars before that is done.
 	if (pm2_utils === undefined) pm2_utils = require('../utility/pm2/utilityFunctions');
@@ -96,13 +100,7 @@ async function upgrade(upgrade_obj) {
 
 	hdb_logger.info(`Starting upgrade to version ${current_hdb_version}`, true);
 
-	try {
-		await runUpgrade(hdb_upgrade_info);
-	} catch (err) {
-		hdb_logger.error('There was an error when upgrading your HDB instance. Check logs for more details.', true);
-		hdb_logger.error(err, true);
-		throw err;
-	}
+	await runUpgrade(hdb_upgrade_info);
 
 	printToLogAndConsole(
 		`HarperDB was successfully upgraded to version ${hdb_upgrade_info[UPGRADE_VERSION]}`,
