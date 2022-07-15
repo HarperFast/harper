@@ -366,7 +366,7 @@ describe('Test 4-0-0 module', () => {
 				error = err;
 			}
 
-			expect(error.message).to.equal(
+			expect(error).to.equal(
 				"Node name 'dev.dog' is invalid, must not contain ., * or >. Please change name and try again."
 			);
 			expect(console_error_stub.args[1][0]).to.equal(

@@ -49,7 +49,7 @@ async function updateNodes() {
 			if (!nats_terms.NATS_TERM_CONSTRAINTS_RX.test(node_record.name)) {
 				const invalid_node_name = `Node name '${node_record.name}' is invalid, must not contain ., * or >. Please change name and try again.`;
 				console.error(invalid_node_name);
-				throw new Error(invalid_node_name);
+				throw invalid_node_name;
 			}
 
 			const route = {
@@ -102,11 +102,17 @@ async function updateNodes() {
 }
 
 function updateSettingsFile_4_0_0() {
+	const settings_path = env.get(terms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY);
+	// If the pre 4.0.0 settings file doesn't exist skip settings file update
+	if (!settings_path.includes('config/settings.js')) {
+		hdb_log.info('pre 4.0.0 settings.js file not found, skipping settings file update');
+		return;
+	}
+
 	const settings_update_msg = 'Updating settings file for version 4.0.0';
 	console.log(settings_update_msg);
 	hdb_log.info(settings_update_msg);
 
-	const settings_path = env.get(terms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY);
 	const settings_dir = path.dirname(settings_path);
 	const hdb_root = env.get(terms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY);
 	const settings_backup_path = path.join(hdb_root, 'backup', '4_0_0_upgrade_settings.bak');

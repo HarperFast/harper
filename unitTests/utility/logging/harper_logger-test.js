@@ -218,17 +218,14 @@ describe('Test harper_logger module', () => {
 	});
 
 	describe('Test createLogFile function', () => {
-		let create_write_stream_stub;
-		const fake_stream = {
-			on: () => {},
-		};
+		let open_sync_stub;
 
 		beforeEach(() => {
-			create_write_stream_stub = sandbox.stub(fs, 'createWriteStream').returns(fake_stream);
+			open_sync_stub = sandbox.stub(fs, 'openSync').returns(123);
 		});
 
 		afterEach(() => {
-			create_write_stream_stub.restore();
+			open_sync_stub.restore();
 			sandbox.restore();
 		});
 
@@ -249,24 +246,24 @@ describe('Test harper_logger module', () => {
 			delete process.env.pm_id;
 		});
 
-		it('Test create write stream is called with correct path if install log', () => {
+		it('Test create file is called with correct path if install log', () => {
 			sandbox.stub(YAML, 'parseDocument').returns(setTestLogConfig('error', TEST_LOG_DIR, true, false));
 			const harper_logger = requireUncached(HARPER_LOGGER_MODULE);
 			const log_name_test = 'install.log';
 			const log_process_name_test = 'install_log_test';
 			harper_logger.createLogFile(log_name_test, log_process_name_test);
 
-			expect(create_write_stream_stub.firstCall.args[0]).to.eql(path.join(INSTALL_LOG_LOCATION, log_name_test));
+			expect(open_sync_stub.firstCall.args[0]).to.eql(path.join(INSTALL_LOG_LOCATION, log_name_test));
 		});
 
-		it('Test create write stream is called with correct path if not install log', () => {
+		it('Test create file is called with correct path if not install log', () => {
 			sandbox.stub(YAML, 'parseDocument').returns(setTestLogConfig('error', HARPER_LOGGER_MODULE, true, false));
 			const harper_logger = requireUncached(HARPER_LOGGER_MODULE);
 			const log_name_test = 'hdb.log';
 			const log_process_name_test = 'hdb_log_test';
 			harper_logger.createLogFile(log_name_test, log_process_name_test);
 
-			expect(create_write_stream_stub.firstCall.args[0]).to.eql(path.join(HARPER_LOGGER_MODULE, log_name_test));
+			expect(open_sync_stub.firstCall.args[0]).to.eql(path.join(HARPER_LOGGER_MODULE, log_name_test));
 		});
 	});
 
@@ -319,44 +316,43 @@ describe('Test harper_logger module', () => {
 		});
 	});
 
-	describe('Test writeToLogStream function', () => {
+	describe('Test writeToLogFile function', () => {
 		let harper_logger;
-		let writeToLogStream;
+		let writeToLogFile;
 		const test_log = createLogRecord('error', '2021-12-03T15:13:05.823Z', 'unit_tests', 'unit test error message');
-		const fake_stream_writer = sandbox.stub().callsFake(() => {});
-		const fake_stream = {
-			on: () => {},
-			write: fake_stream_writer,
-		};
-		let create_write_stream_stub;
+		let open_sync_stub;
 		let ensure_dir_sync_stub;
+		let append_file_sync_stub;
 
 		beforeEach(() => {
 			harper_logger = requireUncached(HARPER_LOGGER_MODULE);
-			writeToLogStream = harper_logger.__get__('writeToLogStream');
-			create_write_stream_stub = sandbox.stub(fs, 'createWriteStream').returns(fake_stream);
+			writeToLogFile = harper_logger.__get__('writeToLogFile');
+			open_sync_stub = sandbox.stub(fs, 'openSync').returns(321);
 			ensure_dir_sync_stub = sandbox.stub(fs, 'ensureDirSync');
+			append_file_sync_stub = sandbox.stub(fs, 'appendFileSync');
 		});
 
 		afterEach(() => {
-			create_write_stream_stub.restore();
+			open_sync_stub.restore();
 			ensure_dir_sync_stub.restore();
+			append_file_sync_stub.restore();
+			sandbox.resetHistory();
 		});
 
-		it('Test that if log stream undefined install stream is created', () => {
-			harper_logger.__set__('log_stream', undefined);
-			writeToLogStream(test_log);
-
-			expect(fake_stream_writer).to.exist;
-			expect(fake_stream_writer.firstCall.args[0]).to.eql(test_log);
+		it('Test that if log file undefined install file is created', () => {
+			harper_logger.__set__('non_pm2_log_file', undefined);
+			writeToLogFile(test_log);
+			expect(open_sync_stub.firstCall.args[0]).to.include('install.log');
+			expect(append_file_sync_stub.args[0][0]).to.equal(321);
+			expect(append_file_sync_stub.args[0][1]).to.eql(test_log);
 		});
 
 		it('Test that log stream written to but not created if already defined', () => {
-			harper_logger.__set__('log_stream', fake_stream);
-			writeToLogStream(test_log);
-
-			expect(fake_stream_writer.firstCall.args[0]).to.eql(test_log);
-			expect(create_write_stream_stub.notCalled).to.be.true;
+			harper_logger.__set__('non_pm2_log_file', 123);
+			writeToLogFile(test_log);
+			expect(open_sync_stub.called).to.be.false;
+			expect(append_file_sync_stub.args[0][0]).to.equal(123);
+			expect(append_file_sync_stub.args[0][1]).to.eql(test_log);
 		});
 	});
 
@@ -366,7 +362,7 @@ describe('Test harper_logger module', () => {
 		let nonPm2LogStdErr;
 		const test_log = createLogRecord('error', '2021-12-03T15:13:05.823Z', 'unit_tests', 'unit test error message');
 
-		const write_to_log_stream_stub = sandbox.stub();
+		const write_to_log_file_stub = sandbox.stub();
 
 		before(() => {
 			harper_logger = requireUncached(HARPER_LOGGER_MODULE);
@@ -374,7 +370,7 @@ describe('Test harper_logger module', () => {
 			nonPm2LogStdErr = harper_logger.__get__('nonPm2LogStdErr');
 			harper_logger.__set__('log_to_file', true);
 			harper_logger.__set__('log_to_stdstreams', true);
-			harper_logger.__set__('writeToLogStream', write_to_log_stream_stub);
+			harper_logger.__set__('writeToLogFile', write_to_log_file_stub);
 		});
 
 		it('Test log is written to log stream and stdout if both params are true', () => {
@@ -382,7 +378,7 @@ describe('Test harper_logger module', () => {
 			nonPm2LogStdOut(test_log);
 
 			expect(captured_stdout).to.eql(test_log);
-			expect(write_to_log_stream_stub.firstCall.args[0]).to.eql(test_log);
+			expect(write_to_log_file_stub.firstCall.args[0]).to.eql(test_log);
 
 			unhookStdOutErr();
 		});
@@ -392,7 +388,7 @@ describe('Test harper_logger module', () => {
 			nonPm2LogStdErr(test_log);
 
 			expect(captured_stdout).to.eql(test_log);
-			expect(write_to_log_stream_stub.firstCall.args[0]).to.eql(test_log);
+			expect(write_to_log_file_stub.firstCall.args[0]).to.eql(test_log);
 
 			unhookStdOutErr();
 		});
