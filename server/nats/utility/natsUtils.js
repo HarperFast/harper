@@ -32,6 +32,7 @@ const {
 	JetStreamManager,
 	JetStreamClient,
 	StringCodec,
+	JSONCodec,
 	createInbox,
 	StreamSource,
 	headers,
@@ -44,6 +45,7 @@ const {
 const pkg_json_path = path.resolve(__dirname, '../../../package.json');
 const pkg_json = require(pkg_json_path);
 
+const jc = JSONCodec();
 const HDB_CLUSTERING_FOLDER = 'clustering';
 const REQUIRED_NATS_SERVER_VERSION = pkg_json.engines[nats_terms.NATS_SERVER_NAME];
 const DEPENDENCIES_PATH = path.resolve(__dirname, '../../../dependencies');
@@ -222,7 +224,7 @@ async function getServerList() {
 	const get_servers = (async () => {
 		// get the servers in parallel
 		for await (const m of sub) {
-			servers.push(decode(m.data));
+			servers.push(jc.decode(m.data));
 		}
 	})();
 
@@ -289,7 +291,7 @@ async function listRemoteStreams(domain_name) {
 
 	const get_streams = (async () => {
 		for await (const m of sub) {
-			streams.push(decode(m.data));
+			streams.push(jc.decode(m.data));
 		}
 	})();
 

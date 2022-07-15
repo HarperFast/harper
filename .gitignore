@@ -11,6 +11,7 @@ coverage/*
 hdb_boot_properties.file
 *test_export.json.json
 /unitTests/envDir/*
+/unitTests/server/nats/tempTestDir/*
 coverage.json
 
 /npm_pack/*
