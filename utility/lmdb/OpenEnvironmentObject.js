@@ -1,7 +1,7 @@
 'use strict';
 
 class OpenEnvironmentObject {
-	constructor(path, map_size, max_dbs, max_readers, _no_sync = false) {
+	constructor(path, map_size, max_dbs, max_readers) {
 		this.path = path;
 		this.mapSize = map_size;
 		this.maxDbs = max_dbs;
