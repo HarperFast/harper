@@ -25,7 +25,9 @@ const MAX_DBS = 10000;
 const MAX_READERS = 1000;
 const INTERNAL_DBIS_NAME = lmdb_terms.INTERNAL_DBIS_NAME;
 const DBI_DEFINITION_NAME = lmdb_terms.DBI_DEFINITION_NAME;
-const MDB_FILE_NAME = 'data.mdb';
+const MDB_LEGACY_FILE_NAME = 'data.mdb';
+const MDB_FILE_EXTENSION = '.mdb';
+const MDB_LOCK_FILE_EXTENSION = '.mdb-lock';
 
 /**
  * This class is used to create the transaction & cursor objects needed to perform search on a dbi as well as a function to close both objects after use
@@ -100,7 +102,7 @@ async function verifyEnvironmentBasePath(base_path) {
  */
 async function validateEnvironmentPath(base_path, env_name) {
 	try {
-		await fs.access(path.join(base_path, env_name, MDB_FILE_NAME), fs.constants.R_OK | fs.constants.F_OK);
+		await fs.access(path.join(base_path, env_name + MDB_FILE_EXTENSION), fs.constants.R_OK | fs.constants.F_OK);
 	} catch (e) {
 		if (e.code === 'ENOENT') {
 			throw new Error(LMDB_ERRORS.INVALID_ENVIRONMENT);
@@ -127,24 +129,27 @@ function validateEnvDBIName(env, dbi_name) {
 
 /**
  * creates a new environment
- * @param base_path - base path the envirnment will reside in
+ * @param base_path - base path the environment will reside in
  * @param env_name - name of the environment
- * @param {Boolean} is_txn - defines if is a transactions environemnt
+ * @param {Boolean} is_txn - defines if is a transactions environment
  * @returns {Promise<lmdb.RootDatabase>} - LMDB environment object
  */
-async function createEnvironment(base_path, env_name, is_txn = false, is_directory = false) {
+async function createEnvironment(base_path, env_name, is_txn = false, is_v3 = false) {
 	pathEnvNameValidation(base_path, env_name);
 	await verifyEnvironmentBasePath(base_path);
 	env_name = env_name.toString();
 	try {
-		await fs.access(path.join(base_path, env_name, MDB_FILE_NAME), fs.constants.R_OK | fs.constants.F_OK);
+		await fs.access(
+			is_v3 ? path.join(base_path, env_name, MDB_LEGACY_FILE_NAME) : path.join(base_path, env_name + MDB_FILE_EXTENSION),
+			fs.constants.R_OK | fs.constants.F_OK
+		);
 		//if no error is thrown the environment already exists so we return the handle to that environment
-		return await openEnvironment(base_path, env_name, is_txn, is_directory);
+		return await openEnvironment(base_path, env_name, is_txn, is_v3);
 	} catch (e) {
 		if (e.code === 'ENOENT') {
 			let environment_path = path.join(base_path, env_name);
-			await fs.mkdirp(is_directory ? environment_path : base_path);
-			let env_init = new OpenEnvironmentObject(environment_path + (is_directory ? '' : '.mdb'), MAP_SIZE, MAX_DBS, MAX_READERS, LMDB_NOSYNC);
+			await fs.mkdirp(base_path);
+			let env_init = new OpenEnvironmentObject(environment_path + MDB_FILE_EXTENSION, MAP_SIZE, MAX_DBS, MAX_READERS, LMDB_NOSYNC);
 			let env = lmdb.open(env_init);
 
 			env.dbis = Object.create(null);
@@ -194,7 +199,7 @@ async function copyEnvironment(base_path, env_name, destination_path, compact_en
  * @param {String} env_name -  the name of the environment
  * @param {Boolean} is_txn - defines if is a transactions environemnt
  */
-async function openEnvironment(base_path, env_name, is_txn = false, is_directory = false) {
+async function openEnvironment(base_path, env_name, is_txn = false, is_v3 = false) {
 	pathEnvNameValidation(base_path, env_name);
 	env_name = env_name.toString();
 	let full_name = getCachedEnvironmentName(base_path, env_name, is_txn);
@@ -207,9 +212,9 @@ async function openEnvironment(base_path, env_name, is_txn = false, is_directory
 		return global.lmdb_map[full_name];
 	}
 	await verifyEnvironmentBasePath(base_path);
-	await validateEnvironmentPath(base_path, env_name);
+	if (!is_v3) await validateEnvironmentPath(base_path, env_name);
 
-	let env_path = path.join(base_path, env_name + (is_directory ? '' : '.mdb'));
+	let env_path = path.join(base_path, env_name + (is_v3 ? '' : MDB_FILE_EXTENSION));
 	let env_init = new OpenEnvironmentObject(env_path, MAP_SIZE, MAX_DBS, MAX_READERS, LMDB_NOSYNC);
 	let env = lmdb.open(env_init);
 
@@ -231,14 +236,15 @@ async function openEnvironment(base_path, env_name, is_txn = false, is_directory
  * @param {String} env_name - name of environment
  * @param {Boolean} is_txn - defines if is a transactions environemnt
  */
-async function deleteEnvironment(base_path, env_name, is_txn = false, is_directory = false) {
+async function deleteEnvironment(base_path, env_name, is_txn = false, is_v3 = false) {
 	pathEnvNameValidation(base_path, env_name);
 	env_name = env_name.toString();
 	await verifyEnvironmentBasePath(base_path);
-	await validateEnvironmentPath(base_path, env_name);
+	if (!is_v3)
+		await validateEnvironmentPath(base_path, env_name);
 
-	await fs.remove(path.join(base_path, env_name + (is_directory ? '' : '.mdb')));
-	await fs.remove(path.join(base_path, env_name + (is_directory ? '' : '.mdb-lock')));
+	await fs.remove(path.join(base_path, env_name + (is_v3 ? '' : MDB_FILE_EXTENSION)));
+	await fs.remove(path.join(base_path, env_name + (is_v3 ? '' : MDB_LOCK_FILE_EXTENSION)));
 	if (global.lmdb_map !== undefined) {
 		let full_name = getCachedEnvironmentName(base_path, env_name, is_txn);
 		if (global.lmdb_map[full_name]) {
@@ -474,7 +480,7 @@ function statDBI(env, dbi_name) {
  */
 async function environmentDataSize(environment_base_path, table_name) {
 	try {
-		let environment_path = path.join(environment_base_path, table_name, MDB_FILE_NAME);
+		let environment_path = path.join(environment_base_path, table_name + MDB_FILE_EXTENSION);
 		let stat_result = await fs.stat(environment_path);
 		return stat_result['size'];
 	} catch (e) {

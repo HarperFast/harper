@@ -56,7 +56,7 @@ async function deleteRecords(env, hash_attribute, ids) {
 					continue;
 				}
 
-				let promise = env.dbis[hash_attribute].ifVersion(cast_hash_value, 1, () => {
+				let promise = env.dbis[hash_attribute].ifVersion(cast_hash_value, lmdb.IF_EXISTS, () => {
 					//always just delete the hash_attribute entry upfront
 					env.dbis[hash_attribute].remove(cast_hash_value);
 
