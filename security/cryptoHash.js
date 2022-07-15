@@ -8,6 +8,9 @@ const KEY_STRING_LENGTH = 64;
 const IV_STRING_LENGTH = 32;
 const ENCRYPTED_STRING_START = KEY_STRING_LENGTH + IV_STRING_LENGTH;
 
+// This is where we cache all the schema.table hashes that get used as nats stream names for local tables.
+const hash_cache = new Map();
+
 module.exports = {
 	encrypt: encrypt,
 	decrypt: decrypt,
@@ -43,11 +46,19 @@ function decrypt(text) {
 
 /**
  * Hashes the schema and table names to create a unique alphanumeric hash that will always
- * be the same length and the same value.
+ * be the same length and the same value. Caches hash if not already cached.
+ * Note - this function is in this file to avoid circular dependencies.
  * @param schema
  * @param table
  * @returns {string}
  */
 function createNatsTableStreamName(schema, table) {
-	return crypto.createHash('md5').update(`${schema}.${table}`).digest('hex');
+	const full_name = `${schema}.${table}`;
+	let hash = hash_cache.get(full_name);
+	if (!hash) {
+		hash = crypto.createHash('md5').update(`${schema}.${table}`).digest('hex');
+		hash_cache.set(full_name, hash);
+	}
+
+	return hash;
 }
