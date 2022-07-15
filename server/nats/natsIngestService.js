@@ -1,7 +1,8 @@
 'use strict';
 
 const util = require('util');
-const { JSONCodec, toJsMsg, createInbox, ErrorCode, checkJsError } = require('nats');
+const { toJsMsg, createInbox, ErrorCode, checkJsError } = require('nats');
+const { encode, decode } = require('msgpackr');
 
 const global_schema = require('../../utility/globalSchema');
 const ipc_server_handlers = require('../ipc/serverHandlers');
@@ -16,7 +17,6 @@ const operation_function_caller = require('../../utility/OperationFunctionCaller
 const transact_to_cluster_utilities = require('../../utility/clustering/transactToClusteringUtilities');
 const p_schema_to_global = util.promisify(global_schema.setSchemaDataToGlobal);
 
-const jc = JSONCodec();
 const MIN_EXPIRE = 1;
 const MAX_EXPIRE = 100;
 const MESSAGE_BATCH_SIZE = 1000;
@@ -118,7 +118,7 @@ async function workQueueListener() {
 			// The consumer will reply to a subject, the name of that subject is the inbox ID.
 			await nats_connection.publish(
 				JS_CONSUMER_SUBJECT,
-				jc.encode({
+				encode({
 					batch: MESSAGE_BATCH_SIZE,
 					no_wait: true,
 					expires: 0,
@@ -150,7 +150,7 @@ async function messageProcessor(msg) {
 	if (!hdb_utils.isEmpty(error)) throw error;
 
 	const js_msg = toJsMsg(msg);
-	const entry = jc.decode(js_msg.data);
+	const entry = decode(js_msg.data);
 
 	harper_logger.trace('processing message:', entry);
 

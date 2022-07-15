@@ -17,6 +17,7 @@ const hdb_terms = require('../../../utility/hdbTerms');
 const hdb_utils = require('../../../utility/common_utils');
 const hdb_logger = require('../../../utility/logging/harper_logger');
 const crypto_hash = require('../../../security/cryptoHash');
+const { encode, decode } = require('msgpackr');
 
 const { isEmpty } = hdb_utils;
 const user = require('../../../security/user');
@@ -31,7 +32,6 @@ const {
 	JetStreamManager,
 	JetStreamClient,
 	StringCodec,
-	JSONCodec,
 	createInbox,
 	StreamSource,
 	headers,
@@ -44,7 +44,6 @@ const {
 const pkg_json_path = path.resolve(__dirname, '../../../package.json');
 const pkg_json = require(pkg_json_path);
 
-const jc = JSONCodec();
 const HDB_CLUSTERING_FOLDER = 'clustering';
 const REQUIRED_NATS_SERVER_VERSION = pkg_json.engines[nats_terms.NATS_SERVER_NAME];
 const DEPENDENCIES_PATH = path.resolve(__dirname, '../../../dependencies');
@@ -223,7 +222,7 @@ async function getServerList() {
 	const get_servers = (async () => {
 		// get the servers in parallel
 		for await (const m of sub) {
-			servers.push(jc.decode(m.data));
+			servers.push(decode(m.data));
 		}
 	})();
 
@@ -290,7 +289,7 @@ async function listRemoteStreams(domain_name) {
 
 	const get_streams = (async () => {
 		for await (const m of sub) {
-			streams.push(jc.decode(m.data));
+			streams.push(decode(m.data));
 		}
 	})();
 
@@ -338,7 +337,7 @@ async function viewStream(stream_name, start_time = undefined, max = undefined) 
 
 		for await (const m of sub) {
 			const jmsg = toJsMsg(m);
-			const obj = jc.decode(jmsg.data);
+			const obj = decode(jmsg.data);
 			let wrapper = {
 				nats_timestamp: jmsg.info.timestampNanos,
 				nats_sequence: jmsg.info.streamSequence,
@@ -400,13 +399,13 @@ async function publishToStream(subject_name, stream_name, entries = [], originat
 		for (let x = 0, length = entries.length; x < length; x++) {
 			try {
 				hdb_logger.trace(`publishToStream publishing to subject: ${subject}, data:`, entries[x]);
-				await js.publish(subject, jc.encode(entries[x]), { headers: h });
+				await js.publish(subject, encode(entries[x]), { headers: h });
 			} catch (err) {
 				// If the stream doesn't exist it is created and published to
 				if (err.code && err.code.toString() === '503') {
 					hdb_logger.trace(`publishToStream creating stream: ${stream_name}`);
 					await createLocalStream(stream_name, [subject]);
-					await js.publish(subject, jc.encode(entries[x]), { headers: h });
+					await js.publish(subject, encode(entries[x]), { headers: h });
 				} else {
 					throw err;
 				}
@@ -607,7 +606,7 @@ async function request(subject, data, timeout = 2000, reply = createInbox()) {
 		throw new Error('data param must be an object');
 	}
 
-	const request_data = jc.encode(data);
+	const request_data = encode(data);
 
 	const { connection } = await getNATSReferences();
 	let options = {
@@ -620,7 +619,7 @@ async function request(subject, data, timeout = 2000, reply = createInbox()) {
 	}
 
 	const response = await connection.request(subject, request_data, options);
-	return jc.decode(response.data);
+	return decode(response.data);
 }
 
 /**
