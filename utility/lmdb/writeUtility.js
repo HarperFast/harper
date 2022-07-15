@@ -87,13 +87,10 @@ function insertRecord(env, hash_attribute, write_attributes, record) {
 			value = hdb_utils.autoCast(value);
 			value = value === undefined ? null : value;
 			record[attribute] = value;
-			if (value !== null && value !== undefined) {
-				//LMDB has a 1978 byte limit for keys, but we try to retain plenty of padding so we don't have to calculate encoded byte length
-				if (common.primitiveCheck(value)) {
-					if (value.length > MAX_SEARCH_KEY_LENGTH) {
-						value = value.slice(0, MAX_SEARCH_KEY_LENGTH) + OVERFLOW_MARKER;
-					}
-					env.dbis[attribute].put(value, cast_hash_value);
+			let values = common.getIndexedValues(value);
+			if (values) {
+				for (let i = 0, l = values.length; i < l; i++) {
+					env.dbis[attribute].put(values[i], cast_hash_value);
 				}
 			}
 		}
@@ -330,22 +327,16 @@ function updateUpsertRecord(env, hash_attribute, record, cast_hash_value, result
 		}
 
 		//if the update cleared out the attribute value we need to delete it from the index
-		if (existing_value !== null && existing_value !== undefined) {
-			if (common.primitiveCheck(existing_value)) {
-				if (existing_value.length > MAX_SEARCH_KEY_LENGTH) {
-					existing_value = existing_value.slice(0, MAX_SEARCH_KEY_LENGTH) + OVERFLOW_MARKER;
-				}
-				dbi.remove(existing_value, cast_hash_value);
+		let values = common.getIndexedValues(existing_value);
+		if (values) {
+			for (let i = 0, l = values.length; i < l; i++) {
+				dbi.remove(values[i], cast_hash_value);
 			}
 		}
-
-		if (value !== null && value !== undefined) {
-			//LMDB has a 1978 byte limit for keys, but we try to retain plenty of padding so we don't have to calculate encoded byte length
-			if (common.primitiveCheck(value)) {
-				if (value.length > MAX_SEARCH_KEY_LENGTH) {
-					value = value.slice(0, MAX_SEARCH_KEY_LENGTH) + OVERFLOW_MARKER;
-				}
-				dbi.put(value, cast_hash_value);
+		values = common.getIndexedValues(value);
+		if (values) {
+			for (let i = 0, l = values.length; i < l; i++) {
+				dbi.put(values[i], cast_hash_value);
 			}
 		}
 	}

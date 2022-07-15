@@ -12,6 +12,7 @@ hdb_boot_properties.file
 *test_export.json.json
 /unitTests/envDir/*
 coverage.json
+dependencies/nats-server
 
 /npm_pack/*
 *.jsc

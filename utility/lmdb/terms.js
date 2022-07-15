@@ -3,6 +3,7 @@
 const INTERNAL_DBIS_NAME = '__dbis__';
 const ENVIRONMENT_NAME_KEY = '__environment_name__';
 const DBI_DEFINITION_NAME = '__dbi_defintion__';
+//LMDB has a 1978 byte limit for keys, but we try to retain plenty of padding so we don't have to calculate encoded byte length
 const MAX_SEARCH_KEY_LENGTH = 256;
 
 const SEARCH_TYPES = {

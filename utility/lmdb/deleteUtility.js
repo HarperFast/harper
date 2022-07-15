@@ -74,11 +74,11 @@ async function deleteRecords(env, hash_attribute, ids) {
 						let value = record[attribute];
 						if (value !== null && value !== undefined) {
 							try {
-								if (common.primitiveCheck(value)) {
-									if (value.length > MAX_SEARCH_KEY_LENGTH) {
-										value = value.slice(0, MAX_SEARCH_KEY_LENGTH) + OVERFLOW_MARKER;
+								let values = common.getIndexedValues(value);
+								if (values) {
+									for (let i = 0, l = values.length; i < l; i++) {
+										dbi.remove(values[i], cast_hash_value);
 									}
-									dbi.remove(value, cast_hash_value);
 								}
 							} catch (e) {
 								log.warn(`cannot delete from attribute: ${attribute}, ${value}:${cast_hash_value}`);
