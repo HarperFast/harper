@@ -180,7 +180,7 @@ async function copyEnvironment(base_path, env_name, destination_path, compact_en
 
 	//verify the destination_path is valid
 	try {
-		await fs.access(destination_path);
+		await fs.access(path.dirname(destination_path));
 	} catch (e) {
 		if (e.code === 'ENOENT') {
 			throw new Error(LMDB_ERRORS.INVALID_DESTINATION_PATH);

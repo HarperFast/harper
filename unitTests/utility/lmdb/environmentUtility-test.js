@@ -16,7 +16,7 @@ const BACKUP_FOLDER_NAME = 'backup';
 const BASE_TEST_PATH = path.join(test_utils.getMockLMDBPath(), LMDB_TEST_FOLDER_NAME);
 let TEST_ENVIRONMENT_NAME = 'test';
 const BACKUP_PATH = path.join(test_utils.getMockLMDBPath(), BACKUP_FOLDER_NAME);
-const BACKUP_TEST_ENV_PATH = path.join(BACKUP_PATH, TEST_ENVIRONMENT_NAME);
+const BACKUP_TEST_ENV_PATH = path.join(BACKUP_PATH, TEST_ENVIRONMENT_NAME + '.mdb');
 
 const INVALID_BASE_TEST_PATH = '/bad/path/zzz/';
 
@@ -281,7 +281,7 @@ describe('Test LMDB environmentUtility module', () => {
 			global.lmdb_map = undefined;
 			await fs.remove(test_utils.getMockLMDBPath());
 			await fs.mkdirp(BASE_TEST_PATH);
-			await fs.mkdirp(BACKUP_TEST_ENV_PATH);
+			await fs.mkdirp(path.dirname(BACKUP_TEST_ENV_PATH));
 			env_orig = await lmdb_env_util.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
 		});
 
@@ -624,7 +624,6 @@ describe('Test LMDB environmentUtility module', () => {
 			let expected = Object.create(null);
 			expected.id = new DBIDefinition(false, true);
 			expected.temperature = new DBIDefinition(true, false);
-			expected[lmdb_terms.BLOB_DBI_NAME] = new DBIDefinition(false, false);
 
 			assert.deepStrictEqual(expected, dbis);
 		});
@@ -632,7 +631,6 @@ describe('Test LMDB environmentUtility module', () => {
 		it('call function no dbis', async () => {
 			let dbis = await test_utils.assertErrorAsync(lmdb_env_util.listDBIDefinitions, [env2], undefined);
 			let expected = Object.create(null);
-			expected[lmdb_terms.BLOB_DBI_NAME] = new DBIDefinition(false, false);
 			assert.deepStrictEqual(dbis, expected);
 		});
 	});
@@ -666,12 +664,12 @@ describe('Test LMDB environmentUtility module', () => {
 		it('call function happy path', async () => {
 			let dbis = await test_utils.assertErrorAsync(lmdb_env_util.listDBIs, [env], undefined);
 
-			assert.deepStrictEqual(dbis, [lmdb_terms.BLOB_DBI_NAME, 'id', 'temperature']);
+			assert.deepStrictEqual(dbis, ['id', 'temperature']);
 		});
 
 		it('call function no dbis', async () => {
 			let dbis = await test_utils.assertErrorAsync(lmdb_env_util.listDBIs, [env2], undefined);
-			assert.deepStrictEqual(dbis, [lmdb_terms.BLOB_DBI_NAME]);
+			assert.deepStrictEqual(dbis, []);
 		});
 	});
 
@@ -698,7 +696,6 @@ describe('Test LMDB environmentUtility module', () => {
 		});
 
 		it('call function happy path no data', async () => {
-			let paths = fs.readdirSync(path.join(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME));
 			let data_size = fs.statSync(path.join(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME + '.mdb'));
 			let stat = await test_utils.assertErrorAsync(
 				lmdb_env_util.environmentDataSize,
@@ -879,7 +876,6 @@ describe('Test LMDB environmentUtility module', () => {
 
 			let expected = Object.create(null);
 			expected.id = new DBIDefinition(false, false);
-			expected[lmdb_terms.BLOB_DBI_NAME] = new DBIDefinition(false, false);
 
 			assert.deepStrictEqual(list_e, undefined);
 			assert.deepStrictEqual(dbis, expected);
