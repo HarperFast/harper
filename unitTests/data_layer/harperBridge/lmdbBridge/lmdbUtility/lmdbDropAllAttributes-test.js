@@ -195,7 +195,7 @@ describe('test lmdbDropAllAttributes module', () => {
 				undefined
 			);
 			let dbis = await test_utils.assertErrorAsync(environment_utility.listDBIs, [env], undefined);
-			assert.deepStrictEqual(dbis.length, 1);
+			assert.deepStrictEqual(dbis.length, 0);
 
 			for (let x = 0; x < results.length; x++) {
 				await test_utils.assertErrorAsync(
