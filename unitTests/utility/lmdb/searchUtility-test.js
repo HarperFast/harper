@@ -29,7 +29,7 @@ const MULTI_RECORD_ARRAY = [
 
 
 const MULTI_RECORD_ARRAY2 = [
-    {id:1, name:'Kyle', age:46, city:'Denver'},
+    {id:1, name:'Kyle', age:46, city:['Athens', 'Denver']},
     {id:2, name:'Jerry', age:32},
     {id:3, name: 'Hank', age: 57},
     {id:4, name:'Joy', age: 44, city:'Denver'},
@@ -452,6 +452,7 @@ describe('Test searchUtility module', ()=>{
         it("test iterate on city", () => {
             let results = test_utils.assertErrorSync(search_util.iterateDBI, [env, 'city'], undefined, 'city iterate');
             assert.deepEqual(results, {
+                'Athens': [1],
                 'Denver': [1, 4],
                 'Denvertown': [5],
                 'Nowhere': [6],
