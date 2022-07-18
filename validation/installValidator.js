@@ -32,7 +32,10 @@ function installValidator(param) {
 }
 
 function validateRootAvailable(value, helpers) {
-	if (fs.existsSync(path.join(value, 'system/hdb_user/data.mdb'))) {
+	if (
+		fs.existsSync(path.join(value, 'system/hdb_user/data.mdb')) ||
+		fs.existsSync(path.join(value, 'system/hdb_user.mdb'))
+	) {
 		return helpers.message(`'${value}' is already in use. Please enter a different path.`);
 	}
 }

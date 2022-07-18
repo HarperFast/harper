@@ -173,7 +173,7 @@ describe('Test LMDB environmentUtility module', () => {
 
 			await test_utils.assertErrorAsync(
 				await fs.access,
-				[path.join(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME, 'data.mdb')],
+				[path.join(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME + '.mdb')],
 				undefined,
 				'test path exists'
 			);
@@ -198,7 +198,7 @@ describe('Test LMDB environmentUtility module', () => {
 
 			await test_utils.assertErrorAsync(
 				await fs.access,
-				[path.join(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME, 'data.mdb')],
+				[path.join(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME + '.mdb')],
 				undefined,
 				'test path exists'
 			);
@@ -412,7 +412,7 @@ describe('Test LMDB environmentUtility module', () => {
 
 			let access_err;
 			try {
-				await fs.access(path.join(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME, 'data.mdb'));
+				await fs.access(path.join(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME + '.mdb'));
 			} catch (e) {
 				access_err = e;
 			}
@@ -699,7 +699,7 @@ describe('Test LMDB environmentUtility module', () => {
 
 		it('call function happy path no data', async () => {
 			let paths = fs.readdirSync(path.join(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME));
-			let data_size = fs.statSync(path.join(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME, 'data.mdb'));
+			let data_size = fs.statSync(path.join(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME + '.mdb'));
 			let stat = await test_utils.assertErrorAsync(
 				lmdb_env_util.environmentDataSize,
 				[BASE_TEST_PATH, TEST_ENVIRONMENT_NAME],

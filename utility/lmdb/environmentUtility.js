@@ -68,7 +68,7 @@ class TransactionCursor {
 
 /**
  * validates the base_path & env_name exist.  checks base_path is a valid path
- * @param {String} base_path - top level path the environment folder and the data.mdb file live under
+ * @param {String} base_path - top level path the environment folder and the .mdb file live under
  * @param {String} env_name - name of environment
  */
 function pathEnvNameValidation(base_path, env_name) {
@@ -96,7 +96,7 @@ async function verifyEnvironmentBasePath(base_path) {
 
 /**
  * checks the environment file exists
- * @param {String} base_path - top level path the environment folder and the data.mdb file live under
+ * @param {String} base_path - top level path the environment folder and the .mdb file live under
  * @param {String} env_name - name of environment
  * @returns {Promise<void>}
  */
@@ -232,7 +232,7 @@ async function openEnvironment(base_path, env_name, is_txn = false, is_v3 = fals
 
 /**
  * deletes the environment from the file system & removes the reference from global
- * @param {String} base_path - top level path the environment folder and the data.mdb file live under
+ * @param {String} base_path - top level path the environment folder and the .mdb file live under
  * @param {String} env_name - name of environment
  * @param {Boolean} is_txn - defines if is a transactions environemnt
  */
