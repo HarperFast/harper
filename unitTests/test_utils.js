@@ -7,7 +7,9 @@ const assert = require('assert');
 const rewire = require('rewire');
 const util = require('util');
 const exec = util.promisify(require('child_process').exec);
+const { spawn } = require('child_process');
 const COMMON_TEST_TERMS = require('./commonTestTerms');
+const { platform } = require('os');
 
 const LeafConfigObject = require('../server/nats/utility/LeafConfigObject');
 const SysUserObject = require('../server/nats/utility/SysUserObject');
@@ -693,17 +695,36 @@ async function launchTestLeafServer(ls_net_port = 9991, node_name = 'testLeafSer
 	const leaf_config_path = path.join(TEMP_CLUSTERING_TEST_DIR, NATS_TEST_CONFIG_FILES.LEAF_SERVER);
 	await fs.writeJson(leaf_config_path, new_leaf_config);
 
-	const pm2_leaf_server_config = {
-		name: 'nats_test_leaf_server',
-		script: `${NATS_SERVER_PATH} -c ${leaf_config_path}`,
-		exec_mode: 'fork',
-		env: { [terms.PROCESS_NAME_ENV_PROP]: terms.PROCESS_DESCRIPTORS.CLUSTERING_LEAF },
-		out_file: '/dev/null',
-		error_file: '/dev/null',
-		instances: 1,
-	};
+	const env = { [terms.PROCESS_NAME_ENV_PROP]: terms.PROCESS_DESCRIPTORS.CLUSTERING_LEAF };
+	if (platform() === 'win32') {
+		// I don't know if you can actually use pm2 to start a non-JS process in windows
+		await new Promise((resolve, reject) => {
+			const nats = spawn(NATS_SERVER_PATH, ['-c', leaf_config_path], { env });
+			nats.stdout.on('data', (data) => {
+				console.log(data);
+			});
+			nats.stderr.on('data', (data) => {
+				// wait until the server says it is ready
+				if (data.toString().includes('Server is ready'))
+					resolve();
+			});
+			nats.on('close', (code) => {
+				console.log(code);
+			});
+		});
+	} else {
+		const pm2_leaf_server_config = {
+			name: 'nats_test_leaf_server',
+			script: `${NATS_SERVER_PATH} -c ${leaf_config_path}`,
+			exec_mode: 'fork',
+			env: { [terms.PROCESS_NAME_ENV_PROP]: terms.PROCESS_DESCRIPTORS.CLUSTERING_LEAF },
+			out_file: '/dev/null',
+			error_file: '/dev/null',
+			instances: 1,
+		};
 
-	//await pm2_utils.start(pm2_leaf_server_config);
+		await pm2_utils.start(pm2_leaf_server_config);
+	}
 }
 
 function setFakeClusterUser() {

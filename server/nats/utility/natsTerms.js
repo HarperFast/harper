@@ -1,7 +1,8 @@
 'use strict';
+const { platform } = require('os')
 
 const NATS_SERVER_ZIP = 'nats-server.zip';
-const NATS_SERVER_NAME = 'nats-server';
+const NATS_SERVER_NAME = platform() == 'win32' ? 'nats-server.exe' : 'nats-server';
 const DELIVER_GROUP = 'HDB';
 
 // Regex used to validate Nats node names
