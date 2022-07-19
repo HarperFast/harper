@@ -69,9 +69,7 @@ function insertRecord(env, hash_attribute, write_attributes, record) {
 			let attribute = write_attributes[x];
 
 			//we do not process the write to the hash attribute as they are handled differently.  Also skip if the attribute does not exist on the object
-			if (attribute === hash_attribute ||
-				record.hasOwnProperty(attribute) === false
-			) {
+			if (attribute === hash_attribute || record.hasOwnProperty(attribute) === false) {
 				continue;
 			}
 
@@ -179,15 +177,11 @@ async function updateRecords(env, hash_attribute, write_attributes, records, gen
 	let keys = [];
 	for (let index = 0; index < records.length; index++) {
 		let record = records[index];
-		setTimestamps(record, false, generate_timestamps);
-
 		let cast_hash_value = hdb_utils.autoCast(record[hash_attribute]);
 
 		let promise;
 		try {
-			promise = //env.dbis[hash_attribute].ifVersion(cast_hash_value, record[UPDATED_TIME_ATTRIBUTE_NAME], () => {
-				updateUpsertRecord(env, hash_attribute, record, cast_hash_value, result);
-			//}, { ifLessThan: true });
+			promise = updateUpsertRecord(env, hash_attribute, record, cast_hash_value, result, true, generate_timestamps);
 		} catch (e) {
 			result.skipped_hashes.push(cast_hash_value);
 			remove_indices.push(index);
@@ -227,32 +221,16 @@ async function upsertRecords(env, hash_attribute, write_attributes, records, gen
 		//iterate upsert records
 		for (let index = 0; index < records.length; index++) {
 			let record = records[index];
-			let is_insert = false;
 			let hash_value = undefined;
-			let existing_record = undefined;
 			if (hdb_utils.isEmpty(record[hash_attribute])) {
 				hash_value = uuid.v4();
 				record[hash_attribute] = hash_value;
-				is_insert = true;
 			} else {
 				hash_value = hdb_utils.autoCast(record[hash_attribute]);
-				//grab existing record
-				existing_record = env.dbis[hash_attribute].get(hash_value);
 			}
 
-			let promise;
-			//if the existing record doesn't exist we initialize it as an empty object & flag the record as an insert
-			if (hdb_utils.isEmpty(existing_record)) {
-				is_insert = true;
-				setTimestamps(record, is_insert, generate_timestamps);
-				promise = insertRecord(env, hash_attribute, write_attributes, record);
-			} else {
-				setTimestamps(record, is_insert, generate_timestamps);
-				promise = //env.dbis[hash_attribute].ifVersion(hash_value, 1, () => {
-					updateUpsertRecord(env, hash_attribute, record, hash_value, result);
-				//});
-			}
-
+			// do an upsert without requiring the record to previously existed
+			let promise = updateUpsertRecord(env, hash_attribute, record, hash_value, result, false, generate_timestamps);
 			puts.push(promise);
 			keys.push(hash_value);
 		}
@@ -287,63 +265,92 @@ async function finalizeWrite(puts, keys, records, result, remove_indices = []) {
  * @param {{}} record - the record to process
  * @param {string|number} cast_hash_value - the hash attribute value cast to it's data type
  * @param {UpdateRecordsResponseObject|UpsertRecordsResponseObject} result
+ * @param {boolean} Require existing record
+ * @param {boolean} Generate timestamps
  */
-function updateUpsertRecord(env, hash_attribute, record, cast_hash_value, result) {
-	let existing_record = env.dbis[hash_attribute].get(cast_hash_value);
-	if (
-		Number.isInteger(record[UPDATED_TIME_ATTRIBUTE_NAME]) &&
-		existing_record[UPDATED_TIME_ATTRIBUTE_NAME] > record[UPDATED_TIME_ATTRIBUTE_NAME]
-	) {
-		throw new Error('existing record is newer than updating record');
-	}
-	result.original_records.push(existing_record);
+function updateUpsertRecord(
+	env,
+	hash_attribute,
+	record,
+	cast_hash_value,
+	result,
+	must_exist = false,
+	generate_timestamps = true
+) {
+	let primary_dbi = env.dbis[hash_attribute];
+	// we prefetch the value to ensure we don't have any page faults inside the write transaction
+	return primary_dbi.prefetch(cast_hash_value).then(() =>
+		primary_dbi.transaction(() => {
+			let existing_record = primary_dbi.get(cast_hash_value);
+			let had_existing = existing_record;
+			if (!existing_record) {
+				if (must_exist) return false;
+				existing_record = {};
+			}
+			setTimestamps(record, !had_existing, generate_timestamps);
+			if (
+				Number.isInteger(record[UPDATED_TIME_ATTRIBUTE_NAME]) &&
+				existing_record[UPDATED_TIME_ATTRIBUTE_NAME] > record[UPDATED_TIME_ATTRIBUTE_NAME]
+			) {
+				// This is not an error condition in our world of last-record-wins
+				// replication. If the existing record is newer than it just means the provided record
+				// is, well... older. And newer records are supposed to "win" over older records, and that
+				// is normal, non-error behavior.
+				return false;
+			}
+			if (had_existing) result.original_records.push(existing_record);
 
-	//iterate the entries from the record
-	for (let [key, value] of Object.entries(record)) {
-		if (key === hash_attribute) {
-			continue;
-		}
-		let dbi = env.dbis[key];
-		if (dbi === undefined) {
-			continue;
-		}
+			// iterate the entries from the record
+			// for-in is about 5x as fast as for-of Object.entries, and this is extremely time sensitive since it is
+			// inside a write transaction
+			for (let key in record) {
+				if (!record.hasOwnProperty(key) || key === hash_attribute) {
+					continue;
+				}
+				let value = record[key];
+				let dbi = env.dbis[key];
+				if (dbi === undefined) {
+					continue;
+				}
 
-		let existing_value = existing_record[key];
+				let existing_value = existing_record[key];
 
-		//
-		if (typeof value === 'function') {
-			let value_results = value([[existing_record]]);
-			if (Array.isArray(value_results)) {
-				value = value_results[0][hdb_terms.FUNC_VAL];
+				//
+				if (typeof value === 'function') {
+					let value_results = value([[existing_record]]);
+					if (Array.isArray(value_results)) {
+						value = value_results[0][hdb_terms.FUNC_VAL];
+						record[key] = value;
+					}
+				}
+				value = hdb_utils.autoCast(value);
+				value = value === undefined ? null : value;
 				record[key] = value;
-			}
-		}
-		value = hdb_utils.autoCast(value);
-		value = value === undefined ? null : value;
-		record[key] = value;
-		existing_value = hdb_utils.autoCast(existing_value);
-		if (value === existing_value) {
-			continue;
-		}
+				existing_value = hdb_utils.autoCast(existing_value);
+				if (value === existing_value) {
+					continue;
+				}
 
-		//if the update cleared out the attribute value we need to delete it from the index
-		let values = common.getIndexedValues(existing_value);
-		if (values) {
-			for (let i = 0, l = values.length; i < l; i++) {
-				dbi.remove(values[i], cast_hash_value);
+				//if the update cleared out the attribute value we need to delete it from the index
+				let values = common.getIndexedValues(existing_value);
+				if (values) {
+					for (let i = 0, l = values.length; i < l; i++) {
+						dbi.remove(values[i], cast_hash_value);
+					}
+				}
+				values = common.getIndexedValues(value);
+				if (values) {
+					for (let i = 0, l = values.length; i < l; i++) {
+						dbi.put(values[i], cast_hash_value);
+					}
+				}
 			}
-		}
-		values = common.getIndexedValues(value);
-		if (values) {
-			for (let i = 0, l = values.length; i < l; i++) {
-				dbi.put(values[i], cast_hash_value);
-			}
-		}
-	}
 
-	let merged_record = Object.assign({}, existing_record, record);
-	// TODO: Don't return this promise once this is embedded in ifVersion
-	return env.dbis[hash_attribute].put(cast_hash_value, merged_record, merged_record[UPDATED_TIME_ATTRIBUTE_NAME]);
+			let merged_record = Object.assign({}, existing_record, record);
+			primary_dbi.put(cast_hash_value, merged_record, merged_record[UPDATED_TIME_ATTRIBUTE_NAME]);
+			return true;
+		})
+	);
 }
 
 /**
