@@ -35,7 +35,7 @@ async function processDirectives(upgrade_obj) {
 		try {
 			sync_func_response = runSyncFunctions(vers.sync_functions);
 		} catch (e) {
-			log.error(`Error while running a settings upgrade script for ${vers.version}: ` + e);
+			log.error(`Error while running an upgrade script for ${vers.version}`);
 			throw e;
 		}
 
@@ -43,7 +43,7 @@ async function processDirectives(upgrade_obj) {
 		try {
 			async_func_responses = await runAsyncFunctions(vers.async_functions);
 		} catch (e) {
-			log.error(`Error while running an upgrade script for ${vers.version}: ` + e);
+			log.error(`Error while running an upgrade script for ${vers.version}`);
 			throw e;
 		}
 
@@ -75,16 +75,10 @@ function runSyncFunctions(directive_functions) {
 			log.info('Variable being processed is not a function');
 			continue;
 		}
-		try {
-			const response = func();
-			log.info(response);
-			func_responses.push(response);
-		} catch (e) {
-			log.error(e);
-			// Right now assume any functions that need to be run are critical to a successful upgrade, so fail completely
-			// if any of them fail.
-			throw e;
-		}
+
+		const response = func();
+		log.info(response);
+		func_responses.push(response);
 	}
 
 	return func_responses;
@@ -114,16 +108,10 @@ async function runAsyncFunctions(directive_functions) {
 			log.info('Variable being processed is not a function');
 			continue;
 		}
-		try {
-			const response = await func();
-			log.info(response);
-			func_responses.push(response);
-		} catch (e) {
-			log.error(e);
-			// Right now assume any functions that need to be run are critical to a successful upgrade, so fail completely
-			// if any of them fail.
-			throw e;
-		}
+
+		const response = await func();
+		log.info(response);
+		func_responses.push(response);
 	}
 	return func_responses;
 }

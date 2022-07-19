@@ -30,7 +30,7 @@ const DEFAULT_CONFIG_FILE = path.resolve(__dirname, '../../config/yaml/', hdb_te
 
 let process_name =
 	process.env.PROCESS_NAME === undefined ? hdb_terms.PROCESS_DESCRIPTORS.INSTALL : process.env.PROCESS_NAME;
-let log_stream;
+let non_pm2_log_file;
 let log_to_file;
 let log_to_stdstreams;
 let log_level;
@@ -118,7 +118,7 @@ function initLogSettings() {
 }
 
 /**
- * If a process is not run by pm2 (like the bin modules) create a log file/stream.
+ * If a process is not run by pm2 (like the bin modules) create a log file
  * @param log_name
  * @param log_process_name
  */
@@ -138,14 +138,8 @@ function createLogFile(log_name, log_process_name) {
 	}
 
 	if (log_to_file) {
-		log_stream = fs.createWriteStream(path.join(log_dir, log_name), {
-			autoClose: true,
-			flags: 'a',
-		});
-
-		log_stream.on('error', (err) => {
-			console.error(err);
-		});
+		// Create or open a log file
+		non_pm2_log_file = fs.openSync(path.join(log_dir, log_name), 'a');
 	}
 }
 
@@ -181,25 +175,18 @@ function createLogRecord(level, args) {
 }
 
 /**
- * If the stream doesn't exist, write to the install log. The only time the log stream should be undefined is initially
+ * If the log file doesn't exist, write to the install log. The only time the log file should be undefined is initially
  * during install or before any of the bin modules have had a chance to create their own log.
  * @param log
  */
-function writeToLogStream(log) {
-	if (log_stream === undefined) {
+function writeToLogFile(log) {
+	if (non_pm2_log_file === undefined) {
 		process_name = hdb_terms.PROCESS_DESCRIPTORS.INSTALL;
 		fs.ensureDirSync(INSTALL_LOG_LOCATION);
-		log_stream = fs.createWriteStream(path.join(INSTALL_LOG_LOCATION, hdb_terms.PROCESS_LOG_NAMES.INSTALL), {
-			autoClose: true,
-			flags: 'a',
-		});
-
-		log_stream.on('error', (err) => {
-			console.error(err);
-		});
+		non_pm2_log_file = fs.openSync(path.join(INSTALL_LOG_LOCATION, hdb_terms.PROCESS_LOG_NAMES.INSTALL), 'a');
 	}
 
-	log_stream.write(log);
+	fs.appendFileSync(non_pm2_log_file, log);
 }
 
 /**
@@ -207,7 +194,7 @@ function writeToLogStream(log) {
  * @param log
  */
 function nonPm2LogStdOut(log) {
-	if (log_to_file) writeToLogStream(log);
+	if (log_to_file) writeToLogFile(log);
 	if (log_to_stdstreams) process.stdout.write(log);
 }
 
@@ -216,7 +203,7 @@ function nonPm2LogStdOut(log) {
  * @param log
  */
 function nonPm2LogStdErr(log) {
-	if (log_to_file) writeToLogStream(log);
+	if (log_to_file) writeToLogFile(log);
 	if (log_to_stdstreams) process.stderr.write(log);
 }
 
@@ -384,6 +371,16 @@ function autoCastBoolean(boolean) {
  */
 function getLogConfig(hdb_config_path) {
 	try {
+		// This is here to accommodate pre 4.0.0 settings files that might exist during upgrade.
+		if (hdb_config_path.includes('config/settings.js')) {
+			const old_hdb_settings = PropertiesReader(hdb_config_path);
+			return {
+				level: old_hdb_settings.get(hdb_terms.HDB_SETTINGS_NAMES.LOG_LEVEL_KEY),
+				config_log_path: path.dirname(old_hdb_settings.get(hdb_terms.HDB_SETTINGS_NAMES.LOG_PATH_KEY)),
+				to_file: old_hdb_settings.get(hdb_terms.HDB_SETTINGS_NAMES.LOG_TO_FILE),
+				to_stream: old_hdb_settings.get(hdb_terms.HDB_SETTINGS_NAMES.LOG_TO_STDSTREAMS),
+			};
+		}
 		const config_doc = YAML.parseDocument(fs.readFileSync(hdb_config_path, 'utf8'));
 		const level = config_doc.getIn(['logging', 'level']);
 		const config_log_path = config_doc.getIn(['logging', 'root']);

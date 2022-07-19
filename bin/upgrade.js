@@ -19,6 +19,9 @@ const hdb_utils = require('../utility/common_utils');
 const hdbInfoController = require('../data_layer/hdbInfoController');
 const upgradePrompt = require('../upgrade/upgradePrompt');
 const ps_list = require('../utility/psList');
+const global_schema = require('../utility/globalSchema');
+const promisify = require('util').promisify;
+const p_schema_to_global = promisify(global_schema.setSchemaDataToGlobal);
 let pm2_utils;
 
 const { UPGRADE_VERSION } = hdb_terms.UPGRADE_JSON_FIELD_NAMES_ENUM;
@@ -35,6 +38,7 @@ module.exports = {
  */
 async function upgrade(upgrade_obj) {
 	hdb_logger.createLogFile(hdb_terms.PROCESS_LOG_NAMES.CLI, hdb_terms.PROCESS_DESCRIPTORS.UPGRADE);
+	await p_schema_to_global();
 
 	// Requiring the pm2 mod will create the .pm2 dir. This code is here to allow install to set pm2 env vars before that is done.
 	if (pm2_utils === undefined) pm2_utils = require('../utility/pm2/utilityFunctions');
@@ -70,7 +74,7 @@ async function upgrade(upgrade_obj) {
 		console.log(
 			`Current Version field missing from the package.json file.  Cannot continue with upgrade.  If you need support, please contact ${hdb_terms.HDB_SUPPORT_ADDRESS}`
 		);
-		hdb_logger.notify('Missing new version field from upgrade info object', true);
+		hdb_logger.notify('Missing new version field from upgrade info object');
 		process.exit(1);
 	}
 
@@ -83,8 +87,8 @@ async function upgrade(upgrade_obj) {
 	try {
 		start_upgrade = await upgradePrompt.forceUpdatePrompt(hdb_upgrade_info);
 	} catch (err) {
-		hdb_logger.error('There was an error when prompting user about upgrade.', true);
-		hdb_logger.error(err, true);
+		hdb_logger.error('There was an error when prompting user about upgrade.');
+		hdb_logger.error(err);
 		start_upgrade = false;
 		exit_code = 1;
 	}
@@ -94,15 +98,9 @@ async function upgrade(upgrade_obj) {
 		process.exit(exit_code);
 	}
 
-	hdb_logger.info(`Starting upgrade to version ${current_hdb_version}`, true);
+	hdb_logger.info(`Starting upgrade to version ${current_hdb_version}`);
 
-	try {
-		await runUpgrade(hdb_upgrade_info);
-	} catch (err) {
-		hdb_logger.error('There was an error when upgrading your HDB instance. Check logs for more details.', true);
-		hdb_logger.error(err, true);
-		throw err;
-	}
+	await runUpgrade(hdb_upgrade_info);
 
 	printToLogAndConsole(
 		`HarperDB was successfully upgraded to version ${hdb_upgrade_info[UPGRADE_VERSION]}`,
@@ -142,7 +140,7 @@ async function checkIfRunning() {
 		let run_err =
 			"HarperDB is running, please stop all HarperDB services with 'harperdb stop' and run the upgrade command again.";
 		console.log(chalk.red(run_err));
-		hdb_logger.error(run_err, true);
+		hdb_logger.error(run_err);
 		process.exit(1);
 	}
 }
@@ -169,8 +167,8 @@ async function runUpgrade(upgrade_obj) {
 	try {
 		await hdbInfoController.insertHdbUpgradeInfo(upgrade_obj[UPGRADE_VERSION]);
 	} catch (err) {
-		hdb_logger.error("Error updating the 'hdb_info' system table.", true);
-		hdb_logger.error(err, true);
+		hdb_logger.error("Error updating the 'hdb_info' system table.");
+		hdb_logger.error(err);
 	}
 }
 
@@ -178,6 +176,6 @@ function printToLogAndConsole(msg, log_level = undefined) {
 	if (!log_level) {
 		log_level = hdb_logger.info;
 	}
-	hdb_logger[log_level](msg, true);
+	hdb_logger[log_level](msg);
 	console.log(chalk.magenta(msg));
 }
