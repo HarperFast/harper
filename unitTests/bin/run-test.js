@@ -560,7 +560,7 @@ describe('Test run module', () => {
 
 		it('Test ENOENT err code returns false', async () => {
 			let err = new Error(TEST_ERROR);
-			err.errno = -2;
+			err.code = 'ENOENT';
 			fs_stat_stub.throws(err);
 			const result = await isHdbInstalled();
 

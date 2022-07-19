@@ -8,6 +8,7 @@ const semver = require('semver');
 const nats_terms = require('./natsTerms');
 const util = require('util');
 const child_process = require('child_process');
+const { platform } = require('os');
 const exec = util.promisify(child_process.exec);
 
 const DEPENDENCIES_PATH = path.resolve(__dirname, '../../../dependencies');
@@ -62,15 +63,18 @@ async function checkNATSServerInstalled() {
 async function checkGoVersion() {
 	console.log(chalk.green(`Verifying go v${REQUIRED_GO_VERSION} is on system.`));
 	let version;
-	try {
-		version = await runCommand('go version | { read _ _ v _; echo ${v#go}; }', undefined);
-	} catch (e) {
-		throw Error('go does not appear to be installed or is not in the PATH, cannot install clustering dependencies.');
+	if (platform() != 'win32') {
+		// need a Windows version of this check
+		try {
+			version = await runCommand('go version | { read _ _ v _; echo ${v#go}; }', undefined);
+		} catch (e) {
+			throw Error('go does not appear to be installed or is not in the PATH, cannot install clustering dependencies.');
+		}
+		if (!semver.gte(version, REQUIRED_GO_VERSION)) {
+			throw Error(`go version ${REQUIRED_GO_VERSION} or higher must be installed.`);
+		}
+		console.log(chalk.green(`go v${REQUIRED_GO_VERSION} is on the system.`));
 	}
-	if (!semver.gte(version, REQUIRED_GO_VERSION)) {
-		throw Error(`go version ${REQUIRED_GO_VERSION} or higher must be installed.`);
-	}
-	console.log(chalk.green(`go v${REQUIRED_GO_VERSION} is on the system.`));
 }
 
 /**
@@ -123,7 +127,9 @@ async function installer() {
 
 	let nats_source_folder = await extractNATSServer();
 	console.log(chalk.green('Building NATS Server binary.'));
-	await runCommand(`export GOPATH=${DEPENDENCIES_PATH} && go build`, nats_source_folder);
+	if (platform() == 'win32') await runCommand(`set GOPATH=${DEPENDENCIES_PATH}&& go build`, nats_source_folder);
+	else
+		await runCommand(`export GOPATH=${DEPENDENCIES_PATH} && go build`, nats_source_folder);
 	console.log(chalk.green('Building NATS Server binary complete.'));
 	await cleanUp(nats_source_folder);
 	console.log(chalk.green(`****NATS Server v${REQUIRED_NATS_SERVER_VERSION} is installed.****`));

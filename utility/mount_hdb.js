@@ -79,7 +79,7 @@ function makeDirectory(targetDir, { isRelativeToScript = false } = {}) {
 	const initDir = path.isAbsolute(targetDir) ? sep : '';
 	const baseDir = isRelativeToScript ? __dirname : '.';
 
-	targetDir.split(sep).reduce((parentDir, childDir) => {
+	targetDir.split('/').reduce((parentDir, childDir) => {
 		const curDir = path.resolve(baseDir, parentDir, childDir);
 		try {
 			if (curDir && curDir !== '/') {

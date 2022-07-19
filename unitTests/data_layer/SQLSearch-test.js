@@ -918,7 +918,7 @@ describe('Test FileSystem Class', function () {
 	});
 
 	describe('_conditionsToFetchAttributeValues()', function () {
-		const test_attr_path = `${TEST_SCHEMA}/${TEST_TABLE_DOG}/${HASH_ATTRIBUTE}`;
+		const test_attr_path = `${TEST_SCHEMA}${path.sep}${TEST_TABLE_DOG}${path.sep}${HASH_ATTRIBUTE}`;
 
 		it('should NOT set exact_search_values property when there is no WHERE clause', function () {
 			const test_sql_statement = sql_basic_dog_select;
@@ -1122,7 +1122,7 @@ describe('Test FileSystem Class', function () {
 		});
 
 		it('should set multiple comparator_search_values.comparators values if the WHERE clause has multiple same attr conditions', function () {
-			const test_age_key = 'dev/dog/age';
+			const test_age_key = `dev${path.sep}dog${path.sep}age`;
 			const age_attr_key = 'age';
 			const test_age_val1 = '5';
 			const test_age_val2 = '10';
