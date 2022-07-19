@@ -340,85 +340,10 @@ function equals(env, hash_attribute, attribute, search_value, reverse = false, l
 				cursor_functions.pushResults(search_value, value, results, hash_attribute, attribute);
 			}
 		}
-
-		if (Buffer.byteLength(search_value.toString()) > lmdb_terms.MAX_BYTE_SIZE) {
-			blobSearch(env, hash_attribute, attribute, search_value, lmdb_terms.SEARCH_TYPES.EQUALS, results);
-		}
 		return results;
 	} catch (e) {
 		throw e;
 	}
-}
-
-/**
- *
- * @param env
- * @param hash_attribute
- * @param attribute
- * @param search_value
- * @param search_type
- * @param results
- * @returns {{}}
- */
-function blobSearch(env, hash_attribute, attribute, search_value, search_type, results = []) {
-	try {
-		let range_value = `${attribute}/`;
-
-		for (let { key, value } of env.dbis[lmdb_terms.BLOB_DBI_NAME].getRange({ start: range_value })) {
-			if (key.startsWith(range_value) === false) {
-				break;
-			}
-
-			let hash_value = key.replace(range_value, '');
-			switch (search_type) {
-				case lmdb_terms.SEARCH_TYPES.EQUALS:
-					if (value === search_value) {
-						addResultFromBlobSearch(hash_value, value, hash_attribute, attribute, results);
-					}
-					break;
-				case lmdb_terms.SEARCH_TYPES.STARTS_WITH:
-					if (value.startsWith(search_value) === true) {
-						addResultFromBlobSearch(hash_value, value, hash_attribute, attribute, results);
-					}
-					break;
-				case lmdb_terms.SEARCH_TYPES.ENDS_WITH:
-					if (value.endsWith(search_value) === true) {
-						addResultFromBlobSearch(hash_value, value, hash_attribute, attribute, results);
-					}
-					break;
-				case lmdb_terms.SEARCH_TYPES.CONTAINS:
-					if (value.indexOf(search_value) >= 0) {
-						addResultFromBlobSearch(hash_value, value, hash_attribute, attribute, results);
-					}
-					break;
-				default:
-					break;
-			}
-		}
-
-		return results;
-	} catch (e) {
-		throw e;
-	}
-}
-
-/**
- *
- * @param {String|Number} hash_value
- * @param {*} blob_value
- * @param {String} hash_attribute
- * @param {String} attribute
- * @param {[]} results
- */
-function addResultFromBlobSearch(hash_value, blob_value, hash_attribute, attribute, results) {
-	let new_object = Object.create(null);
-	new_object[attribute] = auto_cast(blob_value);
-
-	if (hash_attribute !== undefined) {
-		new_object[hash_attribute] = auto_cast(hash_value);
-	}
-	results[0].push(hash_value);
-	results[1].push(new_object);
 }
 
 /**
@@ -1168,10 +1093,6 @@ function validateComparisonFunctions(env, attribute, search_value) {
 function setGetWholeRowAttributes(env, fetch_attributes) {
 	if (fetch_attributes.length === 1 && hdb_terms.SEARCH_WILDCARDS.indexOf(fetch_attributes[0]) >= 0) {
 		fetch_attributes = environment_utility.listDBIs(env);
-		let blob_index = fetch_attributes.indexOf(lmdb_terms.BLOB_DBI_NAME);
-		if (blob_index >= 0) {
-			fetch_attributes.splice(blob_index, 1);
-		}
 	}
 
 	return fetch_attributes;
