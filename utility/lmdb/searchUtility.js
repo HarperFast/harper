@@ -79,7 +79,7 @@ function iterateRangeNext(
 ) {
 	let results = [[], []];
 
-	let dbi = env.dbis[attribute];
+	let dbi = environment_utility.openDBI(env, attribute)
 	if (dbi[lmdb_terms.DBI_DEFINITION_NAME].is_hash_attribute) {
 		hash_attribute = attribute;
 	}
@@ -168,7 +168,7 @@ function iterateRangeBetween(
 
 	let start = reverse === true ? end_value : start_value;
 
-	for (let { key, value } of env.dbis[attribute].getRange({ start, end, reverse, limit, offset })) {
+	for (let { key, value } of dbi.getRange({ start, end, reverse, limit, offset })) {
 		cursor_functions.pushResults(key, value, results, hash_attribute, attribute);
 	}
 	return results;
@@ -588,10 +588,11 @@ function greaterThanEqual(
 
 	//if reverse = true we need to find the prev value to the search
 	let next_value;
+	let dbi;
 	if (reverse === false) {
 		next_value = search_value;
 	} else {
-		let dbi = environment_utility.openDBI(env, attribute);
+		dbi = environment_utility.openDBI(env, attribute);
 
 		//get the first key
 		let first;
@@ -612,24 +613,20 @@ function greaterThanEqual(
 		}
 	}
 
-	try {
-		let dbi = env.dbis[attribute];
-		if (dbi[lmdb_terms.DBI_DEFINITION_NAME].is_hash_attribute) {
-			hash_attribute = attribute;
-		}
-
-		//because reversing only returns 1 entry from a dup sorted key we get all entries for the search value
-		let start_value = reverse === true ? undefined : next_value === undefined ? false : next_value;
-		let end_value = reverse === true ? (next_value === undefined ? false : next_value) : undefined;
-
-		for (let { key, value } of dbi.getRange({ start: start_value, end: end_value, reverse, limit, offset })) {
-			cursor_functions.greaterThanEqualCompare(search_value, key, value, results, hash_attribute, attribute);
-		}
-
-		return results;
-	} catch (e) {
-		throw e;
+	dbi = dbi || environment_utility.openDBI(env, attribute);
+	if (dbi[lmdb_terms.DBI_DEFINITION_NAME].is_hash_attribute) {
+		hash_attribute = attribute;
 	}
+
+	//because reversing only returns 1 entry from a dup sorted key we get all entries for the search value
+	let start_value = reverse === true ? undefined : next_value === undefined ? false : next_value;
+	let end_value = reverse === true ? (next_value === undefined ? false : next_value) : undefined;
+
+	for (let { key, value } of dbi.getRange({ start: start_value, end: end_value, reverse, limit, offset })) {
+		cursor_functions.greaterThanEqualCompare(search_value, key, value, results, hash_attribute, attribute);
+	}
+
+	return results;
 }
 
 /**
@@ -828,17 +825,13 @@ function searchByHash(env, hash_attribute, fetch_attributes, id) {
 
 	id = auto_cast(id);
 
-	try {
-		let obj = null;
-		let object = env.dbis[hash_attribute].get(id);
+	let obj = null;
+	let object = env.dbis[hash_attribute].get(id);
 
-		if (object) {
-			obj = cursor_functions.parseRow(object, fetch_attributes);
-		}
-		return obj;
-	} catch (e) {
-		throw e;
+	if (object) {
+		obj = cursor_functions.parseRow(object, fetch_attributes);
 	}
+	return obj;
 }
 
 /**
@@ -859,19 +852,15 @@ function checkHashExists(env, hash_attribute, id) {
 		throw new Error(LMDB_ERRORS.ID_REQUIRED);
 	}
 
-	try {
-		id = auto_cast(id);
-		let found_key = true;
+	id = auto_cast(id);
+	let found_key = true;
 
-		let value = env.dbis[hash_attribute].get(id);
+	let value = env.dbis[hash_attribute].get(id);
 
-		if (value === undefined) {
-			found_key = false;
-		}
-		return found_key;
-	} catch (e) {
-		throw e;
+	if (value === undefined) {
+		found_key = false;
 	}
+	return found_key;
 }
 
 /**
