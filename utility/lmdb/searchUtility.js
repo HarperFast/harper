@@ -427,6 +427,7 @@ function endsWith(
  * @param {boolean} reverse - defines if the iterator goes from last to first
  * @param {number} limit - defines the max number of entries to iterate
  * @param {number} offset - defines the entries to skip
+ * @param {boolean} ends_with - Must only contain this value at the end
  * @returns {[[],[]]} - ids matching the search
  */
 function contains(
@@ -483,7 +484,7 @@ function contains(
 			// now get each record so we can check the full value
 			for (let primary_key of attr_dbi.getValues(key)) {
 				let record = primary_dbi.get(primary_key);
-				let found_str = record[attribute].toString();
+				found_str = record[attribute].toString();
 				if (ends_with ? found_str.endsWith(search_value) : found_str.includes(search_value)) {
 					if (!matching_keys)
 						matching_keys = [];
@@ -508,31 +509,6 @@ function contains(
 		}
 	}
 
-
-/*
-	for (let { key, value: record } of attr_dbi.getRange({
-		start: reverse ? undefined : false,
-		end: !reverse ? undefined : false,
-		reverse: reverse,
-	})) {
-		let value = record[attribute];
-		if (ends_with ? value?.toString().endsWith(search_value) : value?.toString().includes(search_value)) {
-			if (offset > 0) {
-				offset--;
-				continue;
-			}
-
-			if (limit === 0) {
-				break;
-			}
-			results[0].push(key);
-			let object = hash_attribute ? { [hash_attribute]: key } : {};
-			if (hash_attribute != attribute)
-				object[attribute] = value;
-			results[1].push(object);
-			limit--;
-		}
-	}*/
 	return results;
 }
 

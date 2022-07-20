@@ -30,27 +30,23 @@ const UPDATED_TIME_ATTRIBUTE_NAME = hdb_terms.TIME_STAMP_NAMES_ENUM.UPDATED_TIME
 async function insertRecords(env, hash_attribute, write_attributes, records, generate_timestamps = true) {
 	validateWrite(env, hash_attribute, write_attributes, records);
 
-	try {
-		initializeTransaction(env, hash_attribute, write_attributes);
+	initializeTransaction(env, hash_attribute, write_attributes);
 
-		let result = new InsertRecordsResponseObject();
+	let result = new InsertRecordsResponseObject();
 
-		let puts = [];
-		let keys = [];
-		for (let index = 0; index < records.length; index++) {
-			let record = records[index];
-			setTimestamps(record, true, generate_timestamps);
+	let puts = [];
+	let keys = [];
+	for (let index = 0; index < records.length; index++) {
+		let record = records[index];
+		setTimestamps(record, true, generate_timestamps);
 
-			let promise = insertRecord(env, hash_attribute, write_attributes, record);
-			let cast_hash_value = record[hash_attribute];
-			puts.push(promise);
-			keys.push(cast_hash_value);
-		}
-
-		return await finalizeWrite(puts, keys, records, result);
-	} catch (e) {
-		throw e;
+		let promise = insertRecord(env, hash_attribute, write_attributes, record);
+		let cast_hash_value = record[hash_attribute];
+		puts.push(promise);
+		keys.push(cast_hash_value);
 	}
+
+	return finalizeWrite(puts, keys, records, result);
 }
 
 /**
@@ -191,7 +187,7 @@ async function updateRecords(env, hash_attribute, write_attributes, records, gen
 		keys.push(cast_hash_value);
 	}
 
-	return await finalizeWrite(puts, keys, records, result, remove_indices);
+	return finalizeWrite(puts, keys, records, result, remove_indices);
 }
 
 /**
@@ -211,34 +207,30 @@ async function upsertRecords(env, hash_attribute, write_attributes, records, gen
 		throw handleHDBError(err, err.message, hdb_errors.HTTP_STATUS_CODES.BAD_REQUEST);
 	}
 
-	try {
-		initializeTransaction(env, hash_attribute, write_attributes);
+	initializeTransaction(env, hash_attribute, write_attributes);
 
-		let result = new UpsertRecordsResponseObject();
+	let result = new UpsertRecordsResponseObject();
 
-		let puts = [];
-		let keys = [];
-		//iterate upsert records
-		for (let index = 0; index < records.length; index++) {
-			let record = records[index];
-			let hash_value = undefined;
-			if (hdb_utils.isEmpty(record[hash_attribute])) {
-				hash_value = uuid.v4();
-				record[hash_attribute] = hash_value;
-			} else {
-				hash_value = hdb_utils.autoCast(record[hash_attribute]);
-			}
-
-			// do an upsert without requiring the record to previously existed
-			let promise = updateUpsertRecord(env, hash_attribute, record, hash_value, result, false, generate_timestamps);
-			puts.push(promise);
-			keys.push(hash_value);
+	let puts = [];
+	let keys = [];
+	//iterate upsert records
+	for (let index = 0; index < records.length; index++) {
+		let record = records[index];
+		let hash_value = undefined;
+		if (hdb_utils.isEmpty(record[hash_attribute])) {
+			hash_value = uuid.v4();
+			record[hash_attribute] = hash_value;
+		} else {
+			hash_value = hdb_utils.autoCast(record[hash_attribute]);
 		}
 
-		return await finalizeWrite(puts, keys, records, result);
-	} catch (e) {
-		throw e;
+		// do an upsert without requiring the record to previously existed
+		let promise = updateUpsertRecord(env, hash_attribute, record, hash_value, result, false, generate_timestamps);
+		puts.push(promise);
+		keys.push(hash_value);
 	}
+
+	return finalizeWrite(puts, keys, records, result);
 }
 
 async function finalizeWrite(puts, keys, records, result, remove_indices = []) {

@@ -29,6 +29,9 @@ const SEARCH_TYPES = {
 };
 
 const TIMESTAMP_NAMES = ['__createdtime__', '__updatedtime__'];
+// This is appended to the end of keys that are larger than the max key size, as a marker to indicate
+// the full value must be retrieved from the full record (from the hash/primary dbi) for operations
+// that require the full value (contains and ends-with operators).
 const OVERFLOW_MARKER = '\uffff';
 
 const TRANSACTIONS_DBI_NAMES_ENUM = {

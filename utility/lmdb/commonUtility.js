@@ -102,7 +102,7 @@ function primitiveCheck(value) {
 function getIndexedValues(value) {
 	if (value === null || value === undefined)
 		return;
-	if (primitiveCheck(value)) {
+	if (PRIMITIVES.includes(typeof value)) {
 		if (value.length > MAX_SEARCH_KEY_LENGTH) {
 			return [value.slice(0, MAX_SEARCH_KEY_LENGTH) + OVERFLOW_MARKER];
 		}
@@ -113,7 +113,7 @@ function getIndexedValues(value) {
 		values = [];
 		for (let i = 0, l = value.length; i < l; i++) {
 			let element = value[i];
-			if (primitiveCheck(element)) {
+			if (PRIMITIVES.includes(typeof element)) {
 				if (element.length > MAX_SEARCH_KEY_LENGTH)
 					values.push(element.slice(0, MAX_SEARCH_KEY_LENGTH) + OVERFLOW_MARKER);
 				else values.push(element);
