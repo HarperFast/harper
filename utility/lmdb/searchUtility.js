@@ -37,30 +37,22 @@ function iterateFullIndex(
 	offset = undefined
 ) {
 	let results = Object.create(null);
-	let stat = environment_utility.statDBI(env, attribute);
-	if (stat.entryCount === 0) {
-		return results;
-	}
 
 	let dbi = environment_utility.openDBI(env, attribute);
 	if (dbi[lmdb_terms.DBI_DEFINITION_NAME].is_hash_attribute) {
 		hash_attribute = attribute;
 	}
 
-	try {
-		for (let { key, value } of dbi.getRange({
-			start: reverse ? undefined : false,
-			end: !reverse ? undefined : false,
-			limit: limit,
-			offset: offset,
-			reverse: reverse,
-		})) {
-			eval_function(key, value, results, hash_attribute, attribute);
-		}
-		return results;
-	} catch (e) {
-		throw e;
+	for (let { key, value } of dbi.getRange({
+		start: reverse ? undefined : false,
+		end: !reverse ? undefined : false,
+		limit: limit,
+		offset: offset,
+		reverse: reverse,
+	})) {
+		eval_function(key, value, results, hash_attribute, attribute);
 	}
+	return results;
 }
 
 /**
@@ -86,29 +78,21 @@ function iterateRangeNext(
 	offset = undefined
 ) {
 	let results = [[], []];
-	let stat = environment_utility.statDBI(env, attribute);
-	if (stat.entryCount === 0) {
-		return results;
+
+	let dbi = env.dbis[attribute];
+	if (dbi[lmdb_terms.DBI_DEFINITION_NAME].is_hash_attribute) {
+		hash_attribute = attribute;
 	}
 
-	try {
-		let dbi = env.dbis[attribute];
-		if (dbi[lmdb_terms.DBI_DEFINITION_NAME].is_hash_attribute) {
-			hash_attribute = attribute;
-		}
+	//because reversing only returns 1 entry from a dup sorted key we get all entries for the search value
+	let start_value = reverse === true ? undefined : search_value === undefined ? false : search_value;
+	let end_value = reverse === true ? search_value : undefined;
 
-		//because reversing only returns 1 entry from a dup sorted key we get all entries for the search value
-		let start_value = reverse === true ? undefined : search_value === undefined ? false : search_value;
-		let end_value = reverse === true ? search_value : undefined;
-
-		for (let { key, value } of dbi.getRange({ start: start_value, end: end_value, reverse, limit, offset })) {
-			eval_function(search_value, key, value, results, hash_attribute, attribute);
-		}
-
-		return results;
-	} catch (e) {
-		throw e;
+	for (let { key, value } of dbi.getRange({ start: start_value, end: end_value, reverse, limit, offset })) {
+		eval_function(search_value, key, value, results, hash_attribute, attribute);
 	}
+
+	return results;
 }
 
 /**
@@ -139,63 +123,55 @@ function iterateRangeBetween(
 	limit = undefined,
 	offset = undefined
 ) {
-	try {
-		let results = [[], []];
-		let stat = environment_utility.statDBI(env, attribute);
-		if (stat.entryCount === 0) {
-			return results;
-		}
+	let results = [[], []];
 
-		let dbi = environment_utility.openDBI(env, attribute);
-		if (dbi[lmdb_terms.DBI_DEFINITION_NAME].is_hash_attribute) {
-			hash_attribute = attribute;
-		}
+	let dbi = environment_utility.openDBI(env, attribute);
+	if (dbi[lmdb_terms.DBI_DEFINITION_NAME].is_hash_attribute) {
+		hash_attribute = attribute;
+	}
 
-		start_value = auto_cast(start_value);
-		start_value = common.convertKeyValueToWrite(start_value);
+	start_value = auto_cast(start_value);
+	start_value = common.convertKeyValueToWrite(start_value);
 
-		end_value = auto_cast(end_value);
-		end_value = common.convertKeyValueToWrite(end_value);
+	end_value = auto_cast(end_value);
+	end_value = common.convertKeyValueToWrite(end_value);
 
-		//get last key
-		let last;
-		for (let key of dbi.getKeys({ reverse: true, limit: 1 })) {
-			last = key;
-		}
-		if (end_value >= last) {
-			end_value = undefined;
-		}
+	//get last key
+	let last;
+	for (let key of dbi.getKeys({ reverse: true, limit: 1 })) {
+		last = key;
+	}
+	if (end_value >= last) {
+		end_value = undefined;
+	}
 
-		//get first key
-		let first;
-		for (let key of dbi.getKeys({ start: false, limit: 1 })) {
-			first = key;
-		}
-		if (start_value <= first) {
-			start_value = false;
-		}
+	//get first key
+	let first;
+	for (let key of dbi.getKeys({ start: false, limit: 1 })) {
+		first = key;
+	}
+	if (start_value <= first) {
+		start_value = false;
+	}
 
-		//advance the end_value by 1 key
-		let end;
-		let start_search = reverse === true ? start_value : end_value;
-		if (start_search !== undefined && start_search !== null) {
-			for (let key of dbi.getKeys({ start: start_search, reverse })) {
-				if (key !== start_search) {
-					end = key;
-					break;
-				}
+	//advance the end_value by 1 key
+	let end;
+	let start_search = reverse === true ? start_value : end_value;
+	if (start_search !== undefined && start_search !== null) {
+		for (let key of dbi.getKeys({ start: start_search, reverse })) {
+			if (key !== start_search) {
+				end = key;
+				break;
 			}
 		}
-
-		let start = reverse === true ? end_value : start_value;
-
-		for (let { key, value } of env.dbis[attribute].getRange({ start, end, reverse, limit, offset })) {
-			cursor_functions.pushResults(key, value, results, hash_attribute, attribute);
-		}
-		return results;
-	} catch (e) {
-		throw e;
 	}
+
+	let start = reverse === true ? end_value : start_value;
+
+	for (let { key, value } of env.dbis[attribute].getRange({ start, end, reverse, limit, offset })) {
+		cursor_functions.pushResults(key, value, results, hash_attribute, attribute);
+	}
+	return results;
 }
 
 /**
@@ -219,27 +195,19 @@ function searchAll(env, hash_attribute, fetch_attributes, reverse = false, limit
 	fetch_attributes = setGetWholeRowAttributes(env, fetch_attributes);
 
 	let results = [];
-	let stat = environment_utility.statDBI(env, hash_attribute);
-	if (stat.entryCount === 0) {
-		return results;
-	}
 
 	let dbi = environment_utility.openDBI(env, hash_attribute);
 
-	try {
-		for (let { key, value } of dbi.getRange({
-			start: reverse ? undefined : false,
-			end: !reverse ? undefined : false,
-			limit: limit,
-			offset: offset,
-			reverse: reverse,
-		})) {
-			cursor_functions.searchAll(fetch_attributes, key, value, results);
-		}
-		return results;
-	} catch (e) {
-		throw e;
+	for (let { key, value } of dbi.getRange({
+		start: reverse ? undefined : false,
+		end: !reverse ? undefined : false,
+		limit: limit,
+		offset: offset,
+		reverse: reverse,
+	})) {
+		cursor_functions.searchAll(fetch_attributes, key, value, results);
 	}
+	return results;
 }
 
 /**
@@ -369,10 +337,6 @@ function startsWith(
 	validateComparisonFunctions(env, attribute, search_value);
 
 	let results = [[], []];
-	let stat = environment_utility.statDBI(env, attribute);
-	if (stat.entryCount === 0) {
-		return results;
-	}
 
 	let dbi = environment_utility.openDBI(env, attribute);
 
@@ -649,10 +613,6 @@ function greaterThanEqual(
 	search_value = common.convertKeyValueToWrite(search_value);
 
 	let results = [[], []];
-	let stat = environment_utility.statDBI(env, attribute);
-	if (stat.entryCount === 0) {
-		return results;
-	}
 
 	//if reverse = true we need to find the prev value to the search
 	let next_value;
@@ -725,46 +685,41 @@ function lessThan(
 	search_value = common.convertKeyValueToWrite(search_value);
 
 	let results = [[], []];
-	let stat = environment_utility.statDBI(env, attribute);
-	if (stat.entryCount === 0 || search_value === undefined || search_value === null) {
+	if (search_value === undefined || search_value === null) {
 		return results;
 	}
 
-	try {
-		let dbi = env.dbis[attribute];
+	let dbi = env.dbis[attribute];
 
-		if (dbi[lmdb_terms.DBI_DEFINITION_NAME].is_hash_attribute) {
-			hash_attribute = attribute;
-		}
+	if (dbi[lmdb_terms.DBI_DEFINITION_NAME].is_hash_attribute) {
+		hash_attribute = attribute;
+	}
 
-		let start;
-		let end;
-		if (reverse === true) {
-			//check if the search value exists, if it does we increment the limit & offset by 1 as we need to allow for skipping that entry
-			let value = dbi.get(search_value);
-			if (value !== undefined) {
-				if (Number.isInteger(offset)) {
-					offset++;
-				} else {
-					limit = limit === undefined ? undefined : limit + 1;
-				}
+	let start;
+	let end;
+	if (reverse === true) {
+		//check if the search value exists, if it does we increment the limit & offset by 1 as we need to allow for skipping that entry
+		let value = dbi.get(search_value);
+		if (value !== undefined) {
+			if (Number.isInteger(offset)) {
+				offset++;
+			} else {
+				limit = limit === undefined ? undefined : limit + 1;
 			}
-
-			end = false;
-			start = search_value;
-		} else {
-			start = false;
-			end = search_value;
 		}
 
-		for (let { key, value } of dbi.getRange({ start, end, reverse, limit, offset })) {
-			cursor_functions.lessThanCompare(search_value, key, value, results, hash_attribute, attribute);
-		}
-
-		return results;
-	} catch (e) {
-		throw e;
+		end = false;
+		start = search_value;
+	} else {
+		start = false;
+		end = search_value;
 	}
+
+	for (let { key, value } of dbi.getRange({ start, end, reverse, limit, offset })) {
+		cursor_functions.lessThanCompare(search_value, key, value, results, hash_attribute, attribute);
+	}
+
+	return results;
 }
 
 /**
@@ -792,51 +747,43 @@ function lessThanEqual(
 	search_value = common.convertKeyValueToWrite(search_value);
 
 	let results = [[], []];
-	let stat = environment_utility.statDBI(env, attribute);
-	if (stat.entryCount === 0 || search_value === undefined || search_value === null) {
-		return results;
+
+	let dbi = env.dbis[attribute];
+
+	if (dbi[lmdb_terms.DBI_DEFINITION_NAME].is_hash_attribute) {
+		hash_attribute = attribute;
 	}
 
-	try {
-		let dbi = env.dbis[attribute];
-
-		if (dbi[lmdb_terms.DBI_DEFINITION_NAME].is_hash_attribute) {
-			hash_attribute = attribute;
+	let next_value;
+	for (let key of dbi.getKeys({ start: search_value })) {
+		if (key > search_value) {
+			next_value = key;
+			break;
 		}
+	}
 
-		let next_value;
-		for (let key of dbi.getKeys({ start: search_value })) {
-			if (key > search_value) {
-				next_value = key;
-				break;
-			}
-		}
-
-		let start;
-		let end;
-		if (reverse === true) {
-			//check if the search value exists, if it does we increment the limit & offset by 1 as we need to allow for skipping that entry
-			if (Number.isInteger(offset)) {
-				offset++;
-			} else {
-				limit = limit === undefined ? undefined : limit + 1;
-			}
-
-			end = false;
-			start = next_value;
+	let start;
+	let end;
+	if (reverse === true) {
+		//check if the search value exists, if it does we increment the limit & offset by 1 as we need to allow for skipping that entry
+		if (Number.isInteger(offset)) {
+			offset++;
 		} else {
-			start = false;
-			end = next_value;
+			limit = limit === undefined ? undefined : limit + 1;
 		}
 
-		for (let { key, value } of dbi.getRange({ start, end, reverse, limit, offset })) {
-			cursor_functions.lessThanEqualCompare(search_value, key, value, results, hash_attribute, attribute);
-		}
-
-		return results;
-	} catch (e) {
-		throw e;
+		end = false;
+		start = next_value;
+	} else {
+		start = false;
+		end = next_value;
 	}
+
+	for (let { key, value } of dbi.getRange({ start, end, reverse, limit, offset })) {
+		cursor_functions.lessThanEqualCompare(search_value, key, value, results, hash_attribute, attribute);
+	}
+
+	return results;
 }
 
 /**
