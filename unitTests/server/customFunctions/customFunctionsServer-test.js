@@ -150,7 +150,7 @@ describe('Test customFunctionsServer module', () => {
 			});
 		});
 
-		it('should not register fastify-cors if cors is not enabled', async () => {
+		it('should not register @fastify/cors if cors is not enabled', async () => {
 			test_utils.preTestPrep();
 
 			const customFunctionsServer_rw = await rewire(CF_SERVER_PATH);
@@ -161,12 +161,12 @@ describe('Test customFunctionsServer module', () => {
 				(s) => String(s) === 'Symbol(fastify.pluginNameChain)'
 			);
 
-			expect(server[plugin_key].length).to.equal(1);
+			expect(server[plugin_key].length).to.equal(2);
 
 			server.close();
 		});
 
-		it('should register fastify-cors if cors is enabled', async () => {
+		it('should register @fastify/cors if cors is enabled', async () => {
 			const test_config_settings = { cors_enabled: true, cors_whitelist: 'harperdb.io, sam-johnson.io' };
 			test_utils.preTestPrep(test_config_settings);
 
@@ -178,8 +178,8 @@ describe('Test customFunctionsServer module', () => {
 				(s) => String(s) === 'Symbol(fastify.pluginNameChain)'
 			);
 
-			expect(server[plugin_key].length).to.equal(2);
-			expect(server[plugin_key]).to.deep.equal(['fastify-cors', 'hdb-request-time']);
+			expect(server[plugin_key].length).to.equal(3);
+			expect(server[plugin_key]).to.deep.equal(['fastify', '@fastify/cors', 'hdb-request-time']);
 
 			server.close();
 		});
@@ -303,7 +303,7 @@ describe('Test customFunctionsServer module', () => {
 
 			expect(test_result).to.be.instanceOf(Array);
 			expect(test_result).to.include('buildRoutes');
-			expect(test_result).to.include('fastify-static');
+			expect(test_result).to.include('@fastify/static');
 			expect(test_result).to.include('hdbCore-auto-0');
 
 			server.close();
