@@ -292,26 +292,22 @@ function equals(env, hash_attribute, attribute, search_value, reverse = false, l
 
 	let dbi = environment_utility.openDBI(env, attribute);
 
-	try {
-		search_value = auto_cast(search_value);
-		search_value = common.convertKeyValueToWrite(search_value);
+	search_value = auto_cast(search_value);
+	search_value = common.convertKeyValueToWrite(search_value);
 
-		let results = [[], []];
-		if (dbi[lmdb_terms.DBI_DEFINITION_NAME].is_hash_attribute) {
-			hash_attribute = attribute;
-			let value = dbi.get(search_value);
-			if (value !== undefined) {
-				cursor_functions.pushResults(search_value, value, results, hash_attribute, attribute);
-			}
-		} else {
-			for (let value of dbi.getValues(search_value, { reverse, limit, offset })) {
-				cursor_functions.pushResults(search_value, value, results, hash_attribute, attribute);
-			}
+	let results = [[], []];
+	if (dbi[lmdb_terms.DBI_DEFINITION_NAME].is_hash_attribute) {
+		hash_attribute = attribute;
+		let value = dbi.get(search_value);
+		if (value !== undefined) {
+			cursor_functions.pushResults(search_value, value, results, hash_attribute, attribute);
 		}
-		return results;
-	} catch (e) {
-		throw e;
+	} else {
+		for (let value of dbi.getValues(search_value, { reverse, limit, offset })) {
+			cursor_functions.pushResults(search_value, value, results, hash_attribute, attribute);
+		}
 	}
+	return results;
 }
 
 /**
@@ -665,7 +661,7 @@ function lessThan(
 		return results;
 	}
 
-	let dbi = env.dbis[attribute];
+	let dbi = environment_utility.openDBI(env, attribute);
 
 	if (dbi[lmdb_terms.DBI_DEFINITION_NAME].is_hash_attribute) {
 		hash_attribute = attribute;
@@ -724,7 +720,7 @@ function lessThanEqual(
 
 	let results = [[], []];
 
-	let dbi = env.dbis[attribute];
+	let dbi = environment_utility.openDBI(env, attribute);
 
 	if (dbi[lmdb_terms.DBI_DEFINITION_NAME].is_hash_attribute) {
 		hash_attribute = attribute;
