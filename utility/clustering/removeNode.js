@@ -52,19 +52,15 @@ async function removeNode(req) {
 		// Send remove node request to remote node.
 		reply = await nats_utils.request(`${remote_node_name}.${nats_terms.REQUEST_SUFFIX}`, remote_payload);
 	} catch (req_err) {
-		hdb_logger.error(`removeNode received error from request: ${req_err}`);
-		const error_msg = nats_utils.requestErrorHandler(req_err, 'remove_node', remote_node_name);
-		throw handleHDBError(new Error(), error_msg, HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR, 'error', error_msg);
+		hdb_logger.error('removeNode received error from request:', req_err);
 	}
 
 	// If an error is received from the remote node abort remove node and throw error
-	if (reply.status === nats_terms.UPDATE_REMOTE_RESPONSE_STATUSES.ERROR) {
-		const err_msg = `Error returned from remote node ${remote_node_name}: ${reply.message}`;
-		throw handleHDBError(new Error(), err_msg, HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR, 'error', err_msg);
+	if (reply?.status === nats_terms.UPDATE_REMOTE_RESPONSE_STATUSES.ERROR) {
+		hdb_logger.error('Error returned from remote node:', remote_node_name, reply?.message);
 	}
-	hdb_logger.trace(reply.message);
+	hdb_logger.trace(reply?.message);
 
-	// The request above is sent before any local changes in case an error occurs and the remote node rejects the request.
 	for (let i = 0, sub_length = record.subscriptions.length; i < sub_length; i++) {
 		const subscription = record.subscriptions[i];
 		hdb_logger.trace(

@@ -74,7 +74,7 @@ async function updateNodes() {
 				name: node_record.name,
 				subscriptions: updated_subs,
 				system_info: {
-					hdb_version: '3.x.x',
+					hdb_version: terms.PRE_4_0_0_VERSION,
 					node_version: undefined,
 					platform: undefined,
 				},

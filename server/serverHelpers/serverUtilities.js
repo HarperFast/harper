@@ -287,7 +287,7 @@ function initializeOperationFunctionMap() {
 	op_func_map.set(terms.OPERATIONS_ENUM.REMOVE_NODE, new OperationFunctionObject(remove_node));
 	op_func_map.set(terms.OPERATIONS_ENUM.CONFIGURE_CLUSTER, new OperationFunctionObject(configure_cluster));
 	op_func_map.set(terms.OPERATIONS_ENUM.SET_CONFIGURATION, new OperationFunctionObject(config_utils.setConfiguration));
-	op_func_map.set(terms.OPERATIONS_ENUM.CLUSTER_STATUS, new OperationFunctionObject(cluster_status));
+	op_func_map.set(terms.OPERATIONS_ENUM.CLUSTER_STATUS, new OperationFunctionObject(cluster_status.clusterStatus));
 	op_func_map.set(terms.OPERATIONS_ENUM.CLUSTER_SET_ROUTES, new OperationFunctionObject(routes.setRoutes));
 	op_func_map.set(terms.OPERATIONS_ENUM.CLUSTER_GET_ROUTES, new OperationFunctionObject(routes.getRoutes));
 	op_func_map.set(terms.OPERATIONS_ENUM.CLUSTER_DELETE_ROUTES, new OperationFunctionObject(routes.deleteRoutes));
