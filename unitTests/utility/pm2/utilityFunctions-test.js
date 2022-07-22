@@ -897,7 +897,7 @@ describe('Test pm2 utilityFunctions module', () => {
 			expect(process_meta[0].pm2_env.rotateInterval).to.equal('2');
 			expect(process_meta[0].pm2_env.rotateModule).to.equal('false');
 			expect(process_meta[0].pm2_env.TZ).to.equal('CST');
-		}).timeout(20000);
+		}).timeout(100000);
 	});
 
 	describe('Test configureLogRotate function', () => {

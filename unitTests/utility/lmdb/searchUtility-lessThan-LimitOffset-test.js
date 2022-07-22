@@ -507,4 +507,11 @@ describe('test lessThan function reverse limit offset', ()=> {
         assert.deepEqual(results[1].length, 20);
         assert.deepEqual(results, expected);
     });
+    it("test lessThan A very long string on string key column", () => {
+        let expected = [[999],[{id: 999, first_name: test_data[test_data.length - 1].first_name}]];
+        let results = test_utils.assertErrorSync(search_util.lessThan, [env, 'id', 'first_name', 'A very long z'], undefined);
+        assert.deepEqual(results[0].length, 1);
+        assert.deepEqual(results[1].length, 1);
+        assert.deepEqual(results, expected);
+    });
 });

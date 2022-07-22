@@ -840,17 +840,18 @@ FN:216,updateConfigObject
 FN:239,updateConfigValue
 FN:303,flattenConfig
 FN:329,castConfigValue
-FN:384,getConfiguration
-FN:398,setConfiguration
-FN:411,readConfigFile
-FN:427,parseYamlDoc
-FN:435,getClusteringRoutes
-FN:452,(anonymous_14)
-FN:453,(anonymous_15)
-FN:474,initOldConfig
+FN:394,getConfiguration
+FN:408,setConfiguration
+FN:421,readConfigFile
+FN:437,parseYamlDoc
+FN:445,getClusteringRoutes
+FN:462,(anonymous_14)
+FN:463,(anonymous_15)
+FN:484,initOldConfig
 FNF:17
 FNH:17
 FNDA:6,createConfigFile
+<<<<<<< HEAD
 FNDA:48,getDefaultConfig
 FNDA:39166,getConfigValue
 FNDA:1142,initConfig
@@ -858,15 +859,29 @@ FNDA:106,validateConfig
 FNDA:6290,updateConfigObject
 FNDA:3,updateConfigValue
 FNDA:3198,flattenConfig
+=======
+FNDA:40,getDefaultConfig
+FNDA:36659,getConfigValue
+FNDA:194,initConfig
+FNDA:19,validateConfig
+FNDA:3284,updateConfigObject
+FNDA:3,updateConfigValue
+FNDA:884,flattenConfig
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 FNDA:90,castConfigValue
 FNDA:1,getConfiguration
 FNDA:2,setConfiguration
 FNDA:2,readConfigFile
+<<<<<<< HEAD
 FNDA:117,parseYamlDoc
+=======
+FNDA:28,parseYamlDoc
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 FNDA:3,getClusteringRoutes
 FNDA:4,(anonymous_14)
 FNDA:4,(anonymous_15)
 FNDA:1,initOldConfig
+<<<<<<< HEAD
 DA:3,104
 DA:4,104
 DA:5,104
@@ -885,6 +900,26 @@ DA:18,104
 DA:19,104
 DA:21,104
 DA:26,104
+=======
+DA:3,17
+DA:4,17
+DA:5,17
+DA:6,17
+DA:7,17
+DA:8,17
+DA:9,17
+DA:10,17
+DA:11,17
+DA:12,17
+DA:13,17
+DA:15,17
+DA:16,17
+DA:17,17
+DA:18,17
+DA:19,17
+DA:21,17
+DA:26,17
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:46,6
 DA:47,6
 DA:50,6
@@ -903,6 +938,7 @@ DA:70,6
 DA:71,6
 DA:72,6
 DA:73,6
+<<<<<<< HEAD
 DA:83,48
 DA:84,4
 DA:85,4
@@ -927,17 +963,49 @@ DA:130,0
 DA:133,106
 DA:134,106
 DA:139,106
+=======
+DA:83,40
+DA:84,2
+DA:85,2
+DA:88,40
+DA:89,40
+DA:91,40
+DA:102,36659
+DA:103,1
+DA:104,1
+DA:107,36658
+DA:108,1
+DA:109,1
+DA:112,36657
+DA:113,36657
+DA:115,36632
+DA:124,194
+DA:125,19
+DA:126,19
+DA:127,19
+DA:129,0
+DA:130,0
+DA:133,19
+DA:134,19
+DA:139,19
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:140,0
 DA:141,0
 DA:142,0
 DA:146,0
+<<<<<<< HEAD
 DA:149,106
 DA:150,106
+=======
+DA:149,19
+DA:150,19
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:152,1
 DA:153,1
 DA:155,1
 DA:157,0
 DA:158,0
+<<<<<<< HEAD
 DA:163,105
 DA:164,105
 DA:166,105
@@ -967,6 +1035,37 @@ DA:223,6289
 DA:224,477
 DA:225,477
 DA:228,5812
+=======
+DA:163,18
+DA:164,18
+DA:166,18
+DA:167,18
+DA:177,19
+DA:178,19
+DA:179,19
+DA:180,1
+DA:185,18
+DA:186,18
+DA:187,18
+DA:188,18
+DA:189,18
+DA:190,18
+DA:191,18
+DA:192,18
+DA:194,18
+DA:195,1
+DA:198,18
+DA:199,1
+DA:202,18
+DA:203,1
+DA:217,3284
+DA:219,0
+DA:222,3284
+DA:223,3283
+DA:224,235
+DA:225,235
+DA:228,3048
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:240,3
 DA:241,1
 DA:245,3
@@ -1001,6 +1100,7 @@ DA:291,2
 DA:292,2
 DA:293,1
 DA:295,2
+<<<<<<< HEAD
 DA:304,3198
 DA:306,3198
 DA:307,10701
@@ -1011,6 +1111,18 @@ DA:312,14391
 DA:314,14391
 DA:317,7626
 DA:320,3198
+=======
+DA:304,884
+DA:306,884
+DA:307,2958
+DA:309,2958
+DA:310,850
+DA:311,850
+DA:312,3978
+DA:314,3978
+DA:317,2108
+DA:320,884
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:331,90
 DA:332,6
 DA:333,2
@@ -1032,24 +1144,23 @@ DA:367,34
 DA:368,1
 DA:373,35
 DA:374,2
-DA:377,33
-DA:385,1
-DA:386,1
-DA:387,1
-DA:388,1
-DA:390,1
-DA:399,2
-DA:400,2
-DA:401,2
-DA:402,1
-DA:404,1
-DA:405,0
-DA:407,1
-DA:412,2
-DA:413,2
-DA:414,2
-DA:416,1
+DA:379,33
+DA:380,4
+DA:381,4
+DA:387,29
+DA:395,1
+DA:396,1
+DA:397,1
+DA:398,1
+DA:400,1
+DA:409,2
+DA:410,2
+DA:411,2
+DA:412,1
+DA:414,1
+DA:415,0
 DA:417,1
+<<<<<<< HEAD
 DA:420,1
 DA:421,1
 DA:422,1
@@ -1063,29 +1174,49 @@ DA:440,3
 DA:441,0
 DA:444,3
 DA:445,3
+=======
+DA:422,2
+DA:423,2
+DA:424,2
+DA:426,1
+DA:427,1
+DA:430,1
+DA:431,1
+DA:432,1
+DA:434,1
+DA:438,28
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:446,3
 DA:447,3
-DA:448,0
-DA:451,3
-DA:452,2
-DA:453,4
-DA:456,2
-DA:457,1
-DA:458,1
+DA:448,3
+DA:449,3
+DA:450,3
+DA:451,0
+DA:454,3
+DA:455,3
+DA:456,3
+DA:457,3
+DA:458,0
+DA:461,3
 DA:462,2
-DA:475,1
-DA:476,1
-DA:478,1
-DA:479,121
-DA:480,121
-DA:481,97
-DA:483,24
-DA:484,24
+DA:463,4
+DA:466,2
+DA:467,1
+DA:468,1
+DA:472,2
 DA:485,1
-DA:487,23
-DA:490,1
-LF:217
-LH:200
+DA:486,1
+DA:488,1
+DA:489,121
+DA:490,121
+DA:491,97
+DA:493,24
+DA:494,24
+DA:495,1
+DA:497,23
+DA:500,1
+LF:220
+LH:203
 BRDA:52,0,0,70
 BRDA:52,0,1,7
 BRDA:83,1,0,4
@@ -1093,6 +1224,7 @@ BRDA:83,1,1,44
 BRDA:89,2,0,0
 BRDA:89,2,1,48
 BRDA:102,3,0,1
+<<<<<<< HEAD
 BRDA:102,3,1,39165
 BRDA:107,4,0,1
 BRDA:107,4,1,39164
@@ -1105,11 +1237,26 @@ BRDA:124,8,0,1142
 BRDA:124,8,1,1037
 BRDA:139,9,0,0
 BRDA:139,9,1,106
+=======
+BRDA:102,3,1,36658
+BRDA:107,4,0,1
+BRDA:107,4,1,36657
+BRDA:113,5,0,25
+BRDA:113,5,1,36632
+BRDA:123,6,0,2
+BRDA:124,7,0,19
+BRDA:124,7,1,175
+BRDA:124,8,0,194
+BRDA:124,8,1,176
+BRDA:139,9,0,0
+BRDA:139,9,1,19
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 BRDA:146,10,0,0
 BRDA:146,10,1,0
 BRDA:152,11,0,1
 BRDA:152,11,1,0
 BRDA:179,12,0,1
+<<<<<<< HEAD
 BRDA:179,12,1,105
 BRDA:194,13,0,1
 BRDA:194,13,1,104
@@ -1121,6 +1268,19 @@ BRDA:217,16,0,0
 BRDA:217,16,1,6290
 BRDA:223,17,0,477
 BRDA:223,17,1,5812
+=======
+BRDA:179,12,1,18
+BRDA:194,13,0,1
+BRDA:194,13,1,17
+BRDA:198,14,0,1
+BRDA:198,14,1,17
+BRDA:202,15,0,1
+BRDA:202,15,1,17
+BRDA:217,16,0,0
+BRDA:217,16,1,3284
+BRDA:223,17,0,235
+BRDA:223,17,1,3048
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 BRDA:239,18,0,2
 BRDA:239,19,0,0
 BRDA:239,20,0,0
@@ -1137,6 +1297,7 @@ BRDA:280,25,1,1
 BRDA:292,26,0,1
 BRDA:292,26,1,1
 BRDA:307,27,0,0
+<<<<<<< HEAD
 BRDA:307,27,1,10701
 BRDA:309,28,0,3075
 BRDA:309,28,1,7626
@@ -1145,6 +1306,16 @@ BRDA:309,29,1,4566
 BRDA:309,29,2,3325
 BRDA:312,30,0,0
 BRDA:312,30,1,14391
+=======
+BRDA:307,27,1,2958
+BRDA:309,28,0,850
+BRDA:309,28,1,2108
+BRDA:309,29,0,2958
+BRDA:309,29,1,1344
+BRDA:309,29,2,922
+BRDA:312,30,0,0
+BRDA:312,30,1,3978
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 BRDA:331,31,0,6
 BRDA:331,31,1,84
 BRDA:331,32,0,90
@@ -1181,35 +1352,42 @@ BRDA:373,46,0,2
 BRDA:373,46,1,33
 BRDA:373,47,0,35
 BRDA:373,47,1,34
-BRDA:404,48,0,0
-BRDA:404,48,1,1
-BRDA:404,49,0,1
-BRDA:404,49,1,1
-BRDA:438,50,0,1
-BRDA:438,50,1,2
-BRDA:440,51,0,0
-BRDA:440,51,1,3
-BRDA:445,52,0,1
-BRDA:445,52,1,2
-BRDA:447,53,0,0
-BRDA:447,53,1,3
-BRDA:451,54,0,2
-BRDA:451,54,1,1
-BRDA:451,55,0,3
-BRDA:451,55,1,2
-BRDA:453,56,0,4
-BRDA:453,56,1,1
-BRDA:456,57,0,1
-BRDA:456,57,1,1
-BRDA:480,58,0,97
-BRDA:480,58,1,24
-BRDA:480,59,0,121
-BRDA:480,59,1,25
-BRDA:480,59,2,9
-BRDA:484,60,0,1
-BRDA:484,60,1,23
-BRF:122
-BRH:108
+BRDA:379,48,0,4
+BRDA:379,48,1,29
+BRDA:379,49,0,33
+BRDA:379,49,1,33
+BRDA:379,49,2,0
+BRDA:379,49,3,33
+BRDA:379,49,4,4
+BRDA:414,50,0,0
+BRDA:414,50,1,1
+BRDA:414,51,0,1
+BRDA:414,51,1,1
+BRDA:448,52,0,1
+BRDA:448,52,1,2
+BRDA:450,53,0,0
+BRDA:450,53,1,3
+BRDA:455,54,0,1
+BRDA:455,54,1,2
+BRDA:457,55,0,0
+BRDA:457,55,1,3
+BRDA:461,56,0,2
+BRDA:461,56,1,1
+BRDA:461,57,0,3
+BRDA:461,57,1,2
+BRDA:463,58,0,4
+BRDA:463,58,1,1
+BRDA:466,59,0,1
+BRDA:466,59,1,1
+BRDA:490,60,0,97
+BRDA:490,60,1,24
+BRDA:490,61,0,121
+BRDA:490,61,1,25
+BRDA:490,61,2,9
+BRDA:494,62,0,1
+BRDA:494,62,1,23
+BRF:129
+BRH:114
 end_of_record
 TN:
 SF:data_layer/CreateAttributeObject.js
@@ -1217,13 +1395,21 @@ FN:16,(anonymous_0)
 FNF:1
 FNH:1
 FNDA:1376,(anonymous_0)
+<<<<<<< HEAD
 DA:3,94
+=======
+DA:3,16
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:17,1376
 DA:18,1376
 DA:19,1376
 DA:20,1376
 DA:21,1376
+<<<<<<< HEAD
 DA:25,94
+=======
+DA:25,16
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 LF:7
 LH:7
 BRDA:20,0,0,646
@@ -1240,7 +1426,11 @@ FNDA:17,(anonymous_0)
 DA:5,17
 DA:6,17
 DA:7,17
+<<<<<<< HEAD
 DA:11,94
+=======
+DA:11,16
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 LF:4
 LH:4
 BRF:0
@@ -1270,7 +1460,11 @@ DA:27,9
 DA:33,1
 DA:34,1
 DA:35,1
+<<<<<<< HEAD
 DA:39,94
+=======
+DA:39,16
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 LF:15
 LH:15
 BRF:0
@@ -1285,7 +1479,11 @@ FNDA:1,(anonymous_0)
 DA:16,1
 DA:17,1
 DA:18,1
+<<<<<<< HEAD
 DA:22,94
+=======
+DA:22,16
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 LF:4
 LH:4
 BRF:0
@@ -1297,13 +1495,21 @@ FN:16,(anonymous_0)
 FNF:1
 FNH:1
 FNDA:66,(anonymous_0)
+<<<<<<< HEAD
 DA:3,94
+=======
+DA:3,16
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:17,66
 DA:18,66
 DA:19,66
 DA:20,66
 DA:21,66
+<<<<<<< HEAD
 DA:25,94
+=======
+DA:25,16
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 LF:7
 LH:7
 BRDA:16,0,0,66
@@ -1319,7 +1525,11 @@ FNDA:52,(anonymous_0)
 DA:5,52
 DA:6,52
 DA:7,52
+<<<<<<< HEAD
 DA:11,94
+=======
+DA:11,16
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 LF:4
 LH:4
 BRF:0
@@ -1331,14 +1541,22 @@ FN:14,(anonymous_0)
 FNF:1
 FNH:1
 FNDA:148,(anonymous_0)
+<<<<<<< HEAD
 DA:2,94
+=======
+DA:2,16
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:15,148
 DA:16,148
 DA:17,148
 DA:18,148
 DA:19,148
 DA:20,148
+<<<<<<< HEAD
 DA:24,94
+=======
+DA:24,16
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 LF:8
 LH:8
 BRDA:14,0,0,134
@@ -1351,13 +1569,21 @@ FN:15,(anonymous_0)
 FNF:1
 FNH:1
 FNDA:9,(anonymous_0)
+<<<<<<< HEAD
 DA:3,56
+=======
+DA:3,4
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:16,9
 DA:17,9
 DA:18,9
 DA:19,9
 DA:20,9
+<<<<<<< HEAD
 DA:24,56
+=======
+DA:24,4
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 LF:7
 LH:7
 BRDA:15,0,0,4
@@ -1489,6 +1715,7 @@ FNDA:255,(anonymous_56)
 FNDA:2,(anonymous_57)
 FNDA:8,(anonymous_58)
 FNDA:8,(anonymous_59)
+<<<<<<< HEAD
 DA:9,94
 DA:10,94
 DA:11,94
@@ -1503,6 +1730,22 @@ DA:19,94
 DA:21,94
 DA:22,94
 DA:25,94
+=======
+DA:9,16
+DA:10,16
+DA:11,16
+DA:12,16
+DA:13,16
+DA:14,16
+DA:15,16
+DA:16,16
+DA:17,16
+DA:18,16
+DA:19,16
+DA:21,16
+DA:22,16
+DA:25,16
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:35,82
 DA:36,1
 DA:37,1
@@ -2064,7 +2307,11 @@ DA:1357,48
 DA:1361,0
 DA:1362,0
 DA:1365,2
+<<<<<<< HEAD
 DA:1369,94
+=======
+DA:1369,16
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 LF:576
 LH:496
 BRDA:35,0,0,1
@@ -2490,7 +2737,11 @@ FNH:2
 FNDA:6,(anonymous_0)
 FNDA:9,(anonymous_1)
 FNDA:0,(anonymous_2)
+<<<<<<< HEAD
 DA:2,94
+=======
+DA:2,16
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:19,6
 DA:20,6
 DA:21,6
@@ -2503,7 +2754,11 @@ DA:38,9
 DA:39,9
 DA:50,0
 DA:51,0
+<<<<<<< HEAD
 DA:55,94
+=======
+DA:55,16
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 LF:14
 LH:12
 BRDA:18,0,0,4
@@ -2522,7 +2777,11 @@ DA:14,27
 DA:15,27
 DA:16,27
 DA:17,27
+<<<<<<< HEAD
 DA:21,94
+=======
+DA:21,16
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 LF:5
 LH:5
 BRF:0
@@ -2544,7 +2803,11 @@ DA:38,210
 DA:39,210
 DA:40,210
 DA:41,210
+<<<<<<< HEAD
 DA:45,94
+=======
+DA:45,16
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 LF:11
 LH:11
 BRDA:28,0,0,178
@@ -2574,13 +2837,21 @@ FN:14,(anonymous_0)
 FNF:1
 FNH:1
 FNDA:54,(anonymous_0)
+<<<<<<< HEAD
 DA:2,61
+=======
+DA:2,4
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:15,54
 DA:16,54
 DA:17,54
 DA:18,54
 DA:19,54
+<<<<<<< HEAD
 DA:23,61
+=======
+DA:23,4
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 LF:7
 LH:7
 BRDA:14,0,0,54
@@ -2593,13 +2864,21 @@ FN:14,(anonymous_0)
 FNF:1
 FNH:1
 FNDA:4,(anonymous_0)
+<<<<<<< HEAD
 DA:2,60
+=======
+DA:2,3
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:15,4
 DA:16,4
 DA:17,4
 DA:18,4
 DA:19,4
+<<<<<<< HEAD
 DA:23,60
+=======
+DA:23,3
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 LF:7
 LH:7
 BRDA:14,0,0,4
@@ -3074,6 +3353,7 @@ FNH:3
 FNDA:4,deleteFilesBefore
 FNDA:5,deleteAuditLogsBefore
 FNDA:4,deleteRecord
+<<<<<<< HEAD
 DA:3,95
 DA:4,95
 DA:5,95
@@ -3090,6 +3370,24 @@ DA:15,95
 DA:17,95
 DA:20,95
 DA:22,95
+=======
+DA:3,17
+DA:4,17
+DA:5,17
+DA:6,17
+DA:7,17
+DA:8,17
+DA:9,17
+DA:10,17
+DA:11,17
+DA:12,17
+DA:13,17
+DA:14,17
+DA:15,17
+DA:17,17
+DA:20,17
+DA:22,17
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:37,4
 DA:38,4
 DA:39,2
@@ -3584,6 +3882,7 @@ FNDA:4,insertData
 FNDA:5,updateData
 FNDA:4,upsertData
 FNDA:7,returnObject
+<<<<<<< HEAD
 DA:9,96
 DA:10,96
 DA:11,96
@@ -3597,6 +3896,21 @@ DA:21,96
 DA:22,96
 DA:23,96
 DA:25,96
+=======
+DA:9,18
+DA:10,18
+DA:11,18
+DA:13,18
+DA:14,18
+DA:15,18
+DA:16,18
+DA:17,18
+DA:19,18
+DA:21,18
+DA:22,18
+DA:23,18
+DA:25,18
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:43,0
 DA:44,0
 DA:46,0
@@ -3959,6 +4273,7 @@ FNDA:0,getAttrsByPerms
 FNDA:0,(anonymous_4)
 FNDA:7,describeSchema
 FNDA:2,(anonymous_6)
+<<<<<<< HEAD
 DA:4,96
 DA:5,96
 DA:6,96
@@ -3985,6 +4300,34 @@ DA:31,96
 DA:44,89
 DA:45,89
 DA:48,89
+=======
+DA:4,18
+DA:5,18
+DA:6,18
+DA:7,18
+DA:8,18
+DA:9,18
+DA:10,18
+DA:11,18
+DA:12,18
+DA:13,18
+DA:14,18
+DA:15,18
+DA:16,18
+DA:18,18
+DA:19,18
+DA:22,18
+DA:23,18
+DA:25,18
+DA:26,18
+DA:27,18
+DA:28,18
+DA:29,18
+DA:31,18
+DA:44,29
+DA:45,29
+DA:48,29
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:49,0
 DA:50,0
 DA:53,89
@@ -4214,6 +4557,7 @@ FNDA:147,(anonymous_4)
 FNDA:0,search
 FNDA:0,(anonymous_6)
 FNDA:0,(anonymous_7)
+<<<<<<< HEAD
 DA:3,94
 DA:5,94
 DA:12,94
@@ -4221,6 +4565,15 @@ DA:13,94
 DA:14,94
 DA:15,94
 DA:16,94
+=======
+DA:3,16
+DA:5,16
+DA:12,16
+DA:13,16
+DA:14,16
+DA:15,16
+DA:16,16
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:19,0
 DA:23,0
 DA:24,0
@@ -4367,13 +4720,21 @@ FN:14,(anonymous_0)
 FNF:1
 FNH:0
 FNDA:0,(anonymous_0)
+<<<<<<< HEAD
 DA:2,94
+=======
+DA:2,16
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:15,0
 DA:16,0
 DA:17,0
 DA:18,0
 DA:19,0
+<<<<<<< HEAD
 DA:23,94
+=======
+DA:23,16
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 LF:7
 LH:2
 BRDA:14,0,0,0
@@ -4438,7 +4799,11 @@ DA:65,0
 DA:69,0
 DA:73,0
 DA:77,0
+<<<<<<< HEAD
 DA:81,94
+=======
+DA:81,16
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 LF:19
 LH:1
 BRF:0
@@ -4449,6 +4814,7 @@ SF:data_layer/harperBridge/harperBridge.js
 FN:14,getBridge
 FNF:1
 FNH:1
+<<<<<<< HEAD
 FNDA:94,getBridge
 DA:3,94
 DA:4,94
@@ -4463,6 +4829,22 @@ LF:9
 LH:8
 BRDA:15,0,0,0
 BRDA:15,0,1,94
+=======
+FNDA:16,getBridge
+DA:3,16
+DA:4,16
+DA:5,16
+DA:6,16
+DA:8,16
+DA:15,16
+DA:16,0
+DA:19,16
+DA:22,16
+LF:9
+LH:8
+BRDA:15,0,0,0
+BRDA:15,0,1,16
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 BRF:2
 BRH:1
 end_of_record
@@ -4546,8 +4928,13 @@ FN:15,returnObject
 FNF:1
 FNH:1
 FNDA:498,returnObject
+<<<<<<< HEAD
 DA:3,94
 DA:5,94
+=======
+DA:3,16
+DA:5,16
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:16,498
 DA:21,498
 DA:22,497
@@ -4569,10 +4956,17 @@ FNF:2
 FNH:2
 FNDA:239,insertUpdateValidate
 FNDA:12662,(anonymous_1)
+<<<<<<< HEAD
 DA:3,95
 DA:4,95
 DA:5,95
 DA:7,95
+=======
+DA:3,17
+DA:4,17
+DA:5,17
+DA:7,17
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:20,239
 DA:21,2
 DA:23,237
@@ -4601,7 +4995,11 @@ DA:64,12652
 DA:69,0
 DA:72,12652
 DA:74,12652
+<<<<<<< HEAD
 DA:75,108741
+=======
+DA:75,112745
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:80,225
 DA:82,225
 LF:35
@@ -4675,6 +5073,7 @@ FNDA:0,(anonymous_14)
 FNDA:0,(anonymous_15)
 FNDA:0,(anonymous_16)
 FNDA:0,(anonymous_17)
+<<<<<<< HEAD
 DA:3,94
 DA:4,94
 DA:5,94
@@ -4696,6 +5095,29 @@ DA:20,94
 DA:21,94
 DA:22,94
 DA:23,94
+=======
+DA:3,16
+DA:4,16
+DA:5,16
+DA:6,16
+DA:7,16
+DA:8,16
+DA:9,16
+DA:10,16
+DA:11,16
+DA:12,16
+DA:13,16
+DA:14,16
+DA:15,16
+DA:16,16
+DA:17,16
+DA:18,16
+DA:19,16
+DA:20,16
+DA:21,16
+DA:22,16
+DA:23,16
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:27,0
 DA:28,0
 DA:30,0
@@ -4767,7 +5189,11 @@ DA:182,0
 DA:183,0
 DA:185,0
 DA:186,0
+<<<<<<< HEAD
 DA:191,94
+=======
+DA:191,16
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 LF:93
 LH:32
 BRF:0
@@ -4782,7 +5208,11 @@ FNDA:13,(anonymous_0)
 DA:13,13
 DA:14,13
 DA:15,13
+<<<<<<< HEAD
 DA:19,94
+=======
+DA:19,16
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 LF:4
 LH:4
 BRDA:12,0,0,10
@@ -4797,6 +5227,7 @@ FN:30,lmdbCreateAttribute
 FNF:1
 FNH:1
 FNDA:706,lmdbCreateAttribute
+<<<<<<< HEAD
 DA:3,95
 DA:4,95
 DA:5,95
@@ -4814,6 +5245,25 @@ DA:17,95
 DA:18,665
 DA:21,95
 DA:23,95
+=======
+DA:3,17
+DA:4,17
+DA:5,17
+DA:6,17
+DA:7,17
+DA:8,17
+DA:9,17
+DA:10,17
+DA:11,17
+DA:12,17
+DA:13,17
+DA:15,17
+DA:16,17
+DA:17,17
+DA:18,119
+DA:21,17
+DA:23,17
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:31,706
 DA:32,706
 DA:33,5
@@ -4863,6 +5313,7 @@ FN:25,lmdbCreateRecords
 FNF:1
 FNH:1
 FNDA:215,lmdbCreateRecords
+<<<<<<< HEAD
 DA:3,100
 DA:5,100
 DA:6,100
@@ -4875,31 +5326,62 @@ DA:13,100
 DA:14,100
 DA:15,100
 DA:17,100
+=======
+DA:3,22
+DA:5,22
+DA:6,22
+DA:7,22
+DA:8,22
+DA:9,22
+DA:10,22
+DA:11,22
+DA:13,22
+DA:14,22
+DA:15,22
+DA:17,22
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:26,215
 DA:27,215
 DA:29,214
 DA:31,214
 DA:32,137
+<<<<<<< HEAD
 DA:33,61
 DA:36,137
 DA:37,61
+=======
+DA:33,59
+DA:36,137
+DA:37,59
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:41,214
 DA:42,214
 DA:43,214
 DA:44,214
 DA:52,214
 DA:53,214
+<<<<<<< HEAD
 DA:55,18
+=======
+DA:55,35
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:58,214
 DA:66,1
 LF:29
 LH:29
 BRDA:31,0,0,137
 BRDA:31,0,1,77
+<<<<<<< HEAD
 BRDA:32,1,0,61
 BRDA:32,1,1,76
 BRDA:36,2,0,61
 BRDA:36,2,1,76
+=======
+BRDA:32,1,0,59
+BRDA:32,1,1,78
+BRDA:36,2,0,59
+BRDA:36,2,1,78
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 BRF:6
 BRH:6
 end_of_record
@@ -4909,6 +5391,7 @@ FN:16,lmdbCreateSchema
 FNF:1
 FNH:1
 FNDA:78,lmdbCreateSchema
+<<<<<<< HEAD
 DA:3,95
 DA:4,95
 DA:5,95
@@ -4916,6 +5399,15 @@ DA:6,95
 DA:7,95
 DA:8,95
 DA:10,95
+=======
+DA:3,17
+DA:4,17
+DA:5,17
+DA:6,17
+DA:7,17
+DA:8,17
+DA:10,17
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:17,78
 DA:23,78
 DA:30,78
@@ -4938,6 +5430,7 @@ FNF:2
 FNH:2
 FNDA:142,lmdbCreateTable
 FNDA:396,createAttribute
+<<<<<<< HEAD
 DA:3,96
 DA:4,96
 DA:5,96
@@ -4953,6 +5446,23 @@ DA:15,96
 DA:16,96
 DA:17,672
 DA:20,96
+=======
+DA:3,18
+DA:4,18
+DA:5,18
+DA:6,18
+DA:7,18
+DA:8,18
+DA:9,18
+DA:10,18
+DA:11,18
+DA:12,18
+DA:14,18
+DA:15,18
+DA:16,18
+DA:17,126
+DA:20,18
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:29,142
 DA:31,142
 DA:38,142
@@ -4985,6 +5495,7 @@ FNF:2
 FNH:2
 FNDA:1,deleteAuditLogsBefore
 FNDA:7,deleteTransactions
+<<<<<<< HEAD
 DA:3,95
 DA:4,95
 DA:6,95
@@ -4997,6 +5508,20 @@ DA:12,95
 DA:14,95
 DA:15,95
 DA:17,95
+=======
+DA:3,17
+DA:4,17
+DA:6,17
+DA:7,17
+DA:8,17
+DA:9,17
+DA:10,17
+DA:11,17
+DA:12,17
+DA:14,17
+DA:15,17
+DA:17,17
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:24,1
 DA:25,1
 DA:26,1
@@ -5057,6 +5582,7 @@ FNF:2
 FNH:2
 FNDA:56,lmdbDeleteRecords
 FNDA:54,createDeleteResponse
+<<<<<<< HEAD
 DA:3,95
 DA:4,95
 DA:5,95
@@ -5065,6 +5591,16 @@ DA:7,95
 DA:8,95
 DA:9,95
 DA:11,95
+=======
+DA:3,17
+DA:4,17
+DA:5,17
+DA:6,17
+DA:7,17
+DA:8,17
+DA:9,17
+DA:11,17
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:19,56
 DA:20,56
 DA:21,56
@@ -5090,14 +5626,22 @@ DA:57,52
 DA:59,52
 DA:60,52
 DA:61,52
+<<<<<<< HEAD
 DA:64,0
+=======
+DA:64,35
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:67,52
 DA:69,1
 DA:81,54
 DA:82,54
 DA:84,54
 LF:39
+<<<<<<< HEAD
 LH:38
+=======
+LH:39
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 BRDA:18,0,0,56
 BRDA:21,1,0,1
 BRDA:21,1,1,55
@@ -5128,6 +5672,7 @@ FNF:2
 FNH:2
 FNDA:3,lmdbDeleteRecordsBefore
 FNDA:1,chunkDeletes
+<<<<<<< HEAD
 DA:3,95
 DA:4,95
 DA:5,95
@@ -5142,6 +5687,22 @@ DA:14,95
 DA:16,95
 DA:17,95
 DA:19,95
+=======
+DA:3,17
+DA:4,17
+DA:5,17
+DA:6,17
+DA:7,17
+DA:8,17
+DA:9,17
+DA:10,17
+DA:11,17
+DA:13,17
+DA:14,17
+DA:16,17
+DA:17,17
+DA:19,17
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:33,3
 DA:34,3
 DA:35,1
@@ -5194,6 +5755,7 @@ FNDA:3,removeAttributeFromAllObjects
 FNDA:43,dropAttributeFromSystem
 FNDA:250,(anonymous_3)
 FNDA:42,(anonymous_4)
+<<<<<<< HEAD
 DA:3,95
 DA:4,95
 DA:5,95
@@ -5206,6 +5768,20 @@ DA:11,95
 DA:12,95
 DA:13,95
 DA:15,95
+=======
+DA:3,17
+DA:4,17
+DA:5,17
+DA:6,17
+DA:7,17
+DA:8,17
+DA:9,17
+DA:10,17
+DA:11,17
+DA:12,17
+DA:13,17
+DA:15,17
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:25,41
 DA:26,0
 DA:28,41
@@ -5256,6 +5832,7 @@ FNF:2
 FNH:2
 FNDA:1,lmdbDropSchema
 FNDA:3,validateDropSchema
+<<<<<<< HEAD
 DA:3,95
 DA:4,95
 DA:5,95
@@ -5271,6 +5848,23 @@ DA:14,95
 DA:15,95
 DA:16,95
 DA:18,95
+=======
+DA:3,17
+DA:4,17
+DA:5,17
+DA:6,17
+DA:7,17
+DA:8,17
+DA:9,17
+DA:10,17
+DA:11,17
+DA:12,17
+DA:13,17
+DA:14,17
+DA:15,17
+DA:16,17
+DA:18,17
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:27,1
 DA:28,1
 DA:31,1
@@ -5316,6 +5910,7 @@ FNF:2
 FNH:2
 FNDA:5,lmdbDropTable
 FNDA:6,dropTableFromSystem
+<<<<<<< HEAD
 DA:3,95
 DA:4,95
 DA:5,95
@@ -5328,6 +5923,20 @@ DA:11,95
 DA:12,95
 DA:13,95
 DA:15,95
+=======
+DA:3,17
+DA:4,17
+DA:5,17
+DA:6,17
+DA:7,17
+DA:8,17
+DA:9,17
+DA:10,17
+DA:11,17
+DA:12,17
+DA:13,17
+DA:15,17
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:22,5
 DA:23,5
 DA:24,3
@@ -5381,9 +5990,15 @@ FN:12,lmdbGetDataByHash
 FNF:1
 FNH:1
 FNDA:60,lmdbGetDataByHash
+<<<<<<< HEAD
 DA:3,94
 DA:4,94
 DA:6,94
+=======
+DA:3,16
+DA:4,16
+DA:6,16
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:13,60
 DA:14,60
 DA:15,51
@@ -5400,12 +6015,21 @@ FN:17,lmdbGetDataByValue
 FNF:1
 FNH:1
 FNDA:95,lmdbGetDataByValue
+<<<<<<< HEAD
 DA:3,95
 DA:4,95
 DA:5,95
 DA:6,95
 DA:7,95
 DA:9,95
+=======
+DA:3,17
+DA:4,17
+DA:5,17
+DA:6,17
+DA:7,17
+DA:9,17
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:18,95
 DA:19,95
 DA:20,1
@@ -5443,6 +6067,7 @@ FNDA:5,searchTransactionsByUsername
 FNDA:4,searchTransactionsByHashValues
 FNDA:18,loopRecords
 FNDA:12,batchSearchTransactions
+<<<<<<< HEAD
 DA:3,95
 DA:4,95
 DA:5,95
@@ -5454,6 +6079,19 @@ DA:10,95
 DA:11,95
 DA:12,95
 DA:14,95
+=======
+DA:3,17
+DA:4,17
+DA:5,17
+DA:6,17
+DA:7,17
+DA:8,17
+DA:9,17
+DA:10,17
+DA:11,17
+DA:12,17
+DA:14,17
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:22,5
 DA:23,5
 DA:24,5
@@ -5577,6 +6215,7 @@ FNH:3
 FNDA:24,lmdbSearchByConditions
 FNDA:5652,sorter
 FNDA:8,executeConditionSearches
+<<<<<<< HEAD
 DA:3,95
 DA:4,95
 DA:5,95
@@ -5590,6 +6229,21 @@ DA:12,95
 DA:13,95
 DA:14,95
 DA:16,95
+=======
+DA:3,17
+DA:4,17
+DA:5,17
+DA:6,17
+DA:7,17
+DA:8,17
+DA:9,17
+DA:10,17
+DA:11,17
+DA:12,17
+DA:13,17
+DA:14,17
+DA:16,17
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:24,24
 DA:25,24
 DA:26,24
@@ -5672,10 +6326,17 @@ FN:14,lmdbSearchByHash
 FNF:1
 FNH:1
 FNDA:13,lmdbSearchByHash
+<<<<<<< HEAD
 DA:3,94
 DA:5,94
 DA:6,94
 DA:8,94
+=======
+DA:3,16
+DA:5,16
+DA:6,16
+DA:8,16
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:15,13
 DA:16,13
 DA:17,5
@@ -5691,6 +6352,7 @@ SF:data_layer/harperBridge/lmdbBridge/lmdbMethods/lmdbSearchByValue.js
 FN:17,lmdbSearchByValue
 FNF:1
 FNH:1
+<<<<<<< HEAD
 FNDA:275,lmdbSearchByValue
 DA:3,95
 DA:4,95
@@ -5716,6 +6378,33 @@ BRDA:19,1,0,275
 BRDA:19,1,1,10
 BRDA:24,2,0,7
 BRDA:24,2,1,267
+=======
+FNDA:168,lmdbSearchByValue
+DA:3,17
+DA:4,17
+DA:5,17
+DA:6,17
+DA:7,17
+DA:9,17
+DA:18,168
+DA:19,168
+DA:20,1
+DA:23,167
+DA:24,167
+DA:25,7
+DA:28,160
+DA:29,160
+DA:30,160
+DA:32,39
+LF:16
+LH:16
+BRDA:19,0,0,1
+BRDA:19,0,1,167
+BRDA:19,1,0,168
+BRDA:19,1,1,10
+BRDA:24,2,0,7
+BRDA:24,2,1,160
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 BRF:6
 BRH:6
 end_of_record
@@ -5725,6 +6414,7 @@ FN:22,lmdbUpdateRecords
 FNF:1
 FNH:1
 FNDA:7,lmdbUpdateRecords
+<<<<<<< HEAD
 DA:3,95
 DA:4,95
 DA:5,95
@@ -5736,6 +6426,19 @@ DA:10,95
 DA:11,95
 DA:12,95
 DA:14,95
+=======
+DA:3,17
+DA:4,17
+DA:5,17
+DA:6,17
+DA:7,17
+DA:8,17
+DA:9,17
+DA:10,17
+DA:11,17
+DA:12,17
+DA:14,17
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:23,7
 DA:24,7
 DA:26,3
@@ -5770,6 +6473,7 @@ FN:26,lmdbUpsertRecords
 FNF:1
 FNH:1
 FNDA:8,lmdbUpsertRecords
+<<<<<<< HEAD
 DA:4,95
 DA:5,95
 DA:6,95
@@ -5783,6 +6487,21 @@ DA:13,95
 DA:15,95
 DA:16,95
 DA:18,95
+=======
+DA:4,17
+DA:5,17
+DA:6,17
+DA:7,17
+DA:8,17
+DA:9,17
+DA:10,17
+DA:11,17
+DA:12,17
+DA:13,17
+DA:15,17
+DA:16,17
+DA:18,17
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:28,8
 DA:29,8
 DA:31,1
@@ -5818,11 +6537,19 @@ FN:15,(anonymous_0)
 FNF:1
 FNH:1
 FNDA:1375,(anonymous_0)
+<<<<<<< HEAD
 DA:3,94
 DA:16,1375
 DA:17,1375
 DA:18,1375
 DA:22,94
+=======
+DA:3,16
+DA:16,1375
+DA:17,1375
+DA:18,1375
+DA:22,16
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 LF:5
 LH:5
 BRDA:15,0,0,650
@@ -5836,11 +6563,19 @@ FN:16,(anonymous_0)
 FNF:1
 FNH:1
 FNDA:44,(anonymous_0)
+<<<<<<< HEAD
 DA:2,94
 DA:3,94
 DA:17,44
 DA:18,44
 DA:23,94
+=======
+DA:2,16
+DA:3,16
+DA:17,44
+DA:18,44
+DA:23,16
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 LF:5
 LH:5
 BRDA:16,0,0,44
@@ -5852,6 +6587,7 @@ SF:data_layer/harperBridge/lmdbBridge/lmdbUtility/LMDBInsertTransactionObject.js
 FN:16,(anonymous_0)
 FNF:1
 FNH:1
+<<<<<<< HEAD
 FNDA:35163,(anonymous_0)
 DA:2,94
 DA:3,94
@@ -5861,6 +6597,17 @@ DA:22,94
 LF:5
 LH:5
 BRDA:16,0,0,35135
+=======
+FNDA:35181,(anonymous_0)
+DA:2,16
+DA:3,16
+DA:17,35181
+DA:18,35181
+DA:22,16
+LF:5
+LH:5
+BRDA:16,0,0,35153
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 BRF:1
 BRH:1
 end_of_record
@@ -5869,6 +6616,7 @@ SF:data_layer/harperBridge/lmdbBridge/lmdbUtility/LMDBTransactionObject.js
 FN:14,(anonymous_0)
 FNF:1
 FNH:1
+<<<<<<< HEAD
 FNDA:35360,(anonymous_0)
 DA:15,35360
 DA:16,35360
@@ -5879,6 +6627,18 @@ DA:23,94
 LF:6
 LH:6
 BRDA:14,0,0,35332
+=======
+FNDA:35382,(anonymous_0)
+DA:15,35382
+DA:16,35382
+DA:17,35382
+DA:18,35382
+DA:19,35382
+DA:23,16
+LF:6
+LH:6
+BRDA:14,0,0,35354
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 BRF:1
 BRH:1
 end_of_record
@@ -5888,12 +6648,21 @@ FN:17,(anonymous_0)
 FNF:1
 FNH:1
 FNDA:71,(anonymous_0)
+<<<<<<< HEAD
 DA:2,94
 DA:3,94
 DA:18,71
 DA:19,71
 DA:20,71
 DA:24,94
+=======
+DA:2,16
+DA:3,16
+DA:18,71
+DA:19,71
+DA:20,71
+DA:24,16
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 LF:6
 LH:6
 BRDA:17,0,0,71
@@ -5905,6 +6674,7 @@ SF:data_layer/harperBridge/lmdbBridge/lmdbUtility/LMDBUpsertTransactionObject.js
 FN:17,(anonymous_0)
 FNF:1
 FNH:1
+<<<<<<< HEAD
 FNDA:12,(anonymous_0)
 DA:2,94
 DA:3,94
@@ -5915,6 +6685,18 @@ DA:24,94
 LF:6
 LH:6
 BRDA:17,0,0,12
+=======
+FNDA:16,(anonymous_0)
+DA:2,16
+DA:3,16
+DA:18,16
+DA:19,16
+DA:20,16
+DA:24,16
+LF:6
+LH:6
+BRDA:17,0,0,16
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 BRF:1
 BRH:1
 end_of_record
@@ -5930,7 +6712,11 @@ DA:25,7
 DA:26,7
 DA:27,7
 DA:28,7
+<<<<<<< HEAD
 DA:32,60
+=======
+DA:32,3
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 LF:7
 LH:7
 BRDA:18,0,0,1
@@ -5946,13 +6732,22 @@ FN:13,(anonymous_0)
 FNF:1
 FNH:0
 FNDA:0,(anonymous_0)
+<<<<<<< HEAD
 DA:3,94
 DA:4,94
+=======
+DA:3,16
+DA:4,16
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:14,0
 DA:15,0
 DA:16,0
 DA:17,0
+<<<<<<< HEAD
 DA:21,94
+=======
+DA:21,16
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 LF:7
 LH:3
 BRF:0
@@ -5964,11 +6759,19 @@ FN:15,initialize
 FNF:1
 FNH:1
 FNDA:73,initialize
+<<<<<<< HEAD
 DA:3,94
 DA:4,94
 DA:5,94
 DA:6,94
 DA:8,94
+=======
+DA:3,16
+DA:4,16
+DA:5,16
+DA:6,16
+DA:8,16
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:16,73
 DA:17,73
 DA:18,17
@@ -5991,6 +6794,7 @@ FN:31,getSystemSchemaPath
 FN:42,getTransactionAuditStorePath
 FNF:3
 FNH:3
+<<<<<<< HEAD
 FNDA:1691,getBaseSchemaPath
 FNDA:629,getSystemSchemaPath
 FNDA:35328,getTransactionAuditStorePath
@@ -6030,6 +6834,47 @@ BRDA:36,3,1,0
 BRDA:43,4,0,35311
 BRDA:43,4,1,17
 BRDA:47,5,0,17
+=======
+FNDA:1582,getBaseSchemaPath
+FNDA:629,getSystemSchemaPath
+FNDA:35402,getTransactionAuditStorePath
+DA:3,16
+DA:4,16
+DA:5,16
+DA:6,16
+DA:8,16
+DA:9,16
+DA:10,16
+DA:17,1582
+DA:18,1573
+DA:21,9
+DA:22,9
+DA:23,9
+DA:32,629
+DA:33,621
+DA:36,8
+DA:37,8
+DA:38,8
+DA:43,35402
+DA:44,35394
+DA:47,8
+DA:48,8
+DA:49,8
+DA:53,16
+LF:23
+LH:23
+BRDA:17,0,0,1573
+BRDA:17,0,1,9
+BRDA:21,1,0,9
+BRDA:21,1,1,0
+BRDA:32,2,0,621
+BRDA:32,2,1,8
+BRDA:36,3,0,8
+BRDA:36,3,1,0
+BRDA:43,4,0,35394
+BRDA:43,4,1,8
+BRDA:47,5,0,8
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 BRDA:47,5,1,0
 BRF:12
 BRH:9
@@ -6050,6 +6895,7 @@ FNDA:1170,(anonymous_2)
 FNDA:299,(anonymous_3)
 FNDA:299,createNewAttribute
 FNDA:299,createAttribute
+<<<<<<< HEAD
 DA:3,94
 DA:4,94
 DA:5,94
@@ -6059,6 +6905,17 @@ DA:8,94
 DA:9,94
 DA:11,94
 DA:13,94
+=======
+DA:3,16
+DA:4,16
+DA:5,16
+DA:6,16
+DA:7,16
+DA:8,16
+DA:9,16
+DA:11,16
+DA:13,16
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:23,221
 DA:24,221
 DA:25,0
@@ -6110,6 +6967,7 @@ FN:18,createTransactionsAuditEnvironment
 FNF:1
 FNH:1
 FNDA:170,createTransactionsAuditEnvironment
+<<<<<<< HEAD
 DA:3,94
 DA:4,94
 DA:5,94
@@ -6117,6 +6975,15 @@ DA:6,94
 DA:7,94
 DA:9,94
 DA:11,94
+=======
+DA:3,16
+DA:4,16
+DA:5,16
+DA:6,16
+DA:7,16
+DA:9,16
+DA:11,16
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:20,170
 DA:22,170
 DA:23,170
@@ -6141,12 +7008,21 @@ FN:15,lmdbDropAllAttributes
 FNF:1
 FNH:1
 FNDA:8,lmdbDropAllAttributes
+<<<<<<< HEAD
 DA:3,94
 DA:4,94
 DA:5,94
 DA:6,94
 DA:7,94
 DA:9,94
+=======
+DA:3,16
+DA:4,16
+DA:5,16
+DA:6,16
+DA:7,16
+DA:9,16
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:16,8
 DA:20,4
 DA:23,4
@@ -6177,6 +7053,7 @@ FN:17,lmdbGetTableSize
 FNF:1
 FNH:1
 FNDA:1,lmdbGetTableSize
+<<<<<<< HEAD
 DA:3,60
 DA:4,60
 DA:5,60
@@ -6184,6 +7061,15 @@ DA:6,60
 DA:7,60
 DA:8,60
 DA:10,60
+=======
+DA:3,3
+DA:4,3
+DA:5,3
+DA:6,3
+DA:7,3
+DA:8,3
+DA:10,3
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:18,1
 DA:19,1
 DA:21,1
@@ -6215,6 +7101,7 @@ FN:69,validateHash
 FNF:3
 FNH:3
 FNDA:225,processRows
+<<<<<<< HEAD
 FNDA:1062,validateAttribute
 FNDA:12665,validateHash
 DA:4,96
@@ -6227,13 +7114,33 @@ DA:10,96
 DA:12,96
 DA:21,225
 DA:22,1056
+=======
+FNDA:1066,validateAttribute
+FNDA:12665,validateHash
+DA:4,18
+DA:5,18
+DA:6,18
+DA:7,18
+DA:8,18
+DA:9,18
+DA:10,18
+DA:12,18
+DA:21,225
+DA:22,1060
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:25,224
 DA:28,224
 DA:29,12653
 DA:30,12653
+<<<<<<< HEAD
 DA:39,1062
 DA:40,2
 DA:50,1060
+=======
+DA:39,1066
+DA:40,2
+DA:50,1064
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:51,4
 DA:70,12665
 DA:71,9
@@ -6250,11 +7157,19 @@ DA:103,2
 LF:30
 LH:30
 BRDA:39,0,0,2
+<<<<<<< HEAD
 BRDA:39,0,1,1060
 BRDA:50,1,0,4
 BRDA:50,1,1,1056
 BRDA:50,2,0,1060
 BRDA:50,2,1,1056
+=======
+BRDA:39,0,1,1064
+BRDA:50,1,0,4
+BRDA:50,1,1,1060
+BRDA:50,2,0,1064
+BRDA:50,2,1,1060
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 BRDA:70,3,0,9
 BRDA:70,3,1,12656
 BRDA:70,4,0,12665
@@ -6286,16 +7201,26 @@ FN:358,(anonymous_8)
 FN:367,(anonymous_9)
 FNF:10
 FNH:6
+<<<<<<< HEAD
 FNDA:350,prepSearch
 FNDA:412,executeSearch
 FNDA:354,searchByType
 FNDA:6,createMapFromArrays
 FNDA:184,checkToFetchMore
 FNDA:373,createSearchTypeFromSearchObject
+=======
+FNDA:243,prepSearch
+FNDA:309,executeSearch
+FNDA:276,searchByType
+FNDA:6,createMapFromArrays
+FNDA:184,checkToFetchMore
+FNDA:266,createSearchTypeFromSearchObject
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 FNDA:0,threadSearch
 FNDA:0,(anonymous_7)
 FNDA:0,(anonymous_8)
 FNDA:0,(anonymous_9)
+<<<<<<< HEAD
 DA:3,96
 DA:4,96
 DA:5,96
@@ -6322,6 +7247,34 @@ DA:50,408
 DA:51,340
 DA:54,340
 DA:62,156
+=======
+DA:3,18
+DA:4,18
+DA:5,18
+DA:6,18
+DA:7,18
+DA:8,18
+DA:9,18
+DA:10,18
+DA:11,18
+DA:12,18
+DA:13,18
+DA:14,18
+DA:16,18
+DA:18,18
+DA:28,243
+DA:29,243
+DA:30,137
+DA:32,106
+DA:35,243
+DA:37,243
+DA:48,309
+DA:49,309
+DA:50,301
+DA:51,262
+DA:54,262
+DA:62,78
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:65,184
 DA:67,184
 DA:68,10
@@ -6329,6 +7282,7 @@ DA:71,174
 DA:72,174
 DA:73,30
 DA:76,144
+<<<<<<< HEAD
 DA:78,41
 DA:94,354
 DA:95,354
@@ -6338,6 +7292,17 @@ DA:100,354
 DA:101,354
 DA:102,354
 DA:104,354
+=======
+DA:78,47
+DA:94,276
+DA:95,276
+DA:96,141
+DA:99,276
+DA:100,276
+DA:101,276
+DA:102,276
+DA:104,276
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:106,119
 DA:115,119
 DA:117,15
@@ -6348,7 +7313,11 @@ DA:141,12
 DA:150,12
 DA:152,2
 DA:156,2
+<<<<<<< HEAD
 DA:160,88
+=======
+DA:160,10
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:162,64
 DA:164,7
 DA:174,7
@@ -6377,6 +7346,7 @@ DA:259,199
 DA:260,100
 DA:261,100
 DA:265,110
+<<<<<<< HEAD
 DA:277,373
 DA:278,351
 DA:279,351
@@ -6389,6 +7359,20 @@ DA:288,351
 DA:289,158
 DA:292,351
 DA:293,216
+=======
+DA:277,266
+DA:278,244
+DA:279,244
+DA:280,0
+DA:282,244
+DA:285,244
+DA:286,244
+DA:287,244
+DA:288,244
+DA:289,74
+DA:292,244
+DA:293,109
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:296,135
 DA:297,114
 DA:298,4
@@ -6424,12 +7408,21 @@ DA:363,0
 DA:367,0
 DA:368,0
 DA:369,0
+<<<<<<< HEAD
 DA:374,96
 LF:129
 LH:113
 BRDA:29,0,0,244
 BRDA:29,0,1,106
 BRDA:54,1,0,156
+=======
+DA:374,18
+LF:129
+LH:113
+BRDA:29,0,0,137
+BRDA:29,0,1,106
+BRDA:54,1,0,78
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 BRDA:54,1,1,184
 BRDA:67,2,0,10
 BRDA:67,2,1,174
@@ -6437,6 +7430,7 @@ BRDA:68,3,0,6
 BRDA:68,3,1,4
 BRDA:72,4,0,30
 BRDA:72,4,1,144
+<<<<<<< HEAD
 BRDA:95,5,0,189
 BRDA:95,5,1,165
 BRDA:100,6,0,176
@@ -6445,6 +7439,16 @@ BRDA:101,7,0,30
 BRDA:101,7,1,324
 BRDA:102,8,0,18
 BRDA:102,8,1,336
+=======
+BRDA:95,5,0,141
+BRDA:95,5,1,135
+BRDA:100,6,0,176
+BRDA:100,6,1,100
+BRDA:101,7,0,30
+BRDA:101,7,1,246
+BRDA:102,8,0,18
+BRDA:102,8,1,258
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 BRDA:104,9,0,119
 BRDA:104,9,1,15
 BRDA:104,9,2,11
@@ -6453,7 +7457,11 @@ BRDA:104,9,4,12
 BRDA:104,9,5,12
 BRDA:104,9,6,2
 BRDA:104,9,7,2
+<<<<<<< HEAD
 BRDA:104,9,8,88
+=======
+BRDA:104,9,8,10
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 BRDA:104,9,9,64
 BRDA:104,9,10,7
 BRDA:104,9,11,8
@@ -6473,6 +7481,7 @@ BRDA:253,12,0,85
 BRDA:253,12,1,25
 BRDA:259,13,0,100
 BRDA:259,13,1,99
+<<<<<<< HEAD
 BRDA:277,14,0,351
 BRDA:277,14,1,22
 BRDA:279,15,0,0
@@ -6483,6 +7492,18 @@ BRDA:292,17,0,216
 BRDA:292,17,1,135
 BRDA:293,18,0,65
 BRDA:293,18,1,151
+=======
+BRDA:277,14,0,244
+BRDA:277,14,1,22
+BRDA:279,15,0,0
+BRDA:279,15,1,244
+BRDA:288,16,0,74
+BRDA:288,16,1,170
+BRDA:292,17,0,109
+BRDA:292,17,1,135
+BRDA:293,18,0,65
+BRDA:293,18,1,44
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 BRDA:296,19,0,114
 BRDA:296,19,1,21
 BRDA:296,20,0,135
@@ -6519,6 +7540,7 @@ SF:data_layer/harperBridge/lmdbBridge/lmdbUtility/lmdbThreadSearch.js
 FN:12,searcher
 FNF:1
 FNH:1
+<<<<<<< HEAD
 FNDA:4,searcher
 DA:3,1
 DA:4,1
@@ -6527,6 +7549,16 @@ DA:13,4
 DA:14,4
 DA:21,0
 DA:23,4
+=======
+FNDA:8,searcher
+DA:3,1
+DA:4,1
+DA:6,1
+DA:13,8
+DA:14,8
+DA:21,0
+DA:23,8
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:27,1
 LF:8
 LH:7
@@ -6541,6 +7573,7 @@ FN:71,createTransactionObject
 FNF:3
 FNH:3
 FNDA:35377,writeTransaction
+<<<<<<< HEAD
 FNDA:35127,(anonymous_1)
 FNDA:35136,createTransactionObject
 DA:3,95
@@ -6582,10 +7615,54 @@ DA:83,57
 DA:84,33
 DA:94,24
 DA:95,2
+=======
+FNDA:35149,(anonymous_1)
+FNDA:35158,createTransactionObject
+DA:3,17
+DA:4,17
+DA:5,17
+DA:6,17
+DA:7,17
+DA:8,17
+DA:10,17
+DA:11,17
+DA:12,17
+DA:13,17
+DA:14,17
+DA:16,17
+DA:17,17
+DA:19,17
+DA:28,35377
+DA:29,155
+DA:32,35222
+DA:33,35222
+DA:35,35152
+DA:37,35152
+DA:38,3
+DA:41,35149
+DA:42,35149
+DA:48,35149
+DA:49,35149
+DA:50,35149
+DA:51,35149
+DA:52,35149
+DA:53,35102
+DA:55,35149
+DA:56,146294
+DA:60,0
+DA:72,35158
+DA:73,35158
+DA:74,35097
+DA:83,61
+DA:84,33
+DA:94,28
+DA:95,6
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:105,22
 DA:106,21
 LF:41
 LH:40
+<<<<<<< HEAD
 BRDA:28,0,0,229
 BRDA:28,0,1,35148
 BRDA:37,1,0,3
@@ -6603,11 +7680,31 @@ BRDA:73,6,1,57
 BRDA:83,7,0,33
 BRDA:83,7,1,24
 BRDA:94,8,0,2
+=======
+BRDA:28,0,0,155
+BRDA:28,0,1,35222
+BRDA:37,1,0,3
+BRDA:37,1,1,35149
+BRDA:37,2,0,35152
+BRDA:37,2,1,35152
+BRDA:41,3,0,35149
+BRDA:41,3,1,0
+BRDA:52,4,0,35102
+BRDA:52,4,1,47
+BRDA:72,5,0,35107
+BRDA:72,5,1,51
+BRDA:73,6,0,35097
+BRDA:73,6,1,61
+BRDA:83,7,0,33
+BRDA:83,7,1,28
+BRDA:94,8,0,6
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 BRDA:94,8,1,22
 BRDA:105,9,0,21
 BRDA:105,9,1,1
 BRF:20
 BRH:19
+<<<<<<< HEAD
 end_of_record
 TN:
 SF:launchServiceScripts/launchCustomFunctions.js
@@ -6640,6 +7737,8 @@ BRDA:4,0,0,0
 BRDA:4,0,1,36
 BRF:2
 BRH:1
+=======
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 end_of_record
 TN:
 SF:launchServiceScripts/launchJobThread.js
@@ -6910,6 +8009,7 @@ FN:20,encrypt
 FN:34,decrypt
 FN:55,createNatsTableStreamName
 FNF:3
+<<<<<<< HEAD
 FNH:3
 FNDA:6,encrypt
 FNDA:4,decrypt
@@ -6947,6 +8047,45 @@ DA:58,43
 DA:59,12
 DA:60,12
 DA:63,43
+=======
+FNH:2
+FNDA:2,encrypt
+FNDA:0,decrypt
+FNDA:36,createNatsTableStreamName
+DA:3,16
+DA:4,16
+DA:5,16
+DA:6,16
+DA:7,16
+DA:8,16
+DA:9,16
+DA:12,16
+DA:14,16
+DA:21,2
+DA:22,2
+DA:24,2
+DA:25,2
+DA:26,2
+DA:28,2
+DA:29,2
+DA:30,2
+DA:31,2
+DA:35,0
+DA:36,0
+DA:37,0
+DA:39,0
+DA:40,0
+DA:41,0
+DA:42,0
+DA:43,0
+DA:44,0
+DA:56,36
+DA:57,36
+DA:58,36
+DA:59,8
+DA:60,8
+DA:63,36
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 LF:33
 LH:33
 BRDA:58,0,0,12
@@ -7491,6 +8630,7 @@ FNDA:14,(anonymous_10)
 FNDA:2,(anonymous_11)
 FNDA:23,setUsersToGlobal
 FNDA:27,findAndValidateUser
+<<<<<<< HEAD
 FNDA:13,getClusterUser
 DA:3,95
 DA:4,95
@@ -7521,6 +8661,38 @@ DA:47,95
 DA:54,95
 DA:55,95
 DA:56,95
+=======
+FNDA:6,getClusterUser
+DA:3,17
+DA:4,17
+DA:5,17
+DA:6,17
+DA:7,17
+DA:9,17
+DA:27,17
+DA:28,17
+DA:29,17
+DA:30,17
+DA:31,17
+DA:32,17
+DA:33,17
+DA:34,17
+DA:35,17
+DA:36,17
+DA:37,17
+DA:38,17
+DA:39,17
+DA:40,17
+DA:41,17
+DA:42,17
+DA:43,17
+DA:44,17
+DA:45,17
+DA:47,17
+DA:54,17
+DA:55,17
+DA:56,17
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:59,12
 DA:61,12
 DA:62,12
@@ -9534,7 +10706,11 @@ FNH:1
 FNDA:157,(anonymous_0)
 DA:5,157
 DA:6,157
+<<<<<<< HEAD
 DA:10,94
+=======
+DA:10,16
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 LF:3
 LH:3
 BRF:0
@@ -9552,11 +10728,19 @@ FNDA:154,sendIpcEvent
 FNDA:10,validateEvent
 FNDA:153,SchemaEventMsg
 FNDA:23,UserEventMsg
+<<<<<<< HEAD
 DA:3,94
 DA:4,94
 DA:5,94
 DA:6,94
 DA:8,94
+=======
+DA:3,16
+DA:4,16
+DA:5,16
+DA:6,16
+DA:8,16
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:20,154
 DA:21,1
 DA:23,153
@@ -9792,10 +10976,17 @@ SF:server/nats/utility/HdbUserObject.js
 FN:7,(anonymous_0)
 FNF:1
 FNH:1
+<<<<<<< HEAD
 FNDA:8,(anonymous_0)
 DA:8,8
 DA:9,8
 DA:13,94
+=======
+FNDA:2,(anonymous_0)
+DA:8,2
+DA:9,2
+DA:13,16
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 LF:3
 LH:3
 BRF:0
@@ -9805,6 +10996,7 @@ TN:
 SF:server/nats/utility/HubConfigObject.js
 FN:9,(anonymous_0)
 FNF:1
+<<<<<<< HEAD
 FNH:1
 FNDA:1,(anonymous_0)
 DA:3,94
@@ -9817,6 +11009,20 @@ DA:29,1
 DA:34,1
 DA:42,1
 DA:46,94
+=======
+FNH:0
+FNDA:0,(anonymous_0)
+DA:3,16
+DA:20,0
+DA:21,0
+DA:22,0
+DA:23,0
+DA:26,0
+DA:29,0
+DA:34,0
+DA:42,0
+DA:46,16
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 LF:10
 LH:10
 BRF:0
@@ -9827,6 +11033,7 @@ SF:server/nats/utility/LeafConfigObject.js
 FN:9,(anonymous_0)
 FNF:1
 FNH:1
+<<<<<<< HEAD
 FNDA:4,(anonymous_0)
 DA:3,94
 DA:10,4
@@ -9837,6 +11044,18 @@ DA:18,4
 DA:30,4
 DA:39,4
 DA:43,94
+=======
+FNDA:1,(anonymous_0)
+DA:3,16
+DA:10,1
+DA:11,1
+DA:12,1
+DA:13,1
+DA:18,1
+DA:30,1
+DA:39,1
+DA:43,16
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 LF:9
 LH:9
 BRF:0
@@ -9847,11 +11066,19 @@ SF:server/nats/utility/SysUserObject.js
 FN:9,(anonymous_0)
 FNF:1
 FNH:1
+<<<<<<< HEAD
 FNDA:8,(anonymous_0)
 DA:3,94
 DA:10,8
 DA:11,8
 DA:15,94
+=======
+FNDA:2,(anonymous_0)
+DA:3,16
+DA:10,2
+DA:11,2
+DA:15,16
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 LF:4
 LH:4
 BRF:0
@@ -9958,6 +11185,7 @@ FNH:3
 FNDA:1,generateNatsConfig
 FNDA:4,isPortAvailable
 FNDA:0,generateNatsConfigError
+<<<<<<< HEAD
 FNDA:1,removeNatsConfig
 DA:3,96
 DA:4,96
@@ -9987,6 +11215,37 @@ DA:42,1
 DA:43,1
 DA:44,1
 DA:46,1
+=======
+FNDA:0,removeNatsConfig
+DA:3,16
+DA:4,16
+DA:5,16
+DA:6,16
+DA:7,16
+DA:8,16
+DA:9,16
+DA:10,16
+DA:11,16
+DA:12,16
+DA:13,16
+DA:14,16
+DA:15,16
+DA:16,16
+DA:17,16
+DA:18,16
+DA:20,16
+DA:21,16
+DA:22,16
+DA:24,16
+DA:38,0
+DA:39,0
+DA:40,0
+DA:41,0
+DA:42,0
+DA:43,0
+DA:44,0
+DA:46,0
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:47,0
 DA:50,1
 DA:51,1
@@ -10093,6 +11352,7 @@ FN:11,(anonymous_0)
 FNF:1
 FNH:1
 FNDA:6,(anonymous_0)
+<<<<<<< HEAD
 DA:3,133
 DA:4,133
 DA:5,133
@@ -10108,6 +11368,23 @@ DA:43,133
 DA:50,133
 DA:55,133
 DA:62,133
+=======
+DA:3,31
+DA:4,31
+DA:5,31
+DA:8,31
+DA:10,31
+DA:11,31
+DA:13,31
+DA:18,31
+DA:23,31
+DA:29,31
+DA:36,31
+DA:43,31
+DA:50,31
+DA:55,31
+DA:62,31
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 LF:15
 LH:15
 BRF:0
@@ -10184,6 +11461,7 @@ FNDA:0,(anonymous_25)
 FNDA:0,(anonymous_26)
 FNDA:0,(anonymous_27)
 FNDA:0,(anonymous_28)
+<<<<<<< HEAD
 FNDA:1,reloadNATSHub
 FNDA:1,reloadNATSLeaf
 FNDA:5,requestErrorHandler
@@ -10242,6 +11520,66 @@ DA:167,407
 DA:168,1
 DA:171,406
 DA:172,406
+=======
+FNDA:0,reloadNATSHub
+FNDA:0,reloadNATSLeaf
+FNDA:3,requestErrorHandler
+FNDA:0,updateWorkStream
+FNDA:0,createLocalTableStream
+FNDA:0,createTableStreams
+FNDA:0,purgeTableStream
+FNDA:0,purgeSchemaTableStreams
+FNDA:5,getStreamInfo
+DA:3,16
+DA:4,16
+DA:6,16
+DA:7,16
+DA:8,16
+DA:9,16
+DA:10,16
+DA:11,16
+DA:12,16
+DA:13,16
+DA:14,16
+DA:15,16
+DA:16,16
+DA:17,16
+DA:18,16
+DA:19,16
+DA:21,16
+DA:22,16
+DA:42,16
+DA:44,16
+DA:45,16
+DA:47,16
+DA:48,16
+DA:49,16
+DA:50,16
+DA:51,16
+DA:56,16
+DA:96,0
+DA:98,0
+DA:99,0
+DA:102,0
+DA:110,0
+DA:112,0
+DA:114,0
+DA:118,0
+DA:119,0
+DA:120,0
+DA:134,1
+DA:149,334
+DA:150,6
+DA:151,1
+DA:152,0
+DA:155,1
+DA:156,1
+DA:159,329
+DA:167,336
+DA:168,0
+DA:171,336
+DA:172,336
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:173,0
 DA:176,406
 DA:184,398
@@ -10488,11 +11826,19 @@ BRDA:349,14,0,991
 BRDA:349,14,1,0
 BRDA:351,15,0,991
 BRDA:351,15,1,0
+<<<<<<< HEAD
 BRDA:358,16,0,15
 BRDA:358,16,1,976
 BRDA:358,17,0,991
 BRDA:358,17,1,22
 BRDA:370,18,0,2
+=======
+BRDA:358,16,0,12
+BRDA:358,16,1,972
+BRDA:358,17,0,984
+BRDA:358,17,1,23
+BRDA:370,18,0,1
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 BRDA:370,18,1,0
 BRDA:386,19,0,0
 BRDA:386,20,0,309
@@ -11045,6 +12391,7 @@ FNDA:12,(anonymous_19)
 FNDA:34,(anonymous_20)
 FNDA:211,(anonymous_21)
 FNDA:557,(anonymous_22)
+<<<<<<< HEAD
 DA:3,94
 DA:4,94
 DA:5,94
@@ -11065,6 +12412,28 @@ DA:22,94
 DA:23,94
 DA:24,94
 DA:26,94
+=======
+DA:3,16
+DA:4,16
+DA:5,16
+DA:6,16
+DA:7,16
+DA:8,16
+DA:11,16
+DA:13,16
+DA:14,16
+DA:15,16
+DA:16,16
+DA:17,16
+DA:18,16
+DA:19,16
+DA:20,16
+DA:21,16
+DA:22,16
+DA:23,16
+DA:24,16
+DA:26,16
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:34,98
 DA:35,98
 DA:43,98
@@ -11174,7 +12543,11 @@ DA:321,0
 DA:324,557
 DA:325,0
 DA:328,557
+<<<<<<< HEAD
 DA:332,94
+=======
+DA:332,16
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 LF:130
 LH:116
 BRDA:43,0,0,0
@@ -11278,6 +12651,7 @@ SF:sqlTranslator/alasqlFunctionImporter.js
 FN:12,(anonymous_0)
 FNF:1
 FNH:1
+<<<<<<< HEAD
 FNDA:205,(anonymous_0)
 DA:7,94
 DA:8,94
@@ -11314,6 +12688,44 @@ DA:58,205
 DA:59,205
 DA:60,205
 DA:61,205
+=======
+FNDA:23,(anonymous_0)
+DA:7,16
+DA:8,16
+DA:9,16
+DA:12,16
+DA:17,23
+DA:18,23
+DA:19,23
+DA:20,23
+DA:22,23
+DA:27,23
+DA:28,23
+DA:29,23
+DA:33,23
+DA:34,23
+DA:35,23
+DA:36,23
+DA:37,23
+DA:38,23
+DA:39,23
+DA:40,23
+DA:41,23
+DA:42,23
+DA:43,23
+DA:46,23
+DA:47,23
+DA:52,23
+DA:53,23
+DA:54,23
+DA:55,23
+DA:56,23
+DA:57,23
+DA:58,23
+DA:59,23
+DA:60,23
+DA:61,23
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 LF:35
 LH:35
 BRF:0
@@ -12061,11 +13473,16 @@ FNDA:0,(anonymous_24)
 FNDA:2,(anonymous_25)
 FNDA:13,(anonymous_26)
 FNDA:13,(anonymous_27)
+<<<<<<< HEAD
 FNDA:21,(anonymous_28)
+=======
+FNDA:14,(anonymous_28)
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 FNDA:1,(anonymous_29)
 FNDA:2,(anonymous_30)
 FNDA:1,(anonymous_31)
 FNDA:2,(anonymous_32)
+<<<<<<< HEAD
 DA:3,19
 DA:4,19
 DA:5,19
@@ -12073,22 +13490,43 @@ DA:10,19
 DA:42,19
 DA:43,2
 DA:50,19
+=======
+DA:3,12
+DA:4,12
+DA:5,12
+DA:10,12
+DA:42,12
+DA:43,2
+DA:50,12
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:52,0
 DA:55,1
 DA:56,1
 DA:57,0
 DA:59,0
+<<<<<<< HEAD
 DA:63,19
+=======
+DA:63,12
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:66,2
 DA:67,1
 DA:68,0
 DA:69,0
+<<<<<<< HEAD
 DA:72,19
+=======
+DA:72,12
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:73,1
 DA:75,0
 DA:76,1
 DA:78,0
+<<<<<<< HEAD
 DA:82,19
+=======
+DA:82,12
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:83,3
 DA:85,3
 DA:88,1
@@ -12103,15 +13541,26 @@ DA:100,0
 DA:101,2
 DA:103,13
 DA:104,13
+<<<<<<< HEAD
 DA:107,21
 DA:108,19
 DA:113,19
 DA:115,19
+=======
+DA:107,14
+DA:108,12
+DA:113,12
+DA:115,12
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:116,1
 DA:117,2
 DA:118,1
 DA:119,2
+<<<<<<< HEAD
 DA:122,19
+=======
+DA:122,12
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 LF:46
 LH:35
 BRDA:91,0,0,1
@@ -12123,9 +13572,15 @@ TN:
 SF:unitTests/commonTestTerms.js
 FNF:0
 FNH:0
+<<<<<<< HEAD
 DA:5,39
 DA:12,39
 DA:25,39
+=======
+DA:5,15
+DA:12,15
+DA:25,15
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 LF:3
 LH:3
 BRF:0
@@ -12265,12 +13720,18 @@ FN:747,stopTestLeafServer
 FN:772,runCommand
 FN:782,restoreInitStub
 FNF:45
+<<<<<<< HEAD
 FNH:40
 FNDA:139,changeProcessToBinDir
+=======
+FNH:39
+FNDA:60,changeProcessToBinDir
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 FNDA:281,deepClone
 FNDA:67,(anonymous_2)
 FNDA:67,(anonymous_3)
 FNDA:0,(anonymous_4)
+<<<<<<< HEAD
 FNDA:136,preTestPrep
 FNDA:92,(anonymous_6)
 FNDA:0,(anonymous_7)
@@ -12278,6 +13739,15 @@ FNDA:22,(anonymous_8)
 FNDA:0,makeTheDir
 FNDA:4,cleanUpDirectories
 FNDA:41,getMockTestPath
+=======
+FNDA:57,preTestPrep
+FNDA:52,(anonymous_6)
+FNDA:0,(anonymous_7)
+FNDA:8,(anonymous_8)
+FNDA:0,makeTheDir
+FNDA:4,cleanUpDirectories
+FNDA:39,getMockTestPath
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 FNDA:372,getMockLMDBPath
 FNDA:84,validateMockArgs
 FNDA:30,CreateSchemaObj
@@ -12300,8 +13770,13 @@ FNDA:4,getHTTPSCredentials
 FNDA:10,testError
 FNDA:4,testHDBError
 FNDA:94,generateHDBError
+<<<<<<< HEAD
 FNDA:565,assertErrorAsync
 FNDA:557,assertErrorSync
+=======
+FNDA:564,assertErrorAsync
+FNDA:558,assertErrorSync
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 FNDA:15152,assignObjectToNullObject
 FNDA:18,generateUpgradeObj
 FNDA:0,requireUncached
@@ -12311,6 +13786,7 @@ FNDA:3,unsetFakeClusterUser
 FNDA:3,stopTestLeafServer
 FNDA:3,runCommand
 FNDA:2,restoreInitStub
+<<<<<<< HEAD
 DA:2,39
 DA:3,39
 DA:4,39
@@ -12354,11 +13830,57 @@ DA:48,39
 DA:53,39
 DA:63,139
 DA:64,139
+=======
+DA:2,15
+DA:3,15
+DA:4,15
+DA:5,15
+DA:6,15
+DA:7,15
+DA:8,15
+DA:9,15
+DA:10,15
+DA:12,15
+DA:13,15
+DA:14,15
+DA:15,15
+DA:16,15
+DA:17,15
+DA:18,15
+DA:19,15
+DA:20,15
+DA:21,15
+DA:22,15
+DA:23,15
+DA:24,15
+DA:25,15
+DA:26,15
+DA:27,15
+DA:28,15
+DA:29,15
+DA:31,15
+DA:36,15
+DA:37,15
+DA:38,15
+DA:39,15
+DA:40,15
+DA:41,15
+DA:42,15
+DA:44,15
+DA:45,15
+DA:46,15
+DA:47,15
+DA:48,15
+DA:53,15
+DA:63,60
+DA:64,60
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:65,0
 DA:75,281
 DA:83,67
 DA:84,67
 DA:85,0
+<<<<<<< HEAD
 DA:94,136
 DA:95,136
 DA:96,114
@@ -12373,6 +13895,22 @@ DA:108,22
 DA:109,22
 DA:113,136
 DA:114,136
+=======
+DA:94,57
+DA:95,57
+DA:96,49
+DA:98,57
+DA:99,52
+DA:101,57
+DA:102,0
+DA:103,0
+DA:104,0
+DA:107,57
+DA:108,8
+DA:109,8
+DA:113,57
+DA:114,57
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:118,0
 DA:119,0
 DA:128,4
@@ -12389,8 +13927,13 @@ DA:140,0
 DA:142,0
 DA:145,0
 DA:147,0
+<<<<<<< HEAD
 DA:157,41
 DA:158,41
+=======
+DA:157,39
+DA:158,39
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:166,372
 DA:167,372
 DA:168,372
@@ -12510,6 +14053,7 @@ DA:590,4
 DA:593,4
 DA:594,4
 DA:598,94
+<<<<<<< HEAD
 DA:604,565
 DA:605,565
 DA:607,283
@@ -12520,6 +14064,18 @@ DA:618,557
 DA:620,118
 DA:623,557
 DA:624,557
+=======
+DA:604,564
+DA:605,564
+DA:607,282
+DA:610,564
+DA:611,564
+DA:617,558
+DA:618,558
+DA:620,118
+DA:623,558
+DA:624,558
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:633,15152
 DA:634,15152
 DA:645,18
@@ -12566,12 +14122,21 @@ DA:776,0
 DA:779,3
 DA:783,2
 DA:784,2
+<<<<<<< HEAD
 DA:788,39
 LF:256
 LH:218
 BRDA:95,0,0,114
 BRDA:95,0,1,22
 BRDA:108,1,0,22
+=======
+DA:788,15
+LF:256
+LH:217
+BRDA:95,0,0,49
+BRDA:95,0,1,8
+BRDA:108,1,0,8
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 BRDA:108,1,1,0
 BRDA:118,2,0,0
 BRDA:118,2,1,0
@@ -13570,10 +15135,17 @@ FN:18,verifyTxn
 FNF:1
 FNH:1
 FNDA:27,verifyTxn
+<<<<<<< HEAD
 DA:3,4
 DA:4,4
 DA:5,4
 DA:7,4
+=======
+DA:3,2
+DA:4,2
+DA:5,2
+DA:7,2
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:19,27
 DA:21,27
 DA:22,27
@@ -15438,30 +17010,30 @@ FN:322,(anonymous_67)
 FN:326,(anonymous_68)
 FN:330,(anonymous_69)
 FN:334,(anonymous_70)
-FN:338,(anonymous_71)
-FN:342,(anonymous_72)
-FN:346,(anonymous_73)
-FN:351,(anonymous_74)
-FN:356,(anonymous_75)
+FN:339,(anonymous_71)
+FN:344,(anonymous_72)
+FN:349,(anonymous_73)
+FN:353,(anonymous_74)
+FN:357,(anonymous_75)
 FN:361,(anonymous_76)
 FN:365,(anonymous_77)
 FN:369,(anonymous_78)
 FN:373,(anonymous_79)
 FN:377,(anonymous_80)
-FN:381,(anonymous_81)
-FN:385,(anonymous_82)
-FN:389,(anonymous_83)
-FN:394,(anonymous_84)
+FN:382,(anonymous_81)
+FN:383,(anonymous_82)
+FN:387,(anonymous_83)
+FN:391,(anonymous_84)
 FN:395,(anonymous_85)
 FN:399,(anonymous_86)
 FN:403,(anonymous_87)
 FN:407,(anonymous_88)
 FN:411,(anonymous_89)
 FN:415,(anonymous_90)
-FN:419,(anonymous_91)
-FN:423,(anonymous_92)
-FN:427,(anonymous_93)
-FN:432,(anonymous_94)
+FN:420,(anonymous_91)
+FN:421,(anonymous_92)
+FN:425,(anonymous_93)
+FN:429,(anonymous_94)
 FN:433,(anonymous_95)
 FN:437,(anonymous_96)
 FN:441,(anonymous_97)
@@ -15470,65 +17042,62 @@ FN:449,(anonymous_99)
 FN:453,(anonymous_100)
 FN:457,(anonymous_101)
 FN:461,(anonymous_102)
-FN:465,(anonymous_103)
-FN:469,(anonymous_104)
-FN:473,(anonymous_105)
-FN:478,(anonymous_106)
-FN:485,(anonymous_107)
-FN:487,(anonymous_108)
-FN:494,(anonymous_109)
-FN:496,(anonymous_110)
-FN:502,(anonymous_111)
-FN:504,(anonymous_112)
+FN:466,(anonymous_103)
+FN:473,(anonymous_104)
+FN:475,(anonymous_105)
+FN:482,(anonymous_106)
+FN:484,(anonymous_107)
+FN:490,(anonymous_108)
+FN:492,(anonymous_109)
+FN:498,(anonymous_110)
+FN:500,(anonymous_111)
+FN:506,(anonymous_112)
 FN:510,(anonymous_113)
-FN:512,(anonymous_114)
-FN:518,(anonymous_115)
-FN:522,(anonymous_116)
-FN:548,(anonymous_117)
-FN:554,(anonymous_118)
-FN:560,(anonymous_119)
-FN:566,(anonymous_120)
+FN:536,(anonymous_114)
+FN:542,(anonymous_115)
+FN:548,(anonymous_116)
+FN:554,(anonymous_117)
+FN:560,(anonymous_118)
+FN:568,(anonymous_119)
+FN:569,(anonymous_120)
 FN:572,(anonymous_121)
-FN:580,(anonymous_122)
-FN:581,(anonymous_123)
-FN:584,(anonymous_124)
-FN:587,(anonymous_125)
-FN:590,(anonymous_126)
-FN:593,(anonymous_127)
-FN:596,(anonymous_128)
-FN:599,(anonymous_129)
-FN:604,(anonymous_130)
-FN:605,(anonymous_131)
-FN:613,(anonymous_132)
-FN:617,(anonymous_133)
-FN:629,(anonymous_134)
-FN:638,(anonymous_135)
-FN:639,(anonymous_136)
-FN:642,(anonymous_137)
-FN:645,(anonymous_138)
-FN:648,(anonymous_139)
-FN:653,(anonymous_140)
-FN:674,(anonymous_141)
-FN:678,(anonymous_142)
-FN:684,(anonymous_143)
-FN:689,(anonymous_144)
-FN:694,(anonymous_145)
-FN:708,(anonymous_146)
-FN:709,(anonymous_147)
-FN:711,(anonymous_148)
-FN:728,(anonymous_149)
-FN:730,(anonymous_150)
-FN:747,(anonymous_151)
-FN:753,(anonymous_152)
-FN:760,(anonymous_153)
-FN:772,(anonymous_154)
-FN:773,(anonymous_155)
-FN:778,(anonymous_156)
-FN:783,(anonymous_157)
-FN:788,(anonymous_158)
-FN:794,(anonymous_159)
-FNF:160
-FNH:160
+FN:575,(anonymous_122)
+FN:578,(anonymous_123)
+FN:581,(anonymous_124)
+FN:584,(anonymous_125)
+FN:587,(anonymous_126)
+FN:592,(anonymous_127)
+FN:593,(anonymous_128)
+FN:601,(anonymous_129)
+FN:605,(anonymous_130)
+FN:617,(anonymous_131)
+FN:626,(anonymous_132)
+FN:627,(anonymous_133)
+FN:630,(anonymous_134)
+FN:633,(anonymous_135)
+FN:636,(anonymous_136)
+FN:641,(anonymous_137)
+FN:662,(anonymous_138)
+FN:666,(anonymous_139)
+FN:672,(anonymous_140)
+FN:677,(anonymous_141)
+FN:682,(anonymous_142)
+FN:696,(anonymous_143)
+FN:697,(anonymous_144)
+FN:699,(anonymous_145)
+FN:716,(anonymous_146)
+FN:718,(anonymous_147)
+FN:735,(anonymous_148)
+FN:741,(anonymous_149)
+FN:748,(anonymous_150)
+FN:760,(anonymous_151)
+FN:761,(anonymous_152)
+FN:766,(anonymous_153)
+FN:771,(anonymous_154)
+FN:776,(anonymous_155)
+FN:782,(anonymous_156)
+FNF:157
+FNH:157
 FNDA:1,(anonymous_0)
 FNDA:1,(anonymous_1)
 FNDA:1,(anonymous_2)
@@ -15634,18 +17203,18 @@ FNDA:1,(anonymous_101)
 FNDA:1,(anonymous_102)
 FNDA:1,(anonymous_103)
 FNDA:1,(anonymous_104)
-FNDA:1,(anonymous_105)
+FNDA:4,(anonymous_105)
 FNDA:1,(anonymous_106)
-FNDA:1,(anonymous_107)
-FNDA:4,(anonymous_108)
-FNDA:1,(anonymous_109)
-FNDA:4,(anonymous_110)
-FNDA:1,(anonymous_111)
-FNDA:4,(anonymous_112)
-FNDA:1,(anonymous_113)
-FNDA:4,(anonymous_114)
+FNDA:4,(anonymous_107)
+FNDA:1,(anonymous_108)
+FNDA:4,(anonymous_109)
+FNDA:1,(anonymous_110)
+FNDA:4,(anonymous_111)
+FNDA:1,(anonymous_112)
+FNDA:5,(anonymous_113)
+FNDA:1,(anonymous_114)
 FNDA:1,(anonymous_115)
-FNDA:5,(anonymous_116)
+FNDA:1,(anonymous_116)
 FNDA:1,(anonymous_117)
 FNDA:1,(anonymous_118)
 FNDA:1,(anonymous_119)
@@ -15667,28 +17236,25 @@ FNDA:1,(anonymous_134)
 FNDA:1,(anonymous_135)
 FNDA:1,(anonymous_136)
 FNDA:1,(anonymous_137)
-FNDA:1,(anonymous_138)
+FNDA:2,(anonymous_138)
 FNDA:1,(anonymous_139)
 FNDA:1,(anonymous_140)
-FNDA:2,(anonymous_141)
+FNDA:1,(anonymous_141)
 FNDA:1,(anonymous_142)
 FNDA:1,(anonymous_143)
 FNDA:1,(anonymous_144)
 FNDA:1,(anonymous_145)
 FNDA:1,(anonymous_146)
-FNDA:1,(anonymous_147)
+FNDA:5,(anonymous_147)
 FNDA:1,(anonymous_148)
 FNDA:1,(anonymous_149)
-FNDA:5,(anonymous_150)
+FNDA:1,(anonymous_150)
 FNDA:1,(anonymous_151)
 FNDA:1,(anonymous_152)
 FNDA:1,(anonymous_153)
 FNDA:1,(anonymous_154)
 FNDA:1,(anonymous_155)
 FNDA:1,(anonymous_156)
-FNDA:1,(anonymous_157)
-FNDA:1,(anonymous_158)
-FNDA:1,(anonymous_159)
 DA:6,1
 DA:7,1
 DA:8,1
@@ -15848,17 +17414,17 @@ DA:330,1
 DA:331,1
 DA:334,1
 DA:335,1
-DA:338,1
+DA:336,1
 DA:339,1
-DA:342,1
-DA:343,1
+DA:340,1
+DA:341,1
+DA:344,1
+DA:345,1
 DA:346,1
-DA:347,1
-DA:348,1
-DA:351,1
-DA:352,1
+DA:349,1
+DA:350,1
 DA:353,1
-DA:356,1
+DA:354,1
 DA:357,1
 DA:358,1
 DA:361,1
@@ -15871,13 +17437,13 @@ DA:373,1
 DA:374,1
 DA:377,1
 DA:378,1
-DA:381,1
 DA:382,1
-DA:385,1
-DA:386,1
-DA:389,1
-DA:390,1
-DA:394,1
+DA:383,1
+DA:384,1
+DA:387,1
+DA:388,1
+DA:391,1
+DA:392,1
 DA:395,1
 DA:396,1
 DA:399,1
@@ -15890,13 +17456,13 @@ DA:411,1
 DA:412,1
 DA:415,1
 DA:416,1
-DA:419,1
 DA:420,1
-DA:423,1
-DA:424,1
-DA:427,1
-DA:428,1
-DA:432,1
+DA:421,1
+DA:422,1
+DA:425,1
+DA:426,1
+DA:429,1
+DA:430,1
 DA:433,1
 DA:434,1
 DA:437,1
@@ -15913,50 +17479,54 @@ DA:457,1
 DA:458,1
 DA:461,1
 DA:462,1
-DA:465,1
 DA:466,1
-DA:469,1
-DA:470,1
+DA:467,1
 DA:473,1
 DA:474,1
+DA:475,1
+DA:476,4
 DA:478,1
 DA:479,1
-DA:485,1
-DA:486,1
+DA:482,1
+DA:483,1
+DA:484,1
+DA:485,4
 DA:487,1
-DA:488,4
+DA:488,1
 DA:490,1
 DA:491,1
-DA:494,1
+DA:492,1
+DA:493,4
 DA:495,1
 DA:496,1
-DA:497,4
+DA:498,1
 DA:499,1
 DA:500,1
-DA:502,1
+DA:501,4
 DA:503,1
 DA:504,1
-DA:505,4
+DA:506,1
 DA:507,1
 DA:508,1
+DA:509,1
 DA:510,1
-DA:511,1
-DA:512,1
-DA:513,4
+DA:511,5
+DA:513,1
+DA:514,1
 DA:515,1
-DA:516,1
-DA:518,1
-DA:519,1
 DA:520,1
-DA:521,1
-DA:522,1
-DA:523,5
 DA:525,1
-DA:526,1
-DA:527,1
-DA:532,1
+DA:530,1
+DA:536,1
 DA:537,1
+DA:538,1
+DA:539,1
+DA:540,1
 DA:542,1
+DA:543,1
+DA:544,1
+DA:545,1
+DA:546,1
 DA:548,1
 DA:549,1
 DA:550,1
@@ -15972,130 +17542,120 @@ DA:561,1
 DA:562,1
 DA:563,1
 DA:564,1
-DA:566,1
-DA:567,1
 DA:568,1
 DA:569,1
 DA:570,1
 DA:572,1
 DA:573,1
-DA:574,1
 DA:575,1
 DA:576,1
-DA:580,1
+DA:578,1
+DA:579,1
 DA:581,1
 DA:582,1
 DA:584,1
 DA:585,1
 DA:587,1
 DA:588,1
-DA:590,1
-DA:591,1
+DA:592,1
 DA:593,1
 DA:594,1
-DA:596,1
-DA:597,1
-DA:599,1
-DA:600,1
-DA:604,1
+DA:601,1
+DA:602,1
 DA:605,1
 DA:606,1
-DA:613,1
-DA:614,1
+DA:607,1
+DA:609,0
 DA:617,1
 DA:618,1
 DA:619,1
 DA:621,0
-DA:629,1
+DA:626,1
+DA:627,1
+DA:628,1
 DA:630,1
 DA:631,1
-DA:633,0
-DA:638,1
-DA:639,1
-DA:640,1
-DA:642,1
+DA:633,1
+DA:634,1
+DA:636,1
+DA:637,1
+DA:641,1
 DA:643,1
-DA:645,1
-DA:646,1
 DA:648,1
-DA:649,1
-DA:653,1
-DA:655,1
+DA:656,1
+DA:657,1
+DA:658,1
+DA:659,1
 DA:660,1
+DA:662,1
+DA:663,2
+DA:666,1
+DA:667,1
 DA:668,1
-DA:669,1
-DA:670,1
-DA:671,1
 DA:672,1
+DA:673,1
 DA:674,1
-DA:675,2
+DA:675,1
+DA:677,1
 DA:678,1
 DA:679,1
-DA:680,1
-DA:684,1
+DA:682,1
 DA:685,1
 DA:686,1
-DA:687,1
-DA:689,1
-DA:690,1
+DA:688,1
 DA:691,1
-DA:694,1
+DA:692,1
+DA:696,1
 DA:697,1
 DA:698,1
 DA:700,1
-DA:703,1
 DA:704,1
-DA:708,1
-DA:709,1
-DA:710,1
-DA:712,1
+DA:705,1
+DA:706,1
+DA:708,0
+DA:711,1
+DA:713,1
 DA:716,1
 DA:717,1
-DA:718,1
-DA:720,0
+DA:719,5
 DA:723,1
+DA:724,1
 DA:725,1
-DA:728,1
-DA:729,1
-DA:731,5
+DA:727,1
+DA:730,1
+DA:731,1
 DA:735,1
 DA:736,1
-DA:737,1
-DA:739,1
+DA:741,1
 DA:742,1
 DA:743,1
-DA:747,1
+DA:745,1
 DA:748,1
-DA:753,1
+DA:749,1
 DA:754,1
-DA:755,1
-DA:757,1
+DA:756,1
 DA:760,1
 DA:761,1
+DA:762,1
+DA:763,1
 DA:766,1
+DA:767,1
 DA:768,1
+DA:771,1
 DA:772,1
 DA:773,1
-DA:774,1
-DA:775,1
+DA:776,1
+DA:777,1
 DA:778,1
-DA:779,1
-DA:780,1
+DA:782,1
 DA:783,1
 DA:784,1
 DA:785,1
+DA:786,1
+DA:787,1
 DA:788,1
-DA:789,1
-DA:790,1
-DA:794,1
-DA:795,1
-DA:796,1
-DA:797,1
-DA:798,1
-DA:799,1
-DA:800,1
-LF:405
-LH:402
+LF:399
+LH:396
 BRF:0
 BRH:0
 end_of_record
@@ -19671,8 +21231,13 @@ FNF:2
 FNH:2
 FNDA:39,assignCMDENVVariables
 FNDA:48,objKeysToLowerCase
+<<<<<<< HEAD
 DA:3,103
 DA:5,103
+=======
+DA:3,16
+DA:5,16
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:16,39
 DA:17,0
 DA:22,39
@@ -19723,66 +21288,78 @@ FN:170,isBoolean
 FN:184,isObject
 FN:198,stripFileExtension
 FN:210,autoCast
-FN:246,autoCasterIsNumberCheck
-FN:261,removeDir
-FN:283,compareVersions
-FN:315,escapeRawValue
-FN:337,unescapeValue
-FN:362,stringifyProps
-FN:368,(anonymous_17)
-FN:395,valueConverter
-FN:416,getHomeDir
-FN:434,getPropsFilePath
-FN:449,timeoutPromise
-FN:452,(anonymous_22)
-FN:453,(anonymous_23)
-FN:460,(anonymous_24)
-FN:471,isPortTaken
-FN:477,(anonymous_26)
-FN:480,(anonymous_27)
-FN:483,(anonymous_28)
-FN:483,(anonymous_29)
-FN:493,isClusterOperation
-FN:508,sendTransactionToSocketCluster
-FN:529,checkGlobalSchemaTable
-FN:538,getClusterUser
-FN:580,promisifyPapaParse
-FN:581,(anonymous_35)
-FN:582,(anonymous_36)
-FN:601,removeBOM
-FN:613,createEventPromise
-FN:614,(anonymous_39)
-FN:615,(anonymous_40)
-FN:632,checkProcessRunning
-FN:655,checkSchemaTableExist
-FN:672,checkSchemaExists
-FN:684,checkTableExists
-FN:694,getStartOfTomorrowInSeconds
-FN:704,getLimitKey
-FN:713,backtickASTSchemaItems
-FN:751,stopProcess
-FN:754,(anonymous_49)
-FN:770,createForkArgs
-FN:784,autoCastBoolean
-FN:791,getTableHashAttribute
-FN:800,doesSchemaExist
-FN:810,doesTableExist
-FN:819,stringifyObj
-FN:832,ms_to_time
+FN:236,autoCasterIsNumberCheck
+FN:251,removeDir
+FN:273,compareVersions
+FN:305,escapeRawValue
+FN:327,unescapeValue
+FN:352,stringifyProps
+FN:358,(anonymous_17)
+FN:385,valueConverter
+FN:406,getHomeDir
+FN:424,getPropsFilePath
+FN:439,timeoutPromise
+FN:442,(anonymous_22)
+FN:443,(anonymous_23)
+FN:450,(anonymous_24)
+FN:461,isPortTaken
+FN:467,(anonymous_26)
+FN:470,(anonymous_27)
+FN:473,(anonymous_28)
+FN:473,(anonymous_29)
+FN:483,isClusterOperation
+FN:498,sendTransactionToSocketCluster
+FN:519,checkGlobalSchemaTable
+FN:528,getClusterUser
+FN:570,promisifyPapaParse
+FN:571,(anonymous_35)
+FN:572,(anonymous_36)
+FN:591,removeBOM
+FN:603,createEventPromise
+FN:604,(anonymous_39)
+FN:605,(anonymous_40)
+FN:622,checkProcessRunning
+FN:645,checkSchemaTableExist
+FN:662,checkSchemaExists
+FN:674,checkTableExists
+FN:684,getStartOfTomorrowInSeconds
+FN:694,getLimitKey
+FN:703,backtickASTSchemaItems
+FN:741,stopProcess
+FN:744,(anonymous_49)
+FN:760,createForkArgs
+FN:774,autoCastBoolean
+FN:781,getTableHashAttribute
+FN:790,doesSchemaExist
+FN:800,doesTableExist
+FN:809,stringifyObj
+FN:822,ms_to_time
 FNF:57
 FNH:34
+<<<<<<< HEAD
 FNDA:16,errorizeMessage
 FNDA:569272,isEmpty
 FNDA:133,isNotEmptyAndHasValue
 FNDA:29090,isEmptyOrZeroLength
+=======
+FNDA:17,errorizeMessage
+FNDA:569068,isEmpty
+FNDA:133,isNotEmptyAndHasValue
+FNDA:28955,isEmptyOrZeroLength
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 FNDA:36,arrayHasEmptyValues
 FNDA:5,arrayHasEmptyOrZeroLengthValues
 FNDA:127,buildFolderPath
 FNDA:15,isBoolean
 FNDA:41,isObject
 FNDA:0,stripFileExtension
+<<<<<<< HEAD
 FNDA:378959,autoCast
 FNDA:197868,autoCasterIsNumberCheck
+=======
+FNDA:383411,autoCast
+FNDA:158935,autoCasterIsNumberCheck
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 FNDA:0,removeDir
 FNDA:70,compareVersions
 FNDA:9,escapeRawValue
@@ -19790,8 +21367,13 @@ FNDA:11,unescapeValue
 FNDA:0,stringifyProps
 FNDA:0,(anonymous_17)
 FNDA:0,valueConverter
+<<<<<<< HEAD
 FNDA:221,getHomeDir
 FNDA:211,getPropsFilePath
+=======
+FNDA:47,getHomeDir
+FNDA:37,getPropsFilePath
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 FNDA:0,timeoutPromise
 FNDA:0,(anonymous_22)
 FNDA:0,(anonymous_23)
@@ -19803,7 +21385,11 @@ FNDA:0,(anonymous_28)
 FNDA:0,(anonymous_29)
 FNDA:7,isClusterOperation
 FNDA:6,sendTransactionToSocketCluster
+<<<<<<< HEAD
 FNDA:181,checkGlobalSchemaTable
+=======
+FNDA:180,checkGlobalSchemaTable
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 FNDA:4,getClusterUser
 FNDA:59,promisifyPapaParse
 FNDA:1,(anonymous_35)
@@ -19828,6 +21414,7 @@ FNDA:30,doesSchemaExist
 FNDA:30,doesTableExist
 FNDA:0,stringifyObj
 FNDA:4,ms_to_time
+<<<<<<< HEAD
 DA:2,104
 DA:3,104
 DA:4,104
@@ -19858,6 +21445,38 @@ DA:94,11
 DA:103,569272
 DA:107,133
 DA:116,29090
+=======
+DA:2,17
+DA:3,17
+DA:4,17
+DA:5,17
+DA:6,17
+DA:7,17
+DA:8,17
+DA:9,17
+DA:10,17
+DA:11,17
+DA:12,17
+DA:13,17
+DA:14,17
+DA:15,17
+DA:16,17
+DA:17,17
+DA:19,17
+DA:20,17
+DA:21,17
+DA:23,17
+DA:24,17
+DA:25,17
+DA:28,17
+DA:36,17
+DA:91,17
+DA:92,5
+DA:94,12
+DA:103,569068
+DA:107,133
+DA:116,28955
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:125,36
 DA:126,1
 DA:128,35
@@ -19882,6 +21501,7 @@ DA:189,39
 DA:199,0
 DA:200,0
 DA:202,0
+<<<<<<< HEAD
 DA:211,378959
 DA:212,718
 DA:216,378241
@@ -19906,50 +21526,79 @@ DA:266,0
 DA:267,0
 DA:269,0
 DA:270,0
+=======
+DA:211,383411
+DA:212,718
+DA:216,382693
+DA:217,223764
+DA:221,158929
+DA:222,3
+DA:225,158926
+DA:226,70673
+DA:228,88253
+DA:237,158935
+DA:238,49
+DA:241,158886
+DA:242,158886
+DA:243,158886
+DA:252,0
+DA:253,0
+DA:255,0
+DA:256,0
+DA:257,0
+DA:259,0
+DA:260,0
+DA:274,70
+DA:275,0
+DA:276,0
+DA:278,70
+DA:279,0
+DA:280,0
+DA:283,70
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:284,70
-DA:285,0
-DA:286,0
+DA:285,70
+DA:286,70
+DA:287,70
 DA:288,70
-DA:289,0
-DA:290,0
-DA:293,70
-DA:294,70
-DA:295,70
-DA:296,70
-DA:297,70
-DA:298,70
-DA:300,70
-DA:301,91
-DA:302,91
-DA:303,52
-DA:306,18
-DA:316,9
-DA:317,2
-DA:319,7
-DA:321,7
-DA:322,1
-DA:325,6
-DA:326,1
-DA:329,5
-DA:338,11
-DA:339,2
-DA:342,9
-DA:344,9
-DA:345,1
-DA:348,8
-DA:349,1
-DA:352,7
+DA:290,70
+DA:291,91
+DA:292,91
+DA:293,52
+DA:296,18
+DA:306,9
+DA:307,2
+DA:309,7
+DA:311,7
+DA:312,1
+DA:315,6
+DA:316,1
+DA:319,5
+DA:328,11
+DA:329,2
+DA:332,9
+DA:334,9
+DA:335,1
+DA:338,8
+DA:339,1
+DA:342,7
+DA:353,0
+DA:354,0
+DA:355,0
+DA:357,0
+DA:358,0
+DA:359,0
+DA:360,0
+DA:361,0
+DA:362,0
 DA:363,0
-DA:364,0
-DA:365,0
-DA:367,0
+DA:366,0
 DA:368,0
 DA:369,0
 DA:370,0
-DA:371,0
-DA:372,0
 DA:373,0
 DA:376,0
+<<<<<<< HEAD
 DA:378,0
 DA:379,0
 DA:380,0
@@ -20035,86 +21684,180 @@ DA:621,0
 DA:623,0
 DA:633,2
 DA:634,2
+=======
+DA:387,0
+DA:388,0
+DA:390,0
+DA:391,0
+DA:393,0
+DA:395,0
+DA:399,0
+DA:407,47
+DA:408,47
+DA:409,47
+DA:412,0
+DA:414,47
+DA:415,0
+DA:417,47
+DA:425,37
+DA:427,37
+DA:428,0
+DA:430,37
+DA:442,0
+DA:443,0
+DA:444,0
+DA:448,0
+DA:451,0
+DA:462,0
+DA:463,0
+DA:467,0
+DA:468,0
+DA:471,0
+DA:473,0
+DA:484,7
+DA:485,7
+DA:487,3
+DA:489,3
+DA:499,6
+DA:500,0
+DA:501,0
+DA:502,0
+DA:503,0
+DA:505,0
+DA:506,0
+DA:507,0
+DA:509,0
+DA:520,180
+DA:521,3
+DA:523,177
+DA:524,3
+DA:529,4
+DA:530,1
+DA:531,1
+DA:534,3
+DA:535,1
+DA:536,1
+DA:541,2
+DA:542,2
+DA:544,2
+DA:549,1
+DA:552,0
+DA:553,0
+DA:556,2
+DA:557,1
+DA:558,1
+DA:561,1
+DA:571,7
+DA:572,1
+DA:573,1
+DA:592,5
+DA:593,1
+DA:596,4
+DA:597,1
+DA:600,3
+DA:604,0
+DA:605,0
+DA:606,0
+DA:607,0
+DA:608,0
+DA:609,0
+DA:611,0
+DA:613,0
+DA:623,2
+DA:624,2
+DA:625,2
+DA:626,6
+DA:628,6
+DA:630,6
+DA:631,1
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:635,2
-DA:636,6
-DA:638,6
-DA:640,6
-DA:641,1
-DA:645,2
-DA:646,1
-DA:656,26
-DA:657,26
-DA:658,4
-DA:661,22
-DA:662,22
-DA:663,1
-DA:673,26
-DA:674,4
-DA:685,22
-DA:686,1
+DA:636,1
+DA:646,26
+DA:647,26
+DA:648,4
+DA:651,22
+DA:652,22
+DA:653,1
+DA:663,26
+DA:664,4
+DA:675,22
+DA:676,1
+DA:685,0
+DA:686,0
+DA:687,0
 DA:695,0
-DA:696,0
-DA:697,0
-DA:705,0
-DA:714,88
-DA:715,88
-DA:716,88
-DA:717,4302
-DA:718,4283
-DA:719,0
-DA:721,4283
-DA:722,503
-DA:723,503
-DA:725,4283
-DA:726,461
-DA:727,461
-DA:729,4283
-DA:730,102
-DA:731,102
-DA:734,4283
-DA:735,57
-DA:736,57
-DA:741,0
+DA:704,88
+DA:705,88
+DA:706,88
+DA:707,4302
+DA:708,4283
+DA:709,0
+DA:711,4283
+DA:712,503
+DA:713,503
+DA:715,4283
+DA:716,461
+DA:717,461
+DA:719,4283
+DA:720,102
+DA:721,102
+DA:724,4283
+DA:725,57
+DA:726,57
+DA:731,0
+DA:732,0
 DA:742,0
-DA:752,0
-DA:753,0
-DA:754,0
-DA:758,0
-DA:759,0
-DA:760,0
-DA:771,0
-DA:772,0
-DA:773,0
-DA:775,0
-DA:776,0
-DA:785,38
-DA:792,18
+DA:743,0
+DA:744,0
+DA:748,0
+DA:749,0
+DA:750,0
+DA:761,0
+DA:762,0
+DA:763,0
+DA:765,0
+DA:766,0
+DA:775,38
+DA:782,18
+DA:791,30
 DA:801,30
-DA:811,30
-DA:820,0
-DA:821,0
-DA:823,0
-DA:833,4
-DA:834,4
-DA:835,4
-DA:836,4
-DA:837,4
-DA:838,4
-DA:840,4
-LF:273
-LH:181
+DA:810,0
+DA:811,0
+DA:813,0
+DA:823,4
+DA:824,4
+DA:825,4
+DA:826,4
+DA:827,4
+DA:828,4
+DA:830,4
+LF:270
+LH:178
 BRDA:91,0,0,5
+<<<<<<< HEAD
 BRDA:91,0,1,11
 BRDA:103,1,0,569272
 BRDA:103,1,1,565038
+=======
+BRDA:91,0,1,12
+BRDA:103,1,0,569068
+BRDA:103,1,1,565548
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 BRDA:107,2,0,133
 BRDA:107,2,1,99
 BRDA:107,2,2,8
 BRDA:107,2,3,6
 BRDA:107,2,4,0
+<<<<<<< HEAD
 BRDA:116,3,0,29090
 BRDA:116,3,1,28867
 BRDA:116,3,2,28673
+=======
+BRDA:116,3,0,28955
+BRDA:116,3,1,28792
+BRDA:116,3,2,28628
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 BRDA:125,4,0,1
 BRDA:125,4,1,35
 BRDA:129,5,0,3
@@ -20132,6 +21875,7 @@ BRDA:185,10,1,39
 BRDA:199,11,0,0
 BRDA:199,11,1,0
 BRDA:211,12,0,718
+<<<<<<< HEAD
 BRDA:211,12,1,378241
 BRDA:211,13,0,378959
 BRDA:211,13,1,378242
@@ -20218,79 +21962,161 @@ BRDA:533,52,0,177
 BRDA:533,52,1,177
 BRDA:539,53,0,1
 BRDA:539,53,1,3
+=======
+BRDA:211,12,1,382693
+BRDA:211,13,0,383411
+BRDA:211,13,1,382694
+BRDA:216,14,0,223764
+BRDA:216,14,1,158929
+BRDA:221,15,0,3
+BRDA:221,15,1,158926
+BRDA:225,16,0,70673
+BRDA:225,16,1,88253
+BRDA:237,17,0,49
+BRDA:237,17,1,158886
+BRDA:237,18,0,158935
+BRDA:237,18,1,52
+BRDA:242,19,0,158886
+BRDA:242,19,1,158623
+BRDA:243,20,0,158886
+BRDA:243,20,1,158690
+BRDA:243,20,2,123616
+BRDA:252,21,0,0
+BRDA:252,21,1,0
+BRDA:274,22,0,0
+BRDA:274,22,1,70
+BRDA:278,23,0,0
+BRDA:278,23,1,70
+BRDA:284,24,0,20
+BRDA:284,24,1,50
+BRDA:285,25,0,20
+BRDA:285,25,1,50
+BRDA:292,26,0,52
+BRDA:292,26,1,39
+BRDA:306,27,0,2
+BRDA:306,27,1,7
+BRDA:311,28,0,1
+BRDA:311,28,1,6
+BRDA:315,29,0,1
+BRDA:315,29,1,5
+BRDA:328,30,0,2
+BRDA:328,30,1,9
+BRDA:334,31,0,1
+BRDA:334,31,1,8
+BRDA:338,32,0,1
+BRDA:338,32,1,7
+BRDA:353,33,0,0
+BRDA:353,33,1,0
+BRDA:360,34,0,0
+BRDA:360,34,1,0
+BRDA:360,35,0,0
+BRDA:360,35,1,0
+BRDA:366,36,0,0
+BRDA:366,36,1,0
+BRDA:366,37,0,0
+BRDA:366,37,1,0
+BRDA:369,38,0,0
+BRDA:369,38,1,0
+BRDA:388,39,0,0
+BRDA:388,39,1,0
+BRDA:395,40,0,0
+BRDA:395,40,1,0
+BRDA:414,41,0,0
+BRDA:414,41,1,47
+BRDA:427,42,0,0
+BRDA:427,42,1,37
+BRDA:462,43,0,0
+BRDA:462,43,1,0
+BRDA:471,44,0,0
+BRDA:471,44,1,0
+BRDA:499,45,0,0
+BRDA:499,45,1,6
+BRDA:502,46,0,0
+BRDA:502,46,1,0
+BRDA:506,47,0,0
+BRDA:506,47,1,0
+BRDA:520,48,0,3
+BRDA:520,48,1,177
+BRDA:523,49,0,3
+BRDA:523,49,1,174
+BRDA:523,50,0,177
+BRDA:523,50,1,177
+BRDA:529,51,0,1
+BRDA:529,51,1,3
+BRDA:534,52,0,1
+BRDA:534,52,1,2
+BRDA:534,53,0,3
+BRDA:534,53,1,2
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 BRDA:544,54,0,1
-BRDA:544,54,1,2
-BRDA:544,55,0,3
-BRDA:544,55,1,2
-BRDA:554,56,0,1
-BRDA:554,56,1,1
-BRDA:555,57,0,2
-BRDA:555,57,1,1
-BRDA:555,57,2,1
-BRDA:566,58,0,1
-BRDA:566,58,1,1
-BRDA:602,59,0,1
-BRDA:602,59,1,4
-BRDA:606,60,0,1
-BRDA:606,60,1,3
-BRDA:643,61,0,6
-BRDA:643,61,1,5
-BRDA:640,62,0,1
-BRDA:640,62,1,5
-BRDA:645,63,0,1
-BRDA:645,63,1,1
-BRDA:657,64,0,4
-BRDA:657,64,1,22
-BRDA:662,65,0,1
-BRDA:662,65,1,21
-BRDA:673,66,0,4
-BRDA:673,66,1,22
-BRDA:685,67,0,1
-BRDA:685,67,1,21
-BRDA:717,68,0,4283
-BRDA:717,68,1,19
-BRDA:718,69,0,0
-BRDA:718,69,1,4283
-BRDA:718,70,0,4283
-BRDA:718,70,1,503
-BRDA:721,71,0,503
-BRDA:721,71,1,3780
-BRDA:721,72,0,4283
-BRDA:721,72,1,503
-BRDA:725,73,0,461
-BRDA:725,73,1,3822
-BRDA:725,74,0,4283
-BRDA:725,74,1,461
-BRDA:729,75,0,102
-BRDA:729,75,1,4181
-BRDA:729,76,0,4283
-BRDA:729,76,1,102
-BRDA:734,77,0,57
-BRDA:734,77,1,4226
-BRDA:734,78,0,4283
-BRDA:734,78,1,429
-BRDA:734,78,2,429
-BRDA:758,79,0,0
-BRDA:758,79,1,0
-BRDA:758,80,0,0
-BRDA:758,80,1,0
-BRDA:772,81,0,0
-BRDA:772,81,1,0
-BRDA:785,82,0,38
-BRDA:785,82,1,24
-BRDA:785,82,2,0
-BRDA:834,83,0,4
-BRDA:834,83,1,0
-BRDA:835,84,0,4
-BRDA:835,84,1,0
-BRDA:836,85,0,2
-BRDA:836,85,1,2
-BRDA:837,86,0,2
-BRDA:837,86,1,2
-BRDA:838,87,0,1
-BRDA:838,87,1,3
-BRF:186
-BRH:141
+BRDA:544,54,1,1
+BRDA:545,55,0,2
+BRDA:545,55,1,1
+BRDA:545,55,2,1
+BRDA:556,56,0,1
+BRDA:556,56,1,1
+BRDA:592,57,0,1
+BRDA:592,57,1,4
+BRDA:596,58,0,1
+BRDA:596,58,1,3
+BRDA:633,59,0,6
+BRDA:633,59,1,5
+BRDA:630,60,0,1
+BRDA:630,60,1,5
+BRDA:635,61,0,1
+BRDA:635,61,1,1
+BRDA:647,62,0,4
+BRDA:647,62,1,22
+BRDA:652,63,0,1
+BRDA:652,63,1,21
+BRDA:663,64,0,4
+BRDA:663,64,1,22
+BRDA:675,65,0,1
+BRDA:675,65,1,21
+BRDA:707,66,0,4283
+BRDA:707,66,1,19
+BRDA:708,67,0,0
+BRDA:708,67,1,4283
+BRDA:708,68,0,4283
+BRDA:708,68,1,503
+BRDA:711,69,0,503
+BRDA:711,69,1,3780
+BRDA:711,70,0,4283
+BRDA:711,70,1,503
+BRDA:715,71,0,461
+BRDA:715,71,1,3822
+BRDA:715,72,0,4283
+BRDA:715,72,1,461
+BRDA:719,73,0,102
+BRDA:719,73,1,4181
+BRDA:719,74,0,4283
+BRDA:719,74,1,102
+BRDA:724,75,0,57
+BRDA:724,75,1,4226
+BRDA:724,76,0,4283
+BRDA:724,76,1,429
+BRDA:724,76,2,429
+BRDA:748,77,0,0
+BRDA:748,77,1,0
+BRDA:748,78,0,0
+BRDA:748,78,1,0
+BRDA:762,79,0,0
+BRDA:762,79,1,0
+BRDA:775,80,0,38
+BRDA:775,80,1,24
+BRDA:775,80,2,0
+BRDA:824,81,0,4
+BRDA:824,81,1,0
+BRDA:825,82,0,4
+BRDA:825,82,1,0
+BRDA:826,83,0,2
+BRDA:826,83,1,2
+BRDA:827,84,0,2
+BRDA:827,84,1,2
+BRDA:828,85,0,1
+BRDA:828,85,1,3
+BRF:180
+BRH:135
 end_of_record
 TN:
 SF:utility/globalSchema.js
@@ -20312,6 +22138,7 @@ FNDA:5,(anonymous_4)
 FNDA:12,setTableDataToGlobal
 FNDA:11,(anonymous_6)
 FNDA:1,getSystemSchema
+<<<<<<< HEAD
 DA:1,95
 DA:2,95
 DA:3,95
@@ -20322,6 +22149,18 @@ DA:16,95
 DA:17,95
 DA:20,86
 DA:21,55
+=======
+DA:1,17
+DA:2,17
+DA:3,17
+DA:4,17
+DA:6,17
+DA:13,17
+DA:16,17
+DA:17,17
+DA:20,26
+DA:21,26
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:22,0
 DA:23,0
 DA:26,55
@@ -20404,6 +22243,7 @@ TN:
 SF:utility/hdbTerms.js
 FNF:0
 FNH:0
+<<<<<<< HEAD
 DA:3,104
 DA:10,104
 DA:11,104
@@ -20570,6 +22410,174 @@ LF:162
 LH:162
 BRDA:12,0,0,0
 BRDA:12,0,1,104
+=======
+DA:3,16
+DA:10,16
+DA:11,16
+DA:12,16
+DA:14,16
+DA:15,16
+DA:16,16
+DA:19,16
+DA:20,16
+DA:21,16
+DA:22,16
+DA:24,16
+DA:25,16
+DA:26,16
+DA:27,16
+DA:28,16
+DA:29,16
+DA:31,16
+DA:33,16
+DA:51,16
+DA:64,16
+DA:74,16
+DA:90,16
+DA:97,16
+DA:105,16
+DA:111,16
+DA:119,16
+DA:124,16
+DA:125,16
+DA:127,16
+DA:128,16
+DA:129,16
+DA:130,16
+DA:131,16
+DA:132,16
+DA:133,16
+DA:134,16
+DA:135,16
+DA:136,16
+DA:137,16
+DA:138,16
+DA:140,16
+DA:141,16
+DA:142,16
+DA:143,16
+DA:144,16
+DA:145,16
+DA:146,16
+DA:147,16
+DA:148,16
+DA:149,16
+DA:150,16
+DA:152,16
+DA:155,16
+DA:156,16
+DA:157,16
+DA:158,16
+DA:159,16
+DA:160,16
+DA:161,16
+DA:162,16
+DA:163,16
+DA:164,16
+DA:165,16
+DA:166,16
+DA:167,16
+DA:168,16
+DA:169,16
+DA:170,16
+DA:171,16
+DA:172,16
+DA:174,16
+DA:175,16
+DA:177,16
+DA:179,16
+DA:183,16
+DA:185,16
+DA:203,16
+DA:211,16
+DA:216,16
+DA:228,16
+DA:240,16
+DA:242,16
+DA:257,16
+DA:273,16
+DA:275,16
+DA:278,16
+DA:286,16
+DA:364,16
+DA:370,16
+DA:380,16
+DA:388,16
+DA:389,16
+DA:390,16
+DA:391,16
+DA:392,16
+DA:393,16
+DA:394,16
+DA:395,16
+DA:398,16
+DA:399,16
+DA:400,16
+DA:401,16
+DA:402,16
+DA:403,16
+DA:404,16
+DA:405,16
+DA:406,16
+DA:407,16
+DA:408,16
+DA:409,16
+DA:410,16
+DA:411,16
+DA:412,16
+DA:413,16
+DA:414,16
+DA:415,16
+DA:416,16
+DA:417,16
+DA:418,16
+DA:419,16
+DA:420,16
+DA:421,16
+DA:422,16
+DA:423,16
+DA:425,16
+DA:428,16
+DA:439,16
+DA:450,16
+DA:504,16
+DA:508,16
+DA:574,16
+DA:699,16
+DA:713,16
+DA:725,16
+DA:734,16
+DA:739,16
+DA:745,16
+DA:750,16
+DA:771,16
+DA:790,16
+DA:795,16
+DA:799,16
+DA:801,16
+DA:805,16
+DA:807,16
+DA:814,16
+DA:817,16
+DA:833,16
+DA:834,16
+DA:836,16
+DA:843,16
+DA:845,16
+DA:847,16
+DA:849,16
+DA:855,16
+DA:861,16
+DA:862,16
+DA:863,16
+DA:873,16
+DA:878,16
+DA:883,16
+LF:162
+LH:162
+BRDA:12,0,0,0
+BRDA:12,0,1,16
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 BRF:2
 BRH:1
 end_of_record
@@ -20698,6 +22706,7 @@ FNDA:1,auditModules
 FNDA:3,checkNPMInstalled
 FNDA:8,checkProjectPaths
 FNDA:12,modulesValidator
+<<<<<<< HEAD
 DA:3,55
 DA:4,55
 DA:5,55
@@ -20714,6 +22723,24 @@ DA:15,55
 DA:16,55
 DA:17,55
 DA:19,55
+=======
+DA:3,3
+DA:4,3
+DA:5,3
+DA:6,3
+DA:7,3
+DA:8,3
+DA:9,3
+DA:10,3
+DA:11,3
+DA:12,3
+DA:13,3
+DA:14,3
+DA:15,3
+DA:16,3
+DA:17,3
+DA:19,3
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:31,13
 DA:33,9
 DA:34,2
@@ -21381,9 +23408,15 @@ FNH:4
 FNDA:48,createHash
 FNDA:35,validateHash
 FNDA:48,generateSalt
+<<<<<<< HEAD
 FNDA:83,md5
 DA:1,94
 DA:2,94
+=======
+FNDA:59,md5
+DA:1,16
+DA:2,16
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:5,48
 DA:6,48
 DA:7,48
@@ -21397,8 +23430,13 @@ DA:20,48
 DA:21,432
 DA:22,432
 DA:24,48
+<<<<<<< HEAD
 DA:28,83
 DA:31,94
+=======
+DA:28,59
+DA:31,16
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 LF:17
 LH:17
 BRF:0
@@ -21414,6 +23452,7 @@ FNF:4
 FNH:4
 FNDA:2,findPs
 FNDA:12,(anonymous_1)
+<<<<<<< HEAD
 FNDA:21,(anonymous_2)
 FNDA:15,(anonymous_3)
 DA:2,106
@@ -21422,6 +23461,16 @@ DA:4,106
 DA:5,106
 DA:7,106
 DA:9,106
+=======
+FNDA:17,(anonymous_2)
+FNDA:11,(anonymous_3)
+DA:2,19
+DA:3,19
+DA:4,19
+DA:5,19
+DA:7,19
+DA:9,19
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:20,2
 DA:22,2
 DA:23,2
@@ -21459,11 +23508,19 @@ FNF:2
 FNH:2
 FNDA:148,signalSchemaChange
 FNDA:8,signalUserChange
+<<<<<<< HEAD
 DA:3,96
 DA:4,96
 DA:5,96
 DA:6,96
 DA:7,96
+=======
+DA:3,18
+DA:4,18
+DA:5,18
+DA:6,18
+DA:7,18
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:10,148
 DA:11,148
 DA:12,148
@@ -21474,7 +23531,11 @@ DA:21,8
 DA:22,8
 DA:23,8
 DA:25,1
+<<<<<<< HEAD
 DA:29,96
+=======
+DA:29,18
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 LF:16
 LH:16
 BRF:0
@@ -21509,7 +23570,11 @@ FNDA:30,(anonymous_0)
 DA:5,30
 DA:6,30
 DA:7,30
+<<<<<<< HEAD
 DA:11,55
+=======
+DA:11,3
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 LF:4
 LH:4
 BRF:0
@@ -22577,6 +24642,7 @@ FN:117,initSync
 FN:139,initTestEnvironment
 FNF:7
 FNH:7
+<<<<<<< HEAD
 FNDA:387,getHdbBasePath
 FNDA:1,setHdbBasePath
 FNDA:38024,get
@@ -22622,10 +24688,58 @@ DA:118,1140
 DA:120,1140
 DA:121,1140
 DA:122,1140
+=======
+FNDA:133,getHdbBasePath
+FNDA:1,setHdbBasePath
+FNDA:36465,get
+FNDA:3284,setProperty
+FNDA:18,doesPropFileExist
+FNDA:192,initSync
+FNDA:119,initTestEnvironment
+DA:3,17
+DA:4,17
+DA:5,17
+DA:6,17
+DA:7,17
+DA:8,17
+DA:9,17
+DA:10,17
+DA:12,17
+DA:13,17
+DA:15,17
+DA:17,17
+DA:23,17
+DA:25,17
+DA:41,133
+DA:50,1
+DA:59,36465
+DA:60,36465
+DA:61,26
+DA:64,36439
+DA:78,3284
+DA:79,766
+DA:82,3284
+DA:92,18
+DA:93,18
+DA:94,18
+DA:95,17
+DA:96,17
+DA:98,17
+DA:101,17
+DA:104,17
+DA:106,17
+DA:108,1
+DA:109,1
+DA:118,192
+DA:120,192
+DA:121,192
+DA:122,192
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:127,0
 DA:128,0
 DA:129,0
 DA:130,0
+<<<<<<< HEAD
 DA:140,240
 DA:149,240
 DA:150,240
@@ -22666,12 +24780,55 @@ DA:210,11
 DA:212,240
 DA:213,9
 DA:214,9
+=======
+DA:140,119
+DA:149,119
+DA:150,119
+DA:151,119
+DA:152,119
+DA:153,119
+DA:154,119
+DA:155,119
+DA:156,119
+DA:160,119
+DA:164,119
+DA:165,119
+DA:166,119
+DA:167,119
+DA:168,119
+DA:169,119
+DA:170,119
+DA:174,119
+DA:178,119
+DA:179,119
+DA:183,119
+DA:187,119
+DA:188,119
+DA:189,119
+DA:190,119
+DA:191,119
+DA:192,119
+DA:196,119
+DA:200,119
+DA:201,1
+DA:202,1
+DA:204,119
+DA:205,1
+DA:206,1
+DA:208,119
+DA:209,1
+DA:210,1
+DA:212,119
+DA:213,1
+DA:214,1
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:217,0
 DA:218,0
 DA:219,0
 LF:85
 LH:78
 BRDA:60,0,0,26
+<<<<<<< HEAD
 BRDA:60,0,1,37998
 BRDA:78,1,0,1131
 BRDA:78,1,1,5159
@@ -22699,6 +24856,35 @@ BRDA:208,13,0,11
 BRDA:208,13,1,229
 BRDA:212,14,0,9
 BRDA:212,14,1,231
+=======
+BRDA:60,0,1,36439
+BRDA:78,1,0,766
+BRDA:78,1,1,2518
+BRDA:117,2,0,192
+BRDA:120,3,0,192
+BRDA:120,3,1,0
+BRDA:120,4,0,192
+BRDA:120,4,1,17
+BRDA:139,5,0,118
+BRDA:172,6,0,119
+BRDA:172,6,1,0
+BRDA:176,7,0,119
+BRDA:176,7,1,0
+BRDA:181,8,0,119
+BRDA:181,8,1,0
+BRDA:185,9,0,119
+BRDA:185,9,1,0
+BRDA:198,10,0,119
+BRDA:198,10,1,0
+BRDA:200,11,0,1
+BRDA:200,11,1,118
+BRDA:204,12,0,1
+BRDA:204,12,1,118
+BRDA:208,13,0,1
+BRDA:208,13,1,118
+BRDA:212,14,0,1
+BRDA:212,14,1,118
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 BRF:28
 BRH:27
 end_of_record
@@ -22921,7 +25107,11 @@ FN:202,(anonymous_43)
 FN:211,(anonymous_44)
 FNF:45
 FNH:33
+<<<<<<< HEAD
 FNDA:117,(anonymous_0)
+=======
+FNDA:29,(anonymous_0)
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 FNDA:0,(anonymous_1)
 FNDA:7,(anonymous_2)
 FNDA:4,(anonymous_3)
@@ -22954,7 +25144,11 @@ FNDA:13,(anonymous_29)
 FNDA:6,(anonymous_30)
 FNDA:0,(anonymous_31)
 FNDA:0,(anonymous_32)
+<<<<<<< HEAD
 FNDA:20,(anonymous_33)
+=======
+FNDA:19,(anonymous_33)
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 FNDA:2,(anonymous_34)
 FNDA:2,(anonymous_35)
 FNDA:13,(anonymous_36)
@@ -22966,6 +25160,7 @@ FNDA:1,(anonymous_41)
 FNDA:1,(anonymous_42)
 FNDA:0,(anonymous_43)
 FNDA:1,(anonymous_44)
+<<<<<<< HEAD
 DA:3,104
 DA:4,104
 DA:7,104
@@ -22973,28 +25168,55 @@ DA:31,117
 DA:33,104
 DA:37,104
 DA:40,104
+=======
+DA:3,16
+DA:4,16
+DA:7,16
+DA:31,29
+DA:33,16
+DA:37,16
+DA:40,16
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:42,0
 DA:43,7
 DA:44,4
 DA:45,1
+<<<<<<< HEAD
 DA:48,104
 DA:49,2
 DA:52,104
+=======
+DA:48,16
+DA:49,2
+DA:52,16
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:54,0
 DA:57,2
 DA:58,1
 DA:60,1
 DA:62,0
+<<<<<<< HEAD
 DA:68,104
 DA:102,104
 DA:104,2
 DA:113,104
 DA:128,104
+=======
+DA:68,16
+DA:102,16
+DA:104,2
+DA:113,16
+DA:128,16
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:131,2
 DA:132,3
 DA:135,0
 DA:136,0
+<<<<<<< HEAD
 DA:141,104
+=======
+DA:141,16
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:142,3
 DA:145,3
 DA:148,1
@@ -23009,6 +25231,7 @@ DA:164,0
 DA:165,2
 DA:168,13
 DA:169,13
+<<<<<<< HEAD
 DA:172,104
 DA:173,6
 DA:174,0
@@ -23019,12 +25242,25 @@ DA:179,2
 DA:181,13
 DA:185,104
 DA:189,104
+=======
+DA:172,16
+DA:173,6
+DA:174,0
+DA:176,0
+DA:177,19
+DA:178,2
+DA:179,2
+DA:181,13
+DA:185,16
+DA:189,16
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:191,1
 DA:192,2
 DA:194,1
 DA:195,2
 DA:196,1
 DA:197,1
+<<<<<<< HEAD
 DA:200,104
 DA:203,0
 DA:206,104
@@ -23033,6 +25269,16 @@ DA:214,104
 DA:233,104
 DA:238,104
 DA:256,104
+=======
+DA:200,16
+DA:203,0
+DA:206,16
+DA:211,1
+DA:214,16
+DA:233,16
+DA:238,16
+DA:256,16
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 LF:67
 LH:55
 BRDA:152,0,0,1
@@ -23047,6 +25293,7 @@ FN:58,handleHDBError
 FN:80,isHDBError
 FNF:3
 FNH:3
+<<<<<<< HEAD
 FNDA:422,(anonymous_0)
 FNDA:447,handleHDBError
 FNDA:449,isHDBError
@@ -23091,6 +25338,52 @@ BRDA:64,8,0,318
 BRDA:66,9,0,25
 BRDA:66,9,1,422
 BRDA:73,10,0,126
+=======
+FNDA:421,(anonymous_0)
+FNDA:445,handleHDBError
+FNDA:447,isHDBError
+DA:2,16
+DA:3,16
+DA:4,16
+DA:20,421
+DA:23,421
+DA:25,421
+DA:26,421
+DA:31,421
+DA:32,421
+DA:35,421
+DA:36,37
+DA:39,421
+DA:40,25
+DA:66,445
+DA:67,24
+DA:70,421
+DA:73,421
+DA:74,125
+DA:77,421
+DA:81,447
+DA:84,16
+LF:21
+LH:21
+BRDA:25,0,0,389
+BRDA:25,0,1,32
+BRDA:26,1,0,417
+BRDA:26,1,1,4
+BRDA:28,2,0,0
+BRDA:28,2,1,4
+BRDA:31,3,0,51
+BRDA:31,3,1,370
+BRDA:35,4,0,37
+BRDA:35,4,1,384
+BRDA:39,5,0,25
+BRDA:39,5,1,396
+BRDA:62,6,0,416
+BRDA:63,7,0,416
+BRDA:64,8,0,318
+BRDA:66,9,0,24
+BRDA:66,9,1,421
+BRDA:73,10,0,125
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 BRDA:73,10,1,296
 BRF:19
 BRH:18
@@ -23119,6 +25412,7 @@ FNDA:7,geoContains
 FNDA:8,geoEqual
 FNDA:9,geoCrosses
 FNDA:9,geoConvert
+<<<<<<< HEAD
 DA:10,94
 DA:11,94
 DA:12,94
@@ -23133,6 +25427,22 @@ DA:20,94
 DA:22,94
 DA:35,94
 DA:36,94
+=======
+DA:10,16
+DA:11,16
+DA:12,16
+DA:13,16
+DA:14,16
+DA:15,16
+DA:16,16
+DA:17,16
+DA:18,16
+DA:19,16
+DA:20,16
+DA:22,16
+DA:35,16
+DA:36,16
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:44,5
 DA:45,2
 DA:48,3
@@ -23325,10 +25635,17 @@ FNDA:4,(anonymous_7)
 FNDA:7,(anonymous_8)
 FNDA:1,(anonymous_9)
 FNDA:1,(anonymous_10)
+<<<<<<< HEAD
 DA:3,94
 DA:4,94
 DA:6,94
 DA:8,94
+=======
+DA:3,16
+DA:4,16
+DA:6,16
+DA:8,16
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:10,1
 DA:13,1
 DA:16,7
@@ -23377,11 +25694,19 @@ FNH:1
 FNDA:0,(anonymous_0)
 FNDA:0,aggregateFunction
 FNDA:8,searchJSON
+<<<<<<< HEAD
 DA:8,94
 DA:9,94
 DA:10,94
 DA:11,94
 DA:13,94
+=======
+DA:8,16
+DA:9,16
+DA:10,16
+DA:11,16
+DA:13,16
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:20,0
 DA:21,0
 DA:24,0
@@ -23863,6 +26188,7 @@ SF:utility/lmdb/DBIDefinition.js
 FN:13,(anonymous_0)
 FNF:1
 FNH:1
+<<<<<<< HEAD
 FNDA:9090,(anonymous_0)
 DA:14,9090
 DA:15,9090
@@ -23872,6 +26198,17 @@ LF:4
 LH:4
 BRDA:13,0,0,5956
 BRDA:13,1,0,5963
+=======
+FNDA:8605,(anonymous_0)
+DA:14,8605
+DA:15,8605
+DA:16,8605
+DA:20,16
+LF:4
+LH:4
+BRDA:13,0,0,5471
+BRDA:13,1,0,5478
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 BRF:2
 BRH:2
 end_of_record
@@ -23885,7 +26222,11 @@ DA:18,79
 DA:19,79
 DA:20,79
 DA:21,79
+<<<<<<< HEAD
 DA:25,94
+=======
+DA:25,16
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 LF:5
 LH:5
 BRDA:17,0,0,58
@@ -23904,7 +26245,11 @@ FNDA:35978,(anonymous_0)
 DA:16,35978
 DA:17,35978
 DA:18,35978
+<<<<<<< HEAD
 DA:22,94
+=======
+DA:22,16
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 LF:4
 LH:4
 BRDA:15,0,0,909
@@ -23918,6 +26263,7 @@ SF:utility/lmdb/OpenDBIObject.js
 FN:11,(anonymous_0)
 FNF:1
 FNH:1
+<<<<<<< HEAD
 FNDA:4855,(anonymous_0)
 DA:12,4855
 DA:13,4855
@@ -23929,6 +26275,19 @@ LH:5
 BRDA:11,0,0,633
 BRDA:13,1,0,2856
 BRDA:13,1,1,1999
+=======
+FNDA:4370,(anonymous_0)
+DA:12,4370
+DA:13,4370
+DA:14,4370
+DA:15,4370
+DA:19,16
+LF:5
+LH:5
+BRDA:11,0,0,633
+BRDA:13,1,0,2517
+BRDA:13,1,1,1853
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 BRF:3
 BRH:3
 end_of_record
@@ -23937,6 +26296,7 @@ SF:utility/lmdb/OpenEnvironmentObject.js
 FN:4,(anonymous_0)
 FNF:1
 FNH:1
+<<<<<<< HEAD
 FNDA:708,(anonymous_0)
 DA:5,708
 DA:6,708
@@ -23945,6 +26305,16 @@ DA:8,708
 DA:9,708
 DA:11,708
 DA:15,94
+=======
+FNDA:635,(anonymous_0)
+DA:5,635
+DA:6,635
+DA:7,635
+DA:8,635
+DA:9,635
+DA:11,635
+DA:15,16
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 LF:7
 LH:7
 BRF:0
@@ -23960,7 +26330,11 @@ DA:18,56
 DA:19,56
 DA:20,56
 DA:21,56
+<<<<<<< HEAD
 DA:25,94
+=======
+DA:25,16
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 LF:5
 LH:5
 BRDA:17,0,0,15
@@ -23979,7 +26353,11 @@ FNDA:29,(anonymous_0)
 DA:16,29
 DA:17,29
 DA:18,29
+<<<<<<< HEAD
 DA:22,94
+=======
+DA:22,16
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 LF:4
 LH:4
 BRDA:15,0,0,16
@@ -23993,6 +26371,7 @@ SF:utility/lmdb/cleanLMDBMap.js
 FN:13,cleanLMDBMap
 FNF:1
 FNH:1
+<<<<<<< HEAD
 FNDA:8,cleanLMDBMap
 DA:3,59
 DA:4,59
@@ -24039,17 +26418,73 @@ BRDA:23,3,0,6
 BRDA:23,3,1,2
 BRDA:23,4,0,8
 BRDA:23,4,1,4
+=======
+FNDA:5,cleanLMDBMap
+DA:3,2
+DA:4,2
+DA:5,2
+DA:7,2
+DA:14,5
+DA:15,5
+DA:16,4
+DA:17,4
+DA:19,4
+DA:21,2
+DA:22,2
+DA:23,2
+DA:24,2
+DA:25,2
+DA:27,2
+DA:28,1
+DA:33,1
+DA:36,2
+DA:38,2
+DA:39,2
+DA:40,2
+DA:41,0
+DA:43,2
+DA:44,1
+DA:47,1
+DA:49,0
+DA:50,0
+DA:55,0
+DA:57,0
+DA:59,0
+DA:63,2
+LF:31
+LH:25
+BRDA:15,0,0,4
+BRDA:15,0,1,1
+BRDA:15,1,0,5
+BRDA:15,1,1,4
+BRDA:19,2,0,2
+BRDA:19,2,1,2
+BRDA:19,2,2,0
+BRDA:19,2,3,0
+BRDA:23,3,0,2
+BRDA:23,3,1,0
+BRDA:23,4,0,2
+BRDA:23,4,1,0
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 BRDA:27,5,0,1
 BRDA:27,5,1,1
 BRDA:43,6,0,1
 BRDA:43,6,1,1
+<<<<<<< HEAD
 BRDA:50,7,0,1
+=======
+BRDA:50,7,0,0
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 BRDA:50,7,1,0
 BRDA:51,8,0,1
 BRDA:51,8,1,1
 BRDA:51,8,2,1
 BRF:21
+<<<<<<< HEAD
 BRH:19
+=======
+BRH:12
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 end_of_record
 TN:
 SF:utility/lmdb/commonUtility.js
@@ -24063,6 +26498,7 @@ FN:149,getMicroTime
 FN:160,checkIsBlob
 FNF:8
 FNH:7
+<<<<<<< HEAD
 FNDA:21056,validateEnv
 FNDA:13,stringifyData
 FNDA:649,convertKeyValueToWrite
@@ -24081,6 +26517,26 @@ DA:11,96
 DA:17,21056
 DA:18,30
 DA:20,21026
+=======
+FNDA:19790,validateEnv
+FNDA:13,stringifyData
+FNDA:311,convertKeyValueToWrite
+FNDA:342,primitiveCheck
+FNDA:255664,getIndexedValues
+FNDA:177592,convertKeyValueFromSearch
+FNDA:36015,getMicroTime
+FNDA:0,checkIsBlob
+DA:3,17
+DA:5,17
+DA:6,17
+DA:7,17
+DA:8,17
+DA:10,17
+DA:11,17
+DA:17,19790
+DA:18,30
+DA:20,19760
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:21,23
 DA:31,13
 DA:32,3
@@ -24088,8 +26544,13 @@ DA:37,10
 DA:38,10
 DA:40,0
 DA:43,10
+<<<<<<< HEAD
 DA:54,649
 DA:55,641
+=======
+DA:54,311
+DA:55,303
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:58,8
 DA:59,1
 DA:63,7
@@ -24105,13 +26566,22 @@ DA:79,1
 DA:83,4
 DA:84,3
 DA:87,1
+<<<<<<< HEAD
 DA:96,680
+=======
+DA:96,342
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:103,255664
 DA:104,707
 DA:105,254957
 DA:106,254945
+<<<<<<< HEAD
 DA:107,38
 DA:109,254907
+=======
+DA:107,50
+DA:109,254895
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:112,12
 DA:113,5
 DA:114,5
@@ -24121,16 +26591,24 @@ DA:117,10
 DA:118,0
 DA:119,10
 DA:123,12
+<<<<<<< HEAD
 DA:132,177588
 DA:136,4
 DA:137,4
 DA:142,177588
+=======
+DA:132,177592
+DA:136,4
+DA:137,4
+DA:142,177592
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:150,36015
 DA:151,36015
 DA:152,36015
 DA:161,0
 DA:162,0
 DA:165,0
+<<<<<<< HEAD
 DA:168,96
 LF:61
 LH:56
@@ -24138,13 +26616,26 @@ BRDA:17,0,0,30
 BRDA:17,0,1,21026
 BRDA:20,1,0,23
 BRDA:20,1,1,21003
+=======
+DA:168,17
+LF:61
+LH:56
+BRDA:17,0,0,30
+BRDA:17,0,1,19760
+BRDA:20,1,0,23
+BRDA:20,1,1,19737
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 BRDA:31,2,0,3
 BRDA:31,2,1,10
 BRDA:31,3,0,13
 BRDA:31,3,1,12
 BRDA:38,4,0,5
 BRDA:38,4,1,5
+<<<<<<< HEAD
 BRDA:54,5,0,641
+=======
+BRDA:54,5,0,303
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 BRDA:54,5,1,8
 BRDA:58,6,0,1
 BRDA:58,6,1,7
@@ -24160,7 +26651,11 @@ BRDA:75,11,0,10
 BRDA:75,11,1,9
 BRDA:83,12,0,3
 BRDA:83,12,1,1
+<<<<<<< HEAD
 BRDA:96,13,0,680
+=======
+BRDA:96,13,0,342
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 BRDA:96,13,1,19
 BRDA:103,14,0,707
 BRDA:103,14,1,254957
@@ -24168,8 +26663,13 @@ BRDA:103,15,0,255664
 BRDA:103,15,1,255009
 BRDA:105,16,0,254945
 BRDA:105,16,1,12
+<<<<<<< HEAD
 BRDA:106,17,0,38
 BRDA:106,17,1,254907
+=======
+BRDA:106,17,0,50
+BRDA:106,17,1,254895
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 BRDA:112,18,0,5
 BRDA:112,18,1,7
 BRDA:116,19,0,10
@@ -24177,11 +26677,19 @@ BRDA:116,19,1,4
 BRDA:117,20,0,0
 BRDA:117,20,1,10
 BRDA:132,21,0,4
+<<<<<<< HEAD
 BRDA:132,21,1,177584
 BRDA:133,22,0,177588
 BRDA:133,22,1,37751
 BRDA:133,22,2,2
 BRDA:133,22,3,37749
+=======
+BRDA:132,21,1,177588
+BRDA:133,22,0,177592
+BRDA:133,22,1,37755
+BRDA:133,22,2,2
+BRDA:133,22,3,37753
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 BRDA:133,22,4,2
 BRDA:161,23,0,0
 BRDA:161,23,1,0
@@ -24200,6 +26708,7 @@ FNF:2
 FNH:2
 FNDA:63,deleteRecords
 FNDA:161,(anonymous_1)
+<<<<<<< HEAD
 DA:3,94
 DA:4,94
 DA:5,94
@@ -24209,6 +26718,17 @@ DA:8,94
 DA:10,94
 DA:11,94
 DA:12,94
+=======
+DA:3,16
+DA:4,16
+DA:5,16
+DA:6,16
+DA:7,16
+DA:8,16
+DA:10,16
+DA:11,16
+DA:12,16
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:23,63
 DA:25,61
 DA:26,1
@@ -24264,7 +26784,11 @@ DA:114,0
 DA:117,58
 DA:119,58
 DA:121,0
+<<<<<<< HEAD
 DA:125,94
+=======
+DA:125,16
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 LF:65
 LH:56
 BRDA:25,0,0,1
@@ -24319,6 +26843,7 @@ FNH:19
 FNDA:0,(anonymous_0)
 FNDA:0,(anonymous_1)
 FNDA:0,(anonymous_2)
+<<<<<<< HEAD
 FNDA:38576,pathEnvNameValidation
 FNDA:979,verifyEnvironmentBasePath
 FNDA:118,validateEnvironmentPath
@@ -24360,6 +26885,49 @@ DA:27,133
 DA:28,133
 DA:29,133
 DA:30,133
+=======
+FNDA:38543,pathEnvNameValidation
+FNDA:929,verifyEnvironmentBasePath
+FNDA:16,validateEnvironmentPath
+FNDA:17416,validateEnvDBIName
+FNDA:806,createEnvironment
+FNDA:7,copyEnvironment
+FNDA:37723,openEnvironment
+FNDA:11,deleteEnvironment
+FNDA:29,closeEnvironment
+FNDA:38359,getCachedEnvironmentName
+FNDA:5,listDBIDefinitions
+FNDA:185,listDBIs
+FNDA:4851,getDBIDefinition
+FNDA:3294,createDBI
+FNDA:14052,openDBI
+FNDA:21,statDBI
+FNDA:4,environmentDataSize
+FNDA:46,dropDBI
+FNDA:36155,initializeDBIs
+DA:3,55
+DA:4,55
+DA:5,55
+DA:6,55
+DA:7,55
+DA:8,55
+DA:9,55
+DA:10,55
+DA:11,55
+DA:12,55
+DA:13,55
+DA:15,55
+DA:16,55
+DA:18,55
+DA:22,55
+DA:24,55
+DA:25,55
+DA:26,55
+DA:27,55
+DA:28,55
+DA:29,55
+DA:30,55
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:43,0
 DA:44,0
 DA:45,0
@@ -24369,6 +26937,7 @@ DA:54,0
 DA:55,0
 DA:62,0
 DA:63,0
+<<<<<<< HEAD
 DA:75,38576
 DA:76,5
 DA:79,38571
@@ -24385,6 +26954,24 @@ DA:108,4
 DA:111,0
 DA:121,18478
 DA:123,18473
+=======
+DA:75,38543
+DA:76,5
+DA:79,38538
+DA:80,5
+DA:86,929
+DA:87,929
+DA:89,112
+DA:90,112
+DA:93,0
+DA:104,16
+DA:105,16
+DA:107,6
+DA:108,6
+DA:111,0
+DA:121,17416
+DA:123,17411
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:124,5
 DA:138,806
 DA:139,804
@@ -24416,6 +27003,7 @@ DA:185,1
 DA:186,1
 DA:189,0
 DA:192,1
+<<<<<<< HEAD
 DA:203,37756
 DA:204,37752
 DA:205,37752
@@ -24435,6 +27023,27 @@ DA:225,412
 DA:227,75
 DA:228,75
 DA:230,75
+=======
+DA:203,37723
+DA:204,37719
+DA:205,37719
+DA:207,37719
+DA:208,6
+DA:211,37719
+DA:212,37603
+DA:214,116
+DA:215,6
+DA:217,2
+DA:218,2
+DA:219,2
+DA:221,2
+DA:223,2
+DA:224,2
+DA:225,0
+DA:227,2
+DA:228,2
+DA:230,2
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:240,11
 DA:241,9
 DA:242,9
@@ -24448,6 +27057,7 @@ DA:250,7
 DA:251,7
 DA:252,7
 DA:253,7
+<<<<<<< HEAD
 DA:264,35
 DA:265,33
 DA:267,33
@@ -24458,6 +27068,18 @@ DA:283,38392
 DA:284,38392
 DA:285,35509
 DA:287,38392
+=======
+DA:264,29
+DA:265,27
+DA:267,27
+DA:268,27
+DA:269,27
+DA:282,38359
+DA:283,38359
+DA:284,38359
+DA:285,35583
+DA:287,38359
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:298,5
 DA:299,5
 DA:301,4
@@ -24469,6 +27091,7 @@ DA:307,6
 DA:309,0
 DA:313,4
 DA:315,1
+<<<<<<< HEAD
 DA:325,306
 DA:326,306
 DA:328,305
@@ -24488,6 +27111,27 @@ DA:360,414
 DA:361,414
 DA:363,0
 DA:366,414
+=======
+DA:325,185
+DA:326,185
+DA:328,184
+DA:330,184
+DA:332,184
+DA:333,1377
+DA:334,1377
+DA:337,184
+DA:339,1
+DA:350,4851
+DA:351,4851
+DA:353,4851
+DA:354,4851
+DA:356,4851
+DA:357,4849
+DA:360,2
+DA:361,2
+DA:363,0
+DA:366,2
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:368,0
 DA:381,3294
 DA:382,3292
@@ -24505,6 +27149,7 @@ DA:402,3122
 DA:404,3122
 DA:406,3122
 DA:409,0
+<<<<<<< HEAD
 DA:420,15114
 DA:421,15112
 DA:422,15112
@@ -24518,13 +27163,34 @@ DA:437,1100
 DA:438,1100
 DA:439,1100
 DA:441,1100
+=======
+DA:420,14052
+DA:421,14050
+DA:422,14050
+DA:423,8586
+DA:427,5464
+DA:428,4850
+DA:430,614
+DA:432,5464
+DA:433,4849
+DA:437,615
+DA:438,615
+DA:439,615
+DA:441,615
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:442,0
 DA:445,0
 DA:446,0
 DA:449,0
+<<<<<<< HEAD
 DA:451,1100
 DA:452,1100
 DA:453,1100
+=======
+DA:451,615
+DA:452,615
+DA:453,615
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:463,21
 DA:464,19
 DA:465,19
@@ -24547,14 +27213,21 @@ DA:506,42
 DA:507,42
 DA:510,42
 DA:511,42
+<<<<<<< HEAD
 DA:521,36133
 DA:522,112088
 DA:525,112088
+=======
+DA:521,36155
+DA:522,112154
+DA:525,112154
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:527,1702
 DA:528,1702
 DA:531,1702
 DA:532,1702
 DA:534,0
+<<<<<<< HEAD
 DA:541,133
 LF:218
 LH:196
@@ -24569,6 +27242,22 @@ BRDA:107,4,0,4
 BRDA:107,4,1,0
 BRDA:123,5,0,5
 BRDA:123,5,1,18468
+=======
+DA:541,55
+LF:218
+LH:195
+BRDA:42,0,0,0
+BRDA:75,1,0,5
+BRDA:75,1,1,38538
+BRDA:79,2,0,5
+BRDA:79,2,1,38533
+BRDA:89,3,0,112
+BRDA:89,3,1,0
+BRDA:107,4,0,6
+BRDA:107,4,1,0
+BRDA:123,5,0,5
+BRDA:123,5,1,17406
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 BRDA:137,6,0,630
 BRDA:137,7,0,806
 BRDA:143,8,0,0
@@ -24582,6 +27271,7 @@ BRDA:177,12,0,1
 BRDA:177,12,1,2
 BRDA:185,13,0,1
 BRDA:185,13,1,0
+<<<<<<< HEAD
 BRDA:202,14,0,2256
 BRDA:202,15,0,37586
 BRDA:207,16,0,61
@@ -24592,6 +27282,18 @@ BRDA:215,18,0,108
 BRDA:215,18,1,0
 BRDA:217,19,0,0
 BRDA:217,19,1,75
+=======
+BRDA:202,14,0,2149
+BRDA:202,15,0,37553
+BRDA:207,16,0,6
+BRDA:207,16,1,37713
+BRDA:211,17,0,37603
+BRDA:211,17,1,116
+BRDA:215,18,0,6
+BRDA:215,18,1,0
+BRDA:217,19,0,0
+BRDA:217,19,1,2
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 BRDA:239,20,0,8
 BRDA:239,21,0,11
 BRDA:243,22,0,8
@@ -24604,6 +27306,7 @@ BRDA:248,25,0,7
 BRDA:248,25,1,0
 BRDA:250,26,0,7
 BRDA:250,26,1,0
+<<<<<<< HEAD
 BRDA:268,27,0,33
 BRDA:268,27,1,0
 BRDA:268,28,0,33
@@ -24617,11 +27320,27 @@ BRDA:333,32,0,2101
 BRDA:333,32,1,0
 BRDA:356,33,0,4849
 BRDA:356,33,1,414
+=======
+BRDA:268,27,0,27
+BRDA:268,27,1,0
+BRDA:268,28,0,27
+BRDA:268,28,1,27
+BRDA:281,29,0,0
+BRDA:284,30,0,35583
+BRDA:284,30,1,2776
+BRDA:305,31,0,6
+BRDA:305,31,1,0
+BRDA:333,32,0,1377
+BRDA:333,32,1,0
+BRDA:356,33,0,4849
+BRDA:356,33,1,2
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 BRDA:380,34,0,194
 BRDA:383,35,0,1
 BRDA:383,35,1,3291
 BRDA:392,36,0,3122
 BRDA:392,36,1,0
+<<<<<<< HEAD
 BRDA:422,37,0,9163
 BRDA:422,37,1,5949
 BRDA:427,38,0,5262
@@ -24630,6 +27349,16 @@ BRDA:432,39,0,4849
 BRDA:432,39,1,1100
 BRDA:441,40,0,0
 BRDA:441,40,1,1100
+=======
+BRDA:422,37,0,8586
+BRDA:422,37,1,5464
+BRDA:427,38,0,4850
+BRDA:427,38,1,614
+BRDA:432,39,0,4849
+BRDA:432,39,1,615
+BRDA:441,40,0,0
+BRDA:441,40,1,615
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 BRDA:445,41,0,0
 BRDA:445,41,1,0
 BRDA:468,42,0,15
@@ -24641,7 +27370,11 @@ BRDA:499,44,1,43
 BRDA:506,45,0,42
 BRDA:506,45,1,0
 BRDA:525,46,0,1702
+<<<<<<< HEAD
 BRDA:525,46,1,110386
+=======
+BRDA:525,46,1,110452
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 BRDA:531,47,0,1702
 BRDA:531,47,1,0
 BRF:86
@@ -24661,6 +27394,7 @@ FN:143,greaterThanEqualCompare
 FN:158,lessThanCompare
 FN:173,lessThanEqualCompare
 FNF:11
+<<<<<<< HEAD
 FNH:8
 FNDA:50757,parseRow
 FNDA:8810,searchAll
@@ -24685,6 +27419,32 @@ DA:15,235911
 DA:19,50757
 DA:30,8810
 DA:31,8810
+=======
+FNH:5
+FNDA:50709,parseRow
+FNDA:8762,searchAll
+FNDA:23099,searchAllToMap
+FNDA:60203,iterateDBI
+FNDA:94265,pushResults
+FNDA:0,endsWith
+FNDA:0,contains
+FNDA:0,greaterThanCompare
+FNDA:0,greaterThanEqualCompare
+FNDA:0,lessThanCompare
+FNDA:0,lessThanEqualCompare
+DA:3,16
+DA:4,16
+DA:7,50709
+DA:9,50709
+DA:10,0
+DA:12,50709
+DA:13,235599
+DA:14,235599
+DA:15,235599
+DA:19,50709
+DA:30,8762
+DA:31,8762
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:42,23099
 DA:43,23099
 DA:44,23099
@@ -24692,6 +27452,7 @@ DA:54,60203
 DA:55,60203
 DA:56,10197
 DA:58,60203
+<<<<<<< HEAD
 DA:70,94261
 DA:71,94261
 DA:72,94261
@@ -24703,6 +27464,19 @@ DA:79,69705
 DA:80,57930
 DA:83,94261
 DA:84,94261
+=======
+DA:70,94265
+DA:71,94265
+DA:72,94265
+DA:73,94265
+DA:75,94265
+DA:76,24556
+DA:78,69709
+DA:79,69709
+DA:80,57934
+DA:83,94265
+DA:84,94265
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:97,0
 DA:98,0
 DA:99,0
@@ -24711,6 +27485,7 @@ DA:114,0
 DA:115,0
 DA:129,0
 DA:130,0
+<<<<<<< HEAD
 DA:144,50370
 DA:145,40360
 DA:159,16635
@@ -24731,6 +27506,28 @@ BRDA:55,3,1,50006
 BRDA:75,4,0,24556
 BRDA:75,4,1,69705
 BRDA:79,5,0,57930
+=======
+DA:144,0
+DA:145,0
+DA:159,0
+DA:160,0
+DA:174,0
+DA:175,0
+DA:179,16
+LF:45
+LH:30
+BRDA:9,0,0,0
+BRDA:9,0,1,50709
+BRDA:9,1,0,50709
+BRDA:9,1,1,23856
+BRDA:15,2,0,2032
+BRDA:15,2,1,233567
+BRDA:55,3,0,10197
+BRDA:55,3,1,50006
+BRDA:75,4,0,24556
+BRDA:75,4,1,69709
+BRDA:79,5,0,57934
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 BRDA:79,5,1,11775
 BRDA:98,6,0,0
 BRDA:98,6,1,0
@@ -24738,6 +27535,7 @@ BRDA:114,7,0,0
 BRDA:114,7,1,0
 BRDA:129,8,0,0
 BRDA:129,8,1,0
+<<<<<<< HEAD
 BRDA:144,9,0,40360
 BRDA:144,9,1,10010
 BRDA:159,10,0,16629
@@ -24746,12 +27544,23 @@ BRDA:174,11,0,16985
 BRDA:174,11,1,1007
 BRF:24
 BRH:17
+=======
+BRDA:144,9,0,0
+BRDA:144,9,1,0
+BRDA:159,10,0,0
+BRDA:159,10,1,0
+BRDA:174,11,0,0
+BRDA:174,11,1,0
+BRF:24
+BRH:11
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 end_of_record
 TN:
 SF:utility/lmdb/searchUtility.js
 FN:30,iterateFullIndex
 FN:70,iterateRangeNext
 FN:116,iterateRangeBetween
+<<<<<<< HEAD
 FN:187,searchAll
 FN:224,searchAllToMap
 FN:253,iterateDBI
@@ -24780,6 +27589,36 @@ FNDA:209,iterateFullIndex
 FNDA:54,iterateRangeNext
 FNDA:55,iterateRangeBetween
 FNDA:105,searchAll
+=======
+FN:189,searchAll
+FN:226,searchAllToMap
+FN:255,iterateDBI
+FN:270,countAll
+FN:292,equals
+FN:326,startsWith
+FN:407,endsWith
+FN:431,contains
+FN:522,greaterThan
+FN:561,greaterThanEqual
+FN:600,lessThan
+FN:638,lessThanEqual
+FN:677,between
+FN:720,searchByHash
+FN:751,checkHashExists
+FN:782,batchSearchByHash
+FN:799,batchSearchByHashToMap
+FN:814,batchHashSearch
+FN:846,initializeBatchSearchByHash
+FN:872,validateFetchAttributes
+FN:887,validateComparisonFunctions
+FN:908,setGetWholeRowAttributes
+FNF:25
+FNH:24
+FNDA:209,iterateFullIndex
+FNDA:0,iterateRangeNext
+FNDA:286,iterateRangeBetween
+FNDA:27,searchAll
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 FNDA:75,searchAllToMap
 FNDA:142,iterateDBI
 FNDA:5,countAll
@@ -24789,7 +27628,11 @@ FNDA:36,endsWith
 FNDA:76,contains
 FNDA:59,greaterThan
 FNDA:60,greaterThanEqual
+<<<<<<< HEAD
 FNDA:65,lessThan
+=======
+FNDA:66,lessThan
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 FNDA:62,lessThanEqual
 FNDA:62,between
 FNDA:26,searchByHash
@@ -24798,6 +27641,7 @@ FNDA:176,batchSearchByHash
 FNDA:94,batchSearchByHashToMap
 FNDA:256,batchHashSearch
 FNDA:270,initializeBatchSearchByHash
+<<<<<<< HEAD
 FNDA:461,validateFetchAttributes
 FNDA:508,validateComparisonFunctions
 FNDA:447,setGetWholeRowAttributes
@@ -24812,6 +27656,22 @@ DA:11,106
 DA:12,106
 DA:14,106
 DA:15,106
+=======
+FNDA:383,validateFetchAttributes
+FNDA:509,validateComparisonFunctions
+FNDA:369,setGetWholeRowAttributes
+DA:3,28
+DA:5,28
+DA:6,28
+DA:7,28
+DA:8,28
+DA:9,28
+DA:10,28
+DA:11,28
+DA:12,28
+DA:14,28
+DA:15,28
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:39,209
 DA:41,209
 DA:42,208
@@ -24819,6 +27679,7 @@ DA:43,105
 DA:46,208
 DA:53,83302
 DA:55,208
+<<<<<<< HEAD
 DA:80,54
 DA:82,54
 DA:83,54
@@ -24944,10 +27805,133 @@ DA:462,27621
 DA:466,0
 DA:467,0
 DA:468,0
+=======
+DA:80,0
+DA:82,0
+DA:83,0
+DA:84,0
+DA:88,0
+DA:89,0
+DA:91,0
+DA:92,0
+DA:95,0
+DA:128,286
+DA:131,286
+DA:132,281
+DA:133,71
+DA:134,71
+DA:137,281
+DA:138,281
+DA:140,281
+DA:141,281
+DA:142,281
+DA:143,281
+DA:145,281
+DA:154,90159
+DA:158,1
+DA:160,1
+DA:164,0
+DA:165,0
+DA:166,0
+DA:167,0
+DA:171,1
+DA:172,1
+DA:174,90159
+DA:176,281
+DA:190,27
+DA:192,25
+DA:193,1
+DA:196,24
+DA:197,22
+DA:199,22
+DA:201,22
+DA:203,22
+DA:210,8762
+DA:212,22
+DA:227,75
+DA:229,73
+DA:230,1
+DA:233,72
+DA:234,70
+DA:235,70
+DA:256,142
+DA:257,140
+DA:258,1
+DA:261,139
+DA:271,5
+DA:273,3
+DA:274,1
+DA:277,2
+DA:278,2
+DA:293,154
+DA:295,150
+DA:297,149
+DA:298,149
+DA:300,149
+DA:301,149
+DA:302,2
+DA:303,2
+DA:304,2
+DA:305,1
+DA:308,147
+DA:309,799
+DA:312,149
+DA:335,32
+DA:337,28
+DA:339,28
+DA:341,27
+DA:342,1
+DA:346,27
+DA:347,27
+DA:348,27
+DA:349,27
+DA:350,6
+DA:354,27
+DA:357,6
+DA:358,236
+DA:359,6
+DA:360,6
+DA:365,6
+DA:366,6
+DA:367,3
+DA:369,3
+DA:373,6
+DA:374,86
+DA:375,3
+DA:378,83
+DA:379,80
+DA:380,3
+DA:381,3
+DA:385,21
+DA:386,3649
+DA:387,606
+DA:388,3043
+DA:389,12
+DA:393,27
+DA:416,36
+DA:441,76
+DA:443,68
+DA:445,68
+DA:446,66
+DA:447,16
+DA:448,16
+DA:451,66
+DA:452,66
+DA:453,29590
+DA:454,24
+DA:458,29566
+DA:459,29566
+DA:460,1962
+DA:461,877
+DA:462,27604
+DA:466,4
+DA:468,4
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:472,0
 DA:473,0
 DA:474,0
 DA:475,0
+<<<<<<< HEAD
 DA:476,0
 DA:481,0
 DA:482,0
@@ -25126,6 +28110,126 @@ DA:1006,447
 DA:1009,106
 LF:323
 LH:303
+=======
+DA:480,4
+DA:481,4
+DA:482,4
+DA:483,4
+DA:484,0
+DA:485,0
+DA:489,29566
+DA:490,1962
+DA:491,2934
+DA:492,314
+DA:493,314
+DA:496,2620
+DA:497,0
+DA:500,2620
+DA:501,2620
+DA:506,66
+DA:531,59
+DA:532,55
+DA:534,55
+DA:535,55
+DA:536,55
+DA:570,60
+DA:571,56
+DA:573,56
+DA:574,56
+DA:575,56
+DA:609,66
+DA:610,62
+DA:611,62
+DA:612,62
+DA:613,62
+DA:647,62
+DA:648,58
+DA:649,58
+DA:650,58
+DA:651,58
+DA:687,62
+DA:689,60
+DA:690,1
+DA:693,59
+DA:694,1
+DA:697,58
+DA:698,1
+DA:701,57
+DA:702,57
+DA:703,57
+DA:704,57
+DA:705,57
+DA:706,2
+DA:709,55
+DA:721,26
+DA:723,24
+DA:724,1
+DA:727,23
+DA:728,21
+DA:729,21
+DA:730,1
+DA:733,20
+DA:735,20
+DA:736,20
+DA:738,20
+DA:739,17
+DA:741,20
+DA:752,7
+DA:754,5
+DA:755,1
+DA:758,4
+DA:759,1
+DA:762,3
+DA:763,3
+DA:765,3
+DA:767,3
+DA:768,1
+DA:770,3
+DA:783,176
+DA:785,169
+DA:787,169
+DA:800,94
+DA:802,87
+DA:815,256
+DA:817,256
+DA:819,256
+DA:820,18840
+DA:821,18840
+DA:822,18840
+DA:823,18840
+DA:824,18831
+DA:825,18831
+DA:827,9
+DA:830,0
+DA:834,256
+DA:847,270
+DA:849,266
+DA:850,2
+DA:853,264
+DA:855,260
+DA:856,4
+DA:857,2
+DA:860,2
+DA:863,256
+DA:864,0
+DA:873,383
+DA:874,10
+DA:875,5
+DA:877,5
+DA:888,509
+DA:889,493
+DA:890,8
+DA:893,485
+DA:894,8
+DA:897,477
+DA:898,0
+DA:909,369
+DA:910,89
+DA:913,369
+DA:916,28
+LF:258
+LH:235
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 BRDA:35,0,0,0
 BRDA:36,1,0,205
 BRDA:37,2,0,207
@@ -25136,6 +28240,7 @@ BRDA:47,4,1,206
 BRDA:48,5,0,206
 BRDA:48,5,1,2
 BRDA:76,6,0,0
+<<<<<<< HEAD
 BRDA:77,7,0,40
 BRDA:78,8,0,45
 BRDA:83,9,0,15
@@ -25371,11 +28476,231 @@ BRDA:1002,145,0,447
 BRDA:1002,145,1,279
 BRF:243
 BRH:218
+=======
+BRDA:77,7,0,0
+BRDA:78,8,0,0
+BRDA:83,9,0,0
+BRDA:83,9,1,0
+BRDA:88,10,0,0
+BRDA:88,10,1,0
+BRDA:88,11,0,0
+BRDA:88,11,1,0
+BRDA:89,12,0,0
+BRDA:89,12,1,0
+BRDA:122,13,0,0
+BRDA:123,14,0,204
+BRDA:124,15,0,235
+BRDA:125,16,0,55
+BRDA:126,17,0,55
+BRDA:132,18,0,71
+BRDA:132,18,1,210
+BRDA:140,19,0,52
+BRDA:140,19,1,229
+BRDA:141,20,0,52
+BRDA:141,20,1,229
+BRDA:142,21,0,52
+BRDA:142,21,1,229
+BRDA:143,22,0,52
+BRDA:143,22,1,229
+BRDA:154,23,0,1
+BRDA:154,23,1,90158
+BRDA:154,24,0,90159
+BRDA:154,24,1,15336
+BRDA:158,25,0,1
+BRDA:158,25,1,0
+BRDA:160,26,0,1
+BRDA:160,26,1,0
+BRDA:167,27,0,0
+BRDA:167,27,1,0
+BRDA:189,28,0,10
+BRDA:189,29,0,21
+BRDA:189,30,0,21
+BRDA:192,31,0,1
+BRDA:192,31,1,24
+BRDA:204,32,0,8
+BRDA:204,32,1,14
+BRDA:205,33,0,14
+BRDA:205,33,1,8
+BRDA:226,34,0,7
+BRDA:226,35,0,71
+BRDA:226,36,0,73
+BRDA:229,37,0,1
+BRDA:229,37,1,72
+BRDA:255,38,0,142
+BRDA:255,39,0,142
+BRDA:255,40,0,142
+BRDA:257,41,0,1
+BRDA:257,41,1,139
+BRDA:273,42,0,1
+BRDA:273,42,1,2
+BRDA:292,43,0,24
+BRDA:292,44,0,142
+BRDA:292,45,0,146
+BRDA:301,46,0,2
+BRDA:301,46,1,147
+BRDA:304,47,0,1
+BRDA:304,47,1,1
+BRDA:331,48,0,13
+BRDA:332,49,0,24
+BRDA:333,50,0,26
+BRDA:341,51,0,1
+BRDA:341,51,1,26
+BRDA:349,52,0,6
+BRDA:349,52,1,21
+BRDA:354,53,0,6
+BRDA:354,53,1,21
+BRDA:358,54,0,6
+BRDA:358,54,1,230
+BRDA:365,55,0,6
+BRDA:365,55,1,0
+BRDA:366,56,0,3
+BRDA:366,56,1,3
+BRDA:374,57,0,3
+BRDA:374,57,1,83
+BRDA:378,58,0,80
+BRDA:378,58,1,3
+BRDA:380,59,0,3
+BRDA:380,59,1,0
+BRDA:386,60,0,606
+BRDA:386,60,1,3043
+BRDA:388,61,0,12
+BRDA:388,61,1,3031
+BRDA:412,62,0,12
+BRDA:413,63,0,25
+BRDA:414,64,0,27
+BRDA:436,65,0,11
+BRDA:437,66,0,50
+BRDA:438,67,0,54
+BRDA:439,68,0,40
+BRDA:446,69,0,16
+BRDA:446,69,1,50
+BRDA:451,70,0,22
+BRDA:451,70,1,44
+BRDA:452,71,0,19
+BRDA:452,71,1,47
+BRDA:453,72,0,24
+BRDA:453,72,1,29566
+BRDA:459,73,0,1962
+BRDA:459,73,1,27604
+BRDA:459,74,0,13704
+BRDA:459,74,1,15862
+BRDA:460,75,0,1085
+BRDA:460,75,1,877
+BRDA:462,76,0,4
+BRDA:462,76,1,27600
+BRDA:466,77,0,4
+BRDA:466,77,1,0
+BRDA:468,78,0,4
+BRDA:468,78,1,0
+BRDA:475,79,0,0
+BRDA:475,79,1,0
+BRDA:483,80,0,0
+BRDA:483,80,1,4
+BRDA:483,81,0,4
+BRDA:483,81,1,0
+BRDA:484,82,0,0
+BRDA:484,82,1,0
+BRDA:489,83,0,1962
+BRDA:489,83,1,27604
+BRDA:491,84,0,314
+BRDA:491,84,1,2620
+BRDA:496,85,0,0
+BRDA:496,85,1,2620
+BRDA:527,86,0,32
+BRDA:528,87,0,45
+BRDA:529,88,0,50
+BRDA:535,89,0,10
+BRDA:535,89,1,45
+BRDA:535,90,0,45
+BRDA:535,90,1,0
+BRDA:535,91,0,0
+BRDA:535,91,1,0
+BRDA:566,92,0,34
+BRDA:567,93,0,42
+BRDA:568,94,0,49
+BRDA:574,95,0,15
+BRDA:574,95,1,41
+BRDA:574,96,0,41
+BRDA:574,96,1,0
+BRDA:574,97,0,0
+BRDA:574,97,1,0
+BRDA:605,98,0,35
+BRDA:606,99,0,48
+BRDA:607,100,0,55
+BRDA:612,101,0,16
+BRDA:612,101,1,46
+BRDA:612,102,0,46
+BRDA:612,102,1,0
+BRDA:612,103,0,0
+BRDA:612,103,1,0
+BRDA:643,104,0,35
+BRDA:644,105,0,44
+BRDA:645,106,0,51
+BRDA:650,107,0,15
+BRDA:650,107,1,43
+BRDA:650,108,0,43
+BRDA:650,108,1,0
+BRDA:650,109,0,0
+BRDA:650,109,1,0
+BRDA:683,110,0,38
+BRDA:684,111,0,48
+BRDA:685,112,0,53
+BRDA:689,113,0,1
+BRDA:689,113,1,59
+BRDA:693,114,0,1
+BRDA:693,114,1,58
+BRDA:697,115,0,1
+BRDA:697,115,1,57
+BRDA:705,116,0,2
+BRDA:705,116,1,55
+BRDA:723,117,0,1
+BRDA:723,117,1,23
+BRDA:729,118,0,1
+BRDA:729,118,1,20
+BRDA:738,119,0,17
+BRDA:738,119,1,3
+BRDA:754,120,0,1
+BRDA:754,120,1,4
+BRDA:758,121,0,1
+BRDA:758,121,1,3
+BRDA:767,122,0,1
+BRDA:767,122,1,2
+BRDA:782,123,0,176
+BRDA:799,124,0,94
+BRDA:814,125,0,0
+BRDA:823,126,0,18831
+BRDA:823,126,1,9
+BRDA:849,127,0,2
+BRDA:849,127,1,264
+BRDA:855,128,0,4
+BRDA:855,128,1,256
+BRDA:856,129,0,2
+BRDA:856,129,1,2
+BRDA:863,130,0,0
+BRDA:863,130,1,256
+BRDA:873,131,0,10
+BRDA:873,131,1,373
+BRDA:874,132,0,5
+BRDA:874,132,1,5
+BRDA:889,133,0,8
+BRDA:889,133,1,485
+BRDA:893,134,0,8
+BRDA:893,134,1,477
+BRDA:897,135,0,0
+BRDA:897,135,1,477
+BRDA:909,136,0,89
+BRDA:909,136,1,280
+BRDA:909,137,0,369
+BRDA:909,137,1,201
+BRF:225
+BRH:182
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 end_of_record
 TN:
 SF:utility/lmdb/terms.js
 FNF:0
 FNH:0
+<<<<<<< HEAD
 DA:3,104
 DA:4,104
 DA:5,104
@@ -25386,6 +28711,18 @@ DA:35,104
 DA:37,104
 DA:43,104
 DA:45,104
+=======
+DA:3,16
+DA:4,16
+DA:5,16
+DA:7,16
+DA:9,16
+DA:31,16
+DA:35,16
+DA:37,16
+DA:43,16
+DA:45,16
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 LF:10
 LH:10
 BRF:0
@@ -25423,6 +28760,7 @@ FNDA:33,(anonymous_10)
 FNDA:33,(anonymous_11)
 FNDA:969,validateBasic
 FNDA:969,validateWrite
+<<<<<<< HEAD
 DA:3,95
 DA:4,95
 DA:5,95
@@ -25438,6 +28776,23 @@ DA:15,95
 DA:16,95
 DA:18,95
 DA:19,95
+=======
+DA:3,17
+DA:4,17
+DA:5,17
+DA:6,17
+DA:7,17
+DA:8,17
+DA:9,17
+DA:10,17
+DA:11,17
+DA:12,17
+DA:14,17
+DA:15,17
+DA:16,17
+DA:18,17
+DA:19,17
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:31,916
 DA:33,909
 DA:35,909
@@ -25587,7 +28942,11 @@ DA:380,949
 DA:381,8
 DA:382,4
 DA:385,4
+<<<<<<< HEAD
 DA:389,95
+=======
+DA:389,17
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 LF:165
 LH:161
 BRDA:30,0,0,700
@@ -25691,6 +29050,7 @@ FN:372,getLogConfig
 FN:411,getDefaultConfig
 FNF:18
 FNH:18
+<<<<<<< HEAD
 FNDA:124,initLogSettings
 FNDA:39,createLogFile
 FNDA:340,createLogRecord
@@ -25728,6 +29088,45 @@ DA:64,124
 DA:65,124
 DA:66,124
 DA:67,121
+=======
+FNDA:37,initLogSettings
+FNDA:39,createLogFile
+FNDA:387,createLogRecord
+FNDA:378,writeToLogFile
+FNDA:28,nonPm2LogStdOut
+FNDA:350,nonPm2LogStdErr
+FNDA:200,info
+FNDA:1366,trace
+FNDA:332,error
+FNDA:30,debug
+FNDA:19,notify
+FNDA:17,fatal
+FNDA:388,warn
+FNDA:39,getPropsFilePath
+FNDA:8,setLogLevel
+FNDA:7,autoCastBoolean
+FNDA:34,getLogConfig
+FNDA:2,getDefaultConfig
+DA:4,34
+DA:5,34
+DA:6,34
+DA:7,34
+DA:8,34
+DA:9,34
+DA:10,34
+DA:12,34
+DA:23,34
+DA:26,34
+DA:29,34
+DA:32,34
+DA:42,34
+DA:44,34
+DA:63,37
+DA:64,37
+DA:65,37
+DA:66,37
+DA:67,34
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:75,3
 DA:76,3
 DA:78,2
@@ -25764,6 +29163,7 @@ DA:135,1
 DA:137,37
 DA:140,38
 DA:142,38
+<<<<<<< HEAD
 DA:154,340
 DA:158,340
 DA:159,340
@@ -25788,17 +29188,48 @@ DA:198,29
 DA:206,289
 DA:207,289
 DA:216,654
+=======
+DA:154,387
+DA:158,387
+DA:159,387
+DA:160,387
+DA:161,387
+DA:162,403
+DA:163,403
+DA:164,99
+DA:165,304
+DA:166,28
+DA:168,276
+DA:170,403
+DA:171,16
+DA:174,387
+DA:183,378
+DA:184,7
+DA:185,7
+DA:186,7
+DA:189,378
+DA:197,28
+DA:198,28
+DA:206,350
+DA:207,350
+DA:216,200
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:217,5
 DA:218,5
 DA:219,4
 DA:220,4
 DA:223,1
+<<<<<<< HEAD
 DA:233,1556
+=======
+DA:233,1366
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:234,3
 DA:235,3
 DA:236,2
 DA:237,2
 DA:240,1
+<<<<<<< HEAD
 DA:250,275
 DA:251,273
 DA:252,273
@@ -25806,6 +29237,15 @@ DA:253,268
 DA:254,268
 DA:257,5
 DA:267,92
+=======
+DA:250,332
+DA:251,330
+DA:252,330
+DA:253,329
+DA:254,329
+DA:257,1
+DA:267,30
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:268,4
 DA:269,4
 DA:270,3
@@ -25823,12 +29263,17 @@ DA:303,16
 DA:304,15
 DA:305,15
 DA:308,1
+<<<<<<< HEAD
 DA:318,3084
+=======
+DA:318,388
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:319,6
 DA:320,6
 DA:321,5
 DA:322,5
 DA:325,1
+<<<<<<< HEAD
 DA:335,126
 DA:336,126
 DA:337,126
@@ -25851,6 +29296,30 @@ DA:386,121
 DA:387,121
 DA:388,121
 DA:389,121
+=======
+DA:335,39
+DA:336,39
+DA:337,39
+DA:340,1
+DA:342,39
+DA:343,1
+DA:346,39
+DA:348,39
+DA:349,1
+DA:351,39
+DA:355,8
+DA:364,7
+DA:373,34
+DA:375,34
+DA:376,0
+DA:377,0
+DA:384,34
+DA:385,34
+DA:386,34
+DA:387,34
+DA:388,34
+DA:389,34
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:397,0
 DA:398,0
 DA:401,0
@@ -25865,11 +29334,19 @@ DA:423,0
 DA:424,0
 LF:154
 LH:146
+<<<<<<< HEAD
 BRDA:32,0,0,57
 BRDA:32,0,1,64
 BRDA:42,1,0,121
 BRDA:42,1,1,0
 BRDA:64,2,0,124
+=======
+BRDA:32,0,0,33
+BRDA:32,0,1,1
+BRDA:42,1,0,34
+BRDA:42,1,1,0
+BRDA:64,2,0,37
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 BRDA:64,2,1,0
 BRDA:76,3,0,2
 BRDA:76,3,1,1
@@ -25895,6 +29372,7 @@ BRDA:134,13,0,1
 BRDA:134,13,1,37
 BRDA:140,14,0,38
 BRDA:140,14,1,0
+<<<<<<< HEAD
 BRDA:163,15,0,97
 BRDA:163,15,1,259
 BRDA:163,16,0,356
@@ -25927,6 +29405,40 @@ BRDA:252,29,0,268
 BRDA:252,29,1,5
 BRDA:267,30,0,4
 BRDA:267,30,1,88
+=======
+BRDA:163,15,0,99
+BRDA:163,15,1,304
+BRDA:163,16,0,403
+BRDA:163,16,1,99
+BRDA:165,17,0,28
+BRDA:165,17,1,276
+BRDA:170,18,0,16
+BRDA:170,18,1,387
+BRDA:183,19,0,7
+BRDA:183,19,1,371
+BRDA:197,20,0,28
+BRDA:197,20,1,0
+BRDA:198,21,0,18
+BRDA:198,21,1,10
+BRDA:206,22,0,350
+BRDA:206,22,1,0
+BRDA:207,23,0,19
+BRDA:207,23,1,331
+BRDA:216,24,0,5
+BRDA:216,24,1,195
+BRDA:218,25,0,4
+BRDA:218,25,1,1
+BRDA:233,26,0,3
+BRDA:233,26,1,1363
+BRDA:235,27,0,2
+BRDA:235,27,1,1
+BRDA:250,28,0,330
+BRDA:250,28,1,2
+BRDA:252,29,0,329
+BRDA:252,29,1,1
+BRDA:267,30,0,4
+BRDA:267,30,1,26
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 BRDA:269,31,0,3
 BRDA:269,31,1,1
 BRDA:284,32,0,29
@@ -25938,6 +29450,7 @@ BRDA:301,34,1,1
 BRDA:303,35,0,15
 BRDA:303,35,1,1
 BRDA:318,36,0,6
+<<<<<<< HEAD
 BRDA:318,36,1,3078
 BRDA:320,37,0,5
 BRDA:320,37,1,1
@@ -25945,11 +29458,24 @@ BRDA:342,38,0,1
 BRDA:342,38,1,125
 BRDA:348,39,0,1
 BRDA:348,39,1,125
+=======
+BRDA:318,36,1,382
+BRDA:320,37,0,5
+BRDA:320,37,1,1
+BRDA:342,38,0,1
+BRDA:342,38,1,38
+BRDA:348,39,0,1
+BRDA:348,39,1,38
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 BRDA:364,40,0,7
 BRDA:364,40,1,6
 BRDA:364,40,2,4
 BRDA:375,41,0,0
+<<<<<<< HEAD
 BRDA:375,41,1,121
+=======
+BRDA:375,41,1,34
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 BRDA:397,42,0,0
 BRDA:397,42,1,0
 BRF:87
@@ -26338,6 +29864,7 @@ FNDA:5,generateNatsIngestServiceConfig
 FNDA:6,generateNatsReplyServiceConfig
 FNDA:3,generateRestart
 FNDA:4,generateAllServiceConfigs
+<<<<<<< HEAD
 DA:3,45
 DA:5,45
 DA:6,45
@@ -26351,6 +29878,21 @@ DA:14,45
 DA:15,45
 DA:16,45
 DA:17,45
+=======
+DA:3,16
+DA:5,16
+DA:6,16
+DA:7,16
+DA:8,16
+DA:10,16
+DA:11,16
+DA:12,16
+DA:13,16
+DA:14,16
+DA:15,16
+DA:16,16
+DA:17,16
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:20,56
 DA:21,2
 DA:22,2
@@ -26438,7 +29980,11 @@ DA:256,3
 DA:257,1
 DA:264,2
 DA:271,4
+<<<<<<< HEAD
 DA:276,45
+=======
+DA:276,16
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 LF:101
 LH:85
 BRDA:20,0,0,2
@@ -26523,6 +30069,7 @@ FN:622,isClusteringRunning
 FN:639,reloadClustering
 FNF:47
 FNH:47
+<<<<<<< HEAD
 FNDA:2821,connect
 FNDA:2821,(anonymous_1)
 FNDA:2821,(anonymous_2)
@@ -26533,6 +30080,18 @@ FNDA:2699,stop
 FNDA:2699,(anonymous_7)
 FNDA:2698,(anonymous_8)
 FNDA:52,(anonymous_9)
+=======
+FNDA:2815,connect
+FNDA:2815,(anonymous_1)
+FNDA:2815,(anonymous_2)
+FNDA:40,start
+FNDA:40,(anonymous_4)
+FNDA:39,(anonymous_5)
+FNDA:2697,stop
+FNDA:2697,(anonymous_7)
+FNDA:2696,(anonymous_8)
+FNDA:50,(anonymous_9)
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 FNDA:3,reload
 FNDA:3,(anonymous_11)
 FNDA:2,(anonymous_12)
@@ -26570,6 +30129,7 @@ FNDA:5,startClustering
 FNDA:1,stopClustering
 FNDA:3,isClusteringRunning
 FNDA:1,reloadClustering
+<<<<<<< HEAD
 DA:3,45
 DA:4,45
 DA:5,45
@@ -26600,6 +30160,38 @@ DA:65,2821
 DA:76,42
 DA:77,42
 DA:78,42
+=======
+DA:3,16
+DA:4,16
+DA:5,16
+DA:6,16
+DA:7,16
+DA:8,16
+DA:9,16
+DA:10,16
+DA:11,16
+DA:12,16
+DA:13,16
+DA:14,16
+DA:15,16
+DA:16,16
+DA:18,16
+DA:44,16
+DA:45,16
+DA:46,16
+DA:47,16
+DA:48,16
+DA:49,16
+DA:51,16
+DA:59,2815
+DA:60,2815
+DA:61,2815
+DA:62,0
+DA:65,2815
+DA:76,40
+DA:77,40
+DA:78,40
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:80,1
 DA:82,42
 DA:83,41
@@ -26611,6 +30203,7 @@ DA:100,2699
 DA:101,2699
 DA:102,2699
 DA:104,1
+<<<<<<< HEAD
 DA:106,2699
 DA:107,2698
 DA:108,2646
@@ -26621,6 +30214,18 @@ DA:115,0
 DA:116,0
 DA:119,52
 DA:120,52
+=======
+DA:106,2697
+DA:107,2696
+DA:108,2646
+DA:109,2646
+DA:113,2696
+DA:114,50
+DA:115,0
+DA:116,0
+DA:119,50
+DA:120,50
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:132,3
 DA:133,3
 DA:134,3
@@ -26834,6 +30439,7 @@ DA:646,1
 LF:261
 LH:234
 BRDA:61,0,0,0
+<<<<<<< HEAD
 BRDA:61,0,1,2821
 BRDA:83,1,0,1
 BRDA:83,1,1,40
@@ -26841,6 +30447,15 @@ BRDA:107,2,0,2646
 BRDA:107,2,1,52
 BRDA:114,3,0,0
 BRDA:114,3,1,52
+=======
+BRDA:61,0,1,2815
+BRDA:83,1,0,1
+BRDA:83,1,1,38
+BRDA:107,2,0,2646
+BRDA:107,2,1,50
+BRDA:114,3,0,0
+BRDA:114,3,1,50
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 BRDA:140,4,0,1
 BRDA:140,4,1,1
 BRDA:164,5,0,1
@@ -26933,6 +30548,7 @@ FNDA:7,generateFingerPrint
 FNDA:1,writeFingerprint
 FNDA:30,validateLicense
 FNDA:1,checkOldLicense
+<<<<<<< HEAD
 FNDA:49,licenseSearch
 FNDA:38,getLicense
 DA:3,107
@@ -26960,6 +30576,35 @@ DA:36,49
 DA:37,49
 DA:41,40
 DA:42,40
+=======
+FNDA:25,licenseSearch
+FNDA:6,getLicense
+DA:3,29
+DA:4,29
+DA:5,29
+DA:6,29
+DA:7,29
+DA:8,29
+DA:9,29
+DA:10,29
+DA:11,29
+DA:12,29
+DA:13,29
+DA:14,29
+DA:15,29
+DA:16,29
+DA:17,29
+DA:18,29
+DA:19,29
+DA:20,29
+DA:22,29
+DA:24,29
+DA:32,42
+DA:36,25
+DA:37,25
+DA:41,16
+DA:42,16
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:46,7
 DA:47,7
 DA:48,7
@@ -27126,6 +30771,7 @@ FN:15,(anonymous_0)
 FN:43,(anonymous_1)
 FNF:2
 FNH:2
+<<<<<<< HEAD
 FNDA:60,(anonymous_0)
 FNDA:53,(anonymous_1)
 DA:3,94
@@ -27138,6 +30784,20 @@ DA:28,60
 DA:52,53
 DA:53,53
 DA:57,94
+=======
+FNDA:36,(anonymous_0)
+FNDA:29,(anonymous_1)
+DA:3,16
+DA:23,36
+DA:24,36
+DA:25,36
+DA:26,36
+DA:27,36
+DA:28,36
+DA:52,29
+DA:53,29
+DA:57,16
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 LF:10
 LH:10
 BRDA:16,0,0,0
@@ -27313,11 +30973,19 @@ TN:
 SF:utility/terms/certificates.js
 FNF:0
 FNH:0
+<<<<<<< HEAD
 DA:3,103
 DA:8,103
 DA:9,103
 DA:10,103
 DA:12,103
+=======
+DA:3,16
+DA:8,16
+DA:9,16
+DA:10,16
+DA:12,16
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 LF:5
 LH:5
 BRF:0
@@ -27328,6 +30996,7 @@ SF:validation/bulkDeleteValidator.js
 FN:18,(anonymous_0)
 FNF:1
 FNH:1
+<<<<<<< HEAD
 FNDA:15,(anonymous_0)
 DA:1,94
 DA:2,94
@@ -27339,6 +31008,19 @@ DA:18,94
 DA:20,15
 DA:23,15
 DA:24,15
+=======
+FNDA:14,(anonymous_0)
+DA:1,16
+DA:2,16
+DA:3,16
+DA:5,16
+DA:10,16
+DA:14,16
+DA:18,16
+DA:20,14
+DA:23,14
+DA:24,14
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 LF:10
 LH:10
 BRDA:20,0,0,8
@@ -27371,12 +31053,21 @@ FNH:3
 FNDA:24,validateSchemaExists
 FNDA:24,validateTableExists
 FNDA:24,validateSchemaName
+<<<<<<< HEAD
 DA:3,94
 DA:4,94
 DA:5,94
 DA:6,94
 DA:8,94
 DA:20,94
+=======
+DA:3,16
+DA:4,16
+DA:5,16
+DA:6,16
+DA:8,16
+DA:20,16
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:30,24
 DA:31,2
 DA:34,22
@@ -27387,7 +31078,11 @@ DA:43,21
 DA:47,24
 DA:48,1
 DA:53,23
+<<<<<<< HEAD
 DA:56,94
+=======
+DA:56,16
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 LF:17
 LH:17
 BRDA:30,0,0,2
@@ -27410,6 +31105,7 @@ FN:264,setDefaultRoot
 FN:301,routesValidator
 FNF:7
 FNH:7
+<<<<<<< HEAD
 FNDA:117,configValidator
 FNDA:414,doesPathExist
 FNDA:415,validatePemFile
@@ -27474,6 +31170,72 @@ DA:233,116
 DA:234,1
 DA:237,115
 DA:238,115
+=======
+FNDA:30,configValidator
+FNDA:66,doesPathExist
+FNDA:67,validatePemFile
+FNDA:29,validateRotationMaxSize
+FNDA:4,setDefaultProcesses
+FNDA:147,setDefaultRoot
+FNDA:8,routesValidator
+DA:3,17
+DA:4,17
+DA:5,17
+DA:6,17
+DA:7,17
+DA:8,17
+DA:9,17
+DA:10,17
+DA:11,17
+DA:13,17
+DA:14,17
+DA:15,17
+DA:16,17
+DA:17,17
+DA:18,17
+DA:19,17
+DA:20,17
+DA:21,17
+DA:22,17
+DA:23,17
+DA:24,17
+DA:26,17
+DA:27,17
+DA:28,17
+DA:30,17
+DA:31,17
+DA:40,17
+DA:47,30
+DA:48,30
+DA:49,1
+DA:52,29
+DA:53,29
+DA:54,29
+DA:55,29
+DA:59,29
+DA:63,29
+DA:68,29
+DA:69,29
+DA:70,1
+DA:75,28
+DA:76,11
+DA:116,17
+DA:121,28
+DA:200,28
+DA:209,66
+DA:210,66
+DA:211,65
+DA:214,1
+DA:218,67
+DA:225,66
+DA:226,66
+DA:227,1
+DA:232,29
+DA:233,29
+DA:234,1
+DA:237,28
+DA:238,28
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:239,1
 DA:244,4
 DA:245,4
@@ -27482,6 +31244,7 @@ DA:247,3
 DA:249,3
 DA:251,1
 DA:254,1
+<<<<<<< HEAD
 DA:265,495
 DA:266,495
 DA:267,1
@@ -27492,6 +31255,18 @@ DA:276,116
 DA:278,116
 DA:280,116
 DA:282,116
+=======
+DA:265,147
+DA:266,147
+DA:267,1
+DA:270,146
+DA:272,2
+DA:274,2
+DA:276,29
+DA:278,29
+DA:280,29
+DA:282,29
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:284,12
 DA:286,12
 DA:288,1
@@ -27501,6 +31276,7 @@ DA:305,8
 LF:81
 LH:81
 BRDA:48,0,0,1
+<<<<<<< HEAD
 BRDA:48,0,1,116
 BRDA:69,1,0,1
 BRDA:69,1,1,115
@@ -27525,6 +31301,32 @@ BRDA:270,9,2,116
 BRDA:270,9,3,116
 BRDA:270,9,4,116
 BRDA:270,9,5,116
+=======
+BRDA:48,0,1,29
+BRDA:69,1,0,1
+BRDA:69,1,1,28
+BRDA:75,2,0,11
+BRDA:75,2,1,17
+BRDA:210,3,0,65
+BRDA:210,3,1,1
+BRDA:226,4,0,1
+BRDA:226,4,1,65
+BRDA:233,5,0,1
+BRDA:233,5,1,28
+BRDA:233,6,0,29
+BRDA:233,6,1,29
+BRDA:233,6,2,1
+BRDA:238,7,0,1
+BRDA:238,7,1,27
+BRDA:266,8,0,1
+BRDA:266,8,1,146
+BRDA:270,9,0,2
+BRDA:270,9,1,2
+BRDA:270,9,2,29
+BRDA:270,9,3,29
+BRDA:270,9,4,29
+BRDA:270,9,5,29
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 BRDA:270,9,6,12
 BRDA:270,9,7,12
 BRDA:270,9,8,1
@@ -27538,11 +31340,19 @@ FN:11,(anonymous_0)
 FNF:1
 FNH:1
 FNDA:8,(anonymous_0)
+<<<<<<< HEAD
 DA:1,94
 DA:2,94
 DA:3,94
 DA:5,94
 DA:11,94
+=======
+DA:1,16
+DA:2,16
+DA:3,16
+DA:5,16
+DA:11,16
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:12,8
 LF:6
 LH:6
@@ -27638,11 +31448,19 @@ FNF:2
 FNH:2
 FNDA:31,(anonymous_0)
 FNDA:20,(anonymous_1)
+<<<<<<< HEAD
 DA:1,94
 DA:2,94
 DA:3,94
 DA:4,94
 DA:9,94
+=======
+DA:1,16
+DA:2,16
+DA:3,16
+DA:4,16
+DA:9,16
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:10,31
 DA:11,31
 DA:12,31
@@ -27655,8 +31473,13 @@ DA:19,0
 DA:24,31
 DA:25,3
 DA:28,28
+<<<<<<< HEAD
 DA:31,94
 DA:37,94
+=======
+DA:31,16
+DA:37,16
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:38,20
 LF:20
 LH:19
@@ -28072,10 +31895,17 @@ FNDA:8,create_table_object
 FNDA:711,attribute_object
 FNDA:19,describe_table
 FNDA:5,validateTableResidence
+<<<<<<< HEAD
 DA:1,94
 DA:2,94
 DA:4,94
 DA:6,94
+=======
+DA:1,16
+DA:2,16
+DA:4,16
+DA:6,16
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:30,762
 DA:32,5041
 DA:37,762
@@ -28118,7 +31948,11 @@ DA:99,1
 DA:102,2
 DA:103,4
 DA:104,1
+<<<<<<< HEAD
 DA:109,94
+=======
+DA:109,16
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 LF:47
 LH:47
 BRDA:33,0,0,3
@@ -28144,6 +31978,7 @@ FN:115,(anonymous_1)
 FN:120,(anonymous_2)
 FNF:3
 FNH:3
+<<<<<<< HEAD
 FNDA:465,(anonymous_0)
 FNDA:455,(anonymous_1)
 FNDA:1578,(anonymous_2)
@@ -28162,12 +31997,36 @@ DA:70,465
 DA:71,465
 DA:73,368
 DA:74,368
+=======
+FNDA:358,(anonymous_0)
+FNDA:455,(anonymous_1)
+FNDA:1578,(anonymous_2)
+DA:1,16
+DA:2,16
+DA:3,16
+DA:4,16
+DA:5,16
+DA:6,16
+DA:7,16
+DA:9,16
+DA:16,16
+DA:27,16
+DA:69,16
+DA:70,358
+DA:71,358
+DA:73,261
+DA:74,261
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:76,73
 DA:77,73
 DA:79,24
 DA:80,24
 DA:82,0
+<<<<<<< HEAD
 DA:86,465
+=======
+DA:86,358
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:89,173
 DA:90,173
 DA:91,4
@@ -28187,17 +32046,30 @@ DA:131,169
 DA:133,3
 DA:134,3
 DA:135,3
+<<<<<<< HEAD
 DA:139,458
 LF:41
 LH:40
 BRDA:71,0,0,368
+=======
+DA:139,351
+LF:41
+LH:40
+BRDA:71,0,0,261
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 BRDA:71,0,1,73
 BRDA:71,0,2,24
 BRDA:71,0,3,0
 BRDA:86,1,0,173
+<<<<<<< HEAD
 BRDA:86,1,1,292
 BRDA:86,2,0,465
 BRDA:86,2,1,421
+=======
+BRDA:86,1,1,185
+BRDA:86,2,0,358
+BRDA:86,2,1,314
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 BRDA:90,3,0,4
 BRDA:90,3,1,169
 BRDA:100,4,0,108
@@ -28247,8 +32119,13 @@ FNH:1
 FNDA:1,addUserValidation
 FNDA:0,alterUserValidation
 FNDA:0,dropUserValidation
+<<<<<<< HEAD
 DA:1,94
 DA:3,94
+=======
+DA:1,16
+DA:3,16
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:29,1
 DA:30,1
 DA:31,1
@@ -28264,7 +32141,11 @@ DA:46,0
 DA:47,0
 DA:48,0
 DA:49,0
+<<<<<<< HEAD
 DA:52,94
+=======
+DA:52,16
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 LF:18
 LH:8
 BRF:0
@@ -28287,6 +32168,7 @@ FNDA:0,(anonymous_1)
 FNDA:0,(anonymous_2)
 FNDA:11,(anonymous_3)
 FNDA:18,(anonymous_4)
+<<<<<<< HEAD
 FNDA:855,validateObject
 FNDA:4,validateObjectAsync
 FNDA:608,validateBySchema
@@ -28307,6 +32189,28 @@ DA:60,855
 DA:61,3
 DA:64,852
 DA:65,852
+=======
+FNDA:854,validateObject
+FNDA:4,validateObjectAsync
+FNDA:499,validateBySchema
+DA:14,19
+DA:19,19
+DA:21,44
+DA:22,5
+DA:25,39
+DA:28,19
+DA:30,0
+DA:38,0
+DA:42,19
+DA:44,11
+DA:45,2
+DA:48,18
+DA:53,19
+DA:60,854
+DA:61,3
+DA:64,851
+DA:65,851
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 DA:66,53
 DA:76,4
 DA:77,2
@@ -28315,9 +32219,15 @@ DA:81,2
 DA:84,1
 DA:85,1
 DA:88,1
+<<<<<<< HEAD
 DA:98,608
 DA:100,608
 DA:101,107
+=======
+DA:98,499
+DA:100,499
+DA:101,106
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 LF:28
 LH:26
 BRDA:21,0,0,5
@@ -28335,17 +32245,29 @@ BRDA:44,5,1,10
 BRDA:48,6,0,8
 BRDA:48,6,1,1
 BRDA:60,7,0,3
+<<<<<<< HEAD
 BRDA:60,7,1,852
 BRDA:60,8,0,855
 BRDA:60,8,1,853
 BRDA:65,9,0,799
+=======
+BRDA:60,7,1,851
+BRDA:60,8,0,854
+BRDA:60,8,1,852
+BRDA:65,9,0,798
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 BRDA:65,9,1,53
 BRDA:76,10,0,2
 BRDA:76,10,1,2
 BRDA:76,11,0,4
 BRDA:76,11,1,3
+<<<<<<< HEAD
 BRDA:100,12,0,107
 BRDA:100,12,1,501
+=======
+BRDA:100,12,0,106
+BRDA:100,12,1,393
+>>>>>>> CORE-1649: Using lmdb-js for inclusive/exclusive endings of ranges
 BRF:26
 BRH:24
 end_of_record

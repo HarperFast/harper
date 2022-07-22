@@ -225,16 +225,6 @@ function autoCast(data) {
 	if (autoCasterIsNumberCheck(data) === true) {
 		return Number(data);
 	}
-
-	//in order to handle json and arrays we test the string to see if it seems minimally like an object or array and perform a JSON.parse on it.
-	//if it fails we assume it is just a regular string
-	if ((data.startsWith('{') && data.endsWith('}')) || (data.startsWith('[') && data.endsWith(']'))) {
-		try {
-			data = JSON.parse(data);
-		} catch (e) {
-			//no-op
-		}
-	}
 	return data;
 }
 

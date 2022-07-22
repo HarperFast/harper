@@ -374,6 +374,16 @@ function castConfigValue(param, value) {
 		return null;
 	}
 
+	//in order to handle json and arrays we test the string to see if it seems minimally like an object or array and perform a JSON.parse on it.
+	//if it fails we assume it is just a regular string
+	if (typeof value === 'string' && ((value.startsWith('{') && value.endsWith('}')) || (value.startsWith('[') && value.endsWith(']')))) {
+		try {
+			return JSON.parse(value);
+		} catch (e) {
+			//no-op
+		}
+	}
+
 	return hdb_utils.autoCast(value);
 }
 

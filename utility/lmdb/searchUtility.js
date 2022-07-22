@@ -37,6 +37,52 @@ function iterateFullIndex(
 	offset = undefined
 ) {
 	let results = Object.create(null);
+	let primary_dbi;
+	let attr_dbi = environment_utility.openDBI(env, attribute); // verify existence of the attribute
+	if (attr_dbi[lmdb_terms.DBI_DEFINITION_NAME].is_hash_attribute) {
+		hash_attribute = attribute;
+		primary_dbi = attr_dbi;
+	}
+
+	lower_value = auto_cast(lower_value);
+	upper_value = auto_cast(upper_value);
+
+	let end = reverse === true ? lower_value : upper_value;
+	let start = reverse === true ? upper_value : lower_value;
+	let inclusive_end = reverse === true ? !exclusive_lower : !exclusive_upper;
+	let exclusive_start = reverse === true ? exclusive_upper : exclusive_lower;
+
+	for (let { key, value } of attr_dbi.getRange({
+		start,
+		end,
+		reverse,
+		limit,
+		offset,
+		inclusiveEnd: inclusive_end,
+		exclusiveStart: exclusive_start,
+	})) {
+		if (typeof key === 'string' && key.endsWith(OVERFLOW_MARKER)) {
+			// the entire value couldn't be encoded because it was too long, so need to search the attribute from
+			// the original record.
+			// first get the hash/primary dbi
+			if (!primary_dbi) {
+				// only have to open once per search
+				if (hash_attribute) primary_dbi = environment_utility.openDBI(env, hash_attribute);
+				else {
+					// not sure how often this gets called without a hash_attribute, as this would be kind of expensive
+					// if done frequently
+					let dbis = environment_utility.listDBIs(env);
+					for (let i = 0, l = dbis.length; i < l; i++) {
+						primary_dbi = environment_utility.openDBI(env, dbis[i]);
+						if (primary_dbi[lmdb_terms.DBI_DEFINITION_NAME].is_hash_attribute) break;
+					}
+				}
+			}
+			let record = primary_dbi.get(value);
+			key = record[attribute];
+		}
+
+
 
 	let dbi = environment_utility.openDBI(env, attribute);
 	if (dbi[lmdb_terms.DBI_DEFINITION_NAME].is_hash_attribute) {
@@ -50,6 +96,8 @@ function iterateFullIndex(
 		offset: offset,
 		reverse: reverse,
 	})) {
+		if (typeof key === 'string' && key.endsWith(OVERFLOW_MARKER))
+
 		eval_function(key, value, results, hash_attribute, attribute);
 	}
 	return results;
@@ -79,7 +127,7 @@ function iterateRangeNext(
 ) {
 	let results = [[], []];
 
-	let dbi = environment_utility.openDBI(env, attribute)
+	let dbi = environment_utility.openDBI(env, attribute);
 	if (dbi[lmdb_terms.DBI_DEFINITION_NAME].is_hash_attribute) {
 		hash_attribute = attribute;
 	}
@@ -106,8 +154,8 @@ function iterateRangeNext(
  * @param {lmdb.RootDatabase} env
  * @param {String} hash_attribute
  * @param {String} attribute
- * @param {Number|String} start_value
- * @param {Number|String} end_value
+ * @param {Number|String} lower_value
+ * @param {Number|String} upper_value
  * @param {boolean} reverse
  * @param {number} limit - defines the max number of entries to iterate
  * @param {number} offset - defines the entries to skip
@@ -117,58 +165,60 @@ function iterateRangeBetween(
 	env,
 	hash_attribute,
 	attribute,
-	start_value,
-	end_value,
+	lower_value,
+	upper_value,
 	reverse = false,
 	limit = undefined,
-	offset = undefined
+	offset = undefined,
+	exclusive_lower = false,
+	exclusive_upper = false
 ) {
 	let results = [[], []];
 
-	let dbi = environment_utility.openDBI(env, attribute);
-	if (dbi[lmdb_terms.DBI_DEFINITION_NAME].is_hash_attribute) {
+	let primary_dbi;
+	let attr_dbi = environment_utility.openDBI(env, attribute); // verify existence of the attribute
+	if (attr_dbi[lmdb_terms.DBI_DEFINITION_NAME].is_hash_attribute) {
 		hash_attribute = attribute;
+		primary_dbi = attr_dbi;
 	}
 
-	start_value = auto_cast(start_value);
-	start_value = common.convertKeyValueToWrite(start_value);
+	lower_value = auto_cast(lower_value);
+	upper_value = auto_cast(upper_value);
 
-	end_value = auto_cast(end_value);
-	end_value = common.convertKeyValueToWrite(end_value);
+	let end = reverse === true ? lower_value : upper_value;
+	let start = reverse === true ? upper_value : lower_value;
+	let inclusive_end = reverse === true ? !exclusive_lower : !exclusive_upper;
+	let exclusive_start = reverse === true ? exclusive_upper : exclusive_lower;
 
-	//get last key
-	let last;
-	for (let key of dbi.getKeys({ reverse: true, limit: 1 })) {
-		last = key;
-	}
-	if (end_value >= last) {
-		end_value = undefined;
-	}
-
-	//get first key
-	let first;
-	for (let key of dbi.getKeys({ start: false, limit: 1 })) {
-		first = key;
-	}
-	if (start_value <= first) {
-		start_value = false;
-	}
-
-	//advance the end_value by 1 key
-	let end;
-	let start_search = reverse === true ? start_value : end_value;
-	if (start_search !== undefined && start_search !== null) {
-		for (let key of dbi.getKeys({ start: start_search, reverse })) {
-			if (key !== start_search) {
-				end = key;
-				break;
+	for (let { key, value } of attr_dbi.getRange({
+		start,
+		end,
+		reverse,
+		limit,
+		offset,
+		inclusiveEnd: inclusive_end,
+		exclusiveStart: exclusive_start,
+	})) {
+		if (typeof key === 'string' && key.endsWith(OVERFLOW_MARKER)) {
+			// the entire value couldn't be encoded because it was too long, so need to search the attribute from
+			// the original record.
+			// first get the hash/primary dbi
+			if (!primary_dbi) {
+				// only have to open once per search
+				if (hash_attribute) primary_dbi = environment_utility.openDBI(env, hash_attribute);
+				else {
+					// not sure how often this gets called without a hash_attribute, as this would be kind of expensive
+					// if done frequently
+					let dbis = environment_utility.listDBIs(env);
+					for (let i = 0, l = dbis.length; i < l; i++) {
+						primary_dbi = environment_utility.openDBI(env, dbis[i]);
+						if (primary_dbi[lmdb_terms.DBI_DEFINITION_NAME].is_hash_attribute) break;
+					}
+				}
 			}
+			let record = primary_dbi.get(value);
+			key = record[attribute];
 		}
-	}
-
-	let start = reverse === true ? end_value : start_value;
-
-	for (let { key, value } of dbi.getRange({ start, end, reverse, limit, offset })) {
 		cursor_functions.pushResults(key, value, results, hash_attribute, attribute);
 	}
 	return results;
@@ -455,25 +505,22 @@ function contains(
 		let matching_keys;
 		let found_str = key.toString();
 		if (ends_with ? found_str.endsWith(search_value) : found_str.includes(search_value)) {
-			if (attr_dbi[lmdb_terms.DBI_DEFINITION_NAME].is_hash_attribute)
-				matching_keys = [key];
-			else
-				matching_keys = attr_dbi.getValues(key);
+			if (attr_dbi[lmdb_terms.DBI_DEFINITION_NAME].is_hash_attribute) matching_keys = [key];
+			else matching_keys = attr_dbi.getValues(key);
 		} else if (found_str.endsWith(OVERFLOW_MARKER)) {
 			// the entire value couldn't be encoded because it was too long, so need to search the attribute from
 			// the original record.
 			// first get the hash/primary dbi
-			if (!primary_dbi) { // only have to open once per search
-				if (hash_attribute)
-					primary_dbi = environment_utility.openDBI(env, hash_attribute);
+			if (!primary_dbi) {
+				// only have to open once per search
+				if (hash_attribute) primary_dbi = environment_utility.openDBI(env, hash_attribute);
 				else {
 					// not sure how often this gets called without a hash_attribute, as this would be kind of expensive
 					// if done frequently
 					let dbis = environment_utility.listDBIs(env);
 					for (let i = 0, l = dbis.length; i < l; i++) {
 						primary_dbi = environment_utility.openDBI(env, dbis[i]);
-						if (primary_dbi[lmdb_terms.DBI_DEFINITION_NAME].is_hash_attribute)
-							break;
+						if (primary_dbi[lmdb_terms.DBI_DEFINITION_NAME].is_hash_attribute) break;
 					}
 				}
 			}
@@ -482,8 +529,7 @@ function contains(
 				let record = primary_dbi.get(primary_key);
 				found_str = record[attribute].toString();
 				if (ends_with ? found_str.endsWith(search_value) : found_str.includes(search_value)) {
-					if (!matching_keys)
-						matching_keys = [];
+					if (!matching_keys) matching_keys = [];
 					matching_keys.push(primary_key);
 				}
 			}
@@ -532,31 +578,20 @@ function greaterThan(
 ) {
 	validateComparisonFunctions(env, attribute, search_value);
 	search_value = auto_cast(search_value);
-	search_value = common.convertKeyValueToWrite(search_value);
 
-	//if reverse = false we need to find the next value to start searching
-	let next_value;
-	if (reverse === true) {
-		next_value = search_value;
-	} else {
-		let dbi = environment_utility.openDBI(env, attribute);
-		for (let key of dbi.getKeys({ start: search_value === undefined ? false : search_value })) {
-			if (key > search_value) {
-				next_value = key;
-				break;
-			}
-		}
-	}
-
-	return iterateRangeNext(
+	let type = typeof search_value;
+	let upper_value = type === 'string' ? '\uffff' : type === 'number' ? Infinity : type === 'boolean' ? true : undefined;
+	return iterateRangeBetween(
 		env,
 		hash_attribute,
 		attribute,
-		next_value,
-		cursor_functions.greaterThanEqualCompare,
+		search_value,
+		upper_value,
 		reverse,
 		limit,
-		offset
+		offset,
+		true,
+		false
 	);
 }
 
@@ -582,51 +617,21 @@ function greaterThanEqual(
 ) {
 	validateComparisonFunctions(env, attribute, search_value);
 	search_value = auto_cast(search_value);
-	search_value = common.convertKeyValueToWrite(search_value);
 
-	let results = [[], []];
-
-	//if reverse = true we need to find the prev value to the search
-	let next_value;
-	let dbi;
-	if (reverse === false) {
-		next_value = search_value;
-	} else {
-		dbi = environment_utility.openDBI(env, attribute);
-
-		//get the first key
-		let first;
-		for (let key of dbi.getKeys({ start: false, limit: 1 })) {
-			first = key;
-		}
-
-		//if search equal or is less than the first key we set next value to be undefined, this will have the iterator go to the very first element
-		if (first >= search_value) {
-			next_value = undefined;
-		} else {
-			for (let key of dbi.getKeys({ start: search_value, reverse })) {
-				if (key < search_value) {
-					next_value = key;
-					break;
-				}
-			}
-		}
-	}
-
-	dbi = dbi || environment_utility.openDBI(env, attribute);
-	if (dbi[lmdb_terms.DBI_DEFINITION_NAME].is_hash_attribute) {
-		hash_attribute = attribute;
-	}
-
-	//because reversing only returns 1 entry from a dup sorted key we get all entries for the search value
-	let start_value = reverse === true ? undefined : next_value === undefined ? false : next_value;
-	let end_value = reverse === true ? (next_value === undefined ? false : next_value) : undefined;
-
-	for (let { key, value } of dbi.getRange({ start: start_value, end: end_value, reverse, limit, offset })) {
-		cursor_functions.greaterThanEqualCompare(search_value, key, value, results, hash_attribute, attribute);
-	}
-
-	return results;
+	let type = typeof search_value;
+	let upper_value = type === 'string' ? '\uffff' : type === 'number' ? Infinity : type === 'boolean' ? true : undefined;
+	return iterateRangeBetween(
+		env,
+		hash_attribute,
+		attribute,
+		search_value,
+		upper_value,
+		reverse,
+		limit,
+		offset,
+		false,
+		false
+	);
 }
 
 /**
@@ -651,44 +656,20 @@ function lessThan(
 ) {
 	validateComparisonFunctions(env, attribute, search_value);
 	search_value = auto_cast(search_value);
-	search_value = common.convertKeyValueToWrite(search_value);
-
-	let results = [[], []];
-	if (search_value === undefined || search_value === null) {
-		return results;
-	}
-
-	let dbi = environment_utility.openDBI(env, attribute);
-
-	if (dbi[lmdb_terms.DBI_DEFINITION_NAME].is_hash_attribute) {
-		hash_attribute = attribute;
-	}
-
-	let start;
-	let end;
-	if (reverse === true) {
-		//check if the search value exists, if it does we increment the limit & offset by 1 as we need to allow for skipping that entry
-		let value = dbi.get(search_value);
-		if (value !== undefined) {
-			if (Number.isInteger(offset)) {
-				offset++;
-			} else {
-				limit = limit === undefined ? undefined : limit + 1;
-			}
-		}
-
-		end = false;
-		start = search_value;
-	} else {
-		start = false;
-		end = search_value;
-	}
-
-	for (let { key, value } of dbi.getRange({ start, end, reverse, limit, offset })) {
-		cursor_functions.lessThanCompare(search_value, key, value, results, hash_attribute, attribute);
-	}
-
-	return results;
+	let type = typeof search_value;
+	let lower_value = type === 'string' ? '\x00' : type === 'number' ? -Infinity : type === 'boolean' ? false : undefined;
+	return iterateRangeBetween(
+		env,
+		hash_attribute,
+		attribute,
+		lower_value,
+		search_value,
+		reverse,
+		limit,
+		offset,
+		false,
+		true
+	);
 }
 
 /**
@@ -713,46 +694,20 @@ function lessThanEqual(
 ) {
 	validateComparisonFunctions(env, attribute, search_value);
 	search_value = auto_cast(search_value);
-	search_value = common.convertKeyValueToWrite(search_value);
-
-	let results = [[], []];
-
-	let dbi = environment_utility.openDBI(env, attribute);
-
-	if (dbi[lmdb_terms.DBI_DEFINITION_NAME].is_hash_attribute) {
-		hash_attribute = attribute;
-	}
-
-	let next_value;
-	for (let key of dbi.getKeys({ start: search_value })) {
-		if (key > search_value) {
-			next_value = key;
-			break;
-		}
-	}
-
-	let start;
-	let end;
-	if (reverse === true) {
-		//check if the search value exists, if it does we increment the limit & offset by 1 as we need to allow for skipping that entry
-		if (Number.isInteger(offset)) {
-			offset++;
-		} else {
-			limit = limit === undefined ? undefined : limit + 1;
-		}
-
-		end = false;
-		start = next_value;
-	} else {
-		start = false;
-		end = next_value;
-	}
-
-	for (let { key, value } of dbi.getRange({ start, end, reverse, limit, offset })) {
-		cursor_functions.lessThanEqualCompare(search_value, key, value, results, hash_attribute, attribute);
-	}
-
-	return results;
+	let type = typeof search_value;
+	let lower_value = type === 'string' ? '\x00' : type === 'number' ? -Infinity : type === 'boolean' ? false : undefined;
+	return iterateRangeBetween(
+		env,
+		hash_attribute,
+		attribute,
+		lower_value,
+		search_value,
+		reverse,
+		limit,
+		offset,
+		false,
+		false
+	);
 }
 
 /**

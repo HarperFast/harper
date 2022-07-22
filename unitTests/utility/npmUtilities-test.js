@@ -483,7 +483,7 @@ describe('test installModules function', () => {
 		check_project_paths_restore();
 		cf_routes_dir_restore();
 		run_command_restore();
-	});
+	}).timeout(20000);
 
 	it('test real happy path, with dry run', async () => {
 		let cf_routes_dir_restore = npm_utils.__set__('CF_ROUTES_DIR', MOCK_CF_DIR_PATH);
