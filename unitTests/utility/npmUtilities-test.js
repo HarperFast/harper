@@ -536,7 +536,7 @@ describe('test installModules function', () => {
 		check_npm_installed_restore();
 		check_project_paths_restore();
 		cf_routes_dir_restore();
-	}).timeout(5000);
+	}).timeout(15000);
 });
 
 describe('test modulesValidator', () => {

@@ -382,7 +382,7 @@ describe('Test pm2 utilityFunctions module', () => {
 		// This afterEach is like this because it was the only way to get the timeout increase working.
 		// The stopDeleteAllServices was taking longer than 2 sec.
 		afterEach(async function () {
-			this.timeout(10000);
+			this.timeout(20000);
 			await stopDeleteAllServices();
 		});
 
@@ -430,7 +430,7 @@ describe('Test pm2 utilityFunctions module', () => {
 			expect(process_meta.length).to.equal(1);
 			expect(process_meta[0].name).to.equal('IPC');
 			expect(process_meta[0].pm2_env.status).to.equal('online');
-		}).timeout(20000);
+		}).timeout(60000);
 
 		it('Test starts reply service', async () => {
 			await utility_functions.startService('Clustering Reply Service');
@@ -593,7 +593,7 @@ describe('Test pm2 utilityFunctions module', () => {
 		// This afterEach is like this because it was the only way to get the timeout increase working.
 		// The stopDeleteAllServices was taking longer than 2 sec.
 		afterEach(async function () {
-			this.timeout(10000);
+			this.timeout(20000);
 			await stopDeleteAllServices();
 			sandbox.resetHistory();
 		});
@@ -787,7 +787,7 @@ describe('Test pm2 utilityFunctions module', () => {
 			const process_meta = await utility_functions.list(PM2_LOGROTATE);
 			expect(process_meta[0].name).to.equal(PM2_LOGROTATE);
 			expect(process_meta[0].pm2_env.status).to.equal('stopped');
-		}).timeout(20000);
+		}).timeout(60000);
 
 		it('Test error from connect causes promise to reject', async () => {
 			const connect_rw = utility_functions.__set__('connect', sandbox.stub().throws(new Error(test_err)));

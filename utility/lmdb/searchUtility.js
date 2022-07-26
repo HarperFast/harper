@@ -37,57 +37,12 @@ function iterateFullIndex(
 	offset = undefined
 ) {
 	let results = Object.create(null);
-	let primary_dbi;
-	let attr_dbi = environment_utility.openDBI(env, attribute); // verify existence of the attribute
-	if (attr_dbi[lmdb_terms.DBI_DEFINITION_NAME].is_hash_attribute) {
-		hash_attribute = attribute;
-		primary_dbi = attr_dbi;
-	}
-
-	lower_value = auto_cast(lower_value);
-	upper_value = auto_cast(upper_value);
-
-	let end = reverse === true ? lower_value : upper_value;
-	let start = reverse === true ? upper_value : lower_value;
-	let inclusive_end = reverse === true ? !exclusive_lower : !exclusive_upper;
-	let exclusive_start = reverse === true ? exclusive_upper : exclusive_lower;
-
-	for (let { key, value } of attr_dbi.getRange({
-		start,
-		end,
-		reverse,
-		limit,
-		offset,
-		inclusiveEnd: inclusive_end,
-		exclusiveStart: exclusive_start,
-	})) {
-		if (typeof key === 'string' && key.endsWith(OVERFLOW_MARKER)) {
-			// the entire value couldn't be encoded because it was too long, so need to search the attribute from
-			// the original record.
-			// first get the hash/primary dbi
-			if (!primary_dbi) {
-				// only have to open once per search
-				if (hash_attribute) primary_dbi = environment_utility.openDBI(env, hash_attribute);
-				else {
-					// not sure how often this gets called without a hash_attribute, as this would be kind of expensive
-					// if done frequently
-					let dbis = environment_utility.listDBIs(env);
-					for (let i = 0, l = dbis.length; i < l; i++) {
-						primary_dbi = environment_utility.openDBI(env, dbis[i]);
-						if (primary_dbi[lmdb_terms.DBI_DEFINITION_NAME].is_hash_attribute) break;
-					}
-				}
-			}
-			let record = primary_dbi.get(value);
-			key = record[attribute];
-		}
-
-
 
 	let dbi = environment_utility.openDBI(env, attribute);
 	if (dbi[lmdb_terms.DBI_DEFINITION_NAME].is_hash_attribute) {
 		hash_attribute = attribute;
 	}
+	const overflowCheck = getOverflowCheck(env, hash_attribute, attribute);
 
 	for (let { key, value } of dbi.getRange({
 		start: reverse ? undefined : false,
@@ -96,9 +51,7 @@ function iterateFullIndex(
 		offset: offset,
 		reverse: reverse,
 	})) {
-		if (typeof key === 'string' && key.endsWith(OVERFLOW_MARKER))
-
-		eval_function(key, value, results, hash_attribute, attribute);
+		eval_function(overflowCheck(key, value), value, results, hash_attribute, attribute);
 	}
 	return results;
 }
@@ -135,9 +88,10 @@ function iterateRangeNext(
 	//because reversing only returns 1 entry from a dup sorted key we get all entries for the search value
 	let start_value = reverse === true ? undefined : search_value === undefined ? false : search_value;
 	let end_value = reverse === true ? search_value : undefined;
+	const overflowCheck = getOverflowCheck(env, hash_attribute, attribute);
 
 	for (let { key, value } of dbi.getRange({ start: start_value, end: end_value, reverse, limit, offset })) {
-		eval_function(search_value, key, value, results, hash_attribute, attribute);
+		eval_function(search_value, overflowCheck(key, value), value, results, hash_attribute, attribute);
 	}
 
 	return results;
@@ -177,6 +131,7 @@ function iterateRangeBetween(
 
 	let primary_dbi;
 	let attr_dbi = environment_utility.openDBI(env, attribute); // verify existence of the attribute
+	const overflowCheck =  getOverflowCheck(env, hash_attribute, attribute);
 	if (attr_dbi[lmdb_terms.DBI_DEFINITION_NAME].is_hash_attribute) {
 		hash_attribute = attribute;
 		primary_dbi = attr_dbi;
@@ -199,6 +154,14 @@ function iterateRangeBetween(
 		inclusiveEnd: inclusive_end,
 		exclusiveStart: exclusive_start,
 	})) {
+		cursor_functions.pushResults(overflowCheck(key, value), value, results, hash_attribute, attribute);
+	}
+	return results;
+}
+
+function getOverflowCheck(env, hash_attribute, attribute) {
+	let primary_dbi;
+	return function(key, value) {
 		if (typeof key === 'string' && key.endsWith(OVERFLOW_MARKER)) {
 			// the entire value couldn't be encoded because it was too long, so need to search the attribute from
 			// the original record.
@@ -219,9 +182,8 @@ function iterateRangeBetween(
 			let record = primary_dbi.get(value);
 			key = record[attribute];
 		}
-		cursor_functions.pushResults(key, value, results, hash_attribute, attribute);
+		return key;
 	}
-	return results;
 }
 
 /**
@@ -306,7 +268,7 @@ function iterateDBI(env, attribute, reverse = false, limit = undefined, offset =
 		throw new Error(LMDB_ERRORS.ATTRIBUTE_REQUIRED);
 	}
 
-	return iterateFullIndex(env, attribute, attribute, cursor_functions.iterateDBI, reverse, limit, offset);
+	return iterateFullIndex(env, undefined, attribute, cursor_functions.iterateDBI, reverse, limit, offset);
 }
 
 /**
