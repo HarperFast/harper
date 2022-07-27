@@ -449,12 +449,11 @@ function contains(
 	validateComparisonFunctions(env, attribute, search_value);
 
 	let results = [[], []];
-	let primary_dbi;
 	let attr_dbi = environment_utility.openDBI(env, attribute); // verify existence of the attribute
 	if (attr_dbi[lmdb_terms.DBI_DEFINITION_NAME].is_hash_attribute) {
 		hash_attribute = attribute;
-		primary_dbi = attr_dbi;
 	}
+	const overflowCheck = getOverflowCheck(env, hash_attribute, attribute);
 
 	offset = Number.isInteger(offset) ? offset : 0;
 	for (let key of attr_dbi.getKeys({ end: reverse ? false : undefined, reverse })) {
@@ -462,53 +461,39 @@ function contains(
 			break;
 		}
 
-		let matching_keys;
 		let found_str = key.toString();
-		if (ends_with ? found_str.endsWith(search_value) : found_str.includes(search_value)) {
-			if (attr_dbi[lmdb_terms.DBI_DEFINITION_NAME].is_hash_attribute) matching_keys = [key];
-			else matching_keys = attr_dbi.getValues(key);
-		} else if (found_str.endsWith(OVERFLOW_MARKER)) {
-			// the entire value couldn't be encoded because it was too long, so need to search the attribute from
-			// the original record.
-			// first get the hash/primary dbi
-			if (!primary_dbi) {
-				// only have to open once per search
-				if (hash_attribute) primary_dbi = environment_utility.openDBI(env, hash_attribute);
-				else {
-					// not sure how often this gets called without a hash_attribute, as this would be kind of expensive
-					// if done frequently
-					let dbis = environment_utility.listDBIs(env);
-					for (let i = 0, l = dbis.length; i < l; i++) {
-						primary_dbi = environment_utility.openDBI(env, dbis[i]);
-						if (primary_dbi[lmdb_terms.DBI_DEFINITION_NAME].is_hash_attribute) break;
-					}
-				}
-			}
-			// now get each record so we can check the full value
+		if (found_str.endsWith(OVERFLOW_MARKER)) {
+			// the entire value couldn't be encoded because it was too long, so need to search the attributes from
+			// the original record
 			for (let primary_key of attr_dbi.getValues(key)) {
-				let record = primary_dbi.get(primary_key);
-				found_str = record[attribute].toString();
-				if (ends_with ? found_str.endsWith(search_value) : found_str.includes(search_value)) {
-					if (!matching_keys) matching_keys = [];
-					matching_keys.push(primary_key);
+				// this will get the full value from each entire record so we can check it
+				let full_key = overflowCheck(key, primary_key);
+				if (ends_with ? full_key.endsWith(search_value) : full_key.includes(search_value)) {
+					found_match(full_key, primary_key);
+				}
+			}
+		} else if (ends_with ? found_str.endsWith(search_value) : found_str.includes(search_value)) {
+			if (attr_dbi[lmdb_terms.DBI_DEFINITION_NAME].is_hash_attribute)
+				found_match(key, key);
+			else {
+				for (let primary_key of attr_dbi.getValues(key)) {
+					found_match(key, primary_key);
 				}
 			}
 		}
-		if (matching_keys) {
-			for (let primary_key of matching_keys) {
-				if (offset > 0) {
-					offset--;
-					continue;
-				}
-
-				if (limit === 0) {
-					break;
-				}
-
-				cursor_functions.pushResults(key, primary_key, results, hash_attribute, attribute);
-				limit--;
+		function found_match(key, primary_key) {
+			if (offset > 0) {
+				offset--;
+				return;
 			}
+			if (limit === 0) {
+				return;
+			}
+
+			cursor_functions.pushResults(key, primary_key, results, hash_attribute, attribute);
+			limit--;
 		}
+
 	}
 
 	return results;
