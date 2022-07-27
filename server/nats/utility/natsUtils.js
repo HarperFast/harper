@@ -230,6 +230,7 @@ async function getServerList() {
 
 	await connection.publish('$SYS.REQ.SERVER.PING.VARZ', undefined, { reply: subj });
 	await connection.flush();
+	await hdb_utils.async_set_timeout(50); // delay for NATS to process published messages
 	await sub.drain();
 	await connection.close();
 	await get_servers; // make sure we have finished getting the servers
