@@ -129,12 +129,10 @@ function iterateRangeBetween(
 ) {
 	let results = [[], []];
 
-	let primary_dbi;
 	let attr_dbi = environment_utility.openDBI(env, attribute); // verify existence of the attribute
 	const overflowCheck =  getOverflowCheck(env, hash_attribute, attribute);
 	if (attr_dbi[lmdb_terms.DBI_DEFINITION_NAME].is_hash_attribute) {
 		hash_attribute = attribute;
-		primary_dbi = attr_dbi;
 	}
 
 	lower_value = auto_cast(lower_value);
@@ -542,7 +540,13 @@ function greaterThan(
 	search_value = auto_cast(search_value);
 
 	let type = typeof search_value;
-	let upper_value = type === 'string' ? '\uffff' : type === 'number' ? Infinity : type === 'boolean' ? true : undefined;
+	let upper_value;
+	if (type === 'string')
+		upper_value = '\uffff';
+	else if (type === 'number')
+		upper_value = Infinity;
+	else if (type === 'boolean')
+		upper_value = true;
 	return iterateRangeBetween(
 		env,
 		hash_attribute,
@@ -581,7 +585,13 @@ function greaterThanEqual(
 	search_value = auto_cast(search_value);
 
 	let type = typeof search_value;
-	let upper_value = type === 'string' ? '\uffff' : type === 'number' ? Infinity : type === 'boolean' ? true : undefined;
+	let upper_value;
+	if (type === 'string')
+		upper_value = '\uffff';
+	else if (type === 'number')
+		upper_value = Infinity;
+	else if (type === 'boolean')
+		upper_value = true;
 	return iterateRangeBetween(
 		env,
 		hash_attribute,
@@ -619,7 +629,13 @@ function lessThan(
 	validateComparisonFunctions(env, attribute, search_value);
 	search_value = auto_cast(search_value);
 	let type = typeof search_value;
-	let lower_value = type === 'string' ? '\x00' : type === 'number' ? -Infinity : type === 'boolean' ? false : undefined;
+	let lower_value;
+	if (type === 'string')
+		lower_value = '\x00';
+	else if (type === 'number')
+		lower_value = -Infinity;
+	else if (type === 'boolean')
+		lower_value = false;
 	return iterateRangeBetween(
 		env,
 		hash_attribute,
@@ -657,7 +673,13 @@ function lessThanEqual(
 	validateComparisonFunctions(env, attribute, search_value);
 	search_value = auto_cast(search_value);
 	let type = typeof search_value;
-	let lower_value = type === 'string' ? '\x00' : type === 'number' ? -Infinity : type === 'boolean' ? false : undefined;
+	let lower_value;
+	if (type === 'string')
+		lower_value = '\x00';
+	else if (type === 'number')
+		lower_value = -Infinity;
+	else if (type === 'boolean')
+		lower_value = false;
 	return iterateRangeBetween(
 		env,
 		hash_attribute,

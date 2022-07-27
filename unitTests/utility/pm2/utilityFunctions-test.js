@@ -492,7 +492,7 @@ describe('Test pm2 utilityFunctions module', () => {
 		// This afterEach is like this because it was the only way to get the timeout increase working.
 		// The stopDeleteAllServices was taking longer than 2 sec.
 		afterEach(async function () {
-			this.timeout(10000);
+			this.timeout(20000);
 			await stopDeleteAllServices();
 		});
 
