@@ -8,6 +8,7 @@ logs/*.log
 .vs_code/*
 /bin/coverage/*
 coverage/*
+!coverage/lcov.info
 hdb_boot_properties.file
 *test_export.json.json
 /unitTests/envDir/*
