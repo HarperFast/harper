@@ -9,6 +9,7 @@ const hdb_utils = require('../common_utils');
 // eslint-disable-next-line no-unused-vars
 const lmdb = require('lmdb');
 const DeleteRecordsResponseObject = require('./DeleteRecordsResponseObject');
+const { OVERFLOW_MARKER, MAX_SEARCH_KEY_LENGTH } = lmdb_terms;
 
 /**
  *  deletes rows and their entries in all indices
@@ -55,7 +56,7 @@ async function deleteRecords(env, hash_attribute, ids) {
 					continue;
 				}
 
-				let promise = env.dbis[hash_attribute].ifVersion(cast_hash_value, 1, () => {
+				let promise = env.dbis[hash_attribute].ifVersion(cast_hash_value, lmdb.IF_EXISTS, () => {
 					//always just delete the hash_attribute entry upfront
 					env.dbis[hash_attribute].remove(cast_hash_value);
 
@@ -64,8 +65,7 @@ async function deleteRecords(env, hash_attribute, ids) {
 						let attribute = all_dbis[y];
 						if (
 							!record.hasOwnProperty(attribute) ||
-							attribute === hash_attribute ||
-							attribute === lmdb_terms.BLOB_DBI_NAME
+							attribute === hash_attribute
 						) {
 							continue;
 						}
@@ -73,15 +73,15 @@ async function deleteRecords(env, hash_attribute, ids) {
 						let dbi = env.dbis[attribute];
 						let value = record[attribute];
 						if (value !== null && value !== undefined) {
-							if (common.checkIsBlob(value)) {
-								env.dbis[lmdb_terms.BLOB_DBI_NAME].remove(`${attribute}/${cast_hash_value}`);
-							} else {
-								try {
-									let converted_key = common.convertKeyValueToWrite(value);
-									dbi.remove(converted_key, cast_hash_value);
-								} catch (e) {
-									log.warn(`cannot delete from attribute: ${attribute}, ${value}:${cast_hash_value}`);
+							try {
+								let values = common.getIndexedValues(value);
+								if (values) {
+									for (let i = 0, l = values.length; i < l; i++) {
+										dbi.remove(values[i], cast_hash_value);
+									}
 								}
+							} catch (e) {
+								log.warn(`cannot delete from attribute: ${attribute}, ${value}:${cast_hash_value}`);
 							}
 						}
 					}

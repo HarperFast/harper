@@ -299,34 +299,6 @@ describe('test lmdbGetDataByValue module', () => {
 			assert.deepStrictEqual(results, expected);
 		});
 
-		it('test search value is json', async () => {
-			let record = { id: 'jsontest', city: { cool: true } };
-			await write_utility.insertRecords(env, 'id', ['id', 'city'], [test_utils.deepClone(record)]);
-
-			let search_object = new SearchObject('dev', 'test', 'city', record.city, 'id', ['id', 'city']);
-			let results = await test_utils.assertErrorAsync(lmdb_search, [search_object], undefined);
-			let expected = {
-				[record.id]: record,
-			};
-			assert.deepEqual(results, expected);
-
-			await delete_utility.deleteRecords(env, 'id', [record.id]);
-		});
-
-		it('test search value is array', async () => {
-			let record = { id: 'arraytest', city: ['awesome', 'great'] };
-			await write_utility.insertRecords(env, 'id', ['id', 'city'], [test_utils.deepClone(record)]);
-
-			let search_object = new SearchObject('dev', 'test', 'city', record.city, 'id', ['id', 'city']);
-			let results = await test_utils.assertErrorAsync(lmdb_search, [search_object], undefined);
-			let expected = {
-				[record.id]: record,
-			};
-			assert.deepEqual(results, expected);
-
-			await delete_utility.deleteRecords(env, 'id', [record.id]);
-		});
-
 		it('test searchall', async () => {
 			let expected = Object.create(null);
 			test_data.forEach((data) => {

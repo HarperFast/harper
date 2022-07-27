@@ -42,7 +42,8 @@ module.exports = {
 	isBoolean: isBoolean,
 	errorizeMessage: errorizeMessage,
 	stripFileExtension: stripFileExtension,
-	autoCast: autoCast,
+	autoCast,
+	autoCastJSONDeep,
 	removeDir: removeDir,
 	compareVersions,
 	escapeRawValue: escapeRawValue,
@@ -225,17 +226,40 @@ function autoCast(data) {
 	if (autoCasterIsNumberCheck(data) === true) {
 		return Number(data);
 	}
+	return data;
+}
 
+function autoCastJSON(data) {
 	//in order to handle json and arrays we test the string to see if it seems minimally like an object or array and perform a JSON.parse on it.
 	//if it fails we assume it is just a regular string
-	if ((data.startsWith('{') && data.endsWith('}')) || (data.startsWith('[') && data.endsWith(']'))) {
+	if (typeof data === 'string' && ((data.startsWith('{') && data.endsWith('}')) || (data.startsWith('[') && data.endsWith(']')))) {
 		try {
-			data = JSON.parse(data);
+			return JSON.parse(data);
 		} catch (e) {
 			//no-op
 		}
 	}
 	return data;
+}
+function autoCastJSONDeep(data) {
+	if (data && typeof data === 'object') {
+		if (Array.isArray(data)) {
+			for (let i = 0, l = data.length; i < l; i++) {
+				let element = data[i];
+				let casted = autoCastJSONDeep(element);
+				if (casted !== element)
+					data[i] = casted;
+			}
+		} else {
+			for (let i in data) {
+				let element = data[i];
+				let casted = autoCastJSONDeep(element);
+				if (casted !== element)
+					data[i] = casted;
+			}
+		}
+		return data;
+	} else return autoCastJSON(data);
 }
 
 /**

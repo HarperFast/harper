@@ -10,6 +10,7 @@ class OpenDBIObject {
 	 */
 	constructor(dup_sort, use_versions = false) {
 		this.dupSort = dup_sort === true;
+		this.encoding = dup_sort ? 'ordered-binary' : 'msgpack';
 		this.useVersions = use_versions;
 		this.sharedStructuresKey = Symbol.for('structures');
 	}
