@@ -481,19 +481,18 @@ function contains(
 				}
 			}
 		}
-		function found_match(key, primary_key) {
-			if (offset > 0) {
-				offset--;
-				return;
-			}
-			if (limit === 0) {
-				return;
-			}
-
-			cursor_functions.pushResults(key, primary_key, results, hash_attribute, attribute);
-			limit--;
+	}
+	function found_match(key, primary_key) {
+		if (offset > 0) {
+			offset--;
+			return;
+		}
+		if (limit === 0) {
+			return;
 		}
 
+		cursor_functions.pushResults(key, primary_key, results, hash_attribute, attribute);
+		limit--;
 	}
 
 	return results;
