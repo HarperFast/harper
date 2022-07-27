@@ -108,29 +108,21 @@ describe('Test removeNode module', () => {
 		});
 	});
 
-	it('Test error thrown and record not inserted if error reply from remote node', async () => {
+	it('Test error from request to remote node doesnt stop remove node', async () => {
 		const error_reply = new UpdateRemoteResponseObject('error', 'Error from remote node');
 		request_stub.resolves(error_reply);
-		await test_utils.assertErrorAsync(
-			remove_node,
-			[test_request],
-			test_utils.generateHDBError('Error returned from remote node node1_test: Error from remote node', 500)
-		);
-		expect(update_work_stream_stub.called).to.be.false;
-		expect(delete_stub.called).to.be.false;
+		await remove_node(test_request);
+		expect(update_work_stream_stub.called).to.be.true;
+		expect(delete_stub.called).to.be.true;
 	});
 
-	it('Test error is handled correctly if no remote nodes listening', async () => {
+	it('Test if no remote nodes listening local node proceeds with removal', async () => {
 		const fake_no_response_err = new Error();
 		fake_no_response_err.code = '503';
 		request_stub.throws(fake_no_response_err);
-		await test_utils.assertErrorAsync(
-			remove_node,
-			[test_request],
-			test_utils.generateHDBError("Unable to remove_node, node 'node1_test' is not listening.", 500)
-		);
-		expect(update_work_stream_stub.called).to.be.false;
-		expect(delete_stub.called).to.be.false;
+		await remove_node(test_request);
+		expect(update_work_stream_stub.called).to.be.true;
+		expect(delete_stub.called).to.be.true;
 	});
 
 	it('Test error is thrown if the node record does not exist', async () => {

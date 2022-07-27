@@ -15,6 +15,7 @@ const hdb_terms = require('../../../utility/hdbTerms');
 const hdb_logger = require('../../../utility/logging/harper_logger');
 const nats_config = require('../../../server/nats/utility/natsConfig');
 const nats_utils = require('../../../server/nats/utility/natsUtils');
+const clustering_utils = require('../../../utility/clustering/clusterUtilities');
 const util = require('util');
 const exec = util.promisify(require('child_process').exec);
 const user = require('../../../security/user');
@@ -121,6 +122,7 @@ describe('Test pm2 utilityFunctions module', () => {
 	let os_cpus_stub;
 	let create_work_stream_stub;
 	let remove_nats_config_stub;
+	let get_all_node_records_stub;
 
 	before(() => {
 		fs.mkdirpSync(path.resolve(__dirname, '../../envDir/clustering'));
@@ -130,6 +132,7 @@ describe('Test pm2 utilityFunctions module', () => {
 		sandbox.stub(user, 'listUsers').resolves(FAKE_USER_LIST);
 		sandbox.stub(user, 'getClusterUser').resolves(fake_cluster_user);
 		remove_nats_config_stub = sandbox.stub(nats_config, 'removeNatsConfig');
+		get_all_node_records_stub = sandbox.stub(clustering_utils, 'getAllNodeRecords').resolves([]);
 		env_mngr.setProperty(hdb_terms.CONFIG_PARAMS.CLUSTERING_USER, FAKE_CLUSTER_USER1);
 		env_mngr.setProperty(hdb_terms.CONFIG_PARAMS.CLUSTERING_HUBSERVER_NETWORK_PORT, 7711);
 		env_mngr.setProperty(hdb_terms.CONFIG_PARAMS.CLUSTERING_NODENAME, 'unitTestNodeName');
@@ -467,6 +470,14 @@ describe('Test pm2 utilityFunctions module', () => {
 			expect(process_meta[0].pm2_env.status).to.equal('online');
 			expect(process_meta[1].pm2_env.status).to.equal('online');
 		}).timeout(20000);
+
+		it('Test starts clustering upgrade', async () => {
+			const start_stub = sandbox.stub();
+			const start_rw = utility_functions.__set__('start', start_stub);
+			await utility_functions.startService('Upgrade-4-0-0');
+			expect(start_stub.args[0][0].name).to.equal('Upgrade-4-0-0');
+			start_rw();
+		});
 
 		it('Test error handled as expected', async () => {
 			await test_utils.assertErrorAsync(
@@ -1021,11 +1032,13 @@ describe('Test pm2 utilityFunctions module', () => {
 		const create_queue_stub = sandbox.stub();
 		const start_service_rw = utility_functions.__set__('startService', start_service_stub);
 		const create_queue_rw = utility_functions.__set__('nats_utils.createWorkQueueStream', create_queue_stub);
+		get_all_node_records_stub.resolves([{ system_info: { hdb_version: '3.x.x' } }]);
 		await utility_functions.startClustering();
 		expect(start_service_stub.getCall(0).args[0]).to.equal('Clustering Hub');
 		expect(start_service_stub.getCall(1).args[0]).to.equal('Clustering Leaf');
 		expect(start_service_stub.getCall(2).args[0]).to.equal('Clustering Ingest Service');
 		expect(start_service_stub.getCall(3).args[0]).to.equal('Clustering Reply Service');
+		expect(start_service_stub.getCall(4).args[0]).to.equal('Upgrade-4-0-0');
 		expect(create_queue_stub.args[0][0]).to.eql({
 			stream_name: '__HARPERDB_WORK_QUEUE__',
 			durable_name: 'HDB_WORK_QUEUE',
@@ -1034,6 +1047,7 @@ describe('Test pm2 utilityFunctions module', () => {
 		});
 		start_service_rw();
 		create_queue_rw();
+		get_all_node_records_stub.resolves([]);
 	});
 
 	describe('Test isHdbRestartRunning function', () => {

@@ -122,7 +122,7 @@ required_permissions.set(routes.setRoutes.name, new permission(true, []));
 required_permissions.set(routes.getRoutes.name, new permission(true, []));
 required_permissions.set(routes.deleteRoutes.name, new permission(true, []));
 required_permissions.set(config_utils.setConfiguration.name, new permission(true, []));
-required_permissions.set(cluster_status.name, new permission(true, []));
+required_permissions.set(cluster_status.clusterStatus.name, new permission(true, []));
 required_permissions.set(reg.getFingerprint.name, new permission(true, []));
 required_permissions.set(reg.setLicense.name, new permission(true, []));
 required_permissions.set(delete_.deleteFilesBefore.name, new permission(true, []));

@@ -1,12 +1,13 @@
 const async = require('async');
 const system_schema = require('../json/systemSchema.json');
 const logger = require('../utility/logging/harper_logger');
-const { callbackify } = require('util');
+const { callbackify, promisify } = require('util');
 
 module.exports = {
 	setSchemaDataToGlobal: setSchemaDataToGlobal,
 	getTableSchema: getTableSchema,
 	getSystemSchema: getSystemSchema,
+	setSchemaDataToGlobalAsync: promisify(setSchemaDataToGlobal),
 };
 
 // These require statements were moved below the module.exports to resolve circular dependencies within the harperBridge module.
