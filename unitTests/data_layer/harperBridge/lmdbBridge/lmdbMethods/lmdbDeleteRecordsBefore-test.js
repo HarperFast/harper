@@ -215,7 +215,7 @@ describe('test validateDropSchema module', () => {
 		it('Test delete where table has no records', async () => {
 			let delete_before = { schema: 'dev', table: 'test2', date: new Date(timestamps[0]) };
 			let results = await test_utils.assertErrorAsync(delete_records_before, [delete_before], undefined);
-			assert.deepStrictEqual(results, undefined);
+			assert.deepStrictEqual(results.message, 'No records found to delete');
 		});
 
 		it('Test delete first chunk of records', async () => {
