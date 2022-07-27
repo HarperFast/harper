@@ -61,6 +61,7 @@ const PROCESS_LOG_NAMES = {
 	CLI: 'cli.log',
 	PM2: 'pm2.log',
 	CLUSTERING_UPGRADE: 'clustering_upgrade.log',
+	JOBS: 'jobs.log',
 };
 
 const LOG_LEVELS = {
@@ -113,7 +114,6 @@ const SERVICE_SERVERS = {
 const LAUNCH_SERVICE_SCRIPTS = {
 	HDB: path.resolve(__dirname, '../launchServiceScripts/launchHarperDB.js'),
 	CUSTOM_FUNCTIONS: path.resolve(__dirname, '../launchServiceScripts/launchCustomFunctions.js'),
-	JOB: path.resolve(__dirname, '../launchServiceScripts/launchJobThread.js'),
 	NATS_INGEST_SERVICE: path.resolve(__dirname, '../launchServiceScripts/launchNatsIngestService.js'),
 	NATS_REPLY_SERVICE: path.resolve(__dirname, '../launchServiceScripts/launchNatsReplyService.js'),
 	NODES_UPGRADE_4_0_0: path.resolve(__dirname, '../launchServiceScripts/launchUpdateNodes4-0-0.js'),
