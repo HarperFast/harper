@@ -20,7 +20,15 @@ module.exports = addNode;
  * @param req - request from API. An object containing a node_name and an array of subscriptions.
  * @returns {Promise<*>}
  */
-async function addNode(req) {
+
+/**
+ * Adds a node to the cluster.
+ * @param req - request from API. An object containing a node_name and an array of subscriptions.
+ * @param skip_validation - if true will skip check for existing record. This is here to accommodate
+ * upgrades to HDB 4.0.0, this upgrade had to force an addNode when record already exists in hdb nodes.
+ * @returns {Promise<string>}
+ */
+async function addNode(req, skip_validation = false) {
 	hdb_logger.trace('addNode called with:', req);
 	clustering_utils.checkClusteringEnabled();
 	const validation = addUpdateNodeValidator(req);
@@ -29,16 +37,19 @@ async function addNode(req) {
 	}
 
 	const remote_node_name = req.node_name;
-	const record = await clustering_utils.getNodeRecord(remote_node_name);
-	if (!hdb_utils.isEmptyOrZeroLength(record)) {
-		throw handleHDBError(
-			new Error(),
-			`Node '${remote_node_name}' has already been added, perform update_node to proceed.`,
-			HTTP_STATUS_CODES.BAD_REQUEST,
-			undefined,
-			undefined,
-			true
-		);
+	// Skip option is here to accommodate upgrades from pre 4.0.0 HDB versions.
+	if (!skip_validation) {
+		const record = await clustering_utils.getNodeRecord(remote_node_name);
+		if (!hdb_utils.isEmptyOrZeroLength(record)) {
+			throw handleHDBError(
+				new Error(),
+				`Node '${remote_node_name}' has already been added, perform update_node to proceed.`,
+				HTTP_STATUS_CODES.BAD_REQUEST,
+				undefined,
+				undefined,
+				true
+			);
+		}
 	}
 
 	// Sanitize the input from API and build two objects, one that will be inserted into the hdb_nodes table

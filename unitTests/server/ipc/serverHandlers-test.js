@@ -9,7 +9,7 @@ chai.use(sinon_chai);
 const harper_logger = require('../../../utility/logging/harper_logger');
 const user_schema = require('../../../security/user');
 const server_ipc_handlers = rewire('../../../server/ipc/serverHandlers');
-const job_runner = require('../../../server/jobRunner');
+const job_runner = require('../../../server/jobs/jobRunner');
 const global_schema = require('../../../utility/globalSchema');
 const schema_describe = require('../../../data_layer/schemaDescribe');
 

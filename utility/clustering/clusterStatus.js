@@ -13,7 +13,10 @@ const { ErrorCode } = require('nats');
 const clustering_enabled = env_mgr.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_ENABLED);
 const this_node_name = env_mgr.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_NODENAME);
 
-module.exports = clusterStatus;
+module.exports = {
+	clusterStatus,
+	buildNodeStatus,
+};
 
 /**
  * Function will msg all the remote nodes in the hdb_nodes table. From the replies
@@ -72,7 +75,7 @@ async function buildNodeStatus(node_record, connections) {
 		}
 	} catch (err) {
 		// If the request to the remote node fails set status accordingly and log error.
-		hdb_logger.error(`Error getting node status from ${remote_node_name}`, err);
+		hdb_logger.warn(`Error getting node status from ${remote_node_name}`, err);
 		if (err.code === ErrorCode.NoResponders) status = nats_terms.CLUSTER_STATUS_STATUSES.NO_RESPONDERS;
 		else if (err.code === ErrorCode.Timeout) status = nats_terms.CLUSTER_STATUS_STATUSES.TIMEOUT;
 		else status = nats_terms.CLUSTER_STATUS_STATUSES.CLOSED;
@@ -96,7 +99,11 @@ async function buildNodeStatus(node_record, connections) {
 			name: remote_node_name,
 			system_info: reply?.message?.system_info,
 		};
-		await cluster_utils.upsertNodeRecord(update_record);
+
+		// pre 4.0.0 clustering upgrade relies on system_info.hdb_version being 3.x.x, for this reason dont update any version that match this
+		if (node_record.system_info?.hdb_version !== hdb_terms.PRE_4_0_0_VERSION) {
+			await cluster_utils.upsertNodeRecord(update_record);
+		}
 	} catch (err) {
 		hdb_logger.error('Cluster status encountered an error updating system info for node:', remote_node_name, err);
 	}

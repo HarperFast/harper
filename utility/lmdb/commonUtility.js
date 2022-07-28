@@ -7,7 +7,7 @@ const lmdb_terms = require('./terms');
 const Buffer = require('buffer').Buffer;
 const microtime = require('microtime');
 
-const MAX_BYTE_SIZE = lmdb_terms.MAX_BYTE_SIZE;
+const { OVERFLOW_MARKER, MAX_SEARCH_KEY_LENGTH } = lmdb_terms;
 const PRIMITIVES = ['number', 'string', 'symbol', 'boolean', 'bigint'];
 /**
  * validates the env argument
@@ -97,6 +97,33 @@ function primitiveCheck(value) {
 }
 
 /**
+ * Return all the indexable values from an attribute, ready to be indexed
+ */
+function getIndexedValues(value) {
+	if (value === null || value === undefined)
+		return;
+	if (PRIMITIVES.includes(typeof value)) {
+		if (value.length > MAX_SEARCH_KEY_LENGTH) {
+			return [value.slice(0, MAX_SEARCH_KEY_LENGTH) + OVERFLOW_MARKER];
+		}
+		return [value];
+	}
+	let values;
+	if (Array.isArray(value)) {
+		values = [];
+		for (let i = 0, l = value.length; i < l; i++) {
+			let element = value[i];
+			if (PRIMITIVES.includes(typeof element)) {
+				if (element.length > MAX_SEARCH_KEY_LENGTH)
+					values.push(element.slice(0, MAX_SEARCH_KEY_LENGTH) + OVERFLOW_MARKER);
+				else values.push(element);
+			}
+		}
+	}
+	return values;
+}
+
+/**
  * takes a key from LMDB and if not of type string returns the key, otherwise it does a nominal check if the string has aspects of an object/array and attempts to JSON parse it
  * @param raw_value
  * @returns {*}
@@ -145,4 +172,5 @@ module.exports = {
 	convertKeyValueFromSearch,
 	getMicroTime,
 	checkIsBlob,
+	getIndexedValues,
 };

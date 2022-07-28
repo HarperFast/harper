@@ -21,7 +21,7 @@ const All_ATTRIBUTES = ['id', 'name', 'age', 'city'];
 const LMDB_TEST_ERRORS = require('../../commonTestErrors').LMDB_ERRORS_ENUM;
 
 const MULTI_RECORD_ARRAY = [
-    {id:1, name:'Kyle', age:46, city:'Denver'},
+    {id:1, name:'Kyle', age:46, city:['Athens', 'Denver']},
     {id:2, name:'Jerry', age:32},
     {id:3, name: 'Hank', age: 57},
     {id:4, name:'Joy', age: 44, city:'Denver'}

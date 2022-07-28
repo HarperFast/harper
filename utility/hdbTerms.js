@@ -46,6 +46,7 @@ const PROCESS_DESCRIPTORS = {
 	REGISTER: 'Register',
 	JOB: 'Job',
 	PM2_LOGROTATE: 'pm2-logrotate',
+	CLUSTERING_UPGRADE_4_0_0: 'Upgrade-4-0-0',
 };
 
 const PROCESS_LOG_NAMES = {
@@ -59,6 +60,8 @@ const PROCESS_LOG_NAMES = {
 	INSTALL: 'install.log',
 	CLI: 'cli.log',
 	PM2: 'pm2.log',
+	CLUSTERING_UPGRADE: 'clustering_upgrade.log',
+	JOBS: 'jobs.log',
 };
 
 const LOG_LEVELS = {
@@ -111,9 +114,9 @@ const SERVICE_SERVERS = {
 const LAUNCH_SERVICE_SCRIPTS = {
 	HDB: path.resolve(__dirname, '../launchServiceScripts/launchHarperDB.js'),
 	CUSTOM_FUNCTIONS: path.resolve(__dirname, '../launchServiceScripts/launchCustomFunctions.js'),
-	JOB: path.resolve(__dirname, '../launchServiceScripts/launchJobThread.js'),
 	NATS_INGEST_SERVICE: path.resolve(__dirname, '../launchServiceScripts/launchNatsIngestService.js'),
 	NATS_REPLY_SERVICE: path.resolve(__dirname, '../launchServiceScripts/launchNatsReplyService.js'),
+	NODES_UPGRADE_4_0_0: path.resolve(__dirname, '../launchServiceScripts/launchUpdateNodes4-0-0.js'),
 };
 
 const ROLE_TYPES_ENUM = {
@@ -880,6 +883,8 @@ const PM2_PROCESS_STATUSES = {
 	ONLINE: 'online',
 };
 
+const PRE_4_0_0_VERSION = '3.x.x';
+
 module.exports = {
 	LOCAL_HARPERDB_OPERATIONS,
 	HDB_SUPPORT_ADDRESS,
@@ -1004,4 +1009,5 @@ module.exports = {
 	HDB_ROOT_DIR_NAME,
 	CLUSTERING_PROCESSES,
 	FOREGROUND_PID_FILE,
+	PRE_4_0_0_VERSION,
 };

@@ -2,9 +2,9 @@
 
 const INTERNAL_DBIS_NAME = '__dbis__';
 const ENVIRONMENT_NAME_KEY = '__environment_name__';
-const BLOB_DBI_NAME = '__blob__';
 const DBI_DEFINITION_NAME = '__dbi_defintion__';
-const MAX_BYTE_SIZE = 254;
+//LMDB has a 1978 byte limit for keys, but we try to retain plenty of padding so we don't have to calculate encoded byte length
+const MAX_SEARCH_KEY_LENGTH = 256;
 
 const SEARCH_TYPES = {
 	EQUALS: 'equals',
@@ -29,6 +29,10 @@ const SEARCH_TYPES = {
 };
 
 const TIMESTAMP_NAMES = ['__createdtime__', '__updatedtime__'];
+// This is appended to the end of keys that are larger than the max key size, as a marker to indicate
+// the full value must be retrieved from the full record (from the hash/primary dbi) for operations
+// that require the full value (contains and ends-with operators).
+const OVERFLOW_MARKER = '\uffff';
 
 const TRANSACTIONS_DBI_NAMES_ENUM = {
 	TIMESTAMP: 'timestamp',
@@ -43,9 +47,9 @@ module.exports = {
 	DBI_DEFINITION_NAME,
 	SEARCH_TYPES,
 	TIMESTAMP_NAMES,
-	BLOB_DBI_NAME,
-	MAX_BYTE_SIZE,
+	MAX_SEARCH_KEY_LENGTH,
 	ENVIRONMENT_NAME_KEY,
 	TRANSACTIONS_DBI_NAMES_ENUM,
 	TRANSACTIONS_DBIS,
+	OVERFLOW_MARKER
 };

@@ -254,9 +254,9 @@ describe('test validateDropSchema module', () => {
 				assert.deepEqual(actual, expected);
 			}
 
-			await test_utils.assertErrorAsync(fs.access, [path.join(DEV_SCHEMA_PATH, 'test')], undefined);
+			await test_utils.assertErrorAsync(fs.access, [path.join(DEV_SCHEMA_PATH, 'test.mdb')], undefined);
 
-			await test_utils.assertErrorAsync(fs.access, [path.join(DEV_SCHEMA_PATH, 'test2')], undefined);
+			await test_utils.assertErrorAsync(fs.access, [path.join(DEV_SCHEMA_PATH, 'test2.mdb')], undefined);
 
 			let drop_object = new DropAttributeObject('dev');
 			await test_utils.assertErrorAsync(lmdb_drop_schema, [drop_object], undefined);

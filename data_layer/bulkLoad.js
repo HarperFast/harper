@@ -490,7 +490,7 @@ async function insertChunk(json_message, insert_results, reject, results, parser
 	if (results_data.length === 0) {
 		return;
 	}
-
+	hdb_utils.autoCastJSONDeep(results_data);
 	// parser pause and resume prevent the parser from getting ahead of insert.
 	if (parser) {
 		parser.pause();

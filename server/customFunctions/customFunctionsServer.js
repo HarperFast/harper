@@ -6,9 +6,9 @@ const fg = require('fast-glob');
 const fs = require('fs');
 
 const fastify = require('fastify');
-const fastify_cors = require('fastify-cors');
-const fastify_static = require('fastify-static');
-const autoload = require('fastify-autoload');
+const fastify_cors = require('@fastify/cors');
+const fastify_static = require('@fastify/static');
+const autoload = require('@fastify/autoload');
 const request_time_plugin = require('../serverHelpers/requestTimePlugin');
 const env = require('../../utility/environment/environmentManager');
 const terms = require('../../utility/hdbTerms');
@@ -93,7 +93,7 @@ async function customFunctionsServer() {
 		try {
 			//now that server is fully loaded/ready, start listening on port provided in config settings
 			harper_logger.info(`Custom Functions process starting on port ${props_server_port}`);
-			await server.listen(props_server_port, '::');
+			await server.listen({ port: props_server_port, host: '::' });
 			harper_logger.info(`Custom Functions process running on port ${props_server_port}`);
 		} catch (err) {
 			server.close();
@@ -177,7 +177,7 @@ async function buildRoutes(cf_server) {
 					});
 			}
 
-			// check for a public folder and, if present, add fastify-static to the server and set up its route, too
+			// check for a public folder and, if present, add @fastify/static to the server and set up its route, too
 			if (set_up_static_route) {
 				harper_logger.info(`Custom Functions setting up webserver for ${project_name}`);
 				cf_server

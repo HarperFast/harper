@@ -12,6 +12,8 @@ const env = require('../../../utility/environment/environmentManager');
 const logger = require('../../../utility/logging/harper_logger');
 const test_utils = require('../../../unitTests/test_utils');
 const common_utils = require('../../../utility/common_utils');
+const routes = require('../../../utility/clustering/routes');
+const insert = require('../../../data_layer/insert');
 
 const ROOT = 'yourcomputer/hdb';
 
@@ -182,7 +184,6 @@ describe('Test 4-0-0 module', () => {
 				error = err;
 			}
 			expect(error.name).to.equal(TEST_ERROR);
-			expect(log_error_stub.args[0][0].name).to.equal('Unit test error');
 			expect(console_log_stub.args[3][0]).to.equal(
 				'There was a problem updating the HarperDB boot properties file. Please check the log for details.'
 			);
@@ -197,7 +198,6 @@ describe('Test 4-0-0 module', () => {
 				error = err;
 			}
 			expect(error.name).to.equal(TEST_ERROR);
-			expect(log_error_stub.args[0][0]).to.equal(error);
 			expect(console_error_stub.firstCall.args[0]).to.equal(
 				'Unable to initialize new properties. Please check the log for details.'
 			);
@@ -212,9 +212,180 @@ describe('Test 4-0-0 module', () => {
 				error = err;
 			}
 			expect(error.name).to.equal(TEST_ERROR);
-			expect(log_error_stub.args[0][0]).to.equal(error);
 			expect(console_error_stub.args[0][0]).to.equal(
 				'There was a problem deleting the old settings file and directory. Please check the log for details.'
+			);
+		});
+	});
+
+	describe('Test updateHdbNodesTable function', () => {
+		const test_nodes = [
+			{
+				name: 'chicken1',
+				host: 'test.io',
+				port: 113345,
+				subscriptions: [
+					{
+						channel: 'dev:dog',
+						subscribe: false,
+						publish: true,
+					},
+					{
+						channel: 'dev:cat',
+						subscribe: true,
+						publish: true,
+					},
+				],
+			},
+			{
+				name: 'chicken_2',
+				host: '100.23.4.56',
+				port: 11345,
+				subscriptions: [
+					{
+						channel: 'dev:dog',
+						subscribe: false,
+						publish: true,
+					},
+				],
+			},
+			{
+				name: 'dog',
+				host: '100.23.4.53',
+				port: 11344,
+				subscriptions: [
+					{
+						channel: 'dev:dog',
+						subscribe: false,
+						publish: true,
+					},
+				],
+			},
+		];
+		let search_by_value_stub = sandbox.stub().resolves(test_nodes);
+		let update_stub;
+		let set_routes_stub;
+		let update_nodes;
+		let console_error_stub;
+
+		before(() => {
+			set_routes_stub = sandbox.stub(routes, 'setRoutes');
+			update_stub = sandbox.stub(insert, 'update');
+			update_nodes = directive_4_0_0_rw.__get__('updateNodes');
+			directive_4_0_0_rw.__set__('p_search_by_value', search_by_value_stub);
+			console_error_stub = sandbox.stub(console, 'error');
+		});
+
+		afterEach(() => {
+			sandbox.resetHistory();
+		});
+
+		it('Test update and set routes are called with correct values', async () => {
+			await update_nodes();
+			expect(update_stub.args[0][0].records[0]).to.eql({
+				name: 'chicken1',
+				subscriptions: [
+					{
+						schema: 'dev',
+						table: 'dog',
+						publish: true,
+						subscribe: false,
+					},
+					{
+						schema: 'dev',
+						table: 'cat',
+						publish: true,
+						subscribe: true,
+					},
+				],
+				system_info: {
+					hdb_version: '3.x.x',
+					node_version: undefined,
+					platform: undefined,
+				},
+			});
+			expect(update_stub.args[0][0].records[1]).to.eql({
+				name: 'chicken_2',
+				subscriptions: [
+					{
+						schema: 'dev',
+						table: 'dog',
+						publish: true,
+						subscribe: false,
+					},
+				],
+				system_info: {
+					hdb_version: '3.x.x',
+					node_version: undefined,
+					platform: undefined,
+				},
+			});
+			expect(update_stub.args[0][0].records[2]).to.eql({
+				name: 'dog',
+				subscriptions: [
+					{
+						schema: 'dev',
+						table: 'dog',
+						publish: true,
+						subscribe: false,
+					},
+				],
+				system_info: {
+					hdb_version: '3.x.x',
+					node_version: undefined,
+					platform: undefined,
+				},
+			});
+			expect(set_routes_stub.args[0][0]).to.eql({
+				server: 'hub',
+				routes: [
+					{
+						host: 'test.io',
+						port: 113345,
+					},
+					{
+						host: '100.23.4.56',
+						port: 11345,
+					},
+					{
+						host: '100.23.4.53',
+						port: 11344,
+					},
+				],
+			});
+		});
+
+		it('Test invalid node name is caught', async () => {
+			const nodes_bad_name = test_utils.deepClone(test_nodes);
+			nodes_bad_name[0].name = 'dev.dog';
+			search_by_value_stub.resolves(nodes_bad_name);
+			let error;
+			try {
+				await update_nodes();
+			} catch (err) {
+				error = err;
+			}
+
+			expect(error).to.equal(
+				"Node name 'dev.dog' is invalid, must not contain ., * or >. Please change name and try again."
+			);
+			expect(console_error_stub.args[1][0]).to.equal(
+				'There was a problem updating the hdb_nodes table. Please check the log for details.'
+			);
+		});
+
+		it('Test error from set routes is caught and messaged logged', async () => {
+			search_by_value_stub.resolves(test_nodes);
+			set_routes_stub.throws(new Error('trouble setting routes'));
+			let error;
+			try {
+				await update_nodes();
+			} catch (err) {
+				error = err;
+			}
+			expect(error.message).to.eql('trouble setting routes');
+			expect(console_error_stub.args[0][0]).to.equal(
+				'There was a problem setting the clustering routes. Please check the log for details.'
 			);
 		});
 	});

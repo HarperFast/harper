@@ -111,9 +111,9 @@ describe("test lmdbCreateTable module", ()=>{
         let expected_table = test_utils.assignObjecttoNullObject(TABLE_SYSTEM_DATA_TEST_A);
         let schema_path = path.join(BASE_SCHEMA_PATH, CREATE_TABLE_OBJ_TEST_A.schema);
         let transactions_path = path.join(BASE_PATH, 'transactions');
-        let table_path = path.join(schema_path, CREATE_TABLE_OBJ_TEST_A.table, 'data.mdb');
+        let table_path = path.join(schema_path, CREATE_TABLE_OBJ_TEST_A.table + '.mdb');
         let expected_attributes = ['__createdtime__', '__updatedtime__', 'id'];
-        let expected_dbis = ['__blob__' , '__createdtime__', '__updatedtime__', 'id'];
+        let expected_dbis = ['__createdtime__', '__updatedtime__', 'id'];
 
         await test_utils.assertErrorAsync(lmdb_create_table, [TABLE_SYSTEM_DATA_TEST_A, CREATE_TABLE_OBJ_TEST_A], undefined);
 
@@ -142,8 +142,8 @@ describe("test lmdbCreateTable module", ()=>{
 
         //validate the transactions environments
         let transaction_path = path.join(transactions_path, CREATE_TABLE_OBJ_TEST_A.schema);
-        let table_transaction_path = path.join(transactions_path, CREATE_TABLE_OBJ_TEST_A.schema, CREATE_TABLE_OBJ_TEST_A.table, 'data.mdb');
-        let expected_txn_dbis = ['__blob__' , 'hash_value', 'timestamp', 'user_name'];
+        let table_transaction_path = path.join(transactions_path, CREATE_TABLE_OBJ_TEST_A.schema, CREATE_TABLE_OBJ_TEST_A.table + '.mdb');
+        let expected_txn_dbis = ['hash_value', 'timestamp', 'user_name'];
         await test_utils.assertErrorAsync(fs.access, [table_transaction_path], undefined);
         let txn_env = await test_utils.assertErrorAsync(environment_utility.openEnvironment, [transaction_path, CREATE_TABLE_OBJ_TEST_A.table, true], undefined);
         let txn_dbis = test_utils.assertErrorSync(environment_utility.listDBIs, [txn_env], undefined);
@@ -157,8 +157,8 @@ describe("test lmdbCreateTable module", ()=>{
         let expected_table = test_utils.assignObjecttoNullObject(TABLE_SYSTEM_DATA_TEST_B);
         let schema_path = path.join(BASE_SCHEMA_PATH, CREATE_TABLE_OBJ_TEST_B.schema);
         let transactions_path = path.join(BASE_PATH, 'transactions');
-        let table_path = path.join(schema_path, CREATE_TABLE_OBJ_TEST_B.table, 'data.mdb');
-        let expected_attributes = ['__blob__', '__createdtime__', '__updatedtime__', 'name'];
+        let table_path = path.join(schema_path, CREATE_TABLE_OBJ_TEST_B.table + '.mdb');
+        let expected_attributes = ['__createdtime__', '__updatedtime__', 'name'];
 
         await test_utils.assertErrorAsync(lmdb_create_table, [TABLE_SYSTEM_DATA_TEST_B, CREATE_TABLE_OBJ_TEST_B], undefined);
 
@@ -187,8 +187,8 @@ describe("test lmdbCreateTable module", ()=>{
 
         //validate the transactions environments
         let transaction_path = path.join(transactions_path, CREATE_TABLE_OBJ_TEST_B.schema);
-        let table_transaction_path = path.join(transaction_path, CREATE_TABLE_OBJ_TEST_B.table, 'data.mdb');
-        let expected_txn_dbis = ['__blob__' , 'hash_value', 'timestamp', 'user_name'];
+        let table_transaction_path = path.join(transaction_path, CREATE_TABLE_OBJ_TEST_B.table + '.mdb');
+        let expected_txn_dbis = ['hash_value', 'timestamp', 'user_name'];
         await test_utils.assertErrorAsync(fs.access, [table_transaction_path], undefined);
         let txn_env = await test_utils.assertErrorAsync(environment_utility.openEnvironment, [transaction_path, CREATE_TABLE_OBJ_TEST_B.table, true], undefined);
         let txn_dbis = test_utils.assertErrorSync(environment_utility.listDBIs, [txn_env], undefined);

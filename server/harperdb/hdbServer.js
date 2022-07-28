@@ -11,10 +11,10 @@ const fs = require('fs');
 const fastify = require('fastify');
 
 const pjson = require(`${__dirname}/../../package.json`);
-const fastify_cors = require('fastify-cors');
-const fastify_compress = require('fastify-compress');
-const fastify_static = require('fastify-static');
-const fastify_helmet = require('fastify-helmet');
+const fastify_cors = require('@fastify/cors');
+const fastify_compress = require('@fastify/compress');
+const fastify_static = require('@fastify/static');
+const fastify_helmet = require('@fastify/helmet');
 const request_time_plugin = require('../serverHelpers/requestTimePlugin');
 const guidePath = require('path');
 
@@ -102,7 +102,7 @@ async function hdbServer() {
 		const server_type = is_https ? 'HTTPS' : 'HTTP';
 		try {
 			//now that server is fully loaded/ready, start listening on port provided in config settings
-			await server.listen(props_server_port, '::');
+			await server.listen({ port: props_server_port, host: '::' });
 			harper_logger.info(`HarperDB ${pjson.version} ${server_type} Server running on port ${props_server_port}`);
 		} catch (err) {
 			server.close();

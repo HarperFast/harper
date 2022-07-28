@@ -20,7 +20,7 @@ const cluster_status = require('../../utility/clustering/clusterStatus');
 const routes = require('../../utility/clustering/routes');
 const export_ = require('../../data_layer/export');
 const op_auth = require('../../utility/operation_authorization');
-const jobs = require('./../jobs');
+const jobs = require('../jobs/jobs');
 const terms = require('../../utility/hdbTerms');
 const { hdb_errors, handleHDBError } = require('../../utility/errors/hdbError');
 const { HTTP_STATUS_CODES } = hdb_errors;
@@ -31,7 +31,7 @@ const insert = require('../../data_layer/insert');
 const global_schema = require('../../utility/globalSchema');
 const system_information = require('../../utility/environment/systemInformation');
 const transact_to_clustering_utils = require('../../utility/clustering/transactToClusteringUtilities');
-const job_runner = require('./../jobRunner');
+const job_runner = require('../jobs/jobRunner');
 const token_authentication = require('../../security/tokenAuthentication');
 const config_utils = require('../../config/configUtils');
 const transaction_log = require('../../utility/logging/transactionLog');
@@ -234,14 +234,11 @@ async function executeJob(json) {
 		result = await jobs.addJob(json);
 		new_job_object = result.createdJob;
 		let job_runner_message = new job_runner.RunnerMessage(new_job_object, json);
-		// purposefully not waiting for await response as we want to callback immediately.
-		job_runner.parseMessage(job_runner_message).catch((e) => {
-			harper_logger.error(`Got an error trying to run a job with message ${job_runner_message}. ${e}`);
-		});
+		await job_runner.parseMessage(job_runner_message);
 
 		return `Starting job with id ${new_job_object.id}`;
 	} catch (err) {
-		let message = `There was an error adding a job: ${err.http_resp_msg ? err.http_resp_msg : err}`;
+		let message = `There was an error executing job: ${err.http_resp_msg ? err.http_resp_msg : err}`;
 		harper_logger.error(message);
 		throw handleHDBError(err, message);
 	}
@@ -287,7 +284,7 @@ function initializeOperationFunctionMap() {
 	op_func_map.set(terms.OPERATIONS_ENUM.REMOVE_NODE, new OperationFunctionObject(remove_node));
 	op_func_map.set(terms.OPERATIONS_ENUM.CONFIGURE_CLUSTER, new OperationFunctionObject(configure_cluster));
 	op_func_map.set(terms.OPERATIONS_ENUM.SET_CONFIGURATION, new OperationFunctionObject(config_utils.setConfiguration));
-	op_func_map.set(terms.OPERATIONS_ENUM.CLUSTER_STATUS, new OperationFunctionObject(cluster_status));
+	op_func_map.set(terms.OPERATIONS_ENUM.CLUSTER_STATUS, new OperationFunctionObject(cluster_status.clusterStatus));
 	op_func_map.set(terms.OPERATIONS_ENUM.CLUSTER_SET_ROUTES, new OperationFunctionObject(routes.setRoutes));
 	op_func_map.set(terms.OPERATIONS_ENUM.CLUSTER_GET_ROUTES, new OperationFunctionObject(routes.getRoutes));
 	op_func_map.set(terms.OPERATIONS_ENUM.CLUSTER_DELETE_ROUTES, new OperationFunctionObject(routes.deleteRoutes));

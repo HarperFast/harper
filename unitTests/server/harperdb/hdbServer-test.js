@@ -40,7 +40,13 @@ const test_req_options = {
 
 // eslint-disable-next-line no-magic-numbers
 const REQ_MAX_BODY_SIZE = 1024 * 1024 * 1024; //this is 1GB in bytes
-const DEFAULT_FASTIFY_PLUGIN_ARR = ['fastify-helmet', 'hdb-request-time', 'fastify-compress', 'fastify-static'];
+const DEFAULT_FASTIFY_PLUGIN_ARR = [
+	'fastify',
+	'@fastify/helmet',
+	'hdb-request-time',
+	'@fastify/compress',
+	'@fastify/static',
+];
 
 let setUsersToGlobal_stub;
 let setSchemaGlobal_stub;
@@ -201,7 +207,7 @@ describe('Test hdbServer module', () => {
 			server.close();
 		});
 
-		it('should register 3 fastify plugins by default - fastify-helmet, fastify-compress, fastify-static', async () => {
+		it('should register 3 fastify plugins by default - @fastify/helmet, @fastify/compress, @fastify/static', async () => {
 			const hdbServer_rw = await rewire(HDB_SERVER_PATH);
 			await new Promise((resolve) => setTimeout(resolve, 100));
 			const server = hdbServer_rw.__get__('server');
@@ -293,7 +299,7 @@ describe('Test hdbServer module', () => {
 			server.close();
 		});
 
-		it('should not register fastify-cors if cors is not enabled', async () => {
+		it('should not register @fastify/cors if cors is not enabled', async () => {
 			test_utils.preTestPrep();
 
 			const hdbServer_rw = await rewire(HDB_SERVER_PATH);
@@ -304,18 +310,19 @@ describe('Test hdbServer module', () => {
 				(s) => String(s) === 'Symbol(fastify.pluginNameChain)'
 			);
 
-			expect(server[plugin_key].length).to.equal(4);
+			expect(server[plugin_key].length).to.equal(5);
 			expect(server[plugin_key]).to.deep.equal([
-				'fastify-helmet',
+				'fastify',
+				'@fastify/helmet',
 				'hdb-request-time',
-				'fastify-compress',
-				'fastify-static',
+				'@fastify/compress',
+				'@fastify/static',
 			]);
 
 			server.close();
 		});
 
-		it('should register fastify-cors if cors is enabled', async () => {
+		it('should register @fastify/cors if cors is enabled', async () => {
 			const test_config_settings = { cors_enabled: true, cors_whitelist: 'harperdb.io, sam-johnson.io' };
 			test_utils.preTestPrep(test_config_settings);
 
@@ -327,13 +334,13 @@ describe('Test hdbServer module', () => {
 				(s) => String(s) === 'Symbol(fastify.pluginNameChain)'
 			);
 
-			expect(server[plugin_key].length).to.equal(5);
-			expect(server[plugin_key]).to.deep.equal(['fastify-cors', ...DEFAULT_FASTIFY_PLUGIN_ARR]);
+			expect(server[plugin_key].length).to.equal(6);
+			expect(server[plugin_key].sort()).to.deep.equal(['@fastify/cors', ...DEFAULT_FASTIFY_PLUGIN_ARR].sort());
 
 			server.close();
 		});
 
-		it('should register fastify-cors if cors is enabled boolean has mixed cap spelling', async () => {
+		it('should register @fastify/cors if cors is enabled boolean has mixed cap spelling', async () => {
 			const test_config_settings = { cors_enabled: 'TRue', cors_whitelist: 'harperdb.io, sam-johnson.io' };
 			test_utils.preTestPrep(test_config_settings);
 
@@ -345,8 +352,8 @@ describe('Test hdbServer module', () => {
 				(s) => String(s) === 'Symbol(fastify.pluginNameChain)'
 			);
 
-			expect(server[plugin_key].length).to.equal(5);
-			expect(server[plugin_key]).to.deep.equal(['fastify-cors', ...DEFAULT_FASTIFY_PLUGIN_ARR]);
+			expect(server[plugin_key].length).to.equal(6);
+			expect(server[plugin_key].sort()).to.deep.equal(['@fastify/cors', ...DEFAULT_FASTIFY_PLUGIN_ARR].sort());
 
 			server.close();
 		});

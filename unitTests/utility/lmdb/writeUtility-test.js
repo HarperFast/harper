@@ -25,7 +25,7 @@ const UUID_VALUE = 'aaa-111-bbb-222';
 const BASE_TEST_PATH = path.join(test_utils.getMockLMDBPath(), 'lmdbTest');
 let TEST_ENVIRONMENT_NAME = 'test';
 const HASH_ATTRIBUTE_NAME = 'id';
-const ALL_ATTRIBUTES = ['id', 'name', 'age', '__createdtime__', '__updatedtime__', '__blob__'];
+const ALL_ATTRIBUTES = ['id', 'name', 'age', '__createdtime__', '__updatedtime__'];
 const ONE_RECORD_ARRAY = [{ id: '1', name: 'Kyle', age: '46' }];
 
 const ONE_RECORD_ARRAY_EXPECTED = [
@@ -215,7 +215,6 @@ describe('Test writeUtility module', () => {
 			await environment_utility.createDBI(env, 'id', false, true);
 			await environment_utility.createDBI(env, 'name', true);
 			await environment_utility.createDBI(env, 'age', true);
-			await environment_utility.createDBI(env, '__blob__', false);
 		});
 
 		afterEach(async () => {
@@ -470,7 +469,7 @@ describe('Test writeUtility module', () => {
 			assert.deepStrictEqual(insert_records, []);
 		});
 
-		it('test long text is written to blob dbi', async () => {
+		it('test long text is written properly', async () => {
 			let record = {
 				id: 10000,
 				text: "Occupy messenger bag microdosing yr, kale chips neutra la croix VHS ugh wayfarers street art. Ethical cronut whatever, cold-pressed viral post-ironic man bun swag marfa green juice. Knausgaard gluten-free selvage ethical subway tile sartorial man bun butcher selfies raclette paleo. Fam brunch plaid woke authentic dreamcatcher hot chicken quinoa gochujang slow-carb selfies keytar PBR&B street art pinterest. Narwhal tote bag glossier paleo cronut salvia cloud bread craft beer butcher meditation fingerstache hella migas 8-bit messenger bag. Tattooed schlitz palo santo gluten-free, wayfarers tumeric squid. Hella keytar thundercats chambray, occupy iPhone paleo slow-carb jianbing everyday carry 90's distillery polaroid fanny pack. Kombucha cray PBR&B shoreditch 8-bit, adaptogen vinyl swag meditation 3 wolf moon. Selvage art party retro kitsch pour-over iPhone street art celiac etsy cred cliche gastropub. Kombucha migas marfa listicle cliche. Godard kombucha ennui lumbersexual, austin pop-up raclette retro. Man braid kale chips pitchfork, tote bag hoodie poke mumblecore. Bitters shoreditch tbh everyday carry keffiyeh raw denim kale chips.",
@@ -484,17 +483,14 @@ describe('Test writeUtility module', () => {
 			let expected_result = new InsertRecordsResponseObject([record.id], [], TXN_TIMESTAMP);
 			assert.deepStrictEqual(result, expected_result);
 
-			let value = env.dbis.__blob__.get(`text/${record.id}`);
-			assert.deepStrictEqual(value, record.text);
-
 			let keys = [];
 			let records = [];
 			for (let { key, value } of env.dbis.text.getRange({ start: false })) {
 				keys.push(key);
 				records.push(value);
 			}
-			assert.deepStrictEqual(keys, []);
-			assert.deepStrictEqual(records, []);
+			assert.strictEqual(keys.length, 1);
+			assert.deepStrictEqual(records, [10000]);
 		});
 
 		it('test insert with alasql function', async () => {
@@ -565,7 +561,6 @@ describe('Test writeUtility module', () => {
 			TEST_ENVIRONMENT_NAME = uuid();
 			env = await environment_utility.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
 			await environment_utility.createDBI(env, 'id', false, true);
-			await environment_utility.createDBI(env, '__blob__', false);
 			let insert_records = test_utils.deepClone(ONE_RECORD_ARRAY);
 			await write_utility.insertRecords(env, HASH_ATTRIBUTE_NAME, test_utils.deepClone(ALL_ATTRIBUTES), insert_records);
 		});
@@ -626,7 +621,7 @@ describe('Test writeUtility module', () => {
 		});
 
 		it('test update one existing row', async () => {
-			let all_attributes_for_update = ['__blob__', '__createdtime__', '__updatedtime__', 'age', 'height', 'id', 'name'];
+			let all_attributes_for_update = ['__createdtime__', '__updatedtime__', 'age', 'height', 'id', 'name'];
 
 			let records = [];
 			for (let { key, value } of env.dbis[HASH_ATTRIBUTE_NAME].getRange({ start: false })) {
@@ -659,7 +654,7 @@ describe('Test writeUtility module', () => {
 		});
 
 		it('test update one existing row with row whose timestamp is older than row in database', async () => {
-			let all_attributes_for_update = ['__blob__', '__createdtime__', '__updatedtime__', 'age', 'height', 'id', 'name'];
+			let all_attributes_for_update = ['__createdtime__', '__updatedtime__', 'age', 'height', 'id', 'name'];
 
 			let records = [];
 			for (let { key, value } of env.dbis[HASH_ATTRIBUTE_NAME].getRange({ start: false })) {
@@ -691,7 +686,7 @@ describe('Test writeUtility module', () => {
 		});
 
 		it('test update one existing row, generate timestamps = false, but no updatedtimestamp', async () => {
-			let all_attributes_for_update = ['__blob__', '__createdtime__', '__updatedtime__', 'age', 'height', 'id', 'name'];
+			let all_attributes_for_update = ['__createdtime__', '__updatedtime__', 'age', 'height', 'id', 'name'];
 
 			let records = [];
 			for (let { key, value } of env.dbis[HASH_ATTRIBUTE_NAME].getRange({ start: false })) {
@@ -724,7 +719,7 @@ describe('Test writeUtility module', () => {
 		});
 
 		it('test update one existing row, generate timestamps = false, updated timestamp is newer the one in db', async () => {
-			let all_attributes_for_update = ['__blob__', '__createdtime__', '__updatedtime__', 'age', 'height', 'id', 'name'];
+			let all_attributes_for_update = ['__createdtime__', '__updatedtime__', 'age', 'height', 'id', 'name'];
 
 			let records = [];
 			for (let { key, value } of env.dbis[HASH_ATTRIBUTE_NAME].getRange({ start: false })) {
@@ -760,7 +755,7 @@ describe('Test writeUtility module', () => {
 		});
 
 		it('test update one existing row & one non-existing row', async () => {
-			let all_attributes_for_update = ['__blob__', '__createdtime__', '__updatedtime__', 'age', 'height', 'id', 'name'];
+			let all_attributes_for_update = ['__createdtime__', '__updatedtime__', 'age', 'height', 'id', 'name'];
 
 			let records = [];
 			for (let { key, value } of env.dbis[HASH_ATTRIBUTE_NAME].getRange({ start: false })) {
@@ -799,7 +794,6 @@ describe('Test writeUtility module', () => {
 
 		it('test partially updating row & make sure other attributes are untouched', async () => {
 			let all_attributes_for_update = [
-				'__blob__',
 				'__createdtime__',
 				'__updatedtime__',
 				'age',
@@ -845,7 +839,6 @@ describe('Test writeUtility module', () => {
 
 		it('test partially updating row to have long text, then change the long text', async () => {
 			let all_attributes_for_update = [
-				'__blob__',
 				'__createdtime__',
 				'__updatedtime__',
 				'age',
@@ -889,9 +882,6 @@ describe('Test writeUtility module', () => {
 			];
 			assert.deepStrictEqual(records, expected2);
 
-			let value = env.dbis['__blob__'].get(`text/${record.id}`);
-			assert.deepStrictEqual(value, record.text);
-
 			//set text to undefined & verify it's gone
 
 			orig_records = [];
@@ -917,14 +907,10 @@ describe('Test writeUtility module', () => {
 				{ id: 1, name: 'Kyle', age: 46, text: null, __createdtime__: TIMESTAMP, __updatedtime__: TIMESTAMP },
 			];
 			assert.deepStrictEqual(records, expected2);
-
-			value = env.dbis['__blob__'].get(`text/${record.id}`);
-			assert.deepStrictEqual(value, undefined);
 		});
 
 		it('test partially updating row to have long text which is json, then remove the json', async () => {
 			let all_attributes_for_update = [
-				'__blob__',
 				'__createdtime__',
 				'__updatedtime__',
 				'age',
@@ -971,14 +957,10 @@ describe('Test writeUtility module', () => {
 			];
 			assert.deepStrictEqual(records, expected2);
 
-			let value = env.dbis['__blob__'].get(`json/${record.id}`);
-			assert.deepStrictEqual(value, record.json);
-
 			//set json to undefined & verify it's gone
 
 			orig_records = [];
 			orig_records.push(Object.assign({}, records[0]));
-			delete orig_records[0].__blob__;
 			expected_update_response = new UpdateRecordsResponseObject([1], [], TXN_TIMESTAMP, orig_records);
 
 			results = await test_utils.assertErrorAsync(
@@ -996,8 +978,6 @@ describe('Test writeUtility module', () => {
 				{ id: 1, name: 'Kyle', age: 46, json: null, __updatedtime__: TIMESTAMP, __createdtime__: TIMESTAMP },
 			];
 			assert.deepStrictEqual(records, expected2);
-			value = env.dbis['__blob__'].get(`json/${record.id}`);
-			assert.deepStrictEqual(value, undefined);
 		});
 
 		it('test update with alasql function', async () => {
@@ -1030,7 +1010,6 @@ describe('Test writeUtility module', () => {
 			assert.deepStrictEqual(records, record);
 
 			let orig_records = [Object.assign({}, records)];
-			delete orig_records[0].__blob__;
 			let expected_update_response = new UpdateRecordsResponseObject([record.id], [], TXN_TIMESTAMP, orig_records);
 
 			rando_func = alasql.compile(`SELECT rando + 1 AS [${hdb_terms.FUNC_VAL}] FROM ?`);
@@ -1076,7 +1055,6 @@ describe('Test writeUtility module', () => {
 			TEST_ENVIRONMENT_NAME = uuid();
 			env = await environment_utility.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
 			await environment_utility.createDBI(env, 'id', false, true);
-			await environment_utility.createDBI(env, '__blob__', false);
 			let insert_records = test_utils.deepClone(ONE_RECORD_ARRAY);
 			await write_utility.insertRecords(env, HASH_ATTRIBUTE_NAME, test_utils.deepClone(ALL_ATTRIBUTES), insert_records);
 		});
@@ -1180,7 +1158,7 @@ describe('Test writeUtility module', () => {
 		});
 
 		it('test upsert one existing row', async () => {
-			let all_attributes_for_update = ['__blob__', '__createdtime__', '__updatedtime__', 'age', 'height', 'id', 'name'];
+			let all_attributes_for_update = ['__createdtime__', '__updatedtime__', 'age', 'height', 'id', 'name'];
 
 			let records = [];
 			for (let { key, value } of env.dbis[HASH_ATTRIBUTE_NAME].getRange({ start: false })) {
@@ -1216,7 +1194,7 @@ describe('Test writeUtility module', () => {
 		});
 
 		it('test upsert one existing row & one non-existing row', async () => {
-			let all_attributes_for_update = ['__blob__', '__createdtime__', '__updatedtime__', 'age', 'height', 'id', 'name'];
+			let all_attributes_for_update = ['__createdtime__', '__updatedtime__', 'age', 'height', 'id', 'name'];
 
 			let records = [];
 			for (let { key, value } of env.dbis[HASH_ATTRIBUTE_NAME].getRange({ start: false })) {
@@ -1258,7 +1236,6 @@ describe('Test writeUtility module', () => {
 
 		it('test partially upserting row & make sure other attributes are untouched', async () => {
 			let all_attributes_for_upsert = [
-				'__blob__',
 				'__createdtime__',
 				'__updatedtime__',
 				'age',
@@ -1300,7 +1277,6 @@ describe('Test writeUtility module', () => {
 
 		it('test partially upserting row to have long text, then change the long text', async () => {
 			let all_attributes_for_upsert = [
-				'__blob__',
 				'__createdtime__',
 				'__updatedtime__',
 				'age',
@@ -1344,9 +1320,6 @@ describe('Test writeUtility module', () => {
 			];
 			assert.deepStrictEqual(records, expected2);
 
-			let value = env.dbis['__blob__'].get(`text/${record.id}`);
-			assert.deepStrictEqual(value, record.text);
-
 			//set text to undefined & verify it's gone
 
 			orig_records = [];
@@ -1371,13 +1344,10 @@ describe('Test writeUtility module', () => {
 				{ id: 1, name: 'Kyle', age: 46, text: null, __createdtime__: TIMESTAMP, __updatedtime__: TIMESTAMP },
 			];
 			assert.deepStrictEqual(records, expected2);
-			value = env.dbis['__blob__'].get(`text/${record.id}`);
-			assert.deepStrictEqual(value, undefined);
 		});
 
 		it('test partially upserting row to have long text which is json, then remove the json', async () => {
 			let all_attributes_for_upsert = [
-				'__blob__',
 				'__createdtime__',
 				'__updatedtime__',
 				'age',
@@ -1423,9 +1393,6 @@ describe('Test writeUtility module', () => {
 			];
 			assert.deepStrictEqual(records, expected2);
 
-			let value = env.dbis['__blob__'].get(`json/${record.id}`);
-			assert.deepStrictEqual(value, record.json);
-
 			//set json to undefined & verify it's gone
 
 			orig_records = [];
@@ -1447,8 +1414,6 @@ describe('Test writeUtility module', () => {
 				{ id: 1, name: 'Kyle', age: 46, json: null, __updatedtime__: TIMESTAMP, __createdtime__: TIMESTAMP },
 			];
 			assert.deepStrictEqual(records, expected2);
-			value = env.dbis['__blob__'].get(`json/${record.id}`);
-			assert.deepStrictEqual(value, undefined);
 		});
 
 		it('test upsert with alasql function', async () => {

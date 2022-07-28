@@ -304,12 +304,12 @@ describe('test lmdbDropTable module', () => {
 				assert.deepEqual(actual, expected);
 			}
 
-			await test_utils.assertErrorAsync(fs.access, [path.join(DEV_SCHEMA_PATH, 'test')], undefined);
+			await test_utils.assertErrorAsync(fs.access, [path.join(DEV_SCHEMA_PATH, 'test.mdb')], undefined);
 
 			//validate the transactions environments
 			let transaction_path = path.join(BASE_PATH, 'transactions', 'dev');
-			let table_transaction_path = path.join(transaction_path, 'test', 'data.mdb');
-			let expected_txn_dbis = ['__blob__', 'hash_value', 'timestamp', 'user_name'];
+			let table_transaction_path = path.join(transaction_path, 'test.mdb');
+			let expected_txn_dbis = ['hash_value', 'timestamp', 'user_name'];
 			await test_utils.assertErrorAsync(fs.access, [table_transaction_path], undefined);
 			let txn_env = await test_utils.assertErrorAsync(
 				environment_utility.openEnvironment,
