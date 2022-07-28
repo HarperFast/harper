@@ -3,6 +3,7 @@
 const fs = require('fs-extra');
 const path = require('path');
 const chalk = require('chalk');
+const needle = require('needle');
 const StreamZip = require('node-stream-zip');
 const semver = require('semver');
 const nats_terms = require('./natsTerms');
@@ -20,6 +21,15 @@ const REQUIRED_GO_VERSION = pkg_json.engines['go-lang'];
 const REQUIRED_NATS_SERVER_VERSION = pkg_json.engines[nats_terms.NATS_SERVER_NAME];
 const NATS_SERVER_BINARY = path.join(DEPENDENCIES_PATH, `${nats_terms.NATS_SERVER_NAME}`);
 const NATS_SERVER_PATH = path.join(DEPENDENCIES_PATH, nats_terms.NATS_SERVER_NAME);
+const NATS_SERVER_DOWNLOAD_URL = `https://github.com/nats-io/nats-server/releases/download/v${REQUIRED_NATS_SERVER_VERSION}/nats-server-v${REQUIRED_NATS_SERVER_VERSION}-`;
+
+const PLATFORM_ARCHITECTURE_MAP = {
+	'linux-x64': 'linux-amd64.zip',
+	'linux-arm64': 'linux-arm64.zip',
+	'darwin-x64': 'darwin-amd64.zip',
+	'darwin-arm64': 'darwin-arm64.zip',
+	'win32-x64': 'windows-amd64',
+};
 
 /**
  * Runs a bash script in a new shell
@@ -102,11 +112,53 @@ async function cleanUp(full_nats_source_path) {
 	await fs.remove(pkg_path);
 }
 
+async function downloadNATSServer() {
+	//get os & architecture
+	const platform_arch = `${process.platform}-${process.arch}`;
+
+	//get the zip name from the map
+	let zip = PLATFORM_ARCHITECTURE_MAP[platform_arch];
+
+	//if there is no matching entry exit so we can build from source
+	if (!zip) {
+		return false;
+	}
+	let url = `${NATS_SERVER_DOWNLOAD_URL}${zip}`;
+	let dependency_platform_arch_path = path.join(DEPENDENCIES_PATH, platform_arch, zip);
+	let response;
+	try {
+		//this creates the path with a dummy file so needle can override
+		await fs.ensureFile(dependency_platform_arch_path);
+		await needle('get', url, { output: dependency_platform_arch_path, follow_max: 5 });
+	} catch (e) {
+		console.error(
+			`Error: ${e.message}, failed to download nats-server dependency: ${url}. Building nats-server from source.`
+		);
+		return false;
+	}
+	//extract the file
+	const stream_zip = new StreamZip.async({ file: dependency_platform_arch_path });
+	const entries = await stream_zip.entries();
+	for (const entry of Object.values(entries)) {
+		if (!entry.isDirectory && entry.name.endsWith('nats-server')) {
+			await stream_zip.extract(entry.name, NATS_SERVER_BINARY);
+		}
+		/*const desc = entry.isDirectory ? 'directory' : `${entry.size} bytes`;
+		console.log(`Entry ${entry.name}: ${desc}`);*/
+	}
+}
+
+downloadNATSServer().then(d=>{});
+
 /**
  * Orchestrates the install of the NATS server
  * @returns {Promise<void>}
  */
 async function installer() {
+	//attempt appropriate download of NATS release
+	//create ability to download all major architectures
+	//fall back to building from source
+
 	console.log(chalk.green('****Starting install of NATS Server.****'));
 	let installed = await checkNATSServerInstalled();
 	if (installed) {
