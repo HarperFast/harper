@@ -364,13 +364,13 @@ describe('Test bulkLoad.js', () => {
 		it('Test error is handled from request promise module', async () => {
 			let error;
 			try {
-				await downloadCSVFile_rw('https://httpstat.us/404');
+				await downloadCSVFile_rw('http://the-internet.herokuapp.com/status_codes/404');
 			} catch (err) {
 				error = err;
 			}
 			expect(error).to.not.equal(undefined);
 			expect(error.http_resp_msg).to.be.equal(
-				'CSV Load failed from URL: https://httpstat.us/404, status code: 404, message: Not Found'
+				'CSV Load failed from URL: http://the-internet.herokuapp.com/status_codes/404, status code: 404, message: Not Found'
 			);
 		}).timeout(10000);
 

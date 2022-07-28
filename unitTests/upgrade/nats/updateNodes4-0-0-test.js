@@ -79,7 +79,6 @@ describe('Test updateNodes4-0-0 module', () => {
 		delete_process_stub = sandbox.stub(pm2_utils, 'deleteProcess');
 		hdb_log_trace_stub = sandbox.stub(hdb_log, 'trace');
 		async_timeout_stub = sandbox.stub(hdb_utils, 'async_set_timeout').resolves();
-		update_nodes4_0_0.__set__('add_node', add_node_stub);
 		update_nodes4_0_0.__set__('remove_node', remove_node_stub);
 	});
 
@@ -92,17 +91,35 @@ describe('Test updateNodes4-0-0 module', () => {
 		sandbox.resetHistory();
 	});
 
-	it('Test promise array is built correctly for each node', async () => {
-		const promise_stub = sandbox.stub(Promise, 'allSettled').resolves();
-		await update_nodes4_0_0();
-		expect(promise_stub.args[0][0].length).to.equal(2);
-		expect(delete_process_stub.args[0][0]).to.equal('Upgrade-4-0-0');
-		promise_stub.restore();
-	});
-
 	it('Test node returns open status and is added happy path', async () => {
+		const add_node_rw = update_nodes4_0_0.__set__('add_node', add_node_stub);
+		const test_req = {
+			__createdtime__: 1658154668061,
+			__updatedtime__: Date.now(),
+			host: '18.224.68.187',
+			name: 'conveyor_1',
+			operation: null,
+			port: 12345,
+			subscriptions: [
+				{
+					schema: 'bearing_1',
+					table: 'speed',
+					publish: true,
+					subscribe: false,
+				},
+				{
+					schema: 'bearing_1',
+					table: 'hours',
+					publish: true,
+					subscribe: true,
+				},
+			],
+			system_info: {
+				hdb_version: '3.x.x',
+			},
+		};
 		update_node = update_nodes4_0_0.__get__('updateNode');
-		await update_node(test_node_record[0]);
+		await update_node(test_req);
 		expect(add_node_stub.args[0][0]).to.eql({
 			operation: 'add_node',
 			node_name: 'conveyor_1',
@@ -121,18 +138,39 @@ describe('Test updateNodes4-0-0 module', () => {
 				},
 			],
 		});
+		add_node_rw();
 	});
 
 	it('Test node is not added and days dif is adjusted', async () => {
+		const add_node_rw = update_nodes4_0_0.__set__('add_node', add_node_stub);
+		const test_req = {
+			__createdtime__: 1658154668061,
+			__updatedtime__: Date.now() - TENS_DAYS_IN_MS,
+			host: '18.224.68.187',
+			name: 'conveyor_2',
+			operation: null,
+			port: 12345,
+			subscriptions: [
+				{
+					schema: 'bearing_1',
+					table: 'speed',
+					publish: true,
+					subscribe: false,
+				},
+			],
+			system_info: {
+				hdb_version: '3.x.x',
+			},
+		};
 		update_node = update_nodes4_0_0.__get__('updateNode');
 		nats_request_stub.resolves({ status: 'error', message: { system_info: { hdb_version: '3.x.x' } } });
-		test_node_record[1].__updatedtime__ = Date.now() - TENS_DAYS_IN_MS;
-		await update_node(test_node_record[1]);
+		await update_node(test_req);
 		expect(add_node_stub.called).to.be.false;
 		expect(Math.floor(hdb_log_trace_stub.args[1][1])).to.equal(10);
 		expect(remove_node_stub.args[0][0]).to.eql({
 			operation: 'remove_node',
 			node_name: 'conveyor_2',
 		});
+		add_node_rw();
 	});
 });
