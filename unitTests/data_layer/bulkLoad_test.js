@@ -372,7 +372,7 @@ describe('Test bulkLoad.js', () => {
 			expect(error.http_resp_msg).to.be.equal(
 				'CSV Load failed from URL: http://the-internet.herokuapp.com/status_codes/404, status code: 404, message: Not Found'
 			);
-		}).timeout(10000);
+		}).timeout(20000);
 
 		it('Test for nominal behaviour, stubs are called as expected', async () => {
 			bulkLoad_rewire.__set__('needle', request_response_stub);
